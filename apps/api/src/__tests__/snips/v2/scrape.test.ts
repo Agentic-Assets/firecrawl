@@ -7,6 +7,7 @@ import {
   TEST_PRODUCTION,
   TEST_SELF_HOST,
   TEST_SUITE_WEBSITE,
+  HAS_FIRE_ENGINE,
   HAS_PLAYWRIGHT,
   HAS_PROXY,
   HAS_AI,
@@ -137,6 +138,22 @@ describe("Scrape tests", () => {
       scrapeTimeout,
     );
   });
+
+  it.concurrent(
+    "returns 400 for invalid URL",
+    async () => {
+      const raw = await scrapeRaw(
+        {
+          url: "not-a-valid-url",
+        } as any,
+        identity,
+      );
+
+      expect(raw.statusCode).toBe(400);
+      expect(raw.body.success).toBe(false);
+    },
+    scrapeTimeout,
+  );
 
   // TEMP: domain broken
   // it.concurrent("works with Punycode domains", async () => {
@@ -274,6 +291,30 @@ describe("Scrape tests", () => {
       );
 
       expect(response.markdown).toContain("Firecrawl");
+    },
+    scrapeTimeout,
+  );
+
+  itIf(TEST_SELF_HOST && !HAS_FIRE_ENGINE)(
+    "rejects actions when fire-engine is not configured",
+    async () => {
+      const raw = await scrapeRaw(
+        {
+          url: "https://example.com",
+          actions: [
+            {
+              type: "wait",
+              milliseconds: 1000,
+            },
+          ],
+        },
+        identity,
+      );
+
+      expect(raw.statusCode).toBe(400);
+      expect(raw.body.success).toBe(false);
+      expect(raw.body.code).toBe("SCRAPE_ACTIONS_NOT_SUPPORTED");
+      expect(raw.body.error).toContain("Actions are not supported");
     },
     scrapeTimeout,
   );

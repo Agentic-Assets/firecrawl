@@ -23,7 +23,7 @@ import { getJobPriority } from "../../lib/job-priority";
 import { addScrapeJobs } from "../../services/queue-jobs";
 import { createWebhookSender, WebhookEvent } from "../../services/webhook";
 import { logger as _logger } from "../../lib/logger";
-import { BLOCKLISTED_URL_MESSAGE } from "../../lib/strings";
+import { UNSUPPORTED_SITE_MESSAGE } from "../../lib/strings";
 import { isUrlBlocked } from "../../scraper/WebScraper/utils/blocklist";
 import { checkPermissions } from "../../lib/permissions";
 import { crawlGroup } from "../../services/worker/nuq";
@@ -109,7 +109,7 @@ export async function batchScrapeController(
       if (!res.headersSent) {
         return res.status(403).json({
           success: false,
-          error: BLOCKLISTED_URL_MESSAGE,
+          error: UNSUPPORTED_SITE_MESSAGE,
         });
       }
     }
@@ -154,12 +154,22 @@ export async function batchScrapeController(
             ? true
             : false,
           zeroDataRetention,
+          bypassBilling: !(req.body.__agentInterop?.shouldBill ?? true),
         }, // NOTE: smart wait disabled for batch scrapes to ensure contentful scrape, speed does not matter
         team_id: req.auth.team_id,
         createdAt: Date.now(),
         maxConcurrency: req.body.maxConcurrency,
         zeroDataRetention,
       };
+
+  if (req.body.appendToId) {
+    if (!sc || sc.team_id !== req.auth.team_id) {
+      return res.status(404).json({
+        success: false,
+        error: "Job not found",
+      });
+    }
+  }
 
   if (!req.body.appendToId) {
     await crawlGroup.addGroup(

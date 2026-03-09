@@ -88,21 +88,6 @@ async function supaCheckTeamCredits(
     };
   }
 
-  const remainingCredits = chunk.price_should_be_graceful
-    ? chunk.remaining_credits + chunk.price_credits
-    : chunk.remaining_credits;
-
-  const creditsWillBeUsed = chunk.adjusted_credits_used + credits;
-
-  // In case chunk.price_credits is undefined, set it to a large number to avoid mistakes
-  const totalPriceCredits = chunk.price_should_be_graceful
-    ? (chunk.total_credits_sum ?? 100000000) + chunk.price_credits
-    : (chunk.total_credits_sum ?? 100000000);
-
-  // Removal of + credits
-  const creditUsagePercentage =
-    chunk.adjusted_credits_used / (chunk.total_credits_sum ?? 100000000);
-
   let isAutoRechargeEnabled = false,
     autoRechargeThreshold = 1000;
   const cacheKey = `team_auto_recharge_${team_id}`;
@@ -125,6 +110,24 @@ async function supaCheckTeamCredits(
     }
   }
 
+  // Graceful billing only applies if the plan supports it AND auto-recharge is enabled
+  const allowOverages = chunk.price_should_be_graceful && isAutoRechargeEnabled;
+
+  const remainingCredits = allowOverages
+    ? chunk.remaining_credits + chunk.price_credits
+    : chunk.remaining_credits;
+
+  const creditsWillBeUsed = chunk.adjusted_credits_used + credits;
+
+  // In case chunk.price_credits is undefined, set it to a large number to avoid mistakes
+  const totalPriceCredits = allowOverages
+    ? (chunk.total_credits_sum ?? 100000000) + chunk.price_credits
+    : (chunk.total_credits_sum ?? 100000000);
+
+  // Removal of + credits
+  const creditUsagePercentage =
+    chunk.adjusted_credits_used / (chunk.total_credits_sum ?? 100000000);
+
   if (
     isAutoRechargeEnabled &&
     chunk.remaining_credits < autoRechargeThreshold &&
@@ -143,12 +146,12 @@ async function supaCheckTeamCredits(
       return {
         success: true,
         message: autoChargeResult.message,
-        remainingCredits: chunk.price_should_be_graceful
+        remainingCredits: allowOverages
           ? autoChargeResult.remainingCredits + chunk.price_credits
           : autoChargeResult.remainingCredits,
         chunk: autoChargeResult.chunk,
       };
-    } else if (chunk.price_should_be_graceful) {
+    } else if (allowOverages) {
       return {
         success: true,
         message: "Auto-recharge failed, but price should be graceful",
@@ -180,6 +183,30 @@ async function supaCheckTeamCredits(
 
   // Compare the adjusted total credits used with the credits allowed by the plan (and graceful)
   if (creditsWillBeUsed > totalPriceCredits) {
+    logger.warn("Credit check failed - insufficient credits", {
+      team_id,
+      teamId: team_id,
+      creditsRequested: credits,
+      is_extract: chunk.is_extract,
+      bypassCreditChecks: chunk.flags?.bypassCreditChecks,
+      price_should_be_graceful: chunk.price_should_be_graceful,
+      allowOverages,
+      price_credits: chunk.price_credits,
+      coupon_credits: chunk.coupon_credits,
+      total_credits_sum: chunk.total_credits_sum,
+      credits_used: chunk.credits_used,
+      adjusted_credits_used: chunk.adjusted_credits_used,
+      remaining_credits: chunk.remaining_credits,
+      sub_current_period_start: chunk.sub_current_period_start,
+      sub_current_period_end: chunk.sub_current_period_end,
+      computed_remainingCredits: remainingCredits,
+      computed_creditsWillBeUsed: creditsWillBeUsed,
+      computed_totalPriceCredits: totalPriceCredits,
+      creditUsagePercentage,
+      sumComponents: chunk.price_credits + chunk.coupon_credits,
+      isAutoRechargeEnabled,
+      autoRechargeThreshold,
+    });
     return {
       success: false,
       message:
