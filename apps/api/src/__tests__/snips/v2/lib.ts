@@ -104,6 +104,33 @@ export async function scrapeStatus(
   return raw.body.data;
 }
 
+export async function scrapeInteractRaw(
+  jobId: string,
+  body: {
+    code: string;
+    language?: "python" | "node" | "bash";
+    timeout?: number;
+    origin?: string;
+  },
+  identity: Identity,
+) {
+  return await request(TEST_API_URL)
+    .post("/v2/scrape/" + encodeURIComponent(jobId) + "/interact")
+    .set("Authorization", `Bearer ${identity.apiKey}`)
+    .set("Content-Type", "application/json")
+    .send(body);
+}
+
+export async function scrapeStopInteractiveBrowserRaw(
+  jobId: string,
+  identity: Identity,
+) {
+  return await request(TEST_API_URL)
+    .delete("/v2/scrape/" + encodeURIComponent(jobId) + "/interact")
+    .set("Authorization", `Bearer ${identity.apiKey}`)
+    .send();
+}
+
 // =========================================
 // Crawl API
 // =========================================
@@ -400,6 +427,46 @@ export async function creditUsage(
   }
 
   return req.body.data;
+}
+
+export async function creditUsageHistorical(identity: Identity): Promise<{
+  success: boolean;
+  periods: {
+    startDate: string | null;
+    endDate: string | null;
+    creditsUsed: number;
+  }[];
+}> {
+  const req = await request(TEST_API_URL)
+    .get("/v2/team/credit-usage/historical")
+    .set("Authorization", `Bearer ${identity.apiKey}`)
+    .set("Content-Type", "application/json");
+
+  if (req.status !== 200) {
+    throw req.body;
+  }
+
+  return req.body;
+}
+
+export async function tokenUsageHistorical(identity: Identity): Promise<{
+  success: boolean;
+  periods: {
+    startDate: string | null;
+    endDate: string | null;
+    tokensUsed: number;
+  }[];
+}> {
+  const req = await request(TEST_API_URL)
+    .get("/v2/team/token-usage/historical")
+    .set("Authorization", `Bearer ${identity.apiKey}`)
+    .set("Content-Type", "application/json");
+
+  if (req.status !== 200) {
+    throw req.body;
+  }
+
+  return req.body;
 }
 
 // =========================================

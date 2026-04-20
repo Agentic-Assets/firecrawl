@@ -1,5 +1,5 @@
 # Firecrawl Rust SDK
-The Firecrawl Rust SDK is a library that allows you to easily scrape and crawl websites, and output the data in a format ready for use with language models (LLMs). It provides a simple and intuitive interface for interacting with the Firecrawl API.
+The Firecrawl Rust SDK is a library that allows you to easily search, scrape, and interact with the web, and output the data in a format ready for use with language models (LLMs). It provides a simple and intuitive interface for the Firecrawl API.
 
 ## Installation
 
@@ -139,6 +139,32 @@ match map_result {
     Ok(data) => println!("Mapped URLs: {:#?}", data),
     Err(e) => eprintln!("Map failed: {}", e),
 }
+```
+
+### Scrape-bound interactive browsing (v2)
+
+Use a scrape job ID to keep interacting with the replayed browser context:
+
+```rust
+use firecrawl::v2::{Client, ScrapeExecuteLanguage, ScrapeExecuteOptions};
+
+let client = Client::new("fc-YOUR-API-KEY")?;
+let job_id = "550e8400-e29b-41d4-a716-446655440000";
+
+let run = client
+    .interact(
+        job_id,
+        ScrapeExecuteOptions {
+            code: Some("console.log(await page.url())".to_string()),
+            language: Some(ScrapeExecuteLanguage::Node),
+            timeout: Some(60),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+println!("{:?}", run.stdout);
+client.stop_interaction(job_id).await?;
 ```
 
 ## Error Handling

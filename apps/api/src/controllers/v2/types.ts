@@ -21,7 +21,10 @@ import { ErrorCodes } from "../../lib/error";
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
 import { integrationSchema } from "../../utils/integration";
-import { webhookSchema } from "../../services/webhook/schema";
+import {
+  webhookSchema,
+  createWebhookSchema,
+} from "../../services/webhook/schema";
 import { BrandingProfile } from "../../types/branding";
 
 // Base URL schema with common validation logic
@@ -68,7 +71,7 @@ export const URL = z.preprocess(
         return false;
       }
     }, "Invalid URL"),
-  // .refine((x) => !isUrlBlocked(x as string), BLOCKLISTED_URL_MESSAGE),
+  // .refine((x) => !isUrlBlocked(x as string), UNSUPPORTED_SITE_MESSAGE),
 );
 
 const strictMessage =
@@ -397,6 +400,14 @@ const attributesFormatWithOptions = z.strictObject({
 
 type AttributesFormatWithOptions = z.output<typeof attributesFormatWithOptions>;
 
+const queryFormatWithOptions = z.strictObject({
+  type: z.literal("query"),
+  prompt: z.string().max(10000),
+  directQuote: z.boolean().optional().default(false),
+});
+
+type QueryFormatWithOptions = z.output<typeof queryFormatWithOptions>;
+
 export type FormatObject =
   | { type: "markdown" }
   | { type: "html" }
@@ -408,10 +419,17 @@ export type FormatObject =
   | ChangeTrackingFormatWithOptions
   | ScreenshotFormatWithOptions
   | AttributesFormatWithOptions
-  | { type: "branding" };
+  | QueryFormatWithOptions
+  | { type: "branding" }
+  | { type: "audio" };
+
+const pdfModeSchema = z.enum(["fast", "auto", "ocr"]);
+
+export type PDFMode = z.infer<typeof pdfModeSchema>;
 
 const pdfParserWithOptions = z.strictObject({
   type: z.literal("pdf"),
+  mode: pdfModeSchema.optional(),
   maxPages: z.int().positive().finite().max(10000).optional(),
 });
 
@@ -444,6 +462,17 @@ export function getPDFMaxPages(parsers?: Parsers): number | undefined {
     return (pdfParser as any).maxPages;
   }
   return undefined;
+}
+
+export function getPDFMode(parsers?: Parsers): PDFMode {
+  if (!parsers) return "auto";
+  for (const parser of parsers) {
+    if (parser === "pdf") return "auto";
+    if (typeof parser === "object" && parser.type === "pdf") {
+      return parser.mode ?? "auto";
+    }
+  }
+  return "auto";
 }
 
 function transformIframeSelector(selector: string): string {
@@ -500,6 +529,8 @@ const baseScrapeOptions = z.strictObject({
           screenshotFormatWithOptions,
           attributesFormatWithOptions,
           z.strictObject({ type: z.literal("branding") }),
+          queryFormatWithOptions,
+          z.strictObject({ type: z.literal("audio") }),
         ])
         .array()
         .optional()
@@ -525,8 +556,9 @@ const baseScrapeOptions = z.strictObject({
     .transform(tags => tags.map(transformIframeSelector))
     .optional(),
   onlyMainContent: z.boolean().prefault(true),
-  timeout: z.int().positive().finite().optional(),
-  waitFor: z.int().nonnegative().finite().max(60000).prefault(0),
+  onlyCleanContent: z.boolean().prefault(false),
+  timeout: z.int().positive().min(1000).optional(),
+  waitFor: z.int().nonnegative().max(60000).prefault(0),
   mobile: z.boolean().prefault(false),
   parsers: parsersSchema.optional(),
   actions: actionsSchema.optional(),
@@ -538,15 +570,24 @@ const baseScrapeOptions = z.strictObject({
   fastMode: z.boolean().prefault(false),
   useMock: z.string().optional(),
   blockAds: z.boolean().prefault(true),
-  proxy: z.enum(["basic", "stealth", "auto"]).prefault("auto"),
+  proxy: z.enum(["basic", "stealth", "enhanced", "auto"]).prefault("auto"),
   maxAge: z.int().gte(0).optional(),
   minAge: z.int().gte(0).optional(),
   storeInCache: z.boolean().prefault(true),
+
+  profile: z
+    .object({
+      name: z.string().min(1).max(128),
+      saveChanges: z.boolean().default(true),
+    })
+    .optional(),
+
   // @deprecated
   __searchPreviewToken: z.string().optional(),
   __experimental_omce: z.boolean().prefault(false).optional(),
   __experimental_omceDomain: z.string().optional(),
   __experimental_engpicker: z.boolean().prefault(false).optional(),
+  __forceFirePDF: z.boolean().prefault(false).optional(),
 });
 
 type ScrapeOptionsBase = z.infer<typeof baseScrapeOptions>;
@@ -593,7 +634,9 @@ const extractTransformImpl = <T extends ScrapeOptionsBase | undefined>(
   }
 
   if (
-    (obj.proxy === "stealth" || obj.proxy === "auto") &&
+    (obj.proxy === "stealth" ||
+      obj.proxy === "enhanced" ||
+      obj.proxy === "auto") &&
     obj.timeout === 30000
   ) {
     result = { ...result, timeout: 120000 };
@@ -676,12 +719,13 @@ const extractOptions = z
     origin: z.string().optional().prefault("api"),
     integration: integrationSchema.optional().transform(val => val || null),
     urlTrace: z.boolean().prefault(false),
-    timeout: z.int().positive().finite().optional(),
+    timeout: z.int().positive().min(1000).optional(),
     agent: agentOptionsExtract.optional(),
     __experimental_streamSteps: z.boolean().prefault(false),
     __experimental_llmUsage: z.boolean().prefault(false),
     __experimental_showSources: z.boolean().prefault(false),
     showSources: z.boolean().prefault(false),
+    // These two below don't do anything anymore
     __experimental_cacheKey: z.string().optional(),
     __experimental_cacheMode: z
       .enum(["direct", "save", "load"])
@@ -711,6 +755,14 @@ export const extractRequestSchema = extractOptions;
 export type ExtractRequest = z.infer<typeof extractRequestSchema>;
 export type ExtractRequestInput = z.input<typeof extractRequestSchema>;
 
+const agentWebhookSchema = createWebhookSchema([
+  "started",
+  "action",
+  "completed",
+  "failed",
+  "cancelled",
+]);
+
 export const agentRequestSchema = z.strictObject({
   urls: URL.array().optional(),
   prompt: z.string().max(10000),
@@ -738,8 +790,10 @@ export const agentRequestSchema = z.strictObject({
   integration: integrationSchema.optional().transform(val => val || null),
   maxCredits: z.number().optional(),
   strictConstrainToURLs: z.boolean().optional(),
+  webhook: agentWebhookSchema.optional(),
 
   overrideWhitelist: z.string().optional(),
+  model: z.enum(["spark-1-pro", "spark-1-mini"]).default("spark-1-pro"),
 });
 
 export type AgentRequest = z.infer<typeof agentRequestSchema>;
@@ -755,6 +809,7 @@ const scrapeRequestSchemaBase = baseScrapeOptions.extend({
       auth: z.string(),
       requestId: z.string(),
       shouldBill: z.boolean(),
+      boostConcurrency: z.boolean().optional(),
     })
     .optional(),
 });
@@ -855,7 +910,8 @@ export const crawlerOptions = z.strictObject({
   allowExternalLinks: z.boolean().prefault(false),
   allowSubdomains: z.boolean().prefault(false),
   ignoreRobotsTxt: z.boolean().prefault(false),
-  sitemap: z.enum(["skip", "include"]).prefault("include"),
+  robotsUserAgent: z.string().optional(),
+  sitemap: z.enum(["skip", "include", "only"]).prefault("include"),
   deduplicateSimilarURLs: z.boolean().prefault(true),
   ignoreQueryParameters: z.boolean().prefault(false),
   regexOnFullURL: z.boolean().prefault(false),
@@ -929,6 +985,7 @@ const mapRequestSchemaBase = crawlerOptions
     useMock: z.string().optional(),
     filterByPath: z.boolean().prefault(true),
     useIndex: z.boolean().prefault(true),
+    ignoreCache: z.boolean().prefault(false),
     location: locationSchema,
     headers: z.record(z.string(), z.string()).optional(),
   });
@@ -953,9 +1010,11 @@ export type Document = {
   links?: string[];
   images?: string[];
   screenshot?: string;
+  audio?: string;
   extract?: any;
   json?: any;
   summary?: string;
+  answer?: string;
   branding?: BrandingProfile;
   warning?: string;
   attributes?: {
@@ -1059,6 +1118,8 @@ export type ErrorResponse = {
   code?: ErrorCodes;
   error: string;
   details?: any;
+  sponsor_status?: string;
+  login_url?: string;
 };
 
 export type ScrapeResponse =
@@ -1119,6 +1180,7 @@ export type AgentStatusResponse =
       status: "processing" | "completed" | "failed";
       error?: string;
       data?: any;
+      model?: "spark-1-pro" | "spark-1-mini";
       expiresAt: string;
       creditsUsed?: number;
     };
@@ -1190,6 +1252,16 @@ export type CrawlStatusResponse =
       next?: string;
       data: Document[];
       warning?: string;
+    }
+  | {
+      success: false;
+      status: "failed";
+      error: string;
+      completed: number;
+      total: number;
+      creditsUsed: number;
+      expiresAt: string;
+      data: Document[];
     };
 
 export type OngoingCrawlsResponse =
@@ -1220,6 +1292,7 @@ export type CrawlErrorsResponse =
 
 type AuthObject = {
   team_id: string;
+  org_id?: string | null;
 };
 
 type Account = {
@@ -1227,16 +1300,20 @@ type Account = {
 };
 
 export type TeamFlags = {
-  ignoreRobots?: boolean;
+  ignoreRobots?: "disabled" | "allowed" | "forced";
+  customRobotsAgent?: "disabled" | "allowed";
   unblockedDomains?: string[];
   forceZDR?: boolean;
   allowZDR?: boolean;
+  scrapeZDR?: "disabled" | "allowed" | "forced";
+  searchZDR?: "disabled" | "allowed" | "forced";
   zdrCost?: number;
   checkRobotsOnScrape?: boolean;
-  allowTeammateInvites?: boolean;
   crawlTtlHours?: number;
   ipWhitelist?: boolean;
   bypassCreditChecks?: boolean;
+  debugBranding?: boolean;
+  maxBrowserSessions?: number;
 } | null;
 
 interface RequestWithMaybeACUC<
@@ -1268,7 +1345,9 @@ export function toV0CrawlerOptions(x: CrawlerOptions) {
     allowExternalContentLinks: x.allowExternalLinks,
     allowSubdomains: x.allowSubdomains,
     ignoreRobotsTxt: x.ignoreRobotsTxt,
+    robotsUserAgent: x.robotsUserAgent,
     ignoreSitemap: x.sitemap === "skip",
+    sitemapOnly: x.sitemap === "only",
     deduplicateSimilarURLs: x.deduplicateSimilarURLs,
     ignoreQueryParameters: x.ignoreQueryParameters,
     regexOnFullURL: x.regexOnFullURL,
@@ -1287,7 +1366,8 @@ export function toV2CrawlerOptions(x: any): CrawlerOptions {
     allowExternalLinks: x.allowExternalContentLinks,
     allowSubdomains: x.allowSubdomains,
     ignoreRobotsTxt: x.ignoreRobotsTxt,
-    sitemap: x.ignoreSitemap ? "skip" : "include",
+    robotsUserAgent: x.robotsUserAgent,
+    sitemap: x.sitemapOnly ? "only" : x.ignoreSitemap ? "skip" : "include",
     deduplicateSimilarURLs: x.deduplicateSimilarURLs,
     ignoreQueryParameters: x.ignoreQueryParameters,
     regexOnFullURL: x.regexOnFullURL,
@@ -1312,7 +1392,7 @@ function fromV0CrawlerOptions(
       allowExternalLinks: x.allowExternalContentLinks,
       allowSubdomains: x.allowSubdomains,
       ignoreRobotsTxt: x.ignoreRobotsTxt,
-      sitemap: x.ignoreSitemap ? "skip" : "include",
+      sitemap: x.sitemapOnly ? "only" : x.ignoreSitemap ? "skip" : "include",
       deduplicateSimilarURLs: x.deduplicateSimilarURLs,
       ignoreQueryParameters: x.ignoreQueryParameters,
       regexOnFullURL: x.regexOnFullURL,
@@ -1623,6 +1703,7 @@ export const searchRequestSchema = z
                 z.strictObject({ type: z.literal("images") }),
                 z.strictObject({ type: z.literal("summary") }),
                 jsonFormatWithOptions,
+                queryFormatWithOptions,
                 screenshotFormatWithOptions,
               ])
               .array()

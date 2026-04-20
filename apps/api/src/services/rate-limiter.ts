@@ -27,14 +27,21 @@ const fallbackRateLimits: AuthCreditUsageChunk["rate_limits"] = {
   crawlStatus: 25000,
   extractAgentPreview: 10,
   scrapeAgentPreview: 10,
+  browser: 2,
+  browserExecute: 10,
+  account: 1000,
 };
 
 export function getRateLimiter(
   mode: RateLimiterMode,
   rate_limits: AuthCreditUsageChunk["rate_limits"] | null,
 ): RateLimiterRedis {
-  return createRateLimiter(
-    `${mode}`,
-    rate_limits?.[mode] ?? fallbackRateLimits?.[mode] ?? 500,
-  );
+  let rateLimit = rate_limits?.[mode] ?? fallbackRateLimits?.[mode] ?? 500;
+
+  if (mode === RateLimiterMode.Search || mode === RateLimiterMode.Scrape) {
+    // TEMP: Mogery
+    rateLimit = Math.max(rateLimit, 100);
+  }
+
+  return createRateLimiter(`${mode}`, rateLimit);
 }

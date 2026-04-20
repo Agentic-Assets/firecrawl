@@ -207,8 +207,15 @@ function inferPalette(
       yiq: contrastYIQ(hex),
     }));
 
+  // Secondary: a chromatic color distinct from both primary and accent
+  const secondary =
+    ranked.find(
+      h => !isGrayish(h) && h !== primary && h !== accent && h !== background,
+    ) || undefined;
+
   const paletteResult = {
     primary,
+    secondary,
     accent,
     background,
     textPrimary: textPrimary,
@@ -515,6 +522,7 @@ export function processRawBranding(raw: BrandingScriptReturn): BrandingProfile {
     __button_snapshots: buttonSnapshots as any,
     __input_snapshots: inputSnapshots as any,
     __framework_hints: raw.frameworkHints as any,
+    __logo_candidates: raw.logoCandidates as any,
   };
 }
 

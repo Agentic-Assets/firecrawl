@@ -3,6 +3,8 @@ import {
   batchScrape,
   crawl,
   creditUsage,
+  creditUsageHistorical,
+  tokenUsageHistorical,
   idmux,
   map,
   scrape,
@@ -27,7 +29,7 @@ describeIf(TEST_PRODUCTION)("Billing tests", () => {
       const rc1 = (await creditUsage(identity)).remainingCredits;
 
       // Run all scrape operations in parallel with Promise.all
-      const [scrape1, scrape2, scrape3] = await Promise.all([
+      const [scrape1, scrape2, scrape3, scrape4] = await Promise.all([
         // scrape 1: regular fc.dev scrape (1 credit)
         scrape(
           {
@@ -63,19 +65,29 @@ describeIf(TEST_PRODUCTION)("Billing tests", () => {
           },
           identity,
         ),
+
+        // scrape 3: fc.dev with query (5 credits)
+        scrape(
+          {
+            url: TEST_SUITE_WEBSITE,
+            formats: [{ type: "query", prompt: "What is Firecrawl?" }],
+          },
+          identity,
+        ),
       ]);
 
       expect(scrape1.metadata.creditsUsed).toBe(1);
       expect(scrape2.metadata.creditsUsed).toBe(1);
       expect(scrape3.metadata.creditsUsed).toBe(5);
+      expect(scrape4.metadata.creditsUsed).toBe(5);
 
-      // sum: 7 credits
+      // sum: 12 credits
 
       await sleepForBatchBilling();
 
       const rc2 = (await creditUsage(identity)).remainingCredits;
 
-      expect(rc1 - rc2).toBe(7);
+      expect(rc1 - rc2).toBe(12);
     },
     120000,
   );
@@ -359,7 +371,7 @@ describeIf(TEST_PRODUCTION)("Billing tests", () => {
         name: "billing/bills ZDR scrape correctly",
         credits: 100,
         flags: {
-          allowZDR: true,
+          scrapeZDR: "allowed",
         },
       });
 
@@ -429,7 +441,7 @@ describeIf(TEST_PRODUCTION)("Billing tests", () => {
         name: "billing/bills ZDR batch scrape correctly",
         credits: 100,
         flags: {
-          allowZDR: true,
+          scrapeZDR: "allowed",
         },
       });
 
@@ -500,7 +512,7 @@ describeIf(TEST_PRODUCTION)("Billing tests", () => {
         name: "billing/bills ZDR crawl correctly",
         credits: 200,
         flags: {
-          allowZDR: true,
+          scrapeZDR: "allowed",
         },
       });
 
@@ -560,13 +572,75 @@ describeIf(TEST_PRODUCTION)("Billing tests", () => {
   );
 
   it.concurrent(
+    "returns historical credit usage",
+    async () => {
+      const identity = await idmux({
+        name: "billing/returns historical credit usage",
+        credits: 100,
+      });
+
+      const result = await creditUsageHistorical(identity);
+
+      expect(result.success).toBe(true);
+      expect(Array.isArray(result.periods)).toBe(true);
+
+      for (const period of result.periods) {
+        expect(typeof period.creditsUsed).toBe("number");
+        expect(period.creditsUsed).toBeGreaterThanOrEqual(0);
+      }
+
+      // Verify periods are sorted by startDate ascending
+      for (let i = 1; i < result.periods.length; i++) {
+        const prevRaw = result.periods[i - 1].startDate ? Date.parse(result.periods[i - 1].startDate!) : NaN;
+        const currRaw = result.periods[i].startDate ? Date.parse(result.periods[i].startDate!) : NaN;
+        const prevNaN = Number.isNaN(prevRaw);
+        const currNaN = Number.isNaN(currRaw);
+        if (!prevNaN && !currNaN) {
+          expect(currRaw).toBeGreaterThanOrEqual(prevRaw);
+        } else if (!prevNaN && currNaN) {
+          // null dates sorted last — valid
+        }
+      }
+    },
+    60000,
+  );
+
+  it.concurrent(
+    "returns historical token usage",
+    async () => {
+      const identity = await idmux({
+        name: "billing/returns historical token usage",
+        credits: 100,
+      });
+
+      const result = await tokenUsageHistorical(identity);
+
+      expect(result.success).toBe(true);
+      expect(Array.isArray(result.periods)).toBe(true);
+
+      for (const period of result.periods) {
+        expect(typeof period.tokensUsed).toBe("number");
+        expect(period.tokensUsed).toBeGreaterThanOrEqual(0);
+      }
+
+      // Verify periods are sorted by startDate ascending
+      for (let i = 1; i < result.periods.length; i++) {
+        const prev = new Date(result.periods[i - 1].startDate ?? 0).getTime();
+        const curr = new Date(result.periods[i].startDate ?? 0).getTime();
+        expect(curr).toBeGreaterThanOrEqual(prev);
+      }
+    },
+    60000,
+  );
+
+  it.concurrent(
     "bills custom-cost ZDR scrape correctly",
     async () => {
       const identity = await idmux({
         name: "billing/bills ZDR scrape correctly",
         credits: 100,
         flags: {
-          allowZDR: true,
+          scrapeZDR: "allowed",
           zdrCost: 0,
         },
       });

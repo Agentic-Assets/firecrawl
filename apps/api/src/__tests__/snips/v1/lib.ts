@@ -63,7 +63,7 @@ export async function scrape(
 ): Promise<Document> {
   const raw = await scrapeRaw(body, identity);
   expectScrapeToSucceed(raw);
-  if (body.proxy === "stealth") {
+  if (body.proxy === "stealth" || body.proxy === "enhanced") {
     expect(raw.body.data.metadata.proxyUsed).toBe("stealth");
   } else if (!body.proxy || body.proxy === "basic") {
     expect(raw.body.data.metadata.proxyUsed).toBe("basic");
@@ -410,7 +410,7 @@ export async function extract(
 // Search API
 // =========================================
 
-async function searchRaw(body: SearchRequestInput, identity: Identity) {
+export async function searchRaw(body: SearchRequestInput, identity: Identity) {
   return await request(TEST_API_URL)
     .post("/v1/search")
     .set("Authorization", `Bearer ${identity.apiKey}`)
@@ -465,6 +465,46 @@ export async function tokenUsage(
       .set("Authorization", `Bearer ${identity.apiKey}`)
       .set("Content-Type", "application/json")
   ).body.data;
+}
+
+export async function creditUsageHistorical(identity: Identity): Promise<{
+  success: boolean;
+  periods: {
+    startDate: string | null;
+    endDate: string | null;
+    creditsUsed: number;
+  }[];
+}> {
+  const req = await request(TEST_API_URL)
+    .get("/v1/team/credit-usage/historical")
+    .set("Authorization", `Bearer ${identity.apiKey}`)
+    .set("Content-Type", "application/json");
+
+  if (req.status !== 200) {
+    throw req.body;
+  }
+
+  return req.body;
+}
+
+export async function tokenUsageHistorical(identity: Identity): Promise<{
+  success: boolean;
+  periods: {
+    startDate: string | null;
+    endDate: string | null;
+    tokensUsed: number;
+  }[];
+}> {
+  const req = await request(TEST_API_URL)
+    .get("/v1/team/token-usage/historical")
+    .set("Authorization", `Bearer ${identity.apiKey}`)
+    .set("Content-Type", "application/json");
+
+  if (req.status !== 200) {
+    throw req.body;
+  }
+
+  return req.body;
 }
 
 // =========================================

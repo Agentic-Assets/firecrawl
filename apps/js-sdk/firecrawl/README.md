@@ -1,6 +1,6 @@
 # Firecrawl Node SDK
 
-The Firecrawl Node SDK is a library that allows you to easily scrape and crawl websites, and output the data in a format ready for use with language models (LLMs). It provides a simple and intuitive interface for interacting with the Firecrawl API.
+The Firecrawl Node SDK is a library that allows you to easily search, scrape, and interact with the web, and output the data in a format ready for use with language models (LLMs). It provides a simple and intuitive interface for the Firecrawl API.
 
 ## Installation
 
@@ -108,6 +108,28 @@ Use `map` to generate a list of URLs from a website. Options let you customize t
 ```js
 const mapResult = await app.map('https://example.com');
 console.log(mapResult);
+```
+
+### Scrape-bound interactive browsing (v2)
+
+Use a scrape job ID to keep interacting with the replayed browser context:
+
+```js
+const doc = await app.scrape('https://example.com', {
+  actions: [{ type: 'click', selector: 'a[href="/pricing"]' }],
+});
+
+const scrapeJobId = doc?.metadata?.scrapeId;
+if (!scrapeJobId) throw new Error('Missing scrapeId');
+
+const run = await app.interact(scrapeJobId, {
+  code: 'console.log(await page.url())',
+  language: 'node',
+  timeout: 60,
+});
+console.log(run.stdout);
+
+await app.stopInteraction(scrapeJobId);
 ```
 
 ### Crawl a website with real‑time updates
