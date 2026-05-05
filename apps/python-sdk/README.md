@@ -1,6 +1,6 @@
 # Firecrawl Python SDK
 
-The Firecrawl Python SDK is a library that allows you to easily scrape and crawl websites, and output the data in a format ready for use with language models (LLMs). It provides a simple and intuitive interface for interacting with the Firecrawl API.
+The Firecrawl Python SDK is a library that allows you to easily search, scrape, and interact with the web, and output the data in a format ready for use with language models (LLMs). It provides a simple and intuitive interface for the Firecrawl API.
 
 ## Installation
 
@@ -49,6 +49,27 @@ scrape_result = firecrawl.scrape('https://firecrawl.dev', formats=['markdown', '
 print(scrape_result)
 ```
 
+### Parsing uploaded files
+
+Use `parse` to upload local bytes/files (`html`, `pdf`, `docx`, etc.) as multipart form data and return the parsed document.
+`parse` does not support change tracking or browser-only options (actions, wait_for, location, mobile, screenshot, branding).
+
+```python
+from firecrawl import Firecrawl
+from firecrawl.v2.types import ParseOptions
+
+firecrawl = Firecrawl(api_key="fc-YOUR_API_KEY")
+
+doc = firecrawl.parse(
+  b"<!DOCTYPE html><html><body><h1>Python Parse</h1></body></html>",
+  filename="upload.html",
+  content_type="text/html",
+  options=ParseOptions(formats=["markdown"]),
+)
+
+print(doc.markdown)
+```
+
 ### Crawling a Website
 
 To crawl a website, use the `crawl` method. It takes the starting URL and optional parameters as arguments. You can control depth, limits, formats, and more.
@@ -87,6 +108,32 @@ crawl_status = firecrawl.get_crawl_status("<crawl_id>")
 print(crawl_status)
 ```
 
+### Manual Pagination (v2)
+
+Crawl and batch scrape status responses may include a `next` URL when more data is available. The SDK auto-paginates by default; to page manually, disable auto-pagination and pass the opaque `next` URL back to the SDK.
+
+```python
+from firecrawl.v2.types import PaginationConfig
+
+# Crawl: fetch one page at a time
+crawl_job = firecrawl.start_crawl("https://firecrawl.dev", limit=100)
+status = firecrawl.get_crawl_status(
+  crawl_job.id,
+  pagination_config=PaginationConfig(auto_paginate=False),
+)
+if status.next:
+  page2 = firecrawl.get_crawl_status_page(status.next)
+
+# Batch scrape: fetch one page at a time
+batch_job = firecrawl.start_batch_scrape(["https://firecrawl.dev"])
+status = firecrawl.get_batch_scrape_status(
+  batch_job.id,
+  pagination_config=PaginationConfig(auto_paginate=False),
+)
+if status.next:
+  page2 = firecrawl.get_batch_scrape_status_page(status.next)
+```
+
 ### Cancelling a Crawl
 
 To cancel an asynchronous crawl job, use the `cancel_crawl` method. It takes the job ID of the asynchronous crawl as a parameter and returns the cancellation status.
@@ -104,6 +151,31 @@ Use `map` to generate a list of URLs from a website. Options let you customize t
 # Map a website (v2):
 map_result = firecrawl.map('https://firecrawl.dev')
 print(map_result)
+```
+
+### Scrape-bound interactive browsing (v2)
+
+Use a scrape job ID to keep interacting with the replayed browser context:
+
+```python
+doc = firecrawl.scrape(
+  "https://example.com",
+  actions=[{"type": "click", "selector": "a[href='/pricing']"}],
+)
+
+scrape_job_id = doc.metadata_typed.scrape_id
+if not scrape_job_id:
+  raise RuntimeError("Missing scrape job id")
+
+run = firecrawl.interact(
+  scrape_job_id,
+  code="print(await page.url())",
+  language="python",
+  timeout=60,
+)
+print(run.stdout)
+
+firecrawl.stop_interaction(scrape_job_id)
 ```
 
 {/* ### Extracting Structured Data from Websites
@@ -164,6 +236,15 @@ firecrawl = AsyncFirecrawl(api_key="YOUR_API_KEY")
 async def example_scrape():
   scrape_result = await firecrawl.scrape(url="https://example.com")
   print(scrape_result)
+
+# Async Parse (v2)
+async def example_parse():
+  parse_result = await firecrawl.parse(
+    b"<!DOCTYPE html><html><body><h1>Async Parse</h1></body></html>",
+    filename="upload.html",
+    content_type="text/html",
+  )
+  print(parse_result)
 
 # Async Crawl (v2)
 async def example_crawl():

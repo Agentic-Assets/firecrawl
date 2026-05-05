@@ -1,5 +1,5 @@
 import { Logger } from "winston";
-import { AddFeatureError } from "../../error";
+import { AddFeatureError, UnsupportedFileError } from "../../error";
 import { FireEngineCheckStatusSuccess } from "../fire-engine/checkStatus";
 import path from "path";
 import os from "os";
@@ -47,11 +47,12 @@ async function feResToDocumentPrefetch(
 ): Promise<Meta["documentPrefetch"]> {
   // Determine file extension from content type
   let extension = "tmp";
-  if (
-    contentType.includes("wordprocessingml") ||
-    contentType.includes("msword")
-  ) {
+  if (contentType.includes("wordprocessingml")) {
+    // Modern .docx format (Office Open XML)
     extension = "docx";
+  } else if (contentType.includes("msword")) {
+    // Legacy .doc format (OLE2/CFB binary)
+    extension = "doc";
   } else if (
     contentType.includes("spreadsheetml") ||
     contentType.includes("ms-excel")
@@ -107,16 +108,38 @@ export async function specialtyScrapeCheck(
     );
   }
 
-  // Check for octet-stream with document signature (Office files are ZIP archives starting with "PK")
-  if (
-    isOctetStream &&
-    (feRes?.file?.content.startsWith("UEsD") || feRes?.content.startsWith("PK"))
-  ) {
-    throw new AddFeatureError(
-      ["document"],
-      undefined,
-      await feResToDocumentPrefetch(logger, feRes, contentType),
-    );
+  // Check for octet-stream with document signature
+  // Modern Office files (.docx, .xlsx) are ZIP archives starting with "PK" (base64: "UEsD")
+  // Legacy Office files (.doc, .xls) are OLE2/CFB files starting with D0 CF 11 E0 (base64: "0M8R4K")
+  if (isOctetStream) {
+    const isZipSignature =
+      feRes?.file?.content.startsWith("UEsD") ||
+      feRes?.content.startsWith("PK");
+    const isOleSignature =
+      feRes?.file?.content.startsWith("0M8R4K") ||
+      feRes?.content.startsWith("\xD0\xCF\x11\xE0");
+
+    if (isZipSignature) {
+      throw new AddFeatureError(
+        ["document"],
+        undefined,
+        await feResToDocumentPrefetch(logger, feRes, contentType),
+      );
+    }
+    if (isOleSignature) {
+      // OLE2 signature is shared by .doc/.xls/.ppt files
+      // Only override to application/msword if URL suggests it's a .doc file
+      const url = feRes?.url?.toLowerCase() ?? "";
+      const isDocUrl = url.endsWith(".doc") || url.includes(".doc?");
+      const effectiveContentType = isDocUrl
+        ? "application/msword"
+        : contentType;
+      throw new AddFeatureError(
+        ["document"],
+        undefined,
+        await feResToDocumentPrefetch(logger, feRes, effectiveContentType),
+      );
+    }
   }
 
   // Check for PDF
@@ -131,5 +154,26 @@ export async function specialtyScrapeCheck(
       feRes?.content.startsWith("%PDF-"))
   ) {
     throw new AddFeatureError(["pdf"], await feResToPdfPrefetch(logger, feRes));
+  }
+
+  // Reject unsupported binary content types (images, video, audio, archives, etc.)
+  const unsupportedBinaryPrefixes = [
+    "image/",
+    "video/",
+    "audio/",
+    "application/zip",
+    "application/x-tar",
+    "application/gzip",
+    "application/x-rar",
+    "application/x-7z",
+    "application/wasm",
+    "application/x-executable",
+    "application/x-sharedlib",
+    "application/java-archive",
+  ];
+  if (
+    unsupportedBinaryPrefixes.some(prefix => contentType.startsWith(prefix))
+  ) {
+    throw new UnsupportedFileError(contentType);
   }
 }

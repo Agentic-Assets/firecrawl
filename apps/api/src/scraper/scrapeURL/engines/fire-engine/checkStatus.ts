@@ -5,6 +5,7 @@ import { z } from "zod";
 import { robustFetch } from "../../lib/fetch";
 import {
   ActionError,
+  AddFeatureError,
   EngineError,
   SiteError,
   SSLError,
@@ -14,9 +15,16 @@ import {
   ProxySelectionError,
 } from "../../error";
 import { MockState } from "../../lib/mock";
-import { fireEngineStagingURL, fireEngineURL } from "./scrape";
+import { fireEngineURL } from "./scrape";
 import { getDocFromGCS } from "../../../../lib/gcs-jobs";
 import { Meta } from "../..";
+
+const browserCookieSchema = z
+  .object({
+    name: z.string(),
+    value: z.string(),
+  })
+  .passthrough();
 
 const successSchema = z.object({
   jobId: z.string(),
@@ -36,10 +44,6 @@ const successSchema = z.object({
   // timeTakenCookie: z.number().optional(),
   // timeTakenRequest: z.number().optional(),
 
-  // legacy: playwright only
-  screenshot: z.string().optional(),
-
-  // new: actions
   screenshots: z.string().array().optional(),
   actionContent: z
     .object({
@@ -85,6 +89,15 @@ const successSchema = z.object({
           link: z.string(),
         }),
       }),
+      z.object({
+        idx: z.number(),
+        type: z.literal("getCookies"),
+        result: z
+          .object({
+            cookies: browserCookieSchema.array(),
+          })
+          .passthrough(),
+      }),
     ])
     .array()
     .optional(),
@@ -126,6 +139,7 @@ const failedSchema = z.object({
   state: z.literal("failed"),
   processing: z.literal(false),
   error: z.string(),
+  retryWithStealth: z.boolean().optional(),
 });
 
 export class StillProcessingError extends Error {
@@ -140,10 +154,10 @@ export async function fireEngineCheckStatus(
   jobId: string,
   mock: MockState | null,
   abort?: AbortSignal,
-  production = true,
+  baseUrl: string = fireEngineURL,
 ): Promise<FireEngineCheckStatusSuccess> {
   let status = await robustFetch({
-    url: `${production ? fireEngineURL : fireEngineStagingURL}/scrape/${jobId}`,
+    url: `${baseUrl}/scrape/${jobId}`,
     method: "GET",
     logger: logger.child({ method: "fireEngineCheckStatus/robustFetch" }),
     headers: {},
@@ -165,12 +179,31 @@ export async function fireEngineCheckStatus(
   const failedParse = failedSchema.safeParse(status);
 
   if (successParse.success) {
+    // Check if this is an unsupported media type error (e.g., binary file)
+    if (
+      successParse.data.pageStatusCode === 415 &&
+      successParse.data.pageError?.startsWith("Unsupported Media Type:")
+    ) {
+      throw new UnsupportedFileError(successParse.data.pageError);
+    }
+
     logger.debug("Scrape succeeded!", { jobId });
     return successParse.data;
   } else if (processingParse.success) {
     throw new StillProcessingError(jobId);
   } else if (failedParse.success) {
     logger.debug("Scrape job failed", { status, jobId });
+    if (
+      failedParse.data.retryWithStealth &&
+      meta.options.proxy === "auto" &&
+      !meta.featureFlags.has("stealthProxy")
+    ) {
+      logger.info(
+        "Scrape job signaled retryWithStealth. Adding stealthProxy flag.",
+        { jobId },
+      );
+      throw new AddFeatureError(["stealthProxy"]);
+    }
     if (
       typeof status.error === "string" &&
       status.error.includes("Chrome error: ")

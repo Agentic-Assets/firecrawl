@@ -154,7 +154,10 @@ type LoggedRequest = {
     | "llmstxt"
     | "deep_research"
     | "map"
-    | "agent";
+    | "parse"
+    | "agent"
+    | "browser"
+    | "interact";
   api_version: string;
   team_id: string;
   origin?: string;
@@ -218,6 +221,7 @@ export type LoggedScrape = {
   credits_cost: number;
   skipNuq: boolean;
   zeroDataRetention: boolean;
+  is_parse?: boolean;
 };
 
 export async function logScrape(scrape: LoggedScrape, force: boolean = false) {
@@ -230,8 +234,10 @@ export async function logScrape(scrape: LoggedScrape, force: boolean = false) {
     zeroDataRetention: scrape.zeroDataRetention,
   });
 
+  const tableName = scrape.is_parse ? "parses" : "scrapes";
+
   await robustInsert(
-    "scrapes",
+    tableName,
     {
       id: scrape.id,
       request_id: scrape.request_id,
@@ -260,6 +266,7 @@ export async function logScrape(scrape: LoggedScrape, force: boolean = false) {
   );
 
   if (
+    !scrape.is_parse &&
     scrape.doc &&
     config.GCS_BUCKET_NAME &&
     !(scrape.skipNuq && scrape.zeroDataRetention)
@@ -268,6 +275,7 @@ export async function logScrape(scrape: LoggedScrape, force: boolean = false) {
   }
 
   if (
+    !scrape.is_parse &&
     scrape.is_successful &&
     !scrape.zeroDataRetention &&
     config.USE_DB_AUTHENTICATION

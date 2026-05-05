@@ -9,9 +9,12 @@ import { CostTracking } from "./cost-tracking";
 import { hasFormatOfType } from "./format-utils";
 import { TransportableError } from "./error";
 import { FeatureFlag } from "../scraper/scrapeURL/engines";
+import { isUrlBlocked } from "../scraper/WebScraper/utils/blocklist";
 
 const creditsPerPDFPage = 1;
 const stealthProxyCostBonus = 4;
+const unblockedDomainCostBonus = 4;
+const xTwitterCostBonus = 9;
 
 export async function calculateCreditsToBeBilled(
   options: ScrapeOptions,
@@ -39,7 +42,8 @@ export async function calculateCreditsToBeBilled(
     // Bill for DNS resolution errors
     if (
       error instanceof TransportableError &&
-      error.code === "SCRAPE_DNS_RESOLUTION_ERROR"
+      (error.code === "SCRAPE_DNS_RESOLUTION_ERROR" ||
+        error.code === "SCRAPE_LOCKDOWN_CACHE_MISS")
     ) {
       creditsToBeBilled = 1;
     }
@@ -48,6 +52,11 @@ export async function calculateCreditsToBeBilled(
   }
 
   let creditsToBeBilled = 1; // Assuming 1 credit per document
+
+  if (options.lockdown) {
+    creditsToBeBilled += 4;
+  }
+
   const changeTrackingFormat = hasFormatOfType(
     options.formats,
     "changeTracking",
@@ -66,7 +75,19 @@ export async function calculateCreditsToBeBilled(
     creditsToBeBilled = Math.ceil((costTrackingJSON.totalCost ?? 1) * 1800);
   }
 
-  if (internalOptions.zeroDataRetention) {
+  if (hasFormatOfType(options.formats, "query")) {
+    creditsToBeBilled += 4;
+  }
+
+  if (hasFormatOfType(options.formats, "audio")) {
+    creditsToBeBilled += 4;
+  }
+
+  if (document.metadata?.postprocessorsUsed?.includes("x-twitter")) {
+    creditsToBeBilled += xTwitterCostBonus;
+  }
+
+  if (internalOptions.zeroDataRetention && !options.lockdown) {
     creditsToBeBilled += flags?.zdrCost ?? 1;
   }
 
@@ -84,6 +105,14 @@ export async function calculateCreditsToBeBilled(
     !unsupportedFeatures?.has("stealthProxy") // if stealth proxy was unsupported, don't bill for it
   ) {
     creditsToBeBilled += stealthProxyCostBonus;
+  }
+
+  const urlsToCheck = [
+    document.metadata?.url,
+    document.metadata?.sourceURL,
+  ].filter((u): u is string => !!u);
+  if (urlsToCheck.some(u => isUrlBlocked(u, null) && !isUrlBlocked(u, flags))) {
+    creditsToBeBilled += unblockedDomainCostBonus;
   }
 
   return creditsToBeBilled;

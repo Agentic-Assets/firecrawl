@@ -1,5 +1,10 @@
 import { HttpClient } from "./utils/httpClient";
-import { scrape } from "./methods/scrape";
+import {
+  scrape,
+  interact as interactMethod,
+  stopInteraction as stopInteractionMethod,
+} from "./methods/scrape";
+import { parse as parseMethod } from "./methods/parse";
 import { search } from "./methods/search";
 import { map as mapMethod } from "./methods/map";
 import {
@@ -20,9 +25,17 @@ import {
 } from "./methods/batch";
 import { startExtract, getExtractStatus, extract as extractWaiter } from "./methods/extract";
 import { startAgent, getAgentStatus, cancelAgent, agent as agentWaiter } from "./methods/agent";
+import {
+  browser as browserMethod,
+  browserExecute,
+  deleteBrowser,
+  listBrowsers,
+} from "./methods/browser";
 import { getConcurrency, getCreditUsage, getQueueStatus, getTokenUsage, getCreditUsageHistorical, getTokenUsageHistorical } from "./methods/usage";
 import type {
   Document,
+  ParseFile,
+  ParseOptions,
   ScrapeOptions,
   SearchData,
   SearchRequest,
@@ -40,6 +53,13 @@ import type {
   CrawlOptions,
   BatchScrapeOptions,
   PaginationConfig,
+  BrowserCreateResponse,
+  BrowserExecuteResponse,
+  BrowserDeleteResponse,
+  BrowserListResponse,
+  ScrapeExecuteRequest,
+  ScrapeExecuteResponse,
+  ScrapeBrowserDeleteResponse,
 } from "./types";
 import { Watcher } from "./watcher";
 import type { WatcherOptions } from "./watcher";
@@ -118,6 +138,64 @@ export class FirecrawlClient {
   async scrape(url: string, options?: ScrapeOptions): Promise<Document>;
   async scrape(url: string, options?: ScrapeOptions): Promise<Document> {
     return scrape(this.http, url, options);
+  }
+  /**
+   * Interact with the browser session associated with a scrape job.
+   * @param jobId Scrape job id.
+   * @param args Code or prompt to execute, with language/timeout options.
+   * @returns Execution result including output, stdout, stderr, exitCode, and killed status.
+   */
+  async interact(
+    jobId: string,
+    args: ScrapeExecuteRequest
+  ): Promise<ScrapeExecuteResponse> {
+    return interactMethod(this.http, jobId, args);
+  }
+  /**
+   * Stop the interaction session associated with a scrape job.
+   * @param jobId Scrape job id.
+   */
+  async stopInteraction(jobId: string): Promise<ScrapeBrowserDeleteResponse> {
+    return stopInteractionMethod(this.http, jobId);
+  }
+  /**
+   * @deprecated Use interact().
+   */
+  async scrapeExecute(
+    jobId: string,
+    args: ScrapeExecuteRequest
+  ): Promise<ScrapeExecuteResponse> {
+    return this.interact(jobId, args);
+  }
+  /**
+   * @deprecated Use stopInteraction().
+   */
+  async stopInteractiveBrowser(jobId: string): Promise<ScrapeBrowserDeleteResponse> {
+    return this.stopInteraction(jobId);
+  }
+  /**
+   * @deprecated Use stopInteraction().
+   */
+  async deleteScrapeBrowser(jobId: string): Promise<ScrapeBrowserDeleteResponse> {
+    return this.stopInteraction(jobId);
+  }
+
+  // Parse
+  /**
+   * Parse an uploaded file via the v2 parse endpoint.
+   * @param file File payload (data, filename, optional contentType).
+   * @param options Optional parse options (formats, parsers, etc.).
+   *                Note: parse does not support changeTracking, screenshot, branding,
+   *                actions, waitFor, location, or mobile options.
+   * @returns Parsed document with requested formats.
+   */
+  async parse<Opts extends ParseOptions>(
+    file: ParseFile,
+    options: Opts
+  ): Promise<Omit<Document, "json"> & { json?: InferredJsonFromOptions<Opts> }>;
+  async parse(file: ParseFile, options?: ParseOptions): Promise<Document>;
+  async parse(file: ParseFile, options?: ParseOptions): Promise<Document> {
+    return parseMethod(this.http, file, options);
   }
 
   // Search
@@ -245,6 +323,8 @@ export class FirecrawlClient {
    * Start an extract job (async).
    * @param args Extraction request (urls, schema or prompt, flags).
    * @returns Job id or processing state.
+   * @deprecated The extract endpoint is in maintenance mode and its use is discouraged.
+   * Review https://docs.firecrawl.dev/developer-guides/usage-guides/choosing-the-data-extractor to find a replacement.
    */
   async startExtract(args: Parameters<typeof startExtract>[1]): Promise<ExtractResponse> {
     return startExtract(this.http, args);
@@ -252,6 +332,8 @@ export class FirecrawlClient {
   /**
    * Get extract job status/data.
    * @param jobId Extract job id.
+   * @deprecated The extract endpoint is in maintenance mode and its use is discouraged.
+   * Review https://docs.firecrawl.dev/developer-guides/usage-guides/choosing-the-data-extractor to find a replacement.
    */
   async getExtractStatus(jobId: string): Promise<ExtractResponse> {
     return getExtractStatus(this.http, jobId);
@@ -260,6 +342,8 @@ export class FirecrawlClient {
    * Convenience waiter: start an extract and poll until it finishes.
    * @param args Extraction request plus waiter controls (pollInterval, timeout seconds).
    * @returns Final extract response.
+   * @deprecated The extract endpoint is in maintenance mode and its use is discouraged.
+   * Review https://docs.firecrawl.dev/developer-guides/usage-guides/choosing-the-data-extractor to find a replacement.
    */
   async extract(args: Parameters<typeof startExtract>[1] & { pollInterval?: number; timeout?: number }): Promise<ExtractResponse> {
     return extractWaiter(this.http, args);
@@ -296,6 +380,47 @@ export class FirecrawlClient {
    */
   async cancelAgent(jobId: string): Promise<boolean> {
     return cancelAgent(this.http, jobId);
+  }
+
+  // Browser
+  /**
+   * Create a new browser session.
+   * @param args Session options (ttl, activityTtl, streamWebView, profile).
+   * @returns Session id, CDP URL, live view URL, and expiration time.
+   */
+  async browser(
+    args: Parameters<typeof browserMethod>[1] = {}
+  ): Promise<BrowserCreateResponse> {
+    return browserMethod(this.http, args);
+  }
+  /**
+   * Execute code in a browser session.
+   * @param sessionId Browser session id.
+   * @param args Code, language ("python" | "node" | "bash"), and optional timeout.
+   * @returns Execution result including stdout, stderr, exitCode, and killed status.
+   */
+  async browserExecute(
+    sessionId: string,
+    args: Parameters<typeof browserExecute>[2]
+  ): Promise<BrowserExecuteResponse> {
+    return browserExecute(this.http, sessionId, args);
+  }
+  /**
+   * Delete a browser session.
+   * @param sessionId Browser session id.
+   */
+  async deleteBrowser(sessionId: string): Promise<BrowserDeleteResponse> {
+    return deleteBrowser(this.http, sessionId);
+  }
+  /**
+   * List browser sessions.
+   * @param args Optional filter (status: "active" | "destroyed").
+   * @returns List of browser sessions.
+   */
+  async listBrowsers(
+    args: Parameters<typeof listBrowsers>[1] = {}
+  ): Promise<BrowserListResponse> {
+    return listBrowsers(this.http, args);
   }
 
   // Usage

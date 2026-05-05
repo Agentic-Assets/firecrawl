@@ -2,7 +2,6 @@
 Search functionality for Firecrawl v2 API.
 """
 
-import re
 from typing import Dict, Any, Union, List, TypeVar, Type
 from ..types import SearchRequest, SearchData, Document, SearchResultWeb, SearchResultNews, SearchResultImages
 from ..utils.normalize import normalize_document_input, _map_search_result_keys
@@ -142,6 +141,11 @@ def _validate_search_request(request: SearchRequest) -> SearchRequest:
             elif hasattr(category, 'type'):
                 if category.type not in valid_categories:
                     raise ValueError(f"Invalid category type: {category.type}. Valid types: {valid_categories}")
+
+    if request.include_domains and request.exclude_domains:
+        raise ValueError(
+            "include_domains and exclude_domains cannot both be specified"
+        )
     
     # Validate location (if provided)
     if request.location is not None:
@@ -150,19 +154,8 @@ def _validate_search_request(request: SearchRequest) -> SearchRequest:
     
     # Validate tbs (time-based search, if provided)
     if request.tbs is not None:
-        valid_tbs_values = {
-            "qdr:h", "qdr:d", "qdr:w", "qdr:m", "qdr:y",  # Google time filters
-            "d", "w", "m", "y"  # Short forms
-        }
-        
-        if request.tbs in valid_tbs_values:
-            pass  # Valid predefined value
-        elif request.tbs.startswith("cdr:"):
-            custom_date_pattern = r"^cdr:1,cd_min:\d{1,2}/\d{1,2}/\d{4},cd_max:\d{1,2}/\d{1,2}/\d{4}$"
-            if not re.match(custom_date_pattern, request.tbs):
-                raise ValueError(f"Invalid custom date range format: {request.tbs}. Expected format: cdr:1,cd_min:MM/DD/YYYY,cd_max:MM/DD/YYYY")
-        else:
-            raise ValueError(f"Invalid tbs value: {request.tbs}. Valid values: {valid_tbs_values} or custom date range format: cdr:1,cd_min:MM/DD/YYYY,cd_max:MM/DD/YYYY")
+        if not isinstance(request.tbs, str) or len(request.tbs.strip()) == 0:
+            raise ValueError("tbs must be a non-empty string")
     
     # Validate scrape_options (if provided)
     if request.scrape_options is not None:
@@ -197,6 +190,16 @@ def _prepare_search_request(request: SearchRequest) -> Dict[str, Any]:
     if validated_request.ignore_invalid_urls is not None:
         data["ignoreInvalidURLs"] = validated_request.ignore_invalid_urls
         data.pop("ignore_invalid_urls", None)
+
+    # include_domains → includeDomains
+    if validated_request.include_domains is not None:
+        data["includeDomains"] = validated_request.include_domains
+        data.pop("include_domains", None)
+
+    # exclude_domains → excludeDomains
+    if validated_request.exclude_domains is not None:
+        data["excludeDomains"] = validated_request.exclude_domains
+        data.pop("exclude_domains", None)
     
     # scrape_options → scrapeOptions
     if validated_request.scrape_options is not None:

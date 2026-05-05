@@ -19,6 +19,7 @@ import {
   BatchScrapeRequestInput,
   SearchRequest,
   SearchRequestInput,
+  toV2CrawlerOptions,
 } from "../../../controllers/v2/types";
 
 describe("V2 Types Validation", () => {
@@ -224,6 +225,7 @@ describe("V2 Types Validation", () => {
       expect(result.origin).toBe("api");
       expect(result.formats).toEqual([{ type: "markdown" }]);
       expect(result.onlyMainContent).toBe(true);
+      expect(result.onlyCleanContent).toBe(false);
       expect(result.waitFor).toBe(0);
       expect(result.mobile).toBe(false);
       expect(result.removeBase64Images).toBe(true);
@@ -231,6 +233,16 @@ describe("V2 Types Validation", () => {
       expect(result.blockAds).toBe(true);
       expect(result.proxy).toBe("auto"); // v2 default is "auto"
       expect(result.storeInCache).toBe(true);
+    });
+
+    it("should accept scrape request with onlyCleanContent=true", () => {
+      const input: ScrapeRequestInput = {
+        url: "https://example.com",
+        onlyCleanContent: true,
+      };
+
+      const result = scrapeRequestSchema.parse(input);
+      expect(result.onlyCleanContent).toBe(true);
     });
 
     it("should accept valid integration value", () => {
@@ -437,6 +449,74 @@ describe("V2 Types Validation", () => {
 
       expect(() => scrapeRequestSchema.parse(input)).toThrow();
     });
+
+    describe("lockdown", () => {
+      it("should default lockdown to false", () => {
+        const input: ScrapeRequestInput = {
+          url: "https://example.com",
+        };
+
+        const result = scrapeRequestSchema.parse(input);
+        expect(result.lockdown).toBe(false);
+      });
+
+      it("should accept lockdown: true", () => {
+        const input: ScrapeRequestInput = {
+          url: "https://example.com",
+          lockdown: true,
+        };
+
+        const result = scrapeRequestSchema.parse(input);
+        expect(result.lockdown).toBe(true);
+      });
+
+      it("should default maxAge to ~2 years when lockdown is true and maxAge is unset", () => {
+        const input: ScrapeRequestInput = {
+          url: "https://example.com",
+          lockdown: true,
+        };
+
+        const result = scrapeRequestSchema.parse(input);
+        expect(result.maxAge).toBe(2 * 365 * 24 * 60 * 60 * 1000);
+      });
+
+      it("should preserve maxAge when lockdown is true and maxAge is provided", () => {
+        const input: ScrapeRequestInput = {
+          url: "https://example.com",
+          lockdown: true,
+          maxAge: 60000,
+        };
+
+        const result = scrapeRequestSchema.parse(input);
+        expect(result.maxAge).toBe(60000);
+      });
+
+      it("should not set maxAge default when lockdown is false", () => {
+        const input: ScrapeRequestInput = {
+          url: "https://example.com",
+          lockdown: false,
+        };
+
+        const result = scrapeRequestSchema.parse(input);
+        expect(result.maxAge).toBeUndefined();
+      });
+
+      // lockdown takes precedence silently at the engine layer; other options are ignored, not rejected
+      it("should accept lockdown: true alongside any other options", () => {
+        const input: ScrapeRequestInput = {
+          url: "https://example.com",
+          lockdown: true,
+          actions: [{ type: "click", selector: "button" }],
+          headers: { "X-Custom": "value" },
+          profile: { name: "my-profile" },
+          proxy: "basic",
+          formats: [{ type: "markdown" }, { type: "changeTracking" }],
+        };
+
+        const result = scrapeRequestSchema.parse(input);
+        expect(result.lockdown).toBe(true);
+      });
+    });
   });
 
   describe("extractRequestSchema", () => {
@@ -606,11 +686,11 @@ describe("V2 Types Validation", () => {
     it("should handle sitemap enum values", () => {
       const input: CrawlRequestInput = {
         url: "https://example.com",
-        sitemap: "include",
+        sitemap: "only",
       };
 
       const result = crawlRequestSchema.parse(input);
-      expect(result.sitemap).toBe("include");
+      expect(result.sitemap).toBe("only");
     });
 
     it("should reject invalid sitemap value", () => {
@@ -620,6 +700,15 @@ describe("V2 Types Validation", () => {
       };
 
       expect(() => crawlRequestSchema.parse(input)).toThrow();
+    });
+
+    it("should map sitemapOnly to sitemap=only", () => {
+      const result = toV2CrawlerOptions({
+        sitemapOnly: true,
+        ignoreSitemap: false,
+      });
+
+      expect(result.sitemap).toBe("only");
     });
   });
 
@@ -825,6 +914,44 @@ describe("V2 Types Validation", () => {
       expect(Array.isArray(result.categories)).toBe(true);
     });
 
+    it("should accept search request with includeDomains", () => {
+      const input: SearchRequestInput = {
+        query: "test",
+        includeDomains: [" Example.com ", "docs.example.com"],
+      };
+
+      const result = searchRequestSchema.parse(input);
+      expect(result.includeDomains).toEqual([
+        "example.com",
+        "docs.example.com",
+      ]);
+    });
+
+    it("should accept search request with excludeDomains", () => {
+      const input: SearchRequestInput = {
+        query: "test",
+        excludeDomains: ["example.com", "spam.example.com"],
+      };
+
+      const result = searchRequestSchema.parse(input);
+      expect(result.excludeDomains).toEqual([
+        "example.com",
+        "spam.example.com",
+      ]);
+    });
+
+    it("should reject search request with includeDomains and excludeDomains", () => {
+      const input: SearchRequestInput = {
+        query: "test",
+        includeDomains: ["example.com"],
+        excludeDomains: ["spam.example.com"],
+      };
+
+      expect(() => searchRequestSchema.parse(input)).toThrow(
+        "includeDomains and excludeDomains cannot both be specified",
+      );
+    });
+
     it("should reject limit exceeding 100", () => {
       const input: SearchRequestInput = {
         query: "test",
@@ -852,6 +979,31 @@ describe("V2 Types Validation", () => {
 
       const result = searchRequestSchema.parse(input);
       expect(result.enterprise).toEqual(["default", "zdr"]);
+    });
+
+    it("should accept search scrapeOptions with query format", () => {
+      const input: SearchRequestInput = {
+        query: "test",
+        scrapeOptions: {
+          formats: [{ type: "query", prompt: "What is Firecrawl?" }],
+        },
+      };
+
+      const result = searchRequestSchema.parse(input);
+      expect(result.scrapeOptions?.formats).toEqual([
+        { type: "query", prompt: "What is Firecrawl?", directQuote: false },
+      ]);
+    });
+
+    it("should reject search scrapeOptions query prompt over 10000 characters", () => {
+      const input: SearchRequestInput = {
+        query: "test",
+        scrapeOptions: {
+          formats: [{ type: "query", prompt: "a".repeat(10001) }],
+        },
+      };
+
+      expect(() => searchRequestSchema.parse(input)).toThrow();
     });
   });
 

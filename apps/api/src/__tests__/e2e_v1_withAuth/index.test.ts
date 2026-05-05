@@ -2,7 +2,7 @@ import request from "supertest";
 import { config } from "../../config";
 import { configDotenv } from "dotenv";
 import { ScrapeRequestInput } from "../../controllers/v1/types";
-import { BLOCKLISTED_URL_MESSAGE } from "../../lib/strings";
+import { UNSUPPORTED_SITE_MESSAGE } from "../../lib/strings";
 
 configDotenv();
 const TEST_URL = "http://127.0.0.1:3002";
@@ -40,7 +40,7 @@ describe("E2E Tests for v1 API Routes", () => {
       expect(response.statusCode).toBe(401);
     });
 
-    it.concurrent("should throw error for blocklisted URL", async () => {
+    it.concurrent("should throw error for unsupported URL", async () => {
       const scrapeRequest: ScrapeRequestInput = {
         url: "https://facebook.com/fake-test",
       };
@@ -52,7 +52,7 @@ describe("E2E Tests for v1 API Routes", () => {
         .send(scrapeRequest);
 
       expect(response.statusCode).toBe(403);
-      expect(response.body.error).toBe(BLOCKLISTED_URL_MESSAGE);
+      expect(response.body.error).toBe(UNSUPPORTED_SITE_MESSAGE);
     });
 
     it.concurrent(
@@ -736,7 +736,7 @@ describe("E2E Tests for v1 API Routes", () => {
       expect(response.statusCode).toBe(401);
     });
 
-    it.concurrent("should throw error for blocklisted URL", async () => {
+    it.concurrent("should throw error for unsupported URL", async () => {
       const scrapeRequest: ScrapeRequestInput = {
         url: "https://facebook.com/fake-test",
       };
@@ -748,7 +748,7 @@ describe("E2E Tests for v1 API Routes", () => {
         .send(scrapeRequest);
 
       expect(response.statusCode).toBe(403);
-      expect(response.body.error).toBe(BLOCKLISTED_URL_MESSAGE);
+      expect(response.body.error).toBe(UNSUPPORTED_SITE_MESSAGE);
     });
 
     it.concurrent(
@@ -965,15 +965,16 @@ describe("E2E Tests for v1 API Routes", () => {
       },
     );
 
-    it.concurrent(
-      "should return Job not found for invalid job ID",
-      async () => {
-        const response = await request(TEST_URL)
-          .get("/v1/crawl/invalidJobId")
-          .set("Authorization", `Bearer ${config.TEST_API_KEY}`);
-        expect(response.statusCode).toBe(404);
-      },
-    );
+    it.concurrent("should reject an invalid job ID", async () => {
+      const response = await request(TEST_URL)
+        .get("/v1/crawl/invalidJobId")
+        .set("Authorization", `Bearer ${config.TEST_API_KEY}`);
+      expect(response.statusCode).toBe(400);
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toBe(
+        "Invalid job ID format. Job ID must be a valid UUID.",
+      );
+    });
 
     it.concurrent(
       "should return a successful crawl status response for a valid crawl job",

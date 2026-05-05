@@ -5,9 +5,13 @@ import {
   getConcurrencyLimitActiveJobs,
   getConcurrencyQueueJobsCount,
   getCrawlConcurrencyLimitActiveJobs,
+  getTeamQueueLimit,
+  MAX_BACKLOG_TIMEOUT_MS,
   pushConcurrencyLimitActiveJob,
   pushConcurrencyLimitedJob,
+  pushConcurrencyLimitedJobs,
   pushCrawlConcurrencyLimitActiveJob,
+  QueueFullError,
 } from "../lib/concurrency-limit";
 import { logger as _logger } from "../lib/logger";
 import { sendNotificationWithCustomDays } from "./notification/email_notification";
@@ -56,12 +60,12 @@ async function _addScrapeJobToConcurrencyQueue(
       ownerId: webScraperOptions.team_id ?? undefined,
       groupId: webScraperOptions.crawl_id ?? undefined,
       backlogged: true,
-      backloggedTimesOutAt: webScraperOptions.crawl_id
-        ? undefined
-        : new Date(
-            Date.now() +
-              (webScraperOptions.scrapeOptions?.timeout ?? 60 * 1000),
-          ),
+      backloggedTimesOutAt: new Date(
+        Date.now() +
+          (webScraperOptions.crawl_id
+            ? MAX_BACKLOG_TIMEOUT_MS
+            : (webScraperOptions.scrapeOptions?.timeout ?? 60 * 1000)),
+      ),
     },
   );
 
@@ -74,7 +78,7 @@ async function _addScrapeJobToConcurrencyQueue(
       listenable,
     },
     webScraperOptions.crawl_id
-      ? Infinity
+      ? MAX_BACKLOG_TIMEOUT_MS
       : (webScraperOptions.scrapeOptions?.timeout ?? 60 * 1000),
   );
 }
@@ -97,28 +101,44 @@ async function _addScrapeJobsToConcurrencyQueue(
         ownerId: job.data.team_id ?? undefined,
         groupId: job.data.crawl_id ?? undefined,
         backlogged: true,
-        backloggedTimesOutAt: job.data.crawl_id
-          ? undefined
-          : new Date(
-              Date.now() + (job.data.scrapeOptions?.timeout ?? 60 * 1000),
-            ),
+        backloggedTimesOutAt: new Date(
+          Date.now() +
+            (job.data.crawl_id
+              ? MAX_BACKLOG_TIMEOUT_MS
+              : (job.data.scrapeOptions?.timeout ?? 60 * 1000)),
+        ),
       },
     })),
   );
 
+  const jobsByTeam = new Map<
+    string,
+    {
+      job: { id: string; data: any; priority: number; listenable: boolean };
+      timeout: number;
+    }[]
+  >();
+
   for (const job of jobs) {
-    await pushConcurrencyLimitedJob(
-      job.data.team_id,
-      {
+    const teamId = job.data.team_id as string;
+    if (!jobsByTeam.has(teamId)) {
+      jobsByTeam.set(teamId, []);
+    }
+    jobsByTeam.get(teamId)!.push({
+      job: {
         id: job.jobId,
         data: job.data,
         priority: job.priority,
         listenable: job.listenable ?? false,
       },
-      job.data.crawl_id
-        ? Infinity
+      timeout: job.data.crawl_id
+        ? MAX_BACKLOG_TIMEOUT_MS
         : (job.data.scrapeOptions?.timeout ?? 60 * 1000),
-    );
+    });
+  }
+
+  for (const [teamId, teamJobs] of jobsByTeam) {
+    await pushConcurrencyLimitedJobs(teamId, teamJobs);
   }
 }
 
@@ -243,19 +263,20 @@ async function addScrapeJobRaw(
       }
     }
 
+    maxConcurrency =
+      (
+        await getACUCTeam(
+          webScraperOptions.team_id,
+          false,
+          true,
+          RateLimiterMode.Crawl,
+        )
+      )?.concurrency ?? 2;
+
     if (concurrencyLimited === null) {
       const now = Date.now();
-      const maxConcurrency =
-        (
-          await getACUCTeam(
-            webScraperOptions.team_id,
-            false,
-            true,
-            RateLimiterMode.Crawl,
-          )
-        )?.concurrency ?? 2;
       await cleanOldConcurrencyLimitEntries(webScraperOptions.team_id, now);
-      const currentActiveConcurrency = (
+      currentActiveConcurrency = (
         await getConcurrencyLimitActiveJobs(webScraperOptions.team_id, now)
       ).length;
       concurrencyLimited =
@@ -264,13 +285,19 @@ async function addScrapeJobRaw(
   }
 
   if (concurrencyLimited === "yes" || concurrencyLimited === "yes-crawl") {
+    const concurrencyQueueJobs = await getConcurrencyQueueJobsCount(
+      webScraperOptions.team_id,
+    );
+
+    const queueLimit = getTeamQueueLimit(maxConcurrency);
+    if (concurrencyQueueJobs >= queueLimit) {
+      throw new QueueFullError(concurrencyQueueJobs, queueLimit);
+    }
+
     if (concurrencyLimited === "yes") {
       // Detect if they hit their concurrent limit
       // If above by 2x, send them an email
       // No need to 2x as if there are more than the max concurrency in the concurrency queue, it is already 2x
-      const concurrencyQueueJobs = await getConcurrencyQueueJobsCount(
-        webScraperOptions.team_id,
-      );
       if (concurrencyQueueJobs > maxConcurrency) {
         // logger.info("Concurrency limited 2x (single) - ", "Concurrency queue jobs: ", concurrencyQueueJobs, "Max concurrency: ", maxConcurrency, "Team ID: ", webScraperOptions.team_id);
 
@@ -473,6 +500,14 @@ export async function addScrapeJobs(
       addToCQ = jobsPotentiallyInCQ
         .slice(countCanBeDirectlyAdded)
         .concat(jobsForcedToCQ);
+
+      if (addToCQ.length > 0) {
+        const currentQueueSize = await getConcurrencyQueueJobsCount(teamId);
+        const queueLimit = getTeamQueueLimit(maxConcurrency);
+        if (currentQueueSize + addToCQ.length > queueLimit) {
+          throw new QueueFullError(currentQueueSize, queueLimit);
+        }
+      }
     }
 
     // equals 2x the max concurrency (only check for non-self-hosted)

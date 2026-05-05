@@ -1,10 +1,15 @@
 import express from "express";
+import multer from "multer";
 import { config } from "../config";
 import { RateLimiterMode } from "../types";
 import expressWs from "express-ws";
 import { searchController } from "../controllers/v2/search";
 import { x402SearchController } from "../controllers/v2/x402-search";
 import { scrapeController } from "../controllers/v2/scrape";
+import {
+  parseController,
+  parseMultipartPayloadMiddleware,
+} from "../controllers/v2/parse";
 import { batchScrapeController } from "../controllers/v2/batch-scrape";
 import { crawlController } from "../controllers/v2/crawl";
 import { crawlParamsPreviewController } from "../controllers/v2/crawl-params-preview";
@@ -34,15 +39,67 @@ import {
 import { queueStatusController } from "../controllers/v2/queue-status";
 import { creditUsageHistoricalController } from "../controllers/v2/credit-usage-historical";
 import { tokenUsageHistoricalController } from "../controllers/v2/token-usage-historical";
-import { paymentMiddleware } from "x402-express";
-import { facilitator } from "@coinbase/x402";
+import {
+  paymentMiddleware,
+  getX402ResourceServer,
+  createX402RouteConfig,
+  isX402Enabled,
+} from "../lib/x402";
 import { agentController } from "../controllers/v2/agent";
 import { agentStatusController } from "../controllers/v2/agent-status";
 import { agentCancelController } from "../controllers/v2/agent-cancel";
+import {
+  browserCreateController,
+  browserExecuteController,
+  browserDeleteController,
+  browserListController,
+  browserWebhookDestroyedController,
+} from "../controllers/v2/browser";
+import { activityController } from "../controllers/v1/activity";
+import { agentSignupController } from "../controllers/v2/agent-signup";
+import {
+  agentSignupConfirmController,
+  agentSignupBlockController,
+} from "../controllers/v2/agent-signup-confirm";
+import {
+  scrapeInteractController,
+  scrapeStopInteractiveBrowserController,
+} from "../controllers/v2/scrape-browser";
 
 expressWs(express());
 
 export const v2Router = express.Router();
+
+const parseUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50 MB
+  },
+});
+
+const parseUploadMiddleware: express.RequestHandler = (req, res, next) => {
+  const upload = parseUpload.single("file");
+
+  upload(req, res, err => {
+    if (!err) {
+      return next();
+    }
+
+    if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({
+        success: false,
+        code: "BAD_REQUEST",
+        error: "Uploaded file exceeds maximum size of 50MB.",
+      });
+    }
+
+    return res.status(400).json({
+      success: false,
+      code: "BAD_REQUEST",
+      error: err.message || "Invalid multipart form-data request.",
+    });
+  });
+};
 
 // Add timing middleware to all v2 routes
 v2Router.use(requestTimingMiddleware("v2"));
@@ -172,6 +229,16 @@ v2Router.post(
 );
 
 v2Router.post(
+  "/parse",
+  authMiddleware(RateLimiterMode.Scrape),
+  countryCheck,
+  parseUploadMiddleware,
+  parseMultipartPayloadMiddleware,
+  checkCreditsMiddleware(1),
+  wrap(parseController),
+);
+
+v2Router.post(
   "/scrape",
   authMiddleware(RateLimiterMode.Scrape),
   countryCheck,
@@ -185,6 +252,20 @@ v2Router.get(
   authMiddleware(RateLimiterMode.CrawlStatus),
   validateJobIdParam,
   wrap(scrapeStatusController),
+);
+
+v2Router.post(
+  "/scrape/:jobId/interact",
+  authMiddleware(RateLimiterMode.BrowserExecute),
+  validateJobIdParam,
+  wrap(scrapeInteractController),
+);
+
+v2Router.delete(
+  "/scrape/:jobId/interact",
+  authMiddleware(RateLimiterMode.BrowserExecute),
+  validateJobIdParam,
+  wrap(scrapeStopInteractiveBrowserController),
 );
 
 v2Router.post(
@@ -327,25 +408,25 @@ v2Router.delete(
 
 v2Router.get(
   "/team/credit-usage",
-  authMiddleware(RateLimiterMode.CrawlStatus),
+  authMiddleware(RateLimiterMode.Account),
   wrap(creditUsageController),
 );
 
 v2Router.get(
   "/team/credit-usage/historical",
-  authMiddleware(RateLimiterMode.CrawlStatus),
+  authMiddleware(RateLimiterMode.Account),
   wrap(creditUsageHistoricalController),
 );
 
 v2Router.get(
   "/team/token-usage",
-  authMiddleware(RateLimiterMode.ExtractStatus),
+  authMiddleware(RateLimiterMode.Account),
   wrap(tokenUsageController),
 );
 
 v2Router.get(
   "/team/token-usage/historical",
-  authMiddleware(RateLimiterMode.ExtractStatus),
+  authMiddleware(RateLimiterMode.Account),
   wrap(tokenUsageHistoricalController),
 );
 
@@ -357,123 +438,68 @@ v2Router.get(
 
 v2Router.get(
   "/team/queue-status",
-  authMiddleware(RateLimiterMode.CrawlStatus),
+  authMiddleware(RateLimiterMode.Account),
   wrap(queueStatusController),
 );
 
-v2Router.post(
-  "/x402/search",
-  authMiddleware(RateLimiterMode.Search),
-  countryCheck,
-  blocklistMiddleware,
-  paymentMiddleware(
-    (config.X402_PAY_TO_ADDRESS as `0x${string}`) ||
-      "0x0000000000000000000000000000000000000000",
-    {
-      "POST /x402/search": {
-        price: config.X402_ENDPOINT_PRICE_USD as string,
-        network: config.X402_NETWORK as
-          | "base-sepolia"
-          | "base"
-          | "avalanche-fuji"
-          | "avalanche"
-          | "iotex",
-        config: {
-          discoverable: true,
-          description:
-            "The search endpoint combines web search (SERP) with Firecrawl's scraping capabilities to return full page content for any query. Requires micropayment via X402 protocol",
-          mimeType: "application/json",
-          maxTimeoutSeconds: 120,
-          inputSchema: {
-            body: {
-              query: {
-                type: "string",
-                description: "Search query to find relevant web pages",
-                required: true,
-              },
-              sources: {
-                type: "array",
-                description: "Sources to search (web, news, images)",
-                required: false,
-              },
-              limit: {
-                type: "number",
-                description: "Maximum number of results to return (max 10)",
-                required: false,
-              },
-              scrapeOptions: {
-                type: "object",
-                description: "Options for scraping the found pages",
-                required: false,
-              },
-              asyncScraping: {
-                type: "boolean",
-                description: "Whether to return job IDs for async scraping",
-                required: false,
-              },
-            },
-          },
-          outputSchema: {
-            type: "object",
-            properties: {
-              success: { type: "boolean" },
-              data: {
-                type: "object",
-                properties: {
-                  web: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        url: { type: "string" },
-                        title: { type: "string" },
-                        description: { type: "string" },
-                        markdown: { type: "string" },
-                      },
-                    },
-                  },
-                  news: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        url: { type: "string" },
-                        title: { type: "string" },
-                        snippet: { type: "string" },
-                        markdown: { type: "string" },
-                      },
-                    },
-                  },
-                  images: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        url: { type: "string" },
-                        title: { type: "string" },
-                        markdown: { type: "string" },
-                      },
-                    },
-                  },
-                },
-              },
-              scrapeIds: {
-                type: "object",
-                description:
-                  "Job IDs for async scraping (if asyncScraping is true)",
-                properties: {
-                  web: { type: "array", items: { type: "string" } },
-                  news: { type: "array", items: { type: "string" } },
-                  images: { type: "array", items: { type: "string" } },
-                },
-              },
-              creditsUsed: { type: "number" },
-            },
-          },
-        },
-      },
-    },
-    facilitator,
-  ),
-  wrap(x402SearchController),
+v2Router.get(
+  "/team/activity",
+  authMiddleware(RateLimiterMode.Account),
+  wrap(activityController),
 );
+
+v2Router.post(
+  "/browser",
+  authMiddleware(RateLimiterMode.Browser),
+  countryCheck,
+  checkCreditsMiddleware(2),
+  wrap(browserCreateController),
+);
+
+v2Router.get(
+  "/browser",
+  authMiddleware(RateLimiterMode.BrowserExecute),
+  wrap(browserListController),
+);
+
+v2Router.post(
+  "/browser/:sessionId/execute",
+  authMiddleware(RateLimiterMode.BrowserExecute),
+  wrap(browserExecuteController),
+);
+
+v2Router.delete(
+  "/browser/:sessionId",
+  authMiddleware(RateLimiterMode.BrowserExecute),
+  wrap(browserDeleteController),
+);
+
+v2Router.post(
+  "/browser/webhook/destroyed",
+  wrap(browserWebhookDestroyedController),
+);
+
+// Agent signup routes (public, no auth required — rate limiting is handled inside the controller)
+// v2Router.post("/agent-signup", wrap(agentSignupController));
+v2Router.post("/agent-signup/confirm", wrap(agentSignupConfirmController));
+v2Router.post("/agent-signup/block", wrap(agentSignupBlockController));
+
+// Only register x402 routes if X402_PAY_TO_ADDRESS is configured
+if (isX402Enabled()) {
+  v2Router.post(
+    "/x402/search",
+    authMiddleware(RateLimiterMode.Search),
+    countryCheck,
+    blocklistMiddleware,
+    paymentMiddleware(
+      createX402RouteConfig(
+        "POST /x402/search",
+        "The search endpoint combines web search (SERP) with Firecrawl's scraping capabilities to return full page content for any query. Requires micropayment via X402 protocol",
+        {},
+        {},
+      ),
+      getX402ResourceServer(),
+    ),
+    wrap(x402SearchController),
+  );
+}
