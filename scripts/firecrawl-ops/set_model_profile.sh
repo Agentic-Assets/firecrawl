@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROFILE="${1:-budget}"
+PROFILE="${1:-gateway}"
 ENV_PATH="${ENV_PATH:-$HOME/Documents/GitHub/firecrawl/.env}"
 
 if [[ ! -f "$ENV_PATH" ]]; then
@@ -18,19 +18,37 @@ set_kv() {
   fi
 }
 
-# always keep OpenRouter compatible base URL for these profiles
-set_kv OPENAI_BASE_URL "https://openrouter.ai/api/v1"
-
 case "$PROFILE" in
+  gateway)
+    # Vercel AI Gateway → deepseek/deepseek-v4-flash.
+    # Verified end-to-end: plain scrape + structured extract both pass.
+    # Requires OPENAI_API_KEY=<vercel-ai-gateway-key> in .env.
+    # Get a key at https://vercel.com/<team>/~/ai/api-keys (team: blightlens).
+    set_kv OPENAI_BASE_URL "https://ai-gateway.vercel.sh/v1"
+    set_kv MODEL_NAME "deepseek/deepseek-v4-flash"
+    ;;
+  gateway-codex)
+    # Vercel AI Gateway → openai/gpt-5.4-mini (premium fallback).
+    set_kv OPENAI_BASE_URL "https://ai-gateway.vercel.sh/v1"
+    set_kv MODEL_NAME "openai/gpt-5.4-mini"
+    ;;
+  openai-direct)
+    # OpenAI Platform key (separate ledger from ChatGPT subscription).
+    # Requires OPENAI_API_KEY=sk-... already populated in .env.
+    set_kv OPENAI_BASE_URL "https://api.openai.com/v1"
+    set_kv MODEL_NAME "gpt-5.4-mini"
+    ;;
   budget)
+    set_kv OPENAI_BASE_URL "https://openrouter.ai/api/v1"
     set_kv MODEL_NAME "openrouter/minimax/minimax-m2.5"
     ;;
   escalated)
+    set_kv OPENAI_BASE_URL "https://openrouter.ai/api/v1"
     set_kv MODEL_NAME "moonshotai/kimi-k2.5"
     ;;
   *)
     echo "Unknown profile: $PROFILE" >&2
-    echo "Use one of: budget | escalated" >&2
+    echo "Use one of: gateway | gateway-codex | openai-direct | budget | escalated" >&2
     exit 2
     ;;
 esac

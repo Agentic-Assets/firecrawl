@@ -18,10 +18,13 @@ Use this skill to run and explain Firecrawl as an internal scraping platform.
 ## Default model policy
 
 Use this routing unless the user overrides:
-- Budget/base pass: `openrouter/minimax/minimax-m2.5`
-- Escalated pass: `moonshotai/kimi-k2.5`
+- **Default: `deepseek/deepseek-v4-flash` via Vercel AI Gateway** (`gateway` profile). Verified end-to-end with structured extract on 2026-05-05. One key, hundreds of models, zero token markup. Get a key at https://vercel.com/<team>/~/ai/api-keys (team: `blightlens`).
+- Alt direct: OpenAI Platform `gpt-5.4-mini` (`openai-direct` profile) — only if a Platform `sk-...` key with prepaid credits exists.
+- Budget/base pass (OpenRouter): `openrouter/minimax/minimax-m2.5`
+- Escalated pass (OpenRouter): `moonshotai/kimi-k2.5`
 
-For repetitive high-volume low-risk tasks, prefer MiniMax M2.5 first.
+For mixed extract + light coding workloads, stay on `openai/gpt-5.4-mini`.
+For repetitive high-volume low-risk tasks where OpenRouter free-tier is cheaper, fall back to MiniMax M2.5.
 For hard extraction/reasoning/coding, escalate to Kimi K2.5.
 
 ## Persistent runtime settings
@@ -29,9 +32,11 @@ For hard extraction/reasoning/coding, escalate to Kimi K2.5.
 Use `scripts/set_model_profile.sh <profile>` to update Firecrawl runtime model defaults in:
 - `~/Documents/GitHub/firecrawl/.env`
 
-Profiles:
-- `budget` (MiniMax M2.5 default)
-- `escalated` (Kimi K2.5 default)
+Profiles (default: `gateway`):
+- `gateway` (alias `codex`) — Vercel AI Gateway → `openai/gpt-5.4-mini`; requires `OPENAI_API_KEY=<vercel-ai-gateway-key>` in `.env`
+- `openai-direct` — OpenAI Platform → `gpt-5.4-mini`; requires `OPENAI_API_KEY=sk-...` Platform key with credits
+- `budget` — OpenRouter `minimax/minimax-m2.5`
+- `escalated` — OpenRouter `moonshotai/kimi-k2.5`
 
 Then restart:
 - `docker compose down && docker compose up -d`
@@ -48,7 +53,7 @@ Then restart:
 ## Scripts
 
 - `scripts/firecrawl_healthcheck.sh` - verify local Firecrawl is running
-- `scripts/set_model_profile.sh` - update LLM model profile (budget/escalated)
+- `scripts/set_model_profile.sh` - update LLM model profile (gateway/openai-direct/budget/escalated; default: gateway)
 - `scripts/artificialanalysis_snapshot.py` - refresh model benchmark data
 - `scripts/platform_access_probe.py` - test accessible vs blocked sources quickly
 - `scripts/cre_access_matrix.py` - CRE platform accessibility testing (news/research/brokerage/government)
