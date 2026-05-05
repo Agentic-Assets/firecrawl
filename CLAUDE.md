@@ -12,6 +12,13 @@ Firecrawl is a web scraper API. The directory you have access to is a monorepo:
 
 For local self-hosted setup (Docker compose, env, PowerShell snippets), see `LOCAL_DEVELOPMENT_GUIDE.md` and `SELF_HOST.md`.
 
+## Env files (which is which)
+
+- **`./.env`** — **primary.** This is the file `docker compose up -d` reads at the repo root and is what every local Firecrawl run depends on. Gitignored. Never commit it.
+- **`apps/api/.env.example`** — upstream's canonical variable reference. Read this to learn what knobs exist; copy to `./.env` for first-time bootstrap.
+- **`apps/api/.env.local`** — tracked upstream artifact with empty values; **not** the file Docker reads despite its `.local` suffix. Ignore unless running `apps/api` directly outside Docker.
+- **Fork-specific vars** (`OPENROUTER_API_KEY`, `MODEL_NAME`, `SWARM_SUPABASE_*`) — documented in `LOCAL_DEVELOPMENT_GUIDE.md` §6 and rewritten by `scripts/firecrawl-ops/set_model_profile.sh`. They live in the root `./.env`.
+
 ## Working in `apps/api`
 
 When making changes to the API:
