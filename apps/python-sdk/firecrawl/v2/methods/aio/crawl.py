@@ -22,6 +22,8 @@ import time
 def _prepare_crawl_request(request: CrawlRequest) -> dict:
     if not request.url or not request.url.strip():
         raise ValueError("URL cannot be empty")
+    if request.limit is not None and request.limit <= 0:
+        raise ValueError("Limit must be positive")
     data = {"url": request.url}
     if request.prompt:
         data["prompt"] = request.prompt
@@ -49,6 +51,8 @@ def _prepare_crawl_request(request: CrawlRequest) -> dict:
         "crawl_entire_domain": "crawlEntireDomain",
         "allow_external_links": "allowExternalLinks",
         "allow_subdomains": "allowSubdomains",
+        "ignore_robots_txt": "ignoreRobotsTxt",
+        "robots_user_agent": "robotsUserAgent",
         "delay": "delay",
         "max_concurrency": "maxConcurrency",
         "regex_on_full_url": "regexOnFullURL",
@@ -335,6 +339,8 @@ async def crawl_params_preview(client: AsyncHttpClient, request: CrawlParamsRequ
         "crawlEntireDomain": "crawl_entire_domain",
         "allowExternalLinks": "allow_external_links",
         "allowSubdomains": "allow_subdomains",
+        "ignoreRobotsTxt": "ignore_robots_txt",
+        "robotsUserAgent": "robots_user_agent",
         "maxConcurrency": "max_concurrency",
         "scrapeOptions": "scrape_options",
         "zeroDataRetention": "zero_data_retention",

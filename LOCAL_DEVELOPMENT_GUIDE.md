@@ -98,3 +98,22 @@ docker compose down; docker compose up -d
 Because you are running locally but using **OpenRouter**, you are getting the best of both worlds:
 1.  **Privacy**: The actual scraping happens on your machine.
 2.  **Intelligence**: You can swap models (like Claude 3.5 Sonnet or GPT-4o) just by changing the `MODEL_NAME` in your `.env`, without needing to manage multiple API keys.
+
+---
+
+### 6. Fork-Specific Env Vars
+This fork's ops layer (`.claude/skills/firecrawl-ops/`, `scripts/firecrawl-ops/`) reads a few extra vars from the repo-root `.env`. There is no root `.env.example` on purpose — copy upstream's `apps/api/.env.example` to `./.env`, then layer these on top:
+
+| Var | Purpose | Required |
+| :--- | :--- | :--- |
+| `OPENROUTER_API_KEY` | Model routing via OpenRouter | Yes (for AI features) |
+| `MODEL_NAME` | Default LLM (rewritten by `scripts/firecrawl-ops/set_model_profile.sh budget\|escalated`) | Yes |
+| `SWARM_SUPABASE_URL` | Persistent swarm telemetry | Optional |
+| `SWARM_SUPABASE_KEY` | Persistent swarm telemetry | Optional |
+
+Switch model profiles without hand-editing:
+```bash
+scripts/firecrawl-ops/set_model_profile.sh budget      # MiniMax M2.5
+scripts/firecrawl-ops/set_model_profile.sh escalated   # Kimi K2.5
+docker compose down && docker compose up -d
+```

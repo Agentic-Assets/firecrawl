@@ -45,6 +45,7 @@ const configSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_BASE_URL: z.string().optional(),
   OPENROUTER_API_KEY: z.string().optional(),
+  XAI_API_KEY: z.string().optional(),
   LLAMAPARSE_API_KEY: z.string().optional(),
   STRIPE_SECRET_KEY: z.string().optional(),
   AUTUMN_SECRET_KEY: z.string().optional(),
@@ -162,6 +163,9 @@ const configSchema = z.object({
   PDF_MU_V2_EXPERIMENT: z.string().optional(),
   PDF_MU_V2_EXPERIMENT_PERCENT: z.coerce.number().default(100),
 
+  // MinerU direct routing (bypass Rust extraction for a % of traffic)
+  MINERU_PERCENT: z.coerce.number().min(0).max(100).default(0),
+
   // Fire PDF (replaces MinerU for a % of traffic)
   FIRE_PDF_ENABLE: z.stringbool().optional(),
   FIRE_PDF_PERCENT: z.coerce.number().min(0).max(100).default(10),
@@ -199,6 +203,12 @@ const configSchema = z.object({
   MODEL_EMBEDDING_NAME: z.string().optional(),
   OLLAMA_BASE_URL: z.string().optional(),
   VERTEX_CREDENTIALS: z.string().optional(),
+
+  // LangSmith (tracing for interact agent)
+  LANGSMITH_API_KEY: z.string().optional(),
+  LANGSMITH_PROJECT: z.string().optional(),
+  LANGSMITH_ENDPOINT: z.string().optional(),
+  LANGSMITH_TRACING: z.stringbool().optional(),
 
   // Rate Limiting
   RATE_LIMIT_TEST_API_KEY_SCRAPE: z.coerce.number().optional(),

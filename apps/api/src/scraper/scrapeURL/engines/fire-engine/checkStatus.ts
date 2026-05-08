@@ -5,6 +5,7 @@ import { z } from "zod";
 import { robustFetch } from "../../lib/fetch";
 import {
   ActionError,
+  AddFeatureError,
   EngineError,
   SiteError,
   SSLError,
@@ -17,6 +18,13 @@ import { MockState } from "../../lib/mock";
 import { fireEngineURL } from "./scrape";
 import { getDocFromGCS } from "../../../../lib/gcs-jobs";
 import { Meta } from "../..";
+
+const browserCookieSchema = z
+  .object({
+    name: z.string(),
+    value: z.string(),
+  })
+  .passthrough();
 
 const successSchema = z.object({
   jobId: z.string(),
@@ -81,6 +89,15 @@ const successSchema = z.object({
           link: z.string(),
         }),
       }),
+      z.object({
+        idx: z.number(),
+        type: z.literal("getCookies"),
+        result: z
+          .object({
+            cookies: browserCookieSchema.array(),
+          })
+          .passthrough(),
+      }),
     ])
     .array()
     .optional(),
@@ -122,6 +139,7 @@ const failedSchema = z.object({
   state: z.literal("failed"),
   processing: z.literal(false),
   error: z.string(),
+  retryWithStealth: z.boolean().optional(),
 });
 
 export class StillProcessingError extends Error {
@@ -175,6 +193,17 @@ export async function fireEngineCheckStatus(
     throw new StillProcessingError(jobId);
   } else if (failedParse.success) {
     logger.debug("Scrape job failed", { status, jobId });
+    if (
+      failedParse.data.retryWithStealth &&
+      meta.options.proxy === "auto" &&
+      !meta.featureFlags.has("stealthProxy")
+    ) {
+      logger.info(
+        "Scrape job signaled retryWithStealth. Adding stealthProxy flag.",
+        { jobId },
+      );
+      throw new AddFeatureError(["stealthProxy"]);
+    }
     if (
       typeof status.error === "string" &&
       status.error.includes("Chrome error: ")

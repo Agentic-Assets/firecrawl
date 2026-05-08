@@ -1,6 +1,6 @@
 import { ScrapeActionContent } from "../../../lib/entities";
 import { config } from "../../../config";
-import { Meta } from "..";
+import type { BrowserCookie, Meta } from "..";
 import { documentMaxReasonableTime, scrapeDocument } from "./document";
 import {
   fireEngineMaxReasonableTime,
@@ -19,6 +19,11 @@ import {
   wikipediaMaxReasonableTime,
   isWikimediaUrl,
 } from "./wikipedia";
+import {
+  scrapeURLWithXTwitter,
+  xTwitterMaxReasonableTime,
+  isXTwitterUrl,
+} from "./x-twitter";
 import { queryEngpickerVerdict, useIndex } from "../../../services";
 import { hasFormatOfType } from "../../../lib/format-utils";
 import { getPDFMaxPages } from "../../../controllers/v2/types";
@@ -39,7 +44,8 @@ export type Engine =
   | "document"
   | "index"
   | "index;documents"
-  | "wikipedia";
+  | "wikipedia"
+  | "x-twitter";
 
 const useFireEngine =
   config.FIRE_ENGINE_BETA_URL !== "" &&
@@ -52,8 +58,12 @@ const useWikipedia =
   config.WIKIPEDIA_ENTERPRISE_USERNAME !== "" &&
   config.WIKIPEDIA_ENTERPRISE_PASSWORD !== undefined &&
   config.WIKIPEDIA_ENTERPRISE_PASSWORD !== "";
+const useXTwitter =
+  (config.XAI_API_KEY !== undefined && config.XAI_API_KEY !== "") ||
+  config.USE_DB_AUTHENTICATION === true;
 
 const engines: Engine[] = [
+  ...(useXTwitter ? ["x-twitter" as const] : []),
   ...(useWikipedia ? ["wikipedia" as const] : []),
   ...(useIndex ? ["index" as const, "index;documents" as const] : []),
   ...(useFireEngine
@@ -79,6 +89,7 @@ const featureFlags = [
   "screenshot@fullScreen",
   "pdf",
   "document",
+  "audio",
   "atsv",
   "location",
   "mobile",
@@ -102,6 +113,7 @@ const featureFlagOptions: {
   "screenshot@fullScreen": { priority: 10 },
   pdf: { priority: 100 },
   document: { priority: 100 },
+  audio: { priority: 100 },
   atsv: { priority: 90 }, // NOTE: should atsv force to tlsclient? adjust priority if not
   useFastMode: { priority: 90 },
   location: { priority: 10 },
@@ -143,6 +155,7 @@ export type EngineScrapeResult = {
 
   youtubeTranscriptContent?: any;
   postprocessorsUsed?: string[];
+  audioCookies?: BrowserCookie[];
 
   proxyUsed: "basic" | "stealth";
   timezone?: string;
@@ -164,6 +177,7 @@ const engineHandlers: {
   pdf: scrapePDF,
   document: scrapeDocument,
   wikipedia: scrapeURLWithWikipedia,
+  "x-twitter": scrapeURLWithXTwitter,
 };
 
 const engineMRTs: {
@@ -188,6 +202,7 @@ const engineMRTs: {
   pdf: pdfMaxReasonableTime,
   document: documentMaxReasonableTime,
   wikipedia: wikipediaMaxReasonableTime,
+  "x-twitter": xTwitterMaxReasonableTime,
 };
 
 const engineOptions: {
@@ -208,6 +223,7 @@ const engineOptions: {
       "screenshot@fullScreen": true,
       pdf: false,
       document: false,
+      audio: false,
       atsv: false,
       mobile: true,
       location: true,
@@ -227,6 +243,7 @@ const engineOptions: {
       "screenshot@fullScreen": true, // through actions transform
       pdf: false,
       document: false,
+      audio: true,
       atsv: false,
       location: true,
       mobile: true,
@@ -246,6 +263,7 @@ const engineOptions: {
       "screenshot@fullScreen": true, // through actions transform
       pdf: false,
       document: false,
+      audio: true,
       atsv: false,
       location: true,
       mobile: true,
@@ -265,6 +283,7 @@ const engineOptions: {
       "screenshot@fullScreen": true,
       pdf: true,
       document: true,
+      audio: false,
       atsv: false,
       location: true,
       mobile: true,
@@ -284,6 +303,7 @@ const engineOptions: {
       "screenshot@fullScreen": true, // through actions transform
       pdf: false,
       document: false,
+      audio: true,
       atsv: false,
       location: true,
       mobile: true,
@@ -303,6 +323,7 @@ const engineOptions: {
       "screenshot@fullScreen": true, // through actions transform
       pdf: false,
       document: false,
+      audio: true,
       atsv: false,
       location: true,
       mobile: true,
@@ -322,6 +343,7 @@ const engineOptions: {
       "screenshot@fullScreen": false,
       pdf: false,
       document: false,
+      audio: false,
       atsv: false,
       location: false,
       mobile: false,
@@ -341,6 +363,7 @@ const engineOptions: {
       "screenshot@fullScreen": false,
       pdf: false,
       document: false,
+      audio: true,
       atsv: true,
       location: true,
       mobile: false,
@@ -360,6 +383,7 @@ const engineOptions: {
       "screenshot@fullScreen": false,
       pdf: false,
       document: false,
+      audio: true,
       atsv: true,
       location: true,
       mobile: false,
@@ -379,6 +403,7 @@ const engineOptions: {
       "screenshot@fullScreen": false,
       pdf: false,
       document: false,
+      audio: false,
       atsv: false,
       location: false,
       mobile: false,
@@ -398,6 +423,7 @@ const engineOptions: {
       "screenshot@fullScreen": false,
       pdf: true,
       document: false,
+      audio: false,
       atsv: false,
       location: false,
       mobile: false,
@@ -417,6 +443,7 @@ const engineOptions: {
       "screenshot@fullScreen": false,
       pdf: false,
       document: true,
+      audio: false,
       atsv: false,
       location: false,
       mobile: false,
@@ -436,6 +463,7 @@ const engineOptions: {
       "screenshot@fullScreen": false,
       pdf: false,
       document: false,
+      audio: false,
       atsv: false,
       location: false,
       mobile: false,
@@ -447,9 +475,33 @@ const engineOptions: {
     },
     quality: 500, // below index (1000) so cache is tried first, above fire-engine (50)
   },
+  "x-twitter": {
+    features: {
+      actions: false,
+      waitFor: false,
+      screenshot: false,
+      "screenshot@fullScreen": false,
+      pdf: false,
+      document: false,
+      audio: false,
+      atsv: false,
+      location: false,
+      mobile: false,
+      skipTlsVerification: true,
+      useFastMode: true,
+      stealthProxy: false,
+      branding: false,
+      disableAdblock: true,
+    },
+    quality: 1500,
+  },
 };
 
 export function shouldUseIndex(meta: Meta) {
+  if (meta.internalOptions.isParse) {
+    return false;
+  }
+
   // Skip index if screenshot format has custom viewport or quality settings
   const screenshotFormat = hasFormatOfType(meta.options.formats, "screenshot");
   const hasCustomScreenshotSettings =
@@ -500,7 +552,12 @@ export async function buildFallbackList(meta: Meta): Promise<
       : []),
   ];
 
-  if (meta.internalOptions.agentIndexOnly) {
+  if (meta.options.lockdown) {
+    const indexEngines: Engine[] = useIndex ? ["index", "index;documents"] : [];
+    _engines.length = 0;
+    _engines.push(...indexEngines);
+    meta.internalOptions.forceEngine = indexEngines;
+  } else if (meta.internalOptions.agentIndexOnly) {
     const indexEngines: Engine[] = useIndex ? ["index", "index;documents"] : [];
     _engines.length = 0;
     _engines.push(...indexEngines);
@@ -516,10 +573,20 @@ export async function buildFallbackList(meta: Meta): Promise<
     }
   }
 
-  if (!isWikimediaUrl(meta.url)) {
+  if (!isWikimediaUrl(meta.url) || Math.random() >= 0.5) {
     const wikiIndex = _engines.indexOf("wikipedia");
     if (wikiIndex !== -1) {
       _engines.splice(wikiIndex, 1);
+    }
+  }
+
+  if (isXTwitterUrl(meta.url) && _engines.includes("x-twitter")) {
+    _engines.length = 0;
+    _engines.push("x-twitter");
+  } else if (!isXTwitterUrl(meta.url)) {
+    const xTwitterIndex = _engines.indexOf("x-twitter");
+    if (xTwitterIndex !== -1) {
+      _engines.splice(xTwitterIndex, 1);
     }
   }
 

@@ -1,5 +1,6 @@
 package com.firecrawl.client;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.firecrawl.errors.FirecrawlException;
 import com.firecrawl.errors.JobTimeoutException;
 import com.firecrawl.models.*;
@@ -193,6 +194,56 @@ public class FirecrawlClient {
     @Deprecated
     public BrowserDeleteResponse deleteScrapeBrowser(String jobId) {
         return stopInteractiveBrowser(jobId);
+    }
+
+    /**
+     * Parses an uploaded file and returns the extracted document.
+     *
+     * @param file the file payload to parse
+     * @return the parsed document
+     */
+    public Document parse(ParseFile file) {
+        return parse(file, null);
+    }
+
+    /**
+     * Parses an uploaded file with scrape-compatible options.
+     *
+     * @param file the file payload to parse
+     * @param options parse options (parse-compatible subset)
+     * @return the parsed document
+     */
+    @SuppressWarnings("unchecked")
+    public Document parse(ParseFile file, ParseOptions options) {
+        Objects.requireNonNull(file, "Parse file is required");
+
+        Map<String, Object> optionsMap = new LinkedHashMap<>();
+        if (options != null) {
+            mergeOptions(optionsMap, options);
+        }
+
+        String optionsJson;
+        try {
+            optionsJson = http.objectMapper.writeValueAsString(optionsMap);
+        } catch (JsonProcessingException e) {
+            throw new FirecrawlException("Failed to serialize parse options", e);
+        }
+
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("options", optionsJson);
+
+        return extractData(
+                http.postMultipart(
+                        "/v2/parse",
+                        fields,
+                        "file",
+                        file.getContent(),
+                        file.getFilename(),
+                        file.getContentType(),
+                        Map.class
+                ),
+                Document.class
+        );
     }
 
     // ================================================================
@@ -716,6 +767,27 @@ public class FirecrawlClient {
     }
 
     /**
+     * Asynchronously parses an uploaded file with default options.
+     *
+     * @param file the file payload
+     * @return a CompletableFuture that resolves to the parsed Document
+     */
+    public CompletableFuture<Document> parseAsync(ParseFile file) {
+        return parseAsync(file, null);
+    }
+
+    /**
+     * Asynchronously parses an uploaded file.
+     *
+     * @param file the file payload
+     * @param options parse options
+     * @return a CompletableFuture that resolves to the parsed Document
+     */
+    public CompletableFuture<Document> parseAsync(ParseFile file, ParseOptions options) {
+        return CompletableFuture.supplyAsync(() -> parse(file, options), asyncExecutor);
+    }
+
+    /**
      * Asynchronously crawls a website and waits for completion.
      *
      * @param url     the URL to crawl
@@ -830,6 +902,116 @@ public class FirecrawlClient {
         return CompletableFuture.supplyAsync(() -> listBrowsers(status), asyncExecutor);
     }
 
+    /**
+     * Asynchronously starts a crawl job and returns immediately with the job reference.
+     *
+     * @param url     the URL to start crawling from
+     * @param options crawl configuration options
+     * @return a CompletableFuture that resolves to the CrawlResponse
+     */
+    public CompletableFuture<CrawlResponse> startCrawlAsync(String url, CrawlOptions options) {
+        return CompletableFuture.supplyAsync(() -> startCrawl(url, options), asyncExecutor);
+    }
+
+    /**
+     * Asynchronously gets the status of a crawl job.
+     *
+     * @param jobId the crawl job ID
+     * @return a CompletableFuture that resolves to the CrawlJob
+     */
+    public CompletableFuture<CrawlJob> getCrawlStatusAsync(String jobId) {
+        return CompletableFuture.supplyAsync(() -> getCrawlStatus(jobId), asyncExecutor);
+    }
+
+    /**
+     * Asynchronously cancels a crawl job.
+     *
+     * @param jobId the crawl job ID
+     * @return a CompletableFuture that resolves to the cancellation response
+     */
+    public CompletableFuture<Map<String, Object>> cancelCrawlAsync(String jobId) {
+        return CompletableFuture.supplyAsync(() -> cancelCrawl(jobId), asyncExecutor);
+    }
+
+    /**
+     * Asynchronously starts a batch scrape job and returns immediately with the job reference.
+     *
+     * @param urls    the URLs to scrape
+     * @param options batch scrape configuration options
+     * @return a CompletableFuture that resolves to the BatchScrapeResponse
+     */
+    public CompletableFuture<BatchScrapeResponse> startBatchScrapeAsync(List<String> urls, BatchScrapeOptions options) {
+        return CompletableFuture.supplyAsync(() -> startBatchScrape(urls, options), asyncExecutor);
+    }
+
+    /**
+     * Asynchronously gets the status of a batch scrape job.
+     *
+     * @param jobId the batch scrape job ID
+     * @return a CompletableFuture that resolves to the BatchScrapeJob
+     */
+    public CompletableFuture<BatchScrapeJob> getBatchScrapeStatusAsync(String jobId) {
+        return CompletableFuture.supplyAsync(() -> getBatchScrapeStatus(jobId), asyncExecutor);
+    }
+
+    /**
+     * Asynchronously cancels a batch scrape job.
+     *
+     * @param jobId the batch scrape job ID
+     * @return a CompletableFuture that resolves to the cancellation response
+     */
+    public CompletableFuture<Map<String, Object>> cancelBatchScrapeAsync(String jobId) {
+        return CompletableFuture.supplyAsync(() -> cancelBatchScrape(jobId), asyncExecutor);
+    }
+
+    /**
+     * Asynchronously starts an agent task and returns immediately with the job reference.
+     *
+     * @param options agent configuration options
+     * @return a CompletableFuture that resolves to the AgentResponse
+     */
+    public CompletableFuture<AgentResponse> startAgentAsync(AgentOptions options) {
+        return CompletableFuture.supplyAsync(() -> startAgent(options), asyncExecutor);
+    }
+
+    /**
+     * Asynchronously gets the status of an agent task.
+     *
+     * @param jobId the agent job ID
+     * @return a CompletableFuture that resolves to the AgentStatusResponse
+     */
+    public CompletableFuture<AgentStatusResponse> getAgentStatusAsync(String jobId) {
+        return CompletableFuture.supplyAsync(() -> getAgentStatus(jobId), asyncExecutor);
+    }
+
+    /**
+     * Asynchronously cancels an agent task.
+     *
+     * @param jobId the agent job ID
+     * @return a CompletableFuture that resolves to the cancellation response
+     */
+    public CompletableFuture<Map<String, Object>> cancelAgentAsync(String jobId) {
+        return CompletableFuture.supplyAsync(() -> cancelAgent(jobId), asyncExecutor);
+    }
+
+    /**
+     * Asynchronously gets concurrency info.
+     *
+     * @return a CompletableFuture that resolves to the ConcurrencyCheck
+     */
+    public CompletableFuture<ConcurrencyCheck> getConcurrencyAsync() {
+        return CompletableFuture.supplyAsync(this::getConcurrency, asyncExecutor);
+    }
+
+    /**
+     * Asynchronously gets credit usage.
+     *
+     * @return a CompletableFuture that resolves to the CreditUsage
+     */
+    public CompletableFuture<CreditUsage> getCreditUsageAsync() {
+        return CompletableFuture.supplyAsync(this::getCreditUsage, asyncExecutor);
+    }
+
     // ================================================================
     // INTERNAL POLLING HELPERS
     // ================================================================
@@ -936,6 +1118,7 @@ public class FirecrawlClient {
     public static final class Builder {
 
         private String apiKey;
+        private boolean apiKeyExplicitlySet;
         private String apiUrl = DEFAULT_API_URL;
         private long timeoutMs = DEFAULT_TIMEOUT_MS;
         private int maxRetries = DEFAULT_MAX_RETRIES;
@@ -951,6 +1134,7 @@ public class FirecrawlClient {
          */
         public Builder apiKey(String apiKey) {
             this.apiKey = apiKey;
+            this.apiKeyExplicitlySet = true;
             return this;
         }
 
@@ -1026,6 +1210,10 @@ public class FirecrawlClient {
 
         public FirecrawlClient build() {
             String resolvedKey = apiKey;
+            if (apiKeyExplicitlySet && (resolvedKey == null || resolvedKey.isBlank())) {
+                throw new FirecrawlException(
+                        "API key cannot be null or empty when explicitly provided.");
+            }
             if (resolvedKey == null || resolvedKey.isBlank()) {
                 resolvedKey = System.getenv("FIRECRAWL_API_KEY");
             }

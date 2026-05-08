@@ -7,6 +7,7 @@ import { MockState } from "../../lib/mock";
 import { getDocFromGCS } from "../../../../lib/gcs-jobs";
 import {
   ActionError,
+  AddFeatureError,
   DNSResolutionError,
   EngineError,
   FEPageLoadFailed,
@@ -18,6 +19,14 @@ import {
 import { Meta } from "../..";
 
 import { config } from "../../../../config";
+
+const browserCookieSchema = z
+  .object({
+    name: z.string(),
+    value: z.string(),
+  })
+  .passthrough();
+
 export type FireEngineScrapeRequestCommon = {
   url: string;
   scrapeId?: string;
@@ -123,6 +132,15 @@ const successSchema = z.object({
           link: z.string(),
         }),
       }),
+      z.object({
+        idx: z.number(),
+        type: z.literal("getCookies"),
+        result: z
+          .object({
+            cookies: browserCookieSchema.array(),
+          })
+          .passthrough(),
+      }),
     ])
     .array()
     .optional(),
@@ -152,6 +170,7 @@ const processingSchema = z.object({
 
 const failedSchema = z.object({
   error: z.string(),
+  retryWithStealth: z.boolean().optional(),
 });
 
 export const fireEngineURL =
@@ -213,6 +232,16 @@ export async function fireEngineScrape<
     logger.debug("Scrape job failed", {
       status,
     });
+    if (
+      failedParse.data.retryWithStealth &&
+      meta.options.proxy === "auto" &&
+      !meta.featureFlags.has("stealthProxy")
+    ) {
+      logger.info(
+        "Scrape signaled retryWithStealth. Adding stealthProxy flag.",
+      );
+      throw new AddFeatureError(["stealthProxy"]);
+    }
     if (
       typeof status.error === "string" &&
       status.error.includes("Chrome error: ")

@@ -545,6 +545,7 @@ class ScrapeOptions(BaseModel):
     max_age: Optional[int] = None
     min_age: Optional[int] = None
     store_in_cache: Optional[bool] = None
+    lockdown: Optional[bool] = None
     profile: Optional[Dict[str, Any]] = None
     integration: Optional[str] = None
 
@@ -561,6 +562,11 @@ class ScrapeOptions(BaseModel):
         raise ValueError(
             f"Invalid formats type: {type(v)}. Expected ScrapeFormats or List[FormatOption]"
         )
+
+
+# Parse accepts a strict subset of scrape options; unsupported fields are
+# rejected by parse-specific request preparation.
+ParseOptions = ScrapeOptions
 
 
 class ScrapeRequest(BaseModel):
@@ -599,6 +605,7 @@ class CrawlRequest(BaseModel):
     allow_external_links: bool = False
     allow_subdomains: bool = False
     ignore_robots_txt: bool = False
+    robots_user_agent: Optional[str] = None
     delay: Optional[int] = None
     max_concurrency: Optional[int] = None
     webhook: Optional[Union[str, WebhookConfig]] = None
@@ -694,6 +701,7 @@ class CrawlParamsData(BaseModel):
     allow_external_links: bool = False
     allow_subdomains: bool = False
     ignore_robots_txt: bool = False
+    robots_user_agent: Optional[str] = None
     delay: Optional[int] = None
     max_concurrency: Optional[int] = None
     webhook: Optional[Union[str, WebhookConfig]] = None
@@ -1062,6 +1070,8 @@ class SearchRequest(BaseModel):
     query: str
     sources: Optional[List[SourceOption]] = None
     categories: Optional[List[CategoryOption]] = None
+    include_domains: Optional[List[str]] = None
+    exclude_domains: Optional[List[str]] = None
     limit: Optional[int] = 5
     tbs: Optional[str] = None
     location: Optional[str] = None
@@ -1109,6 +1119,15 @@ class SearchRequest(BaseModel):
                 raise ValueError(f"Invalid category format: {category}")
 
         return normalized_categories
+
+    @model_validator(mode="after")
+    def validate_domain_filters(self):
+        """Validate mutually exclusive search domain filters."""
+        if self.include_domains and self.exclude_domains:
+            raise ValueError(
+                "include_domains and exclude_domains cannot both be specified"
+            )
+        return self
 
     # NOTE: parsers validation does not belong on SearchRequest; it is part of ScrapeOptions.
 

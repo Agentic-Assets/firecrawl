@@ -13,6 +13,7 @@ import {
   MapRequestInput,
   BatchScrapeRequestInput,
   SearchRequestInput,
+  ParseRequestInput,
 } from "../../../controllers/v2/types";
 import request from "supertest";
 import {
@@ -81,6 +82,98 @@ export async function scrapeWithFailure(
 }> {
   const raw = await scrapeRaw(body, identity);
   expectScrapeToFail(raw);
+  return raw.body;
+}
+
+export async function parseRaw(
+  body: {
+    options?: Omit<ParseRequestInput, "file">;
+    file: {
+      content: Buffer | string;
+      filename: string;
+      contentType?: string;
+    };
+  },
+  identity: Identity,
+) {
+  const fileContent =
+    typeof body.file.content === "string"
+      ? Buffer.from(body.file.content)
+      : body.file.content;
+
+  const req = request(TEST_API_URL)
+    .post("/v2/parse")
+    .set("Authorization", `Bearer ${identity.apiKey}`)
+    .attach("file", fileContent, {
+      filename: body.file.filename,
+      contentType: body.file.contentType,
+    });
+
+  if (body.options !== undefined) {
+    req.field("options", JSON.stringify(body.options));
+  }
+
+  return await req;
+}
+
+export async function parse(
+  body: {
+    options?: Omit<ParseRequestInput, "file">;
+    file: {
+      content: Buffer | string;
+      filename: string;
+      contentType?: string;
+    };
+  },
+  identity: Identity,
+): Promise<Document> {
+  const raw = await parseRaw(body, identity);
+  expectScrapeToSucceed(raw);
+  return raw.body.data;
+}
+
+export async function parseWithFailure(
+  body: {
+    options?: Omit<ParseRequestInput, "file">;
+    file?: {
+      content: Buffer | string;
+      filename: string;
+      contentType?: string;
+    };
+    rawOptions?: string;
+  },
+  identity: Identity,
+): Promise<{
+  success: false;
+  error: string;
+  code?: string;
+}> {
+  const req = request(TEST_API_URL)
+    .post("/v2/parse")
+    .set("Authorization", `Bearer ${identity.apiKey}`);
+
+  if (body.file) {
+    const fileContent =
+      typeof body.file.content === "string"
+        ? Buffer.from(body.file.content)
+        : body.file.content;
+
+    req.attach("file", fileContent, {
+      filename: body.file.filename,
+      contentType: body.file.contentType,
+    });
+  }
+
+  if (body.rawOptions !== undefined) {
+    req.field("options", body.rawOptions);
+  } else if (body.options !== undefined) {
+    req.field("options", JSON.stringify(body.options));
+  }
+
+  const raw = await req;
+  expect(raw.statusCode).not.toBe(200);
+  expect(raw.body.success).toBe(false);
+  expect(typeof raw.body.error).toBe("string");
   return raw.body;
 }
 
@@ -385,7 +478,7 @@ export function expectMapToSucceed(response: Awaited<ReturnType<typeof map>>) {
 // Search API
 // =========================================
 
-async function searchRaw(body: SearchRequestInput, identity: Identity) {
+export async function searchRaw(body: SearchRequestInput, identity: Identity) {
   return await request(TEST_API_URL)
     .post("/v2/search")
     .set("Authorization", `Bearer ${identity.apiKey}`)
@@ -401,6 +494,12 @@ function expectSearchToSucceed(
   expect(typeof response.body.data).toBe("object");
 }
 
+function expectSearchToFail(response: Awaited<ReturnType<typeof searchRaw>>) {
+  expect(response.statusCode).not.toBe(200);
+  expect(response.body.success).toBe(false);
+  expect(typeof response.body.error).toBe("string");
+}
+
 export async function search(
   body: SearchRequestInput,
   identity: Identity,
@@ -408,6 +507,19 @@ export async function search(
   const raw = await searchRaw(body, identity);
   expectSearchToSucceed(raw);
   return raw.body.data;
+}
+
+export async function searchWithFailure(
+  body: SearchRequestInput,
+  identity: Identity,
+): Promise<{
+  success: false;
+  error: string;
+  details?: unknown;
+}> {
+  const raw = await searchRaw(body, identity);
+  expectSearchToFail(raw);
+  return raw.body;
 }
 
 // =========================================

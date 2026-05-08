@@ -42,6 +42,12 @@ export async function fetchAudio(
     return document;
   }
 
+  // Lockdown forbids any outbound request touching the target URL. The avgrab
+  // service fetches the source on our behalf, so we must skip it here.
+  if (meta.options.lockdown) {
+    return document;
+  }
+
   if (!config.AVGRAB_SERVICE_URL) {
     meta.logger.warn("AVGRAB_SERVICE_URL is not configured");
     document.warning =
@@ -55,10 +61,17 @@ export async function fetchAudio(
     throw new AudioUnsupportedUrlError();
   }
 
+  const requestBody = {
+    url: meta.url,
+    ...(meta.audioCookies && meta.audioCookies.length > 0
+      ? { cookies: meta.audioCookies }
+      : {}),
+  };
+
   const response = await fetch(`${config.AVGRAB_SERVICE_URL}/download`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: meta.url }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
