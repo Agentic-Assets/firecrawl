@@ -65,3 +65,4 @@ apps/api/src/lib/scrape-interact/*.md
 # fork-local: ad-hoc progress notes and scrape outputs (may contain tokens / third-party content)
 PROGRESS_SUMMARY.md
 test-runs/
+/examples/northmarq
