@@ -24,6 +24,7 @@ from .types import (
     CrawlParamsData,
     WebhookConfig,
     AgentWebhookConfig,
+    MonitorWebhookConfig,
     CrawlErrorsResponse,
     ActiveCrawlsResponse,
     MapOptions,
@@ -315,6 +316,8 @@ class FirecrawlClient:
         *,
         sources: Optional[List[SourceOption]] = None,
         categories: Optional[List[CategoryOption]] = None,
+        include_domains: Optional[List[str]] = None,
+        exclude_domains: Optional[List[str]] = None,
         limit: Optional[int] = None,
         tbs: Optional[str] = None,
         location: Optional[str] = None,
@@ -325,7 +328,7 @@ class FirecrawlClient:
     ) -> SearchData:
         """
         Search for documents.
-        
+
         Args:
             query: Search query string
             limit: Maximum number of results to return (default: 5)
@@ -333,7 +336,7 @@ class FirecrawlClient:
             location: Location string for search
             timeout: Request timeout in milliseconds (default: 300000)
             page_options: Options for scraping individual pages
-            
+
         Returns:
             SearchData containing the search results
         """
@@ -341,6 +344,8 @@ class FirecrawlClient:
             query=query,
             sources=sources,
             categories=categories,
+            include_domains=include_domains,
+            exclude_domains=exclude_domains,
             limit=limit,
             tbs=tbs,
             location=location,
@@ -671,7 +676,7 @@ class FirecrawlClient:
         schedule: Union[MonitorSchedule, Dict[str, Any]],
         targets: List[Union[MonitorTarget, Dict[str, Any]]],
         *,
-        webhook: Optional[WebhookConfig] = None,
+        webhook: Optional[Union[MonitorWebhookConfig, Dict[str, Any]]] = None,
         notification: Optional[MonitorNotification] = None,
         retention_days: Optional[int] = None,
     ) -> Monitor:
@@ -708,7 +713,7 @@ class FirecrawlClient:
         name: Optional[str] = None,
         status: Optional[Literal["active", "paused"]] = None,
         schedule: Optional[Union[MonitorSchedule, Dict[str, Any]]] = None,
-        webhook: Optional[Union[WebhookConfig, Dict[str, Any]]] = None,
+        webhook: Optional[Union[MonitorWebhookConfig, Dict[str, Any]]] = None,
         notification: Optional[Union[MonitorNotification, Dict[str, Any]]] = None,
         targets: Optional[List[Union[MonitorTarget, Dict[str, Any]]]] = None,
         retention_days: Optional[int] = None,
