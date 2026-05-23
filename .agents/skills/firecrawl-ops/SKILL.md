@@ -75,8 +75,17 @@ Keep Firecrawl tooling separate from any one agent runtime:
 - Direct API: `http://localhost:3002`
 - Optional Cursor adapter: `.cursor/mcp.json` plus `.cursor/skills/firecrawl-local-api/SKILL.md`
 - Codex/Claude-style adapter: `.agents/skills/firecrawl-local-api/SKILL.md`
+- User-level installer: `scripts/firecrawl-ops/sync_agent_skills.sh`
 
 Cursor Composer 2.5 can drive a Cursor SDK agent that calls local Firecrawl through MCP/CLI/API. Use the SDK local runtime for this Mac's Firecrawl stack; cloud agents need a reachable Firecrawl URL. Do not treat Composer as Firecrawl's internal model provider unless Cursor publishes an OpenAI-compatible base URL.
+
+After updating repo skills, run:
+
+```bash
+scripts/firecrawl-ops/sync_agent_skills.sh
+```
+
+This copies `firecrawl-ops` and `firecrawl-local-api` into `~/.agents/skills` and symlinks them into user-level agent folders.
 
 ## Endpoint Selection
 
@@ -144,6 +153,7 @@ The skill folder exposes these via symlinks to `docs/firecrawl-ops/references/` 
 - `scripts/firecrawl_healthcheck.sh`: local stack smoke test
 - `scripts/firecrawl_cli.sh`: Firecrawl CLI wrapper pinned to the local API URL
 - `scripts/firecrawl_mcp.sh`: Firecrawl MCP wrapper pinned to the local API URL
+- `scripts/sync_agent_skills.sh`: copy repo skills to `~/.agents/skills` and symlink them into user-level agent folders
 - `scripts/set_model_profile.sh`: model profile switcher
 - `scripts/sync_upstream_main.sh`: safe upstream merge helper for this fork
 - `scripts/artificialanalysis_snapshot.py`: refresh model benchmark data

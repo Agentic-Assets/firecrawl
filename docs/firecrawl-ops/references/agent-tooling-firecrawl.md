@@ -18,6 +18,7 @@ This repo keeps the local Firecrawl tool layer separate from any one agent model
    - Cursor can read `.cursor/mcp.json` and `.cursor/skills/` when configured to use project settings.
    - Other MCP-capable agents can call `scripts/firecrawl-ops/firecrawl_mcp.sh` directly.
    - Codex/Claude-style agents can read `.agents/skills/firecrawl-local-api/SKILL.md`.
+   - User-level installs are synced by `scripts/firecrawl-ops/sync_agent_skills.sh`.
 
 4. **Agent model runtime**
    - Cursor Composer 2.5 is an agent model choice.
@@ -43,6 +44,27 @@ Override the package version if needed:
 
 ```bash
 FIRECRAWL_MCP_PACKAGE=firecrawl-mcp@3.17.0 scripts/firecrawl-ops/firecrawl_mcp.sh
+```
+
+## User-Level Skill Sync
+
+After updating the repo skills, run:
+
+```bash
+scripts/firecrawl-ops/sync_agent_skills.sh
+```
+
+The script:
+
+- copies `firecrawl-ops` and `firecrawl-local-api` into `~/.agents/skills`
+- dereferences repo symlinks so the user-level copies are standalone
+- symlinks those canonical copies into `~/.codex/skills`, `~/.claude/skills`, and `~/.cursor/skills`
+- skips existing non-symlink destinations unless `--force` is passed
+
+Preview without writing:
+
+```bash
+scripts/firecrawl-ops/sync_agent_skills.sh --dry-run
 ```
 
 ## Generic MCP Client Config

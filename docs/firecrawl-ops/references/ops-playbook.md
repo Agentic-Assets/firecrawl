@@ -57,6 +57,15 @@ For Cursor SDK specifically, use the local runtime for this local API. Either pa
 
 See `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` for generic client config and Cursor-specific notes.
 
+## User-level skill sync
+After editing `.agents/skills/firecrawl-ops` or `.agents/skills/firecrawl-local-api`, copy them into the user-level canonical folder and refresh per-agent symlinks:
+
+```bash
+scripts/firecrawl-ops/sync_agent_skills.sh
+```
+
+This copies into `~/.agents/skills` and symlinks into `~/.codex/skills`, `~/.claude/skills`, and `~/.cursor/skills`. Use `--dry-run` to preview.
+
 ## Safe operations
 - Do not expose postgres port publicly.
 - Keep `USE_DB_AUTHENTICATION=false` unless you explicitly configure teams/api keys.
