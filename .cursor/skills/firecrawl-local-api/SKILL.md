@@ -9,6 +9,7 @@ This is an optional Cursor adapter, not the core Firecrawl setup. The reusable F
 
 - `scripts/firecrawl-ops/firecrawl_mcp.sh` for MCP
 - `scripts/firecrawl-ops/firecrawl_cli.sh` for CLI
+- `scripts/firecrawl-ops/firecrawl_request.py` for saved artifacts and advanced direct API options
 - `.agents/skills/firecrawl-local-api/SKILL.md` for Codex/Claude-style agents
 - `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` for cross-agent setup
 
@@ -39,6 +40,13 @@ If MCP is unavailable, use the CLI wrapper:
 scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
+```
+
+Use `firecrawl_request.py` for direct local API settings the CLI does not expose, especially PDF `mode` and `maxPages`, or when the agent needs split markdown/html/metadata files:
+
+```bash
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html --pdf-mode auto --max-pages 25 --pretty
 ```
 
 For Cursor SDK code, project settings are not loaded by default. Either pass `mcpServers` inline with `command: "bash"` and `args: ["scripts/firecrawl-ops/firecrawl_mcp.sh"]`, or set `local: { cwd: process.cwd(), settingSources: ["project"] }`.

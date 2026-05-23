@@ -10,7 +10,7 @@ Firecrawl is a web scraper API. The directory you have access to is a monorepo:
 - `apps/nuq-postgres` — Postgres-backed queue (`nuq`) used alongside Redis/RabbitMQ
 - `apps/redis`, `apps/test-site`, `apps/test-suite`, `apps/ui` — supporting infra and tests
 
-For local self-hosted setup (Docker compose, env, PowerShell snippets), see `LOCAL_DEVELOPMENT_GUIDE.md` and `SELF_HOST.md`.
+For local self-hosted setup, see `LOCAL_DEVELOPMENT_GUIDE.md`, `SELF_HOST.md`, and the `firecrawl-ops` skill.
 
 ## Env files (which is which)
 
@@ -50,7 +50,7 @@ This fork adds a self-hosted operations layer on top of upstream Firecrawl. It i
 - `firecrawl-ops` — runtime health, Docker, model routing, endpoint selection
 - `firecrawl-local-api` — calling the local API at `http://localhost:3002`
 
-Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/deepseek-v4-pro` (OpenRouter). Verified locally 2026-05-09.
+Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/deepseek-v4-pro` (OpenRouter). Verified locally on 2026-05-23.
 - `docs/firecrawl-ops/references/` — durable reference docs:
   - `tools-capabilities.md` — endpoint-by-endpoint capability map
   - `model-routing.md` — model strategy and escalation rules
@@ -67,11 +67,7 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
   - `sync_agent_skills.sh` — copy repo Firecrawl skills to `~/.agents/skills` and symlink them into user-level agent folders
   - `set_model_profile.sh budget|escalated|gateway|gateway-codex|openai-direct` — rewrite `.env` model defaults; follow with `docker compose up -d --force-recreate api`
   - `sync_upstream_main.sh` — create an upstream-sync branch, merge `firecrawl/firecrawl:main`, and show protected fork path diffs
-  - `artificialanalysis_snapshot.py` — refresh ArtificialAnalysis benchmark data for routing decisions
-  - `platform_access_probe.py`, `cre_access_matrix.py` — accessibility probes
-  - `bulk_triage_runner.py` — budget-first triage with escalation batches
-  - `crawl_swarm.py`, `firecrawl_swarm_pipeline.py` — parallel map+scrape swarm with confidence/provenance output
-  - `google_flights_scrape.py`, `parse_flight_deals.py` — Atlas multi-region flight scraper + parser
+  - Optional older workflow examples: `artificialanalysis_snapshot.py`, `platform_access_probe.py`, `cre_access_matrix.py`, `bulk_triage_runner.py`, `crawl_swarm.py`, `firecrawl_swarm_pipeline.py`, `google_flights_scrape.py`, `parse_flight_deals.py`. Prefer `firecrawl_request.py` for new local-agent scripting.
 - Cross-agent integration:
   - `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` — separates the Firecrawl API/CLI/MCP tool layer from Cursor Composer or any other agent model
   - `.cursor/mcp.json` — optional Cursor adapter that registers `firecrawl-local` by calling `scripts/firecrawl-ops/firecrawl_mcp.sh`

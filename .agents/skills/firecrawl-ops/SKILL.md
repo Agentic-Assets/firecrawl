@@ -94,6 +94,8 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 
 Do not use this helper to replace SDKs or the upstream CLI for normal app code. It exists for local agent workflows, repeatable saved artifacts, and API options the CLI does not expose yet.
 
+Prefer `firecrawl_request.py` for new local-agent scripting because it uses only Python stdlib. Treat older domain workflow scripts as optional examples unless the user specifically asks for those workflows.
+
 ## Cross-Agent MCP
 
 Keep Firecrawl tooling separate from any one agent runtime:
@@ -154,7 +156,7 @@ Use `scripts/firecrawl-ops/set_model_profile.sh <profile>` to rewrite `.env`.
 
 Profiles:
 
-- `budget`: OpenRouter `deepseek/deepseek-v4-flash`; primary cheap model for routine extraction and high-volume discovery. Verified locally for schema-backed `v2/extract` on 2026-05-09.
+- `budget`: OpenRouter `deepseek/deepseek-v4-flash`; primary cheap model for routine extraction and high-volume discovery. Local profile wiring verified on 2026-05-23.
 - `escalated`: OpenRouter `deepseek/deepseek-v4-pro`; smarter fallback for hard extraction, noisy pages, or budget failures.
 - `gateway`: Vercel AI Gateway `deepseek/deepseek-v4-flash`; requires a Vercel AI Gateway key.
 - `gateway-codex`: Vercel AI Gateway `openai/gpt-5.4-mini`; premium fallback.

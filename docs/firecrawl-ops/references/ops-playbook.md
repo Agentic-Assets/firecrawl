@@ -68,6 +68,8 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 
 Use the official SDKs in application code. This helper is for cross-agent local runs and advanced local API settings the CLI does not expose yet.
 
+Prefer `firecrawl_request.py` for new local-agent scripting. Older domain workflow scripts are kept as optional examples, not the default path.
+
 ## Cross-agent MCP
 Use the reusable wrapper for MCP-capable agents:
 

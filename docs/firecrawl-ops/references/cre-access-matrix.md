@@ -1,143 +1,62 @@
 # CRE Platform Access Matrix
 
-**Last tested:** 2026-03-09
+This is a starting matrix for Commercial Real Estate sources, not a permanent truth table. Access rules, bot protection, paywalls, and page structure change often. Refresh with `scripts/firecrawl-ops/cre_access_matrix.py` before using the results for a serious workflow.
 
-This reference documents which CRE (Commercial Real Estate) platforms are accessible via Firecrawl scraping without login or bot protection issues.
-
-## Quick Reference
-
-| Status | Meaning |
-|--------|---------|
-| 🟢 Accessible | Full content extractable, no blocks |
-| 🟡 Partial | Teaser/summary available, full content gated |
-| 🔴 Blocked | Bot protection blocks scraping |
-
----
-
-## 🟢 Fully Accessible Sources
-
-### Brokerage Research Reports
-
-| Source | Content Type | Volume | Best For |
-|--------|--------------|--------|----------|
-| **CBRE Insights** | Quarterly sector figures | ~11K chars | Cap rates, vacancy, absorption, investment volume by sector (office, industrial, multifamily, retail, hotel, life sciences, medical outpatient, net lease) |
-| **Cushman Wakefield** | MarketBeats | ~8-11K chars | Metro-specific market reports, Tulsa and other markets |
-| **Colliers** | Research pages | ~11K chars | Market insights, property reports |
-| **Savills** | Research | ~15K chars | Global CRE research, market reports |
-| **JLL** | Research pages | ~7-8K chars | Market research, sector reports |
-| **Marcus & Millichap** | Report teasers | ~27K chars | Investment forecasts, submarket dynamics (full PDFs gated) |
-
-### Industry Publications
-
-| Source | Content Type | Volume | Best For |
-|--------|--------------|--------|----------|
-| **GlobeSt.com** | News + analysis | ~31K chars | CRE news, trending stories, sector coverage, deal announcements |
-| **CommercialCafe** | Listings + research | ~16K chars | Market reports, property search |
-| **Crexi** | Listings + blog | ~1-13K chars | Property listings, market insights |
-
-### Government & Academic Data
-
-| Source | Content Type | Volume | Best For |
-|--------|--------------|--------|----------|
-| **Census.gov/construction** | Government data | ~126K chars | Building permits, housing starts, construction statistics |
-| **FRED (St. Louis Fed)** | Economic data | ~5K chars per series | Economic time series, unlimited API access |
-| **BIS.org** | Central bank research | Mixed (some gated) | BIS papers, global financial data |
-
-### REIT Data
-
-| Source | Content Type | Volume | Best For |
-|--------|--------------|--------|----------|
-| **REIT.com** | REIT data | ~8K chars | Index returns, sector breakdowns, market cap data |
-| **NAREIT** | Industry statistics | ~7-8K chars | REIT performance data, industry metrics |
-
----
-
-## 🟡 Partial Access (Teasers / Login-Gated)
-
-| Source | What's Free | What's Gated |
-|--------|--------------|--------------|
-| **Marcus & Millichap** | Report summaries, submarket dynamics, headlines | Full PDF reports, detailed data tables |
-| **NREI Online** | Headlines only | Full articles require login |
-| **PI Executive** | Headlines | Full content gated |
-| **PREA** | Some headlines | Research reports gated |
-| **Reonomy** | Landing pages | Property data requires login |
-| **ULI (Urban Land Institute)** | Event info, summaries | Full research gated |
-
----
-
-## 🔴 Blocked Sources
-
-| Source | Block Type | Notes |
-|--------|------------|-------|
-| **CoStar** | Akamai/EdgeSuite | "Access Denied" — requires browser session |
-| **LoopNet** | Akamai/EdgeSuite | Same blocking as CoStar |
-| **Knight Frank** | Cloudflare-style | Bot detection blocks scrapers |
-| **Reuters Real Estate** | 401 Unauthorized | Requires auth |
-| **WSJ Real Estate** | Paywall | Limited/no access |
-| **Bloomberg Real Estate** | Paywall | ~900 chars only |
-
----
-
-## Recommended Workflows
-
-### For Quarterly Market Metrics
-```
-CBRE Quarterly Figures → Full executive summaries with hard numbers
-URL pattern: https://www.cbre.com/insights/figures/q4-2025-us-<sector>-figures
-```
-
-### For Metro-Specific Reports
-```
-Cushman Wakefield MarketBeats → Tulsa and other markets
-URL pattern: https://www.cushmanwakefield.com/en/united-states/insights/us-marketbeats/<metro>-marketbeat
-```
-
-### For CRE News
-```
-GlobeSt → Full articles, deal announcements
-URL: https://www.globest.com/
-```
-
-### For REIT Data
-```
-REIT.com → Index returns, sector breakdowns
-URL: https://www.reit.com/
-```
-
-### For Economic Context
-```
-FRED → Economic time series
-URL: https://fred.stlouisfed.org/
-Census Construction → Building permits, housing starts
-URL: https://www.census.gov/construction/
-```
-
----
-
-## Testing Script
-
-Use `scripts/cre_access_matrix.py` to test accessibility of CRE sources:
+## Refresh
 
 ```bash
-python3 scripts/cre_access_matrix.py --sources all
-python3 scripts/cre_access_matrix.py --sources news --output results.json
+python3 scripts/firecrawl-ops/cre_access_matrix.py --sources all --output results/cre-access-matrix.json
+python3 scripts/firecrawl-ops/platform_access_probe.py --url https://www.cbre.com/insights
 ```
 
-Output includes: status (accessible/blocked/login-gated), markdown length, and sample snippet.
+The scripts use the local v2 scrape endpoint at `http://localhost:3002/v2/scrape`.
 
----
+## Status Meanings
+
+| Status | Meaning |
+|---|---|
+| `accessible` | Substantial markdown returned without obvious block/login text |
+| `partial` | Useful teaser/summary content returned, but full detail may be gated |
+| `login-gated` | Login or subscription flow appears before useful content |
+| `blocked` | Bot protection or access-denied page detected |
+| `minimal` / `empty` / `error` | Not enough content to rely on without manual follow-up |
+
+## Historically Useful Sources
+
+These have been useful in prior local probes and are good first-pass candidates:
+
+- CBRE Insights
+- Cushman & Wakefield MarketBeats
+- Colliers research pages
+- Savills research pages
+- JLL research pages
+- GlobeSt.com
+- CommercialCafe
+- FRED
+- Census construction data
+- REIT.com / NAREIT
+
+## Historically Difficult Sources
+
+Treat these as likely requiring manual access, authenticated browser flows, or another data source:
+
+- CoStar
+- LoopNet
+- Reuters / WSJ / Bloomberg real-estate pages
+- paid research portals such as PREA or Green Street
+- property-data products with login walls such as Reonomy
+
+## Recommended Workflow
+
+1. Run `cre_access_matrix.py` against the current source set.
+2. Keep URLs with `accessible` or `partial` status.
+3. Save the output JSON with the run date.
+4. Use `v2/map` or targeted `v2/scrape` on the promising domains.
+5. Escalate low-content or blocked sources only if the user has a legitimate authenticated route.
 
 ## Notes
 
-1. **Volume varies by page**: Homepage listings typically return more content than deep article pages
-2. **Login-gated sources**: May still be useful for headlines/teasers; full content requires browser automation
-3. **Government sources**: Generally fully accessible with no restrictions
-4. **REIT sources**: Good for index-level data; company-specific data may require SEC filings
-
----
-
-## Changelog
-
-| Date | Change |
-|------|--------|
-| 2026-03-09 | Initial access matrix created from platform probe testing |
+- Homepage and index pages often scrape better than deep article pages.
+- Government and public-data sources are usually more stable than commercial platforms.
+- Login prompts do not always mean zero value; teaser pages can still provide titles, dates, and source leads.
+- Verify important numbers against the source page or downloaded document before using them in a final report.

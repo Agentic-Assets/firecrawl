@@ -1,162 +1,117 @@
-# Firecrawl Local Development & PowerShell Guide
+# Firecrawl Local Development Guide
 
-This guide is designed to help you master **Firecrawl** while running it locally. Since you're using **PowerShell** and have it integrated with **OpenRouter**, here is your personal playbook for effective scraping and data extraction.
+This guide describes this fork's local self-hosted setup. It is intentionally focused on the current Mac workflow: OrbStack, Docker compose, the v2 API, local agent skills, and model-profile helpers.
 
----
+## 1. Local Runtime
 
-### 1. The Local Architecture
-When you run `docker compose up -d`, you're spinning up five essential services:
-*   **API (`firecrawl-api`)**: The brain that handles your requests.
-*   **Playwright Service**: The browser engine that actually "visits" websites.
-*   **Redis**: The "waiting room" for jobs and task queuing.
-*   **Postgres**: The database for long-term storage (though we currently have `USE_DB_AUTHENTICATION=false`).
-*   **RabbitMQ**: Handles internal communication between components.
+Start from the repo root:
 
----
-
-### 2. Mastering the PowerShell Workflow
-Since PowerShell's default `curl` is actually an alias for `Invoke-WebRequest`, it can be tricky with JSON. Always use the **Variable + `Invoke-RestMethod`** pattern for reliability:
-
-#### 🟢 The "Happy Path" Scrape
-Use this for simple text or markdown retrieval.
-```powershell
-$body = @{
-    url = "https://example.com"
-    formats = @("markdown")
-    waitFor = 1000 # Give it 1 second to settle
-} | ConvertTo-Json
-
-Invoke-RestMethod -Uri "http://localhost:3002/v1/scrape" -Method Post -ContentType "application/json" -Body $body
+```bash
+docker compose up -d
+bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
-#### 🧠 The "Smart" Extraction (OpenRouter)
-Since you've configured OpenRouter, you can use LLMs to turn messy websites into clean data.
-```powershell
-$body = @{
-    url = "https://caymanseagraves.com"
-    formats = @("extract")
-    extract = @{
-        schema = @{
-            type = "object"
-            properties = @{
-                publications = @{ type = "array"; items = @{ type = "string" } }
-            }
-        }
-    }
-} | ConvertTo-Json -Depth 10 # Use -Depth 10 for nested objects!
+Expected baseline:
+- OrbStack is running and `docker context show` is `orbstack`.
+- API is reachable at `http://localhost:3002`.
+- Core services include `api`, `playwright-service`, `redis`, `rabbitmq`, and `nuq-postgres`.
+- Local auth is usually disabled with `USE_DB_AUTHENTICATION=false`.
 
-Invoke-RestMethod -Uri "http://localhost:3002/v1/scrape" -Method Post -ContentType "application/json" -Body $body
+Useful commands:
+
+```bash
+docker compose ps
+docker compose logs api --tail 200
+docker compose logs playwright-service --tail 200
+docker compose up -d --force-recreate api
+docker compose down
 ```
 
----
+## 2. Env Files
 
-### 3. Pro-Tips for Effectiveness
+- `./.env` is the primary local env file read by Docker compose. It is gitignored; never commit secrets.
+- `apps/api/.env.example` is upstream's reference list of available variables.
+- `apps/api/.env.local` is tracked upstream scaffolding and is not the Docker compose env file.
 
-#### ⏱️ Handling Dynamic Content (`waitFor`)
-Modern sites (React, Next.js, v0) often load content *after* the initial page load. 
-*   **Tip**: If your markdown is empty or says "Loading...", increase `waitFor`.
-*   **Safe Default**: Use `waitFor = 5000` for heavy sites.
-
-#### 🔍 Debugging with Docker Logs
-If a request fails, the terminal output might not tell you *why*. Check the API logs in real-time:
-```powershell
-# See the last 50 lines and follow new ones
-docker logs -f firecrawl-api-1 --tail 50
-```
-*Look for:* `🐂 Worker taking job` or `Model: <your-model-name>`. (I've updated the code so it now correctly shows your configured `MODEL_NAME` in the logs instead of a hardcoded default).
-
-#### 📂 Bypassing `.gitignore` for `.env`
-If you need to change your keys (like OpenRouter), you might find that Cursor or your IDE "hides" the `.env` file. You can always edit it via PowerShell:
-```powershell
-# Open it in Notepad
-notepad .env
-# Or restart docker to apply changes
-docker compose down; docker compose up -d
-```
-
----
-
-### 4. When to use "Crawl" vs "Scrape"
-*   **Scrape**: Use when you have **one specific URL** and want the content now.
-*   **Crawl**: Use when you want to find **every page** on a domain (e.g., `caymanseagraves.com/*`).
-    *   *Note*: Crawling locally is resource-intensive. Start with a small `limit` (e.g., `limit = 10`).
-
----
-
-### 5. Essential Local Commands Reference
-| Action | Command |
-| :--- | :--- |
-| **Start everything** | `docker compose up -d` |
-| **Stop everything** | `docker compose down` |
-| **Check health** | `docker ps` |
-| **Reset Database** | `docker volume rm firecrawl_postgres_data` (Caution!) |
-| **View API Logs** | `docker logs firecrawl-api-1` |
-
----
-
-### 🚀 Your OpenRouter / Gateway Advantage
-Because you are running locally but can route AI calls through **OpenRouter**, **Vercel AI Gateway**, or **OpenAI**, you are getting the best of both worlds:
-1.  **Privacy**: The actual scraping happens on your machine.
-2.  **Intelligence**: You can swap models by changing `OPENAI_BASE_URL` and `MODEL_NAME` in your `.env`.
-
----
-
-### 6. Fork-Specific Env Vars
-This fork's ops layer (`.agents/skills/firecrawl-ops/`, `scripts/firecrawl-ops/`) reads a few extra vars from the repo-root `.env`. The model helper creates a minimal gitignored `.env` if one is missing:
+Create or refresh local model defaults:
 
 ```bash
 scripts/firecrawl-ops/set_model_profile.sh budget
-```
-
-| Var | Purpose | Required |
-| :--- | :--- | :--- |
-| `FIRECRAWL_API_URL` | Local CLI target (`http://localhost:3002`) | Optional but recommended |
-| `OPENAI_API_KEY` | Provider key for OpenRouter, Vercel AI Gateway, or OpenAI-compatible profiles | Yes (for AI features) |
-| `OPENAI_BASE_URL` | Provider base URL, rewritten by `scripts/firecrawl-ops/set_model_profile.sh` | Yes (for AI features) |
-| `MODEL_NAME` | Default LLM, rewritten by `scripts/firecrawl-ops/set_model_profile.sh` | Yes (for AI features) |
-| `OPENROUTER_API_KEY` | Optional direct OpenRouter provider path; not the default local profile route | Optional |
-| `PDF_RUST_EXTRACT_ENABLE` | Local Rust PDF text extraction; defaults to `true` in compose | Optional |
-| `FIRE_PDF_BASE_URL` / `FIRE_PDF_API_KEY` | Optional external Fire PDF OCR/layout service for harder PDFs | Optional |
-| `RUNPOD_MU_API_KEY` / `RUNPOD_MU_POD_ID` | Optional external MinerU-style OCR/layout fallback | Optional |
-| `SWARM_SUPABASE_URL` | Persistent swarm telemetry | Optional |
-| `SWARM_SUPABASE_KEY` | Persistent swarm telemetry | Optional |
-
-Switch model profiles without hand-editing:
-```bash
-scripts/firecrawl-ops/set_model_profile.sh budget      # DeepSeek V4 Flash (OpenRouter)
-scripts/firecrawl-ops/set_model_profile.sh escalated   # DeepSeek V4 Pro (OpenRouter)
-scripts/firecrawl-ops/set_model_profile.sh gateway     # DeepSeek V4 Flash (Vercel AI Gateway)
 docker compose up -d --force-recreate api
 ```
 
-PDF parsing is local by default and does not use Firecrawl cloud credits. Use `/v2/parse` for local uploads. Direct HTTP supports PDF parser knobs that the CLI does not expose:
+Important fork/local vars:
+
+| Var | Purpose |
+| :--- | :--- |
+| `FIRECRAWL_API_URL` | Local helper/CLI target, normally `http://localhost:3002` |
+| `OPENAI_API_KEY` | Provider key for OpenRouter, Vercel AI Gateway, or OpenAI-compatible providers |
+| `OPENAI_BASE_URL` | Provider base URL written by `set_model_profile.sh` |
+| `MODEL_NAME` | Firecrawl's internal LLM model id |
+| `OPENROUTER_API_KEY` | Optional direct OpenRouter path; not the default local profile route |
+| `PDF_RUST_EXTRACT_ENABLE` | Local PDF text extraction; compose defaults it to `true` |
+| `FIRE_PDF_BASE_URL` / `FIRE_PDF_API_KEY` | Optional external Fire PDF OCR/layout service |
+| `RUNPOD_MU_API_KEY` / `RUNPOD_MU_POD_ID` | Optional external MinerU-style OCR/layout service |
+| `SWARM_SUPABASE_URL` / `SWARM_SUPABASE_KEY` | Optional swarm telemetry destination |
+
+Profiles:
 
 ```bash
-curl -sS -X POST http://localhost:3002/v2/parse \
-  -F 'options={"formats":["markdown","html"],"parsers":[{"type":"pdf","mode":"auto","maxPages":25}]}' \
-  -F "file=@./report.pdf"
+scripts/firecrawl-ops/set_model_profile.sh budget        # OpenRouter DeepSeek V4 Flash
+scripts/firecrawl-ops/set_model_profile.sh escalated     # OpenRouter DeepSeek V4 Pro
+scripts/firecrawl-ops/set_model_profile.sh gateway       # Vercel AI Gateway DeepSeek V4 Flash
+scripts/firecrawl-ops/set_model_profile.sh gateway-codex # Vercel AI Gateway OpenAI model
+scripts/firecrawl-ops/set_model_profile.sh openai-direct # OpenAI Platform
 ```
 
-Use `mode:"auto"` normally, `mode:"fast"` for cheap text-only parsing, and `mode:"ocr"` only when Fire PDF or MinerU-style OCR services are configured. The fully local path is good for text PDFs, but tables, figures, scans, and complex multi-column layouts can still flatten into markdown.
+## 3. Local API Quick Use
 
-### 7. Local Firecrawl CLI
-Use the fork wrapper so the CLI always talks to your local API:
+Prefer v2 endpoints for new local work:
+
+```bash
+curl -sS -X POST http://localhost:3002/v2/scrape \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com","formats":["markdown","links"]}'
+```
+
+PowerShell form:
+
+```powershell
+$body = @{
+  url = "https://example.com"
+  formats = @("markdown", "links")
+} | ConvertTo-Json -Depth 10
+
+Invoke-RestMethod -Uri "http://localhost:3002/v2/scrape" -Method Post -ContentType "application/json" -Body $body
+```
+
+Endpoint selection:
+- One URL: `POST /v2/scrape`
+- Search: `POST /v2/search`
+- Discover URLs: `POST /v2/map`
+- Crawl site: `POST /v2/crawl`, then poll `GET /v2/crawl/:id`
+- Many URLs: `POST /v2/batch/scrape`, then poll status
+- Local files: `POST /v2/parse`
+- Structured extraction: `POST /v2/scrape` with JSON format, or `POST /v2/extract` with explicit schema
+
+## 4. CLI And Agent Helpers
+
+Use the upstream Firecrawl CLI through the local wrapper:
 
 ```bash
 scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
+scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty -o ./out/example.json
 ```
 
-From another codebase, use the installed skill copy instead:
+From another codebase, use the installed skill copy:
 
 ```bash
 ~/.agents/skills/firecrawl-local-api/scripts/firecrawl_cli.sh parse ./report.pdf --json --pretty
 ```
 
-The wrapper keeps your current directory, so relative file paths resolve from wherever you run it.
-
-For saved artifacts or PDF parser controls that the CLI does not expose, use the local direct helper:
+Use the direct helper when an agent needs saved field artifacts or advanced PDF parser options:
 
 ```bash
 scripts/firecrawl-ops/firecrawl_request.py scrape https://example.com \
@@ -170,35 +125,54 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 
 Use official Firecrawl SDKs in application code. The helper is for local agent runs from any codebase on this computer.
 
-For crawl jobs, prefer submit + explicit status polling:
+For local crawls, avoid `--wait` if it hangs; submit and poll:
 
 ```bash
 ID=$(scripts/firecrawl-ops/firecrawl_cli.sh crawl https://example.com --limit 1 --pretty | jq -r '.data.jobId')
 scripts/firecrawl-ops/firecrawl_cli.sh crawl "$ID" --status --pretty
 ```
 
-### 8. Agent Tooling: MCP, CLI, Cursor Composer
+## 5. PDF Parsing
+
+Local PDF parsing does not spend Firecrawl cloud credits. `creditsUsed` in local responses is local accounting metadata. External OCR/layout providers can still have their own costs if configured.
+
+Direct HTTP with parser knobs:
+
+```bash
+curl -sS -X POST http://localhost:3002/v2/parse \
+  -F 'options={"formats":["markdown","html"],"parsers":[{"type":"pdf","mode":"auto","maxPages":25}]}' \
+  -F "file=@./report.pdf"
+```
+
+Modes:
+- `auto`: default; local Rust extraction for text PDFs, then configured OCR fallbacks, then `pdf-parse`
+- `fast`: local text extraction only; avoids OCR-style work
+- `ocr`: useful only when Fire PDF or MinerU-style services are configured
+
+The fully local path is strongest for text PDFs. Tables, figures, scans, and complex multi-column layouts can still flatten into markdown.
+
+## 6. Cross-Agent Tooling
+
 Keep these layers separate:
 
-1. **Firecrawl local runtime**: OrbStack + Docker compose, API at `http://localhost:3002`.
-2. **Reusable tool interfaces**: direct HTTP API, `scripts/firecrawl-ops/firecrawl_cli.sh`, `scripts/firecrawl-ops/firecrawl_request.py`, and `scripts/firecrawl-ops/firecrawl_mcp.sh`.
-3. **Agent adapters**: `.cursor/mcp.json`, `.cursor/skills/`, `.agents/skills/`, or any other MCP-capable client config.
-4. **Agent model runtime**: Cursor Composer 2.5, Codex, Claude, or another model.
+1. Firecrawl local runtime: OrbStack + Docker compose, API at `http://localhost:3002`.
+2. Reusable tool interfaces: direct HTTP API, `firecrawl_cli.sh`, `firecrawl_request.py`, and `firecrawl_mcp.sh`.
+3. Agent adapters: `.cursor/mcp.json`, `.cursor/skills/`, `.agents/skills/`, or any MCP-capable client config.
+4. Agent model runtime: Cursor Composer, Codex, Claude, or another model.
 
-For MCP-capable agents, use:
+For MCP-capable agents:
 
 ```bash
 scripts/firecrawl-ops/firecrawl_mcp.sh
 ```
 
-Cursor is wired to that reusable wrapper through `.cursor/mcp.json` as `firecrawl-local`, but Cursor SDK code does not load project settings by default. For SDK agents, either pass `mcpServers` inline or set `local: { cwd: process.cwd(), settingSources: ["project"] }`.
+Cursor is one optional adapter. Cursor SDK code does not load project settings by default; pass `mcpServers` inline or use `local: { cwd: process.cwd(), settingSources: ["project"] }`. Cursor cloud agents cannot reach this Mac's `localhost:3002` unless the API is exposed at a reachable URL.
 
-Use Composer 2.5 as the Cursor SDK agent model to take advantage of Cursor SDK pricing. Use the SDK local runtime for this Mac's Firecrawl stack. Local Firecrawl remains the web/file tool. Firecrawl's own AI-backed summary/json/extract calls still use `OPENAI_BASE_URL` and `MODEL_NAME` profiles unless Cursor exposes an OpenAI-compatible endpoint.
+Firecrawl's own AI-backed formats still use `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `MODEL_NAME`. Do not treat Cursor Composer as Firecrawl's internal model provider unless Cursor publishes an OpenAI-compatible endpoint.
 
-See `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` for generic MCP client config and Cursor-specific notes.
+## 7. Skill Sync
 
-### 9. Sync Skills To User-Level Agents
-After editing the repo's Firecrawl skills, run:
+After editing repo skills or local-agent docs:
 
 ```bash
 scripts/firecrawl-ops/sync_agent_skills.sh
@@ -206,10 +180,18 @@ scripts/firecrawl-ops/sync_agent_skills.sh
 
 It copies `firecrawl-ops` and `firecrawl-local-api` into `~/.agents/skills` and symlinks them into `~/.codex/skills`, `~/.claude/skills`, and `~/.cursor/skills`.
 
-This checkout also uses `.githooks/post-commit` and `.githooks/pre-push` as non-blocking reminders to rerun the sync script when skill-related files change. Enable them with:
+Enable advisory git hook reminders per clone:
 
 ```bash
 scripts/firecrawl-ops/install_git_hooks.sh
 ```
 
-Run that once after cloning this repo on another computer. Git hook config is local to each checkout and is not carried by commits.
+## 8. Upstream Sync
+
+Keep fork-owned ops assets in `.agents/`, `docs/firecrawl-ops/`, `scripts/firecrawl-ops/`, `LOCAL_DEVELOPMENT_GUIDE.md`, and `AGENTS.md`. Sync upstream on a branch:
+
+```bash
+scripts/firecrawl-ops/sync_upstream_main.sh
+```
+
+Prefer upstream for product/API/SDK/security files. Prefer this fork for local ops, skills, model-routing docs, and self-hosted workflow docs.

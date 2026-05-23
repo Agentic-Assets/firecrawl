@@ -31,7 +31,7 @@ def scrape_url(api, url):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--api", default="http://localhost:3002/v1")
+    ap.add_argument("--api", default="http://localhost:3002/v2")
     ap.add_argument("--seeds", required=True)
     ap.add_argument("--limit", type=int, default=10)
     ap.add_argument("--scrape-per-seed", type=int, default=5)
