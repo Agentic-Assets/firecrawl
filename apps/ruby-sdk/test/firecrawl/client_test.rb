@@ -74,13 +74,14 @@ class ClientTest < Minitest::Test
       )
       .to_return(
         status: 200,
-        body: JSON.generate(data: { markdown: "# Hello", metadata: { title: "Example", sourceURL: "https://example.com" } }),
+        body: JSON.generate(data: { markdown: "# Hello", video: "https://storage.googleapis.com/firecrawl/video.mp4", metadata: { title: "Example", sourceURL: "https://example.com" } }),
         headers: { "Content-Type" => "application/json" }
       )
 
     doc = @client.scrape("https://example.com")
     assert_instance_of Firecrawl::Models::Document, doc
     assert_equal "# Hello", doc.markdown
+    assert_equal "https://storage.googleapis.com/firecrawl/video.mp4", doc.video
     assert_equal "Example", doc.metadata["title"]
   end
 
@@ -458,6 +459,39 @@ class ClientTest < Minitest::Test
     refute h.key?("timeout") # nil values should be omitted
   end
 
+  def test_query_format_to_h
+    format = Firecrawl::Models::QueryFormat.new(
+      prompt: "What is Firecrawl?",
+      mode: Firecrawl::Models::QueryFormat::MODE_DIRECT_QUOTE
+    )
+    opts = Firecrawl::Models::ScrapeOptions.new(formats: [format])
+
+    assert_equal(
+      [{ "type" => "query", "prompt" => "What is Firecrawl?", "mode" => "directQuote" }],
+      opts.to_h["formats"]
+    )
+  end
+
+  def test_question_and_highlights_format_to_h
+    question = Firecrawl::Models::QuestionFormat.new(question: "What is Firecrawl?")
+    highlights = Firecrawl::Models::HighlightsFormat.new(query: "What is Firecrawl?")
+    opts = Firecrawl::Models::ScrapeOptions.new(formats: [question, highlights])
+
+    assert_equal(
+      [
+        { "type" => "question", "question" => "What is Firecrawl?" },
+        { "type" => "highlights", "query" => "What is Firecrawl?" },
+      ],
+      opts.to_h["formats"]
+    )
+  end
+
+  def test_query_format_rejects_invalid_mode
+    assert_raises(ArgumentError) do
+      Firecrawl::Models::QueryFormat.new(prompt: "What is Firecrawl?", mode: "quoted")
+    end
+  end
+
   def test_scrape_options_skip_tls_defaults_to_false
     opts = Firecrawl::Models::ScrapeOptions.new
     assert_equal false, opts.skip_tls_verification
@@ -641,6 +675,12 @@ class ClientTest < Minitest::Test
   def test_parse_options_rejects_unsupported_format
     assert_raises(ArgumentError) do
       Firecrawl::Models::ParseOptions.new(formats: ["screenshot"])
+    end
+  end
+
+  def test_parse_options_rejects_video_format
+    assert_raises(ArgumentError) do
+      Firecrawl::Models::ParseOptions.new(formats: ["video"])
     end
   end
 

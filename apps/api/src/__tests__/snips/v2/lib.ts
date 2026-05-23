@@ -13,6 +13,7 @@ import {
   MapRequestInput,
   BatchScrapeRequestInput,
   SearchRequestInput,
+  SearchFeedbackRequestInput,
   ParseRequestInput,
 } from "../../../controllers/v2/types";
 import request from "supertest";
@@ -83,6 +84,96 @@ export async function scrapeWithFailure(
   const raw = await scrapeRaw(body, identity);
   expectScrapeToFail(raw);
   return raw.body;
+}
+
+// =========================================
+// Monitor API
+// =========================================
+
+export type MonitorCreateInput = {
+  name: string;
+  schedule: { cron: string; timezone?: string };
+  webhook?: { url: string; headers?: Record<string, string> };
+  notification?: {
+    email?: {
+      enabled?: boolean;
+      recipients?: string[];
+      includeDiffs?: boolean;
+    };
+  };
+  targets: Array<
+    | {
+        type: "scrape";
+        urls: string[];
+        scrapeOptions?: Record<string, unknown>;
+      }
+    | {
+        type: "crawl";
+        url: string;
+        crawlOptions?: Record<string, unknown>;
+        scrapeOptions?: Record<string, unknown>;
+      }
+  >;
+  retentionDays?: number;
+};
+
+export async function monitorCreateRaw(
+  body: MonitorCreateInput,
+  identity: Identity,
+) {
+  return await request(TEST_API_URL)
+    .post("/v2/monitor")
+    .set("Authorization", `Bearer ${identity.apiKey}`)
+    .set("Content-Type", "application/json")
+    .send(body);
+}
+
+export async function monitorListRaw(identity: Identity) {
+  return await request(TEST_API_URL)
+    .get("/v2/monitor")
+    .set("Authorization", `Bearer ${identity.apiKey}`);
+}
+
+export async function monitorGetRaw(id: string, identity: Identity) {
+  return await request(TEST_API_URL)
+    .get(`/v2/monitor/${id}`)
+    .set("Authorization", `Bearer ${identity.apiKey}`);
+}
+
+export async function monitorPatchRaw(
+  id: string,
+  body: Partial<MonitorCreateInput> & { status?: "active" | "paused" },
+  identity: Identity,
+) {
+  return await request(TEST_API_URL)
+    .patch(`/v2/monitor/${id}`)
+    .set("Authorization", `Bearer ${identity.apiKey}`)
+    .set("Content-Type", "application/json")
+    .send(body);
+}
+
+export async function monitorDeleteRaw(id: string, identity: Identity) {
+  return await request(TEST_API_URL)
+    .delete(`/v2/monitor/${id}`)
+    .set("Authorization", `Bearer ${identity.apiKey}`);
+}
+
+export async function monitorRunRaw(id: string, identity: Identity) {
+  return await request(TEST_API_URL)
+    .post(`/v2/monitor/${id}/run`)
+    .set("Authorization", `Bearer ${identity.apiKey}`);
+}
+
+export async function monitorCheckRaw(
+  monitorId: string,
+  checkId: string,
+  identity: Identity,
+  query?: Record<string, string | number>,
+) {
+  const req = request(TEST_API_URL)
+    .get(`/v2/monitor/${monitorId}/checks/${checkId}`)
+    .set("Authorization", `Bearer ${identity.apiKey}`);
+  return query ? req.query(query) : req;
 }
 
 export async function parseRaw(
@@ -519,6 +610,73 @@ export async function searchWithFailure(
 }> {
   const raw = await searchRaw(body, identity);
   expectSearchToFail(raw);
+  return raw.body;
+}
+
+export async function searchRawFull(
+  body: SearchRequestInput,
+  identity: Identity,
+) {
+  return await request(TEST_API_URL)
+    .post("/v2/search")
+    .set("Authorization", `Bearer ${identity.apiKey}`)
+    .set("Content-Type", "application/json")
+    .send(body);
+}
+
+export async function searchFeedbackRaw(
+  searchId: string,
+  body: SearchFeedbackRequestInput,
+  identity: Identity,
+) {
+  return await request(TEST_API_URL)
+    .post("/v2/search/" + encodeURIComponent(searchId) + "/feedback")
+    .set("Authorization", `Bearer ${identity.apiKey}`)
+    .set("Content-Type", "application/json")
+    .send(body);
+}
+
+export async function searchFeedback(
+  searchId: string,
+  body: SearchFeedbackRequestInput,
+  identity: Identity,
+): Promise<{
+  success: true;
+  feedbackId: string;
+  creditsRefunded: number;
+  creditsRefundedToday?: number;
+  dailyRefundCap?: number;
+  dailyCapReached?: boolean;
+  alreadySubmitted?: boolean;
+  warning?: string;
+}> {
+  const raw = await searchFeedbackRaw(searchId, body, identity);
+  if (raw.statusCode !== 200) {
+    console.warn(
+      "Search feedback did not succeed",
+      JSON.stringify(raw.body, null, 2),
+    );
+  }
+  expect(raw.statusCode).toBe(200);
+  expect(raw.body.success).toBe(true);
+  expect(typeof raw.body.feedbackId).toBe("string");
+  expect(typeof raw.body.creditsRefunded).toBe("number");
+  return raw.body;
+}
+
+export async function searchFeedbackWithFailure(
+  searchId: string,
+  body: SearchFeedbackRequestInput,
+  identity: Identity,
+): Promise<{
+  success: false;
+  error: string;
+  details?: unknown;
+}> {
+  const raw = await searchFeedbackRaw(searchId, body, identity);
+  expect(raw.statusCode).not.toBe(200);
+  expect(raw.body.success).toBe(false);
+  expect(typeof raw.body.error).toBe("string");
   return raw.body;
 }
 
