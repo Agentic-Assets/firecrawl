@@ -40,11 +40,11 @@ case "$PROFILE" in
     ;;
   budget)
     set_kv OPENAI_BASE_URL "https://openrouter.ai/api/v1"
-    set_kv MODEL_NAME "openrouter/minimax/minimax-m2.5"
+    set_kv MODEL_NAME "deepseek/deepseek-v4-flash"
     ;;
   escalated)
     set_kv OPENAI_BASE_URL "https://openrouter.ai/api/v1"
-    set_kv MODEL_NAME "moonshotai/kimi-k2.5"
+    set_kv MODEL_NAME "deepseek/deepseek-v4-pro"
     ;;
   *)
     echo "Unknown profile: $PROFILE" >&2
@@ -55,4 +55,4 @@ esac
 
 echo "Applied profile '$PROFILE' to $ENV_PATH"
 echo "MODEL_NAME=$(grep '^MODEL_NAME=' "$ENV_PATH" | cut -d= -f2-)"
-echo "Next: cd ~/Documents/GitHub/firecrawl && docker compose down && docker compose up -d"
+echo "Next: cd ~/Documents/GitHub/firecrawl && docker compose up -d --force-recreate api"

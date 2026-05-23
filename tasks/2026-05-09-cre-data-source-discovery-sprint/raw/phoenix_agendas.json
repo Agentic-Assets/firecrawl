@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "phoenix_agendas",
+    "url": "https://www.phoenix.gov/cityclerk/publicmeetings/city-council-meetings",
+    "category": "municipal_agendas_packets",
+    "source_type": "municipal agenda portal",
+    "expected_signals": "planning, zoning, public approvals",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.phoenix.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: subscribe",
+  "markdown_len": 16312,
+  "links_len": 53,
+  "available_fields": [
+    "asset_type"
+  ],
+  "snippet": "No results found. Please remove your search query or try again.",
+  "raw_sha256": "0a9a0344e17a84903880b8a19befe5b980ace1084a65bcae3d90f5e5715a4dfd",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

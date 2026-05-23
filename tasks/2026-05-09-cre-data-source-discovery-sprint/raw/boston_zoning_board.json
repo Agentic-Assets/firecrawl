@@ -1,0 +1,33 @@
+{
+  "source": {
+    "id": "boston_zoning_board",
+    "url": "https://www.boston.gov/departments/inspectional-services/zoning-board-appeal",
+    "category": "permits_zoning_planning",
+    "source_type": "zoning board records",
+    "expected_signals": "zoning relief, redevelopment, owner/project clues",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.boston.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 78621,
+  "links_len": 469,
+  "available_fields": [
+    "address",
+    "asset_type",
+    "price",
+    "broker"
+  ],
+  "snippet": "* [Please see the City's public notices page](https://www.boston.gov/node/11666)",
+  "raw_sha256": "7cf08749f8a80e6cc07170e60d7688ab06023d5b7a30093bd225ddf28a054d6f",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

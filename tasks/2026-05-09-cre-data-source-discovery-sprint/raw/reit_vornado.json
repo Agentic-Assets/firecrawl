@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "reit_vornado",
+    "url": "https://investors.vno.com/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "NYC office/retail portfolio, debt, occupancy, supplement PDFs",
+    "geography": "regional",
+    "asset_types": "office, retail"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://investors.vno.com/robots.txt (HTTPSConnectionPool(host='investors.vno.com', port=443): Read timed out. (read timeout=8))",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 4487,
+  "links_len": 22,
+  "available_fields": [
+    "address"
+  ],
+  "snippet": "* [Press Releases](https://investors.vno.com/press-releases)",
+  "raw_sha256": "bc87ccaa9022a29215b2f6794539bd3c1016c0e3ed0f94e5a7c057f6dc99f6af",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

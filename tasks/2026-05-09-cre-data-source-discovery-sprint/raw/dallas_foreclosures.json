@@ -1,0 +1,35 @@
+{
+  "source": {
+    "id": "dallas_foreclosures",
+    "url": "https://www.dallascounty.org/government/county-clerk/foreclosures.php",
+    "category": "distress_sources",
+    "source_type": "foreclosure notices",
+    "expected_signals": "trustee sale notices, posting dates",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.dallascounty.org/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 21205,
+  "links_len": 117,
+  "available_fields": [
+    "address",
+    "asset_type",
+    "price",
+    "debt",
+    "distress",
+    "disposition"
+  ],
+  "snippet": "all Foreclosure Postings and Sales will take place on the North Side of the George Allen Courts Building Facing Commerce Street below the overhang, or as designated by the County Commissioners. The earliest time the sale will begin is 10:00am, but no later than three hours after such time.",
+  "raw_sha256": "c4d53f6280bb007301ab9e277b8128a3205adc0df3db1b7b80e84d8e85036aa7",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "source": {
+    "id": "colliers_research",
+    "url": "https://www.colliers.com/en/countries/united-states/commercial-real-estate-research",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage research",
+    "expected_signals": "market reports, asset class, metro and property type signals",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.colliers.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 16737,
+  "links_len": 17,
+  "available_fields": [
+    "address",
+    "asset_type",
+    "broker",
+    "tenant"
+  ],
+  "snippet": "In commercial real estate, having the right insights at the right time matters. That\u2019s why Colliers is committed to digging deep, uncovering commercial real estate trends and providing unique perspectives our clients can use to make the best decisions possible. From quarterly insights reports to special reports on major news events affecting real estate, our experts will keep you up to speed.",
+  "raw_sha256": "7278fa249eb93eaa87d8a8180a000ddc1564df800ae2e985cc2471bb1465307b",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

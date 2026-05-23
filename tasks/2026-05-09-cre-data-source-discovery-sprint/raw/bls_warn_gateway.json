@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "bls_warn_gateway",
+    "url": "https://www.dol.gov/agencies/eta/layoffs/warn",
+    "category": "warn_notices",
+    "source_type": "WARN notice gateway",
+    "expected_signals": "layoffs, plant closures, tenant distress, business movement",
+    "geography": "national",
+    "asset_types": "tenant/business"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.dol.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 5359,
+  "links_len": 16,
+  "available_fields": [
+    "address",
+    "asset_type",
+    "broker"
+  ],
+  "snippet": "Office of Policy Development and Research; Division of Policy, Legislation, and Regulations",
+  "raw_sha256": "090cc784e2b00c0dfaca734c386811aae9259c508ca65800baf93640ee23001a",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

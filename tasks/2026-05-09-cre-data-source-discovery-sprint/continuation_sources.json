@@ -1,0 +1,1055 @@
+[
+  {
+    "id": "savills_us_research",
+    "url": "https://www.savills.us/research-and-insight/",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage research",
+    "expected_signals": "market reports, sector commentary, tenant and investment signals",
+    "geography": "national",
+    "asset_types": "office, industrial, retail, multifamily"
+  },
+  {
+    "id": "newmark_market_reports",
+    "url": "https://www.nmrk.com/insights/market-report",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage market reports",
+    "expected_signals": "market reports, rent, vacancy, leasing, broker commentary",
+    "geography": "national",
+    "asset_types": "office, industrial, retail, multifamily"
+  },
+  {
+    "id": "kidder_mathews_research",
+    "url": "https://kidder.com/market-reports/",
+    "category": "regional_boutique_brokerage",
+    "source_type": "regional brokerage research",
+    "expected_signals": "west coast market reports, property-type trends, broker activity",
+    "geography": "regional",
+    "asset_types": "office, industrial, retail, multifamily"
+  },
+  {
+    "id": "lee_associates_research",
+    "url": "https://www.lee-associates.com/research/",
+    "category": "regional_boutique_brokerage",
+    "source_type": "brokerage research",
+    "expected_signals": "market reports and local broker intelligence",
+    "geography": "national",
+    "asset_types": "office, industrial, retail, land"
+  },
+  {
+    "id": "avisonyoung_insights",
+    "url": "https://www.avisonyoung.us/insights",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage insights",
+    "expected_signals": "market intelligence, tenant movement, broker research",
+    "geography": "national",
+    "asset_types": "office, industrial, retail"
+  },
+  {
+    "id": "svn_properties",
+    "url": "https://svn.com/properties/",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage listings",
+    "expected_signals": "listed CRE deals, broker, asset type, location",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "naiglobal_properties",
+    "url": "https://www.naiglobal.com/properties/",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage listings",
+    "expected_signals": "for sale/lease listings, brokers, markets",
+    "geography": "global",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "transwestern_insights",
+    "url": "https://transwestern.com/insights",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage insights",
+    "expected_signals": "market reports and transaction commentary",
+    "geography": "national",
+    "asset_types": "office, industrial, healthcare, multifamily"
+  },
+  {
+    "id": "stream_realty_insights",
+    "url": "https://streamrealty.com/insights/",
+    "category": "regional_boutique_brokerage",
+    "source_type": "brokerage insights",
+    "expected_signals": "tenant movement, market reports, development and broker activity",
+    "geography": "regional",
+    "asset_types": "office, industrial, retail"
+  },
+  {
+    "id": "land_com",
+    "url": "https://www.land.com/",
+    "category": "land_brokers_marketplaces",
+    "source_type": "land listing marketplace",
+    "expected_signals": "land for sale, acreage, price, broker, location",
+    "geography": "national",
+    "asset_types": "land, farms, ranches"
+  },
+  {
+    "id": "landwatch",
+    "url": "https://www.landwatch.com/",
+    "category": "land_brokers_marketplaces",
+    "source_type": "land listing marketplace",
+    "expected_signals": "land listings, acreage, price, owner/broker clues",
+    "geography": "national",
+    "asset_types": "land"
+  },
+  {
+    "id": "landandfarm",
+    "url": "https://www.landandfarm.com/",
+    "category": "land_brokers_marketplaces",
+    "source_type": "land listing marketplace",
+    "expected_signals": "rural land, farms, development parcels",
+    "geography": "national",
+    "asset_types": "land, farms"
+  },
+  {
+    "id": "mossy_oak_properties",
+    "url": "https://www.mossyoakproperties.com/",
+    "category": "land_brokers_marketplaces",
+    "source_type": "land brokerage",
+    "expected_signals": "land listings, acreage, recreational and development land",
+    "geography": "national",
+    "asset_types": "land"
+  },
+  {
+    "id": "crexi",
+    "url": "https://www.crexi.com/",
+    "category": "listing_marketplaces",
+    "source_type": "CRE listing marketplace",
+    "expected_signals": "properties for sale/lease, broker, price, asset type",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "tenx",
+    "url": "https://www.ten-x.com/",
+    "category": "auction_firms",
+    "source_type": "commercial real estate auction marketplace",
+    "expected_signals": "auction deals, bid dates, asset types, broker/seller clues",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "auction_com",
+    "url": "https://www.auction.com/",
+    "category": "auction_firms",
+    "source_type": "real estate auction marketplace",
+    "expected_signals": "foreclosure and bank-owned auction signals",
+    "geography": "national",
+    "asset_types": "residential, small commercial"
+  },
+  {
+    "id": "rimarketplace",
+    "url": "https://rimarketplace.com/",
+    "category": "auction_firms",
+    "source_type": "commercial auction marketplace",
+    "expected_signals": "auction listings, distressed assets, brokered sales",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "loopnet_control",
+    "url": "https://www.loopnet.com/",
+    "category": "listing_marketplaces",
+    "source_type": "CRE listing marketplace",
+    "expected_signals": "listed deals if licensed or permissioned",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "commercialcafe",
+    "url": "https://www.commercialcafe.com/",
+    "category": "listing_marketplaces",
+    "source_type": "CRE listing marketplace",
+    "expected_signals": "office, retail, industrial listings and market pages",
+    "geography": "national",
+    "asset_types": "office, retail, industrial"
+  },
+  {
+    "id": "commercialsearch",
+    "url": "https://www.commercialsearch.com/",
+    "category": "listing_marketplaces",
+    "source_type": "CRE listing marketplace",
+    "expected_signals": "commercial listings, broker and property clues",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "propertyshark_commercial",
+    "url": "https://www.propertyshark.com/Real-Estate-Reports/",
+    "category": "property_intelligence_platforms",
+    "source_type": "property intelligence reports",
+    "expected_signals": "ownership, property report teaser, public-record aggregation",
+    "geography": "national",
+    "asset_types": "mixed"
+  },
+  {
+    "id": "reonomy",
+    "url": "https://www.reonomy.com/",
+    "category": "property_intelligence_platforms",
+    "source_type": "property intelligence platform",
+    "expected_signals": "ownership and property intelligence if licensed",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "selfstorage_sale",
+    "url": "https://www.selfstoragesales.com/",
+    "category": "specialty_asset_marketplaces",
+    "source_type": "self-storage brokerage listings",
+    "expected_signals": "self-storage listings, price, units, broker, occupancy clues",
+    "geography": "national",
+    "asset_types": "self storage"
+  },
+  {
+    "id": "mhp_store",
+    "url": "https://www.themhpstore.com/",
+    "category": "specialty_asset_marketplaces",
+    "source_type": "mobile home park marketplace",
+    "expected_signals": "MHP listings, pads, occupancy, price, broker",
+    "geography": "national",
+    "asset_types": "mobile home parks"
+  },
+  {
+    "id": "parksandplaces",
+    "url": "https://www.parksandplaces.com/",
+    "category": "specialty_asset_marketplaces",
+    "source_type": "mobile home/RV park listings",
+    "expected_signals": "MHP/RV park listings, owner/broker, acreage, units",
+    "geography": "national",
+    "asset_types": "mobile home parks, RV parks"
+  },
+  {
+    "id": "hotelbrokerone",
+    "url": "https://www.hotelbrokerone.com/hotels-for-sale/",
+    "category": "specialty_asset_marketplaces",
+    "source_type": "hospitality brokerage listings",
+    "expected_signals": "hotels for sale, rooms, location, broker",
+    "geography": "national",
+    "asset_types": "hotel"
+  },
+  {
+    "id": "hbi_hotels",
+    "url": "https://www.hbihotels.com/hotels-for-sale/",
+    "category": "specialty_asset_marketplaces",
+    "source_type": "hotel brokerage listings",
+    "expected_signals": "hospitality sale listings, room count, price, market",
+    "geography": "national",
+    "asset_types": "hotel"
+  },
+  {
+    "id": "seniorcare_real_estate",
+    "url": "https://seniorcare-realestate.com/",
+    "category": "specialty_asset_marketplaces",
+    "source_type": "senior housing brokerage",
+    "expected_signals": "senior housing listings and operator signals",
+    "geography": "national",
+    "asset_types": "senior housing"
+  },
+  {
+    "id": "medicalofficebrokers",
+    "url": "https://medicalofficebrokers.com/",
+    "category": "specialty_asset_marketplaces",
+    "source_type": "medical office brokerage",
+    "expected_signals": "medical office listings, tenants, brokers",
+    "geography": "national",
+    "asset_types": "medical office"
+  },
+  {
+    "id": "buildout_public",
+    "url": "https://buildout.com/",
+    "category": "broker_listing_infrastructure",
+    "source_type": "broker listing infrastructure",
+    "expected_signals": "broker listing page ecosystem and embedded CRE flyers",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "catylist",
+    "url": "https://www.catylist.com/",
+    "category": "broker_listing_infrastructure",
+    "source_type": "commercial listing platform",
+    "expected_signals": "regional CIE listing infrastructure",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "reit_equity_residential",
+    "url": "https://www.equityapartments.com/investors",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "portfolio, occupancy, dispositions, debt and market exposure",
+    "geography": "national",
+    "asset_types": "multifamily"
+  },
+  {
+    "id": "reit_avalonbay",
+    "url": "https://investors.avalonbay.com/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "apartment portfolio, development, dispositions, occupancy",
+    "geography": "national",
+    "asset_types": "multifamily"
+  },
+  {
+    "id": "reit_public_storage",
+    "url": "https://investors.publicstorage.com/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "self-storage portfolio, acquisitions, occupancy, debt",
+    "geography": "national",
+    "asset_types": "self storage"
+  },
+  {
+    "id": "reit_extra_space",
+    "url": "https://ir.extraspace.com/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "self-storage portfolio, JV, acquisition, NOI clues",
+    "geography": "national",
+    "asset_types": "self storage"
+  },
+  {
+    "id": "reit_welltower",
+    "url": "https://welltower.com/investors/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "senior housing and medical office portfolio, operators, dispositions",
+    "geography": "national",
+    "asset_types": "senior housing, medical office"
+  },
+  {
+    "id": "reit_ventas",
+    "url": "https://ir.ventasreit.com/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "healthcare real estate portfolio, operator and debt clues",
+    "geography": "national",
+    "asset_types": "healthcare, senior housing"
+  },
+  {
+    "id": "reit_vornado",
+    "url": "https://investors.vno.com/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "NYC office/retail portfolio, debt, occupancy, supplement PDFs",
+    "geography": "regional",
+    "asset_types": "office, retail"
+  },
+  {
+    "id": "reit_boston_properties",
+    "url": "https://investors.bxp.com/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "office portfolio, leasing, development, debt maturity",
+    "geography": "national",
+    "asset_types": "office"
+  },
+  {
+    "id": "blackstone_real_estate",
+    "url": "https://www.blackstone.com/our-businesses/real-estate/",
+    "category": "pe_real_estate_firms",
+    "source_type": "PE real estate manager",
+    "expected_signals": "sector focus, portfolio themes, fund strategy",
+    "geography": "global",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "starwood_capital",
+    "url": "https://www.starwoodcapital.com/businesses/real-estate/",
+    "category": "pe_real_estate_firms",
+    "source_type": "real estate investment manager",
+    "expected_signals": "portfolio strategy, dispositions/acquisitions, sectors",
+    "geography": "global",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "brookfield_real_estate",
+    "url": "https://www.brookfield.com/our-businesses/real-estate",
+    "category": "pe_real_estate_firms",
+    "source_type": "real estate investment manager",
+    "expected_signals": "portfolio themes, property sectors, capital deployment",
+    "geography": "global",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "greystar_investment",
+    "url": "https://www.greystar.com/business-services/investment-management",
+    "category": "owner_operator_tenant_sites",
+    "source_type": "multifamily owner/operator",
+    "expected_signals": "multifamily portfolio, investment activity, development",
+    "geography": "global",
+    "asset_types": "multifamily"
+  },
+  {
+    "id": "related_companies",
+    "url": "https://www.related.com/",
+    "category": "owner_operator_tenant_sites",
+    "source_type": "developer/operator",
+    "expected_signals": "development pipeline, projects, sectors, tenants",
+    "geography": "national",
+    "asset_types": "mixed-use, office, residential"
+  },
+  {
+    "id": "lincoln_property_company",
+    "url": "https://www.lpc.com/",
+    "category": "owner_operator_tenant_sites",
+    "source_type": "developer/property manager",
+    "expected_signals": "portfolio, development, management footprint",
+    "geography": "national",
+    "asset_types": "office, industrial, multifamily"
+  },
+  {
+    "id": "cbre_im",
+    "url": "https://www.cbreim.com/",
+    "category": "pe_real_estate_firms",
+    "source_type": "real estate investment manager",
+    "expected_signals": "portfolio strategy, sectors, investment themes",
+    "geography": "global",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "jpmorgan_commercial_term_lending",
+    "url": "https://www.jpmorgan.com/commercial-banking/solutions/commercial-term-lending",
+    "category": "lenders_servicers_receivers",
+    "source_type": "CRE lender",
+    "expected_signals": "lending criteria, property types, financing context",
+    "geography": "national",
+    "asset_types": "multifamily, mixed commercial"
+  },
+  {
+    "id": "berkadia",
+    "url": "https://www.berkadia.com/",
+    "category": "lenders_servicers_receivers",
+    "source_type": "mortgage banking and investment sales",
+    "expected_signals": "debt, investment sales, broker activity, market reports",
+    "geography": "national",
+    "asset_types": "multifamily, senior housing, hospitality"
+  },
+  {
+    "id": "lument",
+    "url": "https://www.lument.com/",
+    "category": "lenders_servicers_receivers",
+    "source_type": "CRE lender",
+    "expected_signals": "agency lending, seniors, multifamily, financing context",
+    "geography": "national",
+    "asset_types": "multifamily, senior housing, healthcare"
+  },
+  {
+    "id": "matthews_net_lease",
+    "url": "https://www.matthews.com/properties/",
+    "category": "sale_leaseback_netlease",
+    "source_type": "net lease brokerage listings",
+    "expected_signals": "net lease listings, tenant, cap rate, price, lease term",
+    "geography": "national",
+    "asset_types": "retail, net lease"
+  },
+  {
+    "id": "sands_investment_group",
+    "url": "https://signnn.com/listings/",
+    "category": "sale_leaseback_netlease",
+    "source_type": "net lease brokerage listings",
+    "expected_signals": "single-tenant net lease listings, tenant, cap rate",
+    "geography": "national",
+    "asset_types": "retail, net lease"
+  },
+  {
+    "id": "boulder_group",
+    "url": "https://www.bouldergroup.com/properties/",
+    "category": "sale_leaseback_netlease",
+    "source_type": "net lease brokerage listings",
+    "expected_signals": "net lease properties, tenants, cap rates",
+    "geography": "national",
+    "asset_types": "retail, net lease"
+  },
+  {
+    "id": "sterling_net_lease",
+    "url": "https://www.sterlingorganization.com/",
+    "category": "sale_leaseback_netlease",
+    "source_type": "retail/net lease investor",
+    "expected_signals": "retail portfolio, acquisitions, tenants, strategy",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  {
+    "id": "irs_real_estate_auctions",
+    "url": "https://www.treasury.gov/auctions/irs/",
+    "category": "distress_foreclosure_bankruptcy",
+    "source_type": "federal seized property auction",
+    "expected_signals": "seized real estate auctions and sale notices",
+    "geography": "national",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "gsa_real_property",
+    "url": "https://realestatesales.gov/",
+    "category": "distress_foreclosure_bankruptcy",
+    "source_type": "federal real property sales",
+    "expected_signals": "government property auctions and disposals",
+    "geography": "national",
+    "asset_types": "land, office, specialty"
+  },
+  {
+    "id": "bid4assets",
+    "url": "https://www.bid4assets.com/",
+    "category": "auction_firms",
+    "source_type": "tax sale and auction platform",
+    "expected_signals": "tax-defaulted auctions, county sales, property lists",
+    "geography": "national",
+    "asset_types": "land, residential, commercial"
+  },
+  {
+    "id": "realtytrac",
+    "url": "https://www.realtytrac.com/",
+    "category": "distress_foreclosure_bankruptcy",
+    "source_type": "foreclosure data platform",
+    "expected_signals": "foreclosure/property data if licensed",
+    "geography": "national",
+    "asset_types": "mixed"
+  },
+  {
+    "id": "bankruptcydata",
+    "url": "https://www.bankruptcydata.com/",
+    "category": "distress_foreclosure_bankruptcy",
+    "source_type": "bankruptcy data platform",
+    "expected_signals": "bankruptcy cases and distress if licensed",
+    "geography": "national",
+    "asset_types": "businesses, real estate"
+  },
+  {
+    "id": "stretto_cases",
+    "url": "https://cases.stretto.com/",
+    "category": "distress_foreclosure_bankruptcy",
+    "source_type": "claims agent case portal",
+    "expected_signals": "bankruptcy cases, debtor, docket links, real estate exposure",
+    "geography": "national",
+    "asset_types": "businesses, real estate"
+  },
+  {
+    "id": "kroll_restructuring_cases",
+    "url": "https://restructuring.ra.kroll.com/",
+    "category": "distress_foreclosure_bankruptcy",
+    "source_type": "claims agent case portal",
+    "expected_signals": "restructuring cases, docket links, debtor real estate clues",
+    "geography": "national",
+    "asset_types": "businesses, real estate"
+  },
+  {
+    "id": "nyc_acris",
+    "url": "https://www.nyc.gov/site/finance/taxes/acris.page",
+    "category": "public_records_recorder_tax",
+    "source_type": "recorder/deed index",
+    "expected_signals": "deeds, mortgages, transfers, ownership clues",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "nyc_oasis",
+    "url": "https://www.oasisnyc.net/",
+    "category": "public_records_assessor_gis",
+    "source_type": "parcel/GIS portal",
+    "expected_signals": "parcel, zoning, land use, owner/public data links",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "la_assessor",
+    "url": "https://portal.assessor.lacounty.gov/",
+    "category": "public_records_assessor_gis",
+    "source_type": "county assessor",
+    "expected_signals": "parcel, assessed value, owner/public-record clues",
+    "geography": "county",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "la_county_recorder",
+    "url": "https://www.lavote.gov/home/records/real-estate-records",
+    "category": "public_records_recorder_tax",
+    "source_type": "county recorder",
+    "expected_signals": "recorded documents, transfers, liens, mortgages",
+    "geography": "county",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "miami_property_search",
+    "url": "https://www.miamidadepa.gov/pa/property_search.asp",
+    "category": "public_records_assessor_gis",
+    "source_type": "county property appraiser",
+    "expected_signals": "folio, owner, building, sales, assessed value",
+    "geography": "county",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "maricopa_assessor",
+    "url": "https://www.mcassessor.maricopa.gov/",
+    "category": "public_records_assessor_gis",
+    "source_type": "county assessor",
+    "expected_signals": "parcel, owner, valuation, property class",
+    "geography": "county",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "king_county_parcel",
+    "url": "https://kingcounty.gov/en/dept/assessor/buildings-and-property/property-value-and-tax-property-information",
+    "category": "public_records_assessor_gis",
+    "source_type": "county assessor",
+    "expected_signals": "parcel, value, tax, property details",
+    "geography": "county",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "denver_property",
+    "url": "https://www.denvergov.org/Property",
+    "category": "public_records_assessor_gis",
+    "source_type": "city property records",
+    "expected_signals": "parcel, assessment, zoning, permits links",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "dc_propertyquest",
+    "url": "https://propertyquest.dc.gov/",
+    "category": "public_records_assessor_gis",
+    "source_type": "city property records",
+    "expected_signals": "parcel, owner, tax assessment, sales",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "phila_atlas",
+    "url": "https://atlas.phila.gov/",
+    "category": "public_records_assessor_gis",
+    "source_type": "city parcel/GIS",
+    "expected_signals": "property, permits, violations, zoning",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "chicago_data_building_permits",
+    "url": "https://data.cityofchicago.org/Buildings/Building-Permits/ydr8-5enu",
+    "category": "permits_zoning_planning",
+    "source_type": "open data permits",
+    "expected_signals": "permit activity, redevelopment, owner/contractor clues",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "seattle_permits",
+    "url": "https://www.seattle.gov/sdci/permits/permit-records",
+    "category": "permits_zoning_planning",
+    "source_type": "permit records",
+    "expected_signals": "permit records, development activity, parcel context",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "austin_permits",
+    "url": "https://www.austintexas.gov/page/building-permits",
+    "category": "permits_zoning_planning",
+    "source_type": "permit records",
+    "expected_signals": "building permits, redevelopment activity",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "sf_permits",
+    "url": "https://sfplanning.org/permit-records",
+    "category": "permits_zoning_planning",
+    "source_type": "planning/permit records",
+    "expected_signals": "planning applications, permits, zoning cases",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "boston_zoning_board",
+    "url": "https://www.boston.gov/departments/inspectional-services/zoning-board-appeal",
+    "category": "permits_zoning_planning",
+    "source_type": "zoning board records",
+    "expected_signals": "zoning relief, redevelopment, owner/project clues",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "houston_planning",
+    "url": "https://www.houstontx.gov/planning/",
+    "category": "permits_zoning_planning",
+    "source_type": "planning department",
+    "expected_signals": "planning cases, plats, development activity",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "nyc_city_planning_zap",
+    "url": "https://zap.planning.nyc.gov/",
+    "category": "permits_zoning_planning",
+    "source_type": "zoning application portal",
+    "expected_signals": "rezoning and land-use applications, applicants, parcels",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "la_city_council_files",
+    "url": "https://cityclerk.lacity.org/lacityclerkconnect/",
+    "category": "municipal_agendas_packets",
+    "source_type": "council files and agendas",
+    "expected_signals": "zoning, development approvals, incentives, public notices",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "chicago_city_clerk",
+    "url": "https://chicityclerk.s3.amazonaws.com/s3fs-public/document_uploads/journals-proceedings/index.html",
+    "category": "municipal_agendas_packets",
+    "source_type": "city council records",
+    "expected_signals": "ordinances, zoning changes, property approvals",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "dallas_city_agendas",
+    "url": "https://cityofdallas.legistar.com/Calendar.aspx",
+    "category": "municipal_agendas_packets",
+    "source_type": "municipal agenda portal",
+    "expected_signals": "agenda items, zoning, incentives, public approvals",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "austin_city_agendas",
+    "url": "https://www.austintexas.gov/department/city-council/council-meetings",
+    "category": "municipal_agendas_packets",
+    "source_type": "municipal agenda portal",
+    "expected_signals": "council packets, zoning, development agreements",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "phoenix_agendas",
+    "url": "https://www.phoenix.gov/cityclerk/publicmeetings/city-council-meetings",
+    "category": "municipal_agendas_packets",
+    "source_type": "municipal agenda portal",
+    "expected_signals": "planning, zoning, public approvals",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "hud_user",
+    "url": "https://www.huduser.gov/portal/home.html",
+    "category": "market_reports_pdfs_libraries",
+    "source_type": "federal housing research",
+    "expected_signals": "market reports, housing needs, affordability, policy context",
+    "geography": "national",
+    "asset_types": "multifamily, housing"
+  },
+  {
+    "id": "bea_regional",
+    "url": "https://www.bea.gov/data/economic-accounts/regional",
+    "category": "market_reports_pdfs_libraries",
+    "source_type": "economic data",
+    "expected_signals": "regional GDP, income, market context",
+    "geography": "national",
+    "asset_types": "market context"
+  },
+  {
+    "id": "bls_warn_gateway",
+    "url": "https://www.dol.gov/agencies/eta/layoffs/warn",
+    "category": "warn_notices",
+    "source_type": "WARN notice gateway",
+    "expected_signals": "layoffs, plant closures, tenant distress, business movement",
+    "geography": "national",
+    "asset_types": "tenant/business"
+  },
+  {
+    "id": "ca_warn",
+    "url": "https://edd.ca.gov/en/Jobs_and_Training/Layoff_Services_WARN",
+    "category": "warn_notices",
+    "source_type": "state WARN notices",
+    "expected_signals": "business closures/layoffs, tenant contraction, facility addresses",
+    "geography": "state",
+    "asset_types": "tenant/business"
+  },
+  {
+    "id": "ny_warn",
+    "url": "https://dol.ny.gov/warn-notices",
+    "category": "warn_notices",
+    "source_type": "state WARN notices",
+    "expected_signals": "layoffs/closures, company, location, date",
+    "geography": "state",
+    "asset_types": "tenant/business"
+  },
+  {
+    "id": "texas_warn",
+    "url": "https://www.twc.texas.gov/data-reports/warn-notice",
+    "category": "warn_notices",
+    "source_type": "state WARN notices",
+    "expected_signals": "layoffs and closure locations",
+    "geography": "state",
+    "asset_types": "tenant/business"
+  },
+  {
+    "id": "florida_warn",
+    "url": "https://floridajobs.org/office-directory/division-of-workforce-services/workforce-programs/warn",
+    "category": "warn_notices",
+    "source_type": "state WARN notices",
+    "expected_signals": "layoffs, closures, employer locations",
+    "geography": "state",
+    "asset_types": "tenant/business"
+  },
+  {
+    "id": "starbucks_store_locator",
+    "url": "https://www.starbucks.com/store-locator",
+    "category": "franchise_location_data",
+    "source_type": "tenant location page",
+    "expected_signals": "tenant footprint and openings/closures if public",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  {
+    "id": "walmart_store_finder",
+    "url": "https://www.walmart.com/store/finder",
+    "category": "franchise_location_data",
+    "source_type": "tenant location page",
+    "expected_signals": "retail footprint and location data",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  {
+    "id": "dollar_general_store_locator",
+    "url": "https://www.dollargeneral.com/store-directory",
+    "category": "franchise_location_data",
+    "source_type": "tenant location directory",
+    "expected_signals": "retail tenant footprint and store locations",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  {
+    "id": "mcdonalds_real_estate",
+    "url": "https://corporate.mcdonalds.com/corpmcd/franchising-overview/real-estate.html",
+    "category": "tenant_business_movement",
+    "source_type": "tenant real estate page",
+    "expected_signals": "site criteria, tenant expansion requirements",
+    "geography": "national",
+    "asset_types": "retail, restaurant"
+  },
+  {
+    "id": "chipotle_real_estate",
+    "url": "https://www.chipotle.com/real-estate",
+    "category": "tenant_business_movement",
+    "source_type": "tenant real estate page",
+    "expected_signals": "site criteria and expansion clues",
+    "geography": "national",
+    "asset_types": "retail, restaurant"
+  },
+  {
+    "id": "target_store_openings",
+    "url": "https://corporate.target.com/about/locations",
+    "category": "tenant_business_movement",
+    "source_type": "tenant locations/corporate page",
+    "expected_signals": "store footprint, openings and market presence",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  {
+    "id": "lowes_real_estate",
+    "url": "https://corporate.lowes.com/our-company/real-estate",
+    "category": "tenant_business_movement",
+    "source_type": "tenant real estate page",
+    "expected_signals": "site criteria, expansion and real estate contacts",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  {
+    "id": "edgar_companyfacts_realty_income",
+    "url": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000726728.json",
+    "category": "public_company_property",
+    "source_type": "SEC company facts API",
+    "expected_signals": "public-company facts, debt, real estate metrics",
+    "geography": "national",
+    "asset_types": "net lease, retail"
+  },
+  {
+    "id": "edgar_submissions_welltower",
+    "url": "https://data.sec.gov/submissions/CIK0000766704.json",
+    "category": "public_company_property",
+    "source_type": "SEC submissions API",
+    "expected_signals": "filings, supplements, 8-Ks, property disclosures",
+    "geography": "national",
+    "asset_types": "healthcare, senior housing"
+  },
+  {
+    "id": "sec_archives",
+    "url": "https://www.sec.gov/edgar/search/",
+    "category": "public_company_property",
+    "source_type": "SEC EDGAR search",
+    "expected_signals": "filings and exhibits if accessed through fair-use workflow",
+    "geography": "national",
+    "asset_types": "public companies"
+  },
+  {
+    "id": "epa_brownfields",
+    "url": "https://www.epa.gov/brownfields",
+    "category": "environmental_records",
+    "source_type": "environmental redevelopment program",
+    "expected_signals": "brownfield grants, redevelopment sites, environmental constraints",
+    "geography": "national",
+    "asset_types": "land, redevelopment"
+  },
+  {
+    "id": "epa_nepassist",
+    "url": "https://www.epa.gov/nepa/nepassist",
+    "category": "environmental_records",
+    "source_type": "environmental review/geospatial portal",
+    "expected_signals": "environmental context and constraints",
+    "geography": "national",
+    "asset_types": "land, redevelopment"
+  },
+  {
+    "id": "tx_vcp",
+    "url": "https://www.tceq.texas.gov/remediation/vcp/vcp.html",
+    "category": "environmental_records",
+    "source_type": "state voluntary cleanup program",
+    "expected_signals": "contaminated/redevelopment sites, cleanup status",
+    "geography": "state",
+    "asset_types": "land, redevelopment"
+  },
+  {
+    "id": "ca_envirostor",
+    "url": "https://www.envirostor.dtsc.ca.gov/public/",
+    "category": "environmental_records",
+    "source_type": "state environmental records",
+    "expected_signals": "cleanup sites, brownfields, environmental constraints",
+    "geography": "state",
+    "asset_types": "land, redevelopment"
+  },
+  {
+    "id": "ny_brownfield",
+    "url": "https://dec.ny.gov/environmental-protection/site-cleanup/brownfield-and-state-superfund-programs/brownfield",
+    "category": "environmental_records",
+    "source_type": "state brownfield program",
+    "expected_signals": "brownfield cleanup sites and redevelopment context",
+    "geography": "state",
+    "asset_types": "land, redevelopment"
+  },
+  {
+    "id": "goodjobsfirst_subsidy_tracker",
+    "url": "https://subsidytracker.goodjobsfirst.org/",
+    "category": "economic_development_incentives",
+    "source_type": "incentives database",
+    "expected_signals": "incentives, abatements, company locations, economic development",
+    "geography": "national",
+    "asset_types": "industrial, office, retail"
+  },
+  {
+    "id": "nyc_ida_projects",
+    "url": "https://edc.nyc/program/nyc-industrial-development-agency",
+    "category": "economic_development_incentives",
+    "source_type": "industrial development agency",
+    "expected_signals": "tax incentives, project approvals, company/property clues",
+    "geography": "city",
+    "asset_types": "industrial, mixed"
+  },
+  {
+    "id": "texas_chapter_313",
+    "url": "https://comptroller.texas.gov/economy/local/ch313/",
+    "category": "economic_development_incentives",
+    "source_type": "tax incentive program records",
+    "expected_signals": "industrial projects, abatements, company location investments",
+    "geography": "state",
+    "asset_types": "industrial, energy"
+  },
+  {
+    "id": "pa_dcED",
+    "url": "https://dced.pa.gov/programs-funding/commonwealth-financing-authority/",
+    "category": "economic_development_incentives",
+    "source_type": "state economic development financing",
+    "expected_signals": "project finance, grants, redevelopment and incentives",
+    "geography": "state",
+    "asset_types": "mixed real estate"
+  },
+  {
+    "id": "business_journals_cre",
+    "url": "https://www.bizjournals.com/news/commercial-real-estate",
+    "category": "news_press_tenant_signals",
+    "source_type": "business news",
+    "expected_signals": "leases, sales, tenant moves, development, local deals",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "connect_cre",
+    "url": "https://www.connectcre.com/",
+    "category": "news_press_tenant_signals",
+    "source_type": "CRE news",
+    "expected_signals": "transaction news, broker activity, tenant movement",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "costar_news",
+    "url": "https://www.costar.com/article",
+    "category": "news_press_tenant_signals",
+    "source_type": "CRE news",
+    "expected_signals": "CRE news if publicly accessible; likely gated/blocked",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "restaurantbusiness_news",
+    "url": "https://www.restaurantbusinessonline.com/",
+    "category": "tenant_business_movement",
+    "source_type": "tenant industry news",
+    "expected_signals": "restaurant closures, expansions, bankruptcies, sale-leaseback clues",
+    "geography": "national",
+    "asset_types": "retail, restaurant"
+  },
+  {
+    "id": "retaildive",
+    "url": "https://www.retaildive.com/",
+    "category": "tenant_business_movement",
+    "source_type": "retail industry news",
+    "expected_signals": "store closures, expansions, tenant distress",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  {
+    "id": "hotelnewsnow",
+    "url": "https://www.costar.com/article/hotel-news-now",
+    "category": "tenant_business_movement",
+    "source_type": "hospitality news",
+    "expected_signals": "hotel transaction, performance and operator news",
+    "geography": "national",
+    "asset_types": "hotel"
+  },
+  {
+    "id": "uli_research",
+    "url": "https://knowledge.uli.org/",
+    "category": "market_reports_pdfs_libraries",
+    "source_type": "research library",
+    "expected_signals": "urban land research, reports, redevelopment, capital markets",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "mortgage_bankers_research",
+    "url": "https://www.mba.org/news-and-research/research-and-economics",
+    "category": "market_reports_pdfs_libraries",
+    "source_type": "mortgage banking research",
+    "expected_signals": "CRE debt, lender exposure, maturities, market reports",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  {
+    "id": "ncreif",
+    "url": "https://www.ncreif.org/",
+    "category": "market_reports_pdfs_libraries",
+    "source_type": "institutional real estate index",
+    "expected_signals": "institutional returns and property performance if public/licensed",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  }
+]

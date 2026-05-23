@@ -1,0 +1,24 @@
+{
+  "source": {
+    "id": "landandfarm",
+    "url": "https://www.landandfarm.com/",
+    "category": "land_brokers_marketplaces",
+    "source_type": "land listing marketplace",
+    "expected_signals": "rural land, farms, development parcels",
+    "geography": "national",
+    "asset_types": "land, farms"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://www.landandfarm.com/robots.txt (status 403)",
+  "http_status": 500,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "error",
+  "failure_modes": "Scrape aborted after exceeding retry limit (document_antibot).",
+  "markdown_len": 0,
+  "links_len": 0,
+  "available_fields": [],
+  "snippet": "",
+  "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "response_keys": []
+}

@@ -1,0 +1,36 @@
+{
+  "source": {
+    "id": "mossy_oak_properties",
+    "url": "https://www.mossyoakproperties.com/",
+    "category": "land_brokers_marketplaces",
+    "source_type": "land brokerage",
+    "expected_signals": "land listings, acreage, recreational and development land",
+    "geography": "national",
+    "asset_types": "land"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.mossyoakproperties.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: sign in, log in, subscribe",
+  "markdown_len": 23218,
+  "links_len": 36,
+  "available_fields": [
+    "address",
+    "asset_type",
+    "size",
+    "price",
+    "distress",
+    "disposition",
+    "tenant"
+  ],
+  "snippet": "Locate a specialist or office near you today.",
+  "raw_sha256": "de120b857cc38fda3e922fa7c8e05fc32f889791fa6772acbd6294ef3f32bcb7",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

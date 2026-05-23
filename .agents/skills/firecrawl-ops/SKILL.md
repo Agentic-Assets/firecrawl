@@ -1,113 +1,89 @@
 ---
 name: firecrawl-ops
-description: Operate, explain, and optimize a self-hosted Firecrawl Docker stack (local or server). Use when the user asks about Firecrawl capabilities/tools/endpoints, setup/runtime health, model cost-performance routing, scraping workflows, or benchmark-informed model selection (including ArtificialAnalysis-based comparisons).
+description: Operate, verify, and troubleshoot the self-hosted Firecrawl Docker stack in this repo or on this Mac. Use when the user asks about Firecrawl runtime health, Docker compose rebuild/restart, local API capabilities, endpoint selection, scraping workflows, model routing, OpenRouter/Vercel AI Gateway profile changes, or which Firecrawl methods work locally.
 ---
 
 # Firecrawl Ops
 
-Use this skill to run and explain Firecrawl as an internal scraping platform.
+Use this skill for runtime and platform work around the local self-hosted Firecrawl stack. For directly calling the API, pair it with `firecrawl-local-api`.
 
-## Quick workflow
+## First Checks
 
-1. Verify runtime health first (`scripts/firecrawl_healthcheck.sh`).
-2. Pick the right endpoint from `references/tools-capabilities.md`.
-3. Apply model profile policy from `references/model-routing.md`.
-4. For model intelligence/cost refresh, run `scripts/artificialanalysis_snapshot.py`.
-5. If making persistent runtime changes, update the Firecrawl `.env` and restart compose.
+Run from the repo root unless `FC_DIR` is set:
 
-## Default model policy
-
-Use this routing unless the user overrides:
-- **Default: `deepseek/deepseek-v4-flash` via Vercel AI Gateway** (`gateway` profile). Verified end-to-end with structured extract on 2026-05-05. One key, hundreds of models, zero token markup. Get a key at https://vercel.com/<team>/~/ai/api-keys (team: `blightlens`).
-- Alt direct: OpenAI Platform `gpt-5.4-mini` (`openai-direct` profile) — only if a Platform `sk-...` key with prepaid credits exists.
-- Budget/base pass (OpenRouter): `openrouter/minimax/minimax-m2.5`
-- Escalated pass (OpenRouter): `moonshotai/kimi-k2.5`
-
-For mixed extract + light coding workloads, stay on `openai/gpt-5.4-mini`.
-For repetitive high-volume low-risk tasks where OpenRouter free-tier is cheaper, fall back to MiniMax M2.5.
-For hard extraction/reasoning/coding, escalate to Kimi K2.5.
-
-## Persistent runtime settings
-
-Use `scripts/set_model_profile.sh <profile>` to update Firecrawl runtime model defaults in:
-- `~/Documents/GitHub/firecrawl/.env`
-
-Profiles (default: `gateway`):
-- `gateway` (alias `codex`) — Vercel AI Gateway → `openai/gpt-5.4-mini`; requires `OPENAI_API_KEY=<vercel-ai-gateway-key>` in `.env`
-- `openai-direct` — OpenAI Platform → `gpt-5.4-mini`; requires `OPENAI_API_KEY=sk-...` Platform key with credits
-- `budget` — OpenRouter `minimax/minimax-m2.5`
-- `escalated` — OpenRouter `moonshotai/kimi-k2.5`
-
-Then restart:
-- `docker compose down && docker compose up -d`
-
-## References
-
-- `references/tools-capabilities.md` - endpoint-by-endpoint capability map
-- `references/model-routing.md` - model strategy, escalation rules, and profile choices
-- `references/ops-playbook.md` - health checks, debugging, and safe operations
-- `references/cayman-use-cases-and-playbooks.md` - mapped responses to Cayman workflow ideas (research/CRE/coding)
-- `references/cre-access-matrix.md` - CRE platform accessibility matrix (what's scrapable vs blocked)
-- `references/google-flights-scraping.md` - Google Flights scraping for travel deals
-
-## Scripts
-
-- `scripts/firecrawl_healthcheck.sh` - verify local Firecrawl is running
-- `scripts/set_model_profile.sh` - update LLM model profile (gateway/openai-direct/budget/escalated; default: gateway)
-- `scripts/artificialanalysis_snapshot.py` - refresh model benchmark data
-- `scripts/platform_access_probe.py` - test accessible vs blocked sources quickly
-- `scripts/cre_access_matrix.py` - CRE platform accessibility testing (news/research/brokerage/government)
-- `scripts/bulk_triage_runner.py` - budget-first triage and escalation batch generation
-- `scripts/crawl_swarm.py` - parallel map+scrape swarm runner from seed URLs
-- `scripts/firecrawl_swarm_pipeline.py` - end-to-end source-probe -> budget -> escalated with confidence/provenance output
-- `scripts/google_flights_scrape.py` - multi-region Google Flights deal scraper (Atlas)
-- `scripts/parse_flight_deals.py` - parse Firecrawl markdown to CSV/JSON (Atlas)
-
-## Google Flights Scraping (Atlas Use Case)
-
-For travel deal scraping, Firecrawl works excellently with Google Flights explore pages.
-
-**Working URL patterns:**
-- `https://www.google.com/travel/explore?q=flights+from+Tulsa` - General explore
-- `https://www.google.com/travel/explore?q=flights+from+Tulsa+to+Hawaii` - Region-specific
-- `https://www.google.com/travel/explore?q=flights+from+Tulsa+to+Europe` - Destination type
-- `https://www.google.com/travel/explore?q=flights+from+Tulsa+to+Mexico&curr=USD&hl=en` - Full params
-
-**Optimal scrape settings:**
-```json
-{
-  "url": "https://www.google.com/travel/explore?q=flights+from+Tulsa+to+Hawaii&curr=USD&hl=en",
-  "formats": ["markdown"],
-  "waitFor": 8000,
-  "onlyMainContent": false
-}
-```
-
-**What you get:** Structured markdown with destination, dates, duration, stops, and price - ready to parse.
-
-**Reference:** See `references/google-flights-scraping.md` for full workflow and parser script.
-
-## CRE Platform Access Matrix
-
-For CRE (Commercial Real Estate) research, not all platforms are scrapable. Use `scripts/cre_access_matrix.py` to test accessibility.
-
-**🟢 Fully accessible:** CBRE, Cushman Wakefield, GlobeSt, Census, FRED, REIT.com, Marcus & Millichap (teasers)
-**🟡 Partial/teasers:** Marcus & Millichap (full reports gated), NREI, PI Executive, PREA, ULI
-**🔴 Blocked:** CoStar, LoopNet, Knight Frank (bot protection)
-
-Run quick test:
 ```bash
-python3 scripts/cre_access_matrix.py --sources news
-python3 scripts/cre_access_matrix.py --sources research --output cre_results.json
+bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
+docker compose ps
 ```
 
-See `references/cre-access-matrix.md` for full source-by-source breakdown and recommended workflows.
+If Docker is down on this Mac, start Docker Desktop first. The expected local API is `http://localhost:3002`.
 
-## Supabase integration (optional)
+## Current Local Reality
 
-If you want persistent swarm telemetry, apply:
-- `references/supabase-schema-firecrawl-swarm.sql`
+Verified on 2026-05-08 after a no-cache Docker rebuild:
 
-Then set env vars before running swarm pipeline:
-- `SWARM_SUPABASE_URL`
-- `SWARM_SUPABASE_KEY`
+- Core stack works: `api`, `playwright-service`, `redis`, `rabbitmq`, and `nuq-postgres`.
+- NuQ Postgres must have schema table `nuq.queue_scrape`; compose now waits for it via healthcheck.
+- Local auth is disabled when `USE_DB_AUTHENTICATION=false`; no bearer token is required.
+- Current LLM profile is OpenRouter with `MODEL_NAME=deepseek/deepseek-v4-flash`.
+- Use model IDs exactly as provider IDs, without an extra `openrouter/` prefix.
+
+Known local gaps:
+
+- `POST /v2/browser` and `/v2/browser/:sessionId/execute` are registered but need `BROWSER_SERVICE_URL`.
+- `POST /v2/agent` is registered but needs `EXTRACT_V3_BETA_URL`.
+- Scrape `actions`, screenshot formats, and scrape-browser interaction need Fire Engine or browser-service support.
+
+## Endpoint Selection
+
+Read `references/tools-capabilities.md` when choosing an endpoint. The short version:
+
+- One page: `POST /v2/scrape`
+- Search: `POST /v2/search`
+- Discover URLs: `POST /v2/map`
+- Crawl pages: `POST /v2/crawl` then poll `GET /v2/crawl/:id`
+- Batch pages: `POST /v2/batch/scrape` then poll `GET /v2/batch/scrape/:id`
+- Local files: `POST /v2/parse` multipart upload
+- One-page structured fields: `POST /v2/scrape` with a `json` format
+- Multi-page structured fields: `POST /v2/extract` with an explicit schema, then poll `GET /v2/extract/:id`
+- Runtime visibility: `GET /v2/team/queue-status`, `GET /v2/crawl/active`
+
+## Model Profiles
+
+Use `scripts/firecrawl-ops/set_model_profile.sh <profile>` to rewrite `.env`.
+
+Profiles:
+
+- `budget`: OpenRouter `deepseek/deepseek-v4-flash`; primary cheap model for routine extraction and high-volume discovery. Verified locally for schema-backed `v2/extract` on 2026-05-09.
+- `escalated`: OpenRouter `deepseek/deepseek-v4-pro`; smarter fallback for hard extraction, noisy pages, or budget failures.
+- `gateway`: Vercel AI Gateway `deepseek/deepseek-v4-flash`; requires a Vercel AI Gateway key.
+- `gateway-codex`: Vercel AI Gateway `openai/gpt-5.4-mini`; premium fallback.
+- `openai-direct`: OpenAI Platform `gpt-5.4-mini`; requires a Platform `sk-...` key with credits.
+
+After changing profiles:
+
+```bash
+docker compose up -d --force-recreate api
+bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
+```
+
+## References And Scripts
+
+The skill folder exposes these via symlinks to `docs/firecrawl-ops/references/` and `scripts/firecrawl-ops/`:
+
+- `references/tools-capabilities.md`: verified local endpoint map and non-working surfaces
+- `references/model-routing.md`: model policy and escalation rules
+- `references/ops-playbook.md`: health checks, logs, restart notes
+- `references/cayman-use-cases-and-playbooks.md`: research/CRE/coding workflows
+- `references/cre-access-matrix.md`: source accessibility matrix
+- `references/google-flights-scraping.md`: Google Flights scrape pattern
+- `references/supabase-schema-firecrawl-swarm.sql`: optional swarm telemetry schema
+- `scripts/firecrawl_healthcheck.sh`: local stack smoke test
+- `scripts/set_model_profile.sh`: model profile switcher
+- `scripts/artificialanalysis_snapshot.py`: refresh model benchmark data
+- `scripts/crawl_swarm.py`, `scripts/firecrawl_swarm_pipeline.py`: batch discovery/scrape workflows
+- `scripts/bulk_triage_runner.py`: budget-first triage with escalation batches
+- `scripts/platform_access_probe.py`, `scripts/cre_access_matrix.py`: access probes
+- `scripts/google_flights_scrape.py`, `scripts/parse_flight_deals.py`: Atlas flight-deal scraper + parser
+
+Load only the specific reference or script needed for the user's task.

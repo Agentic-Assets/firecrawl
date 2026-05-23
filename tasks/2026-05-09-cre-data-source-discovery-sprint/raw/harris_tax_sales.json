@@ -1,0 +1,35 @@
+{
+  "source": {
+    "id": "harris_tax_sales",
+    "url": "https://www.hctax.net/Property/TaxSales",
+    "category": "distress_sources",
+    "source_type": "tax sale",
+    "expected_signals": "delinquent tax sales, auction schedule, rules",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.hctax.net/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: register",
+  "markdown_len": 28312,
+  "links_len": 36,
+  "available_fields": [
+    "address",
+    "asset_type",
+    "price",
+    "debt",
+    "distress",
+    "disposition"
+  ],
+  "snippet": "[Skip to main content](https://www.hctax.net/Property/TaxSales#main-content)",
+  "raw_sha256": "f27a8f1e452db22658afc31b3fa9d7052a6cd0e05ed5485eb7c2c54b14891f44",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

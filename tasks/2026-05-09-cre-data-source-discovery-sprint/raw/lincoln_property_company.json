@@ -1,0 +1,33 @@
+{
+  "source": {
+    "id": "lincoln_property_company",
+    "url": "https://www.lpc.com/",
+    "category": "owner_operator_tenant_sites",
+    "source_type": "developer/property manager",
+    "expected_signals": "portfolio, development, management footprint",
+    "geography": "national",
+    "asset_types": "office, industrial, multifamily"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.lpc.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 11815,
+  "links_len": 52,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "broker",
+    "tenant"
+  ],
+  "snippet": "Our team works closely with clients to deliver elevated tenant experiences and ensure they meet their financial and performance goals.](https://lpc.com/what-we-do/manage/)",
+  "raw_sha256": "51d00670d5ce1d6aa6fe9eebf1ba66a5f6bfa8de6c8767f0d6ce1029d7e7fe8b",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

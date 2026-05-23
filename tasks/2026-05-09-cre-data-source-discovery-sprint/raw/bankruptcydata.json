@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "bankruptcydata",
+    "url": "https://www.bankruptcydata.com/",
+    "category": "distress_foreclosure_bankruptcy",
+    "source_type": "bankruptcy data platform",
+    "expected_signals": "bankruptcy cases and distress if licensed",
+    "geography": "national",
+    "asset_types": "businesses, real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://www.bankruptcydata.com/robots.txt (status 404)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 2890,
+  "links_len": 1,
+  "available_fields": [
+    "price",
+    "debt",
+    "distress"
+  ],
+  "snippet": "Finding deal fees, DIP comps, capital structures, who is involved in the case, and directly accessing documents only takes minutes. You'll save yourself from long nights of digging for data, scrolling through documents, and discover information you would have otherwise missed.",
+  "raw_sha256": "6db99451ae7e770e1b36d3e3efc31a6199c17ee0f4e6e1a76fa5f7f2fd1ae26d",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

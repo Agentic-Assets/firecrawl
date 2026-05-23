@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "maricopa_assessor",
+    "url": "https://www.mcassessor.maricopa.gov/",
+    "category": "public_records_assessor_gis",
+    "source_type": "county assessor",
+    "expected_signals": "parcel, owner, valuation, property class",
+    "geography": "county",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://www.mcassessor.maricopa.gov/robots.txt (HTTPSConnectionPool(host='www.mcassessor.maricopa.gov', port=443): Max retries exceeded with url: /robots.txt (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)'))))",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 3809,
+  "links_len": 10,
+  "available_fields": [
+    "asset_type",
+    "price"
+  ],
+  "snippet": "![Maricopa County Assessor's Office](https://www.mcassessor.maricopa.gov/app/assets/img/Assessor-Reversed.png) ![Best Places to Work banner](https://www.mcassessor.maricopa.gov/app/assets/img/TWP_Arizona_Portrait_2025.png)",
+  "raw_sha256": "a3ce83a2784ea463af66924f9e441ca210a018f5e5605bd1fa21735ad377920e",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

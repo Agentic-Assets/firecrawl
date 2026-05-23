@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "mcdonalds_real_estate",
+    "url": "https://corporate.mcdonalds.com/corpmcd/franchising-overview/real-estate.html",
+    "category": "tenant_business_movement",
+    "source_type": "tenant real estate page",
+    "expected_signals": "site criteria, tenant expansion requirements",
+    "geography": "national",
+    "asset_types": "retail, restaurant"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://corporate.mcdonalds.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "minimal",
+  "failure_modes": "very small public text surface",
+  "markdown_len": 287,
+  "links_len": 0,
+  "available_fields": [],
+  "snippet": "Next window please! =================== We can\u2019t seem to find what you\u2019re looking for. Error code: 404 ![McDonald's employee in Drive Thru window smiling while talking to woman in car](https://s7d1.scene7.com/is/image/mcdonalds/Utility_404_Desktop:hero-desktop?resmode=sharp2)",
+  "raw_sha256": "cfa6d5b6c5684333ce5f6b54d414643f90dc86f7437e8ea297deff5a12cbef67",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

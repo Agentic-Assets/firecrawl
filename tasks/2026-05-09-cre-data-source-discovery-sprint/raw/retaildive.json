@@ -1,0 +1,33 @@
+{
+  "source": {
+    "id": "retaildive",
+    "url": "https://www.retaildive.com/",
+    "category": "tenant_business_movement",
+    "source_type": "retail industry news",
+    "expected_signals": "store closures, expansions, tenant distress",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.retaildive.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: subscribe",
+  "markdown_len": 36894,
+  "links_len": 57,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "distress",
+    "disposition"
+  ],
+  "snippet": "* [Marketing Dive](https://www.marketingdive.com/)",
+  "raw_sha256": "929bbd6b81b1582d27d18e6305cb52d3f397c86f2c6a0af1934ed027e1e1a708",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

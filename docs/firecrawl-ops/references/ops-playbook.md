@@ -4,7 +4,9 @@
 ```bash
 cd ~/Documents/GitHub/firecrawl
 docker compose up -d
-# restart
+# after model profile or API env changes
+docker compose up -d --force-recreate api
+# full restart
 docker compose down && docker compose up -d
 ```
 
@@ -35,7 +37,7 @@ python3 scripts/firecrawl-ops/artificialanalysis_snapshot.py
 ## Env vars (fork-specific)
 Set in the repo-root `.env` so `docker-compose.yaml` picks them up:
 - `OPENROUTER_API_KEY` — required for the model routing layer
-- `MODEL_NAME` — default LLM (rewritten by `scripts/firecrawl-ops/set_model_profile.sh budget|escalated`)
+- `MODEL_NAME` — default LLM (rewritten by `scripts/firecrawl-ops/set_model_profile.sh`; default budget profile is `deepseek/deepseek-v4-flash`)
 - `SWARM_SUPABASE_URL`, `SWARM_SUPABASE_KEY` — optional, only if using `firecrawl_swarm_pipeline.py` telemetry
 
 Upstream API vars live in `apps/api/.env.example`. Copy that to root `.env` for first-time setup, then layer the fork vars above on top.

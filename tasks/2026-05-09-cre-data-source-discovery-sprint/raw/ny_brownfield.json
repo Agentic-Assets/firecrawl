@@ -1,0 +1,24 @@
+{
+  "source": {
+    "id": "ny_brownfield",
+    "url": "https://dec.ny.gov/environmental-protection/site-cleanup/brownfield-and-state-superfund-programs/brownfield",
+    "category": "environmental_records",
+    "source_type": "state brownfield program",
+    "expected_signals": "brownfield cleanup sites and redevelopment context",
+    "geography": "state",
+    "asset_types": "land, redevelopment"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://dec.ny.gov/robots.txt",
+  "http_status": 500,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "error",
+  "failure_modes": "Scrape aborted after exceeding retry limit (document_antibot).",
+  "markdown_len": 0,
+  "links_len": 0,
+  "available_fields": [],
+  "snippet": "",
+  "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "response_keys": []
+}

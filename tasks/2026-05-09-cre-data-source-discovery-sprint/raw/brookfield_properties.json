@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "brookfield_properties",
+    "url": "https://www.brookfieldproperties.com/en.html",
+    "category": "owner_operator_tenant_sites",
+    "source_type": "owner/operator",
+    "expected_signals": "portfolio, asset classes, market exposure",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.brookfieldproperties.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 9720,
+  "links_len": 19,
+  "available_fields": [
+    "asset_type",
+    "tenant"
+  ],
+  "snippet": "![2 sets of staircases with someone walking down the second one. The first one in the foreground is lightered colored wood and only 5 steps, quite wide. The other steps are a full staircase. On the left side there are large windows. Under the larger stairs is a plant box with green plants.](https://brookfieldproperties-bp-corporate-prod.web.arc-cdn.net/resizer/v2/RIWCPVV3CFGOPNSYF6GZYXZT5E.jpg?focal=0%2C0&auth=c1c0f8f08326b3636fb134a8d3d122b1710eb1364b80da6684e0688b559b509a&width=2400)![woman in",
+  "raw_sha256": "f663ced50b896621cb7a5f8e1abdfb0582370020e76a90fa80201be25411431e",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

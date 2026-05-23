@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "dc_propertyquest",
+    "url": "https://propertyquest.dc.gov/",
+    "category": "public_records_assessor_gis",
+    "source_type": "city property records",
+    "expected_signals": "parcel, owner, tax assessment, sales",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://propertyquest.dc.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 1256,
+  "links_len": 0,
+  "available_fields": [
+    "asset_type"
+  ],
+  "snippet": "![DC Office of Planning logo](https://propertyquest.dc.gov/OpLogo159_2.gif)",
+  "raw_sha256": "2e7060cfbf704487bca8f89c80482ed77a98a19fecadcbbcaf8e000054233248",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "pa_dcED",
+    "url": "https://dced.pa.gov/programs-funding/commonwealth-financing-authority/",
+    "category": "economic_development_incentives",
+    "source_type": "state economic development financing",
+    "expected_signals": "project finance, grants, redevelopment and incentives",
+    "geography": "state",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://dced.pa.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 3795,
+  "links_len": 19,
+  "available_fields": [
+    "asset_type",
+    "debt"
+  ],
+  "snippet": "The Commonwealth Financing Authority (CFA) was established in 2004 as an independent agency to administer Pennsylvania\u2019s economic stimulus packages. The CFA holds fiduciary responsibility over the funding of programs and investments in Pennsylvania\u2019s economic growth. Unique among state agencies in structure and scope, the CFA consists of seven Board members: four legislative appointees and the secretaries of the Department of Community and Economic Development, the Office of the Budget and Depar",
+  "raw_sha256": "8e7ecf6c375554b767b5322d7a10c4992670a5d4261c9f591aa431068da073a9",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

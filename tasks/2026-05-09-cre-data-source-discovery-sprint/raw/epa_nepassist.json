@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "epa_nepassist",
+    "url": "https://www.epa.gov/nepa/nepassist",
+    "category": "environmental_records",
+    "source_type": "environmental review/geospatial portal",
+    "expected_signals": "environmental context and constraints",
+    "geography": "national",
+    "asset_types": "land, redevelopment"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.epa.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 4216,
+  "links_len": 12,
+  "available_fields": [],
+  "snippet": "For questions or assistance on NEPAssist, please email [NEPAssist](mailto:NEPAssisthelp@epa.gov?subject=NEPAssist%20Help)",
+  "raw_sha256": "e8c7a03aed5c228c4090e50aa8255a44bae8c3206cee17520d58f78a0e55a5c6",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "sterling_net_lease",
+    "url": "https://www.sterlingorganization.com/",
+    "category": "sale_leaseback_netlease",
+    "source_type": "retail/net lease investor",
+    "expected_signals": "retail portfolio, acquisitions, tenants, strategy",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.sterlingorganization.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 4481,
+  "links_len": 10,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "tenant"
+  ],
+  "snippet": "Sterling Organization is a vertically integrated private equity real estate firm whose national platform is focused on investing in retail and distribution real estate assets across the risk spectrum in major markets within the United States. Sterling Organization, with offices across the nation, is headquartered in West Palm Beach, FL.",
+  "raw_sha256": "e045922014999a5c5f6f63ebe68ff7c86755e3113616a0c426803e36efce8a23",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

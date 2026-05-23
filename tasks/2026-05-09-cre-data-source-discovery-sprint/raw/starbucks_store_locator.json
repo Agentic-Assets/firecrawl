@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "starbucks_store_locator",
+    "url": "https://www.starbucks.com/store-locator",
+    "category": "franchise_location_data",
+    "source_type": "tenant location page",
+    "expected_signals": "tenant footprint and openings/closures if public",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.starbucks.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: log in",
+  "markdown_len": 4932,
+  "links_len": 4,
+  "available_fields": [],
+  "snippet": "This site uses cookies, but not the kind you eat ------------------------------------------------ We use cookies to remember log in details, provide secure log in, improve site functionality, and deliver personalized content. By continuing to browse the site, you accept cookies. Change cookie settings Agree [Privacy Notice](https://www.starbucks.com/terms/privacy-notice/) [Skip to main content](https://www.starbucks.com/store-locator#content) Choose an order typePickupDelivery Store Locator ====",
+  "raw_sha256": "8720d023b7064c91dcf61c43083eae8e95b60009678ea49c09a2130deb9d9d4e",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

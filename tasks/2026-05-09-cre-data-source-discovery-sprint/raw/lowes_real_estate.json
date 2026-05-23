@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "lowes_real_estate",
+    "url": "https://corporate.lowes.com/our-company/real-estate",
+    "category": "tenant_business_movement",
+    "source_type": "tenant real estate page",
+    "expected_signals": "site criteria, expansion and real estate contacts",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://corporate.lowes.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 1165,
+  "links_len": 10,
+  "available_fields": [],
+  "snippet": "If you entered a web address please check it was correct. Or maybe you followed a link to a page that we've removed.",
+  "raw_sha256": "f83e24c0f6d65102821f307e0b1895b1f437d350f8b0bea8cd1b459fafee4b65",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

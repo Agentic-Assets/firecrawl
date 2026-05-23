@@ -1,0 +1,67 @@
+{
+  "crawl_date": "2026-05-09T07:39:09.190990+00:00",
+  "sources_tested": 31,
+  "categories_tested": [
+    "brokerage_listing_research",
+    "county_public_records",
+    "distress_sources",
+    "industry_directories_capital_markets",
+    "market_reports_pdfs_libraries",
+    "news_press_tenant_signals",
+    "owner_operator_tenant_sites",
+    "reit_public_company_disclosures"
+  ],
+  "access_counts": {
+    "robots_disallowed": 12,
+    "partial_public": 6,
+    "approved_public": 13
+  },
+  "sample_extract_count": 9,
+  "method_checks": [
+    {
+      "method": "v2/scrape",
+      "status_code": 200,
+      "success": true,
+      "evidence": "markdown_len=4364"
+    },
+    {
+      "method": "v2/search",
+      "status_code": 200,
+      "success": true,
+      "evidence": "results=1"
+    },
+    {
+      "method": "v2/map",
+      "status_code": 200,
+      "success": true,
+      "evidence": "links=5"
+    },
+    {
+      "method": "v2/batch/scrape",
+      "status_code": 200,
+      "success": true,
+      "evidence": "id=019e0bae-4418-74fe-8aea-13cd91b2b69d; status=completed; completed=2"
+    },
+    {
+      "method": "v2/crawl",
+      "status_code": 200,
+      "success": true,
+      "evidence": "id=019e0bae-53fb-72ca-b362-d69bc00d8e97; status=completed; data_items=2"
+    },
+    {
+      "method": "v2/extract",
+      "status_code": 200,
+      "success": true,
+      "evidence": "id=019e0bae-8c1f-73fd-a933-e647fee18a9b; status=completed; data_items=1"
+    },
+    {
+      "method": "v2/parse PDF",
+      "url": "https://www.nmrk.com/storage-nmrk/uploads/fields/pdf-market-reports/2Q24-Silicon-Valley-Office-Market-Report.pdf",
+      "success": true,
+      "evidence": "markdown_len=23790; downloaded_bytes=1942854",
+      "robots_status": "allowed",
+      "robots_url": "https://www.nmrk.com/robots.txt",
+      "status_code": 200
+    }
+  ]
+}

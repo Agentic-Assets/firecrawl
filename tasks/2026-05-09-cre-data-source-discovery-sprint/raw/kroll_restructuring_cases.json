@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "kroll_restructuring_cases",
+    "url": "https://restructuring.ra.kroll.com/",
+    "category": "distress_foreclosure_bankruptcy",
+    "source_type": "claims agent case portal",
+    "expected_signals": "restructuring cases, docket links, debtor real estate clues",
+    "geography": "national",
+    "asset_types": "businesses, real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://restructuring.ra.kroll.com/robots.txt (status 403)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 20192,
+  "links_len": 33,
+  "available_fields": [
+    "asset_type"
+  ],
+  "snippet": "[![Office Properties Income Trust](https://restructuring.ra.kroll.com/_next/image?url=https%3A%2F%2Fedge.sitecorecloud.io%2Fkrollllc17bf0-kroll6fee-proda464-0e9b%2Fmedia%2FKroll-Images%2FKBS-Ticker-Module-Logos%2Foffice-properties-income-trust.jpg%3Fh%3D90%26iar%3D0%26w%3D250&w=640&q=100)](https://restructuring.ra.kroll.com/OPI/)",
+  "raw_sha256": "00606b3a3e085c6a43b5c2505d08ef2f19951403245407b181ab03923bec39ea",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

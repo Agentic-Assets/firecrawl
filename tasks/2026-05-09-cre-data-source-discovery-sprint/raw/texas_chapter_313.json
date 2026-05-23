@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "texas_chapter_313",
+    "url": "https://comptroller.texas.gov/economy/local/ch313/",
+    "category": "economic_development_incentives",
+    "source_type": "tax incentive program records",
+    "expected_signals": "industrial projects, abatements, company location investments",
+    "geography": "state",
+    "asset_types": "industrial, energy"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://comptroller.texas.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 4782,
+  "links_len": 31,
+  "available_fields": [
+    "asset_type",
+    "occupancy",
+    "debt"
+  ],
+  "snippet": "[Sales Tax Programs](https://comptroller.texas.gov/economy/development/sales-tax/)",
+  "raw_sha256": "40065744a23556b1d12149e4e9d025fe8fd55b7b2b1042280ecd1c79b1030f53",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

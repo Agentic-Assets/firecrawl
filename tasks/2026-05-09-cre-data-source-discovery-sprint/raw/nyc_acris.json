@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "nyc_acris",
+    "url": "https://www.nyc.gov/site/finance/taxes/acris.page",
+    "category": "public_records_recorder_tax",
+    "source_type": "recorder/deed index",
+    "expected_signals": "deeds, mortgages, transfers, ownership clues",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.nyc.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 1824,
+  "links_len": 7,
+  "available_fields": [],
+  "snippet": "The Department of Finance has recently redesigned its website and this page has moved. Please update your bookmark to:",
+  "raw_sha256": "b71067043d870377f41ba0ce212af17de49dca16fb93db5c2506e3a209825212",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "hbi_hotels",
+    "url": "https://www.hbihotels.com/hotels-for-sale/",
+    "category": "specialty_asset_marketplaces",
+    "source_type": "hotel brokerage listings",
+    "expected_signals": "hospitality sale listings, room count, price, market",
+    "geography": "national",
+    "asset_types": "hotel"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.hbihotels.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 1053,
+  "links_len": 1,
+  "available_fields": [
+    "asset_type",
+    "disposition",
+    "broker"
+  ],
+  "snippet": "[Learn More](https://www.hbihotels.com/hotels-for-sale/#)",
+  "raw_sha256": "de2ffeb0769354bcbe72a35d733e53d921e8b495a7df9df6ff5514c1f1286312",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

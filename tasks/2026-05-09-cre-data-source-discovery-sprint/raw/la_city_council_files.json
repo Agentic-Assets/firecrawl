@@ -1,0 +1,34 @@
+{
+  "source": {
+    "id": "la_city_council_files",
+    "url": "https://cityclerk.lacity.org/lacityclerkconnect/",
+    "category": "municipal_agendas_packets",
+    "source_type": "council files and agendas",
+    "expected_signals": "zoning, development approvals, incentives, public notices",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://cityclerk.lacity.org/robots.txt (status 404)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 71037,
+  "links_len": 6,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "debt",
+    "broker",
+    "tenant"
+  ],
+  "snippet": "| Office of Management-Employee Services |",
+  "raw_sha256": "ab4655d18a29ab659096778f2cc2fa03033648b578b35f3d4eaa267b9dd23874",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

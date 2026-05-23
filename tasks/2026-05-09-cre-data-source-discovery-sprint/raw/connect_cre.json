@@ -1,0 +1,38 @@
+{
+  "source": {
+    "id": "connect_cre",
+    "url": "https://www.connectcre.com/",
+    "category": "news_press_tenant_signals",
+    "source_type": "CRE news",
+    "expected_signals": "transaction news, broker activity, tenant movement",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.connectcre.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 53847,
+  "links_len": 93,
+  "available_fields": [
+    "address",
+    "asset_type",
+    "size",
+    "price",
+    "debt",
+    "distress",
+    "disposition",
+    "broker",
+    "tenant"
+  ],
+  "snippet": "Connect News Commercial Real Estate news for every market and every facet, every day.",
+  "raw_sha256": "adb3f85e0dbaa170e385143e44571562562f9b856780c8edfda702709be03634",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

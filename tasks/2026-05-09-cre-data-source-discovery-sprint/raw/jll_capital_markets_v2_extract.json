@@ -1,0 +1,48 @@
+{
+  "success": true,
+  "data": {
+    "source_type": "public_page",
+    "asset_types": [
+      "Office",
+      "Industrial and logistics",
+      "Retail",
+      "Hotels and hospitality",
+      "Living and multifamily",
+      "Healthcare",
+      "Data centers",
+      "Life sciences",
+      "Land",
+      "Self storage",
+      "Energy"
+    ],
+    "services": [
+      "Investment sales",
+      "Investment banking",
+      "Private investor",
+      "Quants",
+      "Optimization",
+      "Debt advisory",
+      "Agency lending",
+      "Loan sales",
+      "Derivative advisory",
+      "Loan servicing",
+      "Distressed assets",
+      "Valuations",
+      "Risk",
+      "Complex real estate analysis & litigation support",
+      "Property tax",
+      "Due diligence services"
+    ],
+    "origination_signals": [
+      "Capital markets professionals",
+      "Global production volume",
+      "Closed transactions",
+      "Transaction data",
+      "AI predicts market trends"
+    ]
+  },
+  "status": "completed",
+  "expiresAt": "2026-05-09T13:41:25.000Z",
+  "tokensUsed": 470,
+  "creditsUsed": 32
+}

@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "nyc_dob_bis",
+    "url": "https://www.nyc.gov/site/buildings/property-or-business-owner/bis.page",
+    "category": "county_public_records",
+    "source_type": "permits and violations",
+    "expected_signals": "permits, complaints, jobs, violations",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.nyc.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 6131,
+  "links_len": 31,
+  "available_fields": [
+    "asset_type",
+    "occupancy"
+  ],
+  "snippet": "[Menu](https://www.nyc.gov/site/buildings/property-or-business-owner/bis.page#)",
+  "raw_sha256": "dc016553e653f6d61e507d372d0bf74f1dd6a220f99ac64c46582fcdd217e464",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

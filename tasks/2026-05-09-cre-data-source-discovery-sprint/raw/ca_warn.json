@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "ca_warn",
+    "url": "https://edd.ca.gov/en/Jobs_and_Training/Layoff_Services_WARN",
+    "category": "warn_notices",
+    "source_type": "state WARN notices",
+    "expected_signals": "business closures/layoffs, tenant contraction, facility addresses",
+    "geography": "state",
+    "asset_types": "tenant/business"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://edd.ca.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 21167,
+  "links_len": 40,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "tenant"
+  ],
+  "snippet": "* CalFresh helps eligible families buy groceries with monthly benefits on an EBT card. Use it at grocery stores and participating online retailers, and farmers markets. CalFresh can\u2019t be used for non-food items or hot meals\u2014unless you\u2019re in the Restaurant Meals Program.",
+  "raw_sha256": "012ac65177dbe3798690a1d596ec74c83f43b396234d294ceb77b8d16b9857fc",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "source": {
+    "id": "sec_prologis",
+    "url": "https://data.sec.gov/submissions/CIK0001045609.json",
+    "category": "reit_public_company_disclosures",
+    "source_type": "SEC submissions JSON",
+    "expected_signals": "filings, dates, 10-K/10-Q/8-K links",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://data.sec.gov/robots.txt (status 404)",
+  "http_status": 500,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "error",
+  "failure_modes": "Scrape aborted after exceeding retry limit (document_antibot).",
+  "markdown_len": 0,
+  "links_len": 0,
+  "available_fields": [],
+  "snippet": "",
+  "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "response_keys": []
+}

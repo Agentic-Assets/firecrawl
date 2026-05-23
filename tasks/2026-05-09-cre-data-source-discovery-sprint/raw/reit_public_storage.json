@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "reit_public_storage",
+    "url": "https://investors.publicstorage.com/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "self-storage portfolio, acquisitions, occupancy, debt",
+    "geography": "national",
+    "asset_types": "self storage"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://investors.publicstorage.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 3090,
+  "links_len": 13,
+  "available_fields": [
+    "price"
+  ],
+  "snippet": "[Public Storage Declares Second Quarter 2026 Dividends](https://investors.publicstorage.com/news-events/press-releases/news-details/2026/Public-Storage-Declares-Second-Quarter-2026-Dividends/default.aspx)",
+  "raw_sha256": "324798cdcf6f4806c891f2ec6b6fd84708ff7688f134ba1568cd9aa479765c08",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

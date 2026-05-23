@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "reit_extra_space",
+    "url": "https://ir.extraspace.com/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "self-storage portfolio, JV, acquisition, NOI clues",
+    "geography": "national",
+    "asset_types": "self storage"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://ir.extraspace.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 6204,
+  "links_len": 23,
+  "available_fields": [],
+  "snippet": "to provide you with the best possible experience. If you wish to review the cookies we store, please select the \"Cookie settings\" option on this banner. After your preferences are saved, you can use the cookie icon at the left to modify your selections at any time. For more information, you can review our [Privacy Policy](https://www.q4inc.com/privacy-center/)",
+  "raw_sha256": "3fec1ced56e45e8269920d83e0f7811b85a9342fc6d63c1ac516b8a7371bb127",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "austin_city_agendas",
+    "url": "https://www.austintexas.gov/department/city-council/council-meetings",
+    "category": "municipal_agendas_packets",
+    "source_type": "municipal agenda portal",
+    "expected_signals": "council packets, zoning, development agreements",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.austintexas.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 4971,
+  "links_len": 36,
+  "available_fields": [
+    "debt"
+  ],
+  "snippet": "**\u2022 Municipal Election Documents** including Campaign Treasurer Appointments, Ballot Applications, and Financial Reports",
+  "raw_sha256": "cbf5a4f5db9560f45e9a09da91f8912ef0a7dc539acd218678aba3a920e1050d",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

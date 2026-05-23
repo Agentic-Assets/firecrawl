@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "transwestern_insights",
+    "url": "https://transwestern.com/insights",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage insights",
+    "expected_signals": "market reports and transaction commentary",
+    "geography": "national",
+    "asset_types": "office, industrial, healthcare, multifamily"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://transwestern.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "login_or_paywall_gated",
+  "failure_modes": "login/paywall terms detected: subscribe",
+  "markdown_len": 510,
+  "links_len": 2,
+  "available_fields": [],
+  "snippet": "We deliver comprehensive commercial real estate strategies tailored to your unique goals, maximizing value through every stage of the property lifecycle.",
+  "raw_sha256": "a1b9d11d35cd38f7e5ade36a2df86ede05df9abfa80d51710452ef00d64a572d",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

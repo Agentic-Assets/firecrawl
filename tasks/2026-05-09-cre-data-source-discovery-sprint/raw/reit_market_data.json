@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "reit_market_data",
+    "url": "https://www.reit.com/data-research/reit-market-data",
+    "category": "reit_public_company_disclosures",
+    "source_type": "industry data",
+    "expected_signals": "REIT market data, sector metrics",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.reit.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: subscribe",
+  "markdown_len": 4720,
+  "links_len": 10,
+  "available_fields": [],
+  "snippet": "[Skip to main content](https://www.reit.com/data-research/reit-market-data#main-content)",
+  "raw_sha256": "956b5f9f1b49f159170df5a075cd8e67a2291cc0b282f15b25e441c949317c07",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

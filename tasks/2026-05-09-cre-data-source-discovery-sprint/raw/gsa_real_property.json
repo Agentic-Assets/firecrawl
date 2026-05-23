@@ -1,0 +1,33 @@
+{
+  "source": {
+    "id": "gsa_real_property",
+    "url": "https://realestatesales.gov/",
+    "category": "distress_foreclosure_bankruptcy",
+    "source_type": "federal real property sales",
+    "expected_signals": "government property auctions and disposals",
+    "geography": "national",
+    "asset_types": "land, office, specialty"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://realestatesales.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: register",
+  "markdown_len": 8118,
+  "links_len": 10,
+  "available_fields": [
+    "address",
+    "distress",
+    "disposition",
+    "tenant"
+  ],
+  "snippet": "![real estate sales](https://d2m3yrz4x1yefr.cloudfront.net/banner_img/1733710797.5328271_AdobeStock_174806108.jpeg)",
+  "raw_sha256": "d08c83ec1d14ef25e51427a1504efb1d5431fa26e3228879088c084df00ea121",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

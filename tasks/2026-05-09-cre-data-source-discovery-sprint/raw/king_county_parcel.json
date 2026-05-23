@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "king_county_parcel",
+    "url": "https://kingcounty.gov/en/dept/assessor/buildings-and-property/property-value-and-tax-property-information",
+    "category": "public_records_assessor_gis",
+    "source_type": "county assessor",
+    "expected_signals": "parcel, value, tax, property details",
+    "geography": "county",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://kingcounty.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 1535,
+  "links_len": 7,
+  "available_fields": [],
+  "snippet": "[Skip to main content](https://kingcounty.gov/en/dept/assessor/buildings-and-property/property-value-and-tax-property-information#maincontent)",
+  "raw_sha256": "644a55fb453fa51b3f9fbdc4ba2a1ff6ead3ec3c993b41c48755a1df18f4b76c",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

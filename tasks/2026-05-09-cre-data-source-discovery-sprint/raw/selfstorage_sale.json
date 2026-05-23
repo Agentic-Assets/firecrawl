@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "selfstorage_sale",
+    "url": "https://www.selfstoragesales.com/",
+    "category": "specialty_asset_marketplaces",
+    "source_type": "self-storage brokerage listings",
+    "expected_signals": "self-storage listings, price, units, broker, occupancy clues",
+    "geography": "national",
+    "asset_types": "self storage"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.selfstoragesales.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "minimal",
+  "failure_modes": "very small public text surface",
+  "markdown_len": 209,
+  "links_len": 0,
+  "available_fields": [],
+  "snippet": "A required part of this site couldn\u2019t load. This may be due to a browser extension, network issues, or browser settings. Please check your connection, disable any ad blockers, or try using a different browser.",
+  "raw_sha256": "3f50f2b96cdee05203884bd88b8fb2d61c6d1afeed710555d41f0de1ee4643d1",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

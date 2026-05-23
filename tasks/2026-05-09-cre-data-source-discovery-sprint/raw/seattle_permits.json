@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "seattle_permits",
+    "url": "https://www.seattle.gov/sdci/permits/permit-records",
+    "category": "permits_zoning_planning",
+    "source_type": "permit records",
+    "expected_signals": "permit records, development activity, parcel context",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.seattle.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 527,
+  "links_len": 1,
+  "available_fields": [],
+  "snippet": "404 Error: Page Not Found ========================= Sorry, the page you were searching might have been removed or renamed. Here are some things you could try: * If you typed or copied the URL, double check for spelling and errors. * Rephrase your search request. Return to the homepage: **[www.seattle.gov](https://www.seattle.gov/) ** ![](https://fonts.gstatic.com/s/i/productlogos/translate/v14/24px.svg) Original text Rate this translation Your feedback will be used to help improve Google Transla",
+  "raw_sha256": "a60a4999ee1e9854da825bc86fd98d985547df9fc8cc079f923ba6c8d78c0c1a",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

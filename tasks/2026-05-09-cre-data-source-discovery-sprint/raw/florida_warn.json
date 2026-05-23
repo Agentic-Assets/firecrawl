@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "florida_warn",
+    "url": "https://floridajobs.org/office-directory/division-of-workforce-services/workforce-programs/warn",
+    "category": "warn_notices",
+    "source_type": "state WARN notices",
+    "expected_signals": "layoffs, closures, employer locations",
+    "geography": "state",
+    "asset_types": "tenant/business"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://floridajobs.org/robots.txt (status 403)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "minimal",
+  "failure_modes": "very small public text surface",
+  "markdown_len": 103,
+  "links_len": 0,
+  "available_fields": [],
+  "snippet": "The resource you are looking for has been removed, had its name changed, or is temporarily unavailable.",
+  "raw_sha256": "90b2d35cd5e08370ed20db81197dd9da1a4dbb421f71293fd5733ea49eb7b3e1",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

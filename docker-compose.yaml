@@ -58,7 +58,7 @@ x-common-env: &common-env
   SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT}
   SEARXNG_ENGINES: ${SEARXNG_ENGINES}
   SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES}
-  ALLOW_LOCAL_WEBHOOKS: ${ALLOW_LOCAL_WEBHOOKS}
+  ALLOW_LOCAL_WEBHOOKS: ${ALLOW_LOCAL_WEBHOOKS:-false}
 
 services:
   playwright-service:
@@ -71,14 +71,14 @@ services:
       PROXY_SERVER: ${PROXY_SERVER}
       PROXY_USERNAME: ${PROXY_USERNAME}
       PROXY_PASSWORD: ${PROXY_PASSWORD}
-      ALLOW_LOCAL_WEBHOOKS: ${ALLOW_LOCAL_WEBHOOKS}
-      BLOCK_MEDIA: ${BLOCK_MEDIA}
+      ALLOW_LOCAL_WEBHOOKS: ${ALLOW_LOCAL_WEBHOOKS:-false}
+      BLOCK_MEDIA: ${BLOCK_MEDIA:-false}
       # Configure maximum concurrent pages for Playwright browser instances
       MAX_CONCURRENT_PAGES: ${CRAWL_CONCURRENT_REQUESTS:-10}
     networks:
       - backend
     # Resource limits for Docker Compose (not Swarm)
-    cpus: 2.0
+    cpus: ${PLAYWRIGHT_CPUS:-2.0}
     mem_limit: 4G
     memswap_limit: 4G
     logging:
@@ -108,12 +108,14 @@ services:
         condition: service_started
       rabbitmq:
         condition: service_healthy
+      nuq-postgres:
+        condition: service_healthy
     ports:
       - "${PORT:-3002}:${INTERNAL_PORT:-3002}"
     command: node dist/src/harness.js --start-docker
     # Resource limits for Docker Compose (not Swarm)
     # Increase if you have more CPU cores/RAM available
-    cpus: 4.0
+    cpus: ${API_CPUS:-2.0}
     mem_limit: 8G
     memswap_limit: 8G
 
@@ -161,6 +163,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-postgres} && psql -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-postgres} -tAc \"select to_regclass('nuq.queue_scrape') is not null\" | grep -q t"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
     networks:
       - backend
     logging:

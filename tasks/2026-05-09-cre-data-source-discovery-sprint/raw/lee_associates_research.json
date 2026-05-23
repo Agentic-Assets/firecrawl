@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "lee_associates_research",
+    "url": "https://www.lee-associates.com/research/",
+    "category": "regional_boutique_brokerage",
+    "source_type": "brokerage research",
+    "expected_signals": "market reports and local broker intelligence",
+    "geography": "national",
+    "asset_types": "office, industrial, retail, land"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.lee-associates.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 4885,
+  "links_len": 24,
+  "available_fields": [
+    "asset_type"
+  ],
+  "snippet": "[Find a Lee & Associates Office >](https://www.lee-associates.com/offices/)",
+  "raw_sha256": "a68c0675c5290fdf43c665c2b23a63d77535eba5eba0425635e46560da91f6d2",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

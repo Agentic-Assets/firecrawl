@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "reit_avalonbay",
+    "url": "https://investors.avalonbay.com/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "apartment portfolio, development, dispositions, occupancy",
+    "geography": "national",
+    "asset_types": "multifamily"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://investors.avalonbay.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 4186,
+  "links_len": 16,
+  "available_fields": [
+    "address",
+    "asset_type"
+  ],
+  "snippet": "[AvalonBay Communities, Inc. Provides Q1 2026 Results, Q2 2026 Guidance, Reaffirms Full Year Core FFO and FFO Outlook, Updates EPS Outlook](https://investors.avalonbay.com/news-events/press-releases/detail/438/avalonbay-communities-inc-provides-q1-2026-results-q2-2026-guidance-reaffirms-full-year-core-ffo-and-ffo-outlook-updates-eps-outlook)",
+  "raw_sha256": "712d327357f039da756442dee941cc4c1f22a5636e09b46c917653550b1ed71e",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

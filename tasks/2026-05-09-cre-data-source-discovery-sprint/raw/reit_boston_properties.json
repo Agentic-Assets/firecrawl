@@ -1,0 +1,33 @@
+{
+  "source": {
+    "id": "reit_boston_properties",
+    "url": "https://investors.bxp.com/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "office portfolio, leasing, development, debt maturity",
+    "geography": "national",
+    "asset_types": "office"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://investors.bxp.com/robots.txt (HTTPSConnectionPool(host='investors.bxp.com', port=443): Read timed out. (read timeout=8))",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 5392,
+  "links_len": 17,
+  "available_fields": [
+    "size",
+    "price",
+    "occupancy",
+    "tenant"
+  ],
+  "snippet": "Leased (In-Service Properties)[1](https://investors.bxp.com/footnotes)",
+  "raw_sha256": "e05e0bb6b6e0534e5ffb2246e80ffe36db79273c890dc97ea8cb9fa0573188c9",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

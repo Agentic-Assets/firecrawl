@@ -1,0 +1,35 @@
+{
+  "source": {
+    "id": "globest",
+    "url": "https://www.globest.com/",
+    "category": "news_press_tenant_signals",
+    "source_type": "CRE news",
+    "expected_signals": "deals, tenant movement, distress, sector news",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.globest.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 28870,
+  "links_len": 73,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "cap_rate",
+    "disposition",
+    "broker",
+    "tenant"
+  ],
+  "snippet": "[![](https://images.touchpointmarkets.com/cdn-cgi/image/format=auto,fit=contain/https://assets.touchpointmarkets.com/b1/d9/6e5008d64e2990c7a0db40ba75f6/cap-rates-and-buy-resize.jpeg)](https://www.globest.com/2026/05/08/when-the-cap-rate-spread-says-it-is-time-to-buy/)",
+  "raw_sha256": "2a047072a053c67d7dc08cd5bc2c2b35b356fdb33b0e2a4b2f073398c258c83c",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

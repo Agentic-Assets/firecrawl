@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "texas_warn",
+    "url": "https://www.twc.texas.gov/data-reports/warn-notice",
+    "category": "warn_notices",
+    "source_type": "state WARN notices",
+    "expected_signals": "layoffs and closure locations",
+    "geography": "state",
+    "asset_types": "tenant/business"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.twc.texas.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 3438,
+  "links_len": 16,
+  "available_fields": [],
+  "snippet": "[Skip to main content](https://www.twc.texas.gov/data-reports/warn-notice#main-content)",
+  "raw_sha256": "3d8569fb704423fef7f577faf84907ff571d3141f205a3a7fcfce915062d54e4",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

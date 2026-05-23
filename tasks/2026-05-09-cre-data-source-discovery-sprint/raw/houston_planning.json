@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "houston_planning",
+    "url": "https://www.houstontx.gov/planning/",
+    "category": "permits_zoning_planning",
+    "source_type": "planning department",
+    "expected_signals": "planning cases, plats, development activity",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.houstontx.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: subscribe",
+  "markdown_len": 12123,
+  "links_len": 49,
+  "available_fields": [
+    "asset_type",
+    "broker",
+    "tenant"
+  ],
+  "snippet": "[![Subscribe to Permit and Plat Reports](https://www.houstontx.gov/planning/Resources/carousel/subscribe-plat.png)](https://www.houstontx.gov/planning/DevelopRegs/dev_reports.html)",
+  "raw_sha256": "94b762f703b90accd3ea3e97147c1fe2eebdd00bc8b605a0e22e3435bc30b498",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

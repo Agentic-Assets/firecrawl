@@ -8,7 +8,7 @@ Yes. Local Firecrawl `scrape` can pull full-text from PDFs and return markdown t
 Recommended pattern:
 - Persist both `pdf_url` and extracted text
 - Keep `extraction_quality` fields (length, section-hit score)
-- Retry hard files with Kimi K2.5 tier
+- Retry hard files with `deepseek/deepseek-v4-pro`
 
 ## 2) Full ARES conference metadata extraction
 Feasible with a staged approach:

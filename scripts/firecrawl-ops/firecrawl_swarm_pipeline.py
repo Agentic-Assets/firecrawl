@@ -3,8 +3,8 @@
 
 Pipeline stages:
 1) Source probe pass
-2) Budget/base pass (MiniMax M2.5)
-3) Auto-escalate failures to Kimi K2.5
+2) Budget/base pass (DeepSeek V4 Flash)
+3) Auto-escalate failures to DeepSeek V4 Pro
 4) Write structured outputs + confidence + provenance to JSON (+ optional Supabase)
 
 Usage:
@@ -45,8 +45,8 @@ BLOCK_PATTERNS = [
 LOGIN_PATTERNS = [r"log in", r"sign in", r"login", r"create account"]
 
 MODEL_BY_PROFILE = {
-    "budget": "openrouter/minimax/minimax-m2.5",
-    "escalated": "moonshotai/kimi-k2.5",
+    "budget": "deepseek/deepseek-v4-flash",
+    "escalated": "deepseek/deepseek-v4-pro",
 }
 
 
@@ -246,12 +246,12 @@ def main() -> None:
     s1 = stage_run("probe_budget", "budget", urls)
     all_items.extend(s1)
 
-    kimi_batch = sorted({x.url for x in s1 if x.quality in {"low_content", "error", "blocked"}})
+    escalated_batch = sorted({x.url for x in s1 if x.quality in {"low_content", "error", "blocked"}})
 
-    # Stage 2: kimi escalation
+    # Stage 2: DeepSeek Pro escalation
     s2: list[ItemResult] = []
-    if kimi_batch:
-        s2 = stage_run("escalate_kimi", "escalated", kimi_batch)
+    if escalated_batch:
+        s2 = stage_run("escalate_deepseek_pro", "escalated", escalated_batch)
         all_items.extend(s2)
 
     final_by_url: dict[str, ItemResult] = {}
@@ -267,7 +267,7 @@ def main() -> None:
         "final_blocked": sum(1 for x in final_items if x.quality == "blocked"),
         "final_error": sum(1 for x in final_items if x.quality == "error"),
         "avg_confidence": round(sum(x.confidence for x in final_items) / max(len(final_items), 1), 4),
-        "kimi_escalations": len(kimi_batch),
+        "deepseek_pro_escalations": len(escalated_batch),
     }
 
     report = {

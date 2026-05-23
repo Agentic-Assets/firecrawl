@@ -1,0 +1,33 @@
+{
+  "source": {
+    "id": "la_county_recorder",
+    "url": "https://www.lavote.gov/home/records/real-estate-records",
+    "category": "public_records_recorder_tax",
+    "source_type": "county recorder",
+    "expected_signals": "recorded documents, transfers, liens, mortgages",
+    "geography": "county",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://www.lavote.gov/robots.txt (status 404)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: register",
+  "markdown_len": 51101,
+  "links_len": 325,
+  "available_fields": [
+    "asset_type",
+    "debt",
+    "broker",
+    "tenant"
+  ],
+  "snippet": "Los Angeles County residents directly impacted by fires can request property at no cost to support their recovery efforts. **Anyone needing property records should call us at (800) 201-8999, option 3, or email** [**RRCCFireAssistance@rrcc.lacounty.gov**](mailto:RRCCFireAssistance@rrcc.lacounty.gov \"mailto:rrccfireassistance@rrcc.lacounty.gov\")",
+  "raw_sha256": "7decdcdca500785a689e5ef1ab1da9fbe81e9af9c68b93dd2d64360690a0b23d",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

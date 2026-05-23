@@ -1,0 +1,34 @@
+{
+  "source": {
+    "id": "blackstone_real_estate",
+    "url": "https://www.blackstone.com/our-businesses/real-estate/",
+    "category": "pe_real_estate_firms",
+    "source_type": "PE real estate manager",
+    "expected_signals": "sector focus, portfolio themes, fund strategy",
+    "geography": "global",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.blackstone.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 11111,
+  "links_len": 13,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "debt",
+    "disposition",
+    "tenant"
+  ],
+  "snippet": "Our vast portfolio provides us with proprietary information across every major real estate asset class in virtually every major market around the world, allowing us to identify themes and invest capital with conviction.",
+  "raw_sha256": "7d3e5b24604c0c48708b993e6260d9b42f2ea6bd084545e236533141f9b94bbf",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

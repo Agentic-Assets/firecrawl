@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "irs_real_estate_auctions",
+    "url": "https://www.treasury.gov/auctions/irs/",
+    "category": "distress_foreclosure_bankruptcy",
+    "source_type": "federal seized property auction",
+    "expected_signals": "seized real estate auctions and sale notices",
+    "geography": "national",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://www.treasury.gov/robots.txt (HTTPSConnectionPool(host='www.treasury.gov', port=443): Read timed out. (read timeout=8))",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: subscribe",
+  "markdown_len": 3701,
+  "links_len": 9,
+  "available_fields": [
+    "distress",
+    "disposition"
+  ],
+  "snippet": "[Skip to main content](https://www.treasury.gov/auctions/irs/#main-content)",
+  "raw_sha256": "4485f076185b7df93ff2b8f9629eea77f3db94496b104371112c395e3c62efaa",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

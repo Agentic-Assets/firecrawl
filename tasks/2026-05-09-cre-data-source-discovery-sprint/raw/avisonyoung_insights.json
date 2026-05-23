@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "avisonyoung_insights",
+    "url": "https://www.avisonyoung.us/insights",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage insights",
+    "expected_signals": "market intelligence, tenant movement, broker research",
+    "geography": "national",
+    "asset_types": "office, industrial, retail"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.avisonyoung.us/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "login_or_paywall_gated",
+  "failure_modes": "login/paywall terms detected: subscribe",
+  "markdown_len": 2134,
+  "links_len": 2,
+  "available_fields": [],
+  "snippet": "Please try [searching our site](https://www.avisonyoung.com/search)",
+  "raw_sha256": "b9d58eff4161603ddef12f20c8ad0e0fa90b47b3f261f318e8fe16aad9396a5e",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "catylist",
+    "url": "https://www.catylist.com/",
+    "category": "broker_listing_infrastructure",
+    "source_type": "commercial listing platform",
+    "expected_signals": "regional CIE listing infrastructure",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.catylist.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 8410,
+  "links_len": 4,
+  "available_fields": [
+    "disposition",
+    "tenant"
+  ],
+  "snippet": "Moody\u2019s Analytics Catylist is a premier all-in-one marketing and listings platform for Commercial Real Estate brokers, combining fully researched CRE data, a suite of reporting and marketing tools, and national exposure for listings. Catylist technology is trusted by over 70 real estate associations, hundreds of economic development communities and thousands of CRE brokerages and commercial professionals across North America.",
+  "raw_sha256": "09639f896bd5dd5ff664fc33e2c6f2b425b843495477f5ee4801c3b4bf382440",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

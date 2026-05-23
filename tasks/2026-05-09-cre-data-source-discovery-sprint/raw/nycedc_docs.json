@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "nycedc_docs",
+    "url": "https://edc.nyc/about-nycedc/financial-public-documents-recordings",
+    "category": "market_reports_pdfs_libraries",
+    "source_type": "public document library",
+    "expected_signals": "public PDFs, economic reports, planning and disparity studies",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://edc.nyc/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 67466,
+  "links_len": 420,
+  "available_fields": [
+    "asset_type",
+    "size",
+    "disposition"
+  ],
+  "snippet": "On October 1, 2014, **Apple Industrial Development Corp.** merged into NYCEDC and ceased to exist as an independent entity. View Apple Industrial Development Corp.'s historical [financial and public documents](https://edc.nyc/node/4394)",
+  "raw_sha256": "99a3f5ebe7755c85fa00f87790560e0e7b23df47e91a25a6a50a12a364b55972",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

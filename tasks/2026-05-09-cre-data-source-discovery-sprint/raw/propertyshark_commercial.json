@@ -1,0 +1,33 @@
+{
+  "source": {
+    "id": "propertyshark_commercial",
+    "url": "https://www.propertyshark.com/Real-Estate-Reports/",
+    "category": "property_intelligence_platforms",
+    "source_type": "property intelligence reports",
+    "expected_signals": "ownership, property report teaser, public-record aggregation",
+    "geography": "national",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.propertyshark.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 40349,
+  "links_len": 18,
+  "available_fields": [
+    "price",
+    "debt",
+    "distress",
+    "disposition"
+  ],
+  "snippet": "[Skip to content](https://www.propertyshark.com/Real-Estate-Reports/#fl-main-content)",
+  "raw_sha256": "23584aaaad7462276730abc12e414ac84faeb7e2068c72ecdc1654334a8db521",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

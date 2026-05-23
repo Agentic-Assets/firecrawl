@@ -19,3 +19,4 @@ RUN set -eux; \
 
 # Copy nuq.sql so it is executed as part of the initdb sequence
 COPY nuq.sql /docker-entrypoint-initdb.d/010-nuq.sql
+RUN chmod 0644 /docker-entrypoint-initdb.d/010-nuq.sql

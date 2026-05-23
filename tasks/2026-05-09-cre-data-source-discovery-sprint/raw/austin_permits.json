@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "austin_permits",
+    "url": "https://www.austintexas.gov/page/building-permits",
+    "category": "permits_zoning_planning",
+    "source_type": "permit records",
+    "expected_signals": "building permits, redevelopment activity",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.austintexas.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 587,
+  "links_len": 4,
+  "available_fields": [],
+  "snippet": "[Skip to main content](https://www.austintexas.gov/page/building-permits#block-coa-sitestudio-theme-content) ### Page Not Found You didn\u2019t do anything wrong \u2014 this page likely moved when we launched the new City of Austin website. We recently redesigned the site to improve access to services, programs and information, so older links or bookmarks may no longer point to the same place. You can go back to the [homepage](https://www.austintexas.gov/) or choose an option below. [Search](https://www.a",
+  "raw_sha256": "3bce08b80f0d07b47762bd40630c6ebd5c00086325aa8f9b0eef006e47e38d30",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

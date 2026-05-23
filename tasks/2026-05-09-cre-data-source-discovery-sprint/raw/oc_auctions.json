@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "oc_auctions",
+    "url": "https://www.ocgov.com/business/bids-auctions-purchasing/property-auctions",
+    "category": "county_public_records",
+    "source_type": "county auctions",
+    "expected_signals": "tax-defaulted property auctions and sale notices",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.ocgov.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 2813,
+  "links_len": 6,
+  "available_fields": [
+    "asset_type",
+    "distress",
+    "disposition"
+  ],
+  "snippet": "Learn more about real and personal property auctions conducted by the County of Orange.",
+  "raw_sha256": "dc54a39a2405b4aa4304cfa1f81df68543c4a7063965d65e1d647e7c0b1407c6",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

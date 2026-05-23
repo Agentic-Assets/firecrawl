@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "commercialcafe",
+    "url": "https://www.commercialcafe.com/",
+    "category": "listing_marketplaces",
+    "source_type": "CRE listing marketplace",
+    "expected_signals": "office, retail, industrial listings and market pages",
+    "geography": "national",
+    "asset_types": "office, retail, industrial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://www.commercialcafe.com/robots.txt (status 403)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: register",
+  "markdown_len": 16206,
+  "links_len": 95,
+  "available_fields": [
+    "asset_type",
+    "disposition",
+    "tenant"
+  ],
+  "snippet": "Your listings also appear on PropertyShark and CommercialSearch.",
+  "raw_sha256": "671c08095ff5a062db0f7e8c5d530636dbe24f0c6000f4c68e61b0aae2048cda",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

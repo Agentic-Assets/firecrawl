@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "reit_ventas",
+    "url": "https://ir.ventasreit.com/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "healthcare real estate portfolio, operator and debt clues",
+    "geography": "national",
+    "asset_types": "healthcare, senior housing"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://ir.ventasreit.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 98529,
+  "links_len": 519,
+  "available_fields": [
+    "price",
+    "disposition"
+  ],
+  "snippet": "3\\. Based on Ventas stock price close on April 27, 2026; includes shares issued under forward sales agreements that were unsettled as of that date; debt figures presented at Ventas share as of March 31, 2026.",
+  "raw_sha256": "cc60722b84b3f91329a7006b0186077b9979cf804483e8e6a2536f90abc6c0be",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

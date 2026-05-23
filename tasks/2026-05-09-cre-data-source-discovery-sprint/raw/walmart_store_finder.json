@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "walmart_store_finder",
+    "url": "https://www.walmart.com/store/finder",
+    "category": "franchise_location_data",
+    "source_type": "tenant location page",
+    "expected_signals": "retail footprint and location data",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.walmart.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 520,
+  "links_len": 5,
+  "available_fields": [],
+  "snippet": "[](https://www.walmart.com/) Robot or human? =============== Activate and hold the button to confirm that you\u2019re human. Thank You! * * * [Terms of Use](https://help.walmart.com/app/answers/detail/a_id/8) [Privacy Policy](https://corporate.walmart.com/privacy-security) [Do Not Sell My Personal Information](https://www.walmart.com/account/api/ccpa-intake?native=false&type=sod) [Request My Personal Information](https://www.walmart.com/account/api/ccpa-intake?native=false&type=access) \u00a92026 Walmart ",
+  "raw_sha256": "265264bbf6b5b475ca575b9607f6d59bdb39c04455c5928a3ac995d06c6d9e88",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

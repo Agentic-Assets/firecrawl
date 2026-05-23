@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "naiop_research",
+    "url": "https://www.naiop.org/research-and-publications/",
+    "category": "market_reports_pdfs_libraries",
+    "source_type": "industry research library",
+    "expected_signals": "development, capital markets, sentiment reports",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.naiop.org/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 14419,
+  "links_len": 33,
+  "available_fields": [
+    "asset_type",
+    "debt",
+    "broker"
+  ],
+  "snippet": "Find the most recent research reports, find articles from Development magazine and see all the content NAIOP has to offer.",
+  "raw_sha256": "24b64c523a10d75feb375570f0ddda332001e30bbfbb147587662b701c8056e3",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

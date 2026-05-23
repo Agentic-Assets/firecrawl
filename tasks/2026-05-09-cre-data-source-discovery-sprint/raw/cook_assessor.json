@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "cook_assessor",
+    "url": "https://assessorpropertydetails.cookcountyil.gov/",
+    "category": "county_public_records",
+    "source_type": "county assessor",
+    "expected_signals": "parcel, assessed value, building class",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://assessorpropertydetails.cookcountyil.gov/robots.txt (status 404)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 2493,
+  "links_len": 3,
+  "available_fields": [
+    "asset_type"
+  ],
+  "snippet": "| The System is currently unavailable due to maintenance. Please check again later. | | ![Hide Bar](https://assessorpropertydetails.cookcountyil.gov/images/icons/Set1/closeicon-normal.gif) |",
+  "raw_sha256": "0a49e3ab94b85b5a036868ca037a3ae49bef7a478f786ec3a62c2cd91817829b",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

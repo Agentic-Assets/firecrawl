@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "dollar_general_store_locator",
+    "url": "https://www.dollargeneral.com/store-directory",
+    "category": "franchise_location_data",
+    "source_type": "tenant location directory",
+    "expected_signals": "retail tenant footprint and store locations",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.dollargeneral.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 4066,
+  "links_len": 50,
+  "available_fields": [],
+  "snippet": "Cookie Policy We use cookies and similar technologies to enhance your experience, personalize content and ads, analyze use of our website, and for other purposes described in our [Privacy Policy](https://www.dollargeneral.com/privacy-policy) . By proceeding or closing this banner, you agree to the use of these technologies. [Cookie Preferences](https://www.dollargeneral.com/store-directory#) Cookie Preferences X Dollar General locations ======================== Select a state [Alabama](https://w",
+  "raw_sha256": "2acc4e8080f0052762b5a10bc16931105511de8af9e58f71351804d79acd54a5",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "boulder_group",
+    "url": "https://www.bouldergroup.com/properties/",
+    "category": "sale_leaseback_netlease",
+    "source_type": "net lease brokerage listings",
+    "expected_signals": "net lease properties, tenants, cap rates",
+    "geography": "national",
+    "asset_types": "retail, net lease"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://www.bouldergroup.com/robots.txt (status 404)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "minimal",
+  "failure_modes": "very small public text surface",
+  "markdown_len": 181,
+  "links_len": 0,
+  "available_fields": [],
+  "snippet": "Not Found ========= The requested URL was not found on this server. Additionally, a 404 Not Found error was encountered while trying to use an ErrorDocument to handle the request.",
+  "raw_sha256": "5da0cfb64f7d0662e149fae36b4bb65a1b2761eb19f9d3d1fcc7eafee6f75735",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

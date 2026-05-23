@@ -1,0 +1,35 @@
+{
+  "source": {
+    "id": "crexi",
+    "url": "https://www.crexi.com/",
+    "category": "listing_marketplaces",
+    "source_type": "CRE listing marketplace",
+    "expected_signals": "properties for sale/lease, broker, price, asset type",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.crexi.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: sign in, register",
+  "markdown_len": 33675,
+  "links_len": 306,
+  "available_fields": [
+    "address",
+    "asset_type",
+    "debt",
+    "distress",
+    "disposition",
+    "tenant"
+  ],
+  "snippet": "View Listings](https://www.crexi.com/lease/properties)",
+  "raw_sha256": "990af013ef7a5a4f18a1c1348985df6e0d3f9ebed4041017d2c7851f5097d272",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

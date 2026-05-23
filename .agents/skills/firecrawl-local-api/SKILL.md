@@ -1,180 +1,103 @@
 ---
 name: firecrawl-local-api
-description: Call the locally running self-hosted Firecrawl API on this machine to scrape URLs, crawl sites, parse PDFs/DOCX/XLSX, search the web, or extract structured data with an LLM. Use this skill any time the user wants page content, site maps, document text, or web search results — even if they don't say "Firecrawl" — because there is a working local instance at http://localhost:3002 that handles all of these without paid API credits. Prefer this over generic fetch/curl-and-parse, over headless-browser code from scratch, and over external paid scraping APIs whenever a Firecrawl endpoint covers the job.
+description: Call the locally running self-hosted Firecrawl API at http://localhost:3002 for scraping, search, crawl, batch scrape, local file parsing, PDF/DOCX/XLSX conversion, and structured extraction. Use when the user wants page content, site maps, document text, web search results, local Firecrawl method testing, or a decision about which Firecrawl endpoint to use.
 ---
 
-# Firecrawl (local, self-hosted) — agent quickstart
+# Firecrawl Local API
 
-A working Firecrawl stack runs on this Mac at **`http://localhost:3002`**. This skill tells you how to call it. For runtime/ops/model-routing concerns (Docker health, LLM profile selection, debugging), see the sibling skill at `.claude/skills/firecrawl-ops/SKILL.md` — they cover different layers.
+Use this skill to call the local Firecrawl API directly. Use `firecrawl-ops` first when Docker health, model config, rebuilds, or logs matter.
 
-## Auth
+## Assumptions
 
-Currently **no auth** — `USE_DB_AUTHENTICATION=false` in `.env`, so any caller works. If `TEST_API_KEY` gets set later, send `Authorization: Bearer <TEST_API_KEY>` on every request. Same key for v1 and v2.
+- Base URL: `http://localhost:3002`
+- Auth: currently disabled with `USE_DB_AUTHENTICATION=false`; do not send a bearer token unless `.env` later sets `TEST_API_KEY`.
+- Verification date: 2026-05-08 after a local Docker rebuild.
 
-## Endpoint cheat-sheet (verified 2026-05-05)
+## What Works Locally
 
-| Endpoint | Purpose |
-|---|---|
-| `POST /v1/scrape` | Single URL → markdown / html / rawHtml / links / summary / extract. Multi-format works. |
-| `POST /v1/map` | Discover URLs on a site. |
-| `POST /v1/crawl` + `GET /v1/crawl/:id` | Multi-page crawl, async, poll the GET for status & results. |
-| `POST /v1/batch/scrape` + `GET /v1/batch/scrape/:id` | Scrape N URLs in one async job. |
-| `POST /v1/extract` | LLM extract from one or more URLs. **Returns the result inline in the POST response — do not poll the GET endpoint.** |
-| `POST /v1/search` | Web search, optional `scrapeOptions` to enrich each hit with markdown. Works without SearxNG. |
-| `POST /v2/scrape` | v1/scrape + `parsers` option for fine-grained PDF mode control. |
-| `POST /v2/parse` | **Multipart file upload** — PDF, DOCX, DOC, ODT, RTF, XLSX, XLS. No URL hosting trick required. |
+| Endpoint | Status | Use |
+|---|---:|---|
+| `POST /v2/scrape` | works | Single URL to markdown/html/rawHtml/links/images/summary/json/attributes/query. |
+| `POST /v2/search` | works | Web search; `scrapeOptions` can enrich hits with markdown. |
+| `POST /v2/map` | works | URL discovery. |
+| `POST /v2/crawl` + `GET /v2/crawl/:id` | works | Async crawl with status polling. |
+| `POST /v2/batch/scrape` + `GET /v2/batch/scrape/:id` | works | Async scrape of many URLs. |
+| `POST /v2/parse` | works | Multipart upload for local HTML/PDF/DOCX/DOC/ODT/RTF/XLSX/XLS. |
+| `POST /v2/extract` + `GET /v2/extract/:id` | works with schema | Async structured extraction. Provide an explicit schema. |
+| `POST /v2/crawl/params-preview` | works | LLM-backed natural-language crawl options. |
+| `GET /v2/team/queue-status` | works | Local queue visibility. |
+| `GET /v2/crawl/active` | works | Active crawl listing. |
+| `POST /v1/extract` | works with schema | Synchronous structured extraction when schema is explicit. |
+| `POST /v1/llmstxt` + `GET /v1/llmstxt/:id` | works | Generate llms.txt style output. |
 
-## PDF / document parsing
+Prefer v2 endpoints for new work unless the user specifically asks for v1.
 
-Use `/v2/parse` for local files, or `/v2/scrape` with `parsers: [{type:"pdf", mode: "..."}]` for URLs.
+## Not Configured Locally
 
-PDF parser `mode`:
-- `auto` (default) — fast text extraction first, falls back to OCR for scanned pages.
-- `fast` — text only; errors out on image-based PDFs.
-- `ocr` — force OCR on every page.
+- `POST /v2/browser`, `GET /v2/browser`, and `POST /v2/browser/:sessionId/execute`: need `BROWSER_SERVICE_URL`.
+- `POST /v2/agent`: needs `EXTRACT_V3_BETA_URL`.
+- Scrape `actions`, screenshot formats, and scrape-browser interaction: need Fire Engine or browser-service support.
+- Prompt-only extract/schema generation may fail on weaker budget models; provide an explicit schema.
 
-OCR is built in. **No LlamaParse key needed.** DOCX / XLSX / etc. are also built-in — no external service.
+## LLM-Backed Calls
 
-## Endpoints that don't work locally
+The local stack uses `.env`:
 
-These require the proprietary `fire-engine` runtime, which is not part of self-hosted:
+- `OPENAI_BASE_URL=https://openrouter.ai/api/v1`
+- `MODEL_NAME=deepseek/deepseek-v4-flash`
 
-- `screenshot`, `screenshot@fullPage` formats
-- `actions` (click / wait / type / scroll sequences)
+Use DeepSeek V4 Flash as the primary low-cost model. It was verified locally for schema-backed `v2/extract` on 2026-05-09. Escalate to `deepseek/deepseek-v4-pro` for noisy pages, low-confidence fields, or repeated malformed output. If LLM-backed calls fail, check API logs for provider/model errors before blaming the endpoint.
 
-If you need either, use Playwright directly (the `playwright-service` is already up on the internal Docker network) or run a local Playwright script — don't try to make Firecrawl do it.
+## Curl Patterns
 
-## LLM-backed features
+Plain scrape:
 
-`extract`, `json`, `summary` formats and `/v1/extract` go through an OpenAI-compatible API set in `.env`:
-
-- `OPENAI_API_KEY` — currently a Vercel AI Gateway key (`vck_…`)
-- `OPENAI_BASE_URL` — `https://ai-gateway.vercel.sh/v1`
-- `MODEL_NAME` — `deepseek/deepseek-v4-flash` (verified end-to-end with structured outputs)
-
-Switching models is a one-liner: `bash scripts/firecrawl-ops/set_model_profile.sh <profile>`. See the firecrawl-ops skill for profile choices.
-
-## Examples
-
-### curl
-
-**Plain markdown:**
 ```bash
-curl -sS -X POST http://localhost:3002/v1/scrape \
+curl -sS -X POST http://localhost:3002/v2/scrape \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://example.com","formats":["markdown"]}'
+  -d '{"url":"https://example.com","formats":["markdown","links"]}'
 ```
 
-**Web search + per-result markdown:**
+Structured one-page extraction:
+
 ```bash
-curl -sS -X POST http://localhost:3002/v1/search \
+curl -sS -X POST http://localhost:3002/v2/scrape \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com","formats":["markdown",{"type":"json","prompt":"Extract the domain and page heading.","schema":{"type":"object","properties":{"domain":{"type":"string"},"heading":{"type":"string"}},"required":["domain","heading"]}}]}'
+```
+
+Local file parse:
+
+```bash
+curl -sS -X POST http://localhost:3002/v2/parse \
+  -F 'options={"formats":["markdown",{"type":"summary"}]}' \
+  -F "file=@./report.pdf"
+```
+
+Async extract with schema:
+
+```bash
+ID=$(curl -sS -X POST http://localhost:3002/v2/extract \
+  -H "Content-Type: application/json" \
+  -d '{"urls":["https://example.com"],"prompt":"Extract the page heading.","schema":{"type":"object","properties":{"heading":{"type":"string"}},"required":["heading"]},"enableWebSearch":false}' \
+  | jq -r .id)
+curl -sS "http://localhost:3002/v2/extract/$ID"
+```
+
+Search with scraped snippets:
+
+```bash
+curl -sS -X POST http://localhost:3002/v2/search \
   -H "Content-Type: application/json" \
   -d '{"query":"firecrawl docs","limit":3,"scrapeOptions":{"formats":["markdown"]}}'
 ```
 
-**LLM extract (returns synchronously):**
-```bash
-curl -sS -X POST http://localhost:3002/v1/extract \
-  -H "Content-Type: application/json" \
-  -d '{"urls":["https://docs.firecrawl.dev/introduction"],
-       "prompt":"Extract page title and one-sentence purpose."}'
-```
+## Choosing Quickly
 
-**Crawl, then poll:**
-```bash
-ID=$(curl -sS -X POST http://localhost:3002/v1/crawl \
-       -H "Content-Type: application/json" \
-       -d '{"url":"https://example.com","limit":10,"scrapeOptions":{"formats":["markdown"]}}' \
-     | jq -r .id)
-curl -sS http://localhost:3002/v1/crawl/$ID | jq '{status, completed, total}'
-```
-
-**Local file → markdown via `/v2/parse` (multipart upload):**
-```bash
-curl -sS -X POST http://localhost:3002/v2/parse \
-  -F 'options={"formats":["markdown"],"parsers":[{"type":"pdf","mode":"auto"}]}' \
-  -F "file=@./report.pdf"
-```
-
-### Python (stdlib `requests`)
-
-```python
-import requests
-
-API = "http://localhost:3002"
-
-# Scrape
-r = requests.post(f"{API}/v1/scrape",
-                  json={"url": "https://example.com", "formats": ["markdown"]})
-md = r.json()["data"]["markdown"]
-
-# Parse a local PDF
-with open("report.pdf", "rb") as f:
-    r = requests.post(
-        f"{API}/v2/parse",
-        files={"file": ("report.pdf", f, "application/pdf")},
-        data={"options": '{"formats":["markdown"],"parsers":[{"type":"pdf","mode":"auto"}]}'},
-    )
-md = r.json()["data"]["markdown"]
-```
-
-### Node (built-in `fetch`)
-
-```js
-const API = "http://localhost:3002";
-
-// Scrape
-const r = await fetch(`${API}/v1/scrape`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ url: "https://example.com", formats: ["markdown"] }),
-});
-const md = (await r.json()).data.markdown;
-
-// Parse a local PDF
-const fd = new FormData();
-fd.set("options", JSON.stringify({
-  formats: ["markdown"],
-  parsers: [{ type: "pdf", mode: "auto" }],
-}));
-fd.set("file", new Blob([await Deno.readFile("report.pdf")], { type: "application/pdf" }),
-       "report.pdf");
-const p = await fetch(`${API}/v2/parse`, { method: "POST", body: fd });
-```
-
-(Node ≥18 native `fetch`/`FormData`; in Node use `fs.openAsBlob` instead of Deno's reader.)
-
-## Choosing the right endpoint
-
-- One URL, want text → `POST /v1/scrape` with `formats: ["markdown"]`.
-- Multiple URLs at once → `POST /v1/batch/scrape`.
-- Whole site → `POST /v1/map` (just the URL list) or `POST /v1/crawl` (URLs + scraped content).
-- Local PDF/DOCX/XLSX → `POST /v2/parse` (multipart).
-- Web search → `POST /v1/search`; add `scrapeOptions` to also fetch each result.
-- Pull structured data with an LLM → `POST /v1/extract` (one-shot, sync return).
-
-## Where this skill lives
-
-Canonical source: **`<repo>/.agents/skills/firecrawl-local-api/SKILL.md`** — agent-neutral, source-controlled with the stack.
-
-Already symlinked for the agents on this Mac:
-
-| Agent | Path | Resolves to |
-|---|---|---|
-| Claude Code (project) | `<repo>/.claude/skills/firecrawl-local-api` | canonical |
-| Cursor (project) | `<repo>/.cursor/skills/firecrawl-local-api` | canonical |
-| User-level registry | `~/.agents/skills/firecrawl-local-api` | canonical |
-| Claude Code (user) | `~/.claude/skills/firecrawl-local-api` | user registry |
-| Cursor (user) | `~/.cursor/skills/firecrawl-local-api` | user registry |
-
-Pattern: **`~/.agents/skills/`** is the user-level neutral registry. Per-agent folders (`~/.claude/skills/`, `~/.cursor/skills/`) symlink into it. Edit the canonical file once; all agents see it.
-
-To add another agent, point its skill loader at `~/.agents/skills/firecrawl-local-api/`:
-
-- **Claude Desktop** — symlink or copy into the desktop app's user-skills folder (location varies by version; check the in-app skill manager).
-- **OpenClaw** — `ln -s ~/.agents/skills/firecrawl-local-api ~/.openclaw/<profile>/skills/firecrawl-local-api`.
-- **Codex CLI / Aider / others** — reference the file path in the agent's system prompt or workspace config. It's plain markdown.
-
-If a tool can't load external files (e.g., a one-shot prompt or a `.cursorrules` file that wants inline rules), paste the body of this `SKILL.md` directly into the agent's prompt context.
-
-The endpoint table and examples above are the only durable contract; everything else (model name, gateway, etc.) lives in `.env` and may change.
+- Need one page text: `v2/scrape` with `formats:["markdown"]`.
+- Need fields from one page: `v2/scrape` with a `json` format.
+- Need fields from multiple URLs: `v2/extract` with schema.
+- Need a PDF or Office file on disk: `v2/parse`.
+- Need a site inventory: `v2/map`.
+- Need many pages: `v2/crawl` or `v2/batch/scrape`.
+- Need current runtime state: use `firecrawl-ops`, then `v2/team/queue-status`.

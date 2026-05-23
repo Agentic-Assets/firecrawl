@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "la_assessor",
+    "url": "https://portal.assessor.lacounty.gov/",
+    "category": "public_records_assessor_gis",
+    "source_type": "county assessor",
+    "expected_signals": "parcel, assessed value, owner/public-record clues",
+    "geography": "county",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://portal.assessor.lacounty.gov/robots.txt (status 404)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "minimal",
+  "failure_modes": "very small public text surface",
+  "markdown_len": 412,
+  "links_len": 2,
+  "available_fields": [],
+  "snippet": "![This is an image of Assessor](https://portal.assessor.lacounty.gov/assets/assessorJPrang-BgSUcMr_.webp) Basic SearchLegal Search[Map Search](https://portal.assessor.lacounty.gov/mapsearch) Search by AIN or Address Search by AIN or Address Los Angeles CountyAssessor Portal * * * * [Map Search](https://portal.assessor.lacounty.gov/mapsearch) * [Assessor Internet](https://assessor.lacounty.gov/)",
+  "raw_sha256": "c2d65a519198689326e3b1e6863dae11ad4ac5c02cba48c4fdbc0a3dae63a326",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "kidder_mathews_research",
+    "url": "https://kidder.com/market-reports/",
+    "category": "regional_boutique_brokerage",
+    "source_type": "regional brokerage research",
+    "expected_signals": "west coast market reports, property-type trends, broker activity",
+    "geography": "regional",
+    "asset_types": "office, industrial, retail, multifamily"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://kidder.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 4019,
+  "links_len": 21,
+  "available_fields": [
+    "asset_type"
+  ],
+  "snippet": "Select Product TypeAll Product TypesBrokerageAgribusinessHotelIndustrialLandLife ScienceMultifamilyOfficeOffice / R&DRetail",
+  "raw_sha256": "7e190ba850c94b49fd2a6894ce6c0b3a85018da12bd59115dbaa8ec530ea01ba",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

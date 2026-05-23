@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "savills_us_research",
+    "url": "https://www.savills.us/research-and-insight/",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage research",
+    "expected_signals": "market reports, sector commentary, tenant and investment signals",
+    "geography": "national",
+    "asset_types": "office, industrial, retail, multifamily"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.savills.us/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 6017,
+  "links_len": 27,
+  "available_fields": [
+    "asset_type"
+  ],
+  "snippet": "World-class insight into trends and predictions across commercial markets.](https://www.savills.us/research-and-insight/#Research)",
+  "raw_sha256": "066371bf7f1deb63f19a87a098dcf66efe74815c7dc9916fb19c1d5d5cbceac0",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

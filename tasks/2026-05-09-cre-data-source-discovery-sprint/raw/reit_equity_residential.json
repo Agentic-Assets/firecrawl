@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "reit_equity_residential",
+    "url": "https://www.equityapartments.com/investors",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "portfolio, occupancy, dispositions, debt and market exposure",
+    "geography": "national",
+    "asset_types": "multifamily"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.equityapartments.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: log in",
+  "markdown_len": 5845,
+  "links_len": 19,
+  "available_fields": [
+    "disposition"
+  ],
+  "snippet": "Our properties are located in prime markets like Manhattan, Boston, Washington DC, San Francisco, Los Angeles and Seattle \u2013 all under one ticker symbol.",
+  "raw_sha256": "6538ee487052d13a14c823c3b46a98200f0a4a5be57147ee7887631a2328aa7e",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "source": {
+    "id": "realtytrac",
+    "url": "https://www.realtytrac.com/",
+    "category": "distress_foreclosure_bankruptcy",
+    "source_type": "foreclosure data platform",
+    "expected_signals": "foreclosure/property data if licensed",
+    "geography": "national",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.realtytrac.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 28904,
+  "links_len": 137,
+  "available_fields": [
+    "address",
+    "size",
+    "price",
+    "debt",
+    "distress",
+    "disposition"
+  ],
+  "snippet": "[For Sale](https://www.realtytrac.com/los-angeles-ca/for-sale/)",
+  "raw_sha256": "064b708cf7dd472be28d3992b8d321ef9990fbfd47c9299caa9ee2c05d09888c",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "omni_cases",
+    "url": "https://omniagentsolutions.com/cases",
+    "category": "distress_sources",
+    "source_type": "bankruptcy claims agent",
+    "expected_signals": "chapter 11 case pages, case status, docket links",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://omniagentsolutions.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 14211,
+  "links_len": 109,
+  "available_fields": [
+    "address",
+    "disposition"
+  ],
+  "snippet": "[Elk Run Property Owners Association, Inc. Date Filed: Jan 20, 2026 Debtor](https://cases.omniagentsolutions.com/?clientId=3765)",
+  "raw_sha256": "704c218dac7502bedfd9ece64e68d86e9f55d698abb5f2827e46c6b49150dddd",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

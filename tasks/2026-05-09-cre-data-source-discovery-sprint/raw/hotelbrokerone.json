@@ -1,0 +1,36 @@
+{
+  "source": {
+    "id": "hotelbrokerone",
+    "url": "https://www.hotelbrokerone.com/hotels-for-sale/",
+    "category": "specialty_asset_marketplaces",
+    "source_type": "hospitality brokerage listings",
+    "expected_signals": "hotels for sale, rooms, location, broker",
+    "geography": "national",
+    "asset_types": "hotel"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.hotelbrokerone.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 10507,
+  "links_len": 20,
+  "available_fields": [
+    "asset_type",
+    "size",
+    "price",
+    "debt",
+    "distress",
+    "disposition",
+    "broker"
+  ],
+  "snippet": "[![](https://www.hotelbrokerone.com/uploads/property/photo/710_480_Exterior%20Night.%20Coutyard%20Tulsa%20Central.jpg) **new listing**](https://www.hotelbrokerone.com/hotels-for-sale/Courtyard-by-Marriott-Tulsa-Oklahoma)",
+  "raw_sha256": "334d95ae106c167776b8ccfb2e12a1967d6916ee5004689885775f91178072a1",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

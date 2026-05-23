@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "mortgage_bankers_research",
+    "url": "https://www.mba.org/news-and-research/research-and-economics",
+    "category": "market_reports_pdfs_libraries",
+    "source_type": "mortgage banking research",
+    "expected_signals": "CRE debt, lender exposure, maturities, market reports",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.mba.org/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 16206,
+  "links_len": 84,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "debt"
+  ],
+  "snippet": "* [State Monthly Activity Report](https://www.mba.org/news-and-research/research-and-economics/single-family-research/state-monthly-activity-report)",
+  "raw_sha256": "8fd34817e450e45f319269b8695ed6555f11b0aae1201042c708af56ed231d49",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

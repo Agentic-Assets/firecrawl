@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "miami_property_search",
+    "url": "https://www.miamidadepa.gov/pa/property_search.asp",
+    "category": "public_records_assessor_gis",
+    "source_type": "county property appraiser",
+    "expected_signals": "folio, owner, building, sales, assessed value",
+    "geography": "county",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.miamidadepa.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 2981,
+  "links_len": 4,
+  "available_fields": [
+    "asset_type"
+  ],
+  "snippet": "Property Search Tangible Personal Property",
+  "raw_sha256": "a7626ec2b1e27d83b5e727c1d56bfb0f96ea4287c830595381c29da37b46dcf7",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

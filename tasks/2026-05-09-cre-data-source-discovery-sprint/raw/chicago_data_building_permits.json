@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "chicago_data_building_permits",
+    "url": "https://data.cityofchicago.org/Buildings/Building-Permits/ydr8-5enu",
+    "category": "permits_zoning_planning",
+    "source_type": "open data permits",
+    "expected_signals": "permit activity, redevelopment, owner/contractor clues",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://data.cityofchicago.org/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 8570,
+  "links_len": 12,
+  "available_fields": [
+    "asset_type"
+  ],
+  "snippet": "Permits issued by the Department of Buildings in the City of Chicago from 2006 to the present. The dataset for each year contains more than 65,000 records/rows of data and cannot be viewed in full in Microsoft Excel. Therefore, when downloading the file, select CSV from the Export menu. Open the file in an ASCII text editor, such as Wordpad, to view and search. Data fields requiring description are detailed below. PERMIT TYPE: \"New Construction and Renovation\" includes new projects or rehabilita",
+  "raw_sha256": "eaa97b7706995c2ebbaa70469df779da3aea705bbf7c0386b62f6c7bf93f4e76",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

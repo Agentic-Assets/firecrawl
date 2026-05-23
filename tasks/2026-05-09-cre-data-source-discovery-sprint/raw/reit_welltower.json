@@ -1,0 +1,35 @@
+{
+  "source": {
+    "id": "reit_welltower",
+    "url": "https://welltower.com/investors/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "senior housing and medical office portfolio, operators, dispositions",
+    "geography": "national",
+    "asset_types": "senior housing, medical office"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://welltower.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 9989,
+  "links_len": 23,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "debt",
+    "disposition",
+    "broker",
+    "tenant"
+  ],
+  "snippet": "We are at the precipice of one of the most pronounced demographic shifts in history, with extraordinary growth in the 80+ population across the US, UK, and Canada. The expected surge in demand for seniors housing in the coming years coupled with scarce new supply should result in an extraordinary growth backdrop for the sector (the \u201cbeta\u201d). However, we remain focused on the bigger prize: our opportunity to deliver unprecedented outperformance (or \u201calpha\u201d) to our existing shareholders. Paramount ",
+  "raw_sha256": "1dc49f816dd98616a5d5fa7d2f0622b3e404ffd9ec34210fb1188ca09657bfc1",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

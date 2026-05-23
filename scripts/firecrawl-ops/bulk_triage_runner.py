@@ -67,11 +67,11 @@ def main():
         },
         "results": results,
         "next_batches": {
-            "escalated_kimi_batch": escalate_primary,
+            "escalated_deepseek_pro_batch": escalate_primary,
         },
         "notes": [
-            "Run budget profile first (MiniMax M2.5)",
-            "Re-run escalated_kimi_batch under escalated profile (Kimi K2.5)",
+            "Run budget profile first (DeepSeek V4 Flash)",
+            "Re-run escalated_deepseek_pro_batch under escalated profile (DeepSeek V4 Pro)",
         ],
     }
 

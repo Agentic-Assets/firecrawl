@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "tx_vcp",
+    "url": "https://www.tceq.texas.gov/remediation/vcp/vcp.html",
+    "category": "environmental_records",
+    "source_type": "state voluntary cleanup program",
+    "expected_signals": "contaminated/redevelopment sites, cleanup status",
+    "geography": "state",
+    "asset_types": "land, redevelopment"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.tceq.texas.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: subscribe",
+  "markdown_len": 10724,
+  "links_len": 45,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "distress"
+  ],
+  "snippet": "* [Property Tax Abatement Incentives](https://www.tceq.texas.gov/remediation/vcp/vcp.html#abatement)",
+  "raw_sha256": "1b20a60349fbb42e54fd7778482c26bf603e25495396d4817cbd8a288c9a0b52",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

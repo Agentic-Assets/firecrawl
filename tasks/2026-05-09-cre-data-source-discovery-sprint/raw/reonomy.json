@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "reonomy",
+    "url": "https://www.reonomy.com/",
+    "category": "property_intelligence_platforms",
+    "source_type": "property intelligence platform",
+    "expected_signals": "ownership and property intelligence if licensed",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.reonomy.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 10743,
+  "links_len": 9,
+  "available_fields": [
+    "distress",
+    "broker"
+  ],
+  "snippet": "Unlock CRE property and market data with Reonomy",
+  "raw_sha256": "a0f88aaf02fe21cbe9f12db57f472435bdd8cfc786dcad11c509a59ad02efaee",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

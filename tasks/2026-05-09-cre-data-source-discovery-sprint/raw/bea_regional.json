@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "bea_regional",
+    "url": "https://www.bea.gov/data/economic-accounts/regional",
+    "category": "market_reports_pdfs_libraries",
+    "source_type": "economic data",
+    "expected_signals": "regional GDP, income, market context",
+    "geography": "national",
+    "asset_types": "market context"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.bea.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 3290,
+  "links_len": 19,
+  "available_fields": [],
+  "snippet": "[Skip to main content](https://www.bea.gov/data/economic-accounts/regional#main-content) 1. [Home](https://www.bea.gov/) 2. [BEA Data](https://www.bea.gov/data) 3. [Economic Accounts by Type](https://www.bea.gov/data/economic-accounts) 4. Regional Economic Accounts Regional Economic Accounts ========================== Products -------- * [Consumer Spending by State](https://www.bea.gov/data/consumer-spending/state) Spending by residents of the 50 states and D.C. * [Employment by State](https://w",
+  "raw_sha256": "106b6477a2539a95ecf7a2ce2e84d18fd45ed4761a2e8147494149198dda2628",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

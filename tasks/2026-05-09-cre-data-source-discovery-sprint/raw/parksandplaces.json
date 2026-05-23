@@ -1,0 +1,33 @@
+{
+  "source": {
+    "id": "parksandplaces",
+    "url": "https://www.parksandplaces.com/",
+    "category": "specialty_asset_marketplaces",
+    "source_type": "mobile home/RV park listings",
+    "expected_signals": "MHP/RV park listings, owner/broker, acreage, units",
+    "geography": "national",
+    "asset_types": "mobile home parks, RV parks"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.parksandplaces.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 8285,
+  "links_len": 6,
+  "available_fields": [
+    "size",
+    "price",
+    "disposition",
+    "broker"
+  ],
+  "snippet": "[CAMPGROUNDS & RV PARKS FOR SALE](https://www.parksandplaces.com/campgrounds-for-sale/)",
+  "raw_sha256": "2d73ac376c8321f490d8f7ff7c8c1773a43108d7b92c25fb877d3ea4f323f976",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "dallas_city_agendas",
+    "url": "https://cityofdallas.legistar.com/Calendar.aspx",
+    "category": "municipal_agendas_packets",
+    "source_type": "municipal agenda portal",
+    "expected_signals": "agenda items, zoning, incentives, public approvals",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://cityofdallas.legistar.com/robots.txt (status 404)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: sign in",
+  "markdown_len": 38019,
+  "links_len": 134,
+  "available_fields": [
+    "address",
+    "disposition",
+    "broker"
+  ],
+  "snippet": "* Reinvestment Zone (RZ06) Six Board (Farmers Market)",
+  "raw_sha256": "46302feeb5d40d634ee0eda770fbb91201bc24d302a69336f04ac6ecf77db89a",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

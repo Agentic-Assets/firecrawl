@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "related_companies",
+    "url": "https://www.related.com/",
+    "category": "owner_operator_tenant_sites",
+    "source_type": "developer/operator",
+    "expected_signals": "development pipeline, projects, sectors, tenants",
+    "geography": "national",
+    "asset_types": "mixed-use, office, residential"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.related.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 17220,
+  "links_len": 14,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "debt"
+  ],
+  "snippet": "On April 27, Related Companies CEO Jeff Blau and President Bruce Beal were named to The 2026 New York City Power 100 list by _City & State New York_, which highlights the most influential leaders making waves in the city's economic and political landscapes. Some of the projects progressing under Blau's leadership include office tower 70 Hudson Yards and 100% affordable development Willets Point, while Beal has been guiding projects including mixed-use development Harborside 4 and the company's v",
+  "raw_sha256": "2c80eef6e5cb0c676a755cad12af31840e66087658f68ee52534a2e80882389d",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "sf_permits",
+    "url": "https://sfplanning.org/permit-records",
+    "category": "permits_zoning_planning",
+    "source_type": "planning/permit records",
+    "expected_signals": "planning applications, permits, zoning cases",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://sfplanning.org/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 1668,
+  "links_len": 6,
+  "available_fields": [],
+  "snippet": "Try our [SF Property Information Map](https://sfplanninggis.org/pim/ \"webpage\")",
+  "raw_sha256": "ba72eaaa625007c8f1c787c1c5f9ee468e2d8bb69d6aadc4992d89384c26cab0",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

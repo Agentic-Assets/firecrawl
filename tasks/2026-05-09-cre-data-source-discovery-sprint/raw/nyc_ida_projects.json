@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "nyc_ida_projects",
+    "url": "https://edc.nyc/program/nyc-industrial-development-agency",
+    "category": "economic_development_incentives",
+    "source_type": "industrial development agency",
+    "expected_signals": "tax incentives, project approvals, company/property clues",
+    "geography": "city",
+    "asset_types": "industrial, mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://edc.nyc/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 651,
+  "links_len": 2,
+  "available_fields": [
+    "asset_type"
+  ],
+  "snippet": "[Skip to main content](https://edc.nyc/program/nyc-industrial-development-agency#main-content)",
+  "raw_sha256": "996ab6808c9812da8beaeaafaf3f6de93c8af1df69bdec368e42cc19ee3c0dbf",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

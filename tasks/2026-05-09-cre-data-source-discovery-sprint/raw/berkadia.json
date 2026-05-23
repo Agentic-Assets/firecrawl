@@ -1,0 +1,33 @@
+{
+  "source": {
+    "id": "berkadia",
+    "url": "https://www.berkadia.com/",
+    "category": "lenders_servicers_receivers",
+    "source_type": "mortgage banking and investment sales",
+    "expected_signals": "debt, investment sales, broker activity, market reports",
+    "geography": "national",
+    "asset_types": "multifamily, senior housing, hospitality"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.berkadia.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 8063,
+  "links_len": 19,
+  "available_fields": [
+    "asset_type",
+    "debt",
+    "disposition",
+    "broker"
+  ],
+  "snippet": "Explore investment properties across real estate sectors and markets.",
+  "raw_sha256": "c7c55fd1f425052706e1545f0d2b5a5db43ff70fdc1c7cf566ecfc5a5f05ce50",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "la_zoning",
+    "url": "https://planning.lacity.gov/zoning/zoning-search",
+    "category": "county_public_records",
+    "source_type": "zoning/planning",
+    "expected_signals": "zoning constraints, overlays, parcel planning context",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://planning.lacity.gov/robots.txt (status 403)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 4471,
+  "links_len": 10,
+  "available_fields": [],
+  "snippet": ") is a web-based mapping tool that provides zoning information for properties located in Los Angeles. ZIMAS was developed by City Planning to assist residents and businesses in making better informed land use decisions. The online mapping system is used to look up property information, ranging from a parcel\u2019s land use and zoning designations to its planning application and building permit history.",
+  "raw_sha256": "748f590056f8cdf58d98fb6f2c748300586e3c8ec3006e12f9d9977c8fff916b",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

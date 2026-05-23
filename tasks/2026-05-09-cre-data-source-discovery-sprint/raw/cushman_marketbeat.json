@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "cushman_marketbeat",
+    "url": "https://www.cushmanwakefield.com/en/united-states/insights/us-marketbeats/us-capital-markets-marketbeat",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage research",
+    "expected_signals": "capital markets, investment volume, sector commentary",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.cushmanwakefield.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: subscribe",
+  "markdown_len": 66094,
+  "links_len": 139,
+  "available_fields": [
+    "asset_type",
+    "tenant"
+  ],
+  "snippet": "Share: [_Share on Facebook_](https://www.facebook.com/sharer.php?t=U.S.%20MarketBeats%20Real%20Estate%20Research%20Data%20%7C%20US%20%7C%20Cushman%20%26%20Wakefield&u=https://www.cushmanwakefield.com/en/united-states/insights/us-marketbeats)",
+  "raw_sha256": "1cb3e175c0a2946c2f51770ebf707e2274636b3423709e024ab9f7bc8cff80e0",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

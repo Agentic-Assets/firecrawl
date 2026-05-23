@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "cbre_im",
+    "url": "https://www.cbreim.com/",
+    "category": "pe_real_estate_firms",
+    "source_type": "real estate investment manager",
+    "expected_signals": "portfolio strategy, sectors, investment themes",
+    "geography": "global",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.cbreim.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 8076,
+  "links_len": 19,
+  "available_fields": [
+    "asset_type"
+  ],
+  "snippet": "[Learn More](https://www.cbreim.com/insights/articles/gen-ai-impact-on-us-employment-and-office-space)",
+  "raw_sha256": "d557e6b97ef169824fb4b819ab1e88a2e7ef7a3693fe9cb6477eafc7191eaac1",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

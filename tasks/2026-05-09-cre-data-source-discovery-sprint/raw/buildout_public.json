@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "buildout_public",
+    "url": "https://buildout.com/",
+    "category": "broker_listing_infrastructure",
+    "source_type": "broker listing infrastructure",
+    "expected_signals": "broker listing page ecosystem and embedded CRE flyers",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://buildout.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: register",
+  "markdown_len": 14450,
+  "links_len": 16,
+  "available_fields": [
+    "asset_type",
+    "broker"
+  ],
+  "snippet": "Press Alt+1 for screen-reader mode, Alt+0 to cancel[Accessibility Screen-Reader Guide, Feedback, and Issue Reporting | New window](https://accessibe.com/blog/knowledgebase/screen-reader-guide)",
+  "raw_sha256": "05ce5bc06ad620431401b92936ed4747caeac1d8f3d77e3e9b64a11c0e706b87",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

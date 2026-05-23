@@ -1,0 +1,33 @@
+{
+  "source": {
+    "id": "cbre_insights",
+    "url": "https://www.cbre.com/insights/us-quarterly-figures",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage research",
+    "expected_signals": "market metrics, sector trends, rent, vacancy, cap rates",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.cbre.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 4364,
+  "links_len": 9,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "occupancy",
+    "tenant"
+  ],
+  "snippet": "### [Net-Lease Investment Volume Falls Slightly Below Pre-Pandemic Average](https://www.cbre.com/insights/figures/q1-2026-us-net-lease-investment-figures \"Net-Lease Investment Volume Falls Slightly Below Pre-Pandemic Average\")",
+  "raw_sha256": "39018ac6c520dca65de75067933fd9fc73bfe83b43d9d5489cdf50e89dc80d19",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

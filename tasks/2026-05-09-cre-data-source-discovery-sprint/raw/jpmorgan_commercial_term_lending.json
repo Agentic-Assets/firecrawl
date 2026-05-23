@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "jpmorgan_commercial_term_lending",
+    "url": "https://www.jpmorgan.com/commercial-banking/solutions/commercial-term-lending",
+    "category": "lenders_servicers_receivers",
+    "source_type": "CRE lender",
+    "expected_signals": "lending criteria, property types, financing context",
+    "geography": "national",
+    "asset_types": "multifamily, mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.jpmorgan.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "minimal",
+  "failure_modes": "very small public text surface",
+  "markdown_len": 200,
+  "links_len": 1,
+  "available_fields": [],
+  "snippet": "We regret to inform you that the information you are looking for is no longer available on **www.jpmorgan.com**. Please visit our [homepage](https://www.jpmorgan.com/)",
+  "raw_sha256": "452c99cdcd3a971bdae01f31f228973cd2f427b08a15834ec201597d79a47ada",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

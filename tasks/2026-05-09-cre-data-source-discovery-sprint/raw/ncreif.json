@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "ncreif",
+    "url": "https://www.ncreif.org/",
+    "category": "market_reports_pdfs_libraries",
+    "source_type": "institutional real estate index",
+    "expected_signals": "institutional returns and property performance if public/licensed",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.ncreif.org/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 2876,
+  "links_len": 14,
+  "available_fields": [],
+  "snippet": "[](https://www.ncreif.org/__static/jdj5jdewjg1cavzjrldzaeg3mtjqv2xt/NFI-ODCE-1Q-2026-Press-Release(2).pdf)",
+  "raw_sha256": "29311b3c93a2995a0251874e809061f6350ea2ebda0a92a61ed6b6a7fa1a5412",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "marcus_research",
+    "url": "https://www.marcusmillichap.com/research",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage research",
+    "expected_signals": "investment forecasts, listings/research teasers",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.marcusmillichap.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 4824,
+  "links_len": 4,
+  "available_fields": [
+    "asset_type",
+    "tenant"
+  ],
+  "snippet": "Marcus & Millichap's research services division is dedicated to providing our clients with cutting-edge market research and innovative insights. We produce research reports and videos covering over a dozen property types, across the United States and Canada, and a variety of market conditions, all to help our clients make better, more informed decisions.",
+  "raw_sha256": "4f5fa546ddd5ff3238ae15f3252e24f56e4049b59380ccda3797f398ea8032ca",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

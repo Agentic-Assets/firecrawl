@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "chipotle_real_estate",
+    "url": "https://www.chipotle.com/real-estate",
+    "category": "tenant_business_movement",
+    "source_type": "tenant real estate page",
+    "expected_signals": "site criteria and expansion clues",
+    "geography": "national",
+    "asset_types": "retail, restaurant"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://www.chipotle.com/robots.txt (status 404)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 1986,
+  "links_len": 6,
+  "available_fields": [],
+  "snippet": "If you would like to submit a Data Subject Request, please click here: [Data Subject Request Form](https://www.chipotle.com/privacy-request)",
+  "raw_sha256": "1a8ef750b03e611ef8bba9bca7e2ad528a33f170de8b4703f13c309d60d8e858",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

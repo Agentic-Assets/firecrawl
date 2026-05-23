@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "realty_income_pr",
+    "url": "https://www.realtyincome.com/investors/press-releases",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT press releases",
+    "expected_signals": "acquisitions, dispositions, earnings, portfolio stats",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.realtyincome.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 3445,
+  "links_len": 14,
+  "available_fields": [
+    "price",
+    "debt"
+  ],
+  "snippet": "[Skip to main content](https://www.realtyincome.com/investors/press-releases#main-content)",
+  "raw_sha256": "e63b624a81e2ef0c589d7340a74849868d824137cf6df2472d3f49dab2f8c938",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

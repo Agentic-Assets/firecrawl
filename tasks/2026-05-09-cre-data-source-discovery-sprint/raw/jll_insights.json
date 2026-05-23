@@ -1,0 +1,34 @@
+{
+  "source": {
+    "id": "jll_insights",
+    "url": "https://www.jll.com/en-us/insights",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage research",
+    "expected_signals": "research articles, market movement, tenant and sector signals",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.jll.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: subscribe",
+  "markdown_len": 21845,
+  "links_len": 59,
+  "available_fields": [
+    "asset_type",
+    "occupancy",
+    "debt",
+    "disposition",
+    "broker"
+  ],
+  "snippet": "### Global office fit-out costs guide 2026",
+  "raw_sha256": "70c295baea1c711a702bc56a38609b2e4d784ac5ff2adb4eebb57423151b20d7",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "denver_property",
+    "url": "https://www.denvergov.org/Property",
+    "category": "public_records_assessor_gis",
+    "source_type": "city property records",
+    "expected_signals": "parcel, assessment, zoning, permits links",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.denvergov.org/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 3845,
+  "links_len": 12,
+  "available_fields": [
+    "distress",
+    "disposition"
+  ],
+  "snippet": "[Skip to main content](https://www.denvergov.org/Property#main-content)",
+  "raw_sha256": "932edd55bea3f26a91c88fda8ca1a851690a489f5be2bfe1a122f48250a36e6d",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

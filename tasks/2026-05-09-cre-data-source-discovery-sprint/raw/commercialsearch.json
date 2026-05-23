@@ -1,0 +1,34 @@
+{
+  "source": {
+    "id": "commercialsearch",
+    "url": "https://www.commercialsearch.com/",
+    "category": "listing_marketplaces",
+    "source_type": "CRE listing marketplace",
+    "expected_signals": "commercial listings, broker and property clues",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.commercialsearch.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: register",
+  "markdown_len": 41638,
+  "links_len": 124,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "disposition",
+    "broker",
+    "tenant"
+  ],
+  "snippet": "Find your space among 370,000 listings spanning all major U.S. markets. Listings are updated daily, include all commercial property types, and are represented by leading commercial real estate brokerages. Research the market, find your space, and connect with a broker - all through our intuitive and easy-to-use platform.",
+  "raw_sha256": "ccccacd7547c64dd8c83a0097f7e46b79f79e7f78d4f55a43a455294d98db57c",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

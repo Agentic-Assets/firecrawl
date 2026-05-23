@@ -1,0 +1,35 @@
+{
+  "source": {
+    "id": "bisnow",
+    "url": "https://www.bisnow.com/",
+    "category": "news_press_tenant_signals",
+    "source_type": "CRE news",
+    "expected_signals": "leases, sales, development, local market news",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.bisnow.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: register",
+  "markdown_len": 26010,
+  "links_len": 87,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "debt",
+    "distress",
+    "broker",
+    "tenant"
+  ],
+  "snippet": "[![Placeholder](https://cdn.bisnow.net/assets/website/placeholder.png)](https://www.bisnow.com/boston/news/office/assembly-investments-401-wash-studiob-133925)",
+  "raw_sha256": "798770546763db221f0588cb64b11bb6f71d8949d4ae3420f17fc1cf2bd78161",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

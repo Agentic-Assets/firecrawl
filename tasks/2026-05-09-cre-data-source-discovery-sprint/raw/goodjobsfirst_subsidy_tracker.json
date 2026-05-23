@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "goodjobsfirst_subsidy_tracker",
+    "url": "https://subsidytracker.goodjobsfirst.org/",
+    "category": "economic_development_incentives",
+    "source_type": "incentives database",
+    "expected_signals": "incentives, abatements, company locations, economic development",
+    "geography": "national",
+    "asset_types": "industrial, office, retail"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://subsidytracker.goodjobsfirst.org/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "blocked",
+  "failure_modes": "block/CAPTCHA/access-control language detected in scraped content",
+  "markdown_len": 50277,
+  "links_len": 9,
+  "available_fields": [
+    "asset_type",
+    "debt",
+    "distress"
+  ],
+  "snippet": "**IMPORTANT NOTE:** Due to uneven disclosure, it is **NOT appropriate** to make state-by-state or jurisdiction-by-jurisdiction comparisons. For more details on the state of disclosure when it comes to economic development incentives, [read this report](https://goodjobsfirst.org/financial-exposure-rating-the-states-on-economic-development-transparency/)",
+  "raw_sha256": "fbd0fee06a903aebbde548b9607a9f96672d55eb8a6a4497962247c8e4e396ed",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

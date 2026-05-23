@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "stretto_cases",
+    "url": "https://cases.stretto.com/",
+    "category": "distress_foreclosure_bankruptcy",
+    "source_type": "claims agent case portal",
+    "expected_signals": "bankruptcy cases, debtor, docket links, real estate exposure",
+    "geography": "national",
+    "asset_types": "businesses, real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://cases.stretto.com/robots.txt (status 404)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: log in",
+  "markdown_len": 4216,
+  "links_len": 5,
+  "available_fields": [
+    "distress",
+    "disposition"
+  ],
+  "snippet": "When you visit our website, we store cookies on your browser to collect information. The information collected might relate to you, your preferences or your device, and is mostly used to make the site work as you expect it to and to provide a more personalized web experience. However, you can choose not to allow certain types of cookies, which may impact your experience of the site and the services we are able to offer. Click on the different category headings to find out more and change our def",
+  "raw_sha256": "f82d8bbfbc82d6d0e67f5b37c3ad5c55c5d6f74898c3f717fba10796f4a5f3d9",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

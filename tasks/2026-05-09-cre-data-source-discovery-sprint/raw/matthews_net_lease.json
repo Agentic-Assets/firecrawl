@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "matthews_net_lease",
+    "url": "https://www.matthews.com/properties/",
+    "category": "sale_leaseback_netlease",
+    "source_type": "net lease brokerage listings",
+    "expected_signals": "net lease listings, tenant, cap rate, price, lease term",
+    "geography": "national",
+    "asset_types": "retail, net lease"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.matthews.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "minimal",
+  "failure_modes": "very small public text surface",
+  "markdown_len": 137,
+  "links_len": 1,
+  "available_fields": [],
+  "snippet": "404 - Page Not Found ==================== Sorry\u2018 the page you're looking for doesn't exist. [Return to Home](https://www.matthews.com/)",
+  "raw_sha256": "476ebf2b110ca4c74d76a20280f495e7a232d9177d69867e000176c2c30749e5",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

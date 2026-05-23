@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "naiglobal_properties",
+    "url": "https://www.naiglobal.com/properties/",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage listings",
+    "expected_signals": "for sale/lease listings, brokers, markets",
+    "geography": "global",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.naiglobal.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 1651,
+  "links_len": 1,
+  "available_fields": [],
+  "snippet": "To find out more about NAI Global\u2019s membership, please tell us a little bit about yourself.",
+  "raw_sha256": "9b67fde338001c7c748182e0f478909b781f1f98119e45c502c9af285468d07b",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

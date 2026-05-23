@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "phila_atlas",
+    "url": "https://atlas.phila.gov/",
+    "category": "public_records_assessor_gis",
+    "source_type": "city parcel/GIS",
+    "expected_signals": "property, permits, violations, zoning",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://atlas.phila.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 1149,
+  "links_len": 1,
+  "available_fields": [],
+  "snippet": "* Research real estate information including property values, zoning, and document archives",
+  "raw_sha256": "f0b03462289ec426976dc6bd9afce964ec61a072df37de3db3b80d5cecf5c027",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "source": {
+    "id": "colliers_capital_markets",
+    "url": "https://www.colliers.com/en/services/capital-markets",
+    "category": "industry_directories_capital_markets",
+    "source_type": "capital markets service page",
+    "expected_signals": "investment sales, debt advisory, capital markets services",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.colliers.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 26514,
+  "links_len": 46,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "debt",
+    "disposition",
+    "broker",
+    "tenant"
+  ],
+  "snippet": "[Skip to main content](https://www.colliers.com/en/services/capital-markets#main-container)",
+  "raw_sha256": "017c57e80d13b961a6fd881242b003b5afbed3636785508eb9611d597a672954",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

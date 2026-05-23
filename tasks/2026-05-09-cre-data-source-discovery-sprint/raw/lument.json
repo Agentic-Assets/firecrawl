@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "lument",
+    "url": "https://www.lument.com/",
+    "category": "lenders_servicers_receivers",
+    "source_type": "CRE lender",
+    "expected_signals": "agency lending, seniors, multifamily, financing context",
+    "geography": "national",
+    "asset_types": "multifamily, senior housing, healthcare"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.lument.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: subscribe",
+  "markdown_len": 16190,
+  "links_len": 22,
+  "available_fields": [
+    "asset_type",
+    "debt",
+    "broker"
+  ],
+  "snippet": "At Lument, we deliver flexible capital solutions, a fully integrated investment sales platform, and strategic insight that helps you maximize opportunities and achieve long-term success. Whether you\u2019re buying, selling, or refinancing, the value we provide goes far beyond the deal.",
+  "raw_sha256": "c96d4fa5ed912d332ea180866b85114f47d4c87d3fbdf79f2429f00c0f4848ae",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

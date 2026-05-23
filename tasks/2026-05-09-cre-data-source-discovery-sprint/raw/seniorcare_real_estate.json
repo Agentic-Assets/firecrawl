@@ -1,0 +1,24 @@
+{
+  "source": {
+    "id": "seniorcare_real_estate",
+    "url": "https://seniorcare-realestate.com/",
+    "category": "specialty_asset_marketplaces",
+    "source_type": "senior housing brokerage",
+    "expected_signals": "senior housing listings and operator signals",
+    "geography": "national",
+    "asset_types": "senior housing"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://seniorcare-realestate.com/robots.txt (HTTPSConnectionPool(host='seniorcare-realestate.com', port=443): Max retries exceeded with url: /robots.txt (Caused by NameResolutionError(\"HTTPSConnection(host='seniorcare-realestate.com', port=443): Failed to resolve 'seniorcare-realestate.com' ([Errno 8] nodename nor servname provided, or not known)\")))",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "error",
+  "failure_modes": "DNS resolution failed for hostname \"seniorcare-realestate.com\". This means the domain name could not be translated to an IP address. Possible causes: (1) The domain name is misspel",
+  "markdown_len": 0,
+  "links_len": 0,
+  "available_fields": [],
+  "snippet": "",
+  "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "response_keys": []
+}

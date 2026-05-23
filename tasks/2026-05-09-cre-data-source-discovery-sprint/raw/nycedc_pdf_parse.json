@@ -1,0 +1,12 @@
+{
+  "parse": {
+    "method": "v2/parse PDF",
+    "url": "https://www.nmrk.com/storage-nmrk/uploads/fields/pdf-market-reports/2Q24-Silicon-Valley-Office-Market-Report.pdf",
+    "success": true,
+    "evidence": "markdown_len=23790; downloaded_bytes=1942854",
+    "robots_status": "allowed",
+    "robots_url": "https://www.nmrk.com/robots.txt",
+    "status_code": 200
+  },
+  "snippet": "Silicon Valley Office Market Overview 2Q24 NEWMARK \u2012The region\u2019s labor market showed signs of stabilizing. After eight months of declines, we have now tracked three months of modest growth, a welcome sign. While employment growth has been slower in this market relative to the U.S., the unemployment rate has fallen more sharply indicating a tighter labor pool. \u2012Layoffs in the large tech companies outpaced employment gains in the AI space, something that we are closely monitoring. Professional and"
+}

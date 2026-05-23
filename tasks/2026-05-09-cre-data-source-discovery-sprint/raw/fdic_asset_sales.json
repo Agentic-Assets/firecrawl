@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "fdic_asset_sales",
+    "url": "https://www.fdic.gov/asset-sales",
+    "category": "distress_sources",
+    "source_type": "lender-owned/asset sales",
+    "expected_signals": "REO, loan sale events, failed-bank asset sales",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.fdic.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 4603,
+  "links_len": 15,
+  "available_fields": [
+    "asset_type",
+    "debt"
+  ],
+  "snippet": "[Skip to main content](https://www.fdic.gov/asset-sales#main-content)",
+  "raw_sha256": "2c5eff559f1d622cd611fca8c7d1f81796cb34624fc97036c417f004bb4bf3dc",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

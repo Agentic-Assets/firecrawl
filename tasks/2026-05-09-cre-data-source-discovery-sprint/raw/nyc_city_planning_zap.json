@@ -1,0 +1,24 @@
+{
+  "source": {
+    "id": "nyc_city_planning_zap",
+    "url": "https://zap.planning.nyc.gov/",
+    "category": "permits_zoning_planning",
+    "source_type": "zoning application portal",
+    "expected_signals": "rezoning and land-use applications, applicants, parcels",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://zap.planning.nyc.gov/robots.txt",
+  "http_status": 500,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "error",
+  "failure_modes": "All scraping engines failed to retrieve content from this URL. Engines tried: [playwright, fetch]. This usually happens when: (1) The URL is invalid or the page doesn't exist (404)",
+  "markdown_len": 0,
+  "links_len": 0,
+  "available_fields": [],
+  "snippet": "",
+  "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "response_keys": []
+}

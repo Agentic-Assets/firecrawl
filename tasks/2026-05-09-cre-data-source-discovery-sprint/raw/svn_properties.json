@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "svn_properties",
+    "url": "https://svn.com/properties/",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage listings",
+    "expected_signals": "listed CRE deals, broker, asset type, location",
+    "geography": "national",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://svn.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 1763,
+  "links_len": 4,
+  "available_fields": [
+    "asset_type",
+    "broker"
+  ],
+  "snippet": "The right commercial real estate properties can transform your portfolio and drive long-term returns. SVN\u00ae International connects investors, owner-occupants, and tenants with opportunities across [office, industrial, retail, multifamily, land, and specialty asset classes](https://svn.com/commercial-property-types/)",
+  "raw_sha256": "518d183cbacee37dfe29786b831b685a1e779e2fd75c0e04682dd35bbea113b8",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

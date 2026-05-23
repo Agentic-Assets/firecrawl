@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "nyc_oasis",
+    "url": "https://www.oasisnyc.net/",
+    "category": "public_records_assessor_gis",
+    "source_type": "parcel/GIS portal",
+    "expected_signals": "parcel, zoning, land use, owner/public data links",
+    "geography": "city",
+    "asset_types": "mixed real estate"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://www.oasisnyc.net/robots.txt (status 404)",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "minimal",
+  "failure_modes": "very small public text surface",
+  "markdown_len": 380,
+  "links_len": 2,
+  "available_fields": [],
+  "snippet": "Please read about [possible options for the future of OASISnyc.net](https://mailchi.mp/8b7a8c025a9b/oasisnycs-future-feedback-needed)",
+  "raw_sha256": "690db3dfbd47c942760ea7356a4e63f4a4c4cbaf617cc3fd709fd0d36f5ae1a5",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

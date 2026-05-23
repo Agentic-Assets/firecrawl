@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "newmark_market_reports",
+    "url": "https://www.nmrk.com/insights/market-report",
+    "category": "brokerage_listing_research",
+    "source_type": "brokerage market reports",
+    "expected_signals": "market reports, rent, vacancy, leasing, broker commentary",
+    "geography": "national",
+    "asset_types": "office, industrial, retail, multifamily"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.nmrk.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "minimal",
+  "failure_modes": "very small public text surface",
+  "markdown_len": 185,
+  "links_len": 2,
+  "available_fields": [],
+  "snippet": "404 Page Not Found ============== The page you're looking for doesn't exist or has been moved. [Return to Homepage](https://www.nmrk.com/) [Contact Us](https://www.nmrk.com/contact)",
+  "raw_sha256": "162dab89188476063e31d6842353da87f77fda463d0bc9e7dc1edfd67b6cd158",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

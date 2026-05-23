@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "simon_ir",
+    "url": "https://investors.simon.com/",
+    "category": "reit_public_company_disclosures",
+    "source_type": "REIT investor relations",
+    "expected_signals": "supplements, occupancy, NOI, debt, tenant mix",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "unknown",
+  "robots_url": "https://investors.simon.com/robots.txt (HTTPSConnectionPool(host='investors.simon.com', port=443): Read timed out. (read timeout=8))",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 6515,
+  "links_len": 27,
+  "available_fields": [
+    "asset_type",
+    "price"
+  ],
+  "snippet": "[Accolades & Research](https://investors.simon.com/news-events/accolades-research \"Learn how Simon has outperformed the market, led the competition & racked up many an award. \")",
+  "raw_sha256": "c28a04ebdd9ba4b3111a062a0f93b853de63f283709d9287414a7807da21d3fc",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

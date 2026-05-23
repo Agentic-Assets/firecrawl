@@ -1,0 +1,36 @@
+{
+  "source": {
+    "id": "brookfield_real_estate",
+    "url": "https://www.brookfield.com/our-businesses/real-estate",
+    "category": "pe_real_estate_firms",
+    "source_type": "real estate investment manager",
+    "expected_signals": "portfolio themes, property sectors, capital deployment",
+    "geography": "global",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.brookfield.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 18993,
+  "links_len": 14,
+  "available_fields": [
+    "asset_type",
+    "size",
+    "price",
+    "occupancy",
+    "debt",
+    "disposition",
+    "tenant"
+  ],
+  "snippet": "We are one of the world\u2019s largest and most successful real estate investors, with a legacy spanning more than a century and a reputation for delivering value through all market cycles.",
+  "raw_sha256": "6af8b23967e3c71a2ca01e6fcd0ea562544401c9e884fc894d22263c3e1c9978",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

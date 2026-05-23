@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "target_store_openings",
+    "url": "https://corporate.target.com/about/locations",
+    "category": "tenant_business_movement",
+    "source_type": "tenant locations/corporate page",
+    "expected_signals": "store footprint, openings and market presence",
+    "geography": "national",
+    "asset_types": "retail"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://corporate.target.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 5276,
+  "links_len": 13,
+  "available_fields": [
+    "asset_type"
+  ],
+  "snippet": "Target has stores and supply chain facilities across the country and offices around the world \u2014 but they\u2019re so much more than buildings or points on a map. They\u2019re epicenters for strategy, service, community and fun. Where our incredible team works together, across the globe, to bring the magic of Target to life \u2014 and spark joy in our guests\u2019 everyday lives.",
+  "raw_sha256": "f8ceec9330f9d9debb7bd0f3accb611c1cdaea04f6514d1d5affa2027703c2ba",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "restaurantbusiness_news",
+    "url": "https://www.restaurantbusinessonline.com/",
+    "category": "tenant_business_movement",
+    "source_type": "tenant industry news",
+    "expected_signals": "restaurant closures, expansions, bankruptcies, sale-leaseback clues",
+    "geography": "national",
+    "asset_types": "retail, restaurant"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.restaurantbusinessonline.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 13989,
+  "links_len": 41,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "debt"
+  ],
+  "snippet": "[### Restaurant sales were all over the place last quarter](https://www.restaurantbusinessonline.com/financing/restaurant-sales-were-all-over-place-last-quarter)",
+  "raw_sha256": "cad3dbfe6f150220a5bfc3d1065ac5daa2882872da87f2c71d5c5c4fd3b96826",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

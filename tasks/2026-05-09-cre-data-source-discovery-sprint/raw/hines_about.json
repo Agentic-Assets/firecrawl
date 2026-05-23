@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "hines_about",
+    "url": "https://www.hines.com/about",
+    "category": "owner_operator_tenant_sites",
+    "source_type": "developer/operator",
+    "expected_signals": "portfolio scale, markets, asset classes",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.hines.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 8342,
+  "links_len": 33,
+  "available_fields": [
+    "address",
+    "price",
+    "disposition"
+  ],
+  "snippet": "We use cookies and tracking technologies to enhance your browsing experience, personalize content, and improve our site's performance. To learn more about how we use cookies or manage your cookie settings, click \u2018Manage Cookies\u2019. By clicking \u2018Accept\u2019, you consent to the use of these tools as outlined in our Privacy Policy. If you choose \u2018Dismiss\u2019, only essential cookies necessary for the website\u2019s basic functionality will be enabled. For more details, please review our",
+  "raw_sha256": "06718efc4c56a89cbb0ab2967e616ce20dce0ecdbbea591f701e6b3731d1ffd6",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

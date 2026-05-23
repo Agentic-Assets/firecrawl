@@ -1,0 +1,37 @@
+{
+  "source": {
+    "id": "jll_capital_markets",
+    "url": "https://www.jll.com/en-us/services/capital-markets/",
+    "category": "industry_directories_capital_markets",
+    "source_type": "capital markets service page",
+    "expected_signals": "brokerage teams, debt/equity services, investment sales signals",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.jll.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 17813,
+  "links_len": 49,
+  "available_fields": [
+    "address",
+    "asset_type",
+    "price",
+    "debt",
+    "distress",
+    "disposition",
+    "broker",
+    "tenant"
+  ],
+  "snippet": "[Skip to main content](https://www.jll.com/en-us/services/capital-markets/#main)",
+  "raw_sha256": "49d4ec536987176a3f0e6094ac861696e7ea319065f2b84d9ae9b59a5b5cbb0f",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

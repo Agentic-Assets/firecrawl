@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "ny_warn",
+    "url": "https://dol.ny.gov/warn-notices",
+    "category": "warn_notices",
+    "source_type": "state WARN notices",
+    "expected_signals": "layoffs/closures, company, location, date",
+    "geography": "state",
+    "asset_types": "tenant/business"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://dol.ny.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 8046,
+  "links_len": 31,
+  "available_fields": [
+    "asset_type",
+    "disposition"
+  ],
+  "snippet": "| [Plug Power, Inc.](https://dol.ny.gov/warn-plug-power-inc-region-capital-date-posted-3312025-notice-date-3252025 \"Plug Power, Inc.\") | Capital | 3/31/2025 | 3/25/2025 |",
+  "raw_sha256": "439c71f1bd4877e11f4d1ad93c270007187beecb12da7038540593954aaab794",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

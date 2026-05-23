@@ -1,0 +1,32 @@
+{
+  "source": {
+    "id": "greystar_investment",
+    "url": "https://www.greystar.com/business-services/investment-management",
+    "category": "owner_operator_tenant_sites",
+    "source_type": "multifamily owner/operator",
+    "expected_signals": "multifamily portfolio, investment activity, development",
+    "geography": "global",
+    "asset_types": "multifamily"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.greystar.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 10625,
+  "links_len": 5,
+  "available_fields": [
+    "asset_type",
+    "price",
+    "disposition"
+  ],
+  "snippet": "Greystar targets gateway markets and select urban growth markets that have demonstrated liquidity, a favorable employment base, strong population growth, and other positive demand drivers. The firm\u2019s core-plus strategies seek to provide investors with the opportunity to generate stable cash flow and take advantage of operational upside with minimal capital expenditures.",
+  "raw_sha256": "0c68a634e04da9c035e7f71ea47731ab5b14e241fa2fd198f829e56922d98b08",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

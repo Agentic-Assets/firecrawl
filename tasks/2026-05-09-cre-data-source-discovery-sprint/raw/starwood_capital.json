@@ -1,0 +1,28 @@
+{
+  "source": {
+    "id": "starwood_capital",
+    "url": "https://www.starwoodcapital.com/businesses/real-estate/",
+    "category": "pe_real_estate_firms",
+    "source_type": "real estate investment manager",
+    "expected_signals": "portfolio strategy, dispositions/acquisitions, sectors",
+    "geography": "global",
+    "asset_types": "mixed commercial"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.starwoodcapital.com/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 2558,
+  "links_len": 5,
+  "available_fields": [],
+  "snippet": "[Skip to main content](https://www.starwoodcapital.com/businesses/real-estate/#main-content)",
+  "raw_sha256": "f99d9b797bcc46ef86555ae2a4f752c67f44bfc3d74cabfd591e53070d4b133f",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

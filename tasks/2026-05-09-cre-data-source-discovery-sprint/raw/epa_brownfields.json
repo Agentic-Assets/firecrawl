@@ -1,0 +1,30 @@
+{
+  "source": {
+    "id": "epa_brownfields",
+    "url": "https://www.epa.gov/brownfields",
+    "category": "environmental_records",
+    "source_type": "environmental redevelopment program",
+    "expected_signals": "brownfield grants, redevelopment sites, environmental constraints",
+    "geography": "national",
+    "asset_types": "land, redevelopment"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://www.epa.gov/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "approved_public",
+  "failure_modes": "public markdown returned without detected access-control stop signal",
+  "markdown_len": 7528,
+  "links_len": 16,
+  "available_fields": [
+    "price"
+  ],
+  "snippet": "* ![Individual inputting data on a laptop](https://www.epa.gov/system/files/styles/gallery_medium/private/images/2025-03/reporting.jpg?h=ccd5e943&itok=jj9meA1B)",
+  "raw_sha256": "a56de0281a5a594a063102f35c2d444f5a12b37d5118a257bfaffe7e034754b0",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

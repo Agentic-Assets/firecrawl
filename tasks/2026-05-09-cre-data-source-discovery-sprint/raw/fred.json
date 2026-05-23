@@ -1,0 +1,31 @@
+{
+  "source": {
+    "id": "fred",
+    "url": "https://fred.stlouisfed.org/",
+    "category": "market_reports_pdfs_libraries",
+    "source_type": "economic data",
+    "expected_signals": "interest rates, construction, employment, rent series",
+    "geography": "mixed",
+    "asset_types": "mixed"
+  },
+  "crawl_date": "2026-05-09T08:17:34.086678+00:00",
+  "robots_status": "allowed",
+  "robots_url": "https://fred.stlouisfed.org/robots.txt",
+  "http_status": 200,
+  "firecrawl_method": "v2/scrape markdown+links",
+  "access_status": "partial_public",
+  "failure_modes": "substantial public text but login/paywall prompts also present: subscribe",
+  "markdown_len": 5078,
+  "links_len": 48,
+  "available_fields": [
+    "asset_type",
+    "debt"
+  ],
+  "snippet": "* [Release](https://fred.stlouisfed.org/releases)",
+  "raw_sha256": "6d65097c2c6cca0b8fbc11a5038733122540166cae15814b89533aebfb791de9",
+  "response_keys": [
+    "links",
+    "markdown",
+    "metadata"
+  ]
+}

@@ -102,7 +102,7 @@ Because you are running locally but using **OpenRouter**, you are getting the be
 ---
 
 ### 6. Fork-Specific Env Vars
-This fork's ops layer (`.claude/skills/firecrawl-ops/`, `scripts/firecrawl-ops/`) reads a few extra vars from the repo-root `.env`. There is no root `.env.example` on purpose — copy upstream's `apps/api/.env.example` to `./.env`, then layer these on top:
+This fork's ops layer (`.agents/skills/firecrawl-ops/`, `scripts/firecrawl-ops/`) reads a few extra vars from the repo-root `.env`. There is no root `.env.example` on purpose — copy upstream's `apps/api/.env.example` to `./.env`, then layer these on top:
 
 | Var | Purpose | Required |
 | :--- | :--- | :--- |
@@ -113,7 +113,8 @@ This fork's ops layer (`.claude/skills/firecrawl-ops/`, `scripts/firecrawl-ops/`
 
 Switch model profiles without hand-editing:
 ```bash
-scripts/firecrawl-ops/set_model_profile.sh budget      # MiniMax M2.5
-scripts/firecrawl-ops/set_model_profile.sh escalated   # Kimi K2.5
-docker compose down && docker compose up -d
+scripts/firecrawl-ops/set_model_profile.sh budget      # DeepSeek V4 Flash (OpenRouter)
+scripts/firecrawl-ops/set_model_profile.sh escalated   # DeepSeek V4 Pro (OpenRouter)
+scripts/firecrawl-ops/set_model_profile.sh gateway     # DeepSeek V4 Flash (Vercel AI Gateway)
+docker compose up -d --force-recreate api
 ```

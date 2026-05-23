@@ -46,7 +46,11 @@ Useful `apps/api` scripts (see `apps/api/package.json` for the full list):
 
 This fork adds a self-hosted operations layer on top of upstream Firecrawl. It is fork-only — do not push it upstream.
 
-- `.Codex/skills/firecrawl-ops/SKILL.md` — entry point. Defines default model routing (budget: `openrouter/minimax/minimax-m2.5`, escalated: `moonshotai/kimi-k2.5`), the standard "verify health → pick endpoint → apply model profile" workflow, and links to all references and scripts.
+**Agent skills** (canonical in `.agents/skills/`):
+- `firecrawl-ops` — runtime health, Docker, model routing, endpoint selection
+- `firecrawl-local-api` — calling the local API at `http://localhost:3002`
+
+Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/deepseek-v4-pro` (OpenRouter). Verified locally 2026-05-09.
 - `docs/firecrawl-ops/references/` — durable reference docs:
   - `tools-capabilities.md` — endpoint-by-endpoint capability map
   - `model-routing.md` — model strategy and escalation rules
@@ -57,7 +61,7 @@ This fork adds a self-hosted operations layer on top of upstream Firecrawl. It i
   - `supabase-schema-firecrawl-swarm.sql` — optional Supabase schema for swarm telemetry (apply, then set `SWARM_SUPABASE_URL` / `SWARM_SUPABASE_KEY`)
 - `scripts/firecrawl-ops/` — runnable ops tooling:
   - `firecrawl_healthcheck.sh` — verify the local stack is up (run this first)
-  - `set_model_profile.sh budget|escalated` — rewrite `.env` model defaults; follow with `docker compose down && docker compose up -d`
+  - `set_model_profile.sh budget|escalated|gateway|gateway-codex|openai-direct` — rewrite `.env` model defaults; follow with `docker compose up -d --force-recreate api`
   - `artificialanalysis_snapshot.py` — refresh ArtificialAnalysis benchmark data for routing decisions
   - `platform_access_probe.py`, `cre_access_matrix.py` — accessibility probes
   - `bulk_triage_runner.py` — budget-first triage with escalation batches
