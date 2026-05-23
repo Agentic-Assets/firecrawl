@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import re
 import subprocess
 import sys
 import time
@@ -15,7 +17,9 @@ from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REQUEST_HELPER = SCRIPT_DIR / "firecrawl_request.py"
+OCR_HELPER = SCRIPT_DIR / "local_firepdf_ocr.sh"
 DEFAULT_ADAPTER_HEALTH_URL = "http://127.0.0.1:31337/health"
+PAGE_BREAK_MARKER = "FIRECRAWLPAGEBREAK"
 
 
 def parse_csv(value: str) -> list[str]:
@@ -69,6 +73,74 @@ def command_json(cmd: list[str], *, timeout: float = 10.0) -> Any:
         return {"ok": True, "stdout": proc.stdout[:1000]}
 
 
+def count_table_signals(markdown: str, html: str = "") -> int:
+    table_lines = sum(1 for line in markdown.splitlines() if line.count("|") >= 2)
+    html_tables = len(re.findall(r"<table\b", html, flags=re.IGNORECASE))
+    return table_lines + html_tables
+
+
+def count_figure_signals(markdown: str, html: str = "", images: list[Any] | None = None) -> int:
+    image_count = len(images or [])
+    figure_words = len(re.findall(r"\b(fig(?:ure)?\.?|chart|image|caption|diagram)\b", markdown, flags=re.IGNORECASE))
+    html_figures = len(re.findall(r"<(?:figure|img)\b", html, flags=re.IGNORECASE))
+    return image_count + figure_words + html_figures
+
+
+def repeated_line_ratio(markdown: str) -> float:
+    lines = [line.strip() for line in markdown.splitlines() if len(line.strip()) >= 8]
+    if not lines:
+        return 0.0
+    counts: dict[str, int] = {}
+    for line in lines:
+        counts[line] = counts.get(line, 0) + 1
+    repeated = sum(count - 1 for count in counts.values() if count > 1)
+    return round(repeated / max(1, len(lines)), 4)
+
+
+def page_records(markdown: str, html: str, images: list[Any], expected_pages: int | None) -> list[dict[str, Any]]:
+    if PAGE_BREAK_MARKER in markdown:
+        chunks = markdown.split(PAGE_BREAK_MARKER)
+        marker_based = True
+    else:
+        chunks = [markdown]
+        marker_based = False
+
+    records: list[dict[str, Any]] = []
+    for index, chunk in enumerate(chunks, start=1):
+        text = chunk.strip()
+        words = len(text.split())
+        warnings: list[str] = []
+        if not text:
+            warnings.append("empty_page")
+        elif words < 25:
+            warnings.append("low_text")
+        records.append(
+            {
+                "page_index": index,
+                "markdown": text,
+                "char_count": len(text),
+                "word_count": words,
+                "table_signal_count": count_table_signals(text),
+                "figure_signal_count": count_figure_signals(text),
+                "warnings": warnings,
+            }
+        )
+
+    if expected_pages and not marker_based and expected_pages > 1:
+        records[0]["warnings"].append("page_breaks_missing")
+    return records
+
+
+def write_pages_jsonl(fields_dir: Path, markdown: str, html: str, images: list[Any], expected_pages: int | None) -> list[dict[str, Any]]:
+    records = page_records(markdown, html, images, expected_pages)
+    fields_dir.mkdir(parents=True, exist_ok=True)
+    target = fields_dir / "pages.jsonl"
+    with target.open("w") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return records
+
+
 def payload(data: Any) -> dict[str, Any]:
     if isinstance(data, dict) and isinstance(data.get("data"), dict):
         return data["data"]
@@ -81,6 +153,7 @@ def summarize_response(data: Any) -> dict[str, Any]:
     html = body.get("html") if isinstance(body.get("html"), str) else ""
     images = body.get("images") if isinstance(body.get("images"), list) else []
     metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    page_break_count = markdown.count(PAGE_BREAK_MARKER)
     return {
         "success": data.get("success") if isinstance(data, dict) else None,
         "markdown_len": len(markdown),
@@ -92,6 +165,12 @@ def summarize_response(data: Any) -> dict[str, Any]:
         "html_len": len(html),
         "image_count": len(images),
         "num_pages": metadata.get("numPages"),
+        "page_break_count": page_break_count,
+        "page_record_count": page_break_count + 1 if markdown else 0,
+        "table_signal_count": count_table_signals(markdown, html),
+        "figure_signal_count": count_figure_signals(markdown, html, images),
+        "replacement_char_count": markdown.count("\ufffd"),
+        "repeated_line_ratio": repeated_line_ratio(markdown),
         "credits_used": metadata.get("creditsUsed"),
         "title": metadata.get("title"),
         "preview": markdown[:500],
@@ -130,9 +209,94 @@ def preflight_failure(pdf: Path, reason: str) -> dict[str, Any]:
     }
 
 
-def run_case(args: argparse.Namespace, pdf: Path, mode: str, out_dir: Path) -> dict[str, Any]:
+def build_qa_report(
+    *,
+    case_dir: Path,
+    fields_dir: Path,
+    data: Any,
+    summary: dict[str, Any],
+    adapter_settings: Any,
+) -> dict[str, Any]:
+    body = payload(data)
+    markdown = body.get("markdown") if isinstance(body.get("markdown"), str) else ""
+    html = body.get("html") if isinstance(body.get("html"), str) else ""
+    images = body.get("images") if isinstance(body.get("images"), list) else []
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    expected_pages = metadata.get("numPages") if isinstance(metadata.get("numPages"), int) else None
+    pages = write_pages_jsonl(fields_dir, markdown, html, images, expected_pages) if markdown else []
+    low_text_pages = [page["page_index"] for page in pages if page["word_count"] < 25]
+    empty_pages = [page["page_index"] for page in pages if page["word_count"] == 0]
+    page_break_count = markdown.count(PAGE_BREAK_MARKER)
+    missing_page_breaks = bool(expected_pages and expected_pages > 1 and page_break_count == 0)
+    abstract_signal = bool(re.search(r"\babstract\b", markdown[:5000], flags=re.IGNORECASE))
+    tail = markdown[-12000:]
+    references_signal = bool(re.search(r"\b(references|bibliography|works cited)\b", tail, flags=re.IGNORECASE))
+    elapsed_per_page = None
+    if expected_pages and summary.get("seconds") is not None:
+        elapsed_per_page = round(float(summary["seconds"]) / max(1, expected_pages), 3)
+
+    warnings: list[str] = []
+    if missing_page_breaks:
+        warnings.append("missing_page_breaks")
+    if low_text_pages:
+        warnings.append("low_text_pages")
+    if summary.get("replacement_char_count", 0):
+        warnings.append("replacement_characters_present")
+    if float(summary.get("repeated_line_ratio") or 0.0) > 0.15:
+        warnings.append("high_repeated_line_ratio")
+    if not abstract_signal:
+        warnings.append("abstract_not_detected_early")
+
+    profile_info = adapter_settings.get("profile") if isinstance(adapter_settings, dict) else None
+    qa = {
+        "profile": summary.get("profile"),
+        "mode": summary.get("mode"),
+        "expected_pages": expected_pages,
+        "page_break_count": page_break_count,
+        "page_record_count": len(pages),
+        "missing_page_breaks": missing_page_breaks,
+        "low_text_pages": low_text_pages,
+        "empty_pages": empty_pages,
+        "replacement_chars": summary.get("replacement_char_count"),
+        "repeated_line_ratio": summary.get("repeated_line_ratio"),
+        "table_signal_count": summary.get("table_signal_count"),
+        "figure_signal_count": summary.get("figure_signal_count"),
+        "abstract_signal": abstract_signal,
+        "references_signal": references_signal,
+        "elapsed_per_page": elapsed_per_page,
+        "adapter_profile": profile_info,
+        "raw_docling_json_capture_enabled": bool(profile_info and profile_info.get("capture_docling_json")),
+        "warnings": warnings,
+    }
+    (case_dir / "qa.json").write_text(json.dumps(qa, indent=2, ensure_ascii=False) + "\n")
+    write_qa_markdown(case_dir / "qa.md", qa)
+    return qa
+
+
+def write_qa_markdown(path: Path, qa: dict[str, Any]) -> None:
+    warnings = ", ".join(qa["warnings"]) if qa["warnings"] else "none"
+    lines = [
+        "# OCR QA",
+        "",
+        f"- Mode: `{qa.get('mode')}`",
+        f"- Profile: `{qa.get('profile') or 'none'}`",
+        f"- Expected pages: `{qa.get('expected_pages')}`",
+        f"- Page records: `{qa.get('page_record_count')}`",
+        f"- Page breaks: `{qa.get('page_break_count')}`",
+        f"- Low-text pages: `{qa.get('low_text_pages')}`",
+        f"- Table signals: `{qa.get('table_signal_count')}`",
+        f"- Figure signals: `{qa.get('figure_signal_count')}`",
+        f"- Repeated-line ratio: `{qa.get('repeated_line_ratio')}`",
+        f"- Raw Docling JSON capture: `{qa.get('raw_docling_json_capture_enabled')}`",
+        f"- Warnings: {warnings}",
+        "",
+    ]
+    path.write_text("\n".join(lines))
+
+
+def run_case(args: argparse.Namespace, pdf: Path, mode: str, profile: str | None, out_dir: Path) -> dict[str, Any]:
     sample = sample_slug(pdf)
-    case_slug = f"{sample}-{mode}"
+    case_slug = f"{sample}-{mode}" if not profile else f"{sample}-{mode}-{clean_slug(profile)}"
     case_dir = out_dir / case_slug
     fields_dir = case_dir / "fields"
     response_path = case_dir / "response.json"
@@ -172,10 +336,12 @@ def run_case(args: argparse.Namespace, pdf: Path, mode: str, out_dir: Path) -> d
     (case_dir / "exit_code.txt").write_text(f"{proc.returncode}\n")
 
     data = load_json(response_path) if response_path.exists() else {}
+    adapter_settings = command_json(["curl", "-fsS", args.adapter_settings_url], timeout=10.0)
     summary = {
         "sample": sample,
         "pdf": str(pdf),
         "mode": mode,
+        "profile": profile,
         "exit_code": proc.returncode,
         "expected_failure": expected_failure(mode, proc),
         "seconds": round(elapsed, 2),
@@ -184,6 +350,9 @@ def run_case(args: argparse.Namespace, pdf: Path, mode: str, out_dir: Path) -> d
         "stderr_preview": proc.stderr[:1000],
         **summarize_response(data),
     }
+    qa = build_qa_report(case_dir=case_dir, fields_dir=fields_dir, data=data, summary=summary, adapter_settings=adapter_settings)
+    summary["qa"] = str(case_dir / "qa.json")
+    summary["qa_warnings"] = qa["warnings"]
     (case_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
     return summary
 
@@ -214,12 +383,40 @@ def choose_recommendations(summaries: list[dict[str, Any]]) -> dict[str, dict[st
                 "reason": "No parser mode produced markdown.",
             }
             continue
+        if len(viable) == 1:
+            only = viable[0]
+            failed_modes = sorted(
+                {
+                    str(item.get("mode"))
+                    for item in items
+                    if item.get("exit_code") != 0 and not item.get("preflight_error")
+                }
+            )
+            reason = "Only one parser mode produced markdown."
+            if failed_modes:
+                reason = f"Only {only.get('mode')} produced markdown; failed modes: {', '.join(failed_modes)}."
+            recommendations[sample] = {
+                "mode": str(only.get("mode")),
+                "profile": str(only.get("profile") or "none"),
+                "reason": reason,
+            }
+            continue
 
-        by_mode = {str(item.get("mode")): item for item in viable}
-        fast = by_mode.get("fast")
-        auto = by_mode.get("auto")
-        ocr = by_mode.get("ocr")
-        ocr_best = max([item for item in [auto, ocr] if item], key=lambda item: (item.get("markdown_len", 0), -item.get("seconds", 0)), default=None)
+        by_mode = {f"{item.get('mode')}:{item.get('profile') or 'none'}": item for item in viable}
+        fast_candidates = [item for item in viable if item.get("mode") == "fast"]
+        auto_candidates = [item for item in viable if item.get("mode") == "auto"]
+        ocr_candidates = [item for item in viable if item.get("mode") == "ocr"]
+        fast = max(fast_candidates, key=lambda item: (item.get("markdown_len", 0), -item.get("seconds", 0)), default=None)
+        ocr_best = max(
+            [*auto_candidates, *ocr_candidates],
+            key=lambda item: (
+                item.get("markdown_len", 0),
+                item.get("page_break_count", 0),
+                item.get("table_signal_count", 0),
+                -item.get("seconds", 0),
+            ),
+            default=None,
+        )
 
         if fast and ocr_best:
             fast_len = int(fast.get("markdown_len", 0))
@@ -229,19 +426,22 @@ def choose_recommendations(summaries: list[dict[str, Any]]) -> dict[str, dict[st
             if fast_len >= max(1000, int(ocr_len * 1.5)) and fast_words >= int(ocr_words * 1.25):
                 recommendations[sample] = {
                     "mode": "fast",
+                    "profile": "none",
                     "reason": "Born-digital text extraction produced much more text and was faster than OCR.",
                 }
                 continue
             if ocr_len >= int(fast_len * 1.1) or ocr_words >= int(fast_words * 1.1):
                 recommendations[sample] = {
                     "mode": str(ocr_best.get("mode")),
-                    "reason": "OCR/layout extraction produced more recoverable text than fast mode; inspect tables and layout.",
+                    "profile": str(ocr_best.get("profile") or "none"),
+                    "reason": "OCR/layout extraction produced more recoverable text than fast mode; inspect tables, page breaks, and layout.",
                 }
                 continue
 
         fastest = min(viable, key=lambda item: item.get("seconds", 0))
         recommendations[sample] = {
             "mode": str(fastest.get("mode")),
+            "profile": str(fastest.get("profile") or "none"),
             "reason": "Outputs were similar enough; prefer the fastest successful mode.",
         }
     return recommendations
@@ -254,31 +454,33 @@ def write_markdown_summary(out_dir: Path, summaries: list[dict[str, Any]]) -> No
         "",
         "## Recommended Mode",
         "",
-        "| PDF | Mode | Why |",
-        "| --- | --- | --- |",
+        "| PDF | Mode | Profile | Why |",
+        "| --- | --- | --- | --- |",
     ]
     for sample, item in sorted(recommendations.items()):
-        lines.append(f"| {sample} | {item['mode']} | {item['reason']} |")
+        lines.append(f"| {sample} | {item['mode']} | {item.get('profile', 'none')} | {item['reason']} |")
     lines.extend([
         "",
         "## Raw Results",
         "",
-        "| PDF | Mode | Exit | Expected | Seconds | Markdown | HTML | Pages | Images | Credits |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| PDF | Mode | Profile | Exit | Expected | Seconds | Markdown | Page Breaks | Pages | Tables | Figures | Warnings |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ])
     for item in summaries:
         lines.append(
-            "| {pdf} | {mode} | {exit_code} | {expected_failure} | {seconds} | {markdown_len} | {html_len} | {num_pages} | {image_count} | {credits_used} |".format(
+            "| {pdf} | {mode} | {profile} | {exit_code} | {expected_failure} | {seconds} | {markdown_len} | {page_break_count} | {num_pages} | {table_signal_count} | {figure_signal_count} | {warnings} |".format(
                 pdf=f"{item.get('sample', basename_slug(Path(item['pdf']).name))}",
                 mode=item["mode"],
+                profile=item.get("profile") or "none",
                 exit_code=item["exit_code"],
                 expected_failure="yes" if item.get("expected_failure") else "",
                 seconds=item["seconds"],
                 markdown_len=item.get("markdown_len"),
-                html_len=item.get("html_len"),
+                page_break_count=item.get("page_break_count"),
                 num_pages=item.get("num_pages"),
-                image_count=item.get("image_count"),
-                credits_used=item.get("credits_used"),
+                table_signal_count=item.get("table_signal_count"),
+                figure_signal_count=item.get("figure_signal_count"),
+                warnings=", ".join(item.get("qa_warnings") or []),
             )
         )
     lines.append("")
@@ -298,10 +500,12 @@ def write_metadata(args: argparse.Namespace, out_dir: Path, summaries: list[dict
         "command": sys.argv,
         "api_url": args.api_url,
         "modes": parse_csv(args.modes),
+        "profiles": parse_csv(args.profiles) if args.profiles else [],
         "formats": parse_csv(args.formats),
         "max_pages": args.max_pages,
         "adapter_health_url": args.adapter_health_url,
         "adapter_health": command_json(["curl", "-fsS", args.adapter_health_url]),
+        "adapter_settings": command_json(["curl", "-fsS", args.adapter_settings_url]),
         "docker_context": command_json(["docker", "context", "show"]),
         "case_count": len(summaries),
         "recommendations": choose_recommendations(summaries),
@@ -315,15 +519,59 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pdfs", nargs="+", type=Path)
     parser.add_argument("--modes", default="fast,auto,ocr", help="Comma-separated parser modes.")
+    parser.add_argument(
+        "--profiles",
+        default="",
+        help="Comma-separated local Docling OCR profiles for auto/ocr cases. Fast mode runs once without a profile.",
+    )
     parser.add_argument("--formats", default="markdown,html,images")
     parser.add_argument("--max-pages", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--api-url", default="http://localhost:3002")
     parser.add_argument("--api-key")
     parser.add_argument("--adapter-health-url", default=DEFAULT_ADAPTER_HEALTH_URL)
+    parser.add_argument("--adapter-settings-url", default="http://127.0.0.1:31337/settings")
+    parser.add_argument(
+        "--no-profile-restart",
+        action="store_true",
+        help="Do not restart the adapter between profiles; assumes the caller already set the desired process-level profile.",
+    )
+    parser.add_argument(
+        "--capture-json",
+        action="store_true",
+        help="When restarting profile cases, ask the adapter to capture raw Docling JSON/settings.",
+    )
     parser.add_argument("--strict", action="store_true", help="Exit 1 on unexpected parse failures.")
     parser.add_argument("--out-dir", type=Path, default=Path("tasks/tmp/firecrawl-pdf-ocr-benchmark"))
     return parser
+
+
+def restart_adapter_for_profile(args: argparse.Namespace, profile: str, out_dir: Path) -> None:
+    if args.no_profile_restart:
+        return
+    cmd = [str(OCR_HELPER), "restart-adapter", "--profile", profile]
+    if args.capture_json:
+        cmd.append("--capture-json")
+        cmd.extend(["--output-dir", str(out_dir / "docling-debug")])
+    proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    profile_dir = out_dir / "_adapter-restarts"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    target_prefix = profile_dir / clean_slug(profile)
+    (target_prefix.with_suffix(".stdout.txt")).write_text(proc.stdout)
+    (target_prefix.with_suffix(".stderr.txt")).write_text(proc.stderr)
+    if proc.returncode != 0:
+        raise SystemExit(f"Failed to restart local FirePDF adapter for profile {profile!r}. See {profile_dir}.")
+
+
+def cases_for_modes_and_profiles(modes: list[str], profiles: list[str]) -> list[tuple[str, str | None]]:
+    cases: list[tuple[str, str | None]] = []
+    for mode in modes:
+        if mode == "fast" or not profiles:
+            cases.append((mode, None))
+            continue
+        for profile in profiles:
+            cases.append((mode, profile))
+    return cases
 
 
 def main() -> int:
@@ -333,6 +581,7 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     modes = parse_csv(args.modes)
+    profiles = parse_csv(args.profiles)
     summaries: list[dict[str, Any]] = []
     for pdf in args.pdfs:
         pdf = pdf.expanduser().resolve()
@@ -344,9 +593,14 @@ def main() -> int:
             print(f"Preflight failed for {pdf}: missing PDF header", file=sys.stderr)
             summaries.append(preflight_failure(pdf, "File is not a PDF; it is missing a %PDF header."))
             continue
-        for mode in modes:
-            print(f"Running {pdf.name} mode={mode}", file=sys.stderr)
-            summaries.append(run_case(args, pdf, mode, out_dir))
+        last_profile: str | None = None
+        for mode, profile in cases_for_modes_and_profiles(modes, profiles):
+            if profile and profile != last_profile:
+                print(f"Applying local OCR profile={profile}", file=sys.stderr)
+                restart_adapter_for_profile(args, profile, out_dir)
+                last_profile = profile
+            print(f"Running {pdf.name} mode={mode} profile={profile or 'none'}", file=sys.stderr)
+            summaries.append(run_case(args, pdf, mode, profile, out_dir))
 
     (out_dir / "summary.json").write_text(json.dumps(summaries, indent=2, ensure_ascii=False) + "\n")
     write_markdown_summary(out_dir, summaries)

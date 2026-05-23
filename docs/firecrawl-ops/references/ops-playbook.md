@@ -135,7 +135,7 @@ Run `scripts/firecrawl-ops/set_model_profile.sh budget` to create a minimal giti
 Use this when scanned/image-only PDFs fail or when `--pdf-mode ocr` needs a local OCR/layout backend:
 
 ```bash
-scripts/firecrawl-ops/local_firepdf_ocr.sh start
+scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
 scripts/firecrawl-ops/local_firepdf_ocr.sh health
 scripts/firecrawl-ops/local_firepdf_ocr.sh doctor
 scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
@@ -155,11 +155,21 @@ Useful checks:
 scripts/firecrawl-ops/local_firepdf_ocr.sh status
 scripts/firecrawl-ops/local_firepdf_ocr.sh logs
 scripts/firecrawl-ops/local_firepdf_ocr.sh settings
+scripts/firecrawl-ops/local_firepdf_ocr.sh profiles
 scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf
 curl -sS http://127.0.0.1:31337/health | jq .
 ```
 
-Useful Docling tuning env vars before `start-adapter` / `start`:
+Named profiles live in `scripts/firecrawl-ops/pdf_ocr_profiles.json`. Use `default` for conservative OCR, `research-page-aware` for academic page chunks, `tables-accurate` or `tables-fast` for table experiments, `scanned-english` for image-only English scans, `qa-debug` for raw Docling JSON capture, and `figure-enrichment-lab` only for benchmarks. Apply profile changes with:
+
+```bash
+scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile tables-accurate
+scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile qa-debug --capture-json
+```
+
+Raw Docling JSON capture is off unless a profile enables it or `--capture-json` is passed. It saves full-document data under `tasks/tmp/firecrawl-docling-debug` by default, so keep it out of commits.
+
+Useful Docling tuning env vars before `start-adapter` / `start`; explicit env vars override the named profile:
 
 - `LOCAL_FIREPDF_TIMEOUT_SECONDS=600` by default; raise it for very large/image-heavy papers
 - `LOCAL_FIREPDF_DOCLING_OCR_PRESET=auto|easyocr|tesseract`
@@ -168,7 +178,7 @@ Useful Docling tuning env vars before `start-adapter` / `start`:
 - `LOCAL_FIREPDF_DOCLING_TABLE_MODE=accurate|fast`
 - `LOCAL_FIREPDF_DOCLING_TO_FORMATS=md,json,html`
 
-After changing these env vars, run `scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter` so the adapter container picks them up. For direct adapter experiments, `POST /ocr` may include a `docling_options` object; Firecrawl API calls use the adapter container env.
+After changing these env vars, run `scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter` so the adapter container picks them up. For direct adapter experiments, `POST /ocr` may include a `docling_options` object; Firecrawl API calls use the process-level adapter profile/env.
 
 ## PDF parser behavior
 Use direct HTTP when you need PDF parser knobs:
@@ -195,10 +205,14 @@ Run a repeatable local matrix:
 
 ```bash
 scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
-  --modes fast,auto,ocr --max-pages 40 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict
+  --modes fast,auto,ocr \
+  --profiles default,research-page-aware,tables-accurate \
+  --max-pages 40 \
+  --out-dir /tmp/firecrawl-pdf-ocr-benchmark \
+  --strict
 ```
 
-The benchmark preflights fake `.pdf` downloads, saves split markdown/html/metadata fields, and writes a `Recommended Mode` section in `summary.md`.
+The benchmark preflights fake `.pdf` downloads, restarts the adapter between OCR profiles unless `--no-profile-restart` is passed, saves split markdown/html/metadata fields, writes `fields/pages.jsonl`, and adds per-case `qa.json` / `qa.md`. The root `summary.md` includes a recommended mode/profile per PDF.
 
 ## Upstream sync
 Use a branch and merge commit so fork-specific ops assets remain easy to review:

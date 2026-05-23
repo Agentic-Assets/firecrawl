@@ -170,10 +170,10 @@ The fully local path is strongest for text PDFs. Tables, figures, scans, and com
 
 This fork can run a local Fire PDF-compatible adapter backed by Docling Serve. It is local and does not spend Firecrawl cloud credits.
 
-Start the OCR services:
+Start the OCR services. Use `research-page-aware` for academic papers when page chunks/citations matter:
 
 ```bash
-scripts/firecrawl-ops/local_firepdf_ocr.sh start
+scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
 scripts/firecrawl-ops/local_firepdf_ocr.sh health
 scripts/firecrawl-ops/local_firepdf_ocr.sh doctor
 ```
@@ -200,12 +200,15 @@ Operational notes:
 - The local Fire PDF adapter runs on `127.0.0.1:31337`.
 - Firecrawl's API container reaches the adapter with `FIRE_PDF_BASE_URL=http://host.docker.internal:31337`.
 - `--pdf-mode fast` avoids OCR; `--pdf-mode auto` uses Firecrawl's normal PDF decision path; `--pdf-mode ocr` forces the local Docling adapter when configured.
-- Mode choice is document-dependent. In a local 2026-05-23 stress test, a 40-page born-digital spec was much richer and faster in `fast`, while a 25-page encrypted slide-style market report benefited modestly from Docling OCR. Use `fast` for dense born-digital text, `ocr` for scanned/image-only/slide-style PDFs, and benchmark unfamiliar document families.
-- Dynamic Docling knobs are passed through env before `start-adapter` / `start`: `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags.
+- Mode choice is document-dependent. In a local 2026-05-23 stress test, a 40-page born-digital spec was much richer and faster in `fast`, while a 25-page encrypted slide-style market report benefited modestly from Docling OCR. Known scanned/image research PDFs that failed the default text path succeeded through Docling OCR with `research-page-aware` page markers. Use `fast` for dense born-digital text, `ocr` for scanned/image-only/slide-style PDFs, and benchmark unfamiliar document families.
+- Named profiles live in `scripts/firecrawl-ops/pdf_ocr_profiles.json`. List them with `scripts/firecrawl-ops/local_firepdf_ocr.sh profiles`.
+- Recommended profiles: `default`, `research-page-aware`, `tables-accurate`, `tables-fast`, `scanned-english`, `qa-debug`, and `figure-enrichment-lab`.
+- Apply a profile with `scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile tables-accurate`. Use `start --profile <name>` for first start.
+- Raw Docling JSON capture is off unless the profile enables it or you pass `--capture-json`; it writes sensitive full-document artifacts under `tasks/tmp/firecrawl-docling-debug` by default.
+- Dynamic Docling knobs are still accepted as env overrides before `start-adapter` / `start`: `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. Explicit env vars override the named profile.
 - Print the full tunable settings surface with `scripts/firecrawl-ops/local_firepdf_ocr.sh settings`.
-- Apply changed OCR settings with `scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter`.
 - Quick OCR verification: `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf`.
-- Repeatable PDF checks can use `scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf --modes fast,auto,ocr --max-pages 40 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict`. The saved `summary.md` includes a recommended mode per PDF.
+- Repeatable PDF checks can use `scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf --modes fast,auto,ocr --profiles default,research-page-aware,tables-accurate --max-pages 40 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict`. The saved `summary.md` includes a recommended mode/profile per PDF, and each case saves `fields/pages.jsonl`, `qa.json`, and `qa.md` when output is available.
 - Direct adapter tests may include a `docling_options` object in `POST /ocr`; Firecrawl API calls use the adapter container env.
 - Stop services with `scripts/firecrawl-ops/local_firepdf_ocr.sh stop`.
 

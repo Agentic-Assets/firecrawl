@@ -54,6 +54,7 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
 - `docs/firecrawl-ops/references/` — durable reference docs:
   - `tools-capabilities.md` — endpoint-by-endpoint capability map
   - `local-pdf-ocr-plan.md` — chosen local Docling OCR adapter plan and alternatives
+  - `local-pdf-ocr-research-agent-plan.md` — profile/page-break/raw-JSON/QA roadmap for research-paper OCR agents
   - `model-routing.md` — model strategy and escalation rules
   - `ops-playbook.md` — health checks, debugging, safe ops
   - `cayman-use-cases-and-playbooks.md` — mapped workflows (research/CRE/coding)
@@ -64,9 +65,10 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
   - `firecrawl_healthcheck.sh` — verify the local stack is up (run this first)
   - `firecrawl_cli.sh` — wrapper for `npx firecrawl-cli` pinned to `http://localhost:3002`; preserves caller cwd so local parse file paths work
   - `firecrawl_request.py` — dependency-free direct HTTP helper for local agents when they need output/save controls or advanced `/v2/parse` PDF options not exposed by the CLI
-  - `local_firepdf_ocr.sh` — start/stop/health/env/settings/doctor/smoke helper for the local Docling OCR adapter
+  - `local_firepdf_ocr.sh` — start/stop/health/env/settings/profiles/doctor/smoke helper for the local Docling OCR adapter
   - `local_firepdf_ocr_service.py` — Fire PDF-compatible `/ocr` adapter used by Firecrawl when `FIRE_PDF_BASE_URL=http://host.docker.internal:31337`
-  - `pdf_ocr_benchmark.py` — repeatable local PDF parser/OCR matrix runner with preflight checks and per-PDF mode recommendations
+  - `pdf_ocr_profiles.json` — named Docling OCR profiles such as `research-page-aware`, `tables-accurate`, and `qa-debug`
+  - `pdf_ocr_benchmark.py` — repeatable local PDF parser/OCR matrix runner with preflight checks, page artifacts, QA reports, and per-PDF mode/profile recommendations
   - `firecrawl_mcp.sh` — wrapper for `npx firecrawl-mcp` pinned to `http://localhost:3002` for any MCP-capable agent
   - `sync_agent_skills.sh` — copy repo Firecrawl skills to `~/.agents/skills` and symlink them into user-level agent folders
   - `set_model_profile.sh budget|escalated|gateway|gateway-codex|openai-direct` — rewrite `.env` model defaults; follow with `docker compose up -d --force-recreate api`

@@ -9,8 +9,10 @@ delegates document understanding to a local Docling Serve instance.
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -33,12 +35,10 @@ ENGINE = os.getenv("LOCAL_FIREPDF_ENGINE", "docling").strip().lower()
 DOCLING_URL = os.getenv("LOCAL_FIREPDF_DOCLING_URL", "http://127.0.0.1:5001").rstrip("/")
 TIMEOUT_SECONDS = float(os.getenv("LOCAL_FIREPDF_TIMEOUT_SECONDS", "600"))
 KEEP_TEMP = os.getenv("LOCAL_FIREPDF_KEEP_TEMP", "").lower() in {"1", "true", "yes", "on"}
-OUTPUT_DIR = os.getenv("LOCAL_FIREPDF_OUTPUT_DIR", "").strip()
-TO_FORMATS = [
-    item.strip()
-    for item in os.getenv("LOCAL_FIREPDF_DOCLING_TO_FORMATS", "md,json,html").split(",")
-    if item.strip()
-]
+PROFILE_NAME = os.getenv("LOCAL_FIREPDF_PROFILE", "default").strip() or "default"
+PROFILES_PATH = Path(
+    os.getenv("LOCAL_FIREPDF_PROFILES_PATH", str(Path(__file__).with_name("pdf_ocr_profiles.json")))
+).expanduser()
 
 
 def parse_bool_env(name: str, default: bool) -> bool:
@@ -55,7 +55,13 @@ def parse_float_env(name: str, default: float) -> float:
     try:
         return float(raw)
     except ValueError:
-        log("Invalid float env value; using default", name=name, value=raw, default=default)
+        print(
+            json.dumps(
+                {"message": "Invalid float env value; using default", "name": name, "value": raw, "default": default}
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
         return default
 
 
@@ -67,28 +73,62 @@ def parse_list_env(name: str) -> list[str] | None:
     return values or None
 
 
-DO_OCR = parse_bool_env("LOCAL_FIREPDF_DOCLING_DO_OCR", True)
-FORCE_OCR = parse_bool_env("LOCAL_FIREPDF_DOCLING_FORCE_OCR", True)
-OCR_PRESET = os.getenv("LOCAL_FIREPDF_DOCLING_OCR_PRESET", "auto").strip() or "auto"
-OCR_LANG = parse_list_env("LOCAL_FIREPDF_DOCLING_OCR_LANG")
-PDF_BACKEND = os.getenv("LOCAL_FIREPDF_DOCLING_PDF_BACKEND", "docling_parse").strip() or "docling_parse"
-TABLE_MODE = os.getenv("LOCAL_FIREPDF_DOCLING_TABLE_MODE", "accurate").strip() or "accurate"
-TABLE_CELL_MATCHING = parse_bool_env("LOCAL_FIREPDF_DOCLING_TABLE_CELL_MATCHING", True)
-DO_TABLE_STRUCTURE = parse_bool_env("LOCAL_FIREPDF_DOCLING_DO_TABLE_STRUCTURE", True)
-INCLUDE_IMAGES = parse_bool_env("LOCAL_FIREPDF_DOCLING_INCLUDE_IMAGES", True)
-IMAGES_SCALE = parse_float_env("LOCAL_FIREPDF_DOCLING_IMAGES_SCALE", 2.0)
-IMAGE_EXPORT_MODE = os.getenv("LOCAL_FIREPDF_DOCLING_IMAGE_EXPORT_MODE", "placeholder").strip() or "placeholder"
-MD_PAGE_BREAK_PLACEHOLDER = os.getenv("LOCAL_FIREPDF_DOCLING_MD_PAGE_BREAK", "").strip()
-DO_CODE_ENRICHMENT = parse_bool_env("LOCAL_FIREPDF_DOCLING_DO_CODE_ENRICHMENT", False)
-DO_FORMULA_ENRICHMENT = parse_bool_env("LOCAL_FIREPDF_DOCLING_DO_FORMULA_ENRICHMENT", False)
-DO_PICTURE_CLASSIFICATION = parse_bool_env("LOCAL_FIREPDF_DOCLING_DO_PICTURE_CLASSIFICATION", False)
-DO_CHART_EXTRACTION = parse_bool_env("LOCAL_FIREPDF_DOCLING_DO_CHART_EXTRACTION", False)
-DO_PICTURE_DESCRIPTION = parse_bool_env("LOCAL_FIREPDF_DOCLING_DO_PICTURE_DESCRIPTION", False)
-VLM_PIPELINE_PRESET = os.getenv("LOCAL_FIREPDF_DOCLING_VLM_PIPELINE_PRESET", "").strip()
-PICTURE_DESCRIPTION_PRESET = os.getenv("LOCAL_FIREPDF_DOCLING_PICTURE_DESCRIPTION_PRESET", "").strip()
-CODE_FORMULA_PRESET = os.getenv("LOCAL_FIREPDF_DOCLING_CODE_FORMULA_PRESET", "").strip()
-TABLE_STRUCTURE_PRESET = os.getenv("LOCAL_FIREPDF_DOCLING_TABLE_STRUCTURE_PRESET", "").strip()
-LAYOUT_PRESET = os.getenv("LOCAL_FIREPDF_DOCLING_LAYOUT_PRESET", "").strip()
+CAPTURE_DOCLING_JSON = parse_bool_env("LOCAL_FIREPDF_CAPTURE_DOCLING_JSON", False)
+OUTPUT_DIR = os.getenv("LOCAL_FIREPDF_OUTPUT_DIR", "").strip()
+
+DEFAULT_DOCLING_OPTIONS: dict[str, Any] = {
+    "from_formats": ["pdf"],
+    "to_formats": ["md", "json", "html"],
+    "do_ocr": True,
+    "force_ocr": True,
+    "ocr_preset": "auto",
+    "pdf_backend": "docling_parse",
+    "table_mode": "accurate",
+    "table_cell_matching": True,
+    "do_table_structure": True,
+    "include_images": True,
+    "images_scale": 2.0,
+    "image_export_mode": "placeholder",
+    "md_page_break_placeholder": "",
+    "abort_on_error": False,
+    "do_code_enrichment": False,
+    "do_formula_enrichment": False,
+    "do_picture_classification": False,
+    "do_chart_extraction": False,
+    "do_picture_description": False,
+}
+
+ENV_OPTION_MAP = {
+    "LOCAL_FIREPDF_DOCLING_TO_FORMATS": ("to_formats", parse_list_env),
+    "LOCAL_FIREPDF_DOCLING_DO_OCR": ("do_ocr", lambda name: parse_bool_env(name, True)),
+    "LOCAL_FIREPDF_DOCLING_FORCE_OCR": ("force_ocr", lambda name: parse_bool_env(name, True)),
+    "LOCAL_FIREPDF_DOCLING_OCR_PRESET": ("ocr_preset", lambda name: os.getenv(name, "").strip()),
+    "LOCAL_FIREPDF_DOCLING_OCR_LANG": ("ocr_lang", parse_list_env),
+    "LOCAL_FIREPDF_DOCLING_PDF_BACKEND": ("pdf_backend", lambda name: os.getenv(name, "").strip()),
+    "LOCAL_FIREPDF_DOCLING_TABLE_MODE": ("table_mode", lambda name: os.getenv(name, "").strip()),
+    "LOCAL_FIREPDF_DOCLING_TABLE_CELL_MATCHING": ("table_cell_matching", lambda name: parse_bool_env(name, True)),
+    "LOCAL_FIREPDF_DOCLING_DO_TABLE_STRUCTURE": ("do_table_structure", lambda name: parse_bool_env(name, True)),
+    "LOCAL_FIREPDF_DOCLING_INCLUDE_IMAGES": ("include_images", lambda name: parse_bool_env(name, True)),
+    "LOCAL_FIREPDF_DOCLING_IMAGES_SCALE": ("images_scale", lambda name: parse_float_env(name, 2.0)),
+    "LOCAL_FIREPDF_DOCLING_IMAGE_EXPORT_MODE": ("image_export_mode", lambda name: os.getenv(name, "").strip()),
+    "LOCAL_FIREPDF_DOCLING_MD_PAGE_BREAK": ("md_page_break_placeholder", lambda name: os.getenv(name, "")),
+    "LOCAL_FIREPDF_DOCLING_DO_CODE_ENRICHMENT": ("do_code_enrichment", lambda name: parse_bool_env(name, False)),
+    "LOCAL_FIREPDF_DOCLING_DO_FORMULA_ENRICHMENT": ("do_formula_enrichment", lambda name: parse_bool_env(name, False)),
+    "LOCAL_FIREPDF_DOCLING_DO_PICTURE_CLASSIFICATION": ("do_picture_classification", lambda name: parse_bool_env(name, False)),
+    "LOCAL_FIREPDF_DOCLING_DO_CHART_EXTRACTION": ("do_chart_extraction", lambda name: parse_bool_env(name, False)),
+    "LOCAL_FIREPDF_DOCLING_DO_PICTURE_DESCRIPTION": ("do_picture_description", lambda name: parse_bool_env(name, False)),
+    "LOCAL_FIREPDF_DOCLING_VLM_PIPELINE_PRESET": ("vlm_pipeline_preset", lambda name: os.getenv(name, "").strip()),
+    "LOCAL_FIREPDF_DOCLING_PICTURE_DESCRIPTION_PRESET": (
+        "picture_description_preset",
+        lambda name: os.getenv(name, "").strip(),
+    ),
+    "LOCAL_FIREPDF_DOCLING_CODE_FORMULA_PRESET": ("code_formula_preset", lambda name: os.getenv(name, "").strip()),
+    "LOCAL_FIREPDF_DOCLING_TABLE_STRUCTURE_PRESET": (
+        "table_structure_preset",
+        lambda name: os.getenv(name, "").strip(),
+    ),
+    "LOCAL_FIREPDF_DOCLING_LAYOUT_PRESET": ("layout_preset", lambda name: os.getenv(name, "").strip()),
+}
 
 
 class AdapterError(Exception):
@@ -239,43 +279,78 @@ def post_json(url: str, payload: dict[str, Any], timeout: float) -> Any:
         raise AdapterError(f"Docling returned invalid JSON: {exc}", status=502) from exc
 
 
+def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def load_profiles() -> dict[str, Any]:
+    try:
+        raw = json.loads(PROFILES_PATH.read_text())
+    except FileNotFoundError as exc:
+        raise AdapterError(f"Missing OCR profile registry: {PROFILES_PATH}", status=500) from exc
+    except json.JSONDecodeError as exc:
+        raise AdapterError(f"Invalid OCR profile registry {PROFILES_PATH}: {exc}", status=500) from exc
+    if not isinstance(raw, dict):
+        raise AdapterError(f"OCR profile registry must be a JSON object: {PROFILES_PATH}", status=500)
+    return raw
+
+
+def resolve_profile(profile_name: str, profiles: dict[str, Any] | None = None, stack: list[str] | None = None) -> dict[str, Any]:
+    profiles = profiles if profiles is not None else load_profiles()
+    stack = stack or []
+    if profile_name not in profiles:
+        available = ", ".join(sorted(profiles.keys()))
+        raise AdapterError(f"Unknown LOCAL_FIREPDF_PROFILE={profile_name!r}. Available profiles: {available}", status=400)
+    if profile_name in stack:
+        raise AdapterError(f"OCR profile inheritance cycle: {' -> '.join([*stack, profile_name])}", status=500)
+
+    current = profiles[profile_name]
+    if not isinstance(current, dict):
+        raise AdapterError(f"OCR profile {profile_name!r} must be an object", status=500)
+
+    parent_name = current.get("extends")
+    if isinstance(parent_name, str) and parent_name.strip():
+        resolved = resolve_profile(parent_name.strip(), profiles, [*stack, profile_name])
+    else:
+        resolved = {}
+    resolved = deep_merge(resolved, current)
+    resolved.pop("extends", None)
+    return resolved
+
+
+def profile_capture_enabled(profile: dict[str, Any]) -> bool:
+    value = profile.get("capture_docling_json")
+    return bool(value) if isinstance(value, bool) else False
+
+
+def env_docling_overrides() -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    for env_name, (option_key, parser) in ENV_OPTION_MAP.items():
+        if env_name not in os.environ:
+            continue
+        value = parser(env_name)
+        if value is None:
+            continue
+        if isinstance(value, str) and value == "" and option_key != "md_page_break_placeholder":
+            continue
+        overrides[option_key] = value
+    return overrides
+
+
 def docling_options(timeout: float, max_pages: int | None) -> dict[str, Any]:
-    options: dict[str, Any] = {
-        "from_formats": ["pdf"],
-        "to_formats": TO_FORMATS,
-        "do_ocr": DO_OCR,
-        "force_ocr": FORCE_OCR,
-        "ocr_preset": OCR_PRESET,
-        "pdf_backend": PDF_BACKEND,
-        "table_mode": TABLE_MODE,
-        "table_cell_matching": TABLE_CELL_MATCHING,
-        "do_table_structure": DO_TABLE_STRUCTURE,
-        "include_images": INCLUDE_IMAGES,
-        "images_scale": IMAGES_SCALE,
-        "image_export_mode": IMAGE_EXPORT_MODE,
-        "md_page_break_placeholder": MD_PAGE_BREAK_PLACEHOLDER,
-        "document_timeout": timeout,
-        "abort_on_error": False,
-        "do_code_enrichment": DO_CODE_ENRICHMENT,
-        "do_formula_enrichment": DO_FORMULA_ENRICHMENT,
-        "do_picture_classification": DO_PICTURE_CLASSIFICATION,
-        "do_chart_extraction": DO_CHART_EXTRACTION,
-        "do_picture_description": DO_PICTURE_DESCRIPTION,
-    }
+    profile = resolve_profile(PROFILE_NAME)
+    options = deep_merge(DEFAULT_DOCLING_OPTIONS, profile.get("docling_options") or {})
+    options = deep_merge(options, env_docling_overrides())
+    options["document_timeout"] = timeout
+    options["abort_on_error"] = False
     if max_pages and max_pages > 0:
         options["page_range"] = [1, max_pages]
-    if OCR_LANG:
-        options["ocr_lang"] = OCR_LANG
-    if VLM_PIPELINE_PRESET:
-        options["vlm_pipeline_preset"] = VLM_PIPELINE_PRESET
-    if PICTURE_DESCRIPTION_PRESET:
-        options["picture_description_preset"] = PICTURE_DESCRIPTION_PRESET
-    if CODE_FORMULA_PRESET:
-        options["code_formula_preset"] = CODE_FORMULA_PRESET
-    if TABLE_STRUCTURE_PRESET:
-        options["table_structure_preset"] = TABLE_STRUCTURE_PRESET
-    if LAYOUT_PRESET:
-        options["layout_preset"] = LAYOUT_PRESET
     return options
 
 
@@ -322,7 +397,7 @@ def merge_docling_overrides(options: dict[str, Any], request_body: dict[str, Any
     return options
 
 
-def call_docling(pdf_path: Path, timeout: float, max_pages: int | None, request_body: dict[str, Any]) -> Any:
+def call_docling(pdf_path: Path, timeout: float, max_pages: int | None, request_body: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     options = merge_docling_overrides(docling_options(timeout, max_pages), request_body)
     payload = {
         "options": options,
@@ -335,18 +410,27 @@ def call_docling(pdf_path: Path, timeout: float, max_pages: int | None, request_
         ],
         "target": {"kind": "inbody"},
     }
-    return post_json(f"{DOCLING_URL}/v1/convert/source", payload, timeout)
+    return post_json(f"{DOCLING_URL}/v1/convert/source", payload, timeout), options
 
 
 def settings_payload() -> dict[str, Any]:
+    profile = resolve_profile(PROFILE_NAME)
+    capture_enabled = CAPTURE_DOCLING_JSON or profile_capture_enabled(profile)
     return {
         "engine": ENGINE,
+        "profile": {
+            "name": PROFILE_NAME,
+            "description": profile.get("description"),
+            "profiles_path": str(PROFILES_PATH),
+            "capture_docling_json": capture_enabled,
+            "output_dir": (OUTPUT_DIR or "/tmp/firecrawl-docling-debug") if capture_enabled else None,
+            "available": sorted(load_profiles().keys()),
+        },
         "adapter": {
             "host": HOST,
             "port": PORT,
             "timeout_seconds": TIMEOUT_SECONDS,
             "keep_temp": KEEP_TEMP,
-            "output_dir": OUTPUT_DIR or None,
         },
         "docling_url": DOCLING_URL,
         "docling_options": docling_options(TIMEOUT_SECONDS, None),
@@ -408,13 +492,119 @@ def extract_markdown(docling_result: Any) -> tuple[str, list[Any]]:
     return "\n\n".join(markdown_parts), errors
 
 
-def save_debug(tmpdir: Path, scrape_id: str, data: Any) -> None:
-    if not OUTPUT_DIR:
+def resolve_json_ref(document: dict[str, Any], ref: str) -> Any:
+    if not ref.startswith("#/"):
+        raise KeyError(ref)
+    current: Any = document
+    for part in ref[2:].split("/"):
+        if isinstance(current, list):
+            current = current[int(part)]
+        elif isinstance(current, dict):
+            current = current[part]
+        else:
+            raise KeyError(ref)
+    return current
+
+
+def first_page_no(item: dict[str, Any]) -> int | None:
+    prov = item.get("prov")
+    if isinstance(prov, list) and prov and isinstance(prov[0], dict):
+        page_no = prov[0].get("page_no")
+        if isinstance(page_no, int):
+            return page_no
+    return None
+
+
+def render_docling_json_item(document: dict[str, Any], item: dict[str, Any], visited: set[str]) -> str:
+    self_ref = item.get("self_ref")
+    if isinstance(self_ref, str):
+        if self_ref in visited:
+            return ""
+        visited.add(self_ref)
+
+    label = str(item.get("label") or "")
+    if label in {"page_header", "page_footer"}:
+        return ""
+
+    text = str(item.get("text") or item.get("orig") or "").strip()
+    if text:
+        if label in {"title"}:
+            return f"# {text}"
+        if label in {"section_header"}:
+            return f"## {text}"
+        if label in {"list_item"}:
+            return f"- {text}"
+        return text
+
+    if label in {"picture", "table", "group"}:
+        children: list[str] = []
+        for child in item.get("children") or []:
+            if not isinstance(child, dict) or not isinstance(child.get("$ref"), str):
+                continue
+            try:
+                child_text = render_docling_json_item(document, resolve_json_ref(document, child["$ref"]), visited)
+            except Exception:
+                continue
+            if child_text:
+                children.append(child_text)
+        prefix = "[Figure]" if label == "picture" else "[Table]" if label == "table" else ""
+        return "\n\n".join([part for part in [prefix, *children] if part])
+
+    return ""
+
+
+def extract_page_markdown_from_json(docling_result: Any, marker: str) -> str | None:
+    documents = iter_documents(docling_result)
+    for item in documents:
+        document = item.get("document") if isinstance(item.get("document"), dict) else item
+        json_content = document.get("json_content") if isinstance(document, dict) else None
+        if not isinstance(json_content, dict):
+            continue
+        body = json_content.get("body")
+        if not isinstance(body, dict) or not isinstance(body.get("children"), list):
+            continue
+
+        pages: dict[int, list[str]] = {}
+        visited: set[str] = set()
+        for child in body["children"]:
+            if not isinstance(child, dict) or not isinstance(child.get("$ref"), str):
+                continue
+            try:
+                resolved = resolve_json_ref(json_content, child["$ref"])
+            except Exception:
+                continue
+            if not isinstance(resolved, dict):
+                continue
+            page_no = first_page_no(resolved)
+            if page_no is None:
+                continue
+            rendered = render_docling_json_item(json_content, resolved, visited)
+            if rendered:
+                pages.setdefault(page_no, []).append(rendered)
+
+        if len(pages) <= 1:
+            continue
+        page_markdown = ["\n\n".join(pages[page_no]).strip() for page_no in sorted(pages)]
+        page_markdown = [part for part in page_markdown if part]
+        if len(page_markdown) > 1:
+            return f"\n\n{marker}\n\n".join(page_markdown)
+    return None
+
+
+def safe_slug(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip(".-_")[:80] or "item"
+
+
+def save_debug(scrape_id: str, data: Any, settings: dict[str, Any]) -> None:
+    profile = resolve_profile(PROFILE_NAME)
+    if not (CAPTURE_DOCLING_JSON or profile_capture_enabled(profile)):
         return
-    out_dir = Path(OUTPUT_DIR).expanduser()
+    out_dir = Path(OUTPUT_DIR or "/tmp/firecrawl-docling-debug").expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
-    target = out_dir / f"{scrape_id or uuid4().hex}.docling.json"
-    target.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    prefix = f"{timestamp}-{safe_slug(scrape_id or uuid4().hex)}-{safe_slug(PROFILE_NAME)}"
+    (out_dir / f"{prefix}-docling.json").write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    (out_dir / f"{prefix}-settings.json").write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
 
 
 def handle_ocr(request_body: dict[str, Any]) -> dict[str, Any]:
@@ -439,14 +629,39 @@ def handle_ocr(request_body: dict[str, Any]) -> dict[str, Any]:
         log(
             "Starting Docling OCR",
             scrape_id=scrape_id,
+            profile=PROFILE_NAME,
             total_pages=total_pages,
             processed_pages=processed_pages,
             max_pages=max_pages,
             timeout=timeout,
         )
-        docling_result = call_docling(pdf_path, timeout, max_pages, request_body)
-        save_debug(tmpdir, scrape_id, docling_result)
+        docling_result, effective_options = call_docling(pdf_path, timeout, max_pages, request_body)
+        save_debug(
+            scrape_id,
+            docling_result,
+            {
+                **settings_payload(),
+                "effective_docling_options": effective_options,
+                "scrape_id": scrape_id,
+                "total_pages": total_pages,
+                "processed_pages": processed_pages,
+            },
+        )
         markdown, errors = extract_markdown(docling_result)
+        page_marker = str(effective_options.get("md_page_break_placeholder") or "").strip()
+        if page_marker and page_marker not in markdown:
+            page_markdown = extract_page_markdown_from_json(docling_result, page_marker)
+            if page_markdown and len(page_markdown) >= max(500, int(len(markdown) * 0.5)):
+                log(
+                    "Using Docling JSON-derived page-aware markdown",
+                    scrape_id=scrape_id,
+                    profile=PROFILE_NAME,
+                    marker=page_marker,
+                    original_length=len(markdown),
+                    page_markdown_length=len(page_markdown),
+                    page_break_count=page_markdown.count(page_marker),
+                )
+                markdown = page_markdown
         if not markdown.strip():
             raise AdapterError("Docling returned no markdown/text content", status=502, details=docling_result)
 
@@ -521,6 +736,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    try:
+        settings_payload()
+    except AdapterError as exc:
+        log("adapter startup failed", error=str(exc), details=exc.details)
+        return 2
+
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
 
     def shutdown(signum: int, _frame: Any) -> None:
@@ -529,7 +750,14 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
-    log("local FirePDF adapter listening", host=HOST, port=PORT, engine=ENGINE, docling_url=DOCLING_URL)
+    log(
+        "local FirePDF adapter listening",
+        host=HOST,
+        port=PORT,
+        engine=ENGINE,
+        profile=PROFILE_NAME,
+        docling_url=DOCLING_URL,
+    )
     httpd.serve_forever()
     return 0
 

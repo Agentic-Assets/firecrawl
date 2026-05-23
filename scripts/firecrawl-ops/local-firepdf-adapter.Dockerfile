@@ -6,6 +6,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY scripts/firecrawl-ops/local_firepdf_ocr_service.py /app/local_firepdf_ocr_service.py
+COPY scripts/firecrawl-ops/pdf_ocr_profiles.json /app/pdf_ocr_profiles.json
 
 ENV LOCAL_FIREPDF_HOST=0.0.0.0
 ENV LOCAL_FIREPDF_PORT=31337

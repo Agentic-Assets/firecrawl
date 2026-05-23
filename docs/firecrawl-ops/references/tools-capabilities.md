@@ -84,7 +84,7 @@ Do not duplicate official SDK behavior in production code. Use JS/Python/Go/Ruby
 For scanned/image-only PDFs or harder table/layout PDFs, use the local Fire PDF-compatible adapter:
 
 ```bash
-scripts/firecrawl-ops/local_firepdf_ocr.sh start
+scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
 scripts/firecrawl-ops/local_firepdf_ocr.sh health
 scripts/firecrawl-ops/local_firepdf_ocr.sh doctor
 scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
@@ -93,7 +93,9 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html --pdf-mode ocr --max-pages 10 --pretty
 ```
 
-The adapter listens on `127.0.0.1:31337`, Docling Serve listens on `127.0.0.1:5001`, and the Firecrawl API container calls the adapter through `http://host.docker.internal:31337`. This does not use Firecrawl cloud credits. Tune with env vars such as `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, and `LOCAL_FIREPDF_DOCLING_TO_FORMATS`; run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply changes.
+The adapter listens on `127.0.0.1:31337`, Docling Serve listens on `127.0.0.1:5001`, and the Firecrawl API container calls the adapter through `http://host.docker.internal:31337`. This does not use Firecrawl cloud credits. In current local tests, known scanned/image research PDFs succeeded through `ocr` with the `research-page-aware` profile. Profiles in `scripts/firecrawl-ops/pdf_ocr_profiles.json` expose common OCR/layout choices: `default`, `research-page-aware`, `tables-accurate`, `tables-fast`, `scanned-english`, `qa-debug`, and `figure-enrichment-lab`. List them with `scripts/firecrawl-ops/local_firepdf_ocr.sh profiles`; apply one with `restart-adapter --profile <name>`.
+
+Tune with env vars such as `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, and `LOCAL_FIREPDF_DOCLING_TO_FORMATS`; run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply changes. Explicit env vars override the named profile. Raw Docling JSON capture is available with `--capture-json` or the `qa-debug` profile and writes full-document debug artifacts under `tasks/tmp`.
 
 Use `fast` for dense born-digital text PDFs when it succeeds; it can preserve more text than OCR and is much faster. Use `ocr` for scanned/image-only/slide-style PDFs. For unfamiliar document families, run the benchmark and read its `Recommended Mode` section.
 
@@ -101,8 +103,14 @@ For repeatable comparisons:
 
 ```bash
 scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
-  --modes fast,auto,ocr --max-pages 40 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict
+  --modes fast,auto,ocr \
+  --profiles default,research-page-aware,tables-accurate \
+  --max-pages 40 \
+  --out-dir /tmp/firecrawl-pdf-ocr-benchmark \
+  --strict
 ```
+
+The benchmark now saves `fields/pages.jsonl`, `qa.json`, and `qa.md` per case when markdown is available, then recommends a mode/profile in root `summary.md`.
 
 ## Present but not configured locally
 

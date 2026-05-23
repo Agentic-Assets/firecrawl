@@ -12,6 +12,10 @@ ADAPTER_CONTAINER="${LOCAL_FIREPDF_ADAPTER_CONTAINER:-firecrawl-local-firepdf-ad
 ADAPTER_LOG="$STATE_DIR/adapter.log"
 ADAPTER_PID="$STATE_DIR/adapter.pid"
 DOCLING_URL="${LOCAL_FIREPDF_DOCLING_URL:-http://127.0.0.1:${DOCLING_PORT}}"
+PROFILE="${LOCAL_FIREPDF_PROFILE:-default}"
+CAPTURE_JSON="${LOCAL_FIREPDF_CAPTURE_DOCLING_JSON:-}"
+CAPTURE_OUTPUT_DIR="${LOCAL_FIREPDF_OUTPUT_DIR:-}"
+REPLACE_ADAPTER=0
 
 mkdir -p "$STATE_DIR"
 
@@ -57,6 +61,8 @@ Commands:
   doctor             Run a fuller local OCR + Firecrawl readiness check.
   smoke [pdf]        Parse one local PDF through Firecrawl OCR mode.
   benchmark [pdf...] Run the PDF parser/OCR benchmark helper.
+  profiles           List named Docling OCR profiles.
+  profile-env <name> Print export commands for a named OCR profile.
   env                Print .env entries needed by Firecrawl.
   settings           Print adapter/Docling tuning env vars.
   enable-firecrawl   Write local OCR routing entries into repo-root .env.
@@ -77,6 +83,13 @@ Environment:
   LOCAL_FIREPDF_DOCLING_PDF_BACKEND=docling_parse|pypdfium2|dlparse_v4
   LOCAL_FIREPDF_DOCLING_TABLE_MODE=accurate|fast
   LOCAL_FIREPDF_DOCLING_TO_FORMATS=md,json,html
+
+Common flags after commands that start/restart the adapter:
+  --profile <name>       Use a named profile from pdf_ocr_profiles.json.
+  --capture-json         Save raw Docling JSON/settings artifacts.
+  --no-capture-json      Disable raw Docling JSON capture for this run.
+  --output-dir <path>    Host directory for raw Docling JSON artifacts.
+  --replace              For start-adapter/start, replace an already-running adapter.
 EOF
 }
 
@@ -104,6 +117,131 @@ pretty_json() {
   fi
 }
 
+profile_file() {
+  local fc_dir
+  fc_dir="$(resolve_fc_dir)"
+  printf '%s\n' "$fc_dir/scripts/firecrawl-ops/pdf_ocr_profiles.json"
+}
+
+parse_adapter_flags() {
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --profile)
+        if [[ "$#" -lt 2 ]]; then
+          echo "--profile requires a value" >&2
+          exit 2
+        fi
+        PROFILE="$2"
+        export LOCAL_FIREPDF_PROFILE="$PROFILE"
+        shift 2
+        ;;
+      --capture-json)
+        CAPTURE_JSON=true
+        export LOCAL_FIREPDF_CAPTURE_DOCLING_JSON=true
+        shift
+        ;;
+      --no-capture-json)
+        CAPTURE_JSON=false
+        export LOCAL_FIREPDF_CAPTURE_DOCLING_JSON=false
+        shift
+        ;;
+      --output-dir)
+        if [[ "$#" -lt 2 ]]; then
+          echo "--output-dir requires a path" >&2
+          exit 2
+        fi
+        CAPTURE_OUTPUT_DIR="$2"
+        export LOCAL_FIREPDF_OUTPUT_DIR="$CAPTURE_OUTPUT_DIR"
+        shift 2
+        ;;
+      --replace)
+        REPLACE_ADAPTER=1
+        shift
+        ;;
+      *)
+        echo "Unknown adapter flag: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+}
+
+profile_capture_enabled() {
+  local profile_name="$1"
+  local file
+  file="$(profile_file)"
+  python3 - "$file" "$profile_name" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+profiles = json.loads(Path(sys.argv[1]).read_text())
+name = sys.argv[2]
+
+def merge(profile, stack=None):
+    stack = stack or []
+    if profile not in profiles:
+        raise SystemExit(f"Unknown profile: {profile}")
+    if profile in stack:
+        raise SystemExit(f"Profile cycle: {' -> '.join(stack + [profile])}")
+    current = dict(profiles[profile])
+    parent = current.get("extends")
+    if parent:
+        base = merge(parent, stack + [profile])
+    else:
+        base = {}
+    base.update(current)
+    return base
+
+resolved = merge(name)
+print("true" if resolved.get("capture_docling_json") is True else "false")
+PY
+}
+
+list_profiles() {
+  local file
+  file="$(profile_file)"
+  python3 - "$file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+profiles = json.loads(Path(sys.argv[1]).read_text())
+for name in sorted(profiles):
+    desc = profiles[name].get("description", "")
+    print(f"{name}\t{desc}")
+PY
+}
+
+profile_env() {
+  local profile_name="${1:-}"
+  if [[ -z "$profile_name" ]]; then
+    echo "Usage: local_firepdf_ocr.sh profile-env <profile>" >&2
+    exit 2
+  fi
+  profile_capture_enabled "$profile_name" >/dev/null
+  printf 'export LOCAL_FIREPDF_PROFILE=%q\n' "$profile_name"
+  if [[ "$(profile_capture_enabled "$profile_name")" == "true" ]]; then
+    printf 'export LOCAL_FIREPDF_CAPTURE_DOCLING_JSON=true\n'
+    printf 'export LOCAL_FIREPDF_OUTPUT_DIR=%q\n' "${CAPTURE_OUTPUT_DIR:-tasks/tmp/firecrawl-docling-debug}"
+  fi
+}
+
+add_env_if_set() {
+  local name="$1"
+  if [[ -n "${!name+x}" ]]; then
+    DOCKER_ENV_ARGS+=("-e" "${name}=${!name}")
+  fi
+}
+
+absolute_path() {
+  python3 - "$1" <<'PY'
+import sys
+from pathlib import Path
+print(Path(sys.argv[1]).expanduser().resolve())
+PY
+}
+
 start_docling() {
   if docker ps --format '{{.Names}}' | grep -qx "$DOCLING_CONTAINER"; then
     echo "Docling Serve already running: $DOCLING_CONTAINER"
@@ -127,50 +265,90 @@ adapter_running() {
 
 start_adapter() {
   if adapter_running; then
-    echo "Adapter already running: $ADAPTER_CONTAINER"
-    return 0
-  fi
-  local fc_dir
-  fc_dir="$(resolve_fc_dir)"
-  if docker ps -a --format '{{.Names}}' | grep -qx "$ADAPTER_CONTAINER"; then
+    if [[ "$REPLACE_ADAPTER" == "1" ]]; then
+      docker rm -f "$ADAPTER_CONTAINER" >/dev/null
+    else
+      echo "Adapter already running: $ADAPTER_CONTAINER"
+      echo "Existing container settings stay in effect. Use restart-adapter --profile <name> to apply profile/env changes."
+      curl -fsS "http://127.0.0.1:${ADAPTER_PORT}/settings" 2>/dev/null | pretty_json || true
+      return 0
+    fi
+  elif docker ps -a --format '{{.Names}}' | grep -qx "$ADAPTER_CONTAINER"; then
     docker rm "$ADAPTER_CONTAINER" >/dev/null
   fi
+
+  local fc_dir capture_enabled host_output_dir container_output_dir
+  fc_dir="$(resolve_fc_dir)"
+  profile_capture_enabled "$PROFILE" >/dev/null
+  capture_enabled="${CAPTURE_JSON:-$(profile_capture_enabled "$PROFILE")}"
+  host_output_dir=""
+  container_output_dir=""
+  if [[ "$capture_enabled" == "true" ]]; then
+    host_output_dir="$(absolute_path "${CAPTURE_OUTPUT_DIR:-$fc_dir/tasks/tmp/firecrawl-docling-debug}")"
+    container_output_dir="/firepdf-output"
+    mkdir -p "$host_output_dir"
+  fi
+
+  local volume_args=()
+  if [[ -n "$host_output_dir" ]]; then
+    volume_args+=("-v" "${host_output_dir}:${container_output_dir}")
+  fi
+
+  DOCKER_ENV_ARGS=(
+    "-e" "LOCAL_FIREPDF_HOST=0.0.0.0"
+    "-e" "LOCAL_FIREPDF_PORT=31337"
+    "-e" "LOCAL_FIREPDF_ENGINE=${LOCAL_FIREPDF_ENGINE:-docling}"
+    "-e" "LOCAL_FIREPDF_DOCLING_URL=http://host.docker.internal:${DOCLING_PORT}"
+    "-e" "LOCAL_FIREPDF_PROFILE=${PROFILE}"
+    "-e" "LOCAL_FIREPDF_PROFILES_PATH=/app/pdf_ocr_profiles.json"
+    "-e" "LOCAL_FIREPDF_CAPTURE_DOCLING_JSON=${capture_enabled:-false}"
+    "-e" "LOCAL_FIREPDF_TIMEOUT_SECONDS=${LOCAL_FIREPDF_TIMEOUT_SECONDS:-600}"
+  )
+  if [[ -n "$container_output_dir" ]]; then
+    DOCKER_ENV_ARGS+=("-e" "LOCAL_FIREPDF_OUTPUT_DIR=${container_output_dir}")
+  fi
+
+  add_env_if_set LOCAL_FIREPDF_DOCLING_DO_OCR
+  add_env_if_set LOCAL_FIREPDF_DOCLING_FORCE_OCR
+  add_env_if_set LOCAL_FIREPDF_DOCLING_TO_FORMATS
+  add_env_if_set LOCAL_FIREPDF_DOCLING_OCR_PRESET
+  add_env_if_set LOCAL_FIREPDF_DOCLING_OCR_LANG
+  add_env_if_set LOCAL_FIREPDF_DOCLING_PDF_BACKEND
+  add_env_if_set LOCAL_FIREPDF_DOCLING_TABLE_MODE
+  add_env_if_set LOCAL_FIREPDF_DOCLING_TABLE_CELL_MATCHING
+  add_env_if_set LOCAL_FIREPDF_DOCLING_DO_TABLE_STRUCTURE
+  add_env_if_set LOCAL_FIREPDF_DOCLING_INCLUDE_IMAGES
+  add_env_if_set LOCAL_FIREPDF_DOCLING_IMAGES_SCALE
+  add_env_if_set LOCAL_FIREPDF_DOCLING_IMAGE_EXPORT_MODE
+  add_env_if_set LOCAL_FIREPDF_DOCLING_MD_PAGE_BREAK
+  add_env_if_set LOCAL_FIREPDF_DOCLING_DO_CODE_ENRICHMENT
+  add_env_if_set LOCAL_FIREPDF_DOCLING_DO_FORMULA_ENRICHMENT
+  add_env_if_set LOCAL_FIREPDF_DOCLING_DO_PICTURE_CLASSIFICATION
+  add_env_if_set LOCAL_FIREPDF_DOCLING_DO_CHART_EXTRACTION
+  add_env_if_set LOCAL_FIREPDF_DOCLING_DO_PICTURE_DESCRIPTION
+  add_env_if_set LOCAL_FIREPDF_DOCLING_VLM_PIPELINE_PRESET
+  add_env_if_set LOCAL_FIREPDF_DOCLING_PICTURE_DESCRIPTION_PRESET
+  add_env_if_set LOCAL_FIREPDF_DOCLING_CODE_FORMULA_PRESET
+  add_env_if_set LOCAL_FIREPDF_DOCLING_TABLE_STRUCTURE_PRESET
+  add_env_if_set LOCAL_FIREPDF_DOCLING_LAYOUT_PRESET
+
   docker build -t "$ADAPTER_IMAGE" -f "$SCRIPT_DIR/local-firepdf-adapter.Dockerfile" "$fc_dir"
   docker run -d \
     --name "$ADAPTER_CONTAINER" \
     -p "127.0.0.1:${ADAPTER_PORT}:31337" \
-    -e LOCAL_FIREPDF_HOST=0.0.0.0 \
-    -e LOCAL_FIREPDF_PORT=31337 \
-    -e LOCAL_FIREPDF_ENGINE="${LOCAL_FIREPDF_ENGINE:-docling}" \
-    -e LOCAL_FIREPDF_DOCLING_URL="http://host.docker.internal:${DOCLING_PORT}" \
-    -e LOCAL_FIREPDF_DOCLING_DO_OCR="${LOCAL_FIREPDF_DOCLING_DO_OCR:-true}" \
-    -e LOCAL_FIREPDF_DOCLING_FORCE_OCR="${LOCAL_FIREPDF_DOCLING_FORCE_OCR:-true}" \
-    -e LOCAL_FIREPDF_DOCLING_TO_FORMATS="${LOCAL_FIREPDF_DOCLING_TO_FORMATS:-md,json,html}" \
-    -e LOCAL_FIREPDF_DOCLING_OCR_PRESET="${LOCAL_FIREPDF_DOCLING_OCR_PRESET:-auto}" \
-    -e LOCAL_FIREPDF_DOCLING_OCR_LANG="${LOCAL_FIREPDF_DOCLING_OCR_LANG:-}" \
-    -e LOCAL_FIREPDF_DOCLING_PDF_BACKEND="${LOCAL_FIREPDF_DOCLING_PDF_BACKEND:-docling_parse}" \
-    -e LOCAL_FIREPDF_DOCLING_TABLE_MODE="${LOCAL_FIREPDF_DOCLING_TABLE_MODE:-accurate}" \
-    -e LOCAL_FIREPDF_DOCLING_TABLE_CELL_MATCHING="${LOCAL_FIREPDF_DOCLING_TABLE_CELL_MATCHING:-true}" \
-    -e LOCAL_FIREPDF_DOCLING_DO_TABLE_STRUCTURE="${LOCAL_FIREPDF_DOCLING_DO_TABLE_STRUCTURE:-true}" \
-    -e LOCAL_FIREPDF_DOCLING_INCLUDE_IMAGES="${LOCAL_FIREPDF_DOCLING_INCLUDE_IMAGES:-true}" \
-    -e LOCAL_FIREPDF_DOCLING_IMAGES_SCALE="${LOCAL_FIREPDF_DOCLING_IMAGES_SCALE:-2.0}" \
-    -e LOCAL_FIREPDF_DOCLING_IMAGE_EXPORT_MODE="${LOCAL_FIREPDF_DOCLING_IMAGE_EXPORT_MODE:-placeholder}" \
-    -e LOCAL_FIREPDF_DOCLING_MD_PAGE_BREAK="${LOCAL_FIREPDF_DOCLING_MD_PAGE_BREAK:-}" \
-    -e LOCAL_FIREPDF_DOCLING_DO_CODE_ENRICHMENT="${LOCAL_FIREPDF_DOCLING_DO_CODE_ENRICHMENT:-false}" \
-    -e LOCAL_FIREPDF_DOCLING_DO_FORMULA_ENRICHMENT="${LOCAL_FIREPDF_DOCLING_DO_FORMULA_ENRICHMENT:-false}" \
-    -e LOCAL_FIREPDF_DOCLING_DO_PICTURE_CLASSIFICATION="${LOCAL_FIREPDF_DOCLING_DO_PICTURE_CLASSIFICATION:-false}" \
-    -e LOCAL_FIREPDF_DOCLING_DO_CHART_EXTRACTION="${LOCAL_FIREPDF_DOCLING_DO_CHART_EXTRACTION:-false}" \
-    -e LOCAL_FIREPDF_DOCLING_DO_PICTURE_DESCRIPTION="${LOCAL_FIREPDF_DOCLING_DO_PICTURE_DESCRIPTION:-false}" \
-    -e LOCAL_FIREPDF_DOCLING_VLM_PIPELINE_PRESET="${LOCAL_FIREPDF_DOCLING_VLM_PIPELINE_PRESET:-}" \
-    -e LOCAL_FIREPDF_DOCLING_PICTURE_DESCRIPTION_PRESET="${LOCAL_FIREPDF_DOCLING_PICTURE_DESCRIPTION_PRESET:-}" \
-    -e LOCAL_FIREPDF_DOCLING_CODE_FORMULA_PRESET="${LOCAL_FIREPDF_DOCLING_CODE_FORMULA_PRESET:-}" \
-    -e LOCAL_FIREPDF_DOCLING_TABLE_STRUCTURE_PRESET="${LOCAL_FIREPDF_DOCLING_TABLE_STRUCTURE_PRESET:-}" \
-    -e LOCAL_FIREPDF_DOCLING_LAYOUT_PRESET="${LOCAL_FIREPDF_DOCLING_LAYOUT_PRESET:-}" \
-    -e LOCAL_FIREPDF_TIMEOUT_SECONDS="${LOCAL_FIREPDF_TIMEOUT_SECONDS:-600}" \
+    "${volume_args[@]}" \
+    "${DOCKER_ENV_ARGS[@]}" \
     "$ADAPTER_IMAGE" >/dev/null
   rm -f "$ADAPTER_PID"
   echo "Started local FirePDF adapter container: $ADAPTER_CONTAINER"
+  echo "Profile: $PROFILE"
+  echo "Raw Docling JSON capture: ${capture_enabled:-false}"
+  if [[ -n "$host_output_dir" ]]; then
+    echo "Raw Docling JSON output dir: $host_output_dir"
+  fi
   wait_for_url "http://127.0.0.1:${ADAPTER_PORT}/health" "Local FirePDF adapter" 30
+  curl -fsS "http://127.0.0.1:${ADAPTER_PORT}/settings" 2>/dev/null | pretty_json || true
+  return 0
 }
 
 stop_adapter() {
@@ -213,8 +391,12 @@ EOF
 print_settings() {
   cat <<EOF
 # Local Docling adapter settings. Export before local_firepdf_ocr.sh start-adapter/start.
+# This is an env template. Use "local_firepdf_ocr.sh health" to inspect the running adapter profile/options.
 LOCAL_FIREPDF_ENGINE=${LOCAL_FIREPDF_ENGINE:-docling}
 LOCAL_FIREPDF_PORT=${LOCAL_FIREPDF_PORT:-31337}
+LOCAL_FIREPDF_PROFILE=${LOCAL_FIREPDF_PROFILE:-default}
+LOCAL_FIREPDF_CAPTURE_DOCLING_JSON=${LOCAL_FIREPDF_CAPTURE_DOCLING_JSON:-false}
+LOCAL_FIREPDF_OUTPUT_DIR=${LOCAL_FIREPDF_OUTPUT_DIR:-tasks/tmp/firecrawl-docling-debug}
 LOCAL_FIREPDF_TIMEOUT_SECONDS=${LOCAL_FIREPDF_TIMEOUT_SECONDS:-600}
 LOCAL_FIREPDF_DOCLING_PORT=${LOCAL_FIREPDF_DOCLING_PORT:-5001}
 LOCAL_FIREPDF_DOCLING_IMAGE=${LOCAL_FIREPDF_DOCLING_IMAGE:-$DOCLING_IMAGE}
@@ -243,6 +425,9 @@ LOCAL_FIREPDF_DOCLING_TABLE_STRUCTURE_PRESET=${LOCAL_FIREPDF_DOCLING_TABLE_STRUC
 LOCAL_FIREPDF_DOCLING_LAYOUT_PRESET=${LOCAL_FIREPDF_DOCLING_LAYOUT_PRESET:-}
 
 # Examples:
+# scripts/firecrawl-ops/local_firepdf_ocr.sh profiles
+# scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile research-page-aware
+# scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile qa-debug --capture-json
 # LOCAL_FIREPDF_DOCLING_TABLE_MODE=fast scripts/firecrawl-ops/local_firepdf_ocr.sh start-adapter
 # LOCAL_FIREPDF_DOCLING_OCR_PRESET=tesseract LOCAL_FIREPDF_DOCLING_OCR_LANG=en scripts/firecrawl-ops/local_firepdf_ocr.sh start-adapter
 EOF
@@ -299,9 +484,16 @@ doctor() {
   env_path="${ENV_PATH:-$fc_dir/.env}"
   echo "== docker context =="
   docker context show
+  if [[ "$(docker context show 2>/dev/null || true)" != "orbstack" ]]; then
+    echo "Warning: expected docker context 'orbstack' for this Mac."
+  fi
   echo
   echo "== containers =="
   status
+  echo
+  echo "== OCR profiles =="
+  echo "Profile file: $(profile_file)"
+  list_profiles
   echo
   echo "== adapter health =="
   health
@@ -350,20 +542,29 @@ benchmark() {
 
 case "${1:-}" in
   start-docling)
+    shift || true
     start_docling
     ;;
   start-adapter)
+    shift || true
+    parse_adapter_flags "$@"
     start_adapter
     ;;
   start)
+    shift || true
+    parse_adapter_flags "$@"
     start_docling
     start_adapter
     ;;
   restart-adapter)
+    shift || true
+    parse_adapter_flags "$@"
     stop_adapter
     start_adapter
     ;;
   restart)
+    shift || true
+    parse_adapter_flags "$@"
     stop_adapter
     stop_docling
     start_docling
@@ -382,6 +583,13 @@ case "${1:-}" in
   benchmark)
     shift || true
     benchmark "$@"
+    ;;
+  profiles)
+    list_profiles
+    ;;
+  profile-env)
+    shift || true
+    profile_env "$@"
     ;;
   env)
     print_env

@@ -187,7 +187,7 @@ curl -sS -X POST http://localhost:3002/v2/parse \
   -F "file=@./report.pdf"
 ```
 
-Supported parser modes are `auto`, `fast`, and `ocr`. Use `auto` by default. Use `fast` when you want local text extraction without expensive OCR-style work. Use `ocr` only when Fire PDF, the local Docling adapter, or MinerU-style OCR services are configured; otherwise the local fallback is still mostly flattened text. `maxPages` caps PDF pages processed, up to 10000.
+Supported parser modes are `auto`, `fast`, and `ocr`. Use `auto` by default. Use `fast` when you want local text extraction without OCR-style work. Use `ocr` when Fire PDF, the local Docling adapter, or MinerU-style OCR services are configured; without one of those OCR backends, `ocr` is not meaningfully stronger than the fallback parser. `maxPages` caps PDF pages processed, up to 10000.
 
 Equivalent helper form:
 
@@ -198,15 +198,15 @@ Equivalent helper form:
 
 PDF output reality:
 
-- The local, free path is strongest for text-based PDFs. With `PDF_RUST_EXTRACT_ENABLE=true`, Rust extraction handles simple text PDFs locally and falls back when the layout is complex.
-- Figure-heavy, table-heavy, scanned, or multi-column PDFs may still flatten into one large markdown string.
+- The default local path is strongest for text-based PDFs. With `PDF_RUST_EXTRACT_ENABLE=true`, Rust extraction handles simple text PDFs locally and falls back when the layout is complex.
+- Figure-heavy, table-heavy, scanned, or multi-column PDFs may flatten on the default path; start the local Docling adapter for stronger local OCR/layout extraction.
 - `formats:["images"]` only returns images when the parsed HTML/markdown exposes image tags; many PDFs return an empty image list.
 - `formats:["html"]` may be markdown-derived HTML, not a faithful page layout with `<table>` or `<img>` tags.
 - For dense born-digital PDFs, `fast` can be both faster and richer than OCR. A local 40-page spec test produced much more markdown in `fast` than in `auto`/`ocr`. Use OCR for scanned/image-only/slide-style documents, and benchmark unfamiliar document families before committing to one mode.
-- More robust OCR/layout extraction needs Fire PDF-compatible OCR routing. This fork provides a local Docling adapter:
+- Stronger local OCR/layout extraction uses Fire PDF-compatible OCR routing. This fork provides a local Docling adapter:
 
 ```bash
-scripts/firecrawl-ops/local_firepdf_ocr.sh start
+scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
 scripts/firecrawl-ops/local_firepdf_ocr.sh doctor
 scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
 docker compose up -d --force-recreate api
@@ -214,13 +214,19 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html --pdf-mode ocr --max-pages 10 --pretty
 ```
 
-The local Docling adapter does not spend Firecrawl cloud credits. External Fire PDF or RunPod MinerU backends can still spend their provider budget.
+The local Docling adapter does not spend Firecrawl cloud credits. In current local tests, `research-page-aware` OCR successfully parsed known scanned/image PDFs and produced page-aware markdown. External Fire PDF or RunPod MinerU backends can still spend their provider budget.
 
-Useful adapter tuning env vars before `scripts/firecrawl-ops/local_firepdf_ocr.sh start-adapter` / `start`: `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply changes. Use `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf` for a one-command OCR parse check. For a saved comparison matrix with per-PDF recommendations:
+Named OCR profiles live in `scripts/firecrawl-ops/pdf_ocr_profiles.json`. List them with `scripts/firecrawl-ops/local_firepdf_ocr.sh profiles`. Useful profiles: `research-page-aware` for academic page chunks, `tables-accurate` for table-heavy papers, `scanned-english` for image-only English scans, and `qa-debug` when raw Docling JSON is needed. Apply a changed profile with `scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile <name>`.
+
+Useful adapter tuning env vars before `scripts/firecrawl-ops/local_firepdf_ocr.sh start-adapter` / `start`: `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. Explicit env vars override the named profile. Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply changes. Use `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf` for a one-command OCR parse check. For a saved comparison matrix with per-PDF recommendations, page chunks, and QA reports:
 
 ```bash
 scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
-  --modes fast,auto,ocr --max-pages 40 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict
+  --modes fast,auto,ocr \
+  --profiles default,research-page-aware,tables-accurate \
+  --max-pages 40 \
+  --out-dir /tmp/firecrawl-pdf-ocr-benchmark \
+  --strict
 ```
 
 Async extract with schema:

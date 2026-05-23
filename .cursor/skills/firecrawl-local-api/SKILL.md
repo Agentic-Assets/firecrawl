@@ -49,6 +49,19 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html --pdf-mode auto --max-pages 25 --pretty
 ```
 
+For harder academic PDFs, use the local Docling OCR adapter profiles:
+
+```bash
+scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
+scripts/firecrawl-ops/local_firepdf_ocr.sh profiles
+scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
+  --modes fast,auto,ocr \
+  --profiles default,research-page-aware,tables-accurate \
+  --max-pages 40 --strict
+```
+
+The benchmark saves per-case `fields/pages.jsonl`, `qa.json`, and `qa.md`, then recommends a mode/profile in `summary.md`. Raw Docling JSON capture is available with `--capture-json` or the `qa-debug` profile and writes full-document debug artifacts under `tasks/tmp`.
+
 For Cursor SDK code, project settings are not loaded by default. Either pass `mcpServers` inline with `command: "bash"` and `args: ["scripts/firecrawl-ops/firecrawl_mcp.sh"]`, or set `local: { cwd: process.cwd(), settingSources: ["project"] }`.
 
 Use the SDK local runtime for this local stack. Cursor cloud agents cannot reach this Mac's `http://localhost:3002` unless the API is exposed at a reachable URL.
