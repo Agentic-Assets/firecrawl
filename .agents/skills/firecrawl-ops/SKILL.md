@@ -174,11 +174,13 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 
 The adapter runs on `127.0.0.1:31337`, Docling Serve runs on `127.0.0.1:5001`, and the API container calls the adapter through `http://host.docker.internal:31337`. The helper pins the known-good Docling Serve CPU image by digest; override `LOCAL_FIREPDF_DOCLING_IMAGE` only for deliberate update testing. Stop it with `scripts/firecrawl-ops/local_firepdf_ocr.sh stop`.
 
-Useful Docling tuning env vars before `start-adapter` / `start`: `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply changes. Use `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf` for a one-command OCR parse check. For repeatable comparisons:
+Mode choice matters. On the 2026-05-23 local stress test, a 40-page born-digital spec was best with `fast` because it preserved far more text in 1.7s, while `auto`/`ocr` took about 128s and produced shorter OCR markdown. The 25-page encrypted slide-style CRE report succeeded in all modes, with Docling OCR adding some structure but taking about 46s. Use `fast` first for dense born-digital text PDFs; use `ocr` for scanned/image-only/slide-style files; run the benchmark when unsure.
+
+Useful Docling tuning env vars before `start-adapter` / `start`: `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply changes. Use `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf` for a one-command OCR parse check. For repeatable comparisons with saved fields and a per-PDF recommended mode:
 
 ```bash
 scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
-  --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict
+  --modes fast,auto,ocr --max-pages 40 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict
 ```
 
 ## Model Profiles
@@ -234,7 +236,7 @@ The skill folder exposes these via symlinks to `docs/firecrawl-ops/references/` 
 - `scripts/firecrawl_healthcheck.sh`: local stack smoke test
 - `scripts/firecrawl_cli.sh`: Firecrawl CLI wrapper pinned to the local API URL
 - `scripts/firecrawl_request.py`: dependency-free direct HTTP helper with output/save controls and advanced parse options
-- `scripts/local_firepdf_ocr.sh`: start/stop/health/env helper for local Docling OCR
+- `scripts/local_firepdf_ocr.sh`: start/stop/health/env/settings/doctor/smoke/benchmark helper for local Docling OCR
 - `scripts/local_firepdf_ocr_service.py`: Fire PDF-compatible adapter that lets Firecrawl call local Docling through `/ocr`
 - `scripts/pdf_ocr_benchmark.py`: repeatable local PDF parser/OCR matrix runner with saved fields and summaries
 - `scripts/firecrawl_mcp.sh`: Firecrawl MCP wrapper pinned to the local API URL

@@ -22,12 +22,13 @@ Implemented and smoke-tested on 2026-05-23:
 
 - `scripts/firecrawl-ops/local_firepdf_ocr_service.py` implements the FirePDF-compatible `POST /ocr` adapter and calls Docling Serve's current `/v1/convert/source` `sources` contract.
 - `scripts/firecrawl-ops/local_firepdf_ocr.sh` starts Docling Serve and the adapter in OrbStack/Docker. It also provides `doctor`, `smoke`, `settings`, `restart-adapter`, and `benchmark` convenience commands. The default Docling Serve CPU image is pinned by digest for repeatability; override `LOCAL_FIREPDF_DOCLING_IMAGE` to intentionally test newer releases.
-- `scripts/firecrawl-ops/pdf_ocr_benchmark.py` runs a saved `fast` / `auto` / `ocr` comparison matrix with metadata, adapter health, settings, and optional `--strict` failure handling.
+- `scripts/firecrawl-ops/pdf_ocr_benchmark.py` runs a saved `fast` / `auto` / `ocr` comparison matrix with metadata, adapter health, settings, preflight checks, per-mode metrics, recommended parser mode, and optional `--strict` failure handling.
 - `set_model_profile.sh` preserves existing local OCR routing values when changing LLM profiles.
 - Verified: direct adapter `/ocr`, local Firecrawl `/v2/parse` with `mode:"ocr"`, local API healthcheck, CLI wrapper parse smoke, and a two-PDF benchmark matrix.
 
 Useful dynamic Docling knobs before `local_firepdf_ocr.sh start-adapter` or `start`:
 
+- `LOCAL_FIREPDF_TIMEOUT_SECONDS=600` by default; raise it for very large/image-heavy papers
 - `LOCAL_FIREPDF_DOCLING_OCR_PRESET=auto|easyocr|tesseract`
 - `LOCAL_FIREPDF_DOCLING_OCR_LANG=en[,de,...]`
 - `LOCAL_FIREPDF_DOCLING_PDF_BACKEND=docling_parse|pypdfium2|dlparse_v4`
@@ -58,7 +59,7 @@ The implementation should preserve the fork's upstream-sync posture:
 
 Expected local behavior after implementation:
 
-- `--pdf-mode fast`: no OCR; good for cheap born-digital text PDFs.
+- `--pdf-mode fast`: no OCR; good for cheap born-digital text PDFs, and often richer than OCR for dense text-heavy documents.
 - `--pdf-mode auto`: use Firecrawl's local Rust text extraction first; fall back to local OCR only when Firecrawl's normal PDF path needs it.
 - `--pdf-mode ocr`: force the OCR path so scanned/image-only PDFs can use the local adapter.
 
@@ -280,7 +281,7 @@ LOCAL_FIREPDF_ENGINE=docling
 LOCAL_FIREPDF_DOCLING_URL=http://127.0.0.1:5001
 LOCAL_FIREPDF_DOCLING_FORCE_OCR=true
 LOCAL_FIREPDF_DOCLING_TO_FORMATS=md,json,html
-LOCAL_FIREPDF_TIMEOUT_SECONDS=240
+LOCAL_FIREPDF_TIMEOUT_SECONDS=600
 LOCAL_FIREPDF_OUTPUT_DIR=
 LOCAL_FIREPDF_KEEP_TEMP=false
 ```
@@ -433,6 +434,7 @@ Agents should learn:
 - Use `--pdf-mode fast` for cheap text PDFs.
 - Use `--pdf-mode auto` for normal work.
 - Use `--pdf-mode ocr` when a scanned/image-only PDF needs local OCR.
+- For a new document family, run `pdf_ocr_benchmark.py` first and read the `Recommended Mode` section in `summary.md`.
 - Plain markdown extraction does not use LLM credits.
 - Local Docling OCR does not use Firecrawl cloud credits.
 - Docling may use local CPU/RAM heavily and may download model assets on first use.
@@ -518,7 +520,7 @@ Sample categories:
 - figure-heavy paper
 - scanned/image-only PDF
 
-Output should be JSON plus a small Markdown summary so agents can compare changes over time:
+Output should be JSON plus a small Markdown summary so agents can compare changes over time. It preflights fake `.pdf` downloads, saves split fields, records timing and output metrics, and writes a per-PDF parser recommendation.
 
 ```text
 tasks/tmp/firecrawl-pdf-ocr-benchmark-YYYYMMDD/

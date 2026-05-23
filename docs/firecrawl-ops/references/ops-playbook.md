@@ -161,6 +161,7 @@ curl -sS http://127.0.0.1:31337/health | jq .
 
 Useful Docling tuning env vars before `start-adapter` / `start`:
 
+- `LOCAL_FIREPDF_TIMEOUT_SECONDS=600` by default; raise it for very large/image-heavy papers
 - `LOCAL_FIREPDF_DOCLING_OCR_PRESET=auto|easyocr|tesseract`
 - `LOCAL_FIREPDF_DOCLING_OCR_LANG=en[,de,...]`
 - `LOCAL_FIREPDF_DOCLING_PDF_BACKEND=docling_parse|pypdfium2|dlparse_v4`
@@ -183,7 +184,7 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html --pdf-mode auto --max-pages 25 --pretty
 ```
 
-`auto` is the default, `fast` avoids OCR-style work, and `ocr` only becomes meaningfully stronger when Fire PDF, local Docling, or MinerU-style OCR services are configured. Local free parsing is good for text PDFs, but figures, tables, scans, and complex multi-column layouts can still flatten. With the Docling adapter enabled, use:
+`auto` is the default, `fast` avoids OCR-style work, and `ocr` only becomes meaningfully stronger when Fire PDF, local Docling, or MinerU-style OCR services are configured. Local free parsing is good for text PDFs, but figures, tables, scans, and complex multi-column layouts can still flatten. Dense born-digital PDFs often do best with `fast`; scanned/image-only/slide-style PDFs are the better OCR candidates. With the Docling adapter enabled, use:
 
 ```bash
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
@@ -194,8 +195,10 @@ Run a repeatable local matrix:
 
 ```bash
 scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
-  --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict
+  --modes fast,auto,ocr --max-pages 40 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict
 ```
+
+The benchmark preflights fake `.pdf` downloads, saves split markdown/html/metadata fields, and writes a `Recommended Mode` section in `summary.md`.
 
 ## Upstream sync
 Use a branch and merge commit so fork-specific ops assets remain easy to review:

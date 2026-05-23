@@ -36,6 +36,13 @@ def sample_slug(path: Path) -> str:
     return f"{clean_slug(stem)}-{digest}"
 
 
+def is_pdf_like(path: Path) -> bool:
+    try:
+        return b"%PDF-" in path.read_bytes()[:1024]
+    except OSError:
+        return False
+
+
 def basename_slug(value: str) -> str:
     stem = value or "pdf"
     cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in stem)
@@ -77,6 +84,11 @@ def summarize_response(data: Any) -> dict[str, Any]:
     return {
         "success": data.get("success") if isinstance(data, dict) else None,
         "markdown_len": len(markdown),
+        "word_count": len(markdown.split()),
+        "line_count": len(markdown.splitlines()),
+        "chars_per_page": round(len(markdown) / metadata.get("numPages"), 1)
+        if isinstance(metadata.get("numPages"), (int, float)) and metadata.get("numPages")
+        else None,
         "html_len": len(html),
         "image_count": len(images),
         "num_pages": metadata.get("numPages"),
@@ -90,6 +102,32 @@ def expected_failure(mode: str, proc: subprocess.CompletedProcess[str]) -> bool:
     if proc.returncode == 0:
         return False
     return mode == "fast" and "SCRAPE_PDF_OCR_REQUIRED" in proc.stderr
+
+
+def preflight_failure(pdf: Path, reason: str) -> dict[str, Any]:
+    return {
+        "sample": sample_slug(pdf),
+        "pdf": str(pdf),
+        "mode": "preflight",
+        "exit_code": 2,
+        "expected_failure": False,
+        "seconds": 0.0,
+        "response": None,
+        "fields": None,
+        "stderr_preview": reason,
+        "success": False,
+        "markdown_len": 0,
+        "word_count": 0,
+        "line_count": 0,
+        "chars_per_page": None,
+        "html_len": 0,
+        "image_count": 0,
+        "num_pages": None,
+        "credits_used": None,
+        "title": None,
+        "preview": "",
+        "preflight_error": reason,
+    }
 
 
 def run_case(args: argparse.Namespace, pdf: Path, mode: str, out_dir: Path) -> dict[str, Any]:
@@ -150,13 +188,84 @@ def run_case(args: argparse.Namespace, pdf: Path, mode: str, out_dir: Path) -> d
     return summary
 
 
+def choose_recommendations(summaries: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+    by_sample: dict[str, list[dict[str, Any]]] = {}
+    for item in summaries:
+        by_sample.setdefault(str(item.get("sample")), []).append(item)
+
+    recommendations: dict[str, dict[str, str]] = {}
+    for sample, items in by_sample.items():
+        preflight = next((item for item in items if item.get("preflight_error")), None)
+        if preflight:
+            recommendations[sample] = {
+                "mode": "none",
+                "reason": str(preflight["preflight_error"]),
+            }
+            continue
+
+        viable = [
+            item
+            for item in items
+            if item.get("exit_code") == 0 and isinstance(item.get("markdown_len"), int) and item.get("markdown_len", 0) > 0
+        ]
+        if not viable:
+            recommendations[sample] = {
+                "mode": "none",
+                "reason": "No parser mode produced markdown.",
+            }
+            continue
+
+        by_mode = {str(item.get("mode")): item for item in viable}
+        fast = by_mode.get("fast")
+        auto = by_mode.get("auto")
+        ocr = by_mode.get("ocr")
+        ocr_best = max([item for item in [auto, ocr] if item], key=lambda item: (item.get("markdown_len", 0), -item.get("seconds", 0)), default=None)
+
+        if fast and ocr_best:
+            fast_len = int(fast.get("markdown_len", 0))
+            ocr_len = int(ocr_best.get("markdown_len", 0))
+            fast_words = int(fast.get("word_count", 0))
+            ocr_words = int(ocr_best.get("word_count", 0))
+            if fast_len >= max(1000, int(ocr_len * 1.5)) and fast_words >= int(ocr_words * 1.25):
+                recommendations[sample] = {
+                    "mode": "fast",
+                    "reason": "Born-digital text extraction produced much more text and was faster than OCR.",
+                }
+                continue
+            if ocr_len >= int(fast_len * 1.1) or ocr_words >= int(fast_words * 1.1):
+                recommendations[sample] = {
+                    "mode": str(ocr_best.get("mode")),
+                    "reason": "OCR/layout extraction produced more recoverable text than fast mode; inspect tables and layout.",
+                }
+                continue
+
+        fastest = min(viable, key=lambda item: item.get("seconds", 0))
+        recommendations[sample] = {
+            "mode": str(fastest.get("mode")),
+            "reason": "Outputs were similar enough; prefer the fastest successful mode.",
+        }
+    return recommendations
+
+
 def write_markdown_summary(out_dir: Path, summaries: list[dict[str, Any]]) -> None:
+    recommendations = choose_recommendations(summaries)
     lines = [
         "# Firecrawl PDF OCR Benchmark",
         "",
+        "## Recommended Mode",
+        "",
+        "| PDF | Mode | Why |",
+        "| --- | --- | --- |",
+    ]
+    for sample, item in sorted(recommendations.items()):
+        lines.append(f"| {sample} | {item['mode']} | {item['reason']} |")
+    lines.extend([
+        "",
+        "## Raw Results",
+        "",
         "| PDF | Mode | Exit | Expected | Seconds | Markdown | HTML | Pages | Images | Credits |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-    ]
+    ])
     for item in summaries:
         lines.append(
             "| {pdf} | {mode} | {exit_code} | {expected_failure} | {seconds} | {markdown_len} | {html_len} | {num_pages} | {image_count} | {credits_used} |".format(
@@ -195,6 +304,7 @@ def write_metadata(args: argparse.Namespace, out_dir: Path, summaries: list[dict
         "adapter_health": command_json(["curl", "-fsS", args.adapter_health_url]),
         "docker_context": command_json(["docker", "context", "show"]),
         "case_count": len(summaries),
+        "recommendations": choose_recommendations(summaries),
         "unexpected_failure_count": len(unexpected_failures),
         "unexpected_failures": unexpected_failures,
     }
@@ -227,7 +337,12 @@ def main() -> int:
     for pdf in args.pdfs:
         pdf = pdf.expanduser().resolve()
         if not pdf.is_file():
-            print(f"Skipping missing PDF: {pdf}", file=sys.stderr)
+            print(f"Preflight failed for {pdf}: file does not exist", file=sys.stderr)
+            summaries.append(preflight_failure(pdf, "File does not exist."))
+            continue
+        if not is_pdf_like(pdf):
+            print(f"Preflight failed for {pdf}: missing PDF header", file=sys.stderr)
+            summaries.append(preflight_failure(pdf, "File is not a PDF; it is missing a %PDF header."))
             continue
         for mode in modes:
             print(f"Running {pdf.name} mode={mode}", file=sys.stderr)
