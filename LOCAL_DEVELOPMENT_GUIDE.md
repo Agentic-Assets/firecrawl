@@ -200,6 +200,7 @@ Operational notes:
 - Firecrawl's API container reaches the adapter with `FIRE_PDF_BASE_URL=http://host.docker.internal:31337`.
 - `--pdf-mode fast` avoids OCR; `--pdf-mode auto` tries normal local extraction first; `--pdf-mode ocr` forces the OCR path.
 - Dynamic Docling knobs are passed through env before `start-adapter` / `start`: `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags.
+- Print the full tunable settings surface with `scripts/firecrawl-ops/local_firepdf_ocr.sh settings`.
 - Repeatable PDF checks can use `scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark`.
 - Stop services with `scripts/firecrawl-ops/local_firepdf_ocr.sh stop`.
 

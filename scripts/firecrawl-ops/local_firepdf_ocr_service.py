@@ -170,6 +170,14 @@ def count_pages(pdf_path: Path) -> int | None:
     return None
 
 
+def capped_page_count(max_pages: int | None, total_pages: int | None) -> int | None:
+    if not max_pages or max_pages <= 0:
+        return total_pages
+    if total_pages is None:
+        return max_pages
+    return min(max_pages, total_pages)
+
+
 def limited_pdf_if_possible(pdf_path: Path, max_pages: int | None, total_pages: int | None, tmpdir: Path) -> tuple[Path, int | None]:
     if not max_pages or max_pages <= 0:
         return pdf_path, total_pages
@@ -180,7 +188,7 @@ def limited_pdf_if_possible(pdf_path: Path, max_pages: int | None, total_pages: 
     pdfunite = shutil.which("pdfunite")
     if not pdfseparate or not pdfunite:
         log("Cannot enforce max_pages without pdfseparate/pdfunite", max_pages=max_pages)
-        return pdf_path, total_pages
+        return pdf_path, capped_page_count(max_pages, total_pages)
 
     page_pattern = tmpdir / "page-%04d.pdf"
     limited_path = tmpdir / "limited.pdf"
@@ -193,7 +201,7 @@ def limited_pdf_if_possible(pdf_path: Path, max_pages: int | None, total_pages: 
     )
     if sep.returncode != 0:
         log("pdfseparate failed", stderr=sep.stderr.strip())
-        return pdf_path, total_pages
+        return pdf_path, capped_page_count(max_pages, total_pages)
     page_files = sorted(tmpdir.glob("page-*.pdf"))
     if not page_files:
         return pdf_path, total_pages
@@ -206,7 +214,7 @@ def limited_pdf_if_possible(pdf_path: Path, max_pages: int | None, total_pages: 
     )
     if unite.returncode != 0:
         log("pdfunite failed", stderr=unite.stderr.strip())
-        return pdf_path, total_pages
+        return pdf_path, capped_page_count(max_pages, total_pages)
     return limited_path, len(page_files)
 
 
@@ -230,7 +238,7 @@ def post_json(url: str, payload: dict[str, Any], timeout: float) -> Any:
         raise AdapterError(f"Docling returned invalid JSON: {exc}", status=502) from exc
 
 
-def docling_options(timeout: float) -> dict[str, Any]:
+def docling_options(timeout: float, max_pages: int | None) -> dict[str, Any]:
     options: dict[str, Any] = {
         "from_formats": ["pdf"],
         "to_formats": TO_FORMATS,
@@ -253,6 +261,8 @@ def docling_options(timeout: float) -> dict[str, Any]:
         "do_chart_extraction": DO_CHART_EXTRACTION,
         "do_picture_description": DO_PICTURE_DESCRIPTION,
     }
+    if max_pages and max_pages > 0:
+        options["page_range"] = [1, max_pages]
     if OCR_LANG:
         options["ocr_lang"] = OCR_LANG
     if VLM_PIPELINE_PRESET:
@@ -268,9 +278,9 @@ def docling_options(timeout: float) -> dict[str, Any]:
     return options
 
 
-def call_docling(pdf_path: Path, timeout: float) -> Any:
+def call_docling(pdf_path: Path, timeout: float, max_pages: int | None) -> Any:
     payload = {
-        "options": docling_options(timeout),
+        "options": docling_options(timeout, max_pages),
         "sources": [
             {
                 "kind": "file",
@@ -370,7 +380,7 @@ def handle_ocr(request_body: dict[str, Any]) -> dict[str, Any]:
             max_pages=max_pages,
             timeout=timeout,
         )
-        docling_result = call_docling(pdf_path, timeout)
+        docling_result = call_docling(pdf_path, timeout, max_pages)
         save_debug(tmpdir, scrape_id, docling_result)
         markdown, errors = extract_markdown(docling_result)
         if not markdown.strip():

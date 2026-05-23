@@ -35,6 +35,8 @@ Useful dynamic Docling knobs before `local_firepdf_ocr.sh start-adapter` or `sta
 - `LOCAL_FIREPDF_DOCLING_TO_FORMATS=md,json,html`
 - optional enrichment flags such as `LOCAL_FIREPDF_DOCLING_DO_CHART_EXTRACTION=true` or `LOCAL_FIREPDF_DOCLING_DO_PICTURE_DESCRIPTION=true`
 
+Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the current/default settings and copy-pasteable examples.
+
 ## Local Firecrawl Fit
 
 This plan is designed for the current self-hosted Firecrawl fork on this Mac:

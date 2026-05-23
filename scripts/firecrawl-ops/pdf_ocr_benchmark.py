@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -20,8 +21,22 @@ def parse_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def slugify(path: Path) -> str:
-    stem = path.stem or "pdf"
+def clean_slug(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in value)
+    return cleaned.strip(".-_")[:80] or "item"
+
+
+def sample_slug(path: Path) -> str:
+    if path.parent.name == "source" and path.parent.parent.name:
+        stem = path.parent.parent.name
+    else:
+        stem = path.stem or path.name or "pdf"
+    digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:8]
+    return f"{clean_slug(stem)}-{digest}"
+
+
+def basename_slug(value: str) -> str:
+    stem = value or "pdf"
     cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in stem)
     return cleaned.strip(".-_")[:80] or "pdf"
 
@@ -58,7 +73,8 @@ def summarize_response(data: Any) -> dict[str, Any]:
 
 
 def run_case(args: argparse.Namespace, pdf: Path, mode: str, out_dir: Path) -> dict[str, Any]:
-    case_slug = f"{slugify(pdf)}-{mode}"
+    sample = sample_slug(pdf)
+    case_slug = f"{sample}-{mode}"
     case_dir = out_dir / case_slug
     fields_dir = case_dir / "fields"
     response_path = case_dir / "response.json"
@@ -99,6 +115,7 @@ def run_case(args: argparse.Namespace, pdf: Path, mode: str, out_dir: Path) -> d
 
     data = load_json(response_path) if response_path.exists() else {}
     summary = {
+        "sample": sample,
         "pdf": str(pdf),
         "mode": mode,
         "exit_code": proc.returncode,
@@ -122,7 +139,7 @@ def write_markdown_summary(out_dir: Path, summaries: list[dict[str, Any]]) -> No
     for item in summaries:
         lines.append(
             "| {pdf} | {mode} | {exit_code} | {seconds} | {markdown_len} | {html_len} | {num_pages} | {image_count} | {credits_used} |".format(
-                pdf=Path(item["pdf"]).name,
+                pdf=f"{item.get('sample', basename_slug(Path(item['pdf']).name))}",
                 mode=item["mode"],
                 exit_code=item["exit_code"],
                 seconds=item["seconds"],

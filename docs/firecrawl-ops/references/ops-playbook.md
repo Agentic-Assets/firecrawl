@@ -153,6 +153,7 @@ Useful checks:
 ```bash
 scripts/firecrawl-ops/local_firepdf_ocr.sh status
 scripts/firecrawl-ops/local_firepdf_ocr.sh logs
+scripts/firecrawl-ops/local_firepdf_ocr.sh settings
 curl -sS http://127.0.0.1:31337/health | jq .
 ```
 
