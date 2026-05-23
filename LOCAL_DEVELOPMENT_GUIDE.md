@@ -94,20 +94,27 @@ docker compose down; docker compose up -d
 
 ---
 
-### 🚀 Your OpenRouter Advantage
-Because you are running locally but using **OpenRouter**, you are getting the best of both worlds:
+### 🚀 Your OpenRouter / Gateway Advantage
+Because you are running locally but can route AI calls through **OpenRouter**, **Vercel AI Gateway**, or **OpenAI**, you are getting the best of both worlds:
 1.  **Privacy**: The actual scraping happens on your machine.
-2.  **Intelligence**: You can swap models (like Claude 3.5 Sonnet or GPT-4o) just by changing the `MODEL_NAME` in your `.env`, without needing to manage multiple API keys.
+2.  **Intelligence**: You can swap models by changing `OPENAI_BASE_URL` and `MODEL_NAME` in your `.env`.
 
 ---
 
 ### 6. Fork-Specific Env Vars
-This fork's ops layer (`.agents/skills/firecrawl-ops/`, `scripts/firecrawl-ops/`) reads a few extra vars from the repo-root `.env`. There is no root `.env.example` on purpose — copy upstream's `apps/api/.env.example` to `./.env`, then layer these on top:
+This fork's ops layer (`.agents/skills/firecrawl-ops/`, `scripts/firecrawl-ops/`) reads a few extra vars from the repo-root `.env`. The model helper creates a minimal gitignored `.env` if one is missing:
+
+```bash
+scripts/firecrawl-ops/set_model_profile.sh budget
+```
 
 | Var | Purpose | Required |
 | :--- | :--- | :--- |
-| `OPENROUTER_API_KEY` | Model routing via OpenRouter | Yes (for AI features) |
-| `MODEL_NAME` | Default LLM (rewritten by `scripts/firecrawl-ops/set_model_profile.sh budget\|escalated`) | Yes |
+| `FIRECRAWL_API_URL` | Local CLI target (`http://localhost:3002`) | Optional but recommended |
+| `OPENAI_API_KEY` | Provider key for OpenRouter, Vercel AI Gateway, or OpenAI-compatible profiles | Yes (for AI features) |
+| `OPENAI_BASE_URL` | Provider base URL, rewritten by `scripts/firecrawl-ops/set_model_profile.sh` | Yes (for AI features) |
+| `MODEL_NAME` | Default LLM, rewritten by `scripts/firecrawl-ops/set_model_profile.sh` | Yes (for AI features) |
+| `OPENROUTER_API_KEY` | Optional direct OpenRouter provider path; not the default local profile route | Optional |
 | `SWARM_SUPABASE_URL` | Persistent swarm telemetry | Optional |
 | `SWARM_SUPABASE_KEY` | Persistent swarm telemetry | Optional |
 
@@ -118,3 +125,56 @@ scripts/firecrawl-ops/set_model_profile.sh escalated   # DeepSeek V4 Pro (OpenRo
 scripts/firecrawl-ops/set_model_profile.sh gateway     # DeepSeek V4 Flash (Vercel AI Gateway)
 docker compose up -d --force-recreate api
 ```
+
+### 7. Local Firecrawl CLI
+Use the fork wrapper so the CLI always talks to your local API:
+
+```bash
+scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty
+scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
+scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
+```
+
+For crawl jobs, prefer submit + explicit status polling:
+
+```bash
+ID=$(scripts/firecrawl-ops/firecrawl_cli.sh crawl https://example.com --limit 1 --pretty | jq -r '.data.jobId')
+scripts/firecrawl-ops/firecrawl_cli.sh crawl "$ID" --status --pretty
+```
+
+### 8. Agent Tooling: MCP, CLI, Cursor Composer
+Keep these layers separate:
+
+1. **Firecrawl local runtime**: OrbStack + Docker compose, API at `http://localhost:3002`.
+2. **Reusable tool interfaces**: direct HTTP API, `scripts/firecrawl-ops/firecrawl_cli.sh`, and `scripts/firecrawl-ops/firecrawl_mcp.sh`.
+3. **Agent adapters**: `.cursor/mcp.json`, `.cursor/skills/`, `.agents/skills/`, or any other MCP-capable client config.
+4. **Agent model runtime**: Cursor Composer 2.5, Codex, Claude, or another model.
+
+For MCP-capable agents, use:
+
+```bash
+scripts/firecrawl-ops/firecrawl_mcp.sh
+```
+
+Cursor is wired to that reusable wrapper through `.cursor/mcp.json` as `firecrawl-local`, but Cursor SDK code does not load project settings by default. For SDK agents, either pass `mcpServers` inline or set `local: { cwd: process.cwd(), settingSources: ["project"] }`.
+
+Use Composer 2.5 as the Cursor SDK agent model to take advantage of Cursor SDK pricing. Use the SDK local runtime for this Mac's Firecrawl stack. Local Firecrawl remains the web/file tool. Firecrawl's own AI-backed summary/json/extract calls still use `OPENAI_BASE_URL` and `MODEL_NAME` profiles unless Cursor exposes an OpenAI-compatible endpoint.
+
+See `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` for generic MCP client config and Cursor-specific notes.
+
+### 9. Sync Skills To User-Level Agents
+After editing the repo's Firecrawl skills, run:
+
+```bash
+scripts/firecrawl-ops/sync_agent_skills.sh
+```
+
+It copies `firecrawl-ops` and `firecrawl-local-api` into `~/.agents/skills` and symlinks them into `~/.codex/skills`, `~/.claude/skills`, and `~/.cursor/skills`.
+
+This checkout also uses `.githooks/post-commit` and `.githooks/pre-push` as non-blocking reminders to rerun the sync script when skill-related files change. Enable them with:
+
+```bash
+scripts/firecrawl-ops/install_git_hooks.sh
+```
+
+Run that once after cloning this repo on another computer. Git hook config is local to each checkout and is not carried by commits.

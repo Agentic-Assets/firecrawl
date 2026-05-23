@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat <<'EOF'
+
+Firecrawl skills reminder before push:
+  If this branch changed repo skills, ops scripts, or Firecrawl local-agent docs,
+  consider running:
+
+    scripts/firecrawl-ops/sync_agent_skills.sh
+
+  This is advisory only; the push will continue.
+
+EOF

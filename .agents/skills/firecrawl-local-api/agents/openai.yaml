@@ -1,4 +1,4 @@
 interface:
   display_name: "Firecrawl Local API"
-  short_description: "Call local Firecrawl endpoints"
-  default_prompt: "Use $firecrawl-local-api to scrape a URL or parse a local document with the local Firecrawl API."
+  short_description: "Call local Firecrawl API and CLI"
+  default_prompt: "Use $firecrawl-local-api to scrape, search, crawl, batch scrape, parse documents, or choose local Firecrawl API/CLI options."

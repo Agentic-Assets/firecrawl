@@ -2,43 +2,21 @@
 
 ## Core endpoints (self-hosted API)
 
-Verified locally on 2026-05-08 after rebuilding the Docker stack.
-
-### `POST /v1/scrape`
-- Best for: single URL content extraction
-- Typical output: markdown, html, metadata
-- Use for: targeted page pulls, doc extraction, quick checks
-
-### `POST /v1/map`
-- Best for: URL discovery on a domain/section
-- Typical output: discovered links
-- Use for: inventory before crawl/extract
-
-### `POST /v1/crawl`
-- Best for: multi-page crawling jobs
-- Typical output: crawl job state + results/status flow
-- Use for: site-wide or section-wide ingestion
-
-### `POST /v1/search`
-- Best for: web search retrieval into workflow
-- Typical output: ranked URL candidates + snippets
-- Use for: discovery before scrape/extract
-
-### `POST /v1/extract`
-- Best for: schema/structured extraction from one or more URLs
-- Typical output: structured JSON against prompt/schema
-- Use for: deterministic fields from messy content
+Verified locally on 2026-05-23 after rebuilding the OrbStack Docker stack and testing the CLI wrapper.
 
 ### `POST /v2/scrape`
 - Best for: current typed scrape surface
 - Typical output: markdown, html/rawHtml, links, images, summary, JSON, attributes/query
-- Works locally for markdown, links, summary, and JSON formats when the LLM profile is valid
+- Works locally for markdown, links, and metadata without model env
+- Summary, JSON, query, and schema extraction need a valid model profile
 - `actions` and screenshot formats require Fire Engine or browser-service support
 
 ### `POST /v2/parse`
 - Best for: local file upload parsing
-- Typical output: markdown, plus optional summary/JSON formats
-- Works locally for HTML upload and supports document formats through the document converter
+- Typical output: markdown, HTML, links, images, summary, JSON, metadata
+- Works locally for HTML/PDF/DOCX/DOC/ODT/RTF/XLSX/XLS
+- PDF markdown parsing verified with a 1-page fixture and a 25-page CRE market report
+- Summary and JSON parse formats need valid model env
 
 ### `POST /v2/extract` + `GET /v2/extract/:id`
 - Best for: async structured extraction from URLs
@@ -53,11 +31,29 @@ Verified locally on 2026-05-08 after rebuilding the Docker stack.
 - Best for: lightweight local runtime visibility
 - Work with auth disabled
 
+## CLI wrapper
+
+Prefer:
+```bash
+scripts/firecrawl-ops/firecrawl_cli.sh <command> ...
+```
+
+The wrapper runs `npx -y firecrawl-cli@latest --api-url http://localhost:3002`. Verified commands:
+- `scrape`
+- `parse`
+- `map`
+- `search`
+- `crawl` submit + explicit status polling
+
+Use `FIRECRAWL_CLI_PACKAGE=firecrawl-cli@1.18.0` if future `latest` releases break local behavior.
+
 ## Present but not configured locally
 
 - `POST /v2/browser`, `GET /v2/browser`, `POST /v2/browser/:sessionId/execute` need `BROWSER_SERVICE_URL`.
 - `POST /v2/agent` needs `EXTRACT_V3_BETA_URL`.
 - `POST /v1/deep-research` starts locally, but it is slower and may keep processing for several minutes.
+- CLI `agent` and `interact` need the corresponding backend services/model configuration.
+- CLI `crawl --wait` may hang locally; submit then poll by job id.
 
 ## Upstream-only (not verified self-hosted)
 
@@ -67,8 +63,8 @@ Verified locally on 2026-05-08 after rebuilding the Docker stack.
 
 - Need one page quickly -> `v2/scrape`
 - Need candidate URLs first -> `v2/map` or `v2/search`
-- Need many pages -> `v2/crawl`
-- Need a local file parsed -> `v2/parse`
+- Need many pages -> `v2/crawl`, then poll status
+- Need a local file parsed -> `v2/parse` or CLI `parse`
 - Need structured fields/entities from one page -> `v2/scrape` with `json`
 - Need async structured fields/entities from multiple pages -> `v2/extract`
 
