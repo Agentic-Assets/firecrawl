@@ -74,6 +74,24 @@ scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
 
 The wrapper runs `npx -y firecrawl-cli@latest --api-url http://localhost:3002`. Override with `FIRECRAWL_CLI_PACKAGE=firecrawl-cli@1.18.0` if a future latest release breaks.
 
+## Cross-Agent MCP
+
+The reusable local MCP entrypoint is:
+
+```bash
+scripts/firecrawl-ops/firecrawl_mcp.sh
+```
+
+It runs the upstream `firecrawl-mcp` package against `FIRECRAWL_API_URL=http://localhost:3002`. MCP-capable agents should use this wrapper rather than duplicating package/env setup in each client config.
+
+Cursor is only one adapter:
+
+- `.cursor/mcp.json` registers `firecrawl-local` by calling `scripts/firecrawl-ops/firecrawl_mcp.sh`.
+- `.cursor/skills/firecrawl-local-api/SKILL.md` gives Cursor/Composer local API guidance.
+- `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` explains the reusable MCP/CLI/API layer separately from Cursor Composer.
+
+Composer 2.5 is an agent runtime/model choice. It is not Firecrawl's internal LLM backend unless Cursor provides an OpenAI-compatible model endpoint.
+
 For crawl, avoid `--wait` locally:
 
 ```bash

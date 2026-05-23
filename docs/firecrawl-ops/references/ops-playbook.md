@@ -44,6 +44,17 @@ ID=$(scripts/firecrawl-ops/firecrawl_cli.sh crawl https://example.com --limit 1 
 scripts/firecrawl-ops/firecrawl_cli.sh crawl "$ID" --status --pretty
 ```
 
+## Cross-agent MCP
+Use the reusable wrapper for MCP-capable agents:
+
+```bash
+scripts/firecrawl-ops/firecrawl_mcp.sh
+```
+
+It starts the upstream `firecrawl-mcp` package with `FIRECRAWL_API_URL=http://localhost:3002`. Cursor is configured as one consumer via `.cursor/mcp.json`; other agents can use the same command. Composer 2.5, Claude, Codex, or any other model should sit above this tool layer instead of owning it.
+
+See `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` for generic client config and Cursor-specific notes.
+
 ## Safe operations
 - Do not expose postgres port publicly.
 - Keep `USE_DB_AUTHENTICATION=false` unless you explicitly configure teams/api keys.

@@ -55,7 +55,14 @@ apps/python-sdk/.venv/
 /apps/go-html-to-md-service/.gomodcache/
 target/
 
-.cursor/
+.cursor/*
+!.cursor/commands/
+!.cursor/commands/**
+!.cursor/rules/
+!.cursor/rules/**
+!.cursor/skills/
+!.cursor/skills/**
+!.cursor/mcp.json
 
 # local files
 _local/

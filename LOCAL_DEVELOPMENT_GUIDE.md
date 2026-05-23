@@ -141,3 +141,23 @@ For crawl jobs, prefer submit + explicit status polling:
 ID=$(scripts/firecrawl-ops/firecrawl_cli.sh crawl https://example.com --limit 1 --pretty | jq -r '.data.jobId')
 scripts/firecrawl-ops/firecrawl_cli.sh crawl "$ID" --status --pretty
 ```
+
+### 8. Agent Tooling: MCP, CLI, Cursor Composer
+Keep these layers separate:
+
+1. **Firecrawl local runtime**: OrbStack + Docker compose, API at `http://localhost:3002`.
+2. **Reusable tool interfaces**: direct HTTP API, `scripts/firecrawl-ops/firecrawl_cli.sh`, and `scripts/firecrawl-ops/firecrawl_mcp.sh`.
+3. **Agent adapters**: `.cursor/mcp.json`, `.cursor/skills/`, `.agents/skills/`, or any other MCP-capable client config.
+4. **Agent model runtime**: Cursor Composer 2.5, Codex, Claude, or another model.
+
+For MCP-capable agents, use:
+
+```bash
+scripts/firecrawl-ops/firecrawl_mcp.sh
+```
+
+Cursor is already wired to that reusable wrapper through `.cursor/mcp.json` as `firecrawl-local`. Run Cursor SDK agents from the repo root so they can discover `.cursor/mcp.json` and `.cursor/skills/`.
+
+Use Composer 2.5 as the Cursor agent model to take advantage of Cursor SDK pricing. Local Firecrawl remains the web/file tool. Firecrawl's own AI-backed summary/json/extract calls still use `OPENAI_BASE_URL` and `MODEL_NAME` profiles unless Cursor exposes an OpenAI-compatible endpoint.
+
+See `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` for generic MCP client config and Cursor-specific notes.

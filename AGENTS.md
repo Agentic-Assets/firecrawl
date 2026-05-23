@@ -62,6 +62,7 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
 - `scripts/firecrawl-ops/` — runnable ops tooling:
   - `firecrawl_healthcheck.sh` — verify the local stack is up (run this first)
   - `firecrawl_cli.sh` — wrapper for `npx firecrawl-cli` pinned to `http://localhost:3002`
+  - `firecrawl_mcp.sh` — wrapper for `npx firecrawl-mcp` pinned to `http://localhost:3002` for any MCP-capable agent
   - `set_model_profile.sh budget|escalated|gateway|gateway-codex|openai-direct` — rewrite `.env` model defaults; follow with `docker compose up -d --force-recreate api`
   - `sync_upstream_main.sh` — create an upstream-sync branch, merge `firecrawl/firecrawl:main`, and show protected fork path diffs
   - `artificialanalysis_snapshot.py` — refresh ArtificialAnalysis benchmark data for routing decisions
@@ -69,6 +70,11 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
   - `bulk_triage_runner.py` — budget-first triage with escalation batches
   - `crawl_swarm.py`, `firecrawl_swarm_pipeline.py` — parallel map+scrape swarm with confidence/provenance output
   - `google_flights_scrape.py`, `parse_flight_deals.py` — Atlas multi-region flight scraper + parser
+- Cross-agent integration:
+  - `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` — separates the Firecrawl API/CLI/MCP tool layer from Cursor Composer or any other agent model
+  - `.cursor/mcp.json` — Cursor adapter that registers `firecrawl-local` by calling `scripts/firecrawl-ops/firecrawl_mcp.sh`
+  - `.cursor/skills/firecrawl-local-api/SKILL.md` — Cursor-native guidance for Composer agents
+  - Composer 2.5 is an agent runtime/model choice; Firecrawl-internal AI calls still use root `.env` model profiles unless Cursor provides an OpenAI-compatible model endpoint.
 
 When the user asks about scraping workflows, model selection, runtime health, or self-hosted ops, prefer this skill over guessing — invoke it via the Skill tool (`firecrawl-ops`).
 

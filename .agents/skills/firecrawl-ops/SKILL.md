@@ -66,6 +66,18 @@ ID=$(scripts/firecrawl-ops/firecrawl_cli.sh crawl https://example.com --limit 1 
 scripts/firecrawl-ops/firecrawl_cli.sh crawl "$ID" --status --pretty
 ```
 
+## Cross-Agent MCP
+
+Keep Firecrawl tooling separate from any one agent runtime:
+
+- Reusable MCP entrypoint: `scripts/firecrawl-ops/firecrawl_mcp.sh`
+- CLI entrypoint: `scripts/firecrawl-ops/firecrawl_cli.sh`
+- Direct API: `http://localhost:3002`
+- Cursor adapter: `.cursor/mcp.json` plus `.cursor/skills/firecrawl-local-api/SKILL.md`
+- Codex/Claude-style adapter: `.agents/skills/firecrawl-local-api/SKILL.md`
+
+Cursor Composer 2.5 can drive an agent that calls local Firecrawl through MCP/CLI/API. Do not treat Composer as Firecrawl's internal model provider unless Cursor publishes an OpenAI-compatible base URL.
+
 ## Endpoint Selection
 
 Read `references/tools-capabilities.md` when choosing an endpoint. The short version:
@@ -124,12 +136,14 @@ The skill folder exposes these via symlinks to `docs/firecrawl-ops/references/` 
 - `references/tools-capabilities.md`: verified local endpoint map and non-working surfaces
 - `references/model-routing.md`: model policy and escalation rules
 - `references/ops-playbook.md`: health checks, logs, restart notes
+- `references/agent-tooling-firecrawl.md`: reusable MCP/CLI/API setup for Cursor and other agents
 - `references/cayman-use-cases-and-playbooks.md`: research/CRE/coding workflows
 - `references/cre-access-matrix.md`: source accessibility matrix
 - `references/google-flights-scraping.md`: Google Flights scrape pattern
 - `references/supabase-schema-firecrawl-swarm.sql`: optional swarm telemetry schema
 - `scripts/firecrawl_healthcheck.sh`: local stack smoke test
 - `scripts/firecrawl_cli.sh`: Firecrawl CLI wrapper pinned to the local API URL
+- `scripts/firecrawl_mcp.sh`: Firecrawl MCP wrapper pinned to the local API URL
 - `scripts/set_model_profile.sh`: model profile switcher
 - `scripts/sync_upstream_main.sh`: safe upstream merge helper for this fork
 - `scripts/artificialanalysis_snapshot.py`: refresh model benchmark data
