@@ -33,6 +33,14 @@ scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
 ```
 
+From another repo, use the installed skill copy:
+```bash
+~/.agents/skills/firecrawl-local-api/scripts/firecrawl_cli.sh parse ./report.pdf --json --pretty
+FC_DIR=/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl ~/.agents/skills/firecrawl-ops/scripts/firecrawl_healthcheck.sh
+```
+
+The CLI wrapper keeps the caller's current directory, so relative upload paths are safe.
+
 Equivalent direct form:
 ```bash
 FIRECRAWL_API_URL=http://localhost:3002 npx -y firecrawl-cli@latest scrape https://example.com
@@ -92,9 +100,22 @@ Set in the repo-root `.env` so `docker-compose.yaml` picks them up:
 - `OPENAI_BASE_URL` — provider base URL, rewritten by `scripts/firecrawl-ops/set_model_profile.sh`
 - `MODEL_NAME` — default LLM (rewritten by `scripts/firecrawl-ops/set_model_profile.sh`; default budget profile is `deepseek/deepseek-v4-flash`)
 - `OPENROUTER_API_KEY` — optional direct OpenRouter provider path; not the default local profile route
+- `PDF_RUST_EXTRACT_ENABLE=true` — local Rust PDF text extraction; no cloud credits
+- `PDF_SHADOW_COMPARISON_ENABLE=false`, `MINERU_PERCENT=0`, `FIRE_PDF_PERCENT=10` — local PDF routing defaults
+- `FIRE_PDF_BASE_URL`, `FIRE_PDF_API_KEY`, `RUNPOD_MU_API_KEY`, `RUNPOD_MU_POD_ID` — optional external OCR/layout services for harder PDFs; not Firecrawl cloud credits, but provider budget may apply
 - `SWARM_SUPABASE_URL`, `SWARM_SUPABASE_KEY` — optional, only if using `firecrawl_swarm_pipeline.py` telemetry
 
 Run `scripts/firecrawl-ops/set_model_profile.sh budget` to create a minimal gitignored `.env` if it is missing, then add the provider key manually and recreate the API container.
+
+## PDF parser behavior
+Use direct HTTP when you need PDF parser knobs:
+```bash
+curl -sS -X POST http://localhost:3002/v2/parse \
+  -F 'options={"formats":["markdown","html"],"parsers":[{"type":"pdf","mode":"auto","maxPages":25}]}' \
+  -F "file=@./report.pdf"
+```
+
+`auto` is the default, `fast` avoids OCR-style work, and `ocr` only becomes meaningfully stronger when Fire PDF or MinerU-style OCR services are configured. Local free parsing is good for text PDFs, but figures, tables, scans, and complex multi-column layouts can still flatten.
 
 ## Upstream sync
 Use a branch and merge commit so fork-specific ops assets remain easy to review:

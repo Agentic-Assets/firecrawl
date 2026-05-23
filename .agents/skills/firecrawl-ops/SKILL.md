@@ -27,11 +27,14 @@ Verified on 2026-05-23 after syncing `firecrawl/firecrawl:main` and rebuilding w
 - Local auth is disabled when `USE_DB_AUTHENTICATION=false`; no bearer token is required.
 - Root `.env` is gitignored and may not exist. Non-AI scrape/map/search/parse work without it; AI-backed summary/json/query/extract need provider env.
 - The local Firecrawl CLI path works through `scripts/firecrawl-ops/firecrawl_cli.sh` or `FIRECRAWL_API_URL=http://localhost:3002 npx -y firecrawl-cli@latest ...`.
+- User-level installed helper scripts also work from other repos at `~/.agents/skills/firecrawl-ops/scripts/`. Set `FC_DIR=/path/to/firecrawl` if the repo is not in the usual local checkout path.
 - The CLI `crawl --wait` can hang locally even after the API finishes. Prefer submit then status-poll by job id.
+- PDF Rust extraction is enabled by default through compose when `PDF_RUST_EXTRACT_ENABLE` is unset. This improves simple text-based PDFs locally but does not turn scanned/table-heavy PDFs into full layout-aware output.
 
 Model routing:
 
 - Use `scripts/firecrawl-ops/set_model_profile.sh <profile>` to write `OPENAI_BASE_URL` and `MODEL_NAME` in root `.env`.
+- The helper also keeps local PDF defaults in `.env`: `PDF_RUST_EXTRACT_ENABLE=true`, `PDF_SHADOW_COMPARISON_ENABLE=false`, `MINERU_PERCENT=0`, and `FIRE_PDF_PERCENT=10`.
 - For OpenRouter and Vercel AI Gateway profiles, put the provider key in `OPENAI_API_KEY`; these profiles use OpenAI-compatible base URLs.
 - `OPENROUTER_API_KEY` exists in API config but is not the default path for these local profiles.
 - Use model IDs exactly as provider IDs, without an extra `openrouter/` prefix.
@@ -53,13 +56,20 @@ scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
 ```
 
+From another repo, use the installed copy:
+
+```bash
+~/.agents/skills/firecrawl-ops/scripts/firecrawl_cli.sh parse ./report.pdf --json --pretty
+FC_DIR=/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl ~/.agents/skills/firecrawl-ops/scripts/firecrawl_healthcheck.sh
+```
+
 Equivalent raw form:
 
 ```bash
 FIRECRAWL_API_URL=http://localhost:3002 npx -y firecrawl-cli@latest scrape https://example.com
 ```
 
-The CLI supports `scrape`, `crawl`, `map`, `parse`, `search`, `agent`, `interact`, `monitor`, setup/config commands, and output flags. For local crawl jobs, use:
+The CLI wrapper preserves the caller's current directory, so relative upload paths work for commands such as `parse ./report.pdf`. The CLI supports `scrape`, `crawl`, `map`, `parse`, `search`, `agent`, `interact`, `monitor`, setup/config commands, and output flags. For local crawl jobs, use:
 
 ```bash
 ID=$(scripts/firecrawl-ops/firecrawl_cli.sh crawl https://example.com --limit 1 --pretty | jq -r '.data.jobId')
@@ -100,6 +110,24 @@ Read `references/tools-capabilities.md` when choosing an endpoint. The short ver
 - One-page structured fields: `POST /v2/scrape` with a `json` format
 - Multi-page structured fields: `POST /v2/extract` with an explicit schema, then poll `GET /v2/extract/:id`
 - Runtime visibility: `GET /v2/team/queue-status`, `GET /v2/crawl/active`
+
+## PDF Parse Notes
+
+For local PDFs, use `POST /v2/parse` or CLI `parse`. Direct HTTP lets you pass parser options that the CLI does not expose:
+
+```bash
+curl -sS -X POST http://localhost:3002/v2/parse \
+  -F 'options={"formats":["markdown","html"],"parsers":[{"type":"pdf","mode":"auto","maxPages":25}]}' \
+  -F "file=@./report.pdf"
+```
+
+Modes:
+
+- `auto`: default. Uses local Rust extraction for simple text PDFs when enabled, then falls back through configured OCR services and finally `pdf-parse`.
+- `fast`: avoids OCR-style work; useful for cheap text extraction.
+- `ocr`: forces the OCR path when Fire PDF or MinerU-style services are configured.
+
+Robust layout extraction is not fully local by default. Table-heavy, figure-heavy, scanned, or multi-column PDFs may flatten into markdown; `images` can be empty and `html` can be markdown-derived. Stronger OCR/layout output requires external Fire PDF or RunPod MinerU configuration, which does not use Firecrawl cloud credits but can use that provider's budget.
 
 ## Model Profiles
 

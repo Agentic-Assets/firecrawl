@@ -17,6 +17,9 @@ Verified locally on 2026-05-23 after rebuilding the OrbStack Docker stack and te
 - Works locally for HTML/PDF/DOCX/DOC/ODT/RTF/XLSX/XLS
 - PDF markdown parsing verified with a 1-page fixture and a 25-page CRE market report
 - Summary and JSON parse formats need valid model env
+- PDF parser options: `parsers:[{"type":"pdf","mode":"auto|fast|ocr","maxPages":25}]`
+- `PDF_RUST_EXTRACT_ENABLE=true` is the local default through compose; it improves simple text PDFs without credits
+- Figure-heavy, table-heavy, scanned, or multi-column PDFs may still flatten; stronger OCR/layout output requires Fire PDF or RunPod MinerU env
 
 ### `POST /v2/extract` + `GET /v2/extract/:id`
 - Best for: async structured extraction from URLs
@@ -38,7 +41,12 @@ Prefer:
 scripts/firecrawl-ops/firecrawl_cli.sh <command> ...
 ```
 
-The wrapper runs `npx -y firecrawl-cli@latest --api-url http://localhost:3002`. Verified commands:
+From another repo or installed user-level skill, use:
+```bash
+~/.agents/skills/firecrawl-local-api/scripts/firecrawl_cli.sh <command> ...
+```
+
+The wrapper runs `npx -y firecrawl-cli@latest --api-url http://localhost:3002` and preserves the caller's current directory, so `parse ./report.pdf` resolves relative to where the agent is working. Verified commands:
 - `scrape`
 - `parse`
 - `map`

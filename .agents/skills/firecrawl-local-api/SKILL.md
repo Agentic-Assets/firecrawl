@@ -14,6 +14,7 @@ Use this skill to call the local Firecrawl API directly or through the Firecrawl
 - Verification date: 2026-05-23 after upstream sync and OrbStack rebuild.
 - Cloud credits are not charged when hitting this local API. `creditsUsed` is local accounting metadata. Third-party costs can still occur for AI providers, proxies, or hosted search integrations.
 - Root `.env` may be absent. Non-AI scrape/map/search/parse can still work; AI formats need `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `MODEL_NAME`.
+- The repo usually lives at `/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl`. If an agent is working from another codebase, direct HTTP calls still work, and installed helper scripts are available under `~/.agents/skills/firecrawl-local-api/scripts/`.
 
 ## What Works Locally
 
@@ -24,7 +25,7 @@ Use this skill to call the local Firecrawl API directly or through the Firecrawl
 | `POST /v2/map` | works | URL discovery. |
 | `POST /v2/crawl` + `GET /v2/crawl/:id` | works | Async crawl with status polling. CLI `--wait` may hang locally; poll by id. |
 | `POST /v2/batch/scrape` + `GET /v2/batch/scrape/:id` | works | Async scrape of many URLs. |
-| `POST /v2/parse` | works | Multipart upload for local HTML/PDF/DOCX/DOC/ODT/RTF/XLSX/XLS. PDF markdown verified. |
+| `POST /v2/parse` | works | Multipart upload for local HTML/PDF/DOCX/DOC/ODT/RTF/XLSX/XLS. PDF parser options include `mode` and `maxPages`. |
 | `POST /v2/extract` + `GET /v2/extract/:id` | works with schema | Async structured extraction. Provide an explicit schema. |
 | `POST /v2/crawl/params-preview` | works | LLM-backed natural-language crawl options. |
 | `GET /v2/team/queue-status` | works | Local queue visibility. |
@@ -64,7 +65,7 @@ Use DeepSeek V4 Flash as the primary low-cost model. Escalate to `deepseek/deeps
 
 ## CLI Patterns
 
-Prefer the fork wrapper:
+Prefer the fork wrapper. From this repo, use:
 
 ```bash
 scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty
@@ -72,7 +73,14 @@ scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
 ```
 
-The wrapper runs `npx -y firecrawl-cli@latest --api-url http://localhost:3002`. Override with `FIRECRAWL_CLI_PACKAGE=firecrawl-cli@1.18.0` if a future latest release breaks.
+From another repo or an installed user-level skill, use:
+
+```bash
+~/.agents/skills/firecrawl-local-api/scripts/firecrawl_cli.sh parse ./report.pdf --json --pretty
+~/.agents/skills/firecrawl-local-api/scripts/firecrawl_healthcheck.sh
+```
+
+Set `FC_DIR=/path/to/firecrawl` for repo-dependent helper scripts when the repo is not in the usual location. The CLI wrapper preserves the caller's current directory, so relative file paths like `./report.pdf` resolve from wherever the agent ran the command. It runs `npx -y firecrawl-cli@latest --api-url http://localhost:3002`. Override with `FIRECRAWL_CLI_PACKAGE=firecrawl-cli@1.18.0` if a future latest release breaks.
 
 ## Cross-Agent MCP
 
@@ -127,6 +135,24 @@ curl -sS -X POST http://localhost:3002/v2/parse \
 ```
 
 Use `{"type":"summary"}` or `{"type":"json"}` only after model env is configured.
+
+PDF parser controls:
+
+```bash
+curl -sS -X POST http://localhost:3002/v2/parse \
+  -F 'options={"formats":["markdown","html"],"parsers":[{"type":"pdf","mode":"auto","maxPages":25}]}' \
+  -F "file=@./report.pdf"
+```
+
+Supported parser modes are `auto`, `fast`, and `ocr`. Use `auto` by default. Use `fast` when you want local text extraction without expensive OCR-style work. Use `ocr` only when Fire PDF or MinerU-style OCR services are configured; otherwise the local fallback is still mostly flattened text. `maxPages` caps PDF pages processed, up to 10000.
+
+PDF output reality:
+
+- The local, free path is strongest for text-based PDFs. With `PDF_RUST_EXTRACT_ENABLE=true`, Rust extraction handles simple text PDFs locally and falls back when the layout is complex.
+- Figure-heavy, table-heavy, scanned, or multi-column PDFs may still flatten into one large markdown string.
+- `formats:["images"]` only returns images when the parsed HTML/markdown exposes image tags; many PDFs return an empty image list.
+- `formats:["html"]` may be markdown-derived HTML, not a faithful page layout with `<table>` or `<img>` tags.
+- More robust OCR/layout extraction needs external services such as Fire PDF or RunPod MinerU via `FIRE_PDF_BASE_URL` / `FIRE_PDF_API_KEY` or `RUNPOD_MU_*`. Those do not spend Firecrawl cloud credits, but they can spend the external provider's compute/API budget.
 
 Async extract with schema:
 

@@ -115,6 +115,9 @@ scripts/firecrawl-ops/set_model_profile.sh budget
 | `OPENAI_BASE_URL` | Provider base URL, rewritten by `scripts/firecrawl-ops/set_model_profile.sh` | Yes (for AI features) |
 | `MODEL_NAME` | Default LLM, rewritten by `scripts/firecrawl-ops/set_model_profile.sh` | Yes (for AI features) |
 | `OPENROUTER_API_KEY` | Optional direct OpenRouter provider path; not the default local profile route | Optional |
+| `PDF_RUST_EXTRACT_ENABLE` | Local Rust PDF text extraction; defaults to `true` in compose | Optional |
+| `FIRE_PDF_BASE_URL` / `FIRE_PDF_API_KEY` | Optional external Fire PDF OCR/layout service for harder PDFs | Optional |
+| `RUNPOD_MU_API_KEY` / `RUNPOD_MU_POD_ID` | Optional external MinerU-style OCR/layout fallback | Optional |
 | `SWARM_SUPABASE_URL` | Persistent swarm telemetry | Optional |
 | `SWARM_SUPABASE_KEY` | Persistent swarm telemetry | Optional |
 
@@ -126,6 +129,16 @@ scripts/firecrawl-ops/set_model_profile.sh gateway     # DeepSeek V4 Flash (Verc
 docker compose up -d --force-recreate api
 ```
 
+PDF parsing is local by default and does not use Firecrawl cloud credits. Use `/v2/parse` for local uploads. Direct HTTP supports PDF parser knobs that the CLI does not expose:
+
+```bash
+curl -sS -X POST http://localhost:3002/v2/parse \
+  -F 'options={"formats":["markdown","html"],"parsers":[{"type":"pdf","mode":"auto","maxPages":25}]}' \
+  -F "file=@./report.pdf"
+```
+
+Use `mode:"auto"` normally, `mode:"fast"` for cheap text-only parsing, and `mode:"ocr"` only when Fire PDF or MinerU-style OCR services are configured. The fully local path is good for text PDFs, but tables, figures, scans, and complex multi-column layouts can still flatten into markdown.
+
 ### 7. Local Firecrawl CLI
 Use the fork wrapper so the CLI always talks to your local API:
 
@@ -134,6 +147,14 @@ scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markd
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
 ```
+
+From another codebase, use the installed skill copy instead:
+
+```bash
+~/.agents/skills/firecrawl-local-api/scripts/firecrawl_cli.sh parse ./report.pdf --json --pretty
+```
+
+The wrapper keeps your current directory, so relative file paths resolve from wherever you run it.
 
 For crawl jobs, prefer submit + explicit status polling:
 
