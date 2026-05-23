@@ -57,6 +57,19 @@ scripts/firecrawl-ops/set_model_profile.sh openai-direct
 docker compose up -d --force-recreate api
 ```
 
+The local wrappers can also apply a profile before a call:
+
+```bash
+scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile budget --firecrawl-healthcheck \
+  parse ./report.pdf --format markdown --json --pretty
+
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown --query "What is this document about?" \
+  --model-profile escalated --healthcheck --pretty
+```
+
+This changes the running Firecrawl API container's model env. It matters for AI-backed formats such as `summary`, `query`, JSON extraction, and `/v2/extract`; plain PDF markdown extraction does not use the LLM model.
+
 For OpenRouter and Vercel AI Gateway, put the provider key in `OPENAI_API_KEY`. The helper sets:
 
 - `OPENAI_BASE_URL=https://openrouter.ai/api/v1`
@@ -83,6 +96,13 @@ From another repo or an installed user-level skill, use:
 ```
 
 Set `FC_DIR=/path/to/firecrawl` for repo-dependent helper scripts when the repo is not in the usual location. The CLI wrapper preserves the caller's current directory, so relative file paths like `./report.pdf` resolve from wherever the agent ran the command. It runs `npx -y firecrawl-cli@latest --api-url http://localhost:3002`. Override with `FIRECRAWL_CLI_PACKAGE=firecrawl-cli@1.18.0` if a future latest release breaks.
+
+Wrapper-only CLI options must come before the Firecrawl command:
+
+```bash
+scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile budget --firecrawl-healthcheck \
+  scrape https://example.com --format summary --json --pretty
+```
 
 ## Agent HTTP Helper
 
@@ -167,7 +187,7 @@ curl -sS -X POST http://localhost:3002/v2/parse \
   -F "file=@./report.pdf"
 ```
 
-Supported parser modes are `auto`, `fast`, and `ocr`. Use `auto` by default. Use `fast` when you want local text extraction without expensive OCR-style work. Use `ocr` only when Fire PDF or MinerU-style OCR services are configured; otherwise the local fallback is still mostly flattened text. `maxPages` caps PDF pages processed, up to 10000.
+Supported parser modes are `auto`, `fast`, and `ocr`. Use `auto` by default. Use `fast` when you want local text extraction without expensive OCR-style work. Use `ocr` only when Fire PDF, the local Docling adapter, or MinerU-style OCR services are configured; otherwise the local fallback is still mostly flattened text. `maxPages` caps PDF pages processed, up to 10000.
 
 Equivalent helper form:
 
@@ -182,7 +202,24 @@ PDF output reality:
 - Figure-heavy, table-heavy, scanned, or multi-column PDFs may still flatten into one large markdown string.
 - `formats:["images"]` only returns images when the parsed HTML/markdown exposes image tags; many PDFs return an empty image list.
 - `formats:["html"]` may be markdown-derived HTML, not a faithful page layout with `<table>` or `<img>` tags.
-- More robust OCR/layout extraction needs external services such as Fire PDF or RunPod MinerU via `FIRE_PDF_BASE_URL` / `FIRE_PDF_API_KEY` or `RUNPOD_MU_*`. Those do not spend Firecrawl cloud credits, but they can spend the external provider's compute/API budget.
+- More robust OCR/layout extraction needs Fire PDF-compatible OCR routing. This fork provides a local Docling adapter:
+
+```bash
+scripts/firecrawl-ops/local_firepdf_ocr.sh start
+scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
+docker compose up -d --force-recreate api
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html --pdf-mode ocr --max-pages 10 --pretty
+```
+
+The local Docling adapter does not spend Firecrawl cloud credits. External Fire PDF or RunPod MinerU backends can still spend their provider budget.
+
+Useful adapter tuning env vars before `scripts/firecrawl-ops/local_firepdf_ocr.sh start-adapter` / `start`: `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. For a saved comparison matrix:
+
+```bash
+scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
+  --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark
+```
 
 Async extract with schema:
 

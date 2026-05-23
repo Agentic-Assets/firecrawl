@@ -50,7 +50,7 @@ Important fork/local vars:
 | `MODEL_NAME` | Firecrawl's internal LLM model id |
 | `OPENROUTER_API_KEY` | Optional direct OpenRouter path; not the default local profile route |
 | `PDF_RUST_EXTRACT_ENABLE` | Local PDF text extraction; compose defaults it to `true` |
-| `FIRE_PDF_BASE_URL` / `FIRE_PDF_API_KEY` | Optional external Fire PDF OCR/layout service |
+| `FIRE_PDF_BASE_URL` / `FIRE_PDF_API_KEY` | Optional Fire PDF-compatible OCR/layout service. For the local Docling adapter, use `FIRE_PDF_BASE_URL=http://host.docker.internal:31337` and leave `FIRE_PDF_API_KEY` empty |
 | `RUNPOD_MU_API_KEY` / `RUNPOD_MU_POD_ID` | Optional external MinerU-style OCR/layout service |
 | `SWARM_SUPABASE_URL` / `SWARM_SUPABASE_KEY` | Optional swarm telemetry destination |
 
@@ -63,6 +63,19 @@ scripts/firecrawl-ops/set_model_profile.sh gateway       # Vercel AI Gateway Dee
 scripts/firecrawl-ops/set_model_profile.sh gateway-codex # Vercel AI Gateway OpenAI model
 scripts/firecrawl-ops/set_model_profile.sh openai-direct # OpenAI Platform
 ```
+
+The local CLI/helper can apply those same profiles before an AI-backed call:
+
+```bash
+scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile budget --firecrawl-healthcheck \
+  scrape https://example.com --format summary --json --pretty
+
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown --query "What is this document about?" \
+  --model-profile escalated --healthcheck --pretty
+```
+
+The wrapper profile flags update `.env` and recreate the API container by default. They matter for summary, query, JSON extraction, and `/v2/extract`. Plain PDF markdown extraction uses the local PDF parser and does not call the LLM model. Existing local OCR routing vars are preserved unless explicitly overwritten.
 
 ## 3. Local API Quick Use
 
@@ -103,6 +116,8 @@ scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markd
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
 scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty -o ./out/example.json
+scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile budget --firecrawl-healthcheck \
+  scrape https://example.com --format summary --json --pretty
 ```
 
 From another codebase, use the installed skill copy:
@@ -150,6 +165,43 @@ Modes:
 - `ocr`: useful only when Fire PDF or MinerU-style services are configured
 
 The fully local path is strongest for text PDFs. Tables, figures, scans, and complex multi-column layouts can still flatten into markdown.
+
+### Local Docling OCR adapter
+
+This fork can run a local Fire PDF-compatible adapter backed by Docling Serve. It is local and does not spend Firecrawl cloud credits.
+
+Start the OCR services:
+
+```bash
+scripts/firecrawl-ops/local_firepdf_ocr.sh start
+scripts/firecrawl-ops/local_firepdf_ocr.sh health
+```
+
+Wire the running Firecrawl API to the adapter:
+
+```bash
+scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
+docker compose up -d --force-recreate api
+bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
+```
+
+Use OCR mode for scanned/image-only PDFs:
+
+```bash
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html --pdf-mode ocr --max-pages 10 --pretty
+```
+
+Operational notes:
+
+- Docling Serve runs in OrbStack/Docker on `127.0.0.1:5001`.
+- The helper pins the known-good Docling Serve CPU image by digest. Override `LOCAL_FIREPDF_DOCLING_IMAGE` when intentionally testing a newer Docling release.
+- The local Fire PDF adapter runs on `127.0.0.1:31337`.
+- Firecrawl's API container reaches the adapter with `FIRE_PDF_BASE_URL=http://host.docker.internal:31337`.
+- `--pdf-mode fast` avoids OCR; `--pdf-mode auto` tries normal local extraction first; `--pdf-mode ocr` forces the OCR path.
+- Dynamic Docling knobs are passed through env before `start-adapter` / `start`: `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags.
+- Repeatable PDF checks can use `scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark`.
+- Stop services with `scripts/firecrawl-ops/local_firepdf_ocr.sh stop`.
 
 ## 6. Cross-Agent Tooling
 

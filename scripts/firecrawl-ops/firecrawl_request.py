@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import re
+import subprocess
 import sys
 import time
 import uuid
@@ -19,6 +20,7 @@ from urllib.request import Request, urlopen
 
 
 DEFAULT_API_URL = "http://localhost:3002"
+MODEL_PROFILES = ["budget", "escalated", "gateway", "gateway-codex", "openai-direct"]
 
 
 def parse_csv(value: str | None) -> list[str]:
@@ -71,6 +73,44 @@ def build_url(api_url: str, path: str) -> str:
     if path.startswith("http://") or path.startswith("https://"):
         return path
     return urljoin(api_url.rstrip("/") + "/", path.lstrip("/"))
+
+
+def resolve_fc_dir(value: str | None = None) -> Path:
+    candidates = [
+        value,
+        os.getenv("FC_DIR"),
+        str(Path(__file__).resolve().parents[2]),
+        str(Path.cwd()),
+        str(Path.home() / "Documents" / "GitHub" / "agentic-assets" / "firecrawl"),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if (path / "docker-compose.yaml").exists() and (path / "scripts" / "firecrawl-ops").is_dir():
+            return path
+    raise SystemExit("Could not find the Firecrawl repo. Pass --firecrawl-dir or set FC_DIR.")
+
+
+def apply_model_profile(args: argparse.Namespace) -> None:
+    profile = getattr(args, "model_profile", None)
+    if not profile:
+        return
+    fc_dir = resolve_fc_dir(getattr(args, "firecrawl_dir", None))
+    script = fc_dir / "scripts" / "firecrawl-ops" / "set_model_profile.sh"
+    subprocess.run([str(script), profile], check=True)
+    if getattr(args, "no_recreate_api", False):
+        print(
+            "Profile written, but running api was not recreated. Recreate api before AI-backed calls.",
+            file=sys.stderr,
+        )
+        return
+    subprocess.run(
+        ["docker", "compose", "--project-directory", str(fc_dir), "up", "-d", "--force-recreate", "api"],
+        check=True,
+    )
+    if getattr(args, "healthcheck", False):
+        subprocess.run([str(fc_dir / "scripts" / "firecrawl-ops" / "firecrawl_healthcheck.sh")], check=True)
 
 
 def request_json(
@@ -238,6 +278,18 @@ def format_result(result: Any, raw_body: bytes, *, pretty: bool) -> bytes:
 def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--api-url", default=os.getenv("FIRECRAWL_API_URL", DEFAULT_API_URL))
     parser.add_argument("--api-key", default=os.getenv("FIRECRAWL_API_KEY") or os.getenv("TEST_API_KEY"))
+    parser.add_argument("--model-profile", choices=MODEL_PROFILES, help="Apply a local model profile before the request.")
+    parser.add_argument("--firecrawl-dir", help="Firecrawl repo root for --model-profile.")
+    parser.add_argument(
+        "--no-recreate-api",
+        action="store_true",
+        help="With --model-profile, update .env but do not recreate the api container.",
+    )
+    parser.add_argument(
+        "--healthcheck",
+        action="store_true",
+        help="With --model-profile, run the local healthcheck after api recreation.",
+    )
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--out", "-o", help="Write the full JSON response to this file.")
     parser.add_argument("--out-dir", help="Write the full JSON response to a timestamped file in this directory.")
@@ -459,6 +511,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    apply_model_profile(args)
     args.func(args)
     return 0
 

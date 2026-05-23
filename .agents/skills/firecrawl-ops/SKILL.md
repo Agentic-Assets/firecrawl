@@ -35,7 +35,8 @@ Verified on 2026-05-23 after syncing `firecrawl/firecrawl:main` and rebuilding w
 Model routing:
 
 - Use `scripts/firecrawl-ops/set_model_profile.sh <profile>` to write `OPENAI_BASE_URL` and `MODEL_NAME` in root `.env`.
-- The helper also keeps local PDF defaults in `.env`: `PDF_RUST_EXTRACT_ENABLE=true`, `PDF_SHADOW_COMPARISON_ENABLE=false`, `MINERU_PERCENT=0`, and `FIRE_PDF_PERCENT=10`.
+- The helper also keeps local PDF defaults in `.env`: `PDF_RUST_EXTRACT_ENABLE=true`, `PDF_SHADOW_COMPARISON_ENABLE=false`, `MINERU_PERCENT=0`, and `FIRE_PDF_PERCENT=10`. Existing local OCR routing vars are preserved when switching model profiles.
+- `firecrawl_cli.sh` and `firecrawl_request.py` can apply a model profile before a call. This recreates the API container by default so AI-backed formats see the new `OPENAI_BASE_URL` / `MODEL_NAME`.
 - For OpenRouter and Vercel AI Gateway profiles, put the provider key in `OPENAI_API_KEY`; these profiles use OpenAI-compatible base URLs.
 - `OPENROUTER_API_KEY` exists in API config but is not the default path for these local profiles.
 - Use model IDs exactly as provider IDs, without an extra `openrouter/` prefix.
@@ -56,6 +57,8 @@ scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markd
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
 scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty -o ./out/example.json
+scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile budget --firecrawl-healthcheck \
+  scrape https://example.com --format summary --json --pretty
 ```
 
 From another repo, use the installed copy:
@@ -90,11 +93,15 @@ scripts/firecrawl-ops/firecrawl_request.py scrape https://example.com \
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html,images --pdf-mode auto --max-pages 25 \
   --out-dir ./out/firecrawl --save-fields ./out/report-fields --pretty --quiet
+
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown --query "What is this document about?" \
+  --model-profile escalated --healthcheck --pretty
 ```
 
 Do not use this helper to replace SDKs or the upstream CLI for normal app code. It exists for local agent workflows, repeatable saved artifacts, and API options the CLI does not expose yet.
 
-Prefer `firecrawl_request.py` for new local-agent scripting because it uses only Python stdlib. Treat older domain workflow scripts as optional examples unless the user specifically asks for those workflows.
+Prefer `firecrawl_request.py` for new local-agent scripting because it uses only Python stdlib. Treat older domain workflow scripts as optional examples unless the user specifically asks for those workflows. Model profile flags affect AI-backed formats; plain PDF markdown parsing stays on the local PDF parser path.
 
 ## Cross-Agent MCP
 
@@ -146,9 +153,32 @@ Modes:
 
 - `auto`: default. Uses local Rust extraction for simple text PDFs when enabled, then falls back through configured OCR services and finally `pdf-parse`.
 - `fast`: avoids OCR-style work; useful for cheap text extraction.
-- `ocr`: forces the OCR path when Fire PDF or MinerU-style services are configured.
+- `ocr`: forces the OCR path when Fire PDF, the local Docling adapter, or MinerU-style services are configured.
 
-Robust layout extraction is not fully local by default. Table-heavy, figure-heavy, scanned, or multi-column PDFs may flatten into markdown; `images` can be empty and `html` can be markdown-derived. Stronger OCR/layout output requires external Fire PDF or RunPod MinerU configuration, which does not use Firecrawl cloud credits but can use that provider's budget.
+Robust layout extraction is not fully local by default. Table-heavy, figure-heavy, scanned, or multi-column PDFs may flatten into markdown; `images` can be empty and `html` can be markdown-derived. For a local, no-Firecrawl-credit OCR/layout backend, start the Docling adapter:
+
+```bash
+scripts/firecrawl-ops/local_firepdf_ocr.sh start
+scripts/firecrawl-ops/local_firepdf_ocr.sh health
+scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
+docker compose up -d --force-recreate api
+```
+
+Then parse hard PDFs with:
+
+```bash
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html --pdf-mode ocr --max-pages 10 --pretty
+```
+
+The adapter runs on `127.0.0.1:31337`, Docling Serve runs on `127.0.0.1:5001`, and the API container calls the adapter through `http://host.docker.internal:31337`. The helper pins the known-good Docling Serve CPU image by digest; override `LOCAL_FIREPDF_DOCLING_IMAGE` only for deliberate update testing. Stop it with `scripts/firecrawl-ops/local_firepdf_ocr.sh stop`.
+
+Useful Docling tuning env vars before `start-adapter` / `start`: `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. For repeatable comparisons:
+
+```bash
+scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
+  --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark
+```
 
 ## Model Profiles
 
@@ -192,6 +222,7 @@ If conflicts appear, prefer upstream for product/API/SDK files and prefer this f
 The skill folder exposes these via symlinks to `docs/firecrawl-ops/references/` and `scripts/firecrawl-ops/`:
 
 - `references/tools-capabilities.md`: verified local endpoint map and non-working surfaces
+- `references/local-pdf-ocr-plan.md`: Docling-first local OCR adapter plan, alternatives, and acceptance criteria
 - `references/model-routing.md`: model policy and escalation rules
 - `references/ops-playbook.md`: health checks, logs, restart notes
 - `references/agent-tooling-firecrawl.md`: reusable MCP/CLI/API setup for Cursor and other agents
@@ -202,6 +233,9 @@ The skill folder exposes these via symlinks to `docs/firecrawl-ops/references/` 
 - `scripts/firecrawl_healthcheck.sh`: local stack smoke test
 - `scripts/firecrawl_cli.sh`: Firecrawl CLI wrapper pinned to the local API URL
 - `scripts/firecrawl_request.py`: dependency-free direct HTTP helper with output/save controls and advanced parse options
+- `scripts/local_firepdf_ocr.sh`: start/stop/health/env helper for local Docling OCR
+- `scripts/local_firepdf_ocr_service.py`: Fire PDF-compatible adapter that lets Firecrawl call local Docling through `/ocr`
+- `scripts/pdf_ocr_benchmark.py`: repeatable local PDF parser/OCR matrix runner with saved fields and summaries
 - `scripts/firecrawl_mcp.sh`: Firecrawl MCP wrapper pinned to the local API URL
 - `scripts/sync_agent_skills.sh`: copy repo skills to `~/.agents/skills` and symlink them into user-level agent folders
 - `scripts/set_model_profile.sh`: model profile switcher

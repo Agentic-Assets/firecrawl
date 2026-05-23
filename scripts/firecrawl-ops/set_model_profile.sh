@@ -80,12 +80,38 @@ set_kv() {
   fi
 }
 
+get_kv() {
+  local key="$1"
+  if grep -q "^${key}=" "$ENV_PATH"; then
+    grep "^${key}=" "$ENV_PATH" | tail -n 1 | cut -d= -f2-
+  fi
+}
+
+value_or_existing() {
+  local key="$1"; local default="$2"
+  if [[ -n "${!key+x}" ]]; then
+    printf '%s\n' "${!key}"
+    return
+  fi
+  local existing
+  existing="$(get_kv "$key")"
+  if [[ -n "$existing" || "$(grep -c "^${key}=" "$ENV_PATH")" != "0" ]]; then
+    printf '%s\n' "$existing"
+  else
+    printf '%s\n' "$default"
+  fi
+}
+
 set_kv FIRECRAWL_API_URL "http://localhost:3002"
 set_kv PDF_RUST_EXTRACT_ENABLE "${PDF_RUST_EXTRACT_ENABLE:-true}"
 set_kv PDF_SHADOW_COMPARISON_ENABLE "${PDF_SHADOW_COMPARISON_ENABLE:-false}"
-set_kv MINERU_PERCENT "${MINERU_PERCENT:-0}"
-set_kv FIRE_PDF_ENABLE "${FIRE_PDF_ENABLE:-false}"
-set_kv FIRE_PDF_PERCENT "${FIRE_PDF_PERCENT:-10}"
+set_kv MINERU_PERCENT "$(value_or_existing MINERU_PERCENT 0)"
+set_kv FIRE_PDF_ENABLE "$(value_or_existing FIRE_PDF_ENABLE false)"
+set_kv FIRE_PDF_PERCENT "$(value_or_existing FIRE_PDF_PERCENT 10)"
+set_kv FIRE_PDF_BASE_URL "$(value_or_existing FIRE_PDF_BASE_URL "")"
+set_kv FIRE_PDF_API_KEY "$(value_or_existing FIRE_PDF_API_KEY "")"
+set_kv RUNPOD_MU_API_KEY "$(value_or_existing RUNPOD_MU_API_KEY "")"
+set_kv RUNPOD_MU_POD_ID "$(value_or_existing RUNPOD_MU_POD_ID "")"
 
 case "$PROFILE" in
   gateway)

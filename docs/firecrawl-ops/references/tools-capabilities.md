@@ -19,7 +19,9 @@ Verified locally on 2026-05-23 after rebuilding the OrbStack Docker stack and te
 - Summary and JSON parse formats need valid model env
 - PDF parser options: `parsers:[{"type":"pdf","mode":"auto|fast|ocr","maxPages":25}]`
 - `PDF_RUST_EXTRACT_ENABLE=true` is the local default through compose; it improves simple text PDFs without credits
-- Figure-heavy, table-heavy, scanned, or multi-column PDFs may still flatten; stronger OCR/layout output requires Fire PDF or RunPod MinerU env
+- Figure-heavy, table-heavy, scanned, or multi-column PDFs may still flatten on the default path
+- Stronger local OCR/layout output is available through the fork's Docling-backed Fire PDF adapter: `scripts/firecrawl-ops/local_firepdf_ocr.sh start`, `enable-firecrawl`, then parse with `mode:"ocr"`
+- External Fire PDF or RunPod MinerU env can also be used, but those may spend that provider's budget
 
 ### `POST /v2/extract` + `GET /v2/extract/:id`
 - Best for: async structured extraction from URLs
@@ -76,6 +78,28 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 ```
 
 Do not duplicate official SDK behavior in production code. Use JS/Python/Go/Ruby/Rust/PHP/etc. SDKs there. Use the helper when an agent needs a shell-stable way to call the local API from another codebase.
+
+## Local Docling OCR adapter
+
+For scanned/image-only PDFs or harder table/layout PDFs, use the local Fire PDF-compatible adapter:
+
+```bash
+scripts/firecrawl-ops/local_firepdf_ocr.sh start
+scripts/firecrawl-ops/local_firepdf_ocr.sh health
+scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
+docker compose up -d --force-recreate api
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html --pdf-mode ocr --max-pages 10 --pretty
+```
+
+The adapter listens on `127.0.0.1:31337`, Docling Serve listens on `127.0.0.1:5001`, and the Firecrawl API container calls the adapter through `http://host.docker.internal:31337`. This does not use Firecrawl cloud credits. Tune with env vars such as `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, and `LOCAL_FIREPDF_DOCLING_TO_FORMATS`.
+
+For repeatable comparisons:
+
+```bash
+scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
+  --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark
+```
 
 ## Present but not configured locally
 
