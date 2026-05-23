@@ -170,3 +170,11 @@ scripts/firecrawl-ops/sync_agent_skills.sh
 ```
 
 It copies `firecrawl-ops` and `firecrawl-local-api` into `~/.agents/skills` and symlinks them into `~/.codex/skills`, `~/.claude/skills`, and `~/.cursor/skills`.
+
+This checkout also uses `.githooks/post-commit` and `.githooks/pre-push` as non-blocking reminders to rerun the sync script when skill-related files change. Enable them with:
+
+```bash
+scripts/firecrawl-ops/install_git_hooks.sh
+```
+
+Run that once after cloning this repo on another computer. Git hook config is local to each checkout and is not carried by commits.

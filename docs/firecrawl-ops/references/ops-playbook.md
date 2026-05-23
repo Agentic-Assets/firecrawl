@@ -66,6 +66,14 @@ scripts/firecrawl-ops/sync_agent_skills.sh
 
 This copies into `~/.agents/skills` and symlinks into `~/.codex/skills`, `~/.claude/skills`, and `~/.cursor/skills`. Use `--dry-run` to preview.
 
+This repo has advisory git hooks in `.githooks/post-commit` and `.githooks/pre-push`. Enable them in a checkout with:
+
+```bash
+scripts/firecrawl-ops/install_git_hooks.sh
+```
+
+Run that once after cloning on another computer. Git stores `core.hooksPath` in the local checkout config, so the committed hooks travel with the repo but must be enabled per clone. The hooks only print reminders; they do not run the sync script or block commits/pushes.
+
 ## Safe operations
 - Do not expose postgres port publicly.
 - Keep `USE_DB_AUTHENTICATION=false` unless you explicitly configure teams/api keys.
