@@ -206,6 +206,7 @@ PDF output reality:
 
 ```bash
 scripts/firecrawl-ops/local_firepdf_ocr.sh start
+scripts/firecrawl-ops/local_firepdf_ocr.sh doctor
 scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
 docker compose up -d --force-recreate api
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
@@ -214,11 +215,11 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 
 The local Docling adapter does not spend Firecrawl cloud credits. External Fire PDF or RunPod MinerU backends can still spend their provider budget.
 
-Useful adapter tuning env vars before `scripts/firecrawl-ops/local_firepdf_ocr.sh start-adapter` / `start`: `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface. For a saved comparison matrix:
+Useful adapter tuning env vars before `scripts/firecrawl-ops/local_firepdf_ocr.sh start-adapter` / `start`: `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply changes. Use `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf` for a one-command OCR parse check. For a saved comparison matrix:
 
 ```bash
 scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
-  --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark
+  --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict
 ```
 
 Async extract with schema:

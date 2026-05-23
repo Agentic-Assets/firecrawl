@@ -86,19 +86,20 @@ For scanned/image-only PDFs or harder table/layout PDFs, use the local Fire PDF-
 ```bash
 scripts/firecrawl-ops/local_firepdf_ocr.sh start
 scripts/firecrawl-ops/local_firepdf_ocr.sh health
+scripts/firecrawl-ops/local_firepdf_ocr.sh doctor
 scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
 docker compose up -d --force-recreate api
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html --pdf-mode ocr --max-pages 10 --pretty
 ```
 
-The adapter listens on `127.0.0.1:31337`, Docling Serve listens on `127.0.0.1:5001`, and the Firecrawl API container calls the adapter through `http://host.docker.internal:31337`. This does not use Firecrawl cloud credits. Tune with env vars such as `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, and `LOCAL_FIREPDF_DOCLING_TO_FORMATS`; run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface.
+The adapter listens on `127.0.0.1:31337`, Docling Serve listens on `127.0.0.1:5001`, and the Firecrawl API container calls the adapter through `http://host.docker.internal:31337`. This does not use Firecrawl cloud credits. Tune with env vars such as `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, and `LOCAL_FIREPDF_DOCLING_TO_FORMATS`; run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply changes.
 
 For repeatable comparisons:
 
 ```bash
 scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
-  --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark
+  --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict
 ```
 
 ## Present but not configured locally

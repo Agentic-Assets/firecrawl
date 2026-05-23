@@ -21,6 +21,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -278,9 +279,53 @@ def docling_options(timeout: float, max_pages: int | None) -> dict[str, Any]:
     return options
 
 
-def call_docling(pdf_path: Path, timeout: float, max_pages: int | None) -> Any:
+def merge_docling_overrides(options: dict[str, Any], request_body: dict[str, Any]) -> dict[str, Any]:
+    """Allow direct adapter callers to test Docling knobs without rebuilding.
+
+    Firecrawl itself does not pass these fields today, so normal API use still
+    follows container env settings. Direct `/ocr` smoke tests may include
+    `docling_options` for fast experiments.
+    """
+    overrides = request_body.get("docling_options")
+    if not isinstance(overrides, dict):
+        return options
+
+    allowed = {
+        "to_formats",
+        "do_ocr",
+        "force_ocr",
+        "ocr_preset",
+        "ocr_lang",
+        "ocr_custom_config",
+        "pdf_backend",
+        "table_mode",
+        "table_cell_matching",
+        "do_table_structure",
+        "include_images",
+        "images_scale",
+        "image_export_mode",
+        "md_page_break_placeholder",
+        "do_code_enrichment",
+        "do_formula_enrichment",
+        "do_picture_classification",
+        "do_chart_extraction",
+        "do_picture_description",
+        "vlm_pipeline_preset",
+        "picture_description_preset",
+        "code_formula_preset",
+        "table_structure_preset",
+        "layout_preset",
+    }
+    for key, value in overrides.items():
+        if key in allowed:
+            options[key] = value
+    return options
+
+
+def call_docling(pdf_path: Path, timeout: float, max_pages: int | None, request_body: dict[str, Any]) -> Any:
+    options = merge_docling_overrides(docling_options(timeout, max_pages), request_body)
     payload = {
-        "options": docling_options(timeout, max_pages),
+        "options": options,
         "sources": [
             {
                 "kind": "file",
@@ -291,6 +336,25 @@ def call_docling(pdf_path: Path, timeout: float, max_pages: int | None) -> Any:
         "target": {"kind": "inbody"},
     }
     return post_json(f"{DOCLING_URL}/v1/convert/source", payload, timeout)
+
+
+def settings_payload() -> dict[str, Any]:
+    return {
+        "engine": ENGINE,
+        "adapter": {
+            "host": HOST,
+            "port": PORT,
+            "timeout_seconds": TIMEOUT_SECONDS,
+            "keep_temp": KEEP_TEMP,
+            "output_dir": OUTPUT_DIR or None,
+        },
+        "docling_url": DOCLING_URL,
+        "docling_options": docling_options(TIMEOUT_SECONDS, None),
+        "direct_request_overrides": {
+            "field": "docling_options",
+            "note": "POST /ocr may include this object for direct adapter tests; Firecrawl API calls use env/container settings.",
+        },
+    }
 
 
 def iter_documents(docling_result: Any) -> list[dict[str, Any]]:
@@ -380,7 +444,7 @@ def handle_ocr(request_body: dict[str, Any]) -> dict[str, Any]:
             max_pages=max_pages,
             timeout=timeout,
         )
-        docling_result = call_docling(pdf_path, timeout, max_pages)
+        docling_result = call_docling(pdf_path, timeout, max_pages, request_body)
         save_debug(tmpdir, scrape_id, docling_result)
         markdown, errors = extract_markdown(docling_result)
         if not markdown.strip():
@@ -406,7 +470,11 @@ class Handler(BaseHTTPRequestHandler):
         log("http", client=self.client_address[0], line=fmt % args)
 
     def do_GET(self) -> None:
-        if self.path not in {"/health", "/healthz"}:
+        path = urlparse(self.path).path
+        if path in {"/settings", "/config"}:
+            write_json(self, 200, {"ok": True, **settings_payload()})
+            return
+        if path not in {"/health", "/healthz"}:
             write_json(self, 404, {"ok": False, "error": "not found"})
             return
         docling_ok = False
@@ -422,20 +490,9 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "ok": docling_ok,
                 "engine": ENGINE,
-                "docling_url": DOCLING_URL,
                 "docling_ok": docling_ok,
                 "docling_error": docling_error,
-                "docling_options": {
-                    "to_formats": TO_FORMATS,
-                    "do_ocr": DO_OCR,
-                    "force_ocr": FORCE_OCR,
-                    "ocr_preset": OCR_PRESET,
-                    "ocr_lang": OCR_LANG,
-                    "pdf_backend": PDF_BACKEND,
-                    "table_mode": TABLE_MODE,
-                    "do_table_structure": DO_TABLE_STRUCTURE,
-                    "include_images": INCLUDE_IMAGES,
-                },
+                **settings_payload(),
             },
         )
 

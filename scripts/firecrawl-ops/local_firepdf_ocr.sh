@@ -51,7 +51,12 @@ Commands:
   start-docling      Start Docling Serve in OrbStack/Docker.
   start-adapter      Build/start the local FirePDF-compatible adapter container on port $ADAPTER_PORT.
   start              Start Docling Serve and the adapter.
+  restart-adapter    Rebuild/restart only the local adapter, applying current settings env.
+  restart            Stop/start Docling Serve and the adapter.
   health             Check Docling Serve and the adapter.
+  doctor             Run a fuller local OCR + Firecrawl readiness check.
+  smoke [pdf]        Parse one local PDF through Firecrawl OCR mode.
+  benchmark [pdf...] Run the PDF parser/OCR benchmark helper.
   env                Print .env entries needed by Firecrawl.
   settings           Print adapter/Docling tuning env vars.
   enable-firecrawl   Write local OCR routing entries into repo-root .env.
@@ -89,6 +94,14 @@ wait_for_url() {
   done
   echo "$label did not become ready: $url" >&2
   return 1
+}
+
+pretty_json() {
+  if command -v jq >/dev/null 2>&1; then
+    jq .
+  else
+    cat
+  fi
 }
 
 start_docling() {
@@ -267,7 +280,7 @@ enable_firecrawl() {
 
 health() {
   curl -fsS "http://127.0.0.1:${DOCLING_PORT}/docs" >/dev/null
-  curl -fsS "http://127.0.0.1:${ADAPTER_PORT}/health" | jq .
+  curl -fsS "http://127.0.0.1:${ADAPTER_PORT}/health" | pretty_json
 }
 
 status() {
@@ -278,6 +291,61 @@ status() {
   else
     echo "Adapter not running"
   fi
+}
+
+doctor() {
+  local fc_dir env_path
+  fc_dir="$(resolve_fc_dir)"
+  env_path="${ENV_PATH:-$fc_dir/.env}"
+  echo "== docker context =="
+  docker context show
+  echo
+  echo "== containers =="
+  status
+  echo
+  echo "== adapter health =="
+  health
+  echo
+  echo "== Firecrawl .env OCR wiring =="
+  if [[ -f "$env_path" ]]; then
+    grep -E '^(FIRE_PDF_ENABLE|FIRE_PDF_PERCENT|FIRE_PDF_BASE_URL|FIRE_PDF_API_KEY|PDF_RUST_EXTRACT_ENABLE|MINERU_PERCENT|RUNPOD_MU_API_KEY|RUNPOD_MU_POD_ID)=' "$env_path" || true
+  else
+    echo "Missing $env_path"
+  fi
+  echo
+  echo "== Firecrawl API =="
+  curl -fsS "http://127.0.0.1:3002/" | pretty_json
+  echo
+  echo "== local stack smoke =="
+  "$fc_dir/scripts/firecrawl-ops/firecrawl_healthcheck.sh"
+}
+
+smoke() {
+  local fc_dir pdf
+  fc_dir="$(resolve_fc_dir)"
+  pdf="${1:-$fc_dir/apps/test-site/public/example.pdf}"
+  if [[ ! -f "$pdf" ]]; then
+    echo "Missing smoke PDF: $pdf" >&2
+    exit 1
+  fi
+  "$fc_dir/scripts/firecrawl-ops/firecrawl_request.py" parse "$pdf" \
+    --formats markdown,html \
+    --pdf-mode ocr \
+    --max-pages "${LOCAL_FIREPDF_SMOKE_MAX_PAGES:-1}" \
+    --out "${LOCAL_FIREPDF_SMOKE_OUT:-${TMPDIR:-/tmp}/firecrawl-local-ocr-smoke.json}" \
+    --pretty \
+    --quiet \
+    --print-paths \
+    --timeout "${LOCAL_FIREPDF_SMOKE_TIMEOUT:-300}"
+}
+
+benchmark() {
+  local fc_dir
+  fc_dir="$(resolve_fc_dir)"
+  if [[ "$#" -eq 0 ]]; then
+    set -- "$fc_dir/apps/test-site/public/example.pdf"
+  fi
+  "$fc_dir/scripts/firecrawl-ops/pdf_ocr_benchmark.py" "$@"
 }
 
 case "${1:-}" in
@@ -291,8 +359,29 @@ case "${1:-}" in
     start_docling
     start_adapter
     ;;
+  restart-adapter)
+    stop_adapter
+    start_adapter
+    ;;
+  restart)
+    stop_adapter
+    stop_docling
+    start_docling
+    start_adapter
+    ;;
   health)
     health
+    ;;
+  doctor)
+    doctor
+    ;;
+  smoke)
+    shift || true
+    smoke "$@"
+    ;;
+  benchmark)
+    shift || true
+    benchmark "$@"
     ;;
   env)
     print_env

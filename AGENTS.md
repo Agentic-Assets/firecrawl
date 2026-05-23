@@ -64,7 +64,7 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
   - `firecrawl_healthcheck.sh` — verify the local stack is up (run this first)
   - `firecrawl_cli.sh` — wrapper for `npx firecrawl-cli` pinned to `http://localhost:3002`; preserves caller cwd so local parse file paths work
   - `firecrawl_request.py` — dependency-free direct HTTP helper for local agents when they need output/save controls or advanced `/v2/parse` PDF options not exposed by the CLI
-  - `local_firepdf_ocr.sh` — start/stop/health/env helper for the local Docling OCR adapter
+  - `local_firepdf_ocr.sh` — start/stop/health/env/settings/doctor/smoke helper for the local Docling OCR adapter
   - `local_firepdf_ocr_service.py` — Fire PDF-compatible `/ocr` adapter used by Firecrawl when `FIRE_PDF_BASE_URL=http://host.docker.internal:31337`
   - `pdf_ocr_benchmark.py` — repeatable local PDF parser/OCR matrix runner
   - `firecrawl_mcp.sh` — wrapper for `npx firecrawl-mcp` pinned to `http://localhost:3002` for any MCP-capable agent

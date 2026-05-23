@@ -137,6 +137,7 @@ Use this when scanned/image-only PDFs fail or when `--pdf-mode ocr` needs a loca
 ```bash
 scripts/firecrawl-ops/local_firepdf_ocr.sh start
 scripts/firecrawl-ops/local_firepdf_ocr.sh health
+scripts/firecrawl-ops/local_firepdf_ocr.sh doctor
 scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
 docker compose up -d --force-recreate api
 scripts/firecrawl-ops/firecrawl_healthcheck.sh
@@ -154,6 +155,7 @@ Useful checks:
 scripts/firecrawl-ops/local_firepdf_ocr.sh status
 scripts/firecrawl-ops/local_firepdf_ocr.sh logs
 scripts/firecrawl-ops/local_firepdf_ocr.sh settings
+scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf
 curl -sS http://127.0.0.1:31337/health | jq .
 ```
 
@@ -164,6 +166,8 @@ Useful Docling tuning env vars before `start-adapter` / `start`:
 - `LOCAL_FIREPDF_DOCLING_PDF_BACKEND=docling_parse|pypdfium2|dlparse_v4`
 - `LOCAL_FIREPDF_DOCLING_TABLE_MODE=accurate|fast`
 - `LOCAL_FIREPDF_DOCLING_TO_FORMATS=md,json,html`
+
+After changing these env vars, run `scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter` so the adapter container picks them up. For direct adapter experiments, `POST /ocr` may include a `docling_options` object; Firecrawl API calls use the adapter container env.
 
 ## PDF parser behavior
 Use direct HTTP when you need PDF parser knobs:
@@ -190,7 +194,7 @@ Run a repeatable local matrix:
 
 ```bash
 scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
-  --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark
+  --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict
 ```
 
 ## Upstream sync

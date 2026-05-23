@@ -160,6 +160,7 @@ Robust layout extraction is not fully local by default. Table-heavy, figure-heav
 ```bash
 scripts/firecrawl-ops/local_firepdf_ocr.sh start
 scripts/firecrawl-ops/local_firepdf_ocr.sh health
+scripts/firecrawl-ops/local_firepdf_ocr.sh doctor
 scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
 docker compose up -d --force-recreate api
 ```
@@ -173,11 +174,11 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 
 The adapter runs on `127.0.0.1:31337`, Docling Serve runs on `127.0.0.1:5001`, and the API container calls the adapter through `http://host.docker.internal:31337`. The helper pins the known-good Docling Serve CPU image by digest; override `LOCAL_FIREPDF_DOCLING_IMAGE` only for deliberate update testing. Stop it with `scripts/firecrawl-ops/local_firepdf_ocr.sh stop`.
 
-Useful Docling tuning env vars before `start-adapter` / `start`: `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface. For repeatable comparisons:
+Useful Docling tuning env vars before `start-adapter` / `start`: `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply changes. Use `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf` for a one-command OCR parse check. For repeatable comparisons:
 
 ```bash
 scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
-  --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark
+  --modes fast,auto,ocr --max-pages 3 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict
 ```
 
 ## Model Profiles

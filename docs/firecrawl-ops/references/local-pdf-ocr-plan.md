@@ -21,8 +21,8 @@ Do not replace Firecrawl's built-in Rust PDF extraction. Keep it as the fast def
 Implemented and smoke-tested on 2026-05-23:
 
 - `scripts/firecrawl-ops/local_firepdf_ocr_service.py` implements the FirePDF-compatible `POST /ocr` adapter and calls Docling Serve's current `/v1/convert/source` `sources` contract.
-- `scripts/firecrawl-ops/local_firepdf_ocr.sh` starts Docling Serve and the adapter in OrbStack/Docker. The default Docling Serve CPU image is pinned by digest for repeatability; override `LOCAL_FIREPDF_DOCLING_IMAGE` to intentionally test newer releases.
-- `scripts/firecrawl-ops/pdf_ocr_benchmark.py` runs a saved `fast` / `auto` / `ocr` comparison matrix.
+- `scripts/firecrawl-ops/local_firepdf_ocr.sh` starts Docling Serve and the adapter in OrbStack/Docker. It also provides `doctor`, `smoke`, `settings`, `restart-adapter`, and `benchmark` convenience commands. The default Docling Serve CPU image is pinned by digest for repeatability; override `LOCAL_FIREPDF_DOCLING_IMAGE` to intentionally test newer releases.
+- `scripts/firecrawl-ops/pdf_ocr_benchmark.py` runs a saved `fast` / `auto` / `ocr` comparison matrix with metadata, adapter health, settings, and optional `--strict` failure handling.
 - `set_model_profile.sh` preserves existing local OCR routing values when changing LLM profiles.
 - Verified: direct adapter `/ocr`, local Firecrawl `/v2/parse` with `mode:"ocr"`, local API healthcheck, CLI wrapper parse smoke, and a two-PDF benchmark matrix.
 
@@ -35,7 +35,7 @@ Useful dynamic Docling knobs before `local_firepdf_ocr.sh start-adapter` or `sta
 - `LOCAL_FIREPDF_DOCLING_TO_FORMATS=md,json,html`
 - optional enrichment flags such as `LOCAL_FIREPDF_DOCLING_DO_CHART_EXTRACTION=true` or `LOCAL_FIREPDF_DOCLING_DO_PICTURE_DESCRIPTION=true`
 
-Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the current/default settings and copy-pasteable examples.
+Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the current/default settings and copy-pasteable examples. Run `restart-adapter` after changing env vars. Direct adapter experiments may include a `docling_options` object in `POST /ocr`; Firecrawl API calls use the adapter container env.
 
 ## Local Firecrawl Fit
 
