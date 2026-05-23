@@ -1,3 +1,4 @@
+import { describe, expect, it, jest } from "@jest/globals";
 import { FirecrawlClient } from "../../../v2/client";
 
 const ALIAS_MAP: Record<string, string> = {
