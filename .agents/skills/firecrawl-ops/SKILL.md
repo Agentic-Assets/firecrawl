@@ -1,11 +1,11 @@
 ---
 name: firecrawl-ops
-description: Operate, verify, and troubleshoot the self-hosted Firecrawl Docker stack in this repo or on this Mac. Use when the user asks about Firecrawl runtime health, Docker compose rebuild/restart, local API capabilities, endpoint selection, scraping workflows, model routing, OpenRouter/Vercel AI Gateway profile changes, or which Firecrawl methods work locally.
+description: Operate, verify, sync, and troubleshoot the self-hosted Firecrawl stack in this fork. Use when the user asks about OrbStack/Docker compose runtime health, local API startup/rebuilds/logs, Firecrawl CLI local setup, upstream sync from firecrawl/firecrawl:main, endpoint capability checks, model routing, OpenRouter/Vercel AI Gateway/OpenAI profile changes, or which Firecrawl methods work locally.
 ---
 
 # Firecrawl Ops
 
-Use this skill for runtime and platform work around the local self-hosted Firecrawl stack. For directly calling the API, pair it with `firecrawl-local-api`.
+Use this skill for runtime, sync, and platform work around this fork's self-hosted Firecrawl stack. For directly calling scrape/search/parse endpoints, pair it with `firecrawl-local-api`.
 
 ## First Checks
 
@@ -16,16 +16,24 @@ bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 docker compose ps
 ```
 
-If Docker is down on this Mac, start Docker Desktop first. The expected local API is `http://localhost:3002`.
+This Mac uses OrbStack, not Docker Desktop. If Docker commands fail, open OrbStack and confirm `docker context show` is `orbstack`. The expected local API is `http://localhost:3002`.
 
 ## Current Local Reality
 
-Verified on 2026-05-08 after a no-cache Docker rebuild:
+Verified on 2026-05-23 after syncing `firecrawl/firecrawl:main` and rebuilding with OrbStack:
 
 - Core stack works: `api`, `playwright-service`, `redis`, `rabbitmq`, and `nuq-postgres`.
 - NuQ Postgres must have schema table `nuq.queue_scrape`; compose now waits for it via healthcheck.
 - Local auth is disabled when `USE_DB_AUTHENTICATION=false`; no bearer token is required.
-- Current LLM profile is OpenRouter with `MODEL_NAME=deepseek/deepseek-v4-flash`.
+- Root `.env` is gitignored and may not exist. Non-AI scrape/map/search/parse work without it; AI-backed summary/json/query/extract need provider env.
+- The local Firecrawl CLI path works through `scripts/firecrawl-ops/firecrawl_cli.sh` or `FIRECRAWL_API_URL=http://localhost:3002 npx -y firecrawl-cli@latest ...`.
+- The CLI `crawl --wait` can hang locally even after the API finishes. Prefer submit then status-poll by job id.
+
+Model routing:
+
+- Use `scripts/firecrawl-ops/set_model_profile.sh <profile>` to write `OPENAI_BASE_URL` and `MODEL_NAME` in root `.env`.
+- For OpenRouter and Vercel AI Gateway profiles, put the provider key in `OPENAI_API_KEY`; these profiles use OpenAI-compatible base URLs.
+- `OPENROUTER_API_KEY` exists in API config but is not the default path for these local profiles.
 - Use model IDs exactly as provider IDs, without an extra `openrouter/` prefix.
 
 Known local gaps:
@@ -33,6 +41,30 @@ Known local gaps:
 - `POST /v2/browser` and `/v2/browser/:sessionId/execute` are registered but need `BROWSER_SERVICE_URL`.
 - `POST /v2/agent` is registered but needs `EXTRACT_V3_BETA_URL`.
 - Scrape `actions`, screenshot formats, and scrape-browser interaction need Fire Engine or browser-service support.
+- AI-backed parse/scrape summary and JSON fail until `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `MODEL_NAME` are valid.
+
+## Local CLI
+
+Prefer the wrapper so agents do not forget the local API URL:
+
+```bash
+scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty
+scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
+scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
+```
+
+Equivalent raw form:
+
+```bash
+FIRECRAWL_API_URL=http://localhost:3002 npx -y firecrawl-cli@latest scrape https://example.com
+```
+
+The CLI supports `scrape`, `crawl`, `map`, `parse`, `search`, `agent`, `interact`, `monitor`, setup/config commands, and output flags. For local crawl jobs, use:
+
+```bash
+ID=$(scripts/firecrawl-ops/firecrawl_cli.sh crawl https://example.com --limit 1 --pretty | jq -r '.data.jobId')
+scripts/firecrawl-ops/firecrawl_cli.sh crawl "$ID" --status --pretty
+```
 
 ## Endpoint Selection
 
@@ -67,6 +99,24 @@ docker compose up -d --force-recreate api
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
+If `.env` is missing, the script creates a minimal gitignored local env. Add the provider key manually afterward:
+
+```bash
+scripts/firecrawl-ops/set_model_profile.sh budget
+$EDITOR .env
+docker compose up -d --force-recreate api
+```
+
+## Upstream Sync
+
+Keep fork-owned ops assets in `.agents/`, `docs/firecrawl-ops/`, `scripts/firecrawl-ops/`, `LOCAL_DEVELOPMENT_GUIDE.md`, and `AGENTS.md`. Sync upstream on a branch, not directly on `main`:
+
+```bash
+scripts/firecrawl-ops/sync_upstream_main.sh
+```
+
+If conflicts appear, prefer upstream for product/API/SDK files and prefer this fork for local ops, skills, model-routing docs, and self-hosted workflow files.
+
 ## References And Scripts
 
 The skill folder exposes these via symlinks to `docs/firecrawl-ops/references/` and `scripts/firecrawl-ops/`:
@@ -79,7 +129,9 @@ The skill folder exposes these via symlinks to `docs/firecrawl-ops/references/` 
 - `references/google-flights-scraping.md`: Google Flights scrape pattern
 - `references/supabase-schema-firecrawl-swarm.sql`: optional swarm telemetry schema
 - `scripts/firecrawl_healthcheck.sh`: local stack smoke test
+- `scripts/firecrawl_cli.sh`: Firecrawl CLI wrapper pinned to the local API URL
 - `scripts/set_model_profile.sh`: model profile switcher
+- `scripts/sync_upstream_main.sh`: safe upstream merge helper for this fork
 - `scripts/artificialanalysis_snapshot.py`: refresh model benchmark data
 - `scripts/crawl_swarm.py`, `scripts/firecrawl_swarm_pipeline.py`: batch discovery/scrape workflows
 - `scripts/bulk_triage_runner.py`: budget-first triage with escalation batches

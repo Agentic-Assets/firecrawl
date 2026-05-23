@@ -94,20 +94,27 @@ docker compose down; docker compose up -d
 
 ---
 
-### 🚀 Your OpenRouter Advantage
-Because you are running locally but using **OpenRouter**, you are getting the best of both worlds:
+### 🚀 Your OpenRouter / Gateway Advantage
+Because you are running locally but can route AI calls through **OpenRouter**, **Vercel AI Gateway**, or **OpenAI**, you are getting the best of both worlds:
 1.  **Privacy**: The actual scraping happens on your machine.
-2.  **Intelligence**: You can swap models (like Claude 3.5 Sonnet or GPT-4o) just by changing the `MODEL_NAME` in your `.env`, without needing to manage multiple API keys.
+2.  **Intelligence**: You can swap models by changing `OPENAI_BASE_URL` and `MODEL_NAME` in your `.env`.
 
 ---
 
 ### 6. Fork-Specific Env Vars
-This fork's ops layer (`.agents/skills/firecrawl-ops/`, `scripts/firecrawl-ops/`) reads a few extra vars from the repo-root `.env`. There is no root `.env.example` on purpose — copy upstream's `apps/api/.env.example` to `./.env`, then layer these on top:
+This fork's ops layer (`.agents/skills/firecrawl-ops/`, `scripts/firecrawl-ops/`) reads a few extra vars from the repo-root `.env`. The model helper creates a minimal gitignored `.env` if one is missing:
+
+```bash
+scripts/firecrawl-ops/set_model_profile.sh budget
+```
 
 | Var | Purpose | Required |
 | :--- | :--- | :--- |
-| `OPENROUTER_API_KEY` | Model routing via OpenRouter | Yes (for AI features) |
-| `MODEL_NAME` | Default LLM (rewritten by `scripts/firecrawl-ops/set_model_profile.sh budget\|escalated`) | Yes |
+| `FIRECRAWL_API_URL` | Local CLI target (`http://localhost:3002`) | Optional but recommended |
+| `OPENAI_API_KEY` | Provider key for OpenRouter, Vercel AI Gateway, or OpenAI-compatible profiles | Yes (for AI features) |
+| `OPENAI_BASE_URL` | Provider base URL, rewritten by `scripts/firecrawl-ops/set_model_profile.sh` | Yes (for AI features) |
+| `MODEL_NAME` | Default LLM, rewritten by `scripts/firecrawl-ops/set_model_profile.sh` | Yes (for AI features) |
+| `OPENROUTER_API_KEY` | Optional direct OpenRouter provider path; not the default local profile route | Optional |
 | `SWARM_SUPABASE_URL` | Persistent swarm telemetry | Optional |
 | `SWARM_SUPABASE_KEY` | Persistent swarm telemetry | Optional |
 
@@ -117,4 +124,20 @@ scripts/firecrawl-ops/set_model_profile.sh budget      # DeepSeek V4 Flash (Open
 scripts/firecrawl-ops/set_model_profile.sh escalated   # DeepSeek V4 Pro (OpenRouter)
 scripts/firecrawl-ops/set_model_profile.sh gateway     # DeepSeek V4 Flash (Vercel AI Gateway)
 docker compose up -d --force-recreate api
+```
+
+### 7. Local Firecrawl CLI
+Use the fork wrapper so the CLI always talks to your local API:
+
+```bash
+scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty
+scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
+scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
+```
+
+For crawl jobs, prefer submit + explicit status polling:
+
+```bash
+ID=$(scripts/firecrawl-ops/firecrawl_cli.sh crawl https://example.com --limit 1 --pretty | jq -r '.data.jobId')
+scripts/firecrawl-ops/firecrawl_cli.sh crawl "$ID" --status --pretty
 ```

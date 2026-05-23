@@ -1,4 +1,4 @@
 interface:
   display_name: "Firecrawl Ops"
-  short_description: "Verify and operate local Firecrawl"
-  default_prompt: "Use $firecrawl-ops to verify the local Firecrawl stack and choose the right endpoint."
+  short_description: "Operate local Firecrawl and sync upstream"
+  default_prompt: "Use $firecrawl-ops to verify the OrbStack Firecrawl stack, configure model routing, run the local CLI, or sync upstream safely."

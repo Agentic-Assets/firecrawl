@@ -17,7 +17,7 @@ For local self-hosted setup (Docker compose, env, PowerShell snippets), see `LOC
 - **`./.env`** — **primary.** This is the file `docker compose up -d` reads at the repo root and is what every local Firecrawl run depends on. Gitignored. Never commit it.
 - **`apps/api/.env.example`** — upstream's canonical variable reference. Read this to learn what knobs exist; copy to `./.env` for first-time bootstrap.
 - **`apps/api/.env.local`** — tracked upstream artifact with empty values; **not** the file Docker reads despite its `.local` suffix. Ignore unless running `apps/api` directly outside Docker.
-- **Fork-specific vars** (`OPENROUTER_API_KEY`, `MODEL_NAME`, `SWARM_SUPABASE_*`) — documented in `LOCAL_DEVELOPMENT_GUIDE.md` §6 and rewritten by `scripts/firecrawl-ops/set_model_profile.sh`. They live in the root `./.env`.
+- **Fork-specific vars** (`FIRECRAWL_API_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_NAME`, optional `OPENROUTER_API_KEY`, `SWARM_SUPABASE_*`) — documented in `LOCAL_DEVELOPMENT_GUIDE.md` §6 and rewritten by `scripts/firecrawl-ops/set_model_profile.sh` where applicable. They live in the root `./.env`.
 
 ## Working in `apps/api`
 
@@ -61,7 +61,9 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
   - `supabase-schema-firecrawl-swarm.sql` — optional Supabase schema for swarm telemetry (apply, then set `SWARM_SUPABASE_URL` / `SWARM_SUPABASE_KEY`)
 - `scripts/firecrawl-ops/` — runnable ops tooling:
   - `firecrawl_healthcheck.sh` — verify the local stack is up (run this first)
+  - `firecrawl_cli.sh` — wrapper for `npx firecrawl-cli` pinned to `http://localhost:3002`
   - `set_model_profile.sh budget|escalated|gateway|gateway-codex|openai-direct` — rewrite `.env` model defaults; follow with `docker compose up -d --force-recreate api`
+  - `sync_upstream_main.sh` — create an upstream-sync branch, merge `firecrawl/firecrawl:main`, and show protected fork path diffs
   - `artificialanalysis_snapshot.py` — refresh ArtificialAnalysis benchmark data for routing decisions
   - `platform_access_probe.py`, `cre_access_matrix.py` — accessibility probes
   - `bulk_triage_runner.py` — budget-first triage with escalation batches

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FC_DIR="${FC_DIR:-$HOME/Documents/GitHub/firecrawl}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_FC_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+FC_DIR="${FC_DIR:-$DEFAULT_FC_DIR}"
 API_URL="${API_URL:-http://localhost:3002}"
 
 cd "$FC_DIR"
@@ -13,7 +16,7 @@ echo "[2/4] API root check"
 curl -fsS "$API_URL/" | head -c 200 && echo
 
 echo "[3/4] scrape smoke test"
-RESP=$(curl -fsS -X POST "$API_URL/v1/scrape" \
+RESP=$(curl -fsS -X POST "$API_URL/v2/scrape" \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://example.com","formats":["markdown"]}')
 export RESP
