@@ -27,6 +27,7 @@ Verified on 2026-05-23 after syncing `firecrawl/firecrawl:main` and rebuilding w
 - Local auth is disabled when `USE_DB_AUTHENTICATION=false`; no bearer token is required.
 - Root `.env` is gitignored and may not exist. Non-AI scrape/map/search/parse work without it; AI-backed summary/json/query/extract need provider env.
 - The local Firecrawl CLI path works through `scripts/firecrawl-ops/firecrawl_cli.sh` or `FIRECRAWL_API_URL=http://localhost:3002 npx -y firecrawl-cli@latest ...`.
+- The upstream CLI is the default for broad command coverage. Use `scripts/firecrawl-ops/firecrawl_request.py` only when an agent needs dependency-free direct HTTP, advanced `/v2/parse` PDF parser options, or split saved artifacts such as markdown/html/metadata files.
 - User-level installed helper scripts also work from other repos at `~/.agents/skills/firecrawl-ops/scripts/`. Set `FC_DIR=/path/to/firecrawl` if the repo is not in the usual local checkout path.
 - The CLI `crawl --wait` can hang locally even after the API finishes. Prefer submit then status-poll by job id.
 - PDF Rust extraction is enabled by default through compose when `PDF_RUST_EXTRACT_ENABLE` is unset. This improves simple text-based PDFs locally but does not turn scanned/table-heavy PDFs into full layout-aware output.
@@ -48,12 +49,13 @@ Known local gaps:
 
 ## Local CLI
 
-Prefer the wrapper so agents do not forget the local API URL:
+Prefer the wrapper so agents do not forget the local API URL. It is still the upstream Firecrawl CLI, just pinned to the local API:
 
 ```bash
 scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
+scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty -o ./out/example.json
 ```
 
 From another repo, use the installed copy:
@@ -76,12 +78,29 @@ ID=$(scripts/firecrawl-ops/firecrawl_cli.sh crawl https://example.com --limit 1 
 scripts/firecrawl-ops/firecrawl_cli.sh crawl "$ID" --status --pretty
 ```
 
+## Agent HTTP Helper
+
+Use `scripts/firecrawl-ops/firecrawl_request.py` when the upstream CLI is too high-level for an agent task. It uses only Python stdlib, reads `FIRECRAWL_API_URL` / `FIRECRAWL_API_KEY`, preserves caller paths, and supports `--out`, `--out-dir`, and `--save-fields`:
+
+```bash
+scripts/firecrawl-ops/firecrawl_request.py scrape https://example.com \
+  --formats markdown,links --pretty --out ./out/example.json \
+  --save-fields ./out/example-fields --quiet --print-paths
+
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html,images --pdf-mode auto --max-pages 25 \
+  --out-dir ./out/firecrawl --save-fields ./out/report-fields --pretty --quiet
+```
+
+Do not use this helper to replace SDKs or the upstream CLI for normal app code. It exists for local agent workflows, repeatable saved artifacts, and API options the CLI does not expose yet.
+
 ## Cross-Agent MCP
 
 Keep Firecrawl tooling separate from any one agent runtime:
 
 - Reusable MCP entrypoint: `scripts/firecrawl-ops/firecrawl_mcp.sh`
 - CLI entrypoint: `scripts/firecrawl-ops/firecrawl_cli.sh`
+- Direct HTTP helper: `scripts/firecrawl-ops/firecrawl_request.py`
 - Direct API: `http://localhost:3002`
 - Optional Cursor adapter: `.cursor/mcp.json` plus `.cursor/skills/firecrawl-local-api/SKILL.md`
 - Codex/Claude-style adapter: `.agents/skills/firecrawl-local-api/SKILL.md`
@@ -180,6 +199,7 @@ The skill folder exposes these via symlinks to `docs/firecrawl-ops/references/` 
 - `references/supabase-schema-firecrawl-swarm.sql`: optional swarm telemetry schema
 - `scripts/firecrawl_healthcheck.sh`: local stack smoke test
 - `scripts/firecrawl_cli.sh`: Firecrawl CLI wrapper pinned to the local API URL
+- `scripts/firecrawl_request.py`: dependency-free direct HTTP helper with output/save controls and advanced parse options
 - `scripts/firecrawl_mcp.sh`: Firecrawl MCP wrapper pinned to the local API URL
 - `scripts/sync_agent_skills.sh`: copy repo skills to `~/.agents/skills` and symlink them into user-level agent folders
 - `scripts/set_model_profile.sh`: model profile switcher

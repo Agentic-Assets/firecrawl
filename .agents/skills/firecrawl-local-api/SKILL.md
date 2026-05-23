@@ -15,6 +15,7 @@ Use this skill to call the local Firecrawl API directly or through the Firecrawl
 - Cloud credits are not charged when hitting this local API. `creditsUsed` is local accounting metadata. Third-party costs can still occur for AI providers, proxies, or hosted search integrations.
 - Root `.env` may be absent. Non-AI scrape/map/search/parse can still work; AI formats need `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `MODEL_NAME`.
 - The repo usually lives at `/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl`. If an agent is working from another codebase, direct HTTP calls still work, and installed helper scripts are available under `~/.agents/skills/firecrawl-local-api/scripts/`.
+- Prefer upstream-maintained interfaces first: direct API, official SDKs, or `firecrawl_cli.sh`. Use `firecrawl_request.py` only for local agent ergonomics such as advanced PDF parser options and saving split artifacts.
 
 ## What Works Locally
 
@@ -65,12 +66,13 @@ Use DeepSeek V4 Flash as the primary low-cost model. Escalate to `deepseek/deeps
 
 ## CLI Patterns
 
-Prefer the fork wrapper. From this repo, use:
+Prefer the fork wrapper. It runs the upstream Firecrawl CLI against the local API, so agents get the maintained CLI surface without cloud defaults. From this repo, use:
 
 ```bash
 scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
+scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty -o ./out/example.json
 ```
 
 From another repo or an installed user-level skill, use:
@@ -81,6 +83,27 @@ From another repo or an installed user-level skill, use:
 ```
 
 Set `FC_DIR=/path/to/firecrawl` for repo-dependent helper scripts when the repo is not in the usual location. The CLI wrapper preserves the caller's current directory, so relative file paths like `./report.pdf` resolve from wherever the agent ran the command. It runs `npx -y firecrawl-cli@latest --api-url http://localhost:3002`. Override with `FIRECRAWL_CLI_PACKAGE=firecrawl-cli@1.18.0` if a future latest release breaks.
+
+## Agent HTTP Helper
+
+Use `firecrawl_request.py` when you need direct API control, predictable saved outputs, or PDF parser options that the CLI does not expose. It has no third-party Python dependency and works from any current directory:
+
+```bash
+~/.agents/skills/firecrawl-local-api/scripts/firecrawl_request.py scrape https://example.com \
+  --formats markdown,links --pretty --out ./out/example.json \
+  --save-fields ./out/example-fields --quiet --print-paths
+
+~/.agents/skills/firecrawl-local-api/scripts/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html,images --pdf-mode auto --max-pages 25 \
+  --out-dir ./out/firecrawl --save-fields ./out/report-fields --pretty --quiet
+```
+
+Selection rule:
+
+- Use CLI for normal `scrape`, `parse`, `search`, `map`, `crawl`, config/setup, and anything listed in `firecrawl_cli.sh --help`.
+- Use `firecrawl_request.py parse` for `--pdf-mode`, `--max-pages`, `--no-pdf-parse`, `--fire-pdf-async`, or split artifact saving.
+- Use official SDKs in app code instead of shelling out.
+- Use raw `curl` when debugging exact wire payloads.
 
 ## Cross-Agent MCP
 
@@ -145,6 +168,13 @@ curl -sS -X POST http://localhost:3002/v2/parse \
 ```
 
 Supported parser modes are `auto`, `fast`, and `ocr`. Use `auto` by default. Use `fast` when you want local text extraction without expensive OCR-style work. Use `ocr` only when Fire PDF or MinerU-style OCR services are configured; otherwise the local fallback is still mostly flattened text. `maxPages` caps PDF pages processed, up to 10000.
+
+Equivalent helper form:
+
+```bash
+~/.agents/skills/firecrawl-local-api/scripts/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html --pdf-mode auto --max-pages 25 --pretty
+```
 
 PDF output reality:
 

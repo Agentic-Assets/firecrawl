@@ -62,6 +62,7 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
 - `scripts/firecrawl-ops/` — runnable ops tooling:
   - `firecrawl_healthcheck.sh` — verify the local stack is up (run this first)
   - `firecrawl_cli.sh` — wrapper for `npx firecrawl-cli` pinned to `http://localhost:3002`; preserves caller cwd so local parse file paths work
+  - `firecrawl_request.py` — dependency-free direct HTTP helper for local agents when they need output/save controls or advanced `/v2/parse` PDF options not exposed by the CLI
   - `firecrawl_mcp.sh` — wrapper for `npx firecrawl-mcp` pinned to `http://localhost:3002` for any MCP-capable agent
   - `sync_agent_skills.sh` — copy repo Firecrawl skills to `~/.agents/skills` and symlink them into user-level agent folders
   - `set_model_profile.sh budget|escalated|gateway|gateway-codex|openai-direct` — rewrite `.env` model defaults; follow with `docker compose up -d --force-recreate api`

@@ -156,6 +156,20 @@ From another codebase, use the installed skill copy instead:
 
 The wrapper keeps your current directory, so relative file paths resolve from wherever you run it.
 
+For saved artifacts or PDF parser controls that the CLI does not expose, use the local direct helper:
+
+```bash
+scripts/firecrawl-ops/firecrawl_request.py scrape https://example.com \
+  --formats markdown,links --pretty --out ./out/example.json \
+  --save-fields ./out/example-fields --quiet --print-paths
+
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html,images --pdf-mode auto --max-pages 25 \
+  --out-dir ./out/firecrawl --save-fields ./out/report-fields --pretty --quiet
+```
+
+Use official Firecrawl SDKs in application code. The helper is for local agent runs from any codebase on this computer.
+
 For crawl jobs, prefer submit + explicit status polling:
 
 ```bash
@@ -167,7 +181,7 @@ scripts/firecrawl-ops/firecrawl_cli.sh crawl "$ID" --status --pretty
 Keep these layers separate:
 
 1. **Firecrawl local runtime**: OrbStack + Docker compose, API at `http://localhost:3002`.
-2. **Reusable tool interfaces**: direct HTTP API, `scripts/firecrawl-ops/firecrawl_cli.sh`, and `scripts/firecrawl-ops/firecrawl_mcp.sh`.
+2. **Reusable tool interfaces**: direct HTTP API, `scripts/firecrawl-ops/firecrawl_cli.sh`, `scripts/firecrawl-ops/firecrawl_request.py`, and `scripts/firecrawl-ops/firecrawl_mcp.sh`.
 3. **Agent adapters**: `.cursor/mcp.json`, `.cursor/skills/`, `.agents/skills/`, or any other MCP-capable client config.
 4. **Agent model runtime**: Cursor Composer 2.5, Codex, Claude, or another model.
 

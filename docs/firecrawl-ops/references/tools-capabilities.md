@@ -55,6 +55,28 @@ The wrapper runs `npx -y firecrawl-cli@latest --api-url http://localhost:3002` a
 
 Use `FIRECRAWL_CLI_PACKAGE=firecrawl-cli@1.18.0` if future `latest` releases break local behavior.
 
+## Agent HTTP helper
+
+The repo also includes a small dependency-free helper:
+
+```bash
+scripts/firecrawl-ops/firecrawl_request.py <scrape|search|map|parse|post> ...
+```
+
+Use it for local agent workflows, not app code. It fills gaps around predictable artifact saving and direct API options:
+
+```bash
+scripts/firecrawl-ops/firecrawl_request.py scrape https://example.com \
+  --formats markdown,links --out ./out/example.json \
+  --save-fields ./out/example-fields --quiet --print-paths
+
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html,images --pdf-mode auto --max-pages 25 \
+  --out-dir ./out/firecrawl --save-fields ./out/report-fields --quiet
+```
+
+Do not duplicate official SDK behavior in production code. Use JS/Python/Go/Ruby/Rust/PHP/etc. SDKs there. Use the helper when an agent needs a shell-stable way to call the local API from another codebase.
+
 ## Present but not configured locally
 
 - `POST /v2/browser`, `GET /v2/browser`, `POST /v2/browser/:sessionId/execute` need `BROWSER_SERVICE_URL`.

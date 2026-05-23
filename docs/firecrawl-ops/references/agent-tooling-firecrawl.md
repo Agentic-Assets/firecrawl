@@ -11,7 +11,8 @@ This repo keeps the local Firecrawl tool layer separate from any one agent model
 
 2. **Portable tool interfaces**
    - HTTP API: direct calls to `/v2/scrape`, `/v2/search`, `/v2/map`, `/v2/crawl`, `/v2/batch/scrape`, `/v2/parse`, and `/v2/extract`.
-   - CLI: `scripts/firecrawl-ops/firecrawl_cli.sh`.
+   - CLI: `scripts/firecrawl-ops/firecrawl_cli.sh` runs the upstream Firecrawl CLI against the local API.
+   - Agent HTTP helper: `scripts/firecrawl-ops/firecrawl_request.py` for saved artifacts and direct API options the CLI does not expose yet.
    - MCP: `scripts/firecrawl-ops/firecrawl_mcp.sh`.
 
 3. **Agent adapters**
@@ -45,6 +46,25 @@ Override the package version if needed:
 ```bash
 FIRECRAWL_MCP_PACKAGE=firecrawl-mcp@3.17.0 scripts/firecrawl-ops/firecrawl_mcp.sh
 ```
+
+## CLI And Direct Helper
+
+Use the upstream CLI wrapper first:
+
+```bash
+scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty -o ./out/example.json
+scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
+```
+
+Use the direct helper when an agent needs portable saved artifacts or advanced local API options:
+
+```bash
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html,images --pdf-mode auto --max-pages 25 \
+  --out-dir ./out/firecrawl --save-fields ./out/report-fields --quiet
+```
+
+Use official SDKs for application integrations. The helper is intentionally fork-owned local tooling, so upstream app/API/SDK syncs stay simple.
 
 ## User-Level Skill Sync
 
@@ -163,6 +183,7 @@ Put the provider key in `OPENAI_API_KEY`. The `gateway` profile uses Vercel AI G
 - "Use local Firecrawl parse for this PDF path; do not use Firecrawl cloud."
 - "Map the site with local Firecrawl first, then batch scrape the most relevant URLs."
 - "If MCP is unavailable, use `scripts/firecrawl-ops/firecrawl_cli.sh`."
+- "If you need PDF `mode`/`maxPages` or split markdown/html outputs, use `scripts/firecrawl-ops/firecrawl_request.py`."
 
 ## Troubleshooting
 

@@ -26,11 +26,12 @@ docker compose logs playwright-service --tail 200
 ```
 
 ## Local CLI
-Use the wrapper so the CLI always targets the self-hosted API:
+Use the wrapper so the upstream Firecrawl CLI always targets the self-hosted API:
 ```bash
 scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
+scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty -o ./out/example.json
 ```
 
 From another repo, use the installed skill copy:
@@ -51,6 +52,21 @@ For local crawl jobs, prefer submit + status polling; `firecrawl crawl --wait` c
 ID=$(scripts/firecrawl-ops/firecrawl_cli.sh crawl https://example.com --limit 1 --pretty | jq -r '.data.jobId')
 scripts/firecrawl-ops/firecrawl_cli.sh crawl "$ID" --status --pretty
 ```
+
+## Agent HTTP helper
+Use `firecrawl_request.py` when an agent needs direct API payload control, advanced PDF parse options, or saved field artifacts:
+
+```bash
+scripts/firecrawl-ops/firecrawl_request.py scrape https://example.com \
+  --formats markdown,links --pretty --out ./out/example.json \
+  --save-fields ./out/example-fields --quiet --print-paths
+
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html,images --pdf-mode auto --max-pages 25 \
+  --out-dir ./out/firecrawl --save-fields ./out/report-fields --pretty --quiet
+```
+
+Use the official SDKs in application code. This helper is for cross-agent local runs and advanced local API settings the CLI does not expose yet.
 
 ## Cross-agent MCP
 Use the reusable wrapper for MCP-capable agents:
@@ -113,6 +129,12 @@ Use direct HTTP when you need PDF parser knobs:
 curl -sS -X POST http://localhost:3002/v2/parse \
   -F 'options={"formats":["markdown","html"],"parsers":[{"type":"pdf","mode":"auto","maxPages":25}]}' \
   -F "file=@./report.pdf"
+```
+
+Equivalent helper form:
+```bash
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html --pdf-mode auto --max-pages 25 --pretty
 ```
 
 `auto` is the default, `fast` avoids OCR-style work, and `ocr` only becomes meaningfully stronger when Fire PDF or MinerU-style OCR services are configured. Local free parsing is good for text PDFs, but figures, tables, scans, and complex multi-column layouts can still flatten.
