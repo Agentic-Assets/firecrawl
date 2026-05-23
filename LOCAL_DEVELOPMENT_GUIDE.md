@@ -156,8 +156,8 @@ For MCP-capable agents, use:
 scripts/firecrawl-ops/firecrawl_mcp.sh
 ```
 
-Cursor is already wired to that reusable wrapper through `.cursor/mcp.json` as `firecrawl-local`. Run Cursor SDK agents from the repo root so they can discover `.cursor/mcp.json` and `.cursor/skills/`.
+Cursor is wired to that reusable wrapper through `.cursor/mcp.json` as `firecrawl-local`, but Cursor SDK code does not load project settings by default. For SDK agents, either pass `mcpServers` inline or set `local: { cwd: process.cwd(), settingSources: ["project"] }`.
 
-Use Composer 2.5 as the Cursor agent model to take advantage of Cursor SDK pricing. Local Firecrawl remains the web/file tool. Firecrawl's own AI-backed summary/json/extract calls still use `OPENAI_BASE_URL` and `MODEL_NAME` profiles unless Cursor exposes an OpenAI-compatible endpoint.
+Use Composer 2.5 as the Cursor SDK agent model to take advantage of Cursor SDK pricing. Use the SDK local runtime for this Mac's Firecrawl stack. Local Firecrawl remains the web/file tool. Firecrawl's own AI-backed summary/json/extract calls still use `OPENAI_BASE_URL` and `MODEL_NAME` profiles unless Cursor exposes an OpenAI-compatible endpoint.
 
 See `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` for generic MCP client config and Cursor-specific notes.

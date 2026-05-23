@@ -73,10 +73,10 @@ Keep Firecrawl tooling separate from any one agent runtime:
 - Reusable MCP entrypoint: `scripts/firecrawl-ops/firecrawl_mcp.sh`
 - CLI entrypoint: `scripts/firecrawl-ops/firecrawl_cli.sh`
 - Direct API: `http://localhost:3002`
-- Cursor adapter: `.cursor/mcp.json` plus `.cursor/skills/firecrawl-local-api/SKILL.md`
+- Optional Cursor adapter: `.cursor/mcp.json` plus `.cursor/skills/firecrawl-local-api/SKILL.md`
 - Codex/Claude-style adapter: `.agents/skills/firecrawl-local-api/SKILL.md`
 
-Cursor Composer 2.5 can drive an agent that calls local Firecrawl through MCP/CLI/API. Do not treat Composer as Firecrawl's internal model provider unless Cursor publishes an OpenAI-compatible base URL.
+Cursor Composer 2.5 can drive a Cursor SDK agent that calls local Firecrawl through MCP/CLI/API. Use the SDK local runtime for this Mac's Firecrawl stack; cloud agents need a reachable Firecrawl URL. Do not treat Composer as Firecrawl's internal model provider unless Cursor publishes an OpenAI-compatible base URL.
 
 ## Endpoint Selection
 

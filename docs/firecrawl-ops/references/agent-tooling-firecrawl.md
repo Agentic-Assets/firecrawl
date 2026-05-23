@@ -15,7 +15,7 @@ This repo keeps the local Firecrawl tool layer separate from any one agent model
    - MCP: `scripts/firecrawl-ops/firecrawl_mcp.sh`.
 
 3. **Agent adapters**
-   - Cursor reads `.cursor/mcp.json` and `.cursor/skills/`.
+   - Cursor can read `.cursor/mcp.json` and `.cursor/skills/` when configured to use project settings.
    - Other MCP-capable agents can call `scripts/firecrawl-ops/firecrawl_mcp.sh` directly.
    - Codex/Claude-style agents can read `.agents/skills/firecrawl-local-api/SKILL.md`.
 
@@ -77,18 +77,49 @@ If the client does not run from the repo root, use the absolute path:
 }
 ```
 
-## Cursor Adapter
+## Optional Cursor Adapter
 
-Cursor's repo config points at the same reusable wrapper:
+Cursor is just one consumer of the reusable wrapper:
 
 - `.cursor/mcp.json`: registers `firecrawl-local`.
-- `.cursor/skills/firecrawl-local-api/SKILL.md`: tells Cursor/Composer agents how to use local Firecrawl.
+- `.cursor/skills/firecrawl-local-api/SKILL.md`: optional project guidance for Cursor agents.
 
-Run Cursor SDK agents from the repo root so they discover both files.
+For the Cursor SDK, do not assume project settings are loaded. Local SDK agents default to no ambient setting sources. Use one of these explicit patterns:
+
+Inline MCP config:
+
+```ts
+import { Agent } from "@cursor/sdk";
+
+await Agent.prompt("Use local Firecrawl to scrape https://example.com", {
+  apiKey: process.env.CURSOR_API_KEY!,
+  model: { id: "composer-2" },
+  local: { cwd: process.cwd() },
+  mcpServers: {
+    "firecrawl-local": {
+      type: "stdio",
+      command: "bash",
+      args: ["scripts/firecrawl-ops/firecrawl_mcp.sh"],
+      cwd: process.cwd(),
+    },
+  },
+});
+```
+
+Project settings opt-in:
+
+```ts
+local: {
+  cwd: process.cwd(),
+  settingSources: ["project"],
+}
+```
+
+Use the local SDK runtime for this local Firecrawl stack. Cursor cloud agents run elsewhere, so `http://localhost:3002` means the cloud VM, not this Mac. For cloud agents, use a reachable Firecrawl URL instead of the local wrapper.
 
 ## Composer 2.5 Boundary
 
-Use Composer 2.5 to operate the agent. Let the agent call local Firecrawl through MCP/CLI/API.
+Use Composer 2.5 to operate the Cursor SDK agent. Let the agent call local Firecrawl through MCP/CLI/API.
 
 Do not set Firecrawl's `OPENAI_BASE_URL` to Cursor unless Cursor provides an OpenAI-compatible endpoint. Cursor SDK model aliases like `composer-latest` belong to the Cursor agent layer, not Firecrawl's internal model provider layer.
 

@@ -72,9 +72,9 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
   - `google_flights_scrape.py`, `parse_flight_deals.py` — Atlas multi-region flight scraper + parser
 - Cross-agent integration:
   - `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` — separates the Firecrawl API/CLI/MCP tool layer from Cursor Composer or any other agent model
-  - `.cursor/mcp.json` — Cursor adapter that registers `firecrawl-local` by calling `scripts/firecrawl-ops/firecrawl_mcp.sh`
-  - `.cursor/skills/firecrawl-local-api/SKILL.md` — Cursor-native guidance for Composer agents
-  - Composer 2.5 is an agent runtime/model choice; Firecrawl-internal AI calls still use root `.env` model profiles unless Cursor provides an OpenAI-compatible model endpoint.
+  - `.cursor/mcp.json` — optional Cursor adapter that registers `firecrawl-local` by calling `scripts/firecrawl-ops/firecrawl_mcp.sh`
+  - `.cursor/skills/firecrawl-local-api/SKILL.md` — optional Cursor-native guidance for Composer agents
+  - Cursor SDK agents should use local runtime for this Mac's `http://localhost:3002`, pass MCP inline or opt into project settings, and keep Composer 2.5 separate from Firecrawl-internal model routing.
 
 When the user asks about scraping workflows, model selection, runtime health, or self-hosted ops, prefer this skill over guessing — invoke it via the Skill tool (`firecrawl-ops`).
 

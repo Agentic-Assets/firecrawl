@@ -5,7 +5,7 @@ description: Use this repo's local Firecrawl API from Cursor or Cursor SDK agent
 
 # Firecrawl Local API For Cursor
 
-This is a Cursor adapter. The reusable Firecrawl layer lives in:
+This is an optional Cursor adapter, not the core Firecrawl setup. The reusable Firecrawl layer lives in:
 
 - `scripts/firecrawl-ops/firecrawl_mcp.sh` for MCP
 - `scripts/firecrawl-ops/firecrawl_cli.sh` for CLI
@@ -40,6 +40,10 @@ scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markd
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
 ```
+
+For Cursor SDK code, project settings are not loaded by default. Either pass `mcpServers` inline with `command: "bash"` and `args: ["scripts/firecrawl-ops/firecrawl_mcp.sh"]`, or set `local: { cwd: process.cwd(), settingSources: ["project"] }`.
+
+Use the SDK local runtime for this local stack. Cursor cloud agents cannot reach this Mac's `http://localhost:3002` unless the API is exposed at a reachable URL.
 
 ## Endpoint Choices
 

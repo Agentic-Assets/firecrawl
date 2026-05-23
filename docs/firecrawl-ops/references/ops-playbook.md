@@ -51,7 +51,9 @@ Use the reusable wrapper for MCP-capable agents:
 scripts/firecrawl-ops/firecrawl_mcp.sh
 ```
 
-It starts the upstream `firecrawl-mcp` package with `FIRECRAWL_API_URL=http://localhost:3002`. Cursor is configured as one consumer via `.cursor/mcp.json`; other agents can use the same command. Composer 2.5, Claude, Codex, or any other model should sit above this tool layer instead of owning it.
+It starts the upstream `firecrawl-mcp` package with `FIRECRAWL_API_URL=http://localhost:3002`. Cursor is configured as one optional consumer via `.cursor/mcp.json`; other agents can use the same command. Composer 2.5, Claude, Codex, or any other model should sit above this tool layer instead of owning it.
+
+For Cursor SDK specifically, use the local runtime for this local API. Either pass this MCP server inline or opt into project settings with `local.settingSources`. Cursor cloud agents cannot reach this Mac's `localhost:3002` unless the API is exposed at a reachable URL.
 
 See `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` for generic client config and Cursor-specific notes.
 
