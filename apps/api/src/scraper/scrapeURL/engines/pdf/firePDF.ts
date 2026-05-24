@@ -10,6 +10,11 @@ import {
   getPdfResultFromCache,
   savePdfResultToCache,
 } from "../../../../lib/gcs-pdf-cache";
+import {
+  PDFLowQualityError,
+  PDFOCRBackpressureError,
+  PDFOCRTimeoutError,
+} from "../../error";
 
 /**
  * Reconcile an existing page count with what fire-pdf reported.
@@ -39,6 +44,65 @@ export function reconcilePageCountWithFirePdf(
   const fromFirePdf = firePdfResult?.pagesProcessed;
   if (fromFirePdf === undefined) return current;
   return Math.max(current, fromFirePdf);
+}
+
+export function parseFirePdfFailure(
+  error: unknown,
+): { status?: number; body?: any; message?: string; code?: string } | null {
+  const cause = (error as { cause?: any })?.cause;
+  const response = cause?.response;
+  if (!response) return null;
+
+  let body: any = response.body;
+  if (typeof body === "string") {
+    try {
+      body = JSON.parse(body);
+    } catch {
+      // Keep raw body.
+    }
+  }
+
+  const details = body?.details;
+  const detailCode =
+    (typeof details === "object" && details !== null && details.code) ||
+    body?.code;
+  const message =
+    body?.error ||
+    (typeof details === "object" && details !== null
+      ? details?.detail || details?.message
+      : undefined) ||
+    (typeof details === "string" ? details : undefined);
+
+  return {
+    status: response.status,
+    body,
+    message: typeof message === "string" ? message : undefined,
+    code: typeof detailCode === "string" ? detailCode : undefined,
+  };
+}
+
+export function throwTypedFirePdfFailure(error: unknown): never {
+  const failure = parseFirePdfFailure(error);
+  const status = failure?.status;
+  const code = failure?.code;
+  const message = failure?.message;
+
+  if (status === 429 || code === "LOCAL_FIREPDF_BACKPRESSURE") {
+    throw new PDFOCRBackpressureError(message);
+  }
+
+  if (
+    status === 504 ||
+    (status === 502 && /timeout|timed out/i.test(message ?? ""))
+  ) {
+    throw new PDFOCRTimeoutError(message);
+  }
+
+  if (status === 422 || code === "LOCAL_FIREPDF_LOW_QUALITY") {
+    throw new PDFLowQualityError(message);
+  }
+
+  throw error;
 }
 
 export async function scrapePDFWithFirePDF(
@@ -133,38 +197,49 @@ export async function scrapePDFWithFirePDF(
     deadlineFields.created_at = Date.now();
   }
 
-  const resp = await robustFetch({
-    url: `${config.FIRE_PDF_BASE_URL}/ocr`,
-    method: "POST",
-    headers: config.FIRE_PDF_API_KEY
-      ? { Authorization: `Bearer ${config.FIRE_PDF_API_KEY}` }
-      : undefined,
-    body: {
-      pdf: base64Content,
-      scrape_id: meta.id,
-      ...(maxPages !== undefined && { max_pages: maxPages }),
-      ...(mode !== undefined && { mode }),
-      // Enrichment for the fire-pdf jobs DB / dashboard. fire-pdf treats
-      // these as optional — older fire-pdf builds will ignore unknown fields.
-      team_id: meta.internalOptions.teamId,
-      ...(meta.internalOptions.crawlId && {
-        crawl_id: meta.internalOptions.crawlId,
+  let resp: {
+    markdown: string;
+    failed_pages: number[] | null;
+    pages_processed?: number;
+    metadata?: Record<string, unknown>;
+  };
+  try {
+    resp = await robustFetch({
+      url: `${config.FIRE_PDF_BASE_URL}/ocr`,
+      method: "POST",
+      headers: config.FIRE_PDF_API_KEY
+        ? { Authorization: `Bearer ${config.FIRE_PDF_API_KEY}` }
+        : undefined,
+      body: {
+        pdf: base64Content,
+        scrape_id: meta.id,
+        ...(maxPages !== undefined && { max_pages: maxPages }),
+        ...(mode !== undefined && { mode }),
+        // Enrichment for the fire-pdf jobs DB / dashboard. fire-pdf treats
+        // these as optional — older fire-pdf builds will ignore unknown fields.
+        team_id: meta.internalOptions.teamId,
+        ...(meta.internalOptions.crawlId && {
+          crawl_id: meta.internalOptions.crawlId,
+        }),
+        ...(zdr ? {} : { url: meta.rewrittenUrl ?? meta.url }),
+        pdf_sha256: pdfSha256,
+        source: "firecrawl",
+        zdr,
+        ...deadlineFields,
+      },
+      logger,
+      schema: z.object({
+        markdown: z.string(),
+        failed_pages: z.array(z.number()).nullable(),
+        pages_processed: z.number().optional(),
+        metadata: z.record(z.string(), z.unknown()).optional(),
       }),
-      ...(zdr ? {} : { url: meta.rewrittenUrl ?? meta.url }),
-      pdf_sha256: pdfSha256,
-      source: "firecrawl",
-      zdr,
-      ...deadlineFields,
-    },
-    logger,
-    schema: z.object({
-      markdown: z.string(),
-      failed_pages: z.array(z.number()).nullable(),
-      pages_processed: z.number().optional(),
-    }),
-    mock: meta.mock,
-    abort: meta.abort.asSignal(),
-  });
+      mock: meta.mock,
+      abort: meta.abort.asSignal(),
+    });
+  } catch (error) {
+    throwTypedFirePdfFailure(error);
+  }
 
   const durationMs = Date.now() - startedAt;
   const pages = resp.pages_processed ?? pagesProcessed;
@@ -176,6 +251,7 @@ export async function scrapePDFWithFirePDF(
     markdownLength: resp.markdown.length,
     failedPages: resp.failed_pages,
     pagesProcessed: pages,
+    ocrMetadata: resp.metadata,
     perPageMs: pages ? Math.round(durationMs / pages) : undefined,
   });
 
@@ -183,6 +259,7 @@ export async function scrapePDFWithFirePDF(
     markdown: resp.markdown,
     html: await safeMarkdownToHtml(resp.markdown, logger, meta.id),
     pagesProcessed: pages,
+    ocrMetadata: resp.metadata,
   };
 
   if (cacheable) {

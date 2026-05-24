@@ -11,7 +11,7 @@ Use this skill to call the local Firecrawl API directly or through the Firecrawl
 
 - Base URL: `http://localhost:3002`
 - Auth: currently disabled with `USE_DB_AUTHENTICATION=false`; do not send a bearer token unless `.env` later sets `TEST_API_KEY`.
-- Verification date: 2026-05-23 after upstream sync and OrbStack rebuild.
+- Core stack verified on 2026-05-23 after upstream sync and OrbStack rebuild; local Docling OCR guardrails added on 2026-05-24.
 - Cloud credits are not charged when hitting this local API. `creditsUsed` is local accounting metadata. Third-party costs can still occur for AI providers, proxies, or hosted search integrations.
 - Root `.env` may be absent. Non-AI scrape/map/search/parse can still work; AI formats need `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `MODEL_NAME`.
 - The repo usually lives at `/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl`. If an agent is working from another codebase, direct HTTP calls still work, and installed helper scripts are available under `~/.agents/skills/firecrawl-local-api/scripts/`.
@@ -214,11 +214,13 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html --pdf-mode ocr --max-pages 10 --pretty
 ```
 
-The local Docling adapter does not spend Firecrawl cloud credits. In current local tests, `research-page-aware` OCR successfully parsed known scanned/image PDFs and produced page-aware markdown. External Fire PDF or RunPod MinerU backends can still spend their provider budget.
+The local Docling adapter does not spend Firecrawl cloud credits. Earlier local tests had `research-page-aware` OCR succeed on known scanned/image PDFs and produce page-aware markdown, but later paper batches exposed low-quality publisher-boilerplate cases. Benchmark unfamiliar PDFs and trust 422 quality failures or QA reports over blanket success claims. External Fire PDF or RunPod MinerU backends can still spend their provider budget.
 
 Named OCR profiles live in `scripts/firecrawl-ops/pdf_ocr_profiles.json`. List them with `scripts/firecrawl-ops/local_firepdf_ocr.sh profiles`. Useful profiles: `research-page-aware` for academic page chunks, `tables-accurate` for table-heavy papers, `scanned-english` for image-only English scans, and `qa-debug` when raw Docling JSON is needed. Apply a changed profile with `scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile <name>`.
 
-Useful adapter tuning env vars before `scripts/firecrawl-ops/local_firepdf_ocr.sh start-adapter` / `start`: `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. Explicit env vars override the named profile. Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply changes. Use `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf` for a one-command OCR parse check. For a saved comparison matrix with per-PDF recommendations, page chunks, and QA reports:
+For local agents, parse errors are now more meaningful: OCR capacity returns `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429, Docling timeouts return `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504, and publisher-boilerplate or mostly-empty OCR output returns `SCRAPE_PDF_LOW_QUALITY` / HTTP 422 instead of a normal-looking success. Successful responses may include `data.metadata.pdfOcr` with page density and boilerplate quality metrics.
+
+Useful adapter tuning env vars before `scripts/firecrawl-ops/local_firepdf_ocr.sh start-adapter` / `restart-adapter` / `start`: `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_MAX_CONCURRENT_OCR` (default 2), `LOCAL_FIREPDF_FAIL_LOW_QUALITY` (default true), `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT` (default 900) applies when starting or recreating Docling Serve, not adapter-only restarts. Explicit env vars override the named profile. Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply adapter changes. Use `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf` for a one-command OCR parse check. For a saved comparison matrix with per-PDF recommendations, page chunks, and QA reports:
 
 ```bash
 scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \

@@ -6,7 +6,7 @@ Date: 2026-05-23
 
 Use a local FirePDF-compatible adapter backed by Docling Serve as the default OCR/layout path for this fork.
 
-This is the strongest first path because it keeps upstream Firecrawl code untouched, uses Firecrawl's existing PDF OCR integration boundary, runs locally without Firecrawl cloud credits, and gives agents a more robust path for scanned, table-heavy, figure-heavy, and multi-column PDFs than the default local parser.
+This is the strongest first path because it uses Firecrawl's existing PDF OCR integration boundary, runs locally without Firecrawl cloud credits, and gives agents a more robust path for scanned, table-heavy, figure-heavy, and multi-column PDFs than the default local parser.
 
 The adapter should live in this fork's ops layer, not in upstream-owned API code:
 
@@ -16,12 +16,14 @@ The adapter should live in this fork's ops layer, not in upstream-owned API code
 
 Do not replace Firecrawl's built-in Rust PDF extraction. Keep it as the fast default for normal text PDFs. Add local OCR as an optional fallback path for hard PDFs.
 
+Small fork-level API changes are acceptable when they only surface local OCR errors and metadata cleanly. Keep those changes narrow so future `firecrawl/firecrawl:main` syncs stay easy.
+
 ## Implementation Status
 
 Implemented and smoke-tested on 2026-05-23:
 
-- `scripts/firecrawl-ops/local_firepdf_ocr_service.py` implements the FirePDF-compatible `POST /ocr` adapter and calls Docling Serve's current `/v1/convert/source` `sources` contract.
-- `scripts/firecrawl-ops/local_firepdf_ocr.sh` starts Docling Serve and the adapter in OrbStack/Docker. It also provides `doctor`, `smoke`, `settings`, `profiles`, `profile-env`, `restart-adapter`, and `benchmark` convenience commands. The default Docling Serve CPU image is pinned by digest for repeatability; override `LOCAL_FIREPDF_DOCLING_IMAGE` to intentionally test newer releases.
+- `scripts/firecrawl-ops/local_firepdf_ocr_service.py` implements the FirePDF-compatible `POST /ocr` adapter and calls Docling Serve's current `/v1/convert/source` `sources` contract. It adds local concurrency backpressure, OCR quality metrics, and optional low-quality rejection for mostly empty or publisher-boilerplate output.
+- `scripts/firecrawl-ops/local_firepdf_ocr.sh` starts Docling Serve and the adapter in OrbStack/Docker. It also provides `doctor`, `smoke`, `settings`, `profiles`, `profile-env`, `restart-adapter`, and `benchmark` convenience commands. The default Docling Serve CPU image is pinned by digest for repeatability; override `LOCAL_FIREPDF_DOCLING_IMAGE` to intentionally test newer releases. New starts set `DOCLING_SERVE_MAX_SYNC_WAIT=900` by default for longer research papers.
 - `scripts/firecrawl-ops/pdf_ocr_profiles.json` defines named OCR profiles for common agent workflows, including `default`, `research-page-aware`, `tables-accurate`, `tables-fast`, `scanned-english`, `qa-debug`, and `figure-enrichment-lab`.
 - `scripts/firecrawl-ops/pdf_ocr_benchmark.py` runs a saved `fast` / `auto` / `ocr` comparison matrix with metadata, adapter health, settings, preflight checks, per-mode/profile metrics, `fields/pages.jsonl`, `qa.json`, `qa.md`, recommended parser mode/profile, and optional `--strict` failure handling.
 - `set_model_profile.sh` preserves existing local OCR routing values when changing LLM profiles.
@@ -38,6 +40,9 @@ Useful named-profile and dynamic Docling controls before `local_firepdf_ocr.sh s
 - `LOCAL_FIREPDF_DOCLING_PDF_BACKEND=docling_parse|pypdfium2|dlparse_v4`
 - `LOCAL_FIREPDF_DOCLING_TABLE_MODE=accurate|fast`
 - `LOCAL_FIREPDF_DOCLING_TO_FORMATS=md,json,html`
+- `LOCAL_FIREPDF_MAX_CONCURRENT_OCR=2` returns explicit backpressure instead of overloading Docling
+- `LOCAL_FIREPDF_FAIL_LOW_QUALITY=true` rejects known-bad OCR loops with explicit low-quality errors
+- `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT=900` controls the Docling container's sync wait budget on new starts
 - optional enrichment flags such as `LOCAL_FIREPDF_DOCLING_DO_CHART_EXTRACTION=true` or `LOCAL_FIREPDF_DOCLING_DO_PICTURE_DESCRIPTION=true`
 
 Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the current/default settings and copy-pasteable examples. Run `restart-adapter` after changing env vars or profiles. Explicit env vars override the named profile. Direct adapter experiments may include a `docling_options` object in `POST /ocr`; Firecrawl API calls use the process-level adapter profile/env.
@@ -56,6 +61,7 @@ This plan is designed for the current self-hosted Firecrawl fork on this Mac:
 The implementation should preserve the fork's upstream-sync posture:
 
 - Do not add Docling, PaddleOCR, or OCR services directly to upstream-owned Firecrawl API code.
+- Keep fork API edits limited to FirePDF failure/metadata mapping when possible.
 - Do not make the main Firecrawl API depend on local OCR being available.
 - Do not require cloud Firecrawl credentials.
 - Keep local OCR opt-in through `.env` and helper scripts.
@@ -77,13 +83,18 @@ POST ${FIRE_PDF_BASE_URL}/ocr
 
 That means we can add a local service that speaks the FirePDF sync contract and point the API container at it through OrbStack's `host.docker.internal`.
 
-This avoids editing upstream-owned files such as:
+The adapter boundary avoids putting local OCR implementation details into upstream-owned files such as:
 
 - `apps/api/src/scraper/scrapeURL/engines/pdf/index.ts`
 - `apps/api/src/scraper/scrapeURL/engines/pdf/firePDF.ts`
 - `apps/api/src/config.ts`
 
-Keeping the OCR bridge fork-owned makes future `firecrawl/firecrawl:main` syncs much easier.
+Keeping the OCR bridge fork-owned makes future `firecrawl/firecrawl:main` syncs much easier. This fork may still carry small API mappings so local adapter failures become useful client responses:
+
+- `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429 when local OCR capacity is full.
+- `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504 when Docling times out.
+- `SCRAPE_PDF_LOW_QUALITY` / HTTP 422 when OCR output is mostly empty, repeated, or dominated by publisher/license boilerplate.
+- Successful OCR parses can expose quality data under `data.metadata.pdfOcr`.
 
 ## Target Architecture
 
@@ -202,19 +213,21 @@ Marker and Surya remain useful experiments, but GPL-3.0 licensing and model/comm
 
 MinerU remains a high-power deferred option. It is active and capable, but its local runtime and operational footprint are heavier than Docling Serve for this Mac/OrbStack setup.
 
-## Implementation Steps
+## Historical Implementation Notes
+
+The sections below document how the local OCR layer was built. They are retained as design notes for future maintenance; agents should not treat them as a fresh to-do list unless replacing or substantially revising the adapter.
 
 ## Files To Add Or Update
 
-Keep the write set fork-owned and predictable:
+The implemented write set is fork-owned and predictable:
 
-Add:
+Added:
 
 - `scripts/firecrawl-ops/local_firepdf_ocr_service.py` — FirePDF-compatible local adapter.
 - `scripts/firecrawl-ops/local_firepdf_ocr.sh` — start/stop/health/env helper for Docling Serve and the adapter.
 - `scripts/firecrawl-ops/pdf_ocr_benchmark.py` — repeatable comparison matrix after the adapter works.
 
-Update:
+Updated:
 
 - `scripts/firecrawl-ops/set_model_profile.sh` — preserve local OCR routing vars unless explicitly reset.
 - `.agents/skills/firecrawl-local-api/SKILL.md` — teach agents how to call local PDF OCR through `/v2/parse`, CLI, and helper flags.
@@ -222,9 +235,9 @@ Update:
 - `LOCAL_DEVELOPMENT_GUIDE.md` — document the local OCR setup for humans.
 - `docs/firecrawl-ops/references/ops-playbook.md` — add the concise operational runbook.
 
-Avoid:
+Still avoid:
 
-- Editing upstream-owned Firecrawl PDF engine files unless a real upstream integration bug appears.
+- Expanding upstream-owned Firecrawl PDF engine changes beyond the narrow local OCR error/metadata mapping unless a real integration bug appears.
 - Committing root `.env`.
 - Making local OCR mandatory for normal Firecrawl startup.
 
@@ -544,7 +557,9 @@ The local OCR setup is ready when:
 - Normal born-digital PDFs still work with `mode:"fast"` and `mode:"auto"`.
 - The API container reaches the adapter through `host.docker.internal`.
 - `.env` can enable/disable local OCR without code edits.
-- No upstream-owned Firecrawl PDF engine files need modification.
+- Fork API changes remain limited to FirePDF error/metadata mapping; the local OCR adapter and tooling stay in fork-owned ops paths.
+- Concurrent OCR overload returns explicit HTTP 429 backpressure, not a generic 500.
+- Low-quality OCR output is either rejected with HTTP 422 or explicitly allowed for diagnostics with `LOCAL_FIREPDF_FAIL_LOW_QUALITY=false`.
 - Skills and docs clearly explain local OCR costs, limits, startup, and model routing boundaries.
 - `set_model_profile.sh` no longer accidentally disables local OCR routing.
 - `scripts/firecrawl-ops/sync_agent_skills.sh` has been run after skill updates.

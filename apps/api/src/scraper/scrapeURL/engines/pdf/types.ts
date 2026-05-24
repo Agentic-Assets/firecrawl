@@ -9,9 +9,14 @@ export type PDFProcessorResult = {
    * and fall back to whatever upstream metadata pass set.
    */
   pagesProcessed?: number;
+  ocrMetadata?: Record<string, unknown>;
 };
 
-export type PdfMetadata = { numPages: number; title?: string };
+export type PdfMetadata = {
+  numPages: number;
+  title?: string;
+  ocr?: Record<string, unknown>;
+};
 
 export const MAX_FILE_SIZE = 19 * 1024 * 1024; // 19MB
 export const FIRE_PDF_MAX_FILE_SIZE = 30 * 1024 * 1024; // 30MB

@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -65,6 +66,24 @@ def parse_float_env(name: str, default: float) -> float:
         return default
 
 
+def parse_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        print(
+            json.dumps(
+                {"message": "Invalid int env value; using default", "name": name, "value": raw, "default": default}
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+        return default
+    return max(1, value)
+
+
 def parse_list_env(name: str) -> list[str] | None:
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
@@ -75,6 +94,11 @@ def parse_list_env(name: str) -> list[str] | None:
 
 CAPTURE_DOCLING_JSON = parse_bool_env("LOCAL_FIREPDF_CAPTURE_DOCLING_JSON", False)
 OUTPUT_DIR = os.getenv("LOCAL_FIREPDF_OUTPUT_DIR", "").strip()
+MAX_CONCURRENT_OCR = parse_int_env("LOCAL_FIREPDF_MAX_CONCURRENT_OCR", 2)
+FAIL_LOW_QUALITY = parse_bool_env("LOCAL_FIREPDF_FAIL_LOW_QUALITY", True)
+OCR_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_OCR)
+OCR_ACTIVE_LOCK = threading.Lock()
+OCR_ACTIVE_COUNT = 0
 
 DEFAULT_DOCLING_OPTIONS: dict[str, Any] = {
     "from_formats": ["pdf"],
@@ -272,7 +296,13 @@ def post_json(url: str, payload: dict[str, Any], timeout: float) -> Any:
             return json.loads(resp.read().decode("utf-8"))
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise AdapterError(f"Docling returned HTTP {exc.code}", status=502, details=body) from exc
+        status = 504 if exc.code == 504 else 502
+        details: Any = body
+        try:
+            details = json.loads(body)
+        except json.JSONDecodeError:
+            pass
+        raise AdapterError(f"Docling returned HTTP {exc.code}", status=status, details=details) from exc
     except URLError as exc:
         raise AdapterError(f"Could not reach Docling Serve: {exc}", status=502) from exc
     except json.JSONDecodeError as exc:
@@ -431,6 +461,9 @@ def settings_payload() -> dict[str, Any]:
             "port": PORT,
             "timeout_seconds": TIMEOUT_SECONDS,
             "keep_temp": KEEP_TEMP,
+            "max_concurrent_ocr": MAX_CONCURRENT_OCR,
+            "active_ocr": get_active_ocr_count(),
+            "fail_low_quality": FAIL_LOW_QUALITY,
         },
         "docling_url": DOCLING_URL,
         "docling_options": docling_options(TIMEOUT_SECONDS, None),
@@ -439,6 +472,11 @@ def settings_payload() -> dict[str, Any]:
             "note": "POST /ocr may include this object for direct adapter tests; Firecrawl API calls use env/container settings.",
         },
     }
+
+
+def get_active_ocr_count() -> int:
+    with OCR_ACTIVE_LOCK:
+        return OCR_ACTIVE_COUNT
 
 
 def iter_documents(docling_result: Any) -> list[dict[str, Any]]:
@@ -591,6 +629,107 @@ def extract_page_markdown_from_json(docling_result: Any, marker: str) -> str | N
     return None
 
 
+PUBLISHER_BOILERPLATE_TERMS = [
+    "downloaded from",
+    "wiley online library",
+    "terms and conditions",
+    "license",
+    "copyright",
+    "all use subject to",
+    "for personal use only",
+    "authorized users",
+    "onlinelibrary.wiley.com",
+]
+
+
+def normalized_line(value: str) -> str:
+    value = value.lower()
+    value = re.sub(r"https?://\S+", "", value)
+    value = re.sub(r"\d{1,4}[-/:]\d{1,2}[-/:]\d{1,4}", "", value)
+    value = re.sub(r"\s+", " ", value)
+    value = re.sub(r"[^a-z0-9 ]+", "", value)
+    return value.strip()
+
+
+def quality_pages(markdown: str, processed_pages: int | None, marker: str) -> list[str]:
+    if marker and marker in markdown:
+        pages = [part.strip() for part in markdown.split(marker)]
+        expected_pages = processed_pages or len(pages)
+        if expected_pages > len(pages):
+            pages.extend([""] * (expected_pages - len(pages)))
+        return pages
+
+    # Without an explicit page marker, flat markdown is still useful text. Do
+    # not invent empty trailing pages; use density metrics instead.
+    if markdown.strip():
+        return [markdown.strip()]
+    else:
+        return []
+
+
+def analyze_markdown_quality(markdown: str, processed_pages: int | None, marker: str) -> dict[str, Any]:
+    pages = quality_pages(markdown, processed_pages, marker)
+    chars_per_page = [len(page.strip()) for page in pages]
+    populated_pages = sum(1 for count in chars_per_page if count > 0)
+    empty_pages = sum(1 for count in chars_per_page if count == 0)
+    page_count = len(chars_per_page)
+    total_chars = len(markdown.strip())
+
+    lines = [line.strip() for line in markdown.splitlines() if line.strip()]
+    normalized_lines = [normalized_line(line) for line in lines]
+    repeated_counts: dict[str, int] = {}
+    for line in normalized_lines:
+        if len(line) >= 30:
+            repeated_counts[line] = repeated_counts.get(line, 0) + 1
+
+    repeated_chars = 0
+    publisher_chars = 0
+    line_chars = sum(len(line) for line in lines) or 1
+    for original, normalized in zip(lines, normalized_lines):
+        if repeated_counts.get(normalized, 0) > 1:
+            repeated_chars += len(original)
+        hits = sum(1 for term in PUBLISHER_BOILERPLATE_TERMS if term in normalized)
+        if hits >= 1:
+            publisher_chars += len(original)
+
+    empty_page_ratio = empty_pages / page_count if page_count else 1.0
+    repeated_boilerplate_ratio = repeated_chars / line_chars
+    publisher_boilerplate_ratio = publisher_chars / line_chars
+    chars_per_expected_page = total_chars / max(processed_pages or page_count or 1, 1)
+
+    warnings: list[str] = []
+    if page_count >= 5 and empty_page_ratio > 0.8:
+        warnings.append("most_pages_empty")
+    if repeated_boilerplate_ratio > 0.5:
+        warnings.append("repeated_text_dominates")
+    if publisher_boilerplate_ratio > 0.45:
+        warnings.append("publisher_boilerplate_dominates")
+    if page_count >= 4 and chars_per_expected_page < 200:
+        warnings.append("very_low_text_density")
+
+    low_quality = (
+        ("most_pages_empty" in warnings and (total_chars < max(12000, page_count * 900)))
+        or "publisher_boilerplate_dominates" in warnings
+        or ("repeated_text_dominates" in warnings and total_chars < max(12000, page_count * 700))
+        or "very_low_text_density" in warnings
+    )
+
+    return {
+        "total_chars": total_chars,
+        "page_count_reported": processed_pages,
+        "page_count_observed": page_count,
+        "populated_pages": populated_pages,
+        "empty_pages": empty_pages,
+        "empty_page_ratio": round(empty_page_ratio, 4),
+        "chars_per_page": chars_per_page,
+        "chars_per_expected_page": round(chars_per_expected_page, 2),
+        "repeated_boilerplate_ratio": round(repeated_boilerplate_ratio, 4),
+        "publisher_boilerplate_ratio": round(publisher_boilerplate_ratio, 4),
+        "warnings": warnings,
+        "low_quality": low_quality,
+    }
+
+
 def safe_slug(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip(".-_")[:80] or "item"
 
@@ -610,6 +749,23 @@ def save_debug(scrape_id: str, data: Any, settings: dict[str, Any]) -> None:
 def handle_ocr(request_body: dict[str, Any]) -> dict[str, Any]:
     if ENGINE != "docling":
         raise AdapterError(f"Unsupported LOCAL_FIREPDF_ENGINE={ENGINE!r}", status=400)
+
+    global OCR_ACTIVE_COUNT
+    acquired = OCR_SEMAPHORE.acquire(blocking=False)
+    if not acquired:
+        raise AdapterError(
+            "Local OCR capacity is full; retry later or lower OCR concurrency.",
+            status=429,
+            details={
+                "code": "LOCAL_FIREPDF_BACKPRESSURE",
+                "active_ocr": get_active_ocr_count(),
+                "max_concurrent_ocr": MAX_CONCURRENT_OCR,
+                "retryable": True,
+            },
+        )
+
+    with OCR_ACTIVE_LOCK:
+        OCR_ACTIVE_COUNT += 1
 
     scrape_id = str(request_body.get("scrape_id") or uuid4().hex)
     max_pages_raw = request_body.get("max_pages")
@@ -665,13 +821,47 @@ def handle_ocr(request_body: dict[str, Any]) -> dict[str, Any]:
         if not markdown.strip():
             raise AdapterError("Docling returned no markdown/text content", status=502, details=docling_result)
 
+        quality = analyze_markdown_quality(markdown, processed_pages, page_marker)
+        metadata = {
+            "engine": ENGINE,
+            "profile": PROFILE_NAME,
+            "total_pages": total_pages,
+            "pages_processed": processed_pages or 1,
+            "quality": quality,
+        }
+        if quality["warnings"]:
+            log(
+                "Docling OCR quality warnings",
+                scrape_id=scrape_id,
+                profile=PROFILE_NAME,
+                warnings=quality["warnings"],
+                total_chars=quality["total_chars"],
+                empty_page_ratio=quality["empty_page_ratio"],
+                repeated_boilerplate_ratio=quality["repeated_boilerplate_ratio"],
+                publisher_boilerplate_ratio=quality["publisher_boilerplate_ratio"],
+            )
+        if quality["low_quality"] and FAIL_LOW_QUALITY:
+            raise AdapterError(
+                "Docling OCR output failed quality checks.",
+                status=422,
+                details={
+                    "code": "LOCAL_FIREPDF_LOW_QUALITY",
+                    "retryable": False,
+                    "metadata": metadata,
+                },
+            )
+
         return {
             "markdown": markdown,
             "failed_pages": [],
             "pages_processed": processed_pages or 1,
             "errors": errors,
+            "metadata": metadata,
         }
     finally:
+        with OCR_ACTIVE_LOCK:
+            OCR_ACTIVE_COUNT -= 1
+        OCR_SEMAPHORE.release()
         if KEEP_TEMP:
             log("Keeping temp directory", path=str(tmpdir))
         else:
@@ -725,11 +915,24 @@ class Handler(BaseHTTPRequestHandler):
                     "markdown": response["markdown"],
                     "failed_pages": response["failed_pages"],
                     "pages_processed": response["pages_processed"],
+                    "errors": response.get("errors") or [],
+                    "metadata": response.get("metadata") or {},
                 },
             )
         except AdapterError as exc:
             log("adapter error", error=str(exc), details=exc.details)
-            write_json(self, exc.status, {"error": str(exc), "details": exc.details})
+            code = None
+            if isinstance(exc.details, dict):
+                code = exc.details.get("code")
+            write_json(
+                self,
+                exc.status,
+                {
+                    "error": str(exc),
+                    "code": code or ("LOCAL_FIREPDF_ERROR" if exc.status < 500 else "LOCAL_FIREPDF_UPSTREAM_ERROR"),
+                    "details": exc.details,
+                },
+            )
         except Exception as exc:
             log("unhandled error", error=str(exc), traceback=traceback.format_exc())
             write_json(self, 500, {"error": str(exc)})

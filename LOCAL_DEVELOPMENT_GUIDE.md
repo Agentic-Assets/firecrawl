@@ -162,7 +162,7 @@ curl -sS -X POST http://localhost:3002/v2/parse \
 Modes:
 - `auto`: default; local Rust extraction for text PDFs, then configured OCR fallbacks, then `pdf-parse`
 - `fast`: local text extraction only; avoids OCR-style work
-- `ocr`: useful only when Fire PDF or MinerU-style services are configured
+- `ocr`: useful when the local Docling Fire PDF-compatible adapter, hosted Fire PDF, or MinerU-style services are configured
 
 The fully local path is strongest for text PDFs. Tables, figures, scans, and complex multi-column layouts can still flatten into markdown.
 
@@ -196,16 +196,19 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 Operational notes:
 
 - Docling Serve runs in OrbStack/Docker on `127.0.0.1:5001`.
-- The helper pins the known-good Docling Serve CPU image by digest. Override `LOCAL_FIREPDF_DOCLING_IMAGE` when intentionally testing a newer Docling release.
+- The helper pins the known-good Docling Serve CPU image by digest and sets `DOCLING_SERVE_MAX_SYNC_WAIT=900` on new starts. Override `LOCAL_FIREPDF_DOCLING_IMAGE` or `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT` only when intentionally testing runtime changes.
 - The local Fire PDF adapter runs on `127.0.0.1:31337`.
 - Firecrawl's API container reaches the adapter with `FIRE_PDF_BASE_URL=http://host.docker.internal:31337`.
 - `--pdf-mode fast` avoids OCR; `--pdf-mode auto` uses Firecrawl's normal PDF decision path; `--pdf-mode ocr` forces the local Docling adapter when configured.
-- Mode choice is document-dependent. In a local 2026-05-23 stress test, a 40-page born-digital spec was much richer and faster in `fast`, while a 25-page encrypted slide-style market report benefited modestly from Docling OCR. Known scanned/image research PDFs that failed the default text path succeeded through Docling OCR with `research-page-aware` page markers. Use `fast` for dense born-digital text, `ocr` for scanned/image-only/slide-style PDFs, and benchmark unfamiliar document families.
+- Mode choice is document-dependent. In a local 2026-05-23 stress test, a 40-page born-digital spec was much richer and faster in `fast`, while a 25-page encrypted slide-style market report benefited modestly from Docling OCR. Earlier scanned/image research tests succeeded through Docling OCR with `research-page-aware` page markers, but later paper batches exposed low-quality publisher-boilerplate cases. Use `fast` for dense born-digital text, `ocr` for scanned/image-only/slide-style PDFs, and benchmark unfamiliar document families.
 - Named profiles live in `scripts/firecrawl-ops/pdf_ocr_profiles.json`. List them with `scripts/firecrawl-ops/local_firepdf_ocr.sh profiles`.
 - Recommended profiles: `default`, `research-page-aware`, `tables-accurate`, `tables-fast`, `scanned-english`, `qa-debug`, and `figure-enrichment-lab`.
 - Apply a profile with `scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile tables-accurate`. Use `start --profile <name>` for first start.
 - Raw Docling JSON capture is off unless the profile enables it or you pass `--capture-json`; it writes sensitive full-document artifacts under `tasks/tmp/firecrawl-docling-debug` by default.
-- Dynamic Docling knobs are still accepted as env overrides before `start-adapter` / `start`: `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. Explicit env vars override the named profile.
+- The adapter limits OCR concurrency with `LOCAL_FIREPDF_MAX_CONCURRENT_OCR` (default 2). Extra simultaneous calls return `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429 instead of overloading Docling.
+- Docling timeouts return `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504. Raise `LOCAL_FIREPDF_TIMEOUT_SECONDS` or `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT` only after checking adapter and Docling logs.
+- Low-quality OCR output with mostly empty pages or publisher/license boilerplate is rejected by default with `SCRAPE_PDF_LOW_QUALITY` / HTTP 422. Set `LOCAL_FIREPDF_FAIL_LOW_QUALITY=false` only when collecting diagnostics.
+- Dynamic adapter knobs are accepted as env overrides before `start-adapter` / `restart-adapter` / `start`: `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_MAX_CONCURRENT_OCR`, `LOCAL_FIREPDF_FAIL_LOW_QUALITY`, `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT` (default 900) applies when starting or recreating Docling Serve. Explicit env vars override the named profile.
 - Print the full tunable settings surface with `scripts/firecrawl-ops/local_firepdf_ocr.sh settings`.
 - Quick OCR verification: `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf`.
 - Repeatable PDF checks can use `scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf --modes fast,auto,ocr --profiles default,research-page-aware,tables-accurate --max-pages 40 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict`. The saved `summary.md` includes a recommended mode/profile per PDF, and each case saves `fields/pages.jsonl`, `qa.json`, and `qa.md` when output is available.

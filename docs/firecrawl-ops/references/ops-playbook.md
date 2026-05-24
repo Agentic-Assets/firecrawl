@@ -143,7 +143,7 @@ docker compose up -d --force-recreate api
 scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
-This starts Docling Serve on `127.0.0.1:5001` and a Fire PDF-compatible adapter on `127.0.0.1:31337`. The helper pins the known-good Docling Serve CPU image by digest; override `LOCAL_FIREPDF_DOCLING_IMAGE` only when deliberately testing a newer release. The API container calls the adapter via `http://host.docker.internal:31337`. Stop both with:
+This starts Docling Serve on `127.0.0.1:5001` and a Fire PDF-compatible adapter on `127.0.0.1:31337`. The helper pins the known-good Docling Serve CPU image by digest and sets `DOCLING_SERVE_MAX_SYNC_WAIT=900` on new starts; override `LOCAL_FIREPDF_DOCLING_IMAGE` or `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT` only when deliberately testing runtime changes. The API container calls the adapter via `http://host.docker.internal:31337`. Stop both with:
 
 ```bash
 scripts/firecrawl-ops/local_firepdf_ocr.sh stop
@@ -169,9 +169,14 @@ scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile qa-debug --
 
 Raw Docling JSON capture is off unless a profile enables it or `--capture-json` is passed. It saves full-document data under `tasks/tmp/firecrawl-docling-debug` by default, so keep it out of commits.
 
+The adapter has guardrails for heavy agent runs. `LOCAL_FIREPDF_MAX_CONCURRENT_OCR=2` by default; excess concurrent requests return `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429. Docling timeouts return `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504. Low-quality OCR dominated by publisher/license boilerplate or empty pages returns `SCRAPE_PDF_LOW_QUALITY` / HTTP 422 by default. Successful Firecrawl responses may include `data.metadata.pdfOcr` quality metrics.
+
 Useful Docling tuning env vars before `start-adapter` / `start`; explicit env vars override the named profile:
 
 - `LOCAL_FIREPDF_TIMEOUT_SECONDS=600` by default; raise it for very large/image-heavy papers
+- `LOCAL_FIREPDF_MAX_CONCURRENT_OCR=2` by default; lower it for fragile local runs or raise it only after benchmarking
+- `LOCAL_FIREPDF_FAIL_LOW_QUALITY=true` by default; set false only for diagnostics
+- `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT=900` by default on new Docling container starts; this requires starting or recreating Docling Serve, not only restarting the adapter
 - `LOCAL_FIREPDF_DOCLING_OCR_PRESET=auto|easyocr|tesseract`
 - `LOCAL_FIREPDF_DOCLING_OCR_LANG=en[,de,...]`
 - `LOCAL_FIREPDF_DOCLING_PDF_BACKEND=docling_parse|pypdfium2|dlparse_v4`

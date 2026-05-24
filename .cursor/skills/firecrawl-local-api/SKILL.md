@@ -62,6 +62,8 @@ scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
 
 The benchmark saves per-case `fields/pages.jsonl`, `qa.json`, and `qa.md`, then recommends a mode/profile in `summary.md`. Raw Docling JSON capture is available with `--capture-json` or the `qa-debug` profile and writes full-document debug artifacts under `tasks/tmp`.
 
+The local OCR adapter has guardrails for agent runs: `LOCAL_FIREPDF_MAX_CONCURRENT_OCR` defaults to 2, a third concurrent OCR request returns `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429, Docling timeouts return `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504, Docling sync waits default to 900 seconds on new starts, and low-quality publisher-boilerplate or mostly-empty OCR output returns `SCRAPE_PDF_LOW_QUALITY` / HTTP 422. Successful parses can expose `data.metadata.pdfOcr` quality metrics.
+
 For Cursor SDK code, project settings are not loaded by default. Either pass `mcpServers` inline with `command: "bash"` and `args: ["scripts/firecrawl-ops/firecrawl_mcp.sh"]`, or set `local: { cwd: process.cwd(), settingSources: ["project"] }`.
 
 Use the SDK local runtime for this local stack. Cursor cloud agents cannot reach this Mac's `http://localhost:3002` unless the API is exposed at a reachable URL.

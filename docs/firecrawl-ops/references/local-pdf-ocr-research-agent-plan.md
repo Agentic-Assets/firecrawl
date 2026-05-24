@@ -1,6 +1,7 @@
 # Local PDF OCR Research Agent Plan
 
 Date: 2026-05-23
+Status: Implemented layer with ongoing corpus validation and tuning.
 
 ## Decision
 
@@ -8,19 +9,22 @@ Keep Docling Serve behind the local FirePDF-compatible adapter as the default OC
 
 This remains the best fit because it:
 
-- Reuses Firecrawl's existing Fire PDF boundary instead of editing upstream-owned PDF engine code.
+- Keeps OCR implementation behind Firecrawl's Fire PDF boundary; this fork only carries narrow API/PDF-engine mappings for local OCR error codes and metadata.
 - Runs locally through OrbStack without Firecrawl cloud credits.
 - Produces Markdown, HTML, and Docling JSON from one conversion.
 - Supports OCR, PDF backends, table modes, image export modes, page-break markers, formulas, charts, and picture enrichment.
 - Preserves Firecrawl's fast local text path for born-digital PDFs where OCR is slower or less complete.
 
-The next improvement should not be "replace Docling." The next improvement should be a better research-agent layer around Docling:
+The main research-agent layer is implemented:
 
 1. Named OCR profiles.
 2. Page boundary preservation.
 3. Raw Docling JSON capture for debugging and table/layout recovery.
 4. Profile-aware benchmarks.
 5. OCR quality reports that tell agents which parser mode/profile to trust.
+6. Explicit 429/504/422 local OCR failure signals and `data.metadata.pdfOcr` quality metadata.
+
+The next improvement should not be "replace Docling." The next improvement is real-corpus validation: tune quality thresholds, compare modes/profiles on hard academic PDFs, and add optional companion engines only when Docling loses on a documented paper set.
 
 ## Current Local Shape
 
@@ -52,16 +56,16 @@ Keep all new work fork-owned unless a clear API need appears:
 - `LOCAL_DEVELOPMENT_GUIDE.md`
 - `AGENTS.md`
 
-Avoid touching these upstream-owned files unless phase-two per-request profile support is needed:
+Keep future upstream-owned edits narrow. These files now carry small local error/metadata mappings; avoid expanding that surface unless phase-two per-request profile support is needed:
 
 - `apps/api/src/controllers/v2/types.ts`
 - `apps/api/src/scraper/scrapeURL/engines/pdf/firePDF.ts`
 - `apps/api/src/scraper/scrapeURL/engines/pdf/fire-pdf/*`
 - Firecrawl PDF cache code
 
-## Most Useful Next Feature
+## Implemented Research-Agent Layer
 
-The highest-value next feature is a profile-aware benchmark and artifact system, not a new OCR engine.
+The highest-value feature was a profile-aware benchmark and artifact system, not a new OCR engine. That layer now exists and should be maintained as the primary agent workflow.
 
 Agents working on academic PDFs need to answer practical questions:
 
@@ -72,19 +76,19 @@ Agents working on academic PDFs need to answer practical questions:
 - Are tables and figures visible enough for downstream extraction?
 - Where is the raw Docling JSON if Markdown flattened something important?
 
-Build the tooling around those questions.
+Use the existing tooling around those questions.
 
-## Phase 1: Named OCR Profiles
+## Implemented: Named OCR Profiles
 
-Add a small JSON profile registry:
+A small JSON profile registry exists at:
 
 ```text
 scripts/firecrawl-ops/pdf_ocr_profiles.json
 ```
 
-The profile file should be boring, portable JSON so shell, Python, and other agents can read it.
+The profile file is boring, portable JSON so shell, Python, and other agents can read it.
 
-Recommended first profiles:
+Current profiles:
 
 | Profile | Purpose | Key options |
 | --- | --- | --- |
@@ -103,9 +107,9 @@ Merge order:
 3. Explicit env overrides such as `LOCAL_FIREPDF_DOCLING_TABLE_MODE`.
 4. Direct adapter `docling_options` overrides for controlled tests.
 
-Do not expose public `/v2/parse` profile options in phase 1. Firecrawl API calls should use the adapter's process-level profile. Direct adapter benchmark calls can use per-request `docling_options`.
+Do not expose public `/v2/parse` profile options yet. Firecrawl API calls use the adapter's process-level profile. Direct adapter benchmark calls can use per-request `docling_options`.
 
-## Phase 2: Page Boundary Preservation
+## Implemented: Page Boundary Preservation
 
 Use Docling's `md_page_break_placeholder` option. Prefer a visible alphanumeric marker that survives Firecrawl's markdown/html normalization:
 
@@ -119,13 +123,13 @@ Why this matters:
 - OCR Markdown can otherwise be hard to split into reliable pages.
 - Page-aware artifacts make academic workflows much stronger: page citations, figure/table inspection, partial reruns, and side-by-side parser comparisons.
 
-Implementation approach:
+Current implementation:
 
 - Keep the default profile clean if downstream consumers dislike page markers.
-- Enable page markers in `research-page-aware`, `tables-*`, `scanned-english`, and `qa-debug`.
-- Extend `pdf_ocr_benchmark.py` to count page markers and save page artifacts.
+- Page markers are enabled in `research-page-aware`, `tables-*`, `scanned-english`, and `qa-debug`.
+- `pdf_ocr_benchmark.py` counts page markers and saves page artifacts.
 
-Recommended benchmark output additions:
+Benchmark output artifacts:
 
 ```text
 fields/markdown.md
@@ -145,11 +149,11 @@ Each `pages.jsonl` record should include:
 - simple table/figure marker counts
 - warnings for very low text, repeated text, or empty pages
 
-## Phase 3: Raw Docling JSON Capture
+## Implemented: Raw Docling JSON Capture
 
-The adapter already has a raw debug save path through `LOCAL_FIREPDF_OUTPUT_DIR`, but it should be made easier and safer to use.
+The adapter has a raw debug save path through `LOCAL_FIREPDF_OUTPUT_DIR`, and the wrapper exposes it through profiles and flags.
 
-Make raw JSON capture:
+Raw JSON capture is:
 
 - Explicit.
 - Off by default.
@@ -164,13 +168,13 @@ LOCAL_FIREPDF_CAPTURE_DOCLING_JSON=false
 LOCAL_FIREPDF_OUTPUT_DIR=tasks/tmp/firecrawl-docling-debug
 ```
 
-Wrapper improvements:
+Wrapper commands:
 
-- Add `local_firepdf_ocr.sh profiles` to list profiles.
-- Add `local_firepdf_ocr.sh profile-env <profile>` to print export commands.
-- Add `local_firepdf_ocr.sh start --profile research-page-aware`.
-- Add `local_firepdf_ocr.sh restart-adapter --profile qa-debug --capture-json`.
-- Mount the chosen output directory into the adapter container when capture is enabled.
+- `local_firepdf_ocr.sh profiles` lists profiles.
+- `local_firepdf_ocr.sh profile-env <profile>` prints export commands.
+- `local_firepdf_ocr.sh start --profile research-page-aware` starts the stack with a profile.
+- `local_firepdf_ocr.sh restart-adapter --profile qa-debug --capture-json` enables debug capture.
+- The chosen output directory is mounted into the adapter container when capture is enabled.
 
 Saved raw files should include enough context to connect them back to benchmark cases:
 
@@ -179,18 +183,18 @@ Saved raw files should include enough context to connect them back to benchmark 
 <timestamp>-<scrape_id>-<profile>-settings.json
 ```
 
-## Phase 4: Profile-Aware Benchmarking
+## Implemented: Profile-Aware Benchmarking
 
-Extend `pdf_ocr_benchmark.py` from a mode matrix to a mode plus profile matrix.
+`pdf_ocr_benchmark.py` supports a mode plus profile matrix.
 
-Current:
+Simple:
 
 ```bash
 scripts/firecrawl-ops/pdf_ocr_benchmark.py ./paper.pdf \
   --modes fast,auto,ocr --max-pages 40 --strict
 ```
 
-Target:
+Profile matrix:
 
 ```bash
 scripts/firecrawl-ops/pdf_ocr_benchmark.py ./paper.pdf \
@@ -222,9 +226,9 @@ Recommendation logic should consider:
 - Raw Docling JSON availability.
 - Whether OCR produced less content than `fast` on a born-digital PDF.
 
-## Phase 5: OCR QA Reports
+## Implemented: OCR QA Reports
 
-Add per-case QA artifacts:
+Per-case QA artifacts:
 
 ```text
 qa.json
@@ -286,22 +290,18 @@ Avoid passing profile names through Firecrawl `/v2/parse` until there is a real 
 
 Without cache changes, per-request profile output can contaminate cached OCR results.
 
-## Recommended Implementation Order
+## Current Maintenance Checklist
 
-1. Add `pdf_ocr_profiles.json`.
-2. Teach `local_firepdf_ocr_service.py` to load and merge named profiles.
-3. Teach `local_firepdf_ocr.sh` to list/apply profiles and enable raw JSON capture cleanly.
-4. Add page artifact generation to `pdf_ocr_benchmark.py`.
-5. Add `--profiles` support and QA reports to `pdf_ocr_benchmark.py`.
-6. Update `firecrawl-ops` and `firecrawl-local-api` skills with the new profile/benchmark workflow.
-7. Run `scripts/firecrawl-ops/sync_agent_skills.sh`.
-8. Benchmark a real academic-paper set:
+1. Run `scripts/firecrawl-ops/sync_agent_skills.sh` after skill updates.
+2. Benchmark real academic-paper sets after OCR or profile changes:
    - born-digital research paper
    - scanned/image-only paper
    - table-heavy finance/CRE paper
    - figure-heavy paper
    - long 40+ page report
-9. Promote only the profiles that win on real outputs.
+3. Tune quality thresholds only from saved benchmark evidence.
+4. Compare GROBID, PaddleOCR, olmOCR, or other companion engines only when Docling loses on a documented corpus.
+5. Promote only the profiles that win on real outputs.
 
 ## Validation Plan
 
