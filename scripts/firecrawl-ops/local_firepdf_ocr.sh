@@ -60,6 +60,7 @@ Commands:
   restart            Stop/start Docling Serve and the adapter.
   health             Check Docling Serve and the adapter.
   doctor             Run a fuller local OCR + Firecrawl readiness check.
+                     Add --smoke-pdf <path> to prove Firecrawl API -> adapter -> Docling.
   smoke [pdf]        Parse one local PDF through Firecrawl OCR mode.
   benchmark [pdf...] Run the PDF parser/OCR benchmark helper.
   profiles           List named Docling OCR profiles.
@@ -310,6 +311,8 @@ start_adapter() {
     "-e" "LOCAL_FIREPDF_TIMEOUT_SECONDS=${LOCAL_FIREPDF_TIMEOUT_SECONDS:-600}"
     "-e" "LOCAL_FIREPDF_MAX_CONCURRENT_OCR=${LOCAL_FIREPDF_MAX_CONCURRENT_OCR:-2}"
     "-e" "LOCAL_FIREPDF_FAIL_LOW_QUALITY=${LOCAL_FIREPDF_FAIL_LOW_QUALITY:-true}"
+    "-e" "LOCAL_FIREPDF_DOCLING_IMAGE_ID=${DOCLING_IMAGE}"
+    "-e" "LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT=${DOCLING_MAX_SYNC_WAIT}"
   )
   if [[ -n "$container_output_dir" ]]; then
     DOCKER_ENV_ARGS+=("-e" "LOCAL_FIREPDF_OUTPUT_DIR=${container_output_dir}")
@@ -489,7 +492,23 @@ status() {
 }
 
 doctor() {
-  local fc_dir env_path
+  local fc_dir env_path smoke_pdf=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --smoke-pdf)
+        if [[ "$#" -lt 2 ]]; then
+          echo "--smoke-pdf requires a path" >&2
+          exit 2
+        fi
+        smoke_pdf="$2"
+        shift 2
+        ;;
+      *)
+        echo "Unknown doctor flag: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
   fc_dir="$(resolve_fc_dir)"
   env_path="${ENV_PATH:-$fc_dir/.env}"
   echo "== docker context =="
@@ -520,6 +539,11 @@ doctor() {
   echo
   echo "== local stack smoke =="
   "$fc_dir/scripts/firecrawl-ops/firecrawl_healthcheck.sh"
+  if [[ -n "$smoke_pdf" ]]; then
+    echo
+    echo "== Firecrawl OCR smoke =="
+    smoke "$smoke_pdf"
+  fi
 }
 
 smoke() {
@@ -584,7 +608,8 @@ case "${1:-}" in
     health
     ;;
   doctor)
-    doctor
+    shift || true
+    doctor "$@"
     ;;
   smoke)
     shift || true

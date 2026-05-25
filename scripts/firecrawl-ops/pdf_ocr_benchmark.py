@@ -153,6 +153,15 @@ def summarize_response(data: Any) -> dict[str, Any]:
     html = body.get("html") if isinstance(body.get("html"), str) else ""
     images = body.get("images") if isinstance(body.get("images"), list) else []
     metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    pdf_ocr = metadata.get("pdfOcr") if isinstance(metadata.get("pdfOcr"), dict) else {}
+    pdf_ocr_quality = pdf_ocr.get("quality") if isinstance(pdf_ocr.get("quality"), dict) else {}
+    pdf_ocr_boundaries = pdf_ocr.get("page_boundaries") if isinstance(pdf_ocr.get("page_boundaries"), dict) else {}
+    pdf_ocr_docling = pdf_ocr.get("docling") if isinstance(pdf_ocr.get("docling"), dict) else {}
+    docling_json_summary = (
+        pdf_ocr_docling.get("json_summary")
+        if isinstance(pdf_ocr_docling.get("json_summary"), dict)
+        else {}
+    )
     page_break_count = markdown.count(PAGE_BREAK_MARKER)
     return {
         "success": data.get("success") if isinstance(data, dict) else None,
@@ -166,11 +175,21 @@ def summarize_response(data: Any) -> dict[str, Any]:
         "image_count": len(images),
         "num_pages": metadata.get("numPages"),
         "page_break_count": page_break_count,
+        "page_boundary_source": pdf_ocr_boundaries.get("source"),
         "page_record_count": page_break_count + 1 if markdown else 0,
         "table_signal_count": count_table_signals(markdown, html),
         "figure_signal_count": count_figure_signals(markdown, html, images),
+        "docling_table_count": docling_json_summary.get("table_count"),
+        "docling_picture_count": docling_json_summary.get("picture_count"),
         "replacement_char_count": markdown.count("\ufffd"),
         "repeated_line_ratio": repeated_line_ratio(markdown),
+        "ocr_low_quality": pdf_ocr_quality.get("low_quality"),
+        "ocr_boilerplate_score": pdf_ocr_quality.get("boilerplate_score"),
+        "ocr_nonempty_pages": pdf_ocr_quality.get("populated_pages"),
+        "ocr_empty_page_ratio": pdf_ocr_quality.get("empty_page_ratio"),
+        "ocr_warnings": pdf_ocr_quality.get("warnings") if isinstance(pdf_ocr_quality.get("warnings"), list) else [],
+        "ocr_settings_fingerprint": pdf_ocr.get("settings_fingerprint"),
+        "ocr_profile": pdf_ocr.get("profile"),
         "credits_used": metadata.get("creditsUsed"),
         "title": metadata.get("title"),
         "preview": markdown[:500],
@@ -222,6 +241,10 @@ def build_qa_report(
     html = body.get("html") if isinstance(body.get("html"), str) else ""
     images = body.get("images") if isinstance(body.get("images"), list) else []
     metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    pdf_ocr = metadata.get("pdfOcr") if isinstance(metadata.get("pdfOcr"), dict) else {}
+    pdf_ocr_quality = pdf_ocr.get("quality") if isinstance(pdf_ocr.get("quality"), dict) else {}
+    pdf_ocr_boundaries = pdf_ocr.get("page_boundaries") if isinstance(pdf_ocr.get("page_boundaries"), dict) else {}
+    pdf_ocr_pages = pdf_ocr.get("pages") if isinstance(pdf_ocr.get("pages"), list) else []
     expected_pages = metadata.get("numPages") if isinstance(metadata.get("numPages"), int) else None
     pages = write_pages_jsonl(fields_dir, markdown, html, images, expected_pages) if markdown else []
     low_text_pages = [page["page_index"] for page in pages if page["word_count"] < 25]
@@ -246,14 +269,30 @@ def build_qa_report(
         warnings.append("high_repeated_line_ratio")
     if not abstract_signal:
         warnings.append("abstract_not_detected_early")
+    for warning in pdf_ocr_quality.get("warnings") or []:
+        if isinstance(warning, str) and warning not in warnings:
+            warnings.append(warning)
+    if pdf_ocr_quality.get("low_quality") is True and "adapter_low_quality" not in warnings:
+        warnings.append("adapter_low_quality")
 
     profile_info = adapter_settings.get("profile") if isinstance(adapter_settings, dict) else None
+    recommendation = "accept"
+    if not summary.get("success") or summary.get("exit_code") != 0:
+        recommendation = "reject"
+    elif pdf_ocr_quality.get("low_quality") is True:
+        recommendation = "reject"
+    elif warnings:
+        recommendation = "manual_review"
+
     qa = {
         "profile": summary.get("profile"),
         "mode": summary.get("mode"),
+        "recommendation": recommendation,
         "expected_pages": expected_pages,
         "page_break_count": page_break_count,
+        "page_boundary_source": pdf_ocr_boundaries.get("source"),
         "page_record_count": len(pages),
+        "adapter_page_summary_count": len(pdf_ocr_pages),
         "missing_page_breaks": missing_page_breaks,
         "low_text_pages": low_text_pages,
         "empty_pages": empty_pages,
@@ -261,6 +300,12 @@ def build_qa_report(
         "repeated_line_ratio": summary.get("repeated_line_ratio"),
         "table_signal_count": summary.get("table_signal_count"),
         "figure_signal_count": summary.get("figure_signal_count"),
+        "docling_table_count": summary.get("docling_table_count"),
+        "docling_picture_count": summary.get("docling_picture_count"),
+        "ocr_settings_fingerprint": summary.get("ocr_settings_fingerprint"),
+        "ocr_boilerplate_score": summary.get("ocr_boilerplate_score"),
+        "ocr_empty_page_ratio": summary.get("ocr_empty_page_ratio"),
+        "ocr_warnings": summary.get("ocr_warnings"),
         "abstract_signal": abstract_signal,
         "references_signal": references_signal,
         "elapsed_per_page": elapsed_per_page,
@@ -280,12 +325,17 @@ def write_qa_markdown(path: Path, qa: dict[str, Any]) -> None:
         "",
         f"- Mode: `{qa.get('mode')}`",
         f"- Profile: `{qa.get('profile') or 'none'}`",
+        f"- Recommendation: `{qa.get('recommendation')}`",
         f"- Expected pages: `{qa.get('expected_pages')}`",
         f"- Page records: `{qa.get('page_record_count')}`",
+        f"- Page boundary source: `{qa.get('page_boundary_source')}`",
         f"- Page breaks: `{qa.get('page_break_count')}`",
         f"- Low-text pages: `{qa.get('low_text_pages')}`",
         f"- Table signals: `{qa.get('table_signal_count')}`",
+        f"- Docling table count: `{qa.get('docling_table_count')}`",
         f"- Figure signals: `{qa.get('figure_signal_count')}`",
+        f"- OCR boilerplate score: `{qa.get('ocr_boilerplate_score')}`",
+        f"- OCR settings fingerprint: `{qa.get('ocr_settings_fingerprint')}`",
         f"- Repeated-line ratio: `{qa.get('repeated_line_ratio')}`",
         f"- Raw Docling JSON capture: `{qa.get('raw_docling_json_capture_enabled')}`",
         f"- Warnings: {warnings}",
@@ -368,6 +418,8 @@ def choose_recommendations(summaries: list[dict[str, Any]]) -> dict[str, dict[st
         if preflight:
             recommendations[sample] = {
                 "mode": "none",
+                "profile": "none",
+                "decision": "reject",
                 "reason": str(preflight["preflight_error"]),
             }
             continue
@@ -376,10 +428,26 @@ def choose_recommendations(summaries: list[dict[str, Any]]) -> dict[str, dict[st
             item
             for item in items
             if item.get("exit_code") == 0 and isinstance(item.get("markdown_len"), int) and item.get("markdown_len", 0) > 0
+            and item.get("ocr_low_quality") is not True
         ]
         if not viable:
+            low_quality = [
+                item
+                for item in items
+                if item.get("exit_code") == 0 and item.get("ocr_low_quality") is True
+            ]
+            if low_quality:
+                recommendations[sample] = {
+                    "mode": "none",
+                    "profile": "none",
+                    "decision": "reject",
+                    "reason": "Only low-quality OCR output was produced; reject or send to manual review.",
+                }
+                continue
             recommendations[sample] = {
                 "mode": "none",
+                "profile": "none",
+                "decision": "reject",
                 "reason": "No parser mode produced markdown.",
             }
             continue
@@ -398,6 +466,7 @@ def choose_recommendations(summaries: list[dict[str, Any]]) -> dict[str, dict[st
             recommendations[sample] = {
                 "mode": str(only.get("mode")),
                 "profile": str(only.get("profile") or "none"),
+                "decision": "manual_review" if only.get("qa_warnings") else "accept",
                 "reason": reason,
             }
             continue
@@ -427,6 +496,7 @@ def choose_recommendations(summaries: list[dict[str, Any]]) -> dict[str, dict[st
                 recommendations[sample] = {
                     "mode": "fast",
                     "profile": "none",
+                    "decision": "accept" if not fast.get("qa_warnings") else "manual_review",
                     "reason": "Born-digital text extraction produced much more text and was faster than OCR.",
                 }
                 continue
@@ -434,6 +504,7 @@ def choose_recommendations(summaries: list[dict[str, Any]]) -> dict[str, dict[st
                 recommendations[sample] = {
                     "mode": str(ocr_best.get("mode")),
                     "profile": str(ocr_best.get("profile") or "none"),
+                    "decision": "accept" if not ocr_best.get("qa_warnings") else "manual_review",
                     "reason": "OCR/layout extraction produced more recoverable text than fast mode; inspect tables, page breaks, and layout.",
                 }
                 continue
@@ -442,6 +513,7 @@ def choose_recommendations(summaries: list[dict[str, Any]]) -> dict[str, dict[st
         recommendations[sample] = {
             "mode": str(fastest.get("mode")),
             "profile": str(fastest.get("profile") or "none"),
+            "decision": "accept" if not fastest.get("qa_warnings") else "manual_review",
             "reason": "Outputs were similar enough; prefer the fastest successful mode.",
         }
     return recommendations
@@ -458,17 +530,18 @@ def write_markdown_summary(out_dir: Path, summaries: list[dict[str, Any]]) -> No
         "| --- | --- | --- | --- |",
     ]
     for sample, item in sorted(recommendations.items()):
-        lines.append(f"| {sample} | {item['mode']} | {item.get('profile', 'none')} | {item['reason']} |")
+        decision = item.get("decision", "manual_review")
+        lines.append(f"| {sample} | {item['mode']} | {item.get('profile', 'none')} | {decision}: {item['reason']} |")
     lines.extend([
         "",
         "## Raw Results",
         "",
-        "| PDF | Mode | Profile | Exit | Expected | Seconds | Markdown | Page Breaks | Pages | Tables | Figures | Warnings |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| PDF | Mode | Profile | Exit | Expected | Seconds | Markdown | Boundary | Pages | Tables | Docling Tables | Boilerplate | OCR Quality | Warnings |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- | --- |",
     ])
     for item in summaries:
         lines.append(
-            "| {pdf} | {mode} | {profile} | {exit_code} | {expected_failure} | {seconds} | {markdown_len} | {page_break_count} | {num_pages} | {table_signal_count} | {figure_signal_count} | {warnings} |".format(
+            "| {pdf} | {mode} | {profile} | {exit_code} | {expected_failure} | {seconds} | {markdown_len} | {boundary} | {num_pages} | {table_signal_count} | {docling_table_count} | {boilerplate} | {ocr_quality} | {warnings} |".format(
                 pdf=f"{item.get('sample', basename_slug(Path(item['pdf']).name))}",
                 mode=item["mode"],
                 profile=item.get("profile") or "none",
@@ -476,10 +549,12 @@ def write_markdown_summary(out_dir: Path, summaries: list[dict[str, Any]]) -> No
                 expected_failure="yes" if item.get("expected_failure") else "",
                 seconds=item["seconds"],
                 markdown_len=item.get("markdown_len"),
-                page_break_count=item.get("page_break_count"),
+                boundary=item.get("page_boundary_source") or f"markers:{item.get('page_break_count')}",
                 num_pages=item.get("num_pages"),
                 table_signal_count=item.get("table_signal_count"),
-                figure_signal_count=item.get("figure_signal_count"),
+                docling_table_count=item.get("docling_table_count"),
+                boilerplate=item.get("ocr_boilerplate_score"),
+                ocr_quality="low" if item.get("ocr_low_quality") is True else "ok" if item.get("ocr_low_quality") is False else "",
                 warnings=", ".join(item.get("qa_warnings") or []),
             )
         )

@@ -1,0 +1,33 @@
+{
+  "sample": "ssrn-fen-6733378-patient-access-readiness-governable-signal-conceptual-c12b89cd-6b077191",
+  "pdf": "/Users/caymanseagraves/Documents/GitHub/agentic-assets/agentic-assets-orbis/tasks/tmp/archive/cursor-pdf-extraction-20260523/cursor-pdf-extraction-ocr-integration-smoke-20260523/documents/ssrn-fen-6733378-patient-access-readiness-governable-signal-conceptual-c12b89cd/source/paper.pdf",
+  "mode": "fast",
+  "profile": null,
+  "exit_code": 1,
+  "expected_failure": true,
+  "seconds": 0.09,
+  "response": null,
+  "fields": null,
+  "stderr_preview": "HTTP 500 from http://localhost:3002/v2/parse\n{\"success\":false,\"code\":\"SCRAPE_PDF_OCR_REQUIRED\",\"error\":\"This PDF is image-based and requires OCR for text extraction, but the requested PDF mode is \\\"fast\\\" which only supports text-based PDFs. To process this PDF, use mode \\\"auto\\\" (which falls back to OCR automatically) or mode \\\"ocr\\\" (which forces OCR processing). Example: parsers: [{ type: \\\"pdf\\\", mode: \\\"auto\\\" }]\"}\n",
+  "success": null,
+  "markdown_len": 0,
+  "word_count": 0,
+  "line_count": 0,
+  "chars_per_page": null,
+  "html_len": 0,
+  "image_count": 0,
+  "num_pages": null,
+  "page_break_count": 0,
+  "page_record_count": 0,
+  "table_signal_count": 0,
+  "figure_signal_count": 0,
+  "replacement_char_count": 0,
+  "repeated_line_ratio": 0.0,
+  "credits_used": null,
+  "title": null,
+  "preview": "",
+  "qa": "/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/tasks/tmp/firecrawl-pdf-ocr-benchmark-orbis-ocr-needed-pageaware-20260523/ssrn-fen-6733378-patient-access-readiness-governable-signal-conceptual-c12b89cd-6b077191-fast/qa.json",
+  "qa_warnings": [
+    "abstract_not_detected_early"
+  ]
+}

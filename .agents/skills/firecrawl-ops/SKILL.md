@@ -18,9 +18,11 @@ docker compose ps
 
 This Mac uses OrbStack, not Docker Desktop. If Docker commands fail, open OrbStack and confirm `docker context show` is `orbstack`. The expected local API is `http://localhost:3002`.
 
+For a fresh clone on another Mac, start with `LOCAL_DEVELOPMENT_GUIDE.md` or `references/partner-orbstack-onboarding.md`. The short path is: install/start OrbStack, confirm `docker context show`, run `scripts/firecrawl-ops/set_model_profile.sh budget`, optionally run `install_git_hooks.sh` and `sync_agent_skills.sh`, then `docker compose build`, `docker compose up -d`, and `firecrawl_healthcheck.sh`.
+
 ## Current Local Reality
 
-Core stack verified on 2026-05-23 after syncing `firecrawl/firecrawl:main` and rebuilding with OrbStack. Local Docling OCR guardrails were added on 2026-05-24:
+Core stack verified after syncing `firecrawl/firecrawl:main` and rebuilding with OrbStack. Local Docling OCR guardrails were added on 2026-05-24, and fresh-clone onboarding was reviewed on 2026-05-25:
 
 - Core stack works: `api`, `playwright-service`, `redis`, `rabbitmq`, and `nuq-postgres`.
 - NuQ Postgres must have schema table `nuq.queue_scrape`; compose now waits for it via healthcheck.
@@ -178,9 +180,11 @@ Mode choice matters. On the 2026-05-23 local stress test, a 40-page born-digital
 
 Named profiles live in `scripts/firecrawl-ops/pdf_ocr_profiles.json`. Use `scripts/firecrawl-ops/local_firepdf_ocr.sh profiles` to list them. Good defaults: `research-page-aware` for academic page chunks, `tables-accurate` for finance/research tables, `scanned-english` for image-only English scans, and `qa-debug` when you need raw Docling JSON. Apply changes with `scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile <name>`. Raw Docling JSON capture is off unless a profile enables it or `--capture-json` is passed; it writes full-document debug artifacts under `tasks/tmp`.
 
-The local adapter now enforces OCR capacity and quality gates. Default `LOCAL_FIREPDF_MAX_CONCURRENT_OCR=2` means a third simultaneous OCR call gets explicit backpressure instead of piling onto Docling; Firecrawl maps that to `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429. Docling timeouts map to `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504. Low-quality OCR loops, such as one publisher/license page plus mostly empty pages, are rejected by default with `SCRAPE_PDF_LOW_QUALITY` / HTTP 422. Successful parses may expose quality metadata at `data.metadata.pdfOcr`. Set `LOCAL_FIREPDF_FAIL_LOW_QUALITY=false` only when deliberately collecting bad-output diagnostics.
+The local adapter now enforces OCR capacity and quality gates. Default `LOCAL_FIREPDF_MAX_CONCURRENT_OCR=2` means a third simultaneous OCR call gets explicit backpressure instead of piling onto Docling; Firecrawl maps that to `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429. Docling timeouts map to `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504. Low-quality OCR loops, such as one publisher/license page plus mostly empty pages, are rejected by default with `SCRAPE_PDF_LOW_QUALITY` / HTTP 422. Successful parses may expose stable `data.metadata.pdfOcr` metadata: adapter/profile/settings fingerprint, resolved Docling options, page-boundary source, compact per-page quality summaries, boilerplate families/scores, table/figure JSON signals, and low-quality gate settings. Set `LOCAL_FIREPDF_FAIL_LOW_QUALITY=false` only when deliberately collecting bad-output diagnostics.
 
-Useful adapter tuning env vars before `start-adapter` / `restart-adapter` / `start`: `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_MAX_CONCURRENT_OCR` (default 2), `LOCAL_FIREPDF_FAIL_LOW_QUALITY` (default true), `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT` (default 900) applies when starting or recreating Docling Serve, not adapter-only restarts. Explicit env vars override the named profile. Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply adapter changes. Use `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf` for a one-command OCR parse check. For repeatable comparisons with saved fields, page artifacts, QA reports, and a per-PDF recommended mode/profile:
+OCR-mode FirePDF cache is intentionally bypassed so profile/env changes cannot reuse stale OCR. For end-to-end readiness checks, use `scripts/firecrawl-ops/local_firepdf_ocr.sh doctor --smoke-pdf ./report.pdf`; it proves Firecrawl API -> adapter -> Docling without changing settings.
+
+Useful adapter tuning env vars before `start-adapter` / `restart-adapter` / `start`: `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_MAX_CONCURRENT_OCR` (default 2), `LOCAL_FIREPDF_FAIL_LOW_QUALITY` (default true), `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT` (default 900) applies when starting or recreating Docling Serve, not adapter-only restarts. Explicit env vars override the named profile. Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply adapter changes. Use `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf` for a one-command OCR parse check. For repeatable comparisons with saved fields, page artifacts, QA reports, accept/reject/manual-review guidance, and a per-PDF recommended mode/profile:
 
 ```bash
 scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
@@ -238,6 +242,7 @@ The skill folder exposes these via symlinks to `docs/firecrawl-ops/references/` 
 - `references/model-routing.md`: model policy and escalation rules
 - `references/ops-playbook.md`: health checks, logs, restart notes
 - `references/agent-tooling-firecrawl.md`: reusable MCP/CLI/API setup for Cursor and other agents
+- `references/partner-orbstack-onboarding.md`: fresh-clone setup checklist for another Mac
 - `references/cayman-use-cases-and-playbooks.md`: research/CRE/coding workflows
 - `references/cre-access-matrix.md`: source accessibility matrix
 - `references/google-flights-scraping.md`: Google Flights scrape pattern

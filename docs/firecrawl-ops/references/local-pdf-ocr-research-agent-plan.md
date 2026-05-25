@@ -22,7 +22,7 @@ The main research-agent layer is implemented:
 3. Raw Docling JSON capture for debugging and table/layout recovery.
 4. Profile-aware benchmarks.
 5. OCR quality reports that tell agents which parser mode/profile to trust.
-6. Explicit 429/504/422 local OCR failure signals and `data.metadata.pdfOcr` quality metadata.
+6. Explicit 429/504/422 local OCR failure signals and stable `data.metadata.pdfOcr` metadata with profile/settings fingerprint, page-boundary source, compact page summaries, boilerplate families/scores, and Docling JSON table/figure signals.
 
 The next improvement should not be "replace Docling." The next improvement is real-corpus validation: tune quality thresholds, compare modes/profiles on hard academic PDFs, and add optional companion engines only when Docling loses on a documented paper set.
 
@@ -285,10 +285,10 @@ Avoid passing profile names through Firecrawl `/v2/parse` until there is a real 
 
 - Add internal-only parser fields such as `__firePdfProfile` or `__firePdfDoclingOptions`.
 - Pass those fields to FirePDF.
-- Include a profile/options hash in FirePDF cache variants.
+- Include a profile/options hash in FirePDF cache variants or bypass OCR-mode cache.
 - Add focused API tests proving profile A cannot reuse cached profile B output.
 
-Without cache changes, per-request profile output can contaminate cached OCR results.
+Current implementation chooses the conservative route: OCR-mode FirePDF cache is bypassed, so local canaries and benchmarks do not reuse output from stale profile/env settings.
 
 ## Current Maintenance Checklist
 

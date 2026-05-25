@@ -1,0 +1,37 @@
+{
+  "profile": null,
+  "mode": "fast",
+  "expected_pages": null,
+  "page_break_count": 0,
+  "page_record_count": 0,
+  "missing_page_breaks": false,
+  "low_text_pages": [],
+  "empty_pages": [],
+  "replacement_chars": 0,
+  "repeated_line_ratio": 0.0,
+  "table_signal_count": 0,
+  "figure_signal_count": 0,
+  "abstract_signal": false,
+  "references_signal": false,
+  "elapsed_per_page": null,
+  "adapter_profile": {
+    "name": "research-page-aware",
+    "description": "Academic papers where downstream agents need page chunks and citations.",
+    "profiles_path": "/app/pdf_ocr_profiles.json",
+    "capture_docling_json": false,
+    "output_dir": null,
+    "available": [
+      "default",
+      "figure-enrichment-lab",
+      "qa-debug",
+      "research-page-aware",
+      "scanned-english",
+      "tables-accurate",
+      "tables-fast"
+    ]
+  },
+  "raw_docling_json_capture_enabled": false,
+  "warnings": [
+    "abstract_not_detected_early"
+  ]
+}

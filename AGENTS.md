@@ -57,6 +57,7 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
   - `local-pdf-ocr-research-agent-plan.md` — profile/page-break/raw-JSON/QA roadmap for research-paper OCR agents
   - `model-routing.md` — model strategy and escalation rules
   - `ops-playbook.md` — health checks, debugging, safe ops
+  - `partner-orbstack-onboarding.md` — fresh-clone setup checklist for another Mac/business partner
   - `cayman-use-cases-and-playbooks.md` — mapped workflows (research/CRE/coding)
   - `cre-access-matrix.md` — CRE platform scrapability matrix (CBRE/Cushman accessible; CoStar/LoopNet blocked)
   - `google-flights-scraping.md` — Atlas travel-deal workflow
@@ -65,10 +66,10 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
   - `firecrawl_healthcheck.sh` — verify the local stack is up (run this first)
   - `firecrawl_cli.sh` — wrapper for `npx firecrawl-cli` pinned to `http://localhost:3002`; preserves caller cwd so local parse file paths work
   - `firecrawl_request.py` — dependency-free direct HTTP helper for local agents when they need output/save controls or advanced `/v2/parse` PDF options not exposed by the CLI
-  - `local_firepdf_ocr.sh` — start/stop/health/env/settings/profiles/doctor/smoke helper for the local Docling OCR adapter; includes local Docling profiles, 429 OCR backpressure, 504 timeout mapping, and 422 low-quality rejection
+  - `local_firepdf_ocr.sh` — start/stop/health/env/settings/profiles/doctor/smoke helper for the local Docling OCR adapter; includes local Docling profiles, `doctor --smoke-pdf`, 429 OCR backpressure, 504 timeout mapping, 422 low-quality rejection, and stable OCR metadata/fingerprints
   - `local_firepdf_ocr_service.py` — Fire PDF-compatible `/ocr` adapter used by Firecrawl when `FIRE_PDF_BASE_URL=http://host.docker.internal:31337`
   - `pdf_ocr_profiles.json` — named Docling OCR profiles such as `research-page-aware`, `tables-accurate`, and `qa-debug`
-  - `pdf_ocr_benchmark.py` — repeatable local PDF parser/OCR matrix runner with preflight checks, page artifacts, QA reports, and per-PDF mode/profile recommendations
+  - `pdf_ocr_benchmark.py` — repeatable local PDF parser/OCR matrix runner with preflight checks, page artifacts, QA reports, accept/reject/manual-review guidance, and per-PDF mode/profile recommendations
   - `firecrawl_mcp.sh` — wrapper for `npx firecrawl-mcp` pinned to `http://localhost:3002` for any MCP-capable agent
   - `sync_agent_skills.sh` — copy repo Firecrawl skills to `~/.agents/skills` and symlink them into user-level agent folders
   - `set_model_profile.sh budget|escalated|gateway|gateway-codex|openai-direct` — rewrite `.env` model defaults; follow with `docker compose up -d --force-recreate api`

@@ -115,22 +115,22 @@ export async function scrapePDFWithFirePDF(
   const logger = meta.logger;
 
   // Cache layout:
-  //   - `ocr` mode reads/writes a dedicated `…-ocr.json` bucket. ocr
-  //     requests explicitly want forced layout-mode OCR, so they must
-  //     not be served a base-cache entry that was written by `auto`.
   //   - `auto` (and legacy undefined-mode) reads/writes the base
   //     `firepdf-<sha>.json` bucket — same key main has always used,
-  //     so existing entries keep working. As a free upgrade, auto also
-  //     reads the ocr bucket as a fallback: if some prior `ocr` run
-  //     already produced markdown for this PDF, reuse it rather than
-  //     running fire-pdf again.
+  //     so existing entries keep working.
+  //   - `ocr` is bypassed. Local Docling profile/env settings can change
+  //     underneath the same PDF bytes, and Cursor OCR canaries must not
+  //     reuse output generated under a stale profile. Most local agent
+  //     OCR calls also pass maxPages, which is bypassed for the same reason.
   //   - `fast` is bypassed entirely (hard cost ceiling — must fail on
   //     scanned PDFs, not serve a cached OCR result).
   const cacheable =
-    mode !== "fast" && !maxPages && !meta.internalOptions.zeroDataRetention;
-  const ownVariant: string | undefined = mode === "ocr" ? "ocr" : undefined;
-  const lookupVariants: (string | undefined)[] =
-    mode === "ocr" ? ["ocr"] : [undefined, "ocr"];
+    mode !== "fast" &&
+    mode !== "ocr" &&
+    !maxPages &&
+    !meta.internalOptions.zeroDataRetention;
+  const ownVariant: string | undefined = undefined;
+  const lookupVariants: (string | undefined)[] = [undefined];
 
   if (cacheable) {
     for (const variant of lookupVariants) {

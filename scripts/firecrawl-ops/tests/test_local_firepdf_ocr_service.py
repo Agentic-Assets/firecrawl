@@ -59,10 +59,33 @@ class MarkdownQualityTests(unittest.TestCase):
         quality = service.analyze_markdown_quality(markdown, processed_pages=10, marker="")
 
         self.assertIn("publisher_boilerplate_dominates", quality["warnings"])
+        self.assertIn("wiley", quality["matched_boilerplate_families"])
         self.assertTrue(quality["low_quality"])
 
     def test_invalid_concurrency_env_falls_back_to_default(self) -> None:
         self.assertEqual(service.parse_int_env("__MISSING_LOCAL_FIREPDF_TEST_ENV__", 2), 2)
+
+    def test_page_summaries_include_boundary_source_and_flags(self) -> None:
+        markdown = "Substantive page text with enough words to avoid low text. " * 3
+        markdown += "\n\nFIRECRAWLPAGEBREAK\n\n"
+
+        pages = service.compact_page_summaries(
+            markdown,
+            processed_pages=2,
+            marker="FIRECRAWLPAGEBREAK",
+            boundary_source="docling_markdown_page_break",
+        )
+
+        self.assertEqual(len(pages), 2)
+        self.assertEqual(pages[0]["boundary_source"], "docling_markdown_page_break")
+        self.assertIn("empty", pages[1]["quality_flags"])
+
+    def test_settings_fingerprint_changes_with_options(self) -> None:
+        first = service.settings_fingerprint({"ocr_preset": "auto", "table_mode": "accurate"})
+        second = service.settings_fingerprint({"ocr_preset": "auto", "table_mode": "fast"})
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(first, service.settings_fingerprint({"table_mode": "accurate", "ocr_preset": "auto"}))
 
 
 class BackpressureTests(unittest.TestCase):

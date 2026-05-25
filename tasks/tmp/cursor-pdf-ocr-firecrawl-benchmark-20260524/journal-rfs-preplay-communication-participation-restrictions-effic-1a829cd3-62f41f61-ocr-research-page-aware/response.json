@@ -1,0 +1,165 @@
+{
+  "success": true,
+  "data": {
+    "markdown": "Preplay Communication, Participation Restrictions, and Efficiency in Initial Public Offerings\n---------------------------------------------------------------------------------------------\n\nChester Spatt and Sanjay Srivastava CarnegieMellon University\n\nTbeextenttowbichtheobservedproceduresfor sellingnewissuesareefficientisstudied.Weshow thataposted-pricemechanism,inconjunctionwith nonbindingpreplaycommunicationandparticipation restrictions, leads to an allocation of tbe security(andpayment)thatmaximizes theseller's expectedrevenue,giventheinformationalconstraintsimposed by tbe optimizing incentives of thepotentialbuyers.\n\nConsider a firm that is going public for the first time. Whilepotential investorsmayhavesomeinformation aboutthecashflowsoftheenterprise,forissuesnot previously traded there often is considerable residual uncertainty concerning the market's valuation of these cash flows. Consequently, we expect strategic considerations to be important in the market for unseasoned issues. Two questions arise: what is an optimal mechanism for selling such securities and how do procedures followed in practice relate to optimal mechanisms?\n\nWegratefully acknowledgethecommentsof the editor(MichaelBrennan), thereferee (Milt Harris),and participants at presentations of this article at theFederalReserveBank of Atlanta,Haifa University,and theJ.J.B.Hilliard and W. L. Lyons Symposium on Static and Dynamic Issues in Finance at IndianaUniversity andthefnancial support of theNationalScienceFoun. dation.AddresscorrespondencetoProfessor ChesterSpatt,GraduateSchool ofIndustrialAdministration,CarnegieMellonUniversity,Pittsburgh,PA15213.\n\nTbeReview ofFinancialStudies1991Volume 4,number4,pp.709-726 1991 The Review of Financial Studies 0893.9454/91/$1.50\n\nFIRECRAWLPAGEBREAK\n\nThe underpricing of new issues has been the subject of considerablerecent attention.1However, themechanism bywhichinitial issues are sold has largely been ignored except by Benveniste and Spindt (1988).We believe that it is diffcult to understand the causes of underpricing, and other questions relating to initial issues, without first analyzing the specific institutional mechanism by which these securities are sold.Forinstance,an importantfeature ofinitial public offeringsof securitiesin thefinancial marketis that the securities are offered to prospective buyers at a posted (fixed) price.2 A single-stage posted-price mechanism does not utilize any information about realized buyer valuations3 in setting the issueprice and isgenerally inefficient (in the sense of not maximizing the seller's expected revenue subject to the informational constraints of the environment). 1f a pure posted-price mechanism were used, then underpricing would not be surprising in the sense that the highest valuation bidder would not always receive the stock; however, this would raise the deeper issue of why such a mechanism was employed. A second feature of the observed institution is that only a select group of buyers is approached \\[see Fuller and Farrell (1987, p. 19) and Benveniste and Spindt (1988)\\]. Limiting access in this fashion seems unintuitive and by itself could also lead to underpricing \\[e.g., Blazenko and Boyle (1989)\\]. These features then raise the question of why issuers of securities utilize a posted-price mechanism in initial public offerings and limit the access of someprospectivebuyers.\n\nWeshowin this articlethat thesetwofeatures of theobserved institutionalmechanism arequite consistentwith the optimalway to sell initial issues if we take seriously a third important aspect of the observed mechanism.An initial issue is usually preceded by a tremendous amount ofinformal communicationbetween theinvestment tional stage of the offering.Such communication can transmitconsiderable information, and, as we show, can result in an optimal allocation of initial issues.\n\nThe literature on underpricing in initial public offerings includes Allen and Faulhaber (1989), Benveniste and Spindt (1988,1989),Grinblatt and Hwang (1989),Ritter (1984),Rock (1986),and Welch (1989).\n\n2Benveniste and Spindt (1988) offer a discussion of the fixed-price aspect of observed offerings. Baron(1982)studiesthe optimal contract between theissuer andinvestment bankerin the context of a fixed-price offering.\n\n'The posted-price mechanism only utilizes the information about the prior distribution of buyer valuations.\n\n\\*See Fuller and Farrell (1987,p.17),Baron (1982),and Benveniste and Spindt (1988). Uttal (1986), in the context of Microsoft going public,describes the process of preplay communication and the determination of thegroup of final buyers.\n\nFIRECRAWLPAGEBREAK\n\nOur main result is that the posted-price mechanism,augmented by nonbinding preplay communication and participation restrictions, implements an allocation of the security (and payment) that maximizes the seller's expected revenue given the informational coners.56 The intuition behind our general result can be illustrated by showinghowpreplay communication andparticipationrestrictions tion. The augmented posted-price mechanism works in two stages. In the communication stage, each potential buyer and the seller declare a reservation price. In the second stage, the seller offers the good at the second highest reservation price declared by the buyers.By restricting accessto this offer toonly thosebuyers whosedeclared reservation price was the highest among those declared by all buyers, the seller can eliminate underreporting in the first stage. Hence, when the second-price auction is optimal, the augmented posted-price mechanism is also optimal. We show that preplay communication and participation restrictions allow the posted-price mechanism to achieve an optimal auction in more general settings, even when the secondprice auction may not be optimal and when the form of the optimal auction is unknown (see Section 3).\n\nWe do not focus upon other observed features of initial public offerings, such as the rationing of securities in equilibrium, though our analysis is consistent with rationing in the offering in that there is some type of purchaser who would be indifferent to purchase, but is not approached in equilibrium.We also abstract from the role of underwritersand thestructureof thecontractbetweenthefirmand its underwriter. Our analysis also does not focus upon the nature and causes of underpricing in initial public offerings. In order to study underpricing in the context of an optimal mechanism, it would appear necessary to incorporate a resale market into the model.\n\nThe model is described in Section 1. An example illustrating our results is offered in Section 2, while our main result is given in Section 3. Some concluding comments are provided in Section 4.\n\n5A mechanism design approach to initial public offerings was previously taken by Benveniste and Spindt(1988),who also describe the observed mechanism.Their analysis takes theinitial communications of potential buyers as binding and does not explain theuse of a posted-price mechanism.\n\nis not suffciently powerful toidentify a unique optimal institutional structure.Instead,the theory precludes a variety of institutions as inefficient.In this sense,an observed structure can be shown tobeeither consistent orinconsistentwith the theory.Aninterestinganalogyisto theirrelevancy theory of capital structure,inwhich the firm's capitalization cannot be inconsistent with the theory in aperfectmarket.\n\nFIRECRAWLPAGEBREAK\n\n1.The Model\n-----------\n\nWe consider the simple case in which there is a single (indivisible) unit of stock to be sold.7 There are n potential buyers. The set of a i s s private signal to iconcerning the value of the stock. For convenience, we assume T, ≤ \\[0,1\\], for all i, and let T= T, × T, × ·.. × T,. The valuation of buyer iis a real number v;(t) ∈ \\[o,1\\], where t= (t, . . : , tn) e Tis the vector of all buyer types or signals. Note that the value to buyer i can depend on the signals of all buyers, so that our model allows for common or correlated values. Payoffs are defined as follows: Given a vector of types t, if bidder i pays y, then the payoff to i is v,(t) - y, if i receives the stock, and -y, otherwise. Note that this formulation allows a buyer to pay without receiving the stock. This is a broad description of thefeasible trading mechanisms.However, in obtaining our results for general auction environments, we will s n n the example of Section 2, this assumption is not imposed, but there exists an optimal auction (sealed-bid, second-price) satisfying the restriction that only the winning bidder pays.\n\nSince buyer types are privately observed, we model the uncertainty of buyer iabout the types of the other buyers by a distribution function F,(t-; ↓ t), where t-, is the (n - 1)-vector of the types of all buyers except i. As implied by the notation,the distribution can be influenced by the type of buyer i, so our model allows for correlated types. We assume that the functions v, and F, are all common knowledge, and that the F, all arise from a common prior distribution F on T.\n\nThe seller's valuation of the stock is assumed to be common knowledge,and we normalize this valuation to zero.\n\n1.1 The posted-price mechanism\n------------------------------\n\nAs noted in theintroduction,there are threefeatures of the observed institutional mechanism upon which we focus. These are the posted price, the ability of the seller to restrict participation, and preplay communication.We start by modeling the first twofeatures,and later introduce preplay communication.\n\nWe model the posted-price mechanism with participationrestrictions by a simultaneous-move game8 in which the seller announces a price p that he is willing to accept for the stock and a set of buyers with whom he is willing to trade, I {1, 2, . . . , n}. Each potential buyer i announces the maximum price p. that he is willing to pay for the security. If {ie I↓ p. ≥ p} ≠ , then trade occurs, the purchase price is that posted by the seller, and the stock is allocated randomly accordingly to a uniform distribution among these bidders. Otherwise, no trade occurs.\n\n7It is straightforward to extend the analysis tomultiple units,where each bidder has a constant can vary across bidders).The major restrictionweneed toimposeis that the optimalmechanism doesnotinvolveprice discriminationby the seller,since therevenuefrom such a mechanism cannot berealized by a posted-price mechanism (without variable entry fees).\n\n*   The assumption of a simultaneous-move game is important to our analysis. We discuss this in detail in Section4.\n\nFIRECRAWLPAGEBREAK\n\nFormally, a strategy for buyer iis a function o;: T, → \\[O, 1\\], where p: = o,(t) denotes the maximum price buyer i is willing to pay given that his type is t. A strategy for the seller, denoted by oo = (p, I), is the choice of p∈ \\[0,1\\] and a set I ∈ 2\", where 2\" is the set of all subsets of {1, 2, ..., n}. Given a strategy profle o = {oo, , :.., on), we denote by v;(o, t) the probability that i receives the stock given t, so that\n\nand zero, otherwise. The expected utility to buyer i of type t; given a strategy profle o is\n\nThe expected payoff to the seller is\n\nDefinition 1. o is an equilibrium to the posted-price mechanism withoutcommunicationif\n\nand\n\n1.2 Auctions\n------------\n\nThe posted-price mechanism described above is only one of many mechanisms a seller could use to sell the stock.Our interest is in studying the extent to which a seller could do better by employing an alternative mechanism. To study this formally,we turn now to a descriptionofanauction.",
+    "metadata": {
+      "scrapeId": "019e5c66-85eb-7588-a0f8-71d541154530",
+      "sourceURL": "paper.pdf",
+      "url": "https://parse.firecrawl.dev/uploads/paper.pdf",
+      "statusCode": 200,
+      "numPages": 5,
+      "pdfOcr": {
+        "engine": "docling",
+        "adapter_version": "2026-05-24.2",
+        "adapter_script_sha256": "deaa8f34f5e0fa9dbe3122934cf4e7c71eeb6f718d7c4d3f50e9d263641c8215",
+        "settings_fingerprint": "0c132b74641c97fff3ae76256c198dbe3c72f75e29c8e7191cbb3bf7b4979768",
+        "settings_fingerprint_algorithm": "sha256-canonical-json-v1",
+        "profile": "research-page-aware",
+        "profile_description": "Academic papers where downstream agents need page chunks and citations.",
+        "total_pages": 18,
+        "pages_processed": 5,
+        "page_count": {
+          "total": 18,
+          "processed": 5,
+          "nonempty": 5
+        },
+        "page_boundaries": {
+          "source": "docling_markdown_page_break",
+          "marker": "FIRECRAWLPAGEBREAK",
+          "marker_count": 4,
+          "observed_page_count": 5
+        },
+        "pages": [
+          {
+            "page": 1,
+            "text_char_count": 1673,
+            "word_count": 155,
+            "boundary_source": "docling_markdown_page_break",
+            "quality_flags": [],
+            "matched_boilerplate_families": []
+          },
+          {
+            "page": 2,
+            "text_char_count": 2851,
+            "word_count": 389,
+            "boundary_source": "docling_markdown_page_break",
+            "quality_flags": [],
+            "matched_boilerplate_families": []
+          },
+          {
+            "page": 3,
+            "text_char_count": 2792,
+            "word_count": 392,
+            "boundary_source": "docling_markdown_page_break",
+            "quality_flags": [],
+            "matched_boilerplate_families": []
+          },
+          {
+            "page": 4,
+            "text_char_count": 3101,
+            "word_count": 529,
+            "boundary_source": "docling_markdown_page_break",
+            "quality_flags": [],
+            "matched_boilerplate_families": []
+          },
+          {
+            "page": 5,
+            "text_char_count": 1112,
+            "word_count": 196,
+            "boundary_source": "docling_markdown_page_break",
+            "quality_flags": [],
+            "matched_boilerplate_families": []
+          }
+        ],
+        "docling": {
+          "url": "http://host.docker.internal:5001",
+          "image_id": "quay.io/docling-project/docling-serve-cpu@sha256:528f52f5ce56be1739df117560512ffaa483be53934bf5b0458b4ca088b1a6b0",
+          "max_sync_wait": "900",
+          "options": {
+            "from_formats": [
+              "pdf"
+            ],
+            "to_formats": [
+              "md",
+              "json",
+              "html"
+            ],
+            "do_ocr": true,
+            "force_ocr": true,
+            "ocr_preset": "auto",
+            "pdf_backend": "docling_parse",
+            "table_mode": "accurate",
+            "table_cell_matching": true,
+            "do_table_structure": true,
+            "include_images": true,
+            "images_scale": 2,
+            "image_export_mode": "placeholder",
+            "md_page_break_placeholder": "FIRECRAWLPAGEBREAK",
+            "abort_on_error": false,
+            "do_code_enrichment": false,
+            "do_formula_enrichment": false,
+            "do_picture_classification": false,
+            "do_chart_extraction": false,
+            "do_picture_description": false,
+            "document_timeout": 600,
+            "page_range": [
+              1,
+              5
+            ]
+          },
+          "options_sha256": "0b3746675d4d80da7eac01b8fa51582dd7f645de1401e6242444ab8b4e2e2685",
+          "json_summary": {
+            "json_export_present": true,
+            "page_count": 5,
+            "content_item_count": 51,
+            "provenance_item_count": 51,
+            "items_missing_provenance": 0,
+            "table_count": 0,
+            "picture_count": 0,
+            "table_cell_count": 0,
+            "tables_by_page": {}
+          }
+        },
+        "low_quality_gate": {
+          "enabled": true,
+          "fail_on_low_quality": true
+        },
+        "cache": {
+          "safe_for_reuse": false,
+          "reason": "Local OCR profile/env settings can change; Firecrawl bypasses OCR-mode FirePDF cache.",
+          "settings_fingerprint": "0c132b74641c97fff3ae76256c198dbe3c72f75e29c8e7191cbb3bf7b4979768"
+        },
+        "quality": {
+          "total_chars": 11617,
+          "page_count_reported": 5,
+          "page_count_observed": 5,
+          "populated_pages": 5,
+          "empty_pages": 0,
+          "empty_page_ratio": 0,
+          "chars_per_page": [
+            1673,
+            2851,
+            2792,
+            3101,
+            1112
+          ],
+          "chars_per_expected_page": 2323.4,
+          "repeated_boilerplate_ratio": 0,
+          "repeated_page_ratio": 0,
+          "repeated_pages": 0,
+          "publisher_boilerplate_ratio": 0,
+          "boilerplate_score": 0,
+          "matched_boilerplate_families": [],
+          "warnings": [],
+          "low_quality": false
+        }
+      },
+      "contentType": "application/pdf",
+      "proxyUsed": "basic",
+      "creditsUsed": 5,
+      "concurrencyLimited": false
+    },
+    "html": "<html><body><h2>Preplay Communication, Participation Restrictions, and Efficiency in Initial Public Offerings</h2>\n<p>Chester Spatt and Sanjay Srivastava CarnegieMellon University</p>\n<p>Tbeextenttowbichtheobservedproceduresfor sellingnewissuesareefficientisstudied.Weshow thataposted-pricemechanism,inconjunctionwith nonbindingpreplaycommunicationandparticipation restrictions, leads to an allocation of tbe security(andpayment)thatmaximizes theseller's expectedrevenue,giventheinformationalconstraintsimposed by tbe optimizing incentives of thepotentialbuyers.</p>\n<p>Consider a firm that is going public for the first time. Whilepotential investorsmayhavesomeinformation aboutthecashflowsoftheenterprise,forissuesnot previously traded there often is considerable residual uncertainty concerning the market's valuation of these cash flows. Consequently, we expect strategic considerations to be important in the market for unseasoned issues. Two questions arise: what is an optimal mechanism for selling such securities and how do procedures followed in practice relate to optimal mechanisms?</p>\n<p>Wegratefully acknowledgethecommentsof the editor(MichaelBrennan), thereferee (Milt Harris),and participants at presentations of this article at theFederalReserveBank of Atlanta,Haifa University,and theJ.J.B.Hilliard and W. L. Lyons Symposium on Static and Dynamic Issues in Finance at IndianaUniversity andthefnancial support of theNationalScienceFoun. dation.AddresscorrespondencetoProfessor ChesterSpatt,GraduateSchool ofIndustrialAdministration,CarnegieMellonUniversity,Pittsburgh,PA15213.</p>\n<p>TbeReview ofFinancialStudies1991Volume 4,number4,pp.709-726 1991 The Review of Financial Studies 0893.9454/91/$1.50</p>\n<p>FIRECRAWLPAGEBREAK</p>\n<p>The underpricing of new issues has been the subject of considerablerecent attention.1However, themechanism bywhichinitial issues are sold has largely been ignored except by Benveniste and Spindt (1988).We believe that it is diffcult to understand the causes of underpricing, and other questions relating to initial issues, without first analyzing the specific institutional mechanism by which these securities are sold.Forinstance,an importantfeature ofinitial public offeringsof securitiesin thefinancial marketis that the securities are offered to prospective buyers at a posted (fixed) price.2 A single-stage posted-price mechanism does not utilize any information about realized buyer valuations3 in setting the issueprice and isgenerally inefficient (in the sense of not maximizing the seller's expected revenue subject to the informational constraints of the environment). 1f a pure posted-price mechanism were used, then underpricing would not be surprising in the sense that the highest valuation bidder would not always receive the stock; however, this would raise the deeper issue of why such a mechanism was employed. A second feature of the observed institution is that only a select group of buyers is approached [see Fuller and Farrell (1987, p. 19) and Benveniste and Spindt (1988)]. Limiting access in this fashion seems unintuitive and by itself could also lead to underpricing [e.g., Blazenko and Boyle (1989)]. These features then raise the question of why issuers of securities utilize a posted-price mechanism in initial public offerings and limit the access of someprospectivebuyers.</p>\n<p>Weshowin this articlethat thesetwofeatures of theobserved institutionalmechanism arequite consistentwith the optimalway to sell initial issues if we take seriously a third important aspect of the observed mechanism.An initial issue is usually preceded by a tremendous amount ofinformal communicationbetween theinvestment tional stage of the offering.Such communication can transmitconsiderable information, and, as we show, can result in an optimal allocation of initial issues.</p>\n<p>The literature on underpricing in initial public offerings includes Allen and Faulhaber (1989), Benveniste and Spindt (1988,1989),Grinblatt and Hwang (1989),Ritter (1984),Rock (1986),and Welch (1989).</p>\n<p>2Benveniste and Spindt (1988) offer a discussion of the fixed-price aspect of observed offerings. Baron(1982)studiesthe optimal contract between theissuer andinvestment bankerin the context of a fixed-price offering.</p>\n<p>'The posted-price mechanism only utilizes the information about the prior distribution of buyer valuations.</p>\n<p>*See Fuller and Farrell (1987,p.17),Baron (1982),and Benveniste and Spindt (1988). Uttal (1986), in the context of Microsoft going public,describes the process of preplay communication and the determination of thegroup of final buyers.</p>\n<p>FIRECRAWLPAGEBREAK</p>\n<p>Our main result is that the posted-price mechanism,augmented by nonbinding preplay communication and participation restrictions, implements an allocation of the security (and payment) that maximizes the seller's expected revenue given the informational coners.56 The intuition behind our general result can be illustrated by showinghowpreplay communication andparticipationrestrictions tion. The augmented posted-price mechanism works in two stages. In the communication stage, each potential buyer and the seller declare a reservation price. In the second stage, the seller offers the good at the second highest reservation price declared by the buyers.By restricting accessto this offer toonly thosebuyers whosedeclared reservation price was the highest among those declared by all buyers, the seller can eliminate underreporting in the first stage. Hence, when the second-price auction is optimal, the augmented posted-price mechanism is also optimal. We show that preplay communication and participation restrictions allow the posted-price mechanism to achieve an optimal auction in more general settings, even when the secondprice auction may not be optimal and when the form of the optimal auction is unknown (see Section 3).</p>\n<p>We do not focus upon other observed features of initial public offerings, such as the rationing of securities in equilibrium, though our analysis is consistent with rationing in the offering in that there is some type of purchaser who would be indifferent to purchase, but is not approached in equilibrium.We also abstract from the role of underwritersand thestructureof thecontractbetweenthefirmand its underwriter. Our analysis also does not focus upon the nature and causes of underpricing in initial public offerings. In order to study underpricing in the context of an optimal mechanism, it would appear necessary to incorporate a resale market into the model.</p>\n<p>The model is described in Section 1. An example illustrating our results is offered in Section 2, while our main result is given in Section 3. Some concluding comments are provided in Section 4.</p>\n<p>5A mechanism design approach to initial public offerings was previously taken by Benveniste and Spindt(1988),who also describe the observed mechanism.Their analysis takes theinitial communications of potential buyers as binding and does not explain theuse of a posted-price mechanism.</p>\n<p>is not suffciently powerful toidentify a unique optimal institutional structure.Instead,the theory precludes a variety of institutions as inefficient.In this sense,an observed structure can be shown tobeeither consistent orinconsistentwith the theory.Aninterestinganalogyisto theirrelevancy theory of capital structure,inwhich the firm's capitalization cannot be inconsistent with the theory in aperfectmarket.</p>\n<p>FIRECRAWLPAGEBREAK</p>\n<h2>1.The Model</h2>\n<p>We consider the simple case in which there is a single (indivisible) unit of stock to be sold.7 There are n potential buyers. The set of a        i   s s private signal to iconcerning the value of the stock. For convenience, we assume T, ≤ [0,1], for all i, and let T= T, × T, × ·.. × T,. The valuation of buyer iis a real number v;(t) ∈ [o,1], where t= (t, . . : , tn) e Tis the vector of all buyer types or signals. Note that the value to buyer i can depend on the signals of all buyers, so that our model allows for common or correlated values. Payoffs are defined as follows: Given a vector of types t, if bidder i pays y, then the payoff to i is v,(t) - y, if i receives the stock, and -y, otherwise. Note that this formulation allows a buyer to pay without receiving the stock. This is a broad description of thefeasible trading mechanisms.However, in obtaining our results for general auction environments, we will s   n     n the example of Section 2, this assumption is not imposed, but there exists an optimal auction (sealed-bid, second-price) satisfying the restriction that only the winning bidder pays.</p>\n<p>Since buyer types are privately observed, we model the uncertainty of buyer iabout the types of the other buyers by a distribution function F,(t-; ↓ t), where t-, is the (n - 1)-vector of the types of all buyers except i. As implied by the notation,the distribution can be influenced by the type of buyer i, so our model allows for correlated types. We assume that the functions v, and F, are all common knowledge, and that the F, all arise from a common prior distribution F on T.</p>\n<p>The seller's valuation of the stock is assumed to be common knowledge,and we normalize this valuation to zero.</p>\n<h2>1.1 The posted-price mechanism</h2>\n<p>As noted in theintroduction,there are threefeatures of the observed institutional mechanism upon which we focus. These are the posted price, the ability of the seller to restrict participation, and preplay communication.We start by modeling the first twofeatures,and later introduce preplay communication.</p>\n<p>We model the posted-price mechanism with participationrestrictions by a simultaneous-move game8 in which the seller announces a price p that he is willing to accept for the stock and a set of buyers with whom he is willing to trade, I  {1, 2, . . . , n}. Each potential buyer i announces the maximum price p. that he is willing to pay for the security. If {ie I↓ p. ≥ p} ≠ , then trade occurs, the purchase price is that posted by the seller, and the stock is allocated randomly accordingly to a uniform distribution among these bidders. Otherwise, no trade occurs.</p>\n<p>7It is straightforward to extend the analysis tomultiple units,where each bidder has a constant can vary across bidders).The major restrictionweneed toimposeis that the optimalmechanism doesnotinvolveprice discriminationby the seller,since therevenuefrom such a mechanism cannot berealized by a posted-price mechanism (without variable entry fees).</p>\n<ul>\n<li>The assumption of a simultaneous-move game is important to our analysis. We discuss this in detail in Section4.</li>\n</ul>\n<p>FIRECRAWLPAGEBREAK</p>\n<p>Formally, a strategy for buyer iis a function o;: T, → [O, 1], where p: = o,(t) denotes the maximum price buyer i is willing to pay given that his type is t. A strategy for the seller, denoted by oo = (p, I), is the choice of p∈ [0,1] and a set I ∈ 2\", where 2\" is the set of all subsets of {1, 2, ..., n}. Given a strategy profle o = {oo, , :.., on), we denote by v;(o, t) the probability that i receives the stock given t, so that</p>\n<!-- formula-not-decoded -->\n\n<p>and zero, otherwise. The expected utility to buyer i of type t; given a strategy profle o is</p>\n<!-- formula-not-decoded -->\n\n<p>The expected payoff to the seller is</p>\n<!-- formula-not-decoded -->\n\n<p>Definition 1. o is an equilibrium to the posted-price mechanism withoutcommunicationif</p>\n<!-- formula-not-decoded -->\n\n<p>and</p>\n<!-- formula-not-decoded -->\n\n<h2>1.2 Auctions</h2>\n<p>The posted-price mechanism described above is only one of many mechanisms a seller could use to sell the stock.Our interest is in studying the extent to which a seller could do better by employing an alternative mechanism. To study this formally,we turn now to a descriptionofanauction.</p>\n</body></html>",
+    "images": []
+  }
+}

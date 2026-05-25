@@ -13,6 +13,7 @@ type CachedPdfResult = {
   markdown: string;
   html: string;
   pagesProcessed?: number;
+  ocrMetadata?: Record<string, unknown>;
 };
 
 const PROVIDER_PREFIXES: Record<PdfCacheProvider, string> = {

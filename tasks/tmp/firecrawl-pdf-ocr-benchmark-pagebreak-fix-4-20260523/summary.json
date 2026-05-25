@@ -1,0 +1,33 @@
+[
+  {
+    "sample": "ssrn-fen-6537058-marketsense-do-small-ai-models-understand-968a3055-e4cfde12",
+    "pdf": "/Users/caymanseagraves/Documents/GitHub/agentic-assets/agentic-assets-orbis/tasks/tmp/archive/cursor-pdf-extraction-20260523/cursor-pdf-extraction-ocr-integration-smoke-20260523/documents/ssrn-fen-6537058-marketsense-do-small-ai-models-understand-968a3055/source/paper.pdf",
+    "mode": "ocr",
+    "profile": "research-page-aware",
+    "exit_code": 0,
+    "expected_failure": false,
+    "seconds": 12.21,
+    "response": "/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/tasks/tmp/firecrawl-pdf-ocr-benchmark-pagebreak-fix-4-20260523/ssrn-fen-6537058-marketsense-do-small-ai-models-understand-968a3055-e4cfde12-ocr-research-page-aware/response.json",
+    "fields": "/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/tasks/tmp/firecrawl-pdf-ocr-benchmark-pagebreak-fix-4-20260523/ssrn-fen-6537058-marketsense-do-small-ai-models-understand-968a3055-e4cfde12-ocr-research-page-aware/fields",
+    "stderr_preview": "",
+    "success": true,
+    "markdown_len": 8252,
+    "word_count": 996,
+    "line_count": 118,
+    "chars_per_page": 1375.3,
+    "html_len": 8459,
+    "image_count": 0,
+    "num_pages": 6,
+    "page_break_count": 5,
+    "page_record_count": 6,
+    "table_signal_count": 0,
+    "figure_signal_count": 7,
+    "replacement_char_count": 0,
+    "repeated_line_ratio": 0.0769,
+    "credits_used": 6,
+    "title": "MarketSense_Paper_Updated_4.pdf",
+    "preview": "MarketSense: Do Small AI Models Understand Financial News?\n----------------------------------------------------------\n\nAn Empirical Study of Compact Language Models and Stock Return Reactions\n\nSai Mahesh Sandeboina Independent Researcher, United States [saimaheshsandeboina931@gmail.com](mailto:saimaheshsandeboina931@gmail.com)\n\nApril 2026\n\nAbstract\n--------\n\nThis paper investigates whether compact, domain-adapted language models can detect economically meaningful sentiment in financial headlines",
+    "qa": "/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/tasks/tmp/firecrawl-pdf-ocr-benchmark-pagebreak-fix-4-20260523/ssrn-fen-6537058-marketsense-do-small-ai-models-understand-968a3055-e4cfde12-ocr-research-page-aware/qa.json",
+    "qa_warnings": []
+  }
+]

@@ -94,7 +94,8 @@ Keeping the OCR bridge fork-owned makes future `firecrawl/firecrawl:main` syncs 
 - `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429 when local OCR capacity is full.
 - `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504 when Docling times out.
 - `SCRAPE_PDF_LOW_QUALITY` / HTTP 422 when OCR output is mostly empty, repeated, or dominated by publisher/license boilerplate.
-- Successful OCR parses can expose quality data under `data.metadata.pdfOcr`.
+- Successful OCR parses can expose stable data under `data.metadata.pdfOcr`, including adapter/profile/settings fingerprint, resolved Docling options, page-boundary source, compact per-page summaries, boilerplate families/scores, table/figure JSON signals, and low-quality gate settings.
+- OCR-mode FirePDF cache is intentionally bypassed so local canaries and benchmarks cannot reuse output produced under a different Docling profile or env override.
 
 ## Target Architecture
 
@@ -156,7 +157,13 @@ Required response:
 {
   "markdown": "# Extracted document...",
   "failed_pages": [],
-  "pages_processed": 25
+  "pages_processed": 25,
+  "metadata": {
+    "settings_fingerprint": "sha256...",
+    "profile": "research-page-aware",
+    "page_boundaries": {"source": "docling_json_provenance"},
+    "quality": {"low_quality": false}
+  }
 }
 ```
 

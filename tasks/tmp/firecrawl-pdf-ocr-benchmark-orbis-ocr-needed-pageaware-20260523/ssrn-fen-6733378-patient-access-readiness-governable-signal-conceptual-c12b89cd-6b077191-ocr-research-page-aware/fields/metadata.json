@@ -1,0 +1,11 @@
+{
+  "scrapeId": "019e5736-5f1d-707c-bfc8-b1f701ad6970",
+  "sourceURL": "paper.pdf",
+  "url": "https://parse.firecrawl.dev/uploads/paper.pdf",
+  "statusCode": 200,
+  "numPages": 10,
+  "contentType": "application/pdf",
+  "proxyUsed": "basic",
+  "creditsUsed": 10,
+  "concurrencyLimited": false
+}

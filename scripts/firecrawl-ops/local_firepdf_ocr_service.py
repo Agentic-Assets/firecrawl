@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
 import os
 import re
@@ -34,6 +35,8 @@ HOST = os.getenv("LOCAL_FIREPDF_HOST", "127.0.0.1")
 PORT = int(os.getenv("LOCAL_FIREPDF_PORT", "31337"))
 ENGINE = os.getenv("LOCAL_FIREPDF_ENGINE", "docling").strip().lower()
 DOCLING_URL = os.getenv("LOCAL_FIREPDF_DOCLING_URL", "http://127.0.0.1:5001").rstrip("/")
+DOCLING_IMAGE_ID = os.getenv("LOCAL_FIREPDF_DOCLING_IMAGE_ID", "").strip()
+DOCLING_MAX_SYNC_WAIT = os.getenv("LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT", "").strip()
 TIMEOUT_SECONDS = float(os.getenv("LOCAL_FIREPDF_TIMEOUT_SECONDS", "600"))
 KEEP_TEMP = os.getenv("LOCAL_FIREPDF_KEEP_TEMP", "").lower() in {"1", "true", "yes", "on"}
 PROFILE_NAME = os.getenv("LOCAL_FIREPDF_PROFILE", "default").strip() or "default"
@@ -96,6 +99,7 @@ CAPTURE_DOCLING_JSON = parse_bool_env("LOCAL_FIREPDF_CAPTURE_DOCLING_JSON", Fals
 OUTPUT_DIR = os.getenv("LOCAL_FIREPDF_OUTPUT_DIR", "").strip()
 MAX_CONCURRENT_OCR = parse_int_env("LOCAL_FIREPDF_MAX_CONCURRENT_OCR", 2)
 FAIL_LOW_QUALITY = parse_bool_env("LOCAL_FIREPDF_FAIL_LOW_QUALITY", True)
+ADAPTER_VERSION = "2026-05-24.2"
 OCR_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_OCR)
 OCR_ACTIVE_LOCK = threading.Lock()
 OCR_ACTIVE_COUNT = 0
@@ -165,6 +169,21 @@ class AdapterError(Exception):
 def log(message: str, **fields: Any) -> None:
     payload = {"message": message, **fields}
     print(json.dumps(payload, ensure_ascii=False), file=sys.stderr, flush=True)
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def sha256_file(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 def read_json_request(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -302,6 +321,15 @@ def post_json(url: str, payload: dict[str, Any], timeout: float) -> Any:
             details = json.loads(body)
         except json.JSONDecodeError:
             pass
+        if status == 504:
+            details = {
+                "code": "LOCAL_FIREPDF_DOCLING_TIMEOUT",
+                "retryable": True,
+                "suggested_action": "Retry with a smaller maxPages value or raise LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT before restarting Docling Serve.",
+                "docling_status": exc.code,
+                "docling_details": details,
+                "timeout_seconds": timeout,
+            }
         raise AdapterError(f"Docling returned HTTP {exc.code}", status=status, details=details) from exc
     except URLError as exc:
         raise AdapterError(f"Could not reach Docling Serve: {exc}", status=502) from exc
@@ -384,6 +412,71 @@ def docling_options(timeout: float, max_pages: int | None) -> dict[str, Any]:
     return options
 
 
+def profile_payload() -> dict[str, Any]:
+    profile = resolve_profile(PROFILE_NAME)
+    capture_enabled = CAPTURE_DOCLING_JSON or profile_capture_enabled(profile)
+    return {
+        "name": PROFILE_NAME,
+        "description": profile.get("description"),
+        "profiles_path": str(PROFILES_PATH),
+        "profiles_sha256": sha256_file(PROFILES_PATH),
+        "resolved": profile,
+        "capture_docling_json": capture_enabled,
+        "output_dir": (OUTPUT_DIR or "/tmp/firecrawl-docling-debug") if capture_enabled else None,
+        "available": sorted(load_profiles().keys()),
+    }
+
+
+def profile_public_payload() -> dict[str, Any]:
+    profile = profile_payload()
+    return {key: value for key, value in profile.items() if key != "resolved"}
+
+
+def resolved_env_overrides() -> dict[str, str]:
+    names = [
+        "LOCAL_FIREPDF_TIMEOUT_SECONDS",
+        "LOCAL_FIREPDF_MAX_CONCURRENT_OCR",
+        "LOCAL_FIREPDF_FAIL_LOW_QUALITY",
+        "LOCAL_FIREPDF_CAPTURE_DOCLING_JSON",
+        "LOCAL_FIREPDF_OUTPUT_DIR",
+        *ENV_OPTION_MAP.keys(),
+    ]
+    return {name: os.environ[name] for name in names if name in os.environ}
+
+
+def settings_fingerprint_payload(effective_options: dict[str, Any] | None = None) -> dict[str, Any]:
+    profile = profile_payload()
+    options = effective_options or docling_options(TIMEOUT_SECONDS, None)
+    return {
+        "adapter_version": ADAPTER_VERSION,
+        "engine": ENGINE,
+        "profile_name": PROFILE_NAME,
+        "profile": profile.get("resolved"),
+        "profiles_sha256": profile.get("profiles_sha256"),
+        "env_overrides": resolved_env_overrides(),
+        "docling_options": options,
+        "adapter_settings": {
+            "timeout_seconds": TIMEOUT_SECONDS,
+            "max_concurrent_ocr": MAX_CONCURRENT_OCR,
+            "fail_low_quality": FAIL_LOW_QUALITY,
+            "capture_docling_json": profile.get("capture_docling_json"),
+        },
+        "docling": {
+            "url": DOCLING_URL,
+            "image_id": DOCLING_IMAGE_ID or None,
+            "max_sync_wait": DOCLING_MAX_SYNC_WAIT or None,
+        },
+        "firecrawl_pdf_parser": {
+            "mode": "ocr",
+            "service_contract": "firepdf-compatible /ocr",
+        },
+    }
+
+
+def settings_fingerprint(effective_options: dict[str, Any] | None = None) -> str:
+    return sha256_text(canonical_json(settings_fingerprint_payload(effective_options)))
+
+
 def merge_docling_overrides(options: dict[str, Any], request_body: dict[str, Any]) -> dict[str, Any]:
     """Allow direct adapter callers to test Docling knobs without rebuilding.
 
@@ -444,18 +537,14 @@ def call_docling(pdf_path: Path, timeout: float, max_pages: int | None, request_
 
 
 def settings_payload() -> dict[str, Any]:
-    profile = resolve_profile(PROFILE_NAME)
-    capture_enabled = CAPTURE_DOCLING_JSON or profile_capture_enabled(profile)
+    profile = profile_public_payload()
+    options = docling_options(TIMEOUT_SECONDS, None)
     return {
         "engine": ENGINE,
-        "profile": {
-            "name": PROFILE_NAME,
-            "description": profile.get("description"),
-            "profiles_path": str(PROFILES_PATH),
-            "capture_docling_json": capture_enabled,
-            "output_dir": (OUTPUT_DIR or "/tmp/firecrawl-docling-debug") if capture_enabled else None,
-            "available": sorted(load_profiles().keys()),
-        },
+        "adapter_version": ADAPTER_VERSION,
+        "adapter_script_sha256": sha256_file(Path(__file__)),
+        "settings_fingerprint": settings_fingerprint(options),
+        "profile": profile,
         "adapter": {
             "host": HOST,
             "port": PORT,
@@ -466,7 +555,12 @@ def settings_payload() -> dict[str, Any]:
             "fail_low_quality": FAIL_LOW_QUALITY,
         },
         "docling_url": DOCLING_URL,
-        "docling_options": docling_options(TIMEOUT_SECONDS, None),
+        "docling": {
+            "url": DOCLING_URL,
+            "image_id": DOCLING_IMAGE_ID or None,
+            "max_sync_wait": DOCLING_MAX_SYNC_WAIT or None,
+        },
+        "docling_options": options,
         "direct_request_overrides": {
             "field": "docling_options",
             "note": "POST /ocr may include this object for direct adapter tests; Firecrawl API calls use env/container settings.",
@@ -629,17 +723,51 @@ def extract_page_markdown_from_json(docling_result: Any, marker: str) -> str | N
     return None
 
 
-PUBLISHER_BOILERPLATE_TERMS = [
-    "downloaded from",
-    "wiley online library",
-    "terms and conditions",
-    "license",
-    "copyright",
-    "all use subject to",
-    "for personal use only",
-    "authorized users",
-    "onlinelibrary.wiley.com",
-]
+PUBLISHER_BOILERPLATE_FAMILIES: dict[str, list[str]] = {
+    "wiley": [
+        "wiley online library",
+        "onlinelibrary.wiley.com",
+        "downloaded from",
+        "terms and conditions",
+    ],
+    "oup": [
+        "academic.oup.com",
+        "oxford university press",
+        "downloaded from",
+        "authorized users",
+    ],
+    "elsevier_sciencedirect": [
+        "sciencedirect",
+        "elsevier",
+        "all rights reserved",
+    ],
+    "springer": [
+        "springer nature",
+        "link.springer.com",
+        "springerlink",
+    ],
+    "taylor_francis": [
+        "taylor & francis",
+        "tandfonline.com",
+        "routledge",
+    ],
+    "jstor": [
+        "jstor",
+        "stable url",
+        "terms and conditions of use",
+    ],
+    "ssrn": [
+        "ssrn",
+        "electronic copy available",
+        "papers.ssrn.com",
+    ],
+    "generic_license": [
+        "for personal use only",
+        "all use subject to",
+        "copyright",
+        "license",
+    ],
+}
 
 
 def normalized_line(value: str) -> str:
@@ -667,6 +795,43 @@ def quality_pages(markdown: str, processed_pages: int | None, marker: str) -> li
         return []
 
 
+def detect_boilerplate_families(normalized: str) -> list[str]:
+    matches: list[str] = []
+    for family, terms in PUBLISHER_BOILERPLATE_FAMILIES.items():
+        hits = sum(1 for term in terms if term in normalized)
+        if hits >= 2 or (family == "generic_license" and hits >= 3):
+            matches.append(family)
+    return matches
+
+
+def compact_page_summaries(markdown: str, processed_pages: int | None, marker: str, boundary_source: str) -> list[dict[str, Any]]:
+    pages = quality_pages(markdown, processed_pages, marker)
+    summaries: list[dict[str, Any]] = []
+    for index, page in enumerate(pages, start=1):
+        text = page.strip()
+        normalized = normalized_line(text[:4000])
+        flags: list[str] = []
+        word_count = len(text.split())
+        if not text:
+            flags.append("empty")
+        elif word_count < 25:
+            flags.append("low_text")
+        families = detect_boilerplate_families(normalized)
+        if families:
+            flags.append("publisher_boilerplate")
+        summaries.append(
+            {
+                "page": index,
+                "text_char_count": len(text),
+                "word_count": word_count,
+                "boundary_source": boundary_source,
+                "quality_flags": flags,
+                "matched_boilerplate_families": families,
+            }
+        )
+    return summaries
+
+
 def analyze_markdown_quality(markdown: str, processed_pages: int | None, marker: str) -> dict[str, Any]:
     pages = quality_pages(markdown, processed_pages, marker)
     chars_per_page = [len(page.strip()) for page in pages]
@@ -684,17 +849,26 @@ def analyze_markdown_quality(markdown: str, processed_pages: int | None, marker:
 
     repeated_chars = 0
     publisher_chars = 0
+    matched_boilerplate_families: set[str] = set()
     line_chars = sum(len(line) for line in lines) or 1
     for original, normalized in zip(lines, normalized_lines):
         if repeated_counts.get(normalized, 0) > 1:
             repeated_chars += len(original)
-        hits = sum(1 for term in PUBLISHER_BOILERPLATE_TERMS if term in normalized)
-        if hits >= 1:
+        families = detect_boilerplate_families(normalized)
+        if families:
             publisher_chars += len(original)
+            matched_boilerplate_families.update(families)
+
+    normalized_pages = [normalized_line(page) for page in pages if len(normalized_line(page)) >= 80]
+    repeated_page_counts: dict[str, int] = {}
+    for page in normalized_pages:
+        repeated_page_counts[page] = repeated_page_counts.get(page, 0) + 1
+    repeated_pages = sum(count - 1 for count in repeated_page_counts.values() if count > 1)
 
     empty_page_ratio = empty_pages / page_count if page_count else 1.0
     repeated_boilerplate_ratio = repeated_chars / line_chars
     publisher_boilerplate_ratio = publisher_chars / line_chars
+    repeated_page_ratio = repeated_pages / max(1, len(normalized_pages))
     chars_per_expected_page = total_chars / max(processed_pages or page_count or 1, 1)
 
     warnings: list[str] = []
@@ -704,6 +878,8 @@ def analyze_markdown_quality(markdown: str, processed_pages: int | None, marker:
         warnings.append("repeated_text_dominates")
     if publisher_boilerplate_ratio > 0.45:
         warnings.append("publisher_boilerplate_dominates")
+    if repeated_page_ratio > 0.25:
+        warnings.append("repeated_pages_detected")
     if page_count >= 4 and chars_per_expected_page < 200:
         warnings.append("very_low_text_density")
 
@@ -711,6 +887,7 @@ def analyze_markdown_quality(markdown: str, processed_pages: int | None, marker:
         ("most_pages_empty" in warnings and (total_chars < max(12000, page_count * 900)))
         or "publisher_boilerplate_dominates" in warnings
         or ("repeated_text_dominates" in warnings and total_chars < max(12000, page_count * 700))
+        or ("repeated_pages_detected" in warnings and total_chars < max(12000, page_count * 700))
         or "very_low_text_density" in warnings
     )
 
@@ -724,10 +901,79 @@ def analyze_markdown_quality(markdown: str, processed_pages: int | None, marker:
         "chars_per_page": chars_per_page,
         "chars_per_expected_page": round(chars_per_expected_page, 2),
         "repeated_boilerplate_ratio": round(repeated_boilerplate_ratio, 4),
+        "repeated_page_ratio": round(repeated_page_ratio, 4),
+        "repeated_pages": repeated_pages,
         "publisher_boilerplate_ratio": round(publisher_boilerplate_ratio, 4),
+        "boilerplate_score": round(max(repeated_boilerplate_ratio, publisher_boilerplate_ratio, repeated_page_ratio), 4),
+        "matched_boilerplate_families": sorted(matched_boilerplate_families),
         "warnings": warnings,
         "low_quality": low_quality,
     }
+
+
+def docling_json_summary(docling_result: Any) -> dict[str, Any]:
+    summary = {
+        "json_export_present": False,
+        "page_count": None,
+        "content_item_count": 0,
+        "provenance_item_count": 0,
+        "items_missing_provenance": 0,
+        "table_count": 0,
+        "picture_count": 0,
+        "table_cell_count": 0,
+        "tables_by_page": {},
+    }
+
+    def count_cells(value: Any) -> int:
+        if isinstance(value, dict):
+            total = 0
+            for key, child in value.items():
+                if key in {"table_cells", "grid"} and isinstance(child, list):
+                    total += len(child)
+                total += count_cells(child)
+            return total
+        if isinstance(value, list):
+            return sum(count_cells(child) for child in value)
+        return 0
+
+    for item in iter_documents(docling_result):
+        document = item.get("document") if isinstance(item.get("document"), dict) else item
+        json_content = document.get("json_content") if isinstance(document, dict) else None
+        if not isinstance(json_content, dict):
+            continue
+        summary["json_export_present"] = True
+        pages = json_content.get("pages")
+        if isinstance(pages, dict):
+            summary["page_count"] = len(pages)
+        elif isinstance(pages, list):
+            summary["page_count"] = len(pages)
+
+        for key in ("texts", "tables", "pictures", "groups"):
+            values = json_content.get(key)
+            if not isinstance(values, list):
+                continue
+            summary["content_item_count"] += len(values)
+            if key == "tables":
+                summary["table_count"] += len(values)
+            if key == "pictures":
+                summary["picture_count"] += len(values)
+            for value in values:
+                if not isinstance(value, dict):
+                    continue
+                prov = value.get("prov")
+                if isinstance(prov, list) and prov:
+                    summary["provenance_item_count"] += 1
+                    page_no = prov[0].get("page_no") if isinstance(prov[0], dict) else None
+                    if key == "tables" and isinstance(page_no, int):
+                        tables_by_page = summary["tables_by_page"]
+                        assert isinstance(tables_by_page, dict)
+                        page_key = str(page_no)
+                        tables_by_page[page_key] = tables_by_page.get(page_key, 0) + 1
+                else:
+                    summary["items_missing_provenance"] += 1
+                if key == "tables":
+                    summary["table_cell_count"] += count_cells(value)
+    return summary
 
 
 def safe_slug(value: str) -> str:
@@ -761,6 +1007,8 @@ def handle_ocr(request_body: dict[str, Any]) -> dict[str, Any]:
                 "active_ocr": get_active_ocr_count(),
                 "max_concurrent_ocr": MAX_CONCURRENT_OCR,
                 "retryable": True,
+                "suggested_delay_seconds": 30,
+                "suggested_action": "Retry later, lower caller concurrency, or increase LOCAL_FIREPDF_MAX_CONCURRENT_OCR after checking local CPU/memory headroom.",
             },
         )
 
@@ -792,6 +1040,7 @@ def handle_ocr(request_body: dict[str, Any]) -> dict[str, Any]:
             timeout=timeout,
         )
         docling_result, effective_options = call_docling(pdf_path, timeout, max_pages, request_body)
+        fingerprint = settings_fingerprint(effective_options)
         save_debug(
             scrape_id,
             docling_result,
@@ -805,6 +1054,9 @@ def handle_ocr(request_body: dict[str, Any]) -> dict[str, Any]:
         )
         markdown, errors = extract_markdown(docling_result)
         page_marker = str(effective_options.get("md_page_break_placeholder") or "").strip()
+        boundary_source = "none"
+        if page_marker and page_marker in markdown:
+            boundary_source = "docling_markdown_page_break"
         if page_marker and page_marker not in markdown:
             page_markdown = extract_page_markdown_from_json(docling_result, page_marker)
             if page_markdown and len(page_markdown) >= max(500, int(len(markdown) * 0.5)):
@@ -818,15 +1070,55 @@ def handle_ocr(request_body: dict[str, Any]) -> dict[str, Any]:
                     page_break_count=page_markdown.count(page_marker),
                 )
                 markdown = page_markdown
+                boundary_source = "docling_json_provenance"
+        if boundary_source == "none":
+            boundary_source = "flat_markdown_no_boundaries" if (processed_pages or 0) > 1 else "single_page_or_unknown"
         if not markdown.strip():
             raise AdapterError("Docling returned no markdown/text content", status=502, details=docling_result)
 
         quality = analyze_markdown_quality(markdown, processed_pages, page_marker)
+        json_summary = docling_json_summary(docling_result)
+        page_break_count = markdown.count(page_marker) if page_marker else 0
+        page_summaries = compact_page_summaries(markdown, processed_pages, page_marker, boundary_source)
         metadata = {
             "engine": ENGINE,
+            "adapter_version": ADAPTER_VERSION,
+            "adapter_script_sha256": sha256_file(Path(__file__)),
+            "settings_fingerprint": fingerprint,
+            "settings_fingerprint_algorithm": "sha256-canonical-json-v1",
             "profile": PROFILE_NAME,
+            "profile_description": profile_public_payload().get("description"),
             "total_pages": total_pages,
             "pages_processed": processed_pages or 1,
+            "page_count": {
+                "total": total_pages,
+                "processed": processed_pages or 1,
+                "nonempty": quality["populated_pages"],
+            },
+            "page_boundaries": {
+                "source": boundary_source,
+                "marker": page_marker or None,
+                "marker_count": page_break_count,
+                "observed_page_count": quality["page_count_observed"],
+            },
+            "pages": page_summaries,
+            "docling": {
+                "url": DOCLING_URL,
+                "image_id": DOCLING_IMAGE_ID or None,
+                "max_sync_wait": DOCLING_MAX_SYNC_WAIT or None,
+                "options": effective_options,
+                "options_sha256": sha256_text(canonical_json(effective_options)),
+                "json_summary": json_summary,
+            },
+            "low_quality_gate": {
+                "enabled": FAIL_LOW_QUALITY,
+                "fail_on_low_quality": FAIL_LOW_QUALITY,
+            },
+            "cache": {
+                "safe_for_reuse": False,
+                "reason": "Local OCR profile/env settings can change; Firecrawl bypasses OCR-mode FirePDF cache.",
+                "settings_fingerprint": fingerprint,
+            },
             "quality": quality,
         }
         if quality["warnings"]:
@@ -847,6 +1139,7 @@ def handle_ocr(request_body: dict[str, Any]) -> dict[str, Any]:
                 details={
                     "code": "LOCAL_FIREPDF_LOW_QUALITY",
                     "retryable": False,
+                    "suggested_action": "Reject this OCR output for automated promotion. Try a different profile or send to manual review if the PDF family matters.",
                     "metadata": metadata,
                 },
             )

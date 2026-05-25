@@ -1,0 +1,2 @@
+HTTP 500 from http://localhost:3002/v2/parse
+{"success":false,"code":"SCRAPE_PDF_OCR_REQUIRED","error":"This PDF is image-based and requires OCR for text extraction, but the requested PDF mode is \"fast\" which only supports text-based PDFs. To process this PDF, use mode \"auto\" (which falls back to OCR automatically) or mode \"ocr\" (which forces OCR processing). Example: parsers: [{ type: \"pdf\", mode: \"auto\" }]"}

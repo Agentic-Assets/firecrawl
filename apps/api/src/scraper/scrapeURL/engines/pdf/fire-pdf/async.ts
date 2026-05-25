@@ -110,6 +110,7 @@ export async function scrapePDFWithFirePDFAsync(
     pagesProcessed: pages,
     failedPages: fetched.failed_pages,
     partialPages: fetched.partial_pages,
+    ocrMetadata: fetched.metadata,
     pollCount: polled.pollCount,
   });
 
@@ -117,6 +118,7 @@ export async function scrapePDFWithFirePDFAsync(
     markdown: fetched.markdown,
     html: await safeMarkdownToHtml(fetched.markdown, meta.logger, meta.id),
     pagesProcessed: pages,
+    ocrMetadata: fetched.metadata,
   };
 
   await maybeSaveResult({

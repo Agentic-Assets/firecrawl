@@ -1,6 +1,23 @@
 # Firecrawl Ops Playbook
 
-Verified locally on 2026-05-23 with OrbStack after syncing `firecrawl/firecrawl:main`.
+Verified locally with OrbStack after syncing `firecrawl/firecrawl:main`; fresh-clone onboarding reviewed on 2026-05-25.
+
+## Fresh clone
+For a new Mac or business partner setup, follow:
+
+```bash
+git clone git@github.com:Agentic-Assets/firecrawl.git
+cd firecrawl
+docker context show
+scripts/firecrawl-ops/set_model_profile.sh budget
+scripts/firecrawl-ops/install_git_hooks.sh
+scripts/firecrawl-ops/sync_agent_skills.sh
+docker compose build
+docker compose up -d
+scripts/firecrawl-ops/firecrawl_healthcheck.sh
+```
+
+Expected Docker context is `orbstack`. If not, open OrbStack and run `docker context use orbstack`. See `docs/firecrawl-ops/references/partner-orbstack-onboarding.md` for the longer checklist.
 
 ## Start / restart
 ```bash
@@ -157,6 +174,7 @@ scripts/firecrawl-ops/local_firepdf_ocr.sh logs
 scripts/firecrawl-ops/local_firepdf_ocr.sh settings
 scripts/firecrawl-ops/local_firepdf_ocr.sh profiles
 scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf
+scripts/firecrawl-ops/local_firepdf_ocr.sh doctor --smoke-pdf ./report.pdf
 curl -sS http://127.0.0.1:31337/health | jq .
 ```
 
@@ -169,7 +187,7 @@ scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile qa-debug --
 
 Raw Docling JSON capture is off unless a profile enables it or `--capture-json` is passed. It saves full-document data under `tasks/tmp/firecrawl-docling-debug` by default, so keep it out of commits.
 
-The adapter has guardrails for heavy agent runs. `LOCAL_FIREPDF_MAX_CONCURRENT_OCR=2` by default; excess concurrent requests return `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429. Docling timeouts return `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504. Low-quality OCR dominated by publisher/license boilerplate or empty pages returns `SCRAPE_PDF_LOW_QUALITY` / HTTP 422 by default. Successful Firecrawl responses may include `data.metadata.pdfOcr` quality metrics.
+The adapter has guardrails for heavy agent runs. `LOCAL_FIREPDF_MAX_CONCURRENT_OCR=2` by default; excess concurrent requests return `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429. Docling timeouts return `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504. Low-quality OCR dominated by publisher/license boilerplate or empty pages returns `SCRAPE_PDF_LOW_QUALITY` / HTTP 422 by default. Successful Firecrawl responses may include stable `data.metadata.pdfOcr` metadata: adapter/profile/settings fingerprint, resolved Docling options, page-boundary source, compact per-page quality summaries, boilerplate families/scores, table/figure JSON signals, and low-quality gate settings. OCR-mode FirePDF cache is bypassed so local OCR canaries do not reuse stale profile output.
 
 Useful Docling tuning env vars before `start-adapter` / `start`; explicit env vars override the named profile:
 
@@ -217,7 +235,7 @@ scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
   --strict
 ```
 
-The benchmark preflights fake `.pdf` downloads, restarts the adapter between OCR profiles unless `--no-profile-restart` is passed, saves split markdown/html/metadata fields, writes `fields/pages.jsonl`, and adds per-case `qa.json` / `qa.md`. The root `summary.md` includes a recommended mode/profile per PDF.
+The benchmark preflights fake `.pdf` downloads, restarts the adapter between OCR profiles unless `--no-profile-restart` is passed, saves split markdown/html/metadata fields, writes `fields/pages.jsonl`, and adds per-case `qa.json` / `qa.md`. The root `summary.md` includes accept/reject/manual-review guidance plus a recommended mode/profile per PDF.
 
 ## Upstream sync
 Use a branch and merge commit so fork-specific ops assets remain easy to review:
