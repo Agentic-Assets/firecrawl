@@ -8,7 +8,7 @@ Usage:
 
 Requirements:
   - Firecrawl running locally on http://localhost:3002
-  - See: ~/.openclaw/skills/firecrawl-ops/
+  - See: ~/.agents/skills/firecrawl-ops/
 """
 
 import argparse
@@ -20,7 +20,7 @@ from datetime import datetime
 from urllib.parse import quote
 import requests
 
-FIRECRAWL_API = "http://localhost:3002/v1"
+FIRECRAWL_API = "http://localhost:3002/v2"
 
 DEFAULT_REGIONS = [
     "Hawaii",

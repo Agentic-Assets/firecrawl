@@ -1,0 +1,157 @@
+{
+  "scrapeId": "019e5c66-85eb-7588-a0f8-71d541154530",
+  "sourceURL": "paper.pdf",
+  "url": "https://parse.firecrawl.dev/uploads/paper.pdf",
+  "statusCode": 200,
+  "numPages": 5,
+  "pdfOcr": {
+    "engine": "docling",
+    "adapter_version": "2026-05-24.2",
+    "adapter_script_sha256": "deaa8f34f5e0fa9dbe3122934cf4e7c71eeb6f718d7c4d3f50e9d263641c8215",
+    "settings_fingerprint": "0c132b74641c97fff3ae76256c198dbe3c72f75e29c8e7191cbb3bf7b4979768",
+    "settings_fingerprint_algorithm": "sha256-canonical-json-v1",
+    "profile": "research-page-aware",
+    "profile_description": "Academic papers where downstream agents need page chunks and citations.",
+    "total_pages": 18,
+    "pages_processed": 5,
+    "page_count": {
+      "total": 18,
+      "processed": 5,
+      "nonempty": 5
+    },
+    "page_boundaries": {
+      "source": "docling_markdown_page_break",
+      "marker": "FIRECRAWLPAGEBREAK",
+      "marker_count": 4,
+      "observed_page_count": 5
+    },
+    "pages": [
+      {
+        "page": 1,
+        "text_char_count": 1673,
+        "word_count": 155,
+        "boundary_source": "docling_markdown_page_break",
+        "quality_flags": [],
+        "matched_boilerplate_families": []
+      },
+      {
+        "page": 2,
+        "text_char_count": 2851,
+        "word_count": 389,
+        "boundary_source": "docling_markdown_page_break",
+        "quality_flags": [],
+        "matched_boilerplate_families": []
+      },
+      {
+        "page": 3,
+        "text_char_count": 2792,
+        "word_count": 392,
+        "boundary_source": "docling_markdown_page_break",
+        "quality_flags": [],
+        "matched_boilerplate_families": []
+      },
+      {
+        "page": 4,
+        "text_char_count": 3101,
+        "word_count": 529,
+        "boundary_source": "docling_markdown_page_break",
+        "quality_flags": [],
+        "matched_boilerplate_families": []
+      },
+      {
+        "page": 5,
+        "text_char_count": 1112,
+        "word_count": 196,
+        "boundary_source": "docling_markdown_page_break",
+        "quality_flags": [],
+        "matched_boilerplate_families": []
+      }
+    ],
+    "docling": {
+      "url": "http://host.docker.internal:5001",
+      "image_id": "quay.io/docling-project/docling-serve-cpu@sha256:528f52f5ce56be1739df117560512ffaa483be53934bf5b0458b4ca088b1a6b0",
+      "max_sync_wait": "900",
+      "options": {
+        "from_formats": [
+          "pdf"
+        ],
+        "to_formats": [
+          "md",
+          "json",
+          "html"
+        ],
+        "do_ocr": true,
+        "force_ocr": true,
+        "ocr_preset": "auto",
+        "pdf_backend": "docling_parse",
+        "table_mode": "accurate",
+        "table_cell_matching": true,
+        "do_table_structure": true,
+        "include_images": true,
+        "images_scale": 2,
+        "image_export_mode": "placeholder",
+        "md_page_break_placeholder": "FIRECRAWLPAGEBREAK",
+        "abort_on_error": false,
+        "do_code_enrichment": false,
+        "do_formula_enrichment": false,
+        "do_picture_classification": false,
+        "do_chart_extraction": false,
+        "do_picture_description": false,
+        "document_timeout": 600,
+        "page_range": [
+          1,
+          5
+        ]
+      },
+      "options_sha256": "0b3746675d4d80da7eac01b8fa51582dd7f645de1401e6242444ab8b4e2e2685",
+      "json_summary": {
+        "json_export_present": true,
+        "page_count": 5,
+        "content_item_count": 51,
+        "provenance_item_count": 51,
+        "items_missing_provenance": 0,
+        "table_count": 0,
+        "picture_count": 0,
+        "table_cell_count": 0,
+        "tables_by_page": {}
+      }
+    },
+    "low_quality_gate": {
+      "enabled": true,
+      "fail_on_low_quality": true
+    },
+    "cache": {
+      "safe_for_reuse": false,
+      "reason": "Local OCR profile/env settings can change; Firecrawl bypasses OCR-mode FirePDF cache.",
+      "settings_fingerprint": "0c132b74641c97fff3ae76256c198dbe3c72f75e29c8e7191cbb3bf7b4979768"
+    },
+    "quality": {
+      "total_chars": 11617,
+      "page_count_reported": 5,
+      "page_count_observed": 5,
+      "populated_pages": 5,
+      "empty_pages": 0,
+      "empty_page_ratio": 0,
+      "chars_per_page": [
+        1673,
+        2851,
+        2792,
+        3101,
+        1112
+      ],
+      "chars_per_expected_page": 2323.4,
+      "repeated_boilerplate_ratio": 0,
+      "repeated_page_ratio": 0,
+      "repeated_pages": 0,
+      "publisher_boilerplate_ratio": 0,
+      "boilerplate_score": 0,
+      "matched_boilerplate_families": [],
+      "warnings": [],
+      "low_quality": false
+    }
+  },
+  "contentType": "application/pdf",
+  "proxyUsed": "basic",
+  "creditsUsed": 5,
+  "concurrencyLimited": false
+}

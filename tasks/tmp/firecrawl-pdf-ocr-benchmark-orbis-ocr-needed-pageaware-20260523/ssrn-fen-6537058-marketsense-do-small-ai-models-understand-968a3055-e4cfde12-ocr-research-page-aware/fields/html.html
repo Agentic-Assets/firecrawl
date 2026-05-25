@@ -1,0 +1,78 @@
+<html><body><h2>MarketSense: Do Small AI Models Understand Financial News?</h2>
+<p>An Empirical Study of Compact Language Models and Stock Return Reactions</p>
+<p>Sai Mahesh Sandeboina Independent Researcher, United States <a href="mailto:saimaheshsandeboina931@gmail.com">saimaheshsandeboina931@gmail.com</a></p>
+<p>April 2026</p>
+<h2>Abstract</h2>
+<p>This paper investigates whether compact, domain-adapted language models can detect economically meaningful sentiment in financial headlines. Using roughly one thousand news items for nine large-cap tickers between April and October 2025,we compare FinBERT—a finance-tuned model—with DistilBERT—a compressed general model. FinBERT's daily sentiment correlates positively with same-day stock returns, whereas DistilBERT shows no consistent signal. The results suggest that domain adaptationmattersmorethanmodel sizefor resource-efficientfinancialNLP.</p>
+<h2>1Introduction</h2>
+<p>Financial markets react to information quickly, and news sentiment is often used as a proxy for short-horizon beliefs. Recent progress in language modeling shows that large models can extract rich semantics, but in production settings (research labs, funds, and startups) smaller models are preferred for cost, latency, and governance reasons. This raises a practical question: Do small, domain-adapted models capture economically meaningfulsentiment?</p>
+<p>We study this in the context of same-day stock returns using compact, widely-available models: FinBERT [3, 2]—a BERT-base model adapted to finance—and DistilBERT [6, 4]—a compressed general-purpose model fine-tuned on sentiment. Using headlines for nine large-cap tickers (AAPL, AMZN, GS, JPM, MS, MSFT, NVDA, TSLA,WMT) from ~April-October 2025, we compute daily sentiment per ticker and relate it to open→closereturns.</p>
+<p>Our main result is simple and actionable: FinBERT's daily sentiment exhibits a small but statistically significant positive correlation with same-day returns, while DistilBERT shows no consistent signal. The implication is that domain adaptation can matter more than raw model size for resource-efficient financial NLP.</p>
+<h2>2 Methodology</h2>
+<p>Data collection.We query Google News RSS for "{TIcKER} stock" and parse results with feedparser. We retain headline, source, URL, and UTC publish time. We deduplicate by (ticker, headline). For prices we use daily OHLC from Stooq (free end-of-day feed) to avoid API throttling issues; we form same-day open→close returns rd = (Close - Open)/Open. See code and CSVs (headlines.csv, prices.csv) for reproducibility [5, 1].</p>
+<p>Sentiment scoring. We score each headline with two models implemented via transformers [7]:</p>
+<ul>
+<li>·FinBERT [3, 2] (finance-tuned). We convert class probabilities to a scalar sentiment s = Pr(pos)Pr(neg).</li>
+<li>DistilBERT [6, 4] (general sentiment). We likewise map SST-2 scores to s.</li>
+</ul>
+<p>FIRECRAWLPAGEBREAK</p>
+<p>For each (date, ticker) we average headline scores into a daily sentiment d,t. We also compute an optional 3-day rolling mean sd,t =  &gt;?=o sd-k,t for visualization stability.</p>
+<p>Alignment and sample.We inner-join daily sentiment with price returns on (date,ticker).In the present run, this yields ~200-250 aligned observations (dependent on news frequency） across the nine tickers, with ~l40 trading days of prices (Stooq). All derived files are saved (headlines_scored.csv, daily-sentiment.csv, joined_sentiment_returns.csv) to support replication.</p>
+<p>Estimation and tests. We report Pearson correlations r(d,t,rd,t） overall and by sector/ticker, with p-values and bootstrap CIs where noted. Plots include sentiment-return scatter with fitted line, rolling sentiment time series,and per-ticker summaries.We treat these as associations,not trading rules.</p>
+<h2>3 Results</h2>
+<h2>3.1 Headline Sentiment vs Same-Day Returns</h2>
+<p>and 2 show the pooled scatterplots (all tickers, all days). FinBERT exhibits a small but clear positive slope; DistilBERT shows no consistent relation.This visual pattern matches our statistics in Section 3.2.</p>
+<p>Figure 1: FinBERT daily sentiment vs same-day open—&gt;close return (all tickers).</p>
+<!-- image -->
+
+<p>FIRECRAWLPAGEBREAK</p>
+<h2>OverallDistilBERTSentimentvsSame-DayReturn r=0.031,p=0.649,n=223</h2>
+<p>Figure 2: DistilBERT daily sentiment vs same-day open—→close return (all tickers).</p>
+<!-- image -->
+
+<h2>3.2Per-Ticker Correlations</h2>
+<p>To summarize by name, we compute Pearson r between sentiment and returns per ticker. Figure 3 plots these values. FinBERT is positive for most symbols (notably AMZN, JPM, NVDA), while DistilBERT is mixed and often near zero. This supports the hypothesis that domain adaptation matters more than parameter count for this task.</p>
+<p>FIRECRAWLPAGEBREAK</p>
+<p>Figure 3: Per-ticker Pearson correlation (r) between daily sentiment and same-day return, for FinBERT and DistilBERT.</p>
+<!-- image -->
+
+<h2>3.3 Rolling Sentiment (Stability Check)</h2>
+<p>We also examine 3-day rolling averages of sentiment by ticker to visualize stability and episodes where the two models disagree.Below we show FinBERT rolling sentiment for all nine names alongside DistilBERT for direct comparison.</p>
+<p>Figure 4:FinBERT:3-dayrolling sentimentby ticker.</p>
+<!-- image -->
+
+<p>FIRECRAWLPAGEBREAK</p>
+<h2>3.41 Representative Per-Ticker Scatterplots</h2>
+<p>For transparency, Figures 5 and 6 show example per-ticker scatterplots for both models.</p>
+<p>Figure 5: AAPL: FinBERT (left)vs DistilBERT (right) sentiment vs return.</p>
+<!-- image -->
+
+<p>Figure 6:MSFT:FinBERT(left）vs DistilBERT(right）sentiment vs return.</p>
+<!-- image -->
+
+<p>Takeaway.Across pooled and per-ticker views,FinBERT's sentiment correlates positively with same-day returns, while DistilBERT's signal is weak or inconsistent. This pattern is robust to rolling aggregation and visible in multiple symbols.</p>
+<h2>4 Conclusion</h2>
+<p>We ask whether small models"understand"financial news in thelimited,testable sense of aligning sentiment with same-day stock moves. Our evidence suggests that a compact, finance-tuned model (FinBERT) does extract a weak but economically meaningful signal, whereas a similarly compact general model (DistilBERT) does not. For many practical settings, domain adaptation beats raw size.</p>
+<p>Limitations. We analyze headlines, not full articles; we consider same-day open→close returns only; and we do not control for confounders (macro releases, earnings timing). Correlations are small and should not be read as trading advice. Re-running the pipeline on different date windows will change sample sizes and noise characteristics.</p>
+<p>FIRECRAWLPAGEBREAK</p>
+<p>Future work. Extend to multi-day horizons, intraday bars, richer event controls, and more compact domain models (e.g., finance-tuned DistilBERT or MiniLM). Explore cross-sectional predictability and interaction with volatility regimes.</p>
+<p>Ethics and reproducibility. We cite all software and models used [7, 3, 2, 6, 4, 5, 1] and provide intermediate CSVs and figures to enable replication.</p>
+<h2>References</h2>
+<ul>
+<li>[1] Stooq: Free historical market data. <a href="https://stooq.com/">https://stooq.com</a>, 2025.</li>
+</ul>
+<ol start="2">
+<li>[2]Prosus AI. Prosusai/finbert (hugging face model card). <a href="https://huggingface.co/ProsusAI/finbert">https://huggingface.co/ProsusAI/finbert</a>, 2020.</li>
+<li>[3]Dogu Araci. Finbert: Financial sentiment analysis with pre-trained language models. In Proceedings of the ACL Student Research Workshop,2019.</li>
+</ol>
+<ul>
+<li>[4]  Hugging  Face. distilbert-base-uncased-finetuned-sst-2-english  (hugging  face   model card). <a href="https://huggingface.co/distilbert-base-uncased-finetuned-sst-2-english,2020">https://huggingface.co/distilbert-base-uncased-finetuned-sst-2-english,2020</a>.</li>
+<li>[5]  Mark  Kellan and community. feedparser: Universalfeed parserforpython. <a href="https://github.com/kurtmckee/feedparser">https://github.com/kurtmckee/feedparser</a>, 2024.</li>
+</ul>
+<ol start="6">
+<li>[6]Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf. Distilbert,a distilled version of bert: smaller, faster,cheaper and lighter. arXiv preprint arXiv:1910.01108, 2019.</li>
+</ol>
+<ul>
+<li>[7] Thomas Wolf, Lysandre Debut, Victor Sanh, et al. Transformers: State-of-the-art natural language processing. In Proceedings ofEMNLP 2020:System Demonstrations,2020.</li>
+</ul>
+</body></html>

@@ -1,0 +1,166 @@
+{
+  "started_at": "2026-05-23T18:39:18-0500",
+  "finished_at": "2026-05-23T18:39:33-0500",
+  "seconds": 15.21,
+  "command": [
+    "scripts/firecrawl-ops/pdf_ocr_benchmark.py",
+    "/Users/caymanseagraves/Documents/GitHub/agentic-assets/agentic-assets-orbis/tasks/tmp/archive/cursor-pdf-extraction-20260523/cursor-pdf-extraction-ocr-integration-smoke-20260523/documents/ssrn-fen-6537058-marketsense-do-small-ai-models-understand-968a3055/source/paper.pdf",
+    "--modes",
+    "ocr",
+    "--profiles",
+    "research-page-aware",
+    "--max-pages",
+    "6",
+    "--out-dir",
+    "tasks/tmp/firecrawl-pdf-ocr-benchmark-pagebreak-fix-4-20260523",
+    "--strict"
+  ],
+  "api_url": "http://localhost:3002",
+  "modes": [
+    "ocr"
+  ],
+  "profiles": [
+    "research-page-aware"
+  ],
+  "formats": [
+    "markdown",
+    "html",
+    "images"
+  ],
+  "max_pages": 6,
+  "adapter_health_url": "http://127.0.0.1:31337/health",
+  "adapter_health": {
+    "ok": true,
+    "engine": "docling",
+    "docling_ok": true,
+    "docling_error": null,
+    "profile": {
+      "name": "research-page-aware",
+      "description": "Academic papers where downstream agents need page chunks and citations.",
+      "profiles_path": "/app/pdf_ocr_profiles.json",
+      "capture_docling_json": false,
+      "output_dir": null,
+      "available": [
+        "default",
+        "figure-enrichment-lab",
+        "qa-debug",
+        "research-page-aware",
+        "scanned-english",
+        "tables-accurate",
+        "tables-fast"
+      ]
+    },
+    "adapter": {
+      "host": "0.0.0.0",
+      "port": 31337,
+      "timeout_seconds": 600.0,
+      "keep_temp": false
+    },
+    "docling_url": "http://host.docker.internal:5001",
+    "docling_options": {
+      "from_formats": [
+        "pdf"
+      ],
+      "to_formats": [
+        "md",
+        "json",
+        "html"
+      ],
+      "do_ocr": true,
+      "force_ocr": true,
+      "ocr_preset": "auto",
+      "pdf_backend": "docling_parse",
+      "table_mode": "accurate",
+      "table_cell_matching": true,
+      "do_table_structure": true,
+      "include_images": true,
+      "images_scale": 2.0,
+      "image_export_mode": "placeholder",
+      "md_page_break_placeholder": "FIRECRAWLPAGEBREAK",
+      "abort_on_error": false,
+      "do_code_enrichment": false,
+      "do_formula_enrichment": false,
+      "do_picture_classification": false,
+      "do_chart_extraction": false,
+      "do_picture_description": false,
+      "document_timeout": 600.0
+    },
+    "direct_request_overrides": {
+      "field": "docling_options",
+      "note": "POST /ocr may include this object for direct adapter tests; Firecrawl API calls use env/container settings."
+    }
+  },
+  "adapter_settings": {
+    "ok": true,
+    "engine": "docling",
+    "profile": {
+      "name": "research-page-aware",
+      "description": "Academic papers where downstream agents need page chunks and citations.",
+      "profiles_path": "/app/pdf_ocr_profiles.json",
+      "capture_docling_json": false,
+      "output_dir": null,
+      "available": [
+        "default",
+        "figure-enrichment-lab",
+        "qa-debug",
+        "research-page-aware",
+        "scanned-english",
+        "tables-accurate",
+        "tables-fast"
+      ]
+    },
+    "adapter": {
+      "host": "0.0.0.0",
+      "port": 31337,
+      "timeout_seconds": 600.0,
+      "keep_temp": false
+    },
+    "docling_url": "http://host.docker.internal:5001",
+    "docling_options": {
+      "from_formats": [
+        "pdf"
+      ],
+      "to_formats": [
+        "md",
+        "json",
+        "html"
+      ],
+      "do_ocr": true,
+      "force_ocr": true,
+      "ocr_preset": "auto",
+      "pdf_backend": "docling_parse",
+      "table_mode": "accurate",
+      "table_cell_matching": true,
+      "do_table_structure": true,
+      "include_images": true,
+      "images_scale": 2.0,
+      "image_export_mode": "placeholder",
+      "md_page_break_placeholder": "FIRECRAWLPAGEBREAK",
+      "abort_on_error": false,
+      "do_code_enrichment": false,
+      "do_formula_enrichment": false,
+      "do_picture_classification": false,
+      "do_chart_extraction": false,
+      "do_picture_description": false,
+      "document_timeout": 600.0
+    },
+    "direct_request_overrides": {
+      "field": "docling_options",
+      "note": "POST /ocr may include this object for direct adapter tests; Firecrawl API calls use env/container settings."
+    }
+  },
+  "docker_context": {
+    "ok": true,
+    "stdout": "orbstack\n"
+  },
+  "case_count": 1,
+  "recommendations": {
+    "ssrn-fen-6537058-marketsense-do-small-ai-models-understand-968a3055-e4cfde12": {
+      "mode": "ocr",
+      "profile": "research-page-aware",
+      "reason": "Outputs were similar enough; prefer the fastest successful mode."
+    }
+  },
+  "unexpected_failure_count": 0,
+  "unexpected_failures": []
+}

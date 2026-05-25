@@ -37,7 +37,10 @@ import {
   UnsupportedFileError,
   SSLError,
   PDFInsufficientTimeError,
+  PDFLowQualityError,
+  PDFOCRBackpressureError,
   PDFOCRRequiredError,
+  PDFOCRTimeoutError,
   IndexMissError,
   NoCachedDataError,
   LockdownMissError,
@@ -833,6 +836,9 @@ async function scrapeURLLoop(meta: Meta): Promise<ScrapeUrlResponse> {
               error.error instanceof UnsupportedFileError ||
               error.error instanceof PDFAntibotError ||
               error.error instanceof PDFOCRRequiredError ||
+              error.error instanceof PDFOCRBackpressureError ||
+              error.error instanceof PDFOCRTimeoutError ||
+              error.error instanceof PDFLowQualityError ||
               error.error instanceof DocumentAntibotError ||
               error.error instanceof PDFInsufficientTimeError ||
               error.error instanceof ProxySelectionError ||
@@ -994,6 +1000,9 @@ async function scrapeURLLoop(meta: Meta): Promise<ScrapeUrlResponse> {
         numPages: engineResult.pdfMetadata?.numPages,
         ...(engineResult.pdfMetadata?.title
           ? { title: engineResult.pdfMetadata.title }
+          : {}),
+        ...(engineResult.pdfMetadata?.ocr
+          ? { pdfOcr: engineResult.pdfMetadata.ocr }
           : {}),
         contentType: engineResult.contentType,
         timezone: engineResult.timezone,
@@ -1400,6 +1409,19 @@ export async function scrapeURL(
             error,
           },
         );
+      } else if (error instanceof PDFOCRBackpressureError) {
+        errorType = "PDFOCRBackpressureError";
+        meta.logger.warn("scrapeURL: PDF OCR backend is at capacity", {
+          error,
+        });
+      } else if (error instanceof PDFOCRTimeoutError) {
+        errorType = "PDFOCRTimeoutError";
+        meta.logger.warn("scrapeURL: PDF OCR backend timed out", { error });
+      } else if (error instanceof PDFLowQualityError) {
+        errorType = "PDFLowQualityError";
+        meta.logger.warn("scrapeURL: PDF OCR output failed quality checks", {
+          error,
+        });
       } else if (error instanceof PDFPrefetchFailed) {
         errorType = "PDFPrefetchFailed";
         meta.logger.warn(

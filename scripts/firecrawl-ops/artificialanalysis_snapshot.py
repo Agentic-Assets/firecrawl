@@ -10,7 +10,7 @@ import json
 import re
 import requests
 
-API = "http://localhost:3002/v1/scrape"
+API = "http://localhost:3002/v2/scrape"
 
 URLS = {
     "leaderboard": "https://artificialanalysis.ai/leaderboards/models",

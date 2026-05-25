@@ -9,6 +9,7 @@ This is an optional Cursor adapter, not the core Firecrawl setup. The reusable F
 
 - `scripts/firecrawl-ops/firecrawl_mcp.sh` for MCP
 - `scripts/firecrawl-ops/firecrawl_cli.sh` for CLI
+- `scripts/firecrawl-ops/firecrawl_request.py` for saved artifacts and advanced direct API options
 - `.agents/skills/firecrawl-local-api/SKILL.md` for Codex/Claude-style agents
 - `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` for cross-agent setup
 
@@ -40,6 +41,29 @@ scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markd
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
 ```
+
+Use `firecrawl_request.py` for direct local API settings the CLI does not expose, especially PDF `mode` and `maxPages`, or when the agent needs split markdown/html/metadata files:
+
+```bash
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html --pdf-mode auto --max-pages 25 --pretty
+```
+
+For harder academic PDFs, use the local Docling OCR adapter profiles:
+
+```bash
+scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
+scripts/firecrawl-ops/local_firepdf_ocr.sh profiles
+scripts/firecrawl-ops/local_firepdf_ocr.sh doctor --smoke-pdf ./report.pdf
+scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
+  --modes fast,auto,ocr \
+  --profiles default,research-page-aware,tables-accurate \
+  --max-pages 40 --strict
+```
+
+The benchmark saves per-case `fields/pages.jsonl`, `qa.json`, and `qa.md`, then recommends accept/reject/manual-review plus a mode/profile in `summary.md`. Raw Docling JSON capture is available with `--capture-json` or the `qa-debug` profile and writes full-document debug artifacts under `tasks/tmp`.
+
+The local OCR adapter has guardrails for agent runs: `LOCAL_FIREPDF_MAX_CONCURRENT_OCR` defaults to 2, a third concurrent OCR request returns `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429, Docling timeouts return `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504, Docling sync waits default to 900 seconds on new starts, and low-quality publisher-boilerplate or mostly-empty OCR output returns `SCRAPE_PDF_LOW_QUALITY` / HTTP 422. Successful parses can expose stable `data.metadata.pdfOcr` metadata with profile/settings fingerprint, resolved Docling options, page-boundary source, compact page summaries, boilerplate families/scores, and table/figure signals. OCR-mode FirePDF cache is bypassed so local canaries do not reuse stale profile output.
 
 For Cursor SDK code, project settings are not loaded by default. Either pass `mcpServers` inline with `command: "bash"` and `args: ["scripts/firecrawl-ops/firecrawl_mcp.sh"]`, or set `local: { cwd: process.cwd(), settingSources: ["project"] }`.
 

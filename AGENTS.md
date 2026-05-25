@@ -10,14 +10,14 @@ Firecrawl is a web scraper API. The directory you have access to is a monorepo:
 - `apps/nuq-postgres` — Postgres-backed queue (`nuq`) used alongside Redis/RabbitMQ
 - `apps/redis`, `apps/test-site`, `apps/test-suite`, `apps/ui` — supporting infra and tests
 
-For local self-hosted setup (Docker compose, env, PowerShell snippets), see `LOCAL_DEVELOPMENT_GUIDE.md` and `SELF_HOST.md`.
+For local self-hosted setup, see `LOCAL_DEVELOPMENT_GUIDE.md`, `SELF_HOST.md`, and the `firecrawl-ops` skill.
 
 ## Env files (which is which)
 
 - **`./.env`** — **primary.** This is the file `docker compose up -d` reads at the repo root and is what every local Firecrawl run depends on. Gitignored. Never commit it.
 - **`apps/api/.env.example`** — upstream's canonical variable reference. Read this to learn what knobs exist; copy to `./.env` for first-time bootstrap.
 - **`apps/api/.env.local`** — tracked upstream artifact with empty values; **not** the file Docker reads despite its `.local` suffix. Ignore unless running `apps/api` directly outside Docker.
-- **Fork-specific vars** (`FIRECRAWL_API_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_NAME`, optional `OPENROUTER_API_KEY`, `SWARM_SUPABASE_*`) — documented in `LOCAL_DEVELOPMENT_GUIDE.md` §6 and rewritten by `scripts/firecrawl-ops/set_model_profile.sh` where applicable. They live in the root `./.env`.
+- **Fork-specific vars** (`FIRECRAWL_API_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_NAME`, optional `OPENROUTER_API_KEY`, `PDF_RUST_EXTRACT_ENABLE`, optional local Docling/Fire PDF/RunPod OCR vars, `SWARM_SUPABASE_*`) — documented in `LOCAL_DEVELOPMENT_GUIDE.md` and rewritten by `scripts/firecrawl-ops/set_model_profile.sh` where applicable. They live in the root `./.env`.
 
 ## Working in `apps/api`
 
@@ -50,27 +50,31 @@ This fork adds a self-hosted operations layer on top of upstream Firecrawl. It i
 - `firecrawl-ops` — runtime health, Docker, model routing, endpoint selection
 - `firecrawl-local-api` — calling the local API at `http://localhost:3002`
 
-Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/deepseek-v4-pro` (OpenRouter). Verified locally 2026-05-09.
+Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/deepseek-v4-pro` (OpenRouter). Verified locally on 2026-05-23.
 - `docs/firecrawl-ops/references/` — durable reference docs:
   - `tools-capabilities.md` — endpoint-by-endpoint capability map
+  - `local-pdf-ocr-plan.md` — chosen local Docling OCR adapter plan and alternatives
+  - `local-pdf-ocr-research-agent-plan.md` — profile/page-break/raw-JSON/QA roadmap for research-paper OCR agents
   - `model-routing.md` — model strategy and escalation rules
   - `ops-playbook.md` — health checks, debugging, safe ops
+  - `partner-orbstack-onboarding.md` — fresh-clone setup checklist for another Mac/business partner
   - `cayman-use-cases-and-playbooks.md` — mapped workflows (research/CRE/coding)
   - `cre-access-matrix.md` — CRE platform scrapability matrix (CBRE/Cushman accessible; CoStar/LoopNet blocked)
   - `google-flights-scraping.md` — Atlas travel-deal workflow
   - `supabase-schema-firecrawl-swarm.sql` — optional Supabase schema for swarm telemetry (apply, then set `SWARM_SUPABASE_URL` / `SWARM_SUPABASE_KEY`)
 - `scripts/firecrawl-ops/` — runnable ops tooling:
   - `firecrawl_healthcheck.sh` — verify the local stack is up (run this first)
-  - `firecrawl_cli.sh` — wrapper for `npx firecrawl-cli` pinned to `http://localhost:3002`
+  - `firecrawl_cli.sh` — wrapper for `npx firecrawl-cli` pinned to `http://localhost:3002`; preserves caller cwd so local parse file paths work
+  - `firecrawl_request.py` — dependency-free direct HTTP helper for local agents when they need output/save controls or advanced `/v2/parse` PDF options not exposed by the CLI
+  - `local_firepdf_ocr.sh` — start/stop/health/env/settings/profiles/doctor/smoke helper for the local Docling OCR adapter; includes local Docling profiles, `doctor --smoke-pdf`, 429 OCR backpressure, 504 timeout mapping, 422 low-quality rejection, and stable OCR metadata/fingerprints
+  - `local_firepdf_ocr_service.py` — Fire PDF-compatible `/ocr` adapter used by Firecrawl when `FIRE_PDF_BASE_URL=http://host.docker.internal:31337`
+  - `pdf_ocr_profiles.json` — named Docling OCR profiles such as `research-page-aware`, `tables-accurate`, and `qa-debug`
+  - `pdf_ocr_benchmark.py` — repeatable local PDF parser/OCR matrix runner with preflight checks, page artifacts, QA reports, accept/reject/manual-review guidance, and per-PDF mode/profile recommendations
   - `firecrawl_mcp.sh` — wrapper for `npx firecrawl-mcp` pinned to `http://localhost:3002` for any MCP-capable agent
   - `sync_agent_skills.sh` — copy repo Firecrawl skills to `~/.agents/skills` and symlink them into user-level agent folders
   - `set_model_profile.sh budget|escalated|gateway|gateway-codex|openai-direct` — rewrite `.env` model defaults; follow with `docker compose up -d --force-recreate api`
   - `sync_upstream_main.sh` — create an upstream-sync branch, merge `firecrawl/firecrawl:main`, and show protected fork path diffs
-  - `artificialanalysis_snapshot.py` — refresh ArtificialAnalysis benchmark data for routing decisions
-  - `platform_access_probe.py`, `cre_access_matrix.py` — accessibility probes
-  - `bulk_triage_runner.py` — budget-first triage with escalation batches
-  - `crawl_swarm.py`, `firecrawl_swarm_pipeline.py` — parallel map+scrape swarm with confidence/provenance output
-  - `google_flights_scrape.py`, `parse_flight_deals.py` — Atlas multi-region flight scraper + parser
+  - Optional older workflow examples: `artificialanalysis_snapshot.py`, `platform_access_probe.py`, `cre_access_matrix.py`, `bulk_triage_runner.py`, `crawl_swarm.py`, `firecrawl_swarm_pipeline.py`, `google_flights_scrape.py`, `parse_flight_deals.py`. Prefer `firecrawl_request.py` for new local-agent scripting.
 - Cross-agent integration:
   - `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` — separates the Firecrawl API/CLI/MCP tool layer from Cursor Composer or any other agent model
   - `.cursor/mcp.json` — optional Cursor adapter that registers `firecrawl-local` by calling `scripts/firecrawl-ops/firecrawl_mcp.sh`

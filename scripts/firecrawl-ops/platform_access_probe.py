@@ -45,7 +45,7 @@ def classify(text: str):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--api", default="http://localhost:3002/v1")
+    ap.add_argument("--api", default="http://localhost:3002/v2")
     ap.add_argument("--url", action="append", default=[])
     args = ap.parse_args()
 

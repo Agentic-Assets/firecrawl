@@ -3,7 +3,36 @@ set -euo pipefail
 
 PROFILE="${1:-gateway}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FC_DIR="${FC_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
+resolve_fc_dir() {
+  if [[ -n "${FC_DIR:-}" ]]; then
+    printf '%s\n' "$FC_DIR"
+    return
+  fi
+
+  local from_script
+  from_script="$(cd "$SCRIPT_DIR/../.." && pwd)"
+  if [[ -f "$from_script/docker-compose.yaml" && -d "$from_script/apps/api" ]]; then
+    printf '%s\n' "$from_script"
+    return
+  fi
+
+  if [[ -f "$PWD/docker-compose.yaml" && -d "$PWD/apps/api" ]]; then
+    printf '%s\n' "$PWD"
+    return
+  fi
+
+  local common="$HOME/Documents/GitHub/agentic-assets/firecrawl"
+  if [[ -f "$common/docker-compose.yaml" && -d "$common/apps/api" ]]; then
+    printf '%s\n' "$common"
+    return
+  fi
+
+  echo "Could not find the Firecrawl repo. Set FC_DIR=/path/to/firecrawl and rerun." >&2
+  exit 1
+}
+
+FC_DIR="$(resolve_fc_dir)"
 ENV_PATH="${ENV_PATH:-$FC_DIR/.env}"
 
 if [[ ! -f "$ENV_PATH" ]]; then
@@ -27,6 +56,17 @@ MODEL_EMBEDDING_NAME=
 # Optional direct OpenRouter provider path. Most local flows use OPENAI_API_KEY
 # with OPENAI_BASE_URL=https://openrouter.ai/api/v1 instead.
 OPENROUTER_API_KEY=
+
+# Local PDF parser defaults. Rust extraction is local and does not use credits.
+PDF_RUST_EXTRACT_ENABLE=true
+PDF_SHADOW_COMPARISON_ENABLE=false
+MINERU_PERCENT=0
+FIRE_PDF_ENABLE=false
+FIRE_PDF_PERCENT=10
+FIRE_PDF_BASE_URL=
+FIRE_PDF_API_KEY=
+RUNPOD_MU_API_KEY=
+RUNPOD_MU_POD_ID=
 EOF
   echo "Created local env file: $ENV_PATH"
 fi
@@ -40,7 +80,38 @@ set_kv() {
   fi
 }
 
+get_kv() {
+  local key="$1"
+  if grep -q "^${key}=" "$ENV_PATH"; then
+    grep "^${key}=" "$ENV_PATH" | tail -n 1 | cut -d= -f2-
+  fi
+}
+
+value_or_existing() {
+  local key="$1"; local default="$2"
+  if [[ -n "${!key+x}" ]]; then
+    printf '%s\n' "${!key}"
+    return
+  fi
+  local existing
+  existing="$(get_kv "$key")"
+  if [[ -n "$existing" || "$(grep -c "^${key}=" "$ENV_PATH")" != "0" ]]; then
+    printf '%s\n' "$existing"
+  else
+    printf '%s\n' "$default"
+  fi
+}
+
 set_kv FIRECRAWL_API_URL "http://localhost:3002"
+set_kv PDF_RUST_EXTRACT_ENABLE "${PDF_RUST_EXTRACT_ENABLE:-true}"
+set_kv PDF_SHADOW_COMPARISON_ENABLE "${PDF_SHADOW_COMPARISON_ENABLE:-false}"
+set_kv MINERU_PERCENT "$(value_or_existing MINERU_PERCENT 0)"
+set_kv FIRE_PDF_ENABLE "$(value_or_existing FIRE_PDF_ENABLE false)"
+set_kv FIRE_PDF_PERCENT "$(value_or_existing FIRE_PDF_PERCENT 10)"
+set_kv FIRE_PDF_BASE_URL "$(value_or_existing FIRE_PDF_BASE_URL "")"
+set_kv FIRE_PDF_API_KEY "$(value_or_existing FIRE_PDF_API_KEY "")"
+set_kv RUNPOD_MU_API_KEY "$(value_or_existing RUNPOD_MU_API_KEY "")"
+set_kv RUNPOD_MU_POD_ID "$(value_or_existing RUNPOD_MU_POD_ID "")"
 
 case "$PROFILE" in
   gateway)

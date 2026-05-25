@@ -50,6 +50,22 @@ MODEL_BY_PROFILE = {
 }
 
 
+def resolve_firecrawl_dir(value: str | None = None) -> Path:
+    candidates = [
+        value,
+        os.getenv("FC_DIR"),
+        str(Path.cwd()),
+        str(Path.home() / "Documents" / "GitHub" / "agentic-assets" / "firecrawl"),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if (path / "docker-compose.yaml").exists() and (path / "scripts" / "firecrawl-ops").is_dir():
+            return path
+    raise SystemExit("Could not find the Firecrawl repo. Pass --firecrawl-dir or set FC_DIR.")
+
+
 @dataclass
 class ItemResult:
     url: str
@@ -114,7 +130,9 @@ def confidence_score(markdown: str, min_len: int) -> float:
 
 
 def run_profile_switch(profile: str, firecrawl_dir: Path) -> None:
-    script = Path.home() / ".openclaw" / "skills" / "firecrawl-ops" / "scripts" / "set_model_profile.sh"
+    script = Path.home() / ".agents" / "skills" / "firecrawl-ops" / "scripts" / "set_model_profile.sh"
+    if not script.exists():
+        script = firecrawl_dir / "scripts" / "firecrawl-ops" / "set_model_profile.sh"
     subprocess.run([str(script), profile], check=True)
     subprocess.run(["docker", "compose", "down"], cwd=str(firecrawl_dir), check=True)
     subprocess.run(["docker", "compose", "up", "-d"], cwd=str(firecrawl_dir), check=True)
@@ -197,13 +215,14 @@ def maybe_write_supabase(run_id: str, report: dict[str, Any]) -> tuple[bool, str
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--api", default="http://localhost:3002/v1")
+    ap.add_argument("--api", default="http://localhost:3002/v2")
     ap.add_argument("--input", required=True)
     ap.add_argument("--out", default="swarm_pipeline_report.json")
     ap.add_argument("--min-len", type=int, default=1200)
     ap.add_argument("--restart-between-stages", action="store_true")
-    ap.add_argument("--firecrawl-dir", default=str(Path.home() / "Documents" / "GitHub" / "firecrawl"))
+    ap.add_argument("--firecrawl-dir", default=None)
     args = ap.parse_args()
+    firecrawl_dir = resolve_firecrawl_dir(args.firecrawl_dir)
 
     urls = load_urls(Path(args.input))
     run_id = str(uuid.uuid4())
@@ -213,7 +232,7 @@ def main() -> None:
 
     def stage_run(stage_name: str, profile: str, target_urls: list[str]) -> list[ItemResult]:
         if args.restart_between_stages:
-            run_profile_switch(profile, Path(args.firecrawl_dir))
+            run_profile_switch(profile, firecrawl_dir)
             time.sleep(2)
 
         out: list[ItemResult] = []

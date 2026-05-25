@@ -41,6 +41,8 @@
 
 **Search, scrape, and clean the web for AI agents.** The web context API to find sources, extract content, and turn it into clean Markdown or structured data your agents can ship with. Open source and available as a [hosted service](https://firecrawl.dev/?ref=github).
 
+> **Agentic Assets fork note:** for local OrbStack setup, model profiles, local CLI/MCP helpers, agent skills, and optional local Docling OCR, start with [`LOCAL_DEVELOPMENT_GUIDE.md`](LOCAL_DEVELOPMENT_GUIDE.md). For a new Mac/business partner clone, use [`docs/firecrawl-ops/references/partner-orbstack-onboarding.md`](docs/firecrawl-ops/references/partner-orbstack-onboarding.md).
+
 _Pst. Hey, you, join our stargazers :)_
 
 <a href="https://github.com/firecrawl/firecrawl">
