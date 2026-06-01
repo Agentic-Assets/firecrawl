@@ -351,7 +351,16 @@ export async function scrapeController(
             });
           }
 
-          const statusCode = e.code === "SCRAPE_TIMEOUT" ? 408 : 500;
+          const statusCode =
+            e.code === "SCRAPE_TIMEOUT"
+              ? 408
+              : e.code === "SCRAPE_PDF_OCR_BACKPRESSURE"
+                ? 429
+                : e.code === "SCRAPE_PDF_OCR_TIMEOUT"
+                  ? 504
+                  : e.code === "SCRAPE_PDF_LOW_QUALITY"
+                    ? 422
+                    : 500;
           setSpanAttributes(span, {
             "scrape.status_code": statusCode,
           });

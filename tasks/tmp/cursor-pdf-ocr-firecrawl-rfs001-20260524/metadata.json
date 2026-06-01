@@ -1,0 +1,194 @@
+{
+  "started_at": "2026-05-24T18:52:06-0500",
+  "finished_at": "2026-05-24T18:52:30-0500",
+  "seconds": 24.44,
+  "command": [
+    "scripts/firecrawl-ops/pdf_ocr_benchmark.py",
+    "/Users/caymanseagraves/Documents/GitHub/agentic-assets/agentic-assets-orbis/tasks/tmp/archive/tmp-cleanup-20260524/cursor-pdf-planner-smoke-input-20260524/RFS/rfs-001.pdf",
+    "--modes",
+    "ocr",
+    "--profiles",
+    "research-page-aware",
+    "--no-profile-restart",
+    "--max-pages",
+    "10",
+    "--timeout",
+    "900",
+    "--out-dir",
+    "tasks/tmp/cursor-pdf-ocr-firecrawl-rfs001-20260524",
+    "--strict"
+  ],
+  "api_url": "http://localhost:3002",
+  "modes": [
+    "ocr"
+  ],
+  "profiles": [
+    "research-page-aware"
+  ],
+  "formats": [
+    "markdown",
+    "html",
+    "images"
+  ],
+  "max_pages": 10,
+  "adapter_health_url": "http://127.0.0.1:31337/health",
+  "adapter_health": {
+    "ok": true,
+    "engine": "docling",
+    "docling_ok": true,
+    "docling_error": null,
+    "adapter_version": "2026-05-24.2",
+    "adapter_script_sha256": "deaa8f34f5e0fa9dbe3122934cf4e7c71eeb6f718d7c4d3f50e9d263641c8215",
+    "settings_fingerprint": "05820981b214830d5a64bd38ca41f2a17eb32cec77cf21365ff07510cfe4398a",
+    "profile": {
+      "name": "research-page-aware",
+      "description": "Academic papers where downstream agents need page chunks and citations.",
+      "profiles_path": "/app/pdf_ocr_profiles.json",
+      "profiles_sha256": "afc1c24449292e9dbb6ec8c748c88be8340291f883ec4019906058611e0aae96",
+      "capture_docling_json": false,
+      "output_dir": null,
+      "available": [
+        "default",
+        "figure-enrichment-lab",
+        "qa-debug",
+        "research-page-aware",
+        "scanned-english",
+        "tables-accurate",
+        "tables-fast"
+      ]
+    },
+    "adapter": {
+      "host": "0.0.0.0",
+      "port": 31337,
+      "timeout_seconds": 600.0,
+      "keep_temp": false,
+      "max_concurrent_ocr": 2,
+      "active_ocr": 0,
+      "fail_low_quality": true
+    },
+    "docling_url": "http://host.docker.internal:5001",
+    "docling": {
+      "url": "http://host.docker.internal:5001",
+      "image_id": "quay.io/docling-project/docling-serve-cpu@sha256:528f52f5ce56be1739df117560512ffaa483be53934bf5b0458b4ca088b1a6b0",
+      "max_sync_wait": "900"
+    },
+    "docling_options": {
+      "from_formats": [
+        "pdf"
+      ],
+      "to_formats": [
+        "md",
+        "json",
+        "html"
+      ],
+      "do_ocr": true,
+      "force_ocr": true,
+      "ocr_preset": "auto",
+      "pdf_backend": "docling_parse",
+      "table_mode": "accurate",
+      "table_cell_matching": true,
+      "do_table_structure": true,
+      "include_images": true,
+      "images_scale": 2.0,
+      "image_export_mode": "placeholder",
+      "md_page_break_placeholder": "FIRECRAWLPAGEBREAK",
+      "abort_on_error": false,
+      "do_code_enrichment": false,
+      "do_formula_enrichment": false,
+      "do_picture_classification": false,
+      "do_chart_extraction": false,
+      "do_picture_description": false,
+      "document_timeout": 600.0
+    },
+    "direct_request_overrides": {
+      "field": "docling_options",
+      "note": "POST /ocr may include this object for direct adapter tests; Firecrawl API calls use env/container settings."
+    }
+  },
+  "adapter_settings": {
+    "ok": true,
+    "engine": "docling",
+    "adapter_version": "2026-05-24.2",
+    "adapter_script_sha256": "deaa8f34f5e0fa9dbe3122934cf4e7c71eeb6f718d7c4d3f50e9d263641c8215",
+    "settings_fingerprint": "05820981b214830d5a64bd38ca41f2a17eb32cec77cf21365ff07510cfe4398a",
+    "profile": {
+      "name": "research-page-aware",
+      "description": "Academic papers where downstream agents need page chunks and citations.",
+      "profiles_path": "/app/pdf_ocr_profiles.json",
+      "profiles_sha256": "afc1c24449292e9dbb6ec8c748c88be8340291f883ec4019906058611e0aae96",
+      "capture_docling_json": false,
+      "output_dir": null,
+      "available": [
+        "default",
+        "figure-enrichment-lab",
+        "qa-debug",
+        "research-page-aware",
+        "scanned-english",
+        "tables-accurate",
+        "tables-fast"
+      ]
+    },
+    "adapter": {
+      "host": "0.0.0.0",
+      "port": 31337,
+      "timeout_seconds": 600.0,
+      "keep_temp": false,
+      "max_concurrent_ocr": 2,
+      "active_ocr": 0,
+      "fail_low_quality": true
+    },
+    "docling_url": "http://host.docker.internal:5001",
+    "docling": {
+      "url": "http://host.docker.internal:5001",
+      "image_id": "quay.io/docling-project/docling-serve-cpu@sha256:528f52f5ce56be1739df117560512ffaa483be53934bf5b0458b4ca088b1a6b0",
+      "max_sync_wait": "900"
+    },
+    "docling_options": {
+      "from_formats": [
+        "pdf"
+      ],
+      "to_formats": [
+        "md",
+        "json",
+        "html"
+      ],
+      "do_ocr": true,
+      "force_ocr": true,
+      "ocr_preset": "auto",
+      "pdf_backend": "docling_parse",
+      "table_mode": "accurate",
+      "table_cell_matching": true,
+      "do_table_structure": true,
+      "include_images": true,
+      "images_scale": 2.0,
+      "image_export_mode": "placeholder",
+      "md_page_break_placeholder": "FIRECRAWLPAGEBREAK",
+      "abort_on_error": false,
+      "do_code_enrichment": false,
+      "do_formula_enrichment": false,
+      "do_picture_classification": false,
+      "do_chart_extraction": false,
+      "do_picture_description": false,
+      "document_timeout": 600.0
+    },
+    "direct_request_overrides": {
+      "field": "docling_options",
+      "note": "POST /ocr may include this object for direct adapter tests; Firecrawl API calls use env/container settings."
+    }
+  },
+  "docker_context": {
+    "ok": true,
+    "stdout": "orbstack\n"
+  },
+  "case_count": 1,
+  "recommendations": {
+    "Biased_by_Choice_How_Financial_Constraints_Can_Reduce_Financ_10.1093_rfs_hhab073-28736cc2": {
+      "mode": "ocr",
+      "profile": "research-page-aware",
+      "decision": "manual_review",
+      "reason": "Only one parser mode produced markdown."
+    }
+  },
+  "unexpected_failure_count": 0,
+  "unexpected_failures": []
+}

@@ -1,0 +1,71 @@
+{
+  "default": {
+    "description": "Conservative general local OCR/layout profile.",
+    "docling_options": {
+      "to_formats": ["md", "json", "html"],
+      "do_ocr": true,
+      "force_ocr": true,
+      "ocr_preset": "auto",
+      "pdf_backend": "docling_parse",
+      "table_mode": "accurate",
+      "table_cell_matching": true,
+      "do_table_structure": true,
+      "include_images": true,
+      "images_scale": 2.0,
+      "image_export_mode": "placeholder"
+    },
+    "capture_docling_json": false
+  },
+  "research-page-aware": {
+    "description": "Academic papers where downstream agents need page chunks and citations.",
+    "extends": "default",
+    "docling_options": {
+      "md_page_break_placeholder": "FIRECRAWLPAGEBREAK"
+    }
+  },
+  "tables-accurate": {
+    "description": "Finance, CRE, and academic PDFs where table structure matters more than speed.",
+    "extends": "research-page-aware",
+    "docling_options": {
+      "table_mode": "accurate",
+      "table_cell_matching": true,
+      "do_table_structure": true
+    }
+  },
+  "tables-fast": {
+    "description": "Faster table/layout pass for long papers or first-pass triage.",
+    "extends": "research-page-aware",
+    "docling_options": {
+      "table_mode": "fast",
+      "table_cell_matching": true,
+      "do_table_structure": true
+    }
+  },
+  "scanned-english": {
+    "description": "Scanned or image-only English PDFs.",
+    "extends": "research-page-aware",
+    "docling_options": {
+      "do_ocr": true,
+      "force_ocr": true,
+      "ocr_lang": ["en"]
+    }
+  },
+  "qa-debug": {
+    "description": "Debug profile with page breaks and raw Docling JSON capture enabled.",
+    "extends": "research-page-aware",
+    "docling_options": {
+      "to_formats": ["md", "json", "html"],
+      "image_export_mode": "placeholder"
+    },
+    "capture_docling_json": true
+  },
+  "figure-enrichment-lab": {
+    "description": "Experimental chart/figure enrichment profile for benchmark-only use.",
+    "extends": "research-page-aware",
+    "docling_options": {
+      "do_chart_extraction": true,
+      "do_picture_classification": true,
+      "do_picture_description": true
+    }
+  }
+}

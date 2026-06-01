@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import requests
 
-FIRECRAWL_API = "http://localhost:3002/v1/scrape"
+FIRECRAWL_API = "http://localhost:3002/v2/scrape"
 
 # CRE sources organized by category
 CRE_SOURCES = {

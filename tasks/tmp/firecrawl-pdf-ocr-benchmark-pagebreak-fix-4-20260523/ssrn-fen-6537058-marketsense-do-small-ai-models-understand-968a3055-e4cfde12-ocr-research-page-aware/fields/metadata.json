@@ -1,0 +1,12 @@
+{
+  "scrapeId": "019e5735-25a3-7765-aeb8-06334d589f5b",
+  "sourceURL": "paper.pdf",
+  "url": "https://parse.firecrawl.dev/uploads/paper.pdf",
+  "statusCode": 200,
+  "numPages": 6,
+  "title": "MarketSense_Paper_Updated_4.pdf",
+  "contentType": "application/pdf",
+  "proxyUsed": "basic",
+  "creditsUsed": 6,
+  "concurrencyLimited": false
+}

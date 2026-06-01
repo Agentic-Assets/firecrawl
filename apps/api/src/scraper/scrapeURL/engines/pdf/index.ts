@@ -6,7 +6,10 @@ import { safeMarkdownToHtml } from "./markdownToHtml";
 import {
   PDFAntibotError,
   PDFInsufficientTimeError,
+  PDFLowQualityError,
+  PDFOCRBackpressureError,
   PDFOCRRequiredError,
+  PDFOCRTimeoutError,
   PDFPrefetchFailed,
   RemoveFeatureError,
   EngineUnsuccessfulError,
@@ -432,7 +435,10 @@ export async function scrapePDF(meta: Meta): Promise<EngineScrapeResult> {
         } catch (error) {
           if (
             error instanceof RemoveFeatureError ||
-            error instanceof AbortManagerThrownError
+            error instanceof AbortManagerThrownError ||
+            error instanceof PDFOCRBackpressureError ||
+            error instanceof PDFOCRTimeoutError ||
+            error instanceof PDFLowQualityError
           ) {
             throw error;
           }
@@ -607,6 +613,7 @@ export async function scrapePDF(meta: Meta): Promise<EngineScrapeResult> {
       pdfMetadata: {
         numPages: effectivePageCount,
         title: metadataTitle,
+        ...(result?.ocrMetadata ? { ocr: result.ocrMetadata } : {}),
       },
 
       contentType: "application/pdf",

@@ -1,0 +1,98 @@
+---
+name: firecrawl-local-api
+description: Use this repo's local Firecrawl API from Cursor or Cursor SDK agents. Use when scraping URLs, searching, mapping/crawling sites, parsing PDFs/Office files, or extracting structured fields with local Firecrawl.
+---
+
+# Firecrawl Local API For Cursor
+
+This is an optional Cursor adapter, not the core Firecrawl setup. The reusable Firecrawl layer lives in:
+
+- `scripts/firecrawl-ops/firecrawl_mcp.sh` for MCP
+- `scripts/firecrawl-ops/firecrawl_cli.sh` for CLI
+- `scripts/firecrawl-ops/firecrawl_request.py` for saved artifacts and advanced direct API options
+- `.agents/skills/firecrawl-local-api/SKILL.md` for Codex/Claude-style agents
+- `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` for cross-agent setup
+
+## Runtime
+
+- Local API: `http://localhost:3002`
+- Local auth: usually disabled with `USE_DB_AUTHENTICATION=false`
+- Mac runtime: OrbStack, not Docker Desktop
+
+Start and verify:
+
+```bash
+docker compose up -d
+bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
+```
+
+## Cursor Tooling
+
+Use the MCP server named `firecrawl-local` first. It is defined in `.cursor/mcp.json` and starts:
+
+```bash
+bash scripts/firecrawl-ops/firecrawl_mcp.sh
+```
+
+If MCP is unavailable, use the CLI wrapper:
+
+```bash
+scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty
+scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
+scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
+```
+
+Use `firecrawl_request.py` for direct local API settings the CLI does not expose, especially PDF `mode` and `maxPages`, or when the agent needs split markdown/html/metadata files:
+
+```bash
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
+  --formats markdown,html --pdf-mode auto --max-pages 25 --pretty
+```
+
+For harder academic PDFs, use the local Docling OCR adapter profiles:
+
+```bash
+scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
+scripts/firecrawl-ops/local_firepdf_ocr.sh profiles
+scripts/firecrawl-ops/local_firepdf_ocr.sh doctor --smoke-pdf ./report.pdf
+scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
+  --modes fast,auto,ocr \
+  --profiles default,research-page-aware,tables-accurate \
+  --max-pages 40 --strict
+```
+
+The benchmark saves per-case `fields/pages.jsonl`, `qa.json`, and `qa.md`, then recommends accept/reject/manual-review plus a mode/profile in `summary.md`. Raw Docling JSON capture is available with `--capture-json` or the `qa-debug` profile and writes full-document debug artifacts under `tasks/tmp`.
+
+The local OCR adapter has guardrails for agent runs: `LOCAL_FIREPDF_MAX_CONCURRENT_OCR` defaults to 2, a third concurrent OCR request returns `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429, Docling timeouts return `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504, Docling sync waits default to 900 seconds on new starts, and low-quality publisher-boilerplate or mostly-empty OCR output returns `SCRAPE_PDF_LOW_QUALITY` / HTTP 422. Successful parses can expose stable `data.metadata.pdfOcr` metadata with profile/settings fingerprint, resolved Docling options, page-boundary source, compact page summaries, boilerplate families/scores, and table/figure signals. OCR-mode FirePDF cache is bypassed so local canaries do not reuse stale profile output.
+
+For Cursor SDK code, project settings are not loaded by default. Either pass `mcpServers` inline with `command: "bash"` and `args: ["scripts/firecrawl-ops/firecrawl_mcp.sh"]`, or set `local: { cwd: process.cwd(), settingSources: ["project"] }`.
+
+Use the SDK local runtime for this local stack. Cursor cloud agents cannot reach this Mac's `http://localhost:3002` unless the API is exposed at a reachable URL.
+
+## Endpoint Choices
+
+- One URL: `POST /v2/scrape`
+- Search: `POST /v2/search`
+- Discover URLs: `POST /v2/map`
+- Crawl: `POST /v2/crawl`, then poll `GET /v2/crawl/:id`
+- Many URLs: `POST /v2/batch/scrape`, then poll status
+- Local files: `POST /v2/parse`
+- Structured extraction: `POST /v2/scrape` with JSON format, or `POST /v2/extract` with an explicit schema
+
+Avoid `firecrawl crawl --wait` locally; submit and poll by job id.
+
+## Composer Boundary
+
+Composer 2.5 is the Cursor SDK agent model. Firecrawl is the local web/file tool.
+
+Do not configure Cursor Composer as Firecrawl's internal LLM backend unless Cursor provides an OpenAI-compatible base URL. For Firecrawl's own AI-backed formats, use:
+
+```bash
+scripts/firecrawl-ops/set_model_profile.sh budget
+scripts/firecrawl-ops/set_model_profile.sh gateway
+docker compose up -d --force-recreate api
+```
+
+## Cost Boundary
+
+Local API calls do not spend Firecrawl cloud credits. Provider keys configured in root `.env`, proxies, and hosted search integrations can still have their own costs.

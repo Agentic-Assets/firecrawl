@@ -13,6 +13,12 @@
       "headers": {
         "Authorization": "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}"
       }
+    },
+    "firecrawl-local": {
+      "command": "bash",
+      "args": [
+        "scripts/firecrawl-ops/firecrawl_mcp.sh"
+      ]
     }
   }
 }

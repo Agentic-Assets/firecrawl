@@ -50,6 +50,7 @@ export const resultResponseSchema = z.object({
   pages_processed: z.number().optional(),
   failed_pages: z.array(z.number()).nullable().optional(),
   partial_pages: z.array(z.number()).nullable().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type PollResponse = z.infer<typeof pollResponseSchema>;

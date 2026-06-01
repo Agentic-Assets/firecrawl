@@ -33,7 +33,7 @@ def load_urls(path: Path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--api", default="http://localhost:3002/v1")
+    ap.add_argument("--api", default="http://localhost:3002/v2")
     ap.add_argument("--input", required=True)
     ap.add_argument("--out", default="triage_report.json")
     ap.add_argument("--min-len", type=int, default=1200)

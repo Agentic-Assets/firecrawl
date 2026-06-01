@@ -1,0 +1,12 @@
+{
+  "scrapeId": "019e5735-bff7-70f9-81d8-1cc8119e7b17",
+  "sourceURL": "paper.pdf",
+  "url": "https://parse.firecrawl.dev/uploads/paper.pdf",
+  "statusCode": 200,
+  "numPages": 14,
+  "title": "CIS_SSRN_Final.md",
+  "contentType": "application/pdf",
+  "proxyUsed": "basic",
+  "creditsUsed": 14,
+  "concurrencyLimited": false
+}

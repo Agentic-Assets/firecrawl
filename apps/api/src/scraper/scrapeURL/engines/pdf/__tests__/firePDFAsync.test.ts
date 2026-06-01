@@ -12,6 +12,7 @@ import {
   scrapePDFWithFirePDFAsync,
 } from "../fire-pdf/async";
 import { config } from "../../../../../config";
+const pdfCacheMock = jest.requireMock("../../../../../lib/gcs-pdf-cache");
 
 // ── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -165,6 +166,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
             pages_processed: 12,
             failed_pages: null,
             partial_pages: null,
+            metadata: { settings_fingerprint: "fp-1", profile: "qa-debug" },
           },
         },
       },
@@ -182,8 +184,83 @@ describe("scrapePDFWithFirePDFAsync", () => {
 
     expect(result.markdown).toBe("# Hello async");
     expect(result.pagesProcessed).toBe(12);
+    expect(result.ocrMetadata).toEqual({
+      settings_fingerprint: "fp-1",
+      profile: "qa-debug",
+    });
     expect(fallback).not.toHaveBeenCalled();
     expect(calls).toHaveLength(4);
+  });
+
+  it("bypasses cache for ocr mode so profile-specific OCR is not reused", async () => {
+    pdfCacheMock.getPdfResultFromCache.mockClear();
+    pdfCacheMock.savePdfResultToCache.mockClear();
+    const { fetchImpl } = makeFetchFromSequence([
+      {
+        matchUrl: /\/jobs$/,
+        matchMethod: "POST",
+        response: {
+          status: 200,
+          body: { scrape_id: "scrape-id-test", status: "done" },
+        },
+      },
+      {
+        matchUrl: /\/jobs\/scrape-id-test\/result$/,
+        matchMethod: "GET",
+        response: {
+          status: 200,
+          body: { markdown: "fresh ocr", pages_processed: 3 },
+        },
+      },
+    ]);
+
+    const result = await scrapePDFWithFirePDFAsync(
+      makeMeta(),
+      "BASE64",
+      undefined,
+      undefined,
+      "ocr",
+      { fetchImpl, fallbackImpl: jest.fn(), sleepImpl: noopSleep },
+    );
+
+    expect(result.markdown).toBe("fresh ocr");
+    expect(pdfCacheMock.getPdfResultFromCache).not.toHaveBeenCalled();
+    expect(pdfCacheMock.savePdfResultToCache).not.toHaveBeenCalled();
+  });
+
+  it("bypasses cache when zero-data-retention is enabled", async () => {
+    pdfCacheMock.getPdfResultFromCache.mockClear();
+    pdfCacheMock.savePdfResultToCache.mockClear();
+    const { fetchImpl } = makeFetchFromSequence([
+      {
+        matchUrl: /\/jobs$/,
+        matchMethod: "POST",
+        response: {
+          status: 200,
+          body: { scrape_id: "scrape-id-test", status: "done" },
+        },
+      },
+      {
+        matchUrl: /\/jobs\/scrape-id-test\/result$/,
+        matchMethod: "GET",
+        response: {
+          status: 200,
+          body: { markdown: "zdr fresh", pages_processed: 1 },
+        },
+      },
+    ]);
+
+    await scrapePDFWithFirePDFAsync(
+      makeMeta({ internalOptions: { zeroDataRetention: true } }),
+      "BASE64",
+      undefined,
+      undefined,
+      undefined,
+      { fetchImpl, fallbackImpl: jest.fn(), sleepImpl: noopSleep },
+    );
+
+    expect(pdfCacheMock.getPdfResultFromCache).not.toHaveBeenCalled();
+    expect(pdfCacheMock.savePdfResultToCache).not.toHaveBeenCalled();
   });
 
   it("idempotent replay: POST 200 done skips polling and fetches result", async () => {

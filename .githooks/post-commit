@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat <<'EOF'
+
+Firecrawl skills reminder:
+  If this commit changed repo skills, ops scripts, or Firecrawl local-agent docs,
+  consider running:
+
+    scripts/firecrawl-ops/sync_agent_skills.sh
+
+  This refreshes ~/.agents/skills and the ~/.codex, ~/.claude, ~/.cursor symlinks.
+
+EOF

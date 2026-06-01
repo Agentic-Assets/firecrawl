@@ -423,6 +423,75 @@ export class PDFOCRRequiredError extends TransportableError {
   }
 }
 
+export class PDFOCRBackpressureError extends TransportableError {
+  constructor(message?: string) {
+    super(
+      "SCRAPE_PDF_OCR_BACKPRESSURE",
+      message ??
+        "The PDF OCR backend is at local capacity. Retry later or lower OCR concurrency.",
+    );
+  }
+
+  serialize() {
+    return super.serialize();
+  }
+
+  static deserialize(
+    _: ErrorCodes,
+    data: ReturnType<typeof this.prototype.serialize>,
+  ) {
+    const x = new PDFOCRBackpressureError(data.message);
+    x.stack = data.stack;
+    return x;
+  }
+}
+
+export class PDFOCRTimeoutError extends TransportableError {
+  constructor(message?: string) {
+    super(
+      "SCRAPE_PDF_OCR_TIMEOUT",
+      message ??
+        "The PDF OCR backend timed out before it could return a completed parse.",
+    );
+  }
+
+  serialize() {
+    return super.serialize();
+  }
+
+  static deserialize(
+    _: ErrorCodes,
+    data: ReturnType<typeof this.prototype.serialize>,
+  ) {
+    const x = new PDFOCRTimeoutError(data.message);
+    x.stack = data.stack;
+    return x;
+  }
+}
+
+export class PDFLowQualityError extends TransportableError {
+  constructor(message?: string) {
+    super(
+      "SCRAPE_PDF_LOW_QUALITY",
+      message ??
+        "The PDF parser returned low-quality OCR output instead of substantive document text.",
+    );
+  }
+
+  serialize() {
+    return super.serialize();
+  }
+
+  static deserialize(
+    _: ErrorCodes,
+    data: ReturnType<typeof this.prototype.serialize>,
+  ) {
+    const x = new PDFLowQualityError(data.message);
+    x.stack = data.stack;
+    return x;
+  }
+}
+
 export class PDFPrefetchFailed extends TransportableError {
   constructor() {
     const message = isSelfHosted()
