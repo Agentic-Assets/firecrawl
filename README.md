@@ -39,7 +39,7 @@
 
 # **🔥 Firecrawl**
 
-**Search, scrape, and clean the web for AI agents.** The web context API to find sources, extract content, and turn it into clean Markdown or structured data your agents can ship with. Open source and available as a [hosted service](https://firecrawl.dev/?ref=github).
+**The API to search, scrape, and interact with the web at scale. 🔥** The web context API to find sources, extract content, and turn it into clean Markdown or structured data your agents can ship with. Open source and available as a [hosted service](https://firecrawl.dev/?ref=github).
 
 > **Agentic Assets fork note:** for local OrbStack setup, model profiles, local CLI/MCP helpers, agent skills, and optional local Docling OCR, start with [`LOCAL_DEVELOPMENT_GUIDE.md`](LOCAL_DEVELOPMENT_GUIDE.md). For a new Mac/business partner clone, use [`docs/firecrawl-ops/references/partner-orbstack-onboarding.md`](docs/firecrawl-ops/references/partner-orbstack-onboarding.md).
 
@@ -106,7 +106,7 @@ search_result = app.search("firecrawl", limit=5)
 
 **Node.js**
 ```javascript
-import Firecrawl from '@mendable/firecrawl-js';
+import { Firecrawl } from 'firecrawl';
 
 const app = new Firecrawl({apiKey: "fc-YOUR_API_KEY"});
 
@@ -163,7 +163,7 @@ result = app.scrape('firecrawl.dev')
 
 **Node.js**
 ```javascript
-import Firecrawl from '@mendable/firecrawl-js';
+import { Firecrawl } from 'firecrawl';
 
 const app = new Firecrawl({ apiKey: "fc-YOUR_API_KEY" });
 
@@ -221,7 +221,7 @@ app.interact(scrape_id, prompt="Click the first result")
 
 **Node.js**
 ```javascript
-import Firecrawl from '@mendable/firecrawl-js';
+import { Firecrawl } from 'firecrawl';
 
 const app = new Firecrawl({apiKey: "fc-YOUR_API_KEY"});
 
@@ -546,10 +546,10 @@ print(results)
 
 Install the SDK:
 ```bash
-npm install @mendable/firecrawl-js
+npm install firecrawl
 ```
 ```javascript
-import Firecrawl from '@mendable/firecrawl-js';
+import { Firecrawl } from 'firecrawl';
 
 const app = new Firecrawl({ apiKey: 'fc-YOUR_API_KEY' });
 

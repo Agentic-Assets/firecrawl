@@ -856,7 +856,14 @@ const crawlerOptions = z.strictObject({
   deduplicateSimilarURLs: z.boolean().prefault(true),
   ignoreQueryParameters: z.boolean().prefault(false),
   regexOnFullURL: z.boolean().prefault(false),
-  delay: z.number().positive().optional(),
+  delay: z
+    .number()
+    .positive()
+    .max(
+      60,
+      "The delay parameter is measured in seconds and cannot exceed 60 seconds.",
+    )
+    .optional(),
 });
 
 // export type CrawlerOptions = {
@@ -1267,6 +1274,7 @@ export type AuthCreditUsageChunk = {
     account?: number;
     supportAsk?: number;
     supportDocsSearch?: number;
+    research?: number;
   };
   concurrency: number;
   flags: TeamFlags;
@@ -1289,7 +1297,7 @@ export type TeamFlags = {
   forceZDR?: boolean;
   allowZDR?: boolean;
   scrapeZDR?: "disabled" | "allowed" | "forced";
-  searchZDR?: "disabled" | "allowed" | "forced";
+  searchZDR?: "disabled" | "allowed" | "forced" | "forced-zdr" | "forced-anon";
   zdrCost?: number;
   checkRobotsOnScrape?: boolean;
   crawlTtlHours?: number;
@@ -1301,6 +1309,7 @@ export type TeamFlags = {
   maxBrowserSessions?: number;
   // POST /v2/search/:jobId/feedback returns 403 TEAM_OPTED_OUT when true.
   searchFeedbackOptOut?: boolean;
+  researchBeta?: boolean;
 } | null;
 
 export type AuthCreditUsageChunkFromTeam = Omit<

@@ -14,7 +14,8 @@ export type FormatString =
   | "attributes"
   | "branding"
   | "audio"
-  | "video";
+  | "video"
+  | "pii";
 
 export interface Viewport {
   width: number;
@@ -205,12 +206,77 @@ export interface ScrapeOptions {
   minAge?: number;
   storeInCache?: boolean;
   lockdown?: boolean;
+  redactPII?: boolean | RedactPIIOptions;
   profile?: {
     name: string;
     saveChanges?: boolean;
   };
   integration?: string;
   origin?: string;
+}
+
+export type RedactPIIEntity =
+  | "PERSON"
+  | "EMAIL"
+  | "PHONE"
+  | "LOCATION"
+  | "FINANCIAL"
+  | "SECRET";
+
+export interface RedactPIIOptions {
+  /**
+   * accurate (default): model-only redaction. Best precision, cleanest output.
+   * aggressive: model + Presidio + spaCy. Higher recall at the cost of precision.
+   * fast: Presidio only, no model call. Lower F1, ~2x throughput.
+   */
+  mode?: "accurate" | "aggressive" | "fast";
+  /** Restrict redaction to these entity buckets. Unset means all entities. */
+  entities?: RedactPIIEntity[];
+  /**
+   * tag (default): replace spans with `<KIND>` placeholders.
+   * mask: replace spans with `*` of equal length.
+   * remove: drop span characters entirely.
+   */
+  replaceStyle?: "tag" | "mask" | "remove";
+}
+
+export type PIISource = "model" | "heuristics" | "unknown";
+
+export interface PIISpan {
+  start: number;
+  end: number;
+  /** Unified entity bucket. Omitted when `kind` doesn't map onto one. */
+  entity?: RedactPIIEntity;
+  /** Granular recognizer label from fire-privacy. */
+  kind: string;
+  source: PIISource;
+  /** Confidence in [0, 1] when supplied. */
+  score?: number;
+}
+
+/**
+ * - ok: redaction completed; redactedMarkdown is the result.
+ * - skipped: redaction was not performed; see `reason`.
+ * - failed: redaction was attempted but did not produce a usable result.
+ */
+export type PIIStatus = "ok" | "skipped" | "failed";
+
+/** Always set when status !== "ok". */
+export type PIIReason =
+  | "empty_input"
+  | "too_large"
+  | "upstream_skipped"
+  | "service_unavailable"
+  | "timeout"
+  | "error";
+
+export interface PIIBlock {
+  status: PIIStatus;
+  reason?: PIIReason;
+  redactedMarkdown: string | null;
+  spans: PIISpan[];
+  /** Span count per entity bucket. Only non-zero entries are present. */
+  counts: Partial<Record<RedactPIIEntity, number>>;
 }
 
 export type ParseFileData =
@@ -483,6 +549,7 @@ export interface Document {
   warning?: string;
   changeTracking?: Record<string, unknown>;
   branding?: BrandingProfile;
+  pii?: PIIBlock;
 }
 
 // Pagination configuration for auto-fetching pages from v2 endpoints that return a `next` URL
@@ -660,6 +727,25 @@ export interface MonitorEmailNotification {
   includeDiffs?: boolean;
 }
 
+/**
+ * Per-recipient opt-in state for monitor email notifications.
+ *
+ * External recipients (not members of the team that owns the monitor) must
+ * confirm their subscription via a one-time email before they receive any
+ * monitor notifications. Team members are auto-confirmed.
+ *
+ * - `pending`      → confirmation email sent, no notifications yet
+ * - `confirmed`    → notifications enabled
+ * - `unsubscribed` → recipient opted out and cannot be re-added without a new
+ *                    confirmation flow
+ */
+export interface MonitorEmailRecipientSubscription {
+  email: string;
+  status: "pending" | "confirmed" | "unsubscribed";
+  source: "team" | "opt_in" | "legacy";
+  confirmationEmailSent?: boolean;
+}
+
 export interface MonitorNotification {
   email?: MonitorEmailNotification;
 }
@@ -695,6 +781,8 @@ export interface CreateMonitorRequest {
   notification?: MonitorNotification;
   targets: MonitorTarget[];
   retentionDays?: number;
+  goal?: string;
+  judgeEnabled?: boolean;
 }
 
 export interface UpdateMonitorRequest {
@@ -705,6 +793,8 @@ export interface UpdateMonitorRequest {
   notification?: MonitorNotification | null;
   targets?: MonitorTarget[];
   retentionDays?: number;
+  goal?: string | null;
+  judgeEnabled?: boolean;
 }
 
 export interface MonitorSummary {
@@ -727,11 +817,32 @@ export interface Monitor {
   targets: MonitorTarget[];
   webhook?: MonitorWebhookConfig | null;
   notification?: MonitorNotification | null;
+  /**
+   * Present on create/update/get responses. Reflects the opt-in state of every
+   * email recipient currently configured on the monitor. Absent when the API
+   * has not reconciled recipients (e.g. team-default delivery with no
+   * explicit recipients).
+   */
+  emailRecipientSubscriptions?: MonitorEmailRecipientSubscription[];
   retentionDays: number;
   estimatedCreditsPerMonth?: number | null;
   lastCheckSummary?: MonitorSummary | null;
+  goal?: string | null;
+  judgeEnabled?: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface MonitorPageJudgment {
+  meaningful: boolean;
+  confidence: "high" | "medium" | "low";
+  reason: string;
+  meaningfulChanges: Array<{
+    type: "added" | "removed" | "changed";
+    before: string | null;
+    after: string | null;
+    reason: string;
+  }>;
 }
 
 export interface MonitorCheck {
@@ -807,6 +918,7 @@ export interface MonitorCheckPage {
   metadata?: unknown;
   diff?: MonitorPageDiff | null;
   snapshot?: MonitorPageSnapshot | null;
+  judgment?: MonitorPageJudgment | null;
   createdAt: string;
 }
 

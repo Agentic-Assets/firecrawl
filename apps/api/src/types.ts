@@ -62,6 +62,8 @@ type ScrapeJobSingleUrlsUnique = {
   sentry?: any;
   is_extract?: boolean;
   apiKeyId: number | null;
+
+  logRequestPromise?: Promise<any>;
 };
 
 export type ScrapeJobSingleUrls = ScrapeJobCommon & ScrapeJobSingleUrlsUnique;
@@ -154,6 +156,7 @@ export enum RateLimiterMode {
   Account = "account",
   SupportAsk = "supportAsk",
   SupportDocsSearch = "supportDocsSearch",
+  Research = "research",
 }
 
 export type AuthResponse =

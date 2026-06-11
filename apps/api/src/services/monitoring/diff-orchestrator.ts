@@ -1,4 +1,5 @@
 import { v7 as uuidv7 } from "uuid";
+import { logger as rootLogger } from "../../lib/logger";
 import { getJobFromGCS } from "../../lib/gcs-jobs";
 import {
   MonitorDiffArtifact,
@@ -11,14 +12,31 @@ import {
   formatsRequestGitDiff,
   formatsRequestJsonExtraction,
 } from "./diff";
+import { judgeChange } from "./judgeChange";
 
-type MonitorPageDiffStatus = "same" | "new" | "changed";
+type MonitorPageDiffStatus = "same" | "new" | "changed" | "error";
+
+type Judgment = {
+  meaningful: boolean;
+  confidence: "high" | "medium" | "low";
+  reason: string;
+  meaningfulChanges: Array<{
+    type: "added" | "removed" | "changed";
+    before: string | null;
+    after: string | null;
+    reason: string;
+  }>;
+};
 
 type MonitorPageDiffResult = {
   status: MonitorPageDiffStatus;
   diffGcsKey: string | null;
   diffTextBytes: number | null;
   diffJsonBytes: number | null;
+  judgment?: Judgment;
+  diffText?: string;
+  diffJson?: Record<string, { previous: unknown; current: unknown }>;
+  error?: string;
 };
 
 type PreviousPageRef = {
@@ -48,9 +66,21 @@ export async function computeAndPersistPageDiff(params: {
   doc: any;
   previous: PreviousPageRef | null;
   formats: unknown;
+  goal?: string | null;
+  extractionPrompt?: string | null;
 }): Promise<MonitorPageDiffResult> {
-  const { teamId, monitorId, checkId, url, scrapeId, doc, previous, formats } =
-    params;
+  const {
+    teamId,
+    monitorId,
+    checkId,
+    url,
+    scrapeId,
+    doc,
+    previous,
+    formats,
+    goal,
+    extractionPrompt,
+  } = params;
 
   const wantsJson = formatsRequestJsonExtraction(formats);
   const wantsGitDiff = formatsRequestGitDiff(formats);
@@ -74,15 +104,17 @@ export async function computeAndPersistPageDiff(params: {
       ? (doc.json as Record<string, unknown>)
       : undefined;
 
-    // If the current scrape didn't produce a JSON document we can't
-    // compute a JSON diff; treat as `changed` to be safe (matches the
-    // markdown-missing branch's behavior).
+    // If the current scrape didn't produce a JSON document we can't compute a
+    // JSON diff (e.g. the extraction step failed) - report `error` rather than
+    // a false `changed`, so the user isn't alerted to a content change that
+    // didn't happen.
     if (!currentJson) {
       return {
-        status: "changed",
+        status: "error",
         diffGcsKey: null,
         diffTextBytes: null,
         diffJsonBytes: null,
+        error: "JSON extraction produced no result for this check.",
       };
     }
 
@@ -130,11 +162,26 @@ export async function computeAndPersistPageDiff(params: {
       ...(markdownSidecar ? { markdown: markdownSidecar } : {}),
     };
     const sizes = await saveMonitorDiffArtifact(diffGcsKey, artifact);
+    const judgment = goal
+      ? await runJudge({
+          goal,
+          extractionPrompt,
+          jsonDiff: result.status === "changed" ? result.json : undefined,
+          markdownDiff: markdownSidecar
+            ? {
+                diffText: markdownSidecar.text,
+              }
+            : undefined,
+        })
+      : undefined;
     return {
       status: "changed",
       diffGcsKey,
       diffTextBytes: sizes.textBytes,
       diffJsonBytes: sizes.jsonBytes,
+      ...(judgment ? { judgment } : {}),
+      ...(result.status === "changed" ? { diffJson: result.json } : {}),
+      ...(markdownSidecar ? { diffText: markdownSidecar.text } : {}),
     };
   }
 
@@ -181,10 +228,43 @@ export async function computeAndPersistPageDiff(params: {
     json: diff.json,
   };
   const sizes = await saveMonitorDiffArtifact(diffGcsKey, artifact);
+  const judgment = goal
+    ? await runJudge({
+        goal,
+        extractionPrompt,
+        markdownDiff: {
+          diffText: diff.text,
+        },
+      })
+    : undefined;
   return {
     status: "changed",
     diffGcsKey,
     diffTextBytes: sizes.textBytes,
     diffJsonBytes: sizes.jsonBytes,
+    ...(judgment ? { judgment } : {}),
+    diffText: diff.text,
   };
+}
+
+async function runJudge(args: {
+  goal: string;
+  extractionPrompt?: string | null;
+  jsonDiff?: Record<string, { previous: unknown; current: unknown }>;
+  markdownDiff?: {
+    diffText?: string;
+  };
+}): Promise<Judgment | undefined> {
+  try {
+    return await judgeChange({
+      logger: rootLogger.child({ module: "monitoring-judge" }),
+      goal: args.goal,
+      extractionPrompt: args.extractionPrompt ?? undefined,
+      jsonDiff: args.jsonDiff,
+      markdownDiff: args.markdownDiff,
+    });
+  } catch (error) {
+    rootLogger.error("Judge call failed", { error });
+    return undefined;
+  }
 }
