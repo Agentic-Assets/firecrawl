@@ -228,9 +228,10 @@ Expected post-patch proof:
   later proven.
 - Image child rows store Algolia thumbnail URLs only.
 
-### 2026-06-12 Full Run And Live Ingest
+### 2026-06-12 Full Run And Live Ingest (Superseded By Refined Reload)
 
-The no-state recovery patch was verified and ingested additively.
+The no-state recovery patch was verified and ingested additively. This section
+is historical. The refined reload below is the current Newmark production proof.
 
 Commands:
 
@@ -253,10 +254,84 @@ Results:
 - Latest Supabase Newmark batch validation: 4,371 latest rows, 1,121 sale, 3,250 lease, 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad state codes, 0 impossible coordinates, 0 bad cap rates, 4,303 image child rows, and 0 orphan image rows.
 - Active Newmark rows after ingest: 5,086 because previous additive rows remain active until a clean all-source reconciliation is eligible.
 
-Remaining limits:
+Historical limits at this point:
 
 - Newmark is feed-complete for public Algolia listing rows after no-state
   recovery, but not deep-contact complete.
 - Listing documents and VCard URLs remain unproven.
 - Contacts should be added later through the People Algolia exact-name lookup
-  plan above.
+  plan above. This contact item was later implemented in the refined reload
+  below.
+
+### 2026-06-12 Refined Full Run, Contacts, And Source-Scoped Reconciliation
+
+The contact/state refinement plan above has now been implemented, live-ingested,
+and validated.
+
+Commands:
+
+```bash
+cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+npm run typecheck
+npx tsx collect.ts --source=newmark --transaction=both --max-items=20 --concurrency=3 --out=/tmp/newmark_refinement_probe_2026-06-12.json
+python3 cre_ingest.py --in /tmp/newmark_refinement_probe_2026-06-12.json --dry-run --keep-artifacts /tmp/newmark_refinement_probe_2026-06-12_ingest_check
+npx tsx collect.ts --source=newmark --transaction=both --max-items=0 --concurrency=4 --out=out/newmark_full_refined_2026-06-12.json
+python3 cre_ingest.py --in out/newmark_full_refined_2026-06-12.json --dry-run --keep-artifacts /tmp/newmark_full_refined_2026-06-12_ingest_check
+python3 cre_ingest.py --in out/newmark_full_refined_2026-06-12.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/newmark_full_refined_2026-06-12_mark_missing_check
+python3 cre_ingest.py --in out/newmark_full_refined_2026-06-12.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/newmark_full_refined_2026-06-12_mark_missing_live
+```
+
+Collector changes:
+
+- Algolia listing queries now use direct public JSON requests after the initial
+  properties-page credential bootstrap.
+- Credential bootstrap retries with a longer render wait when the first scrape
+  misses the public Algolia config.
+- The three Washington, DC no-state lease rows infer `DC` from city and ZIP.
+- Original Algolia hit payloads are preserved as `rawNewmarkHit`.
+- Broker provenance fields are preserved in `newmarkBrokerProvenance`.
+- Public People Algolia lookup by exact broker name populates
+  `contactsDetailed` with name, title, email, phone, office, profile URL, and
+  avatar URL when available.
+- Profile URLs are normalized to absolute `https://www.nmrk.com/...` URLs.
+- Detail-page scraping remains out of scope because the public detail shell is
+  noisy and Buildout detail config remains consent-gated.
+
+Full artifact result:
+
+- Artifact: `out/newmark_full_refined_2026-06-12.json`, 22.0 MB.
+- Collected 4,371 rows: 1,121 sale and 3,250 lease.
+- Missing URLs: 0.
+- Missing titles: 0.
+- Missing states: 0.
+- Washington, DC recovered rows with state `DC`: 3.
+- Public People contacts/profile URLs: 3,961.
+- Contacts with phone: 3,910.
+- Raw Algolia hits preserved: 4,371.
+- Broker provenance objects preserved: 4,371.
+- Document rows: 0.
+- Image URLs: 4,303.
+
+Ingest and Supabase proof:
+
+- Dry-run staged 4,371 rows and skipped 0 missing URLs.
+- Source-scoped `--mark-missing` was dry-run and then live-applied only for
+  `newmark`.
+- Active Newmark rows after cleanup: 4,371, with 1,121 sale and 3,250 lease.
+- Old additive rows soft-deleted: 715.
+- Live child rows: 4,303 image URL rows, 3,961 contact rows, 3,961 profile URLs,
+  and 0 document rows.
+- Quality checks: 0 bad source URLs, 0 missing titles, 0 missing raw data, 0
+  missing states, 0 invalid states, 0 impossible coordinates, 0 malformed
+  guarded prices/cap rates, 0 duplicate external IDs, 0 bad image/profile URLs,
+  and 0 child orphans.
+- Search proof:
+  `credeals.search_cre_listings('Alvista', null, null, null, null)` returned
+  the live Newmark `Alvista Sterling Palms` sale row.
+
+Remaining limits:
+
+- Listing-specific documents, full galleries, second/third broker joins, and
+  VCard URLs remain unproven.
+- Do not store Newmark site-wide legal PDFs or placeholder images as listing
+  assets.

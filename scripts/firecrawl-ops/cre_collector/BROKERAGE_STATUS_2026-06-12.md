@@ -20,7 +20,7 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 | SVN | Partial live refresh, mapping complete from prior full artifact | 5,521 total, 2,988 sale + 2,533 lease in latest full artifact | Buildout inventory feed mapping, sale/lease partitioning, broker refs, PDFs, images | Fresh 2026-06-12 probes failed closed on Buildout 403 HTML before writing JSON; wait for throttling-safe clean run before marking refreshed complete |
 | Cushman & Wakefield | Complete public feed, live-ingested and validated | 11,318 active rows, 2,743 sale + 8,575 lease | Public search API pagination plus detail-page enrichment for facts, document URLs, image URLs, contacts, profile URLs, VCard URLs, JSON-LD | Optional future field audit only if missing fields are discovered |
 | JLL | Needs deep audit | 4,678 total, 333 sale + 4,345 lease | Search-page pagination and listing URLs | Add/verify detail-page enrichment for documents, image galleries, broker contact links, and richer facts |
-| Newmark | Needs deep audit | 4,368 collected, 1,121 sale + 3,247 lease of 3,250 reported lease | Algolia credentials scraped from page, state and property-type splits for the 1,000-hit cap | Close the 3-row lease gap if still present and audit detail fields, brokers, documents, and images |
+| Newmark | Complete public Algolia feed with contact enrichment, live-ingested and validated | 4,371 active rows, 1,121 sale + 3,250 lease | Public Algolia listing feed, state/property-type split, no-state DC recovery, raw hit preservation, broker provenance, public People exact-name contacts/profile URLs, image URLs | Listing documents, full galleries, second/third broker joins, and VCards remain unproven |
 | Avison Young | Public feed complete, needs detail enrichment | 2,200 staged unique rows, 636 sale + 1,431 lease + 133 sale_or_lease | Public SharpLaunch active website/team_member feed, client-side transaction partition, contact joins, CDN image/avatar URLs | Optional detail-page enrichment for public PDFs, richer galleries, JSON-LD, VCard/profile URLs |
 | Savills | Partial, not CRE-defensible yet | 100 sale rows of 105 source cards in latest full run; fresh probe collected 12 sale rows from page 1, 0 US lease | Server-rendered global property-search sale pages, foreign fallback cards filtered | Find an authorized or clearly public U.S. commercial inventory source before enriching or claiming CRE coverage |
 | JLL Investor Center | Partial | 50 sale rows | Rendered public grid | Determine whether more pages exist and enrich details where public |
@@ -41,8 +41,8 @@ because Buildout returned 403 HTML during 2026-06-12 probes.
 
 ## Not Complete Yet
 
-JLL, Newmark, and Avison Young need the Cushman-style deep audit: prove detail
-page enrichment, document URLs, image URLs, contact URLs, and source totals.
+JLL and Avison Young still need the Cushman-style deep audit: prove detail page
+enrichment, document URLs, image URLs, contact URLs, and source totals.
 Savills, JLL Investor Center, Colliers SalesTracker, and SVN live refresh are
 explicitly partial. Marcus & Millichap is complete for the defensible public
 sale feed after full ActivityId expansion, detail enrichment, source-scoped
@@ -83,11 +83,9 @@ Result:
 ## Next Broker Order
 
 1. JLL, because it already collects all reported rows and likely only needs detail enrichment.
-2. Newmark, because the Algolia feed is strong but the 3-row lease gap and contact/document completeness need proof.
-3. Avison Young, because the current 11/11 per transaction might be complete or might be a rendered-sidebar illusion.
-4. Savills, because it has a small sale gap and lease ambiguity.
-5. JLL Investor and CBRE Deal Flow, because each has known first-batch or gated limitations.
-6. Newmark/JLL detail enrichment, following the saved 2026-06-12 broker-folder review notes.
-7. Main Colliers Coveo sale/lease coverage only after a safe non-POST-blocked path exists.
-8. Marcus auctions only after EQUIRE decides whether public auction inventory
+2. Avison Young, because the current 11/11 per transaction might be complete or might be a rendered-sidebar illusion.
+3. Savills, because it has a small sale gap and lease ambiguity.
+4. JLL Investor and CBRE Deal Flow, because each has known first-batch or gated limitations.
+5. Main Colliers Coveo sale/lease coverage only after a safe non-POST-blocked path exists.
+6. Marcus auctions only after EQUIRE decides whether public auction inventory
    belongs in the listing surface.

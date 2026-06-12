@@ -537,10 +537,11 @@ Next safe plan: add opt-in durable page cache, true page-window cache-fill
 controls, pacing before fallback, and attempted/failed/unattempted diagnostics;
 then fill small windows before assembling a Lee-only no-ingest full artifact.
 
-## 2026-06-12 JLL/Newmark Detail Review
+## 2026-06-12 JLL/Newmark Detail Review (Newmark Partly Superseded)
 
-JLL and Newmark remain loaded but not detail-complete. A side-agent review saved
-notes under the broker folders:
+JLL remains loaded but not detail-complete. The Newmark contact/state findings
+in this review were later acted on in the refined Newmark completion section
+below. A side-agent review saved notes under the broker folders:
 
 - `cre_scrapers/brokers/jll/PERFORMANCE_ACCURACY_REVIEW_2026-06-12.md`
 - `cre_scrapers/brokers/newmark/PERFORMANCE_ACCURACY_REVIEW_2026-06-12.md`
@@ -551,10 +552,10 @@ Highlights:
   rows are still card-level. Detail-page `__NEXT_DATA__` artifacts show
   brochures, images, brokers, coordinates, and profile-like broker fields are
   available. No VCard URLs were observed.
-- Newmark is feed-complete via Algolia after no-state recovery, but not
-  deep-contact complete. The recommended path is cached Algolia People lookup by
-  exact `broker_name`, not noisy detail-page shells. The recovered Washington,
-  DC lease rows are present but still have `state: null`.
+- Newmark was feed-complete via Algolia after no-state recovery but not
+  deep-contact complete at this point. This was later refined with cached
+  Algolia People lookup by exact `broker_name`, not noisy detail-page shells,
+  and the Washington, DC rows now carry `state: DC`.
 
 ## 2026-06-12 Marcus & Millichap Full Public Sale Ingest
 
@@ -667,3 +668,51 @@ Result:
   prices/cap rates, bad child URLs, or child orphans.
 - Search proof: `credeals.search_cre_listings('Lee', null, null, null, null)`
   returned live Lee rows.
+
+## 2026-06-12 Newmark Refined Public Feed Ingest
+
+Newmark is now live-ingested and validated for the defensible public Algolia
+listing feed, with state recovery and first-broker public People enrichment.
+Listing documents, full galleries, second/third broker joins, and VCards remain
+unproven.
+
+Code change:
+
+- Newmark listing Algolia calls now use direct public JSON once the public page
+  has exposed the app id/search key/index name.
+- Credential extraction retries the rendered page with longer wait before
+  failing.
+- The mapper preserves `rawNewmarkHit` and `newmarkBrokerProvenance`.
+- Missing Washington, DC state is inferred only for city `Washington` and ZIPs
+  beginning with `200`.
+- First-broker contacts are enriched through cached Algolia People lookups by
+  exact normalized public `broker_name`, with absolute `nmrk.com` profile URLs.
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=newmark --transaction=both --max-items=20 --concurrency=3 --out=/tmp/newmark_refinement_probe_2026-06-12.json
+python3 cre_ingest.py --in /tmp/newmark_refinement_probe_2026-06-12.json --dry-run --keep-artifacts /tmp/newmark_refinement_probe_2026-06-12_ingest_check
+npx tsx collect.ts --source=newmark --transaction=both --max-items=0 --concurrency=4 --out=out/newmark_full_refined_2026-06-12.json
+python3 cre_ingest.py --in out/newmark_full_refined_2026-06-12.json --dry-run --keep-artifacts /tmp/newmark_full_refined_2026-06-12_ingest_check
+python3 cre_ingest.py --in out/newmark_full_refined_2026-06-12.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/newmark_full_refined_2026-06-12_mark_missing_check
+python3 cre_ingest.py --in out/newmark_full_refined_2026-06-12.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/newmark_full_refined_2026-06-12_mark_missing_live
+```
+
+Result:
+
+- Artifact: `out/newmark_full_refined_2026-06-12.json`, 22.0 MB.
+- Raw rows: 4,371, with 1,121 sale and 3,250 lease.
+- Artifact QA: 0 missing URLs, 0 missing titles, 0 missing states, 0 duplicate
+  IDs, 4,303 image URLs, 3,961 contact/profile URL rows, and 0 document URLs.
+- Dry-run ingest staged 4,371 rows and skipped 0 missing URLs.
+- Source-scoped `--mark-missing` was dry-run and then live-applied only for
+  `newmark`, soft-deleting 715 older additive rows.
+- Supabase proof: 4,371 active Newmark rows, 1,121 sale, 3,250 lease, 4,303
+  image child rows, 3,961 contact child rows with profile URLs, and 0 bad source
+  URLs, missing titles, missing raw data, invalid states, impossible
+  coordinates, malformed guarded prices/cap rates, duplicate external IDs, bad
+  child URLs, or child orphans.
+- Search proof: `credeals.search_cre_listings('Alvista', null, null, null,
+  null)` returned the live Newmark `Alvista Sterling Palms` row.

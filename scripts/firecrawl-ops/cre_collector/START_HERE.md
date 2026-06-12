@@ -28,8 +28,8 @@ Result:
 - Live additive ingest completed through `psql`.
 - `--mark-missing` was not used on that all-source run because Lee & Associates failed at the time; Lee was later completed through a source-specific cache assembly run.
 - Fresh validation confirmed 33,488 latest artifact rows touched in Supabase and 34,218 active rows total because 730 older additive rows remained active before later source-specific reconciliations.
-- After later source-specific ingests through Lee & Associates, live Supabase
-  active rows total 65,274.
+- After later source-specific ingests through Newmark refinement, live Supabase
+  active rows total 64,559.
 
 ## Latest Source Matrix
 
@@ -40,7 +40,7 @@ Result:
 | JLL | 4,678 | Active |
 | JLL Investor | 8 in latest hardened probe; source total about 1,087 to 1,088 | Partial, first rendered search page detail-enriched |
 | Cushman & Wakefield | 11,318 active rows, 2,743 sale + 8,575 lease | Complete public API feed with detail enrichment, live-ingested with source-scoped mark-missing cleanup |
-| Newmark | 4,371 in post-validation full probe | Active via Algolia, no-state recovery added |
+| Newmark | 4,371 active rows, 1,121 sale + 3,250 lease | Complete public Algolia feed with no-state DC recovery, public People contacts/profile URLs, raw hit preservation, and source-scoped cleanup |
 | Marcus & Millichap | 3,124 active sale rows | Complete public sale feed via public map ActivityIds, `mappropertydetail` tiles, and detail HTML; live-ingested with source-scoped mark-missing cleanup; lease unsupported |
 | Avison Young | 2,200 staged unique rows in post-validation full run | Public SharpLaunch feed live-ingested additively; still needs optional detail-page enrichment |
 | Savills | 100 | Active, sale only; US lease empty after fallback filtering |
@@ -113,5 +113,6 @@ images into Supabase storage for the bulk collector.
 - Transwestern is now current in Supabase from `out/transwestern_full_2026-06-12_121302_cleaned.json`: 2,021 active rows, 3,054 document URL rows, 4,838 image URL rows, 3,746 contact/profile/VCard URL rows, and 0 bad descriptions or bad asset URLs. The live DB needed the existing `sql/001_cre_brokerages.sql` Transwestern seed inserted before ingest.
 - Marcus & Millichap is now current in Supabase from `out/marcus_full_2026-06-12_130035.json`: 3,124 active public sale rows, 16,771 image URL rows, 7,915 contact/profile URL rows, 0 document rows, and 0 final detail errors. Gated deal-room URLs stay in raw metadata only. Public lease remains unsupported.
 - Lee & Associates is now current in Supabase from `out/lee_full_cache_2026-06-12_assembled.json`: 9,223 active rows, 9,062 image URL rows, 7,681 document URL rows, 9,223 contact rows, and 0 bad URLs, duplicate IDs, bad states, bad coordinates, or child orphans. The durable Buildout cache remains under gitignored `out/cache/buildout/lee-associates/`.
+- Newmark is now current in Supabase from `out/newmark_full_refined_2026-06-12.json`: 4,371 active rows, 4,303 image URL rows, 3,961 contact/profile URL rows, 0 document rows, 0 missing states, and 715 old additive rows soft-deleted. Listing documents, full galleries, second/third broker joins, and VCards remain unproven.
 - Do not treat legacy `cre_scrapers` active flags as production collector status.
 - Do not stage `node_modules/`, `out/`, `__pycache__/`, or generated SQL artifacts.

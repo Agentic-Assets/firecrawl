@@ -63,7 +63,7 @@ Latest full ingested all-source run started 2026-06-12 04:04:23 UTC. Several
 sources were upgraded after that run on 2026-06-12 local time through
 source-specific full runs and validation: CBRE Deal Flow, Cushman & Wakefield,
 NAI Global active feed, Colliers SalesTracker, Transwestern, and Marcus &
-Millichap public sale, and Lee & Associates.
+Millichap public sale, Lee & Associates, and Newmark refined contacts/state.
 
 | Source key | Method | Sale | Lease | Notes |
 |------------|--------|------|-------|-------|
@@ -72,7 +72,7 @@ Millichap public sale, and Lee & Associates.
 | `jll` | Search pages, waitFor 8000 | 333 | 4,345 | tenure=sale / tenure=rent |
 | `jll-investor` | `__NEXT_DATA__` first search page plus detail enrichment | 8 in hardened probe, source total about 1,087 to 1,088 | n/a | Sale-only partial; full completion needs pagination or sitemap policy decision |
 | `cushman-wakefield` | Public `/api/properties/search` JSON plus detail enrichment | 2,743 live total | 8,575 live total | Full API pagination verified; detail pages enrich docs, photos, visible contacts, JSON-LD, and VCard/profile URLs. Use `CUSHMAN_QUERY='1800 Central'` for targeted probes |
-| `newmark` | Algolia API (creds scraped from page) | 1,121 | 3,250 | No-state recovery added; latest full probe collected 4,371 |
+| `newmark` | Algolia API plus public People exact-name lookup | 1,121 live rows | 3,250 live rows | Complete public Algolia feed from `out/newmark_full_refined_2026-06-12.json`; no-state DC recovery, raw hit preservation, 3,961 contact/profile rows, source-scoped cleanup |
 | `marcus-millichap` | Public map ActivityId feed, mappropertydetail tiles, plus public detail HTML | 3,124 active live rows | n/a | Complete for public sale feed; source-scoped `--mark-missing` applied from `out/marcus_full_2026-06-12_130035.json`; public lease unsupported; gated deal-room URLs remain raw metadata only |
 | `avison-young` | Public SharpLaunch feed | 636 staged sale rows | 1,431 staged lease rows plus 133 sale_or_lease | Full SharpLaunch run live-ingested additively; still needs optional detail-page enrichment for PDFs, richer galleries, JSON-LD, VCard/profile URLs |
 | `savills` | Server-rendered pages /page/N | ~100 of 105 source cards | 0 | US lease inventory empty; foreign fallback cards filtered; US parser accepts state names, ZIP-only rows, and city/state/ZIP variants |

@@ -119,6 +119,25 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
   malformed guarded prices/cap rates, bad child URLs, or child orphans. Search
   proof used the updated five-argument `credeals.search_cre_listings` signature
   and returned live Lee rows.
+- Post-validation live ingest: Newmark was refined and reloaded from
+  `out/newmark_full_refined_2026-06-12.json`. The collector now retries the
+  public Algolia credential bootstrap, uses direct public Algolia JSON for
+  listing and People queries, infers `DC` for the three Washington DC no-state
+  lease rows, preserves `rawNewmarkHit` and `newmarkBrokerProvenance`, and
+  populates `contactsDetailed` from exact public People name matches. The full
+  artifact collected 4,371 rows, 1,121 sale and 3,250 lease, with 0 missing
+  URLs, 0 missing titles, 0 missing states, 3 DC-recovered rows, 3,961
+  contact/profile rows, 3,910 contacts with phone, 4,303 image URLs, and 0
+  document rows. Dry-run staged all 4,371 rows and skipped 0 missing URLs.
+  Source-scoped `--mark-missing` was dry-run and then applied only for
+  `newmark`, soft-deleting 715 old additive rows. Live validation found 4,371
+  active Newmark rows, 1,121 sale, 3,250 lease, 4,303 image child rows, 3,961
+  contact child rows/profile URLs, 0 document rows, and 0 bad source URLs,
+  missing titles, missing raw data, missing states, invalid states, duplicate
+  external IDs, impossible coordinates, malformed guarded prices/cap rates, bad
+  image/profile URLs, or child orphans. Search proof used
+  `credeals.search_cre_listings('Alvista', null, null, null, null)` and
+  returned the live Newmark `Alvista Sterling Palms` row.
 - 724 older active rows remain from earlier additive runs after Marcus
   source-scoped reconciliation: Newmark 715, CBRE 5, Savills 2, SVN 2. Do not
   treat active row count as a pure latest-run count until a clean reconciliation
