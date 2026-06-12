@@ -60,7 +60,8 @@ Read these in order:
 6. `LESSONS_2026-06-11.md`
 7. `VALIDATION_2026-06-12.md`
 8. `BROKERAGE_STATUS_2026-06-12.md`
-9. `docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md`
+9. `SUPABASE_SECURITY_NOTE_2026-06-12.md`
+10. `docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md`
 
 Then run:
 
@@ -89,7 +90,7 @@ Target project: `fhqycqubkkrdgzswccwd`, schema `credeals`.
 
 The ingestor reads `POSTGRES_URL_NON_POOLING` or `POSTGRES_URL` from the EQUIRE `.env.local` file and shells out to `psql`. It prints only the env file path, never the credential value.
 
-The collector-owned `cre_*` base tables and `v_cre_*` views are service-role only. `anon` and `authenticated` do not have table or view `SELECT`. RLS is enabled with no public row policies by design.
+The collector-owned `cre_*` base tables and `v_cre_*` views are service-role only. `anon` and `authenticated` do not have table or view `SELECT`. RLS is enabled with no public row policies by design. The display views use `security_invoker=true`, and `search_cre_listings(...)` plus `update_cre_listing_timestamp()` are executable by `service_role`, not by public browser roles.
 
 Document and image tables store source URLs only. Do not download public PDFs or
 images into Supabase storage for the bulk collector.

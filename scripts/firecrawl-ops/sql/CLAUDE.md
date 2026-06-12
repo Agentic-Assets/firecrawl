@@ -68,6 +68,13 @@ The collector-owned `cre_*` tables and `v_cre_*` views are service-role only.
 `anon` and `authenticated` do not have table or view `SELECT`. RLS is enabled
 with no public row policies by design.
 
+As of the 2026-06-12 display-app security follow-up, the four display views use
+`security_invoker=true`. `credeals.search_cre_listings(text,text,text,text,text)`
+and `credeals.update_cre_listing_timestamp()` should remain executable by
+`service_role`, not by `public`, `anon`, or `authenticated`. Read
+`../cre_collector/SUPABASE_SECURITY_NOTE_2026-06-12.md` before changing view or
+function grants.
+
 ## Agent-facing objects (do not drop these)
 
 EQUIRE agents read these  -  do not rename or drop without coordinating with the

@@ -22,6 +22,7 @@ self-hosted Firecrawl API.
 | `LESSONS_2026-06-11.md` | Operational lessons and future verification pattern |
 | `VALIDATION_2026-06-12.md` | Supabase reconciliation, quality checks, and current gaps |
 | `BROKERAGE_STATUS_2026-06-12.md` | Per-broker coverage status, counts, and next upgrade order |
+| `SUPABASE_SECURITY_NOTE_2026-06-12.md` | Display-app security follow-up for RLS, view, and function grants |
 | `../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md` | Reusable process for upgrading one brokerage to full public-feed coverage |
 | `out/` | Run artifacts (gitignored) |
 
@@ -136,6 +137,10 @@ surface. RLS is enabled with no public row policies by design, so Supabase
 advisor INFO notices for "RLS enabled no policy" on these tables are accepted
 private-schema notices, not public access gaps. EQUIRE should query these
 objects from server-side code or a deliberately designed API layer.
+
+Read `SUPABASE_SECURITY_NOTE_2026-06-12.md` before changing grants, views,
+or function privileges. The display app hardened view security and revoked
+public execute on helper functions while preserving service-role collector use.
 
 ## Daily updates
 
