@@ -443,3 +443,49 @@ Results:
 - Ingest dry run staged 24 JLL listings, skipped 0 for missing URL, wrote
   `/tmp/jll_property_types_ingest_check/ingest.sql`, and did not connect to
   Supabase.
+
+### 2026-06-12 main JLL detail enrichment and cache probe
+
+Implemented bounded detail-page enrichment for source key `jll`. The collector
+still discovers rows through rendered public `property.jll.com` search pages
+across all documented property-type filters, then enriches each selected detail
+URL from `script#__NEXT_DATA__`.
+
+Code behavior:
+
+- Detail pages are cached under `out/cache/jll-detail/` by normalized listing
+  URL so interrupted long runs do not discard completed rendered detail scrapes.
+- Detail failures remain row-local as `detailError`; the source does not fail
+  just because one detail page is weak.
+- Stable JLL property ids from `pageProps.property.id` are used as collector
+  ids. If the same property appears in sale and lease passes, `cre_ingest.py`
+  can merge it into `sale_or_lease` through its existing `(brokerage,
+  external_id)` logic.
+- URL-only child rows come from public `brochures`, `floorPlans`, `images`, and
+  broker profile/avatar fields. No PDFs or images are downloaded.
+- Broker profile URLs use the verified public pattern
+  `https://www.us.jll.com/en/people/<pageUrl>`; sample `justin-lossner` returned
+  `200` through local Firecrawl.
+
+Verification:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npm run typecheck
+npx tsx collect.ts --source=jll --transaction=both --max-items=6 --page-cap=1 --concurrency=2 --out=/tmp/jll_detail_cached_probe_2026-06-12.json
+python3 cre_ingest.py --in /tmp/jll_detail_cached_probe_2026-06-12.json --dry-run --keep-artifacts /tmp/jll_detail_cached_probe_2026-06-12_ingest_check
+```
+
+Probe result:
+
+- 12 listings emitted: 6 sale and 6 lease.
+- 0 detail errors, 0 skipped ingest rows, and 0 duplicate collector ids.
+- 12 rows had stable JLL property ids and coordinates.
+- 10 public document URLs, 37 image URLs, 25 contact rows, and 25 public broker
+  profile URLs were emitted.
+- The JLL detail cache contained 12 rendered detail files after the probe.
+
+Next step:
+
+- Run a full JLL collection with detail cache enabled, then dry-run and live
+  ingest only after detail errors and duplicate/merge behavior are understood.

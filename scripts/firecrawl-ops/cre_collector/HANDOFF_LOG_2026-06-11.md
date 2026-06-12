@@ -716,3 +716,43 @@ Result:
   child URLs, or child orphans.
 - Search proof: `credeals.search_cre_listings('Alvista', null, null, null,
   null)` returned the live Newmark `Alvista Sterling Palms` row.
+
+## 2026-06-12 JLL Detail Enrichment Cache Probe
+
+Main JLL is still pending a full detail-enriched collection, but the collector
+now has the detail parser and resumable cache needed for that full run.
+
+Code change:
+
+- `srcJll` still discovers rendered public `property.jll.com` search pages
+  across all documented property-type filters.
+- Each selected listing URL is enriched from detail-page `script#__NEXT_DATA__`
+  using `pageProps.property` and `pageProps.brokers`.
+- Detail pages are cached under `out/cache/jll-detail/` by normalized listing
+  URL so interrupted full runs can resume without losing completed detail
+  scrapes.
+- Per-row `detailError` is retained instead of failing the source.
+- Public URL-only assets include brochures, floor plans, images, broker profile
+  URLs, avatar URLs, and LinkedIn URLs. No binaries are downloaded.
+
+Verification:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npm run typecheck
+npx tsx collect.ts --source=jll --transaction=both --max-items=6 --page-cap=1 --concurrency=2 --out=/tmp/jll_detail_cached_probe_2026-06-12.json
+python3 cre_ingest.py --in /tmp/jll_detail_cached_probe_2026-06-12.json --dry-run --keep-artifacts /tmp/jll_detail_cached_probe_2026-06-12_ingest_check
+```
+
+Probe result:
+
+- 12 listings emitted: 6 sale and 6 lease.
+- 0 detail errors, 0 skipped ingest rows, and 0 duplicate collector ids.
+- 12 rows had stable JLL property ids and coordinates.
+- 10 public document URLs, 37 image URLs, 25 contact rows, and 25 broker
+  profile URLs were emitted.
+- The JLL detail cache contained 12 rendered detail files after the probe.
+
+Next step: run full JLL with the cache enabled, dry-run ingest, inspect
+detail-error and merge counts, then live ingest with source-scoped
+`--mark-missing` only if the full run is clean and current.
