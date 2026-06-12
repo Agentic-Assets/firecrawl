@@ -227,3 +227,36 @@ Expected post-patch proof:
 - Document child rows remain empty unless listing-specific document URLs are
   later proven.
 - Image child rows store Algolia thumbnail URLs only.
+
+### 2026-06-12 Full Run And Live Ingest
+
+The no-state recovery patch was verified and ingested additively.
+
+Commands:
+
+```bash
+cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=newmark --transaction=both --max-items=0 --out=/tmp/newmark_no_state_full_probe.json
+python3 cre_ingest.py --in out/newmark_full_2026-06-12_no_state_recovery.json --dry-run --keep-artifacts /tmp/newmark_full_2026-06-12_no_state_recovery_ingest_check
+python3 cre_ingest.py --in out/newmark_full_2026-06-12_no_state_recovery.json --keep-artifacts /tmp/newmark_full_2026-06-12_no_state_recovery_live_ingest
+```
+
+Saved artifact:
+
+- `out/newmark_full_2026-06-12_no_state_recovery.json`, copied from the verified full probe so the evidence lives under `out/`.
+
+Results:
+
+- Collected 4,371 rows: 1,121 sale and 3,250 lease.
+- Dry-run staged 4,371 rows and skipped 0 missing URLs.
+- Live additive ingest completed without `--mark-missing`.
+- Latest Supabase Newmark batch validation: 4,371 latest rows, 1,121 sale, 3,250 lease, 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad state codes, 0 impossible coordinates, 0 bad cap rates, 4,303 image child rows, and 0 orphan image rows.
+- Active Newmark rows after ingest: 5,086 because previous additive rows remain active until a clean all-source reconciliation is eligible.
+
+Remaining limits:
+
+- Newmark is feed-complete for public Algolia listing rows after no-state
+  recovery, but not deep-contact complete.
+- Listing documents and VCard URLs remain unproven.
+- Contacts should be added later through the People Algolia exact-name lookup
+  plan above.

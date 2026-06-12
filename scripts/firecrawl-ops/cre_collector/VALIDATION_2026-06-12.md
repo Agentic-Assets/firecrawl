@@ -64,6 +64,7 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
 
 - Post-validation code update: Cushman & Wakefield no longer uses the shallow rendered Coveo card path. On 2026-06-12 local probes verified the public `/api/properties/search` path with 2,743 sale and 8,575 lease live source totals. A targeted `CUSHMAN_QUERY='1800 Central'` probe captured the expected 2 PDFs, 15 photos, building size, lot size, year built, and Gib Kerr contact/profile/VCard data. These rows are not yet reflected in the validated Supabase counts above.
 - Post-validation live ingest: CBRE Deal Flow was upgraded from the old first-grid path to the public RCM ListingEngine endpoint and ingested additively from `out/cbre_dealflow_full_2026-06-12_041740.json`. The artifact staged 1,836 rows, 1,809 public sale cards and all 27 public lease cards, with 0 skipped missing URLs. RCM reported 2,042 sale rows, but public card pagination exposed 1,809 sale cards before returning 0 additional cards. Live Supabase now has 1,857 active Deal Flow-prefixed rows under brokerage slug `cbre`, including prior additive probe rows retained because `--mark-missing` was not used.
+- Post-validation live ingest: Newmark no-state recovery was ingested additively from `out/newmark_full_2026-06-12_no_state_recovery.json`. The artifact staged 4,371 rows, 1,121 sale and 3,250 lease, with 0 skipped missing URLs. Latest-batch validation found 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad states, 0 bad coordinates, 0 bad cap rates, 4,303 image child rows, and 0 orphan images.
 - Lee & Associates is not uploaded. A fresh Lee-only run on 2026-06-12 passed the prior failure zone, then failed pages 286 through 297 after retries and aborted with `Error: no listings collected from any source`. It wrote only `out/lee_latest_2026-06-12_004010.log`, not a usable JSON artifact.
 - Colliers is not uploaded. Current collector has no supported public GET path for the POST-only workflow.
 - Transwestern is not uploaded from a full run yet. Current collector has a targeted public GET feed probe and dry-run proof, but it still needs full collection, live ingest, and Supabase validation.
@@ -128,3 +129,29 @@ Ingest proof:
 Database note:
 
 - psql reported the existing project-level collation version warning. That is outside the CRE loader and did not prevent validation queries or ingest.
+
+## 2026-06-12 Newmark No-State Recovery Ingest
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+cp /tmp/newmark_no_state_full_probe.json out/newmark_full_2026-06-12_no_state_recovery.json
+python3 cre_ingest.py --in out/newmark_full_2026-06-12_no_state_recovery.json --dry-run --keep-artifacts /tmp/newmark_full_2026-06-12_no_state_recovery_ingest_check
+python3 cre_ingest.py --in out/newmark_full_2026-06-12_no_state_recovery.json --keep-artifacts /tmp/newmark_full_2026-06-12_no_state_recovery_live_ingest
+```
+
+Collector result:
+
+- Artifact: `out/newmark_full_2026-06-12_no_state_recovery.json`.
+- Collected rows: 4,371, including 1,121 sale and 3,250 lease.
+- Source totals matched collected rows for both transactions.
+- Artifact coverage: 4,303 image URLs, 0 document rows, 0 detailed contact rows, and 0 detail errors.
+
+Ingest proof:
+
+- Dry-run staged 4,371 rows and skipped 0 missing URLs.
+- Live additive ingest completed without `--mark-missing`.
+- Latest Newmark batch in Supabase: 4,371 rows, 1,121 sale, 3,250 lease.
+- Latest Newmark batch quality checks: 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad state codes, 0 impossible coordinates, 0 bad cap rates, 4,303 image child rows, and 0 orphan image rows.
+- Active Newmark rows after ingest: 5,086, because earlier additive rows remain active pending a clean all-source reconciliation.

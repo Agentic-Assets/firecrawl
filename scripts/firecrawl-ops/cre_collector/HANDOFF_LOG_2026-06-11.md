@@ -257,3 +257,33 @@ Result:
 - Sample search proof: `search_cre_listings('industrial', null, 'TX', null, 'sale')` returned a live CBRE Deal Flow row (`Fort Worth Shallow Bay`).
 
 Keep `--mark-missing` off until a clean all-source run has no Buildout or source errors.
+
+## 2026-06-12 Newmark No-State Recovery Ingest
+
+The Newmark Algolia no-state recovery artifact was preserved under `out/` and
+live-ingested additively.
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+cp /tmp/newmark_no_state_full_probe.json out/newmark_full_2026-06-12_no_state_recovery.json
+python3 cre_ingest.py --in out/newmark_full_2026-06-12_no_state_recovery.json --dry-run --keep-artifacts /tmp/newmark_full_2026-06-12_no_state_recovery_ingest_check
+python3 cre_ingest.py --in out/newmark_full_2026-06-12_no_state_recovery.json --keep-artifacts /tmp/newmark_full_2026-06-12_no_state_recovery_live_ingest
+```
+
+Result:
+
+- Full artifact: `out/newmark_full_2026-06-12_no_state_recovery.json`.
+- Collected and staged 4,371 rows, skipped 0.
+- Transaction split: 1,121 sale and 3,250 lease.
+- Live ingest completed without `--mark-missing`.
+- Latest Newmark batch validation: 0 missing URLs, titles, raw data, bad states,
+  bad coordinates, bad cap rates, or orphan image rows.
+- Latest Newmark batch image rows: 4,303.
+- Active Newmark rows after ingest: 5,086 because older additive inventory
+  remains active.
+
+Newmark is now public-feed complete for Algolia row coverage, but still needs
+deep contact/profile/VCard/document enrichment before it can be called
+complete for detail enrichment.
