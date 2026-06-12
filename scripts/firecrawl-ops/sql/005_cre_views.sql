@@ -73,6 +73,7 @@ LEFT JOIN LATERAL (
 WHERE l.deleted_at IS NULL;
 
 COMMENT ON VIEW credeals.v_cre_listings_full IS 'Listing + brokerage name + contacts/documents/images as JSON arrays. Excludes soft-deleted. Primary agent read.';
+ALTER VIEW credeals.v_cre_listings_full SET (security_invoker = true);
 
 -- ===========================================================================
 -- VIEW: v_cre_active_for_sale
@@ -109,6 +110,7 @@ WHERE l.deleted_at IS NULL
   AND l.transaction_type IN ('sale', 'sale_or_lease');
 
 COMMENT ON VIEW credeals.v_cre_active_for_sale IS 'Active for-sale listings with brokerage + primary contact. Mandate-fit screening / OriginationBrief seed.';
+ALTER VIEW credeals.v_cre_active_for_sale SET (security_invoker = true);
 
 -- ===========================================================================
 -- VIEW: v_cre_active_for_lease
@@ -145,6 +147,7 @@ WHERE l.deleted_at IS NULL
   AND l.transaction_type IN ('lease', 'sale_or_lease');
 
 COMMENT ON VIEW credeals.v_cre_active_for_lease IS 'Active for-lease listings with brokerage + primary contact, including divisibility and lease terms.';
+ALTER VIEW credeals.v_cre_active_for_lease SET (security_invoker = true);
 
 -- ===========================================================================
 -- VIEW: v_cre_market_summary
@@ -175,6 +178,7 @@ WHERE l.deleted_at IS NULL
 GROUP BY l.city, l.state, l.property_type;
 
 COMMENT ON VIEW credeals.v_cre_market_summary IS 'Per-(city,state,property_type) aggregates: counts, avg price/PSF/size, median cap rate, avg occupancy. MarketStrategistAgent input.';
+ALTER VIEW credeals.v_cre_market_summary SET (security_invoker = true);
 
 -- ===========================================================================
 -- FUNCTION: search_cre_listings(...)
@@ -248,6 +252,26 @@ $$;
 
 COMMENT ON FUNCTION credeals.search_cre_listings(text, text, text, text, text)
     IS 'FTS + optional filters (city/state/type/transaction) over active listings, ts_rank-ordered, capped at 200. Canonical agent search entry point.';
+
+REVOKE EXECUTE ON FUNCTION credeals.search_cre_listings(text, text, text, text, text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION credeals.update_cre_listing_timestamp() FROM PUBLIC;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE EXECUTE ON FUNCTION credeals.search_cre_listings(text, text, text, text, text) FROM anon;
+        REVOKE EXECUTE ON FUNCTION credeals.update_cre_listing_timestamp() FROM anon;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        REVOKE EXECUTE ON FUNCTION credeals.search_cre_listings(text, text, text, text, text) FROM authenticated;
+        REVOKE EXECUTE ON FUNCTION credeals.update_cre_listing_timestamp() FROM authenticated;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        GRANT EXECUTE ON FUNCTION credeals.search_cre_listings(text, text, text, text, text) TO service_role;
+        GRANT EXECUTE ON FUNCTION credeals.update_cre_listing_timestamp() TO service_role;
+    END IF;
+END
+$$;
 
 -- ===========================================================================
 -- Triggers: keep updated_at fresh on mutation.
