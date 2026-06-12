@@ -477,3 +477,79 @@ Result:
 
 Remaining limit: none for public feed coverage. Treat future Cushman work as
 field enrichment audit only.
+
+## 2026-06-12 Transwestern Full GET Feed Ingest
+
+Transwestern was completed from the public GET feed and detail-page enrichment
+path after a targeted description-cleanup guard.
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=transwestern --transaction=both --max-items=0 --concurrency=4 --out=out/transwestern_full_2026-06-12_121302.json
+python3 cre_ingest.py --in out/transwestern_full_2026-06-12_121302_cleaned.json --dry-run --keep-artifacts /tmp/transwestern_full_2026-06-12_121302_cleaned_ingest_check
+python3 cre_ingest.py --in out/transwestern_full_2026-06-12_121302_cleaned.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/transwestern_full_2026-06-12_121302_cleaned_mark_missing_check
+python3 cre_ingest.py --in out/transwestern_full_2026-06-12_121302_cleaned.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/transwestern_full_2026-06-12_121302_cleaned_mark_missing_live_retry
+```
+
+Result:
+
+- Raw artifact: `out/transwestern_full_2026-06-12_121302.json`.
+- Cleaned artifact: `out/transwestern_full_2026-06-12_121302_cleaned.json`.
+- Raw collection: 2,151 rows, 289 unique run-level brokers, 519 sale-bucket
+  rows, and 1,632 lease-bucket rows.
+- `Sale or Lease` rows appeared in both passes by design. Dry-run staged 2,021
+  unique rows and skipped 0 missing URLs.
+- Detail coverage in the full artifact: 3,184 document URLs, 5,093 image URLs,
+  3,963 contacts/profile URLs/VCard URLs, and 0 detail errors.
+- The cleaned artifact removed 2,151 footer/TREC/copyright descriptions after a
+  performance review found they were site boilerplate, not property narratives.
+- Live database was missing the already-defined `transwestern` brokerage seed
+  row. Inserted the seed, then reran the same live ingest.
+- Live source-scoped `--mark-missing` completed for `transwestern`.
+- Supabase proof: 2,021 active Transwestern rows, 389 sale, 1,502 lease, 130
+  sale_or_lease, 4,838 image child rows, 3,054 document child rows, 3,746 contact
+  child rows, 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad
+  descriptions, 0 duplicate external IDs, 0 bad states, 0 impossible
+  coordinates, 0 malformed guarded prices/cap rates, 0 bad asset URLs, and 0
+  child orphans.
+- Search proof: `search_cre_listings('National Avenue', null, null, null, null)`
+  returned the live Transwestern `1025 W. National Avenue` row.
+
+Remaining refinements: add a detail cache to avoid double-scraping the 130
+sale-or-lease rows, harden availability-table parsing, and promote clearly valid
+detail prices/rates where the feed has zero price.
+
+## 2026-06-12 Lee Buildout Throttling Finding
+
+Lee remains not uploaded. A side-agent probe found that individual Buildout
+pages are healthy, including pages `0`, `32`, `286`, `297`, and `332`, and the
+current Lee total is `9972`. The blocker is sustained full-inventory behavior:
+after many pages, Buildout returns temporary 403 HTML or non-JSON responses.
+
+Saved note:
+`cre_scrapers/brokers/lee_associates/LEE_BUILDOUT_THROTTLING_RESUMABILITY_2026-06-12.md`.
+
+Next safe plan: add opt-in durable page cache, true page-window cache-fill
+controls, pacing before fallback, and attempted/failed/unattempted diagnostics;
+then fill small windows before assembling a Lee-only no-ingest full artifact.
+
+## 2026-06-12 JLL/Newmark Detail Review
+
+JLL and Newmark remain loaded but not detail-complete. A side-agent review saved
+notes under the broker folders:
+
+- `cre_scrapers/brokers/jll/PERFORMANCE_ACCURACY_REVIEW_2026-06-12.md`
+- `cre_scrapers/brokers/newmark/PERFORMANCE_ACCURACY_REVIEW_2026-06-12.md`
+
+Highlights:
+
+- JLL now covers all nine property-type filters across sale and lease, but main
+  rows are still card-level. Detail-page `__NEXT_DATA__` artifacts show
+  brochures, images, brokers, coordinates, and profile-like broker fields are
+  available. No VCard URLs were observed.
+- Newmark is feed-complete via Algolia after no-state recovery, but not
+  deep-contact complete. The recommended path is cached Algolia People lookup by
+  exact `broker_name`, not noisy detail-page shells. The recovered Washington,
+  DC lease rows are present but still have `state: null`.

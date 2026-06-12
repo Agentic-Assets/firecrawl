@@ -66,7 +66,7 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
 - Post-validation live ingest: CBRE Deal Flow was upgraded from the old first-grid path to the public RCM ListingEngine endpoint and ingested additively from `out/cbre_dealflow_full_2026-06-12_041740.json`. The artifact staged 1,836 rows, 1,809 public sale cards and all 27 public lease cards, with 0 skipped missing URLs. RCM reported 2,042 sale rows, but public card pagination exposed 1,809 sale cards before returning 0 additional cards. Live Supabase now has 1,857 active Deal Flow-prefixed rows under brokerage slug `cbre`, including prior additive probe rows retained because `--mark-missing` was not used.
 - Post-validation live ingest: Newmark no-state recovery was ingested additively from `out/newmark_full_2026-06-12_no_state_recovery.json`. The artifact staged 4,371 rows, 1,121 sale and 3,250 lease, with 0 skipped missing URLs. Latest-batch validation found 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad states, 0 bad coordinates, 0 bad cap rates, 4,303 image child rows, and 0 orphan images.
 - Post-validation live ingest: Avison Young SharpLaunch full feed was ingested additively from `out/avison_full_2026-06-12_043342.json`. The artifact collected 2,333 raw rows and staged 2,200 unique rows after dual sale/lease merge, with 0 skipped missing URLs. Latest-batch validation found 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad states, 0 bad coordinates, 0 bad cap rates, 4,125 contact child rows, 2,186 image child rows, and 0 orphan contact/image rows.
-- Lee & Associates is not uploaded. A fresh Lee-only run on 2026-06-12 passed the prior failure zone, then failed pages 286 through 297 after retries and aborted with `Error: no listings collected from any source`. It wrote only `out/lee_latest_2026-06-12_004010.log`, not a usable JSON artifact.
+- Lee & Associates is not uploaded. A fresh Lee-only run on 2026-06-12 passed the prior failure zone, then failed pages 286 through 297 after retries and aborted with `Error: no listings collected from any source`. A later side-agent probe confirmed individual pages `0`, `32`, `286`, `297`, and `332` return valid JSON and Lee total is now `9972`, so the blocker is sustained-run throttling/non-JSON behavior, not permanently bad pages. See `cre_scrapers/brokers/lee_associates/LEE_BUILDOUT_THROTTLING_RESUMABILITY_2026-06-12.md`.
 - Post-validation live ingest: Colliers SalesTracker was ingested additively
   from `out/colliers_salestracker_full_2026-06-12_050241.json`. The artifact
   collected 1,300 public SalesTracker sale cards from RCM GET list/map endpoints
@@ -80,7 +80,7 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
   contacts/documents/images. Sample `search_cre_listings('office', null, null,
   null, 'sale')` returned live Colliers rows. The main
   `www.colliers.com/en/properties` Coveo sale/lease search remains blocked.
-- Transwestern is not uploaded from a full run yet. Current collector has a targeted public GET feed probe and dry-run proof, but it still needs full collection, live ingest, and Supabase validation.
+- Post-validation live ingest: Transwestern was loaded from `out/transwestern_full_2026-06-12_121302_cleaned.json`. The full public GET/detail artifact collected 2,151 raw rows, which staged to 2,021 unique listings after 130 sale-or-lease duplicates merged. The cleaned artifact removed 2,151 footer/TREC/copyright descriptions and retained URL-only child assets. Live validation found 2,021 active rows, 389 sale, 1,502 lease, 130 sale_or_lease, 3,054 document URL rows, 4,838 image URL rows, 3,746 contact rows, 3,746 profile URLs, 3,746 VCard URLs, and 0 bad descriptions, bad asset URLs, missing URLs, missing titles, missing raw data, duplicate external IDs, bad states, impossible coordinates, malformed guarded prices/cap rates, or child orphans.
 - 730 older active rows remain from earlier additive runs: Newmark 715, Marcus & Millichap 6, CBRE 5, Savills 2, SVN 2. Do not treat active row count as a pure latest-run count until a clean reconciliation run marks missing rows.
 - Some supported adapters are intentionally shallow: Avison Young, Marcus & Millichap, and Savills have first-page, first-batch, or sale-only limitations documented in `CLAUDE.md`. Cushman was removed from this list after the 2026-06-12 API upgrade, full run, source-scoped reconciliation, and live validation. NAI Global was removed after the public Infabode GraphQL active-status filter was proven and live-ingested on 2026-06-12.
 
@@ -106,10 +106,9 @@ The Lee command was piped through `tee`, so the shell process returned the `tee`
 1. Make Lee throttling-safe before any claim of all-source coverage. Candidate fixes: lower Buildout concurrency for Lee, add longer page-batch cooldowns, persist successful pages to a resumable cache, or collect Lee in smaller page windows.
 2. Add a saved validation command that compares latest artifact staged rows to Supabase touched rows by brokerage.
 3. After Lee is clean, run a full all-source collection and live ingest with mark-missing eligibility, then verify that stale active rows are gone or intentionally retained.
-4. Run a conservative full dry run for Transwestern, then validate staged rows
-   and child URL rows before any additive live ingest. Treat main Colliers Coveo
-   sale/lease coverage as integration backlog until a permitted non-POST path
-   exists.
+4. Implement Lee Buildout resumability/page-cache controls before another
+   sustained Lee full run. Treat main Colliers Coveo sale/lease coverage as
+   integration backlog until a permitted non-POST path exists.
 
 ## 2026-06-12 CBRE Deal Flow Full Run And Live Ingest
 
@@ -302,3 +301,58 @@ Remaining limit:
 - This is complete for the public Cushman search API and visible detail-page
   enrichment. Any future change should be a field audit, not a bulk coverage
   blocker.
+
+## 2026-06-12 Transwestern Full Run And Live Ingest
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=transwestern --transaction=both --max-items=0 --concurrency=4 --out=out/transwestern_full_2026-06-12_121302.json
+python3 cre_ingest.py --in out/transwestern_full_2026-06-12_121302_cleaned.json --dry-run --keep-artifacts /tmp/transwestern_full_2026-06-12_121302_cleaned_ingest_check
+python3 cre_ingest.py --in out/transwestern_full_2026-06-12_121302_cleaned.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/transwestern_full_2026-06-12_121302_cleaned_mark_missing_check
+python3 cre_ingest.py --in out/transwestern_full_2026-06-12_121302_cleaned.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/transwestern_full_2026-06-12_121302_cleaned_mark_missing_live_retry
+```
+
+Collector and cleanup result:
+
+- Raw artifact: `out/transwestern_full_2026-06-12_121302.json`, 8.1 MB.
+- Cleaned ingest artifact:
+  `out/transwestern_full_2026-06-12_121302_cleaned.json`.
+- Collected rows: 2,151 raw rows, with 519 sale-bucket rows and 1,632
+  lease-bucket rows.
+- The 130 `Sale or Lease` rows intentionally appeared in both sale and lease
+  passes and merged to `sale_or_lease` during staging.
+- Detail coverage before ingest: 3,184 document URLs, 5,093 image URLs, 3,963
+  contacts/profile URLs/VCard URLs, 0 detail errors, 0 missing URLs, and 0
+  missing titles.
+- The cleaned artifact removed 2,151 footer/TREC/copyright descriptions because
+  the detail fallback was site footer text, not property narrative text.
+- After cleanup: 0 bad descriptions, 0 bad document URLs, and 0 bad image URLs.
+
+Ingest proof:
+
+- Dry-run staged 2,021 unique rows and skipped 0 missing URLs.
+- Initial live ingest failed because the live database had not yet seeded the
+  existing `sql/001_cre_brokerages.sql` Transwestern row. The missing
+  `credeals.cre_brokerages` slug was inserted, then the same cleaned ingest was
+  retried.
+- Source-scoped `--mark-missing` dry-run activated only for `transwestern`.
+- Live ingest plus reconciliation completed.
+- Active Transwestern rows after ingest: 2,021, with 389 sale, 1,502 lease, and
+  130 sale_or_lease.
+- Supabase validation found 0 missing URLs, 0 missing titles, 0 missing raw data,
+  0 bad descriptions, 0 duplicate external IDs, 0 bad state codes, 0 impossible
+  coordinates, 0 malformed guarded prices, 0 malformed cap rates, 0 bad document
+  URLs, 0 bad image URLs, and 0 orphan contacts/documents/images.
+- Active child rows: 4,838 image URL rows, 3,054 document URL rows, 3,746
+  contact rows, 3,746 profile URLs, and 3,746 VCard URLs.
+- `credeals.v_cre_listings_full` returned live Transwestern sample rows, and
+  `search_cre_listings('National Avenue', null, null, null, null)` returned the
+  live `1025 W. National Avenue` Transwestern listing.
+
+Remaining limit:
+
+- Availability parsing and price/rate promotion should be hardened before daily
+  scheduling. The full live load is still defensible because raw availability is
+  retained and guarded malformed prices/rates validate cleanly.

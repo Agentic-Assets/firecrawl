@@ -1,6 +1,6 @@
 # CRE Collector Start Here
 
-Last updated: 2026-06-12 local time, evidence from run finished at `2026-06-12T04:31:24.562Z`, validation on 2026-06-12, CBRE Deal Flow plus Colliers SalesTracker full ingests, NAI active-status-filtered ingest, and Cushman full live ingest on 2026-06-12.
+Last updated: 2026-06-12 local time, evidence from run finished at `2026-06-12T04:31:24.562Z`, validation on 2026-06-12, CBRE Deal Flow plus Colliers SalesTracker full ingests, NAI active-status-filtered ingest, Cushman full live ingest, and Transwestern full live ingest on 2026-06-12.
 
 This directory is the production daily path for public commercial real estate listing inventory feeding EQUIRE. Use it for sale and lease listings. The older `../cre_scrapers/` Python package is legacy support for source probes and detail-page enrichment.
 
@@ -44,9 +44,9 @@ Result:
 | Savills | 100 | Active, sale only; US lease empty after fallback filtering |
 | SVN | 5,521 in latest full artifact | Mapping complete from prior full artifact; fresh live refresh partial due Buildout 403 HTML |
 | NAI Global | 241 active rows, 183 sale + 58 lease live-ingested with mark-missing cleanup | Complete public active feed via Infabode GraphQL and `publicPost`, filtered to `FOR_SALE_ON_MARKET`; historical/unknown rows excluded |
-| Lee & Associates | 0 | Blocked under sustained Buildout paging; latest retry failed pages 286-297 |
+| Lee & Associates | 0 | Blocked under sustained Buildout paging; page probes are healthy, but full-run needs durable page cache/resumability |
 | Colliers | 1,300 SalesTracker cards collected, 1,172 unique rows live-ingested | Partial investment-sale coverage via public RCM GET endpoints; main Colliers Coveo sale/lease search remains blocked |
-| Transwestern | 8 in probe, source feed totals 519 sale-bucket rows and 1,636 lease-bucket rows before dedupe | Public GET feed implemented and dry-run proven; pending full run and live ingest |
+| Transwestern | 2,021 active rows, 389 sale + 1,502 lease + 130 sale_or_lease | Complete public GET feed, detail-enriched and live-ingested with source-scoped mark-missing cleanup |
 
 ## Start A New Session
 
@@ -108,7 +108,7 @@ images into Supabase storage for the bulk collector.
 - Do not store source PDF or image binaries in Supabase. Store URLs only.
 - Do not claim complete Colliers coverage. Only SalesTracker investment-sale coverage has a public GET path; 1,172 unique SalesTracker sale rows are live-ingested, while the main Colliers Coveo sale/lease search remains blocked.
 - Do not ingest NAI Global's unbounded Infabode feed as active inventory. Use only rows whose public `publicPost.listingStatus` contains `FOR_SALE_ON_MARKET`. The 2026-06-12 active artifact `out/nai_active_only_from_full_2026-06-12_044310.json` was live-ingested with source-scoped `--mark-missing`; 19 old rendered-card probe rows were soft-deleted.
-- Do not claim Transwestern complete until the implemented public GET feed has a clean full run, live ingest, and Supabase validation.
-- Do not claim Lee coverage until a sustained full Lee run writes a clean artifact and is ingested.
+- Transwestern is now current in Supabase from `out/transwestern_full_2026-06-12_121302_cleaned.json`: 2,021 active rows, 3,054 document URL rows, 4,838 image URL rows, 3,746 contact/profile/VCard URL rows, and 0 bad descriptions or bad asset URLs. The live DB needed the existing `sql/001_cre_brokerages.sql` Transwestern seed inserted before ingest.
+- Do not claim Lee coverage until a sustained full Lee run writes a clean artifact and is ingested. Read `cre_scrapers/brokers/lee_associates/LEE_BUILDOUT_THROTTLING_RESUMABILITY_2026-06-12.md` first; individual Buildout pages are healthy, but sustained full-inventory fetches trigger temporary 403/non-JSON responses.
 - Do not treat legacy `cre_scrapers` active flags as production collector status.
 - Do not stage `node_modules/`, `out/`, `__pycache__/`, or generated SQL artifacts.

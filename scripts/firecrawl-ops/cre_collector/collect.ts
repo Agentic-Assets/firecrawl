@@ -3746,6 +3746,21 @@ function extractTranswesternPhotos(doc: ScrapedDoc, feedImage: string | null): s
   );
 }
 
+function transwesternDescription($: cheerio.CheerioAPI, doc: ScrapedDoc): string | null {
+  const candidate =
+    clean($(".property-description, .PropertyDescription, #overview").first().text()) ??
+    clean(doc.markdown.match(/Overview\s*([\s\S]{1,1800}?)(?:\n[A-Z][A-Za-z ]+\n|\n#{1,6}\s|$)/i)?.[1]);
+  if (
+    !candidate ||
+    /TREC Information About Brokerage Services|Privacy Policy|Copyright\s+Transwestern|Sitemap|Working-at-Transwestern/i.test(
+      candidate
+    )
+  ) {
+    return null;
+  }
+  return candidate;
+}
+
 async function enrichTranswesternListing(row: any, bucket: string, tx: Tx): Promise<any> {
   const detailUrl = transwesternDetailUrl(row.PageUrl);
   const feedImage = canonicalTranswesternUrl(clean(row.PropertyImage));
@@ -3791,9 +3806,7 @@ async function enrichTranswesternListing(row: any, bucket: string, tx: Tx): Prom
       )
       .filter((id: number | null): id is number => id !== null);
     const coordMatch = doc.rawHtml.match(/myLatLng\s*=\s*\{\s*lat:\s*(-?[0-9.]+),\s*lng:\s*(-?[0-9.]+)/i);
-    const description =
-      clean($(".property-description, .PropertyDescription, #overview").first().text()) ??
-      clean(doc.markdown.match(/Overview\s*([\s\S]{1,1800}?)(?:\n[A-Z][A-Za-z ]+\n|\n#{1,6}\s|$)/i)?.[1]);
+    const description = transwesternDescription($, doc);
     const leaseRateText =
       availability.map((a) => clean(a.rate)).find((rate) => rate && /\$|psf|sf|negotiable/i.test(rate)) ??
       null;

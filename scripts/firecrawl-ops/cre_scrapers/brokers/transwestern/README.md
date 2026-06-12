@@ -1,17 +1,17 @@
 # Transwestern Source Notes
 
-Production bulk collection is not implemented yet. These notes capture the
-2026-06-12 source audit for adding `transwestern` to
-`scripts/firecrawl-ops/cre_collector/collect.ts` without using request-body
-coverage, binary downloads, or live Supabase ingest.
+Production bulk collection is implemented in
+`scripts/firecrawl-ops/cre_collector/collect.ts` under source key
+`transwestern`. These notes capture the 2026-06-12 source audit and live ingest
+proof. The collector uses public GET feed URLs and public detail pages only. It
+stores PDFs, flyers, images, broker profiles, and VCards as URLs only.
 
 ## 2026-06-12 Deep Dive Notes
 
 ### Status
 
-Transwestern should no longer be treated as blocked on a POST-only path. The
-public website exposes a repeatable URL-only GET path for feed discovery and
-detail enrichment:
+Transwestern is no longer blocked on a POST-only path. The public website
+exposes a repeatable URL-only GET path for feed discovery and detail enrichment:
 
 - Discovery sitemap: `https://transwestern.com/sitemap.aspx?xml=properties`
 - Search/feed JSON: `https://transwestern.com/properties?call=ajax&...`
@@ -20,6 +20,56 @@ detail enrichment:
 The browser source still uses a jQuery `POST` from `/properties`, but the same
 `call=ajax` parameters also work as a GET query. A collector can avoid
 POST-body dependence.
+
+## 2026-06-12 Full Run And Supabase Proof
+
+Artifacts:
+
+- Raw full artifact: `cre_collector/out/transwestern_full_2026-06-12_121302.json`.
+- Cleaned ingest artifact:
+  `cre_collector/out/transwestern_full_2026-06-12_121302_cleaned.json`.
+- Performance/accuracy review:
+  `PERFORMANCE_ACCURACY_NOTE_2026-06-12.md`.
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=transwestern --transaction=both --max-items=0 --concurrency=4 --out=out/transwestern_full_2026-06-12_121302.json
+python3 cre_ingest.py --in out/transwestern_full_2026-06-12_121302_cleaned.json --dry-run --keep-artifacts /tmp/transwestern_full_2026-06-12_121302_cleaned_ingest_check
+python3 cre_ingest.py --in out/transwestern_full_2026-06-12_121302_cleaned.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/transwestern_full_2026-06-12_121302_cleaned_mark_missing_live_retry
+```
+
+Result:
+
+- Raw collection: 2,151 rows, 519 sale-bucket rows and 1,632 lease-bucket rows.
+- Staged unique rows: 2,021, after 130 `Sale or Lease` rows merged.
+- Detail coverage in the raw artifact: 3,184 document URLs, 5,093 image URLs,
+  3,963 contact/profile/VCard URL rows, 0 detail errors, 0 missing URLs, and 0
+  missing titles.
+- Description cleanup: every raw fallback description matched footer,
+  TREC/copyright, or site-map boilerplate, so the cleaned artifact removed 2,151
+  descriptions. The collector now has a Transwestern-only guard that emits null
+  rather than footer text.
+- Live ingest initially failed because the live database had not yet seeded the
+  `transwestern` brokerage row already present in `sql/001_cre_brokerages.sql`.
+  After seeding that slug, the same cleaned artifact ingested successfully.
+- Active Supabase rows: 2,021, with 389 sale, 1,502 lease, and 130
+  sale_or_lease.
+- Active child URL rows: 3,054 documents, 4,838 images, 3,746 contacts, 3,746
+  profile URLs, and 3,746 VCard URLs.
+- Validation: 0 bad descriptions, 0 bad document URLs, 0 bad image URLs, 0
+  missing URLs, 0 missing titles, 0 missing raw data, 0 duplicate external IDs,
+  0 bad state codes, 0 impossible coordinates, 0 malformed guarded prices/cap
+  rates, and 0 child orphans.
+
+Remaining refinements:
+
+- Add a run-local detail cache so the 130 `Sale or Lease` detail pages are not
+  scraped twice.
+- Harden availability table parsing before promoting more sale prices or lease
+  rates from detail rows.
+- Parse broker office names if a stable contact-card selector is found.
 
 ### 2026-06-12 GET Refresh
 
