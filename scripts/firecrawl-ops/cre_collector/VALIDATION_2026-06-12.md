@@ -119,6 +119,25 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
   malformed guarded prices/cap rates, bad child URLs, or child orphans. Search
   proof used the updated five-argument `credeals.search_cre_listings` signature
   and returned live Lee rows.
+- Post-validation live ingest: SVN was loaded from
+  `out/svn_full_cache_2026-06-12_assembled.json` after adding the same durable
+  Buildout page-cache/window controls. Cache-only fills produced contiguous
+  pages 0 through 184, with cached pages reporting `total=5526` and `limit=30`.
+  Cache-only windows intentionally refused to write partial listing artifacts.
+  The assembled artifact collected 5,526 raw Buildout rows, 2,989 sale and
+  2,537 lease, with 0 missing URLs, 0 missing titles, 4,071 document URL rows,
+  5,526 image URL rows, and 636 unique run-level brokers. Dry-run staged 5,287
+  unique rows and skipped 0 missing URLs; the reduction is expected because
+  the ingestor strips Buildout sale/lease suffixes and merges dual-mode
+  property pairs plus exact duplicate rows. Source-scoped `--mark-missing` was
+  dry-run and then applied only for `svn`, soft-deleting 34 older rows. Live
+  validation found 5,287 active SVN rows, 2,660 sale, 2,192 lease, 435
+  sale_or_lease, 5,235 image child rows, 3,899 document child rows, 5,287
+  contact child rows, and 0 bad source URLs, missing titles, missing raw data,
+  duplicate external IDs, invalid states, impossible coordinates, malformed
+  guarded prices/cap rates, bad child URLs, or child orphans. One active SVN
+  row is missing state. Search proof used the updated five-argument
+  `credeals.search_cre_listings` signature and returned live SVN rows.
 - Post-validation live ingest: Newmark was refined and reloaded from
   `out/newmark_full_refined_2026-06-12.json`. The collector now retries the
   public Algolia credential bootstrap, uses direct public Algolia JSON for
@@ -138,10 +157,11 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
   image/profile URLs, or child orphans. Search proof used
   `credeals.search_cre_listings('Alvista', null, null, null, null)` and
   returned the live Newmark `Alvista Sterling Palms` row.
-- 724 older active rows remain from earlier additive runs after Marcus
-  source-scoped reconciliation: Newmark 715, CBRE 5, Savills 2, SVN 2. Do not
-  treat active row count as a pure latest-run count until a clean reconciliation
-  run marks missing rows.
+- Known older additive rows after the latest source-scoped reconciliations are
+  limited to sources that have not received a clean scoped cleanup in this
+  continuation, including CBRE 5 and Savills 2 from the earlier audit. Do not
+  treat active row count as a pure latest-run count for unreconciled sources
+  until a clean source run marks missing rows.
 - Some supported adapters are intentionally shallow: Avison Young and Savills
   have first-page, first-batch, or source-fit limitations documented in
   `CLAUDE.md`. Marcus & Millichap was removed from this shallow list for the
@@ -431,3 +451,51 @@ Remaining limit:
 - Availability parsing and price/rate promotion should be hardened before daily
   scheduling. The full live load is still defensible because raw availability is
   retained and guarded malformed prices/rates validate cleanly.
+
+## 2026-06-12 SVN Full Cache Assembly And Live Ingest
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+BUILDOUT_ASSEMBLE_FROM_CACHE=1 FIRECRAWL_API_URL=http://localhost:3002 npx tsx collect.ts --source=svn --transaction=both --max-items=0 --concurrency=1 --out=out/svn_full_cache_2026-06-12_assembled.json
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json --dry-run --keep-artifacts /tmp/svn_full_cache_2026-06-12_assembled_ingest_check
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/svn_full_cache_2026-06-12_assembled_mark_missing_check
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/svn_full_cache_2026-06-12_assembled_mark_missing_live
+```
+
+Collector result:
+
+- Artifact: `out/svn_full_cache_2026-06-12_assembled.json`, 5.2 MB.
+- Assembled from contiguous durable Buildout cache pages 0 through 184.
+- Collected rows: 5,526 raw rows, with 2,989 sale-bucket rows and 2,537
+  lease-bucket rows.
+- Artifact coverage before ingest: 4,071 document URL rows, 5,526 image URL
+  rows, 5,526 broker/contact refs, 636 unique run-level brokers, 0 missing URLs,
+  and 0 missing titles.
+- Raw Buildout IDs had 30 duplicate groups; ingestor canonicalization merged
+  sale/lease suffix variants and exact duplicates.
+
+Ingest proof:
+
+- Dry-run staged 5,287 unique rows and skipped 0 missing URLs.
+- Source-scoped `--mark-missing` dry-run activated only for `svn`.
+- Live ingest plus reconciliation completed.
+- Active SVN rows after ingest: 5,287, with 2,660 sale, 2,192 lease, and 435
+  sale_or_lease.
+- Old SVN rows soft-deleted: 34.
+- Supabase validation found 0 missing URLs, 0 missing titles, 0 missing raw
+  data, 0 duplicate external IDs, 0 invalid state codes, 0 impossible
+  coordinates, 0 malformed guarded prices, 0 malformed cap rates, 0 bad child
+  URLs, and 0 orphan contacts/documents/images.
+- Active child rows: 5,235 image URL rows, 3,899 document URL rows, and 5,287
+  contact rows.
+- One active SVN row is missing state.
+- `search_cre_listings('1500', null, null, null, null)` returned live SVN rows,
+  including `1500 N Halsted St`.
+
+Remaining limit:
+
+- This is complete for the public SVN Buildout feed. Future work should focus
+  on optional detail-page enrichment only if a safe public detail path is
+  proven.

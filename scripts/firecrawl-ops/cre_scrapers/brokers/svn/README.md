@@ -13,14 +13,28 @@ Production bulk collection uses SVN's Buildout plugin inventory feed in `cre_col
 
 ## Verification Evidence
 
-Latest complete artifact reviewed: `cre_collector/out/full_latest_2026-06-11_230423.json`.
+Latest complete artifact reviewed:
+`cre_collector/out/svn_full_cache_2026-06-12_assembled.json`.
 
-- Finished at `2026-06-12T04:31:24.562Z`.
-- SVN source rows: 5,521 total, 2,988 sale and 2,533 lease.
-- Detail coverage in that artifact: 5,521 listing URLs, 5,521 listings with broker refs, 637 unique SVN brokers, 4,058 listings with PDF brochure URLs, 5,521 listings with image URLs, 5,481 listings with lat/lon, 2,958 sale rows with price text, and 2,533 lease rows with lease-rate text.
-- Dual-mode coverage: 646 rows surfaced as `Sale/Lease`.
+- Assembled on 2026-06-12 from durable Buildout cache pages 0 through 184.
+- Raw SVN source rows: 5,526 total, 2,989 sale-bucket rows and 2,537
+  lease-bucket rows.
+- Staged rows after ingestor canonicalization: 5,287 unique listings.
+- Live active Supabase rows after source-scoped reconciliation: 5,287 total,
+  2,660 sale, 2,192 lease, and 435 sale_or_lease.
+- Artifact coverage: 5,526 listing URLs, 5,526 listings with broker/contact
+  refs, 636 unique SVN brokers, 4,071 listings with PDF/document URLs, and
+  5,526 listings with image URLs.
+- Live child rows after ingest: 5,235 image URL rows, 3,899 document URL rows,
+  and 5,287 contact rows.
+- Quality proof: 0 missing URLs, 0 missing titles, 0 missing raw data, 0
+  duplicate external IDs, 0 bad asset URLs, and 0 orphan contacts, documents,
+  or images. One active SVN row is missing state.
 
-Live probe on 2026-06-12:
+The earlier live probes below are retained as failure-mode evidence. They led
+to the durable Buildout cache/window strategy now used for SVN.
+
+Live probe on 2026-06-12 before cache-window recovery:
 
 ```bash
 FIRECRAWL_API_URL=http://localhost:3002 npx tsx collect.ts \
@@ -46,4 +60,8 @@ Sequential paging still failed closed at 6 failed pages out of 185.
 
 Buildout feeds can serve HTML interstitials under sustained paging. The production collector retries individual pages and aborts the source if too many pages fail.
 
-Current recommendation: treat SVN as mapping-complete from the latest full artifact, but partial for live refresh verification until a fresh both-transaction probe writes a valid artifact again. Do not use `--mark-missing` from an SVN run that reports Buildout page failures.
+Current recommendation: use durable cache-window fills and assemble from cache
+only after all pages are present. Do not use `--mark-missing` from an SVN run
+that reports Buildout page failures or an incomplete cache. The 2026-06-12
+assembled cache artifact passed dry-run ingest, live ingest, and source-scoped
+Supabase validation.

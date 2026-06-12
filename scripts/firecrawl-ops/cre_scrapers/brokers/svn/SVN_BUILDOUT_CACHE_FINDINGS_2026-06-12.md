@@ -107,3 +107,53 @@ BUILDOUT_ASSEMBLE_FROM_CACHE=1 FIRECRAWL_API_URL=http://localhost:3002 \
 
 Only consider live ingest or source-scoped reconciliation after a clean
 assembled artifact and dry-run ingest pass.
+
+## Full Cache Assembly And Supabase Proof
+
+The cache was later filled through page 184 and assembled from cache only:
+
+```bash
+cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+BUILDOUT_ASSEMBLE_FROM_CACHE=1 FIRECRAWL_API_URL=http://localhost:3002 \
+  npx tsx collect.ts --source=svn --transaction=both --max-items=0 \
+  --concurrency=1 --out=out/svn_full_cache_2026-06-12_assembled.json
+```
+
+Collector result:
+
+- Artifact: `out/svn_full_cache_2026-06-12_assembled.json`.
+- Rows collected: 5,526 raw Buildout rows.
+- Transaction buckets: 2,989 sale and 2,537 lease.
+- Coverage: 4,071 document URL rows, 5,526 image URL rows, 5,526 broker/contact
+  refs, and 636 unique run-level brokers.
+- QA: 0 missing URLs, 0 missing titles, 0 missing raw data, and 30 raw duplicate
+  Buildout ID groups before ingestor canonicalization.
+
+Ingest and validation:
+
+```bash
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json \
+  --dry-run --keep-artifacts /tmp/svn_full_cache_2026-06-12_assembled_ingest_check
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json \
+  --dry-run --mark-missing --mark-missing-floor 100 \
+  --keep-artifacts /tmp/svn_full_cache_2026-06-12_assembled_mark_missing_check
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json \
+  --mark-missing --mark-missing-floor 100 \
+  --keep-artifacts /tmp/svn_full_cache_2026-06-12_assembled_mark_missing_live
+```
+
+- Dry-run staged 5,287 unique rows and skipped 0 missing URLs.
+- Source-scoped `--mark-missing` activated only for `svn`.
+- Live Supabase rows after ingest: 5,287 active SVN listings.
+- Transaction split: 2,660 sale, 2,192 lease, 435 sale_or_lease.
+- Old rows soft-deleted: 34.
+- Child rows: 5,235 image URLs, 3,899 document URLs, 5,287 contact rows.
+- Validation found 0 bad source URLs, missing titles, missing raw data,
+  duplicate external IDs, invalid states, impossible coordinates, malformed
+  guarded prices/cap rates, bad child URLs, or child orphans.
+- One active SVN row is missing state.
+- `search_cre_listings('1500', null, null, null, null)` returned live SVN rows.
+
+Status: complete for the public SVN Buildout feed. Future SVN work should be
+limited to optional detail-page enrichment if a safe public detail path is
+proven.

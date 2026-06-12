@@ -175,7 +175,13 @@ Fresh validation found that the latest full artifact uploaded correctly for the 
 - Latest scrape jobs: 35,510 discovered, 33,488 saved, 2 errors.
 - Active rows: 34,218 in both `cre_listings` and `v_cre_listings_full`.
 
-The 730-row difference between latest touched rows and active rows is older additive inventory, not a latest-upload mismatch. Breakdown: Newmark 715, Marcus & Millichap 6, CBRE 5, Savills 2, SVN 2. Leave `--mark-missing` off while Lee remains unreliable.
+Historical note, later source-scoped reconciliations superseded part of this:
+the 730-row difference between latest touched rows and active rows was older
+additive inventory, not a latest-upload mismatch. The original breakdown
+included older Newmark, Marcus & Millichap, CBRE, Savills, and SVN rows. Later
+same-day source runs reconciled Marcus, Newmark, Lee, SVN, and other completed
+sources. For current counts, use `VALIDATION_2026-06-12.md` and
+`START_HERE.md`.
 
 Fresh quality checks found no bad URLs, missing titles, bad transaction values, invalid state codes, impossible coordinates, malformed guarded prices, malformed guarded cap rates, missing raw data, duplicate `(brokerage_id, external_id)` groups, or orphan child rows among latest touched rows. NAI Global still has shared `source_url` values because the source exposes cards inside one widget URL.
 
@@ -800,6 +806,42 @@ BUILDOUT_CACHE_ONLY=1 BUILDOUT_PAGE_START=5 BUILDOUT_PAGE_END=24 \
 
 Repeat windows until pages 0 through 184 are present, then assemble only from
 cache and dry-run ingest before any live upload or source-scoped reconciliation.
+
+## 2026-06-12 SVN Full Cache Assembly And Live Ingest
+
+SVN is now complete for its public Buildout feed. The durable cache was filled
+through page 184, assembled from cache only, dry-run staged cleanly, and then
+live-ingested with source-scoped reconciliation.
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+BUILDOUT_ASSEMBLE_FROM_CACHE=1 FIRECRAWL_API_URL=http://localhost:3002 npx tsx collect.ts --source=svn --transaction=both --max-items=0 --concurrency=1 --out=out/svn_full_cache_2026-06-12_assembled.json
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json --dry-run --keep-artifacts /tmp/svn_full_cache_2026-06-12_assembled_ingest_check
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/svn_full_cache_2026-06-12_assembled_mark_missing_check
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/svn_full_cache_2026-06-12_assembled_mark_missing_live
+```
+
+Result:
+
+- Artifact: `out/svn_full_cache_2026-06-12_assembled.json`, 5.2 MB.
+- Raw collected rows: 5,526, with 2,989 sale-bucket rows and 2,537 lease-bucket
+  rows.
+- Artifact URL-only coverage: 4,071 document rows, 5,526 image rows, 5,526
+  broker/contact refs, and 636 unique run-level brokers.
+- Dry-run staged 5,287 unique rows and skipped 0 missing URLs.
+- Source-scoped live reconciliation soft-deleted 34 old SVN rows.
+- Active Supabase rows after ingest: 5,287, with 2,660 sale, 2,192 lease, and
+  435 sale_or_lease.
+- Active child rows: 5,235 image URLs, 3,899 document URLs, and 5,287 contacts.
+- Validation found 0 duplicate external IDs, bad URLs, missing titles, missing
+  raw data, invalid states, impossible coordinates, malformed guarded
+  prices/cap rates, bad child URLs, or child orphans.
+- One active SVN row is missing state.
+- Search proof:
+  `credeals.search_cre_listings('1500', null, null, null, null)` returned live
+  SVN rows.
 
 ## 2026-06-12 Savills Commercial Lease Recheck
 

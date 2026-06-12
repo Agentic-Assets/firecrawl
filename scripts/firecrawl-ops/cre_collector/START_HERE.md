@@ -44,7 +44,7 @@ Result:
 | Marcus & Millichap | 3,124 active sale rows | Complete public sale feed via public map ActivityIds, `mappropertydetail` tiles, and detail HTML; live-ingested with source-scoped mark-missing cleanup; lease unsupported |
 | Avison Young | 2,200 staged unique rows in post-validation full run | Public SharpLaunch feed live-ingested additively; still needs optional detail-page enrichment |
 | Savills | 100 legacy sale rows + 2 defensible commercial lease rows in latest probe | Partial; lease now has 2 U.S. retail rows with PDF/image/contact URLs, while current sale rows remain global/residential and not CRE-defensible |
-| SVN | 5,521 in latest full artifact | Mapping complete from prior full artifact; fresh live refresh partial due Buildout 403 HTML |
+| SVN | 5,287 active rows, 2,660 sale + 2,192 lease + 435 sale_or_lease | Complete public Buildout feed, assembled from durable page cache and live-ingested with source-scoped mark-missing cleanup |
 | NAI Global | 241 active rows, 183 sale + 58 lease live-ingested with mark-missing cleanup | Complete public active feed via Infabode GraphQL and `publicPost`, filtered to `FOR_SALE_ON_MARKET`; historical/unknown rows excluded |
 | Lee & Associates | 9,223 active rows, 2,611 sale + 5,691 lease + 921 sale_or_lease | Complete public Buildout feed, assembled from durable page cache and live-ingested with source-scoped mark-missing cleanup |
 | Colliers | 1,300 SalesTracker cards collected, 1,172 unique rows live-ingested | Partial investment-sale coverage via public RCM GET endpoints; main Colliers Coveo sale/lease search remains blocked |
@@ -114,5 +114,6 @@ images into Supabase storage for the bulk collector.
 - Marcus & Millichap is now current in Supabase from `out/marcus_full_2026-06-12_130035.json`: 3,124 active public sale rows, 16,771 image URL rows, 7,915 contact/profile URL rows, 0 document rows, and 0 final detail errors. Gated deal-room URLs stay in raw metadata only. Public lease remains unsupported.
 - Lee & Associates is now current in Supabase from `out/lee_full_cache_2026-06-12_assembled.json`: 9,223 active rows, 9,062 image URL rows, 7,681 document URL rows, 9,223 contact rows, and 0 bad URLs, duplicate IDs, bad states, bad coordinates, or child orphans. The durable Buildout cache remains under gitignored `out/cache/buildout/lee-associates/`.
 - Newmark is now current in Supabase from `out/newmark_full_refined_2026-06-12.json`: 4,371 active rows, 4,303 image URL rows, 3,961 contact/profile URL rows, 0 document rows, 0 missing states, and 715 old additive rows soft-deleted. Listing documents, full galleries, second/third broker joins, and VCards remain unproven.
+- SVN is now current in Supabase from `out/svn_full_cache_2026-06-12_assembled.json`: 5,287 active rows, 5,235 image URL rows, 3,899 document URL rows, 5,287 contact rows, 0 duplicate external IDs, 0 bad URLs, 0 missing titles, 0 missing raw data, and 34 old rows soft-deleted. One active SVN row is missing state.
 - Do not treat legacy `cre_scrapers` active flags as production collector status.
 - Do not stage `node_modules/`, `out/`, `__pycache__/`, or generated SQL artifacts.
