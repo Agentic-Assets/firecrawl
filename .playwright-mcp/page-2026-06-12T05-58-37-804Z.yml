@@ -1,0 +1,1078 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - link "Cushman & Wakefield Logo" [ref=e5] [cursor=pointer]:
+        - /url: /en/united-states
+        - img "Cushman & Wakefield Logo" [ref=e6]
+      - navigation "Primary Navigation":    
+      - navigation "Header utility" [ref=e7]:
+        - listitem [ref=e8]:
+          - button "Open search" [ref=e9] [cursor=pointer]:
+            - generic [ref=e10]:
+              - text: 
+              - generic [ref=e11]: Open Search Menu
+            - generic [ref=e12]:
+              - text: 
+              - generic [ref=e13]: Close Search Menu
+        - listitem [ref=e14]
+        - listitem [ref=e16]:
+          - button "Choose region" [ref=e17] [cursor=pointer]:
+            - generic [ref=e19]: 
+          - generic [ref=e20]:
+            - generic [ref=e22]:
+              - generic [ref=e23]: Select Country
+              - textbox [ref=e24]:
+                - /placeholder: Start typing a location
+            - separator [ref=e25]
+            - list [ref=e26]:
+              - listitem [ref=e27]:
+                - link [ref=e28] [cursor=pointer]:
+                  - /url: /en/properties/properties-for-sale
+                  - generic [ref=e29]: 
+                  - text: Global
+              - listitem [ref=e30]:
+                - link [ref=e31] [cursor=pointer]:
+                  - /url: /es-ar/argentina
+                  - text: Argentina
+              - listitem [ref=e33]:
+                - link [ref=e34] [cursor=pointer]:
+                  - /url: /en/australia/properties/invest/search
+                  - text: Australia
+              - listitem [ref=e36]:
+                - link [ref=e37] [cursor=pointer]:
+                  - /url: /en/offices/austria
+                  - text: Austria
+              - listitem [ref=e39]:
+                - link [ref=e40] [cursor=pointer]:
+                  - /url: /en/belgium/properties/invest/search
+                  - text: Belgium
+              - listitem [ref=e42]:
+                - link [ref=e43] [cursor=pointer]:
+                  - /url: /pt-br/brazil
+                  - text: Brazil
+              - listitem [ref=e45]:
+                - link [ref=e46] [cursor=pointer]:
+                  - /url: /en/offices/bulgaria
+                  - text: Bulgaria
+              - listitem [ref=e48]:
+                - link [ref=e49] [cursor=pointer]:
+                  - /url: /en/canada/properties/invest/search
+                  - text: Canada
+              - listitem [ref=e51]:
+                - link [ref=e52] [cursor=pointer]:
+                  - /url: /es-cl/chile
+                  - text: Chile
+              - listitem [ref=e54]:
+                - link [ref=e55] [cursor=pointer]:
+                  - /url: /es-co/colombia
+                  - text: Colombia
+              - listitem [ref=e57]:
+                - link [ref=e58] [cursor=pointer]:
+                  - /url: /en/offices/costa-rica
+                  - text: Costa Rica
+              - listitem [ref=e60]:
+                - link [ref=e61] [cursor=pointer]:
+                  - /url: /en/offices/croatia
+                  - text: Croatia
+              - listitem [ref=e63]:
+                - link [ref=e64] [cursor=pointer]:
+                  - /url: /cs-cz/czech-republic
+                  - text: Czech Republic
+              - listitem [ref=e66]:
+                - link [ref=e67] [cursor=pointer]:
+                  - /url: /en/offices/denmark
+                  - text: Denmark
+              - listitem [ref=e69]:
+                - link [ref=e70] [cursor=pointer]:
+                  - /url: /fi-fi/finland
+                  - text: Finland
+              - listitem [ref=e72]:
+                - link [ref=e73] [cursor=pointer]:
+                  - /url: /fr-fr/france
+                  - text: France
+              - listitem [ref=e75]:
+                - link [ref=e76] [cursor=pointer]:
+                  - /url: /en/offices/georgia-tbilisi
+                  - text: Georgia
+              - listitem [ref=e78]:
+                - link [ref=e79] [cursor=pointer]:
+                  - /url: /de-de/germany
+                  - text: Germany
+              - listitem [ref=e81]:
+                - link [ref=e82] [cursor=pointer]:
+                  - /url: /en/greater-china
+                  - text: Greater China
+              - listitem [ref=e84]:
+                - link [ref=e85] [cursor=pointer]:
+                  - /url: /en/offices/greece
+                  - text: Greece
+              - listitem [ref=e87]:
+                - link [ref=e88] [cursor=pointer]:
+                  - /url: /hu-hu/hungary
+                  - text: Hungary
+              - listitem [ref=e90]:
+                - link [ref=e91] [cursor=pointer]:
+                  - /url: /en/india/properties/invest/search
+                  - text: India
+              - listitem [ref=e93]:
+                - link [ref=e94] [cursor=pointer]:
+                  - /url: /id-id/indonesia/properties/invest/search
+                  - text: Indonesia
+              - listitem [ref=e96]:
+                - link [ref=e97] [cursor=pointer]:
+                  - /url: /en/ireland
+                  - text: Ireland
+              - listitem [ref=e99]:
+                - link [ref=e100] [cursor=pointer]:
+                  - /url: /en/offices/israel
+                  - text: Israel
+              - listitem [ref=e102]:
+                - link [ref=e103] [cursor=pointer]:
+                  - /url: /it-it/italy
+                  - text: Italy
+              - listitem [ref=e105]:
+                - link [ref=e106] [cursor=pointer]:
+                  - /url: /ja-jp/japan/properties/invest
+                  - text: Japan
+              - listitem [ref=e108]:
+                - link [ref=e109] [cursor=pointer]:
+                  - /url: /en/offices/kazakhstan
+                  - text: Kazakhstan
+              - listitem [ref=e111]:
+                - link [ref=e112] [cursor=pointer]:
+                  - /url: /en/offices/kosovo
+                  - text: Kosovo
+              - listitem [ref=e114]:
+                - link [ref=e115] [cursor=pointer]:
+                  - /url: /fr-lu/luxembourg/properties/invest/search
+                  - text: Luxembourg
+              - listitem [ref=e117]:
+                - link [ref=e118] [cursor=pointer]:
+                  - /url: /en/offices/malaysia
+                  - text: Malaysia
+              - listitem [ref=e120]:
+                - link [ref=e121] [cursor=pointer]:
+                  - /url: /es-mx/mexico/properties/invest/search
+                  - text: Mexico
+              - listitem [ref=e123]:
+                - link [ref=e124] [cursor=pointer]:
+                  - /url: /en/offices/montenegro
+                  - text: Montenegro
+              - listitem [ref=e126]:
+                - link [ref=e127] [cursor=pointer]:
+                  - /url: /nl-nl/netherlands
+                  - text: Netherlands
+              - listitem [ref=e129]:
+                - link [ref=e130] [cursor=pointer]:
+                  - /url: /en/new-zealand
+                  - text: New Zealand
+              - listitem [ref=e132]:
+                - link [ref=e133] [cursor=pointer]:
+                  - /url: /en/offices/north-macedonia
+                  - text: North Macedonia
+              - listitem [ref=e135]:
+                - link [ref=e136] [cursor=pointer]:
+                  - /url: /en/offices/norway
+                  - text: Norway
+              - listitem [ref=e138]:
+                - link [ref=e139] [cursor=pointer]:
+                  - /url: /es-pe/peru
+                  - text: Peru
+              - listitem [ref=e141]:
+                - link [ref=e142] [cursor=pointer]:
+                  - /url: /en/philippines/properties/invest/search
+                  - text: Philippines
+              - listitem [ref=e144]:
+                - link [ref=e145] [cursor=pointer]:
+                  - /url: /pl-pl/poland
+                  - text: Poland
+              - listitem [ref=e147]:
+                - link [ref=e148] [cursor=pointer]:
+                  - /url: /pt-pt/portugal
+                  - text: Portugal
+              - listitem [ref=e150]:
+                - link [ref=e151] [cursor=pointer]:
+                  - /url: /en/offices/qatar
+                  - text: Qatar
+              - listitem [ref=e153]:
+                - link [ref=e154] [cursor=pointer]:
+                  - /url: /en/offices/romania
+                  - text: Romania
+              - listitem [ref=e156]:
+                - link [ref=e157] [cursor=pointer]:
+                  - /url: /en/offices/serbia
+                  - text: Serbia
+              - listitem [ref=e159]:
+                - link [ref=e160] [cursor=pointer]:
+                  - /url: /en/singapore/properties/invest/search
+                  - text: Singapore
+              - listitem [ref=e162]:
+                - link [ref=e163] [cursor=pointer]:
+                  - /url: /sk-sk/slovakia
+                  - text: Slovakia
+              - listitem [ref=e165]:
+                - link [ref=e166] [cursor=pointer]:
+                  - /url: /en/offices/south-africa
+                  - text: South Africa
+              - listitem [ref=e168]:
+                - link [ref=e169] [cursor=pointer]:
+                  - /url: /ko-kr/south-korea
+                  - text: South Korea
+              - listitem [ref=e171]:
+                - link [ref=e172] [cursor=pointer]:
+                  - /url: /es-es/spain
+                  - text: Spain
+              - listitem [ref=e174]:
+                - link [ref=e175] [cursor=pointer]:
+                  - /url: /sv-se/sweden
+                  - text: Sweden
+              - listitem [ref=e177]:
+                - link [ref=e178] [cursor=pointer]:
+                  - /url: /en/offices/zurich
+                  - text: Switzerland
+              - listitem [ref=e180]:
+                - link [ref=e181] [cursor=pointer]:
+                  - /url: /en/thailand/properties/invest/search
+                  - text: Thailand
+              - listitem [ref=e183]:
+                - link [ref=e184] [cursor=pointer]:
+                  - /url: /en/offices/turkey
+                  - text: Turkey
+              - listitem [ref=e186]:
+                - link [ref=e187] [cursor=pointer]:
+                  - /url: /en/offices/uae
+                  - text: United Arab Emirates
+              - listitem [ref=e189]:
+                - link [ref=e190] [cursor=pointer]:
+                  - /url: /en/united-kingdom/properties/invest/search
+                  - text: United Kingdom
+              - listitem [ref=e192]:
+                - link [ref=e193] [cursor=pointer]:
+                  - /url: /en/united-states/properties/invest/search
+                  - text: United States
+              - listitem [ref=e195]:
+                - link [ref=e196] [cursor=pointer]:
+                  - /url: https://www.cushmanwakefield.com/en/offices/uruguay
+                  - text: Uruguay
+              - listitem [ref=e198]:
+                - link [ref=e199] [cursor=pointer]:
+                  - /url: /vi-vn/vietnam/properties/invest/search
+                  - text: Vietnam
+        - listitem
+        - button "Open mobile navigation" [ref=e201] [cursor=pointer]:
+          - generic [ref=e202]:
+            - text: 
+            - generic [ref=e203]: Open Search Menu
+          - generic [ref=e204]:
+            - text: 
+            - generic [ref=e205]: Close Search Menu
+        - text: 
+    - text:            
+    - link "CONTACT US  External Link" [ref=e207] [cursor=pointer]:
+      - /url: https://cw-prod-amrgws-a-cd.azurewebsites.net/en/inquire
+      - text: CONTACT US
+      - generic [ref=e208]:
+        - text: 
+        - generic [ref=e209]: External Link
+  - main [ref=e210]:
+    - navigation "breadcrumb" [ref=e212]:
+      - list [ref=e213]:
+        - listitem [ref=e214]:
+          - link "United States" [ref=e215] [cursor=pointer]:
+            - /url: /en/united-states
+        - listitem [ref=e216]:
+          - text: "|"
+          - link "Properties" [ref=e217] [cursor=pointer]:
+            - /url: /en/united-states/properties
+        - listitem [ref=e218]:
+          - text: "|"
+          - link "Properties for Sale in The U.S." [ref=e219] [cursor=pointer]:
+            - /url: /en/united-states/properties/invest
+        - listitem [ref=e220]: "| Properties"
+    - generic [ref=e222]:
+      - generic [ref=e223]:
+        - heading "Available Properties for Sale" [level=1] [ref=e224]
+        - search [ref=e225]:
+          - textbox "Search by keyword" [ref=e226]
+          - button "Search" [ref=e227] [cursor=pointer]:
+            - img [ref=e228]
+        - text: "|"
+        - complementary [ref=e231]:
+          - button "For Sale +1" [ref=e233] [cursor=pointer]:
+            - paragraph [ref=e234]: For Sale +1
+            - img [ref=e235]
+          - button "Property Type" [ref=e238] [cursor=pointer]:
+            - paragraph [ref=e239]: Property Type
+            - img [ref=e240]
+          - button "Available Space" [ref=e243] [cursor=pointer]:
+            - paragraph [ref=e244]: Available Space
+            - img [ref=e245]
+          - button "All Filters" [ref=e247] [cursor=pointer]:
+            - img [ref=e248]
+            - generic [ref=e250]: All Filters
+          - navigation [ref=e251]:
+            - link [ref=e252] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/alabama
+              - text: Alabama
+            - link [ref=e253] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/arizona
+              - text: Arizona
+            - link [ref=e254] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california
+              - text: California
+            - link [ref=e255] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado
+              - text: Colorado
+            - link [ref=e256] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/connecticut
+              - text: Connecticut
+            - link [ref=e257] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/florida
+              - text: Florida
+            - link [ref=e258] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/georgia
+              - text: Georgia
+            - link [ref=e259] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/hawaii
+              - text: Hawaii
+            - link [ref=e260] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/idaho
+              - text: Idaho
+            - link [ref=e261] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/illinois
+              - text: Illinois
+            - link [ref=e262] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/indiana
+              - text: Indiana
+            - link [ref=e263] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/iowa
+              - text: Iowa
+            - link [ref=e264] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/kansas
+              - text: Kansas
+            - link [ref=e265] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/kentucky
+              - text: Kentucky
+            - link [ref=e266] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/louisiana
+              - text: Louisiana
+            - link [ref=e267] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/michigan
+              - text: Michigan
+            - link [ref=e268] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/minnesota
+              - text: Minnesota
+            - link [ref=e269] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/missouri
+              - text: Missouri
+            - link [ref=e270] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/nebraska
+              - text: Nebraska
+            - link [ref=e271] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/nevada
+              - text: Nevada
+            - link [ref=e272] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-hampshire
+              - text: New Hampshire
+            - link [ref=e273] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-jersey
+              - text: New Jersey
+            - link [ref=e274] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york
+              - text: New York
+            - link [ref=e275] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/north-carolina
+              - text: North Carolina
+            - link [ref=e276] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/ohio
+              - text: Ohio
+            - link [ref=e277] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/pennsylvania
+              - text: Pennsylvania
+            - link [ref=e278] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/south-carolina
+              - text: South Carolina
+            - link [ref=e279] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/tennessee
+              - text: Tennessee
+            - link [ref=e280] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/texas
+              - text: Texas
+            - link [ref=e281] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/utah
+              - text: Utah
+            - link [ref=e282] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/virginia
+              - text: Virginia
+            - link [ref=e283] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/washington
+              - text: Washington
+            - link [ref=e284] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/wisconsin
+              - text: Wisconsin
+            - link [ref=e285] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-amherst
+              - text: Amherst
+            - link [ref=e286] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/ohio/city-avon
+              - text: Avon
+            - link [ref=e287] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-bath
+              - text: Bath
+            - link [ref=e288] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/texas/city-baytown
+              - text: Baytown, Harris
+            - link [ref=e289] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/ohio/city-beachwood
+              - text: Beachwood
+            - link [ref=e290] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-binghamton
+              - text: Binghamton
+            - link [ref=e291] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/city-brighton
+              - text: Brighton, Adams
+            - link [ref=e292] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-buffalo
+              - text: Buffalo
+            - link [ref=e293] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-calexico
+              - text: Calexico, Imperial
+            - link [ref=e294] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/florida/city-cape-coral
+              - text: Cape Coral
+            - link [ref=e295] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-carlsbad
+              - text: Carlsbad, San Diego
+            - link [ref=e296] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/indiana/city-carmel
+              - text: Carmel, Hamilton
+            - link [ref=e297] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/city-centennial
+              - text: Centennial, Arapahoe
+            - link [ref=e298] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/pennsylvania/city-chambersburg
+              - text: Chambersburg, Franklin
+            - link [ref=e299] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/illinois/city-chicago
+              - text: Chicago, Cook
+            - link [ref=e300] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/ohio/city-cincinnati
+              - text: Cincinnati, Hamilton
+            - link [ref=e301] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-clay
+              - text: Clay
+            - link [ref=e302] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/ohio/city-cleveland
+              - text: Cleveland
+            - link [ref=e303] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/city-colorado-springs
+              - text: Colorado Springs
+            - link [ref=e304] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-corning
+              - text: Corning
+            - link [ref=e305] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-cortland
+              - text: Cortland
+            - link [ref=e306] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/illinois/city-dekalb
+              - text: Dekalb, Dekalb
+            - link [ref=e307] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/city-denver
+              - text: Denver, Adams
+            - link [ref=e308] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/city-denver
+              - text: Denver, Denver
+            - link [ref=e309] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/iowa/city-des-moines
+              - text: Des Moines
+            - link [ref=e310] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-east-syracuse
+              - text: East Syracuse
+            - link [ref=e311] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/minnesota/city-eden-prairie
+              - text: Eden Prairie, Hennepin
+            - link [ref=e312] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-elmira
+              - text: Elmira
+            - link [ref=e313] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-endicott
+              - text: Endicott
+            - link [ref=e314] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/city-fort-collins
+              - text: Fort Collins, Larimer
+            - link [ref=e315] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/florida/city-fort-myers
+              - text: Fort Myers
+            - link [ref=e316] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-fremont
+              - text: Fremont, Alameda
+            - link [ref=e317] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-fresno
+              - text: Fresno
+            - link [ref=e318] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/city-greeley
+              - text: Greeley, Weld
+            - link [ref=e319] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/north-carolina/city-greensboro
+              - text: Greensboro
+            - link [ref=e320] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/pennsylvania/city-hanover
+              - text: Hanover, York
+            - link [ref=e321] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/pennsylvania/city-harrisburg
+              - text: Harrisburg, Dauphin
+            - link [ref=e322] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-hornell
+              - text: Hornell
+            - link [ref=e323] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-horseheads
+              - text: Horseheads
+            - link [ref=e324] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/texas/city-houston
+              - text: Houston, Harris
+            - link [ref=e325] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/ohio/city-independence
+              - text: Independence
+            - link [ref=e326] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/indiana/city-indianapolis
+              - text: Indianapolis, Marion
+            - link [ref=e327] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/washington/city-issaquah
+              - text: Issaquah
+            - link [ref=e328] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-ithaca
+              - text: Ithaca
+            - link [ref=e329] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/florida/city-jacksonville
+              - text: Jacksonville
+            - link [ref=e330] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/missouri/city-kansas-city
+              - text: Kansas City, Jackson
+            - link [ref=e331] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/nebraska/city-la-vista
+              - text: La Vista
+            - link [ref=e332] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/minnesota/city-lakeville
+              - text: Lakeville, Dakota
+            - link [ref=e333] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/nevada/city-las-vegas
+              - text: Las Vegas
+            - link [ref=e334] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/nevada/city-las-vegas
+              - text: Las Vegas, Clark
+            - link [ref=e335] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/minnesota/city-lino-lakes
+              - text: Lino Lakes, Anoka
+            - link [ref=e336] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-liverpool
+              - text: Liverpool
+            - link [ref=e337] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-lodi
+              - text: Lodi, San Joaquin
+            - link [ref=e338] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-los-angeles
+              - text: Los Angeles, Los Angeles
+            - link [ref=e339] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/kentucky/city-louisville
+              - text: Louisville
+            - link [ref=e340] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/kentucky/city-louisville
+              - text: Louisville, Jefferson
+            - link [ref=e341] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/city-loveland
+              - text: Loveland, Larimer
+            - link [ref=e342] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/idaho/city-meridian
+              - text: Meridian, Ada
+            - link [ref=e343] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/tennessee/city-millington
+              - text: Millington, Shelby
+            - link [ref=e344] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-new-york
+              - text: New York
+            - link [ref=e345] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/indiana/city-noblesville
+              - text: Noblesville, Hamilton
+            - link [ref=e346] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/city-nunn
+              - text: Nunn, Weld
+            - link [ref=e347] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-oakland
+              - text: Oakland, Alameda
+            - link [ref=e348] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/nebraska/city-omaha
+              - text: Omaha
+            - link [ref=e349] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-oneonta
+              - text: Oneonta
+            - link [ref=e350] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/florida/city-orlando
+              - text: Orlando, Orange
+            - link [ref=e351] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-painted-post
+              - text: Painted Post
+            - link [ref=e352] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/nebraska/city-papillion
+              - text: Papillion
+            - link [ref=e353] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-petaluma
+              - text: Petaluma, Sonoma
+            - link [ref=e354] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/arizona/city-phoenix
+              - text: Phoenix
+            - link [ref=e355] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/arizona/city-phoenix
+              - text: Phoenix, Maricopa
+            - link [ref=e356] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-prattsburgh
+              - text: Prattsburgh
+            - link [ref=e357] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/city-pueblo
+              - text: Pueblo
+            - link [ref=e358] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-richmond
+              - text: Richmond, Contra Costa
+            - link [ref=e359] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-rochester
+              - text: Rochester
+            - link [ref=e360] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-sacramento
+              - text: Sacramento, Sacramento
+            - link [ref=e361] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-salinas
+              - text: Salinas, Monterey
+            - link [ref=e362] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/utah/city-salt-lake-city
+              - text: Salt Lake City
+            - link [ref=e363] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-san-diego
+              - text: San Diego, San Diego
+            - link [ref=e364] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-san-jose
+              - text: San Jose, Santa Clara
+            - link [ref=e365] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-santa-cruz
+              - text: Santa Cruz, Santa Cruz
+            - link [ref=e366] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/washington/city-seattle
+              - text: Seattle
+            - link [ref=e367] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/city-stockton
+              - text: Stockton, San Joaquin
+            - link [ref=e368] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-syracuse
+              - text: Syracuse
+            - link [ref=e369] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-tonawanda
+              - text: Tonawanda
+            - link [ref=e370] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-utica
+              - text: Utica
+            - link [ref=e371] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-vestal
+              - text: Vestal
+            - link [ref=e372] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/ohio/city-warren
+              - text: Warren
+            - link [ref=e373] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-watertown
+              - text: Watertown
+            - link [ref=e374] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/new-york/city-williamsville
+              - text: Williamsville
+            - link [ref=e375] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/city-windsor
+              - text: Windsor, Weld
+            - link [ref=e376] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/minnesota/city-woodbury
+              - text: Woodbury, Washington
+            - link [ref=e377] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/adams
+              - text: Adams, Colorado
+            - link [ref=e378] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/alameda
+              - text: Alameda, California
+            - link [ref=e379] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/minnesota/anoka
+              - text: Anoka, Minnesota
+            - link [ref=e380] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/arapahoe
+              - text: Arapahoe, Colorado
+            - link [ref=e381] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/nevada/clark
+              - text: Clark, Nevada
+            - link [ref=e382] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/contra-costa
+              - text: Contra Costa, California
+            - link [ref=e383] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/illinois/cook
+              - text: Cook, Illinois
+            - link [ref=e384] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/denver
+              - text: Denver, Colorado
+            - link [ref=e385] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/indiana/hamilton
+              - text: Hamilton, Indiana
+            - link [ref=e386] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/texas/harris
+              - text: Harris, Texas
+            - link [ref=e387] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/connecticut/hartford
+              - text: Hartford, Connecticut
+            - link [ref=e388] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/minnesota/hennepin
+              - text: Hennepin, Minnesota
+            - link [ref=e389] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/missouri/jackson
+              - text: Jackson, Missouri
+            - link [ref=e390] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/kansas/johnson
+              - text: Johnson, Kansas
+            - link [ref=e391] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/larimer
+              - text: Larimer, Colorado
+            - link [ref=e392] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/los-angeles
+              - text: Los Angeles, California
+            - link [ref=e393] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/arizona/maricopa
+              - text: Maricopa, Arizona
+            - link [ref=e394] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/indiana/marion
+              - text: Marion, Indiana
+            - link [ref=e395] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/monterey
+              - text: Monterey, California
+            - link [ref=e396] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/florida/orange
+              - text: Orange, Florida
+            - link [ref=e397] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/riverside
+              - text: Riverside, California
+            - link [ref=e398] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/sacramento
+              - text: Sacramento, California
+            - link [ref=e399] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/san-diego
+              - text: San Diego, California
+            - link [ref=e400] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/san-joaquin
+              - text: San Joaquin, California
+            - link [ref=e401] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/california/santa-clara
+              - text: Santa Clara, California
+            - link [ref=e402] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/minnesota/washington
+              - text: Washington, Minnesota
+            - link [ref=e403] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/colorado/weld
+              - text: Weld, Colorado
+            - link [ref=e404] [cursor=pointer]:
+              - /url: /en/united-states/properties/invest/search/pennsylvania/york
+              - text: York, Pennsylvania
+          - button "Hide Map" [expanded] [ref=e405] [cursor=pointer]:
+            - img [ref=e406]
+            - generic [ref=e408]: Hide Map
+      - generic [ref=e409]:
+        - generic [ref=e410]:
+          - generic [ref=e411] [cursor=pointer]:
+            - checkbox "Update results when map moves" [checked] [ref=e412]
+            - text: Update results when map moves
+          - generic [ref=e414]:
+            - region "Map" [ref=e415]
+            - iframe [ref=e426]:
+              
+        - generic [ref=e428]:
+          - navigation "Pagination" [ref=e429]:
+            - status [ref=e430]:
+              - generic [ref=e431]: Results 1-12 of 2743
+              - generic [ref=e432]:
+                - generic [ref=e433]: Sort
+                - generic [ref=e434]:
+                  - combobox
+                  - button "Date" [ref=e435] [cursor=pointer]
+          - generic [ref=e436]:
+            - 'link "23420 Lakeland Boulevard Active For Sale • Industrial 23420 Lakeland Boulevard 23420 Lakeland Boulevard Euclid, Ohio 44132 United States Sale Price: Contact us for pricing" [ref=e437] [cursor=pointer]':
+              - /url: /en/united-states/properties/for-sale/industrial/oh/euclid/23420-lakeland-boulevard/23420-lakeland-boulevard-s
+              - img "23420 Lakeland Boulevard" [ref=e439]
+              - generic [ref=e440]:
+                - generic [ref=e441]: Active
+                - paragraph [ref=e442]:
+                  - strong [ref=e443]: For Sale
+                  - strong [ref=e444]: • Industrial
+                - paragraph [ref=e445]: 23420 Lakeland Boulevard
+                - paragraph [ref=e446]:
+                  - text: 23420 Lakeland Boulevard
+                  - text: Euclid, Ohio 44132
+                  - text: United States
+                - paragraph [ref=e447]: "Sale Price: Contact us for pricing"
+            - 'link "1735 Iowa Avenue Active For Sale • Industrial 1735 Iowa Avenue 1735 Iowa Avenue Lorain, Ohio 44052 United States Sale Price: $245,000 USD" [ref=e448] [cursor=pointer]':
+              - /url: /en/united-states/properties/for-sale/industrial/oh/lorain/1735-iowa-avenue/1735-iowa-avenue-s
+              - img "1735 Iowa Avenue" [ref=e450]
+              - generic [ref=e451]:
+                - generic [ref=e452]: Active
+                - paragraph [ref=e453]:
+                  - strong [ref=e454]: For Sale
+                  - strong [ref=e455]: • Industrial
+                - paragraph [ref=e456]: 1735 Iowa Avenue
+                - paragraph [ref=e457]:
+                  - text: 1735 Iowa Avenue
+                  - text: Lorain, Ohio 44052
+                  - text: United States
+                - paragraph [ref=e458]: "Sale Price: $245,000 USD"
+            - 'link "Image Placeholder Available For Sale • Manufacturing 118 W 60th St 118 W 60th St Minneapolis, Minnesota 55419 United States Sale Price: Contact us for pricing" [ref=e459] [cursor=pointer]':
+              - /url: /en/united-states/properties/for-sale/manufacturing/mn/minneapolis/118-w-60th-st/s120210354s120210354-s
+              - img "Image Placeholder" [ref=e461]
+              - generic [ref=e462]:
+                - generic [ref=e463]: Available
+                - paragraph [ref=e464]:
+                  - strong [ref=e465]: For Sale
+                  - strong [ref=e466]: • Manufacturing
+                - paragraph [ref=e467]: 118 W 60th St
+                - paragraph [ref=e468]:
+                  - text: 118 W 60th St
+                  - text: Minneapolis, Minnesota 55419
+                  - text: United States
+                - paragraph [ref=e469]: "Sale Price: Contact us for pricing"
+            - 'link "Image Placeholder Available For Sale • Warehouse/Distribution Interchange 8841 Sage Way San Diego, California 92154 United States Sale Price: Contact us for pricing" [ref=e470] [cursor=pointer]':
+              - /url: /en/united-states/properties/for-sale/warehousedistribution/ca/san-diego/8841-sage-way/s121163549s121163549-s
+              - img "Image Placeholder" [ref=e472]
+              - generic [ref=e473]:
+                - generic [ref=e474]: Available
+                - paragraph [ref=e475]:
+                  - strong [ref=e476]: For Sale
+                  - strong [ref=e477]: • Warehouse/Distribution
+                - paragraph [ref=e478]: Interchange
+                - paragraph [ref=e479]:
+                  - text: 8841 Sage Way
+                  - text: San Diego, California 92154
+                  - text: United States
+                - paragraph [ref=e480]: "Sale Price: Contact us for pricing"
+            - 'link "Land Development Opportunity Investment Property Available For Sale • Land Land Development Opportunity 3930 W. California Ave. Salt Lake City, Utah 84104 United States Sale Price: Contact us for pricing" [ref=e481] [cursor=pointer]':
+              - /url: /en/united-states/properties/for-sale/land/ut/salt-lake-city/3930-w-california-ave/s121052076s121052076-s
+              - img "Land Development Opportunity" [ref=e483]
+              - generic [ref=e484]:
+                - generic [ref=e485]: Investment Property
+                - generic [ref=e486]: Available
+                - paragraph [ref=e487]:
+                  - strong [ref=e488]: For Sale
+                  - strong [ref=e489]: • Land
+                - paragraph [ref=e490]: Land Development Opportunity
+                - paragraph [ref=e491]:
+                  - text: 3930 W. California Ave.
+                  - text: Salt Lake City, Utah 84104
+                  - text: United States
+                - paragraph [ref=e492]: "Sale Price: Contact us for pricing"
+            - 'link "Portland Portal III Available For Sale • Warehouse/Distribution Portland Portal III 18205-18365 NE Sandy Blvd Portland, Oregon 97230 United States Sale Price: Contact us for pricing" [ref=e493] [cursor=pointer]':
+              - /url: /en/united-states/properties/for-sale/warehousedistribution/or/portland/18205-18365-ne-sandy-blvd/s121848407s121848407-s
+              - img "Portland Portal III" [ref=e495]
+              - generic [ref=e496]:
+                - generic [ref=e497]: Available
+                - paragraph [ref=e498]:
+                  - strong [ref=e499]: For Sale
+                  - strong [ref=e500]: • Warehouse/Distribution
+                - paragraph [ref=e501]: Portland Portal III
+                - paragraph [ref=e502]:
+                  - text: 18205-18365 NE Sandy Blvd
+                  - text: Portland, Oregon 97230
+                  - text: United States
+                - paragraph [ref=e503]: "Sale Price: Contact us for pricing"
+            - 'link "Central Pike Logistics Center - Building A Available For Sale • Warehouse/Distribution Central Pike Logistics Center - Building A 1600 Block Central Pike Lebanon, Tennessee 37090 United States Sale Price: Contact us for pricing" [ref=e504] [cursor=pointer]':
+              - /url: /en/united-states/properties/for-sale/warehousedistribution/tn/lebanon/1600-block-central-pike/s121553888s121553888-s
+              - img "Central Pike Logistics Center - Building A" [ref=e506]
+              - generic [ref=e507]:
+                - generic [ref=e508]: Available
+                - paragraph [ref=e509]:
+                  - strong [ref=e510]: For Sale
+                  - strong [ref=e511]: • Warehouse/Distribution
+                - paragraph [ref=e512]: Central Pike Logistics Center - Building A
+                - paragraph [ref=e513]:
+                  - text: 1600 Block Central Pike
+                  - text: Lebanon, Tennessee 37090
+                  - text: United States
+                - paragraph [ref=e514]: "Sale Price: Contact us for pricing"
+            - 'link "Central Pike Logistics Center - Building B Available For Sale • Warehouse/Distribution Central Pike Logistics Center - Building B 1600 Block Central Pike Lebanon, Tennessee 37090 United States Sale Price: Contact us for pricing" [ref=e515] [cursor=pointer]':
+              - /url: /en/united-states/properties/for-sale/warehousedistribution/tn/lebanon/1600-block-central-pike/s121553890s121553890-s
+              - img "Central Pike Logistics Center - Building B" [ref=e517]
+              - generic [ref=e518]:
+                - generic [ref=e519]: Available
+                - paragraph [ref=e520]:
+                  - strong [ref=e521]: For Sale
+                  - strong [ref=e522]: • Warehouse/Distribution
+                - paragraph [ref=e523]: Central Pike Logistics Center - Building B
+                - paragraph [ref=e524]:
+                  - text: 1600 Block Central Pike
+                  - text: Lebanon, Tennessee 37090
+                  - text: United States
+                - paragraph [ref=e525]: "Sale Price: Contact us for pricing"
+            - 'link "266 Route 125 Investment Property Available For Sale • Warehouse/Distribution 266 Route 125 266 Route 125 Kingston, New Hampshire 03848 United States Sale Price: Contact us for pricing" [ref=e526] [cursor=pointer]':
+              - /url: /en/united-states/properties/for-sale/warehousedistribution/nh/kingston/266-route-125/s121335132s121335132-s
+              - img "266 Route 125" [ref=e528]
+              - generic [ref=e529]:
+                - generic [ref=e530]: Investment Property
+                - generic [ref=e531]: Available
+                - paragraph [ref=e532]:
+                  - strong [ref=e533]: For Sale
+                  - strong [ref=e534]: • Warehouse/Distribution
+                - paragraph [ref=e535]: 266 Route 125
+                - paragraph [ref=e536]:
+                  - text: 266 Route 125
+                  - text: Kingston, New Hampshire 03848
+                  - text: United States
+                - paragraph [ref=e537]: "Sale Price: Contact us for pricing"
+            - 'link "Commercial Building For Sale Investment Property Available For Sale • Office Commercial Building For Sale 380 Airport Road Durango, Colorado 81303 United States Sale Price: Contact us for pricing" [ref=e538] [cursor=pointer]':
+              - /url: /en/united-states/properties/for-sale/office/co/durango/380-airport-road/s121742674s121742674-s
+              - img "Commercial Building For Sale" [ref=e540]
+              - generic [ref=e541]:
+                - generic [ref=e542]: Investment Property
+                - generic [ref=e543]: Available
+                - paragraph [ref=e544]:
+                  - strong [ref=e545]: For Sale
+                  - strong [ref=e546]: • Office
+                - paragraph [ref=e547]: Commercial Building For Sale
+                - paragraph [ref=e548]:
+                  - text: 380 Airport Road
+                  - text: Durango, Colorado 81303
+                  - text: United States
+                - paragraph [ref=e549]: "Sale Price: Contact us for pricing"
+            - 'link "Concord Place Investment Property Available For Sale • Office Concord Place 2999 N 44th Street Phoenix, Arizona 85018 United States Sale Price: Contact us for pricing" [ref=e550] [cursor=pointer]':
+              - /url: /en/united-states/properties/for-sale/office/az/phoenix/2999-n-44th-street/s225092s225092-s
+              - img "Concord Place" [ref=e552]
+              - generic [ref=e553]:
+                - generic [ref=e554]: Investment Property
+                - generic [ref=e555]: Available
+                - paragraph [ref=e556]:
+                  - strong [ref=e557]: For Sale
+                  - strong [ref=e558]: • Office
+                - paragraph [ref=e559]: Concord Place
+                - paragraph [ref=e560]:
+                  - text: 2999 N 44th Street
+                  - text: Phoenix, Arizona 85018
+                  - text: United States
+                - paragraph [ref=e561]: "Sale Price: Contact us for pricing"
+            - 'link "5945 Southfront Rd Available For Sale • Land 5945 Southfront Rd 5945 Southfront Rd Livermore, California 94551 United States Sale Price: Contact us for pricing" [ref=e562] [cursor=pointer]':
+              - /url: /en/united-states/properties/for-sale/land/ca/livermore/5945-southfront-rd/s121372068s121372068-s
+              - img "5945 Southfront Rd" [ref=e564]
+              - generic [ref=e565]:
+                - generic [ref=e566]: Available
+                - paragraph [ref=e567]:
+                  - strong [ref=e568]: For Sale
+                  - strong [ref=e569]: • Land
+                - paragraph [ref=e570]: 5945 Southfront Rd
+                - paragraph [ref=e571]:
+                  - text: 5945 Southfront Rd
+                  - text: Livermore, California 94551
+                  - text: United States
+                - paragraph [ref=e572]: "Sale Price: Contact us for pricing"
+          - navigation "Pagination" [ref=e573]:
+            - generic [ref=e575]:
+              - link "1" [ref=e576] [cursor=pointer]:
+                - /url: /en/united-states/properties/invest/search
+              - link "2" [ref=e577] [cursor=pointer]:
+                - /url: /en/united-states/properties/invest/search?page=2
+              - link "3" [ref=e578] [cursor=pointer]:
+                - /url: /en/united-states/properties/invest/search?page=3
+              - link "4" [ref=e579] [cursor=pointer]:
+                - /url: /en/united-states/properties/invest/search?page=4
+              - generic: …
+              - link "229" [ref=e580] [cursor=pointer]:
+                - /url: /en/united-states/properties/invest/search?page=229
+              - link "Next page" [ref=e581] [cursor=pointer]:
+                - /url: /en/united-states/properties/invest/search?page=2
+                - img "Right Arrow" [ref=e582]
+    - generic [ref=e588]:
+      - generic [ref=e589]:
+        - heading "Ready to talk?" [level=3] [ref=e590]
+        - generic [ref=e591]: Get in touch and we can help with any additional information you need.
+      - link "CONTACT US" [ref=e593] [cursor=pointer]:
+        - /url: /en/inquire
+    - img "Mobile Logo" [ref=e595]
+  - contentinfo [ref=e596]:
+    - generic [ref=e598]:
+      - generic [ref=e599]:
+        - generic [ref=e600]: As a global commercial real estate services leader with 52,000 professionals worldwide, we will never settle for the world that’s been built, but relentlessly drive it forward for our clients, colleagues and communities.
+        - list [ref=e601]:
+          - listitem [ref=e602]:
+            - link [ref=e603] [cursor=pointer]:
+              - /url: https://www.linkedin.com/company/cushman-&-wakefield
+              - generic [ref=e604]:
+                - text: 
+                - generic [ref=e605]: LinkedIn
+          - listitem [ref=e606]:
+            - link [ref=e607] [cursor=pointer]:
+              - /url: https://twitter.com/cushwake
+              - generic [ref=e608]:
+                - text: 
+                - generic [ref=e609]: Twitter
+          - listitem [ref=e610]:
+            - link [ref=e611] [cursor=pointer]:
+              - /url: https://www.facebook.com/CushmanWakefield
+              - generic [ref=e612]:
+                - text: 
+                - generic [ref=e613]: Facebook
+          - listitem [ref=e614]:
+            - link [ref=e615] [cursor=pointer]:
+              - /url: http://instagram.com/cushwake
+              - generic [ref=e616]:
+                - text: 
+                - generic [ref=e617]: Instagram
+          - listitem [ref=e618]:
+            - link [ref=e619] [cursor=pointer]:
+              - /url: https://www.youtube.com/user/theCushmanWakefield
+              - generic [ref=e620]:
+                - text: 
+                - generic [ref=e621]: YouTube
+      - list [ref=e623]:
+        - listitem [ref=e624]:
+          - link "About Us" [ref=e625] [cursor=pointer]:
+            - /url: /en/united-states/about-us
+        - listitem [ref=e626]:
+          - link "Apartment Resident Support  External Link" [ref=e627] [cursor=pointer]:
+            - /url: http://cushwk.co/servicerequest
+            - text: Apartment Resident Support
+            - generic [ref=e628]:
+              - text: 
+              - generic [ref=e629]: External Link
+        - listitem [ref=e630]:
+          - link "Contact Us" [ref=e631] [cursor=pointer]:
+            - /url: /en/inquire
+        - listitem [ref=e632]:
+          - link "Americas Leadership" [ref=e633] [cursor=pointer]:
+            - /url: /en/united-states/about-us/leadership
+        - listitem [ref=e634]:
+          - link "Environmental, Social and Governance (ESG)" [ref=e635] [cursor=pointer]:
+            - /url: /en/united-states/about-us/esg
+        - listitem [ref=e636]:
+          - link "Investor Relations  External Link" [ref=e637] [cursor=pointer]:
+            - /url: http://ir.cushmanwakefield.com/home/default.aspx
+            - text: Investor Relations
+            - generic [ref=e638]:
+              - text: 
+              - generic [ref=e639]: External Link
+        - listitem [ref=e640]:
+          - link "Legal Entities" [ref=e641] [cursor=pointer]:
+            - /url: /en/united-states/legal-entities
+        - listitem [ref=e642]:
+          - link "Office Locations" [ref=e643] [cursor=pointer]:
+            - /url: /en/united-states/offices
+    - generic [ref=e645]:
+      - list [ref=e646]:
+        - listitem [ref=e647]:
+          - link "Cookie Notice" [ref=e648] [cursor=pointer]:
+            - /url: /en/united-states/cookie-notice
+        - listitem [ref=e649]:
+          - link "Privacy Notice" [ref=e650] [cursor=pointer]:
+            - /url: /en/united-states/privacy-notice
+        - listitem [ref=e651]:
+          - link "Sitemap" [ref=e652] [cursor=pointer]:
+            - /url: /en/united-states/sitemap
+        - listitem [ref=e653]:
+          - link "Terms of Use" [ref=e654] [cursor=pointer]:
+            - /url: /en/united-states/terms-of-use
+        - listitem [ref=e655]:
+          - link "Third Party Privacy Notice" [ref=e656] [cursor=pointer]:
+            - /url: /en/united-states/global-third-party-privacy-notice
+      - paragraph [ref=e657]: © Copyright Cushman & Wakefield 2026. All Rights Reserved.
+    - text: 

@@ -74,3 +74,4 @@ apps/api/src/lib/scrape-interact/*.md
 PROGRESS_SUMMARY.md
 test-runs/
 /examples/northmarq
+/scripts/firecrawl-ops/cre_collector/node_modules

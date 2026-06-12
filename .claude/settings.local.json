@@ -50,7 +50,11 @@
       "Bash(timeout 10 bash:*)",
       "Bash(dir:*)",
       "Bash(docker:*)",
-      "Bash(open -a OrbStack)"
+      "Bash(open -a OrbStack)",
+      "Read(//Users/caymanseagraves/Downloads/**)",
+      "Bash(mkdir -p /tmp/prometheus-script-new)",
+      "Bash(unzip -o \"prometheus-script \\(1\\).zip\" -d /tmp/prometheus-script-new)",
+      "Read(//tmp/**)"
     ],
     "deny": [
       "Bash(rm -rf /:*)",

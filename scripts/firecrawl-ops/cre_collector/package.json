@@ -1,0 +1,20 @@
+{
+  "name": "cre-collector",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multi-source CRE listing collector running against the local self-hosted Firecrawl API. Adapted from the Prometheus collector (scripts/firecrawl-ops/prometheus/multi_source/script.ts).",
+  "type": "module",
+  "scripts": {
+    "collect": "tsx collect.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mendable/firecrawl-js": "^4.3.5",
+    "cheerio": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "25.9.3",
+    "tsx": "^4.19.0",
+    "typescript": "6.0.3"
+  }
+}

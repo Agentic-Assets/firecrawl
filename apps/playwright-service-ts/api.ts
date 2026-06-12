@@ -1,10 +1,15 @@
 import express, { Request, Response } from 'express';
-import { chromium, Browser, BrowserContext, Route, Request as PlaywrightRequest, Page } from 'playwright';
+import { chromium as stealthChromium } from 'playwright-extra';
+import { Browser, BrowserContext, Route, Request as PlaywrightRequest, Page } from 'playwright';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import dotenv from 'dotenv';
 import UserAgent from 'user-agents';
 import { getError } from './helpers/get_error';
 import { lookup } from 'dns/promises';
 import IPAddr from 'ipaddr.js';
+
+// Register stealth plugin before any launch call.
+stealthChromium.use(StealthPlugin());
 
 dotenv.config();
 
@@ -183,22 +188,76 @@ interface UrlModel {
 let browser: Browser;
 
 const initializeBrowser = async () => {
-  browser = await chromium.launch({
+  browser = await (stealthChromium.launch({
     headless: true,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
-      '--disable-gpu'
+      '--disable-gpu',
+      // Hide automation indicators
+      '--disable-blink-features=AutomationControlled',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--disable-site-isolation-trials',
+      // More realistic fingerprint
+      '--enable-features=NetworkService,NetworkServiceLogging',
+      '--lang=en-US,en',
     ]
-  });
+  }) as unknown as Promise<Browser>);
 };
 
+// Belt-and-suspenders JS patches injected into every page context before
+// any site script runs. These cover vectors the stealth plugin may miss.
+const STEALTH_INIT_SCRIPT = `
+  (() => {
+    // webdriver flag
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+    // Chrome object expected by CF bot checks
+    if (!window.chrome) {
+      Object.defineProperty(window, 'chrome', {
+        writable: true, enumerable: true, configurable: false,
+        value: {
+          app: { isInstalled: false, InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }, RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' } },
+          runtime: {},
+          loadTimes: () => {},
+          csi: () => {},
+        }
+      });
+    }
+
+    // Realistic plugin list
+    const pluginData = [
+      { name: 'Chrome PDF Plugin',  description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{ type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' }] },
+      { name: 'Chrome PDF Viewer',  description: '',                          filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', mimeTypes: [{ type: 'application/pdf', suffixes: 'pdf', description: '' }] },
+      { name: 'Native Client',      description: '',                          filename: 'internal-nacl-plugin',  mimeTypes: [{ type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable' }, { type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable' }] },
+    ];
+    const fakePlugins = pluginData.map(p => {
+      const mimes = p.mimeTypes.map(m => ({ type: m.type, suffixes: m.suffixes, description: m.description, enabledPlugin: null }));
+      return { name: p.name, description: p.description, filename: p.filename, length: mimes.length, item: (i) => mimes[i], namedItem: (n) => mimes.find(m => m.type === n) || null, [Symbol.iterator]: function*() { yield* mimes; } };
+    });
+    Object.defineProperty(navigator, 'plugins', { get: () => Object.assign(fakePlugins, { item: (i) => fakePlugins[i], namedItem: (n) => fakePlugins.find(p => p.name === n) || null, refresh: () => {}, length: fakePlugins.length, [Symbol.iterator]: function*() { yield* fakePlugins; } }) });
+
+    // Languages
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+
+    // Hardware concurrency and device memory (match a standard laptop)
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+    Object.defineProperty(navigator, 'deviceMemory',        { get: () => 8 });
+
+    // Permissions — notifications must return the real permission state
+    const _origPermQuery = window.navigator.permissions.query.bind(navigator.permissions);
+    window.navigator.permissions.query = (params) =>
+      (params.name === 'notifications')
+        ? Promise.resolve({ state: Notification.permission, onchange: null })
+        : _origPermQuery(params);
+  })();
+`;
+
 const createContext = async (skipTlsVerification: boolean = false, userAgentOverride?: string): Promise<{ context: BrowserContext; securityState: ContextSecurityState }> => {
-  const userAgent = userAgentOverride || new UserAgent().toString();
+  const userAgent = userAgentOverride || new UserAgent({ deviceCategory: 'desktop' }).toString();
   const viewport = { width: 1280, height: 800 };
   const securityState: ContextSecurityState = {
     blockedNavigationRequestUrl: null,
@@ -209,6 +268,8 @@ const createContext = async (skipTlsVerification: boolean = false, userAgentOver
     viewport,
     ignoreHTTPSErrors: skipTlsVerification,
     serviceWorkers: 'block',
+    locale: 'en-US',
+    timezoneId: 'America/New_York',
   };
 
   if (PROXY_SERVER && PROXY_USERNAME && PROXY_PASSWORD) {
@@ -224,6 +285,9 @@ const createContext = async (skipTlsVerification: boolean = false, userAgentOver
   }
 
   const newContext = await browser.newContext(contextOptions);
+
+  // Inject stealth patches before any page script runs.
+  await newContext.addInitScript(STEALTH_INIT_SCRIPT);
 
   if (BLOCK_MEDIA) {
     await newContext.route('**/*.{png,jpg,jpeg,gif,svg,mp3,mp4,avi,flac,ogg,wav,webm}', async (route: Route, request: PlaywrightRequest) => {
@@ -256,7 +320,7 @@ const createContext = async (skipTlsVerification: boolean = false, userAgentOver
     }
     return route.continue();
   });
-  
+
   return { context: newContext, securityState };
 };
 
@@ -333,21 +397,21 @@ app.get('/health', async (req: Request, res: Response) => {
     if (!browser) {
       await initializeBrowser();
     }
-    
+
     const { context: testContext } = await createContext();
     const testPage = await testContext.newPage();
     await testPage.close();
     await testContext.close();
-    
-    res.status(200).json({ 
+
+    res.status(200).json({
       status: 'healthy',
       maxConcurrentPages: MAX_CONCURRENT_PAGES,
       activePages: MAX_CONCURRENT_PAGES - pageSemaphore.getAvailablePermits()
     });
   } catch (error) {
     console.error('Health check failed:', error);
-    res.status(503).json({ 
-      status: 'unhealthy', 
+    res.status(503).json({
+      status: 'unhealthy',
       error: error instanceof Error ? error.message : 'Unknown error occurred'
     });
   }
@@ -395,15 +459,12 @@ app.post('/scrape', async (req: Request, res: Response) => {
   }
 
   await pageSemaphore.acquire();
-  
+
   let requestContext: BrowserContext | null = null;
   let securityState: ContextSecurityState | null = null;
   let page: Page | null = null;
 
   try {
-    // Extract user-agent from request headers (case-insensitive) so it can
-    // be applied at the context level.  Playwright ignores user-agent in
-    // setExtraHTTPHeaders when the context already defines one (#2802).
     const userAgentOverride = headers
       ? Object.entries(headers).find(([k]) => k.toLowerCase() === 'user-agent')?.[1]
       : undefined;
@@ -414,8 +475,6 @@ app.post('/scrape', async (req: Request, res: Response) => {
     page = await requestContext.newPage();
 
     if (headers) {
-      // Remove the user-agent key before calling setExtraHTTPHeaders since
-      // we already forwarded it to the context-level userAgent option.
       const filteredHeaders = Object.fromEntries(
         Object.entries(headers).filter(([k]) => k.toLowerCase() !== 'user-agent')
       );

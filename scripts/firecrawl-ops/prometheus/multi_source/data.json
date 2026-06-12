@@ -1,0 +1,3868 @@
+{
+  "description": "Commercial real estate for-sale listings collected from major brokerage websites, normalized to a common structure.",
+  "maxItemsPerSource": 15,
+  "sources": [
+    {
+      "sourceKey": "cbre",
+      "supported": true,
+      "company": "CBRE",
+      "sourceUrl": "https://www.cbre.com/properties/properties-for-lease/commercial-space?aspects=isSale",
+      "method": "CBRE public listings API (JSON)",
+      "totalAvailableOnSource": 5879,
+      "listingsCollected": 15,
+      "note": null
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "supported": true,
+      "company": "CBRE Deal Flow",
+      "sourceUrl": "https://www.cbredealflow.com/",
+      "method": "Rendered public homepage grid parsed (cards)",
+      "totalAvailableOnSource": null,
+      "listingsCollected": 15,
+      "note": "Deal rooms and full financial detail require registration; public card data only. Coverage limited to the first page of the grid."
+    },
+    {
+      "sourceKey": "jll",
+      "supported": true,
+      "company": "JLL",
+      "sourceUrl": "https://property.jll.com/search?tenureTypes=sale",
+      "method": "Rendered search pages parsed (cards)",
+      "totalAvailableOnSource": 332,
+      "listingsCollected": 15,
+      "note": null
+    },
+    {
+      "sourceKey": "jll-investor",
+      "supported": true,
+      "company": "JLL Investor Center",
+      "sourceUrl": "https://invest.jll.com/us/en/property-search?filter=%7B%22location%22%3A%5B%22United%20States%22%5D%7D",
+      "method": "Rendered search page parsed (cards)",
+      "totalAvailableOnSource": null,
+      "listingsCollected": 15,
+      "note": null
+    },
+    {
+      "sourceKey": "cushman-wakefield",
+      "supported": true,
+      "company": "Cushman & Wakefield",
+      "sourceUrl": "https://www.cushmanwakefield.com/en/united-states/properties/invest/search",
+      "method": "Rendered sale-search page parsed (cards); note: C&W's full result API is POST-only",
+      "totalAvailableOnSource": null,
+      "listingsCollected": 12,
+      "note": "Coverage limited to listings rendered on the first page of the US sale search."
+    },
+    {
+      "sourceKey": "colliers",
+      "supported": false,
+      "note": "Colliers' property search (colliers.com/en/properties) loads results only through Coveo's POST-only search API behind a consent wall, which this collector cannot call. No public GET endpoint or server-rendered listing markup was found."
+    },
+    {
+      "sourceKey": "newmark",
+      "supported": true,
+      "company": "Newmark",
+      "sourceUrl": "https://www.nmrk.com/properties",
+      "method": "Newmark Algolia search API (JSON; credentials read from the page)",
+      "totalAvailableOnSource": 1390,
+      "listingsCollected": 15,
+      "note": null
+    },
+    {
+      "sourceKey": "marcus-millichap",
+      "supported": true,
+      "company": "Marcus & Millichap",
+      "sourceUrl": "https://www.marcusmillichap.com/properties",
+      "method": "Rendered properties page parsed (cards); full result API is POST-only",
+      "totalAvailableOnSource": null,
+      "listingsCollected": 12,
+      "note": "Coverage limited to listings rendered on the first page (sorted by default)."
+    },
+    {
+      "sourceKey": "avison-young",
+      "supported": true,
+      "company": "Avison Young (US)",
+      "sourceUrl": "https://www.avisonyoung.us/properties/#/?transaction=sale&view=sidebar&status=active",
+      "method": "Rendered SharpLaunch search app parsed (sidebar items)",
+      "totalAvailableOnSource": 458,
+      "listingsCollected": 15,
+      "note": null
+    },
+    {
+      "sourceKey": "savills",
+      "supported": true,
+      "company": "Savills",
+      "sourceUrl": "https://search.savills.com/com/en/list/property-for-sale/united-states-of-america",
+      "method": "Server-rendered list pages parsed (cards), paginated via /page/N",
+      "totalAvailableOnSource": 105,
+      "listingsCollected": 15,
+      "note": null
+    },
+    {
+      "sourceKey": "svn",
+      "supported": true,
+      "company": "SVN",
+      "sourceUrl": "https://svn.com/properties/",
+      "method": "Buildout plugin inventory API (JSON)",
+      "totalAvailableOnSource": 5524,
+      "listingsCollected": 15,
+      "note": null
+    },
+    {
+      "sourceKey": "nai-global",
+      "supported": true,
+      "company": "NAI Global",
+      "sourceUrl": "https://ab.infabode.com/nai-global/listings3",
+      "method": "Rendered Infabode listings widget parsed (cards, infinite scroll — first batch)",
+      "totalAvailableOnSource": null,
+      "listingsCollected": 15,
+      "note": "Cards are not individually linked; the listings page URL is provided. Coverage limited to the first rendered batch."
+    },
+    {
+      "sourceKey": "lee-associates",
+      "supported": true,
+      "company": "Lee & Associates",
+      "sourceUrl": "https://www.lee-associates.com/properties/",
+      "method": "Buildout plugin inventory API (JSON)",
+      "totalAvailableOnSource": 9971,
+      "listingsCollected": 15,
+      "note": null
+    },
+    {
+      "sourceKey": "transwestern",
+      "supported": false,
+      "note": "Transwestern's property search (transwestern.com/properties) is a map-driven app whose data loads via POST requests only, with no public GET endpoint or server-rendered listing markup."
+    }
+  ],
+  "listings": [
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-160329",
+      "name": "Free standing Building with Drive-Thru",
+      "headline": "1,992 SF Building Available for Sale",
+      "transactionType": "Sale",
+      "assetType": "Retail",
+      "description": "Free Standing Building with Drive-Thru",
+      "street": "7 Underpass Road",
+      "city": "Brewster",
+      "state": "MA",
+      "postalCode": "02631",
+      "country": "US",
+      "latitude": 41.7648713,
+      "longitude": -70.0656721,
+      "salePriceText": "Contact broker for pricing",
+      "buildingSizeSqft": 1992,
+      "brokerIds": [
+        0,
+        1
+      ],
+      "brochures": [
+        {
+          "name": "Brewster, MA - 7 Underpass Road.pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-160329/3ea73c19/6f7f65d8-2b03-49de-884e-81b90e3a0143.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-160329/b7669e04/140b7601-463c-4b00-9ba3-42385643028a.PNG"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-160329/free-standing-building-with-drive-thru-7-underpass-road-brewster-ma-02631",
+      "lastUpdated": "2024-07-30"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-189392",
+      "name": "6 Collins Ave",
+      "headline": "Flexible Build to Suit ±20,000 – 280,000 SF Stand-alone or Campus Design",
+      "transactionType": "Sale/Lease",
+      "assetType": "Land",
+      "description": "Fully permitted development site that can accommodate up to ±275,000 SF of single-story development with significant design flexibility and multiple building scenarios.",
+      "street": "6 Collins Avenue",
+      "city": "Plymouth",
+      "state": "MA",
+      "postalCode": "02360",
+      "country": "US",
+      "latitude": 41.9588355,
+      "longitude": -70.6932532,
+      "salePriceText": "Contact broker for pricing",
+      "brokerIds": [
+        2,
+        3,
+        4
+      ],
+      "brochures": [
+        {
+          "name": "6 Collins Ave, Plymouth.pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-189392/eb8ed10e/4a7f4ece-a4ec-403e-973e-4873a65b2719.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-189392/b7f38aa8/c2a36bd1-885b-4ff8-8231-66439000b4b4.jpg"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-189392/6-collins-ave-6-collins-avenue-plymouth-ma-02360",
+      "lastUpdated": "2025-10-07"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-169129",
+      "headline": "Pad Site Available",
+      "transactionType": "Sale/Lease",
+      "assetType": "Retail",
+      "street": "435 Westgate Drive",
+      "city": "Brockton",
+      "state": "MA",
+      "postalCode": "02301",
+      "country": "US",
+      "latitude": 42.0948962,
+      "longitude": -71.0555516,
+      "salePriceText": "Contact broker for pricing",
+      "brokerIds": [
+        5,
+        6
+      ],
+      "brochures": [
+        {
+          "name": "Brockton, MA - 435 Westgate Drive.pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-169129/ef28e435/dfd218d0-11f6-4e06-a0de-6e4c2bf6d6c4.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-169129/d6adb7e9/9395d038-8464-4314-9622-038d0b9706bf.PNG"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-169129/435-westgate-drive-brockton-ma-02301",
+      "lastUpdated": "2024-12-19"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-131103",
+      "name": "Route 24_Harrison Boulevard",
+      "transactionType": "Sale/Lease",
+      "assetType": "Retail",
+      "description": "25 Acres of Land Available - Asking Price of $4,750,000.00 + 25 acre lot available for commercial development + Located directly off the interchange of Route 24 and Harrison Boulevard with over 125,000 cars per day + Prime visibility and signage available on Route 24 + Well-positioned within a strong retail market with neighboring tenants including; Ikea, Costco, Floor & D&eacute;cor, Christmas Tree Shops, Jordan's, Petco and Home Depot + Highly populated area with nearly 200,000 people within five miles",
+      "street": "Harrison Boulevard and Old Pond Street",
+      "city": "Avon",
+      "state": "MA",
+      "postalCode": "2322",
+      "country": "US",
+      "latitude": 42.12294,
+      "longitude": -71.05567,
+      "salePriceText": "Contact broker for pricing",
+      "brokerIds": [
+        7
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-131103/d8eeba99/e00718b2-34bb-47ca-b026-2c8dab109e8d.jpeg"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-131103/route-24-harrison-boulevard-harrison-boulevard-and-old-pond-street-avon-ma-2322",
+      "lastUpdated": "2024-01-25"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-69496",
+      "name": "401 Wampanoag Trail",
+      "headline": "Full Building Opportunity",
+      "transactionType": "Sale/Lease",
+      "assetType": "Office",
+      "description": "CBRE Inc. is pleased to offer a four story, 46,000 SF office/medical office building at 401 Wampanoag Trail in East Providence, Rhode Island. The property overlooks Route 114 and is situated at the entrance to the Westminster Business Park and immediately adjacent to a new ±72,000 SF medical building. With immediate access to Interstate 195.",
+      "street": "401 Wampanoag Trail",
+      "city": "East Providence",
+      "state": "RI",
+      "postalCode": "02915",
+      "country": "US",
+      "latitude": 41.7937952,
+      "longitude": -71.348986,
+      "salePriceText": "Contact broker for pricing",
+      "buildingSizeSqft": 46000,
+      "brokerIds": [
+        8,
+        9
+      ],
+      "brochures": [
+        {
+          "name": "(BR)-2 Page Flyer PORT (B)_401 Wampanoag Trl_HIGH.pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-69496/ed579961/1e4b8b9d-31ef-476c-a925-25732ade788e.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-69496/21e5ca46/5b80f002-0ba9-4392-9b47-a057260b9d00.JPG",
+        "https://www.cbre.com/resources/fileassets/US-SMPL-69496/c6122d10/c7bbaba1-e358-49a3-9966-e9ef877d465c.jpg"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-69496/401-wampanoag-trail-401-wampanoag-trail-east-providence-ri-02915",
+      "lastUpdated": "2023-11-08"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-176774",
+      "headline": "Unique Standalone Advanced Manufacturing Opportunity in Woburn, MA",
+      "transactionType": "Sale/Lease",
+      "assetType": "Industrial",
+      "description": "On behalf of new ownership, CBRE is pleased to bring your attention to a new full building opportunity at 17 Presidential Way in Woburn, Massachusetts. The ±110,000 SF warehouse/manufacturing facility offers 24’ - 30’ clear height, over 100 auto spaces, 7 loading docks and 3 drive-in doors. 17 Presidential is situated directly off of Interstate 93 and within 2 miles from Route 128, providing a future tenant great access to two major highways.",
+      "street": "17 Presidential Way",
+      "city": "Woburn",
+      "state": "MA",
+      "postalCode": "01801",
+      "country": "US",
+      "latitude": 42.5230015,
+      "longitude": -71.1419058,
+      "salePriceText": "Contact broker for pricing",
+      "buildingSizeSqft": 110000,
+      "brokerIds": [
+        10,
+        11,
+        12
+      ],
+      "brochures": [
+        {
+          "name": "17 Presidential Way Brochure_4.1.25(HIGH) (1).pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-176774/be87fff9/348407ef-2b99-4493-91df-fee3c0a0d058.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-176774/24b5dd9b/a63c5983-0be7-4f5d-95b7-307d340e5d01.jpg"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-176774/17-presidential-way-woburn-ma-01801",
+      "lastUpdated": "2025-04-23"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-77509",
+      "name": "717-721 & 727 School Street",
+      "headline": "Redevelopment Properties",
+      "transactionType": "Sale",
+      "assetType": "Industrial",
+      "description": "CBRE is pleased to offer for sale the unique mill buildings at 717-721 & 727 School Street and an additional surface lot on Service Road in Pawtucket, Rhode Island. The two main industrial mill structures of 109,796 SF and 186,276 SF are on abutting lots containing 7.30 acres of MO zoned land with tremendous sightlines down and across the Seekonk River. The additional surface lot, also zoned MO, contains 1.08 acres of paved land for parking. The buildings are un-occupied with all mechanical systems running and fully operational.",
+      "street": "717 School Street",
+      "city": "Pawtucket",
+      "state": "RI",
+      "postalCode": "02860",
+      "country": "US",
+      "latitude": 41.85960095,
+      "longitude": -71.37447495,
+      "salePriceText": "Contact broker for pricing",
+      "buildingSizeSqft": 365032.95716859004,
+      "brokerIds": [
+        13
+      ],
+      "brochures": [
+        {
+          "name": "(BR)-2 Page Flyer PORT (B)_School Street Properties_HIGH.pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-77509/189c0a2a/bb418ad0-64c8-42f4-b806-6b87c0693a27.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-77509/33c7d1d2/1ae7e09f-1e38-426d-b0d3-b84a05700325.jpg",
+        "https://www.cbre.com/resources/fileassets/US-SMPL-77509/ff026f7d/98c67add-6cb0-432f-a22f-469b1ecebbae.jpg",
+        "https://www.cbre.com/resources/fileassets/US-SMPL-77509/8165fef5/ad99b04b-6b8d-46a2-b065-840da918fdaf.jpg",
+        "https://www.cbre.com/resources/fileassets/US-SMPL-77509/debf0717/015123d2-5a4c-48b3-8eb5-ecbedd36f9a8.jpg",
+        "https://www.cbre.com/resources/fileassets/US-SMPL-77509/8165fef5/34e059de-ec8f-4daf-9d8f-63d302d1038c.jpg",
+        "https://www.cbre.com/resources/fileassets/US-SMPL-77509/ff026f7d/8799c0a6-b504-4643-94eb-9b238fbf6c50.jpg"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-77509/717-721-727-school-street-717-school-street-pawtucket-ri-02860",
+      "lastUpdated": "2023-02-22"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-93787",
+      "name": "15-25 Bath Street",
+      "headline": "Industrial Refrigerated Storage Facility",
+      "transactionType": "Sale",
+      "assetType": "Industrial",
+      "description": "CBRE is pleased to offer for sale a modern 31,358 SF USDA certified refrigerated food processing and storage facility centrally located in close proximity to I-95. The site is improved with two structures consisting of a 14,744 SF one and two story refrigerated wholesale food warehouse building with office area and a ±16,614 sf addition that was constructed in 2010 providing additional refrigerated space and dock height loading area.",
+      "street": "15 Bath Street",
+      "city": "Providence",
+      "state": "RI",
+      "postalCode": "02908",
+      "country": "US",
+      "latitude": 41.8306054,
+      "longitude": -71.4237605,
+      "salePriceText": "Contact broker for pricing",
+      "buildingSizeSqft": 31358,
+      "brokerIds": [
+        14
+      ],
+      "brochures": [
+        {
+          "name": "Multi-PageFlyer_Custom#2_15-25 Bath Street_HIGH.pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-93787/d80aea95/36bf30c7-10f1-4396-abaf-51fe62c0a056.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-93787/3f87d6cc/3a18866d-b3e2-4231-9be9-98ec1a6605bb.jpg"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-93787/15-25-bath-street-15-bath-street-providence-ri-02908",
+      "lastUpdated": "2023-03-13"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-196501",
+      "name": "248 Haverhill Street",
+      "headline": "2 Acres of Land Right Off Interstate 93",
+      "transactionType": "Sale",
+      "assetType": "Retail",
+      "street": "248 Haverhill Street",
+      "city": "Methuen",
+      "state": "MA",
+      "postalCode": "01844",
+      "country": "US",
+      "latitude": 42.7062241,
+      "longitude": -71.2044653,
+      "salePriceText": "Contact broker for pricing",
+      "brokerIds": [
+        7,
+        15
+      ],
+      "brochures": [
+        {
+          "name": "Methuen, MA - 248 Haverhill Street.pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-196501/6ed97833/5d8b1abc-bb65-42b8-b696-54826e55d75a.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-196501/b107e340/a2d42a0e-079a-4d9b-b0d5-f510be3a1e8f.jpg"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-196501/248-haverhill-street-248-haverhill-street-methuen-ma-01844",
+      "lastUpdated": "2026-02-09"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-92608",
+      "name": "25 Blackstone Valley Place",
+      "headline": "Blackstone Valley Office Park",
+      "transactionType": "Sale/Lease",
+      "assetType": "Office",
+      "description": "CBRE is pleased to offer office space from ±2,500 SF up to ±79,950 SF at 25 Blackstone Valley Place in Lincoln, RI.",
+      "street": "25 Blackstone Valley Place",
+      "city": "Lincoln",
+      "state": "RI",
+      "postalCode": "02865",
+      "country": "US",
+      "latitude": 41.9383859,
+      "longitude": -71.4624395,
+      "salePriceUsd": 5495000,
+      "buildingSizeSqft": 79950,
+      "brokerIds": [
+        9,
+        8
+      ],
+      "brochures": [
+        {
+          "name": "(BR)-2 Page Flyer PORT (C)_25 Blackstone Valley Place_HIGH.pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-92608/8e126ba6/4053bc6c-bbf3-4764-9d64-ace670819865.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-92608/c7cb9eef/b7638d00-2a55-444b-b09d-d7ef6e94aa9b.jpg"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-92608/25-blackstone-valley-place-25-blackstone-valley-place-lincoln-ri-02865",
+      "lastUpdated": "2023-11-08"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-38444",
+      "name": "1275 Park East Drive",
+      "headline": "Industrial Building for Sale",
+      "transactionType": "Sale",
+      "assetType": "Industrial",
+      "street": "1275 Park East Drive",
+      "city": "Woonsocket",
+      "state": "RI",
+      "postalCode": "02895",
+      "country": "US",
+      "latitude": 42.0010264,
+      "longitude": -71.46710165,
+      "salePriceText": "Contact broker for pricing",
+      "buildingSizeSqft": 52940,
+      "brokerIds": [
+        8
+      ],
+      "brochures": [
+        {
+          "name": "1275 Park East Drive.pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-38444/d95dd3e5/005c7cc8-97a4-4d21-ba23-45260f9e447e.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-38444/f2085334/119a76be-e6d5-403f-9030-d0a861e2f4f3.JPG",
+        "https://www.cbre.com/resources/fileassets/US-SMPL-38444/7fa6301c/54602744-416e-4673-8519-53f3ba40387c.jpg"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-38444/1275-park-east-drive-1275-park-east-drive-woonsocket-ri-02895",
+      "lastUpdated": "2022-09-27"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-130979",
+      "name": "340 S Main Street",
+      "headline": "1.27 Acres Available",
+      "transactionType": "Sale",
+      "assetType": "Retail",
+      "description": "+ 1.27 acres for sale in Bellingham + Corner lot at lighted intersection + 20,000 cars per day travel along route 126 and South Main Street + Located near Rhode Island border, with many retailers and restaurants nearby + Stop and Shop, Dunkin', CVS, Planet Fitness and Burlington are within two miles",
+      "street": "340 South Main Street",
+      "city": "Bellingham",
+      "state": "MA",
+      "postalCode": "02019",
+      "country": "US",
+      "latitude": 42.035596,
+      "longitude": -71.493971,
+      "salePriceText": "Contact broker for pricing",
+      "buildingSizeSqft": 55321.223819106126,
+      "brokerIds": [
+        0,
+        16
+      ],
+      "brochures": [
+        {
+          "name": "Bellingham, MA - 340 South Main Street.pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-130979/f2a7f9cb/48f60be5-4fd1-4661-adab-45c059d27c7e.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-130979/af2faa39/437734b3-f7b5-4ab5-aca9-94d437493bf6.png"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-130979/340-s-main-street-340-south-main-street-bellingham-ma-02019",
+      "lastUpdated": "2026-03-16"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-196500",
+      "headline": "0.73 Acres Available For Sale or Ground Lease",
+      "transactionType": "Sale",
+      "assetType": "Retail",
+      "description": ".73 acres right off of Everett Turnpike",
+      "street": "2 Continental Boulevard",
+      "city": "Merrimack",
+      "state": "NH",
+      "postalCode": "03054",
+      "country": "US",
+      "latitude": 42.8392624,
+      "longitude": -71.4969545,
+      "salePriceText": "Contact broker for pricing",
+      "brokerIds": [
+        7,
+        15
+      ],
+      "brochures": [
+        {
+          "name": "Merrimack, NH - 2 Continental Boulevard.pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-196500/45ef9f60/6b3dce6f-72c4-42f3-b9e8-2ea59b955d17.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-196500/1b67cf8c/7df7393d-ec20-4a05-a76b-b0e432a432ac.jpg"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-196500/2-continental-boulevard-merrimack-nh-03054",
+      "lastUpdated": "2026-02-09"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-96094",
+      "name": "220 Lake Road & 27 Forbes Road",
+      "transactionType": "Sale",
+      "assetType": "Land",
+      "description": "CBRE, Inc., as exclusive advisor to Ownership, is pleased to present the opportunity to acquire the Killingly Oaks Business Park Industrial Land Parcels located at 220 Lake Road & 27 Forbes Road, Killingly, CT (the “Property”). The Property totals 20.86 acres of industrial land situated midway between Hartford, CT and Providence, RI, and proximate to both the New York City and Boston MSAs. The Property is positioned in a highly desirable New England distribution market home to nearly 40 million residents within a 200-mile radius. Substantiating the desirability of the distribution market, the local area is home to largescale industrial and distribution facilities occupied by Walgreens, UNFI, Amazon, Frito-Lay, International Paper, Lowe’s, and Staples, to name a few. The Property is surrounded by an abundance of major highways and is approximately 1-mile from two, 4-way interchanges along Interstate 395, which provides access to Interstate 90 to the north and Interstate 95 to the south.",
+      "street": "220 Lake Road",
+      "city": "Killingly",
+      "state": "CT",
+      "postalCode": "06241",
+      "country": "US",
+      "latitude": 41.861469,
+      "longitude": -71.910709,
+      "salePriceText": "Contact broker for pricing",
+      "buildingSizeSqft": 908661.9912335069,
+      "brokerIds": [
+        17,
+        18,
+        19,
+        20
+      ],
+      "brochures": [
+        {
+          "name": "Killingly Oaks Business Park Industrial Land Parcels - CBRE Investment Summary - 4-25-23.pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-96094/f295549c/cb5c6ec5-8195-4645-9e16-19b771172aff.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-96094/79eac86f/73b4138d-dd34-46fa-ab4a-722a532c9e82.jpg",
+        "https://www.cbre.com/resources/fileassets/US-SMPL-96094/840fa2be/f3fee5d6-ab4f-430a-b75c-af7361dbe484.jpg"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-96094/220-lake-road-27-forbes-road-220-lake-road-killingly-ct-06241",
+      "lastUpdated": "2023-04-27"
+    },
+    {
+      "sourceKey": "cbre",
+      "sourceCompany": "CBRE",
+      "id": "US-SMPL-124896",
+      "name": "10 & 20 Washington Square",
+      "headline": "Two Office Properties For Sale",
+      "transactionType": "Sale",
+      "assetType": "Office",
+      "description": "40,110 SF Available on One Acre",
+      "street": "20 Washington Square",
+      "city": "Worcester",
+      "state": "MA",
+      "postalCode": "01604",
+      "country": "US",
+      "latitude": 42.2630389606151,
+      "longitude": -71.7951842355822,
+      "salePriceText": "Contact broker for pricing",
+      "buildingSizeSqft": 40110,
+      "brokerIds": [
+        0,
+        15,
+        6
+      ],
+      "brochures": [
+        {
+          "name": "Worcester, MA - 10 & 20 Washington Square.pdf",
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-124896/02c6491b/58e22b80-7098-44d5-ac99-782851874ce6.pdf"
+        }
+      ],
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-124896/4b86c712/e5ae0f83-6252-4d5c-8a82-12e6e2edceeb.jpeg",
+        "https://www.cbre.com/resources/fileassets/US-SMPL-124896/cdd5f1c4/b0732b5c-e3b4-4c38-b04b-682aeb1fe2cf.jpg",
+        "https://www.cbre.com/resources/fileassets/US-SMPL-124896/17890f08/1d6f7919-391f-4286-96c5-6d8b0ad56a16.jpg"
+      ],
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-124896/10-20-washington-square-20-washington-square-worcester-ma-01604",
+      "lastUpdated": "2023-12-04"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "Capitol Hill Apartments",
+      "transactionType": "Sale (investment)",
+      "assetType": "Multifamily",
+      "description": "The Capitol Apartments consists of 4 total units, on a large lot with potential to build additional units. One unit is currently vacant for potential owner occupant financing but could be leased for an investor looking for a fully leased as …",
+      "city": "Reno",
+      "state": "NV",
+      "country": "The Capitol Apartments consist",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlCAULLRZUwGngh47DCAyGZK9RIwgKfuMuO5yCxu8BE05"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "Saugus Plaza",
+      "transactionType": "Sale (investment)",
+      "description": "Saugus Plaza is a 169,300 square foot, grocery and home-improvement anchored shopping center located less than 10-miles north of Boston along the core Route 1 retail market in Saugus, Massachusetts.",
+      "city": "Saugus",
+      "state": "MA",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlG97JAuFSMcL7sAF72xVWQIM3yT92Fx5-5jNrmTVK6Mb"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "Public Square Garage 2026",
+      "transactionType": "Sale (investment)",
+      "assetType": "Industrial",
+      "description": "CBRE presents the opportunity to acquire Public Square Garage, downtown Nashville’s premier parking asset in the constrained CBD. The 1.14-acre site at 350 Deaderick St includes a 12-story, 1,069-space garage plus 37,049 SF of prime street- …",
+      "city": "Nashville",
+      "state": "TN",
+      "country": "United States",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlOFiy9yPdFBlB-jLwqw0VDgR0zF_IbAdiXWahXTGIpG1"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "5451 East Harmony Road, Unit 103_Back Nine",
+      "transactionType": "Sale (investment)",
+      "assetType": "Retail",
+      "description": "The offering features a first generation retail building secured by a NNN lease, providing investors with minimal landlord responsibilities and predictable income. The property is leased to a nationally operating tenant under a new 10 year …",
+      "city": "Fort Collins",
+      "state": "CO",
+      "country": "United States",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlMgP-6uS6YuilWY5-cLdntlCUeV95PrdNJglREjcuEDt"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "CityPlace",
+      "transactionType": "Sale (investment)",
+      "assetType": "Office",
+      "description": "An Iconic Value Add Office Tower Opportunity",
+      "city": "Opportunity Hartford",
+      "state": "CT",
+      "country": "An Iconic Value Add Office Tow",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlJKTvW7MBj1bVbb-MsAn-keZsTViiDk7NLEFd0Vun1Ql"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "The Intown Collection",
+      "transactionType": "Sale (investment)",
+      "assetType": "Multifamily",
+      "city": "United States Atlanta",
+      "state": "GA",
+      "country": "United States",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlMbSgX13mwBrtLW8wFEHC7Eu88AOM8kH5pLeo4IFToCl"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "Cross Keys Place",
+      "transactionType": "Sale (investment)",
+      "assetType": "Retail",
+      "description": "established community shopping center located in Sewell, NJ just off the “main-and-main” intersection of NJ Route 42 and Berlin-Cross Keys Road",
+      "city": "Cross Keys Road Sewell",
+      "state": "NJ",
+      "country": "United States",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlM_lNwSgCttjBaXhWZFDsEXKZhWrUmrHue8lU8wVZcUv"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "Sunset Pointe Shopping Center",
+      "transactionType": "Sale (investment)",
+      "assetType": "Retail",
+      "city": "States Stevenson Ranch",
+      "state": "CA",
+      "country": "United States",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlAyyrvFJh6-kFbTvroIayO0RVmWTKK5MFMG34fHn06tZ"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "Hōkūala",
+      "transactionType": "Sale (investment)",
+      "description": "Hōkūala offers breathtaking views of the Pacific Ocean and Hāíupu mountains, presenting a unique chance to create a distinctive community and become Kaua’i’s premier destination resort on the last oceanfront development site on the south sh …",
+      "city": "Lihue",
+      "state": "HI",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlKgPa9GRYqZgnU4jGvIMv0dJSXVctJp4IBjifNcV2c_z"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "Sugar Beach Resort",
+      "transactionType": "Sale (investment)",
+      "description": "The Sugar Beach Resort offering consists of the existing resort and wellness center along with the existing infrastructure and future development property for a total of 36.34 beachfront acres.",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlDmOMrmoZ751IE_5SId2gNGvdPEhVpGr8XlOrqIDVfmm"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "Starbucks",
+      "transactionType": "Sale (investment)",
+      "assetType": "Retail",
+      "city": "United States Dallas",
+      "state": "TX",
+      "country": "United States",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlJYbLWE9sOzzfSNCeC1fyBnj7gKpOAFp8AjNKTJrdfUM"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "Edmonton - 22 Acres of Excess Land",
+      "transactionType": "Sale (investment)",
+      "assetType": "Land",
+      "description": "OpenLane is offering approximately 20± acres of industrial land located at 1701 9 Street, Nisku, Alberta, within one of the Edmonton region’s most established and high-performing industrial nodes.",
+      "city": "Nisku",
+      "state": "AB",
+      "country": "CanadaOpenLane is offering app",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlFmIRzi56czryaV0PqwwE63AZOqzTo-DE5PBXaFjg51I"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "Ottawa - 15 Acres of Excess Land",
+      "transactionType": "Sale (investment)",
+      "assetType": "Land",
+      "description": "OpenLane is offering approximately 15± acres of industrial land located at 1717 Burton Road in Ottawa, Ontario, situated within one of the city’s established and highly accessible industrial corridors.",
+      "city": "Ottawa",
+      "state": "ON",
+      "country": "CanadaOpenLane is offering app",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlHvpLK-iCvdbvBNx1z-HINESiZuvK3WNhe0cTfBCNF1x"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "Saskatoon - 20 Acres of Excess Land",
+      "transactionType": "Sale (investment)",
+      "assetType": "Land",
+      "description": "OpenLane is offering approximately 20± acres of industrial land located at 37507 SK‑12, Saskatoon, Saskatchewan, positioned along a key transportation corridor with direct exposure to Highway 12.",
+      "country": "CanadaOpenLane is offering app",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlPASOVo3EFLn5RQUoGnKse5lHWG9WE2md70SFmoTP78r"
+    },
+    {
+      "sourceKey": "cbre-dealflow",
+      "sourceCompany": "CBRE Deal Flow",
+      "name": "Winnipeg - 10 Acres of Excess Land",
+      "transactionType": "Sale (investment)",
+      "assetType": "Land",
+      "description": "OpenLane is offering approximately 10± acres of industrial land located at 68088 MB‑7 in Stonewall, Manitoba, benefiting from prominent highway exposure along Provincial Trunk Highway 7 and immediate access to the Winnipeg metro area.",
+      "city": "Stonewall",
+      "state": "MB",
+      "country": "CanadaOpenLane is offering app",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlLaqxa44zWi6G0oirFTs3qkhGPeAavPN_-1HJ6XUTkPY"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "615-3rd-st-cbd",
+      "name": "615 3RD STREET",
+      "transactionType": "Sale",
+      "city": "Des Moines",
+      "state": "IA",
+      "postalCode": "50309",
+      "country": "US",
+      "url": "https://property.jll.com/listings/615-3rd-st-cbd"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "10-w-lafayette-st-10-w-lafayette-st-new-jersey-ind",
+      "name": "10 W LAFAYETTE ST",
+      "transactionType": "Sale",
+      "city": "Trenton",
+      "state": "NJ",
+      "postalCode": "08608",
+      "country": "US",
+      "url": "https://property.jll.com/listings/10-w-lafayette-st-10-w-lafayette-st-new-jersey-ind"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "303-santa-fe-dr-san-diego",
+      "name": "303 SANTA FE DR",
+      "transactionType": "Sale",
+      "city": "Encinitas",
+      "state": "CA",
+      "postalCode": "92024",
+      "country": "US",
+      "url": "https://property.jll.com/listings/303-santa-fe-dr-san-diego"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "woodland-center-ii-8335-allison-pointe-trl-keystone",
+      "name": "WOODLAND CENTER II",
+      "transactionType": "Sale",
+      "city": "Indianapolis",
+      "state": "IN",
+      "postalCode": "46250",
+      "country": "US",
+      "url": "https://property.jll.com/listings/woodland-center-ii-8335-allison-pointe-trl-keystone"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "castle-hills-village-offices-phase-iii-2520-king-arthur-blvd-dallas-fort-worth",
+      "name": "CASTLE HILLS VILLAGE OFFICES – PHASE III",
+      "transactionType": "Sale",
+      "city": "Lewisville",
+      "state": "TX",
+      "postalCode": "75056",
+      "country": "US",
+      "url": "https://property.jll.com/listings/castle-hills-village-offices-phase-iii-2520-king-arthur-blvd-dallas-fort-worth"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "710-w-laurel-rd-philadelphia",
+      "name": "710 W LAUREL RD",
+      "transactionType": "Sale",
+      "city": "Stratford",
+      "state": "NJ",
+      "postalCode": "08084",
+      "country": "US",
+      "url": "https://property.jll.com/listings/710-w-laurel-rd-philadelphia"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "3000-s-lenola-rd-philadelphia",
+      "name": "3000 S LENOLA RD",
+      "transactionType": "Sale",
+      "city": "Maple Shade",
+      "state": "NJ",
+      "postalCode": "08052",
+      "country": "US",
+      "url": "https://property.jll.com/listings/3000-s-lenola-rd-philadelphia"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "crescent-building-707-w-main-ave-spokane",
+      "name": "CRESCENT BUILDING",
+      "transactionType": "Sale",
+      "city": "Spokane",
+      "state": "WA",
+      "postalCode": "99201",
+      "country": "US",
+      "url": "https://property.jll.com/listings/crescent-building-707-w-main-ave-spokane"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "5728-root-rd-houston",
+      "name": "5728 ROOT RD",
+      "transactionType": "Sale",
+      "city": "Spring",
+      "state": "TX",
+      "postalCode": "77389",
+      "country": "US",
+      "url": "https://property.jll.com/listings/5728-root-rd-houston"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "2446-west-i-h-20-dallas-fort-worth",
+      "name": "2446 WEST I H 20",
+      "transactionType": "Sale",
+      "city": "Arlington",
+      "state": "TX",
+      "postalCode": "76017",
+      "country": "US",
+      "url": "https://property.jll.com/listings/2446-west-i-h-20-dallas-fort-worth"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "800-walnut-st-800-walnut-st-central-iowa-des-moines",
+      "name": "SKYVIEW BUILDING",
+      "transactionType": "Sale",
+      "city": "Des Moines",
+      "state": "IA",
+      "postalCode": "50309",
+      "country": "US",
+      "url": "https://property.jll.com/listings/800-walnut-st-800-walnut-st-central-iowa-des-moines"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "1423-1425-keystone-ave-not-tracked-michigan",
+      "name": "1423-1425 KEYSTONE AVE",
+      "transactionType": "Sale",
+      "city": "Lansing",
+      "state": "MI",
+      "postalCode": "48911",
+      "country": "US",
+      "url": "https://property.jll.com/listings/1423-1425-keystone-ave-not-tracked-michigan"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "2200-lackland-rd-mid-county",
+      "name": "2200 LACKLAND RD",
+      "transactionType": "Sale",
+      "city": "Overland",
+      "state": "MO",
+      "postalCode": "63114",
+      "country": "US",
+      "url": "https://property.jll.com/listings/2200-lackland-rd-mid-county"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "408-410-w-franklin-st-richmond",
+      "name": "408-410 W FRANKLIN ST",
+      "transactionType": "Sale",
+      "city": "Richmond",
+      "state": "VA",
+      "postalCode": "23220",
+      "country": "US",
+      "url": "https://property.jll.com/listings/408-410-w-franklin-st-richmond"
+    },
+    {
+      "sourceKey": "jll",
+      "sourceCompany": "JLL",
+      "id": "3939-essex-ln-3939-essex-ln-houston",
+      "name": "3939 ESSEX LN",
+      "transactionType": "Sale",
+      "city": "Houston",
+      "state": "TX",
+      "postalCode": "77027",
+      "country": "US",
+      "url": "https://property.jll.com/listings/3939-essex-ln-3939-essex-ln-houston"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "fox-hill",
+      "name": "fox hill",
+      "transactionType": "Sale (investment)",
+      "assetType": "living multi housing",
+      "status": "Under Contract",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1773071983/Prod/DealX/Img/bbc06546-2123-4114-95fa-acaeebb593b6.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/living-multi-housing/fox-hill"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "seasons-at-horsetooth",
+      "name": "seasons at horsetooth",
+      "transactionType": "Sale (investment)",
+      "assetType": "living multi housing",
+      "status": "Under Contract",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1773178306/Prod/DealX/Img/dc9f49ad-0abf-4848-9911-5d4235f1ea2d.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/living-multi-housing/seasons-at-horsetooth"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "cromwell-field-shopping-center",
+      "name": "cromwell field shopping center",
+      "transactionType": "Sale (investment)",
+      "assetType": "retail",
+      "status": "Active",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1757446784/Prod/DealX/Img/d9872d42-511d-4a2f-9221-54aa48ac8e86.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/retail/cromwell-field-shopping-center"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "university-grove-lsu-sh",
+      "name": "university grove lsu sh",
+      "transactionType": "Sale (investment)",
+      "assetType": "living multi housing",
+      "status": "Active",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1781191001/Prod/DealX/Img/6fc3f347-59d6-4ddf-beed-7c1dc8559c0e.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/living-multi-housing/university-grove-lsu-sh"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "university-edge",
+      "name": "university edge",
+      "transactionType": "Sale (investment)",
+      "assetType": "living multi housing",
+      "status": "Active",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1778003036/Prod/DealX/Img/a956783a-0b69-4757-a62e-ede4e8e95fe5.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/living-multi-housing/university-edge"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "amli-deerfield",
+      "name": "amli deerfield",
+      "transactionType": "Sale (investment)",
+      "assetType": "living multi housing",
+      "status": "Active",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1779989029/Prod/DealX/Img/917f3824-f554-4656-b375-a782c033566c.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/living-multi-housing/amli-deerfield"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "the-sinclair",
+      "name": "the sinclair",
+      "transactionType": "Sale (investment)",
+      "assetType": "living multi housing",
+      "status": "Active",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1780680665/Prod/DealX/Img/8c62378d-494e-43e2-b442-14f6a91502df.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/living-multi-housing/the-sinclair"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "the-slate-jeffersonville",
+      "name": "the slate jeffersonville",
+      "transactionType": "Sale (investment)",
+      "assetType": "living multi housing",
+      "status": "Active",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1779133934/Prod/DealX/Img/ec3db294-ca04-478b-a691-2f8bd1c32f0f.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/living-multi-housing/the-slate-jeffersonville"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "424-bedford-ave",
+      "name": "424 bedford ave",
+      "transactionType": "Sale (investment)",
+      "assetType": "living multi housing",
+      "status": "Active",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1781120585/Prod/DealX/Img/34a318ee-665d-44b4-b42b-dbb2d9e4c213.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/living-multi-housing/424-bedford-ave"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "solaris-house-at-uptown-atx",
+      "name": "solaris house at uptown atx",
+      "transactionType": "Sale (investment)",
+      "assetType": "living multi housing",
+      "status": "Under Contract",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1776269827/Prod/DealX/Img/b3ac54f8-ce86-4a76-9591-8e13af17f9ed.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/living-multi-housing/solaris-house-at-uptown-atx"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "belden-park-crossing",
+      "name": "belden park crossing",
+      "transactionType": "Sale (investment)",
+      "assetType": "retail",
+      "status": "Active",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1780430760/Prod/DealX/Img/737cddf3-ee61-4c50-ade6-4f30cef50892.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/retail/belden-park-crossing"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "32-east",
+      "name": "32 east",
+      "transactionType": "Sale (investment)",
+      "assetType": "retail",
+      "status": "Active",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1780428305/Prod/DealX/Img/0aa5eb29-c0c5-4949-b88a-2fc63e47de04.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/retail/32-east"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "central-park",
+      "name": "central park",
+      "transactionType": "Sale (investment)",
+      "assetType": "office",
+      "status": "Active",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1781031960/Prod/DealX/Img/b97a7252-f5c5-4ebd-8903-cc50569071e5.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/office/central-park"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "project-acela",
+      "name": "project acela",
+      "transactionType": "Sale (investment)",
+      "assetType": "industrial logistics",
+      "status": "Active",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1781101659/Prod/DealX/Img/830f9fd2-4d37-4692-bc3a-481563837ced.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/industrial-logistics/project-acela"
+    },
+    {
+      "sourceKey": "jll-investor",
+      "sourceCompany": "JLL Investor Center",
+      "id": "sinclair-portfolio",
+      "name": "sinclair portfolio",
+      "transactionType": "Sale (investment)",
+      "assetType": "living multi housing",
+      "status": "Under Contract",
+      "photos": [
+        "https://res.cloudinary.com/jll-global-cmg/image/upload/w_1920,q_auto/ar_1,c_crop/w_86,q_auto,c_scale/v1779216517/Prod/DealX/Img/8b4c168f-f331-43cd-a54c-8b86ab487a4f.jpg"
+      ],
+      "url": "https://invest.jll.com/us/en/listings/living-multi-housing/sinclair-portfolio"
+    },
+    {
+      "sourceKey": "cushman-wakefield",
+      "sourceCompany": "Cushman & Wakefield",
+      "id": "23420-lakeland-boulevard-s",
+      "name": "23420 Lakeland Boulevard",
+      "transactionType": "Sale",
+      "assetType": "industrial",
+      "street": "23420 Lakeland Boulevard Euclid, Ohio 44132 United States",
+      "city": "euclid",
+      "state": "OH",
+      "postalCode": "23420",
+      "country": "US",
+      "salePriceText": "Contact us for pricing",
+      "photos": [
+        "https://assets.cushmanwakefield.com/-/pmedia/254738/p/23420-lakeland-boulevard.webp?rev=aab0ecc866d3e54a9a1d5e4119ff1cf3c0bcbf012809d60f5186f39876685e14c6962ecd3d59b028d6c0c36503a2d7d116e3086ac269149001dffbd8646e5ad0"
+      ],
+      "url": "https://www.cushmanwakefield.com/en/united-states/properties/for-sale/industrial/oh/euclid/23420-lakeland-boulevard/23420-lakeland-boulevard-s"
+    },
+    {
+      "sourceKey": "cushman-wakefield",
+      "sourceCompany": "Cushman & Wakefield",
+      "id": "1735-iowa-avenue-s",
+      "name": "1735 Iowa Avenue",
+      "transactionType": "Sale",
+      "assetType": "industrial",
+      "street": "1735 Iowa Avenue Lorain, Ohio 44052 United States",
+      "city": "lorain",
+      "state": "OH",
+      "postalCode": "44052",
+      "country": "US",
+      "salePriceUsd": 245000,
+      "salePriceText": "$245,000 USD",
+      "photos": [
+        "https://assets.cushmanwakefield.com/-/pmedia/257862/p/1735-iowa-avenue.webp?rev=b5d51b940a4baa769f267b4afa54454985afa73d0b1ec9e7d666b1065039a3d434de14c350ee96133c7dd18a5519ecf3019098d0b97c2add9ed8030d745b78f4"
+      ],
+      "url": "https://www.cushmanwakefield.com/en/united-states/properties/for-sale/industrial/oh/lorain/1735-iowa-avenue/1735-iowa-avenue-s"
+    },
+    {
+      "sourceKey": "cushman-wakefield",
+      "sourceCompany": "Cushman & Wakefield",
+      "id": "s120210354s120210354-s",
+      "name": "118 W 60th St",
+      "transactionType": "Sale",
+      "assetType": "manufacturing",
+      "street": "118 W 60th St Minneapolis, Minnesota 55419 United States",
+      "city": "minneapolis",
+      "state": "MN",
+      "postalCode": "55419",
+      "country": "US",
+      "salePriceText": "Contact us for pricing",
+      "photos": [
+        "https://www.cushmanwakefield.com/Assets/images/fallbacks/generic@1,5x.png"
+      ],
+      "url": "https://www.cushmanwakefield.com/en/united-states/properties/for-sale/manufacturing/mn/minneapolis/118-w-60th-st/s120210354s120210354-s"
+    },
+    {
+      "sourceKey": "cushman-wakefield",
+      "sourceCompany": "Cushman & Wakefield",
+      "id": "s121163549s121163549-s",
+      "name": "Interchange",
+      "transactionType": "Sale",
+      "assetType": "warehousedistribution",
+      "street": "8841 Sage Way San Diego, California 92154 United States",
+      "city": "san diego",
+      "state": "CA",
+      "postalCode": "92154",
+      "country": "US",
+      "salePriceText": "Contact us for pricing",
+      "photos": [
+        "https://www.cushmanwakefield.com/Assets/images/fallbacks/generic@1,5x.png"
+      ],
+      "url": "https://www.cushmanwakefield.com/en/united-states/properties/for-sale/warehousedistribution/ca/san-diego/8841-sage-way/s121163549s121163549-s"
+    },
+    {
+      "sourceKey": "cushman-wakefield",
+      "sourceCompany": "Cushman & Wakefield",
+      "id": "s121052076s121052076-s",
+      "name": "Land Development Opportunity",
+      "transactionType": "Sale",
+      "assetType": "land",
+      "street": "3930 W. California Ave. Salt Lake City, Utah 84104 United States",
+      "city": "salt lake city",
+      "state": "UT",
+      "postalCode": "84104",
+      "country": "US",
+      "salePriceText": "Contact us for pricing",
+      "photos": [
+        "https://assets.cushmanwakefield.com/-/pmedia/194356/p/land-development-opportunity.webp?rev=bcbb09bfe90f231b0cbc72967cb31f3255e39f83b01e60fe0d2538222742b5b564411153b56052f63eb227fc11999ba4eb76e9986b37049f8871433d2210ddc6"
+      ],
+      "url": "https://www.cushmanwakefield.com/en/united-states/properties/for-sale/land/ut/salt-lake-city/3930-w-california-ave/s121052076s121052076-s"
+    },
+    {
+      "sourceKey": "cushman-wakefield",
+      "sourceCompany": "Cushman & Wakefield",
+      "id": "s121848407s121848407-s",
+      "name": "Portland Portal III",
+      "transactionType": "Sale",
+      "assetType": "warehousedistribution",
+      "street": "18205-18365 NE Sandy Blvd Portland, Oregon 97230 United States",
+      "city": "portland",
+      "state": "OR",
+      "postalCode": "18205",
+      "country": "US",
+      "salePriceText": "Contact us for pricing",
+      "photos": [
+        "https://assets.cushmanwakefield.com/-/pmedia/253096/p/portland-portal-iii.webp?rev=e0cbeedc052ba9c784a0bdc13c898a8838350278709875d97a7a1834b11ccd8c36c1048581810f5823b8bc093a42eafbfb47fb15d9951bb55eb82d26c1f074cc"
+      ],
+      "url": "https://www.cushmanwakefield.com/en/united-states/properties/for-sale/warehousedistribution/or/portland/18205-18365-ne-sandy-blvd/s121848407s121848407-s"
+    },
+    {
+      "sourceKey": "cushman-wakefield",
+      "sourceCompany": "Cushman & Wakefield",
+      "id": "s121553888s121553888-s",
+      "name": "Central Pike Logistics Center - Building A",
+      "transactionType": "Sale",
+      "assetType": "warehousedistribution",
+      "street": "1600 Block Central Pike Lebanon, Tennessee 37090 United States",
+      "city": "lebanon",
+      "state": "TN",
+      "postalCode": "37090",
+      "country": "US",
+      "salePriceText": "Contact us for pricing",
+      "photos": [
+        "https://assets.cushmanwakefield.com/-/pmedia/252402/p/central-pike-logistics-center---building-a.webp?rev=7285310e51b655862dbc3e867e84d1de1ab5c0b7c52f05799694003d44ba791cc7a5841bd9bb92a83617de98702cb2731d97d65ea0fd1e51c4db66f9215fff87"
+      ],
+      "url": "https://www.cushmanwakefield.com/en/united-states/properties/for-sale/warehousedistribution/tn/lebanon/1600-block-central-pike/s121553888s121553888-s"
+    },
+    {
+      "sourceKey": "cushman-wakefield",
+      "sourceCompany": "Cushman & Wakefield",
+      "id": "s121553890s121553890-s",
+      "name": "Central Pike Logistics Center - Building B",
+      "transactionType": "Sale",
+      "assetType": "warehousedistribution",
+      "street": "1600 Block Central Pike Lebanon, Tennessee 37090 United States",
+      "city": "lebanon",
+      "state": "TN",
+      "postalCode": "37090",
+      "country": "US",
+      "salePriceText": "Contact us for pricing",
+      "photos": [
+        "https://assets.cushmanwakefield.com/-/pmedia/252401/p/central-pike-logistics-center---building-b.webp?rev=7285310e51b655862dbc3e867e84d1de1ab5c0b7c52f05799694003d44ba791cc7a5841bd9bb92a83617de98702cb2731d97d65ea0fd1e51c4db66f9215fff87"
+      ],
+      "url": "https://www.cushmanwakefield.com/en/united-states/properties/for-sale/warehousedistribution/tn/lebanon/1600-block-central-pike/s121553890s121553890-s"
+    },
+    {
+      "sourceKey": "cushman-wakefield",
+      "sourceCompany": "Cushman & Wakefield",
+      "id": "s121335132s121335132-s",
+      "name": "266 Route 125",
+      "transactionType": "Sale",
+      "assetType": "warehousedistribution",
+      "street": "266 Route 125 Kingston, New Hampshire 03848 United States",
+      "city": "kingston",
+      "state": "NH",
+      "postalCode": "03848",
+      "country": "US",
+      "salePriceText": "Contact us for pricing",
+      "photos": [
+        "https://assets.cushmanwakefield.com/-/pmedia/223233/p/266-route-125.webp?rev=512320632b4aef8ffc350c9d7f0fea986b3d0e62455c1f461d117d829655a2e8a59c04972d9b5af50d38246e02088e3f94eb506d0d4fa85d103b0b5d0f7517f9"
+      ],
+      "url": "https://www.cushmanwakefield.com/en/united-states/properties/for-sale/warehousedistribution/nh/kingston/266-route-125/s121335132s121335132-s"
+    },
+    {
+      "sourceKey": "cushman-wakefield",
+      "sourceCompany": "Cushman & Wakefield",
+      "id": "s121742674s121742674-s",
+      "name": "Commercial Building For Sale",
+      "transactionType": "Sale",
+      "assetType": "office",
+      "street": "380 Airport Road Durango, Colorado 81303 United States",
+      "city": "durango",
+      "state": "CO",
+      "postalCode": "81303",
+      "country": "US",
+      "salePriceText": "Contact us for pricing",
+      "photos": [
+        "https://assets.cushmanwakefield.com/-/pmedia/261851/p/commercial-building-for-sale.webp?rev=b0305a7d77887148d25f3992caaa236ebff7e2ab5b9b6743b7daa13602ac29c5bd21bcbb59f71dab0751e526c3ba6dc392ee696897e3501f77e8e546c77c6a0c"
+      ],
+      "url": "https://www.cushmanwakefield.com/en/united-states/properties/for-sale/office/co/durango/380-airport-road/s121742674s121742674-s"
+    },
+    {
+      "sourceKey": "cushman-wakefield",
+      "sourceCompany": "Cushman & Wakefield",
+      "id": "s225092s225092-s",
+      "name": "Concord Place",
+      "transactionType": "Sale",
+      "assetType": "office",
+      "street": "2999 N 44th Street Phoenix, Arizona 85018 United States",
+      "city": "phoenix",
+      "state": "AZ",
+      "postalCode": "85018",
+      "country": "US",
+      "salePriceText": "Contact us for pricing",
+      "photos": [
+        "https://assets.cushmanwakefield.com/-/pmedia/253380/p/concord-place.webp?rev=31304ba59b7d1737b2b53f7c104686a88648f5ccb9c2dda6130f1baa792df372fc3c29fdc0585e753dc2bb381b6e5926cd972f6c0118fbb139e397787086993c"
+      ],
+      "url": "https://www.cushmanwakefield.com/en/united-states/properties/for-sale/office/az/phoenix/2999-n-44th-street/s225092s225092-s"
+    },
+    {
+      "sourceKey": "cushman-wakefield",
+      "sourceCompany": "Cushman & Wakefield",
+      "id": "s121372068s121372068-s",
+      "name": "5945 Southfront Rd",
+      "transactionType": "Sale",
+      "assetType": "land",
+      "street": "5945 Southfront Rd Livermore, California 94551 United States",
+      "city": "livermore",
+      "state": "CA",
+      "postalCode": "94551",
+      "country": "US",
+      "salePriceText": "Contact us for pricing",
+      "photos": [
+        "https://assets.cushmanwakefield.com/-/pmedia/222119/p/5945-southfront-rd.webp?rev=ab0e210f9a6bd1b18fb18ad5e458875bbfaa8c1607d9a68f21b785edf248c48611fe02a2e673a214acf17691a491e95da7cf6b13d5e185431f8249048e5603db"
+      ],
+      "url": "https://www.cushmanwakefield.com/en/united-states/properties/for-sale/land/ca/livermore/5945-southfront-rd/s121372068s121372068-s"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "1919-sterling-palms-ct-brandon-sale",
+      "name": "Alvista Sterling Palms",
+      "headline": "-",
+      "transactionType": "Sale",
+      "assetType": "Multifamily, Low-Rise/Garden",
+      "street": "1919 Sterling Palms Ct",
+      "city": "Brandon",
+      "state": "Florida",
+      "postalCode": "33511",
+      "county": "Hillsborough",
+      "country": "US",
+      "latitude": 27.9082428,
+      "longitude": -82.32062719999999,
+      "buildingSizeSqft": 271443,
+      "lotSizeAcres": 17.39175849403122,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU1MTEyNjAvMjIyYjFmYWIwODRhMzMzZTJiZDM3Y2E5YWJkMWE3NzNmMmFmZGViNS9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjEwMDAsImhlaWdodCI6MTAwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgxMTg5Nzg3fQ=="
+      ],
+      "url": "https://www.nmrk.com/properties/1919-sterling-palms-ct-brandon-sale",
+      "lastUpdated": "2026-06-11"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "6250-6270-south-boyle-avenue-vernon-sale",
+      "name": "6250 - 6270 South Boyle Avenue",
+      "headline": "18 Dock High Positions * 1 Ground Level Door Fenced & Secured Yard * 2,000 + 1,200 Amps Power 24' Clearance * .45/3000 Sprinklers Sewer Discharge Credits Possible Excellent South Vernon Location Walking Distance to Food & Amenities",
+      "transactionType": "Sale",
+      "assetType": "Industrial, Manufacturing",
+      "street": "6250 - 6270 South Boyle Avenue",
+      "city": "Vernon",
+      "state": "California",
+      "postalCode": "90058",
+      "county": "Los Angeles",
+      "submarket": "Central",
+      "country": "US",
+      "latitude": 33.9845796,
+      "longitude": -118.2105877,
+      "lotSizeAcres": 8.83,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0OTcyNjcvZWI1MzZlMDQxZDJjY2ZlOTgxOTljNDIyYjk0Mjk5MTc3NTYwMzExZS9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjEwMDAsImhlaWdodCI6MTAwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgxMDQ1NDk5fQ=="
+      ],
+      "url": "https://www.nmrk.com/properties/6250-6270-south-boyle-avenue-vernon-sale",
+      "lastUpdated": "2026-06-09"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "3668-albion-pl-n-seattle-sale",
+      "name": "3668 Albion Pl N",
+      "headline": "Presenting a lucrative investment opportunity, 3668 Albion Pl N is a prime commercial property tailored to meet the needs of discerning investors. With a sizeable 22,685 SF building featuring 1 unit, this property offers potential for a high return on investment. Built in 1960 and zoned NC2-75(M1), it presents a versatile space suitable for a range of office or office building ventures. Situated in the thriving Seattle area, this property provides an ideal foundation for capitalizing on the city's dynamic commercial landscape. Don't miss the chance to secure a valuable asset and maximize your investment portfolio with this exceptional property.",
+      "transactionType": "Sale",
+      "assetType": "Office, Office Building",
+      "street": "3668 Albion Pl N",
+      "city": "Seattle",
+      "state": "Washington",
+      "postalCode": "98103",
+      "county": "King",
+      "country": "US",
+      "latitude": 47.6524319,
+      "longitude": -122.3444374,
+      "buildingSizeSqft": 22705,
+      "lotSizeAcres": 0.2967171717171717,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0OTY1ODcvYmJkM2IyMmEzY2ZiZjNjMWMwOGNhNWNjMGI4Yzc1MmZiYzc2Njg1MS9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjEwMDAsImhlaWdodCI6MTAwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgxMDQxMTIyfQ=="
+      ],
+      "url": "https://www.nmrk.com/properties/3668-albion-pl-n-seattle-sale",
+      "lastUpdated": "2026-06-09"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "1625-1st-street-bradenton-sale",
+      "name": "Infill Bradenton Development Site",
+      "headline": "-",
+      "transactionType": "Sale",
+      "assetType": "Land, Multifamily",
+      "street": "1625 1st Street",
+      "city": "Bradenton",
+      "state": "Florida",
+      "postalCode": "34208",
+      "county": "Manatee",
+      "country": "US",
+      "latitude": 27.4835789,
+      "longitude": -82.561659,
+      "lotSizeAcres": 20.58,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0OTQ5ODcvODQwZmI0NzhlNTk5ZmVlZmJjNzM5OGRhNGRlZGI3MjI2NzcwMTk2ZC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjEwMDAsImhlaWdodCI6MTAwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgxMDM0MjUzfQ=="
+      ],
+      "url": "https://www.nmrk.com/properties/1625-1st-street-bradenton-sale",
+      "lastUpdated": "2026-06-09"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "1922-airport-way-south-seattle-sale",
+      "name": "1922 Airport Way South",
+      "headline": "Unique industrial investment opportunity at 1922 Airport Way South, a 12,153-square-foot asset boasting a solid, century-old presence within Seattle’s vital manufacturing corridor. The building’s robust construction and flexible interior space accommodate a wide range of light industrial uses, from warehousing to fabrication. Panoramic exposure along Airport Way South enhances visibility, while sizeable loading potential facilitates seamless operations. A rare offering combining exceptional square footage, historical character, and enduring functionality, this property presents a compelling addition to any industrial portfolio seeking stability and future upside in one of Seattle’s most trafficked employment corridors.",
+      "transactionType": "Sale",
+      "assetType": "Industrial, Manufacturing",
+      "street": "1922 Airport Way South",
+      "city": "Seattle",
+      "state": "Washington",
+      "postalCode": "98134",
+      "county": "King",
+      "country": "US",
+      "latitude": 47.5859064,
+      "longitude": -122.3208909,
+      "buildingSizeSqft": 12153,
+      "lotSizeAcres": 0.369,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0OTMwMDEvNTdmMDNhMzM5MWQyYmQzYmM3Mjg0ZjcyMGY4NTIxZDE5NjU3YTFjOS9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjEwMDAsImhlaWdodCI6MTAwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgxMDI4MDgyfQ=="
+      ],
+      "url": "https://www.nmrk.com/properties/1922-airport-way-south-seattle-sale",
+      "lastUpdated": "2026-06-09"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "333-west-seymour-avenue-cincinnati-sale",
+      "name": "333 W Seymour Ave",
+      "headline": "Industrial Space for Sale.",
+      "transactionType": "Sale",
+      "assetType": "Industrial, Manufacturing",
+      "street": "333 West Seymour Avenue",
+      "city": "Cincinnati",
+      "state": "Ohio",
+      "postalCode": "45216",
+      "county": "Hamilton",
+      "submarket": "Central/Midtown",
+      "country": "US",
+      "latitude": 39.1946774,
+      "longitude": -84.48671619999999,
+      "buildingSizeSqft": 160690,
+      "lotSizeAcres": 7.26,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0OTEwNjMvYWUzN2ZhZDgzOGM0MTljYjYyZjMzYzRkZGY0MGMxNDY0MDIxMzU4Yy9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjEwMDAsImhlaWdodCI6MTAwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgxMDIxODA3fQ=="
+      ],
+      "url": "https://www.nmrk.com/properties/333-west-seymour-avenue-cincinnati-sale",
+      "lastUpdated": "2026-06-09"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "17300-west-valley-highway-tukwila-sale",
+      "name": "17300 West Valley Highway",
+      "headline": "Discover a prime investment opportunity at 17300 West Valley Highway, Tukwila, WA, 98188. This expansive industrial property offers an ideal location for manufacturing and industrial operations seeking a strategic foothold in the thriving Tukwila area. Boasting ample space for production facilities, warehouses, and distribution centers, this property provides the flexibility and infrastructure essential for success in industrial ventures. With easy access to transportation routes and a dynamic business environment, this property presents an unparalleled opportunity for industrial investors looking to maximize their operations in an in-demand market.",
+      "transactionType": "Sale",
+      "assetType": "Industrial, Manufacturing",
+      "street": "17300 West Valley Highway",
+      "city": "Tukwila",
+      "state": "Washington",
+      "postalCode": "98188",
+      "county": "King",
+      "country": "US",
+      "latitude": 47.4480217,
+      "longitude": -122.2426754,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0ODU4NjkvMzY0OWRmODRjYzM2NGZhM2RjYWZhMGZiNWE1NTE0OWM2OGZlZjUzZC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjEwMDAsImhlaWdodCI6MTAwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgwOTU3ODQxfQ=="
+      ],
+      "url": "https://www.nmrk.com/properties/17300-west-valley-highway-tukwila-sale",
+      "lastUpdated": "2026-06-08"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "880-main-street-wadsworth-sale",
+      "name": "The Village of St. Edward at Wadsworth",
+      "headline": "880 Main Street, Wadsworth, OH, 44281 offers a prime location for office or medical use in the sought-after Wadsworth area. With excellent visibility, accessibility, and a versatile interior layout, it presents a solid investment opportunity in commercial real estate.",
+      "transactionType": "Sale",
+      "assetType": "Office, Medical",
+      "street": "880 Main Street",
+      "city": "Wadsworth",
+      "state": "Ohio",
+      "postalCode": "44281",
+      "county": "Medina",
+      "country": "US",
+      "latitude": 41.0039396,
+      "longitude": -81.7311801,
+      "url": "https://www.nmrk.com/properties/880-main-street-wadsworth-sale",
+      "lastUpdated": "2026-06-08"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "7600-france-avenue-south-minneapolis-sale",
+      "name": "France Commons",
+      "headline": "Retails Space for Sale",
+      "transactionType": "Sale",
+      "assetType": "Retail, Street Retail",
+      "street": "7600 France Avenue South",
+      "city": "Minneapolis",
+      "state": "Minnesota",
+      "postalCode": "55435",
+      "county": "Hennepin",
+      "submarket": "I-494 Corridor",
+      "country": "US",
+      "latitude": 44.8643389,
+      "longitude": -93.3300981,
+      "buildingSizeSqft": 188810,
+      "lotSizeAcres": 6.59,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0NjA3MjkvYWFkYTI3YTliYjkwNmI0NmQ0NDljODFkOTI2ZGRhMGFjMjliZGVkOC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjEwMDAsImhlaWdodCI6MTAwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgwNjY1NzM3fQ=="
+      ],
+      "url": "https://www.nmrk.com/properties/7600-france-avenue-south-minneapolis-sale",
+      "lastUpdated": "2026-06-11"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "575-shelton-mill-rd-auburn-sale",
+      "name": "YUGO Auburn North",
+      "headline": "Discount to Replacement Cost Yugo Auburn North is being offered at a fraction of replacement cost, the property’s attractive price point lends investors the ability to completely reposition the asset and drive NOI through continued stabilization and value-add enhancements",
+      "transactionType": "Sale",
+      "assetType": "Multifamily, Low-Rise/Garden",
+      "street": "575 Shelton Mill Rd",
+      "city": "Auburn",
+      "state": "Alabama",
+      "postalCode": "36830",
+      "county": "Lee",
+      "country": "US",
+      "latitude": 32.6290693,
+      "longitude": -85.47429640000001,
+      "buildingSizeSqft": 445600,
+      "lotSizeAcres": 30.46999540863177,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0NTE1MTcvZjU5MDlhNDAzNTllYWRkNzE2NTlkY2RjMGNiMDUwM2JkZTNkYTAzMy9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjEwMDAsImhlaWdodCI6MTAwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgwNTg5Mzk2fQ=="
+      ],
+      "url": "https://www.nmrk.com/properties/575-shelton-mill-rd-auburn-sale",
+      "lastUpdated": "2026-06-04"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "9250-renner-boulevard-lenexa-sale",
+      "name": "Reflections at City Center",
+      "headline": "Reflections is a premier, brand-new Class A+ multifamily community located in the highly desirable Lenexa submarket within the Kansas City MSA. Positioned in one of Johnson County’s most affluent and fastest-growing corridors, the property offers residents a modern, amenity-rich living experience supported by strong surrounding demographics, top-tier schools, and proximity to major employment hubs. Completed in 2025, the 338-unit asset offers a modern, institutional-quality lifestyle with underground structured parking, thoughtfully designed floorplans and premium interior finishes, including quartz countertops, stainless steel appliances, wood-style flooring, and in-unit washer and dryers. The property is complemented by a robust, lifestyle-oriented amenity package featuring a resort-style pool and spa, fitness and wellness facilities, and curated indoor/outdoor social spaces. Strategically positioned with immediate access to Interstate 435 and K-10, Reflections benefits from proximity to major employment hubs throughout Johnson County, as well as strong surrounding demographics characterized by high household incomes and continued population growth. Reflections offers investors the opportunity to acquire a stabilized, institutional-quality asset in a high-performing submarket with long-term rent growth potential driven by favorable demographic trends, limited new supply at comparable quality levels, and continued economic expansion within Johnson County.",
+      "transactionType": "Sale",
+      "assetType": "Multifamily, Mid-Rise",
+      "street": "9250 Renner Boulevard",
+      "city": "Lenexa",
+      "state": "Kansas",
+      "postalCode": "66219-9700",
+      "county": "Johnson County",
+      "country": "US",
+      "latitude": 38.9610233,
+      "longitude": -94.7806791,
+      "buildingSizeSqft": 294284,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0NjY4MjkvNWE4NWMzZjAzZDE2NjViOTZiNWZjMzBmOGQxNDdjNGYwMGZlOWRhOC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjEwMDAsImhlaWdodCI6MTAwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgwNjY5NzM5fQ=="
+      ],
+      "url": "https://www.nmrk.com/properties/9250-renner-boulevard-lenexa-sale",
+      "lastUpdated": "2026-06-11"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "737-sw-109th-ave-miami-sale",
+      "name": "109 Tower",
+      "headline": "100% Bed-to-Bath Parity with Comprehensive Amenity Package 109 Tower delivers 100% bed-to-bath parity across all 542 beds, with every 2x2 and 4x4 floor plan providing each resident a private bedroom and dedicated bathroom, the product standard that purpose-built student housing demand is increasingly concentrated around in the FIU market; Select units at 109 Tower include private balconies, a feature unavailable across the broader FIU off-campus market",
+      "transactionType": "Sale",
+      "assetType": "Multifamily, High-Rise",
+      "street": "737 SW 109th Ave",
+      "city": "Miami",
+      "state": "Florida",
+      "postalCode": "33174",
+      "county": "Miami-Dade",
+      "country": "US",
+      "latitude": 25.7622593,
+      "longitude": -80.37237170000002,
+      "buildingSizeSqft": 180144,
+      "lotSizeAcres": 0.8199954086317722,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0NTEyOTkvZGJkMGQ4MDQ5NjBlZjg4ZTRkOGMyZGQ2ZjQ2ZDkwOTE3MjY5NzJmMi9vcmlnaW5hbC5qcGVnIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjoxMDAwLCJoZWlnaHQiOjEwMDAsImZpdCI6Imluc2lkZSIsIndpdGhvdXRFbmxhcmdlbWVudCI6dHJ1ZX0sInJvdGF0ZSI6bnVsbH0sInVwZGF0ZWRBdCI6MTc4MDU4ODU4OH0="
+      ],
+      "url": "https://www.nmrk.com/properties/737-sw-109th-ave-miami-sale",
+      "lastUpdated": "2026-06-04"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "3718-southwest-24th-avenue-gainesville-sale",
+      "name": "The Ridge Gainesville",
+      "headline": "100% Bed-to-Bath Parity with Best-in-Class Community Amenities The gated community offers student residents an exceptional amenity package including a resort-styled themed pool, lazy river pool, large 13+ person hot tub, 12-foot outdoor jumbotron, modern gym with TRX suspension training, business center and study lounges, a clubhouse with coffee bar, high-speed WiFi, and billiards, and a recently added on-site convenience store - delivering a living experience that meaningfully differentiates The Ridge from competing properties in the Gainesville market",
+      "transactionType": "Sale",
+      "assetType": "Multifamily, Low-Rise/Garden",
+      "street": "3718 Southwest 24th Avenue",
+      "city": "Gainesville",
+      "state": "Florida",
+      "postalCode": "32607",
+      "county": "Alachua",
+      "country": "US",
+      "latitude": 29.6315056,
+      "longitude": -82.379767,
+      "buildingSizeSqft": 146199,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0NTExMTcvMDU5MzMyNjExMjhkOTBkNWQ3Mzg2MzBmNGI3MWQ3MDE4ZjU5Y2RhNy9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjEwMDAsImhlaWdodCI6MTAwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgwNTg3OTUxfQ=="
+      ],
+      "url": "https://www.nmrk.com/properties/3718-southwest-24th-avenue-gainesville-sale",
+      "lastUpdated": "2026-06-09"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "3415-12th-street-w-jacksonville-edgewood-logistics-center-sale",
+      "name": "Edgewood Logistics Center",
+      "headline": "±250,800 Class A Warehouse Space Available for Sale or Lease",
+      "transactionType": "Sale",
+      "assetType": "Industrial, Warehouse/Distribution",
+      "street": "3415 12th Street W",
+      "city": "Jacksonville",
+      "state": "Florida",
+      "postalCode": "32254",
+      "county": "Duval",
+      "submarket": "Westside",
+      "country": "US",
+      "latitude": 30.3520068,
+      "longitude": -81.7286113,
+      "buildingSizeSqft": 250800,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0NDI5NjUvMmVmMWJiMWQ0ZDFiOTViMGMyYzlmNWU0MTQ2Yjc2ZjkzYzBiNmFkOC9vcmlnaW5hbC5wbmciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjEwMDAsImhlaWdodCI6MTAwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgwNTEyNzcwfQ=="
+      ],
+      "url": "https://www.nmrk.com/properties/3415-12th-street-w-jacksonville-edgewood-logistics-center-sale",
+      "lastUpdated": "2026-06-05"
+    },
+    {
+      "sourceKey": "newmark",
+      "sourceCompany": "Newmark",
+      "id": "1401-chestnut-street-bastrop-sale",
+      "name": "1401 Chestnut Street",
+      "headline": "Contact Broker for Pricing Details",
+      "transactionType": "Sale",
+      "assetType": "Land, Other",
+      "street": "1401 Chestnut Street",
+      "city": "Bastrop",
+      "state": "Texas",
+      "postalCode": "78602",
+      "county": "Bastrop",
+      "submarket": "Bastrop County",
+      "country": "US",
+      "latitude": 30.1104429,
+      "longitude": -97.31122289999999,
+      "lotSizeAcres": 0.66,
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0NDUwNDQvOWQ0OGY3MzJjOWU0Yzk0MWQ5YWI0ODFlZTRlN2MzNjMwN2U5Zjg5NC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjEwMDAsImhlaWdodCI6MTAwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgwNTE4MDEyfQ=="
+      ],
+      "url": "https://www.nmrk.com/properties/1401-chestnut-street-bastrop-sale",
+      "lastUpdated": "2026-06-10"
+    },
+    {
+      "sourceKey": "marcus-millichap",
+      "sourceCompany": "Marcus & Millichap",
+      "id": "203965",
+      "name": "CVS",
+      "transactionType": "Sale",
+      "assetType": "Net Lease",
+      "city": "Iowa City",
+      "state": "IA",
+      "country": "US",
+      "salePriceUsd": 3188315,
+      "salePriceText": "$3,188,315",
+      "capRatePct": 8.25,
+      "sizeText": "Years Remaining On Lease: 5.6",
+      "photos": [
+        "https://mmimageservice.azurewebsites.net/api/image/property/759e3419-f81a-4e0d-b506-9cd7b1d5ad16/M"
+      ],
+      "url": "https://www.marcusmillichap.com/properties/203965/cvs"
+    },
+    {
+      "sourceKey": "marcus-millichap",
+      "sourceCompany": "Marcus & Millichap",
+      "id": "196382",
+      "name": "Portillo's - 15 Year Absolute NNN Ground Lease",
+      "transactionType": "Sale",
+      "assetType": "Net Lease",
+      "city": "Humble",
+      "state": "TX",
+      "country": "US",
+      "salePriceUsd": 6131000,
+      "salePriceText": "$6,131,000",
+      "capRatePct": 5.35,
+      "sizeText": "Years Remaining On Lease: 14.7",
+      "photos": [
+        "https://mmimageservice.azurewebsites.net/api/image/property/2fdc191a-6494-4dfa-9400-ea2f0ed4664c/M"
+      ],
+      "url": "https://www.marcusmillichap.com/properties/196382/portillos-15-year-absolute-nnn-ground-lease"
+    },
+    {
+      "sourceKey": "marcus-millichap",
+      "sourceCompany": "Marcus & Millichap",
+      "id": "302602",
+      "name": "871 & 879 Commonwealth Avenue",
+      "transactionType": "Sale",
+      "assetType": "Industrial",
+      "city": "Hagerstown",
+      "state": "MD",
+      "country": "US",
+      "salePriceUsd": 4350000,
+      "salePriceText": "$4,350,000",
+      "capRatePct": 12.02,
+      "sizeText": "Price/Gross SF: $81.49",
+      "photos": [
+        "https://mmimageservice.azurewebsites.net/api/image/property/00000000-0000-0000-0000-000000000000/M"
+      ],
+      "url": "https://www.marcusmillichap.com/properties/302602/871-879-commonwealth-avenue"
+    },
+    {
+      "sourceKey": "marcus-millichap",
+      "sourceCompany": "Marcus & Millichap",
+      "id": "196042",
+      "name": "Best Western Inn of Del Rio",
+      "transactionType": "Sale",
+      "assetType": "Hospitality/Golf",
+      "city": "Del Rio",
+      "state": "TX",
+      "country": "US",
+      "salePriceUsd": 3000000,
+      "salePriceText": "$3,000,000",
+      "capRatePct": 13.77,
+      "photos": [
+        "https://mmimageservice.azurewebsites.net/api/image/property/30d51061-fe84-49b4-9ea4-7414f110bbcb/M"
+      ],
+      "url": "https://www.marcusmillichap.com/properties/196042/best-western-inn-of-del-rio"
+    },
+    {
+      "sourceKey": "marcus-millichap",
+      "sourceCompany": "Marcus & Millichap",
+      "id": "145630",
+      "name": "Salem Shopping Center",
+      "transactionType": "Sale",
+      "assetType": "Retail",
+      "city": "Salem",
+      "state": "IL",
+      "country": "US",
+      "salePriceUsd": 4231500,
+      "salePriceText": "$4,231,500",
+      "capRatePct": 9,
+      "sizeText": "Price/Gross SF: $153.87",
+      "photos": [
+        "https://mmimageservice.azurewebsites.net/api/image/property/3d3f4c18-c713-4ad0-a57d-f9adda0d7a93/M"
+      ],
+      "url": "https://www.marcusmillichap.com/properties/145630/salem-shopping-center"
+    },
+    {
+      "sourceKey": "marcus-millichap",
+      "sourceCompany": "Marcus & Millichap",
+      "id": "204820",
+      "name": "101 - 104, 716 Adams Court",
+      "transactionType": "Sale",
+      "assetType": "Industrial",
+      "city": "Kelowna",
+      "state": "BC",
+      "country": "US",
+      "salePriceUsd": 4804600,
+      "salePriceText": "$4,804,600",
+      "capRatePct": 4.75,
+      "sizeText": "Price/Gross SF: $363.74",
+      "photos": [
+        "https://mmimageservice.azurewebsites.net/api/image/property/dbc3d331-ea3c-4573-97bb-fed541fca77f/M"
+      ],
+      "url": "https://www.marcusmillichap.com/properties/204820/101-104-716-adams-court"
+    },
+    {
+      "sourceKey": "marcus-millichap",
+      "sourceCompany": "Marcus & Millichap",
+      "id": "301851",
+      "name": "IHOP",
+      "transactionType": "Sale",
+      "assetType": "Net Lease",
+      "city": "Dade City",
+      "state": "FL",
+      "country": "US",
+      "salePriceUsd": 1632000,
+      "salePriceText": "$1,632,000",
+      "capRatePct": 6,
+      "sizeText": "Years Remaining On Lease: 4.3",
+      "photos": [
+        "https://mmimageservice.azurewebsites.net/api/image/property/6bba3ff8-001f-41bc-80a7-498b3d097eb5/M"
+      ],
+      "url": "https://www.marcusmillichap.com/properties/301851/ihop"
+    },
+    {
+      "sourceKey": "marcus-millichap",
+      "sourceCompany": "Marcus & Millichap",
+      "id": "202876",
+      "name": "4160 W 74th Ave",
+      "transactionType": "Sale",
+      "assetType": "Apartments",
+      "city": "Westminster",
+      "state": "CO",
+      "country": "US",
+      "salePriceUsd": 1575000,
+      "salePriceText": "$1,575,000",
+      "capRatePct": 5.86,
+      "sizeText": "Number of Units: 8",
+      "photos": [
+        "https://mmimageservice.azurewebsites.net/api/image/property/38a3a828-a620-4ff5-bc7d-14dcc036d4fb/M"
+      ],
+      "url": "https://www.marcusmillichap.com/properties/202876/4160-w-74th-ave"
+    },
+    {
+      "sourceKey": "marcus-millichap",
+      "sourceCompany": "Marcus & Millichap",
+      "id": "194321",
+      "name": "16680 W 11th Ave",
+      "transactionType": "Sale",
+      "assetType": "Apartments",
+      "city": "Golden",
+      "state": "CO",
+      "country": "US",
+      "salePriceUsd": 835000,
+      "salePriceText": "$835,000",
+      "capRatePct": 6.73,
+      "sizeText": "Number of Units: 5",
+      "photos": [
+        "https://mmimageservice.azurewebsites.net/api/image/property/c48016dd-0ce0-4e12-a1da-866c88577764/M"
+      ],
+      "url": "https://www.marcusmillichap.com/properties/194321/16680-w-11th-ave"
+    },
+    {
+      "sourceKey": "marcus-millichap",
+      "sourceCompany": "Marcus & Millichap",
+      "id": "202208",
+      "name": "City View Apartments",
+      "transactionType": "Sale",
+      "assetType": "Apartments",
+      "city": "Athens",
+      "state": "GA",
+      "country": "US",
+      "salePriceUsd": 5100000,
+      "salePriceText": "$5,100,000",
+      "capRatePct": 7.42,
+      "photos": [
+        "https://mmimageservice.azurewebsites.net/api/image/property/13f62462-695d-4b74-a55b-2cc40e8b1f47/M"
+      ],
+      "url": "https://www.marcusmillichap.com/properties/202208/city-view-apartments"
+    },
+    {
+      "sourceKey": "marcus-millichap",
+      "sourceCompany": "Marcus & Millichap",
+      "id": "201797",
+      "name": "Brakes Plus",
+      "transactionType": "Sale",
+      "assetType": "Net Lease",
+      "city": "Westminster",
+      "state": "CO",
+      "country": "US",
+      "salePriceUsd": 2711000,
+      "salePriceText": "$2,711,000",
+      "capRatePct": 5.25,
+      "sizeText": "Years Remaining On Lease: 15.1",
+      "photos": [
+        "https://mmimageservice.azurewebsites.net/api/image/property/6bdb1165-0e6b-4bea-b045-b49f79c38d7e/M"
+      ],
+      "url": "https://www.marcusmillichap.com/properties/201797/brakes-plus"
+    },
+    {
+      "sourceKey": "marcus-millichap",
+      "sourceCompany": "Marcus & Millichap",
+      "id": "300505",
+      "name": "Jack in the Box",
+      "transactionType": "Sale",
+      "assetType": "Net Lease",
+      "city": "Pinole",
+      "state": "CA",
+      "country": "US",
+      "salePriceUsd": 4254000,
+      "salePriceText": "$4,254,000",
+      "capRatePct": 6.5,
+      "sizeText": "Years Remaining On Lease: 2.9",
+      "photos": [
+        "https://mmimageservice.azurewebsites.net/api/image/property/f37f2333-4f89-40df-9ddb-64d778e58fcd/M"
+      ],
+      "url": "https://www.marcusmillichap.com/properties/300505/jack-in-the-box"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "26107",
+      "name": "185 Oval Drive",
+      "transactionType": "Sale/Lease",
+      "city": "Islandia",
+      "state": "NY",
+      "country": "US",
+      "sizeText": "1,858.1 Square Feet",
+      "details": {
+        "Square Feet": "1,858.1"
+      },
+      "url": "https://www.avisonyoung.us/properties/185-oval-drive-islandia"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "19968",
+      "name": "Lagos",
+      "transactionType": "Sale",
+      "city": "Manor",
+      "state": "TX",
+      "country": "US",
+      "sizeText": "39.3 Acre(s)",
+      "details": {
+        "Acre(s)": "39.3"
+      },
+      "url": "https://www.avisonyoung.us/properties/17211-blake-manor-rd-manor-sale"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "56753",
+      "name": "1701 21st Avenue S",
+      "transactionType": "Sale",
+      "city": "Nashville",
+      "state": "TN",
+      "country": "US",
+      "sizeText": "30,359 Square Feet",
+      "details": {
+        "Square Feet": "30,359"
+      },
+      "url": "https://www.avisonyoung.us/properties/1701-21st-avenue-s"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "55374",
+      "name": "The Manhattan Retail Collection",
+      "transactionType": "Sale",
+      "city": "New York",
+      "state": "NY",
+      "country": "US",
+      "sizeText": "112,615 Square Feet",
+      "details": {
+        "Square Feet": "112,615"
+      },
+      "url": "https://www.avisonyoung.us/properties/the-manhattan-retail-collection"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "57979",
+      "name": "423 16th Street",
+      "transactionType": "Sale",
+      "city": "Brooklyn",
+      "state": "NY",
+      "country": "US",
+      "sizeText": "11,668 Square Feet",
+      "details": {
+        "Square Feet": "11,668"
+      },
+      "url": "https://www.avisonyoung.us/properties/423-16th-street"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "60563",
+      "name": "East Village Portfolio",
+      "transactionType": "Sale",
+      "city": "New York",
+      "state": "NY",
+      "country": "US",
+      "sizeText": "167,971 Square Feet",
+      "details": {
+        "Square Feet": "167,971"
+      },
+      "url": "https://www.avisonyoung.us/properties/east-village-portfolio"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "53326",
+      "name": "Freeman Energy Field I & II",
+      "transactionType": "Sale",
+      "city": "Andrews County",
+      "state": "TX",
+      "country": "US",
+      "sizeText": "4,198 Acre(s)",
+      "details": {
+        "Acre(s)": "4,198"
+      },
+      "url": "https://www.avisonyoung.us/properties/freeman-energy-field-i"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "61230",
+      "name": "1619 Broadway",
+      "transactionType": "Sale",
+      "city": "New York",
+      "state": "NY",
+      "country": "US",
+      "sizeText": "31,264 Square Feet",
+      "details": {
+        "Square Feet": "31,264"
+      },
+      "url": "https://www.avisonyoung.us/properties/1619-broadway"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "64477",
+      "name": "129-02 Northern Boulevard",
+      "transactionType": "Sale",
+      "city": "Queens",
+      "state": "NY",
+      "country": "US",
+      "sizeText": "138,198 Square Feet",
+      "details": {
+        "Square Feet": "138,198"
+      },
+      "url": "https://www.avisonyoung.us/properties/129-02-northern-boulevard"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "65356",
+      "name": "Westchester Plaza",
+      "transactionType": "Sale",
+      "city": "Mount Vernon",
+      "state": "NY",
+      "country": "US",
+      "sizeText": "561,711 Square Feet",
+      "details": {
+        "Square Feet": "561,711"
+      },
+      "url": "https://www.avisonyoung.us/properties/westchester-plaza"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "60474",
+      "name": "21 East 29th Street & 1580 Nostrand Avenue",
+      "transactionType": "Sale",
+      "city": "Brooklyn",
+      "state": "NY",
+      "country": "US",
+      "sizeText": "86,099 Square Feet",
+      "details": {
+        "Square Feet": "86,099"
+      },
+      "url": "https://www.avisonyoung.us/properties/21-east-29th-street-1580-nostrand-avenue"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "56949",
+      "name": "358 Concord Avenue",
+      "transactionType": "Sale",
+      "city": "Bronx",
+      "state": "NY",
+      "country": "US",
+      "sizeText": "262,212 Square Feet",
+      "details": {
+        "Square Feet": "262,212"
+      },
+      "url": "https://www.avisonyoung.us/properties/358-concord-avenue"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "18616",
+      "name": "Upper East Side Portfolio",
+      "transactionType": "Sale",
+      "city": "New York",
+      "state": "NY",
+      "country": "US",
+      "sizeText": "66,288 Square Feet",
+      "details": {
+        "Square Feet": "66,288",
+        "Units": "134"
+      },
+      "url": "https://www.avisonyoung.us/properties/upper-east-side-portfolio-2024-sale"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "51632",
+      "name": "The Roosevelt Triangle",
+      "transactionType": "Sale",
+      "city": "Queens",
+      "state": "NY",
+      "country": "US",
+      "sizeText": "36,427 Square Feet",
+      "details": {
+        "Square Feet": "36,427"
+      },
+      "url": "https://www.avisonyoung.us/properties/the-roosevelt-triangle"
+    },
+    {
+      "sourceKey": "avison-young",
+      "sourceCompany": "Avison Young (US)",
+      "id": "60480",
+      "name": "185 East 7th Street",
+      "transactionType": "Sale",
+      "city": "New York",
+      "state": "NY",
+      "country": "US",
+      "sizeText": "11,993 Square Feet",
+      "details": {
+        "Square Feet": "11,993"
+      },
+      "url": "https://www.avisonyoung.us/properties/185-east-7th-street"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbssofslo260011",
+      "name": "10790 Bellagio Rd…",
+      "transactionType": "Sale",
+      "city": "Bel-Air",
+      "state": "CA",
+      "postalCode": "90077",
+      "country": "US",
+      "salePriceUsd": 34500000,
+      "salePriceText": "$34,500,000",
+      "sizeText": "14,827 sq ft",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBSSOFSLO260011/SLO260011_02_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbssofslo260011"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbssofslo260010",
+      "name": "11201 Chalon Road…",
+      "transactionType": "Sale",
+      "city": "Bel-Air",
+      "state": "CA",
+      "postalCode": "90049",
+      "country": "US",
+      "salePriceUsd": 400000000,
+      "salePriceText": "$400,000,000",
+      "sizeText": "70,000 sq ft",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBSSOFSLO260010/SLO260010_06_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbssofslo260010"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbssofslo260009",
+      "name": "5189 Filaree Heights…",
+      "transactionType": "Sale",
+      "city": "Malibu",
+      "state": "CA",
+      "postalCode": "90265",
+      "country": "US",
+      "salePriceUsd": 16995000,
+      "salePriceText": "$16,995,000",
+      "sizeText": "10,300 sq ft",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBSSOFSLO260009/SLO260009_05_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbssofslo260009"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbssofslo260008",
+      "name": "8164 Waring Ave…",
+      "transactionType": "Sale",
+      "city": "Los Angeles",
+      "state": "CA",
+      "postalCode": "90046",
+      "country": "US",
+      "salePriceUsd": 3895000,
+      "salePriceText": "$3,895,000",
+      "sizeText": "2,400 sq ft",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBSSOFSLO260008/SLO260008_02_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbssofslo260008"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbsnyonyo260003",
+      "name": "40 East 72nd Street, PH…",
+      "transactionType": "Sale",
+      "city": "New York, 10021",
+      "country": "US",
+      "salePriceUsd": 26500000,
+      "salePriceText": "$26,500,000",
+      "sizeText": "6,060 sq ft",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBSNYONYO260003/NYO260003_01_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbsnyonyo260003"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbsnyonyo260007",
+      "name": "551 West 21 St 16b…",
+      "transactionType": "Sale",
+      "city": "New York, 10011",
+      "country": "US",
+      "salePriceUsd": 13500000,
+      "salePriceText": "$13,500,000",
+      "sizeText": "3,860 sq ft",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBSNYONYO260007/NYO260007_01_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbsnyonyo260007"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbgnhxlai260081",
+      "name": "The Strathmore…",
+      "transactionType": "Sale",
+      "city": "400 East 84th Street",
+      "state": "NY",
+      "postalCode": "10028",
+      "country": "US",
+      "salePriceUsd": 960000,
+      "salePriceText": "$960,000",
+      "sizeText": "2,411 sq ft",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBGNHXLAI260081/LAI260081_01_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbgnhxlai260081"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbsnyonyo260004",
+      "name": "301 East 61st Street, PH…",
+      "transactionType": "Sale",
+      "city": "New York, 10065",
+      "country": "US",
+      "salePriceUsd": 6495000,
+      "salePriceText": "$6,495,000",
+      "sizeText": "2,900 sq ft",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBSNYONYO260004/NYO260004_01_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbsnyonyo260004"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbgnhxlai260074",
+      "name": "Brooklyn Tower…",
+      "transactionType": "Sale",
+      "city": "85 Fleet Street, Brooklyn, New York, 11201",
+      "country": "US",
+      "salePriceUsd": 965000,
+      "salePriceText": "$965,000",
+      "sizeText": "2,433 sq ft",
+      "brokerIds": [
+        22
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBGNHXLAI260074/LAI260074_05_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbgnhxlai260074"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbsnyonyo260005",
+      "name": "212 Fifth Avenue, 14b…",
+      "transactionType": "Sale",
+      "city": "New York, NY 10010",
+      "country": "US",
+      "salePriceUsd": 7850000,
+      "salePriceText": "$7,850,000",
+      "sizeText": "2,693 sq ft",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBSNYONYO260005/NYO260005_01_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbsnyonyo260005"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbsnyonyo260006",
+      "name": "36 Bleecker Street, 5A…",
+      "transactionType": "Sale",
+      "city": "New York, 10012",
+      "country": "US",
+      "salePriceUsd": 12350000,
+      "salePriceText": "$12,350,000",
+      "sizeText": "3,280 sq ft",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBSNYONYO260006/NYO260006_01_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbsnyonyo260006"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbgnhxlai260062",
+      "name": "The Flatiron Building…",
+      "transactionType": "Sale",
+      "city": "175 Fifth Avenue, New York, 10010",
+      "country": "US",
+      "salePriceUsd": 11750000,
+      "salePriceText": "$11,750,000",
+      "sizeText": "4,654.31 sq ft",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBGNHXLAI260062/LAI260062_01_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbgnhxlai260062"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbgnhxlai260061",
+      "name": "The Tribeca Crown At 100 Barclay…",
+      "transactionType": "Sale",
+      "city": "100 Barclay Street, New York, 10007",
+      "country": "US",
+      "salePriceUsd": 25950000,
+      "salePriceText": "$25,950,000",
+      "sizeText": "7,062.19 sq ft",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBGNHXLAI260061/LAI260061_01_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbgnhxlai260061"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbssofslo260003",
+      "name": "1420 Davies Drive, Beverly Hills…",
+      "transactionType": "Sale",
+      "city": "CA 90210",
+      "country": "US",
+      "salePriceUsd": 69995000,
+      "salePriceText": "$69,995,000",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBSSOFSLO260003/SLO260003_06_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbssofslo260003"
+    },
+    {
+      "sourceKey": "savills",
+      "sourceCompany": "Savills",
+      "id": "gbssofslo260007",
+      "name": "859 Woodacres Road…",
+      "transactionType": "Sale",
+      "city": "Santa Monica, CA 90402",
+      "country": "US",
+      "salePriceUsd": 88000000,
+      "salePriceText": "$88,000,000",
+      "brokerIds": [
+        21
+      ],
+      "photos": [
+        "https://assets.savills.com/properties/GBSSOFSLO260007/SLO260007_01_l_lis.jpg"
+      ],
+      "url": "https://search.savills.com/com/en/property-detail/gbssofslo260007"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2520477",
+      "name": "CIMS 66",
+      "transactionType": "Sale",
+      "assetType": "Warehouse/Distribution",
+      "street": "73-5573 Lawehana Street",
+      "city": "Kailua Kona",
+      "state": "HI",
+      "postalCode": "96740",
+      "country": "US",
+      "latitude": 19.6852917,
+      "longitude": -156.0187633,
+      "salePriceUsd": 4000000,
+      "salePriceText": "$4,000,000",
+      "sizeText": "13,500 SF",
+      "brokerIds": [
+        23
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0OTc3NzcvN2QzNmMzMDU5NDg3NTI1MzU3ZGIzNjA2NzA0ZThiYmUzYWVlMDFkZC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgxMDUyOTc1fQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1649686-sale"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2490737",
+      "name": "Lehua Court",
+      "transactionType": "Sale",
+      "assetType": "Retail",
+      "street": "92-8635 Lehua",
+      "city": "Oceanview",
+      "state": "HI",
+      "postalCode": "96737",
+      "country": "US",
+      "latitude": 19.084051,
+      "longitude": -155.771197,
+      "salePriceUsd": 995000,
+      "salePriceText": "$995,000",
+      "sizeText": "4.14 Acres",
+      "brokerIds": [
+        23
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4164952?token=d74b43cd2af7a670584d973b03107e71cdfd6835"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzUxMzIyNjgvMDlhZTg4MDk2ZmM1NTc1ZDNmMjYxMzM2YzVjMzA0ODljNzMxZjk4Mi9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzc3MzE0OTI5fQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1633875-sale"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2383152",
+      "name": "981 Riverview Drive",
+      "transactionType": "Sale",
+      "assetType": "Office Showroom",
+      "street": "981 Riverview Drive",
+      "city": "WALNUTPORT",
+      "state": "PA",
+      "postalCode": "89460",
+      "country": "US",
+      "latitude": 40.7642608,
+      "longitude": -75.59589609999999,
+      "salePriceUsd": 425000,
+      "salePriceText": "$425,000",
+      "sizeText": "4,176 SF",
+      "brokerIds": [
+        24
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzM4MzUyNDgvMTI5YjE1NzEwZTljZGQ2ODhmZTYzNjI0N2FkYzVhZWVmZDE4NTgzNi9vcmlnaW5hbC5wbmciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzYzNzU1ODIyfQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1579771-sale"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2426709",
+      "name": "Faith Community Church",
+      "transactionType": "Sale",
+      "assetType": "School",
+      "street": "14001 Shelbyville Rd",
+      "city": "Louisville",
+      "state": "KY",
+      "postalCode": "40245",
+      "country": "US",
+      "latitude": 38.2401645,
+      "longitude": -85.4902168,
+      "salePriceUsd": 2500000,
+      "salePriceText": "$2,500,000",
+      "sizeText": "5,566 SF",
+      "brokerIds": [
+        25
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzQzMDI2NzEvYWUxNTcwNDAyZjYzMjI3ZTQzZjQ4MTU5OWZlZDE3YjU1MTVmN2RiZS9vcmlnaW5hbC5wbmciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzY5MjIxMTc0fQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1599904-sale"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2398473",
+      "name": "100 2nd St S",
+      "transactionType": "Sale",
+      "assetType": "Office Building",
+      "street": "100 2nd St S",
+      "city": "Sartell",
+      "state": "MN",
+      "postalCode": "56377",
+      "country": "US",
+      "latitude": 45.6149201,
+      "longitude": -94.20542600000002,
+      "salePriceUsd": 1695000,
+      "salePriceText": "$1,695,000",
+      "sizeText": "12,408 SF",
+      "brokerIds": [
+        26
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4023748?token=eab2736cc506f4ceb8924c512aa8be55dc091303"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzQxODY1NjYvYzcyMzBmODVhMTYzZTY5ODFhZWJmYjFkZTJlOTAxYTE0YTJiODQ0ZC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzY4MjQ4ODY2fQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1588044-sale"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2439695",
+      "name": "328 Higdon Avenue",
+      "transactionType": "Sale",
+      "assetType": "Low-Rise/Garden",
+      "street": "328 Higdon Avenue",
+      "city": "Mountain View",
+      "state": "CA",
+      "postalCode": "94041",
+      "country": "US",
+      "latitude": 37.396837,
+      "longitude": -122.0918603,
+      "salePriceUsd": 2199000,
+      "salePriceText": "$2,199,000",
+      "sizeText": "2,160 SF",
+      "brokerIds": [
+        27
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4119536?token=ab5702707bec79cc0835e7e0ae6f7f4f67befd2c"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzQ3ODI0MjAvOTk4ZGY3MTIxZTAxZTY1NGNmNmRmYjRhODJmMWMyZDAzMzVmOWFlOC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzczNTE4Nzg1fQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=328higdon"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2525836",
+      "name": "COMMERCIAL SPACE FOR SALE IN WEST-CENTRAL SPRINGFIELD",
+      "transactionType": "Sale",
+      "assetType": "Street Retail",
+      "street": "2545 W College Rd",
+      "city": "Springfield",
+      "state": "MO",
+      "postalCode": "65802",
+      "country": "US",
+      "latitude": 37.2098508,
+      "longitude": -93.32785439999999,
+      "salePriceUsd": 110000,
+      "salePriceText": "$110,000",
+      "sizeText": "3,169 SF",
+      "brokerIds": [
+        28
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4220190?token=a2f6d96ea0a891077e685dee368bf29ae31bb6a4"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0NDY2ODUvM2FhYzc4MDg2MGQyNzdjNGM5MGRhM2MwMzhmYjc2MDZlNDg5NDk0ZS9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgwNTI0MDQ5fQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1652669-sale"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2515146",
+      "name": "±3,700 SF RETAIL SPACE FOR SALE OR LEASE IN NEOSHO MO",
+      "transactionType": "Sale/Lease",
+      "assetType": "Restaurant",
+      "street": "648 South Neosho Boulevard",
+      "city": "Neosho",
+      "state": "MO",
+      "postalCode": "64850",
+      "country": "US",
+      "latitude": 36.8625868,
+      "longitude": -94.3826527,
+      "salePriceUsd": 850000,
+      "salePriceText": "$850,000",
+      "sizeText": "3,700 SF",
+      "brokerIds": [
+        28
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4204009?token=dc16855d22f1ce18f4537d98bb35a18f68581de8"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzUzNTMwNTIvNDc3ZGRlMDY2YzNjMjc3NzEzM2IzMTM5NDI2ZTg3YTRiODgyZjBjZC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzc5NDg0OTQ2fQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1646822-sale"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2501804",
+      "name": "±15 ACRES FOR SALE ON HIGHWAY MM NEAR AMAZON",
+      "transactionType": "Sale",
+      "assetType": "Industrial",
+      "street": "1230 South State Highway MM",
+      "city": "Republic",
+      "state": "MO",
+      "postalCode": "65802",
+      "country": "US",
+      "latitude": 37.194195,
+      "longitude": -93.420936,
+      "salePriceUsd": 2.5,
+      "salePriceText": "$2.50 / SF",
+      "sizeText": "15 Acres",
+      "brokerIds": [
+        28
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4177649?token=faaf544e3d58a5b96726db87a3902a3a82073ce7"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzUxNTUyNjgvNjI4YWRiYjJlMGQwNjBiZDI3MjU0ZGE4N2UwZDhhOWRjZjZjMWQ2NC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzc3NDgyNzUwfQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1639597-sale"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2519486",
+      "name": "±11.8 ACRE DEVELOPMENT SITE ON I-44 & HWY MM",
+      "transactionType": "Sale",
+      "assetType": "Other",
+      "street": "6700 West Farm Road 140",
+      "city": "Republic",
+      "state": "MO",
+      "postalCode": "65802",
+      "country": "US",
+      "latitude": 37.1991207,
+      "longitude": -93.4250429,
+      "salePriceUsd": 2200000,
+      "salePriceText": "$2,200,000",
+      "sizeText": "11.8 Acres",
+      "brokerIds": [
+        28
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4207920?token=b73289b31d25e507068c09ec1a129d3bc95a7aa6"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzUzOTczNDIvY2EzY2RkNDdkM2NkNDEwYTA1ZjFkOWQ0OThhMWRjMDkzNmYzZTY2ZC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgwMDcxMDE1fQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1649126-sale"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2480664",
+      "name": "RETAIL/OFFICE DEVELOPMENT SITE FOR SALE ON BATTLEFIELD",
+      "transactionType": "Sale",
+      "assetType": "Retail",
+      "street": "2700 E Battlefield Rd",
+      "city": "Springfield",
+      "state": "MO",
+      "postalCode": "65804",
+      "country": "US",
+      "latitude": 37.1580707,
+      "longitude": -93.2411036,
+      "salePriceUsd": 1195000,
+      "salePriceText": "$1,195,000",
+      "sizeText": "7.01 Acres",
+      "brokerIds": [
+        28
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4146127?token=2945d26fa1bd9781fd4f93b961ce06bae6ecd6f8"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzUwMTY5NTUvMmI0MDNkMGY4NDMxNGQ4MDhkZjNkNjg4MjRhMzc0YmEyNTJhOGVkNy9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzc2MDk2MzY3fQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1628979-sale"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2453485",
+      "name": "±5.91 ACRES MULTIFAMILY LAND IN EAST SPRINGFIELD",
+      "transactionType": "Sale",
+      "assetType": "Office",
+      "street": "2740 East Pythian Street",
+      "city": "Springfield",
+      "state": "MO",
+      "postalCode": "65802",
+      "country": "US",
+      "latitude": 37.2167779,
+      "longitude": -93.2401659,
+      "salePriceUsd": 4,
+      "salePriceText": "$4.00 / SF",
+      "sizeText": "5.91 Acres",
+      "brokerIds": [
+        28
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4100128?token=2b04ecdcd69c261f6ffde8d79087d044528ea3c6"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzQ2NTc1MTgvNzQ1ZTUzZmQzNmJmNzIxODY5ZmVjYjg2MDJlYjdkNTc5ZGIzZjVhMi9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzcyNDcxNzE2fQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1614369-sale"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2440944",
+      "name": "COMMERCIAL PROPERTY W/KITCHEN FOR SALE IN BRANSON, MO",
+      "transactionType": "Sale",
+      "assetType": "Street Retail",
+      "street": "625 Historic Highway 165",
+      "city": "Branson",
+      "state": "MO",
+      "postalCode": "65616",
+      "country": "US",
+      "latitude": 36.6319638,
+      "longitude": -93.2808134,
+      "salePriceUsd": 1710000,
+      "salePriceText": "$1,710,000",
+      "sizeText": "15,392 SF",
+      "brokerIds": [
+        28
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4084810?token=fc98e4096ffd22f89564d88618e0d139f02bf293"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzQ0OTk3MTQvOWVhNmE0NDY5N2Q2MWFlNzZlMDdmNmJiMjE3MzMwZGJiMTllZGU2Ny9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzcxMDAzMjY0fQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1607637-sale"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2448091",
+      "name": "COMMERCIAL LOTS JUST OFF STATE HWY 76 IN BRANSON",
+      "transactionType": "Sale",
+      "assetType": "Office",
+      "street": "301 Pat Nash Drive",
+      "city": "Branson",
+      "state": "MO",
+      "postalCode": "65616",
+      "country": "US",
+      "latitude": 36.6460234,
+      "longitude": -93.2815715,
+      "salePriceUsd": 3,
+      "salePriceText": "$3.00 - $9.00 / SF",
+      "sizeText": "16.94 Acres",
+      "brokerIds": [
+        28
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4091189?token=4b367b79e5afc863c9018a6d1296c9c92c330fc6"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzQ4NjYyNTMvNmIyZjRjNGU4MTJmNTEyMTgzZmY5YTU0MjUzNTg3NTc5ODVlZGU5OC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzc0MzYwMzkzfQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1611395-sale"
+    },
+    {
+      "sourceKey": "svn",
+      "sourceCompany": "SVN",
+      "id": "2437880",
+      "name": "DEVELOPMENT SITE FOR SALE OFF U.S. HIGHWAY 65 & EVANS RD.",
+      "transactionType": "Sale",
+      "assetType": "Other",
+      "street": "6401 Farmer Branch Road",
+      "city": "Ozark",
+      "state": "MO",
+      "postalCode": "65721",
+      "country": "US",
+      "latitude": 37.0961269,
+      "longitude": -93.2305784,
+      "salePriceUsd": 1988078,
+      "salePriceText": "$1,988,078",
+      "sizeText": "6.52 Acres",
+      "brokerIds": [
+        28
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4086518?token=a257cc015cce975c60a3730d5fee22cf5ebcca2f"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzQ0OTIzNjcvOWUxZTY1NWUxNTM4ZWVjNzdkNTdiOTFkMjU4Y2RjMjA3ZmJmYWRiMC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzcwOTMyOTc0fQ=="
+      ],
+      "url": "https://svn.com/properties/?propertyId=1606013-sale"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "name": "1.2 Ac Corner Lot - NE 14th Street",
+      "transactionType": "Sale",
+      "assetType": "For Sale",
+      "description": "Price Reduced for QUICK-CLOSE SALE! 1.2 acre Vacant Land. Located at the Corner of NE 14th St and NE 39th Ave in Ocala. 1 mile west of Wal-Mart and LowesLocation Description1.2 acre vacant land located at the Corner of NE 14th St and NE...",
+      "city": "Silver Springs",
+      "state": "FL",
+      "country": "US",
+      "listingOffice": "NAI Heritage",
+      "photos": [
+        "https://storage.googleapis.com/infabode2_pro/uploads/post/images/1602673/112813.jpg"
+      ],
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "name": "2.96 Acres Land For 34 Multifamily Units - ready to build",
+      "transactionType": "Sale",
+      "assetType": "For Sale",
+      "description": "$200K price drop for quick close buyer! NAI Heritage is excited to offer 2.96 acres of R3-zoned vacant land, strategically positioned in the heart of Ocala. This shovel-ready site comes with fully approved plans from the City of Ocala t...",
+      "city": "Citra",
+      "state": "FL",
+      "country": "US",
+      "listingOffice": "NAI Heritage",
+      "photos": [
+        "https://storage.googleapis.com/infabode2_pro/uploads/post/images/1602672/112809.jpg"
+      ],
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "name": "3140 Northwest Gainesville Road | Ocala, FL 34475",
+      "transactionType": "Sale",
+      "assetType": "For Sale",
+      "description": "We are pleased to present this strategically positioned 5± acre development site to the market, offering a prime opportunity in North Ocala's thriving commercial corridor. The property features immediate development potential and strong...",
+      "city": "Ocala",
+      "state": "FL",
+      "country": "US",
+      "listingOffice": "NAI Heritage",
+      "photos": [
+        "https://storage.googleapis.com/infabode2_pro/uploads/post/images/1602671/112808.png"
+      ],
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "name": "Andover Office Space",
+      "transactionType": "Sale",
+      "assetType": "For Sale",
+      "description": "Andover Road serves as the main commercial strip for Andover, KS, agrowing community of about 18,000 people, lined with dining and shoppingoptions, with larger shopping centers in Wichita just 8 miles away. It's a solidsmall-market offi...",
+      "city": "Andover",
+      "state": "KS",
+      "country": "US",
+      "listingOffice": "NAI Martens",
+      "photos": [
+        "https://storage.googleapis.com/infabode2_pro/uploads/post/images/1602670/112803.jpg"
+      ],
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "name": "Hamburg Office/Showroom",
+      "transactionType": "Sale",
+      "assetType": "For Sale",
+      "description": "NAI Isaac is pleased to present +/-6,000 SF for lease in the Hamburg area in Lexington. The property is located on Bryant Road just off Man O' War Boulevard at Exit 108 on I-75.Location DescriptionLocated in Southeast Lexington on Bryan...",
+      "city": "Lexington-Fayette",
+      "state": "KY",
+      "country": "US",
+      "listingOffice": "NAI Isaac",
+      "photos": [
+        "https://storage.googleapis.com/infabode2_pro/uploads/post/images/1602658/112799.jpg"
+      ],
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "name": "5410 Sevens Pkwy",
+      "transactionType": "Sale",
+      "assetType": "For Sale",
+      "description": "Introducing Eau Claire's newest landmark in commercial real estate: a stunning Class A office building nestled in a prime location with easy access to two major highways. Boasting interstate visibility, this state-of-the-art constructio...",
+      "city": "Eau Claire",
+      "state": "WI",
+      "country": "US",
+      "listingOffice": "NAI Commonweal",
+      "photos": [
+        "https://storage.googleapis.com/infabode2_pro/uploads/post/images/1602605/112789.jpg"
+      ],
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "name": "2101 83rd St",
+      "transactionType": "Sale",
+      "assetType": "For Sale",
+      "description": "16,400 SF freestanding industrial warehouse building is in the highly sought-after North Bergen market. This versatile space sits on .86 acres.Location DescriptionSituated within North Bergen's thriving industrial hub, 2101 83rd St offe...",
+      "city": "North Bergen",
+      "state": "NJ",
+      "country": "US",
+      "listingOffice": "NAI James E. Hanson",
+      "photos": [
+        "https://storage.googleapis.com/infabode2_pro/uploads/post/images/1602599/112780.png"
+      ],
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "name": "3012 S Locust Street",
+      "transactionType": "Sale",
+      "assetType": "For Sale",
+      "description": "Introducing a prime retail opportunity at 3012 S Locust St, Grand Island, NE. This attractive 2,188 SF property, built in 2006, offers an ideal space for retail or street retail investors. Zoned B2 and strategically situated in the bust...",
+      "city": "Grand Island",
+      "state": "NE",
+      "country": "US",
+      "listingOffice": "NAI NP Dodge",
+      "photos": [
+        "https://storage.googleapis.com/infabode2_pro/uploads/post/images/1602593/112760.jpg"
+      ],
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "name": "4009 W Wood River Road Alda, NE 68810",
+      "transactionType": "Sale",
+      "assetType": "For Sale",
+      "description": "Presenting an exceptional investment opportunity near Grand Island, NE, this property offers 63.74 acres of prime farm ground with I-80 frontage, ensuring excellent visibility. The site comes equipped with readily available utilities, p...",
+      "city": "Doniphan",
+      "state": "NE",
+      "country": "US",
+      "listingOffice": "NAI NP Dodge",
+      "photos": [
+        "https://storage.googleapis.com/infabode2_pro/uploads/post/images/1602592/112758.png"
+      ],
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "transactionType": "Sale",
+      "country": "US",
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "transactionType": "Sale",
+      "country": "US",
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "transactionType": "Sale",
+      "country": "US",
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "transactionType": "Sale",
+      "country": "US",
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "transactionType": "Sale",
+      "country": "US",
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "nai-global",
+      "sourceCompany": "NAI Global",
+      "transactionType": "Sale",
+      "country": "US",
+      "url": "https://ab.infabode.com/nai-global/listings3"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "1521921",
+      "name": "1382 Valencia Avenue, Unit L",
+      "transactionType": "Sale",
+      "assetType": "Flex Space",
+      "street": "1382 Valencia Avenue, Unit L",
+      "city": "Tustin",
+      "state": "CA",
+      "postalCode": "92780",
+      "country": "US",
+      "latitude": 33.71750350000001,
+      "longitude": -117.8339819,
+      "salePriceText": "Call For Info",
+      "sizeText": "6,119 SF",
+      "brokerIds": [
+        29
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4235445?token=6d35833eb1c211cafed249e592c0317853a7444b"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMTM1NjY2ODQvYjQ2M2ZjM2UyNzdlOWU2MjdhMGQyOWVlZTIzMmY5OThmOGRlZTI0My9vcmlnaW5hbC4iLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNjY0NjA0NjAyfQ=="
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=1119990-sale&address=1382-Valencia-Avenue-Unit-L&officeId=2409"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "2490211",
+      "name": "High Image Office Condo For Sale near Orange Circle",
+      "transactionType": "Sale",
+      "assetType": "Office Condo",
+      "street": "738 East Chapman Avenue",
+      "city": "Orange",
+      "state": "CA",
+      "postalCode": "92866",
+      "country": "US",
+      "latitude": 33.7875974,
+      "longitude": -117.845745,
+      "salePriceUsd": 834159,
+      "salePriceText": "$834,159",
+      "sizeText": "1,044 SF",
+      "brokerIds": [
+        30
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4164847?token=9ef16c26d16b633322a7a792969f7ae58a36900c"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzUwNDk2NzMvOTM5ZTgwMjExOWQzNTczYjE2ZTZiNGQzNmYxMjU3NTZkN2Y0ZTliYy9vcmlnaW5hbC5wbmciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzc2MzYwMzc4fQ=="
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=738echapman&address=738-East-Chapman-Avenue&officeId=426"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "1499492",
+      "name": "ParkCenter 400",
+      "transactionType": "Sale",
+      "assetType": "Office Building",
+      "street": "400 N Tustin Ave",
+      "city": "Santa Ana",
+      "state": "CA",
+      "postalCode": "92705",
+      "country": "US",
+      "latitude": 33.7486103,
+      "longitude": -117.8345314,
+      "salePriceText": "Best Offer",
+      "sizeText": "125,043 SF",
+      "brokerIds": [
+        31
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/3371128?token=6c92bb3c439dfe0229f4a9e8bf982c65d6ed0e9f"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMTM1MTAzNTYvM2ZiMWVmODQwMjY0YThmNjg4ZjlmOGQ5ODJjMmYxNzY2ZTBkYzQyZi9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNjY0MDUyMDA1fQ=="
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=PC400&address=400-N-Tustin-Ave&officeId=426"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "438570",
+      "name": "Building A",
+      "transactionType": "Sale/Lease",
+      "assetType": "Manufacturing",
+      "street": "29395 Hunco Way",
+      "city": "Lake Elsinore",
+      "state": "CA",
+      "postalCode": "92530",
+      "country": "US",
+      "latitude": 33.6904164,
+      "longitude": -117.3439201,
+      "salePriceText": "TBD",
+      "sizeText": "28,684 SF",
+      "brokerIds": [
+        32
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4235435?token=4d82821a4f419fa7bc5f87b6acfba841350dfd90"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzE0NzQ3MDcvYmY0MDg3MzU4MDEyMTgwYjE0ZDVkOWMzMTg2N2JhN2NkOWZjMDgwZC9vcmlnaW5hbC5KUEciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzMzODU5MDU5fQ=="
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=249884-sale&address=29395-Hunco-Way&officeId=2425"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "2529471",
+      "name": "880 Verdulera St",
+      "transactionType": "Sale",
+      "assetType": "Manufacturing",
+      "street": "880 Verdulera St",
+      "city": "Camarillo",
+      "state": "CA",
+      "postalCode": "93010",
+      "country": "US",
+      "latitude": 34.2165599,
+      "longitude": -119.0936699,
+      "salePriceUsd": 4100000,
+      "salePriceText": "$4,100,000",
+      "sizeText": "443 SF",
+      "brokerIds": [
+        33
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4227993?token=59692f05179c4eef060ab82a8de3f025c8c74689"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0NzM0ODYvMzdkZTY1YjNhNjU2NGYyOGUyMWIzYTg1ZDEwMGE4ZmRjNjg5Njc1Mi9vcmlnaW5hbC5qcGVnIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjoyNTAwLCJoZWlnaHQiOjI1MDAsImZpdCI6Imluc2lkZSIsIndpdGhvdXRFbmxhcmdlbWVudCI6dHJ1ZX0sInJvdGF0ZSI6bnVsbH0sInVwZGF0ZWRBdCI6MTc4MDcwMTQwNX0="
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=1654643-sale&address=880-Verdulera-St&officeId=2417"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "2522832",
+      "name": "The Laureate",
+      "transactionType": "Sale",
+      "assetType": "Mid-Rise",
+      "street": "4731 12th Ave NE",
+      "city": "Seattle",
+      "state": "WA",
+      "postalCode": "98105",
+      "country": "US",
+      "latitude": 47.6640984,
+      "longitude": -122.3155007,
+      "salePriceUsd": 6500000,
+      "salePriceText": "$6,500,000",
+      "sizeText": "14,251 SF",
+      "brokerIds": [
+        34
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0NTc4MzUvMmZkYmM0MzAyYjdhYjYzMjVlMDU5MDY3NGIwNWIzZDc2OWMwNjYwOC9vcmlnaW5hbC5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgwNjA3NDM1fQ=="
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=1651035-sale&address=4731-12th-Ave-NE&officeId=2085"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "2503748",
+      "name": "9446 W. Fairview Ave.",
+      "transactionType": "Sale",
+      "assetType": "Office Condo",
+      "street": "9446 W. Fairview Ave.",
+      "city": "Boise",
+      "state": "ID",
+      "postalCode": "83704",
+      "country": "US",
+      "latitude": 43.6195914,
+      "longitude": -116.2996629,
+      "salePriceUsd": 499000,
+      "salePriceText": "$499,000",
+      "sizeText": "1,833 SF",
+      "brokerIds": [
+        35
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4180277?token=1b59a55ea27eb228b0168823c73ee33a7ca07e14"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzU0MzQ3NjAvNjlkM2I0YjA5N2EyNzM3ZjIyMTgzYzY2Mjg4NTQzOWU5M2FmNDRjYi9vcmlnaW5hbC5wbmciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzgwNDM5NTQ4fQ=="
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=1640595-sale&address=9446-W-Fairview-Ave&officeId=1514"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "2483313",
+      "name": "615 West Idaho Avenue",
+      "transactionType": "Sale",
+      "assetType": "Mobile Home Park",
+      "street": "615 West Idaho Avenue",
+      "city": "Homedale",
+      "state": "ID",
+      "postalCode": "83628",
+      "country": "US",
+      "latitude": 43.6166008,
+      "longitude": -116.9455411,
+      "salePriceUsd": 1950000,
+      "salePriceText": "$1,950,000",
+      "sizeText": "0 SF",
+      "brokerIds": [
+        36
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4148881?token=967e421f6b6f56ddf6edc8aa93b5a268d363931d"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzQ5ODE4NTEvZmVmZGFiNmYyYzliZjBmMmFlZTVjY2QzYjg4ZDM1ODAzNjg0MWFjZi9vcmlnaW5hbC5wbmciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzc1NTc4NzEyfQ=="
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=1630116-sale&address=615-West-Idaho-Avenue&officeId=1514"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "679600",
+      "name": "Business Center Drive & Discovery Bay Drive",
+      "transactionType": "Sale",
+      "assetType": "Retail",
+      "street": "0 Business Center Drive",
+      "city": "Pearland",
+      "state": "TX",
+      "postalCode": "77584",
+      "country": "US",
+      "latitude": 29.5709834,
+      "longitude": -95.389825,
+      "salePriceText": "Call For Information",
+      "sizeText": "5.77 Acres",
+      "brokerIds": [
+        37
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/3560157?token=18ce56a98c8e1363fccd516135d8b9317e0113a5"
+        }
+      ],
+      "photos": [
+        "https://s3.amazonaws.com/buildout-production/datas/31597836/03ac5692805fdbdab377a73a9a4382685b47bd41/full.png?1736454956"
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=0-Business-Center-Drive-Pearland-TX-77584-Sale&address=0-Business-Center-Drive&officeId=2282"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "2490308",
+      "name": "9661 Irvine Center Dr",
+      "transactionType": "Sale/Lease",
+      "assetType": "Flex Space",
+      "street": "9661 Irvine Center Dr",
+      "city": "Irvine",
+      "state": "CA",
+      "postalCode": "92618",
+      "country": "US",
+      "latitude": 33.6340982,
+      "longitude": -117.733136,
+      "salePriceText": "Call For Info",
+      "sizeText": "2,313 SF",
+      "brokerIds": [
+        38
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4205108?token=e0097a5080675ab077575909773afedf8d9351b4"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzUwNDQ1NzkvYjYwZTM5ZGZiMTkwMDQ4ZTRmZGRmZTQ4NDhkZmQ1NWYxODQwZGM1NC9vcmlnaW5hbC5KUEVHIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjoyNTAwLCJoZWlnaHQiOjI1MDAsImZpdCI6Imluc2lkZSIsIndpdGhvdXRFbmxhcmdlbWVudCI6dHJ1ZX0sInJvdGF0ZSI6bnVsbH0sInVwZGF0ZWRBdCI6MTc3NjI5NjU3M30="
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=1633636-sale&address=9661-Irvine-Center-Dr&officeId=2409"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "2384436",
+      "name": "27 Orchard Road",
+      "transactionType": "Sale",
+      "assetType": "Office Building",
+      "street": "27 Orchard Road",
+      "city": "Lake Forest",
+      "state": "CA",
+      "postalCode": "92630",
+      "country": "US",
+      "latitude": 33.6694116,
+      "longitude": -117.6734527,
+      "salePriceUsd": 4395000,
+      "salePriceText": "$4,395,000",
+      "sizeText": "10,098 SF",
+      "brokerIds": [
+        39
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4007734?token=668ab4799f4391c4b5d096fc1f80466bd4dad948"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzM3OTc1MTEvZjhhY2NjMTNjYmNlMzZiMTgzNWIwMGQ0ZWQxMmM1ZjA4NzUxODZjZC9vcmlnaW5hbC5KUEVHIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjoyNTAwLCJoZWlnaHQiOjI1MDAsImZpdCI6Imluc2lkZSIsIndpdGhvdXRFbmxhcmdlbWVudCI6dHJ1ZX0sInJvdGF0ZSI6bnVsbH0sInVwZGF0ZWRBdCI6MTc2MzUwNzI3M30="
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=1580472-sale&address=27-Orchard-Road&officeId=2409"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "2306360",
+      "name": "22956 El Toro Road",
+      "transactionType": "Sale",
+      "assetType": "Office Building",
+      "street": "22956 El Toro Road",
+      "city": "Lake Forest",
+      "state": "CA",
+      "postalCode": "92630",
+      "country": "US",
+      "latitude": 33.629019,
+      "longitude": -117.689327,
+      "salePriceUsd": 905000,
+      "salePriceText": "$905,000",
+      "sizeText": "2,545 SF",
+      "brokerIds": [
+        39
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/3823083?token=a4b2cdc1b19e1c01de2cf4c16291b1099f078094"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzMwMzMwNTcvMmI5NjU3NjFhZTBjNjA5MjBlYmY3YjM2Y2UwOTNiNjllNTI2NDMzOS9vcmlnaW5hbC5KUEciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzU0MDgzNDAyfQ=="
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=1538896-sale&address=22956-El-Toro-Road&officeId=2409"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "2490308",
+      "name": "9661 Irvine Center Dr",
+      "transactionType": "Sale/Lease",
+      "assetType": "Flex Space",
+      "street": "9661 Irvine Center Dr",
+      "city": "Irvine",
+      "state": "CA",
+      "postalCode": "92618",
+      "country": "US",
+      "latitude": 33.6340982,
+      "longitude": -117.733136,
+      "salePriceText": "Call For Info",
+      "sizeText": "2,313 SF",
+      "brokerIds": [
+        38
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4205108?token=e0097a5080675ab077575909773afedf8d9351b4"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzUwNDQ1NzkvYjYwZTM5ZGZiMTkwMDQ4ZTRmZGRmZTQ4NDhkZmQ1NWYxODQwZGM1NC9vcmlnaW5hbC5KUEVHIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjoyNTAwLCJoZWlnaHQiOjI1MDAsImZpdCI6Imluc2lkZSIsIndpdGhvdXRFbmxhcmdlbWVudCI6dHJ1ZX0sInJvdGF0ZSI6bnVsbH0sInVwZGF0ZWRBdCI6MTc3NjI5NjU3M30="
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=1633636-sale&address=9661-Irvine-Center-Dr&officeId=2409"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "966036",
+      "name": "23265 South Pointe Dr.",
+      "transactionType": "Sale",
+      "assetType": "Office Building",
+      "street": "23265 South Pointe Dr.",
+      "city": "Laguna Hills",
+      "state": "CA",
+      "postalCode": "92653",
+      "country": "US",
+      "latitude": 33.6259994,
+      "longitude": -117.7236839,
+      "salePriceUsd": 1999000,
+      "salePriceText": "$1,999,000",
+      "sizeText": "6,013 SF",
+      "brokerIds": [
+        39
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/1785199?token=3dcdecbe6152dc890c288c0e8b15eaf2bcad06ef"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvNjkwNDU5Mi82N2I2Y2YzMjcwMzRmMjkyYThhY2ViMjU5YTRlNDI2ZjM0ZDM1NjJmL29yaWdpbmFsLiIsImVkaXRzIjp7InJlc2l6ZSI6eyJ3aWR0aCI6MjUwMCwiaGVpZ2h0IjoyNTAwLCJmaXQiOiJpbnNpZGUiLCJ3aXRob3V0RW5sYXJnZW1lbnQiOnRydWV9LCJyb3RhdGUiOm51bGx9LCJ1cGRhdGVkQXQiOjE2MDg3ODk5MDF9"
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=694518-sale&address=23265-South-Pointe-Dr&officeId=2409"
+    },
+    {
+      "sourceKey": "lee-associates",
+      "sourceCompany": "Lee & Associates",
+      "id": "1577232",
+      "name": "9927 & 9331 Muirlands Blvd",
+      "transactionType": "Sale/Lease",
+      "assetType": "Office Building",
+      "street": "9927 & 9331 Muirlands Blvd",
+      "city": "Irvine",
+      "state": "CA",
+      "postalCode": "92618",
+      "country": "US",
+      "latitude": 33.6412311,
+      "longitude": -117.7169209,
+      "salePriceUsd": 3881000,
+      "salePriceText": "$3,881,000",
+      "sizeText": "7,463 SF",
+      "brokerIds": [
+        40
+      ],
+      "brochures": [
+        {
+          "name": "Listing brochure (PDF)",
+          "url": "https://buildout.com/docs/documents/4089355?token=f5318841c18d9c88f37aca955367ffd4908d7013"
+        }
+      ],
+      "photos": [
+        "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoiZGF0YXMvMzQ1NDg0NzkvOGRlNWVkNWExZDc2NDMzNGFiMTQwZDYxMjZhODk2YTI4N2UwODEzZi9vcmlnaW5hbC5KUEciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjI1MDAsImhlaWdodCI6MjUwMCwiZml0IjoiaW5zaWRlIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlfSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzcxNDQ0NDQwfQ=="
+      ],
+      "url": "https://www.lee-associates.com/properties/?propertyId=1156353-sale&address=9927-9331-Muirlands-Blvd&officeId=2409"
+    }
+  ],
+  "brokers": [
+    {
+      "name": "Josh Kulak",
+      "email": "josh.kulak@cbre.com",
+      "phone": "617 912 6835",
+      "office": "Massachusetts - Boston",
+      "company": "CBRE"
+    },
+    {
+      "name": "Katrina Giostas",
+      "email": "katrina.giotsas@cbre.com",
+      "phone": "857 328 4173",
+      "office": "Massachusetts - Boston",
+      "company": "CBRE"
+    },
+    {
+      "name": "Robert Byrne",
+      "email": "robert.byrne@cbre.com",
+      "phone": "617 827 7486",
+      "office": "Massachusetts - Boston 33 Arch Street",
+      "company": "CBRE"
+    },
+    {
+      "name": "Brendan McKenzie",
+      "email": "brendan.mckenzie@cbre.com",
+      "phone": "508 280 1147",
+      "office": "Massachusetts - Boston 33 Arch Street",
+      "company": "CBRE"
+    },
+    {
+      "name": "Dan Hines",
+      "email": "dan.hines@cbre.com",
+      "phone": "978 270 3544",
+      "office": "Massachusetts - Boston 33 Arch Street",
+      "company": "CBRE"
+    },
+    {
+      "name": "John Ferris",
+      "email": "john.ferris@cbre.com",
+      "phone": "617 912 6871",
+      "office": "Massachusetts - Boston",
+      "company": "CBRE"
+    },
+    {
+      "name": "Rob Robledo",
+      "email": "rob.robledo@cbre.com",
+      "phone": "617 912 6869",
+      "office": "Massachusetts - Boston",
+      "company": "CBRE"
+    },
+    {
+      "name": "Ryan Minihan",
+      "email": "ryan.minihan@cbre.com",
+      "phone": "617 912 6859",
+      "office": "Massachusetts - Boston",
+      "company": "CBRE"
+    },
+    {
+      "name": "Alden Anderson",
+      "email": "alden.anderson@cbre.com",
+      "phone": "401 621 4338",
+      "office": "Rhode Island - Providence",
+      "company": "CBRE"
+    },
+    {
+      "name": "John Cregan",
+      "email": "john.cregan@cbre.com",
+      "phone": "401 621 4335",
+      "office": "Rhode Island - Providence",
+      "company": "CBRE"
+    },
+    {
+      "name": "Christian Vallis",
+      "email": "christian.vallis@cbre.com",
+      "phone": "978 223 8582",
+      "office": "Massachusetts - Boston 33 Arch Street",
+      "company": "CBRE"
+    },
+    {
+      "name": "Brian McKenzie",
+      "email": "brian.mckenzie@cbre.com",
+      "phone": "617 439 7813",
+      "office": "Massachusetts - Boston",
+      "company": "CBRE"
+    },
+    {
+      "name": "John Wilson",
+      "email": "john.wilson15@cbre.com",
+      "phone": "617 439 7811",
+      "office": "Massachusetts - Boston 33 Arch Street",
+      "company": "CBRE"
+    },
+    {
+      "name": "Daniel Cregan",
+      "email": "dan.cregan@cbre.com",
+      "phone": "401 621 4340",
+      "office": "Rhode Island - Providence",
+      "company": "CBRE"
+    },
+    {
+      "name": "Thomas Barry",
+      "email": "thomas.barry2@cbre.com",
+      "phone": "401 621 4339",
+      "office": "Rhode Island - Providence",
+      "company": "CBRE"
+    },
+    {
+      "name": "Zack Mittelstadt",
+      "email": "Zack.Mittelstadt@cbre.com",
+      "phone": "207 860 0376",
+      "office": "Massachusetts - Boston",
+      "company": "CBRE"
+    },
+    {
+      "name": "Michael Nolan",
+      "email": "Michael.nolan@cbre.com",
+      "phone": "617 774 8344",
+      "office": "Massachusetts - Boston",
+      "company": "CBRE"
+    },
+    {
+      "name": "Christopher Metcalfe",
+      "email": "christopher.metcalfe@cbre.com",
+      "phone": "860 987 4710",
+      "office": "Connecticut - Hartford",
+      "company": "CBRE"
+    },
+    {
+      "name": "Kyle Roberts",
+      "email": "kyle.roberts@cbre.com",
+      "phone": "860 987 4730",
+      "office": "Connecticut - Hartford",
+      "company": "CBRE"
+    },
+    {
+      "name": "Maury Vanden Eykel",
+      "email": "maury.vandeneykel@cbre.com",
+      "phone": "312 297 7634",
+      "office": "Illinois - Chicago",
+      "company": "CBRE"
+    },
+    {
+      "name": "Brian Pfohl",
+      "email": "brian.pfohl@cbre.com",
+      "phone": "404 504 7893",
+      "office": "Georgia - Atlanta",
+      "company": "CBRE"
+    },
+    {
+      "name": "Rory McMullen",
+      "phone": "+44 (0) 7803 013 362+44 (0) 7803 013 362",
+      "company": "Savills"
+    },
+    {
+      "name": "Jemimah White",
+      "phone": "+44 (0) 203 618 3541+44 (0) 203 618 3541",
+      "company": "Savills"
+    },
+    {
+      "name": "Gregory Ogin, HI #RB-16053",
+      "email": "gogin@svn.com",
+      "phone": "808.329.6446",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzAwNC84MDkvb3JpZ2luYWwvT2dpbi02X2Nyb3BwZWQuanBnIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjo5MCwiaGVpZ2h0Ijo5MCwiZml0IjoiY292ZXIiLCJ3aXRob3V0RW5sYXJnZW1lbnQiOnRydWV9LCJyb3RhdGUiOm51bGx9LCJ1cGRhdGVkQXQiOjE2MTM2ODgzMDF9",
+      "company": "SVN"
+    },
+    {
+      "name": "Cindy Miller, PA #RS284561",
+      "email": "cindy.miller@svn.com",
+      "phone": "484.245.1020",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzAxMS80NzMvb3JpZ2luYWwvQ3ludGhpYV9NaWxsZXJfNjhfaGVhZHNob3RfMy4yNS4xOV8oNSkuanBnIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjo5MCwiaGVpZ2h0Ijo5MCwiZml0IjoiY292ZXIiLCJ3aXRob3V0RW5sYXJnZW1lbnQiOnRydWV9LCJyb3RhdGUiOm51bGx9LCJ1cGRhdGVkQXQiOjE3NjM3NTcxNjh9",
+      "company": "SVN"
+    },
+    {
+      "name": "Jerry Ward, CCIM, KY #17888 | IN #RB14016767",
+      "email": "jerry.ward@svn.com",
+      "phone": "502.297.8797",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzEwNS8wNzIvb3JpZ2luYWwvSU1HXzAzNTIuSlBHIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjo5MCwiaGVpZ2h0Ijo5MCwiZml0IjoiY292ZXIiLCJ3aXRob3V0RW5sYXJnZW1lbnQiOnRydWV9LCJyb3RhdGUiOm51bGx9LCJ1cGRhdGVkQXQiOjE2MjEwNzgzOTV9",
+      "company": "SVN"
+    },
+    {
+      "name": "Kate Hanson, CCIM",
+      "email": "kate.hanson@svn.com",
+      "phone": "320.420.6485",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzE3OS81OTYvb3JpZ2luYWwvS2F0ZV8yMDI2X0VESVQuanBnIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjo5MCwiaGVpZ2h0Ijo5MCwiZml0IjoiY292ZXIiLCJ3aXRob3V0RW5sYXJnZW1lbnQiOnRydWV9LCJyb3RhdGUiOm51bGx9LCJ1cGRhdGVkQXQiOjE3Nzc0ODg1ODB9",
+      "company": "SVN"
+    },
+    {
+      "name": "Kevin D. Chin, CCIM, CalDRE #00696127",
+      "email": "kevinc@svn.com",
+      "phone": "415.922.2900 x101",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzAwMS83NDgvb3JpZ2luYWwvQ2hpbi02XygyKS5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjkwLCJoZWlnaHQiOjkwLCJmaXQiOiJjb3ZlciIsIndpdGhvdXRFbmxhcmdlbWVudCI6dHJ1ZX0sInJvdGF0ZSI6bnVsbH0sInVwZGF0ZWRBdCI6MTUxNjExNjEzMn0=",
+      "company": "SVN"
+    },
+    {
+      "name": "Lee McLean III, SIOR, CCIM",
+      "email": "lee.mclean@svn.com",
+      "phone": "417.887.8826 x110",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzAwNi82NzMvb3JpZ2luYWwvTGVlX01jTGVhbl9waG90b18yMDI0LjIuanBnIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjo5MCwiaGVpZ2h0Ijo5MCwiZml0IjoiY292ZXIiLCJ3aXRob3V0RW5sYXJnZW1lbnQiOnRydWV9LCJyb3RhdGUiOm51bGx9LCJ1cGRhdGVkQXQiOjE3NDU5NTUzNTV9",
+      "company": "SVN"
+    },
+    {
+      "name": "Scott Colton, CalDRE #01923432",
+      "email": "scolton@leeirvine.com",
+      "phone": "949.790.3127",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzA0My8zMDYvb3JpZ2luYWwvQ29sdG9uX19TY290dC5wbmciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjkwLCJoZWlnaHQiOjkwLCJmaXQiOiJjb3ZlciIsIndpdGhvdXRFbmxhcmdlbWVudCI6dHJ1ZSwicG9zaXRpb24iOiJ0b3AifSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzc0NDU1NTA4fQ==",
+      "company": "Lee & Associates"
+    },
+    {
+      "name": "Jaimeson Hearne, CalDRE #01925107",
+      "email": "jhearne@lee-associates.com",
+      "phone": "714.564.7146",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzAwNS8wMDUvb3JpZ2luYWwvSmFpbWVzb25fSGVhcm5lX1Jlc3VtZV8yMDIyLmpwZyIsImVkaXRzIjp7InJlc2l6ZSI6eyJ3aWR0aCI6OTAsImhlaWdodCI6OTAsImZpdCI6ImNvdmVyIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlLCJwb3NpdGlvbiI6InRvcCJ9LCJyb3RhdGUiOm51bGx9LCJ1cGRhdGVkQXQiOjE2NjYyMTg1Mzl9",
+      "company": "Lee & Associates"
+    },
+    {
+      "name": "Marshal Vogt, CalDRE #01519213",
+      "email": "mvogt@lee-associates.com",
+      "phone": "714.564.7117",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzAwNC81NTUvb3JpZ2luYWwvTWFyc2hhbF9Wb2d0X1Jlc3VtZV8yMDIyLmpwZyIsImVkaXRzIjp7InJlc2l6ZSI6eyJ3aWR0aCI6OTAsImhlaWdodCI6OTAsImZpdCI6ImNvdmVyIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlLCJwb3NpdGlvbiI6InRvcCJ9LCJyb3RhdGUiOm51bGx9LCJ1cGRhdGVkQXQiOjE3NzYzODAyODN9",
+      "company": "Lee & Associates"
+    },
+    {
+      "name": "Kevin Nellis, CalDRE #965653",
+      "email": "knellis@lee-associates.com",
+      "phone": "951.445.4513",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzAxNS84MTUvb3JpZ2luYWwvS2V2aW5OZWxsaXMuanBnIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjo5MCwiaGVpZ2h0Ijo5MCwiZml0IjoiY292ZXIiLCJ3aXRob3V0RW5sYXJnZW1lbnQiOnRydWUsInBvc2l0aW9uIjoidG9wIn0sInJvdGF0ZSI6bnVsbH0sInVwZGF0ZWRBdCI6MTUyMjc5NDQ1NH0=",
+      "company": "Lee & Associates"
+    },
+    {
+      "name": "Brett Saunders",
+      "email": "bsaunders@lee-re.com",
+      "phone": "818.444.4926",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzEyNS8wNTAvb3JpZ2luYWwvc2F1bmRlcnNfaGVhZHNob3RfdXBkYXRlLnBuZyIsImVkaXRzIjp7InJlc2l6ZSI6eyJ3aWR0aCI6OTAsImhlaWdodCI6OTAsImZpdCI6ImNvdmVyIiwid2l0aG91dEVubGFyZ2VtZW50Ijp0cnVlLCJwb3NpdGlvbiI6InRvcCJ9LCJyb3RhdGUiOm51bGx9LCJ1cGRhdGVkQXQiOjE3Njg1MDY2NjF9",
+      "company": "Lee & Associates"
+    },
+    {
+      "name": "Daniel Lim",
+      "email": "dlim@lee-associates.com",
+      "phone": "206.773.2692",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzA3MC8xOTAvb3JpZ2luYWwvRGFuaWVsXzQwMHg0MDAuanBnIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjo5MCwiaGVpZ2h0Ijo5MCwiZml0IjoiY292ZXIiLCJ3aXRob3V0RW5sYXJnZW1lbnQiOnRydWUsInBvc2l0aW9uIjoidG9wIn0sInJvdGF0ZSI6bnVsbH0sInVwZGF0ZWRBdCI6MTU3NjE4NTYyMX0=",
+      "company": "Lee & Associates"
+    },
+    {
+      "name": "Brian Forde",
+      "email": "brianf@leeidaho.com",
+      "phone": "208.343.2300 x1131",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzE4OC82NjIvb3JpZ2luYWwvbGVlXzA1MS5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjkwLCJoZWlnaHQiOjkwLCJmaXQiOiJjb3ZlciIsIndpdGhvdXRFbmxhcmdlbWVudCI6dHJ1ZSwicG9zaXRpb24iOiJ0b3AifSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzExNjQzNjkwfQ==",
+      "company": "Lee & Associates"
+    },
+    {
+      "name": "Parker Brakebill",
+      "email": "parkerb@leeidaho.com",
+      "phone": "208.343.2300 x1136",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzIwMy81NTQvb3JpZ2luYWwvbGVlXzAyNi5qcGciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjkwLCJoZWlnaHQiOjkwLCJmaXQiOiJjb3ZlciIsIndpdGhvdXRFbmxhcmdlbWVudCI6dHJ1ZSwicG9zaXRpb24iOiJ0b3AifSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzIxMjI4NzQ3fQ==",
+      "company": "Lee & Associates"
+    },
+    {
+      "name": "Brandi Dees, TX #530827",
+      "email": "bdees@lee-associates.com",
+      "phone": "713.744.7442",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzIzMy8wODgvb3JpZ2luYWwvRGVlc19CcmFuZGlfaGVhZHNob3RfT3JpZ2luYWxfQmFja2dyb3VuZF9JbWFnZS5qcGVnIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjo5MCwiaGVpZ2h0Ijo5MCwiZml0IjoiY292ZXIiLCJ3aXRob3V0RW5sYXJnZW1lbnQiOnRydWUsInBvc2l0aW9uIjoidG9wIn0sInJvdGF0ZSI6bnVsbH0sInVwZGF0ZWRBdCI6MTc3ODI3ODgxNH0=",
+      "company": "Lee & Associates"
+    },
+    {
+      "name": "Matt Fryer, CalDRE #01333079",
+      "email": "mfryer@leeirvine.com",
+      "phone": "949.790.3122",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzAxNi8xMTIvb3JpZ2luYWwvRnJ5ZXJfX01hdHQucG5nIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjo5MCwiaGVpZ2h0Ijo5MCwiZml0IjoiY292ZXIiLCJ3aXRob3V0RW5sYXJnZW1lbnQiOnRydWUsInBvc2l0aW9uIjoidG9wIn0sInJvdGF0ZSI6bnVsbH0sInVwZGF0ZWRBdCI6MTc3NDQ1NTgxM30=",
+      "company": "Lee & Associates"
+    },
+    {
+      "name": "Travis Watts, CalDRE #01927498",
+      "email": "twatts@leeirvine.com",
+      "phone": "949.790.3140",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzAxNi8xMDAvb3JpZ2luYWwvV2F0dHNfX1RyYXZpcy5wbmciLCJlZGl0cyI6eyJyZXNpemUiOnsid2lkdGgiOjkwLCJoZWlnaHQiOjkwLCJmaXQiOiJjb3ZlciIsIndpdGhvdXRFbmxhcmdlbWVudCI6dHJ1ZSwicG9zaXRpb24iOiJ0b3AifSwicm90YXRlIjpudWxsfSwidXBkYXRlZEF0IjoxNzc0NDU2NTQ0fQ==",
+      "company": "Lee & Associates"
+    },
+    {
+      "name": "Dave Smith, CalDRE #01195186",
+      "email": "dsmith@leeirvine.com",
+      "phone": "949.790.3134",
+      "avatarUrl": "https://d33y5rc9xva21v.cloudfront.net/eyJidWNrZXQiOiJidWlsZG91dC1wcm9kdWN0aW9uIiwia2V5IjoidXNlcnMvcHJvZmlsZV9waG90b3MvMDAwLzAxNi8xMjIvb3JpZ2luYWwvU21pdGhfX0RhdmUucG5nIiwiZWRpdHMiOnsicmVzaXplIjp7IndpZHRoIjo5MCwiaGVpZ2h0Ijo5MCwiZml0IjoiY292ZXIiLCJ3aXRob3V0RW5sYXJnZW1lbnQiOnRydWUsInBvc2l0aW9uIjoidG9wIn0sInJvdGF0ZSI6bnVsbH0sInVwZGF0ZWRBdCI6MTc3NDQ1NjM3OX0=",
+      "company": "Lee & Associates"
+    }
+  ],
+  "totalListings": 174
+}

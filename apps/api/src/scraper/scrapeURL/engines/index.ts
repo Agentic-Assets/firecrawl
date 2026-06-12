@@ -358,7 +358,7 @@ const engineOptions: {
       mobile: false,
       skipTlsVerification: true,
       useFastMode: false,
-      stealthProxy: false,
+      stealthProxy: true,
       branding: false,
       disableAdblock: false,
     },

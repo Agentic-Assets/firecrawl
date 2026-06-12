@@ -3,20 +3,20 @@
 This file provides guidance to Claude Code when working with this repository. Keep it aligned with `AGENTS.md`; that file is the broader Codex-facing source of truth.
 
 Firecrawl is a web scraper API monorepo:
-- `apps/api` — API server, queue workers, and scraping engines; most product changes land here
-- `apps/*-sdk` — language SDKs
-- `apps/playwright-service-ts` — headless browser sidecar
-- `apps/go-html-to-md-service` — HTML to Markdown sidecar
-- `apps/nuq-postgres` — Postgres-backed queue used alongside Redis/RabbitMQ
-- `apps/redis`, `apps/test-site`, `apps/test-suite`, `apps/ui` — supporting infra and tests
+- `apps/api`  -  API server, queue workers, and scraping engines; most product changes land here
+- `apps/*-sdk`  -  language SDKs
+- `apps/playwright-service-ts`  -  headless browser sidecar
+- `apps/go-html-to-md-service`  -  HTML to Markdown sidecar
+- `apps/nuq-postgres`  -  Postgres-backed queue used alongside Redis/RabbitMQ
+- `apps/redis`, `apps/test-site`, `apps/test-suite`, `apps/ui`  -  supporting infra and tests
 
 For local self-hosted setup, see `LOCAL_DEVELOPMENT_GUIDE.md`, `SELF_HOST.md`, and the `firecrawl-ops` skill.
 
 ## Env files
 
-- `./.env` — primary local Docker compose env. Gitignored. Never commit it.
-- `apps/api/.env.example` — upstream canonical variable reference.
-- `apps/api/.env.local` — tracked upstream artifact with empty values; Docker compose does not read it.
+- `./.env`  -  primary local Docker compose env. Gitignored. Never commit it.
+- `apps/api/.env.example`  -  upstream canonical variable reference.
+- `apps/api/.env.local`  -  tracked upstream artifact with empty values; Docker compose does not read it.
 - Fork-specific vars live in root `./.env`: `FIRECRAWL_API_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_NAME`, optional `OPENROUTER_API_KEY`, PDF OCR/routing vars, and optional `SWARM_SUPABASE_*`.
 
 ## Working in `apps/api`
@@ -43,10 +43,10 @@ Useful scripts:
 This fork adds local operations assets. Keep them fork-only and out of upstream product/API/SDK code unless explicitly needed.
 
 Canonical locations:
-- `.agents/skills/firecrawl-ops` — runtime health, Docker/OrbStack, model routing, upstream sync, endpoint selection
-- `.agents/skills/firecrawl-local-api` — local API/CLI usage at `http://localhost:3002`
-- `docs/firecrawl-ops/references/` — durable ops references
-- `scripts/firecrawl-ops/` — runnable local tools
+- `.agents/skills/firecrawl-ops`  -  runtime health, Docker/OrbStack, model routing, upstream sync, endpoint selection
+- `.agents/skills/firecrawl-local-api`  -  local API/CLI usage at `http://localhost:3002`
+- `docs/firecrawl-ops/references/`  -  durable ops references
+- `scripts/firecrawl-ops/`  -  runnable local tools
 
 Key scripts:
 - `firecrawl_healthcheck.sh`
@@ -56,6 +56,47 @@ Key scripts:
 - `set_model_profile.sh budget|escalated|gateway|gateway-codex|openai-direct`
 - `sync_agent_skills.sh`
 - `sync_upstream_main.sh`
+
+## CRE listing intelligence (EQUIRE feed)
+
+`scripts/firecrawl-ops/` also contains a full CRE listing ingestion system that
+feeds EQUIRE's deal intelligence platform. See each subdirectory's `CLAUDE.md`.
+
+Key components:
+- `scripts/firecrawl-ops/cre_collector/`  -  PRODUCTION multi-source collector + ingestor:
+  `collect.ts` (14 sources, sale + lease, full pagination through local Firecrawl),
+  `cre_ingest.py` (collector JSON -> `credeals` upserts via psql),
+  `cre_daily_update.sh` (daily refresh; use `--no-mark-missing` until every source is clean)
+- `scripts/firecrawl-ops/cre_scrapers/`  -  legacy Python scraper package
+  for source experiments and detail-page enrichment. Do not treat it as the daily bulk path.
+- `scripts/firecrawl-ops/sql/`  -  Supabase migrations for `cre_*` tables
+  (target: project `fhqycqubkkrdgzswccwd`; apply via `000_run_all.sql`)
+- `scripts/firecrawl-ops/cre_pipeline.py`  -  legacy CLI for the Python scraper package
+- `scripts/firecrawl-ops/prometheus/`  -  reference Prometheus/CBRE API collector + 11MB dataset
+- `scripts/firecrawl-ops/cbre_scrape.py`  -  original single-broker CBRE page scraper (still valid)
+- `docs/firecrawl-ops/references/cre-listing-system-design.md`  -  full architecture doc
+
+Brokers: CBRE (+ Deal Flow), JLL (+ Investor Center), Cushman & Wakefield,
+Marcus & Millichap, Avison Young, SVN, NAI Global, Newmark, Lee & Associates,
+Savills. Colliers and Transwestern are unsupported in the collector (POST-only
+APIs). Newmark works via its public Algolia API; Marcus & Millichap works
+under stealth with retries (both formerly disabled). Latest verified full run
+started `2026-06-12T04:04:23Z` and produced 35,510 raw records. Lee & Associates
+is the only supported source that failed in that run: Buildout returned HTML
+interstitials on pages 93-104, so the source aborted at 12/333 failed pages.
+
+CBRE has an internal JSON API (`/listings-api/propertylistings/query`) that bypasses
+the need for page scraping  -  see `scripts/firecrawl-ops/prometheus/CLAUDE.md`.
+Cloudflare still applies; route through local Firecrawl with `proxy=stealth, rawHtml`.
+
+The current ingestor uses `POSTGRES_URL_NON_POOLING` or `POSTGRES_URL` from the
+EQUIRE `.env.local` file and shells out to `psql`. It does not print the URL.
+Older REST/service-key loader docs apply only to the legacy Python scraper path.
+
+Start a new CRE collector session at:
+- `scripts/firecrawl-ops/cre_collector/START_HERE.md`
+- `scripts/firecrawl-ops/cre_collector/CLAUDE.md`
+- `scripts/firecrawl-ops/cre_collector/HANDOFF_LOG_2026-06-11.md`
 
 Verified local baseline on 2026-05-23:
 - OrbStack Docker compose stack

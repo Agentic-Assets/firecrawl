@@ -1,0 +1,1353 @@
+▗ ▗   ▖ ▖  Claude Code v2.1.173
+           Sonnet 4.6 · Claude Max
+  ▘▘ ▝▝    ~/…/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+
+ ▎ Meet Fable 5, our newest model for complex, long-running work. Try anytime with /model.
+ ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
+
+⏺ scripts/firecrawl-ops/CLAUDE.md is written. It covers:
+
+  - Full directory map with one-line descriptions of every file and subdirectory
+  - Part 1: CRE pipeline — database schema (credeals schema, all 7 tables, 4
+  agent-facing views), migration instructions, broker status table,
+  source-of-truth alignment rules, pipeline CLI examples, the CBRE internal JSON
+  API, and required env vars
+  - Part 2: Local ops tooling — healthcheck, CLI wrapper, direct HTTP helper,
+  model profiles, Cloudflare bypass summary, local PDF OCR, upstream sync
+  - Key references — pointer table to all the deep-dive docs and sub-CLAUDE.md
+  files
+
+✻ Churned for 1m 38s
+
+❯ /effort                                                                       
+  ⎿  Set effort level to max (this session only): Maximum capability with deepest
+     reasoning. May use excessive tokens resulting in long response times or
+     overthinking. Use sparingly for the hardest tasks.
+
+※ recap: CRE listing pipeline is fully wired: migrations applied to the credeals schema, old public tables dropped, and a top-level CLAUDE.md written for scripts/firecrawl-ops. Next: run a test scrape to verify end-to-end pipeline flow.
+
+❯ /compact                                                                      
+  ⎿  Compacted (ctrl+o to see full summary)
+  ⎿  Referenced file ../../../../../../Downloads/prometheus-script/script.ts
+  ⎿  Read ../../../../../../Downloads/prometheus-script/README.md (29 lines)
+  ⎿  Read CLAUDE.md (306 lines)
+  ⎿  Read cre_scrapers/CLAUDE.md (125 lines)
+  ⎿  Referenced file ../../docs/firecrawl-ops/references/cre-listing-system-design.md
+  ⎿  Skills restored (firecrawl-ops)
+
+❯ /effort                                                                       
+  ⎿  Set effort level to max (this session only): Maximum capability with deepest
+     reasoning. May use excessive tokens resulting in long response times or
+     overthinking. Use sparingly for the hardest tasks.
+
+❯ /model                                                                        
+  ⎿  Set model to Fable 5 and saved as your default for new sessions
+
+❯ /effort                                                                       
+  ⎿  Set effort level to ultracode (this session only): xhigh + dynamic workflow
+     orchestration
+
+❯ /plugin                                                                       
+
+❯ ultracode '/Users/caymanseagraves/Downloads/prometheus-script (1).zip'  OK,   
+  here's the script that can do all of them. Please copy this into the folder   
+  where                                                                         
+    you're working and get it set up and running with our local firecraw api    
+  tools. Then go ahead and start building up and doing the extraction and       
+    building out the full database for all of the listings, both for sale       
+  listings and listing and leasing listings for all the properties in the       
+  United                                                                        
+    States. Work carefully and intelligently. We carefully and intelligently.   
+  Make sure you take you have clear documentation. Make sure the systems are    
+  reusable so we can use it to update and add the new listings each day.        
+  Carefully and intelligently and use workflow to help you.                     
+
+⏺ I'll start by unpacking the new Prometheus script and checking what it covers,
+  then verify the local Firecrawl stack before building out the extraction
+  system.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Stack is healthy. Now let me read the new script to see what it covers.
+
+  Read 2 files, ran 3 shell commands (ctrl+o to expand)
+
+❯ ultracode Continue. But please copy that zipped file that one from the downloads into the code base Erynne and a place that will be saved so we can save the original zipped version as well but continue with whatever the task too. use local firecrawl tools and methods. use supabase /supabase:supabase /supabase-postgres-best-practices Set a timer for 
+
+⏺ I'll invoke the Supabase skills you referenced, then copy the zip into the
+  repo and set up task tracking.
+
+⏺ Skill(supabase:supabase)
+  ⎿  Successfully loaded skill
+
+⏺ Skill(supabase-postgres-best-practices)
+  ⎿  Successfully loaded skill
+  Listed 1 directory, ran 2 shell commands (ctrl+o to expand)
+
+  Read 1 file (ctrl+o to expand)
+  ⎿  Loaded ../sql/CLAUDE.md
+
+⏺ Write(package.json)
+  ⎿  Wrote 17 lines to package.json
+       1 {
+       2   "name": "cre-collector",
+       4   "private": true,
+       5   "description": "Multi-source CRE listing collector running aga
+         inst the local self-hosted Firecrawl API. Adapted from the Prome
+         cript.ts).",
+       6   "type": "module",
+       7   "scripts": {
+       9   },
+      10   "dependencies": {
+     … +9 lines (ctrl+o to expand)
+
+⏺ Write(collect.ts)
+  ⎿  Wrote 1201 lines to collect.ts
+       1 // =============================================================
+       2 // collect.ts — multi-source CRE listing collector (local Firecr
+       3 //
+       4 // Adapted from scripts/firecrawl-ops/prometheus/multi_source/sc
+       5 // (the original Prometheus cloud collector, preserved unmodifie
+       6 //
+       8 //   - Runs against the self-hosted Firecrawl API (FIRECRAWL_API
+         _URL,
+         .
+         locally).
+     … +1409 lines (ctrl+o to expand)
+
+⏺ Now install dependencies and run a quick smoke test on one cheap API source
+  before fanning out the full verification:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ The local API's integration enum rejects custom values — I'll drop that field:
+
+⏺ Update(collect.ts)
+  ⎿  Removed 1 line
+      133          ...(opts.waitFor ? { waitFor: opts.waitFor } : {}),
+      134          ...(opts.proxy ? { proxy: opts.proxy } : {}),
+      135          timeout: opts.timeout ?? 90000,
+      136 -        integration: "equire-cre-collector",                  
+      136        } as any);
+      137        const body = (doc as any).rawHtml ?? "";
+      138        if (!body) throw new Error("empty response body");
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ SVN sale works through the Buildout API, but the lease filter isn't right — it
+  paged 180 pages with zero matches. Let me probe Buildout's actual lease
+  parameter directly:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Update(collect.ts)  ⎿  Added 48 lines, removed 19 lines
+      356  }
+      357  
+      358  // --- Buildout platform (SVN, Lee & Associates): inventory JS
+           ON API, paginated ---
+      359 +// The inventory feed has no server-side sale/lease filter; it
+          +ems carry a `sale`                                            
+      360 +// boolean (false = lease availability). Fetch the full invent
+          +ory once per                                                  
+      361 +// brokerage (cached across the sale and lease passes) and par
+          +tition client-side.                                           
+      362  
+      363 +const buildoutCache = new Map<string, { items: any[]; total: n
+          +umber | null }>();                                            
+      364 +                                                              
+      365 +async function buildoutInventory(                             
+      366 +  company: string,                                            
+      367 +  pluginKey: string                                           
+      368 +): Promise<{ items: any[]; total: number | null }> {          
+      369 +  const cached = buildoutCache.get(pluginKey);                
+      370 +  if (cached) return cached;                                  
+      371 +  const first = await scrapeJson(                             
+      372 +    `https://buildout.com/plugins/${pluginKey}/inventory.json?
+          +page=0`,                                                      
+      373 +    { timeout: 60000 }                                        
+      374 +  );                                                          
+      375 +  const total: number | null = first.meta?.total ?? null;     
+      376 +  const limit: number = first.meta?.limit ?? 30;              
+      377 +  const items: any[] = [...(first.inventory ?? [])];          
+      378 +  if (total && total > limit) {                               
+      379 +    const pages = Math.min(Math.ceil(total / limit), 1200);   
+      380 +    const pageNums = Array.from({ length: pages - 1 }, (_, i) 
+          +=> i + 1);                                                    
+      381 +    let done = 1;                                             
+      382 +    const chunks = await pmap(pageNums, CONCURRENCY, async (p)
+          + => {                                                         
+      383 +      const d = await scrapeJson(                             
+      384 +        `https://buildout.com/plugins/${pluginKey}/inventory.j
+          +son?page=${p}`,                                               
+      385 +        { timeout: 60000 }                                    
+      386 +      );                                                      
+      387 +      done++;                                                 
+      388 +      if (done % 25 === 0) console.error(`  ${company}: invent
+          +ory page ${done}/${pages}`);                                  
+      389 +      return d.inventory ?? [];                               
+      390 +    });                                                       
+      391 +    for (const c of chunks) items.push(...c);                 
+      392 +  }                                                           
+      393 +  const result = { items, total };                            
+      394 +  buildoutCache.set(pluginKey, result);                       
+      395 +  console.error(`  ${company}: full inventory cached (${items.
+          +length} items, total ${total ?? "?"})`);                      
+      396 +  return result;                                              
+      397 +}                                                             
+      398 +                                                              
+      399  async function srcBuildout(
+      400    company: string,
+      401    pluginKey: string,
+     ...
+      403    tx: Tx,
+      404    max: number
+      405  ): Promise<SourceResult> {
+      406 +  const { items, total } = await buildoutInventory(company, pl
+          +uginKey);                                                     
+      407    const listings: any[] = [];
+      368 -  let total: number | null = null;                            
+      369 -  const filter = tx === "sale" ? "sale=true" : "lease=true";  
+      370 -  for (let page = 0; listings.length < max && page < 400; page
+          -++) {                                                         
+      371 -    const data = await scrapeJson(                            
+      372 -      `https://buildout.com/plugins/${pluginKey}/inventory.jso
+          -n?page=${page}&${filter}`,                                    
+      373 -      { timeout: 60000 }                                      
+      374 -    );                                                        
+      375 -    const inv: any[] = data.inventory ?? [];                  
+      376 -    total = data.meta?.total ?? total;                        
+      377 -    if (!inv.length) break;                                   
+      378 -    if (page % 10 === 0) {                                    
+      379 -      console.error(`  ${company}/${tx}: page ${page}, ${listi
+          -ngs.length} so far (total ${total ?? "?"})`);                 
+      380 -    }                                                         
+      381 -    for (const x of inv) {                                    
+      382 -      if (listings.length >= max) break;                      
+      383 -      const isSale = x.sale === true;                         
+      384 -      const isLease = x.lease === true;                       
+      385 -      if (tx === "sale" && !isSale) continue;                 
+      386 -      if (tx === "lease" && !isLease) continue;               
+      408 +  for (const x of items) {                                    
+      409 +    if (listings.length >= max) break;                        
+      410 +    if (x.closed === true) continue;                          
+      411 +    const isSale = x.sale === true;                           
+      412 +    const isLease = x.sale !== true; // inventory rows are act
+          +ive availabilities: not-for-sale = for-lease                  
+      413 +    if (tx === "sale" && !isSale) continue;                   
+      414 +    if (tx === "lease" && !isLease) continue;                 
+      415 +    {                                                         
+      416        const attrs = new Map<string, string>(
+      417          (x.index_attributes ?? []).map((p: any) => [String(p[0
+           ]), String(p[1])])
+      418        );
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Update(collect.ts)
+  ⎿  Added 1 line, removed 1 line
+      434        listings.push({
+      435          id: x.id != null ? String(x.id) : null,
+      436          name: clean(x.display_name) ?? clean(x.name),
+      437 -        transactionType: isSale && isLease ? "Sale/Lease" : is
+          -Lease ? "Lease" : "Sale",                                     
+      437 +        transactionType: x.also_for_sale_or_lease ? "Sale/Leas
+          +e" : isLease ? "Lease" : "Sale",                              
+      438          assetType: clean(x.property_sub_type_name) ?? attrs.ge
+           t("Property Type") ?? null,
+      439          street: clean(x.address),
+      440          city: clean(x.city),
+
+  Ran 1 shell command (ctrl+o to expand)
+
+❯ /compact                                                                      
+  ⎿  Compacted (ctrl+o to see full summary)
+  ⎿  Referenced file ../../../../../../../../../tmp/prometheus-script-new/script.ts
+  ⎿  Read ../../../../../../../../../tmp/prometheus-script-new/README.md (29 lines)
+  ⎿  Read ../../../../../../../Downloads/prometheus-script/README.md (29 lines)
+  ⎿  Referenced file ../../../../../../../Downloads/prometheus-script/script.ts
+  ⎿  Referenced file collect.ts
+  ⎿  Skills restored (supabase:supabase-postgres-best-practices, supabase:supabase, firecrawl-ops)
+
+❯ ultracode Continue working intelligently and carefully                        
+
+  Searched for 1 pattern, read 1 file, ran 1 shell command (ctrl+o to expand)
+  ⎿  Loaded ../CLAUDE.md
+
+⏺ Stack is green. Launching the 12-source verification workflow in the
+  background.
+  ⎿  Invalid tool parameters
+
+⏺ Workflow(Probe all 12 supported CRE collector sources through local Firecrawl
+          (sale + lease))
+  ⎿  /workflows to view dynamic workflow runs
+
+⏺ While the verification workflow runs, I'll build the Supabase ingestor. First,
+  refreshing the schema details.
+
+  Searched for 1 pattern, read 3 files (ctrl+o to expand)
+  ⎿  Loaded scripts/firecrawl-ops/sql/CLAUDE.md
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Write(cre_ingest.py)
+  ⎿  Wrote 736 lines to cre_ingest.py
+       1 #!/usr/bin/env python3
+       3 cre_ingest.py: load collect.ts output JSON into the Supabase `cr
+         edeals` schema.
+       5 Python stdlib only. Connects with psql (Homebrew libpq or PATH) 
+         using
+          runtime.
+       7 Credential values are never printed and never written into artif
+       8 
+       9 Pipeline per run:
+         ifacts).
+     … +859 lines (ctrl+o to expand)
+
+⏺ Ingestor written. Now adding the Savills seed row to the brokerage migration
+  (the collector's savills source has no registry row yet).
+
+⏺ Update(~/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/sql/0
+        01_cre_brokerages.sql)
+  ⎿  Added 8 lines
+      116   'https://www.lee-associates.com/properties/',
+      117   'Lee & Associates. Office/industrial-focused national CRE bro
+           kerage. Not yet live-tested (added per coverage requirement). 
+           Default-safe stealth config; verify proxy/wait_for and listing
+            URL pattern on first scrape run, then update scrape_config.',
+      118   '{"proxy": "stealth", "wait_for_ms": 6000, "timeout_ms": 6000
+           0, "pagination_strategy": "unknown", "listing_url_pattern": "/
+           properties/{listing-id}", "notes": "UNVERIFIED: not in test ba
+           tch. Start with default stealth/6000. Run a discovery scrape, 
+           then update scrape_config (proxy, wait_for_ms, listing_url_pat
+           tern, pagination) with measured values."}'::jsonb,
+      119 + true),                                                       
+      120 +                                                              
+      121 +-- 11. Savills -- added 2026-06-11 for the multi-source collec
+          +tor (cre_collector/collect.ts).                               
+      122 +('Savills', 'savills',                                        
+      123 + 'https://www.savills.us',                                    
+      124 + 'https://search.savills.com/us/en/list/property-for-sale/unit
+          +ed-states-of-america',                                        
+      125 + 'Savills North America. Server-rendered paginated search at s
+          +earch.savills.com (/page/N). Sale base: property-for-sale/unit
+          +ed-states-of-america; lease base: property-to-rent/united-stat
+          +es-of-america. Collected by cre_collector/collect.ts (source k
+          +ey savills); smaller US inventory (~100 sale listings).',     
+      126 + '{"proxy": "auto", "wait_for_ms": 5000, "timeout_ms": 60000, 
+          +"pagination_strategy": "path_page_n", "search_url_pattern": "h
+          +ttps://search.savills.com/us/en/list/property-{for-sale|to-ren
+          +t}/united-states-of-america/page/{n}", "notes": "Added for cre
+          +_collector multi-source run. HTML cards server-rendered; no Cl
+          +oudflare observed."}'::jsonb,                                 
+      127   true)
+      128  
+      129  ON CONFLICT (slug) DO UPDATE SET
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Savills seeded and DB connectivity confirmed. Testing the ingestor end-to-end
+  with whatever probe output already exists.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Update(cre_ingest.py)
+  ⎿  Added 9 lines, removed 1 line
+      173  
+      174  
+      175  _MONEY_RE = re.compile(r"\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)")
+      176 +# "$10 - 16", "$1.50 to 2.25": the upper bound often has no $ 
+          +of its own                                                    
+      177 +_MONEY_RANGE_RE = re.compile(                                 
+      178 +    r"\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:-|–|to)\s*\$?\s*([
+          +0-9][0-9,]*(?:\.[0-9]+)?)"                                    
+      179 +)                                                             
+      180  
+      181  
+      182  def parse_lease_rates(text):
+     ...
+      191      low = text.lower()
+      192      if not re.search(r"(/|per\s|\s)s\.?f|psf|square\s*f", low)
+           :
+      193          return None, None
+      190 -    nums = [float(m.replace(",", "")) for m in _MONEY_RE.finda
+          -ll(text)]                                                     
+      194 +    m = _MONEY_RANGE_RE.search(text)                          
+      195 +    if m:                                                     
+      196 +        nums = [float(m.group(1).replace(",", "")), float(m.gr
+          +oup(2).replace(",", ""))]                                     
+      197 +    else:                                                     
+      198 +        nums = [float(x.replace(",", "")) for x in _MONEY_RE.f
+          +indall(text)]                                                 
+      199      nums = [n for n in nums if 0 < n < 1000]
+      200      if not nums:
+      201          return None, None
+
+⏺ Update(cre_ingest.py)
+  ⎿  Added 11 lines, removed 1 line
+      271          return None  # source_url is NOT NULL; un-linked rows 
+           aren't actionable
+      272  
+      273      raw_id = listing.get("id")
+      274 -    if raw_id is not None and str(raw_id).strip():            
+      274 +    # Buildout sources (svn, lee-associates) list a dual-mode 
+          +property twice                                                
+      275 +    # with distinct inventory ids; the URL propertyId base ("1
+          +614726-sale" /                                                
+      276 +    # "1614726-lease") is the stable per-property key, so the 
+          +pair merges.                                                  
+      277 +    buildout_pid = None                                       
+      278 +    if source_key in ("svn", "lee-associates"):               
+      279 +        m = re.search(r"[?&]propertyId=([^&#]+)", url)        
+      280 +        if m:                                                 
+      281 +            buildout_pid = re.sub(r"-(sale|lease)$", "", m.gro
+          +up(1))                                                        
+      282 +    if buildout_pid:                                          
+      283 +        external_id = prefix + buildout_pid                   
+      284 +    elif raw_id is not None and str(raw_id).strip():          
+      285          external_id = prefix + str(raw_id).strip()
+      286      else:
+      287          external_id = prefix + "url:" + hashlib.sha1(url.encod
+           e()).hexdigest()[:16]
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ zsh doesn't word-split unquoted variables. Rerunning with xargs.
+
+  Read 1 file, ran 9 shell commands (ctrl+o to expand)
+⏺ Dynamic workflow "Probe all 12 supported CRE collector sources through local Firecrawl (sale + lease)" completed · 9m 37s
+
+⏺ Update(collect.ts)
+  ⎿  Added 16 lines, removed 3 lines
+      146    throw lastErr;
+      147  }
+      148  
+      149 -async function scrapeJson(url: string, opts: ScrapeOpts = {}):
+          - Promise<any> {                                               
+      150 -  const body = await scrapeRaw(url, opts);                    
+      149 +function parseJsonBody(body: string): any | null {            
+      150    try {
+      151      return JSON.parse(body);
+      152    } catch {
+     ...
+      169          }
+      170        }
+      171      }
+      173 -    throw new Error(`response from ${url} contained no parseab
+          -le JSON object`);                                             
+      172 +    return null;                                              
+      173    }
+      174  }
+      175  
+      176 +async function scrapeJson(url: string, opts: ScrapeOpts = {}):
+          + Promise<any> {                                               
+      177 +  // A successful scrape can still return a non-JSON body (rat
+          +e-limit or                                                    
+      178 +  // challenge interstitial, e.g. Buildout under sustained pag
+          +ing). Retry the                                               
+      179 +  // whole scrape with growing backoff before giving up.      
+      180 +  for (let attempt = 1; attempt <= 3; attempt++) {            
+      181 +    const body = await scrapeRaw(url, opts);                  
+      182 +    const parsed = parseJsonBody(body);                       
+      183 +    if (parsed !== null) return parsed;                       
+      184 +    console.error(`non-JSON body from ${url} (attempt ${attemp
+          +t}); backing off`);                                           
+      185 +    await new Promise((r) => setTimeout(r, 8000 * attempt));  
+      186 +  }                                                           
+      187 +  throw new Error(`response from ${url} contained no parseable
+          + JSON object`);                                               
+      188 +}                                                             
+      189 +                                                              
+      190  // Bounded-concurrency map that preserves input order in the r
+           esult.
+      191  async function pmap<T, R>(items: T[], limit: number, fn: (t: T
+           , i: number) => Promise<R>): Promise<R[]> {
+      192    const results: R[] = new Array(items.length);
+
+⏺ Now the Buildout inventory page-failure tolerance:
+
+⏺ Update(collect.ts)
+  ⎿  Added 25 lines, removed 8 lines
+      388    const total: number | null = first.meta?.total ?? null;
+      389    const limit: number = first.meta?.limit ?? 30;
+      390    const items: any[] = [...(first.inventory ?? [])];
+      391 +  let failedPages = 0;                                        
+      392    if (total && total > limit) {
+      393      const pages = Math.min(Math.ceil(total / limit), 1200);
+      394      const pageNums = Array.from({ length: pages - 1 }, (_, i) 
+           => i + 1);
+      395      let done = 1;
+      396      const chunks = await pmap(pageNums, CONCURRENCY, async (p)
+            => {
+      396 -      const d = await scrapeJson(                             
+      397 -        `https://buildout.com/plugins/${pluginKey}/inventory.j
+          -son?page=${p}`,                                               
+      398 -        { timeout: 60000 }                                    
+      399 -      );                                                      
+      400 -      done++;                                                 
+      401 -      if (done % 25 === 0) console.error(`  ${company}: invent
+          -ory page ${done}/${pages}`);                                  
+      402 -      return d.inventory ?? [];                               
+      397 +      try {                                                   
+      398 +        const d = await scrapeJson(                           
+      399 +          `https://buildout.com/plugins/${pluginKey}/inventory
+          +.json?page=${p}`,                                             
+      400 +          { timeout: 60000 }                                  
+      401 +        );                                                    
+      402 +        done++;                                               
+      403 +        if (done % 25 === 0) console.error(`  ${company}: inve
+          +ntory page ${done}/${pages}`);                                
+      404 +        return d.inventory ?? [];                             
+      405 +      } catch (err) {                                         
+      406 +        failedPages++;                                        
+      407 +        console.error(`  ${company}: inventory page ${p} FAILE
+          +D after retries: ${err}`);                                    
+      408 +        return [];                                            
+      409 +      }                                                       
+      410      });
+      411      for (const c of chunks) items.push(...c);
+      412 +    // A few rate-limited pages are tolerable (gap fills on th
+          +e next run);                                                  
+      413 +    // a large gap means the feed is unusable and must not be 
+          +cached or                                                     
+      414 +    // ingested (mark-missing on a gappy run would soft-delete
+          + live rows).                                                  
+      415 +    if (failedPages > Math.max(3, pages * 0.03)) {            
+      416 +      throw new Error(                                        
+      417 +        `${company}: ${failedPages}/${pages} inventory pages f
+          +ailed; aborting this source`                                  
+      418 +      );                                                      
+      419 +    }                                                         
+      420    }
+      421    const result = { items, total };
+      422    buildoutCache.set(pluginKey, result);
+      408 -  console.error(`  ${company}: full inventory cached (${items.
+          -length} items, total ${total ?? "?"})`);                      
+      423 +  console.error(                                              
+      424 +    `  ${company}: full inventory cached (${items.length} item
+          +s, total ${total ?? "?"}${failedPages ? `, ${failedPages} page
+          +s skipped` : ""})`                                            
+      425 +  );                                                          
+      426    return result;
+      427  }
+      428  
+
+⏺ Now the nai-global synthesized id and savills US filter:
+
+⏺ Update(collect.ts)
+  ⎿  Added 1 line
+      22  import { parseArgs } from "node:util";
+      23  import { writeFileSync, mkdirSync } from "node:fs";
+      24  import { dirname } from "node:path";
+      25 +import { createHash } from "node:crypto";                      
+      26  
+      27  const API_URL = process.env.FIRECRAWL_API_URL ?? "http://localh
+          ost:3002";
+      28  // Self-hosted with USE_DB_AUTHENTICATION=false accepts any non
+          -empty key.
+
+⏺ Update(collect.ts)
+  ⎿  Added 4 lines
+      1024          .match(/Published by\s*([A-Za-z0-9 .,&'-]+?)(?:\d+ (?
+            :day|hour|week|month)|$)/) ?? [])[1] ??
+      1025        null;
+      1026      const img = card.find("img").first().attr("src") ?? null;
+      1027 +    // The Infabode widget exposes no per-card id or link; a 
+           +hash of the                                                  
+      1028 +    // stable display fields is the only dedup key available.
+      1029 +    const cardKey = [title ?? "", m ? m[1] : "", m ? m[2] : "
+           +"].join("|");                                                
+      1030      listings.push({
+      1031 +      id: title ? "card:" + createHash("sha1").update(cardKey
+           +).digest("hex").slice(0, 16) : null,                         
+      1032        name: title,
+      1033        transactionType: tx === "sale" ? "Sale" : "Lease",
+      1034        assetType: contentType,
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(collect.ts)
+  ⎿  Added 6 lines
+      958          }),
+      959        ].filter((x): x is number => x !== null);
+      960        const m = (address2 ?? "").match(/^(.*?),\s*(.*?),\s*([A
+           -Z]{2})\s*(\d{5})?/);
+      961 +      // When the US filter has no inventory (lease), Savills 
+          +renders foreign                                               
+      962 +      // fallback cards (e.g. Cyprus, EUR-priced). US-only fee
+          +d: drop them.                                                 
+      963 +      if (!m) {                                               
+      964 +        nonUsFiltered++;                                      
+      965 +        return;                                               
+      966 +      }                                                       
+      967        const img = card.find("img").attr("src") ?? card.find("i
+           mg").attr("data-src") ?? null;
+      968        listings.push({
+      969          id: abs.split("/property-detail/")[1] ?? null,
+
+⏺ Update(collect.ts)
+  ⎿  Added 1 line
+      915        : "https://search.savills.com/com/en/list/property-to-re
+           nt/united-states-of-america";
+      916    const listings: any[] = [];
+      917    let total: number | null = null;
+      918 +  let nonUsFiltered = 0;                                      
+      919    for (let page = 1; listings.length < max && page <= Math.max
+           (PAGE_CAP, 10); page++) {
+      920      const url = page === 1 ? base : `${base}/page/${page}`;
+      921      const html = await scrapeRaw(url, { waitFor: 6000 });
+
+⏺ Update(collect.ts)
+  ⎿  Added 6 lines, removed 1 line
+       986      if (!seenHere.size) break;
+       987      console.error(`  savills/${tx}: page ${page}, ${listings.
+            length} collected (total ${total ?? "?"})`);
+       988    }
+       989 -  if (!listings.length) throw new Error("no property-detail l
+           -inks found on Savills list page");                           
+       989 +  if (!listings.length && !nonUsFiltered) {                  
+       990 +    throw new Error("no property-detail links found on Savill
+           +s list page");                                               
+       991 +  }                                                          
+       992    return {
+       993      company: "Savills",
+       994      sourceUrl: base,
+       995      method: "Server-rendered list pages parsed (cards), pagin
+            ated via /page/N",
+       996      totalAvailable: total,
+       997      listings,
+       998 +    note: nonUsFiltered                                      
+       999 +      ? `${nonUsFiltered} non-US fallback card(s) filtered ou
+           +t`                                                           
+      1000 +      : undefined,                                           
+      1001    };
+      1002  }
+      1003  
+
+⏺ Quick smoke test of the patched adapters (also validates the file still
+  compiles):
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ While the smoke test runs in the background, I'll build the daily-update
+  runner (Task #5 component).
+
+⏺ Write(cre_daily_update.sh)
+  ⎿  Wrote 70 lines to cre_daily_update.sh
+       1 #!/usr/bin/env bash
+         ===============
+       3 # cre_daily_update.sh: daily CRE listing refresh (collect -> ing
+       4 #
+       5 # Collects every supported source (sale + lease, full pagination
+       6 # local self-hosted Firecrawl API, then upserts into the Supabas
+         e `credeals`
+         es listings a
+       8 # clean full pass no longer sees).
+      10 # Usage:
+     … +78 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Write(.gitignore)
+  ⎿  Wrote 2 lines to .gitignore
+      1 node_modules/
+      2 out/
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Task Output b9bqnsij3  ⎿    savills/lease: page 56, 0 collected (total ?)
+       savills/lease: page 57, 0 collected (total ?)
+       savills/lease: page 58, 0 collected (total ?)
+     … +16 lines (ctrl+o to expand)
+
+⏺ Background command "Smoke-test patched nai-global and savills adapters" completed (exit code 0)
+
+⏺ Update(collect.ts)
+  ⎿  Added 1 line
+      917    let total: number | null = null;
+      918    let nonUsFiltered = 0;
+      919    for (let page = 1; listings.length < max && page <= Math.max
+           (PAGE_CAP, 10); page++) {
+      920 +    const before = listings.length;                           
+      921      const url = page === 1 ? base : `${base}/page/${page}`;
+      922      const html = await scrapeRaw(url, { waitFor: 6000 });
+      923      const $ = cheerio.load(html);
+
+⏺ Update(collect.ts)
+  ⎿  Added 2 lines
+      985        });
+      986      });
+      987      if (!seenHere.size) break;
+      988 +    // every card on this page was a duplicate or filtered: en
+          +d of useful pages                                             
+      989 +    if (listings.length === before) break;                    
+      990      console.error(`  savills/${tx}: page ${page}, ${listings.l
+           ength} collected (total ${total ?? "?"})`);
+      991    }
+      992    if (!listings.length && !nonUsFiltered) {
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+⏺ Write(CLAUDE.md)
+  ⎿  Wrote 127 lines to CLAUDE.md
+       1 # CLAUDE.md — cre_collector/
+       3 Multi-source CRE listing collector + Supabase ingestor. This is 
+         the
+         isting
+       5 database (EQUIRE feed). It supersedes the per-broker Python scra
+       6 `../cre_scrapers/` for bulk collection (those remain useful for 
+         detail-page
+       8 
+       9 Adapted from the Prometheus cloud collector preserved at
+         e local
+     … +170 lines (ctrl+o to expand)
+
+⏺ Update(~/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/sql/0
+        01_cre_brokerages.sql)
+  ⎿  Added 4 lines, removed 4 lines
+      70   '{"proxy": "stealth", "wait_for_ms": 5000, "timeout_ms": 60000
+          , "pagination_strategy": "coveo_hash_facets", "listing_url_patt
+          ern": "/en/properties/{name-slug}/{address-slug}/usa{7-digit-id
+          }", "external_id_pattern": "usa[0-9]{7}", "search_url_pattern":
+           "/en/properties#f:listingtype=[For%20Sale]&f:recenttransaction
+          s=[0]", "pagination_param": "#first=N", "notes": "Easiest targe
+          t. Raise wait_for to 7000 if render slow (heavy content). Listi
+          ng IDs stable and parseable from URL tail."}'::jsonb,
+      71   true),
+      72  
+      73 --- 5. Marcus & Millichap -- TIMEOUT even at 90s. Managed CF / h
+         -eadless detection suspected. Disabled pending API approach.    
+      73 +-- 5. Marcus & Millichap -- works via cre_collector (stealth + 
+         +120s timeout + 3x retry). Sale-only platform. Flaky but usable.
+      74  ('Marcus & Millichap', 'marcus-millichap',
+      75   'https://www.marcusmillichap.com',
+      76   'https://www.marcusmillichap.com/properties',
+      77 - 'Marcus & Millichap. SCRAPE_TIMEOUT at both 60s and 90s. Consi
+         -stent timeout characteristic of active headless-browser detecti
+         -on or a render that never resolves. Has an internal property se
+         -arch API feeding their map (potential alternative). Disabled un
+         -til a working approach is verified.',                          
+      78 - '{"proxy": "stealth", "wait_for_ms": 10000, "timeout_ms": 1200
+         -00, "pagination_strategy": "unknown", "listing_url_pattern": "/
+         -properties/{listing-id}", "notes": "FAILED in testing: timeout 
+         -at 90s. Try wait_for=10000 timeout=120000. May need fingerprint
+         - spoofing beyond stealth, or direct map API. active=false until
+         - verified."}'::jsonb,                                          
+      79 - false),                                                       
+      77 + 'Marcus & Millichap. Investment-sales platform (no public leas
+         +e inventory). Verified 2026-06-11 via cre_collector/collect.ts:
+         + stealth proxy + timeout 120000 succeeds, but intermittent SCRA
+         +PE_TIMEOUTs occur and are absorbed by the collector''s 3-attemp
+         +t retry. Stable numeric listing ids and canonical /properties/{
+         +id}/{slug} URLs.',                                             
+      78 + '{"proxy": "stealth", "wait_for_ms": 10000, "timeout_ms": 1200
+         +00, "pagination_strategy": "rendered_grid", "listing_url_patter
+         +n": "/properties/{listing-id}/{slug}", "notes": "Collected by c
+         +re_collector (source key marcus-millichap, sale-only). Flaky un
+         +der stealth: expect 1-2 timeouts absorbed by retries per run."}
+         +'::jsonb,                                                      
+      79 + true),                                                        
+      80  
+      81  -- 6. Avison Young -- Liferay SPA, hash routing. Listings hydra
+          te client-side; not in initial HTML. Hard.
+      82  ('Avison Young', 'avison-young',
+
+⏺ Update(~/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/sql/0
+        01_cre_brokerages.sql)
+  ⎿  Added 4 lines, removed 4 lines
+       94   '{"proxy": "stealth", "wait_for_ms": 5000, "timeout_ms": 6000
+           0, "pagination_strategy": "unknown_until_consent_bypassed", "c
+           onsent_wall": "cookieyes", "actions": [{"type": "click", "sele
+           ctor": "[data-cky-tag=accept-button], .cky-btn-accept"}], "coo
+           kie_header": "cookieyes-consent=yes", "notes": "MEDIUM: barrie
+           r is consent wall not CF. Add actions click on CookieYes accep
+           t button before content renders. Franchise listings may live o
+           n partner subdomains."}'::jsonb,
+       95   true),
+       96  
+       97 --- 8. Newmark -- public /properties is a signup funnel. Real l
+          -istings gated behind nim.nmrk.com investor portal. Disabled.  
+       97 +-- 8. Newmark -- works via public Algolia search API (credenti
+          +als embedded in the /properties page). Sale + lease.          
+       98  ('Newmark', 'newmark',
+       99   'https://www.nmrk.com',
+      100   'https://www.nmrk.com/properties?saleOrLease=sale',
+      101 - 'Newmark. Clean Next.js app, no Cloudflare, but public /prope
+          -rties is an investor-portal signup funnel with NO public listi
+          -ng cards. Real listings require a nim.nmrk.com (Newmark Invest
+          -or Management) account. Not scrapeable without authentication.
+          - Disabled.',                                                  
+      102 - '{"proxy": "stealth", "wait_for_ms": 5000, "timeout_ms": 6000
+          -0, "pagination_strategy": "gated", "listing_url_pattern": "/pr
+          -operties?saleOrLease=sale&propertyTypes={1=office,2=retail,3=i
+          -ndustrial,5=land,7=special,8=hospitality}", "portal_url": "htt
+          -ps://nim.nmrk.com", "notes": "HARD (access-gated): public page
+          - is a signup funnel, no public listings. Requires nim.nmrk.com
+          - auth. active=false until a credentialed/authorized path exist
+          -s."}'::jsonb,                                                 
+      103 - false),                                                      
+      101 + 'Newmark. The /properties page embeds public Algolia search c
+          +redentials; the Algolia index serves full listing data without
+          + authentication (verified 2026-06-11 via cre_collector/collect
+          +.ts: 1,390 sale + 3,757 lease). Algolia''s ~1,000-hit retrieva
+          +l cap is bypassed by splitting queries per state facet. The ni
+          +m.nmrk.com portal gate only applies to the rendered site, not 
+          +the search index.',                                           
+      102 + '{"proxy": "auto", "wait_for_ms": 3000, "timeout_ms": 60000, 
+          +"pagination_strategy": "algolia_state_facets", "facet_filter":
+          + "saleOrLease:Sale|Lease", "notes": "Collected by cre_collecto
+          +r (source key newmark). Algolia appId/searchKey/index are scra
+          +ped from the page on each run; per-state facet split keeps eve
+          +ry query under the 1k retrieval cap."}'::jsonb,               
+      103 + true),                                                       
+      104  
+      105  -- 9. SVN -- WordPress. No CF. Browse page is nav-only; listin
+           gs behind a search form. Query-param discovery.
+      106  ('SVN', 'svn',
+
+⏺ Background command "Full collection: Cushman + Avison Young group" completed (exit code 0)
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Update(collect.ts)
+  ⎿  Added 60 lines, removed 43 lines
+      718  // --- Cushman & Wakefield: rendered search pages ---
+      719  
+      720  async function srcCushman(tx: Tx, max: number): Promise<Source
+           Result> {
+      721 -  const sourceUrl =                                           
+      721 +  const base =                                                
+      722      tx === "sale"
+      723        ? "https://www.cushmanwakefield.com/en/united-states/pro
+           perties/invest/search"
+      724        : "https://www.cushmanwakefield.com/en/united-states/pro
+           perties/lease/search";
+      725 -  const html = await scrapeRaw(sourceUrl, { waitFor: 10000 });
+      726 -  const $ = cheerio.load(html);                               
+      725    const seen = new Set<string>();
+      726    const listings: any[] = [];
+      727 +  let total: number | null = null;                            
+      728    const hrefPat =
+      729      tx === "sale"
+      730        ? 'a[href*="/for-sale/"], a[href*="/properties/sale/"], 
+           a[href*="/properties/for-sale/"]'
+      731        : 'a[href*="/for-lease/"], a[href*="/properties/lease/"]
+           , a[href*="/properties/for-lease/"]';
+      732    const dirToken = tx === "sale" ? "for-sale" : "for-lease";
+      734 -  $(hrefPat).each((_, el) => {                                
+      735 -    if (listings.length >= max) return;                       
+      736 -    const href = $(el).attr("href")!;                         
+      737 -    if (!new RegExp(`/(${dirToken}|${tx})/`).test(href) || /\/
+          -search/.test(href)) return;                                   
+      738 -    const abs = href.startsWith("http") ? href : `https://www.
+          -cushmanwakefield.com${href}`;                                 
+      739 -    if (seen.has(abs)) return;                                
+      740 -    seen.add(abs);                                            
+      741 -    const card = $(el).closest(".cw-search-card").length ? $(e
+          -l).closest(".cw-search-card") : $(el);                        
+      742 -    const name = clean(card.find(".cw-search-card__title").fir
+          -st().text());                                                 
+      743 -    const address = clean(card.find(".cw-search-card__address"
+          -).first().text());                                            
+      744 -    const priceText =                                         
+      745 -      clean(card.find(".cw-search-card__price").first().text()
+          -)?.replace(                                                   
+      746 -        /^(Sale Price|Rental Price|Price):\s*/i,              
+      747 -        ""                                                    
+      748 -      ) ?? null;                                              
+      749 -    const img = card.find("img").attr("src") ?? null;         
+      750 -    const parts = abs.split("/").filter(Boolean);             
+      751 -    const di = parts.indexOf(dirToken);                       
+      752 -    const zipM = (address ?? "").match(/\b(\d{5})\b/);        
+      753 -    listings.push({                                           
+      754 -      id: parts.slice(-1)[0] ?? null,                         
+      755 -      name: name ?? clean(parts.slice(-2)[0]?.replace(/-/g, " 
+          -")),                                                          
+      756 -      transactionType: tx === "sale" ? "Sale" : "Lease",      
+      757 -      assetType: di > 0 && parts[di + 1] ? clean(parts[di + 1]
+          -.replace(/-/g, " ")) : null,                                  
+      758 -      street: address,                                        
+      759 -      city: clean((parts[di + 3] ?? "").replace(/-/g, " ")),  
+      760 -      state: (parts[di + 2] ?? "").toUpperCase().slice(0, 2) |
+          -| null,                                                       
+      761 -      postalCode: zipM ? zipM[1] : null,                      
+      762 -      country: "US",                                          
+      763 -      salePriceUsd: tx === "sale" ? moneyToNumber(priceText) :
+          - null,                                                        
+      764 -      salePriceText: tx === "sale" ? priceText : null,        
+      765 -      leaseRateText: tx === "lease" ? priceText : null,       
+      766 -      brokerIds: [],                                          
+      767 -      photos: img ? [img] : [],                               
+      768 -      url: abs,                                               
+      733 +  const PER_PAGE = 12; // Coveo default batch; #first=N offset
+          +s into the result set                                         
+      734 +  for (let page = 0; listings.length < max && page < PAGE_CAP;
+          + page++) {                                                    
+      735 +    const before = listings.length;                           
+      736 +    const sourceUrl = page === 0 ? base : `${base}#first=${pag
+          +e * PER_PAGE}`;                                               
+      737 +    const html = await scrapeRaw(sourceUrl, { waitFor: 10000 }
+          +);                                                            
+      738 +    const $ = cheerio.load(html);                             
+      739 +    total =                                                   
+      740 +      total ??                                                
+      741 +      (Number(($("*").text().match(/([0-9][0-9,]*)\s+results/i
+          +) ?? [])[1]?.replace(/,/g, "")) ||                            
+      742 +        null);                                                
+      743 +    $(hrefPat).each((_, el) => {                              
+      744 +      if (listings.length >= max) return;                     
+      745 +      const href = $(el).attr("href")!;                       
+      746 +      if (!new RegExp(`/(${dirToken}|${tx})/`).test(href) || /
+          +\/search/.test(href)) return;                                 
+      747 +      const abs = href.startsWith("http") ? href : `https://ww
+          +w.cushmanwakefield.com${href}`;                               
+      748 +      if (seen.has(abs)) return;                              
+      749 +      seen.add(abs);                                          
+      750 +      const card = $(el).closest(".cw-search-card").length    
+      751 +        ? $(el).closest(".cw-search-card")                    
+      752 +        : $(el);                                              
+      753 +      const name = clean(card.find(".cw-search-card__title").f
+          +irst().text());                                               
+      754 +      const address = clean(card.find(".cw-search-card__addres
+          +s").first().text());                                          
+      755 +      const priceText =                                       
+      756 +        clean(card.find(".cw-search-card__price").first().text
+          +())?.replace(                                                 
+      757 +          /^(Sale Price|Rental Price|Price):\s*/i,            
+      758 +          ""                                                  
+      759 +        ) ?? null;                                            
+      760 +      const img = card.find("img").attr("src") ?? null;       
+      761 +      const parts = abs.split("/").filter(Boolean);           
+      762 +      const di = parts.indexOf(dirToken);                     
+      763 +      const zipM = (address ?? "").match(/\b(\d{5})\b/);      
+      764 +      listings.push({                                         
+      765 +        id: parts.slice(-1)[0] ?? null,                       
+      766 +        name: name ?? clean(parts.slice(-2)[0]?.replace(/-/g, 
+          +" ")),                                                        
+      767 +        transactionType: tx === "sale" ? "Sale" : "Lease",    
+      768 +        assetType: di > 0 && parts[di + 1] ? clean(parts[di + 
+          +1].replace(/-/g, " ")) : null,                                
+      769 +        street: address,                                      
+      770 +        city: clean((parts[di + 3] ?? "").replace(/-/g, " ")),
+      771 +        state: (parts[di + 2] ?? "").toUpperCase().slice(0, 2)
+          + || null,                                                     
+      772 +        postalCode: zipM ? zipM[1] : null,                    
+      773 +        country: "US",                                        
+      774 +        salePriceUsd: tx === "sale" ? moneyToNumber(priceText)
+          + : null,                                                      
+      775 +        salePriceText: tx === "sale" ? priceText : null,      
+      776 +        leaseRateText: tx === "lease" ? priceText : null,     
+      777 +        brokerIds: [],                                        
+      778 +        photos: img ? [img] : [],                             
+      779 +        url: abs,                                             
+      780 +      });                                                     
+      781      });
+      770 -  });                                                         
+      782 +    // No new cards on this offset: either the hash was ignore
+          +d (page 1                                                     
+      783 +    // duplicate) or we ran past the end of the result set.   
+      784 +    if (listings.length === before) break;                    
+      785 +    console.error(                                            
+      786 +      `  cushman-wakefield/${tx}: offset ${page * PER_PAGE}, $
+          +{listings.length} collected (total ${total ?? "?"})`          
+      787 +    );                                                        
+      788 +  }                                                           
+      789    if (!listings.length) {
+      790      throw new Error(`no ${dirToken} listing links found on Cus
+           hman & Wakefield US search page`);
+      791    }
+      792    return {
+      793      company: "Cushman & Wakefield",
+      776 -    sourceUrl,                                                
+      777 -    method: "Rendered search page parsed (cards); full result 
+          -API is POST-only",                                            
+      778 -    totalAvailable: null,                                     
+      794 +    sourceUrl: base,                                          
+      795 +    method: "Rendered Coveo search pages parsed (cards), pagin
+          +ated via #first=N",                                           
+      796 +    totalAvailable: total,                                    
+      797      listings,
+      780 -    note: "Coverage limited to listings rendered on the first 
+          -page of the US search.",                                      
+      798    };
+      799  }
+      800  
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Update(~/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/CLAUD
+        E.md)  ⎿  Added 8 lines
+      35      004_cre_indexes.sql        Performance indexes (geo, FTS, G
+          IN, price, cap rate)
+      36      005_cre_views.sql          Agent-facing views, search_cre_l
+          istings(), updated_at triggers
+      37  
+      38 +  cre_collector/               PRODUCTION multi-source collecto
+         +r + Supabase ingestor                                          
+      39 +    CLAUDE.md                  Collector guide (source matrix, 
+         +ingest semantics, daily runs)                                  
+      40 +    collect.ts                 14-source collector (local Firec
+         +rawl, sale + lease, full pagination)                           
+      41 +    cre_ingest.py              Collector JSON -> credeals schem
+         +a upserts (stdlib + psql)                                      
+      42 +    cre_daily_update.sh        Daily refresh: healthcheck -> co
+         +llect -> ingest --mark-missing                                 
+      43 +                                                               
+      44    prometheus/                  Reference Prometheus collector +
+           pre-collected dataset
+      45      CLAUDE.md                  Prometheus-specific guide (key: 
+          CBRE internal API)
+      46      script.ts                  Original TypeScript collector (c
+          loud Firecrawl SDK)
+      47      data.json                  Pre-collected CBRE dataset (5,87
+          7 listings, 11MB, 2026-06-11)
+      48      README.md                  Original Prometheus README
+      49 +    multi_source/              Original 14-source Prometheus sc
+         +ript (unmodified reference)                                    
+      50 +    archive/                   Original zip artifacts as delive
+         +red                                                            
+      51  
+      52    firecrawl_healthcheck.sh     Stack smoke test
+      53    firecrawl_cli.sh             Upstream Firecrawl CLI pinned to
+           http://localhost:3002
+
+⏺ Update(~/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/CLAUD
+        E.md)
+  ⎿  Added 19 lines, removed 12 lines
+      129  
+      130  ### Broker status
+      131  
+      132 -| Broker | Slug | Status | Notes |                            
+      133 -|--------|------|--------|-------|                            
+      134 -| CBRE | `cbre` | Active | Cloudflare stealth; has internal JS
+          -ON API (see `prometheus/`) |                                  
+      135 -| JLL | `jll` | Active | Next.js, no CF; scrape search pages |
+      136 -| Cushman & Wakefield | `cushman-wakefield` | Active | Coveo s
+          -earch, no CF |                                                
+      137 -| Colliers | `colliers` | Active | Easiest — stable `usa{7digi
+          -t}` IDs in links |                                            
+      138 -| Marcus & Millichap | `marcus-millichap` | **Disabled** | Tim
+          -eout at 90s; needs API approach |                             
+      139 -| Avison Young | `avison-young` | Active | Liferay hash SPA; h
+          -ard |                                                         
+      140 -| NAI Global | `nai-global` | Active | CookieYes consent wall;
+          - actions click needed |                                       
+      141 -| Newmark | `newmark` | **Disabled** | Gated behind `nim.nmrk.
+          -com` auth portal |                                            
+      142 -| SVN | `svn` | Active | WordPress; discovery via `?propertyTy
+          -pes=` |                                                       
+      143 -| Lee & Associates | `lee-associates` | Active | Unverified — 
+          -run discovery scrape first |                                  
+      132 +Bulk collection now runs through `cre_collector/collect.ts` (s
+          +ee its                                                        
+      133 +CLAUDE.md for the verified per-source matrix with sale/lease t
+          +otals). The                                                   
+      134 +2026-06-11 verification flipped two former blockers: Newmark w
+          +orks via its                                                  
+      135 +public Algolia search API (creds embedded in the page), and Ma
+          +rcus &                                                        
+      136 +Millichap works under stealth with retries.                   
+      137  
+      138 +| Broker | Slug | Status | Collection method (cre_collector) |
+      139 +|--------|------|--------|-----------------------------------|
+      140 +| CBRE | `cbre` | Active | Internal JSON API, stealth (sale 5.
+          +9k + lease 14.8k); also `cbre-dealflow` sub-source |          
+      141 +| JLL | `jll` | Active | Search pages (sale 332 + lease 4.3k);
+          + also `jll-investor` sub-source |                             
+      142 +| Cushman & Wakefield | `cushman-wakefield` | Active | Coveo s
+          +earch pages, `#first=N` pagination |                          
+      143 +| Colliers | `colliers` | Unsupported in collector | POST-only
+          + API; Python scraper path still available |                   
+      144 +| Marcus & Millichap | `marcus-millichap` | Active (flaky) | S
+          +tealth + 120s timeout + retries; sale-only |                  
+      145 +| Avison Young | `avison-young` | Active (limited) | SPA sideb
+          +ar; only first ~11 cards render locally |                     
+      146 +| NAI Global | `nai-global` | Active (limited) | Infabode widg
+          +et; synthesized `card:` ids, first batch only |               
+      147 +| Newmark | `newmark` | Active | Algolia API, per-state facets
+          + (sale 1.4k + lease 3.8k) |                                   
+      148 +| SVN | `svn` | Active | Buildout inventory API (~5.5k items) 
+          +|                                                             
+      149 +| Lee & Associates | `lee-associates` | Active | Buildout inve
+          +ntory API (~10k items) |                                      
+      150 +| Savills | `savills` | Active | Server-rendered pages; sale ~
+          +105, US lease empty |                                         
+      151 +                                                              
+      152  ### Source of truth alignment
+      153  
+      154  `config.py` `BROKERS` slugs **must** match `001_cre_brokerages
+           .sql` seed slugs.
+
+⏺ Background command "Test Coveo hash pagination on Cushman sale search" completed (exit code 0)
+
+  Read 2 files, ran 6 shell commands (ctrl+o to expand)
+
+⏺ Background command "Full collection: stealth group (CBRE, Dealflow, M&amp;M)" completed (exit code 0)
+
+⏺ The stealth group (CBRE + Dealflow + M&M) just finished — checking it, and
+  extracting the Sitecore Coveo endpoint config from the saved page:
+
+  Read 2 files, ran 3 shell commands (ctrl+o to expand)
+
+⏺ Update(CLAUDE.md)
+  ⎿  Added 1 line, removed 1 line
+      57  | `cbre-dealflow` | Rendered grid, stealth | ~hundreds | n/a | 
+          Sale-only platform; ids prefixed `dealflow:` |
+      58  | `jll` | Search pages, waitFor 8000 | 332 | 4,345 | tenure=sal
+          e / tenure=rent |
+      59  | `jll-investor` | Rendered grid | ~hundreds | n/a | Sale-only;
+           ids prefixed `investor:` |
+      60 -| `cushman-wakefield` | Search pages | ? | ? | Distinct sale/le
+         -ase URL paths |                                                
+      60 +| `cushman-wakefield` | Coveo search page | 12/run of 2,743 | 1
+         +2/run | KNOWN LIMIT: Coveo ignores `#first=N` on fresh render; 
+         +`/coveo/rest` POST is blocked by Azure App Gateway. Needs scrap
+         +e actions (scroll/pager) or session replay for full coverage | 
+      61  | `newmark` | Algolia API (creds scraped from page) | 1,390 | 3
+          ,757 | Per-state facet split beats the 1k cap |
+      62  | `marcus-millichap` | Rendered grid, stealth | works | n/a | F
+          laky: timeouts absorbed by 3x retry |
+      63  | `avison-young` | SPA sidebar, waitFor 14000 | ~11 | ~11 | KNO
+          WN LIMIT: only first sidebar batch renders (no scroll actions l
+          ocally) |
+
+⏺ Update(~/Documents/GitHub/agentic-assets/firecrawl/CLAUDE.md)
+  ⎿  File must be read first
+
+  Searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+⏺ Background command "Ingest CBRE/Dealflow/M&amp;M full collection to Supabase" completed (exit code 0)
+
+⏺ Update(~/Documents/GitHub/agentic-assets/firecrawl/CLAUDE.md)
+  ⎿  Added 4 lines
+      63  feeds EQUIRE's deal intelligence platform. See each subdirector
+          y's `CLAUDE.md`.
+      64  
+      65  Key components:
+      66 +- `scripts/firecrawl-ops/cre_collector/` — PRODUCTION multi-sou
+         +rce collector + ingestor:                                      
+      67 +  `collect.ts` (14 sources, sale + lease, full pagination throu
+         +gh local Firecrawl),                                           
+      68 +  `cre_ingest.py` (collector JSON -> `credeals` upserts via psq
+         +l),                                                            
+      69 +  `cre_daily_update.sh` (daily refresh with soft-delete reconci
+         +liation)                                                       
+      70  - `scripts/firecrawl-ops/cre_scrapers/` — Python package, one s
+          craper per broker
+      71    (`config.py` is the single source of truth; `base.py`, `norma
+          lizer.py`, then per-broker files)
+      72  - `scripts/firecrawl-ops/sql/` — Supabase migrations for `cre_*
+          ` tables
+
+⏺ Update(~/Documents/GitHub/agentic-assets/firecrawl/CLAUDE.md)
+  ⎿  Added 5 lines, removed 2 lines
+      76  - `scripts/firecrawl-ops/cbre_scrape.py` — original single-brok
+          er CBRE page scraper (still valid)
+      77  - `docs/firecrawl-ops/references/cre-listing-system-design.md` 
+          — full architecture doc
+      78  
+      79 -Brokers: CBRE, JLL, Cushman & Wakefield, Colliers, Marcus & Mil
+         -lichap (disabled),                                             
+      80 -Avison Young, SVN, NAI Global, Newmark (disabled), Lee & Associ
+         -ates.                                                          
+      79 +Brokers: CBRE (+ Deal Flow), JLL (+ Investor Center), Cushman &
+         + Wakefield,                                                    
+      80 +Marcus & Millichap, Avison Young, SVN, NAI Global, Newmark, Lee
+         + & Associates,                                                 
+      81 +Savills. Colliers and Transwestern are unsupported in the colle
+         +ctor (POST-only                                                
+      82 +APIs). Newmark works via its public Algolia API; Marcus & Milli
+         +chap works                                                     
+      83 +under stealth with retries (both formerly disabled).           
+      84  
+      85  CBRE has an internal JSON API (`/listings-api/propertylistings/
+          query`) that bypasses
+      86  the need for page scraping — see `scripts/firecrawl-ops/prometh
+          eus/CLAUDE.md`.
+
+⏺ All documentation layers updated. While the remaining two groups collect,
+  running the Supabase advisors check and a data-quality sanity pass on what's
+  ingested:
+
+  Called plugin:supabase:supabase, ran 4 shell commands (ctrl+o to expand)
+⏺ Only two WARN findings touch the CRE schema: mutable search_path on
+  search_cre_listings and update_cre_listing_timestamp (both predate today).
+  Fixing them in the migration and live:
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ Update(~/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/sql/0
+        05_cre_views.sql)
+  ⎿  Added 1 line
+      19  CREATE OR REPLACE FUNCTION credeals.update_cre_listing_timestam
+          p()
+      20  RETURNS trigger
+      21  LANGUAGE plpgsql
+      22 +SET search_path = ''                                           
+      23  AS $$
+      24  BEGIN
+      25      NEW.updated_at = now();
+
+⏺ Update(~/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/sql/0
+        05_cre_views.sql)
+  ⎿  Added 1 line
+      208  )
+      209  LANGUAGE sql
+      210  STABLE
+      211 +SET search_path = ''                                          
+      212  AS $$
+      213      SELECT
+      214          l.id, b.name, l.title, l.address, l.city, l.state,
+
+⏺ SET search_path = '' breaks unqualified references — verifying the function
+  body qualifies its tables before applying live:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Body is fully schema-qualified and built-ins resolve via pg_catalog. Applying
+  live with a smoke test:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Both advisor warnings are resolved and the search function works against live
+  data. Adding the launchd template for scheduling, then waiting on the two
+  remaining collection groups.
+
+⏺ Write(com.agenticassets.cre-daily.plist.example)
+  ⎿  Wrote 44 lines to com.agenticassets.cre-daily.plist.example
+       1 <?xml version="1.0" encoding="UTF-8"?>
+       2 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www
+         .apple.com/DTDs/PropertyList-1.0.dtd">
+       4   Daily CRE listing refresh via launchd (06:30 local).
+       5 
+       6   Install:
+       7     cp com.agenticassets.cre-daily.plist.example \
+       8        ~/Library/LaunchAgents/com.agenticassets.cre-daily.plist
+      10     launchctl load ~/Library/LaunchAgents/com.agenticassets.cre-
+         daily.plist
+     … +40 lines (ctrl+o to expand)
+
+⏺ Task Output bsgykoj49
+  ⎿  non-JSON body from https://buildout.com/plugins/9a64a93980aeae8db347e7
+     2cdfa8ca61017acc9a/inventory.json?page=124 (attempt 2); backing off
+     non-JSON body from https://buildout.com/plugins/9a64a93980aeae8db347e7
+     … +373 lines (ctrl+o to expand)
+
+⏺ Background command "Full collection: JLL group (search pages + investor)" completed (exit code 0)
+
+⏺ Background command "Full collection: JSON-API group (SVN, Lee, Newmark, Savills, NAI)" completed (exit code 0)
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Update(collect.ts)
+  ⎿  Added 8 lines, removed 2 lines
+      1002        });
+      1003      });
+      1004      if (!seenHere.size) break;
+      1005 -    // every card on this page was a duplicate or filtered: e
+           -nd of useful pages                                           
+      1006 -    if (listings.length === before) break;                   
+      1005 +    // Savills shuffles sort order between requests, so a pag
+           +e can be all                                                 
+      1006 +    // duplicates without meaning the end of the result set. 
+           +Stop only after                                              
+      1007 +    // several consecutive pages contribute nothing new.     
+      1008 +    if (listings.length === before) {                        
+      1009 +      if (++emptyStreak >= 3) break;                         
+      1010 +    } else {                                                 
+      1011 +      emptyStreak = 0;                                       
+      1012 +    }                                                        
+      1013      console.error(`  savills/${tx}: page ${page}, ${listings.
+            length} collected (total ${total ?? "?"})`);
+      1014    }
+      1015    if (!listings.length && !nonUsFiltered) {
+
+⏺ Update(collect.ts)
+  ⎿  Added 1 line
+      933    const listings: any[] = [];
+      934    let total: number | null = null;
+      935    let nonUsFiltered = 0;
+      936 +  let emptyStreak = 0;                                        
+      937    for (let page = 1; listings.length < max && page <= Math.max
+           (PAGE_CAP, 10); page++) {
+      938      const before = listings.length;
+      939      const url = page === 1 ? base : `${base}/page/${page}`;
+
+⏺ Update(collect.ts)
+  ⎿  Added 7 lines, removed 2 lines
+      514    const { appId, searchKey, indexName } = newmarkCreds;
+      515    const facetVal = tx === "sale" ? "Sale" : "Lease";
+      516  
+      517 -  const query = async (extraFacets: string[], hitsPerPage: num
+          -ber, page = 0) => {                                           
+      517 +  const query = async (                                       
+      518 +    extraFacets: string[],                                    
+      519 +    hitsPerPage: number,                                      
+      520 +    page = 0,                                                 
+      521 +    facetsField = "state"                                     
+      522 +  ) => {                                                      
+      523      const facetFilters = encodeURIComponent(
+      524        JSON.stringify([
+      525          "sectionGroup:Properties",
+     ...
+      530        ])
+      531      );
+      532      return scrapeJson(
+      528 -      `https://${appId}-dsn.algolia.net/1/indexes/${indexName}
+          -?x-algolia-application-id=${appId}&x-algolia-api-key=${searchK
+          -ey}&query=&hitsPerPage=${hitsPerPage}&page=${page}&facets=${en
+          -codeURIComponent("state")}&facetFilters=${facetFilters}`,     
+      533 +      `https://${appId}-dsn.algolia.net/1/indexes/${indexName}
+          +?x-algolia-application-id=${appId}&x-algolia-api-key=${searchK
+          +ey}&query=&hitsPerPage=${hitsPerPage}&page=${page}&facets=${en
+          +codeURIComponent(facetsField)}&facetFilters=${facetFilters}`, 
+      534        { timeout: 60000 }
+      535      );
+      536    };
+
+⏺ Update(collect.ts)
+  ⎿  Added 15 lines, removed 2 lines
+      547      console.error(`  newmark/${tx}: ${total} total > single-qu
+           ery cap, splitting across ${states.length} states`);
+      548      await pmap(states, CONCURRENCY, async (st) => {
+      549        if (hitMap.size >= max) return;
+      550 -      const r = await query([`state:${st}`], 1000);           
+      550 +      const r = await query([`state:${st}`], 1000, 0, "propert
+          +y_types");                                                    
+      551        for (const h of r.hits ?? []) hitMap.set(h.objectID ?? h
+           .slug ?? JSON.stringify(h), h);
+      552        if ((r.nbHits ?? 0) > 1000) {
+      553 -        console.error(`  newmark/${tx}: WARNING state ${st} ha
+          -s ${r.nbHits} hits, >1000 cap; coverage truncated for that sta
+          -te`);                                                         
+      553 +        // Sub-split the over-cap state by property type to st
+          +ay under the cap.                                             
+      554 +        const types: string[] = Object.keys(r.facets?.property
+          +_types ?? {});                                                
+      555 +        if (!types.length) {                                  
+      556 +          console.error(`  newmark/${tx}: WARNING state ${st} 
+          +has ${r.nbHits} hits, >1000 cap and no property_types facet; c
+          +overage truncated`);                                          
+      557 +          return;                                             
+      558 +        }                                                     
+      559 +        console.error(`  newmark/${tx}: state ${st} has ${r.nb
+          +Hits} hits, sub-splitting across ${types.length} property type
+          +s`);                                                          
+      560 +        await pmap(types, 2, async (pt) => {                  
+      561 +          const r2 = await query([`state:${st}`, `property_typ
+          +es:${pt}`], 1000);                                            
+      562 +          for (const h of r2.hits ?? []) hitMap.set(h.objectID
+          + ?? h.slug ?? JSON.stringify(h), h);                          
+      563 +          if ((r2.nbHits ?? 0) > 1000) {                      
+      564 +            console.error(`  newmark/${tx}: WARNING ${st}/${pt
+          +} still ${r2.nbHits} hits, >1000 cap; coverage truncated`);   
+      565 +          }                                                   
+      566 +        });                                                   
+      567        }
+      568      });
+      569    }
+
+⏺ Background command "Ingest API, JLL, and CW/AY group collections" completed (exit code 0)
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)  ⎿  You've hit your monthly spend limit.
+     /usage-credits to adjust your monthly spend limit.
+
+✻ Churned for 49m 11s
