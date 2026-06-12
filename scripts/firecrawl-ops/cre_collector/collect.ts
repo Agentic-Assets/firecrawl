@@ -4452,8 +4452,11 @@ async function runSource(key: SourceKey, tx: Tx, max: number): Promise<SourceRes
           directReferer: "https://svn.com/properties/",
           pageConcurrency: 1,
           requireCompletePages: true,
+          cacheSlug: "svn",
+          usePageCache: true,
           recoveryPasses: 1,
           recoveryCooldownMs: 15000,
+          maxRecoveryPages: 60,
         }
       );
     case "lee-associates":

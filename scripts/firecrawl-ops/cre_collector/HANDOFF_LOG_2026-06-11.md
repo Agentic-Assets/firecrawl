@@ -763,3 +763,40 @@ Probe result:
 Next step: run full JLL with the cache enabled, dry-run ingest, inspect
 detail-error and merge counts, then live ingest with source-scoped
 `--mark-missing` only if the full run is clean and current.
+
+## 2026-06-12 SVN Buildout Cache Path Reopened
+
+A focused SVN worker verified that SVN can use the Lee-style durable Buildout
+page cache path. No Supabase ingest was run and no binaries were downloaded.
+
+Code change:
+
+- SVN now passes `cacheSlug: "svn"` and `usePageCache: true` into the shared
+  Buildout inventory helper.
+- SVN recovery remains conservative with `pageConcurrency: 1`,
+  `requireCompletePages: true`, `recoveryPasses: 1`, and `maxRecoveryPages: 60`.
+
+Probe result:
+
+- `BUILDOUT_CACHE_ONLY=1` for pages 0 through 2 succeeded against public
+  Buildout JSON and correctly refused to write a partial listing artifact.
+- `BUILDOUT_ASSEMBLE_FROM_CACHE=1` failed closed when only pages 0 through 2
+  were present, reporting missing pages beginning at page 3.
+- A follow-up cache window filled pages 3 through 4.
+- SVN cache now has pages 0 through 4 under gitignored
+  `out/cache/buildout/svn/`, each reporting `total=5526`, `limit=30`, and
+  `rows=30`.
+- `npm run typecheck` and `python3 -m py_compile cre_ingest.py` passed.
+
+Next safe SVN pattern:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+BUILDOUT_CACHE_ONLY=1 BUILDOUT_PAGE_START=5 BUILDOUT_PAGE_END=24 \
+  BUILDOUT_PAGE_JITTER_MS=250,1000 npx tsx collect.ts \
+  --source=svn --transaction=sale --max-items=0 --concurrency=1 \
+  --out=/tmp/svn_cache_window_should_not_write.json
+```
+
+Repeat windows until pages 0 through 184 are present, then assemble only from
+cache and dry-run ingest before any live upload or source-scoped reconciliation.
