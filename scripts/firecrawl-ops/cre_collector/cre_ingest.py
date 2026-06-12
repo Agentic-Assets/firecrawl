@@ -187,6 +187,10 @@ def norm_cap_rate(v):
 
 
 _MONEY_RE = re.compile(r"\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)")
+_SALE_PSF_TEXT_RE = re.compile(
+    r"(?:/|\bper\s+)\s*(?:s\.?f\.?|sq\.?\s*ft|square\s*feet)|\bpsf\b",
+    re.I,
+)
 # "$10 - 16", "$1.50 to 2.25": the upper bound often has no $ of its own
 _MONEY_RANGE_RE = re.compile(
     r"\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:-|–|to)\s*\$?\s*([0-9][0-9,]*(?:\.[0-9]+)?)"
@@ -208,9 +212,14 @@ def parse_lease_rates(text):
     m = _MONEY_RANGE_RE.search(text)
     if m:
         nums = [float(m.group(1).replace(",", "")), float(m.group(2).replace(",", ""))]
+        # Buildout sometimes formats a suite-size range as a money range, e.g.
+        # "$2.50 - 250 SF/month". Treat large upper bounds as unsafe rather
+        # than promoting suite size into an annual PSF lease rate.
+        if max(nums) > 100 and min(nums) < 100:
+            return None, None
     else:
         nums = [float(x.replace(",", "")) for x in _MONEY_RE.findall(text)]
-    nums = [n for n in nums if 0 < n < 1000]
+    nums = [n for n in nums if 0 < n <= 500]
     if not nums:
         return None, None
     monthly = bool(re.search(r"/\s*mo|month", low))
@@ -219,8 +228,22 @@ def parse_lease_rates(text):
         nums = [n * 12 for n in nums]
     elif not annual and min(nums) > 100:
         return None, None  # per-SF but implausible as annual; don't guess
+    nums = [n for n in nums if 0 < n <= 500]
+    if not nums:
+        return None, None
     lo, hi = min(nums), max(nums)
     return round(lo, 2), (round(hi, 2) if hi > lo else None)
+
+
+def parse_money(text):
+    if not text or not isinstance(text, str):
+        return None
+    m = _MONEY_RE.search(text)
+    return float(m.group(1).replace(",", "")) if m else None
+
+
+def is_sale_psf_text(text):
+    return bool(text and isinstance(text, str) and _SALE_PSF_TEXT_RE.search(text))
 
 
 _SF_RE = re.compile(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:sf\b|sq\.?\s*ft|square\s*feet)", re.I)
@@ -236,6 +259,8 @@ def parse_size_text(text):
     m = _SF_RE.search(text)
     if m:
         size_sf = float(m.group(1).replace(",", ""))
+        if size_sf > 1_000_000_000:
+            size_sf = None
     m = _ACRE_RE.search(text)
     if m:
         lot_sf = float(m.group(1).replace(",", "")) * SQFT_PER_ACRE
@@ -308,8 +333,12 @@ def to_row(listing, brokers_by_idx, scraped_at):
         size_sf = size_sf if size_sf is not None else t_size
         lot_size_sf = lot_size_sf if lot_size_sf is not None else t_lot
 
+    sale_price_text = listing.get("salePriceText")
     sale_price = num_or_none(listing.get("salePriceUsd"), lo=100, hi=1e11)
-    price_per_sf = None
+    price_per_sf = num_or_none(listing.get("salePricePerSf"), lo=0, hi=10000)
+    if is_sale_psf_text(sale_price_text):
+        price_per_sf = price_per_sf or num_or_none(parse_money(sale_price_text), lo=0, hi=10000)
+        sale_price = None
     if sale_price and size_sf and size_sf > 100:
         price_per_sf = round(sale_price / size_sf, 2)
 
@@ -543,7 +572,10 @@ WITH ins AS (
         zip               = COALESCE(EXCLUDED.zip, t.zip),
         lat               = COALESCE(EXCLUDED.lat, t.lat),
         lng               = COALESCE(EXCLUDED.lng, t.lng),
-        size_sf           = COALESCE(EXCLUDED.size_sf, t.size_sf),
+        size_sf           = CASE
+                              WHEN t.size_sf > 1000000000 THEN EXCLUDED.size_sf
+                              ELSE COALESCE(EXCLUDED.size_sf, t.size_sf)
+                            END,
         lot_size_sf       = COALESCE(EXCLUDED.lot_size_sf, t.lot_size_sf),
         year_built        = COALESCE(EXCLUDED.year_built, t.year_built),
         sale_price_usd    = EXCLUDED.sale_price_usd,

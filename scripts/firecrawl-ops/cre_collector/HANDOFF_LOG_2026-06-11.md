@@ -429,6 +429,12 @@ Open QA follow-ups from the sidecar: decide display/merge policy for Cushman
 duplicate source URLs, review Lee/SVN value parsing flags, and treat missing
 state/coordinate gaps as map/filter quality work.
 
+Lee/SVN value parsing was subsequently fixed and reingested from existing
+complete artifacts without a new crawl and without `--mark-missing`. The final
+targeted validation found 0 sale-PSF flags, 0 lease-rate flags, and 0 huge
+`size_sf` values for both Lee and SVN. See
+`VALIDATION_2026-06-12.md#2026-06-12-leesvn-numeric-parser-cleanup`.
+
 ## 2026-06-12 JLL Detail Wait Speed Patch
 
 The JLL collector now defaults detail scrapes to `JLL_DETAIL_WAIT_MS=1000` with

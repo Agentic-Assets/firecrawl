@@ -420,6 +420,47 @@ Result:
 - Savills stays partial: 104 active Savills rows exist, but only 2 rows belong
   to the latest U.S. commercial lease batch.
 
+## 2026-06-12 Lee/SVN Numeric Parser Cleanup
+
+The read-only sidecar in
+`out/lee_svn_value_parsing_review_2026-06-12.md` found that Lee & Associates and
+SVN value flags were parser issues, not Buildout coverage failures. Raw text
+was preserved, but numeric fields were too eager for per-SF sale prices, mixed
+rent/size strings, and implausibly large square-footage text.
+
+Implemented cleanup:
+
+- Buildout sale text containing `/SF`, `per SF`, or `PSF` is no longer stored
+  as total `sale_price_usd`. It is stored as `sale_price_per_sf` when numeric.
+- Lease-rate parsing now rejects likely suite-size ranges such as
+  `$2.50 - 250 SF/month` and annual/monthly values above the conservative
+  annual PSF ceiling.
+- `parse_size_text` ignores parsed sizes above 1 billion SF.
+- The upsert clears existing `size_sf` values above 1 billion SF when the new
+  normalized artifact has no valid replacement.
+
+Commands:
+
+```bash
+python3 cre_ingest.py --in out/lee_full_cache_2026-06-12_assembled.json --dry-run --keep-artifacts /tmp/lee_parser_huge_size_guard_dry_run_2026-06-12
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json --dry-run --keep-artifacts /tmp/svn_parser_huge_size_guard_dry_run_2026-06-12
+python3 cre_ingest.py --in out/lee_full_cache_2026-06-12_assembled.json --keep-artifacts /tmp/lee_parser_huge_size_guard_live_ingest_2026-06-12
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json --keep-artifacts /tmp/svn_parser_huge_size_guard_live_ingest_2026-06-12
+npm run validate:supabase -- --out out/live_validation_after_lee_svn_numeric_cleanup_2026-06-12.md
+```
+
+Result:
+
+- Lee dry-run and live reingest staged 9,223 listings, skipped 0 missing URLs,
+  and kept active counts unchanged.
+- SVN dry-run and live reingest staged 5,287 listings, skipped 0 missing URLs,
+  and kept active counts unchanged.
+- No `--mark-missing` was used.
+- Targeted read-only SQL after reingest found Lee and SVN each have 0 sale-PSF
+  flags, 0 lease-rate flags, and 0 size values above 1 billion SF.
+- Full read-only validation report saved to
+  `out/live_validation_after_lee_svn_numeric_cleanup_2026-06-12.md`.
+
 ## 2026-06-12 JLL Detail Wait Speed Patch Probe
 
 Commands:

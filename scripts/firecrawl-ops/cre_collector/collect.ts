@@ -112,6 +112,10 @@ function moneyToNumber(t: string | null): number | null {
   return m ? Number(m[1]) : null;
 }
 
+function isPerSfPriceText(t: string | null): boolean {
+  return Boolean(t && /(?:\/|\bper\s+)\s*(?:s\.?f\.?|sq\.?\s*ft|square\s*feet)|\bpsf\b/i.test(t));
+}
+
 function prune(v: any): any {
   if (v === null || v === undefined || v === false || v === "") return undefined;
   if (Array.isArray(v)) {
@@ -850,7 +854,8 @@ async function srcBuildout(
         country: "US",
         latitude: num(x.latitude),
         longitude: num(x.longitude),
-        salePriceUsd: tx === "sale" ? moneyToNumber(priceText) : null,
+        salePriceUsd: tx === "sale" && !isPerSfPriceText(priceText) ? moneyToNumber(priceText) : null,
+        salePricePerSf: tx === "sale" && isPerSfPriceText(priceText) ? moneyToNumber(priceText) : null,
         salePriceText: tx === "sale" ? priceText : null,
         leaseRateText,
         sizeText,
