@@ -511,3 +511,42 @@ Next step:
   `JLL_DETAIL_CONCURRENCY=6` if local Firecrawl remains healthy. Dry-run and
   live ingest only after detail errors and duplicate/merge behavior are
   understood.
+
+### 2026-06-12 full-run performance notes
+
+Why the JLL full run is slower than other brokerages:
+
+- Current complete-detail path renders one public Next.js detail page per
+  listing through local Firecrawl.
+- Full search discovery found 1,873 unique sale rows and 9,358 to 9,359 unique
+  lease rows before same-property merge behavior is applied.
+- That means roughly 11,200 detail pages need enrichment if every row is
+  detail-complete.
+- Other completed sources were faster because they exposed direct JSON APIs,
+  public feed pages, or Buildout page caches. JLL's rich detail data currently
+  comes from rendered detail HTML.
+
+Speed options explored:
+
+- Direct GraphQL is not proven. Prior probes returned generic HTTP 400 without
+  the exact browser request shape.
+- `_next/data` looked promising because Firecrawl fetched candidate JSON routes
+  in about one to two seconds, but the tested route shapes returned
+  `{"notFound": true}` even when built from the cached page's `buildId`, `page`,
+  and query values.
+- Card-level full runs are much faster, but they lose stable property ids,
+  documents, coordinates, richer images, and broker contact/profile fields.
+- The practical current speedup is the URL-keyed `out/cache/jll-detail/` cache
+  plus `JLL_DETAIL_CONCURRENCY=6`. The cache makes restarts safe and the
+  higher detail concurrency was verified on a 12-row lease probe with 0 detail
+  errors, 12 stable ids, 12 document URLs, and 24 contacts/profile URLs.
+
+Operational guidance:
+
+- Do not ingest a full JLL artifact produced with `--page-cap=60`; office lease
+  needed page 87 on 2026-06-12.
+- Use `--page-cap=100` or higher until source totals change.
+- If a run must be interrupted, preserve `out/cache/jll-detail/`; restarting
+  will reuse completed detail pages.
+- If Firecrawl starts producing sustained socket failures under concurrency 6,
+  lower `JLL_DETAIL_CONCURRENCY` to 4 and keep the same cache.
