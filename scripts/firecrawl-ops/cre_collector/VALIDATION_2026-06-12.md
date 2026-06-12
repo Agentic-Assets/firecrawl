@@ -386,6 +386,54 @@ Result:
 - URL-only SQL sanity found no `data:` or `base64` strings.
 - No live JLL Investor ingest was run.
 
+## 2026-06-12 Read-Only Live QA Sidecar
+
+Commands:
+
+```bash
+npm run validate:supabase -- --out out/live_validation_sidecar_2026-06-12.md
+python3 - <<'PY'
+# read-only psql checks through cre_ingest.load_db_url/find_psql
+PY
+```
+
+Artifacts:
+
+- `out/live_validation_sidecar_2026-06-12_notes.md`
+- `out/live_validation_sidecar_2026-06-12.md`
+- `out/live_validation_sidecar_2026-06-12_targeted.json`
+- `out/live_validation_sidecar_2026-06-12_search_smoke.json`
+
+Result:
+
+- Live active total: 64,539.
+- No active duplicate `(brokerage_id, external_id)` groups.
+- No missing active source URLs, titles, or raw data.
+- No bad active document, image, profile, avatar, or VCard URL schemes.
+- No child orphans and no impossible coordinates.
+- Search smoke matched expected-source rows for SVN, Lee, Transwestern,
+  Cushman, Newmark, Marcus, NAI, and Savills.
+- Duplicate `source_url` groups remain for display/merge review, especially
+  Cushman in the targeted requested-brokerage pass.
+- Lee/SVN value parsing flags remain and missing state/coordinate gaps remain
+  map/filter quality issues.
+- Savills stays partial: 104 active Savills rows exist, but only 2 rows belong
+  to the latest U.S. commercial lease batch.
+
+## 2026-06-12 JLL Detail Wait Speed Patch Probe
+
+Commands:
+
+```bash
+JLL_DETAIL_CACHE_DIR=/tmp/jll_fast_detail_probe_cache_2026-06-12 JLL_DETAIL_WAIT_MS=1000 JLL_DETAIL_FALLBACK_WAIT_MS=8000 JLL_DETAIL_CONCURRENCY=2 npx tsx collect.ts --source=jll --transaction=sale --max-items=2 --page-cap=1 --concurrency=2 --out=/tmp/jll_fast_detail_probe_2026-06-12.json
+npm run typecheck
+python3 -m py_compile cre_ingest.py cre_validate.py && python3 -m compileall -q ../cre_scrapers
+```
+
+Result: 2 JLL sale rows, 2 document URLs, 7 image URLs, 4 contact rows, 0
+detail errors, 0 missing URLs, TypeScript typecheck passed, and Python compile
+checks passed. Existing JLL detail cache files stay reusable.
+
 ## 2026-06-12 NAI Global Active Infabode Ingest
 
 Commands:

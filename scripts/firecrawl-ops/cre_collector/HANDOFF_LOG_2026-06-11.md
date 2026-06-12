@@ -403,6 +403,51 @@ Result:
 - URL-only SQL sanity found no `data:` or `base64` strings.
 - No live JLL Investor ingest was run.
 
+## 2026-06-12 Sidecar QA And Blocker Rechecks
+
+Four focused sidecar agents saved durable notes while the main JLL run
+continued:
+
+- `cre_scrapers/brokers/jll/JLL_LONG_RUN_PERF_AUDIT_2026-06-12.md`: main JLL
+  run is alive, search pagination is complete, and detail cache growth confirms
+  progress. The bottleneck is uncached rendered detail scrapes with the old
+  8000 ms wait.
+- `cre_scrapers/brokers/savills/SAVILLS_US_SALE_PUBLIC_PATH_RECHECK_2026-06-12.md`:
+  no defensible public U.S. commercial sale path found. Keep Savills sale
+  blocked and do not claim legacy global/residential sale rows as U.S.
+  commercial sale coverage.
+- `cre_scrapers/brokers/colliers/COLLIERS_MAIN_PATH_RECHECK_2026-06-12.md`:
+  main Colliers sale/lease search remains blocked. Keep Colliers partial,
+  SalesTracker investment-sale subset only.
+- `out/live_validation_sidecar_2026-06-12_notes.md`: read-only Supabase QA
+  found 64,539 active rows, no duplicate active external IDs, no missing active
+  source URLs/titles/raw data, no bad active child URL schemes, no child
+  orphans, no impossible coordinates, and search smoke passed for SVN, Lee,
+  Transwestern, Cushman, Newmark, Marcus, NAI, and Savills.
+
+Open QA follow-ups from the sidecar: decide display/merge policy for Cushman
+duplicate source URLs, review Lee/SVN value parsing flags, and treat missing
+state/coordinate gaps as map/filter quality work.
+
+## 2026-06-12 JLL Detail Wait Speed Patch
+
+The JLL collector now defaults detail scrapes to `JLL_DETAIL_WAIT_MS=1000` with
+`JLL_DETAIL_FALLBACK_WAIT_MS=8000` only when the fast response lacks
+`pageProps.property`. Existing `out/cache/jll-detail` files are reused. Detail
+enrichment logs every 100 rows.
+
+Verification:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+JLL_DETAIL_CACHE_DIR=/tmp/jll_fast_detail_probe_cache_2026-06-12 JLL_DETAIL_WAIT_MS=1000 JLL_DETAIL_FALLBACK_WAIT_MS=8000 JLL_DETAIL_CONCURRENCY=2 npx tsx collect.ts --source=jll --transaction=sale --max-items=2 --page-cap=1 --concurrency=2 --out=/tmp/jll_fast_detail_probe_2026-06-12.json
+npm run typecheck
+python3 -m py_compile cre_ingest.py cre_validate.py && python3 -m compileall -q ../cre_scrapers
+```
+
+Result: 2 sale rows, 2 document URLs, 7 image URLs, 4 contact rows, 0 detail
+errors, 0 missing URLs, and all compile/type checks passed.
+
 ## 2026-06-12 Colliers SalesTracker Partial Adapter
 
 Colliers was upgraded from fully unsupported to partial investment-sale support

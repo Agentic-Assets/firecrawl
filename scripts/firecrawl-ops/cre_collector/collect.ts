@@ -1113,6 +1113,13 @@ const JLL_DETAIL_CONCURRENCY = boundedInt(
   1,
   10
 );
+const JLL_DETAIL_WAIT_MS = boundedInt(process.env.JLL_DETAIL_WAIT_MS, 1000, 0, 30000);
+const JLL_DETAIL_FALLBACK_WAIT_MS = boundedInt(
+  process.env.JLL_DETAIL_FALLBACK_WAIT_MS,
+  8000,
+  1000,
+  60000
+);
 
 function jllPropertyTypeLabel(propertyType: string): string {
   return propertyType
@@ -1288,10 +1295,13 @@ function writeJllDetailCache(url: string, doc: ScrapedDoc): void {
   renameSync(tmp, path);
 }
 
-async function scrapeJllDetailDoc(url: string): Promise<ScrapedDoc> {
-  const cached = readJllDetailCache(url);
+async function scrapeJllDetailDoc(
+  url: string,
+  opts: { refresh?: boolean; waitFor?: number } = {}
+): Promise<ScrapedDoc> {
+  const cached = opts.refresh ? null : readJllDetailCache(url);
   if (cached) return cached;
-  const doc = await scrapeDoc(url, { waitFor: 8000, timeout: 120000 });
+  const doc = await scrapeDoc(url, { waitFor: opts.waitFor ?? JLL_DETAIL_WAIT_MS, timeout: 120000 });
   writeJllDetailCache(url, doc);
   return doc;
 }
@@ -1362,10 +1372,16 @@ function jllContacts(brokersRaw: any[]): any[] {
 async function enrichJllListing(base: any): Promise<any> {
   if (!base.url) return base;
   try {
-    const doc = await scrapeJllDetailDoc(base.url);
-    const next = jllNextData(doc.rawHtml);
-    const pageProps = next?.props?.pageProps;
-    const property = pageProps?.property;
+    let doc = await scrapeJllDetailDoc(base.url);
+    let next = jllNextData(doc.rawHtml);
+    let pageProps = next?.props?.pageProps;
+    let property = pageProps?.property;
+    if (!property && JLL_DETAIL_FALLBACK_WAIT_MS > JLL_DETAIL_WAIT_MS) {
+      doc = await scrapeJllDetailDoc(base.url, { refresh: true, waitFor: JLL_DETAIL_FALLBACK_WAIT_MS });
+      next = jllNextData(doc.rawHtml);
+      pageProps = next?.props?.pageProps;
+      property = pageProps?.property;
+    }
     if (!property) return prune({ ...base, detailError: "missing property in __NEXT_DATA__" });
 
     const contactsDetailed = jllContacts(Array.isArray(pageProps?.brokers) ? pageProps.brokers : property?.brokers);
@@ -1499,7 +1515,15 @@ async function srcJll(tx: Tx, max: number): Promise<SourceResult> {
     if (addedOrSeenOnPage === 0) break;
   }
   if (!listings.length) throw new Error("no listing cards found on JLL search page");
-  const enriched = await pmap(listings, JLL_DETAIL_CONCURRENCY, enrichJllListing);
+  let enrichedCount = 0;
+  const enriched = await pmap(listings, JLL_DETAIL_CONCURRENCY, async (listing) => {
+    const row = await enrichJllListing(listing);
+    enrichedCount++;
+    if (enrichedCount % 100 === 0 || enrichedCount === listings.length) {
+      console.error(`  jll/${tx}: detail enriched ${enrichedCount}/${listings.length}`);
+    }
+    return row;
+  });
 
   const knownTotals = Object.values(filterTotals).filter((n): n is number => typeof n === "number");
   const total = knownTotals.length ? knownTotals.reduce((sum, n) => sum + n, 0) : null;

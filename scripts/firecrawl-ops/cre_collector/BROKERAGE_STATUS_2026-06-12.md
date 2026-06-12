@@ -42,20 +42,21 @@ and Supabase validation.
 ## Not Complete Yet
 
 JLL still needs the Cushman-style deep audit: prove detail page enrichment,
-document URLs, image URLs, contact URLs, and source totals. Avison Young now has
-bounded detail enrichment proof, but not a full-feed detail-enriched live run.
-Savills and JLL Investor Center are explicitly partial, and main Colliers Coveo
-sale/lease coverage remains blocked. JLL Investor now has a safer sitemap/detail
-path than the robots-disallowed search pagination route, but no full sitemap
-detail ingest has run yet. Colliers SalesTracker is complete only for
-the public RCM investment-sale subset. Marcus & Millichap is complete for the
+document URLs, image URLs, contact URLs, and source totals. The active full JLL
+detail run is cache-progressing, and a follow-up speed patch now uses a 1000 ms
+detail wait with an 8000 ms fallback for future or restarted runs. Avison Young
+now has bounded detail enrichment proof, but not a full-feed detail-enriched
+live run. Savills and JLL Investor Center are explicitly partial, and main
+Colliers Coveo sale/lease coverage remains blocked. JLL Investor now has a
+safer sitemap/detail path than the robots-disallowed search pagination route,
+but no full sitemap detail ingest has run yet. Colliers SalesTracker is
+complete only for the public RCM investment-sale subset. Marcus & Millichap is complete for the
 defensible public sale feed after full ActivityId expansion, detail enrichment,
 source-scoped ingest, and Supabase validation; public lease remains blocked.
-Savills remains weak for EQUIRE sale coverage because the current sale path is
-a global or residential property-search feed, but the commercial lease path now
-exposes two defensible Chicago retail listings and those rows are live-ingested
-additively. Lee and SVN are now complete
-for their public Buildout feeds after durable page-cache assembly, source-scoped
+Savills remains weak for EQUIRE sale coverage because no safe repeatable public
+U.S. commercial sale path was found in the latest recheck, but the commercial
+lease path now exposes two defensible Chicago retail listings and those rows
+are live-ingested additively. Lee and SVN are now complete for their public Buildout feeds after durable page-cache assembly, source-scoped
 reconciliation, and Supabase validation. Transwestern is now complete for its
 public GET feed after full collection, cleaned artifact ingest, source-scoped
 reconciliation, and Supabase validation.

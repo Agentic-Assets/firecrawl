@@ -268,6 +268,36 @@ detail discovery and United States filtering.
 
 Scope: public JLL Property listings at `property.jll.com`, source key `jll`. This does not cover JLL Investor Center except as a separate source handled by `jll-investor`.
 
+### 2026-06-12 long-run performance audit and speed patch
+
+See `JLL_LONG_RUN_PERF_AUDIT_2026-06-12.md` for the read-only audit of the
+active full JLL run. The audit confirmed search pagination had completed and
+detail enrichment was progressing through `out/cache/jll-detail`, but uncached
+details were slow because the active process used an 8000 ms rendered
+Firecrawl wait for every detail page.
+
+Collector follow-up:
+
+- `JLL_DETAIL_WAIT_MS` now defaults to 1000 ms for JLL detail pages.
+- `JLL_DETAIL_FALLBACK_WAIT_MS` defaults to 8000 ms and refreshes a row only
+  when the fast scrape does not expose `pageProps.property` in `__NEXT_DATA__`.
+- Detail enrichment now logs every 100 rows.
+- Existing cache files remain valid and are reused unless a fallback refresh is
+  needed.
+
+Verification:
+
+```bash
+JLL_DETAIL_CACHE_DIR=/tmp/jll_fast_detail_probe_cache_2026-06-12 JLL_DETAIL_WAIT_MS=1000 JLL_DETAIL_FALLBACK_WAIT_MS=8000 JLL_DETAIL_CONCURRENCY=2 npx tsx collect.ts --source=jll --transaction=sale --max-items=2 --page-cap=1 --concurrency=2 --out=/tmp/jll_fast_detail_probe_2026-06-12.json
+npm run typecheck
+python3 -m py_compile cre_ingest.py cre_validate.py && python3 -m compileall -q ../cre_scrapers
+```
+
+Result: 2 JLL sale rows, 2 document URLs, 7 image URLs, 4 contact rows, 0
+detail errors, 0 missing URLs, TypeScript typecheck passed, and Python compile
+checks passed. This patch does not affect an already-running Node process
+until that process is restarted or a future run starts.
+
 ### Commands and artifacts
 
 All probes used local Firecrawl at `http://localhost:3002`, did not download binaries, and did not ingest to Supabase.
