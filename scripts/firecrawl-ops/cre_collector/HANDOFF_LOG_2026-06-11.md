@@ -926,7 +926,10 @@ Result:
 - 2 U.S. commercial lease rows, both Chicago, IL retail listings.
 - 4 public PDF document URLs, 24 image URLs, and 2 contact rows.
 - Dry-run ingest staged both rows and skipped 0 missing URLs.
-- No live ingest was run.
+- A later additive live ingest was run from
+  `out/savills_lease_public_2026-06-12_live_candidate.json` without
+  `--mark-missing`. Live Savills now has 104 active rows, 101 sale and 3 lease,
+  with 4 document URL rows, 31 image URL rows, and 104 contact rows.
 
 Limit:
 

@@ -22,7 +22,7 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 | JLL | Needs deep audit | 4,678 total, 333 sale + 4,345 lease | Search-page pagination and listing URLs | Add/verify detail-page enrichment for documents, image galleries, broker contact links, and richer facts |
 | Newmark | Complete public Algolia feed with contact enrichment, live-ingested and validated | 4,371 active rows, 1,121 sale + 3,250 lease | Public Algolia listing feed, state/property-type split, no-state DC recovery, raw hit preservation, broker provenance, public People exact-name contacts/profile URLs, image URLs | Listing documents, full galleries, second/third broker joins, and VCards remain unproven |
 | Avison Young | Public feed complete; bounded detail enrichment verified | 2,200 staged unique rows, 636 sale + 1,431 lease + 133 sale_or_lease | Public SharpLaunch active website/team_member feed, client-side transaction partition, contact joins, CDN image/avatar URLs, and bounded detail enrichment for selected rows | Full-feed detail enrichment is not run by default; VCards remain unproven in sampled pages |
-| Savills | Partial, lease has small defensible public CRE subset; sale still not CRE-defensible | 100 legacy global/residential sale rows plus 2 U.S. commercial lease rows in latest probe | Server-rendered commercial lease `__NEXT_DATA__` for two Chicago retail listings with PDF/image/contact URLs; legacy global sale cards remain separate caveat | Find a public U.S. commercial sale source before claiming sale coverage; product decision needed on whether to retain legacy global/residential sale rows |
+| Savills | Partial, lease has small defensible public CRE subset live-ingested; sale still not CRE-defensible | 104 active rows, 101 sale + 3 lease | Server-rendered commercial lease `__NEXT_DATA__` for two Chicago retail listings with PDF/image/contact URLs; legacy global sale cards remain separate caveat | Find a public U.S. commercial sale source before claiming sale coverage; product decision needed on whether to retain legacy global/residential sale rows |
 | JLL Investor Center | Partial | 50 sale rows | Rendered public grid | Determine whether more pages exist and enrich details where public |
 | Marcus & Millichap | Complete public sale feed, live-ingested and validated; public lease blocked | 3,124 active sale rows | Public `mapproperties` ActivityIds, `mappropertydetail` tiles, direct public detail HTML, image URLs, visible contacts/profile URLs, and gated deal-room URLs retained only in raw metadata | Public lease remains unproven; auctions need a product decision before inclusion |
 | NAI Global | Complete public active feed, status-filtered | 241 active rows, 183 sale + 58 lease | Public Infabode feed plus `publicPost` detail enrichment, stable `infabode:<id>` IDs, source/original URLs, image URLs, one document URL, and raw status proof | Do not ingest historical/`UNKNOWN` Infabode rows as active inventory; optional future archive table only |
@@ -51,7 +51,8 @@ defensible public sale feed after full ActivityId expansion, detail enrichment,
 source-scoped ingest, and Supabase validation; public lease remains blocked.
 Savills remains weak for EQUIRE sale coverage because the current sale path is
 a global or residential property-search feed, but the commercial lease path now
-exposes two defensible Chicago retail listings. Lee and SVN are now complete
+exposes two defensible Chicago retail listings and those rows are live-ingested
+additively. Lee and SVN are now complete
 for their public Buildout feeds after durable page-cache assembly, source-scoped
 reconciliation, and Supabase validation. Transwestern is now complete for its
 public GET feed after full collection, cleaned artifact ingest, source-scoped
@@ -86,7 +87,7 @@ Result:
 
 1. JLL, because it already collects all reported rows and likely only needs detail enrichment.
 2. Avison Young, only if we decide to schedule bounded or full-feed detail enrichment beyond the verified sample.
-3. Savills, because lease has only a 2-row defensible subset and sale remains not CRE-defensible.
+3. Savills, because sale remains not CRE-defensible and the lease subset is only 2 defensible rows.
 4. JLL Investor, because sitemap/detail discovery needs an approved public path decision.
 5. Main Colliers Coveo sale/lease coverage only after a safe non-POST-blocked path exists.
 6. Marcus auctions only after EQUIRE decides whether public auction inventory

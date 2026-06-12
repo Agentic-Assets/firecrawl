@@ -11,10 +11,13 @@ printed. Document and image handling remains URL-only.
 
 Live totals from Supabase:
 
-- `credeals.cre_listings` active rows: 64,537.
-- `credeals.v_cre_listings_full` rows: 64,537.
+- `credeals.cre_listings` active rows: 64,539 after the later Savills lease
+  live ingest.
+- `credeals.v_cre_listings_full` rows: 64,539 after the later Savills lease
+  live ingest.
 - `credeals.v_cre_active_for_sale` rows: 24,455.
-- `credeals.v_cre_active_for_lease` rows: 43,497.
+- `credeals.v_cre_active_for_lease` rows: 43,499 after the later Savills lease
+  live ingest.
 - `credeals.v_cre_market_summary` rows: 15,411.
 
 Source-split active counts:
@@ -29,16 +32,15 @@ Source-split active counts:
 | Newmark | 4,371 | 1,121 | 3,250 | 0 | 4,371 | 2026-06-12 13:52:24Z | 715 |
 | Marcus & Millichap | 3,124 | 3,124 | 0 | 0 | 3,124 | 2026-06-12 13:08:59Z | 0 |
 | Avison Young | 2,200 | 636 | 1,431 | 133 | 2,200 | 2026-06-12 09:33:46Z | 0 |
-| Savills | 102 | 101 | 1 | 0 | 100 | 2026-06-12 04:31:24Z | 0 |
+| Savills | 104 | 101 | 3 | 0 | 2 | 2026-06-12 21:05:23Z | 0 |
 | SVN | 5,287 | 2,660 | 2,192 | 435 | 5,287 | 2026-06-12 20:41:44Z | 34 |
 | NAI Global | 241 | 183 | 58 | 0 | 241 | 2026-06-12 11:31:05Z | 19 |
 | Lee & Associates | 9,223 | 2,611 | 5,691 | 921 | 9,223 | 2026-06-12 13:39:08Z | 0 |
 | Colliers SalesTracker | 1,172 | 1,172 | 0 | 0 | 1,172 | 2026-06-12 10:05:58Z | 0 |
 | Transwestern | 2,021 | 389 | 1,502 | 130 | 2,021 | 2026-06-12 12:42:43Z | 0 |
 
-The live active total is 22 rows below the earlier `START_HERE.md` 64,559
-figure. The later SVN job at 2026-06-12 20:41Z shows 34 soft-deleted SVN rows
-and appears to explain the count drift.
+The live active total is updated here after the later Savills lease live ingest.
+The previous 64,537 total was two rows lower before those additive lease rows.
 
 ## Status By Source
 

@@ -9,6 +9,11 @@ not CRE-defensible because the current 100 collected sale rows come from the
 global residential property search, while the corrected commercial sale route
 only exposed a Toronto, Canada sale object.
 
+The 2 U.S. commercial lease rows were later live-ingested additively from
+`out/savills_lease_public_2026-06-12_live_candidate.json` with 4 PDF URL rows,
+24 image URL rows, and 2 contact rows. Live Savills now has 104 active rows,
+101 sale and 3 lease. No `--mark-missing` was used.
+
 ## 2026-06-12 Continuation Probe
 
 Scope: Savills-only follow-up for the CRE collector. No secrets were read, no
