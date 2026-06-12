@@ -83,3 +83,38 @@ Deferred enrichment:
 - Detail pages can expose public PDF document URLs, richer gallery image URLs,
   JSON-LD listing data, and contact aliases. Keep any future detail pass bounded
   and store URLs only, not downloaded binaries.
+
+## 2026-06-12 Full Run And Live Ingest
+
+The SharpLaunch adapter was run as a full source-specific collection and
+live-ingested additively.
+
+Commands:
+
+```bash
+cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=avison-young --transaction=both --max-items=0 --concurrency=4 --out=out/avison_full_2026-06-12_043342.json
+python3 cre_ingest.py --in out/avison_full_2026-06-12_043342.json --dry-run --keep-artifacts /tmp/avison_full_2026-06-12_043342_ingest_check
+python3 cre_ingest.py --in out/avison_full_2026-06-12_043342.json --keep-artifacts /tmp/avison_full_2026-06-12_043342_live_ingest
+```
+
+Results:
+
+- Artifact: `out/avison_full_2026-06-12_043342.json`, 6.4 MB.
+- Log: `out/avison_full_2026-06-12_043342.log`.
+- Collected raw rows: 2,333, including 769 sale-bucket rows and 1,564 lease-bucket rows.
+- Unique staged rows: 2,200, because 133 dual sale/lease SharpLaunch rows merge into `sale_or_lease`.
+- Brokers: 528 unique run-level broker records.
+- Artifact coverage: 2,318 image URLs, 4,376 detailed contact rows, 0 document rows, and 0 detail errors.
+- Dry-run staged 2,200 rows and skipped 0 missing URLs.
+- Live additive ingest completed without `--mark-missing`.
+
+Supabase proof:
+
+- Active Avison Young rows after ingest: 2,200.
+- Transaction split: 636 sale, 1,431 lease, and 133 `sale_or_lease`.
+- Latest-batch quality checks: 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad state codes, 0 impossible coordinates, 0 bad cap rates, 4,125 contact child rows, 2,186 image child rows, and 0 orphan contact/image rows.
+
+Current status: public-feed complete for SharpLaunch row coverage. Still needs
+optional detail-page enrichment for public PDFs, richer galleries, JSON-LD, and
+VCard/profile URLs before being called detail-enriched complete.

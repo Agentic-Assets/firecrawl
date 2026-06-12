@@ -287,3 +287,31 @@ Result:
 Newmark is now public-feed complete for Algolia row coverage, but still needs
 deep contact/profile/VCard/document enrichment before it can be called
 complete for detail enrichment.
+
+## 2026-06-12 Avison Young SharpLaunch Ingest
+
+Avison Young was upgraded from the old shallow rendered-sidebar state to the
+full public SharpLaunch active feed and live-ingested additively.
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=avison-young --transaction=both --max-items=0 --concurrency=4 --out=out/avison_full_2026-06-12_043342.json
+python3 cre_ingest.py --in out/avison_full_2026-06-12_043342.json --dry-run --keep-artifacts /tmp/avison_full_2026-06-12_043342_ingest_check
+python3 cre_ingest.py --in out/avison_full_2026-06-12_043342.json --keep-artifacts /tmp/avison_full_2026-06-12_043342_live_ingest
+```
+
+Result:
+
+- Full artifact: `out/avison_full_2026-06-12_043342.json`, 6.4 MB.
+- Full log: `out/avison_full_2026-06-12_043342.log`.
+- Raw rows: 2,333.
+- Staged unique rows: 2,200, skipped 0.
+- Active Supabase split: 636 sale, 1,431 lease, and 133 `sale_or_lease`.
+- Latest-batch quality checks: 0 missing URLs, titles, raw data, bad states,
+  bad coordinates, bad cap rates, or orphan contact/image rows.
+- Latest-batch child rows: 4,125 contacts and 2,186 images.
+
+The SharpLaunch public feed is loaded. Optional detail enrichment remains for
+listing PDFs, richer image galleries, JSON-LD, and VCard/profile URLs.

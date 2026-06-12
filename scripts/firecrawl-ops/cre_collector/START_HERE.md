@@ -40,7 +40,7 @@ Result:
 | Cushman & Wakefield | 24 in latest ingested artifact; code now verifies 2,743 sale + 8,575 lease live source totals | Active via public API and detail enrichment; pending full re-run and ingest |
 | Newmark | 4,371 in post-validation full probe | Active via Algolia, no-state recovery added |
 | Marcus & Millichap | 12 in probe, 3,126 reported public sale total | Partial, public contentsearch sale API and detail enrichment; lease unsupported |
-| Avison Young | 12 in probe, SharpLaunch feed path proven | Partial until full SharpLaunch run and live ingest |
+| Avison Young | 2,200 staged unique rows in post-validation full run | Public SharpLaunch feed live-ingested additively; still needs optional detail-page enrichment |
 | Savills | 100 | Active, sale only; US lease empty after fallback filtering |
 | SVN | 5,521 in latest full artifact | Mapping complete from prior full artifact; fresh live refresh partial due Buildout 403 HTML |
 | NAI Global | 12 in probe | Partial, public Infabode GraphQL feed and publicPost detail enrichment proven |

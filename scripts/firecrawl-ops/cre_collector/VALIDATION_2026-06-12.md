@@ -65,6 +65,7 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
 - Post-validation code update: Cushman & Wakefield no longer uses the shallow rendered Coveo card path. On 2026-06-12 local probes verified the public `/api/properties/search` path with 2,743 sale and 8,575 lease live source totals. A targeted `CUSHMAN_QUERY='1800 Central'` probe captured the expected 2 PDFs, 15 photos, building size, lot size, year built, and Gib Kerr contact/profile/VCard data. These rows are not yet reflected in the validated Supabase counts above.
 - Post-validation live ingest: CBRE Deal Flow was upgraded from the old first-grid path to the public RCM ListingEngine endpoint and ingested additively from `out/cbre_dealflow_full_2026-06-12_041740.json`. The artifact staged 1,836 rows, 1,809 public sale cards and all 27 public lease cards, with 0 skipped missing URLs. RCM reported 2,042 sale rows, but public card pagination exposed 1,809 sale cards before returning 0 additional cards. Live Supabase now has 1,857 active Deal Flow-prefixed rows under brokerage slug `cbre`, including prior additive probe rows retained because `--mark-missing` was not used.
 - Post-validation live ingest: Newmark no-state recovery was ingested additively from `out/newmark_full_2026-06-12_no_state_recovery.json`. The artifact staged 4,371 rows, 1,121 sale and 3,250 lease, with 0 skipped missing URLs. Latest-batch validation found 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad states, 0 bad coordinates, 0 bad cap rates, 4,303 image child rows, and 0 orphan images.
+- Post-validation live ingest: Avison Young SharpLaunch full feed was ingested additively from `out/avison_full_2026-06-12_043342.json`. The artifact collected 2,333 raw rows and staged 2,200 unique rows after dual sale/lease merge, with 0 skipped missing URLs. Latest-batch validation found 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad states, 0 bad coordinates, 0 bad cap rates, 4,125 contact child rows, 2,186 image child rows, and 0 orphan contact/image rows.
 - Lee & Associates is not uploaded. A fresh Lee-only run on 2026-06-12 passed the prior failure zone, then failed pages 286 through 297 after retries and aborted with `Error: no listings collected from any source`. It wrote only `out/lee_latest_2026-06-12_004010.log`, not a usable JSON artifact.
 - Colliers is not uploaded. Current collector has no supported public GET path for the POST-only workflow.
 - Transwestern is not uploaded from a full run yet. Current collector has a targeted public GET feed probe and dry-run proof, but it still needs full collection, live ingest, and Supabase validation.
@@ -155,3 +156,36 @@ Ingest proof:
 - Latest Newmark batch in Supabase: 4,371 rows, 1,121 sale, 3,250 lease.
 - Latest Newmark batch quality checks: 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad state codes, 0 impossible coordinates, 0 bad cap rates, 4,303 image child rows, and 0 orphan image rows.
 - Active Newmark rows after ingest: 5,086, because earlier additive rows remain active pending a clean all-source reconciliation.
+
+## 2026-06-12 Avison Young SharpLaunch Full Ingest
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=avison-young --transaction=both --max-items=0 --concurrency=4 --out=out/avison_full_2026-06-12_043342.json
+python3 cre_ingest.py --in out/avison_full_2026-06-12_043342.json --dry-run --keep-artifacts /tmp/avison_full_2026-06-12_043342_ingest_check
+python3 cre_ingest.py --in out/avison_full_2026-06-12_043342.json --keep-artifacts /tmp/avison_full_2026-06-12_043342_live_ingest
+```
+
+Collector result:
+
+- Artifact: `out/avison_full_2026-06-12_043342.json`.
+- Log: `out/avison_full_2026-06-12_043342.log`.
+- Collected raw rows: 2,333, including 769 sale-bucket rows and 1,564 lease-bucket rows.
+- Run-level brokers: 528.
+- Artifact coverage: 2,318 image URLs, 4,376 detailed contact rows, 0 document rows, and 0 detail errors.
+
+Ingest proof:
+
+- Dry-run staged 2,200 unique rows and skipped 0 missing URLs.
+- Live additive ingest completed without `--mark-missing`.
+- Active Avison Young rows after ingest: 2,200.
+- Transaction split: 636 sale, 1,431 lease, and 133 `sale_or_lease`.
+- Latest-batch quality checks: 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad state codes, 0 impossible coordinates, 0 bad cap rates, 4,125 contact child rows, 2,186 image child rows, and 0 orphan contact/image rows.
+
+Remaining limit:
+
+- The full SharpLaunch feed is now loaded, but optional detail-page enrichment is
+  still needed for public PDFs, richer galleries, JSON-LD, and VCard/profile
+  URLs.
