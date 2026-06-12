@@ -89,13 +89,11 @@ entrypoints before quoting coverage or making collector changes:
 - `scripts/firecrawl-ops/cre_collector/BROKERAGE_STATUS_2026-06-12.md`
 
 Latest verified all-source run started `2026-06-12T04:04:23Z` and produced
-35,510 raw records. Lee & Associates failed that run under sustained Buildout
-paging, so daily ingest should stay additive with `--no-mark-missing` until a
-clean full run succeeds. Colliers has partial public SalesTracker
-investment-sale coverage, but main Colliers Coveo sale/lease search remains
-blocked. Transwestern and Marcus & Millichap public sale have since completed
-clean source-specific full runs, live ingest, source-scoped reconciliation, and
-Supabase validation; Marcus public lease remains unsupported.
+35,510 raw records. Later source-specific runs completed Transwestern, Marcus
+& Millichap public sale, and Lee & Associates public Buildout coverage with
+live ingest, source-scoped reconciliation, and Supabase validation. Colliers has
+partial public SalesTracker investment-sale coverage, but main Colliers Coveo
+sale/lease search remains blocked. Marcus public lease remains unsupported.
 
 CBRE has an internal JSON API (`/listings-api/propertylistings/query`) that bypasses
 the need for page scraping  -  see `scripts/firecrawl-ops/prometheus/CLAUDE.md`.

@@ -4,9 +4,9 @@ Validation time: 2026-06-12 local time.
 
 ## Verdict
 
-The latest full collection was uploaded correctly for the rows it safely staged, but the system does not yet contain every public listing from every target brokerage.
+The latest full collection was uploaded correctly for the rows it safely staged, and later source-specific ingests have completed several formerly partial sources. The system still does not contain every public listing from every target brokerage because some sources remain partial or blocked by source limits.
 
-The latest full artifact staged 33,488 unique rows and the live Supabase rows touched by that artifact also total 33,488. The active listing view currently has 34,218 rows because 730 older rows remain active from prior additive runs. This was intentional because `--mark-missing` was not used after Lee & Associates failed.
+The latest all-source artifact staged 33,488 unique rows and the live Supabase rows touched by that artifact also total 33,488. Later source-specific ingests completed additional brokerages, including Lee & Associates. The original all-source run intentionally skipped `--mark-missing` because Lee & Associates failed at that time.
 
 ## Fresh Evidence
 
@@ -66,7 +66,12 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
 - Post-validation live ingest: CBRE Deal Flow was upgraded from the old first-grid path to the public RCM ListingEngine endpoint and ingested additively from `out/cbre_dealflow_full_2026-06-12_041740.json`. The artifact staged 1,836 rows, 1,809 public sale cards and all 27 public lease cards, with 0 skipped missing URLs. RCM reported 2,042 sale rows, but public card pagination exposed 1,809 sale cards before returning 0 additional cards. Live Supabase now has 1,857 active Deal Flow-prefixed rows under brokerage slug `cbre`, including prior additive probe rows retained because `--mark-missing` was not used.
 - Post-validation live ingest: Newmark no-state recovery was ingested additively from `out/newmark_full_2026-06-12_no_state_recovery.json`. The artifact staged 4,371 rows, 1,121 sale and 3,250 lease, with 0 skipped missing URLs. Latest-batch validation found 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad states, 0 bad coordinates, 0 bad cap rates, 4,303 image child rows, and 0 orphan images.
 - Post-validation live ingest: Avison Young SharpLaunch full feed was ingested additively from `out/avison_full_2026-06-12_043342.json`. The artifact collected 2,333 raw rows and staged 2,200 unique rows after dual sale/lease merge, with 0 skipped missing URLs. Latest-batch validation found 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad states, 0 bad coordinates, 0 bad cap rates, 4,125 contact child rows, 2,186 image child rows, and 0 orphan contact/image rows.
-- Lee & Associates is not uploaded. A fresh Lee-only run on 2026-06-12 passed the prior failure zone, then failed pages 286 through 297 after retries and aborted with `Error: no listings collected from any source`. A later side-agent probe confirmed individual pages `0`, `32`, `286`, `297`, and `332` return valid JSON and Lee total is now `9972`, so the blocker is sustained-run throttling/non-JSON behavior, not permanently bad pages. See `cre_scrapers/brokers/lee_associates/LEE_BUILDOUT_THROTTLING_RESUMABILITY_2026-06-12.md`.
+- Superseded Lee note: Lee & Associates was not uploaded in the original
+  all-source validation run because sustained Buildout paging failed near pages
+  286 through 297. Later on 2026-06-12, durable page-cache/window assembly
+  completed all pages and Lee was live-ingested with validation. Keep the older
+  note as failure-mode evidence, but use the later Lee section below for current
+  coverage.
 - Post-validation live ingest: Colliers SalesTracker was ingested additively
   from `out/colliers_salestracker_full_2026-06-12_050241.json`. The artifact
   collected 1,300 public SalesTracker sale cards from RCM GET list/map endpoints
@@ -95,6 +100,25 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
   states, impossible coordinates, malformed guarded prices/cap rates, bad child
   URLs, or child orphans. Search proof used the updated five-argument
   `credeals.search_cre_listings` signature and returned live Marcus rows.
+- Post-validation live ingest: Lee & Associates was loaded from
+  `out/lee_full_cache_2026-06-12_assembled.json` after adding durable Buildout
+  page-cache/window controls. Cache-only fills produced contiguous pages 0
+  through 332, with page 0 and page 332 both reporting `total=9975` and
+  `limit=30`. Cache-only windows intentionally refused to write partial listing
+  artifacts. The assembled artifact collected 9,975 raw Buildout rows, 3,447
+  sale and 6,528 lease, with 0 missing URLs, 0 missing titles, 8,238 document
+  URL rows, 9,975 image URLs, and 1,085 unique run-level brokers. Dry-run staged
+  9,223 unique rows and skipped 0 missing URLs; the 752-row reduction is
+  expected because the ingestor strips Buildout `propertyId` `-sale`/`-lease`
+  suffixes and merges 744 sale+lease property pairs plus 8 exact duplicate
+  rows. Source-scoped `--mark-missing` was dry-run and then applied only for
+  `lee-associates`. Live validation found 9,223 active Lee rows, 2,611 sale,
+  5,691 lease, 921 sale_or_lease, 9,062 image child rows, 7,681 document child
+  rows, 9,223 contact child rows, and 0 bad source URLs, missing titles, missing
+  raw data, duplicate external IDs, bad states, impossible coordinates,
+  malformed guarded prices/cap rates, bad child URLs, or child orphans. Search
+  proof used the updated five-argument `credeals.search_cre_listings` signature
+  and returned live Lee rows.
 - 724 older active rows remain from earlier additive runs after Marcus
   source-scoped reconciliation: Newmark 715, CBRE 5, Savills 2, SVN 2. Do not
   treat active row count as a pure latest-run count until a clean reconciliation

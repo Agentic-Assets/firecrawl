@@ -100,8 +100,8 @@ The latest documented full all-source run in this folder is the 2026-06-12
 validation cycle: 35,510 raw records, 33,488 staged unique upsert rows, and
 34,218 active Supabase rows after additive carryover. Cushman, CBRE Deal Flow,
 Avison Young, Newmark, Marcus and Millichap, NAI Global, Colliers SalesTracker,
-and Transwestern have post-run source-specific changes documented in
-`cre_collector/START_HERE.md` and
+Lee and Associates, and Transwestern have post-run source-specific changes
+documented in `cre_collector/START_HERE.md` and
 `BROKERAGE_STATUS_2026-06-12.md`; read those before quoting coverage.
 
 Supabase objects live under `credeals`, not `public`:
@@ -133,8 +133,9 @@ Important current cautions:
 - Colliers has partial public SalesTracker investment-sale support. The main
   Colliers Coveo sale and lease search remains blocked until a public GET,
   Firecrawl-compatible action path, or authorized integration exists.
-- Lee and Associates remains blocked under sustained Buildout paging until a
-  clean full artifact and ingest are proven.
+- Lee and Associates is complete for the public Buildout feed after durable
+  page-cache assembly, live ingest, source-scoped reconciliation, and Supabase
+  validation.
 - Transwestern is complete for its public GET feed after full run, live ingest,
   source-scoped reconciliation, and Supabase validation.
 - Cushman is complete for its public API feed after full run, live ingest,

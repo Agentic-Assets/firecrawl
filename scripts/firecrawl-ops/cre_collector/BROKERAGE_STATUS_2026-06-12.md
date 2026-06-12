@@ -26,7 +26,7 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 | JLL Investor Center | Partial | 50 sale rows | Rendered public grid | Determine whether more pages exist and enrich details where public |
 | Marcus & Millichap | Complete public sale feed, live-ingested and validated; public lease blocked | 3,124 active sale rows | Public `mapproperties` ActivityIds, `mappropertydetail` tiles, direct public detail HTML, image URLs, visible contacts/profile URLs, and gated deal-room URLs retained only in raw metadata | Public lease remains unproven; auctions need a product decision before inclusion |
 | NAI Global | Complete public active feed, status-filtered | 241 active rows, 183 sale + 58 lease | Public Infabode feed plus `publicPost` detail enrichment, stable `infabode:<id>` IDs, source/original URLs, image URLs, one document URL, and raw status proof | Do not ingest historical/`UNKNOWN` Infabode rows as active inventory; optional future archive table only |
-| Lee & Associates | Blocked | 0 uploaded in latest full run | Buildout feed path known | Sustained full run failed around pages 286-297; needs throttling-safe or resumable paging |
+| Lee & Associates | Complete public Buildout feed, live-ingested and validated | 9,223 active rows, 2,611 sale + 5,691 lease + 921 sale_or_lease | Public Buildout inventory feed with durable page cache/window fill, broker refs, document URLs, image URLs, and source-scoped reconciliation | Optional future detail-page enrichment only if a safe public path is proven |
 | Colliers | Partial, live-ingested SalesTracker subset | 1,300 SalesTracker cards collected, 1,172 unique active Supabase rows | Public SalesTracker RCM GET list/map endpoints plus anonymous SLP detail enrichment for investment-sale cards | Main `www.colliers.com/en/properties` Coveo sale/lease path remains blocked; SalesTracker filtered total reports 1,653 but public card pagination exposed 1,300 unique cards |
 | Transwestern | Complete public feed, live-ingested and validated | 2,021 active rows, 389 sale + 1,502 lease + 130 sale_or_lease | Public properties GET feed plus detail-page enrichment for property docs, images, contacts, profile URLs, and VCards; footer descriptions suppressed | Optional future accuracy work: availability parser hardening and detail-cache speedup |
 
@@ -48,10 +48,12 @@ explicitly partial. Marcus & Millichap is complete for the defensible public
 sale feed after full ActivityId expansion, detail enrichment, source-scoped
 ingest, and Supabase validation; public lease remains blocked. Savills is
 especially weak for EQUIRE because the current path is a global or residential
-property-search feed, not a proven U.S. commercial inventory source. Lee is
-blocked. Main Colliers Coveo sale/lease coverage remains blocked. Transwestern
-is now complete for its public GET feed after full collection, cleaned artifact
-ingest, source-scoped reconciliation, and Supabase validation.
+property-search feed, not a proven U.S. commercial inventory source. Lee is now
+complete for its public Buildout feed after durable page-cache assembly,
+source-scoped reconciliation, and Supabase validation. Main Colliers Coveo
+sale/lease coverage remains blocked. Transwestern is now complete for its
+public GET feed after full collection, cleaned artifact ingest, source-scoped
+reconciliation, and Supabase validation.
 
 NAI Global is complete only for the active public Infabode inventory whose
 `publicPost.listingStatus` contains `FOR_SALE_ON_MARKET`. The same public feed
@@ -85,8 +87,7 @@ Result:
 3. Avison Young, because the current 11/11 per transaction might be complete or might be a rendered-sidebar illusion.
 4. Savills, because it has a small sale gap and lease ambiguity.
 5. JLL Investor and CBRE Deal Flow, because each has known first-batch or gated limitations.
-6. Lee, after adding a resumable or much slower Buildout paging mode.
-7. Newmark/JLL detail enrichment, following the saved 2026-06-12 broker-folder review notes.
-8. Main Colliers Coveo sale/lease coverage only after a safe non-POST-blocked path exists.
-9. Marcus auctions only after EQUIRE decides whether public auction inventory
+6. Newmark/JLL detail enrichment, following the saved 2026-06-12 broker-folder review notes.
+7. Main Colliers Coveo sale/lease coverage only after a safe non-POST-blocked path exists.
+8. Marcus auctions only after EQUIRE decides whether public auction inventory
    belongs in the listing surface.

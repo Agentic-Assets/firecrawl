@@ -521,12 +521,14 @@ Remaining refinements: add a detail cache to avoid double-scraping the 130
 sale-or-lease rows, harden availability-table parsing, and promote clearly valid
 detail prices/rates where the feed has zero price.
 
-## 2026-06-12 Lee Buildout Throttling Finding
+## 2026-06-12 Lee Buildout Throttling Finding (Superseded By Cache Assembly)
 
-Lee remains not uploaded. A side-agent probe found that individual Buildout
-pages are healthy, including pages `0`, `32`, `286`, `297`, and `332`, and the
-current Lee total is `9972`. The blocker is sustained full-inventory behavior:
-after many pages, Buildout returns temporary 403 HTML or non-JSON responses.
+Historical note: Lee was not uploaded at this point in the day. A side-agent
+probe found that individual Buildout pages were healthy, including pages `0`,
+`32`, `286`, `297`, and `332`, and the current Lee total was `9972`. The
+blocker was sustained full-inventory behavior: after many pages, Buildout
+returned temporary 403 HTML or non-JSON responses. This was later resolved by
+the durable cache assembly documented in the Lee completion section below.
 
 Saved note:
 `cre_scrapers/brokers/lee_associates/LEE_BUILDOUT_THROTTLING_RESUMABILITY_2026-06-12.md`.
@@ -605,3 +607,63 @@ Ops note:
   because the OrbStack Docker socket was unavailable and `localhost:3002` was
   not accepting connections. Marcus uses direct public HTTP endpoints, so the
   Marcus run and ingest were not blocked by local Firecrawl being down.
+
+## 2026-06-12 Lee & Associates Full Buildout Ingest
+
+Lee & Associates is now live-ingested and validated for the public Buildout
+inventory feed. This did not use local Firecrawl because the durable page-cache
+fill used direct public Buildout JSON successfully.
+
+Code change:
+
+- Added durable Buildout page-cache controls in `collect.ts`.
+- Lee opts into `cacheSlug: "lee-associates"` and `usePageCache: true`.
+- `BUILDOUT_CACHE_ONLY=1` fills a page window and then refuses to emit a partial
+  artifact.
+- `BUILDOUT_ASSEMBLE_FROM_CACHE=1` disables recovery/network fallback and fails
+  if any expected page is missing.
+- `BUILDOUT_PAGE_START`, `BUILDOUT_PAGE_END`, and `BUILDOUT_PAGE_JITTER_MS`
+  control windowed cache fills.
+
+Cache-fill proof:
+
+- Cached pages: 333 of 333, contiguous pages 0 through 332.
+- Cache location: `out/cache/buildout/lee-associates/` (gitignored).
+- Cache size: about 37 MB.
+- Page 0 and page 332 both reported `total=9975`, `limit=30`; page 332 had 15
+  inventory rows.
+- Old failure window pages 286 through 297 were filled successfully.
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npm run typecheck
+BUILDOUT_ASSEMBLE_FROM_CACHE=1 npx tsx collect.ts --source=lee-associates --transaction=both --max-items=0 --concurrency=1 --out=out/lee_full_cache_2026-06-12_assembled.json
+python3 cre_ingest.py --in out/lee_full_cache_2026-06-12_assembled.json --dry-run --keep-artifacts /tmp/lee_full_cache_2026-06-12_assembled_ingest_check
+python3 cre_ingest.py --in out/lee_full_cache_2026-06-12_assembled.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/lee_full_cache_2026-06-12_assembled_mark_missing_check
+python3 cre_ingest.py --in out/lee_full_cache_2026-06-12_assembled.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/lee_full_cache_2026-06-12_assembled_mark_missing_live
+```
+
+Result:
+
+- Artifact: `out/lee_full_cache_2026-06-12_assembled.json`, 8.9 MB.
+- Raw rows: 9,975.
+- Sale rows before merge: 3,447.
+- Lease rows before merge: 6,528.
+- Unique run-level brokers: 1,085.
+- Artifact QA: 0 missing URLs, 0 missing titles, 0 closed rows, 8,238 document
+  URLs, 9,975 image URLs, and 9,975 broker references.
+- Dry-run staged 9,223 unique rows and skipped 0 missing URLs.
+- Expected merge explanation: 744 sale+lease property pairs merged to
+  `sale_or_lease` after stripping Buildout `propertyId` `-sale`/`-lease`
+  suffixes, plus 8 exact duplicate rows.
+- Source-scoped `--mark-missing` was dry-run and then live-applied only for
+  `lee-associates`.
+- Supabase proof: 9,223 active Lee rows, 2,611 sale, 5,691 lease, 921
+  sale_or_lease, 9,062 image child rows, 7,681 document child rows, 9,223
+  contact child rows, and 0 bad source URLs, missing titles, missing raw data,
+  duplicate external IDs, bad states, impossible coordinates, malformed guarded
+  prices/cap rates, bad child URLs, or child orphans.
+- Search proof: `credeals.search_cre_listings('Lee', null, null, null, null)`
+  returned live Lee rows.

@@ -20,7 +20,7 @@
 import Firecrawl from "@mendable/firecrawl-js";
 import * as cheerio from "cheerio";
 import { parseArgs } from "node:util";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 const API_URL = process.env.FIRECRAWL_API_URL ?? "http://localhost:3002";
@@ -469,6 +469,8 @@ type BuildoutInventoryOpts = {
   directReferer?: string;
   pageConcurrency?: number;
   requireCompletePages?: boolean;
+  cacheSlug?: string;
+  usePageCache?: boolean;
   recoveryPasses?: number;
   recoveryCooldownMs?: number;
   maxRecoveryPages?: number;
@@ -478,6 +480,111 @@ type BuildoutInventoryOpts = {
 
 function buildoutInventoryUrl(pluginKey: string, page: number): string {
   return `https://buildout.com/plugins/${pluginKey}/inventory.json?page=${page}`;
+}
+
+function envBool(name: string): boolean {
+  return ["1", "true", "yes", "on"].includes((process.env[name] ?? "").toLowerCase());
+}
+
+function envInt(name: string): number | null {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : null;
+}
+
+function buildoutCacheSlug(company: string, pluginKey: string, opts: BuildoutInventoryOpts): string {
+  return (
+    opts.cacheSlug ??
+    company
+      .toLowerCase()
+      .replace(/&/g, "and")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") ??
+    pluginKey.slice(0, 12)
+  );
+}
+
+function buildoutCacheDir(): string {
+  return process.env.BUILDOUT_CACHE_DIR ?? "out/cache/buildout";
+}
+
+function buildoutPageCachePath(company: string, pluginKey: string, page: number, opts: BuildoutInventoryOpts): string {
+  return `${buildoutCacheDir()}/${buildoutCacheSlug(company, pluginKey, opts)}/page-${String(page).padStart(4, "0")}.json`;
+}
+
+function readBuildoutPageCache(
+  company: string,
+  pluginKey: string,
+  page: number,
+  opts: BuildoutInventoryOpts
+): any | null {
+  const path = buildoutPageCachePath(company, pluginKey, page, opts);
+  if (!existsSync(path)) return null;
+  try {
+    const cached = JSON.parse(readFileSync(path, "utf8"));
+    if (cached.pluginKey !== pluginKey || cached.page !== page) return null;
+    const data = cached.data;
+    if (!data || !Array.isArray(data.inventory)) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function writeBuildoutPageCache(
+  company: string,
+  pluginKey: string,
+  page: number,
+  opts: BuildoutInventoryOpts,
+  data: any
+): void {
+  if (!data || !Array.isArray(data.inventory)) return;
+  const path = buildoutPageCachePath(company, pluginKey, page, opts);
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(
+    tmp,
+    JSON.stringify(
+      {
+        pluginKey,
+        page,
+        cachedAt: new Date().toISOString(),
+        data,
+      },
+      null,
+      2
+    )
+  );
+  renameSync(tmp, path);
+}
+
+function buildoutPageWindow(pages: number): { start: number; end: number } | null {
+  const start = envInt("BUILDOUT_PAGE_START");
+  const end = envInt("BUILDOUT_PAGE_END");
+  if (start === null && end === null) return null;
+  const lo = Math.max(0, start ?? 0);
+  const hi = Math.min(pages - 1, end ?? lo);
+  if (hi < lo) throw new Error(`invalid Buildout page window ${lo}-${hi}`);
+  return { start: lo, end: hi };
+}
+
+function buildoutJitterMs(): [number, number] | null {
+  const raw = process.env.BUILDOUT_PAGE_JITTER_MS;
+  if (!raw) return null;
+  const parts = raw.split(",").map((p) => Number(p.trim()));
+  if (!parts.every(Number.isFinite)) return null;
+  const lo = Math.max(0, Math.trunc(parts[0] ?? 0));
+  const hi = Math.max(lo, Math.trunc(parts[1] ?? parts[0] ?? 0));
+  return [lo, hi];
+}
+
+async function sleepBuildoutJitter(): Promise<void> {
+  const jitter = buildoutJitterMs();
+  if (!jitter || jitter[1] <= 0) return;
+  const [lo, hi] = jitter;
+  const ms = lo + Math.floor(Math.random() * (hi - lo + 1));
+  await new Promise((r) => setTimeout(r, ms));
 }
 
 async function directBuildoutJson(url: string, referer: string, timeoutMs = 15000): Promise<any> {
@@ -511,20 +618,31 @@ async function fetchBuildoutInventoryPage(
   opts: BuildoutInventoryOpts
 ): Promise<any> {
   const url = buildoutInventoryUrl(pluginKey, page);
+  const useCache = opts.usePageCache || envBool("BUILDOUT_USE_PAGE_CACHE") || envBool("BUILDOUT_CACHE_ONLY") || envBool("BUILDOUT_ASSEMBLE_FROM_CACHE");
+  if (useCache) {
+    const cached = readBuildoutPageCache(company, pluginKey, page, opts);
+    if (cached) return cached;
+    if (envBool("BUILDOUT_ASSEMBLE_FROM_CACHE")) {
+      throw new Error(`missing Buildout cache page ${page} for ${buildoutCacheSlug(company, pluginKey, opts)}`);
+    }
+  }
+  await sleepBuildoutJitter();
+  let data: any;
   if (opts.preferDirectJson) {
     try {
-      const d = await directBuildoutJson(url, opts.directReferer ?? "https://buildout.com/");
+      data = await directBuildoutJson(url, opts.directReferer ?? "https://buildout.com/");
       if (page === 0) console.error(`  ${company}: direct Buildout JSON available`);
-      return d;
     } catch (err) {
       console.error(`  ${company}: direct Buildout JSON failed for page ${page} (${err}); falling back to Firecrawl`);
     }
   }
-  return scrapeJson(url, {
+  data ??= await scrapeJson(url, {
     timeout: 60000,
     jsonAttempts: opts.jsonAttempts,
     jsonBackoffMs: opts.jsonBackoffMs,
   });
+  if (useCache) writeBuildoutPageCache(company, pluginKey, page, opts, data);
+  return data;
 }
 
 async function buildoutInventory(
@@ -540,21 +658,43 @@ async function buildoutInventory(
   const total: number | null = first.meta?.total ?? null;
   const limit: number = first.meta?.limit ?? 30;
   const pages = total && total > limit ? Math.min(Math.ceil(total / limit), 1200) : 1;
+  const pageWindow = buildoutPageWindow(pages);
+  const cacheOnly = envBool("BUILDOUT_CACHE_ONLY");
+  const assembleFromCache = envBool("BUILDOUT_ASSEMBLE_FROM_CACHE");
+  if (pageWindow) {
+    console.error(
+      `  ${company}: Buildout page window ${pageWindow.start}-${pageWindow.end}/${pages - 1}${
+        cacheOnly ? " (cache-only)" : assembleFromCache ? " (assembling from cache)" : ""
+      }`
+    );
+  }
   const inventoryByPage = new Map<number, any[]>();
   inventoryByPage.set(0, first.inventory ?? []);
   const failedPages = new Set<number>();
+  const attemptedPages = new Set<number>([0]);
+  const unattemptedPages = new Set<number>();
   if (total && total > limit) {
     const failureLimit = Math.max(3, Math.floor(pages * 0.03));
-    const pageNums = Array.from({ length: pages - 1 }, (_, i) => i + 1);
+    const allPageNums = Array.from({ length: pages - 1 }, (_, i) => i + 1);
+    const pageNums =
+      pageWindow && !assembleFromCache
+        ? allPageNums.filter((p) => p >= pageWindow.start && p <= pageWindow.end)
+        : allPageNums;
+    if (pageWindow && !assembleFromCache) {
+      for (const p of allPageNums) {
+        if (!pageNums.includes(p)) unattemptedPages.add(p);
+      }
+    }
     const pageConcurrency = Math.max(1, Math.min(opts.pageConcurrency ?? Math.min(CONCURRENCY, 2), pageNums.length));
     let done = 1;
     let aborting = false;
     await pmap(pageNums, pageConcurrency, async (p) => {
       if (aborting) {
-        failedPages.add(p);
+        unattemptedPages.add(p);
         return;
       }
       try {
+        attemptedPages.add(p);
         const d = await fetchBuildoutInventoryPage(company, pluginKey, p, opts);
         inventoryByPage.set(p, d.inventory ?? []);
         done++;
@@ -568,7 +708,7 @@ async function buildoutInventory(
       }
     });
 
-    const recoveryPasses = opts.recoveryPasses ?? 0;
+    const recoveryPasses = assembleFromCache ? 0 : opts.recoveryPasses ?? 0;
     const maxRecoveryPages = opts.maxRecoveryPages ?? failureLimit;
     for (let pass = 1; pass <= recoveryPasses && failedPages.size > 0; pass++) {
       if (failedPages.size > maxRecoveryPages) break;
@@ -601,11 +741,38 @@ async function buildoutInventory(
             });
           }
           inventoryByPage.set(p, d.inventory ?? []);
+          if (opts.usePageCache || envBool("BUILDOUT_USE_PAGE_CACHE") || envBool("BUILDOUT_CACHE_ONLY")) {
+            writeBuildoutPageCache(company, pluginKey, p, opts, d);
+          }
           failedPages.delete(p);
           console.error(`  ${company}: recovered Buildout inventory page ${p}`);
         } catch (err) {
           console.error(`  ${company}: inventory page ${p} still failed on recovery pass ${pass}: ${err}`);
         }
+      }
+    }
+
+    if (cacheOnly) {
+      const missingAttempted = [...pageNums].filter((p) => !inventoryByPage.has(p));
+      const cacheError = new Error(
+        `${company}: cache-only Buildout window complete (${pageWindow?.start ?? 0}-${pageWindow?.end ?? pages - 1}); ` +
+          `${attemptedPages.size} page(s) attempted, ${missingAttempted.length} selected page(s) missing; not producing listing artifact`
+      );
+      buildoutFailureCache.set(pluginKey, cacheError);
+      throw cacheError;
+    }
+
+    if (pageWindow && !assembleFromCache) {
+      const windowError = new Error(
+        `${company}: Buildout page window was requested without BUILDOUT_CACHE_ONLY=1 or BUILDOUT_ASSEMBLE_FROM_CACHE=1; refusing partial listing artifact`
+      );
+      buildoutFailureCache.set(pluginKey, windowError);
+      throw windowError;
+    }
+
+    if (assembleFromCache) {
+      for (let p = 0; p < pages; p++) {
+        if (!inventoryByPage.has(p)) failedPages.add(p);
       }
     }
 
@@ -616,8 +783,9 @@ async function buildoutInventory(
       const failed = [...failedPages].sort((a, b) => a - b);
       const shown = failed.slice(0, 20).join(",");
       const suffix = failed.length > 20 ? `... (+${failed.length - 20} more)` : "";
+      const unattempted = unattemptedPages.size ? `, ${unattemptedPages.size} unattempted page(s)` : "";
       const abortError = new Error(
-        `${company}: ${failedPages.size}/${pages} inventory pages failed (${shown}${suffix}); aborting this source`
+        `${company}: ${failedPages.size}/${pages} inventory pages failed (${shown}${suffix}${unattempted}); aborting this source`
       );
       buildoutFailureCache.set(pluginKey, abortError);
       throw abortError;
@@ -3970,6 +4138,8 @@ async function runSource(key: SourceKey, tx: Tx, max: number): Promise<SourceRes
           directReferer: "https://www.lee-associates.com/properties/",
           pageConcurrency: 1,
           requireCompletePages: true,
+          cacheSlug: "lee-associates",
+          usePageCache: true,
           recoveryPasses: 1,
           recoveryCooldownMs: 15000,
           maxRecoveryPages: 60,

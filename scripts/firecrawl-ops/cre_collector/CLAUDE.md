@@ -44,7 +44,7 @@ npx tsx collect.ts --source=all --transaction=both --max-items=0 \
 python3 cre_ingest.py --in out/run.json                  # additive upsert
 python3 cre_ingest.py --in out/run.json --mark-missing   # full-run reconcile
 
-# The safe daily cycle while Lee remains blocked
+# The safe daily cycle while any all-source errors remain
 bash cre_daily_update.sh --no-mark-missing
 ```
 
@@ -63,7 +63,7 @@ Latest full ingested all-source run started 2026-06-12 04:04:23 UTC. Several
 sources were upgraded after that run on 2026-06-12 local time through
 source-specific full runs and validation: CBRE Deal Flow, Cushman & Wakefield,
 NAI Global active feed, Colliers SalesTracker, Transwestern, and Marcus &
-Millichap public sale.
+Millichap public sale, and Lee & Associates.
 
 | Source key | Method | Sale | Lease | Notes |
 |------------|--------|------|-------|-------|
@@ -77,7 +77,7 @@ Millichap public sale.
 | `avison-young` | Public SharpLaunch feed | 636 staged sale rows | 1,431 staged lease rows plus 133 sale_or_lease | Full SharpLaunch run live-ingested additively; still needs optional detail-page enrichment for PDFs, richer galleries, JSON-LD, VCard/profile URLs |
 | `savills` | Server-rendered pages /page/N | ~100 of 105 source cards | 0 | US lease inventory empty; foreign fallback cards filtered; US parser accepts state names, ZIP-only rows, and city/state/ZIP variants |
 | `svn` | Buildout inventory API | 2,988 in latest full artifact | 2,533 in latest full artifact | Mapping complete from prior artifact, but fresh live refresh partial because Buildout returned 403 HTML during probes |
-| `lee-associates` | Buildout inventory API | blocked in latest full run | blocked in latest full run | Buildout throttles under sustained paging; latest fresh retry passed pages 93-104 but failed pages 286-297 and aborted at 12/333 failed pages |
+| `lee-associates` | Buildout inventory API with durable page cache/window assembly | 2,611 live sale rows | 5,691 live lease rows plus 921 sale_or_lease | Complete public Buildout feed from `out/lee_full_cache_2026-06-12_assembled.json`; source-scoped `--mark-missing` applied after cache pages 0-332 assembled cleanly |
 | `nai-global` | Public Infabode GraphQL feed and `publicPost` details | 6 in probe | 6 in probe | Stable `infabode:` ids and detail URLs; contacts only when public fields exist |
 | `colliers` | Public SalesTracker RCM GET list/map plus SLP detail | 3 in probe, 1,653 SalesTracker filtered total | 0, main lease search blocked | Partial investment-sale coverage only; main `www.colliers.com/en/properties` Coveo sale/lease path remains blocked; no POST, agreement, or gated document path is used |
 | `transwestern` | Public GET feed plus detail pages | 4 in probe | 4 in probe | Implemented and dry-run proven; full run and live ingest still needed |
@@ -94,9 +94,9 @@ Rate limiting: Buildout occasionally returns HTML interstitials under
 sustained paging. `scrapeJson` retries with backoff; the inventory fetch
 tolerates isolated page failures but aborts the source if more than ~3% of
 pages fail, then caches that failure for the second transaction pass. This
-prevents a gappy run from soft-deleting live rows downstream. Lee can serve
-individual failed pages later, but a 333-page run still fails without a
-throttling-safe or resumable strategy.
+prevents a gappy run from soft-deleting live rows downstream. Lee now uses the
+durable Buildout page cache controls documented in its broker README; assemble
+from cache only after pages 0 through 332 are present.
 
 ## cre_ingest.py
 
