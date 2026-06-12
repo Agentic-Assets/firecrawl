@@ -24,7 +24,7 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 | Avison Young | Public feed complete, needs detail enrichment | 2,200 staged unique rows, 636 sale + 1,431 lease + 133 sale_or_lease | Public SharpLaunch active website/team_member feed, client-side transaction partition, contact joins, CDN image/avatar URLs | Optional detail-page enrichment for public PDFs, richer galleries, JSON-LD, VCard/profile URLs |
 | Savills | Partial, not CRE-defensible yet | 100 sale rows of 105 source cards in latest full run; fresh probe collected 12 sale rows from page 1, 0 US lease | Server-rendered global property-search sale pages, foreign fallback cards filtered | Find an authorized or clearly public U.S. commercial inventory source before enriching or claiming CRE coverage |
 | JLL Investor Center | Partial | 50 sale rows | Rendered public grid | Determine whether more pages exist and enrich details where public |
-| Marcus & Millichap | Partial | 12 sale rows | Rendered first grid under stealth | Find public pagination/API and detail enrichment; lease is not publicly listed |
+| Marcus & Millichap | Partial, public sale expansion proven | 105 sale rows in no-ingest probe, 3,126 reported public sale total | Public `mapproperties` ActivityIds, `mappropertydetail` tiles, and detail-page enrichment; lease is not publicly listed | Run conservative full sale collection, dry-run ingest validation, live ingest decision, and Supabase validation |
 | NAI Global | Complete public active feed, status-filtered | 241 active rows, 183 sale + 58 lease | Public Infabode feed plus `publicPost` detail enrichment, stable `infabode:<id>` IDs, source/original URLs, image URLs, one document URL, and raw status proof | Do not ingest historical/`UNKNOWN` Infabode rows as active inventory; optional future archive table only |
 | Lee & Associates | Blocked | 0 uploaded in latest full run | Buildout feed path known | Sustained full run failed around pages 286-297; needs throttling-safe or resumable paging |
 | Colliers | Partial, live-ingested SalesTracker subset | 1,300 SalesTracker cards collected, 1,172 unique active Supabase rows | Public SalesTracker RCM GET list/map endpoints plus anonymous SLP detail enrichment for investment-sale cards | Main `www.colliers.com/en/properties` Coveo sale/lease path remains blocked; SalesTracker filtered total reports 1,653 but public card pagination exposed 1,300 unique cards |
@@ -44,7 +44,9 @@ because Buildout returned 403 HTML during 2026-06-12 probes.
 JLL, Newmark, and Avison Young need the Cushman-style deep audit: prove detail
 page enrichment, document URLs, image URLs, contact URLs, and source totals.
 Savills, JLL Investor Center, Marcus & Millichap, Colliers SalesTracker, and
-SVN live refresh are explicitly partial. Savills is
+SVN live refresh are explicitly partial. Marcus now has a public ActivityId
+expansion path proven past the newest-100 cap, but it still needs full run and
+ingest validation before being called complete. Savills is
 especially weak for EQUIRE because the current path is a global or residential
 property-search feed, not a proven U.S. commercial inventory source. Lee is
 blocked. Main Colliers Coveo sale/lease coverage remains blocked. Transwestern

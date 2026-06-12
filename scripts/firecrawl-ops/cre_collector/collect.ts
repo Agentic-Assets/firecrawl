@@ -1688,7 +1688,6 @@ async function srcCushman(tx: Tx, max: number): Promise<SourceResult> {
 
 const MARCUS_BASE = "https://www.marcusmillichap.com";
 const MARCUS_PROPERTIES_URL = `${MARCUS_BASE}/properties`;
-const MARCUS_PUBLIC_SEARCH_CAP = 100;
 
 function marcusHeaders(): Record<string, string> {
   return {
@@ -1712,6 +1711,10 @@ function marcusSearchBody(pageSize: number): Record<string, any> {
     savedSearchId: null,
     allowedFacets: ["propertytype", "location", "advisors", "listingprice", "caprate"],
   };
+}
+
+function marcusMapDetailBody(activityId: string): Record<string, any> {
+  return { activityId };
 }
 
 async function marcusPost(path: string, body: Record<string, any>): Promise<any> {
@@ -1810,6 +1813,49 @@ function parseMarcusTileHtml(tileHtml: string | null | undefined, row: any = {})
     },
     rawMarcusSearchRow: row,
   });
+}
+
+async function fetchMarcusMapRows(): Promise<any[]> {
+  const map = await marcusPost("/api/contentsearch/mapproperties", marcusSearchBody(1));
+  const results = map.Results ?? map;
+  const rows = Array.isArray(results.Properties) ? results.Properties : Array.isArray(results) ? results : [];
+  const seen = new Set<string>();
+  return rows.filter((row: any) => {
+    const activityId = clean(row.ActivityId);
+    if (!activityId || seen.has(activityId)) return false;
+    seen.add(activityId);
+    return true;
+  });
+}
+
+async function fetchMarcusMapListing(mapRow: any): Promise<any | null> {
+  const activityId = clean(mapRow.ActivityId);
+  if (!activityId) return null;
+  try {
+    const detail = await marcusPost("/api/contentsearch/mappropertydetail", marcusMapDetailBody(activityId));
+    const results = detail.Results ?? detail;
+    return parseMarcusTileHtml(results.PropertyDetail, {
+      ...mapRow,
+      ActivityId: activityId,
+      PropertyUrl: results.PropertyUrl,
+      rawMarcusMapDetail: results,
+    });
+  } catch (err) {
+    console.error(`  marcus-millichap/sale: map detail failed for ${activityId}: ${err}`);
+    return prune({
+      activityId,
+      latitude: num(Number(mapRow.Latitude)),
+      longitude: num(Number(mapRow.Longitude)),
+      country: "US",
+      transactionType: "Sale",
+      marcusFlags: {
+        newlyListed: Boolean(mapRow.NewlyListed),
+        newlyReduced: Boolean(mapRow.NewlyReduced),
+      },
+      detailError: String(err),
+      rawMarcusSearchRow: mapRow,
+    });
+  }
 }
 
 async function fetchMarcusDetailHtml(url: string): Promise<string> {
@@ -1940,17 +1986,25 @@ async function srcMarcusMillichap(tx: Tx, max: number): Promise<SourceResult> {
         "Sale-only in the public property UI. The documented public bundle exposes property and auction endpoints, but no public lease search mode or lease endpoint was found.",
     };
   }
-  const want = Math.min(max, MARCUS_PUBLIC_SEARCH_CAP);
-  const pageSize = Math.max(1, Number.isFinite(want) ? want : MARCUS_PUBLIC_SEARCH_CAP);
-  const search = await marcusPost("/api/contentsearch/properties", marcusSearchBody(pageSize));
+  const search = await marcusPost("/api/contentsearch/properties", marcusSearchBody(2));
   const results = search.Results ?? search;
   const rows = Array.isArray(results.Properties) ? results.Properties : [];
   const total = typeof results.TotalCount === "number" ? results.TotalCount : null;
-  if (!rows.length) throw new Error("Marcus & Millichap public properties API returned no rows");
+  if (!rows.length) throw new Error("Marcus & Millichap public properties API sanity check returned no rows");
   console.error(
-    `  marcus-millichap/sale: public properties API returned ${rows.length} row(s), total ${total ?? "?"}`
+    `  marcus-millichap/sale: public properties API sanity check returned ${rows.length} row(s), total ${
+      total ?? "?"
+    }`
   );
-  const baseListings = rows.map((row: any) => parseMarcusTileHtml(row.Tile, row)).filter((l: any) => l.url);
+  const mapRows = await fetchMarcusMapRows();
+  if (!mapRows.length) throw new Error("Marcus & Millichap public mapproperties API returned no rows");
+  const want = Math.min(max, mapRows.length);
+  const selectedMapRows = mapRows.slice(0, Number.isFinite(want) ? want : mapRows.length);
+  console.error(
+    `  marcus-millichap/sale: public map API returned ${mapRows.length} ActivityId row(s), expanding ${selectedMapRows.length}`
+  );
+  const baseRows = await pmap(selectedMapRows, CONCURRENCY, fetchMarcusMapListing);
+  const baseListings = baseRows.filter((l: any) => l?.url);
   let done = 0;
   const listings = await pmap(baseListings, CONCURRENCY, async (row) => {
     const enriched = await enrichMarcusListing(row);
@@ -1964,11 +2018,11 @@ async function srcMarcusMillichap(tx: Tx, max: number): Promise<SourceResult> {
     company: "Marcus & Millichap",
     sourceUrl: MARCUS_PROPERTIES_URL,
     method:
-      "Public POST /api/contentsearch/properties JSON, newest-100 public cap, plus direct public detail HTML enrichment",
+      "Public POST /api/contentsearch/mapproperties ActivityIds, mappropertydetail tiles, and direct public detail HTML enrichment",
     totalAvailable: total,
     listings,
     note:
-      "Public sale inventory only. The listing endpoint reports the full matching total but the public UI/API caps unfiltered search rows at the newest 100; broader public map ActivityIds require separate mappropertydetail expansion and remain deferred for load control.",
+      "Public sale inventory only. The list endpoint still caps unfiltered visible rows at the newest 100, so discovery uses public map ActivityIds plus mappropertydetail tiles. Lease remains skipped because no public lease UI mode or endpoint has been proven.",
   };
 }
 

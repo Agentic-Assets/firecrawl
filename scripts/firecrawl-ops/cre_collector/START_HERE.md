@@ -39,7 +39,7 @@ Result:
 | JLL Investor | 8 in latest hardened probe; source total about 1,087 to 1,088 | Partial, first rendered search page detail-enriched |
 | Cushman & Wakefield | 11,318 active rows, 2,743 sale + 8,575 lease | Complete public API feed with detail enrichment, live-ingested with source-scoped mark-missing cleanup |
 | Newmark | 4,371 in post-validation full probe | Active via Algolia, no-state recovery added |
-| Marcus & Millichap | 12 in probe, 3,126 reported public sale total | Partial, public contentsearch sale API and detail enrichment; lease unsupported |
+| Marcus & Millichap | 105 in no-ingest probe, 3,126 reported public sale total | Partial, public map ActivityId + mappropertydetail sale path proven past newest-100 cap; full run and live ingest pending; lease unsupported |
 | Avison Young | 2,200 staged unique rows in post-validation full run | Public SharpLaunch feed live-ingested additively; still needs optional detail-page enrichment |
 | Savills | 100 | Active, sale only; US lease empty after fallback filtering |
 | SVN | 5,521 in latest full artifact | Mapping complete from prior full artifact; fresh live refresh partial due Buildout 403 HTML |

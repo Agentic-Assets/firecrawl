@@ -12,7 +12,7 @@ Production bulk collection has Marcus & Millichap support in `cre_collector/coll
 
 The public collector should only ingest visible card and detail data. Do not synthesize financial fields that are gated or absent.
 
-As of the 2026-06-12 verification pass below, the production collector uses the public contentsearch JSON route for sale rows and direct public detail HTML for addresses, descriptions, visible advisor contacts, and property image URLs. It still treats Marcus & Millichap as sale-only. Public lease inventory remains unproven. Unfiltered public search is capped at the newest 100 rows even though the site reports a larger total.
+As of the 2026-06-12 verification pass below, the production collector uses the public map ActivityId route, public `mappropertydetail` tile route, and direct public detail HTML for sale rows, addresses, descriptions, visible advisor contacts, and property image URLs. It still treats Marcus & Millichap as sale-only. Public lease inventory remains unproven. Unfiltered public list search is capped at the newest 100 rows even though the site reports a larger total, so the collector now uses the map ActivityId expansion path instead of relying on list pagination.
 
 ## 2026-06-12 Deep Dive Notes
 
@@ -83,25 +83,26 @@ Gated fields:
 
 ### Status recommendation
 
-Upgrade Marcus from "rendered first grid only" to "API-backed public sale feed candidate, with gated-document limits." The site has a reliable public API path beyond the current 12 first-grid rows, but full coverage is not a single unfiltered page loop because the public list endpoint caps at the newest 100 matching rows.
+Upgrade Marcus from "rendered first grid only" to "API-backed public sale feed candidate, with gated-document limits." The site has a reliable public API path beyond the original 12 first-grid rows, but full coverage is not a single unfiltered page loop because the public list endpoint caps at the newest 100 matching rows. The production collector now uses `mapproperties` ActivityIds plus `mappropertydetail` tiles to cross that cap.
 
-Best collector path:
+Implemented collector path:
 
-1. Use `POST /api/contentsearch/mapproperties` to discover all public sale `ActivityId` values and coordinates.
-2. Use bounded, retrying calls to `POST /api/contentsearch/mappropertydetail` to recover each listing URL and card HTML.
-3. Parse card HTML for external id, title, property type, location, price text, cap rate, image URL, and flags.
-4. Optionally enrich selected or full sale detail pages for address, description, specifications, contacts, profile URLs, emails, phones, avatar URLs, gallery image URLs, and gated deal-room URLs.
-5. Keep documents and images as URLs only. Do not download OM, PDF, or image binaries.
-6. Keep lease skipped with an evidence note. Add auctions only if EQUIRE wants auction inventory as a separate sale-like sub-source or transaction subtype.
+1. Use a tiny `POST /api/contentsearch/properties` sanity check for public total count and schema drift.
+2. Use `POST /api/contentsearch/mapproperties` to discover all public sale `ActivityId` values and coordinates.
+3. Use bounded, retrying calls to `POST /api/contentsearch/mappropertydetail` to recover each listing URL and card HTML.
+4. Parse card HTML for external id, title, property type, location, price text, cap rate, image URL, and flags.
+5. Enrich selected or full sale detail pages for address, description, specifications, contacts, profile URLs, emails, phones, avatar URLs, gallery image URLs, and gated deal-room URLs.
+6. Keep documents and images as URLs only. Do not download OM, PDF, or image binaries.
+7. Keep lease skipped with an evidence note. Add auctions only if EQUIRE wants auction inventory as a separate sale-like sub-source or transaction subtype.
 
-### Collector patch plan
+### Collector patch status
 
-- Replace the current `srcMarcusMillichap` rendered-page scrape with a POST helper for `properties`, `mapproperties`, and `mappropertydetail`.
-- Preserve a small `properties` call as a sanity check for total count, facets, and newest-100 behavior.
-- Add a `parseMarcusTileHtml` helper so both `properties.Results.Properties[].Tile` and `mappropertydetail.Results.PropertyDetail` share parsing.
-- Use `DealId` from tile HTML or `PropertyUrl` as the stable external id, with `ActivityId` in `raw_data`.
-- Add `enrichMarcusDetailPage(url)` for public HTML fields, contacts, images, and gated deal-room URL classification. Detail failures should not drop the feed row.
-- Keep `tx === "lease"` returning skipped, with the 2026-06-12 no-public-lease evidence in the note.
+- `srcMarcusMillichap` now uses POST helpers for `properties`, `mapproperties`, and `mappropertydetail`.
+- The small `properties` call is preserved as a sanity check for total count, facets, and newest-100 behavior.
+- `parseMarcusTileHtml` is reused for public list tiles and public map detail tiles.
+- `DealId` from tile HTML or `PropertyUrl` is the stable external id, with `ActivityId` in `raw_data`.
+- `enrichMarcusListing(url)` collects public HTML fields, contacts, images, and gated deal-room URL classification. Detail failures do not drop the feed row.
+- `tx === "lease"` still returns skipped, with the 2026-06-12 no-public-lease evidence in the note.
 - If auctions are added, use a prefixed id such as `auction:<dealId>` or a separate source key so auction rows cannot collide with standard sale rows.
 
 ## 2026-06-12 Collector Verification Pass
@@ -156,5 +157,41 @@ Verification errors and resolution:
 Remaining blocked or partial:
 
 - Lease inventory remains unsupported because no public lease UI mode or endpoint has been proven.
-- Unfiltered public sale search remains capped at the newest 100 rows. The map endpoint exposes broader public ActivityIds, but expanding every map row through `mappropertydetail` is deferred for load control and should be tested as a separate bounded full-coverage upgrade.
+- Unfiltered public sale search remains capped at the newest 100 rows. The collector now crosses that cap through public map ActivityIds and `mappropertydetail`; a no-live-ingest 105-row probe passed, but a full 3,126-row collector run and ingest validation are still pending.
 - Auctions are publicly discoverable through `/api/contentsearch/auctions`, but are not included in the production Marcus source to avoid mixing standard sale rows with auction inventory without a product decision.
+
+## 2026-06-12 Map ActivityId Expansion Follow-Up
+
+Scope: Marcus & Millichap only. No live ingest was run. No `--mark-missing` was used. No gated content, auth, binary downloads, OM downloads, PDF downloads, or image downloads were used.
+
+Raw public endpoint proof:
+
+- `POST /api/contentsearch/properties` with `pageSize=2` returned HTTP 200, `TotalCount=3126`, `NumberOfPages=50`, 2 structured rows, and the expected public list schema.
+- `POST /api/contentsearch/mapproperties` returned HTTP 200 and 3,126 public map rows with `ActivityId`, latitude, longitude, and listing flags.
+- `POST /api/contentsearch/mappropertydetail` returned HTTP 200 for sampled ActivityIds at indexes 0, 1, 99, and 100. Index 100 proved a public row beyond the newest-100 list cap:
+  `https://www.marcusmillichap.com/properties/301638/7eleven-strip-center-nnn-leases-denver-msa-recent-lease-extension-45-year-hist-occupancy`.
+
+Commands:
+
+```bash
+cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl
+bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
+cd scripts/firecrawl-ops/cre_collector
+npm run typecheck
+npx tsx collect.ts --source=marcus-millichap --transaction=both --max-items=8 --concurrency=3 --out=/tmp/marcus_map_probe_2026-06-12.json
+python3 cre_ingest.py --in /tmp/marcus_map_probe_2026-06-12.json --dry-run --keep-artifacts /tmp/marcus_map_probe_2026-06-12_ingest
+npx tsx collect.ts --source=marcus-millichap --transaction=sale --max-items=105 --concurrency=6 --out=/tmp/marcus_map_105_probe_2026-06-12.json
+python3 cre_ingest.py --in /tmp/marcus_map_105_probe_2026-06-12.json --dry-run --keep-artifacts /tmp/marcus_map_105_probe_2026-06-12_ingest
+```
+
+Results:
+
+- Healthcheck passed and local Firecrawl scrape smoke was healthy.
+- Typecheck passed.
+- 8-row both-mode probe collected 8 sale rows and 0 lease rows; dry-run ingest staged 8 Marcus rows and skipped 0 for missing URL.
+- 105-row sale probe collected 105 sale rows from the public ActivityId expansion path; dry-run ingest staged 105 Marcus rows and skipped 0 for missing URL.
+- 105-row artifact totals: 0 missing URLs, 267 visible contact rows, 557 image URLs, 0 public brochure/document rows, and 105 gated deal-room URLs retained in raw listing data only.
+
+Next action:
+
+- Run a conservative full Marcus sale collection from the public ActivityId path, then dry-run ingest and inspect staged row counts, child URL counts, and detail-error counts before any live additive ingest. Keep lease skipped unless a public lease UI mode or endpoint is proven.
