@@ -151,6 +151,13 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
   full run, source-scoped reconciliation, and live validation. NAI Global was
   removed after the public Infabode GraphQL active-status filter was proven and
   live-ingested on 2026-06-12.
+- Post-validation probe: Savills now has a defensible public U.S. commercial
+  lease path from the server-rendered commercial lease page. The bounded probe
+  collected 2 Chicago, IL retail lease rows with 4 public PDF document URLs, 24
+  image URLs, and 2 contact rows. Dry-run ingest staged both rows and skipped 0
+  missing URLs. No live ingest was run. Savills sale remains partial and not
+  CRE-defensible because the current sale route is global/residential, while
+  the corrected commercial sale route exposed only a Toronto, Canada object.
 
 ## Access Model
 

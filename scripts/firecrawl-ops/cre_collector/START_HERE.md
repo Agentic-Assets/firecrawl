@@ -43,7 +43,7 @@ Result:
 | Newmark | 4,371 active rows, 1,121 sale + 3,250 lease | Complete public Algolia feed with no-state DC recovery, public People contacts/profile URLs, raw hit preservation, and source-scoped cleanup |
 | Marcus & Millichap | 3,124 active sale rows | Complete public sale feed via public map ActivityIds, `mappropertydetail` tiles, and detail HTML; live-ingested with source-scoped mark-missing cleanup; lease unsupported |
 | Avison Young | 2,200 staged unique rows in post-validation full run | Public SharpLaunch feed live-ingested additively; still needs optional detail-page enrichment |
-| Savills | 100 | Active, sale only; US lease empty after fallback filtering |
+| Savills | 100 legacy sale rows + 2 defensible commercial lease rows in latest probe | Partial; lease now has 2 U.S. retail rows with PDF/image/contact URLs, while current sale rows remain global/residential and not CRE-defensible |
 | SVN | 5,521 in latest full artifact | Mapping complete from prior full artifact; fresh live refresh partial due Buildout 403 HTML |
 | NAI Global | 241 active rows, 183 sale + 58 lease live-ingested with mark-missing cleanup | Complete public active feed via Infabode GraphQL and `publicPost`, filtered to `FOR_SALE_ON_MARKET`; historical/unknown rows excluded |
 | Lee & Associates | 9,223 active rows, 2,611 sale + 5,691 lease + 921 sale_or_lease | Complete public Buildout feed, assembled from durable page cache and live-ingested with source-scoped mark-missing cleanup |

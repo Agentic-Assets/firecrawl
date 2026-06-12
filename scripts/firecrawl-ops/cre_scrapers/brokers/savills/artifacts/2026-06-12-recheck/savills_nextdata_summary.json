@@ -1,0 +1,853 @@
+{
+  "commercial_sale": {
+    "totalItems": 0,
+    "paging": null,
+    "rows": [
+      {
+        "ExternalPropertyID": "9FB099FE-5F4A-47C4-B955-8054A6ADC83A",
+        "PropertyID": 1165457,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 43.66362,
+        "Longitude": -79.32788,
+        "PropertyTypes": [
+          {
+            "Type": "retail",
+            "TypeTag": "R",
+            "Caption": "Retail",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 1225000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "Right size commercial building for sale, centrally located in Leslieville. 855 SF on the main level, 528 SF on the second level and 348 SF located in the basement.",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/9fb099fe-5f4a-47c4-b955-8054a6adc83a",
+        "imageCount": 5,
+        "agentCount": 0,
+        "agents": []
+      }
+    ]
+  },
+  "commercial_lease": {
+    "totalItems": 1,
+    "paging": null,
+    "rows": [
+      {
+        "ExternalPropertyID": "5025923B-1E46-42E5-81C4-6F4316A8B02D",
+        "PropertyID": 1159921,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 41.91255,
+        "Longitude": -87.67782,
+        "PropertyTypes": [
+          {
+            "Type": "retail",
+            "TypeTag": "R",
+            "Caption": "Retail",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 0,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/5025923b-1e46-42e5-81c4-6f4316a8b02d",
+        "imageCount": 2,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "E4014DBE-336F-4AC8-BA9B-6ED1B48F73FE",
+        "PropertyID": 1159922,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 41.91268,
+        "Longitude": -87.67781,
+        "PropertyTypes": [
+          {
+            "Type": "retail",
+            "TypeTag": "R",
+            "Caption": "Retail",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 0,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/e4014dbe-336f-4ac8-ba9b-6ed1b48f73fe",
+        "imageCount": 2,
+        "agentCount": 0,
+        "agents": []
+      }
+    ]
+  },
+  "global_sale": {
+    "totalItems": 6,
+    "paging": null,
+    "rows": [
+      {
+        "ExternalPropertyID": "GBSSOFSLO260011",
+        "PropertyID": 1167693,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 34.079334,
+        "Longitude": -118.452398,
+        "PropertyTypes": [
+          {
+            "Type": "house",
+            "TypeTag": "H",
+            "Caption": "House",
+            "PriorityWeight": 1
+          },
+          {
+            "Type": "villa",
+            "TypeTag": "V",
+            "Caption": "Villa",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 34500000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "Timeless Georgian grandeur redefined through contemporary luxury and design",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbssofslo260011",
+        "imageCount": 24,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSSOFSLO260010",
+        "PropertyID": 1166854,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 34.083363,
+        "Longitude": -118.460618,
+        "PropertyTypes": [
+          {
+            "Type": "house",
+            "TypeTag": "H",
+            "Caption": "House",
+            "PriorityWeight": 1
+          },
+          {
+            "Type": "villa",
+            "TypeTag": "V",
+            "Caption": "Villa",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 400000000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "A once-in-a-generation estate uniting monumental scale with unparalleled luxury.",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbssofslo260010",
+        "imageCount": 18,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSSOFSLO260009",
+        "PropertyID": 1166851,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 34.030747,
+        "Longitude": -118.827937,
+        "PropertyTypes": [
+          {
+            "Type": "house",
+            "TypeTag": "H",
+            "Caption": "House",
+            "PriorityWeight": 1
+          },
+          {
+            "Type": "villa",
+            "TypeTag": "V",
+            "Caption": "Villa",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 16995000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "A private Malibu retreat",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbssofslo260009",
+        "imageCount": 8,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSSOFSLO260008",
+        "PropertyID": 1166847,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 34.085294,
+        "Longitude": -118.367568,
+        "PropertyTypes": [
+          {
+            "Type": "house",
+            "TypeTag": "H",
+            "Caption": "House",
+            "PriorityWeight": 1
+          },
+          {
+            "Type": "villa",
+            "TypeTag": "V",
+            "Caption": "Villa",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 3895000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "Enduring modern architecture shaped by warmth, texture, and light",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbssofslo260008",
+        "imageCount": 13,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSNYONYO260003",
+        "PropertyID": 1165912,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 40.771263,
+        "Longitude": -73.964841,
+        "PropertyTypes": [
+          {
+            "Type": "penthouse",
+            "TypeTag": "PENT",
+            "Caption": "Penthouse",
+            "PriorityWeight": 50
+          },
+          {
+            "Type": "flat-apartment",
+            "TypeTag": "APT",
+            "Caption": "Flat / Apartment",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 26500000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "Triplex Penthouse in the heart of the Upper East Side.",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbsnyonyo260003",
+        "imageCount": 16,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSNYONYO260007",
+        "PropertyID": 1165910,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 40.747579,
+        "Longitude": -74.007302,
+        "PropertyTypes": [
+          {
+            "Type": "flat-apartment",
+            "TypeTag": "APT",
+            "Caption": "Flat / Apartment",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 13500000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "West Chelsea Arts District along Manhattan\u2019s waterfront",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbsnyonyo260007",
+        "imageCount": 24,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBGNHXLAI260081",
+        "PropertyID": 1163797,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 40.775238,
+        "Longitude": -73.950262,
+        "PropertyTypes": [
+          {
+            "Type": "new-development",
+            "TypeTag": "ND",
+            "Caption": "New development",
+            "PriorityWeight": 55
+          },
+          {
+            "Type": "flat-apartment",
+            "TypeTag": "APT",
+            "Caption": "Flat / Apartment",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 960000,
+        "PriceText": null,
+        "SizeText": {
+          "Ping": 0,
+          "SqYd": 0,
+          "SqMt": 69.03,
+          "SqFt": 743,
+          "Acres": 0,
+          "Hectares": 0,
+          "Marla": 0,
+          "Kanal": 0
+        },
+        "Description": "The Height of Effortless Living on the Upper East Side. 144 one- to four-bedroom residences with sweeping city and river views, gracious layouts and artful finishes.",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbgnhxlai260081",
+        "imageCount": 12,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSNYONYO260004",
+        "PropertyID": 1162913,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 40.7619,
+        "Longitude": -73.963196,
+        "PropertyTypes": [
+          {
+            "Type": "penthouse",
+            "TypeTag": "PENT",
+            "Caption": "Penthouse",
+            "PriorityWeight": 50
+          },
+          {
+            "Type": "flat-apartment",
+            "TypeTag": "APT",
+            "Caption": "Flat / Apartment",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 6495000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "An exceptional Loft- Style Penthouse on the Upper East Side",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbsnyonyo260004",
+        "imageCount": 10,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBGNHXLAI260074",
+        "PropertyID": 1162771,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 40.690425,
+        "Longitude": -73.982324,
+        "PropertyTypes": [
+          {
+            "Type": "new-development",
+            "TypeTag": "ND",
+            "Caption": "New development",
+            "PriorityWeight": 55
+          },
+          {
+            "Type": "penthouse",
+            "TypeTag": "PENT",
+            "Caption": "Penthouse",
+            "PriorityWeight": 50
+          },
+          {
+            "Type": "flat-apartment",
+            "TypeTag": "APT",
+            "Caption": "Flat / Apartment",
+            "PriorityWeight": 1
+          },
+          {
+            "Type": "studio",
+            "TypeTag": "STU",
+            "Caption": "Studio",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 965000,
+        "PriceText": null,
+        "SizeText": {
+          "Ping": 0,
+          "SqYd": 0,
+          "SqMt": 52.95,
+          "SqFt": 570,
+          "Acres": 0,
+          "Hectares": 0,
+          "Marla": 0,
+          "Kanal": 0
+        },
+        "Description": "Introducing Brooklyn Tower, the borough\u2019s only 92 story supertall. Designed with artfully crafted interiors by Gachot, Brooklyn Tower offers studio-to-four bedroom luxury condominium.",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbgnhxlai260074",
+        "imageCount": 9,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSNYONYO260005",
+        "PropertyID": 1162842,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 40.743544,
+        "Longitude": -73.988725,
+        "PropertyTypes": [
+          {
+            "Type": "flat-apartment",
+            "TypeTag": "APT",
+            "Caption": "Flat / Apartment",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 7850000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "Set along the storied stretch of Madison Square Park.",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbsnyonyo260005",
+        "imageCount": 17,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSNYONYO260006",
+        "PropertyID": 1162837,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 40.725464,
+        "Longitude": -73.994089,
+        "PropertyTypes": [
+          {
+            "Type": "flat-apartment",
+            "TypeTag": "APT",
+            "Caption": "Flat / Apartment",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 12350000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "A truly exceptional residence in one of NoHo's most coveted prewar condominiums",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbsnyonyo260006",
+        "imageCount": 12,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBGNHXLAI260062",
+        "PropertyID": 1160453,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 40.74106,
+        "Longitude": -73.989699,
+        "PropertyTypes": [
+          {
+            "Type": "new-development",
+            "TypeTag": "ND",
+            "Caption": "New development",
+            "PriorityWeight": 55
+          },
+          {
+            "Type": "flat-apartment",
+            "TypeTag": "APT",
+            "Caption": "Flat / Apartment",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 11750000,
+        "PriceText": null,
+        "SizeText": {
+          "Ping": 0,
+          "SqYd": 0,
+          "SqMt": 287.5,
+          "SqFt": 3094.62,
+          "Acres": 0,
+          "Hectares": 0,
+          "Marla": 0,
+          "Kanal": 0
+        },
+        "Description": "The Flatiron Building stands as a rare expression of lasting architectural ingenuity. The original Beaux-Arts beauty is now reimagined as a collection of substantial private residences.",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbgnhxlai260062",
+        "imageCount": 8,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBGNHXLAI260061",
+        "PropertyID": 1160441,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 40.713776,
+        "Longitude": -74.012871,
+        "PropertyTypes": [
+          {
+            "Type": "new-development",
+            "TypeTag": "ND",
+            "Caption": "New development",
+            "PriorityWeight": 55
+          },
+          {
+            "Type": "penthouse",
+            "TypeTag": "PENT",
+            "Caption": "Penthouse",
+            "PriorityWeight": 50
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 25950000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "At the crown of Ralph Walker\u2019s Art Deco landmark, two newly completed Tribeca penthouses deliver estate-scale living - 21-foot ceilings, private loggias, and Paris Forino interiors.",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbgnhxlai260061",
+        "imageCount": 8,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSSOFSLO260003",
+        "PropertyID": 1157039,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 34.097827,
+        "Longitude": -118.433924,
+        "PropertyTypes": [
+          {
+            "Type": "house",
+            "TypeTag": "H",
+            "Caption": "House",
+            "PriorityWeight": 1
+          },
+          {
+            "Type": "villa",
+            "TypeTag": "V",
+            "Caption": "Villa",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 69995000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "Palatial European Estate with 360-degree views of Los Angeles",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbssofslo260003",
+        "imageCount": 9,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSSOFSLO260007",
+        "PropertyID": 1157043,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 34.040478,
+        "Longitude": -118.50591,
+        "PropertyTypes": [
+          {
+            "Type": "house",
+            "TypeTag": "H",
+            "Caption": "House",
+            "PriorityWeight": 1
+          },
+          {
+            "Type": "villa",
+            "TypeTag": "V",
+            "Caption": "Villa",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 88000000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "One-of-a-kind trophy estate by the late, legendary architect Howard Backen",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbssofslo260007",
+        "imageCount": 9,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSSOFSLO260006",
+        "PropertyID": 1157042,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 34.105203,
+        "Longitude": -118.357577,
+        "PropertyTypes": [
+          {
+            "Type": "house",
+            "TypeTag": "H",
+            "Caption": "House",
+            "PriorityWeight": 1
+          },
+          {
+            "Type": "villa",
+            "TypeTag": "V",
+            "Caption": "Villa",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 125000000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "The Hollywood Hills house designed by Scott Mitchell Studio",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbssofslo260006",
+        "imageCount": 12,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSSOFSLO260005",
+        "PropertyID": 1157041,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 34.082135,
+        "Longitude": -118.447219,
+        "PropertyTypes": [
+          {
+            "Type": "townhouse",
+            "TypeTag": "TH",
+            "Caption": "Townhouse",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 135000000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "Architecture as sculpture. A rare fusion of location, art, and cutting-edge technology",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbssofslo260005",
+        "imageCount": 9,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSSOFSLO260004",
+        "PropertyID": 1157040,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 33.009221,
+        "Longitude": -117.195182,
+        "PropertyTypes": [
+          {
+            "Type": "house",
+            "TypeTag": "H",
+            "Caption": "House",
+            "PriorityWeight": 1
+          },
+          {
+            "Type": "villa",
+            "TypeTag": "V",
+            "Caption": "Villa",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 84950000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "Willow Creek Estate, A truly unparalleled 77-acre Covenant estate",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbssofslo260004",
+        "imageCount": 12,
+        "agentCount": 0,
+        "agents": []
+      },
+      {
+        "ExternalPropertyID": "GBSSOFSLO260002",
+        "PropertyID": 1157037,
+        "Title": null,
+        "Address": null,
+        "DisplayAddress": null,
+        "City": null,
+        "Region": null,
+        "Country": null,
+        "Postcode": null,
+        "Latitude": 34.094571,
+        "Longitude": -118.435855,
+        "PropertyTypes": [
+          {
+            "Type": "house",
+            "TypeTag": "H",
+            "Caption": "House",
+            "PriorityWeight": 1
+          },
+          {
+            "Type": "villa",
+            "TypeTag": "V",
+            "Caption": "Villa",
+            "PriorityWeight": 1
+          }
+        ],
+        "CommercialPropertyType": null,
+        "PropertyUse": null,
+        "Tenure": null,
+        "Price": 39000000,
+        "PriceText": null,
+        "SizeText": null,
+        "Description": "A legendary Beverly Hills promontory estate where iconic history meets unrivalled panoramic views",
+        "DetailUrl": "https://search.savills.com/com/en/property-detail/gbssofslo260002",
+        "imageCount": 12,
+        "agentCount": 0,
+        "agents": []
+      }
+    ]
+  }
+}

@@ -1,5 +1,14 @@
 # Savills Broker Notes
 
+## Latest Recheck
+
+See `RECHECK_2026-06-12.md` for the latest Savills-only recheck. It found a
+defensible public U.S. commercial lease path with 2 Chicago retail listings and
+patched the collector lease path accordingly. Savills sale remains partial and
+not CRE-defensible because the current 100 collected sale rows come from the
+global residential property search, while the corrected commercial sale route
+only exposed a Toronto, Canada sale object.
+
 ## 2026-06-12 Continuation Probe
 
 Scope: Savills-only follow-up for the CRE collector. No secrets were read, no

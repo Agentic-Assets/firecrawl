@@ -2915,15 +2915,141 @@ function parseSavillsUsLocation(address2: string | null): {
     parts.find((p) => {
       const lower = p.toLowerCase();
       return !/^\d{5}(?:-\d{4})?$/.test(p) && !/\b[A-Z]{2}\b/.test(p) && !US_STATE_NAME_TO_ABBR[lower];
-    }) ?? null;
+    }) ??
+    clean(address2.replace(new RegExp(`\\b${state}\\b.*$`), "").replace(/\d{5}(?:-\d{4})?.*$/, "").replace(/,+$/, "")) ??
+    null;
   return { city: clean(city), state, postalCode };
 }
 
+function parseSavillsNextData(html: string): any | null {
+  const raw = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function savillsNextDataProperties(html: string): any[] {
+  const data = parseSavillsNextData(html);
+  const props = data?.props?.initialReduxState?.properties;
+  return props && typeof props === "object" ? Object.values(props) : [];
+}
+
+function savillsTotalItems(html: string, fallback: number): number | null {
+  const data = parseSavillsNextData(html);
+  const total = data?.props?.initialReduxState?.listPage?.totalItems;
+  if (typeof total === "number" && total > 0) return Math.max(total, fallback);
+  const headingTotal = Number((html.match(/([0-9][0-9,]*)\s+Properties for (?:let|sale|rent)/i) ?? [])[1]?.replace(/,/g, ""));
+  return Number.isFinite(headingTotal) && headingTotal > 0 ? Math.max(headingTotal, fallback) : fallback || null;
+}
+
+function savillsSqft(text: string | null): number | null {
+  const match = text?.match(/\(([0-9][0-9,.]*)\s*sq ?ft\)/i) ?? text?.match(/([0-9][0-9,.]*)\s*sq ?ft/i);
+  return match ? Number(match[1].replace(/,/g, "")) : null;
+}
+
+function savillsImageUrls(row: any): string[] {
+  const urls = new Set<string>();
+  for (const img of [...(row.ImagesGallery ?? []), ...(row.PropertyCardImagesGallery ?? [])]) {
+    for (const key of ["ImageUrl_L", "ImageUrl_M", "ImageUrl_S", "ImageUrl"]) {
+      const url = clean(img?.[key]);
+      if (url?.startsWith("http")) urls.add(url);
+    }
+  }
+  return [...urls];
+}
+
+function savillsDocumentUrls(row: any): { name: string | null; url: string }[] {
+  const docs: { name: string | null; url: string }[] = [];
+  const add = (name: string | null, url: string | null) => {
+    if (url?.startsWith("http") && /\.pdf(?:$|\?)/i.test(url) && !docs.some((d) => d.url === url)) {
+      docs.push({ name, url });
+    }
+  };
+  add("Floor plan", clean(row.FloorplanPDFUrl));
+  for (const doc of row.BrochureGallery ?? []) {
+    add(clean(doc?.Caption) ?? "Brochure", clean(doc?.ImageUrl));
+  }
+  return docs;
+}
+
+function savillsContact(agent: any): any | null {
+  const name = clean(agent?.AgentName);
+  const email = clean(agent?.EmailAddress);
+  const phone = clean(agent?.AgentPhoneNumber);
+  if (!name && !email && !phone) return null;
+  return {
+    name,
+    email,
+    phone,
+    office: clean(agent?.Office?.OfficeName),
+    company: "Savills",
+    avatarUrl: clean(agent?.AgentImageUrl),
+  };
+}
+
+async function srcSavillsCommercialLease(max: number): Promise<SourceResult> {
+  const sourceUrl = "https://search.savills.com/com/en/list/commercial/property-to-let/united-states-of-america";
+  const html = await scrapeRaw(sourceUrl, { waitFor: 6000 });
+  const rows = savillsNextDataProperties(html).filter((row) => row?.IsCommercial === true);
+  const selected = rows.slice(0, Math.min(max, rows.length));
+  const listings: any[] = [];
+  let nonUsFiltered = 0;
+  for (const row of selected) {
+    const location = parseSavillsUsLocation(clean(row.AddressLine2));
+    if (!location) {
+      nonUsFiltered++;
+      continue;
+    }
+    const contactsDetailed = [savillsContact(row.PrimaryAgent), savillsContact(row.SecondaryAgent)].filter(Boolean);
+    const brokerIds = contactsDetailed
+      .map((contact) => brokerRef(contact))
+      .filter((id): id is number => id !== null);
+    const propertyType = clean(row.PropertyTypes?.[0]?.Caption);
+    const detailId = clean(row.ExternalPropertyIDFormatted) ?? clean(row.ExternalPropertyID)?.toLowerCase();
+    const url = detailId ? `https://search.savills.com/com/en/property-detail/${detailId}` : sourceUrl;
+    listings.push({
+      id: clean(row.ExternalPropertyID) ?? detailId,
+      name: clean(row.AddressLine1) ?? clean(row.PropertyPageTitle),
+      transactionType: "Lease",
+      assetType: propertyType,
+      street: clean(row.AddressLine1),
+      city: location.city,
+      state: location.state,
+      postalCode: location.postalCode,
+      country: "US",
+      latitude: num(row.Latitude),
+      longitude: num(row.Longitude),
+      leaseRateText: clean(row.GuidePriceText) ?? clean(row.DisplayPriceText),
+      sizeText: clean(row.SizeFormatted) ?? clean(row.FooterSizeFormatted),
+      buildingSizeSqft: savillsSqft(clean(row.SizeFormatted) ?? clean(row.FooterSizeFormatted)),
+      description: clean((row.LongDescription ?? []).map((part: any) => [part.Head, part.Body].filter(Boolean).join("\n")).join("\n\n")),
+      brokerIds,
+      contactsDetailed,
+      brochures: savillsDocumentUrls(row),
+      photos: savillsImageUrls(row),
+      url,
+      rawSavillsProperty: row,
+    });
+  }
+  return {
+    company: "Savills",
+    sourceUrl,
+    method: "Server-rendered commercial lease page parsed from public __NEXT_DATA__ property objects",
+    totalAvailable: savillsTotalItems(html, listings.length + nonUsFiltered),
+    listings,
+    note: nonUsFiltered
+      ? `${nonUsFiltered} non-US or non-US-office commercial lease row(s) filtered out`
+      : "Commercial sale route was checked separately; the only public commercial sale object observed was Toronto, Canada.",
+  };
+}
+
 async function srcSavills(tx: Tx, max: number): Promise<SourceResult> {
-  const base =
-    tx === "sale"
-      ? "https://search.savills.com/com/en/list/property-for-sale/united-states-of-america"
-      : "https://search.savills.com/com/en/list/property-to-rent/united-states-of-america";
+  if (tx === "lease") return srcSavillsCommercialLease(max);
+
+  const base = "https://search.savills.com/com/en/list/property-for-sale/united-states-of-america";
   const listings: any[] = [];
   let total: number | null = null;
   let nonUsFiltered = 0;
@@ -2982,14 +3108,13 @@ async function srcSavills(tx: Tx, max: number): Promise<SourceResult> {
       listings.push({
         id: abs.split("/property-detail/")[1] ?? null,
         name,
-        transactionType: tx === "sale" ? "Sale" : "Lease",
+        transactionType: "Sale",
         city: location.city,
         state: location.state,
         postalCode: location.postalCode,
         country: "US",
-        salePriceUsd: tx === "sale" && /\$/.test(priceText ?? "") ? moneyToNumber(priceText) : null,
-        salePriceText: tx === "sale" ? priceText : null,
-        leaseRateText: tx === "lease" ? priceText : null,
+        salePriceUsd: /\$/.test(priceText ?? "") ? moneyToNumber(priceText) : null,
+        salePriceText: priceText,
         sizeText,
         brokerIds,
         photos: img && !img.startsWith("data:") ? [img] : [],
@@ -3005,7 +3130,7 @@ async function srcSavills(tx: Tx, max: number): Promise<SourceResult> {
     } else {
       emptyStreak = 0;
     }
-    console.error(`  savills/${tx}: page ${page}, ${listings.length} collected (total ${total ?? "?"})`);
+    console.error(`  savills/sale: page ${page}, ${listings.length} collected (total ${total ?? "?"})`);
   }
   if (!listings.length && !nonUsFiltered) {
     throw new Error("no property-detail links found on Savills list page");

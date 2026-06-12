@@ -800,3 +800,40 @@ BUILDOUT_CACHE_ONLY=1 BUILDOUT_PAGE_START=5 BUILDOUT_PAGE_END=24 \
 
 Repeat windows until pages 0 through 184 are present, then assemble only from
 cache and dry-run ingest before any live upload or source-scoped reconciliation.
+
+## 2026-06-12 Savills Commercial Lease Recheck
+
+Savills remains partial, but the collector now has a defensible public U.S.
+commercial lease path. Sale remains not CRE-defensible.
+
+Code change:
+
+- Savills lease now parses the public server-rendered commercial lease page:
+  `https://search.savills.com/com/en/list/commercial/property-to-let/united-states-of-america`.
+- The parser reads public `__NEXT_DATA__` property objects and emits URL-only
+  PDFs, images, and visible contacts.
+- Savills location parsing was tightened so `Chicago IL` stages as city
+  `Chicago`, state `IL`.
+
+Verification:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npm run typecheck
+npx tsx collect.ts --source=savills --transaction=lease --max-items=0 --page-cap=5 --concurrency=1 --out=/tmp/savills_lease_main_verify_2026-06-12.json
+python3 cre_ingest.py --in /tmp/savills_lease_main_verify_2026-06-12.json --dry-run --keep-artifacts /tmp/savills_lease_main_verify_2026-06-12_ingest_check
+```
+
+Result:
+
+- 2 U.S. commercial lease rows, both Chicago, IL retail listings.
+- 4 public PDF document URLs, 24 image URLs, and 2 contact rows.
+- Dry-run ingest staged both rows and skipped 0 missing URLs.
+- No live ingest was run.
+
+Limit:
+
+- The current Savills sale path still comes from a global/residential search
+  and must not be treated as complete CRE sale coverage. The corrected public
+  commercial sale route exposed only a Toronto, Canada sale object during the
+  recheck.
