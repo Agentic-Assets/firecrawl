@@ -28,8 +28,8 @@ Result:
 - Live additive ingest completed through `psql`.
 - `--mark-missing` was not used on that all-source run because Lee & Associates failed at the time; Lee was later completed through a source-specific cache assembly run.
 - Fresh validation confirmed 33,488 latest artifact rows touched in Supabase and 34,218 active rows total because 730 older additive rows remained active before later source-specific reconciliations.
-- After later source-specific ingests through Newmark refinement, live Supabase
-  active rows total 64,559.
+- After later source-specific ingests through SVN reconciliation, live Supabase
+  active rows total 64,537.
 
 ## Latest Source Matrix
 
