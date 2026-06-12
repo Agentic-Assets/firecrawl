@@ -229,3 +229,31 @@ Results:
 - The targeted artifact had 2 documents, 15 images, 1 contact, and no binary PDF/image fields.
 
 Python `cre_scrapers` reorganization was also completed: broker-specific scraper code now lives under `scripts/firecrawl-ops/cre_scrapers/brokers/<broker>/scraper.py`, each broker folder has a README, and top-level compatibility shims such as `cre_scrapers.cushman` still work.
+
+## 2026-06-12 CBRE Deal Flow Full Run And Ingest
+
+CBRE Deal Flow was upgraded and live-ingested additively after the prior full-run validation.
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=cbre-dealflow --transaction=both --max-items=0 --concurrency=4 --out=out/cbre_dealflow_full_2026-06-12_041740.json
+python3 cre_ingest.py --in out/cbre_dealflow_full_2026-06-12_041740.json --dry-run --keep-artifacts /tmp/cbre_dealflow_full_2026-06-12_041740_ingest_check
+python3 cre_ingest.py --in out/cbre_dealflow_full_2026-06-12_041740.json --keep-artifacts /tmp/cbre_dealflow_full_2026-06-12_041740_live_ingest
+```
+
+Result:
+
+- Full artifact: `out/cbre_dealflow_full_2026-06-12_041740.json`, 12.6 MB.
+- Full log: `out/cbre_dealflow_full_2026-06-12_041740.log`.
+- Collected 1,836 rows: 1,809 sale and 27 lease.
+- Public RCM totals reported 2,042 sale and 27 lease. The sale endpoint exposed 1,809 public cards before returning 0 additional cards.
+- Dry-run staged 1,836 rows, skipped 0.
+- Live ingest completed without `--mark-missing`.
+- Active Deal Flow-prefixed rows in Supabase after ingest: 1,857, including earlier additive probe rows.
+- Quality checks on the active Deal Flow-prefixed subset: 0 missing URLs, titles, raw data, bad states, bad coordinates, bad cap rates, or child orphans.
+- Child rows after ingest: 5,597 contacts, 416 documents, and 40,176 images.
+- Sample search proof: `search_cre_listings('industrial', null, 'TX', null, 'sale')` returned a live CBRE Deal Flow row (`Fort Worth Shallow Bay`).
+
+Keep `--mark-missing` off until a clean all-source run has no Buildout or source errors.

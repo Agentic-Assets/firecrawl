@@ -96,3 +96,33 @@ Observed limits and guardrails:
 - Detail-page `loggedinuser` agreement, brochure, executive-summary, and deal-room links are not inserted as document rows unless they are directly visible from a public card or public section link.
 - Contact emails are stored only from visible `mailto:` card links or detail JSON with `ShowEmail=true`; hidden detail emails remain out.
 - Full unbounded runs should keep low concurrency. Detail enrichment uses concurrency 2 and direct public HTTP, so it does not add local Firecrawl queue load.
+
+### 2026-06-12 Full Run And Live Ingest
+
+Command:
+
+```bash
+cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=cbre-dealflow --transaction=both --max-items=0 --concurrency=4 --out=out/cbre_dealflow_full_2026-06-12_041740.json
+python3 cre_ingest.py --in out/cbre_dealflow_full_2026-06-12_041740.json --dry-run --keep-artifacts /tmp/cbre_dealflow_full_2026-06-12_041740_ingest_check
+python3 cre_ingest.py --in out/cbre_dealflow_full_2026-06-12_041740.json --keep-artifacts /tmp/cbre_dealflow_full_2026-06-12_041740_live_ingest
+```
+
+Results:
+
+- Artifact: `out/cbre_dealflow_full_2026-06-12_041740.json`, 12.6 MB.
+- Log: `out/cbre_dealflow_full_2026-06-12_041740.log`.
+- Runtime: 5:58.
+- Collected rows: 1,836 total, 1,809 `Investment Sale` rows and 27 `Lease` rows.
+- Public filter totals reported by RCM: 2,042 sale and 27 lease. The sale endpoint stopped returning additional public cards after 1,809 observed cards, so the full artifact records the public-card count collected and the larger reported sale total separately.
+- Artifact coverage: 1,900 unique brokers, 416 URL-only document rows, 40,213 image URLs, 5,664 detailed contact rows, and 37 nonfatal `detailError` rows where the public card existed but the anonymous detail page did not expose parseable `var data`.
+- Dry-run ingest staged 1,836 rows and skipped 0 missing URLs.
+- Live additive ingest completed without `--mark-missing`.
+
+Supabase proof after live ingest:
+
+- Active Deal Flow-prefixed rows inside brokerage slug `cbre`: 1,857, including previous additive probe rows retained because `--mark-missing` was not used.
+- Deal Flow-prefixed active transaction split: 1,830 sale and 27 lease.
+- Quality checks on the active Deal Flow-prefixed subset: 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad states, 0 bad coordinates, 0 bad cap rates, and 0 orphan contacts/documents/images.
+- Child rows on active Deal Flow-prefixed listings: 5,597 contacts, 416 documents, and 40,176 images.
+- `search_cre_listings('industrial', null, 'TX', null, 'sale')` returned a live CBRE Deal Flow row (`Fort Worth Shallow Bay`) after ingest.

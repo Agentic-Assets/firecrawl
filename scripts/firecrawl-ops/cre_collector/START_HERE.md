@@ -1,6 +1,6 @@
 # CRE Collector Start Here
 
-Last updated: 2026-06-12 local time, evidence from run finished at `2026-06-12T04:31:24.562Z`, validation on 2026-06-12, and Cushman post-validation probes on 2026-06-12.
+Last updated: 2026-06-12 local time, evidence from run finished at `2026-06-12T04:31:24.562Z`, validation on 2026-06-12, Cushman post-validation probes, and CBRE Deal Flow full ingest on 2026-06-12.
 
 This directory is the production daily path for public commercial real estate listing inventory feeding EQUIRE. Use it for sale and lease listings. The older `../cre_scrapers/` Python package is legacy support for source probes and detail-page enrichment.
 
@@ -34,19 +34,19 @@ Result:
 | Source | Raw count | Status |
 |---|---:|---|
 | CBRE | 20,684 | Active |
-| CBRE Deal Flow | 21 | Active, limited |
+| CBRE Deal Flow | 1,836 in post-validation full run, 1,809 sale + 27 lease | Active via public RCM ListingEngine endpoint and live-ingested additively |
 | JLL | 4,678 | Active |
-| JLL Investor | 50 | Active, limited |
+| JLL Investor | 8 in latest hardened probe; source total about 1,087 to 1,088 | Partial, first rendered search page detail-enriched |
 | Cushman & Wakefield | 24 in latest ingested artifact; code now verifies 2,743 sale + 8,575 lease live source totals | Active via public API and detail enrichment; pending full re-run and ingest |
-| Newmark | 4,368 | Active via Algolia |
-| Marcus & Millichap | 12 | Active, limited to first rendered grid |
-| Avison Young | 22 | Active, limited to first sidebar batch |
+| Newmark | 4,371 in post-validation full probe | Active via Algolia, no-state recovery added |
+| Marcus & Millichap | 12 in probe, 3,126 reported public sale total | Partial, public contentsearch sale API and detail enrichment; lease unsupported |
+| Avison Young | 12 in probe, SharpLaunch feed path proven | Partial until full SharpLaunch run and live ingest |
 | Savills | 100 | Active, sale only; US lease empty after fallback filtering |
-| SVN | 5,521 | Active via Buildout |
-| NAI Global | 30 | Active, limited to first Infabode batch |
+| SVN | 5,521 in latest full artifact | Mapping complete from prior full artifact; fresh live refresh partial due Buildout 403 HTML |
+| NAI Global | 12 in probe | Partial, public Infabode GraphQL feed and publicPost detail enrichment proven |
 | Lee & Associates | 0 | Blocked under sustained Buildout paging; latest retry failed pages 286-297 |
 | Colliers | 0 | Unsupported, POST-only path found |
-| Transwestern | 0 | Unsupported, POST-only path found |
+| Transwestern | 8 in probe, source feed totals 519 sale-bucket rows and 1,636 lease-bucket rows before dedupe | Public GET feed implemented and dry-run proven; pending full run and live ingest |
 
 ## Start A New Session
 
@@ -98,8 +98,10 @@ images into Supabase storage for the bulk collector.
 
 - Do not use `--mark-missing` after a run with Lee or other source errors.
 - Do not treat Supabase as current for Cushman until a fresh full collection and ingest runs. The code was upgraded after the latest ingest; local probes verified 2,743 sale, 8,575 lease, and the 1800 Central detail record with 2 PDFs, 15 photos, and contact links.
+- CBRE Deal Flow has been ingested additively from the public RCM endpoint. Do not use its reported 2,042 sale total as collected count; the public card pagination exposed 1,809 sale cards in the full run.
 - Do not store source PDF or image binaries in Supabase. Store URLs only.
-- Do not claim Colliers or Transwestern coverage until a public GET, Firecrawl-compatible action path, or authorized integration exists.
+- Do not claim Colliers coverage until a public GET, Firecrawl-compatible action path, or authorized integration exists.
+- Do not claim Transwestern complete until the implemented public GET feed has a clean full run, live ingest, and Supabase validation.
 - Do not claim Lee coverage until a sustained full Lee run writes a clean artifact and is ingested.
 - Do not treat legacy `cre_scrapers` active flags as production collector status.
 - Do not stage `node_modules/`, `out/`, `__pycache__/`, or generated SQL artifacts.

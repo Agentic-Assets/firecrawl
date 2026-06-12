@@ -58,27 +58,28 @@ Env: `FIRECRAWL_API_URL` (default `http://localhost:3002`),
 
 ### Source status
 
-Latest full ingested run started 2026-06-12 04:04:23 UTC. Cushman & Wakefield
-was upgraded after that run on 2026-06-12 local time; the new source totals
-below are from live targeted probes and still need a full collection plus
-Supabase ingest before database counts reflect them.
+Latest full ingested all-source run started 2026-06-12 04:04:23 UTC. Cushman
+& Wakefield was upgraded after that run on 2026-06-12 local time; its new source
+totals below are from live targeted probes and still need a full collection plus
+Supabase ingest before database counts reflect them. CBRE Deal Flow was upgraded
+and ingested additively after that validation from a source-specific full run.
 
 | Source key | Method | Sale | Lease | Notes |
 |------------|--------|------|-------|-------|
 | `cbre` | Internal JSON API, stealth proxy | 5,879 | 14,805 | Cloudflare; waitFor 4000 |
-| `cbre-dealflow` | Rendered grid, stealth | 21 | n/a | Sale-only platform; ids prefixed `dealflow:` |
+| `cbre-dealflow` | Public RCM ListingEngine endpoint | 1,809 public cards collected of 2,042 reported | 27 of 27 | Full source-specific run live-ingested additively from `out/cbre_dealflow_full_2026-06-12_041740.json`; ids prefixed `dealflow:` and folded into parent `cbre` |
 | `jll` | Search pages, waitFor 8000 | 333 | 4,345 | tenure=sale / tenure=rent |
-| `jll-investor` | Rendered grid | 50 | n/a | Sale-only; ids prefixed `investor:` |
+| `jll-investor` | `__NEXT_DATA__` first search page plus detail enrichment | 8 in hardened probe, source total about 1,087 to 1,088 | n/a | Sale-only partial; full completion needs pagination or sitemap policy decision |
 | `cushman-wakefield` | Public `/api/properties/search` JSON plus detail enrichment | 2,743 live total | 8,575 live total | Full API pagination verified; detail pages enrich docs, photos, visible contacts, JSON-LD, and VCard/profile URLs. Use `CUSHMAN_QUERY='1800 Central'` for targeted probes |
-| `newmark` | Algolia API (creds scraped from page) | 1,121 | 3,247 of 3,250 | Per-state facet split plus California property-type split beats the 1k cap |
-| `marcus-millichap` | Rendered grid, stealth | 12 | n/a | Flaky: timeouts absorbed by 3x retry |
-| `avison-young` | SPA sidebar, waitFor 14000 | ~11 | ~11 | KNOWN LIMIT: only first sidebar batch renders (no scroll actions locally) |
+| `newmark` | Algolia API (creds scraped from page) | 1,121 | 3,250 | No-state recovery added; latest full probe collected 4,371 |
+| `marcus-millichap` | Public contentsearch sale API plus public detail HTML | 12 in probe, 3,126 reported public sale total | n/a | Sale-only until public lease inventory is proven; detail enriches contacts/images and keeps gated deal-room URLs in raw data only |
+| `avison-young` | Public SharpLaunch feed | 6 sale + 6 lease in probe | included | SharpLaunch API path proven with images and team members; full run and live ingest still needed |
 | `savills` | Server-rendered pages /page/N | ~100 of 105 source cards | 0 | US lease inventory empty; foreign fallback cards filtered; US parser accepts state names, ZIP-only rows, and city/state/ZIP variants |
-| `svn` | Buildout inventory API | ~5,500 total | (same feed) | Full inventory cached once, partitioned client-side by `sale` boolean |
+| `svn` | Buildout inventory API | 2,988 in latest full artifact | 2,533 in latest full artifact | Mapping complete from prior artifact, but fresh live refresh partial because Buildout returned 403 HTML during probes |
 | `lee-associates` | Buildout inventory API | blocked in latest full run | blocked in latest full run | Buildout throttles under sustained paging; latest fresh retry passed pages 93-104 but failed pages 286-297 and aborted at 12/333 failed pages |
-| `nai-global` | Infabode widget cards | 15 | 15 | No per-card links; synthesized `card:` hash ids; first batch only |
+| `nai-global` | Public Infabode GraphQL feed and `publicPost` details | 6 in probe | 6 in probe | Stable `infabode:` ids and detail URLs; contacts only when public fields exist |
 | `colliers` | UNSUPPORTED | – | – | POST-only API; needs request-body support |
-| `transwestern` | UNSUPPORTED | – | – | POST-only API |
+| `transwestern` | Public GET feed plus detail pages | 4 in probe | 4 in probe | Implemented and dry-run proven; full run and live ingest still needed |
 
 Buildout semantics (svn, lee-associates): the inventory feed has **no
 server-side sale/lease filter** (`lease=true` is ignored). Items carry
