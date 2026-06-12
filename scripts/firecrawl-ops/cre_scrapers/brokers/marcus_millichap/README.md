@@ -1,6 +1,6 @@
 # Marcus & Millichap Scraper Notes
 
-Production bulk collection has limited Marcus & Millichap support in `cre_collector/collect.ts`.
+Production bulk collection has Marcus & Millichap support in `cre_collector/collect.ts`.
 
 ## Site Structure
 
@@ -11,6 +11,8 @@ Production bulk collection has limited Marcus & Millichap support in `cre_collec
 ## Current Limitation
 
 The public collector should only ingest visible card and detail data. Do not synthesize financial fields that are gated or absent.
+
+As of the 2026-06-12 verification pass below, the production collector uses the public contentsearch JSON route for sale rows and direct public detail HTML for addresses, descriptions, visible advisor contacts, and property image URLs. It still treats Marcus & Millichap as sale-only. Public lease inventory remains unproven. Unfiltered public search is capped at the newest 100 rows even though the site reports a larger total.
 
 ## 2026-06-12 Deep Dive Notes
 
@@ -101,3 +103,58 @@ Best collector path:
 - Add `enrichMarcusDetailPage(url)` for public HTML fields, contacts, images, and gated deal-room URL classification. Detail failures should not drop the feed row.
 - Keep `tx === "lease"` returning skipped, with the 2026-06-12 no-public-lease evidence in the note.
 - If auctions are added, use a prefixed id such as `auction:<dealId>` or a separate source key so auction rows cannot collide with standard sale rows.
+
+## 2026-06-12 Collector Verification Pass
+
+Scope: Marcus & Millichap only. No live ingest was run. No `--mark-missing` was used. No gated content, auth, binary downloads, OM downloads, PDF downloads, or image downloads were used.
+
+Commands:
+
+```bash
+cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=marcus-millichap --transaction=both --max-items=8 --out=/tmp/marcus_before_probe.json
+npm run typecheck
+npx tsx collect.ts --source=marcus-millichap --transaction=both --max-items=12 --out=/tmp/marcus_after_probe.json
+python3 cre_ingest.py --in /tmp/marcus_after_probe.json --dry-run --keep-artifacts /tmp/marcus_after_ingest_check
+```
+
+Live public API proof:
+
+- Tiny bounded `POST /api/contentsearch/properties` probe with `pageSize=2` returned HTTP 200 JSON, `TotalCount=3136`, `NumberOfPages=50`, 2 rows, structured listing fields, and embedded tile HTML with `data-activityId` and `data-dealId`.
+- `POST /api/contentsearch/mapproperties` returned HTTP 200 JSON and 3,136 public map rows with `ActivityId`, latitude, longitude, and listing flags.
+- `POST /api/contentsearch/mappropertydetail` for one ActivityId returned HTTP 200 JSON with `PropertyUrl` and `PropertyDetail` tile HTML.
+- The after collector run saw `totalAvailableOnSource=3126`; the public total drifted during the session, so treat this as live source state, not a code discrepancy.
+
+Before patch artifact:
+
+- `/tmp/marcus_before_probe.json`
+- 8 top-level sale listings, 0 lease listings.
+- 0 global brokers.
+- Method was rendered first-page card parsing.
+- Fields were limited to card-level id, title, asset type, location, price text, cap rate where visible, one image URL, and URL.
+
+After patch artifact:
+
+- `/tmp/marcus_after_probe.json`
+- 12 top-level sale listings, 0 lease listings.
+- Sale source summary: method `Public POST /api/contentsearch/properties JSON, newest-100 public cap, plus direct public detail HTML enrichment`, `totalAvailableOnSource=3126`, `listingsCollected=12`.
+- Detail enrichment totals: 28 visible `contactsDetailed` records, 64 property image URLs, and 12 gated deal-room URLs retained in raw listing data as `gatedDocuments`.
+- Gated deal-room URLs were not mapped into `brochures` because the downstream child document table does not distinguish gated links from public document links.
+
+Ingest dry-run:
+
+- Command staged 12 listings, skipped 0 for missing URL, and wrote `/tmp/marcus_after_ingest_check/ingest.sql`.
+- Dry run did not connect to Supabase.
+
+Verification errors and resolution:
+
+- First post-patch typecheck/probe caught a nullable cap-rate parser bug when an API row had no cap-rate text.
+- Fixed `parseMarcusTileHtml` to guard null cap-rate text.
+- Rerun `npm run typecheck` passed.
+- Rerun after probe passed and wrote `/tmp/marcus_after_probe.json`.
+
+Remaining blocked or partial:
+
+- Lease inventory remains unsupported because no public lease UI mode or endpoint has been proven.
+- Unfiltered public sale search remains capped at the newest 100 rows. The map endpoint exposes broader public ActivityIds, but expanding every map row through `mappropertydetail` is deferred for load control and should be tested as a separate bounded full-coverage upgrade.
+- Auctions are publicly discoverable through `/api/contentsearch/auctions`, but are not included in the production Marcus source to avoid mixing standard sale rows with auction inventory without a product decision.
