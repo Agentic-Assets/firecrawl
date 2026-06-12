@@ -464,63 +464,171 @@ async function srcCbre(tx: Tx, max: number): Promise<SourceResult> {
 const buildoutCache = new Map<string, { items: any[]; total: number | null }>();
 const buildoutFailureCache = new Map<string, Error>();
 
+type BuildoutInventoryOpts = {
+  preferDirectJson?: boolean;
+  directReferer?: string;
+  pageConcurrency?: number;
+  requireCompletePages?: boolean;
+  recoveryPasses?: number;
+  recoveryCooldownMs?: number;
+  maxRecoveryPages?: number;
+  jsonAttempts?: number;
+  jsonBackoffMs?: number;
+};
+
+function buildoutInventoryUrl(pluginKey: string, page: number): string {
+  return `https://buildout.com/plugins/${pluginKey}/inventory.json?page=${page}`;
+}
+
+async function directBuildoutJson(url: string, referer: string, timeoutMs = 15000): Promise<any> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        accept: "application/json,text/plain,*/*",
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+        referer,
+      },
+    });
+    const body = await res.text();
+    const parsed = parseJsonBody(body);
+    if (res.ok && parsed !== null) return parsed;
+    const contentType = res.headers.get("content-type") ?? "unknown";
+    const shape = parsed === null ? "non-json" : "json-error-status";
+    throw new Error(`direct GET ${res.status} ${contentType} (${shape})`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchBuildoutInventoryPage(
+  company: string,
+  pluginKey: string,
+  page: number,
+  opts: BuildoutInventoryOpts
+): Promise<any> {
+  const url = buildoutInventoryUrl(pluginKey, page);
+  if (opts.preferDirectJson) {
+    try {
+      const d = await directBuildoutJson(url, opts.directReferer ?? "https://buildout.com/");
+      if (page === 0) console.error(`  ${company}: direct Buildout JSON available`);
+      return d;
+    } catch (err) {
+      console.error(`  ${company}: direct Buildout JSON failed for page ${page} (${err}); falling back to Firecrawl`);
+    }
+  }
+  return scrapeJson(url, {
+    timeout: 60000,
+    jsonAttempts: opts.jsonAttempts,
+    jsonBackoffMs: opts.jsonBackoffMs,
+  });
+}
+
 async function buildoutInventory(
   company: string,
-  pluginKey: string
+  pluginKey: string,
+  opts: BuildoutInventoryOpts = {}
 ): Promise<{ items: any[]; total: number | null }> {
   const cached = buildoutCache.get(pluginKey);
   if (cached) return cached;
   const cachedFailure = buildoutFailureCache.get(pluginKey);
   if (cachedFailure) throw cachedFailure;
-  const first = await scrapeJson(
-    `https://buildout.com/plugins/${pluginKey}/inventory.json?page=0`,
-    { timeout: 60000 }
-  );
+  const first = await fetchBuildoutInventoryPage(company, pluginKey, 0, opts);
   const total: number | null = first.meta?.total ?? null;
   const limit: number = first.meta?.limit ?? 30;
-  const items: any[] = [...(first.inventory ?? [])];
-  let failedPages = 0;
+  const pages = total && total > limit ? Math.min(Math.ceil(total / limit), 1200) : 1;
+  const inventoryByPage = new Map<number, any[]>();
+  inventoryByPage.set(0, first.inventory ?? []);
+  const failedPages = new Set<number>();
   if (total && total > limit) {
-    const pages = Math.min(Math.ceil(total / limit), 1200);
     const failureLimit = Math.max(3, Math.floor(pages * 0.03));
     const pageNums = Array.from({ length: pages - 1 }, (_, i) => i + 1);
+    const pageConcurrency = Math.max(1, Math.min(opts.pageConcurrency ?? Math.min(CONCURRENCY, 2), pageNums.length));
     let done = 1;
     let aborting = false;
-    const chunks = await pmap(pageNums, CONCURRENCY, async (p) => {
-      if (aborting) return [];
+    await pmap(pageNums, pageConcurrency, async (p) => {
+      if (aborting) {
+        failedPages.add(p);
+        return;
+      }
       try {
-        const d = await scrapeJson(
-          `https://buildout.com/plugins/${pluginKey}/inventory.json?page=${p}`,
-          { timeout: 60000 }
-        );
+        const d = await fetchBuildoutInventoryPage(company, pluginKey, p, opts);
+        inventoryByPage.set(p, d.inventory ?? []);
         done++;
         if (done % 25 === 0) console.error(`  ${company}: inventory page ${done}/${pages}`);
-        return d.inventory ?? [];
       } catch (err) {
-        failedPages++;
+        failedPages.add(p);
         console.error(`  ${company}: inventory page ${p} FAILED after retries: ${err}`);
-        if (failedPages > failureLimit) {
+        if (failedPages.size > failureLimit) {
           aborting = true;
         }
-        return [];
       }
     });
-    for (const c of chunks) items.push(...c);
+
+    const recoveryPasses = opts.recoveryPasses ?? 0;
+    const maxRecoveryPages = opts.maxRecoveryPages ?? failureLimit;
+    for (let pass = 1; pass <= recoveryPasses && failedPages.size > 0; pass++) {
+      if (failedPages.size > maxRecoveryPages) break;
+      const retryPages = [...failedPages].sort((a, b) => a - b);
+      console.error(
+        `  ${company}: retrying ${retryPages.length} failed Buildout page(s), recovery pass ${pass}/${recoveryPasses}`
+      );
+      await new Promise((r) => setTimeout(r, opts.recoveryCooldownMs ?? 15000));
+      for (const p of retryPages) {
+        try {
+          let d: any;
+          if (opts.preferDirectJson) {
+            try {
+              d = await directBuildoutJson(
+                buildoutInventoryUrl(pluginKey, p),
+                opts.directReferer ?? "https://buildout.com/"
+              );
+            } catch {
+              d = await fetchBuildoutInventoryPage(company, pluginKey, p, {
+                ...opts,
+                jsonAttempts: opts.jsonAttempts ?? 4,
+                jsonBackoffMs: opts.jsonBackoffMs ?? 12000,
+              });
+            }
+          } else {
+            d = await fetchBuildoutInventoryPage(company, pluginKey, p, {
+              ...opts,
+              jsonAttempts: opts.jsonAttempts ?? 4,
+              jsonBackoffMs: opts.jsonBackoffMs ?? 12000,
+            });
+          }
+          inventoryByPage.set(p, d.inventory ?? []);
+          failedPages.delete(p);
+          console.error(`  ${company}: recovered Buildout inventory page ${p}`);
+        } catch (err) {
+          console.error(`  ${company}: inventory page ${p} still failed on recovery pass ${pass}: ${err}`);
+        }
+      }
+    }
+
     // A few rate-limited pages are tolerable (gap fills on the next run);
     // a large gap means the feed is unusable and must not be cached or
     // ingested (mark-missing on a gappy run would soft-delete live rows).
-    if (failedPages > failureLimit) {
+    if (opts.requireCompletePages ? failedPages.size > 0 : failedPages.size > failureLimit) {
+      const failed = [...failedPages].sort((a, b) => a - b);
+      const shown = failed.slice(0, 20).join(",");
+      const suffix = failed.length > 20 ? `... (+${failed.length - 20} more)` : "";
       const abortError = new Error(
-        `${company}: ${failedPages}/${pages} inventory pages failed; aborting this source`
+        `${company}: ${failedPages.size}/${pages} inventory pages failed (${shown}${suffix}); aborting this source`
       );
       buildoutFailureCache.set(pluginKey, abortError);
       throw abortError;
     }
   }
+  const items: any[] = [];
+  for (let p = 0; p < pages; p++) items.push(...(inventoryByPage.get(p) ?? []));
   const result = { items, total };
   buildoutCache.set(pluginKey, result);
   console.error(
-    `  ${company}: full inventory cached (${items.length} items, total ${total ?? "?"}${failedPages ? `, ${failedPages} pages skipped` : ""})`
+    `  ${company}: full inventory cached (${items.length} items, total ${total ?? "?"}${failedPages.size ? `, ${failedPages.size} pages skipped` : ""})`
   );
   return result;
 }
@@ -530,9 +638,10 @@ async function srcBuildout(
   pluginKey: string,
   listingsPage: string,
   tx: Tx,
-  max: number
+  max: number,
+  inventoryOpts: BuildoutInventoryOpts = {}
 ): Promise<SourceResult> {
-  const { items, total } = await buildoutInventory(company, pluginKey);
+  const { items, total } = await buildoutInventory(company, pluginKey, inventoryOpts);
   const listings: any[] = [];
   for (const x of items) {
     if (listings.length >= max) break;
@@ -3340,7 +3449,15 @@ async function runSource(key: SourceKey, tx: Tx, max: number): Promise<SourceRes
         "b933480474026c41d248b77156c84aef37dcac68",
         "https://svn.com/properties/",
         tx,
-        max
+        max,
+        {
+          preferDirectJson: true,
+          directReferer: "https://svn.com/properties/",
+          pageConcurrency: 1,
+          requireCompletePages: true,
+          recoveryPasses: 1,
+          recoveryCooldownMs: 15000,
+        }
       );
     case "lee-associates":
       return srcBuildout(
@@ -3348,7 +3465,16 @@ async function runSource(key: SourceKey, tx: Tx, max: number): Promise<SourceRes
         "9a64a93980aeae8db347e72cdfa8ca61017acc9a",
         "https://www.lee-associates.com/properties/",
         tx,
-        max
+        max,
+        {
+          preferDirectJson: true,
+          directReferer: "https://www.lee-associates.com/properties/",
+          pageConcurrency: 1,
+          requireCompletePages: true,
+          recoveryPasses: 1,
+          recoveryCooldownMs: 15000,
+          maxRecoveryPages: 60,
+        }
       );
     case "nai-global":
       return srcNaiGlobal(tx, max);
