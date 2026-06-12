@@ -61,3 +61,38 @@ The sampled details had `isUserLoggedIn=false` and a `loggedinuser.agreementlabe
 8. Store public image and document URLs only. Do not follow or download `/files/...` binaries.
 9. Store contact email only when `ShowEmail=true` or a visible `mailto:` link exists. Store phone/title/name when visible or when the detail JSON marks them displayable.
 10. Keep registration-gated agreement, brochure, executive summary, and deal-room links out of document rows unless they are public direct asset URLs.
+
+### 2026-06-12 Collector Implementation And Validation
+
+Status: implemented in `scripts/firecrawl-ops/cre_collector/collect.ts` for source key `cbre-dealflow`. The collector now uses the public Real Capital Markets ListingEngine path directly, not the first rendered homepage grid. It extracts the public engine key from the homepage, fetches public filters, and calls:
+
+- `POST /api/Handler/ListingEngine/GetFilters?pv=<key>` with a non-empty form body.
+- `POST /api/AjaxEngine/GetListingsHtml?&pv=<key>` with `Start`, `PageSize`, and `FilterProjectType`.
+- `FilterProjectType=Investment Sale` for sale.
+- `FilterProjectType=Leasing` for lease.
+
+Required commands run from `scripts/firecrawl-ops/cre_collector`:
+
+```bash
+npx tsx collect.ts --source=cbre-dealflow --transaction=both --max-items=6 --out=/tmp/cbre_dealflow_before_probe.json
+npm run typecheck
+npx tsx collect.ts --source=cbre-dealflow --transaction=both --max-items=10 --out=/tmp/cbre_dealflow_after_probe.json
+python3 cre_ingest.py --in /tmp/cbre_dealflow_after_probe.json --dry-run --keep-artifacts /tmp/cbre_dealflow_after_ingest_check
+```
+
+Results:
+
+- Before probe, old collector: 6 sale rows, 0 lease rows, method `Rendered public homepage grid parsed (cards)`.
+- Current public filter totals: 2,042 `Investment Sale` rows, 27 `Leasing` rows, and `totalAvail=2550` across all project types.
+- After probe, new collector: 20 rows total, 10 sale and 10 lease, 58 unique brokers.
+- Ingest dry-run: staged 20 rows, skipped 0 no-URL rows, wrote `/tmp/cbre_dealflow_after_ingest_check/ingest.sql`, did not connect.
+- Generated SQL folds this sub-source into parent `cbre` via `dealflow:` external IDs, for example `dealflow:150532`.
+- After-probe artifact had 6 public brochure-link cards stored as URL-only document rows, 437 image URLs, and 56 contact rows. No binary assets were downloaded.
+
+Observed limits and guardrails:
+
+- One sale row, `Intown Collection`, exposed a public card but no parseable anonymous `var data` detail object. The collector keeps the card row and stores `detailError` instead of dropping it.
+- Some lease cards link directly to public `/buyer/brochure?pv=...` URLs rather than `/handler/landing.aspx`. The collector stores the visible brochure URL and card-level contacts, but does not fetch or download the document.
+- Detail-page `loggedinuser` agreement, brochure, executive-summary, and deal-room links are not inserted as document rows unless they are directly visible from a public card or public section link.
+- Contact emails are stored only from visible `mailto:` card links or detail JSON with `ShowEmail=true`; hidden detail emails remain out.
+- Full unbounded runs should keep low concurrency. Detail enrichment uses concurrency 2 and direct public HTTP, so it does not add local Firecrawl queue load.

@@ -912,60 +912,259 @@ async function srcJll(tx: Tx, max: number): Promise<SourceResult> {
 
 // --- JLL Investor Center: rendered page (sale-only by nature) ---
 
-async function srcJllInvestor(tx: Tx, max: number): Promise<SourceResult> {
-  if (tx === "lease") {
-    return {
-      company: "JLL Investor Center",
-      sourceUrl: "https://invest.jll.com",
-      method: "skipped",
-      totalAvailable: 0,
-      listings: [],
-      note: "Investment-sale platform; no lease inventory.",
-    };
+const JLL_INVESTOR_HOST = "https://invest.jll.com";
+const JLL_INVESTOR_SEARCH_URL =
+  "https://invest.jll.com/us/en/property-search?filter=%7B%22location%22%3A%5B%22United%20States%22%5D%7D";
+const JLL_INVESTOR_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
+
+function jllInvestorNextData(rawHtml: string): any | null {
+  const $ = cheerio.load(rawHtml);
+  const text = $("#__NEXT_DATA__").first().text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
   }
-  const sourceUrl =
-    "https://invest.jll.com/us/en/property-search?filter=%7B%22location%22%3A%5B%22United%20States%22%5D%7D";
-  const html = await scrapeRaw(sourceUrl, { waitFor: 8000 });
-  const $ = cheerio.load(html);
-  const total =
-    Number((html.match(/([0-9][0-9,]*)\s+results/i) ?? [])[1]?.replace(/,/g, "")) || null;
+}
+
+function jllInvestorUrlFromAlias(alias: string | null): string | null {
+  const cleaned = clean(alias);
+  if (!cleaned) return null;
+  if (/^https?:\/\//i.test(cleaned)) return cleaned;
+  const path = cleaned.startsWith("/us/en/listings/")
+    ? cleaned
+    : `/us/en/listings/${cleaned.replace(/^\/+/, "")}`;
+  return `${JLL_INVESTOR_HOST}${path}`;
+}
+
+function jllInvestorStatus(row: any): string {
+  if (row?.isUnderContract) return "Under Contract";
+  const status = clean(row?.stageName ?? row?.status);
+  return status ?? "Active";
+}
+
+function jllInvestorSearchListing(row: any): any {
+  const url = jllInvestorUrlFromAlias(row?.alias);
+  const id = clean(row?.id) ?? clean(row?.alias)?.split("/").slice(-1)[0] ?? null;
+  return prune({
+    id,
+    name: clean(row?.name),
+    transactionType: "Sale (investment)",
+    assetType:
+      clean(row?.assetType) ??
+      clean(row?.rawAssetType) ??
+      (Array.isArray(row?.assetTypesPrimaryList) ? row.assetTypesPrimaryList.map(clean).filter(Boolean).join(", ") : null),
+    status: jllInvestorStatus(row),
+    street: clean(row?.displayAddress),
+    city: clean(row?.city),
+    state: clean(row?.state),
+    country: clean(row?.country) === "United States" ? "US" : clean(row?.country),
+    latitude: num(row?.latitude),
+    longitude: num(row?.longitude),
+    sizeText: clean(row?.numberOfUnits),
+    brokerIds: [],
+    photos: clean(row?.image) ? [clean(row.image)] : [],
+    url,
+    jllInvestorSearchRow: row,
+  });
+}
+
+function jllInvestorSearchFallback(rawHtml: string, max: number): any[] {
+  const $ = cheerio.load(rawHtml);
   const seen = new Set<string>();
   const listings: any[] = [];
   $('a[href*="/us/en/listings/"]').each((_, el) => {
     if (listings.length >= max) return;
     const href = $(el).attr("href")!;
-    const abs = href.startsWith("http") ? href : `https://invest.jll.com${href}`;
+    const abs = href.startsWith("http") ? href : `${JLL_INVESTOR_HOST}${href}`;
     if (seen.has(abs)) return;
     seen.add(abs);
     const card = $(el).closest("li,article,div[class]");
     const txt = clean(card.text()) ?? "";
     const img = card.find("img").attr("src") ?? null;
     const slugParts = abs.split("/listings/")[1]?.split("/") ?? [];
-    listings.push({
-      id: slugParts.slice(-1)[0] ?? null,
-      name:
-        clean(card.find("h3,h4").first().text()) ??
-        clean(slugParts.slice(-1)[0]?.replace(/-/g, " ")) ??
-        null,
-      transactionType: "Sale (investment)",
-      assetType: clean(slugParts.length > 1 ? slugParts[0]?.replace(/-/g, " ") : null),
-      status: /under contract/i.test(txt)
-        ? "Under Contract"
-        : /closed/i.test(txt)
-          ? "Closed"
-          : "Active",
-      brokerIds: [],
-      photos: img ? [img] : [],
-      url: abs,
-    });
+    listings.push(
+      prune({
+        id: slugParts.slice(-1)[0] ?? null,
+        name:
+          clean(card.find("h3,h4").first().text()) ??
+          clean(slugParts.slice(-1)[0]?.replace(/-/g, " ")) ??
+          null,
+        transactionType: "Sale (investment)",
+        assetType: clean(slugParts.length > 1 ? slugParts[0]?.replace(/-/g, " ") : null),
+        status: /under contract/i.test(txt)
+          ? "Under Contract"
+          : /closed/i.test(txt)
+            ? "Closed"
+            : "Active",
+        brokerIds: [],
+        photos: img ? [img] : [],
+        url: abs,
+      })
+    );
   });
+  return listings;
+}
+
+function jllInvestorDocumentUrls(listing: any): string[] {
+  const docs = listing?.documents;
+  const candidates: string[] = [];
+  const visit = (value: any) => {
+    if (!value) return;
+    if (typeof value === "string") {
+      if (/^https?:\/\//i.test(value)) candidates.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value === "object") {
+      visit(value.url);
+      for (const nested of Object.values(value)) visit(nested);
+    }
+  };
+  visit(docs);
+  return dedupeStrings(candidates);
+}
+
+function jllInvestorImageUrls(listing: any, fallback: string[] = []): string[] {
+  const images = [
+    clean(listing?.image),
+    ...(Array.isArray(listing?.multimedia?.images) ? listing.multimedia.images.map(clean) : []),
+    ...fallback,
+  ];
+  return dedupeStrings(images).filter((url) => /^https?:\/\//i.test(url));
+}
+
+function jllInvestorContacts(listing: any): any[] {
+  if (!Array.isArray(listing?.brokers)) return [];
+  const contacts = listing.brokers
+    .map((broker: any) =>
+      prune({
+        name: clean(broker?.name),
+        title: clean(broker?.title),
+        email: clean(broker?.email),
+        phone: clean(broker?.phone),
+        company: "JLL",
+        avatarUrl: clean(broker?.image),
+        linkedInUrl: clean(broker?.linkedInURL),
+        licensedEntity: broker?.licensedEntity,
+        licenses: broker?.licenses,
+      })
+    )
+    .filter(Boolean);
+  const seen = new Set<string>();
+  return contacts.filter((contact: any) => {
+    const key = contact.email ?? contact.name ?? JSON.stringify(contact);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function enrichJllInvestorListing(base: any): Promise<any> {
+  if (!base.url) return base;
+  try {
+    const doc = await scrapeDoc(base.url, { waitFor: 8000, timeout: 120000 });
+    const next = jllInvestorNextData(doc.rawHtml);
+    const listing = next?.props?.pageProps?.initialState?.pdp?.listing;
+    if (!listing) {
+      return prune({ ...base, detailError: "missing pdp listing in __NEXT_DATA__" });
+    }
+    const contactsDetailed = jllInvestorContacts(listing);
+    const brokerIds = contactsDetailed
+      .map((contact: any) =>
+        brokerRef({
+          name: clean(contact.name),
+          email: clean(contact.email),
+          phone: clean(contact.phone),
+          office: clean(contact.office),
+          avatarUrl: clean(contact.avatarUrl),
+          company: "JLL",
+        })
+      )
+      .filter((id: number | null): id is number => id !== null);
+    const documentUrls = jllInvestorDocumentUrls(listing);
+    return prune({
+      ...base,
+      id: clean(listing.id) ?? base.id,
+      name: clean(listing.name) ?? base.name,
+      assetType:
+        clean(listing.assetType) ??
+        clean(listing.rawAssetType) ??
+        (Array.isArray(listing.assetTypesPrimaryList)
+          ? listing.assetTypesPrimaryList.map(clean).filter(Boolean).join(", ")
+          : base.assetType),
+      description: clean(listing.description) ?? base.description,
+      street: clean(listing.fullLocation) ?? base.street,
+      city: clean(listing.city) ?? base.city,
+      state: clean(listing.state) ?? base.state,
+      country: clean(listing.country) === "United States" ? "US" : clean(listing.country) ?? base.country,
+      latitude: num(listing.latitude) ?? base.latitude,
+      longitude: num(listing.longitude) ?? base.longitude,
+      status: jllInvestorStatus(listing),
+      sizeText: clean(listing.numberOfUnits ? `${listing.numberOfUnits} units` : null) ?? base.sizeText,
+      brokerIds,
+      contactsDetailed,
+      brochures: documentUrls.map((url) => ({ name: titleFromFilename(url), url })),
+      photos: jllInvestorImageUrls(listing, base.photos ?? []),
+      lastUpdated: clean(listing.dateModified ?? listing.datePublished),
+      jllInvestorDetail: {
+        id: clean(listing.id),
+        alias: clean(listing.alias),
+        dealType: clean(listing.dealType),
+        stageName: clean(listing.stageName),
+        isUnderContract: Boolean(listing.isUnderContract),
+        highlights: listing.highlights,
+        customAttributes: listing.customAttributes,
+        documentsCA: listing.documentsCA,
+        rawPriceRange: listing.priceRange,
+        datePublished: clean(listing.datePublished),
+        dateModified: clean(listing.dateModified),
+        scrape: {
+          markdownLength: doc.markdown.length,
+          rawHtmlLength: doc.rawHtml.length,
+          linkCount: doc.links.length,
+        },
+      },
+    });
+  } catch (err) {
+    console.error(`  jll-investor: detail failed for ${base.url}: ${err}`);
+    return prune({ ...base, detailError: String(err) });
+  }
+}
+
+async function srcJllInvestor(tx: Tx, max: number): Promise<SourceResult> {
+  if (tx === "lease") {
+    return {
+      company: "JLL Investor Center",
+      sourceUrl: JLL_INVESTOR_HOST,
+      method: "skipped",
+      totalAvailable: 0,
+      listings: [],
+      note: "Investment-sale platform; no lease inventory.",
+    };
+  }
+  const html = await scrapeRaw(JLL_INVESTOR_SEARCH_URL, { waitFor: 8000, timeout: 120000 });
+  const next = jllInvestorNextData(html);
+  const search = next?.props?.pageProps?.initialState?.advancedSearch;
+  const rows = Array.isArray(search?.listings) ? search.listings : [];
+  const total = typeof search?.count === "number" ? search.count : null;
+  const baseListings = rows.length
+    ? rows.slice(0, Math.min(max, rows.length)).map(jllInvestorSearchListing)
+    : jllInvestorSearchFallback(html, max);
+  const listings = await pmap(baseListings, JLL_INVESTOR_DETAIL_CONCURRENCY, enrichJllInvestorListing);
   if (!listings.length) throw new Error("no listing cards found on JLL Investor Center search page");
   return {
     company: "JLL Investor Center",
-    sourceUrl,
-    method: "Rendered search page parsed (cards)",
+    sourceUrl: JLL_INVESTOR_SEARCH_URL,
+    method: "Rendered search page __NEXT_DATA__ plus public detail-page enrichment",
     totalAvailable: total,
     listings,
+    note:
+      "Still bounded to the first rendered search page. Detail enrichment stores public teaser document URLs, image URLs, and broker contact fields only; CA/NDA document URLs remain in raw detail metadata.",
   };
 }
 
@@ -2353,72 +2552,447 @@ async function srcNaiGlobal(tx: Tx, max: number): Promise<SourceResult> {
   };
 }
 
-// --- CBRE Deal Flow: rendered public homepage grid (sale-only platform) ---
+// --- CBRE Deal Flow: public Real Capital Markets ListingEngine API ---
 
-async function srcCbreDealflow(tx: Tx, max: number): Promise<SourceResult> {
-  if (tx === "lease") {
-    return {
-      company: "CBRE Deal Flow",
-      sourceUrl: "https://www.cbredealflow.com/",
-      method: "skipped",
-      totalAvailable: 0,
-      listings: [],
-      note: "Investment-sale platform; no lease inventory.",
-    };
+const CBRE_DEALFLOW_BASE = "https://www.cbredealflow.com";
+const CBRE_DEALFLOW_SOURCE_URL = `${CBRE_DEALFLOW_BASE}/`;
+const CBRE_DEALFLOW_FALLBACK_ENGINE_KEY = "oi5qxFqUeAwpuWTlIxfX2WDpoZa3NjIo51F63rmSsEI";
+const CBRE_DEALFLOW_PAGE_SIZE = 200;
+const CBRE_DEALFLOW_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
+const CBRE_DEALFLOW_PROJECT_TYPE_BY_TX: Record<Tx, string> = {
+  sale: "Investment Sale",
+  lease: "Leasing",
+};
+
+type CbreDealflowCard = {
+  id: string | null;
+  url: string;
+  urlKind: "detail" | "brochure";
+  listingPv: string | null;
+  name: string | null;
+  transactionType: string;
+  assetType: string | null;
+  description: string | null;
+  city: string | null;
+  state: string | null;
+  country: string | null;
+  sizeText: string | null;
+  status: string | null;
+  brokerIds: number[];
+  contactsDetailed?: any[];
+  brochures?: any[];
+  photos: string[];
+  cbreDealflowCard: Record<string, any>;
+};
+
+function cbreDealflowHeaders(accept = "application/json, text/javascript, */*; q=0.01"): Record<string, string> {
+  return {
+    accept,
+    origin: CBRE_DEALFLOW_BASE,
+    referer: CBRE_DEALFLOW_SOURCE_URL,
+    "user-agent": "Mozilla/5.0 CRE collector",
+    "x-requested-with": "XMLHttpRequest",
+  };
+}
+
+function cbreDealflowUrl(href: string | null | undefined): string | null {
+  const h = clean(href ?? null);
+  if (!h || /^javascript:/i.test(h) || /^mailto:/i.test(h) || /^tel:/i.test(h)) return null;
+  try {
+    return new URL(h, CBRE_DEALFLOW_BASE).toString();
+  } catch {
+    return null;
   }
-  const sourceUrl = "https://www.cbredealflow.com/";
-  const html = await scrapeRaw(sourceUrl, { waitFor: 8000, proxy: "stealth", timeout: 120000 });
-  const $ = cheerio.load(html);
-  const total =
-    Number((html.match(/([0-9][0-9,]*)\s*ASSETS LISTED/i) ?? [])[1]?.replace(/,/g, "")) || null;
-  const byHref = new Map<string, { texts: string[]; img: string | null; ctx: string }>();
-  $('a[href*="landing.aspx"]').each((_, el) => {
-    const href = $(el).attr("href")!;
-    const abs = href.startsWith("http") ? href : `https://www.cbredealflow.com${href}`;
-    const rec = byHref.get(abs) ?? { texts: [], img: null, ctx: "" };
-    const t = clean($(el).text());
-    if (t) rec.texts.push(t);
-    rec.img = rec.img ?? $(el).find("img").attr("src") ?? null;
-    if (!rec.ctx) rec.ctx = clean($(el).closest("td,li,div[class]").parent().text()) ?? "";
-    byHref.set(abs, rec);
+}
+
+async function cbreDealflowGetText(url: string): Promise<string> {
+  const res = await fetch(url, {
+    headers: cbreDealflowHeaders("text/html,application/json,*/*"),
+    signal: AbortSignal.timeout(30000),
   });
-  const listings: any[] = [];
-  for (const [abs, rec] of byHref) {
-    if (listings.length >= max) break;
-    const texts = rec.texts.sort((a, b) => a.length - b.length);
-    const name = texts[0] ?? null;
-    if (!name || name.length < 4) continue;
-    const description = texts.length > 1 ? texts[texts.length - 1] : null;
-    const typeCountry = (rec.ctx.match(
-      /(Office|Industrial|Retail|Multifamily|Land|Hotel|Mixed[- ]Use|Healthcare|Self Storage|Data Cent[a-z]+|Senior Housing|Debt|Other)\s*\|?\s*(United States|[A-Za-z ]{4,30})/
-    ) ?? []) as any[];
-    const ctxClean = rec.ctx
-      .split(name)
-      .join(" ")
-      .replace(/\b(Details|Contacts|Available|New Listing|Featured)\b/g, " ");
-    const cityMatches = [...ctxClean.matchAll(/([A-Z][A-Za-z .'-]{1,30}?)[‚,]\s*([A-Z]{2})\b/g)];
-    const cityState = (cityMatches[cityMatches.length - 1] ?? []) as any[];
-    listings.push({
-      name,
-      transactionType: "Sale (investment)",
-      assetType: typeCountry[1] ?? null,
-      description: description && description !== name ? description : null,
-      city: cityState[1] ? clean(String(cityState[1]).split(".").pop() ?? "") : null,
-      state: cityState[2] ?? null,
-      country: typeCountry[2] ? clean(typeCountry[2]) : null,
-      brokerIds: [],
-      photos: rec.img ? [rec.img] : [],
-      url: abs,
+  if (!res.ok) throw new Error(`CBRE Deal Flow GET ${url} HTTP ${res.status}`);
+  return res.text();
+}
+
+async function cbreDealflowPostJson(path: string, body: URLSearchParams): Promise<any> {
+  const url = `${CBRE_DEALFLOW_BASE}${path}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      ...cbreDealflowHeaders(),
+      "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+    },
+    body,
+    signal: AbortSignal.timeout(30000),
+  });
+  const text = await res.text();
+  let parsed: any = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`CBRE Deal Flow ${path} returned non-JSON HTTP ${res.status}`);
+  }
+  if (!res.ok || parsed?.success === false) {
+    throw new Error(`CBRE Deal Flow ${path} HTTP ${res.status}`);
+  }
+  return parsed;
+}
+
+function extractCbreDealflowEngineKey(html: string): string {
+  return (
+    html.match(/new\s+ListingEngine\s*\(\s*\{[\s\S]*?key\s*:\s*["']([^"']+)/i)?.[1] ??
+    html.match(/pv=([A-Za-z0-9_-]{30,})/)?.[1] ??
+    CBRE_DEALFLOW_FALLBACK_ENGINE_KEY
+  );
+}
+
+function parseCbreDealflowFilters(filters: any): Record<string, any> {
+  return prune({
+    projectTypes: Array.isArray(filters?.ProjectType) ? filters.ProjectType : undefined,
+    countries: Array.isArray(filters?.Country) ? filters.Country : undefined,
+    states: Array.isArray(filters?.State) ? filters.State : undefined,
+    statuses: Array.isArray(filters?.Status) ? filters.Status : undefined,
+    assetTypes: Array.isArray(filters?.AssetType) ? filters.AssetType : undefined,
+  }) ?? {};
+}
+
+function parseCbreDealflowLocation(text: string | null): { city: string | null; state: string | null } {
+  const normalized = clean((text ?? "").replace(/\u201A/g, ","));
+  const match = normalized?.match(/^(.+?),\s*([A-Z]{2})\b/);
+  return {
+    city: match ? clean(match[1]) : null,
+    state: match?.[2] ?? null,
+  };
+}
+
+function listingPvFromCbreDealflowUrl(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).searchParams.get("pv");
+  } catch {
+    return null;
+  }
+}
+
+function cbreDealflowCardContacts($: cheerio.CheerioAPI, card: cheerio.Cheerio<any>): any[] {
+  const contacts: any[] = [];
+  card.find(".contacts .tab-text").each((_, el) => {
+    const row = $(el);
+    const name = clean(row.find(".name").first().text()) ?? clean(row.text().match(/[A-Za-z][A-Za-z .'-]+/)?.[0] ?? null);
+    const email = clean(row.find('a[href^="mailto:"]').first().attr("href")?.replace(/^mailto:/i, ""));
+    const phone =
+      clean(row.find('a[href^="tel:"]').first().text()) ??
+      clean(row.find('a[href^="tel:"]').first().attr("href")?.replace(/^tel:/i, ""));
+    if (!name && !email && !phone) return;
+    contacts.push(
+      prune({
+        name,
+        email,
+        phone,
+        company: "CBRE",
+      }) ?? {}
+    );
+  });
+  return contacts;
+}
+
+function parseCbreDealflowCards(html: string, tx: Tx): CbreDealflowCard[] {
+  const $ = cheerio.load(html);
+  const cards: CbreDealflowCard[] = [];
+  $("li.item, ul.gridview > li").each((_, el) => {
+    const card = $(el);
+    const detailUrl = cbreDealflowUrl(
+      card.find('a[href*="landing.aspx"], a[href*="modern.aspx"], a[href*="/buyer/brochure"]').first().attr("href")
+    );
+    if (!detailUrl) return;
+    const urlKind = /\/buyer\/brochure/i.test(detailUrl) ? "brochure" : "detail";
+    const detailText = clean(card.find(".details").first().text());
+    const projectType =
+      clean(detailText?.match(/\b(Investment Sale|Leasing)\b/i)?.[1] ?? null) ??
+      CBRE_DEALFLOW_PROJECT_TYPE_BY_TX[tx];
+    const wanted = CBRE_DEALFLOW_PROJECT_TYPE_BY_TX[tx];
+    if (projectType.toLowerCase() !== wanted.toLowerCase()) return;
+    const location = parseCbreDealflowLocation(card.find(".location .city, .location").first().text());
+    const country = clean(card.find(".country").first().text()?.replace(/\|/g, ""));
+    const img = cbreDealflowUrl(card.find("img").first().attr("src"));
+    const sizeText =
+      clean(detailText?.match(/\b(?:Investment Sale|Leasing)\s*\|\s*([^|]+)$/i)?.[1] ?? null) ??
+      clean(detailText?.match(/([0-9][0-9,.]*\s*(?:sq ft|sf|units?|acres?|ac)\b)/i)?.[1] ?? null);
+    const listingPv = listingPvFromCbreDealflowUrl(detailUrl);
+    const contactsDetailed = cbreDealflowCardContacts($, card);
+    const brokerIds = contactsDetailed
+      .map((c) =>
+        brokerRef({
+          name: clean(c.name),
+          email: clean(c.email),
+          phone: clean(c.phone),
+          company: "CBRE",
+        })
+      )
+      .filter((id: number | null): id is number => id !== null);
+    cards.push({
+      id: listingPv,
+      url: detailUrl,
+      urlKind,
+      listingPv,
+      name: clean(card.find(".headline").first().text()) ?? clean(card.find("a.summary p").attr("title")),
+      transactionType: tx === "sale" ? "Investment Sale" : "Lease",
+      assetType: clean(card.find(".asset").first().text()?.replace(/^--$/, "")),
+      description: clean(card.find("a.summary p").first().text()),
+      city: location.city,
+      state: location.state,
+      country,
+      sizeText,
+      status: clean(card.find(".status").first().text()),
+      brokerIds,
+      contactsDetailed,
+      brochures:
+        urlKind === "brochure"
+          ? [
+              {
+                name: "Public brochure",
+                url: detailUrl,
+              },
+            ]
+          : [],
+      photos: img ? [img] : [],
+      cbreDealflowCard: prune({
+        listingPv,
+        urlKind,
+        projectType,
+        status: clean(card.find(".status").first().text()),
+        contactsText: clean(card.find(".contacts, .contact").text()),
+        detailsText: detailText,
+      }) ?? {},
+    });
+  });
+  return cards;
+}
+
+function parseCbreDealflowDetailData(html: string): any | null {
+  const match = html.match(/var\s+data\s*=\s*(\{[\s\S]*?\})\s*<\/script>/i);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function cbreDealflowTextFromHtml(html: string | null | undefined): string | null {
+  if (!html) return null;
+  return clean(cheerio.load(html).text());
+}
+
+function cbreDealflowDescription(data: any, fallback: string | null): string | null {
+  const summary = clean(data?.projectfields?.summary);
+  if (summary) return summary;
+  for (const section of data?.sections ?? []) {
+    for (const content of section?.contents ?? []) {
+      const text = cbreDealflowTextFromHtml(content?.content) ?? clean(content?.subtitle);
+      if (text && text.length > 40) return text.slice(0, 2000);
+    }
+  }
+  return fallback;
+}
+
+function cbreDealflowImageUrls(data: any, cardPhotos: string[]): string[] {
+  const candidates: Array<string | null> = [...cardPhotos];
+  const pushImage = (img: any) => {
+    candidates.push(cbreDealflowUrl(img?.imageUrl));
+    candidates.push(cbreDealflowUrl(img?.thumburl));
+  };
+  for (const photo of data?.photos ?? []) pushImage(photo);
+  for (const section of data?.sections ?? []) {
+    for (const img of section?.images ?? []) pushImage(img);
+  }
+  return dedupeStrings(candidates).filter((url) => /\.(?:jpe?g|png|webp|gif)(?:[?#].*)?$/i.test(url));
+}
+
+function cbreDealflowDocumentUrls(data: any): any[] {
+  const candidates: string[] = [];
+  for (const section of data?.sections ?? []) {
+    for (const img of section?.images ?? []) {
+      const link = cbreDealflowUrl(img?.link);
+      if (link && /\.pdf(?:[?#].*)?$/i.test(link)) candidates.push(link);
+    }
+    for (const content of section?.contents ?? []) {
+      const $ = cheerio.load(content?.content ?? "");
+      $("a[href]").each((_, a) => {
+        const link = cbreDealflowUrl($(a).attr("href"));
+        if (link && /\.pdf(?:[?#].*)?$/i.test(link)) candidates.push(link);
+      });
+    }
+  }
+  return dedupeStrings(candidates).map((url) => ({ name: titleFromFilename(url), url }));
+}
+
+function cbreDealflowContacts(data: any): any[] {
+  const contacts: any[] = [];
+  for (const section of data?.sections ?? []) {
+    for (const c of section?.contacts ?? []) {
+      const name = clean(c?.Fullname) ?? clean([c?.Firstname, c?.Lastname].filter(Boolean).join(" "));
+      if (!name) continue;
+      const avatarUrl = c?.ShowProfileImage ? cbreDealflowUrl(c?.ProfileImageUrl) : null;
+      const email = c?.ShowEmail === true ? clean(c?.Email) : null;
+      const phone = c?.ShowPhone === true ? clean(c?.Phone) : null;
+      contacts.push(
+        prune({
+          name,
+          title: c?.ShowTitle === true ? clean(c?.Title) : null,
+          email,
+          phone,
+          company: clean(c?.CompanyName) ?? "CBRE",
+          avatarUrl,
+          profileUrl: c?.ShowExpertBio === true ? cbreDealflowUrl(c?.ExpertBioUrl) : null,
+          cbreContactId: c?.ProjectContactId ?? null,
+        }) ?? { name, company: "CBRE" }
+      );
+    }
+  }
+  return contacts;
+}
+
+async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Promise<any> {
+  if (card.urlKind === "brochure") {
+    return prune({
+      ...card,
+      cbreDealflowDetail: {
+        pagePvValue: card.listingPv,
+        publicBrochureCard: true,
+      },
     });
   }
-  if (!listings.length) throw new Error("no asset cards found on CBRE Deal Flow homepage");
+  try {
+    const html = await cbreDealflowGetText(card.url);
+    const data = parseCbreDealflowDetailData(html);
+    if (!data) throw new Error("detail page had no parseable public data object");
+    const addr = data.addresses ?? {};
+    const fields = data.projectfields ?? {};
+    const detailContacts = cbreDealflowContacts(data);
+    const contactsDetailed = detailContacts.length ? detailContacts : card.contactsDetailed ?? [];
+    const brokerIds = contactsDetailed
+      .map((c) =>
+        brokerRef({
+          name: clean(c.name),
+          email: clean(c.email),
+          phone: clean(c.phone),
+          avatarUrl: clean(c.avatarUrl),
+          company: "CBRE",
+        })
+      )
+      .filter((id: number | null): id is number => id !== null);
+    const size = num(Number(fields.size));
+    const sizeType = clean(fields.sizetype);
+    const parcelSize = num(Number(fields.parcelsize));
+    const parcelType = clean(fields.parcelType);
+    const showPrice = fields.showprice === true && num(Number(fields.value));
+    return prune({
+      ...card,
+      id: data.projectid != null ? String(data.projectid) : card.id,
+      name: clean(data.name) ?? card.name,
+      description: cbreDealflowDescription(data, card.description),
+      assetType: clean(data.assetType?.full) ?? clean(data.assetType?.subType) ?? card.assetType,
+      street: clean(addr.street),
+      city: clean(addr.city) ?? card.city,
+      state: clean(addr.state) ?? card.state,
+      postalCode: clean(addr.zip),
+      country: clean(addr.country) ?? card.country ?? "United States",
+      latitude: num(Number(addr.latitude)),
+      longitude: num(Number(addr.longitude)),
+      salePriceUsd: tx === "sale" && showPrice ? Number(fields.value) : null,
+      salePriceText:
+        tx === "sale" && showPrice
+          ? `${clean(fields.valuesymbol) ?? "$"}${Number(fields.value).toLocaleString("en-US")}`
+          : null,
+      sizeText: size && sizeType ? `${size.toLocaleString("en-US")} ${sizeType}` : card.sizeText,
+      buildingSizeSqft: sizeType && /sq\s*ft/i.test(sizeType) ? size : null,
+      lotSizeAcres: parcelSize && parcelType && /acre|ac\b/i.test(parcelType) ? parcelSize : null,
+      brokerIds,
+      contactsDetailed,
+      brochures: cbreDealflowDocumentUrls(data),
+      photos: cbreDealflowImageUrls(data, card.photos),
+      cbreDealflowDetail: {
+        projectId: data.projectid ?? null,
+        pagePvValue: clean(data.pagePvValue),
+        projectType: clean(data.projectType),
+        status: clean(data.status),
+        isUserLoggedIn: data.isUserLoggedIn === true,
+        gatedLabels: prune({
+          agreement: clean(data.loggedinuser?.agreementlabel),
+          brochure: clean(data.loggedinuser?.brochurelabel),
+        }),
+        photoCount: Array.isArray(data.photos) ? data.photos.length : 0,
+        sectionCount: Array.isArray(data.sections) ? data.sections.length : 0,
+      },
+    });
+  } catch (err) {
+    console.error(`  cbre-dealflow/${tx}: detail failed for ${card.url}: ${err}`);
+    return prune({
+      ...card,
+      detailError: String(err),
+    });
+  }
+}
+
+async function srcCbreDealflow(tx: Tx, max: number): Promise<SourceResult> {
+  const projectType = CBRE_DEALFLOW_PROJECT_TYPE_BY_TX[tx];
+  const home = await cbreDealflowGetText(CBRE_DEALFLOW_SOURCE_URL);
+  const engineKey = extractCbreDealflowEngineKey(home);
+  const filters = await cbreDealflowPostJson(
+    `/api/Handler/ListingEngine/GetFilters?pv=${encodeURIComponent(engineKey)}`,
+    new URLSearchParams({ Start: "1", PageSize: "1" })
+  );
+  const filterSummary = parseCbreDealflowFilters(filters);
+  const want = Math.min(max, Number.MAX_SAFE_INTEGER);
+  const listingsByUrl = new Map<string, CbreDealflowCard>();
+  let total: number | null = null;
+  let totalAvail: number | null = null;
+  let start = 1;
+  for (let page = 1; page <= PAGE_CAP && listingsByUrl.size < want; page++) {
+    const pageSize = Math.min(CBRE_DEALFLOW_PAGE_SIZE, want - listingsByUrl.size);
+    const data = await cbreDealflowPostJson(
+      `/api/AjaxEngine/GetListingsHtml?&pv=${encodeURIComponent(engineKey)}`,
+      new URLSearchParams({
+        Start: String(start),
+        PageSize: String(pageSize),
+        FilterProjectType: projectType,
+      })
+    );
+    total = total ?? (Number.isFinite(Number(data.total)) ? Number(data.total) : null);
+    totalAvail = totalAvail ?? (Number.isFinite(Number(data.totalAvail)) ? Number(data.totalAvail) : null);
+    const cards = parseCbreDealflowCards(String(data.html ?? ""), tx);
+    for (const card of cards) {
+      if (!listingsByUrl.has(card.url) && listingsByUrl.size < want) listingsByUrl.set(card.url, card);
+    }
+    console.error(
+      `  cbre-dealflow/${tx}: page ${page} start ${start}, ${cards.length} ${projectType} cards (${listingsByUrl.size}/${total ?? "?"})`
+    );
+    const numProjects = Number(data.numProjects ?? cards.length);
+    if (!numProjects || cards.length === 0) break;
+    start += numProjects;
+  }
+  const selected = [...listingsByUrl.values()];
+  if (!selected.length) throw new Error(`no public ${projectType} cards found on CBRE Deal Flow`);
+  let done = 0;
+  const listings = await pmap(selected, CBRE_DEALFLOW_DETAIL_CONCURRENCY, async (card) => {
+    const listing = await enrichCbreDealflowCard(card, tx);
+    done++;
+    if (done % 25 === 0 || done === selected.length) {
+      console.error(`  cbre-dealflow/${tx}: detail enriched ${done}/${selected.length}`);
+    }
+    return listing;
+  });
   return {
     company: "CBRE Deal Flow",
-    sourceUrl,
-    method: "Rendered public homepage grid parsed (cards)",
+    sourceUrl: CBRE_DEALFLOW_SOURCE_URL,
+    method:
+      "Public RCM ListingEngine API filtered by FilterProjectType, paginated cards plus anonymous detail data object enrichment",
     totalAvailable: total,
     listings,
-    note: "Deal rooms and full financial detail require registration; public card data only. Coverage limited to the first page of the grid.",
+    note: `Public filter totalAvail was ${totalAvail ?? "unknown"} across all project types; ${projectType} filtered total was ${total ?? "unknown"}. Filter facets sampled: ${Object.entries(filterSummary)
+      .map(([k, v]) => `${k}=${Array.isArray(v) ? v.length : "?"}`)
+      .join(", ")}. Gated agreement, brochure, executive-summary, and deal-room links are retained only in raw metadata labels, not document rows.`,
   };
 }
 

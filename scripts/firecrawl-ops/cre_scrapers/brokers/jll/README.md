@@ -181,6 +181,77 @@ main `jll` search source.
    - `python3 cre_ingest.py --in /tmp/jll_investor_page_probe.json --dry-run --keep-artifacts /tmp/jll_investor_ingest_check`
    - Full run only after the robots/policy route is chosen.
 
+### 2026-06-12 collector hardening and run prep
+
+Scope: source key `jll-investor` only. This pass did not expand search
+pagination and did not change the policy-sensitive discovery path. It hardened
+the current first rendered search page by parsing embedded `__NEXT_DATA__` and
+enriching the already discovered public detail URLs.
+
+Commands:
+
+```bash
+cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl
+bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
+
+cd scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=jll-investor --transaction=both --max-items=8 --page-cap=2 --concurrency=2 --out=out/jll_investor_probe_current_2026-06-12.json
+npm run typecheck
+npx tsx collect.ts --source=jll-investor --transaction=both --max-items=8 --page-cap=2 --concurrency=2 --out=out/jll_investor_probe_fixed_2026-06-12.json
+python3 cre_ingest.py --in out/jll_investor_probe_fixed_2026-06-12.json --dry-run --keep-artifacts out/jll_investor_ingest_fixed_2026-06-12
+```
+
+Saved artifacts:
+
+- `scripts/firecrawl-ops/cre_collector/out/jll_investor_probe_current_2026-06-12.json`
+- `scripts/firecrawl-ops/cre_collector/out/jll_investor_probe_current_2026-06-12.log`
+- `scripts/firecrawl-ops/cre_collector/out/jll_investor_search_2026-06-12.json`
+- `scripts/firecrawl-ops/cre_collector/out/jll_investor_search_2026-06-12_fields/`
+- `scripts/firecrawl-ops/cre_collector/out/jll_investor_detail_ora_2026-06-12.json`
+- `scripts/firecrawl-ops/cre_collector/out/jll_investor_detail_ora_2026-06-12_fields/`
+- `scripts/firecrawl-ops/cre_collector/out/jll_investor_probe_enriched_2026-06-12.json`
+- `scripts/firecrawl-ops/cre_collector/out/jll_investor_probe_enriched_2026-06-12.log`
+- `scripts/firecrawl-ops/cre_collector/out/jll_investor_probe_fixed_2026-06-12.json`
+- `scripts/firecrawl-ops/cre_collector/out/jll_investor_probe_fixed_2026-06-12.log`
+- `scripts/firecrawl-ops/cre_collector/out/jll_investor_ingest_fixed_2026-06-12/ingest.sql`
+
+Results:
+
+- Current pre-patch probe: 8 sale listings, 0 lease listings, source total
+  unknown, 0 broker records, 8 rows with one search-card image, 0 rows with
+  contacts, 0 rows with documents.
+- Fixed probe: 8 sale listings, 0 lease listings, source total 1,087 at run
+  time, 19 deduped broker records.
+- Fixed detail coverage: 8/8 rows with image URLs, 8/8 rows with contact data,
+  8/8 rows with latitude/longitude, 4/8 rows with public teaser document URLs.
+- Sample ORA Apartments coverage: stable Salesforce-style id
+  `006Vk00000A8hrqIAB`, 6 image URLs, 4 public broker contacts, 1 public
+  offering teaser PDF URL, and CA/NDA document URLs retained only in
+  `jllInvestorDetail.documentsCA`.
+- Dry-run ingest staged 8 `jll-investor` listings, skipped 0 for missing URL,
+  wrote `out/jll_investor_ingest_fixed_2026-06-12/ingest.sql`, and did not
+  connect to Supabase.
+
+Collector behavior after patch:
+
+- Sale path parses `initialState.advancedSearch.listings` from
+  `__NEXT_DATA__` instead of relying on card text only.
+- Sale path enriches each selected detail URL by parsing
+  `initialState.pdp.listing` from public detail-page `__NEXT_DATA__`.
+- Stored child rows remain URL-only: public teaser/flyer PDFs in `brochures`,
+  image URLs in `photos`, and broker contact fields in `contactsDetailed`.
+- `documentsCA` URLs are not promoted to public document child rows. They are
+  retained in raw detail metadata pending a policy decision.
+- Lease remains a supported skip with note `Investment-sale platform; no lease
+  inventory.`
+
+Remaining blocker:
+
+The source remains **Partial**. A complete run still needs a policy decision on
+whether to use the query-string search pagination path despite the
+`robots.txt` `Disallow: */property-search?*` line, or to switch to XML-sitemap
+detail discovery and United States filtering.
+
 ## 2026-06-12 Deep Dive Notes
 
 Scope: public JLL Property listings at `property.jll.com`, source key `jll`. This does not cover JLL Investor Center except as a separate source handled by `jll-investor`.
