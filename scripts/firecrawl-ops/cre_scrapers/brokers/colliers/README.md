@@ -151,13 +151,54 @@ Recommendation:
 
 Partial adapter plan:
 
-1. Run a conservative full Colliers SalesTracker dry run before live ingest:
-   `npx tsx collect.ts --source=colliers --transaction=both --max-items=0
-   --page-cap=40 --concurrency=2 --out=out/colliers_salestracker_full_<date>.json`.
-2. Dry-run ingest the full artifact and verify staged row count, skipped URL
-   count, contact rows, image rows, document rows, and per-listing
-   `detailError`.
-3. Only live-ingest additively after the full dry-run artifact is clean. Do not
-   use `--mark-missing`.
-4. Continue to treat main Colliers `www.colliers.com/en/properties` sale and
+1. Complete. Conservative full SalesTracker collection, dry-run ingest, live
+   ingest, and Supabase validation were run on 2026-06-12.
+2. Continue to treat main Colliers `www.colliers.com/en/properties` sale and
    lease coverage as blocked until a safe public non-POST path is found.
+
+## 2026-06-12 Full SalesTracker Run And Live Ingest
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=colliers --transaction=both --max-items=0 --page-cap=30 --concurrency=2 --out=out/colliers_salestracker_full_2026-06-12_050241.json
+python3 cre_ingest.py --in out/colliers_salestracker_full_2026-06-12_050241.json --dry-run --keep-artifacts /tmp/colliers_salestracker_full_2026-06-12_050241_ingest_check
+python3 cre_ingest.py --in out/colliers_salestracker_full_2026-06-12_050241.json --keep-artifacts /tmp/colliers_salestracker_full_2026-06-12_050241_live_ingest
+```
+
+Collector result:
+
+- Artifact: `out/colliers_salestracker_full_2026-06-12_050241.json`.
+- Log: `out/colliers_salestracker_full_2026-06-12_050241.log`.
+- Runtime: 3:16.86.
+- Public list pages exposed 1,300 unique sale cards before a 0-card page.
+- RCM reported `total: 1653` and `totalAvail: 2094`; the collector preserves
+  both source totals and the exposed public card count.
+- 486 collected cards did not expose a public SLP detail link and were retained
+  as card/map rows.
+- Artifact detail coverage: 1,207 unique brokers, 2,915 contact rows, 10,036
+  image URLs, 0 document rows, 0 missing URLs, 0 missing titles, and 0
+  `detailError` rows.
+- Duplicate source ProjectIds: 128 repeated ID groups in the public cards. The
+  ingestor staged 1,172 unique upsert rows.
+
+Supabase proof:
+
+- Dry-run staged 1,172 unique Colliers rows and skipped 0 missing URLs.
+- Live additive ingest completed without `--mark-missing`.
+- Active Colliers rows after ingest: 1,172, all sale.
+- Active Colliers child rows after ingest: 2,733 contacts, 0 documents, and
+  9,908 images.
+- Quality checks: 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad
+  state codes, 0 impossible coordinates, 0 duplicate external IDs, and 0 orphan
+  contacts/documents/images.
+- Sample `search_cre_listings('office', null, null, null, 'sale')` returned
+  live Colliers rows including `438 South 3rd Street`, `707 Richards`, and
+  `630 Comanche Trail`.
+
+Remaining limit:
+
+- This is not complete Colliers coverage. It is only the public SalesTracker
+  investment-sale subset. The main Colliers Coveo sale/lease inventory remains
+  blocked until a safe public non-POST path or authorized integration exists.

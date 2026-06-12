@@ -76,16 +76,18 @@ Key components:
 - `scripts/firecrawl-ops/cbre_scrape.py`  -  original single-broker CBRE page scraper (still valid)
 - `docs/firecrawl-ops/references/cre-listing-system-design.md`  -  full architecture doc
 
-Brokers: CBRE (+ Deal Flow), JLL (+ Investor Center), Cushman & Wakefield,
-Marcus & Millichap, Avison Young, SVN, NAI Global, Newmark, Lee & Associates,
-Savills. Colliers has partial SalesTracker investment-sale support, while the
-main Colliers Coveo sale/lease path remains blocked. Transwestern is still not
-validated by a full run and live ingest. Newmark works via its public Algolia API;
-Marcus & Millichap works under stealth with retries (both formerly disabled).
-Latest verified full run
-started `2026-06-12T04:04:23Z` and produced 35,510 raw records. Lee & Associates
-is the only supported source that failed in that run: Buildout returned HTML
-interstitials on pages 93-104, so the source aborted at 12/333 failed pages.
+Current source status changes quickly. Treat these as the canonical status
+entrypoints before quoting coverage or making collector changes:
+- `scripts/firecrawl-ops/cre_collector/START_HERE.md`
+- `scripts/firecrawl-ops/cre_collector/BROKERAGE_STATUS_2026-06-12.md`
+
+Latest verified all-source run started `2026-06-12T04:04:23Z` and produced
+35,510 raw records. Lee & Associates failed that run under sustained Buildout
+paging, so daily ingest should stay additive with `--no-mark-missing` until a
+clean full run succeeds. Colliers has partial public SalesTracker
+investment-sale coverage, but main Colliers Coveo sale/lease search remains
+blocked. Transwestern has a public GET probe and dry-run proof, but still needs
+a clean full run, live ingest, and Supabase validation.
 
 CBRE has an internal JSON API (`/listings-api/propertylistings/query`) that bypasses
 the need for page scraping  -  see `scripts/firecrawl-ops/prometheus/CLAUDE.md`.

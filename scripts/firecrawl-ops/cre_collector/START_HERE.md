@@ -1,6 +1,6 @@
 # CRE Collector Start Here
 
-Last updated: 2026-06-12 local time, evidence from run finished at `2026-06-12T04:31:24.562Z`, validation on 2026-06-12, Cushman post-validation probes, and CBRE Deal Flow full ingest on 2026-06-12.
+Last updated: 2026-06-12 local time, evidence from run finished at `2026-06-12T04:31:24.562Z`, validation on 2026-06-12, Cushman post-validation probes, and CBRE Deal Flow plus Colliers SalesTracker full ingests on 2026-06-12.
 
 This directory is the production daily path for public commercial real estate listing inventory feeding EQUIRE. Use it for sale and lease listings. The older `../cre_scrapers/` Python package is legacy support for source probes and detail-page enrichment.
 
@@ -45,7 +45,7 @@ Result:
 | SVN | 5,521 in latest full artifact | Mapping complete from prior full artifact; fresh live refresh partial due Buildout 403 HTML |
 | NAI Global | 12 in probe | Partial, public Infabode GraphQL feed and publicPost detail enrichment proven |
 | Lee & Associates | 0 | Blocked under sustained Buildout paging; latest retry failed pages 286-297 |
-| Colliers | 3 in targeted SalesTracker probe, 1,653 SalesTracker filtered total | Partial investment-sale coverage via public RCM GET endpoints; main Colliers Coveo sale/lease search remains blocked |
+| Colliers | 1,300 SalesTracker cards collected, 1,172 unique rows live-ingested | Partial investment-sale coverage via public RCM GET endpoints; main Colliers Coveo sale/lease search remains blocked |
 | Transwestern | 8 in probe, source feed totals 519 sale-bucket rows and 1,636 lease-bucket rows before dedupe | Public GET feed implemented and dry-run proven; pending full run and live ingest |
 
 ## Start A New Session
@@ -100,7 +100,7 @@ images into Supabase storage for the bulk collector.
 - Do not treat Supabase as current for Cushman until a fresh full collection and ingest runs. The code was upgraded after the latest ingest; local probes verified 2,743 sale, 8,575 lease, and the 1800 Central detail record with 2 PDFs, 15 photos, and contact links.
 - CBRE Deal Flow has been ingested additively from the public RCM endpoint. Do not use its reported 2,042 sale total as collected count; the public card pagination exposed 1,809 sale cards in the full run.
 - Do not store source PDF or image binaries in Supabase. Store URLs only.
-- Do not claim complete Colliers coverage. Only SalesTracker investment-sale coverage has a public GET path; the main Colliers Coveo sale/lease search remains blocked.
+- Do not claim complete Colliers coverage. Only SalesTracker investment-sale coverage has a public GET path; 1,172 unique SalesTracker sale rows are live-ingested, while the main Colliers Coveo sale/lease search remains blocked.
 - Do not claim Transwestern complete until the implemented public GET feed has a clean full run, live ingest, and Supabase validation.
 - Do not claim Lee coverage until a sustained full Lee run writes a clean artifact and is ingested.
 - Do not treat legacy `cre_scrapers` active flags as production collector status.

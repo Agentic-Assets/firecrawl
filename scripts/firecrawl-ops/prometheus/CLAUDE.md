@@ -1,6 +1,6 @@
-# CLAUDE.md — prometheus/
+# CLAUDE.md - prometheus/
 
-Reference implementation from Firecrawl's Prometheus product — a cloud-based
+Reference implementation from Firecrawl's Prometheus product, a cloud-based
 CRE data collector originally written for CBRE's US commercial for-sale inventory.
 
 ## Files
@@ -29,7 +29,7 @@ Response shape:
 
 This API is still behind Cloudflare (403 on direct curl). You must route it
 through local Firecrawl with stealth proxy and `formats: ["rawHtml"]`.
-The rawHtml contains the raw JSON body — parse it directly, no HTML stripping needed.
+The rawHtml contains the raw JSON body. Parse it directly, no HTML stripping needed.
 
 Verified working locally:
 ```bash
@@ -51,7 +51,7 @@ print('DocumentCount:', parsed['DocumentCount'])
 # -> DocumentCount: 5877
 ```
 
-Note `waitFor: 4000` — the API endpoint renders much faster than the SPA detail pages.
+Note `waitFor: 4000`: the API endpoint renders much faster than the SPA detail pages.
 
 ## Local production adaptation
 
@@ -72,7 +72,7 @@ asset_base = data['assetBaseUrl']   # https://www.cbre.com/resources/fileassets/
 # photo full URL = asset_base + listing['id'] + '/' + photo_path
 ```
 
-## Field mapping: prometheus → cre_listings
+## Field mapping: prometheus -> cre_listings
 
 | prometheus field | cre_listings column | Notes |
 |-----------------|---------------------|-------|
@@ -88,8 +88,8 @@ asset_base = data['assetBaseUrl']   # https://www.cbre.com/resources/fileassets/
 | `minAreaSqft` | `min_divisible_sf` | |
 | `yearBuilt` | `year_built` | |
 | `salePriceUsd` | `sale_price_usd` | null if `priceOnApplication=true` |
-| `assetType` | `property_type` | map: "Retail"→retail, "Land"→land, etc. |
-| `alsoForLease` | `transaction_type` | true→sale_or_lease, false→sale |
+| `assetType` | `property_type` | map: "Retail" -> retail, "Land" -> land, etc. |
+| `alsoForLease` | `transaction_type` | true -> sale_or_lease, false -> sale |
 | `description` | `description` | |
 | `highlights` | `highlights` (text[]) | |
 | full record | `raw_data` (jsonb) | store the entire prometheus listing |
@@ -102,8 +102,12 @@ asset_base = data['assetBaseUrl']   # https://www.cbre.com/resources/fileassets/
 The Prometheus discovery confirms CBRE has an undocumented internal JSON API.
 Other large Next.js/React SPA brokerages may have similar patterns:
 - JLL: current collector uses public search pages. A structured API would reduce scrape time.
-- Colliers: latest collector research found only POST-only Coveo/API paths behind consent behavior.
-- Cushman & Wakefield: current collector is limited to first rendered Coveo cards; `/coveo/rest` POST is blocked by Azure App Gateway.
+- Colliers: SalesTracker investment-sale has partial public GET coverage, while
+  main Colliers Coveo sale/lease search remains blocked.
+- Cushman & Wakefield: public `/api/properties/search` pagination works in code
+  with detail enrichment, pending full upgraded run and Supabase ingest.
+- Transwestern: public GET feed has targeted probe and dry-run proof, pending
+  full run, live ingest, and Supabase validation.
 
 Finding these APIs eliminates Cloudflare bypass overhead and yields structured data
-directly — far preferable to parsing markdown from rendered pages.
+directly, which is far preferable to parsing markdown from rendered pages.

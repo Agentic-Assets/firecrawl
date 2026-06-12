@@ -9,7 +9,7 @@ Run these in order. Each file is idempotent (`CREATE TABLE IF NOT EXISTS`, etc.)
 
 | File | What it creates |
 |------|----------------|
-| `000_run_all.sql` | Master runner  -  executes 001–006 in order |
+| `000_run_all.sql` | Master runner, dependency order `001`, `002`, `003`, `004`, `006`, then `005` |
 | `001_cre_brokerages.sql` | `cre_brokerages` table + collector brokerage seed rows |
 | `002_cre_listings.sql` | `cre_listings`, `cre_listing_contacts`, `cre_listing_documents`, `cre_listing_images` |
 | `003_cre_scrape_tracking.sql` | `cre_scrape_jobs`, `cre_scrape_log` |
@@ -30,8 +30,8 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 000_run_all.sql
 # Option C: Supabase dashboard SQL editor  -  paste each file in order
 ```
 
-`DATABASE_URL` format: `postgresql://postgres:<pwd>@db.fhqycqubkkrdgzswccwd.supabase.co:5432/postgres`
-The password lives only in `~/.pgpass` or a secrets vault. Never commit it.
+Set `DATABASE_URL` from `~/.pgpass`, a secrets vault, or another local secret
+source before running `psql`. Never commit or print the connection string.
 
 ## Schema conventions
 

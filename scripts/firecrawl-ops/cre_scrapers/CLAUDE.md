@@ -58,7 +58,7 @@ matching column in `../sql/002_cre_listings.sql` will cause a REST upsert 400 er
 FIRECRAWL_API_URL=http://localhost:3002    # default; override for remote
 FIRECRAWL_API_KEY=                         # empty is fine for self-hosted
 SUPABASE_URL=https://fhqycqubkkrdgzswccwd.supabase.co
-SUPABASE_SERVICE_KEY=<service-role-key>   # legacy REST upsert only; never commit
+SUPABASE_SERVICE_KEY=...                  # legacy REST upsert only; never commit
 ```
 
 ## Running scrapers
@@ -116,15 +116,10 @@ network requests via browser devtools before building a page scraper.
 
 ## Known issues / gotchas
 
-- **Production status lives in `../cre_collector/CLAUDE.md`.** Do not update this
-  legacy package and assume the daily run changed.
-- **Marcus & Millichap** works in the collector through rendered first-page cards
-  under stealth with retries, but it remains limited.
-- **Avison Young** works in the collector as a first-sidebar-batch source. Full
-  coverage likely needs scroll actions or a public API.
-- **NAI Global** works in the collector as a first-rendered-batch source with
-  synthesized card ids because the widget exposes no stable per-card links.
-- **Newmark** works in the collector via its public Algolia API, with state and
-  property-type sub-splits to avoid the 1,000-hit cap.
+- **Production status lives in `../cre_collector/START_HERE.md` and
+  `../cre_collector/BROKERAGE_STATUS_2026-06-12.md`.** Do not update this
+  legacy package and assume the daily run changed. Those files are the current
+  source of truth for Marcus & Millichap, Avison Young, NAI Global, Newmark,
+  and every other production collector source.
 - `batch_scrape()` polls every 8s. For large batches (>200 URLs) set a longer
   poll timeout or submit in chunks of 50-100.

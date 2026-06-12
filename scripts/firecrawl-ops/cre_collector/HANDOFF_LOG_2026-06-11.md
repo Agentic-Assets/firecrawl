@@ -363,15 +363,30 @@ Results:
   `detailError` rows.
 - One card had no public SLP detail link and was retained as a card/map row.
 
-Next action:
-
-Run a conservative full SalesTracker dry run with no live ingest first:
+Follow-up full run and ingest:
 
 ```bash
-npx tsx collect.ts --source=colliers --transaction=both --max-items=0 --page-cap=40 --concurrency=2 --out=out/colliers_salestracker_full_<date>.json
-python3 cre_ingest.py --in out/colliers_salestracker_full_<date>.json --dry-run --keep-artifacts /tmp/colliers_salestracker_full_<date>_ingest
+npx tsx collect.ts --source=colliers --transaction=both --max-items=0 --page-cap=30 --concurrency=2 --out=out/colliers_salestracker_full_2026-06-12_050241.json
+python3 cre_ingest.py --in out/colliers_salestracker_full_2026-06-12_050241.json --dry-run --keep-artifacts /tmp/colliers_salestracker_full_2026-06-12_050241_ingest_check
+python3 cre_ingest.py --in out/colliers_salestracker_full_2026-06-12_050241.json --keep-artifacts /tmp/colliers_salestracker_full_2026-06-12_050241_live_ingest
 ```
 
-Use live ingest only after checking staged row count, skipped URLs, contacts,
-images, document rows, and per-listing `detailError`. Do not use
-`--mark-missing`.
+Result:
+
+- Public SalesTracker pages exposed 1,300 unique sale cards before a 0-card
+  page, while RCM reported `total=1653` and `totalAvail=2094`.
+- Artifact detail coverage: 1,207 unique brokers, 2,915 contact rows, 10,036
+  image URLs, 0 document rows, 0 missing URLs, 0 missing titles, and 0
+  `detailError` rows.
+- 486 cards lacked public SLP detail links and were retained as card/map rows.
+- 128 repeated ProjectId groups in public cards deduped to 1,172 staged rows.
+- Live additive ingest completed without `--mark-missing`.
+- Supabase proof after ingest: 1,172 active Colliers rows, 2,733 contact child
+  rows, 9,908 image child rows, 0 missing URLs, 0 missing titles, 0 missing raw
+  data, 0 bad states, 0 impossible coordinates, 0 duplicate external IDs, and
+  0 orphan contacts/documents/images.
+- `search_cre_listings('office', null, null, null, 'sale')` returned live
+  Colliers rows.
+
+Remaining limit: this is only SalesTracker investment-sale coverage. Main
+Colliers Coveo sale/lease coverage remains blocked.
