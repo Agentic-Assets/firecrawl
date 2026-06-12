@@ -201,12 +201,10 @@ The Lee command was piped through `tee`, so the shell process returned the `tee`
 
 ## Next Fixes
 
-1. Make Lee throttling-safe before any claim of all-source coverage. Candidate fixes: lower Buildout concurrency for Lee, add longer page-batch cooldowns, persist successful pages to a resumable cache, or collect Lee in smaller page windows.
+1. [COMPLETED 2026-06-12] Make Lee throttling-safe before any claim of all-source coverage. Candidate fixes: lower Buildout concurrency for Lee, add longer page-batch cooldowns, persist successful pages to a resumable cache, or collect Lee in smaller page windows. Durable page-cache/window controls were implemented, cache pages 0 through 332 assembled cleanly, Lee was live-ingested with source-scoped reconciliation, and Supabase validation confirmed 9,223 active rows. Lee is complete.
 2. Add a saved validation command that compares latest artifact staged rows to Supabase touched rows by brokerage.
-3. After Lee is clean, run a full all-source collection and live ingest with mark-missing eligibility, then verify that stale active rows are gone or intentionally retained.
-4. Implement Lee Buildout resumability/page-cache controls before another
-   sustained Lee full run. Treat main Colliers Coveo sale/lease coverage as
-   integration backlog until a permitted non-POST path exists.
+3. Run a full all-source collection and live ingest with mark-missing eligibility, then verify that stale active rows are gone or intentionally retained. The remaining gate is Colliers main Coveo sale/lease coverage (still blocked). Lee is no longer a blocker and jll-investor cleanup is complete.
+4. [COMPLETED 2026-06-12 for Lee clause] Implement Lee Buildout resumability/page-cache controls before another sustained Lee full run. Lee page-cache controls are implemented and Lee is complete and reconciled. Treat main Colliers Coveo sale/lease coverage as integration backlog until a permitted non-POST path exists.
 
 ## 2026-06-12 CBRE Deal Flow Full Run And Live Ingest
 
@@ -386,6 +384,40 @@ Result:
 - URL-only SQL sanity found no `data:` or `base64` strings.
 - No live JLL Investor ingest was run.
 
+## 2026-06-12 JLL Investor Full Sitemap Detail Run And Live Ingest
+
+Full run finished 2026-06-12 22:47 UTC using speed controls
+`JLL_INVESTOR_DETAIL_WAIT_MS=1000`, `JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS=8000`,
+`JLL_INVESTOR_DETAIL_CONCURRENCY=4` (commit d0c9f5d63).
+
+Collector result:
+
+- 1,857 sitemap detail URLs scanned.
+- 934 U.S. sale listings retained after country filter.
+- 0 lease rows (not applicable: Investor Center is sale-only).
+- 878 unique brokers in artifact `out/jll_investor_full_sitemap_detail_2026-06-12.json`.
+- All rows lack coordinates; the Investor detail path does not expose them.
+
+Ingest and cleanup:
+
+- Live additive ingest completed.
+- User-approved source-scoped soft-delete removed the 50 stale early-probe rows
+  (from the 04:31 UTC probe ingest) at approximately 23:25 UTC.
+
+Post-cleanup validation artifact: `out/live_validation_after_jll_investor_cleanup_2026-06-12.md`.
+
+Post-cleanup Supabase state:
+
+- Active jll-investor rows: 934 (all latest batch, all sale).
+- Soft-deleted jll-investor rows: 50 (stale early-probe rows).
+- Missing-state rows: 0.
+- Duplicate source URL groups: 0.
+- Child rows: 2,572 contacts, 345 documents, 5,658 images.
+- Coordinates present: 0 (known limitation of the Investor detail path, not a regression).
+- DB total active listings: 71,600.
+
+Completion standard met: full run, live ingest, source-scoped reconciliation, and Supabase validation complete.
+
 ## 2026-06-12 Read-Only Live QA Sidecar
 
 Commands:
@@ -549,7 +581,11 @@ Live ingest and cleanup:
 - Active JLL main rows: 10,741, with 1,247 sale, 8,733 lease, and 761
   sale_or_lease.
 - Active JLL Investor rows remain 50 under the folded brokerage slug and were
-  not touched by the cleanup.
+  not touched by the cleanup. [SUPERSEDED 2026-06-12: after the full sitemap
+  detail run finished 22:47 UTC and the user-approved source-scoped soft-delete
+  removed these 50 stale early-probe rows, active jll-investor rows are now
+  934. See the "2026-06-12 JLL Investor Full Sitemap Detail Run And Live
+  Ingest" section below for the complete record.]
 - Active JLL duplicate external ID groups: 0.
 - Active JLL source URL quality: 0 bad source URLs, 0 missing titles, 0 missing
   raw data.

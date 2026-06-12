@@ -319,6 +319,10 @@ Implemented behavior:
 
 ### Ready-To-Implement Mapper Checklist
 
+> NOTE 2026-06-12: all items in this checklist were implemented and verified
+> in the 2026-06-12 collector patch verification. The list is retained below
+> as a mapping reference.
+
 - Add constants near `srcNaiGlobal`: `NAI_PUBLIC_API_URL`,
   `NAI_PUBLIC_POST_URL`, `NAI_LISTING_URL_BASE`, `NAI_PAGE_SIZE=18`,
   `NAI_CONTENT_TYPE_BY_TX = { sale: 4, lease: 10 }`, and the 116

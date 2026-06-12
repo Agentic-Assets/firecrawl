@@ -400,6 +400,12 @@ path.
 Status: implemented in `scripts/firecrawl-ops/cre_collector/collect.ts` and
 probe-proven, but not yet full-run or live-ingested.
 
+> SUPERSEDED: the full run, live ingest, source-scoped reconciliation, and
+> Supabase validation were all completed in the 2026-06-12 full run session
+> documented in the "2026-06-12 Full Run And Supabase Proof" section of the
+> production collector's START_HERE.md. Live active count: 2,021 rows
+> (389 sale / 1,502 lease / 130 sale_or_lease).
+
 What changed:
 
 - `collect.ts` now includes `srcTranswestern(tx, max)`.
@@ -443,6 +449,13 @@ Probe result:
 - Ingest dry-run staged 8 Transwestern listings and skipped 0 missing URLs.
 
 Remaining proof before calling complete:
+
+> COMPLETED 2026-06-12: all steps below were completed in the 2026-06-12 full
+> run session. Full collection ran with `--max-items=0`, the full artifact
+> passed dry-run inspection, the Transwestern brokerage seed row was confirmed
+> in the live database, and live ingest completed successfully. Source-scoped
+> reconciliation and Supabase validation followed. Live active count: 2,021
+> rows (389 sale / 1,502 lease / 130 sale_or_lease).
 
 - Run full `transwestern` sale and lease collection with `--max-items=0`.
 - Dry-run the full artifact and inspect staged rows, child URL counts,

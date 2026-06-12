@@ -143,6 +143,10 @@ Important current cautions:
 - Marcus & Millichap is complete for its public sale feed after full run, live
   ingest, source-scoped reconciliation, and Supabase validation; public lease
   remains unsupported.
+- JLL Investor Center is complete for the public sitemap detail path: 934
+  active U.S. sale rows live-ingested and reconciled on 2026-06-12. All
+  jll-investor rows lack coordinates; the Investor detail path does not expose
+  them.
 
 ## Local Firecrawl Ops
 

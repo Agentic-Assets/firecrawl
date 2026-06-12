@@ -202,3 +202,27 @@ Result:
 bounded and full runs. Full runs may still be slow because the sitemap contains
 global inventory and requires detail scraping before U.S. filtering. Use low
 concurrency and consider `JLL_INVESTOR_SITEMAP_SCAN_LIMIT` for future probes.
+
+## Full Run Completion
+
+Full sitemap detail run completed 2026-06-12 22:47 UTC.
+
+- 1,857 sitemap detail URLs scanned.
+- 934 U.S. sale rows retained and live-ingested.
+- Lease: 0 (not applicable; investment-sale platform only).
+- 878 unique brokers in the full output artifact
+  `out/jll_investor_full_sitemap_detail_2026-06-12.json`.
+- Live-ingested additively (no broad `--mark-missing`).
+- Source-scoped soft-delete applied after user approval: 50 stale early-probe
+  rows (from the 04:31 UTC probe ingest) removed.
+- Post-cleanup validation: 0 missing-state rows, 0 duplicate source URL groups,
+  934 active jll-investor rows (all latest batch), 50 soft-deleted.
+- Child rows: 2,572 contacts, 345 documents, 5,658 images.
+- All jll-investor rows lack coordinates; the Investor detail path does not
+  expose latitude or longitude. This is a known limitation, not a regression.
+- Speed env vars used for the full run:
+  `JLL_INVESTOR_DETAIL_WAIT_MS=1000`,
+  `JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS=8000`,
+  `JLL_INVESTOR_DETAIL_CONCURRENCY=4` (commit d0c9f5d63).
+
+`jll-investor` status: **Complete**.

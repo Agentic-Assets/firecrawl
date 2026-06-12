@@ -1,6 +1,6 @@
 # CRE Collector Start Here
 
-Last updated: 2026-06-12 local time, evidence from run finished at `2026-06-12T04:31:24.562Z`, validation on 2026-06-12, CBRE Deal Flow plus Colliers SalesTracker full ingests, NAI active-status-filtered ingest, Cushman full live ingest, Transwestern full live ingest, Marcus & Millichap full public sale ingest, and Lee & Associates full Buildout ingest on 2026-06-12.
+Last updated: 2026-06-12 local time, evidence from run finished at `2026-06-12T04:31:24.562Z`, validation on 2026-06-12, CBRE Deal Flow plus Colliers SalesTracker full ingests, NAI active-status-filtered ingest, Cushman full live ingest, Transwestern full live ingest, Marcus & Millichap full public sale ingest, and Lee & Associates full Buildout ingest on 2026-06-12. JLL Investor full sitemap detail ingest finished 2026-06-12 22:47 UTC (934 U.S. sale rows live); 50 stale early-probe rows soft-deleted 2026-06-12 ~23:25 UTC after user approval.
 
 This directory is the production daily path for public commercial real estate listing inventory feeding EQUIRE. Use it for sale and lease listings. The older `../cre_scrapers/` Python package is legacy support for source probes and detail-page enrichment.
 
@@ -28,22 +28,23 @@ Result:
 - Live additive ingest completed through `psql`.
 - `--mark-missing` was not used on that all-source run because Lee & Associates failed at the time; Lee was later completed through a source-specific cache assembly run.
 - Fresh validation confirmed 33,488 latest artifact rows touched in Supabase and 34,218 active rows total because 730 older additive rows remained active before later source-specific reconciliations.
-- After later source-specific ingests through JLL full detail enrichment and
-  narrow stale-row cleanups, live Supabase active rows total 70,716.
+- After later source-specific ingests through JLL full detail enrichment,
+  JLL Investor full sitemap detail ingest, and narrow stale-row cleanups,
+  live Supabase active rows total 71,600 as of 2026-06-12T23:26 UTC.
 
 ## Latest Source Matrix
 
 | Source | Raw count | Status |
 |---|---:|---|
-| CBRE | 20,684 | Active |
+| CBRE | 19,028 active rows, 4,222 sale + 13,145 lease + 1,661 sale_or_lease | Active via internal JSON API through local Firecrawl stealth |
 | CBRE Deal Flow | 1,836 active rows, 1,809 sale + 27 lease | Active via public RCM ListingEngine endpoint; 21 stale URL-hash duplicate rows soft-deleted |
 | JLL | 10,741 active rows, 1,247 sale + 8,733 lease + 761 sale_or_lease | Complete main public property feed with detail enrichment, live-ingested; 4,406 stale same-URL rows soft-deleted |
-| JLL Investor | 1,855 sitemap detail URLs in latest probe; 3 U.S. rows retained from 8 scanned | Partial, public sitemap/detail discovery implemented and dry-run verified, not live-ingested |
+| JLL Investor | 1,857 sitemap detail URLs scanned; 934 U.S. sale rows retained and live (latest batch) | Complete; full sitemap detail run live-ingested 2026-06-12 22:47 UTC; source-scoped cleanup removed 50 stale early-probe rows |
 | Cushman & Wakefield | 11,318 active rows, 2,743 sale + 8,575 lease | Complete public API feed with detail enrichment, live-ingested with source-scoped mark-missing cleanup |
 | Newmark | 4,371 active rows, 1,121 sale + 3,250 lease | Complete public Algolia feed with no-state DC recovery, public People contacts/profile URLs, raw hit preservation, and source-scoped cleanup |
 | Marcus & Millichap | 3,124 active sale rows | Complete public sale feed via public map ActivityIds, `mappropertydetail` tiles, and detail HTML; live-ingested with source-scoped mark-missing cleanup; lease unsupported |
 | Avison Young | 2,200 staged unique rows in post-validation full run | Public SharpLaunch feed live-ingested additively; bounded detail enrichment is verified for selected rows but full-feed detail enrichment has not been live-run |
-| Savills | 104 active rows, 101 sale + 3 lease | Partial; 2 defensible U.S. retail lease rows are now live with PDF/image/contact URLs, while current sale rows remain global/residential and not CRE-defensible |
+| Savills | 104 active rows, 101 sale + 3 lease | Partial; 3 U.S. retail lease rows are now live with PDF/image/contact URLs, while current sale rows remain global/residential and not CRE-defensible |
 | SVN | 5,287 active rows, 2,660 sale + 2,192 lease + 435 sale_or_lease | Complete public Buildout feed, assembled from durable page cache and live-ingested with source-scoped mark-missing cleanup |
 | NAI Global | 241 active rows, 183 sale + 58 lease live-ingested with mark-missing cleanup | Complete public active feed via Infabode GraphQL and `publicPost`, filtered to `FOR_SALE_ON_MARKET`; historical/unknown rows excluded |
 | Lee & Associates | 9,223 active rows, 2,611 sale + 5,691 lease + 921 sale_or_lease | Complete public Buildout feed, assembled from durable page cache and live-ingested with source-scoped mark-missing cleanup |
@@ -117,14 +118,15 @@ images into Supabase storage for the bulk collector.
 - Newmark is now current in Supabase from `out/newmark_full_refined_2026-06-12.json`: 4,371 active rows, 4,303 image URL rows, 3,961 contact/profile URL rows, 0 document rows, 0 missing states, and 715 old additive rows soft-deleted. Listing documents, full galleries, second/third broker joins, and VCards remain unproven.
 - SVN is now current in Supabase from `out/svn_full_cache_2026-06-12_assembled.json`: 5,287 active rows, 5,235 image URL rows, 3,899 document URL rows, 5,287 contact rows, 0 duplicate external IDs, 0 bad URLs, 0 missing titles, 0 missing raw data, and 34 old rows soft-deleted. One active SVN row is missing state.
 - JLL main property feed is now current in Supabase from `out/jll_full_detail_enriched_2026-06-12.json`: 11,230 collected sale/lease rows, 10,604 staged unique rows, 0 detail errors, 0 skipped missing URLs, 9,747 artifact document URLs, 28,254 artifact image URLs, and 23,801 artifact contacts/profile URLs. Live JLL main now has 10,741 active rows after 4,406 old same-URL rows were soft-deleted. Remaining duplicate source URL groups are 135 latest-batch sale/lease same-page variants.
+- JLL Investor Center is now current in Supabase from `out/jll_investor_full_sitemap_detail_2026-06-12.json`: 934 active rows (all sale; lease not applicable for this path), 2,572 contact rows, 345 document URL rows, and 5,658 image URL rows. All jll-investor rows lack coordinates because the Investor detail path exposes none (known limitation, not a regression). Speed controls: `JLL_INVESTOR_DETAIL_WAIT_MS=1000`, `JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS=8000`, `JLL_INVESTOR_DETAIL_CONCURRENCY=4` (commit d0c9f5d63). The 50 stale early-probe rows were soft-deleted after user approval at ~23:25 UTC 2026-06-12.
 - Avison Young bounded detail enrichment is verified on a 4-row probe:
   6 public PDF URLs, 36 public image URLs, 4 JSON-LD payloads, 1 broker profile
   URL, 0 VCards, and 0 detail errors. Full-feed runs stay SharpLaunch-only by
   default unless `AVISON_YOUNG_DETAIL_LIMIT` is set.
 - Savills commercial lease path is live-ingested additively from
-  `out/savills_lease_public_2026-06-12_live_candidate.json`: 2 U.S. retail
-  lease rows, 4 PDF URL rows, 24 image URL rows, 2 contacts, and 0 skipped
-  missing URLs. Savills sale remains not CRE-defensible.
+  `out/savills_lease_public_2026-06-12_live_candidate.json`: 3 U.S. retail
+  lease rows live (updated from the original 2-row ingest artifact), 4 PDF URL rows,
+  24 image URL rows, and 0 skipped missing URLs. Savills sale remains not CRE-defensible.
 - `cre_ingest.py` now drops non-HTTP contact profile/avatar/VCard URLs and
   non-HTTP document URLs. Reingesting the complete Lee and SVN artifacts
   refreshed child rows and reduced active bad contact avatar URLs from 37 to 0.

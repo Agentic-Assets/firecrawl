@@ -103,7 +103,9 @@ Current documented baseline from the 2026-06-12 validation cycle:
 - Latest full artifact: `cre_collector/out/full_latest_2026-06-11_230423.json`
 - Raw listing records: 35,510
 - Staged unique upsert rows: 33,488
-- Active Supabase rows after additive carryover: 34,218
+- Active Supabase rows after additive carryover: 34,218 (intermediate count
+  right after the 04:04 UTC full run; later source-specific completions raised
+  the live total to 71,600 active rows as of 2026-06-12T23:26 UTC)
 - Full collection time: about 27 minutes at concurrency 3
 - `--mark-missing` was skipped because Lee and Associates failed
 
@@ -163,8 +165,8 @@ High-signal cautions:
   Cloudflare, using local Firecrawl stealth.
 - CBRE Deal Flow is a separate public RCM ListingEngine source folded into
   parent CBRE with prefixed IDs.
-- Cushman now has public API collection and detail enrichment, but live
-  Supabase counts require a fresh full run and ingest after the code upgrade.
+- Cushman is complete for its public API feed after full run, live ingest,
+  source-scoped reconciliation, and Supabase validation (11,318 active rows).
 - Newmark uses Algolia credentials embedded in the public page.
 - Marcus and Millichap has public sale API coverage and detail enrichment;
   lease inventory is not proven.
@@ -174,8 +176,11 @@ High-signal cautions:
 - Colliers has partial public SalesTracker investment-sale support. The main
   Colliers Coveo sale and lease search remains blocked until a usable public
   path or authorized integration exists.
-- Transwestern is implemented and dry-run proven, but is not complete until
-  full collection, live ingest, and validation are done.
+- Transwestern is complete for its public GET feed after full run, live ingest,
+  source-scoped reconciliation, and Supabase validation (2,021 active rows).
+- JLL Investor Center is complete for the public sitemap detail path: 934
+  active U.S. sale rows live-ingested and reconciled on 2026-06-12. No
+  coordinates are available from the Investor detail path (known limitation).
 
 ## Local CLI Wrapper
 

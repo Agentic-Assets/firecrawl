@@ -90,10 +90,13 @@ entrypoints before quoting coverage or making collector changes:
 
 Latest verified all-source run started `2026-06-12T04:04:23Z` and produced
 35,510 raw records. Later source-specific runs completed Transwestern, Marcus
-& Millichap public sale, and Lee & Associates public Buildout coverage with
-live ingest, source-scoped reconciliation, and Supabase validation. Colliers has
-partial public SalesTracker investment-sale coverage, but main Colliers Coveo
-sale/lease search remains blocked. Marcus public lease remains unsupported.
+& Millichap public sale, Lee & Associates public Buildout coverage, and JLL
+Investor Center full sitemap detail path (934 active sale rows, 1,857 sitemap
+URLs scanned, live-ingested and source-scoped reconciliation completed
+2026-06-12) with live ingest, source-scoped reconciliation, and Supabase
+validation. Colliers has partial public SalesTracker investment-sale coverage,
+but main Colliers Coveo sale/lease search remains blocked. Marcus public lease
+remains unsupported.
 
 CBRE has an internal JSON API (`/listings-api/propertylistings/query`) that bypasses
 the need for page scraping  -  see `scripts/firecrawl-ops/prometheus/CLAUDE.md`.
@@ -106,7 +109,6 @@ Older REST/service-key loader docs apply only to the legacy Python scraper path.
 Start a new CRE collector session at:
 - `scripts/firecrawl-ops/cre_collector/START_HERE.md`
 - `scripts/firecrawl-ops/cre_collector/CLAUDE.md`
-- `scripts/firecrawl-ops/cre_collector/HANDOFF_LOG_2026-06-11.md`
 
 Verified local baseline on 2026-05-23:
 - OrbStack Docker compose stack

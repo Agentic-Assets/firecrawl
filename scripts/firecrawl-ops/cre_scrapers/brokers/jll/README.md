@@ -146,9 +146,11 @@ is cleaner than the robots-disallowed query-string search pagination route, but
 it is detail-scrape heavy because the U.S. locale sitemap still includes
 global inventory.
 
-For EQUIRE's defensible dataset, keep the status as **Partial** until a full
-sitemap detail scan is completed, dry-run ingested, live-ingested, and
-validated. Do not use query-string search pagination without an explicit
+For EQUIRE's defensible dataset, the full sitemap detail scan, live ingest,
+and validation are now complete as of 2026-06-12 22:47 UTC: 1,857 sitemap
+detail URLs scanned, 934 U.S. sale rows retained and live-ingested, 50 stale
+early-probe rows soft-deleted after user approval. `jll-investor` status is
+**Complete**. Do not use query-string search pagination without an explicit
 policy/legal decision.
 
 ### Collector patch plan
@@ -257,12 +259,13 @@ Result:
 - Dry-run ingest staged 3 `jll-investor` rows and skipped 0 missing URLs.
 - No live JLL Investor ingest was run.
 
-Remaining blocker:
-
-The source remains **Partial**. A complete run still needs a policy decision on
-whether to use the query-string search pagination path despite the
-`robots.txt` `Disallow: */property-search?*` line, or to switch to XML-sitemap
-detail discovery and United States filtering.
+[COMPLETED 2026-06-12] The remaining blocker above was resolved. The XML-sitemap
+detail discovery path was adopted and the full run completed 2026-06-12 22:47 UTC:
+1,857 sitemap detail URLs scanned, 934 U.S. sale rows live-ingested, 50 stale
+early-probe rows soft-deleted after user approval. Child rows: 2,572 contacts,
+345 documents, 5,658 images. No coordinates are available for jll-investor rows;
+the Investor detail path does not expose them. The query-string search pagination
+path was not used. `jll-investor` status is now **Complete**.
 
 ## 2026-06-12 Deep Dive Notes
 
@@ -377,7 +380,7 @@ All probes used local Firecrawl at `http://localhost:3002`, did not download bin
 | rent | coworking | 524 | 50 |
 | rent | data-center | 4 | 4 |
 
-Observed public filtered counts sum to 1,889 sale and 9,531 rent before cross-property-type de-dupe. The current office-only collector path sees 333 sale and 4,345 rent, so it is partial coverage.
+Observed public filtered counts sum to 1,889 sale and 9,531 rent before cross-property-type de-dupe. The current office-only collector path sees 333 sale and 4,345 rent, so it is partial coverage. [SUPERSEDED 2026-06-12: the collector was patched the same day to loop all public property types; full multi-type run completed and live-ingested with 10,741 active rows.]
 
 ### JSON and detail enrichment
 
@@ -410,7 +413,7 @@ Observed public filtered counts sum to 1,889 sale and 9,531 rent before cross-pr
 
 ### Limitations
 
-- Current production `srcJll` is not full coverage because the JLL site defaults untyped searches to office.
+- [SUPERSEDED 2026-06-12] Current production `srcJll` is not full coverage because the JLL site defaults untyped searches to office. The collector was patched the same day to loop all public property types; full multi-type run completed and live-ingested.
 - Counts above are per property type filter and may double-count listings that carry multiple property types or both sale and rent tenure. Collector output must de-dupe by normalized detail URL and JLL property id after detail fetch.
 - JLL pricing is often withheld as "Please contact us for price", so numeric price coverage will remain sparse even after detail enrichment.
 - Raw HTML scanning is still needed for `__NEXT_DATA__`, because Markdown and Firecrawl links do not expose all broker fields or structured property arrays.
@@ -419,9 +422,11 @@ Observed public filtered counts sum to 1,889 sale and 9,531 rent before cross-pr
 
 ### Status recommendation
 
-Status: partial, patch recommended before calling `jll` complete for EQUIRE.
-
-The public path is defensible once the collector loops all public property types and enriches detail pages from `__NEXT_DATA__`. Without that patch, the source is usable for office listings but misses large public sale and lease segments such as land, industrial, retail, lab, medical, coworking, multifamily, and data center.
+[SUPERSEDED 2026-06-12] Status at time of writing: partial. Main `jll` is now
+complete and live-ingested. The collector was upgraded to loop all public
+property types with detail enrichment; full run, live ingest, source-scoped
+reconciliation, and Supabase validation completed 2026-06-12. Live active rows:
+10,741 (1,247 sale, 8,733 lease, 761 sale_or_lease).
 
 ### Concrete collector patch plan
 
@@ -570,13 +575,10 @@ Result: 12 sale rows covered all nine property-type tokens, including
 industrial; 0 detail errors; 12 stable ids; 12 public document URLs; 27 contact
 rows; and dry-run ingest staged all 12 rows.
 
-Next step:
-
-- Run or resume a full JLL collection with detail cache enabled, high enough
-  page cap for office lease (`--page-cap=100` was required on 2026-06-12), and
-  `JLL_DETAIL_CONCURRENCY=6` if local Firecrawl remains healthy. Dry-run and
-  live ingest only after detail errors and duplicate/merge behavior are
-  understood.
+[COMPLETED 2026-06-12] Full JLL collection with detail enrichment is complete and
+live-ingested. The full run used `--page-cap=100` and `JLL_DETAIL_CONCURRENCY=6`.
+Active main JLL rows: 10,741 (1,247 sale, 8,733 lease, 761 sale_or_lease).
+Source-scoped reconciliation and Supabase validation completed the same day.
 
 ### 2026-06-12 full-run performance notes
 

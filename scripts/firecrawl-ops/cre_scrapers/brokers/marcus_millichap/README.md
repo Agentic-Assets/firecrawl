@@ -157,7 +157,7 @@ Verification errors and resolution:
 Remaining blocked or partial:
 
 - Lease inventory remains unsupported because no public lease UI mode or endpoint has been proven.
-- Unfiltered public sale search remains capped at the newest 100 rows. The collector now crosses that cap through public map ActivityIds and `mappropertydetail`; a no-live-ingest 105-row probe passed, but a full 3,126-row collector run and ingest validation are still pending.
+- SUPERSEDED: see the 2026-06-12 full public sale ingest below. The full collector run collected 3,124 rows (the API-reported total drifted from 3,126 to 3,124 at run time); live ingest and source-scoped mark-missing completed. Public lease and gated deal rooms remain unsupported.
 - Auctions are publicly discoverable through `/api/contentsearch/auctions`, but are not included in the production Marcus source to avoid mixing standard sale rows with auction inventory without a product decision.
 
 ## 2026-06-12 Map ActivityId Expansion Follow-Up
