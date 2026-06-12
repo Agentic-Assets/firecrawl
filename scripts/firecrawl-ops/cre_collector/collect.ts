@@ -1553,7 +1553,19 @@ const JLL_INVESTOR_SEARCH_URL =
   "https://invest.jll.com/us/en/property-search?filter=%7B%22location%22%3A%5B%22United%20States%22%5D%7D";
 const JLL_INVESTOR_SITEMAP_INDEX_URL = `${JLL_INVESTOR_HOST}/sitemap_index.xml`;
 const JLL_INVESTOR_US_SITEMAP_URL = `${JLL_INVESTOR_HOST}/us/sitemap-us.xml`;
-const JLL_INVESTOR_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
+const JLL_INVESTOR_DETAIL_CONCURRENCY = boundedInt(
+  process.env.JLL_INVESTOR_DETAIL_CONCURRENCY,
+  Math.min(CONCURRENCY, 4),
+  1,
+  8
+);
+const JLL_INVESTOR_DETAIL_WAIT_MS = boundedInt(process.env.JLL_INVESTOR_DETAIL_WAIT_MS, 1000, 0, 30000);
+const JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS = boundedInt(
+  process.env.JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS,
+  8000,
+  1000,
+  60000
+);
 const JLL_INVESTOR_SITEMAP_SCAN_LIMIT = boundedInt(
   process.env.JLL_INVESTOR_SITEMAP_SCAN_LIMIT,
   0,
@@ -1731,9 +1743,14 @@ function jllInvestorContacts(listing: any): any[] {
 async function enrichJllInvestorListing(base: any): Promise<any> {
   if (!base.url) return base;
   try {
-    const doc = await scrapeDoc(base.url, { waitFor: 8000, timeout: 120000 });
-    const next = jllInvestorNextData(doc.rawHtml);
-    const listing = next?.props?.pageProps?.initialState?.pdp?.listing;
+    let doc = await scrapeDoc(base.url, { waitFor: JLL_INVESTOR_DETAIL_WAIT_MS, timeout: 120000 });
+    let next = jllInvestorNextData(doc.rawHtml);
+    let listing = next?.props?.pageProps?.initialState?.pdp?.listing;
+    if (!listing && JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS > JLL_INVESTOR_DETAIL_WAIT_MS) {
+      doc = await scrapeDoc(base.url, { waitFor: JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS, timeout: 120000 });
+      next = jllInvestorNextData(doc.rawHtml);
+      listing = next?.props?.pageProps?.initialState?.pdp?.listing;
+    }
     if (!listing) {
       return prune({ ...base, detailError: "missing pdp listing in __NEXT_DATA__" });
     }
