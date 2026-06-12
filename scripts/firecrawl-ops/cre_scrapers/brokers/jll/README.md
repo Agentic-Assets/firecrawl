@@ -139,47 +139,39 @@ Carlstadt.
 
 ### Status recommendation
 
-Operationally, `jll-investor` is not limited to a first public grid. A full
-public search pagination path is feasible through local Firecrawl, and detail
-pages expose enough public JSON for useful URL-only enrichment.
+Operationally, `jll-investor` is no longer limited to a first public grid. The
+implemented path uses XML sitemap discovery plus public detail-page
+`__NEXT_DATA__`, then filters retained rows to public detail country `US`. This
+is cleaner than the robots-disallowed query-string search pagination route, but
+it is detail-scrape heavy because the U.S. locale sitemap still includes
+global inventory.
 
-For EQUIRE's defensible dataset, keep the status as **Partial** until one of
-these is approved:
-
-1. Use the query-string search pagination despite the robots disallow line,
-   with an explicit policy/legal decision.
-2. Use the XML sitemap as the discovery seed, then scrape detail pages and
-   filter to United States listings. This is cleaner relative to robots, but it
-   requires many more detail scrapes and will include non-US candidates before
-   filtering.
+For EQUIRE's defensible dataset, keep the status as **Partial** until a full
+sitemap detail scan is completed, dry-run ingested, live-ingested, and
+validated. Do not use query-string search pagination without an explicit
+policy/legal decision.
 
 ### Collector patch plan
 
 Keep this logic scoped to source key `jll-investor`; do not mix it with the
 main `jll` search source.
 
-1. Replace card-anchor parsing in `srcJllInvestor` with a parser for
-   `__NEXT_DATA__.props.pageProps.initialState.advancedSearch`.
-2. Paginate sale only with `page=1..N`, using `count / 50` as guidance and
-   stopping on an empty `listings` array. Keep `PAGE_CAP` as a hard cap.
-3. Optionally use `_next/data/<buildId>/us/en/property-search.json?...` through
-   local Firecrawl after reading the current `buildId` from page 1. Fall back
-   to rendered search HTML if the JSON route shape changes.
-4. Map search rows to collector fields: stable id, URL from `alias`, name,
-   transaction type `Sale (investment)`, asset type, display address, city,
-   state, country, lat/lon, status, price or price range, area, land area,
-   image URL, dates, and raw row.
-5. Add bounded detail enrichment for selected or all rows, with low concurrency:
-   parse `initialState.pdp.listing`, append public `multimedia.images`, public
-   teaser/flyer document URLs, and broker contact data. Store CA/NDA URLs
-   separately in `raw_data` or omit them from `documents` until policy approves
-   them as collectible URLs.
-6. Keep lease behavior as `skipped` with note `Investment-sale platform; no
+1. Fetch `https://invest.jll.com/sitemap_index.xml`.
+2. Discover and fetch `https://invest.jll.com/us/sitemap-us.xml`.
+3. Extract `/us/en/listings/...` detail URLs and de-dupe them.
+4. Use `JLL_INVESTOR_SITEMAP_SCAN_LIMIT` for bounded probes. Without that env
+   cap, finite `--max-items` scans a wider candidate window to account for
+   non-U.S. rows before slicing retained U.S. rows.
+5. Parse public detail-page `initialState.pdp.listing`, append public
+   multimedia images, public teaser/flyer document URLs, and broker contact
+   data. Keep CA/NDA URLs in raw metadata only.
+6. Retain only rows whose public detail country normalizes to `US`.
+7. Keep lease behavior as `skipped` with note `Investment-sale platform; no
    lease inventory`.
-7. Verification path:
-   - `npx tsx collect.ts --source=jll-investor --transaction=sale --max-items=120 --page-cap=3 --concurrency=2 --out=/tmp/jll_investor_page_probe.json`
-   - `python3 cre_ingest.py --in /tmp/jll_investor_page_probe.json --dry-run --keep-artifacts /tmp/jll_investor_ingest_check`
-   - Full run only after the robots/policy route is chosen.
+8. Verification path:
+   - `JLL_INVESTOR_SITEMAP_SCAN_LIMIT=8 npx tsx collect.ts --source=jll-investor --transaction=sale --max-items=4 --concurrency=2 --out=/tmp/jll_investor_sitemap_probe.json`
+   - `python3 cre_ingest.py --in /tmp/jll_investor_sitemap_probe.json --dry-run --keep-artifacts /tmp/jll_investor_ingest_check`
+   - Full run only after the runtime cost and U.S. retained count are understood.
 
 ### 2026-06-12 collector hardening and run prep
 
@@ -244,6 +236,26 @@ Collector behavior after patch:
   retained in raw detail metadata pending a policy decision.
 - Lease remains a supported skip with note `Investment-sale platform; no lease
   inventory.`
+
+### 2026-06-12 sitemap/detail expansion proof
+
+See `JLL_INVESTOR_SITEMAP_DETAIL_2026-06-12.md` for the implemented public
+sitemap/detail path.
+
+Review probe:
+
+```bash
+JLL_INVESTOR_SITEMAP_SCAN_LIMIT=8 npx tsx collect.ts --source=jll-investor --transaction=sale --max-items=4 --concurrency=2 --out=/tmp/jll_investor_sitemap_probe_review_2026-06-12.json
+python3 cre_ingest.py --in /tmp/jll_investor_sitemap_probe_review_2026-06-12.json --dry-run --keep-artifacts /tmp/jll_investor_sitemap_probe_review_ingest_2026-06-12
+```
+
+Result:
+
+- 1,855 sitemap detail URLs found in the latest current-tree probe.
+- 8 detail URLs scanned, 3 U.S. rows retained, 0 detail errors.
+- 3 public document URLs, 15 image URLs, 6 contacts, and only `US` countries.
+- Dry-run ingest staged 3 `jll-investor` rows and skipped 0 missing URLs.
+- No live JLL Investor ingest was run.
 
 Remaining blocker:
 

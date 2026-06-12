@@ -360,6 +360,32 @@ Result:
 - Generated SQL contains the scrape-job note and no parent-level soft-delete
   block for `cbre`.
 
+## 2026-06-12 JLL Investor Sitemap Detail Probe
+
+`jll-investor` now uses public XML sitemap discovery plus public detail-page
+`__NEXT_DATA__` parsing instead of the robots-disallowed query-string search
+pagination route. The collector keeps Investor Center separate from main `jll`,
+filters retained rows to public detail country `US`, and stores only URL
+references for documents/images.
+
+Verification:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+JLL_INVESTOR_SITEMAP_SCAN_LIMIT=8 npx tsx collect.ts --source=jll-investor --transaction=sale --max-items=4 --concurrency=2 --out=/tmp/jll_investor_sitemap_probe_review_2026-06-12.json
+python3 cre_ingest.py --in /tmp/jll_investor_sitemap_probe_review_2026-06-12.json --dry-run --keep-artifacts /tmp/jll_investor_sitemap_probe_review_ingest_2026-06-12
+```
+
+Result:
+
+- Latest current-tree probe found 1,855 sitemap detail URLs.
+- Scanned 8 detail URLs, retained 3 U.S. rows, and saw 0 detail errors.
+- Output contained 3 public document URLs, 15 image URLs, 6 contacts, and only
+  `US` countries.
+- Dry-run ingest staged 3 `jll-investor` rows and skipped 0 missing URLs.
+- URL-only SQL sanity found no `data:` or `base64` strings.
+- No live JLL Investor ingest was run.
+
 ## 2026-06-12 NAI Global Active Infabode Ingest
 
 Commands:

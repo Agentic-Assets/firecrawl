@@ -1522,7 +1522,15 @@ async function srcJll(tx: Tx, max: number): Promise<SourceResult> {
 const JLL_INVESTOR_HOST = "https://invest.jll.com";
 const JLL_INVESTOR_SEARCH_URL =
   "https://invest.jll.com/us/en/property-search?filter=%7B%22location%22%3A%5B%22United%20States%22%5D%7D";
+const JLL_INVESTOR_SITEMAP_INDEX_URL = `${JLL_INVESTOR_HOST}/sitemap_index.xml`;
+const JLL_INVESTOR_US_SITEMAP_URL = `${JLL_INVESTOR_HOST}/us/sitemap-us.xml`;
 const JLL_INVESTOR_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
+const JLL_INVESTOR_SITEMAP_SCAN_LIMIT = boundedInt(
+  process.env.JLL_INVESTOR_SITEMAP_SCAN_LIMIT,
+  0,
+  0,
+  10000
+);
 
 function jllInvestorNextData(rawHtml: string): any | null {
   const $ = cheerio.load(rawHtml);
@@ -1543,6 +1551,26 @@ function jllInvestorUrlFromAlias(alias: string | null): string | null {
     ? cleaned
     : `/us/en/listings/${cleaned.replace(/^\/+/, "")}`;
   return `${JLL_INVESTOR_HOST}${path}`;
+}
+
+function jllInvestorSitemapUrls(rawHtml: string): string[] {
+  const decoded = decodeHtmlEntities(rawHtml);
+  const matches = decoded.match(/https:\/\/invest\.jll\.com\/[a-z]{2}\/sitemap-[a-z]{2}\.xml/gi) ?? [];
+  return dedupeStrings(matches);
+}
+
+function jllInvestorDetailUrlsFromSitemap(rawHtml: string): string[] {
+  const decoded = decodeHtmlEntities(rawHtml);
+  const matches =
+    decoded.match(/https:\/\/invest\.jll\.com\/us\/en\/listings\/[^<>"'\s]+/gi) ?? [];
+  return dedupeStrings(matches.map((url) => url.replace(/\/$/, "")));
+}
+
+function jllInvestorSitemapCandidateLimit(max: number, total: number): number {
+  if (JLL_INVESTOR_SITEMAP_SCAN_LIMIT > 0) return Math.min(total, JLL_INVESTOR_SITEMAP_SCAN_LIMIT);
+  if (!Number.isFinite(max)) return total;
+  const requested = Math.max(1, Math.trunc(max));
+  return Math.min(total, Math.max(requested * 8, requested + 25));
 }
 
 function jllInvestorStatus(row: any): string {
@@ -1754,24 +1782,48 @@ async function srcJllInvestor(tx: Tx, max: number): Promise<SourceResult> {
       note: "Investment-sale platform; no lease inventory.",
     };
   }
-  const html = await scrapeRaw(JLL_INVESTOR_SEARCH_URL, { waitFor: 8000, timeout: 120000 });
-  const next = jllInvestorNextData(html);
-  const search = next?.props?.pageProps?.initialState?.advancedSearch;
-  const rows = Array.isArray(search?.listings) ? search.listings : [];
-  const total = typeof search?.count === "number" ? search.count : null;
-  const baseListings = rows.length
-    ? rows.slice(0, Math.min(max, rows.length)).map(jllInvestorSearchListing)
-    : jllInvestorSearchFallback(html, max);
-  const listings = await pmap(baseListings, JLL_INVESTOR_DETAIL_CONCURRENCY, enrichJllInvestorListing);
-  if (!listings.length) throw new Error("no listing cards found on JLL Investor Center search page");
+  const indexHtml = await scrapeRaw(JLL_INVESTOR_SITEMAP_INDEX_URL, { waitFor: 1000, timeout: 60000 });
+  const sitemapUrl =
+    jllInvestorSitemapUrls(indexHtml).find((url) => url === JLL_INVESTOR_US_SITEMAP_URL) ??
+    JLL_INVESTOR_US_SITEMAP_URL;
+  const sitemapHtml = await scrapeRaw(sitemapUrl, { waitFor: 1000, timeout: 60000 });
+  const detailUrls = jllInvestorDetailUrlsFromSitemap(sitemapHtml);
+  if (!detailUrls.length) throw new Error("no listing URLs found in JLL Investor Center US sitemap");
+
+  const candidateLimit = jllInvestorSitemapCandidateLimit(max, detailUrls.length);
+  const candidates = detailUrls.slice(0, candidateLimit);
+  console.error(
+    `  jll-investor: ${detailUrls.length} sitemap detail URL(s), scanning ${candidates.length}`
+  );
+  let enrichedCount = 0;
+  const enriched = await pmap(candidates, JLL_INVESTOR_DETAIL_CONCURRENCY, async (url) => {
+    const row = await enrichJllInvestorListing({
+      id: url.split("/").filter(Boolean).slice(-1)[0] ?? null,
+      transactionType: "Sale (investment)",
+      brokerIds: [],
+      photos: [],
+      url,
+    });
+    enrichedCount++;
+    if (enrichedCount % 10 === 0 || enrichedCount === candidates.length) {
+      console.error(`  jll-investor: detail enriched ${enrichedCount}/${candidates.length}`);
+    }
+    return row;
+  });
+
+  const detailErrors = enriched.filter((row) => row?.detailError).length;
+  const usRows = enriched.filter((row) => row?.country === "US");
+  const listings = usRows.slice(0, Math.min(max, usRows.length));
+  const nonUsRows = enriched.length - usRows.length - detailErrors;
+  if (!listings.length) throw new Error("no United States listing details found in JLL Investor Center sitemap sample");
   return {
     company: "JLL Investor Center",
-    sourceUrl: JLL_INVESTOR_SEARCH_URL,
-    method: "Rendered search page __NEXT_DATA__ plus public detail-page enrichment",
-    totalAvailable: total,
+    sourceUrl: sitemapUrl,
+    method: "Public XML sitemap detail discovery plus detail-page __NEXT_DATA__ enrichment and United States country filtering",
+    totalAvailable: detailUrls.length,
     listings,
     note:
-      "Still bounded to the first rendered search page. Detail enrichment stores public teaser document URLs, image URLs, and broker contact fields only; CA/NDA document URLs remain in raw detail metadata.",
+      `Sitemap contains global inventory on the US locale path, so rows are retained only when public detail-page country is United States. Scanned ${candidates.length} detail URL(s), kept ${listings.length} U.S. row(s), skipped ${nonUsRows} non-U.S. row(s), and saw ${detailErrors} detail error(s). Detail enrichment stores public teaser document URLs, image URLs, and broker contact fields only; CA/NDA document URLs remain in raw detail metadata.`,
   };
 }
 

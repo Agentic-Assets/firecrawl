@@ -38,7 +38,7 @@ Result:
 | CBRE | 20,684 | Active |
 | CBRE Deal Flow | 1,836 in post-validation full run, 1,809 sale + 27 lease | Active via public RCM ListingEngine endpoint and live-ingested additively |
 | JLL | 4,678 | Active |
-| JLL Investor | 8 in latest hardened probe; source total about 1,087 to 1,088 | Partial, first rendered search page detail-enriched |
+| JLL Investor | 1,855 sitemap detail URLs in latest probe; 3 U.S. rows retained from 8 scanned | Partial, public sitemap/detail discovery implemented and dry-run verified, not live-ingested |
 | Cushman & Wakefield | 11,318 active rows, 2,743 sale + 8,575 lease | Complete public API feed with detail enrichment, live-ingested with source-scoped mark-missing cleanup |
 | Newmark | 4,371 active rows, 1,121 sale + 3,250 lease | Complete public Algolia feed with no-state DC recovery, public People contacts/profile URLs, raw hit preservation, and source-scoped cleanup |
 | Marcus & Millichap | 3,124 active sale rows | Complete public sale feed via public map ActivityIds, `mappropertydetail` tiles, and detail HTML; live-ingested with source-scoped mark-missing cleanup; lease unsupported |

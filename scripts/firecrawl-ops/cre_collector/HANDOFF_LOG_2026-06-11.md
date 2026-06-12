@@ -377,6 +377,32 @@ Result: 1,836 rows staged, 0 skipped missing URLs, `cbre` mark-missing skipped
 because the batch saw only `cbre-dealflow`, and the generated SQL had no
 parent-level soft-delete block for `cbre`.
 
+## 2026-06-12 JLL Investor Sitemap Detail Probe
+
+JLL Investor Center now has an implemented public sitemap/detail path scoped to
+source key `jll-investor`. It avoids the robots-disallowed query-string
+pagination route, discovers detail URLs from `https://invest.jll.com/us/sitemap-us.xml`,
+parses public detail-page `__NEXT_DATA__`, and retains only detail rows whose
+country normalizes to `US`.
+
+Verification:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+JLL_INVESTOR_SITEMAP_SCAN_LIMIT=8 npx tsx collect.ts --source=jll-investor --transaction=sale --max-items=4 --concurrency=2 --out=/tmp/jll_investor_sitemap_probe_review_2026-06-12.json
+python3 cre_ingest.py --in /tmp/jll_investor_sitemap_probe_review_2026-06-12.json --dry-run --keep-artifacts /tmp/jll_investor_sitemap_probe_review_ingest_2026-06-12
+```
+
+Result:
+
+- Latest current-tree probe found 1,855 sitemap detail URLs.
+- Scanned 8 detail URLs, retained 3 U.S. rows, and saw 0 detail errors.
+- Output contained 3 public document URLs, 15 image URLs, 6 contacts, and only
+  `US` countries.
+- Dry-run ingest staged 3 `jll-investor` rows and skipped 0 missing URLs.
+- URL-only SQL sanity found no `data:` or `base64` strings.
+- No live JLL Investor ingest was run.
+
 ## 2026-06-12 Colliers SalesTracker Partial Adapter
 
 Colliers was upgraded from fully unsupported to partial investment-sale support
