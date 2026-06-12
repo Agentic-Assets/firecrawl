@@ -435,6 +435,13 @@ targeted validation found 0 sale-PSF flags, 0 lease-rate flags, and 0 huge
 `size_sf` values for both Lee and SVN. See
 `VALIDATION_2026-06-12.md#2026-06-12-leesvn-numeric-parser-cleanup`.
 
+CBRE Deal Flow stale duplicate cleanup was also completed. The narrow cleanup
+soft-deleted exactly 21 active `dealflow:url:<sha1>` rows that shared
+`source_url` with newer active enriched Deal Flow IDs. Active Deal Flow rows
+are now 1,836, active `dealflow:url:%` rows are 0, and duplicate source URL
+groups remain only for Avison Young and Cushman display/grouping cases. See
+`VALIDATION_2026-06-12.md#2026-06-12-cbre-deal-flow-stale-url-hash-cleanup`.
+
 ## 2026-06-12 JLL Detail Wait Speed Patch
 
 The JLL collector now defaults detail scrapes to `JLL_DETAIL_WAIT_MS=1000` with
@@ -453,6 +460,27 @@ python3 -m py_compile cre_ingest.py cre_validate.py && python3 -m compileall -q 
 
 Result: 2 sale rows, 2 document URLs, 7 image URLs, 4 contact rows, 0 detail
 errors, 0 missing URLs, and all compile/type checks passed.
+
+## 2026-06-12 JLL Full Detail Live Ingest
+
+The restarted fast-detail JLL run finished successfully:
+
+- Artifact: `out/jll_full_detail_enriched_2026-06-12.json`.
+- Collected 11,230 rows, 1,872 sale and 9,358 lease.
+- Dry-run staged 10,604 unique rows with 0 skipped missing URLs.
+- Live ingest staged 10,604 unique rows with 0 skipped missing URLs.
+- Artifact QA found 0 detail errors, 9,747 document URLs, 28,254 image URLs,
+  23,801 contact/profile URLs, and no `data:` or `base64` strings.
+- No broad `--mark-missing` was used because `jll` folds with `jll-investor`.
+- Narrow stale cleanup soft-deleted 4,406 older same-URL JLL rows from the
+  early shallow run, leaving JLL Investor untouched.
+- Validation report:
+  `out/live_validation_after_jll_cleanup_2026-06-12.md`.
+- Live active total after cleanup: 70,716.
+- Active JLL main rows: 10,741, with 1,247 sale, 8,733 lease, and 761
+  sale_or_lease.
+- Remaining JLL duplicate source URL groups: 135 latest-batch same-page
+  sale/lease variants, not stale duplicates.
 
 ## 2026-06-12 Colliers SalesTracker Partial Adapter
 

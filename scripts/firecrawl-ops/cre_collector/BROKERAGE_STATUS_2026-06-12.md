@@ -16,10 +16,10 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 | Brokerage / site | Current status | Latest verified listing count | What we have | Main remaining work |
 |---|---|---:|---|---|
 | CBRE | Complete public feed | 20,684 total, 5,879 sale + 14,805 lease | Full internal JSON API pagination, agents, charges, brochures, photos, coordinates, size fields | Optional detail-page audit only if we discover fields missing from the API |
-| CBRE Deal Flow | Complete public endpoint for exposed cards, with gated-detail limits | 1,836 full-run rows, 1,809 sale + 27 lease | Public RCM ListingEngine endpoint, sale and lease filters, pagination, public card/detail enrichment, URL-only docs/images, contacts | RCM reports 2,042 sale total but public card pagination exposed 1,809 sale cards; gated agreement/deal-room docs stay in raw metadata only |
+| CBRE Deal Flow | Complete public endpoint for exposed cards, with gated-detail limits | 1,836 active rows, 1,809 sale + 27 lease | Public RCM ListingEngine endpoint, sale and lease filters, pagination, public card/detail enrichment, URL-only docs/images, contacts | RCM reports 2,042 sale total but public card pagination exposed 1,809 sale cards; 21 stale URL-hash duplicate rows soft-deleted; gated agreement/deal-room docs stay in raw metadata only |
 | SVN | Complete public Buildout feed, live-ingested and validated | 5,287 active rows, 2,660 sale + 2,192 lease + 435 sale_or_lease | Public Buildout inventory feed with durable page cache/window fill, sale/lease partitioning, broker refs, document URLs, image URLs, and source-scoped reconciliation | One active SVN row is missing state; optional future detail-page enrichment only if a safe public path is proven |
 | Cushman & Wakefield | Complete public feed, live-ingested and validated | 11,318 active rows, 2,743 sale + 8,575 lease | Public search API pagination plus detail-page enrichment for facts, document URLs, image URLs, contacts, profile URLs, VCard URLs, JSON-LD | Optional future field audit only if missing fields are discovered |
-| JLL | Needs deep audit | 4,678 total, 333 sale + 4,345 lease | Search-page pagination and listing URLs | Add/verify detail-page enrichment for documents, image galleries, broker contact links, and richer facts |
+| JLL | Complete main public property feed, live-ingested and validated | 10,741 active main JLL rows, 1,247 sale + 8,733 lease + 761 sale_or_lease | Rendered public search pagination across property type filters plus detail-page `__NEXT_DATA__` enrichment for documents, image galleries, broker contacts/profile URLs, richer facts, and source-scoped stale same-URL cleanup | 135 latest-batch duplicate source URL groups remain as sale/lease same-page variants; JLL Investor remains separate and partial |
 | Newmark | Complete public Algolia feed with contact enrichment, live-ingested and validated | 4,371 active rows, 1,121 sale + 3,250 lease | Public Algolia listing feed, state/property-type split, no-state DC recovery, raw hit preservation, broker provenance, public People exact-name contacts/profile URLs, image URLs | Listing documents, full galleries, second/third broker joins, and VCards remain unproven |
 | Avison Young | Public feed complete; bounded detail enrichment verified | 2,200 staged unique rows, 636 sale + 1,431 lease + 133 sale_or_lease | Public SharpLaunch active website/team_member feed, client-side transaction partition, contact joins, CDN image/avatar URLs, and bounded detail enrichment for selected rows | Full-feed detail enrichment is not run by default; VCards remain unproven in sampled pages |
 | Savills | Partial, lease has small defensible public CRE subset live-ingested; sale still not CRE-defensible | 104 active rows, 101 sale + 3 lease | Server-rendered commercial lease `__NEXT_DATA__` for two Chicago retail listings with PDF/image/contact URLs; legacy global sale cards remain separate caveat | Find a public U.S. commercial sale source before claiming sale coverage; product decision needed on whether to retain legacy global/residential sale rows |
@@ -33,20 +33,19 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 ## Completed Or Closest To Complete
 
 CBRE is complete for its public feed. CBRE Deal Flow is complete for the public
-RCM cards exposed through the public endpoint and has been live-ingested
-additively. Cushman & Wakefield is complete for its public API feed and is now
+RCM cards exposed through the public endpoint, has been live-ingested, and has
+had 21 stale URL-hash duplicate rows soft-deleted. Cushman & Wakefield is complete for its public API feed and is now
 live-ingested with source-scoped reconciliation. SVN is complete for its public
 Buildout feed after durable page-cache assembly, source-scoped reconciliation,
 and Supabase validation.
 
 ## Not Complete Yet
 
-JLL still needs the Cushman-style deep audit: prove detail page enrichment,
-document URLs, image URLs, contact URLs, and source totals. The active full JLL
-detail run is cache-progressing, and a follow-up speed patch now uses a 1000 ms
-detail wait with an 8000 ms fallback for future or restarted runs. Avison Young
-now has bounded detail enrichment proof, but not a full-feed detail-enriched
-live run. Savills and JLL Investor Center are explicitly partial, and main
+JLL main property search is now complete for its public rendered feed after full
+detail enrichment, live ingest, validation, and stale same-URL cleanup. Avison
+Young now has bounded detail enrichment proof, but not a full-feed
+detail-enriched live run. Savills and JLL Investor Center are explicitly
+partial, and main
 Colliers Coveo sale/lease coverage remains blocked. JLL Investor now has a
 safer sitemap/detail path than the robots-disallowed search pagination route,
 but no full sitemap detail ingest has run yet. Colliers SalesTracker is

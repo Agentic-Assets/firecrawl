@@ -461,6 +461,48 @@ Result:
 - Full read-only validation report saved to
   `out/live_validation_after_lee_svn_numeric_cleanup_2026-06-12.md`.
 
+## 2026-06-12 CBRE Deal Flow Stale URL-Hash Cleanup
+
+The duplicate-source sidecar in
+`out/duplicate_source_url_review_2026-06-12.md` found 21 stale active
+`cbre-dealflow` rows with old `dealflow:url:<sha1>` external IDs. Each stale
+row shared a `source_url` with a newer active Deal Flow row using the enriched
+project/PV ID strategy.
+
+Dry-run/read-only proof:
+
+```bash
+# Read-only psql through cre_ingest.load_db_url/find_psql
+# Count stale active cbre/dealflow:url rows that share source_url with a newer
+# active non-url-hash dealflow row.
+```
+
+Result: 21 candidate rows, matching the sidecar review.
+
+Cleanup:
+
+```bash
+/tmp/cbre_dealflow_stale_url_hash_cleanup_2026-06-12.sql
+```
+
+The SQL soft-deleted only active `cbre` rows where:
+
+- `external_id LIKE 'dealflow:url:%'`
+- the same brokerage and `source_url` had an active
+  `dealflow:%` row whose external ID was not `dealflow:url:%`
+- the replacement row had `scraped_at >=` the stale row
+
+Result:
+
+- 21 stale URL-hash rows soft-deleted.
+- `npm run validate:supabase -- --out out/live_validation_after_cbre_dealflow_cleanup_2026-06-12.md`
+  passed and wrote the validation report.
+- Active total became 64,518.
+- CBRE Deal Flow active rows are 1,836, with 21 soft-deleted stale rows.
+- Active `dealflow:url:%` rows are now 0.
+- Duplicate source URL groups are now only Avison Young and Cushman & Wakefield,
+  both classified as display/grouping cases by the sidecar review.
+
 ## 2026-06-12 JLL Detail Wait Speed Patch Probe
 
 Commands:
@@ -474,6 +516,45 @@ python3 -m py_compile cre_ingest.py cre_validate.py && python3 -m compileall -q 
 Result: 2 JLL sale rows, 2 document URLs, 7 image URLs, 4 contact rows, 0
 detail errors, 0 missing URLs, TypeScript typecheck passed, and Python compile
 checks passed. Existing JLL detail cache files stay reusable.
+
+## 2026-06-12 JLL Full Detail Run, Ingest, And Cleanup
+
+Commands:
+
+```bash
+JLL_DETAIL_WAIT_MS=1000 JLL_DETAIL_FALLBACK_WAIT_MS=8000 JLL_DETAIL_CONCURRENCY=6 npx tsx collect.ts --source=jll --transaction=both --max-items=0 --page-cap=100 --concurrency=6 --out=out/jll_full_detail_enriched_2026-06-12.json
+python3 cre_ingest.py --in out/jll_full_detail_enriched_2026-06-12.json --dry-run --keep-artifacts /tmp/jll_full_detail_enriched_ingest_dry_run_2026-06-12
+python3 cre_ingest.py --in out/jll_full_detail_enriched_2026-06-12.json --keep-artifacts /tmp/jll_full_detail_enriched_live_ingest_2026-06-12
+```
+
+Artifact result:
+
+- 11,230 collected rows: 1,872 sale and 9,358 lease.
+- 0 detail errors and 0 skipped missing URLs.
+- 9,747 document URLs, 28,254 image URLs, 23,801 contact/profile URLs.
+- No `data:` or `base64` strings found in the artifact or dry-run SQL.
+- Dry-run staged 10,604 unique rows after sale/lease merge.
+
+Live ingest and cleanup:
+
+- Live ingest staged 10,604 unique rows and skipped 0 missing URLs.
+- Broad `--mark-missing` was not used because `jll` folds with
+  `jll-investor`; parent-level reconciliation requires both source keys.
+- A narrow cleanup soft-deleted 4,406 older same-URL JLL rows from the earlier
+  shallow all-source run when the same `source_url` had a latest-batch enriched
+  JLL row.
+- `npm run validate:supabase -- --out out/live_validation_after_jll_cleanup_2026-06-12.md`
+  passed and wrote the validation report.
+- Active total after cleanup: 70,716.
+- Active JLL main rows: 10,741, with 1,247 sale, 8,733 lease, and 761
+  sale_or_lease.
+- Active JLL Investor rows remain 50 under the folded brokerage slug and were
+  not touched by the cleanup.
+- Active JLL duplicate external ID groups: 0.
+- Active JLL source URL quality: 0 bad source URLs, 0 missing titles, 0 missing
+  raw data.
+- Remaining active JLL duplicate source URL groups: 135 groups / 270 rows,
+  retained as latest-batch sale/lease same-page variants rather than stale rows.
 
 ## 2026-06-12 NAI Global Active Infabode Ingest
 

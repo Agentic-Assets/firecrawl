@@ -298,6 +298,30 @@ detail errors, 0 missing URLs, TypeScript typecheck passed, and Python compile
 checks passed. This patch does not affect an already-running Node process
 until that process is restarted or a future run starts.
 
+### 2026-06-12 full detail ingest proof
+
+The fast-detail full run completed from the existing detail cache plus new
+tail scrapes:
+
+```bash
+JLL_DETAIL_WAIT_MS=1000 JLL_DETAIL_FALLBACK_WAIT_MS=8000 JLL_DETAIL_CONCURRENCY=6 npx tsx collect.ts --source=jll --transaction=both --max-items=0 --page-cap=100 --concurrency=6 --out=out/jll_full_detail_enriched_2026-06-12.json
+python3 cre_ingest.py --in out/jll_full_detail_enriched_2026-06-12.json --dry-run --keep-artifacts /tmp/jll_full_detail_enriched_ingest_dry_run_2026-06-12
+python3 cre_ingest.py --in out/jll_full_detail_enriched_2026-06-12.json --keep-artifacts /tmp/jll_full_detail_enriched_live_ingest_2026-06-12
+```
+
+Result:
+
+- 11,230 collected rows, 10,604 staged unique rows, and 0 skipped missing URLs.
+- 0 detail errors.
+- 9,747 public document URLs, 28,254 image URLs, 23,801 contact/profile URLs.
+- Live ingest completed without broad `--mark-missing`.
+- Narrow cleanup soft-deleted 4,406 stale same-URL rows from the older shallow
+  JLL run, leaving JLL Investor untouched.
+- Active main JLL after cleanup: 10,741 rows, 1,247 sale, 8,733 lease, and 761
+  sale_or_lease.
+- Remaining 135 duplicate source URL groups are latest-batch sale/lease
+  same-page variants.
+
 ### Commands and artifacts
 
 All probes used local Firecrawl at `http://localhost:3002`, did not download binaries, and did not ingest to Supabase.

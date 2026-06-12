@@ -28,16 +28,16 @@ Result:
 - Live additive ingest completed through `psql`.
 - `--mark-missing` was not used on that all-source run because Lee & Associates failed at the time; Lee was later completed through a source-specific cache assembly run.
 - Fresh validation confirmed 33,488 latest artifact rows touched in Supabase and 34,218 active rows total because 730 older additive rows remained active before later source-specific reconciliations.
-- After later source-specific ingests through Savills lease, live Supabase
-  active rows total 64,539.
+- After later source-specific ingests through JLL full detail enrichment and
+  narrow stale-row cleanups, live Supabase active rows total 70,716.
 
 ## Latest Source Matrix
 
 | Source | Raw count | Status |
 |---|---:|---|
 | CBRE | 20,684 | Active |
-| CBRE Deal Flow | 1,836 in post-validation full run, 1,809 sale + 27 lease | Active via public RCM ListingEngine endpoint and live-ingested additively |
-| JLL | 4,678 | Active |
+| CBRE Deal Flow | 1,836 active rows, 1,809 sale + 27 lease | Active via public RCM ListingEngine endpoint; 21 stale URL-hash duplicate rows soft-deleted |
+| JLL | 10,741 active rows, 1,247 sale + 8,733 lease + 761 sale_or_lease | Complete main public property feed with detail enrichment, live-ingested; 4,406 stale same-URL rows soft-deleted |
 | JLL Investor | 1,855 sitemap detail URLs in latest probe; 3 U.S. rows retained from 8 scanned | Partial, public sitemap/detail discovery implemented and dry-run verified, not live-ingested |
 | Cushman & Wakefield | 11,318 active rows, 2,743 sale + 8,575 lease | Complete public API feed with detail enrichment, live-ingested with source-scoped mark-missing cleanup |
 | Newmark | 4,371 active rows, 1,121 sale + 3,250 lease | Complete public Algolia feed with no-state DC recovery, public People contacts/profile URLs, raw hit preservation, and source-scoped cleanup |
@@ -107,7 +107,7 @@ images into Supabase storage for the bulk collector.
 
 - Do not use `--mark-missing` after a run with Lee or other source errors.
 - Cushman & Wakefield is now current in Supabase from `out/cushman_full_2026-06-12_022841.json`: 11,318 active rows, 18,343 document URL rows, 24,278 image URL rows, 21,110 contact rows, 21,110 profile URLs, and 20,301 VCard URLs. Source-scoped `--mark-missing` soft-deleted 24 old probe rows.
-- CBRE Deal Flow has been ingested additively from the public RCM endpoint. Do not use its reported 2,042 sale total as collected count; the public card pagination exposed 1,809 sale cards in the full run.
+- CBRE Deal Flow has been ingested from the public RCM endpoint. Do not use its reported 2,042 sale total as collected count; the public card pagination exposed 1,809 sale cards in the full run. A narrow cleanup soft-deleted 21 stale `dealflow:url:<sha1>` rows that duplicated newer enriched Deal Flow IDs.
 - Do not store source PDF or image binaries in Supabase. Store URLs only.
 - Do not claim complete Colliers coverage. Only SalesTracker investment-sale coverage has a public GET path; 1,172 unique SalesTracker sale rows are live-ingested, while the main Colliers Coveo sale/lease search remains blocked.
 - Do not ingest NAI Global's unbounded Infabode feed as active inventory. Use only rows whose public `publicPost.listingStatus` contains `FOR_SALE_ON_MARKET`. The 2026-06-12 active artifact `out/nai_active_only_from_full_2026-06-12_044310.json` was live-ingested with source-scoped `--mark-missing`; 19 old rendered-card probe rows were soft-deleted.
@@ -116,6 +116,7 @@ images into Supabase storage for the bulk collector.
 - Lee & Associates is now current in Supabase from `out/lee_full_cache_2026-06-12_assembled.json`: 9,223 active rows, 9,062 image URL rows, 7,681 document URL rows, 9,223 contact rows, and 0 bad URLs, duplicate IDs, bad states, bad coordinates, or child orphans. The durable Buildout cache remains under gitignored `out/cache/buildout/lee-associates/`.
 - Newmark is now current in Supabase from `out/newmark_full_refined_2026-06-12.json`: 4,371 active rows, 4,303 image URL rows, 3,961 contact/profile URL rows, 0 document rows, 0 missing states, and 715 old additive rows soft-deleted. Listing documents, full galleries, second/third broker joins, and VCards remain unproven.
 - SVN is now current in Supabase from `out/svn_full_cache_2026-06-12_assembled.json`: 5,287 active rows, 5,235 image URL rows, 3,899 document URL rows, 5,287 contact rows, 0 duplicate external IDs, 0 bad URLs, 0 missing titles, 0 missing raw data, and 34 old rows soft-deleted. One active SVN row is missing state.
+- JLL main property feed is now current in Supabase from `out/jll_full_detail_enriched_2026-06-12.json`: 11,230 collected sale/lease rows, 10,604 staged unique rows, 0 detail errors, 0 skipped missing URLs, 9,747 artifact document URLs, 28,254 artifact image URLs, and 23,801 artifact contacts/profile URLs. Live JLL main now has 10,741 active rows after 4,406 old same-URL rows were soft-deleted. Remaining duplicate source URL groups are 135 latest-batch sale/lease same-page variants.
 - Avison Young bounded detail enrichment is verified on a 4-row probe:
   6 public PDF URLs, 36 public image URLs, 4 JSON-LD payloads, 1 broker profile
   URL, 0 VCards, and 0 detail errors. Full-feed runs stay SharpLaunch-only by
