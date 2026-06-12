@@ -2798,23 +2798,33 @@ function extractAvisonYoungDocuments(docs: Array<{ doc: ScrapedDoc; url: string 
   return urls.map((url) => ({ name: titleFromFilename(url), url }));
 }
 
+function isAvisonYoungPropertyPhoto(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const filename = u.pathname.split("/").pop()?.toLowerCase() ?? "";
+    return (
+      u.hostname === "cdn.sharplaunch.com" &&
+      /\.(?:jpe?g|png|webp)(?:[?#].*)?$/i.test(u.pathname + u.search) &&
+      !/\/media\//i.test(u.pathname) &&
+      // Exclude 150x150 dimension prefix (broker headshots/avatars)
+      !/\/150x150\//i.test(u.pathname) &&
+      // Exclude known non-property images (logo, generic header)
+      !/ay_logo/i.test(filename) &&
+      !/sharplaunch_header/i.test(filename) &&
+      (/\/website-\d+\//i.test(u.pathname) || /\/v2\/client-\d+\//i.test(u.pathname))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function extractAvisonYoungPhotos(docs: Array<{ doc: ScrapedDoc; url: string }>, fallback: string[]): string[] {
   const urls = docs
     .flatMap(({ doc, url }) => extractAvisonYoungUrls(doc, url))
-    .filter((url) => {
-      try {
-        const u = new URL(url);
-        return (
-          u.hostname === "cdn.sharplaunch.com" &&
-          /\.(?:jpe?g|png|webp)(?:[?#].*)?$/i.test(u.pathname + u.search) &&
-          !/\/media\//i.test(u.pathname) &&
-          (/\/website-\d+\//i.test(u.pathname) || /\/v2\/client-\d+\//i.test(u.pathname))
-        );
-      } catch {
-        return false;
-      }
-    });
-  return dedupeStrings([...urls, ...fallback]);
+    .filter(isAvisonYoungPropertyPhoto);
+  // Apply the same filter to fallback so non-property feed images are excluded too
+  const filteredFallback = fallback.filter(isAvisonYoungPropertyPhoto);
+  return dedupeStrings([...urls, ...filteredFallback]);
 }
 
 function extractAvisonYoungJsonLd(docs: Array<{ doc: ScrapedDoc; url: string }>): any | null {
@@ -2997,7 +3007,7 @@ function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>): any {
     yearBuilt: num(row.yearbuilt),
     brokerIds,
     contactsDetailed,
-    photos: imageUrl ? [imageUrl] : [],
+    photos: imageUrl && isAvisonYoungPropertyPhoto(imageUrl) ? [imageUrl] : [],
     url: externalUrl ?? sharpLaunchUrl,
     externalUrl,
     sharpLaunchUrl,
