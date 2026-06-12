@@ -96,11 +96,12 @@ Use `--mark-missing` only after a clean all-source full run. While Lee and
 Associates or another source is blocked, keep daily ingest additive with
 `--no-mark-missing`.
 
-The latest documented full run in this folder is the 2026-06-12 validation
-cycle: 35,510 raw records, 33,488 staged unique upsert rows, and 34,218 active
-Supabase rows after additive carryover. Cushman, CBRE Deal Flow, Avison Young,
-Newmark, Marcus and Millichap, NAI Global, and Transwestern have post-run
-changes documented in `cre_collector/START_HERE.md` and
+The latest documented full all-source run in this folder is the 2026-06-12
+validation cycle: 35,510 raw records, 33,488 staged unique upsert rows, and
+34,218 active Supabase rows after additive carryover. Cushman, CBRE Deal Flow,
+Avison Young, Newmark, Marcus and Millichap, NAI Global, Colliers SalesTracker,
+and Transwestern have post-run source-specific changes documented in
+`cre_collector/START_HERE.md` and
 `BROKERAGE_STATUS_2026-06-12.md`; read those before quoting coverage.
 
 Supabase objects live under `credeals`, not `public`:
@@ -116,7 +117,7 @@ Supabase objects live under `credeals`, not `public`:
 - `v_cre_active_for_sale`
 - `v_cre_active_for_lease`
 - `v_cre_market_summary`
-- `search_cre_listings(query, city, state, type, transaction)`
+- `search_cre_listings(query, p_city, p_state, p_type, p_transaction)`
 
 Document and image tables store source URLs only. Do not download public PDFs
 or images into Supabase storage for the bulk collector.
@@ -134,10 +135,13 @@ Important current cautions:
   Firecrawl-compatible action path, or authorized integration exists.
 - Lee and Associates remains blocked under sustained Buildout paging until a
   clean full artifact and ingest are proven.
-- Transwestern is implemented and dry-run proven, but not complete until it has
-  a clean full run, live ingest, and Supabase validation.
-- Cushman code now reaches the public API and details, but Supabase counts are
-  only current after a fresh full run and ingest.
+- Transwestern is complete for its public GET feed after full run, live ingest,
+  source-scoped reconciliation, and Supabase validation.
+- Cushman is complete for its public API feed after full run, live ingest,
+  source-scoped reconciliation, and Supabase validation.
+- Marcus & Millichap is complete for its public sale feed after full run, live
+  ingest, source-scoped reconciliation, and Supabase validation; public lease
+  remains unsupported.
 
 ## Local Firecrawl Ops
 

@@ -93,8 +93,9 @@ Latest verified all-source run started `2026-06-12T04:04:23Z` and produced
 paging, so daily ingest should stay additive with `--no-mark-missing` until a
 clean full run succeeds. Colliers has partial public SalesTracker
 investment-sale coverage, but main Colliers Coveo sale/lease search remains
-blocked. Transwestern has a public GET probe and dry-run proof, but still needs
-a clean full run, live ingest, and Supabase validation.
+blocked. Transwestern and Marcus & Millichap public sale have since completed
+clean source-specific full runs, live ingest, source-scoped reconciliation, and
+Supabase validation; Marcus public lease remains unsupported.
 
 CBRE has an internal JSON API (`/listings-api/propertylistings/query`) that bypasses
 the need for page scraping  -  see `scripts/firecrawl-ops/prometheus/CLAUDE.md`.

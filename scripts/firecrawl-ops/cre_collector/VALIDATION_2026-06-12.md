@@ -81,8 +81,33 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
   null, 'sale')` returned live Colliers rows. The main
   `www.colliers.com/en/properties` Coveo sale/lease search remains blocked.
 - Post-validation live ingest: Transwestern was loaded from `out/transwestern_full_2026-06-12_121302_cleaned.json`. The full public GET/detail artifact collected 2,151 raw rows, which staged to 2,021 unique listings after 130 sale-or-lease duplicates merged. The cleaned artifact removed 2,151 footer/TREC/copyright descriptions and retained URL-only child assets. Live validation found 2,021 active rows, 389 sale, 1,502 lease, 130 sale_or_lease, 3,054 document URL rows, 4,838 image URL rows, 3,746 contact rows, 3,746 profile URLs, 3,746 VCard URLs, and 0 bad descriptions, bad asset URLs, missing URLs, missing titles, missing raw data, duplicate external IDs, bad states, impossible coordinates, malformed guarded prices/cap rates, or child orphans.
-- 730 older active rows remain from earlier additive runs: Newmark 715, Marcus & Millichap 6, CBRE 5, Savills 2, SVN 2. Do not treat active row count as a pure latest-run count until a clean reconciliation run marks missing rows.
-- Some supported adapters are intentionally shallow: Avison Young, Marcus & Millichap, and Savills have first-page, first-batch, or sale-only limitations documented in `CLAUDE.md`. Cushman was removed from this list after the 2026-06-12 API upgrade, full run, source-scoped reconciliation, and live validation. NAI Global was removed after the public Infabode GraphQL active-status filter was proven and live-ingested on 2026-06-12.
+- Post-validation live ingest: Marcus & Millichap was loaded from
+  `out/marcus_full_2026-06-12_130035.json` after adding a Marcus-only detail
+  JSONL checkpoint beside the artifact. The full public ActivityId/map-detail
+  artifact collected 3,124 sale rows and 0 lease rows, with 0 missing URLs, 0
+  missing titles, 0 duplicate IDs, 0 final detail errors, 16,771 image URLs,
+  7,915 visible contact/profile URL rows, and 3,124 gated deal-room URLs kept
+  only in raw metadata. Dry-run staged all 3,124 rows and skipped 0 missing
+  URLs. Source-scoped `--mark-missing` was dry-run and then applied only for
+  `marcus-millichap`. Live validation found 3,124 active Marcus rows, all sale,
+  16,771 image child rows, 7,915 contact child rows, 0 document rows, and 0 bad
+  source URLs, missing titles, missing raw data, duplicate external IDs, bad
+  states, impossible coordinates, malformed guarded prices/cap rates, bad child
+  URLs, or child orphans. Search proof used the updated five-argument
+  `credeals.search_cre_listings` signature and returned live Marcus rows.
+- 724 older active rows remain from earlier additive runs after Marcus
+  source-scoped reconciliation: Newmark 715, CBRE 5, Savills 2, SVN 2. Do not
+  treat active row count as a pure latest-run count until a clean reconciliation
+  run marks missing rows.
+- Some supported adapters are intentionally shallow: Avison Young and Savills
+  have first-page, first-batch, or source-fit limitations documented in
+  `CLAUDE.md`. Marcus & Millichap was removed from this shallow list for the
+  public sale feed after the 2026-06-12 ActivityId expansion, full run,
+  source-scoped reconciliation, and live validation; public lease remains
+  blocked. Cushman was removed from this list after the 2026-06-12 API upgrade,
+  full run, source-scoped reconciliation, and live validation. NAI Global was
+  removed after the public Infabode GraphQL active-status filter was proven and
+  live-ingested on 2026-06-12.
 
 ## Access Model
 

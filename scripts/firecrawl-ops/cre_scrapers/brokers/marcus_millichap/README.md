@@ -195,3 +195,69 @@ Results:
 Next action:
 
 - Run a conservative full Marcus sale collection from the public ActivityId path, then dry-run ingest and inspect staged row counts, child URL counts, and detail-error counts before any live additive ingest. Keep lease skipped unless a public lease UI mode or endpoint is proven.
+
+## 2026-06-12 Full Public Sale Ingest
+
+Scope: Marcus & Millichap only. No authenticated pages, gated deal-room
+documents, PDF downloads, image downloads, or binary downloads were used.
+Public deal-room URLs were retained only in raw metadata as gated links and
+were not promoted into public document child rows.
+
+Collector hardening:
+
+- Added a Marcus detail JSONL checkpoint beside the requested output path:
+  `out/marcus_full_2026-06-12_130035.json.marcus-detail-cache.jsonl`.
+- The checkpoint stores successful detail-enriched listing JSON rows as soon as
+  each row completes, so interrupted full runs can resume the expensive detail
+  stage.
+- Cached rows with `detailError` are ignored on read and are no longer appended
+  on write, so transient detail failures are retried on the next run.
+
+Commands:
+
+```bash
+cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+npm run typecheck
+npx tsx collect.ts --source=marcus-millichap --transaction=both --max-items=0 --concurrency=6 --out=out/marcus_full_2026-06-12_130035.json
+python3 cre_ingest.py --in out/marcus_full_2026-06-12_130035.json --dry-run --keep-artifacts /tmp/marcus_full_2026-06-12_130035_ingest_check
+python3 cre_ingest.py --in out/marcus_full_2026-06-12_130035.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/marcus_full_2026-06-12_130035_mark_missing_check
+python3 cre_ingest.py --in out/marcus_full_2026-06-12_130035.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/marcus_full_2026-06-12_130035_mark_missing_live
+```
+
+Collection result:
+
+- Artifact: `out/marcus_full_2026-06-12_130035.json`, 15.5 MB.
+- Public source total: 3,124 sale rows.
+- Collected rows: 3,124 sale rows and 0 lease rows.
+- Missing URLs: 0.
+- Missing titles: 0.
+- Duplicate external IDs: 0.
+- Detail errors after retry: 0.
+- URL-only images in artifact: 16,771.
+- Visible detailed contacts/profile URLs in artifact: 7,915.
+- Gated deal-room URLs retained in raw metadata only: 3,124.
+- Public document child URLs: 0, because anonymous deal-room links are gated.
+
+Ingest and Supabase proof:
+
+- Dry-run staged 3,124 rows and skipped 0 missing URLs.
+- Source-scoped `--mark-missing` dry-run was clean for `marcus-millichap`.
+- Live source-scoped ingest completed successfully.
+- Supabase active rows after ingest: 3,124 active Marcus rows, all sale.
+- Child rows after ingest: 16,771 image URL rows, 7,915 contact rows, and 0
+  document rows.
+- Quality checks: 0 bad source URLs, 0 missing titles, 0 missing raw data, 0
+  invalid states, 0 impossible coordinates, 0 malformed guarded prices, 0 bad
+  cap rates, 0 duplicate external IDs, 0 bad child URLs, and 0 child orphans.
+- Search proof used the updated five-argument
+  `credeals.search_cre_listings(query, p_city, p_state, p_type, p_transaction)`
+  function and returned live Marcus rows such as `Comfort Inn Montgomery`.
+
+Remaining limit:
+
+- Marcus remains complete for the defensible public sale feed exposed through
+  the public ActivityId/map-detail/detail-HTML path.
+- Public lease inventory remains unsupported because no public lease UI mode or
+  endpoint has been proven.
+- Public auctions are still excluded pending a product decision about whether
+  auction inventory belongs in the EQUIRE listing surface.

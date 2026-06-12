@@ -20,7 +20,7 @@
 import Firecrawl from "@mendable/firecrawl-js";
 import * as cheerio from "cheerio";
 import { parseArgs } from "node:util";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 const API_URL = process.env.FIRECRAWL_API_URL ?? "http://localhost:3002";
@@ -1922,6 +1922,37 @@ function parseMarcusSpecifications($: cheerio.CheerioAPI): Record<string, string
   return specs;
 }
 
+function marcusListingCacheKey(listing: any): string | null {
+  return clean(String(listing?.id ?? listing?.activityId ?? listing?.url ?? ""));
+}
+
+function marcusDetailCachePath(): string {
+  return OUT_PATH ? `${OUT_PATH}.marcus-detail-cache.jsonl` : "out/marcus-millichap-detail-cache.jsonl";
+}
+
+function readMarcusDetailCache(path: string): Map<string, any> {
+  const cached = new Map<string, any>();
+  if (!existsSync(path)) return cached;
+  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const listing = JSON.parse(line);
+      if (listing?.detailError) continue;
+      const key = marcusListingCacheKey(listing);
+      if (key) cached.set(key, listing);
+    } catch {
+      // Ignore a partial final line if a prior run was interrupted mid-write.
+    }
+  }
+  return cached;
+}
+
+function appendMarcusDetailCache(path: string, listing: any): void {
+  if (listing?.detailError) return;
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, `${JSON.stringify(listing)}\n`);
+}
+
 async function enrichMarcusListing(base: any): Promise<any> {
   if (!base.url) return base;
   try {
@@ -2005,9 +2036,17 @@ async function srcMarcusMillichap(tx: Tx, max: number): Promise<SourceResult> {
   );
   const baseRows = await pmap(selectedMapRows, CONCURRENCY, fetchMarcusMapListing);
   const baseListings = baseRows.filter((l: any) => l?.url);
+  const cachePath = marcusDetailCachePath();
+  const cachedDetails = readMarcusDetailCache(cachePath);
+  if (cachedDetails.size) {
+    console.error(`  marcus-millichap/sale: loaded ${cachedDetails.size} cached detail row(s) from ${cachePath}`);
+  }
   let done = 0;
   const listings = await pmap(baseListings, CONCURRENCY, async (row) => {
-    const enriched = await enrichMarcusListing(row);
+    const key = marcusListingCacheKey(row);
+    const cached = key ? cachedDetails.get(key) : null;
+    const enriched = cached ?? (await enrichMarcusListing(row));
+    if (!cached) appendMarcusDetailCache(cachePath, enriched);
     done++;
     if (done % 10 === 0 || done === baseListings.length) {
       console.error(`  marcus-millichap/sale: detail enriched ${done}/${baseListings.length}`);

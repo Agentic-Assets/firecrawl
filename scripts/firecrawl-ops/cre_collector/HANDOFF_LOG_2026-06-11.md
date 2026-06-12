@@ -553,3 +553,55 @@ Highlights:
   deep-contact complete. The recommended path is cached Algolia People lookup by
   exact `broker_name`, not noisy detail-page shells. The recovered Washington,
   DC lease rows are present but still have `state: null`.
+
+## 2026-06-12 Marcus & Millichap Full Public Sale Ingest
+
+Marcus & Millichap is now live-ingested and validated for the defensible public
+sale feed. Public lease remains blocked because no public lease UI mode or
+endpoint has been proven.
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npm run typecheck
+npx tsx collect.ts --source=marcus-millichap --transaction=both --max-items=0 --concurrency=6 --out=out/marcus_full_2026-06-12_130035.json
+python3 cre_ingest.py --in out/marcus_full_2026-06-12_130035.json --dry-run --keep-artifacts /tmp/marcus_full_2026-06-12_130035_ingest_check
+python3 cre_ingest.py --in out/marcus_full_2026-06-12_130035.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/marcus_full_2026-06-12_130035_mark_missing_check
+python3 cre_ingest.py --in out/marcus_full_2026-06-12_130035.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/marcus_full_2026-06-12_130035_mark_missing_live
+```
+
+Collector notes:
+
+- Added a Marcus-only detail JSONL checkpoint beside the output artifact.
+- The checkpoint recovered the interrupted full run pattern and made the retry
+  run reuse 3,119 successful detail rows while retrying five transient
+  `fetch failed` rows.
+- Cache reads now skip rows with `detailError`, and cache writes no longer append
+  failed detail rows.
+
+Result:
+
+- Artifact: `out/marcus_full_2026-06-12_130035.json`, 15.5 MB.
+- Detail cache: `out/marcus_full_2026-06-12_130035.json.marcus-detail-cache.jsonl`.
+- Collected rows: 3,124 sale rows and 0 lease rows.
+- Artifact QA: 0 missing URLs, 0 missing titles, 0 duplicate IDs, 0 final detail
+  errors, 16,771 image URLs, 7,915 contact/profile URL rows, and 3,124 gated
+  deal-room URLs kept only in raw metadata.
+- Dry-run ingest staged 3,124 rows and skipped 0 missing URLs.
+- Source-scoped `--mark-missing` was dry-run and then live-applied only for
+  `marcus-millichap`.
+- Supabase proof: 3,124 active Marcus rows, all sale; 16,771 image child rows;
+  7,915 contact child rows; 0 document rows; 0 bad source URLs, missing titles,
+  missing raw data, duplicate external IDs, bad states, impossible coordinates,
+  malformed guarded prices/cap rates, bad child URLs, or child orphans.
+- Search proof: the UI-updated five-argument
+  `credeals.search_cre_listings(query, p_city, p_state, p_type, p_transaction)`
+  returned live Marcus rows for query `marcus`.
+
+Ops note:
+
+- `bash scripts/firecrawl-ops/firecrawl_healthcheck.sh` failed during this pass
+  because the OrbStack Docker socket was unavailable and `localhost:3002` was
+  not accepting connections. Marcus uses direct public HTTP endpoints, so the
+  Marcus run and ingest were not blocked by local Firecrawl being down.
