@@ -75,6 +75,7 @@ bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 cd scripts/firecrawl-ops/cre_collector
 npm run typecheck
 python3 -m py_compile cre_ingest.py
+npm run validate:supabase -- --out /tmp/cre_validate_latest.md
 ```
 
 ## Safe Daily Command

@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "collect": "tsx collect.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "validate:supabase": "python3 cre_validate.py"
   },
   "dependencies": {
     "@mendable/firecrawl-js": "^4.3.5",
