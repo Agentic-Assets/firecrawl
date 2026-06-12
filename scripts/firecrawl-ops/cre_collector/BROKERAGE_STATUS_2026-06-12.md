@@ -21,7 +21,7 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 | Cushman & Wakefield | Complete public feed, live-ingested and validated | 11,318 active rows, 2,743 sale + 8,575 lease | Public search API pagination plus detail-page enrichment for facts, document URLs, image URLs, contacts, profile URLs, VCard URLs, JSON-LD | Optional future field audit only if missing fields are discovered |
 | JLL | Needs deep audit | 4,678 total, 333 sale + 4,345 lease | Search-page pagination and listing URLs | Add/verify detail-page enrichment for documents, image galleries, broker contact links, and richer facts |
 | Newmark | Complete public Algolia feed with contact enrichment, live-ingested and validated | 4,371 active rows, 1,121 sale + 3,250 lease | Public Algolia listing feed, state/property-type split, no-state DC recovery, raw hit preservation, broker provenance, public People exact-name contacts/profile URLs, image URLs | Listing documents, full galleries, second/third broker joins, and VCards remain unproven |
-| Avison Young | Public feed complete, needs detail enrichment | 2,200 staged unique rows, 636 sale + 1,431 lease + 133 sale_or_lease | Public SharpLaunch active website/team_member feed, client-side transaction partition, contact joins, CDN image/avatar URLs | Optional detail-page enrichment for public PDFs, richer galleries, JSON-LD, VCard/profile URLs |
+| Avison Young | Public feed complete; bounded detail enrichment verified | 2,200 staged unique rows, 636 sale + 1,431 lease + 133 sale_or_lease | Public SharpLaunch active website/team_member feed, client-side transaction partition, contact joins, CDN image/avatar URLs, and bounded detail enrichment for selected rows | Full-feed detail enrichment is not run by default; VCards remain unproven in sampled pages |
 | Savills | Partial, lease has small defensible public CRE subset; sale still not CRE-defensible | 100 legacy global/residential sale rows plus 2 U.S. commercial lease rows in latest probe | Server-rendered commercial lease `__NEXT_DATA__` for two Chicago retail listings with PDF/image/contact URLs; legacy global sale cards remain separate caveat | Find a public U.S. commercial sale source before claiming sale coverage; product decision needed on whether to retain legacy global/residential sale rows |
 | JLL Investor Center | Partial | 50 sale rows | Rendered public grid | Determine whether more pages exist and enrich details where public |
 | Marcus & Millichap | Complete public sale feed, live-ingested and validated; public lease blocked | 3,124 active sale rows | Public `mapproperties` ActivityIds, `mappropertydetail` tiles, direct public detail HTML, image URLs, visible contacts/profile URLs, and gated deal-room URLs retained only in raw metadata | Public lease remains unproven; auctions need a product decision before inclusion |
@@ -41,8 +41,9 @@ and Supabase validation.
 
 ## Not Complete Yet
 
-JLL and Avison Young still need the Cushman-style deep audit: prove detail page
-enrichment, document URLs, image URLs, contact URLs, and source totals.
+JLL still needs the Cushman-style deep audit: prove detail page enrichment,
+document URLs, image URLs, contact URLs, and source totals. Avison Young now has
+bounded detail enrichment proof, but not a full-feed detail-enriched live run.
 Savills and JLL Investor Center are explicitly partial, and main Colliers Coveo
 sale/lease coverage remains blocked. Colliers SalesTracker is complete only for
 the public RCM investment-sale subset. Marcus & Millichap is complete for the
@@ -84,7 +85,7 @@ Result:
 ## Next Broker Order
 
 1. JLL, because it already collects all reported rows and likely only needs detail enrichment.
-2. Avison Young, because the full SharpLaunch feed is loaded but detail PDFs, richer galleries, JSON-LD, and VCards are not yet promoted.
+2. Avison Young, only if we decide to schedule bounded or full-feed detail enrichment beyond the verified sample.
 3. Savills, because lease has only a 2-row defensible subset and sale remains not CRE-defensible.
 4. JLL Investor, because sitemap/detail discovery needs an approved public path decision.
 5. Main Colliers Coveo sale/lease coverage only after a safe non-POST-blocked path exists.

@@ -10,13 +10,13 @@ Production bulk collection uses the Avison Young SharpLaunch public feed in
   longer depends on that shallow rendered batch.
 - Treat this Python scraper as a source lab for future detail-page enrichment.
 
-## Current Limitation
+## Current Behavior
 
 The production collector fetches the full active SharpLaunch website feed,
 filters US-compatible rows, partitions sale and lease client-side, and joins
-team-member contacts. Detail pages are not scraped in the first SharpLaunch
-adapter pass, so PDFs, galleries beyond the feed image, contact aliases, and
-JSON-LD facts remain future enrichment.
+team-member contacts. Full-feed runs stay SharpLaunch-only by default so the
+daily path remains cheap and stable. Bounded runs now support public detail-page
+enrichment for selected rows.
 
 ## 2026-06-12 Deep Dive Notes
 
@@ -77,12 +77,20 @@ Implemented collector behavior:
 6. Joins `team_member_ids` into `contactsDetailed` with public name, title,
    email, phone, company or location, and constructible CDN avatar URL.
 7. Stores only public source URLs, SharpLaunch URLs, and CDN image/avatar URLs.
+8. For bounded runs, fetches public SharpLaunch/Avison detail pages for
+   selected rows and extracts URL-only PDFs, richer public image URLs, JSON-LD,
+   broker profile URLs, and visible VCard-like URLs.
 
-Deferred enrichment:
+Detail enrichment:
 
-- Detail pages can expose public PDF document URLs, richer gallery image URLs,
-  JSON-LD listing data, and contact aliases. Keep any future detail pass bounded
-  and store URLs only, not downloaded binaries.
+- Finite `--max-items=N` runs enrich the selected rows.
+- Unlimited `--max-items=0` full-feed runs remain SharpLaunch-only unless
+  `AVISON_YOUNG_DETAIL_LIMIT` is set.
+- `AVISON_YOUNG_DETAIL_LIMIT=N` enriches at most `N` selected rows.
+- `AVISON_YOUNG_DETAIL_LIMIT=0` forces detail enrichment off.
+- `AVISON_YOUNG_DETAIL_CONCURRENCY` is capped by the collector
+  `--concurrency` setting.
+- Keep this bounded unless a full-detail runtime is deliberately scheduled.
 
 ## 2026-06-12 Full Run And Live Ingest
 
@@ -115,6 +123,39 @@ Supabase proof:
 - Transaction split: 636 sale, 1,431 lease, and 133 `sale_or_lease`.
 - Latest-batch quality checks: 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad state codes, 0 impossible coordinates, 0 bad cap rates, 4,125 contact child rows, 2,186 image child rows, and 0 orphan contact/image rows.
 
-Current status: public-feed complete for SharpLaunch row coverage. Still needs
-optional detail-page enrichment for public PDFs, richer galleries, JSON-LD, and
-VCard/profile URLs before being called detail-enriched complete.
+Current status: public-feed complete for SharpLaunch row coverage. Bounded
+detail enrichment is implemented and verified, but the full 2,200-row feed has
+not been detail-enriched live.
+
+## 2026-06-12 Bounded Detail Enrichment Proof
+
+Commands:
+
+```bash
+cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=avison-young --transaction=both --max-items=2 --concurrency=2 --out=/tmp/avison_young_detail_probe_after_ingest_filter_2026-06-12.json
+python3 cre_ingest.py --in /tmp/avison_young_detail_probe_after_ingest_filter_2026-06-12.json --dry-run --keep-artifacts /tmp/avison_young_detail_probe_after_ingest_filter_ingest
+npm run typecheck
+```
+
+Result:
+
+- 4 listings, 2 sale and 2 lease sample rows.
+- 6 public PDF document URLs.
+- 36 public image URLs.
+- 5 contact rows.
+- 1 broker profile URL.
+- 0 VCard URLs in the sampled pages.
+- 4 rows with JSON-LD captured.
+- 0 detail errors.
+- Dry-run ingest staged 4 rows and skipped 0 missing URLs.
+
+Limits:
+
+- The detail pass is public but request-heavy. Keep daily full-feed runs
+  SharpLaunch-only unless `AVISON_YOUNG_DETAIL_LIMIT` is explicitly set.
+- VCard URLs remain unproven in the checked samples.
+- A later full-feed dry-run after this patch remained SharpLaunch-only by
+  default and staged 2,199 unique rows from 2,332 raw rows. This appears to be
+  one-row live source drift from the earlier 2,200-row Supabase load. No live
+  Avison reconciliation was run from that drifted probe.

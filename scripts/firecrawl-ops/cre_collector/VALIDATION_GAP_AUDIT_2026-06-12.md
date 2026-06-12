@@ -64,8 +64,9 @@ Partial or limited sources:
 
 - CBRE Deal Flow: complete for the exposed public RCM card endpoint, but still
   partial relative to reported source totals and gated deal-room material.
-- Avison Young: public SharpLaunch feed complete, but detail-page enrichment
-  for PDFs, richer galleries, JSON-LD, profile URLs, and VCards remains open.
+- Avison Young: public SharpLaunch feed complete. Bounded detail-page
+  enrichment for selected rows is now implemented and verified after this
+  audit; full-feed detail enrichment has not been live-run.
 - Colliers: SalesTracker investment-sale subset is live and validated; main
   Colliers Coveo sale/lease coverage remains blocked.
 - JLL main: collects current search rows, but no documents, contacts, images
@@ -112,8 +113,9 @@ High-priority validation gaps:
    Flow has 21 groups / 42 rows, and Cushman has 8 groups / 18 rows. External
    IDs are still unique, so this is a display/merge-policy issue, not an
    upsert-key failure.
-4. Fix or document the 37 bad contact `avatar_url` values. Profile and VCard
-   URL checks were clean.
+4. Closed after this audit: `cre_ingest.py` now drops non-HTTP contact and
+   document URLs, and Lee/SVN live child refresh reduced bad active
+   `avatar_url` values from 37 to 0. Profile and VCard URL checks stayed clean.
 5. Review price and rate outliers flagged by conservative QA: Avison Young has
    2 sale-price flags and 1 PSF flag, Lee has 1 PSF flag and 3 lease-rate
    flags, SVN has 2 PSF flags and 2 lease-rate flags, Colliers has 1 PSF flag,

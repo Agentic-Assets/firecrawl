@@ -150,6 +150,15 @@ def norm_state(v):
     return US_STATES.get(s.lower())
 
 
+def http_url_or_none(v):
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    if not re.match(r"^https?://", s, re.I):
+        return None
+    return s
+
+
 def norm_property_type(asset_type):
     if not asset_type or not isinstance(asset_type, str):
         return None
@@ -322,9 +331,9 @@ def to_row(listing, brokers_by_idx, scraped_at):
                     "email": c.get("email"),
                     "phone": c.get("phone"),
                     "company": c.get("company") or listing.get("sourceCompany"),
-                    "profileUrl": c.get("profileUrl"),
-                    "avatarUrl": c.get("avatarUrl"),
-                    "vcardUrl": c.get("vcardUrl"),
+                    "profileUrl": http_url_or_none(c.get("profileUrl")),
+                    "avatarUrl": http_url_or_none(c.get("avatarUrl")),
+                    "vcardUrl": http_url_or_none(c.get("vcardUrl")),
                     "isPrimary": i == 0,
                 }
             )
@@ -342,15 +351,17 @@ def to_row(listing, brokers_by_idx, scraped_at):
                     "email": b.get("email"),
                     "phone": b.get("phone"),
                     "company": b.get("company") or listing.get("sourceCompany"),
-                    "avatarUrl": b.get("avatarUrl"),
+                    "avatarUrl": http_url_or_none(b.get("avatarUrl")),
                     "isPrimary": i == 0,
                 }
             )
 
     documents = []
     for d in listing.get("brochures") or []:
-        if isinstance(d, dict) and d.get("url"):
-            documents.append({"title": d.get("name"), "url": d["url"], "docType": "brochure"})
+        if isinstance(d, dict):
+            doc_url = http_url_or_none(d.get("url"))
+            if doc_url:
+                documents.append({"title": d.get("name"), "url": doc_url, "docType": "brochure"})
 
     images = []
     for i, p in enumerate(listing.get("photos") or []):

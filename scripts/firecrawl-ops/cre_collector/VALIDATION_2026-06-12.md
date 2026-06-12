@@ -295,9 +295,46 @@ Ingest proof:
 
 Remaining limit:
 
-- The full SharpLaunch feed is now loaded, but optional detail-page enrichment is
-  still needed for public PDFs, richer galleries, JSON-LD, and VCard/profile
-  URLs.
+- The full SharpLaunch feed is now loaded. Bounded detail-page enrichment is
+  implemented and verified for selected rows, but the full 2,200-row feed has
+  not been detail-enriched live.
+
+Bounded detail proof:
+
+- Probe command:
+  `npx tsx collect.ts --source=avison-young --transaction=both --max-items=2 --concurrency=2 --out=/tmp/avison_young_detail_probe_after_ingest_filter_2026-06-12.json`.
+- Result: 4 listings, 6 public PDF document URLs, 36 public image URLs, 5
+  contact rows, 1 broker profile URL, 0 VCards, 4 JSON-LD payloads, and 0
+  detail errors.
+- Dry-run ingest staged all 4 rows and skipped 0 missing URLs.
+- A later full-feed dry-run after the bounded detail patch remained
+  SharpLaunch-only by default and staged 2,199 unique rows from 2,332 raw rows,
+  with 0 skipped missing URLs. No live Avison reconciliation was run from that
+  drifted probe.
+
+## 2026-06-12 Child URL Filter And Bad Avatar Cleanup
+
+`cre_ingest.py` now drops non-HTTP contact profile/avatar/VCard URLs and
+non-HTTP document URLs before staging child rows. This prevents relative
+Buildout placeholder avatar paths from entering Supabase child tables.
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+python3 cre_ingest.py --in out/lee_full_cache_2026-06-12_assembled.json --dry-run --keep-artifacts /tmp/lee_avatar_filter_reingest_dry
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json --dry-run --keep-artifacts /tmp/svn_avatar_filter_reingest_dry
+python3 cre_ingest.py --in out/lee_full_cache_2026-06-12_assembled.json --keep-artifacts /tmp/lee_avatar_filter_reingest_live
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json --keep-artifacts /tmp/svn_avatar_filter_reingest_live
+npm run validate:supabase -- --out /tmp/cre_validate_after_avatar_filter_2026-06-12.md
+```
+
+Result:
+
+- Lee dry-run staged 9,223 rows and skipped 0 missing URLs.
+- SVN dry-run staged 5,287 rows and skipped 0 missing URLs.
+- Live child refreshes did not use `--mark-missing`.
+- Active bad contact avatar URLs are now 0, down from 37.
 
 ## 2026-06-12 NAI Global Active Infabode Ingest
 

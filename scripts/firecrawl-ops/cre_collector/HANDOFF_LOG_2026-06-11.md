@@ -319,8 +319,45 @@ Result:
   bad coordinates, bad cap rates, or orphan contact/image rows.
 - Latest-batch child rows: 4,125 contacts and 2,186 images.
 
-The SharpLaunch public feed is loaded. Optional detail enrichment remains for
-listing PDFs, richer image galleries, JSON-LD, and VCard/profile URLs.
+The SharpLaunch public feed is loaded. Bounded detail enrichment is now
+implemented and verified for selected rows, but full-feed detail enrichment has
+not been live-run.
+
+Bounded detail proof:
+
+- Command:
+  `npx tsx collect.ts --source=avison-young --transaction=both --max-items=2 --concurrency=2 --out=/tmp/avison_young_detail_probe_after_ingest_filter_2026-06-12.json`.
+- Result: 4 listings, 6 public PDF document URLs, 36 public image URLs, 5
+  contact rows, 1 broker profile URL, 0 VCards, 4 JSON-LD payloads, and 0
+  detail errors.
+- Dry-run ingest staged all 4 rows and skipped 0 missing URLs.
+- A later full-feed dry-run after the bounded detail patch stayed
+  SharpLaunch-only by default and staged 2,199 unique rows from 2,332 raw rows.
+  No live Avison reconciliation was run from that drifted probe.
+
+## 2026-06-12 Child URL Filter And Bad Avatar Cleanup
+
+The ingestor now drops non-HTTP child URLs for contact profile/avatar/VCard
+fields and document URLs before staging. This was verified by dry-running and
+then live-refreshing child rows from the already complete Lee and SVN artifacts
+without `--mark-missing`.
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+python3 cre_ingest.py --in out/lee_full_cache_2026-06-12_assembled.json --dry-run --keep-artifacts /tmp/lee_avatar_filter_reingest_dry
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json --dry-run --keep-artifacts /tmp/svn_avatar_filter_reingest_dry
+python3 cre_ingest.py --in out/lee_full_cache_2026-06-12_assembled.json --keep-artifacts /tmp/lee_avatar_filter_reingest_live
+python3 cre_ingest.py --in out/svn_full_cache_2026-06-12_assembled.json --keep-artifacts /tmp/svn_avatar_filter_reingest_live
+npm run validate:supabase -- --out /tmp/cre_validate_after_avatar_filter_2026-06-12.md
+```
+
+Result:
+
+- Lee dry-run staged 9,223 rows and skipped 0 missing URLs.
+- SVN dry-run staged 5,287 rows and skipped 0 missing URLs.
+- Active bad contact avatar URLs went from 37 to 0.
 
 ## 2026-06-12 Colliers SalesTracker Partial Adapter
 
