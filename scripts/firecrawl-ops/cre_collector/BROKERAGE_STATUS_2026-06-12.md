@@ -18,7 +18,7 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 | CBRE | Complete public feed | 20,684 total, 5,879 sale + 14,805 lease | Full internal JSON API pagination, agents, charges, brochures, photos, coordinates, size fields | Optional detail-page audit only if we discover fields missing from the API |
 | CBRE Deal Flow | Complete public endpoint for exposed cards, with gated-detail limits | 1,836 full-run rows, 1,809 sale + 27 lease | Public RCM ListingEngine endpoint, sale and lease filters, pagination, public card/detail enrichment, URL-only docs/images, contacts | RCM reports 2,042 sale total but public card pagination exposed 1,809 sale cards; gated agreement/deal-room docs stay in raw metadata only |
 | SVN | Partial live refresh, mapping complete from prior full artifact | 5,521 total, 2,988 sale + 2,533 lease in latest full artifact | Buildout inventory feed mapping, sale/lease partitioning, broker refs, PDFs, images | Fresh 2026-06-12 probes failed closed on Buildout 403 HTML before writing JSON; wait for throttling-safe clean run before marking refreshed complete |
-| Cushman & Wakefield | Complete in code, pending full run and Supabase ingest | 11,318 live total, 2,743 sale + 8,575 lease | Public search API pagination plus detail enrichment for facts, document URLs, image URLs, contacts, profile URLs, VCard URLs, JSON-LD | Run full Cushman collection and live ingest after reviewing runtime cost |
+| Cushman & Wakefield | Complete public feed, live-ingested and validated | 11,318 active rows, 2,743 sale + 8,575 lease | Public search API pagination plus detail-page enrichment for facts, document URLs, image URLs, contacts, profile URLs, VCard URLs, JSON-LD | Optional future field audit only if missing fields are discovered |
 | JLL | Needs deep audit | 4,678 total, 333 sale + 4,345 lease | Search-page pagination and listing URLs | Add/verify detail-page enrichment for documents, image galleries, broker contact links, and richer facts |
 | Newmark | Needs deep audit | 4,368 collected, 1,121 sale + 3,247 lease of 3,250 reported lease | Algolia credentials scraped from page, state and property-type splits for the 1,000-hit cap | Close the 3-row lease gap if still present and audit detail fields, brokers, documents, and images |
 | Avison Young | Public feed complete, needs detail enrichment | 2,200 staged unique rows, 636 sale + 1,431 lease + 133 sale_or_lease | Public SharpLaunch active website/team_member feed, client-side transaction partition, contact joins, CDN image/avatar URLs | Optional detail-page enrichment for public PDFs, richer galleries, JSON-LD, VCard/profile URLs |
@@ -34,11 +34,10 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 
 CBRE is complete for its public feed. CBRE Deal Flow is complete for the public
 RCM cards exposed through the public endpoint and has been live-ingested
-additively. Cushman & Wakefield is complete in code and targeted verification,
-but not yet reflected in Supabase because the full upgraded run has not been
-ingested. SVN remains mapping-complete from the latest full artifact, but fresh
-live refresh verification is partial because Buildout returned 403 HTML during
-2026-06-12 probes.
+additively. Cushman & Wakefield is complete for its public API feed and is now
+live-ingested with source-scoped reconciliation. SVN remains mapping-complete
+from the latest full artifact, but fresh live refresh verification is partial
+because Buildout returned 403 HTML during 2026-06-12 probes.
 
 ## Not Complete Yet
 

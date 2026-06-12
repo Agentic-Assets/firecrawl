@@ -441,3 +441,39 @@ Result:
 Remaining limit: the public API did not expose broker names, phones, profile
 URLs, or VCards for sampled fields. Do not treat the historical public Infabode
 rows as active unless EQUIRE adds a separate archive/history surface.
+
+## 2026-06-12 Cushman & Wakefield Full API Ingest
+
+Cushman & Wakefield was completed from the public search API and detail-page
+enrichment path.
+
+Command:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=cushman-wakefield --transaction=both --max-items=0 --page-cap=400 --concurrency=6 --out=out/cushman_full_2026-06-12_022841.json
+python3 cre_ingest.py --in out/cushman_full_2026-06-12_022841.json --dry-run --keep-artifacts /tmp/cushman_full_2026-06-12_022841_ingest_check
+python3 cre_ingest.py --in out/cushman_full_2026-06-12_022841.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/cushman_full_2026-06-12_022841_mark_missing_check
+python3 cre_ingest.py --in out/cushman_full_2026-06-12_022841.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/cushman_full_2026-06-12_022841_mark_missing_live
+```
+
+Result:
+
+- Full artifact: `out/cushman_full_2026-06-12_022841.json`, 43.2 MB.
+- Runtime: 4:41:00.
+- Collected rows: 11,318 total, 2,743 sale and 8,575 lease.
+- Source totals matched collected rows for both sale and lease.
+- Detail coverage: 18,343 document URLs, 24,278 image URLs, 21,110 detailed
+  contacts, 21,110 profile URLs, 20,301 VCard URLs, and 0 detail errors.
+- Dry-run staged 11,318 rows and skipped 0 missing URLs.
+- Source-scoped `--mark-missing` was dry-run and then applied only for
+  `cushman-wakefield`.
+- Supabase proof after ingest: 11,318 active Cushman rows, 2,743 sale and 8,575
+  lease, 24,278 image child rows, 18,343 document child rows, 21,110 contact
+  child rows, 0 missing URLs, 0 missing titles, 0 missing raw data, 0 duplicate
+  external IDs, 0 bad states, 0 impossible coordinates, 0 malformed guarded
+  prices/cap rates, and 0 orphan contacts/documents/images.
+- Old shallow/probe rows soft-deleted: 24.
+
+Remaining limit: none for public feed coverage. Treat future Cushman work as
+field enrichment audit only.

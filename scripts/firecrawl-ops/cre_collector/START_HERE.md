@@ -1,6 +1,6 @@
 # CRE Collector Start Here
 
-Last updated: 2026-06-12 local time, evidence from run finished at `2026-06-12T04:31:24.562Z`, validation on 2026-06-12, Cushman post-validation probes, CBRE Deal Flow plus Colliers SalesTracker full ingests, and NAI active-status-filtered ingest on 2026-06-12.
+Last updated: 2026-06-12 local time, evidence from run finished at `2026-06-12T04:31:24.562Z`, validation on 2026-06-12, CBRE Deal Flow plus Colliers SalesTracker full ingests, NAI active-status-filtered ingest, and Cushman full live ingest on 2026-06-12.
 
 This directory is the production daily path for public commercial real estate listing inventory feeding EQUIRE. Use it for sale and lease listings. The older `../cre_scrapers/` Python package is legacy support for source probes and detail-page enrichment.
 
@@ -37,7 +37,7 @@ Result:
 | CBRE Deal Flow | 1,836 in post-validation full run, 1,809 sale + 27 lease | Active via public RCM ListingEngine endpoint and live-ingested additively |
 | JLL | 4,678 | Active |
 | JLL Investor | 8 in latest hardened probe; source total about 1,087 to 1,088 | Partial, first rendered search page detail-enriched |
-| Cushman & Wakefield | 24 in latest ingested artifact; code now verifies 2,743 sale + 8,575 lease live source totals | Active via public API and detail enrichment; pending full re-run and ingest |
+| Cushman & Wakefield | 11,318 active rows, 2,743 sale + 8,575 lease | Complete public API feed with detail enrichment, live-ingested with source-scoped mark-missing cleanup |
 | Newmark | 4,371 in post-validation full probe | Active via Algolia, no-state recovery added |
 | Marcus & Millichap | 12 in probe, 3,126 reported public sale total | Partial, public contentsearch sale API and detail enrichment; lease unsupported |
 | Avison Young | 2,200 staged unique rows in post-validation full run | Public SharpLaunch feed live-ingested additively; still needs optional detail-page enrichment |
@@ -103,7 +103,7 @@ images into Supabase storage for the bulk collector.
 ## Known Limits To Respect
 
 - Do not use `--mark-missing` after a run with Lee or other source errors.
-- Do not treat Supabase as current for Cushman until a fresh full collection and ingest runs. The code was upgraded after the latest ingest; local probes verified 2,743 sale, 8,575 lease, and the 1800 Central detail record with 2 PDFs, 15 photos, and contact links.
+- Cushman & Wakefield is now current in Supabase from `out/cushman_full_2026-06-12_022841.json`: 11,318 active rows, 18,343 document URL rows, 24,278 image URL rows, 21,110 contact rows, 21,110 profile URLs, and 20,301 VCard URLs. Source-scoped `--mark-missing` soft-deleted 24 old probe rows.
 - CBRE Deal Flow has been ingested additively from the public RCM endpoint. Do not use its reported 2,042 sale total as collected count; the public card pagination exposed 1,809 sale cards in the full run.
 - Do not store source PDF or image binaries in Supabase. Store URLs only.
 - Do not claim complete Colliers coverage. Only SalesTracker investment-sale coverage has a public GET path; 1,172 unique SalesTracker sale rows are live-ingested, while the main Colliers Coveo sale/lease search remains blocked.

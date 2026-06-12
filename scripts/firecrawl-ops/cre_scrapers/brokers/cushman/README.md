@@ -13,7 +13,8 @@ Production bulk collection currently lives in `../../../../cre_collector/collect
   - `language=en`
   - `limit=100`
   - `offset=<0,100,200,...>`
-- Verified totals on 2026-06-12: sale returned `2743`, lease returned `8574`.
+- Verified totals on 2026-06-12 full run: sale returned `2743`, lease returned
+  `8575`.
 - Direct non-browser `urllib` calls can receive Azure Application Gateway `403`; the local Firecrawl API can fetch the endpoint.
 
 ## Detail Pages
@@ -39,3 +40,29 @@ Search API rows may use `sitecore-www.cushmanwakefield.com`; canonicalize those 
 ## Contact Caveat
 
 VCard URLs expose richer contact data in a browser session, but local Firecrawl and direct Python calls can fail on those endpoints. Store the VCard URL and visible contact fields during bulk runs; use a browser-backed enrichment pass only when email capture becomes necessary.
+
+## 2026-06-12 Full Run Proof
+
+Artifact: `cre_collector/out/cushman_full_2026-06-12_022841.json`.
+
+Command:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=cushman-wakefield --transaction=both --max-items=0 --page-cap=400 --concurrency=6 --out=out/cushman_full_2026-06-12_022841.json
+python3 cre_ingest.py --in out/cushman_full_2026-06-12_022841.json --dry-run --keep-artifacts /tmp/cushman_full_2026-06-12_022841_ingest_check
+python3 cre_ingest.py --in out/cushman_full_2026-06-12_022841.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/cushman_full_2026-06-12_022841_mark_missing_live
+```
+
+Result:
+
+- Runtime: 4:41:00.
+- Collected rows: 11,318, with 2,743 sale and 8,575 lease.
+- Detail enrichment: 18,343 document URLs, 24,278 image URLs, 21,110 detailed
+  contacts, 21,110 profile URLs, 20,301 VCard URLs, and 0 detail errors.
+- Dry-run staged 11,318 rows and skipped 0 missing URLs.
+- Live ingest used source-scoped `--mark-missing`, soft-deleting 24 old shallow
+  probe rows.
+- Supabase proof: 11,318 active Cushman rows; 0 missing URLs, missing titles,
+  missing raw data, duplicate external IDs, bad state codes, impossible
+  coordinates, malformed guarded prices/cap rates, or child orphans.

@@ -62,7 +62,7 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
 
 ## Known Gaps
 
-- Post-validation code update: Cushman & Wakefield no longer uses the shallow rendered Coveo card path. On 2026-06-12 local probes verified the public `/api/properties/search` path with 2,743 sale and 8,575 lease live source totals. A targeted `CUSHMAN_QUERY='1800 Central'` probe captured the expected 2 PDFs, 15 photos, building size, lot size, year built, and Gib Kerr contact/profile/VCard data. These rows are not yet reflected in the validated Supabase counts above.
+- Post-validation live ingest: Cushman & Wakefield was upgraded from the shallow rendered Coveo card path to the public `/api/properties/search` path with detail-page enrichment and live-ingested from `out/cushman_full_2026-06-12_022841.json`. The artifact collected 11,318 rows, 2,743 sale and 8,575 lease, with 0 detail errors and 0 skipped missing URLs. Source-scoped `--mark-missing` soft-deleted the 24 older Cushman probe rows. Live validation found 11,318 active Cushman rows, 18,343 document URL rows, 24,278 image URL rows, 21,110 contact rows, 21,110 profile URLs, 20,301 VCard URLs, and 0 missing URLs, titles, raw data, duplicate external IDs, bad states, impossible coordinates, malformed prices/cap rates, or child orphans.
 - Post-validation live ingest: CBRE Deal Flow was upgraded from the old first-grid path to the public RCM ListingEngine endpoint and ingested additively from `out/cbre_dealflow_full_2026-06-12_041740.json`. The artifact staged 1,836 rows, 1,809 public sale cards and all 27 public lease cards, with 0 skipped missing URLs. RCM reported 2,042 sale rows, but public card pagination exposed 1,809 sale cards before returning 0 additional cards. Live Supabase now has 1,857 active Deal Flow-prefixed rows under brokerage slug `cbre`, including prior additive probe rows retained because `--mark-missing` was not used.
 - Post-validation live ingest: Newmark no-state recovery was ingested additively from `out/newmark_full_2026-06-12_no_state_recovery.json`. The artifact staged 4,371 rows, 1,121 sale and 3,250 lease, with 0 skipped missing URLs. Latest-batch validation found 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad states, 0 bad coordinates, 0 bad cap rates, 4,303 image child rows, and 0 orphan images.
 - Post-validation live ingest: Avison Young SharpLaunch full feed was ingested additively from `out/avison_full_2026-06-12_043342.json`. The artifact collected 2,333 raw rows and staged 2,200 unique rows after dual sale/lease merge, with 0 skipped missing URLs. Latest-batch validation found 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad states, 0 bad coordinates, 0 bad cap rates, 4,125 contact child rows, 2,186 image child rows, and 0 orphan contact/image rows.
@@ -82,7 +82,7 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
   `www.colliers.com/en/properties` Coveo sale/lease search remains blocked.
 - Transwestern is not uploaded from a full run yet. Current collector has a targeted public GET feed probe and dry-run proof, but it still needs full collection, live ingest, and Supabase validation.
 - 730 older active rows remain from earlier additive runs: Newmark 715, Marcus & Millichap 6, CBRE 5, Savills 2, SVN 2. Do not treat active row count as a pure latest-run count until a clean reconciliation run marks missing rows.
-- Some supported adapters are intentionally shallow: Avison Young, Marcus & Millichap, and Savills have first-page, first-batch, or sale-only limitations documented in `CLAUDE.md`. Cushman was removed from this list after the 2026-06-12 API upgrade, pending full re-run and ingest. NAI Global was removed after the public Infabode GraphQL active-status filter was proven and live-ingested on 2026-06-12.
+- Some supported adapters are intentionally shallow: Avison Young, Marcus & Millichap, and Savills have first-page, first-batch, or sale-only limitations documented in `CLAUDE.md`. Cushman was removed from this list after the 2026-06-12 API upgrade, full run, source-scoped reconciliation, and live validation. NAI Global was removed after the public Infabode GraphQL active-status filter was proven and live-ingested on 2026-06-12.
 
 ## Access Model
 
@@ -256,3 +256,49 @@ Remaining limit:
   null, and other non-active statuses back to 2021. Those rows are public but
   are not defensible active inventory. Save them only to audit/archive artifacts
   unless EQUIRE adds a separate historical listing surface.
+
+## 2026-06-12 Cushman & Wakefield Full Run And Live Ingest
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=cushman-wakefield --transaction=both --max-items=0 --page-cap=400 --concurrency=6 --out=out/cushman_full_2026-06-12_022841.json
+python3 cre_ingest.py --in out/cushman_full_2026-06-12_022841.json --dry-run --keep-artifacts /tmp/cushman_full_2026-06-12_022841_ingest_check
+python3 cre_ingest.py --in out/cushman_full_2026-06-12_022841.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/cushman_full_2026-06-12_022841_mark_missing_check
+python3 cre_ingest.py --in out/cushman_full_2026-06-12_022841.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/cushman_full_2026-06-12_022841_mark_missing_live
+```
+
+Collector result:
+
+- Artifact: `out/cushman_full_2026-06-12_022841.json`, 43.2 MB.
+- Runtime: 4:41:00.
+- Collected rows: 11,318, including 2,743 sale and 8,575 lease.
+- Source totals matched collected rows for both transactions.
+- Brokers: 1,696 unique run-level brokers.
+- Artifact coverage: 18,343 document URLs, 24,278 image URLs, 21,110 detailed
+  contacts, 21,110 profile URLs, 20,301 VCard URLs, 0 detail errors, 0 missing
+  URLs, and 0 missing titles.
+
+Ingest proof:
+
+- Dry-run staged 11,318 rows and skipped 0 missing URLs.
+- Source-scoped `--mark-missing` dry-run activated only for
+  `cushman-wakefield`.
+- Live ingest plus reconciliation completed.
+- Active Cushman rows after ingest: 11,318, with 2,743 sale and 8,575 lease.
+- Old shallow/probe rows soft-deleted: 24.
+- Supabase validation found 0 missing URLs, 0 missing titles, 0 missing raw data,
+  0 duplicate external IDs, 0 bad state codes, 0 impossible coordinates, 0
+  malformed guarded prices, 0 malformed cap rates, and 0 orphan
+  contacts/documents/images.
+- Active child rows: 24,278 image URL rows, 18,343 document URL rows, 21,110
+  contact rows, 21,110 profile URLs, and 20,301 VCard URLs.
+- `search_cre_listings('Cushman', null, null, null, null)` returned live
+  Cushman & Wakefield rows with stable property detail URLs.
+
+Remaining limit:
+
+- This is complete for the public Cushman search API and visible detail-page
+  enrichment. Any future change should be a field audit, not a bulk coverage
+  blocker.
