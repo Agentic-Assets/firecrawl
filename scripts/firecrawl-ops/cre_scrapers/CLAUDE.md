@@ -52,6 +52,12 @@ production collector status from these flags. Current collector status is in
 in `normalizer.py` uses `asdict()`  -  adding a field to `ListingData` without a
 matching column in `../sql/002_cre_listings.sql` will cause a REST upsert 400 error.
 
+**Date fields are provenance-sensitive.** Do not populate `listing_date` from
+generic scraped, updated, or `lastUpdated` values. Use it only when the source
+explicitly exposes a true first-listed/date-published/on-market field. Put
+broker recency in `updated_date`; `scraped_at`, `created_at`, and `updated_at`
+are our collection/database lifecycle timestamps.
+
 ## Env vars required
 
 ```bash

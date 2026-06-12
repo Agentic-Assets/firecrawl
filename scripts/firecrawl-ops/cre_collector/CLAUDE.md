@@ -132,7 +132,9 @@ Key behavior:
 
 Date semantics:
 - `listing_date` exists in the database but the current bulk collector does not
-  populate it. Treat it as null unless a source-specific backfill is added.
+  populate it. Treat it as null unless a source-specific backfill is added and
+  raw/source provenance proves a true first-listed/date-published/on-market
+  field. Never infer it from generic `lastUpdated`.
 - `updated_date` is source-provided listing recency. The collector maps each
   adapter's best public `lastUpdated`, `updated_at`, `on_market_at`,
   `dateModified`, `datePublished`, `datePosted`, or `publishedAt` value to
@@ -141,6 +143,8 @@ Date semantics:
   `finishedAt`.
 - `created_at`, `updated_at`, and `deleted_at` are database lifecycle fields:
   first insert, latest row refresh, and soft-delete by `--mark-missing`.
+- The live Supabase column comments were clarified on 2026-06-12; keep
+  `../sql/002_cre_listings.sql` comments aligned when date handling changes.
 
 Supabase access model: the collector-owned `credeals.cre_*` base tables and
 `v_cre_*` views are service-role only. `anon` and `authenticated` have schema

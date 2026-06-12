@@ -82,9 +82,9 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listings (
     raw_data        jsonb       DEFAULT '{}'::jsonb,  -- full structured-extraction JSON + any unmapped fields
 
     -- --- Timestamps --------------------------------------------------------
-    scraped_at      timestamptz DEFAULT now(),  -- when this row's content was last scraped
-    listing_date    timestamptz,                -- when the broker first listed it (if exposed)
-    updated_date    timestamptz,                -- broker's own last-updated (if exposed)
+    scraped_at      timestamptz DEFAULT now(),  -- our collector snapshot time, not broker listing date
+    listing_date    timestamptz,                -- true first-listed/date-published only when source-proven
+    updated_date    timestamptz,                -- broker/source recency, not necessarily first-listed
     created_at      timestamptz DEFAULT now(),
     updated_at      timestamptz DEFAULT now(),
     deleted_at      timestamptz                 -- soft delete; non-null = de-listed / pruned
@@ -102,6 +102,9 @@ COMMENT ON COLUMN credeals.cre_listings.cap_rate        IS 'Going-in cap rate as
 COMMENT ON COLUMN credeals.cre_listings.occupancy_rate  IS 'Occupancy as a fraction in [0,1]. Mandate filter: core (high) vs value-add (low).';
 COMMENT ON COLUMN credeals.cre_listings.markdown        IS 'Full scraped markdown. Primary-source grounding for any EQUIRE claim derived from this listing.';
 COMMENT ON COLUMN credeals.cre_listings.raw_data        IS 'jsonb: full Firecrawl structured-extraction output plus any broker-specific fields not mapped to columns.';
+COMMENT ON COLUMN credeals.cre_listings.scraped_at      IS 'Timestamp when our collector last scraped or refreshed the listing snapshot. This is our collection time, not a broker listing date.';
+COMMENT ON COLUMN credeals.cre_listings.listing_date    IS 'Source-provided original listing or published date only when the upstream brokerage explicitly exposes one. Do not infer this from scrape time, updated_at, or generic lastUpdated fields.';
+COMMENT ON COLUMN credeals.cre_listings.updated_date    IS 'Source-provided listing recency or last-modified date from the upstream brokerage when exposed. Not necessarily the first-listed/on-market date.';
 COMMENT ON COLUMN credeals.cre_listings.deleted_at      IS 'Soft-delete marker. Non-null means the listing was de-listed upstream or pruned; views exclude these.';
 
 -- -----------------------------------------------------------------------------
