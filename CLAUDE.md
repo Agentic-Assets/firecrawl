@@ -12,6 +12,13 @@ Firecrawl is a web scraper API monorepo:
 
 For local self-hosted setup, see `LOCAL_DEVELOPMENT_GUIDE.md`, `SELF_HOST.md`, and the `firecrawl-ops` skill.
 
+## Root hygiene
+
+Keep the repo root limited to durable entrypoints, configs, and top-level
+context. Put logs, browser captures, and one-off run outputs under a
+task-specific folder or `tasks/tmp/`; put durable reference docs under `docs/`;
+and keep workflow or example artifacts beside the relevant script or example.
+
 ## Env files
 
 - `./.env`  -  primary local Docker compose env. Gitignored. Never commit it.

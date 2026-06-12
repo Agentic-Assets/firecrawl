@@ -1,4 +1,9 @@
-# Firecrawl Setup Progress Summary - January 6, 2026
+# Archived Firecrawl Setup Progress Summary - January 6, 2026
+
+Historical note only. This captured an early January 2026 setup pass and is
+superseded by `LOCAL_DEVELOPMENT_GUIDE.md`, root `CLAUDE.md`, and
+`scripts/firecrawl-ops/`. Do not treat model choices, auth settings, schema
+state, or example tokens here as current.
 
 ## Work Completed
 
@@ -27,7 +32,7 @@
 
 ### 5. Access Information
 - **Local API**: `http://localhost:3002`
-- **Authenticated Token**: `fc-31dba252482749989356775a972cd48a`
+- **Authenticated Token**: `[redacted historical local token]`
 - **Supabase Project ID**: `fhqycqubkkrdgzswccwd`
 
 ## 🛡️ Important Rules & Safety

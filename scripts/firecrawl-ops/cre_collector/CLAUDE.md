@@ -130,6 +130,18 @@ Key behavior:
 - `--dry-run --keep-artifacts DIR` writes the generated SQL without
   connecting.
 
+Date semantics:
+- `listing_date` exists in the database but the current bulk collector does not
+  populate it. Treat it as null unless a source-specific backfill is added.
+- `updated_date` is source-provided listing recency. The collector maps each
+  adapter's best public `lastUpdated`, `updated_at`, `on_market_at`,
+  `dateModified`, `datePublished`, `datePosted`, or `publishedAt` value to
+  `listing.lastUpdated`, and `cre_ingest.py` writes that to `updated_date`.
+- `scraped_at` is the collector artifact/run timestamp, usually the artifact
+  `finishedAt`.
+- `created_at`, `updated_at`, and `deleted_at` are database lifecycle fields:
+  first insert, latest row refresh, and soft-delete by `--mark-missing`.
+
 Supabase access model: the collector-owned `credeals.cre_*` base tables and
 `v_cre_*` views are service-role only. `anon` and `authenticated` have schema
 USAGE in the broader EQUIRE project but no table or view SELECT on this listing

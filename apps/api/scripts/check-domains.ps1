@@ -2,7 +2,7 @@
 # Reads domains from domains.txt and checks availability via instantdomainsearch.com
 
 $apiUrl = "http://localhost:3002/v1/scrape"
-$apiKey = "fc-31dba252482749989356775a972cd48a"
+$apiKey = $env:FIRECRAWL_API_KEY
 $domainsFile = "domains.txt"
 $resultsFile = "domain-availability-results.json"
 
@@ -36,8 +36,13 @@ foreach ($domain in $domains) {
     } | ConvertTo-Json -Depth 5
     
     try {
+        $headers = @{}
+        if ($apiKey) {
+            $headers["Authorization"] = "Bearer $apiKey"
+        }
+
         $response = Invoke-RestMethod -Uri $apiUrl -Method Post -ContentType "application/json" `
-            -Header @{"Authorization" = "Bearer $apiKey"} -Body $body -ErrorAction Stop
+            -Headers $headers -Body $body -ErrorAction Stop
         
         # Parse availability from markdown content if extract not available
         $availability = "unknown"

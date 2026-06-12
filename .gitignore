@@ -66,6 +66,7 @@ target/
 
 # local files
 _local/
+.playwright-mcp/
 
 
 apps/api/src/lib/scrape-interact/*.md
