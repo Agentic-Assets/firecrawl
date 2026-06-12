@@ -2563,6 +2563,15 @@ function naiSizeText(detail: any): string | null {
   return pieces.length ? pieces.join("; ") : null;
 }
 
+function naiListingStatus(detail: any): string | null {
+  const value = detail?.listingStatus;
+  if (Array.isArray(value)) {
+    const statuses = value.map((status) => clean(status)).filter(Boolean);
+    return statuses.length ? statuses.join(",") : null;
+  }
+  return clean(value);
+}
+
 function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: string | null): any {
   const id = Number(row?.id);
   const sourceLocations = Array.isArray(detail?.locations) && detail.locations.length ? detail.locations : row?.locations;
@@ -2611,7 +2620,7 @@ function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: string |
     sourceOrganization: detail?.source ?? row?.source,
     sourceWebsiteUrl: clean(detail?.urlOriginal),
     sourceSocialLinks: Array.isArray(detail?.source?.socialLinks) ? detail.source.socialLinks : undefined,
-    listingStatus: clean(detail?.listingStatus),
+    listingStatus: naiListingStatus(detail),
     tags: Array.isArray(detail?.tags) ? detail.tags : undefined,
     providerCurrency: clean(detail?.currency),
   };
@@ -2649,15 +2658,19 @@ async function srcNaiGlobal(tx: Tx, max: number): Promise<SourceResult> {
       return naiListingFromFeed(row, tx, null, String(err));
     }
   });
+  const activeListings = listings.filter((listing) => listing.listingStatus === "FOR_SALE_ON_MARKET");
+  const skippedInactiveOrUnknown = listings.length - activeListings.length;
   return {
     company: "NAI Global",
     sourceUrl: NAI_WIDGET_URL,
-    method: "Infabode public GraphQL feed plus publicPost detail enrichment, offset paginated",
-    totalAvailable: stoppedOnShortPage ? rows.length : null,
-    listings,
+    method: "Infabode public GraphQL feed plus publicPost detail enrichment, offset paginated, filtered to FOR_SALE_ON_MARKET",
+    totalAvailable: stoppedOnShortPage ? activeListings.length : null,
+    listings: activeListings,
     note:
       `${NAI_SOURCE_IDS.length} documented NAI source organization ids; stable Infabode IDs and detail URLs captured. ` +
-      `Documents and contacts remain URL-only when public fields exist; detail failures retained per listing: ${detailFailures}.`,
+      `Documents and contacts remain URL-only when public fields exist. ` +
+      `Scanned ${rows.length} public feed rows for ${tx}; retained ${activeListings.length} on-market rows, ` +
+      `skipped ${skippedInactiveOrUnknown} inactive/unknown-status rows, detail failures skipped: ${detailFailures}.`,
   };
 }
 
@@ -3659,7 +3672,9 @@ function extractTranswesternDocuments(doc: ScrapedDoc): any[] {
       if (u) candidates.push(u);
     }
   }
-  return dedupeStrings(candidates).map((url) => ({ name: titleFromFilename(url), url }));
+  return dedupeStrings(candidates)
+    .filter((url) => !/\/Upload\/TREC\/|\/privacy-policy(?:\?|$)|health1\.aetna\.com/i.test(url))
+    .map((url) => ({ name: titleFromFilename(url), url }));
 }
 
 function extractTranswesternPhotos(doc: ScrapedDoc, feedImage: string | null): string[] {
@@ -3670,7 +3685,11 @@ function extractTranswesternPhotos(doc: ScrapedDoc, feedImage: string | null): s
       candidates.push(canonicalTranswesternUrl($(el).attr("href") ?? $(el).attr("src") ?? null));
     }
   );
-  return dedupeStrings(candidates).filter((url) => !/\.pdf(?:\?|$)/i.test(url));
+  return dedupeStrings(candidates).filter(
+    (url) =>
+      !/\.pdf(?:\?|$)/i.test(url) &&
+      !/\/assets\/images\/(?:mail|comment|connect-image|tw-logo|Transwestern_2023|tw_gl|transwestern-mapmarker)/i.test(url)
+  );
 }
 
 async function enrichTranswesternListing(row: any, bucket: string, tx: Tx): Promise<any> {

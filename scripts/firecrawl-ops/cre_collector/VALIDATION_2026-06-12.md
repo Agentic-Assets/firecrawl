@@ -82,7 +82,7 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
   `www.colliers.com/en/properties` Coveo sale/lease search remains blocked.
 - Transwestern is not uploaded from a full run yet. Current collector has a targeted public GET feed probe and dry-run proof, but it still needs full collection, live ingest, and Supabase validation.
 - 730 older active rows remain from earlier additive runs: Newmark 715, Marcus & Millichap 6, CBRE 5, Savills 2, SVN 2. Do not treat active row count as a pure latest-run count until a clean reconciliation run marks missing rows.
-- Some supported adapters are intentionally shallow: Avison Young, Marcus & Millichap, NAI Global, and Savills have first-page, first-batch, or sale-only limitations documented in `CLAUDE.md`. Cushman was removed from this list after the 2026-06-12 API upgrade, pending full re-run and ingest.
+- Some supported adapters are intentionally shallow: Avison Young, Marcus & Millichap, and Savills have first-page, first-batch, or sale-only limitations documented in `CLAUDE.md`. Cushman was removed from this list after the 2026-06-12 API upgrade, pending full re-run and ingest. NAI Global was removed after the public Infabode GraphQL active-status filter was proven and live-ingested on 2026-06-12.
 
 ## Access Model
 
@@ -204,3 +204,55 @@ Remaining limit:
 - The full SharpLaunch feed is now loaded, but optional detail-page enrichment is
   still needed for public PDFs, richer galleries, JSON-LD, and VCard/profile
   URLs.
+
+## 2026-06-12 NAI Global Active Infabode Ingest
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npx tsx collect.ts --source=nai-global --transaction=both --max-items=24 --page-cap=6 --concurrency=2 --out=out/nai_active_filter_probe_2026-06-12.json
+python3 cre_ingest.py --in out/nai_active_only_from_full_2026-06-12_044310.json --dry-run --keep-artifacts /tmp/nai_active_only_2026-06-12_ingest_check
+python3 cre_ingest.py --in out/nai_active_only_from_full_2026-06-12_044310.json --keep-artifacts /tmp/nai_active_only_2026-06-12_live_ingest
+python3 cre_ingest.py --in out/nai_active_only_from_full_2026-06-12_044310.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/nai_active_only_2026-06-12_mark_missing_check
+python3 cre_ingest.py --in out/nai_active_only_from_full_2026-06-12_044310.json --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/nai_active_only_2026-06-12_mark_missing_live
+```
+
+Collector and policy result:
+
+- Existing full enriched artifact `out/nai_full_unbounded_2026-06-12_044310.json`
+  collected 13,597 public Infabode rows, but status review showed most rows were
+  historical or ambiguous.
+- Public `PostFilter` has no server-side `listingStatus` filter, so the safe
+  policy is to detail-enrich through `publicPost(id)` and retain only rows whose
+  public `listingStatus` contains `FOR_SALE_ON_MARKET`.
+- Filtered active artifact:
+  `out/nai_active_only_from_full_2026-06-12_044310.json`.
+- Active artifact rows: 241 total, 183 sale and 58 lease.
+- Statuses: 241 `FOR_SALE_ON_MARKET`; 0 `UNKNOWN`, `SOLD`, `UNDER_OFFER`, null,
+  or detail-error rows retained.
+- Artifact coverage: 0 missing URLs, 0 missing titles, 670 image URLs, 1
+  document URL, 241 original/source website URLs, and 0 detailed contacts. The
+  public API did not expose broker names, phones, profile URLs, or VCards in the
+  sampled fields.
+
+Ingest proof:
+
+- Dry-run staged 241 rows and skipped 0 missing URLs.
+- Live ingest completed, then source-scoped `--mark-missing` was applied only
+  for `nai-global` after a dry-run confirmed the guard.
+- Active Supabase rows after cleanup: 241, with 183 sale and 58 lease.
+- The old 19 rendered-card probe rows with shared widget URLs were soft-deleted.
+- Supabase validation found 0 missing URLs, 0 missing titles, 0 missing raw data,
+  0 non-`FOR_SALE_ON_MARKET` statuses, 0 duplicate external IDs, 0 bad state
+  codes, 0 impossible coordinates, and 0 orphan contacts/documents/images.
+- Active child rows: 670 image URL rows, 1 document URL row, and 0 contact rows.
+- `search_cre_listings('NAI', null, null, null, null)` returned live NAI Global
+  rows with stable `https://infabode.com/services/listings/<id>` source URLs.
+
+Remaining limit:
+
+- The public Infabode feed also exposes older `UNKNOWN`, `SOLD`, `UNDER_OFFER`,
+  null, and other non-active statuses back to 2021. Those rows are public but
+  are not defensible active inventory. Save them only to audit/archive artifacts
+  unless EQUIRE adds a separate historical listing surface.

@@ -3,6 +3,17 @@
 Production bulk collection now uses the public Infabode GraphQL feed in
 `cre_collector/collect.ts`.
 
+## Current Status Policy
+
+Read `INFABODE_LISTING_STATUS_POLICY_2026-06-12.md` before running or
+ingesting an unbounded NAI collection. The public Infabode feed pages back to
+2021 and does not expose a server-side active/on-market filter in `PostFilter`.
+The defensible live-ingest policy is to fetch `publicPost` detail first and
+treat only `listingStatus` containing `FOR_SALE_ON_MARKET` as active current
+inventory. Public rows with `UNKNOWN`, `SOLD`, `UNDER_OFFER`,
+`FOR_SALE_OFF_MARKET`, `WITHDRAWN_UNSOLD`, null detail, or detail failures
+should not be loaded into the active `credeals` listing surface.
+
 ## Site Structure
 
 - Public listings are exposed through a widget-style page.

@@ -25,7 +25,7 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 | Savills | Partial, not CRE-defensible yet | 100 sale rows of 105 source cards in latest full run; fresh probe collected 12 sale rows from page 1, 0 US lease | Server-rendered global property-search sale pages, foreign fallback cards filtered | Find an authorized or clearly public U.S. commercial inventory source before enriching or claiming CRE coverage |
 | JLL Investor Center | Partial | 50 sale rows | Rendered public grid | Determine whether more pages exist and enrich details where public |
 | Marcus & Millichap | Partial | 12 sale rows | Rendered first grid under stealth | Find public pagination/API and detail enrichment; lease is not publicly listed |
-| NAI Global | Partial | 30 rows, 15 sale + 15 lease | First Infabode widget batch, synthesized `card:` ids | Find stable per-card links and widget pagination or API |
+| NAI Global | Complete public active feed, status-filtered | 241 active rows, 183 sale + 58 lease | Public Infabode feed plus `publicPost` detail enrichment, stable `infabode:<id>` IDs, source/original URLs, image URLs, one document URL, and raw status proof | Do not ingest historical/`UNKNOWN` Infabode rows as active inventory; optional future archive table only |
 | Lee & Associates | Blocked | 0 uploaded in latest full run | Buildout feed path known | Sustained full run failed around pages 286-297; needs throttling-safe or resumable paging |
 | Colliers | Partial, live-ingested SalesTracker subset | 1,300 SalesTracker cards collected, 1,172 unique active Supabase rows | Public SalesTracker RCM GET list/map endpoints plus anonymous SLP detail enrichment for investment-sale cards | Main `www.colliers.com/en/properties` Coveo sale/lease path remains blocked; SalesTracker filtered total reports 1,653 but public card pagination exposed 1,300 unique cards |
 | Transwestern | Partial, public GET implemented | 8 in probe, source feed totals 519 sale-bucket rows and 1,636 lease-bucket rows before dedupe | Public properties GET feed plus detail-page enrichment in targeted probe | Run full collection, dry-run ingest, live ingest, and Supabase validation before marking complete |
@@ -44,13 +44,19 @@ live refresh verification is partial because Buildout returned 403 HTML during
 
 JLL, Newmark, and Avison Young need the Cushman-style deep audit: prove detail
 page enrichment, document URLs, image URLs, contact URLs, and source totals.
-Savills, JLL Investor Center, Marcus & Millichap, NAI Global, Colliers
-SalesTracker, and SVN live refresh are explicitly partial. Savills is
+Savills, JLL Investor Center, Marcus & Millichap, Colliers SalesTracker, and
+SVN live refresh are explicitly partial. Savills is
 especially weak for EQUIRE because the current path is a global or residential
 property-search feed, not a proven U.S. commercial inventory source. Lee is
 blocked. Main Colliers Coveo sale/lease coverage remains blocked. Transwestern
 now has a proven public GET feed and targeted probe, but still needs a full run
 and live ingest validation before being marked complete.
+
+NAI Global is complete only for the active public Infabode inventory whose
+`publicPost.listingStatus` contains `FOR_SALE_ON_MARKET`. The same public feed
+also exposes historical or ambiguous rows back to 2021 with `UNKNOWN`, `SOLD`,
+`UNDER_OFFER`, or null statuses; those are deliberately excluded from the active
+`credeals` surface.
 
 ## Cushman Proof Snapshot
 
@@ -77,7 +83,7 @@ Result:
 2. Newmark, because the Algolia feed is strong but the 3-row lease gap and contact/document completeness need proof.
 3. Avison Young, because the current 11/11 per transaction might be complete or might be a rendered-sidebar illusion.
 4. Savills, because it has a small sale gap and lease ambiguity.
-5. NAI Global, Marcus & Millichap, JLL Investor, and CBRE Deal Flow, because each has known first-batch or gated limitations.
+5. Marcus & Millichap, JLL Investor, and CBRE Deal Flow, because each has known first-batch or gated limitations.
 6. Transwestern, because it has a public GET probe but still needs a conservative full dry run, live ingest decision, and Supabase validation.
 7. Lee, after adding a resumable or much slower Buildout paging mode.
 8. Main Colliers Coveo sale/lease coverage only after a safe non-POST-blocked path exists.
