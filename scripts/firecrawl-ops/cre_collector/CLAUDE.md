@@ -78,7 +78,7 @@ and ingested additively after that validation from a source-specific full run.
 | `svn` | Buildout inventory API | 2,988 in latest full artifact | 2,533 in latest full artifact | Mapping complete from prior artifact, but fresh live refresh partial because Buildout returned 403 HTML during probes |
 | `lee-associates` | Buildout inventory API | blocked in latest full run | blocked in latest full run | Buildout throttles under sustained paging; latest fresh retry passed pages 93-104 but failed pages 286-297 and aborted at 12/333 failed pages |
 | `nai-global` | Public Infabode GraphQL feed and `publicPost` details | 6 in probe | 6 in probe | Stable `infabode:` ids and detail URLs; contacts only when public fields exist |
-| `colliers` | UNSUPPORTED | – | – | POST-only API; needs request-body support |
+| `colliers` | Public SalesTracker RCM GET list/map plus SLP detail | 3 in probe, 1,653 SalesTracker filtered total | 0, main lease search blocked | Partial investment-sale coverage only; main `www.colliers.com/en/properties` Coveo sale/lease path remains blocked; no POST, agreement, or gated document path is used |
 | `transwestern` | Public GET feed plus detail pages | 4 in probe | 4 in probe | Implemented and dry-run proven; full run and live ingest still needed |
 
 Buildout semantics (svn, lee-associates): the inventory feed has **no

@@ -1,5 +1,127 @@
 # Savills Broker Notes
 
+## 2026-06-12 Continuation Probe
+
+Scope: Savills-only follow-up for the CRE collector. No secrets were read, no
+Supabase ingest was run, no binary assets were downloaded, and `collect.ts` was
+not edited because the live issue is source suitability rather than an isolated
+parser bug.
+
+### Current Public Endpoints Checked
+
+- Sale list: `https://search.savills.com/com/en/list/property-for-sale/united-states-of-america`
+- Lease list: `https://search.savills.com/com/en/list/property-to-rent/united-states-of-america`
+- U.S. corporate service sample:
+  `https://www.savills.us/services/occupier-services/site-selection.aspx`
+- U.S. capital markets sample:
+  `https://www.savills.us/services/capital-markets.aspx`
+- Sale detail sample:
+  `https://search.savills.com/com/en/property-detail/gbssofslo260011`
+- Lease fallback detail sample:
+  `https://search.savills.com/com/en/property-detail/cyelit10899`
+
+### Commands Run
+
+Health check:
+
+```bash
+bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
+```
+
+Direct public HTML probes:
+
+```bash
+curl -LsS -A 'Mozilla/5.0' \
+  'https://search.savills.com/com/en/list/property-for-sale/united-states-of-america' \
+  -o /tmp/savills_sale_live_20260612.html
+
+curl -LsS -A 'Mozilla/5.0' \
+  'https://search.savills.com/com/en/list/property-to-rent/united-states-of-america' \
+  -o /tmp/savills_lease_live_20260612.html
+
+curl -LsS -A 'Mozilla/5.0' \
+  'https://search.savills.com/com/en/property-detail/gbssofslo260011' \
+  -o /tmp/savills_sale_detail_gbssofslo260011_20260612.html
+
+curl -LsS -A 'Mozilla/5.0' \
+  'https://search.savills.com/com/en/property-detail/cyelit10899' \
+  -o /tmp/savills_lease_detail_cyelit10899_20260612.html
+
+curl -LsS -A 'Mozilla/5.0' \
+  'https://www.savills.us/services/occupier-services/site-selection.aspx' \
+  -o /tmp/savills_us_site_selection_20260612.html
+
+curl -LsS -A 'Mozilla/5.0' \
+  'https://www.savills.us/services/capital-markets.aspx' \
+  -o /tmp/savills_us_capital_markets_20260612.html
+```
+
+Targeted collector probes:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+
+npx tsx collect.ts --source=savills --transaction=sale \
+  --max-items=12 --page-cap=4 --concurrency=1 \
+  --out=/tmp/savills_sale_probe_20260612.json
+
+npx tsx collect.ts --source=savills --transaction=lease \
+  --max-items=12 --page-cap=4 --concurrency=1 \
+  --out=/tmp/savills_lease_probe_20260612.json
+```
+
+### Fresh Results
+
+- Local Firecrawl health check passed. Compose printed expected warnings for
+  unset optional env vars, then API root and scrape smoke were healthy.
+- Sale list HTML was 838,959 bytes, reported `105` properties for sale, exposed
+  `19` unique property-detail links on page 1, and had `rel=next` pointing to
+  `/page/2`.
+- Lease list HTML was 413,183 bytes, exposed one distinct detail URL
+  (`cyelit10899`), had no reported U.S. lease count, and had no `rel=next`.
+- Sale collector probe wrote `/tmp/savills_sale_probe_20260612.json`, collected
+  `12` sale listings from page 1, and reported source total `105`.
+- Lease collector probe collected `0` U.S. listings. It logged page 1 and page 2
+  as zero collected, then exited with `Error: no listings collected from any
+  source` because the run was lease-only and empty. This is consistent with the
+  current lease path being a non-U.S. fallback rather than U.S. inventory.
+- The first sale detail JSON-LD says `10790 Bellagio Rd` is a `Product` with
+  `description: "7 bedrooms House for sale"`, `priceCurrency: "USD"`, and
+  `streetAddress: "10790 Bellagio Rd, Bel-Air, California, CA 90077"`.
+- Sale and lease detail pages each exposed one `.pdf` URL, but it was the
+  generic Savills app terms PDF:
+  `https://pdf.savills.com/Savills-App-Terms-of-Use-v1.15.01.2026.pdf`.
+  No property brochure or OM PDF was observed in these two samples.
+- The sale detail sample exposed many image URLs and one `tel:` link, but the
+  contact/profile-like links were global Savills or contact-form links, not a
+  clear U.S. CRE listing broker profile.
+- The sampled `www.savills.us` commercial pages exposed service, research,
+  office, people, and site-search links. They did not expose a public U.S.
+  commercial listing feed, property inventory endpoint, or safe public JSON API.
+
+### Artifacts
+
+- `/tmp/savills_sale_live_20260612.html`
+- `/tmp/savills_lease_live_20260612.html`
+- `/tmp/savills_sale_probe_20260612.json`
+- `/tmp/savills_sale_detail_gbssofslo260011_20260612.html`
+- `/tmp/savills_lease_detail_cyelit10899_20260612.html`
+- `/tmp/savills_us_site_selection_20260612.html`
+- `/tmp/savills_us_capital_markets_20260612.html`
+
+`/tmp/savills_lease_probe_20260612.json` was not written because the lease-only
+collector probe produced no listings and exited nonzero.
+
+### Current Recommendation
+
+Do not spend collector-code time enriching the current Savills global
+property-search feed unless Cayman explicitly wants residential/global luxury
+property rows in EQUIRE. For CRE coverage, the strongest next action is to
+temporarily exclude Savills from CRE completeness claims and look for an
+authorized or clearly public Savills U.S. commercial inventory source. The
+current public paths are useful evidence, but they are not a defensible U.S.
+commercial brokerage listing feed.
+
 ## 2026-06-12 Deep Dive Notes
 
 Scope: read-only Savills investigation for EQUIRE CRE listing coverage, source

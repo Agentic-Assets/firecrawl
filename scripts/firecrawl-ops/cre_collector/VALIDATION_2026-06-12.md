@@ -67,7 +67,13 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
 - Post-validation live ingest: Newmark no-state recovery was ingested additively from `out/newmark_full_2026-06-12_no_state_recovery.json`. The artifact staged 4,371 rows, 1,121 sale and 3,250 lease, with 0 skipped missing URLs. Latest-batch validation found 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad states, 0 bad coordinates, 0 bad cap rates, 4,303 image child rows, and 0 orphan images.
 - Post-validation live ingest: Avison Young SharpLaunch full feed was ingested additively from `out/avison_full_2026-06-12_043342.json`. The artifact collected 2,333 raw rows and staged 2,200 unique rows after dual sale/lease merge, with 0 skipped missing URLs. Latest-batch validation found 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad states, 0 bad coordinates, 0 bad cap rates, 4,125 contact child rows, 2,186 image child rows, and 0 orphan contact/image rows.
 - Lee & Associates is not uploaded. A fresh Lee-only run on 2026-06-12 passed the prior failure zone, then failed pages 286 through 297 after retries and aborted with `Error: no listings collected from any source`. It wrote only `out/lee_latest_2026-06-12_004010.log`, not a usable JSON artifact.
-- Colliers is not uploaded. Current collector has no supported public GET path for the POST-only workflow.
+- Colliers is not uploaded. Post-validation code now has a public GET path for
+  Colliers SalesTracker investment-sale cards only. A targeted `--max-items=3`
+  probe staged 3 rows, skipped 0 missing URLs, retained 1 card without a public
+  SLP detail link as a card/map row, captured 4 public contacts, 9 image URLs,
+  and 0 document rows, and produced 0 `detailError` rows. The main
+  `www.colliers.com/en/properties` Coveo sale/lease search remains blocked and
+  no full SalesTracker run or live ingest has been performed.
 - Transwestern is not uploaded from a full run yet. Current collector has a targeted public GET feed probe and dry-run proof, but it still needs full collection, live ingest, and Supabase validation.
 - 730 older active rows remain from earlier additive runs: Newmark 715, Marcus & Millichap 6, CBRE 5, Savills 2, SVN 2. Do not treat active row count as a pure latest-run count until a clean reconciliation run marks missing rows.
 - Some supported adapters are intentionally shallow: Avison Young, Marcus & Millichap, NAI Global, and Savills have first-page, first-batch, or sale-only limitations documented in `CLAUDE.md`. Cushman was removed from this list after the 2026-06-12 API upgrade, pending full re-run and ingest.
@@ -94,7 +100,10 @@ The Lee command was piped through `tee`, so the shell process returned the `tee`
 1. Make Lee throttling-safe before any claim of all-source coverage. Candidate fixes: lower Buildout concurrency for Lee, add longer page-batch cooldowns, persist successful pages to a resumable cache, or collect Lee in smaller page windows.
 2. Add a saved validation command that compares latest artifact staged rows to Supabase touched rows by brokerage.
 3. After Lee is clean, run a full all-source collection and live ingest with mark-missing eligibility, then verify that stale active rows are gone or intentionally retained.
-4. Treat Colliers as integration backlog until a permitted API path exists. Run Transwestern full collection and validation from the public GET feed before marking it complete.
+4. Run conservative full dry runs for Colliers SalesTracker and Transwestern,
+   then validate staged rows and child URL rows before any additive live ingest.
+   Treat main Colliers Coveo sale/lease coverage as integration backlog until a
+   permitted non-POST path exists.
 
 ## 2026-06-12 CBRE Deal Flow Full Run And Live Ingest
 

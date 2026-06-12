@@ -315,3 +315,63 @@ Result:
 
 The SharpLaunch public feed is loaded. Optional detail enrichment remains for
 listing PDFs, richer image galleries, JSON-LD, and VCard/profile URLs.
+
+## 2026-06-12 Colliers SalesTracker Partial Adapter
+
+Colliers was upgraded from fully unsupported to partial investment-sale support
+through the public SalesTracker RCM GET path. Main
+`www.colliers.com/en/properties` sale and lease coverage remains blocked behind
+the Coveo POST workflow.
+
+Implemented in `collect.ts`:
+
+- `srcColliers()` uses `https://sales.colliers.com/` to extract the RCM engine
+  key.
+- Listing cards come from
+  `https://my.rcm1.com/api/AjaxEngine/GetListingsHtml?...`.
+- Coordinates and stable `ProjectId` values come from
+  `https://my.rcm1.com/api/AjaxEngine/GetMapData?...`.
+- Public detail enrichment uses
+  `https://my.rcm1.com/api/handler/slp/Init?pv=<public-card-detail-pv>`.
+- Lease mode returns an explicit zero-row source entry because no Colliers lease
+  GET feed is proven.
+- Brochure and agreement URLs are retained only in raw metadata. The collector
+  does not download PDFs/images or classify gated document paths as public
+  document rows.
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npm run typecheck
+npx tsx collect.ts --source=colliers --transaction=sale --max-items=3 --page-cap=1 --concurrency=2 --out=/tmp/colliers_collector_probe_2026-06-12.json
+python3 cre_ingest.py --in /tmp/colliers_collector_probe_2026-06-12.json --dry-run --keep-artifacts /tmp/colliers_collector_probe_2026-06-12_ingest
+npx tsx collect.ts --source=colliers --transaction=both --max-items=3 --page-cap=1 --concurrency=2 --out=/tmp/colliers_collector_both_probe_2026-06-12.json
+python3 cre_ingest.py --in /tmp/colliers_collector_both_probe_2026-06-12.json --dry-run --keep-artifacts /tmp/colliers_collector_both_probe_2026-06-12_ingest
+python3 -m py_compile cre_ingest.py
+```
+
+Results:
+
+- Direct public GET probe artifacts are in
+  `/tmp/colliers_probe_2026-06-12_codex/`.
+- SalesTracker reported `total=1653` and `totalAvail=2094`.
+- Targeted collector probe collected ProjectIds `150540`, `150534`, and
+  `150533`.
+- Dry-run ingest staged 3 Colliers rows and skipped 0 rows for missing URL.
+- The probe had 4 public contacts, 9 image URLs, 0 document rows, and 0
+  `detailError` rows.
+- One card had no public SLP detail link and was retained as a card/map row.
+
+Next action:
+
+Run a conservative full SalesTracker dry run with no live ingest first:
+
+```bash
+npx tsx collect.ts --source=colliers --transaction=both --max-items=0 --page-cap=40 --concurrency=2 --out=out/colliers_salestracker_full_<date>.json
+python3 cre_ingest.py --in out/colliers_salestracker_full_<date>.json --dry-run --keep-artifacts /tmp/colliers_salestracker_full_<date>_ingest
+```
+
+Use live ingest only after checking staged row count, skipped URLs, contacts,
+images, document rows, and per-listing `detailError`. Do not use
+`--mark-missing`.

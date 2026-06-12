@@ -22,12 +22,12 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 | JLL | Needs deep audit | 4,678 total, 333 sale + 4,345 lease | Search-page pagination and listing URLs | Add/verify detail-page enrichment for documents, image galleries, broker contact links, and richer facts |
 | Newmark | Needs deep audit | 4,368 collected, 1,121 sale + 3,247 lease of 3,250 reported lease | Algolia credentials scraped from page, state and property-type splits for the 1,000-hit cap | Close the 3-row lease gap if still present and audit detail fields, brokers, documents, and images |
 | Avison Young | Public feed complete, needs detail enrichment | 2,200 staged unique rows, 636 sale + 1,431 lease + 133 sale_or_lease | Public SharpLaunch active website/team_member feed, client-side transaction partition, contact joins, CDN image/avatar URLs | Optional detail-page enrichment for public PDFs, richer galleries, JSON-LD, VCard/profile URLs |
-| Savills | Partial | 100 sale rows of 105 source cards, 0 US lease | Server-rendered sale pages, foreign fallback cards filtered | Resolve 5 filtered or missing sale cards and confirm lease inventory source |
+| Savills | Partial, not CRE-defensible yet | 100 sale rows of 105 source cards in latest full run; fresh probe collected 12 sale rows from page 1, 0 US lease | Server-rendered global property-search sale pages, foreign fallback cards filtered | Find an authorized or clearly public U.S. commercial inventory source before enriching or claiming CRE coverage |
 | JLL Investor Center | Partial | 50 sale rows | Rendered public grid | Determine whether more pages exist and enrich details where public |
 | Marcus & Millichap | Partial | 12 sale rows | Rendered first grid under stealth | Find public pagination/API and detail enrichment; lease is not publicly listed |
 | NAI Global | Partial | 30 rows, 15 sale + 15 lease | First Infabode widget batch, synthesized `card:` ids | Find stable per-card links and widget pagination or API |
 | Lee & Associates | Blocked | 0 uploaded in latest full run | Buildout feed path known | Sustained full run failed around pages 286-297; needs throttling-safe or resumable paging |
-| Colliers | Blocked | 0 | POST-only Coveo path identified | Needs repeatable public GET, request-body support, safe action path, or authorized integration |
+| Colliers | Partial | 3 in targeted SalesTracker probe, 1,653 SalesTracker filtered total | Public SalesTracker RCM GET list/map endpoints plus anonymous SLP detail enrichment for investment-sale cards | Run conservative full SalesTracker dry run and additive ingest if clean; main `www.colliers.com/en/properties` Coveo sale/lease path remains blocked |
 | Transwestern | Blocked | 0 | POST-only map app path identified | Needs repeatable public GET, request-body support, safe action path, or authorized integration |
 
 ## Completed Or Closest To Complete
@@ -44,10 +44,13 @@ live refresh verification is partial because Buildout returned 403 HTML during
 
 JLL, Newmark, and Avison Young need the Cushman-style deep audit: prove detail
 page enrichment, document URLs, image URLs, contact URLs, and source totals.
-Savills, JLL Investor Center, Marcus & Millichap, NAI Global, and SVN live
-refresh are explicitly partial. Lee and Colliers are blocked. Transwestern now
-has a proven public GET feed and targeted probe, but still needs a full run and
-live ingest validation before being marked complete.
+Savills, JLL Investor Center, Marcus & Millichap, NAI Global, Colliers
+SalesTracker, and SVN live refresh are explicitly partial. Savills is
+especially weak for EQUIRE because the current path is a global or residential
+property-search feed, not a proven U.S. commercial inventory source. Lee is
+blocked. Main Colliers Coveo sale/lease coverage remains blocked. Transwestern
+now has a proven public GET feed and targeted probe, but still needs a full run
+and live ingest validation before being marked complete.
 
 ## Cushman Proof Snapshot
 
@@ -75,5 +78,6 @@ Result:
 3. Avison Young, because the current 11/11 per transaction might be complete or might be a rendered-sidebar illusion.
 4. Savills, because it has a small sale gap and lease ambiguity.
 5. NAI Global, Marcus & Millichap, JLL Investor, and CBRE Deal Flow, because each has known first-batch or gated limitations.
-6. Lee, after adding a resumable or much slower Buildout paging mode.
-7. Colliers and Transwestern only after a safe non-POST-blocked path exists.
+6. Colliers SalesTracker and Transwestern, because both have public GET probes but still need conservative full dry runs, live ingest decisions, and Supabase validation.
+7. Lee, after adding a resumable or much slower Buildout paging mode.
+8. Main Colliers Coveo sale/lease coverage only after a safe non-POST-blocked path exists.

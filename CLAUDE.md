@@ -78,9 +78,11 @@ Key components:
 
 Brokers: CBRE (+ Deal Flow), JLL (+ Investor Center), Cushman & Wakefield,
 Marcus & Millichap, Avison Young, SVN, NAI Global, Newmark, Lee & Associates,
-Savills. Colliers and Transwestern are unsupported in the collector (POST-only
-APIs). Newmark works via its public Algolia API; Marcus & Millichap works
-under stealth with retries (both formerly disabled). Latest verified full run
+Savills. Colliers has partial SalesTracker investment-sale support, while the
+main Colliers Coveo sale/lease path remains blocked. Transwestern is still not
+validated by a full run and live ingest. Newmark works via its public Algolia API;
+Marcus & Millichap works under stealth with retries (both formerly disabled).
+Latest verified full run
 started `2026-06-12T04:04:23Z` and produced 35,510 raw records. Lee & Associates
 is the only supported source that failed in that run: Buildout returned HTML
 interstitials on pages 93-104, so the source aborted at 12/333 failed pages.
