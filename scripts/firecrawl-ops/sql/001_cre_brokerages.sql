@@ -124,6 +124,14 @@ INSERT INTO credeals.cre_brokerages (name, slug, base_url, search_url, descripti
  'https://search.savills.com/us/en/list/property-for-sale/united-states-of-america',
  'Savills North America. Server-rendered paginated search at search.savills.com (/page/N). Sale base: property-for-sale/united-states-of-america; lease base: property-to-rent/united-states-of-america. Collected by cre_collector/collect.ts (source key savills); smaller US inventory (~100 sale listings).',
  '{"proxy": "auto", "wait_for_ms": 5000, "timeout_ms": 60000, "pagination_strategy": "path_page_n", "search_url_pattern": "https://search.savills.com/us/en/list/property-{for-sale|to-rent}/united-states-of-america/page/{n}", "notes": "Added for cre_collector multi-source run. HTML cards server-rendered; no Cloudflare observed."}'::jsonb,
+ true),
+
+-- 12. Transwestern -- public GET feed plus detail pages, added 2026-06-12.
+('Transwestern', 'transwestern',
+ 'https://transwestern.com',
+ 'https://transwestern.com/properties',
+ 'Transwestern. Public property search exposes a repeatable GET feed at /properties?call=ajax with DealsType buckets for Sale, Lease, Sublease, and Sale or Lease. Detail pages expose broker profile links, vCards, flyer/PDF URLs, gallery image URLs, property facts, and availability tables.',
+ '{"proxy": "auto", "wait_for_ms": 1500, "timeout_ms": 60000, "pagination_strategy": "public_ajax_get_deal_buckets", "search_url_pattern": "/properties?call=ajax&DealsType={Sale|Lease|Sublease|Sale%20or%20Lease}", "listing_url_pattern": "/property/{PageUrl}", "notes": "Collected by cre_collector source key transwestern. Use GET, not the browser POST body. Skip feed rows whose PageUrl is empty or '-'."}'::jsonb,
  true)
 
 ON CONFLICT (slug) DO UPDATE SET

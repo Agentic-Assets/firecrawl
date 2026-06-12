@@ -28,7 +28,7 @@
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 004_cre_indexes.sql
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 005_cre_views.sql
 --
--- Option C -- Supabase SQL editor: paste the contents of 001 -> 005 in order.
+-- Option C -- Supabase SQL editor: paste the contents of 001 -> 006 in order.
 --
 -- -----------------------------------------------------------------------------
 -- DEPENDENCY ORDER (do not reorder)
@@ -36,6 +36,7 @@
 --   002 cre_listings (+children) references cre_brokerages
 --   003 cre_scrape_tracking     references cre_brokerages, cre_listings
 --   004 cre_indexes             indexes on cre_listings
+--   006 cre_contact_urls        contact profile/avatar/VCard URL fields
 --   005 cre_views               views, search fn, updated_at triggers
 --
 -- Extensions: pgcrypto (gen_random_uuid) is already installed on this project.
@@ -60,6 +61,9 @@ CREATE SCHEMA IF NOT EXISTS credeals;
 
 \echo '=== 004_cre_indexes.sql ==='
 \i 004_cre_indexes.sql
+
+\echo '=== 006_cre_contact_urls.sql ==='
+\i 006_cre_contact_urls.sql
 
 \echo '=== 005_cre_views.sql ==='
 \i 005_cre_views.sql

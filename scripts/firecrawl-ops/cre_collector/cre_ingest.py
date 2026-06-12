@@ -69,6 +69,7 @@ SOURCE_TO_BROKERAGE = {
     "svn": ("svn", ""),
     "nai-global": ("nai-global", ""),
     "lee-associates": ("lee-associates", ""),
+    "transwestern": ("transwestern", ""),
 }
 
 # Ordered keyword -> property_type enum. First match wins.
@@ -302,20 +303,49 @@ def to_row(listing, brokers_by_idx, scraped_at):
     lease_min, lease_max = parse_lease_rates(listing.get("leaseRateText"))
 
     contacts = []
-    for i, bid in enumerate(listing.get("brokerIds") or []):
-        b = brokers_by_idx.get(bid)
-        if not b or not (b.get("name") or b.get("email")):
-            continue
-        contacts.append(
-            {
-                "name": b.get("name"),
-                "title": b.get("title"),
-                "email": b.get("email"),
-                "phone": b.get("phone"),
-                "company": b.get("company") or listing.get("sourceCompany"),
-                "isPrimary": i == 0,
-            }
-        )
+    source_contacts = listing.get("contactsDetailed") or []
+    if source_contacts:
+        for i, c in enumerate(source_contacts):
+            if not isinstance(c, dict) or not (
+                c.get("name")
+                or c.get("email")
+                or c.get("phone")
+                or c.get("profileUrl")
+                or c.get("avatarUrl")
+                or c.get("vcardUrl")
+            ):
+                continue
+            contacts.append(
+                {
+                    "name": c.get("name"),
+                    "title": c.get("title"),
+                    "email": c.get("email"),
+                    "phone": c.get("phone"),
+                    "company": c.get("company") or listing.get("sourceCompany"),
+                    "profileUrl": c.get("profileUrl"),
+                    "avatarUrl": c.get("avatarUrl"),
+                    "vcardUrl": c.get("vcardUrl"),
+                    "isPrimary": i == 0,
+                }
+            )
+        if not contacts:
+            source_contacts = []
+    if not source_contacts:
+        for i, bid in enumerate(listing.get("brokerIds") or []):
+            b = brokers_by_idx.get(bid)
+            if not b or not (b.get("name") or b.get("email")):
+                continue
+            contacts.append(
+                {
+                    "name": b.get("name"),
+                    "title": b.get("title"),
+                    "email": b.get("email"),
+                    "phone": b.get("phone"),
+                    "company": b.get("company") or listing.get("sourceCompany"),
+                    "avatarUrl": b.get("avatarUrl"),
+                    "isPrimary": i == 0,
+                }
+            )
 
     documents = []
     for d in listing.get("brochures") or []:
@@ -516,18 +546,31 @@ WITH ins AS (
 )
 SELECT * FROM ins;
 
--- Children: refresh wholesale for every touched listing.
-DELETE FROM credeals.cre_listing_contacts  WHERE listing_id IN (SELECT id FROM _up);
-DELETE FROM credeals.cre_listing_documents WHERE listing_id IN (SELECT id FROM _up);
-DELETE FROM credeals.cre_listing_images    WHERE listing_id IN (SELECT id FROM _up);
+-- Children: refresh wholesale only when the latest source row did not hit a
+-- detail-page error. This protects previously good documents/images/contacts
+-- from transient detail-scrape failures while still refreshing normal rows.
+CREATE TEMP TABLE _child_refresh ON COMMIT DROP AS
+SELECT DISTINCT u.id
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError');
 
-INSERT INTO credeals.cre_listing_contacts (listing_id, name, title, email, phone, brokerage_name, is_primary)
+DELETE FROM credeals.cre_listing_contacts  WHERE listing_id IN (SELECT id FROM _child_refresh);
+DELETE FROM credeals.cre_listing_documents WHERE listing_id IN (SELECT id FROM _child_refresh);
+DELETE FROM credeals.cre_listing_images    WHERE listing_id IN (SELECT id FROM _child_refresh);
+
+INSERT INTO credeals.cre_listing_contacts (
+    listing_id, name, title, email, phone, brokerage_name,
+    profile_url, avatar_url, vcard_url, is_primary
+)
 SELECT u.id, x->>'name', x->>'title', x->>'email', x->>'phone', x->>'company',
+       x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
        COALESCE((x->>'isPrimary')::boolean, false)
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
-WHERE jsonb_typeof(s.contacts) = 'array';
+WHERE u.id IN (SELECT id FROM _child_refresh)
+  AND jsonb_typeof(s.contacts) = 'array';
 
 INSERT INTO credeals.cre_listing_documents (listing_id, doc_type, title, url)
 SELECT u.id,
@@ -536,7 +579,8 @@ SELECT u.id,
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.documents) x
-WHERE jsonb_typeof(s.documents) = 'array' AND x->>'url' IS NOT NULL;
+WHERE u.id IN (SELECT id FROM _child_refresh)
+  AND jsonb_typeof(s.documents) = 'array' AND x->>'url' IS NOT NULL;
 
 INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order)
 SELECT u.id, x->>'url', COALESCE((x->>'isPrimary')::boolean, false),
@@ -544,7 +588,8 @@ SELECT u.id, x->>'url', COALESCE((x->>'isPrimary')::boolean, false),
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.images) x
-WHERE jsonb_typeof(s.images) = 'array' AND x->>'url' IS NOT NULL;
+WHERE u.id IN (SELECT id FROM _child_refresh)
+  AND jsonb_typeof(s.images) = 'array' AND x->>'url' IS NOT NULL;
 """)
 
     if mark_missing_slugs:

@@ -116,6 +116,9 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listing_contacts (
     email           text,
     phone           text,
     brokerage_name  text,                       -- broker's firm as printed on the listing
+    profile_url     text,
+    avatar_url      text,
+    vcard_url       text,
     is_primary      boolean     DEFAULT false,
     created_at      timestamptz DEFAULT now()
 );

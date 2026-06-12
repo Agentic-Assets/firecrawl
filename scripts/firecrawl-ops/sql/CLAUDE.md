@@ -9,11 +9,12 @@ Run these in order. Each file is idempotent (`CREATE TABLE IF NOT EXISTS`, etc.)
 
 | File | What it creates |
 |------|----------------|
-| `000_run_all.sql` | Master runner  -  executes 001–005 in order |
-| `001_cre_brokerages.sql` | `cre_brokerages` table + 10-broker seed rows |
+| `000_run_all.sql` | Master runner  -  executes 001–006 in order |
+| `001_cre_brokerages.sql` | `cre_brokerages` table + collector brokerage seed rows |
 | `002_cre_listings.sql` | `cre_listings`, `cre_listing_contacts`, `cre_listing_documents`, `cre_listing_images` |
 | `003_cre_scrape_tracking.sql` | `cre_scrape_jobs`, `cre_scrape_log` |
 | `004_cre_indexes.sql` | Performance indexes (geo, FTS, jsonb GIN, price, cap_rate) |
+| `006_cre_contact_urls.sql` | Contact profile/avatar/VCard URL columns and refreshed `v_cre_listings_full` contact JSON |
 | `005_cre_views.sql` | `v_cre_listings_full`, `v_cre_active_for_sale`, `v_cre_active_for_lease`, `v_cre_market_summary`, `search_cre_listings()` function, `updated_at` trigger |
 
 ## Running migrations
@@ -55,7 +56,9 @@ The password lives only in `~/.pgpass` or a secrets vault. Never commit it.
 The production bulk loader is `../cre_collector/cre_ingest.py`. Its
 `SOURCE_TO_BROKERAGE` mapping must match the slug values inserted in
 `001_cre_brokerages.sql`. Sub-sources fold into parent brokerages:
-`cbre-dealflow` -> `cbre`, and `jll-investor` -> `jll`.
+`cbre-dealflow` -> `cbre`, and `jll-investor` -> `jll`. New source keys
+must be added to both the loader mapping and the seed file before dry-run or
+live ingest.
 
 The legacy Python scraper package in `../cre_scrapers/` still has its own
 `config.py` and `ListingData` model. Keep those aligned when using that package,

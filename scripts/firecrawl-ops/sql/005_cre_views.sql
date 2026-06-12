@@ -48,7 +48,11 @@ LEFT JOIN LATERAL (
     SELECT json_agg(json_build_object(
         'id', cc.id, 'name', cc.name, 'title', cc.title,
         'email', cc.email, 'phone', cc.phone,
-        'brokerage_name', cc.brokerage_name, 'is_primary', cc.is_primary
+        'brokerage_name', cc.brokerage_name,
+        'profile_url', cc.profile_url,
+        'avatar_url', cc.avatar_url,
+        'vcard_url', cc.vcard_url,
+        'is_primary', cc.is_primary
     ) ORDER BY cc.is_primary DESC, cc.name) AS contacts
     FROM credeals.cre_listing_contacts cc WHERE cc.listing_id = l.id
 ) c ON true
