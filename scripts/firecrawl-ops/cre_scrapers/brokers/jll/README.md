@@ -455,6 +455,11 @@ Code behavior:
 
 - Detail pages are cached under `out/cache/jll-detail/` by normalized listing
   URL so interrupted long runs do not discard completed rendered detail scrapes.
+- `JLL_DETAIL_CONCURRENCY` can override the detail enrichment concurrency
+  independently of search-page concurrency. The default remains conservative,
+  but the 2026-06-12 full run was restarted with `JLL_DETAIL_CONCURRENCY=6`
+  after cache progress showed the browser-rendered detail phase was the
+  bottleneck.
 - Search pages that render zero cards are retried with longer waits before the
   collector accepts the page, because a full-run attempt briefly returned 0
   cards for sale/industrial even though the verified public total is 492.
@@ -501,5 +506,8 @@ rows; and dry-run ingest staged all 12 rows.
 
 Next step:
 
-- Run a full JLL collection with detail cache enabled, then dry-run and live
-  ingest only after detail errors and duplicate/merge behavior are understood.
+- Run or resume a full JLL collection with detail cache enabled, high enough
+  page cap for office lease (`--page-cap=100` was required on 2026-06-12), and
+  `JLL_DETAIL_CONCURRENCY=6` if local Firecrawl remains healthy. Dry-run and
+  live ingest only after detail errors and duplicate/merge behavior are
+  understood.

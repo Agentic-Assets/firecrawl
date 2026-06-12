@@ -1107,6 +1107,12 @@ const JLL_PROPERTY_TYPES = [
   "coworking",
   "data-center",
 ] as const;
+const JLL_DETAIL_CONCURRENCY = boundedInt(
+  process.env.JLL_DETAIL_CONCURRENCY,
+  Math.min(CONCURRENCY, 3),
+  1,
+  10
+);
 
 function jllPropertyTypeLabel(propertyType: string): string {
   return propertyType
@@ -1493,7 +1499,7 @@ async function srcJll(tx: Tx, max: number): Promise<SourceResult> {
     if (addedOrSeenOnPage === 0) break;
   }
   if (!listings.length) throw new Error("no listing cards found on JLL search page");
-  const enriched = await pmap(listings, Math.min(CONCURRENCY, 3), enrichJllListing);
+  const enriched = await pmap(listings, JLL_DETAIL_CONCURRENCY, enrichJllListing);
 
   const knownTotals = Object.values(filterTotals).filter((n): n is number => typeof n === "number");
   const total = knownTotals.length ? knownTotals.reduce((sum, n) => sum + n, 0) : null;
