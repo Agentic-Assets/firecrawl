@@ -1190,6 +1190,25 @@ function parseJllSearchPage(html: string, tx: Tx, propertyType: string, page: nu
   return { total, listings };
 }
 
+async function fetchJllSearchPage(tx: Tx, propertyType: string, page: number): Promise<{
+  total: number | null;
+  listings: any[];
+}> {
+  const searchUrl = jllFilteredSearchUrl(tx === "sale" ? "sale" : "rent", propertyType, page);
+  const waits = [8000, 12000, 16000];
+  let lastParsed: { total: number | null; listings: any[] } | null = null;
+  for (const waitFor of waits) {
+    const html = await scrapeRaw(searchUrl, { waitFor });
+    const parsed = parseJllSearchPage(html, tx, propertyType, page);
+    lastParsed = parsed;
+    if (parsed.listings.length > 0 || parsed.total === 0) return parsed;
+    console.error(
+      `  jll/${tx}/${propertyType}: page ${page} rendered 0 cards (total ${parsed.total ?? "?"}); retrying with waitFor=${waitFor}`
+    );
+  }
+  return lastParsed ?? { total: null, listings: [] };
+}
+
 function mergeJllListing(existing: any, candidate: any, propertyType: string, page: number) {
   existing.jllPropertyTypeFilters = Array.from(
     new Set([...(existing.jllPropertyTypeFilters ?? []), propertyType])
@@ -1436,9 +1455,7 @@ async function srcJll(tx: Tx, max: number): Promise<SourceResult> {
     if (!activePropertyTypes.length) break;
 
     const pageResults = await pmap(activePropertyTypes, CONCURRENCY, async (propertyType) => {
-      const searchUrl = jllFilteredSearchUrl(tenure, propertyType, page);
-      const html = await scrapeRaw(searchUrl, { waitFor: 8000 });
-      const parsed = parseJllSearchPage(html, tx, propertyType, page);
+      const parsed = await fetchJllSearchPage(tx, propertyType, page);
       if (filterTotals[propertyType] === undefined) {
         filterTotals[propertyType] = parsed.total;
         maxByFilterPage[propertyType] =

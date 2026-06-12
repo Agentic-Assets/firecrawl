@@ -752,6 +752,13 @@ Probe result:
 - 10 public document URLs, 37 image URLs, 25 contact rows, and 25 broker
   profile URLs were emitted.
 - The JLL detail cache contained 12 rendered detail files after the probe.
+- A first full-run attempt was stopped before ingest because sale/industrial
+  rendered 0 cards despite prior evidence of 492 rows. The collector now retries
+  zero-card search pages with longer waits before accepting them.
+- Retry verification on `--transaction=sale --max-items=12 --page-cap=1`
+  covered all nine property-type tokens, including industrial, with 0 detail
+  errors, 12 stable ids, 12 public document URLs, 27 contact rows, and 0 skipped
+  ingest rows.
 
 Next step: run full JLL with the cache enabled, dry-run ingest, inspect
 detail-error and merge counts, then live ingest with source-scoped

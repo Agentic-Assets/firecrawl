@@ -455,6 +455,9 @@ Code behavior:
 
 - Detail pages are cached under `out/cache/jll-detail/` by normalized listing
   URL so interrupted long runs do not discard completed rendered detail scrapes.
+- Search pages that render zero cards are retried with longer waits before the
+  collector accepts the page, because a full-run attempt briefly returned 0
+  cards for sale/industrial even though the verified public total is 492.
 - Detail failures remain row-local as `detailError`; the source does not fail
   just because one detail page is weak.
 - Stable JLL property ids from `pageProps.property.id` are used as collector
@@ -484,6 +487,17 @@ Probe result:
 - 10 public document URLs, 37 image URLs, 25 contact rows, and 25 public broker
   profile URLs were emitted.
 - The JLL detail cache contained 12 rendered detail files after the probe.
+
+Search retry verification:
+
+```bash
+npx tsx collect.ts --source=jll --transaction=sale --max-items=12 --page-cap=1 --concurrency=3 --out=/tmp/jll_search_retry_probe_2026-06-12.json
+python3 cre_ingest.py --in /tmp/jll_search_retry_probe_2026-06-12.json --dry-run --keep-artifacts /tmp/jll_search_retry_probe_2026-06-12_ingest_check
+```
+
+Result: 12 sale rows covered all nine property-type tokens, including
+industrial; 0 detail errors; 12 stable ids; 12 public document URLs; 27 contact
+rows; and dry-run ingest staged all 12 rows.
 
 Next step:
 
