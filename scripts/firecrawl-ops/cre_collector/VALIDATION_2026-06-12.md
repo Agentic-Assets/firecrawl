@@ -336,6 +336,27 @@ Result:
 - Live child refreshes did not use `--mark-missing`.
 - Active bad contact avatar URLs are now 0, down from 37.
 
+## 2026-06-12 Folded Source Mark-Missing Guard
+
+`cre_ingest.py --mark-missing` now refuses incomplete folded source coverage.
+This protects parent brokerage slugs that contain multiple source keys, for
+example `cbre` plus `cbre-dealflow` and `jll` plus `jll-investor`.
+
+Verification:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+python3 cre_ingest.py --in out/cbre_dealflow_full_2026-06-12_041740.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/cbre_dealflow_mark_missing_guard_check_2026-06-12
+```
+
+Result:
+
+- Staged 1,836 Deal Flow rows and skipped 0 missing URLs.
+- Printed `mark-missing skipped` for parent slug `cbre` because the batch saw
+  only `cbre-dealflow` and not both `cbre` and `cbre-dealflow`.
+- Generated SQL contains the scrape-job note and no parent-level soft-delete
+  block for `cbre`.
+
 ## 2026-06-12 NAI Global Active Infabode Ingest
 
 Commands:

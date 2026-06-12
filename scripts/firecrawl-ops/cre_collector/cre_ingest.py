@@ -72,6 +72,10 @@ SOURCE_TO_BROKERAGE = {
     "transwestern": ("transwestern", ""),
 }
 
+SOURCE_KEYS_BY_SLUG = {}
+for _source_key, (_slug, _prefix) in SOURCE_TO_BROKERAGE.items():
+    SOURCE_KEYS_BY_SLUG.setdefault(_slug, set()).add(_source_key)
+
 # Ordered keyword -> property_type enum. First match wins.
 PROPERTY_TYPE_RULES = [
     ("mixed", "mixed_use"),
@@ -739,11 +743,14 @@ def main():
 
     # Per-brokerage job stats + mark-missing eligibility.
     slug_stats = {}
+    source_keys_by_slug_seen = {}
     for e in source_entries:
-        mapping = SOURCE_TO_BROKERAGE.get(e.get("sourceKey"))
+        source_key = e.get("sourceKey")
+        mapping = SOURCE_TO_BROKERAGE.get(source_key)
         if not mapping:
             continue
         slug = mapping[0]
+        source_keys_by_slug_seen.setdefault(slug, set()).add(source_key)
         st = slug_stats.setdefault(slug, {"discovered": 0, "errors": 0, "notes": []})
         st["discovered"] += e.get("listingsCollected") or 0
         if e.get("error"):
@@ -752,6 +759,31 @@ def main():
     slug_saved = {}
     for r in rows:
         slug_saved[r["slug"]] = slug_saved.get(r["slug"], 0) + 1
+    mark_missing_slugs = set()
+    if args.mark_missing:
+        for slug, st in slug_stats.items():
+            known_keys = SOURCE_KEYS_BY_SLUG.get(slug, {slug})
+            seen_keys = source_keys_by_slug_seen.get(slug, set())
+            has_complete_folded_coverage = len(known_keys) == 1 or known_keys <= seen_keys
+            if (
+                st["errors"] == 0
+                and slug_saved.get(slug, 0) >= args.mark_missing_floor
+                and has_complete_folded_coverage
+            ):
+                mark_missing_slugs.add(slug)
+            elif len(known_keys) > 1 and not has_complete_folded_coverage:
+                st["notes"].append(
+                    "mark-missing skipped: folded source coverage incomplete "
+                    f"(saw {sorted(seen_keys)}, need {sorted(known_keys)})"
+                )
+        ineligible = set(slug_stats) - mark_missing_slugs
+        if ineligible:
+            print(
+                "mark-missing skipped for (errors, below floor, or incomplete folded source coverage): "
+                f"{sorted(ineligible)}",
+                file=sys.stderr,
+            )
+
     job_meta = [
         {
             "slug": slug,
@@ -763,15 +795,6 @@ def main():
         for slug, st in sorted(slug_stats.items())
         if slug_saved.get(slug, 0) > 0 or st["discovered"] > 0 or st["errors"] > 0
     ]
-
-    mark_missing_slugs = set()
-    if args.mark_missing:
-        for slug, st in slug_stats.items():
-            if st["errors"] == 0 and slug_saved.get(slug, 0) >= args.mark_missing_floor:
-                mark_missing_slugs.add(slug)
-        ineligible = set(slug_stats) - mark_missing_slugs
-        if ineligible:
-            print(f"mark-missing skipped for (errors or below floor): {sorted(ineligible)}", file=sys.stderr)
 
     sql = build_sql(rows, job_meta, started_at, mark_missing_slugs)
 

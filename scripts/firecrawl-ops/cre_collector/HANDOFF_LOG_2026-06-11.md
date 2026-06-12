@@ -359,6 +359,24 @@ Result:
 - SVN dry-run staged 5,287 rows and skipped 0 missing URLs.
 - Active bad contact avatar URLs went from 37 to 0.
 
+## 2026-06-12 Folded Source Mark-Missing Guard
+
+The ingestor now refuses parent-level `--mark-missing` when a folded source
+batch is incomplete. This prevents a `cbre-dealflow` only artifact from
+soft-deleting main `cbre` rows, and likewise prevents a `jll` only artifact
+from soft-deleting `jll-investor` rows.
+
+Verification:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+python3 cre_ingest.py --in out/cbre_dealflow_full_2026-06-12_041740.json --dry-run --mark-missing --mark-missing-floor 100 --keep-artifacts /tmp/cbre_dealflow_mark_missing_guard_check_2026-06-12
+```
+
+Result: 1,836 rows staged, 0 skipped missing URLs, `cbre` mark-missing skipped
+because the batch saw only `cbre-dealflow`, and the generated SQL had no
+parent-level soft-delete block for `cbre`.
+
 ## 2026-06-12 Colliers SalesTracker Partial Adapter
 
 Colliers was upgraded from fully unsupported to partial investment-sale support

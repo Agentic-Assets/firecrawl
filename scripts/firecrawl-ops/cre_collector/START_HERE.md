@@ -123,5 +123,9 @@ images into Supabase storage for the bulk collector.
 - `cre_ingest.py` now drops non-HTTP contact profile/avatar/VCard URLs and
   non-HTTP document URLs. Reingesting the complete Lee and SVN artifacts
   refreshed child rows and reduced active bad contact avatar URLs from 37 to 0.
+- `cre_ingest.py --mark-missing` now refuses incomplete folded source coverage.
+  For parent slugs with sub-sources, such as `cbre` plus `cbre-dealflow` or
+  `jll` plus `jll-investor`, all known source keys must be present in the same
+  ingest batch before parent-level soft deletes can activate.
 - Do not treat legacy `cre_scrapers` active flags as production collector status.
 - Do not stage `node_modules/`, `out/`, `__pycache__/`, or generated SQL artifacts.
