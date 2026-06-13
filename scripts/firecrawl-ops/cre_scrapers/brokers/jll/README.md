@@ -273,11 +273,10 @@ Scope: public JLL Property listings at `property.jll.com`, source key `jll`. Thi
 
 ### 2026-06-12 long-run performance audit and speed patch
 
-See `JLL_LONG_RUN_PERF_AUDIT_2026-06-12.md` for the read-only audit of the
-active full JLL run. The audit confirmed search pagination had completed and
-detail enrichment was progressing through `out/cache/jll-detail`, but uncached
-details were slow because the active process used an 8000 ms rendered
-Firecrawl wait for every detail page.
+A read-only audit of the active full JLL run confirmed search pagination had
+completed and detail enrichment was progressing through `out/cache/jll-detail`,
+but uncached details were slow because the active process used an 8000 ms
+rendered Firecrawl wait for every detail page.
 
 Collector follow-up:
 

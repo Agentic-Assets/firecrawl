@@ -1,9 +1,8 @@
 # Colliers Main Sitemap Unlock - 2026-06-12
 
 Scope: main Colliers public sale and lease inventory at
-`https://www.colliers.com/en/properties`. This supersedes the "blocked" verdict
-in `MAIN_PROPERTIES_PUBLIC_RECHECK_2026-06-12.md` and
-`COLLIERS_MAIN_PATH_RECHECK_2026-06-12.md` for discovery.
+`https://www.colliers.com/en/properties`. This supersedes the earlier "blocked"
+verdict reached by the dated public-path/sitemap rechecks (pruned 2026-06-13).
 
 ## Verdict
 

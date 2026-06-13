@@ -5,9 +5,10 @@ collector build. Archived 2026-06-13 during the doc reorganization. Nothing here
 is current status; live status is in `../BROKERAGE_STATUS_2026-06-12.md`,
 `../START_HERE.md`, and `docs/firecrawl-ops/references/cre-intelligence-system-design.md`.
 
-These files are kept (not deleted) because each still holds durable operational
-knowledge that is not worth duplicating into the live docs but is worth keeping
-findable. Index of the durable nuggets:
+The files kept here each hold durable operational knowledge worth keeping
+findable without duplicating it into the live docs. Point-in-time session
+transcripts, completed goal records, and stale gap/QA snapshots were pruned
+2026-06-13. Index of the durable nuggets:
 
 - `HANDOFF_LOG_2026-06-11.md` -- chronological build evidence. Durable nuggets:
   the working Cushman public API URL shape
@@ -22,16 +23,15 @@ findable. Index of the durable nuggets:
 - `VALIDATION_2026-06-12.md` -- full reconciliation. Durable nugget: the CBRE Deal
   Flow stale `dealflow:url:<sha1>` cleanup predicate (soft-delete url-hash rows
   superseded by a newer enriched project/PV row at the same source_url).
-- `VALIDATION_GAP_AUDIT_2026-06-12.md` -- point-in-time gap list (counts now stale).
 - `SUPABASE_EGRESS_AUDIT_2026-06-12.md` -- durable nugget: the read-only egress
   triage SQL methodology (`BEGIN READ ONLY`, `SET LOCAL statement_timeout`,
   `pg_column_size`, `pg_stat_statements` filtered to CRE, RLS/grant checks) and
   the board-query projection trick (`null::jsonb as raw_data`) plus its
   regression test in the display app.
-- `SUPABASE_RECENT_UPLOAD_QA_2026-06-12.md`, `SUPABASE_SECURITY_NOTE_2026-06-12.md`
-  -- the live security/access model is summarized in `../CLAUDE.md`
-  ("Supabase access model"); these hold the point-in-time QA/perf figures.
-- `CONTRACT_SYNC_2026-06-12.md`, `CODEX_GOAL_2026-06-11.md`, `goals/` -- completed
-  goals and a point-in-time contract reconciliation.
-- `2026-06-11-...-continued-from-a-previous-c.txt` -- raw terminal session replay;
-  signal content is captured in the structured docs above.
+- `SUPABASE_SECURITY_NOTE_2026-06-12.md` -- the live security/access model is
+  summarized in `../CLAUDE.md` ("Supabase access model"); this holds the
+  point-in-time access posture.
+- `CONTRACT_SYNC_2026-06-12.md` -- point-in-time UI/collector contract
+  reconciliation (note: `005_cre_views.sql` does not itself encode
+  `security_invoker`/grants, so a fresh DB rebuild needs the separate display-app
+  hardening SQL).

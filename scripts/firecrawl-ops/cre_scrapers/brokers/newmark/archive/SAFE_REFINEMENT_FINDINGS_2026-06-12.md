@@ -86,9 +86,8 @@ VCard URLs. The public people profile
   - `701-8th-st-nw-washington-lease`, ZIP `20001`.
   - `800-maine-avenue-southwest-washington-lease`, ZIP `20024`.
   - `1800-massachusetts-avenue-northwest-washington-lease`, ZIP `20036`.
-- `SUPABASE_RECENT_UPLOAD_QA_2026-06-12.md` independently reports the same
-  latest-batch Newmark shape: 4,371 rows, 3 missing states, 0 contacts,
-  0 documents, and 4,303 image rows.
+- The latest-batch Newmark Supabase QA independently reported the same shape:
+  4,371 rows, 3 missing states, 0 contacts, 0 documents, and 4,303 image rows.
 - Direct public `fetch()` from this host is currently blocked by Cloudflare for
   `https://www.nmrk.com/properties`. The local Firecrawl stack was not available
   because OrbStack's Docker socket was missing, so no fresh collector probe was

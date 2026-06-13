@@ -3,6 +3,12 @@
 Production bulk collection uses the Buildout inventory path in
 `../../../../cre_collector/collect.ts` under source key `lee-associates`.
 
+> STATUS 2026-06-13: COMPLETE. Lee & Associates is fully collected and
+> live-ingested (9,223 active rows) through the durable Buildout page cache. The
+> "blocked" and "not production-complete" wording in the dated sections below is
+> HISTORICAL chronological buildout; the final proof is the "2026-06-12 Full
+> Cache Assembly And Live Ingest" section at the end of this file.
+
 ## 2026-06-12 Deep Dive Notes
 
 Status: blocked for production completion until a sustained full run proves

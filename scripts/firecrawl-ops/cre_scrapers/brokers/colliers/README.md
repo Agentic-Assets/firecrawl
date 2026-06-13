@@ -10,8 +10,9 @@ brokerage:
    no auth). Folded with id prefix `main:`. See below.
 
 The old "main site blocked" verdict is HISTORICAL and superseded; the sitemap
-path is the production discovery method for the main site. The dated
-investigation notes that reached the blocked verdict are in `archive/`.
+path is the production discovery method for the main site. The breakthrough is
+recorded in `archive/COLLIERS_MAIN_SITEMAP_UNLOCK_2026-06-12.md`; the superseded
+blocked-verdict probe logs were pruned 2026-06-13.
 
 ## Main site (`colliers-main`): public XML sitemap path (durable)
 
