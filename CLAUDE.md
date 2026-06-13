@@ -64,6 +64,35 @@ Key scripts:
 - `sync_agent_skills.sh`
 - `sync_upstream_main.sh`
 
+## Skills
+
+Refresh the relevant skill before non-trivial work. The custom Firecrawl skills
+below are this fork's source of truth for the self-hosted stack; the rest cover
+Python and Supabase work that touches `scripts/firecrawl-ops/` and `credeals`.
+
+**Custom Firecrawl skills** (fork-owned, in `.agents/skills/`):
+- [`firecrawl-ops`](.agents/skills/firecrawl-ops/SKILL.md)  -  self-hosted stack
+  runtime and health, Docker/OrbStack, model routing (`set_model_profile.sh`),
+  local PDF OCR (Docling adapter), upstream sync, and endpoint selection. Use it
+  for any runtime, model-selection, sync, or self-hosted ops question instead of
+  guessing.
+- [`firecrawl-local-api`](.agents/skills/firecrawl-local-api/SKILL.md)  -  how to
+  call the local API and CLI at `http://localhost:3002` (scrape, search, map,
+  crawl, parse). Pair it with `firecrawl-ops` when hitting endpoints directly.
+
+**Python Ruff skills** (`.agents/skills/ruff*`):
+Normal edit → [`ruff`](.agents/skills/ruff/SKILL.md): `check --diff` on changed files; `format` only when that tree already uses ruff (skill-local `ruff.toml`).
+Config / CI / rules → [`ruff-linting`](.agents/skills/ruff-linting/SKILL.md).
+Bulk cleanup → [`ruff-recursive-fix`](.agents/skills/ruff-recursive-fix/SKILL.md): safe → unsafe → manual loop on a folder or repo.
+Verify with `py_compile`, not repo-wide ruff alone.
+New or changed tests → read plugin **`python-testing-patterns`**; run the matching pytest harness (e.g. `scripts/firecrawl-ops/cre_collector/tests/`).
+
+**Python dev plugin skills** (Cursor `claude-code-workflows/python-development`): use the `python-development` plugin skills as appropriate; discover via the Skill tool.
+
+**Supabase plugin skills** (use for DB, Auth, Edge Functions, migrations, RLS):
+`supabase`, `supabase:supabase-postgres-best-practices`.
+Client API: [Supabase Python reference](https://supabase.com/docs/reference/python/introduction).
+
 ## CRE listing intelligence (EQUIRE feed)
 
 `scripts/firecrawl-ops/` also contains a full CRE listing ingestion system that
@@ -84,24 +113,26 @@ Key components:
 - `docs/firecrawl-ops/references/cre-intelligence-system-design.md`  -  canonical architecture + go-forward monitoring plan
 - `docs/firecrawl-ops/references/cre-equire-consumer-api.md`  -  EQUIRE consumer/API reference (views, SQL, env, quick start)
 
-Current source status changes quickly. Treat these as the canonical status
-entrypoints before quoting coverage or making collector changes:
-- `scripts/firecrawl-ops/cre_collector/START_HERE.md`
-- `scripts/firecrawl-ops/cre_collector/BROKERAGE_STATUS_2026-06-12.md`
+Current source status changes quickly. Treat these as the canonical
+entrypoints before quoting coverage or making collector changes (start a new
+CRE session here):
+- `scripts/firecrawl-ops/cre_collector/START_HERE.md`  -  new-session runbook, live status matrix, and Next Steps
+- `scripts/firecrawl-ops/cre_collector/CLAUDE.md`  -  collector/ingestor reference
+- `scripts/firecrawl-ops/cre_collector/BROKERAGE_STATUS_2026-06-12.md`  -  per-source coverage, counts, upgrade order
 
-Latest verified all-source run started `2026-06-12T04:04:23Z` and produced
-35,510 raw records. Later source-specific runs completed Transwestern, Marcus
-& Millichap public sale, Lee & Associates public Buildout coverage, and JLL
-Investor Center full sitemap detail path (934 active sale rows, 1,857 sitemap
-URLs scanned, live-ingested and source-scoped reconciliation completed
-2026-06-12) with live ingest, source-scoped reconciliation, and Supabase
-validation. Colliers now has two folded sources under the `colliers` brokerage:
-SalesTracker (`colliers`, public RCM investment-sale subset, 1,172 rows) and the
-main site (`colliers-main`), unblocked 2026-06-13 via the public XML sitemap
-(`/sitemap` -> `en/sitemap?type=properties`, 15,896 detail URLs) through local
-Firecrawl plus detail-render JSON-LD parse (no Coveo POST). A bounded 2,000-URL
-batch is live (943 rows); the full run is in progress. Marcus public lease
-remains unsupported.
+For live per-source counts, the latest baseline, and per-source collection
+methods (including the folded `colliers` / `colliers-main` sources and which
+sources stay partial), see `START_HERE.md`, `BROKERAGE_STATUS_2026-06-12.md`,
+and `cre_collector/CLAUDE.md`.
+
+### Next steps (CRE)
+
+Canonical go-forward plan: section 14 of
+`docs/firecrawl-ops/references/cre-intelligence-system-design.md` (per-source
+method audit plus the authorized build sequence in 14.4). Live run status (the
+in-flight `colliers-main` full run, the additive change-tracking / monitor build
+order) lives in `cre_collector/START_HERE.md` and the dated `HANDOFF_*` docs;
+do not restate it here.
 
 CBRE has an internal JSON API (`/listings-api/propertylistings/query`) that bypasses
 the need for page scraping  -  see `scripts/firecrawl-ops/prometheus/CLAUDE.md`.
@@ -111,17 +142,11 @@ The current ingestor uses `POSTGRES_URL_NON_POOLING` or `POSTGRES_URL` from the
 EQUIRE `.env.local` file and shells out to `psql`. It does not print the URL.
 Older REST/service-key loader docs apply only to the legacy Python scraper path.
 
-Start a new CRE collector session at:
-- `scripts/firecrawl-ops/cre_collector/START_HERE.md`
-- `scripts/firecrawl-ops/cre_collector/CLAUDE.md`
-
 Verified local baseline on 2026-05-23:
 - OrbStack Docker compose stack
 - local API at `http://localhost:3002`
 - upstream CLI wrapper plus local direct helper
 - budget model `deepseek/deepseek-v4-flash`; escalated model `deepseek/deepseek-v4-pro`
-
-When the user asks about local scraping workflows, model selection, runtime health, upstream sync, CLI/MCP setup, or self-hosted ops, use the `firecrawl-ops` skill instead of guessing.
 
 ## Architecture notes
 

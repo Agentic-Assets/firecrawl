@@ -287,3 +287,26 @@ CREATE TRIGGER trg_cre_brokerages_updated_at
     BEFORE UPDATE ON credeals.cre_brokerages
     FOR EACH ROW
     EXECUTE FUNCTION credeals.update_cre_listing_timestamp();
+
+-- ===========================================================================
+-- VIEW: v_cre_recent_changes
+-- Recent (7-day) entries from the append-only change ledger (007), with the
+-- listing title/url and brokerage slug inlined. Operator + prospecting-ops
+-- freshness read. ADDITIVE: does NOT change the four existing display views.
+-- Requires cre_listing_events (007), which is created before 005 runs.
+-- ===========================================================================
+CREATE OR REPLACE VIEW credeals.v_cre_recent_changes AS
+SELECT
+    e.id, e.listing_id, e.brokerage_id, e.scrape_job_id,
+    e.event_type, e.field, e.old_value, e.new_value, e.source_value,
+    e.detected_at,
+    l.title, l.source_url,
+    b.slug AS brokerage_slug
+FROM credeals.cre_listing_events e
+JOIN      credeals.cre_listings  l ON l.id = e.listing_id
+LEFT JOIN credeals.cre_brokerages b ON b.id = e.brokerage_id
+WHERE e.detected_at > now() - interval '7 days'
+ORDER BY e.detected_at DESC;
+
+COMMENT ON VIEW credeals.v_cre_recent_changes IS 'Last 7 days of cre_listing_events with listing title/url + brokerage slug. Operator/prospecting-ops freshness read. Additive; existing display views unchanged.';
+ALTER VIEW credeals.v_cre_recent_changes SET (security_invoker = true);

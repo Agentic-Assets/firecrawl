@@ -6,8 +6,7 @@ enrichment. It is no longer the production daily bulk path. Use
 `../cre_collector/collect.ts`, `../cre_collector/cre_ingest.py`, and
 `../cre_collector/cre_daily_update.sh` for daily sale and lease inventory.
 
-Full system design: `docs/firecrawl-ops/references/cre-intelligence-system-design.md`
-(EQUIRE consumer/API reference: `docs/firecrawl-ops/references/cre-equire-consumer-api.md`)
+Reference docs: see parent `../CLAUDE.md` Start Here section.
 
 ## Package layout
 
@@ -30,6 +29,9 @@ cre_scrapers/
     svn/             SVN scraper code + source notes
     nai_global/      NAI Global scraper code + source notes
     newmark/         Newmark scraper code + source notes
+    lee_associates/  Lee & Associates scraper code + source notes
+    savills/         Savills scraper code + source notes
+    transwestern/    Transwestern scraper code + source notes
   pipeline.py        CREScrapingPipeline: run_all(), run_broker(), get_status(), export_jsonl()
 ```
 
@@ -96,18 +98,12 @@ python3 -m compileall -q cre_scrapers && echo OK
 
 ## CBRE API path (faster than page scraping)
 
-CBRE exposes an internal listings JSON API that returns paginated structured
-data for all ~5,877 US for-sale listings. This is far faster than scraping
-detail pages one by one. The API endpoint is still behind Cloudflare so it
-still needs Firecrawl stealth, but with `waitFor=4000` instead of 6000 and
-`rawHtml` format to get the JSON body.
+CBRE uses an internal JSON API, not page scraping. See `../prometheus/CLAUDE.md`
+for the endpoint, verified curl, and response shape. Production implementation:
+`../cre_collector/collect.ts`.
 
-Reference implementation: `../prometheus/script.ts` (cloud Firecrawl version).
-Production local implementation: `../cre_collector/collect.ts`.
-Pre-collected reference dataset: `../prometheus/data.json` (11MB, 5,877 listings, 2026-06-11).
-
-The same API pattern may exist for other large brokerages  -  check their
-network requests via browser devtools before building a page scraper.
+Check network requests via browser devtools before building a page scraper for
+any large Next.js/React SPA brokerage; a similar API pattern may exist.
 
 ## Adding a new broker
 
@@ -130,3 +126,9 @@ network requests via browser devtools before building a page scraper.
   and every other production collector source.
 - `batch_scrape()` polls every 8s. For large batches (>200 URLs) set a longer
   poll timeout or submit in chunks of 50-100.
+- **The 007 change-tracking tables (`cre_listing_events`, `cre_source_index`,
+  `cre_enrichment_queue`, `cre_source_baseline`) are collector-owned and
+  observe-only**, maintained by `../cre_collector/cre_monitor.py` /
+  `cre_gate.py`. This legacy REST path writes `cre_listings` (+ children) only
+  and must not write the monitor tables. See
+  `../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md`.

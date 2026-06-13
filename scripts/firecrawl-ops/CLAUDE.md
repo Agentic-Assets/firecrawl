@@ -44,7 +44,9 @@ scripts/firecrawl-ops/
   CLAUDE.md                    Agent routing, compact
   README.md                    Human guide, fuller runbook
 
-  cre_collector/               Production CRE collector and Supabase ingestor
+  cre_collector/               Production CRE collector, Supabase ingestor, and
+                               observe-only monitor/change-tracking layer
+                               (cre_monitor.py, cre_gate.py, collect.ts --monitor)
   cre_scrapers/                Legacy Python probes and detail enrichment
   sql/                         Idempotent credeals schema migrations
   prometheus/                  Original Prometheus CBRE reference dataset
@@ -97,13 +99,16 @@ Use `--mark-missing` only after a clean all-source full run. While Lee and
 Associates or another source is blocked, keep daily ingest additive with
 `--no-mark-missing`.
 
-The latest documented full all-source run in this folder is the 2026-06-12
-validation cycle: 35,510 raw records, 33,488 staged unique upsert rows, and
-34,218 active Supabase rows after additive carryover. Cushman, CBRE Deal Flow,
-Avison Young, Newmark, Marcus and Millichap, NAI Global, Colliers SalesTracker,
-Lee and Associates, and Transwestern have post-run source-specific changes
-documented in `cre_collector/START_HERE.md` and
-`BROKERAGE_STATUS_2026-06-12.md`; read those before quoting coverage.
+Change tracking (007 tables) runs through a separate observe-only path:
+`collect.ts --monitor` produces a cheap enumeration artifact consumed by
+`cre_monitor.py` and `cre_gate.py`, never by `cre_ingest.py`. NEVER feed a
+`--monitor` artifact to `cre_ingest.py` (it is sparse and the upsert would erase
+enriched prices, `raw_data`, and child rows). See
+`../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` for the full run
+model and gotchas.
+
+Latest all-source baseline: 2026-06-12. See `cre_collector/START_HERE.md`
+for live counts and post-run source-specific changes before quoting coverage.
 
 Supabase objects live under `credeals`, not `public`:
 
@@ -114,10 +119,15 @@ Supabase objects live under `credeals`, not `public`:
 - `cre_listing_images`
 - `cre_scrape_jobs`
 - `cre_scrape_log`
+- `cre_listing_events` (change ledger, 007)
+- `cre_source_index` (enumeration snapshot, 007)
+- `cre_enrichment_queue` (detail-render work queue, 007)
+- `cre_source_baseline` (coverage health baseline, 007)
 - `v_cre_listings_full`
 - `v_cre_active_for_sale`
 - `v_cre_active_for_lease`
 - `v_cre_market_summary`
+- `v_cre_recent_changes` (7-day change ledger feed, 007+005)
 - `search_cre_listings(query, p_city, p_state, p_type, p_transaction)`
 
 Document and image tables store source URLs only. Do not download public PDFs
@@ -125,33 +135,20 @@ or images into Supabase storage for the bulk collector.
 
 ## Broker Status Rules
 
-Current source status belongs in `cre_collector/START_HERE.md` and
-`cre_collector/BROKERAGE_STATUS_2026-06-12.md`. Do not treat the legacy
-`cre_scrapers/config.py` active flags as production coverage.
+Current per-source status and counts live in `cre_collector/START_HERE.md` and
+`cre_collector/BROKERAGE_STATUS_2026-06-12.md` (the canonical homes). Do not
+restate counts here, and do not treat the legacy `cre_scrapers/config.py`
+active flags as production coverage.
 
-Important current cautions:
+Durable cautions:
 
-- Colliers has two folded sources under the `colliers` brokerage: SalesTracker
-  (`colliers`, public RCM investment-sale subset) and main site (`colliers-main`,
-  the public XML sitemap `/sitemap` -> `en/sitemap?type=properties` through local
-  Firecrawl plus detail-render JSON-LD parse, `main:` id prefix). The Coveo POST
-  search is no longer needed. A bounded 2,000-URL batch is live; the full
-  ~15,896-URL run is in progress as of 2026-06-13
-  (`cre_collector/HANDOFF_COLLIERS_MAIN_2026-06-13.md`).
-- Lee and Associates is complete for the public Buildout feed after durable
-  page-cache assembly, live ingest, source-scoped reconciliation, and Supabase
-  validation.
-- Transwestern is complete for its public GET feed after full run, live ingest,
-  source-scoped reconciliation, and Supabase validation.
-- Cushman is complete for its public API feed after full run, live ingest,
-  source-scoped reconciliation, and Supabase validation.
-- Marcus & Millichap is complete for its public sale feed after full run, live
-  ingest, source-scoped reconciliation, and Supabase validation; public lease
-  remains unsupported.
-- JLL Investor Center is complete for the public sitemap detail path: 934
-  active U.S. sale rows live-ingested and reconciled on 2026-06-12. All
-  jll-investor rows lack coordinates; the Investor detail path does not expose
-  them.
+- Colliers has two folded sources under the `colliers` brokerage: `colliers`
+  (SalesTracker investment-sale subset) and `colliers-main` (full public site
+  via XML sitemap, `main:` ids). The main-site full run is still in progress;
+  see `cre_collector/HANDOFF_COLLIERS_MAIN_2026-06-13.md`.
+- Keep daily ingest additive (`cre_daily_update.sh --no-mark-missing`) while
+  `colliers-main` is mid-run and Savills sale stays partial. Use the default
+  `--mark-missing` only after a clean all-source run.
 
 ## Local Firecrawl Ops
 

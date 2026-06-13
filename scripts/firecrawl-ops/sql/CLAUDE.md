@@ -9,13 +9,14 @@ Run these in order. Each file is idempotent (`CREATE TABLE IF NOT EXISTS`, etc.)
 
 | File | What it creates |
 |------|----------------|
-| `000_run_all.sql` | Master runner, dependency order `001`, `002`, `003`, `004`, `006`, then `005` |
+| `000_run_all.sql` | Master runner, dependency order `001`, `002`, `003`, `004`, `007`, `006`, then `005` |
 | `001_cre_brokerages.sql` | `cre_brokerages` table + collector brokerage seed rows |
 | `002_cre_listings.sql` | `cre_listings`, `cre_listing_contacts`, `cre_listing_documents`, `cre_listing_images` |
 | `003_cre_scrape_tracking.sql` | `cre_scrape_jobs`, `cre_scrape_log` |
 | `004_cre_indexes.sql` | Performance indexes (geo, FTS, jsonb GIN, price, cap_rate) |
+| `007_cre_change_tracking.sql` | Monitor tables: `cre_listing_events` (change ledger), `cre_source_index` (enumeration snapshot), `cre_enrichment_queue` (detail-render work queue), `cre_source_baseline` (coverage health baseline) |
 | `006_cre_contact_urls.sql` | Contact profile/avatar/VCard URL columns and refreshed `v_cre_listings_full` contact JSON |
-| `005_cre_views.sql` | `v_cre_listings_full`, `v_cre_active_for_sale`, `v_cre_active_for_lease`, `v_cre_market_summary`, `search_cre_listings()` function, `updated_at` trigger |
+| `005_cre_views.sql` | `v_cre_listings_full`, `v_cre_active_for_sale`, `v_cre_active_for_lease`, `v_cre_market_summary`, `v_cre_recent_changes`, `search_cre_listings()` function, `updated_at` trigger |
 
 ## Running migrations
 
@@ -56,7 +57,7 @@ source before running `psql`. Never commit or print the connection string.
 The production bulk loader is `../cre_collector/cre_ingest.py`. Its
 `SOURCE_TO_BROKERAGE` mapping must match the slug values inserted in
 `001_cre_brokerages.sql`. Sub-sources fold into parent brokerages:
-`cbre-dealflow` -> `cbre`, and `jll-investor` -> `jll`. New source keys
+`cbre-dealflow` -> `cbre`, `jll-investor` -> `jll`, and `colliers-main` -> `colliers`. New source keys
 must be added to both the loader mapping and the seed file before dry-run or
 live ingest.
 

@@ -61,6 +61,7 @@ const { values: flags } = parseArgs({
     "page-cap": { type: "string" }, // page-scrape sources: max rendered pages per tx
     out: { type: "string" }, // output JSON path (default stdout)
     concurrency: { type: "string" }, // concurrent page fetches within a source
+    monitor: { type: "boolean" }, // cheap-enumeration-only pass: skip detail render/enrichment
   },
 });
 
@@ -86,6 +87,11 @@ const MAX_ITEMS = rawMax <= 0 ? Number.POSITIVE_INFINITY : rawMax;
 const PAGE_CAP = Math.max(1, Number(flags["page-cap"] ?? "60"));
 const CONCURRENCY = Math.max(1, Math.min(6, Number(flags.concurrency ?? "3")));
 const OUT_PATH = flags.out ?? null;
+// Monitor mode: run only each source's cheap enumeration step (list/search/API/
+// sitemap) and emit the freely-available enumeration fields, skipping the
+// detail-page render/enrichment. Additive and gated entirely on this flag; the
+// default (non-monitor) full-collection path is byte-identical when absent.
+const MONITOR = flags.monitor === true;
 
 type Tx = "sale" | "lease";
 
@@ -350,7 +356,9 @@ type SourceResult = {
 
 // --- CBRE: internal listings JSON API, paginated, behind Cloudflare (stealth) ---
 
-async function srcCbre(tx: Tx, max: number): Promise<SourceResult> {
+async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
+  // Enumeration-only source: the listings-api JSON already returns fully mapped
+  // rows with no per-listing detail render, so monitor output == full output.
   const aspect = tx === "sale" ? "isSale" : "isLetting";
   const opts: ScrapeOpts = { proxy: "stealth", waitFor: 4000, timeout: 120000 };
   const base = `https://www.cbre.com/listings-api/propertylistings/query?site=us-comm&Common.Aspects=${aspect}&PageSize=200`;
@@ -451,6 +459,7 @@ async function srcCbre(tx: Tx, max: number): Promise<SourceResult> {
         .filter(Boolean),
       url: `https://www.cbre.com/properties/properties-for-lease/commercial-space/details/${d["Common.PrimaryKey"]}/${slug}`,
       lastUpdated: clean(d["Common.LastUpdated"])?.slice(0, 10) ?? null,
+      created: clean(d["Common.Created"])?.slice(0, 10) ?? null,
     };
   });
   return {
@@ -813,8 +822,11 @@ async function srcBuildout(
   listingsPage: string,
   tx: Tx,
   max: number,
+  _monitor: boolean,
   inventoryOpts: BuildoutInventoryOpts = {}
 ): Promise<SourceResult> {
+  // Enumeration-only source: the Buildout inventory API has no per-listing detail
+  // render, so monitor output == full output (status/price/id are all in-feed).
   const { items, total } = await buildoutInventory(company, pluginKey, inventoryOpts);
   const listings: any[] = [];
   for (const x of items) {
@@ -918,7 +930,7 @@ function newmarkAbsoluteUrl(value: any): string | null {
   }
 }
 
-async function srcNewmark(tx: Tx, max: number): Promise<SourceResult> {
+async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   const sourceUrl = "https://www.nmrk.com/properties";
   if (!newmarkCreds) {
     for (const waitFor of [3000, 8000]) {
@@ -1040,7 +1052,9 @@ async function srcNewmark(tx: Tx, max: number): Promise<SourceResult> {
 
   const hits = [...hitMap.values()].slice(0, Math.min(max, Number.MAX_SAFE_INTEGER));
   const listings = await pmap(hits, Math.min(CONCURRENCY, 4), async (h: any) => {
-    const person = await lookupPerson(clean(h.broker_name));
+    // Monitor mode: skip the per-hit People-Algolia contact lookup (the only
+    // detail call here); all other hit fields are free in the enumeration.
+    const person = monitor ? null : await lookupPerson(clean(h.broker_name));
     const contactsDetailed = person
       ? [
           {
@@ -1467,7 +1481,7 @@ async function enrichJllListing(base: any): Promise<any> {
   }
 }
 
-async function srcJll(tx: Tx, max: number): Promise<SourceResult> {
+async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   const tenure = tx === "sale" ? "sale" : "rent";
   const sourceUrl = `https://property.jll.com/search?tenureTypes=${tenure}`;
   const listings: any[] = [];
@@ -1521,6 +1535,26 @@ async function srcJll(tx: Tx, max: number): Promise<SourceResult> {
     if (addedOrSeenOnPage === 0) break;
   }
   if (!listings.length) throw new Error("no listing cards found on JLL search page");
+  const knownTotals = Object.values(filterTotals).filter((n): n is number => typeof n === "number");
+  const total = knownTotals.length ? knownTotals.reduce((sum, n) => sum + n, 0) : null;
+  if (monitor) {
+    // Monitor mode is NOT supported for jll: the persisted external id is the
+    // detail-page numeric property.id (enrichJllListing, id = property.id), which
+    // cannot be recovered from the search card (the cheap key is only the URL
+    // slug). Verified 11,230/11,230 slug != property.id against a full artifact.
+    // Emitting slug-keyed rows would make every row read as NEW each run and
+    // pollute the change ledger / enrichment queue, so jll stays on the
+    // full-sweep cadence and emits no monitor rows. A cheap path would need
+    // URL-keyed reconciliation in cre_monitor.py (out of scope here).
+    return {
+      company: "JLL",
+      sourceUrl,
+      method: "Monitor mode unsupported (detail-derived numeric external id); full-sweep cadence only",
+      totalAvailable: total,
+      listings: [],
+      note: "Monitor mode emits no rows for jll: its external id is the detail-page numeric property.id and cannot be derived from the search-card URL slug. Refresh this source via the full (non-monitor) collection path.",
+    };
+  }
   let enrichedCount = 0;
   const enriched = await pmap(listings, JLL_DETAIL_CONCURRENCY, async (listing) => {
     const row = await enrichJllListing(listing);
@@ -1530,9 +1564,6 @@ async function srcJll(tx: Tx, max: number): Promise<SourceResult> {
     }
     return row;
   });
-
-  const knownTotals = Object.values(filterTotals).filter((n): n is number => typeof n === "number");
-  const total = knownTotals.length ? knownTotals.reduce((sum, n) => sum + n, 0) : null;
   const totalEvidence = JLL_PROPERTY_TYPES.map(
     (propertyType) => `${propertyType}=${filterTotals[propertyType] ?? "?"}`
   ).join(", ");
@@ -1599,13 +1630,6 @@ function jllInvestorSitemapUrls(rawHtml: string): string[] {
   const decoded = decodeHtmlEntities(rawHtml);
   const matches = decoded.match(/https:\/\/invest\.jll\.com\/[a-z]{2}\/sitemap-[a-z]{2}\.xml/gi) ?? [];
   return dedupeStrings(matches);
-}
-
-function jllInvestorDetailUrlsFromSitemap(rawHtml: string): string[] {
-  const decoded = decodeHtmlEntities(rawHtml);
-  const matches =
-    decoded.match(/https:\/\/invest\.jll\.com\/us\/en\/listings\/[^<>"'\s]+/gi) ?? [];
-  return dedupeStrings(matches.map((url) => url.replace(/\/$/, "")));
 }
 
 function jllInvestorSitemapCandidateLimit(max: number, total: number): number {
@@ -1792,7 +1816,9 @@ async function enrichJllInvestorListing(base: any): Promise<any> {
       contactsDetailed,
       brochures: documentUrls.map((url) => ({ name: titleFromFilename(url), url })),
       photos: jllInvestorImageUrls(listing, base.photos ?? []),
-      lastUpdated: clean(listing.dateModified ?? listing.datePublished),
+      lastUpdated:
+        clean(listing.dateModified ?? listing.datePublished) ??
+        (base.lastmod ? String(base.lastmod).slice(0, 10) : null),
       jllInvestorDetail: {
         id: clean(listing.id),
         alias: clean(listing.alias),
@@ -1818,7 +1844,7 @@ async function enrichJllInvestorListing(base: any): Promise<any> {
   }
 }
 
-async function srcJllInvestor(tx: Tx, max: number): Promise<SourceResult> {
+async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   if (tx === "lease") {
     return {
       company: "JLL Investor Center",
@@ -1834,22 +1860,50 @@ async function srcJllInvestor(tx: Tx, max: number): Promise<SourceResult> {
     jllInvestorSitemapUrls(indexHtml).find((url) => url === JLL_INVESTOR_US_SITEMAP_URL) ??
     JLL_INVESTOR_US_SITEMAP_URL;
   const sitemapHtml = await scrapeRaw(sitemapUrl, { waitFor: 1000, timeout: 60000 });
-  const detailUrls = jllInvestorDetailUrlsFromSitemap(sitemapHtml);
-  if (!detailUrls.length) throw new Error("no listing URLs found in JLL Investor Center US sitemap");
+  const seenDetailUrls = new Set<string>();
+  const detailEntries = extractSitemapUrlEntries(sitemapHtml)
+    .filter((e) => /^https:\/\/invest\.jll\.com\/us\/en\/listings\//i.test(e.loc))
+    .map((e) => ({ loc: e.loc.replace(/\/$/, ""), lastmod: e.lastmod }))
+    .filter((e) => {
+      if (seenDetailUrls.has(e.loc)) return false;
+      seenDetailUrls.add(e.loc);
+      return true;
+    });
+  if (!detailEntries.length) throw new Error("no listing URLs found in JLL Investor Center US sitemap");
 
-  const candidateLimit = jllInvestorSitemapCandidateLimit(max, detailUrls.length);
-  const candidates = detailUrls.slice(0, candidateLimit);
+  if (monitor) {
+    // Monitor mode is NOT supported for jll-investor: the persisted external id
+    // is the detail-page Salesforce listing.id (enrichJllInvestorListing), which
+    // cannot be recovered from the sitemap (the cheap key is only the URL slug).
+    // Verified 934/934 slug != listing.id against the full sitemap artifact.
+    // Emitting slug-keyed rows would make every row read as NEW each run and
+    // pollute the change ledger / enrichment queue, so jll-investor stays on the
+    // full-sweep cadence and emits no monitor rows. A cheap path would need
+    // URL-keyed reconciliation in cre_monitor.py (out of scope here).
+    return {
+      company: "JLL Investor Center",
+      sourceUrl: sitemapUrl,
+      method: "Monitor mode unsupported (detail-derived Salesforce external id); full-sweep cadence only",
+      totalAvailable: detailEntries.length,
+      listings: [],
+      note: "Monitor mode emits no rows for jll-investor: its external id is the detail-page Salesforce listing.id and cannot be derived from the sitemap URL slug. Refresh this source via the full (non-monitor) collection path.",
+    };
+  }
+
+  const candidateLimit = jllInvestorSitemapCandidateLimit(max, detailEntries.length);
+  const candidates = detailEntries.slice(0, candidateLimit);
   console.error(
-    `  jll-investor: ${detailUrls.length} sitemap detail URL(s), scanning ${candidates.length}`
+    `  jll-investor: ${detailEntries.length} sitemap detail URL(s), scanning ${candidates.length}`
   );
   let enrichedCount = 0;
-  const enriched = await pmap(candidates, JLL_INVESTOR_DETAIL_CONCURRENCY, async (url) => {
+  const enriched = await pmap(candidates, JLL_INVESTOR_DETAIL_CONCURRENCY, async (entry) => {
     const row = await enrichJllInvestorListing({
-      id: url.split("/").filter(Boolean).slice(-1)[0] ?? null,
+      id: entry.loc.split("/").filter(Boolean).slice(-1)[0] ?? null,
       transactionType: "Sale (investment)",
       brokerIds: [],
       photos: [],
-      url,
+      url: entry.loc,
+      lastmod: entry.lastmod,
     });
     enrichedCount++;
     if (enrichedCount % 10 === 0 || enrichedCount === candidates.length) {
@@ -1867,7 +1921,7 @@ async function srcJllInvestor(tx: Tx, max: number): Promise<SourceResult> {
     company: "JLL Investor Center",
     sourceUrl: sitemapUrl,
     method: "Public XML sitemap detail discovery plus detail-page __NEXT_DATA__ enrichment and United States country filtering",
-    totalAvailable: detailUrls.length,
+    totalAvailable: detailEntries.length,
     listings,
     note:
       `Sitemap contains global inventory on the US locale path, so rows are retained only when public detail-page country is United States. Scanned ${candidates.length} detail URL(s), kept ${listings.length} U.S. row(s), skipped ${nonUsRows} non-U.S. row(s), and saw ${detailErrors} detail error(s). Detail enrichment stores public teaser document URLs, image URLs, and broker contact fields only; CA/NDA document URLs remain in raw detail metadata.`,
@@ -2238,7 +2292,7 @@ async function enrichCushmanListing(row: any, tx: Tx): Promise<any> {
   }
 }
 
-async function srcCushman(tx: Tx, max: number): Promise<SourceResult> {
+async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   const sourceUrl =
     tx === "sale"
       ? "https://www.cushmanwakefield.com/en/united-states/properties/invest/search"
@@ -2264,14 +2318,18 @@ async function srcCushman(tx: Tx, max: number): Promise<SourceResult> {
   }
   const rows = chunks.flat().slice(0, want);
   let done = 0;
-  const listings = await pmap(rows, CUSHMAN_DETAIL_CONCURRENCY, async (row) => {
-    const enriched = await enrichCushmanListing(row, tx);
-    done++;
-    if (done % 25 === 0 || done === rows.length) {
-      console.error(`  cushman-wakefield/${tx}: detail enriched ${done}/${rows.length}`);
-    }
-    return enriched;
-  });
+  // Monitor mode: skip the per-listing detail scrape and map rows with the cheap
+  // base mapping (listingStatus is free here; real price is detail-only).
+  const listings = monitor
+    ? rows.map((row) => baseCushmanListing(row, tx))
+    : await pmap(rows, CUSHMAN_DETAIL_CONCURRENCY, async (row) => {
+        const enriched = await enrichCushmanListing(row, tx);
+        done++;
+        if (done % 25 === 0 || done === rows.length) {
+          console.error(`  cushman-wakefield/${tx}: detail enriched ${done}/${rows.length}`);
+        }
+        return enriched;
+      });
   return {
     company: "Cushman & Wakefield",
     sourceUrl,
@@ -2602,7 +2660,7 @@ async function enrichMarcusListing(base: any): Promise<any> {
   }
 }
 
-async function srcMarcusMillichap(tx: Tx, max: number): Promise<SourceResult> {
+async function srcMarcusMillichap(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   if (tx === "lease") {
     return {
       company: "Marcus & Millichap",
@@ -2633,6 +2691,21 @@ async function srcMarcusMillichap(tx: Tx, max: number): Promise<SourceResult> {
   );
   const baseRows = await pmap(selectedMapRows, CONCURRENCY, fetchMarcusMapListing);
   const baseListings = baseRows.filter((l: any) => l?.url);
+  if (monitor) {
+    // Monitor mode: keep the lightweight per-ActivityId mappropertydetail POST
+    // (it is the only source of the DealId external id and the http PropertyUrl,
+    // both to_row-required) but skip the heavy per-listing detail-HTML enrich.
+    // Free change keys: salePriceUsd, capRatePct, NewlyListed/NewlyReduced flags.
+    return {
+      company: "Marcus & Millichap",
+      sourceUrl: MARCUS_PROPERTIES_URL,
+      method:
+        "Public POST /api/contentsearch/mapproperties ActivityIds plus mappropertydetail tiles for id/url/price/cap rate (monitor mode; detail HTML enrichment skipped)",
+      totalAvailable: total,
+      listings: baseListings,
+      note: "Monitor mode: map + mappropertydetail tile fields only (id, url, price, cap rate, flags); the per-listing detail-HTML render is skipped. No terminal status (flags-only source).",
+    };
+  }
   const cachePath = marcusDetailCachePath();
   const cachedDetails = readMarcusDetailCache(cachePath);
   if (cachedDetails.size) {
@@ -3086,7 +3159,7 @@ async function enrichAvisonYoungListing(base: any): Promise<any> {
   });
 }
 
-async function srcAvisonYoung(tx: Tx, max: number): Promise<SourceResult> {
+async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   const sourceUrl = `https://www.avisonyoung.us/properties/#/?transaction=${tx}&view=sidebar&status=active`;
   const { websiteRows, teamMembers } = await getAvisonYoungFeed();
   const rows = websiteRows
@@ -3096,6 +3169,20 @@ async function srcAvisonYoung(tx: Tx, max: number): Promise<SourceResult> {
     .sort((a, b) => Number(a.order_id ?? a.id ?? 0) - Number(b.order_id ?? b.id ?? 0));
   const want = Math.min(max, rows.length);
   const baseListings = rows.slice(0, want).map((row) => avisonYoungBaseListing(row, teamMembers));
+  if (monitor) {
+    // Monitor mode: emit the SharpLaunch feed base listings only and skip the
+    // detail-page enrichment. id/price/cap rate/lastUpdated are all free in the
+    // feed; the feed already filters to status=active.
+    if (!baseListings.length) throw new Error(`no ${tx} listings found in Avison Young SharpLaunch feed`);
+    return {
+      company: "Avison Young (US)",
+      sourceUrl,
+      method: "SharpLaunch public website/team_member API base listings only (monitor mode; detail-page enrichment skipped)",
+      totalAvailable: rows.length,
+      listings: baseListings,
+      note: "Monitor mode: SharpLaunch feed fields only (id, url, price, cap rate, lastUpdated, contacts from the team_member API); per-listing detail-page enrichment skipped.",
+    };
+  }
   const detailLimit = avisonYoungDetailLimit(max, baseListings.length);
   const enrichedListings = detailLimit
     ? await pmap(baseListings.slice(0, detailLimit), AVISON_YOUNG_DETAIL_CONCURRENCY, async (listing, idx) => {
@@ -3386,7 +3473,10 @@ async function srcSavillsCommercialLease(max: number): Promise<SourceResult> {
   };
 }
 
-async function srcSavills(tx: Tx, max: number): Promise<SourceResult> {
+async function srcSavills(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
+  // Enumeration-only source: both the sale list pages and the lease __NEXT_DATA__
+  // parse extract every field from the list page (no per-listing detail render),
+  // so monitor output == full output.
   if (tx === "lease") return srcSavillsCommercialLease(max);
 
   const base = "https://search.savills.com/com/en/list/property-for-sale/united-states-of-america";
@@ -3682,7 +3772,7 @@ function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: string |
   };
 }
 
-async function srcNaiGlobal(tx: Tx, max: number): Promise<SourceResult> {
+async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   const targetContentType = NAI_CONTENT_TYPE_BY_TX[tx];
   const rows: any[] = [];
   let stoppedOnShortPage = false;
@@ -3699,6 +3789,21 @@ async function srcNaiGlobal(tx: Tx, max: number): Promise<SourceResult> {
     }
   }
   if (!rows.length) throw new Error(`no ${tx} listing rows found in NAI Global Infabode feed`);
+  if (monitor) {
+    // Monitor mode: emit feed rows only (detail=null) and skip both the per-row
+    // publicPost detail GraphQL fetch and the detail-dependent
+    // FOR_SALE_ON_MARKET active filter. id (infabode:<id>) matches the full-path
+    // external id; status and price are detail-only and thus absent here.
+    const listings = rows.map((row) => naiListingFromFeed(row, tx, null, null));
+    return {
+      company: "NAI Global",
+      sourceUrl: NAI_WIDGET_URL,
+      method: "Infabode public GraphQL feed enumeration only (monitor mode; publicPost detail enrichment and FOR_SALE_ON_MARKET filter skipped)",
+      totalAvailable: stoppedOnShortPage ? listings.length : null,
+      listings,
+      note: "Monitor mode: feed fields only (id, name, location, lastUpdated/publishedAt, photos, url). listingStatus and price are detail-only, so the FOR_SALE_ON_MARKET filter is deferred and off-market rows may be emitted (resolved downstream on render).",
+    };
+  }
   let detailFailures = 0;
   const listings = await pmap(rows, NAI_DETAIL_CONCURRENCY, async (row) => {
     const id = Number(row?.id);
@@ -4113,7 +4218,7 @@ async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Promise<a
   }
 }
 
-async function srcCbreDealflow(tx: Tx, max: number): Promise<SourceResult> {
+async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   const projectType = CBRE_DEALFLOW_PROJECT_TYPE_BY_TX[tx];
   const home = await cbreDealflowGetText(CBRE_DEALFLOW_SOURCE_URL);
   const engineKey = extractCbreDealflowEngineKey(home);
@@ -4153,14 +4258,18 @@ async function srcCbreDealflow(tx: Tx, max: number): Promise<SourceResult> {
   const selected = [...listingsByUrl.values()];
   if (!selected.length) throw new Error(`no public ${projectType} cards found on CBRE Deal Flow`);
   let done = 0;
-  const listings = await pmap(selected, CBRE_DEALFLOW_DETAIL_CONCURRENCY, async (card) => {
-    const listing = await enrichCbreDealflowCard(card, tx);
-    done++;
-    if (done % 25 === 0 || done === selected.length) {
-      console.error(`  cbre-dealflow/${tx}: detail enriched ${done}/${selected.length}`);
-    }
-    return listing;
-  });
+  // Monitor mode: skip the per-card detail enrichment and return the parsed cards
+  // directly (status is free via the card .status; price is detail-only).
+  const listings = monitor
+    ? selected
+    : await pmap(selected, CBRE_DEALFLOW_DETAIL_CONCURRENCY, async (card) => {
+        const listing = await enrichCbreDealflowCard(card, tx);
+        done++;
+        if (done % 25 === 0 || done === selected.length) {
+          console.error(`  cbre-dealflow/${tx}: detail enriched ${done}/${selected.length}`);
+        }
+        return listing;
+      });
   return {
     company: "CBRE Deal Flow",
     sourceUrl: CBRE_DEALFLOW_SOURCE_URL,
@@ -4482,7 +4591,7 @@ async function enrichColliersCard(card: ColliersCard): Promise<any> {
   }
 }
 
-async function srcColliers(tx: Tx, max: number): Promise<SourceResult> {
+async function srcColliers(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   if (tx === "lease") {
     return {
       company: "Colliers",
@@ -4526,14 +4635,18 @@ async function srcColliers(tx: Tx, max: number): Promise<SourceResult> {
   const selected = [...listingsById.values()];
   if (!selected.length) throw new Error("no public Colliers SalesTracker cards found");
   let done = 0;
-  const listings = await pmap(selected, COLLIERS_DETAIL_CONCURRENCY, async (card) => {
-    const listing = await enrichColliersCard(card);
-    done++;
-    if (done % 25 === 0 || done === selected.length) {
-      console.error(`  colliers/sale: detail enriched ${done}/${selected.length}`);
-    }
-    return listing;
-  });
+  // Monitor mode: skip the per-card SLP Init detail enrichment and return the
+  // parsed cards directly (status and price are free via the card .status/.price).
+  const listings = monitor
+    ? selected
+    : await pmap(selected, COLLIERS_DETAIL_CONCURRENCY, async (card) => {
+        const listing = await enrichColliersCard(card);
+        done++;
+        if (done % 25 === 0 || done === selected.length) {
+          console.error(`  colliers/sale: detail enriched ${done}/${selected.length}`);
+        }
+        return listing;
+      });
   const missingDetails = selected.filter((card) => !card.detailPv).length;
   return {
     company: "Colliers",
@@ -5039,7 +5152,40 @@ async function colliersMainEnrichAll(max: number): Promise<any[]> {
   return result;
 }
 
-async function srcColliersMain(tx: Tx, max: number): Promise<SourceResult> {
+async function srcColliersMain(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+  if (monitor) {
+    // Monitor mode: cheap sitemap enumeration only (url + lastmod), no detail
+    // render. Emit on the sale pass only so a URL is not duplicated across both
+    // transactionMode passes; Sale/Lease classification is detail-only and is
+    // deferred to the downstream render of new/changed listings.
+    if (tx === "lease") {
+      return {
+        company: "Colliers",
+        sourceUrl: COLLIERS_MAIN_SOURCE_URL,
+        method:
+          "Public colliers.com XML sitemap enumeration (monitor mode; emitted on the sale pass only to avoid duplicate transactionMode rows)",
+        totalAvailable: colliersMainSitemapCache ? colliersMainSitemapCache.length : null,
+        listings: [],
+        note: "Monitor mode: colliers-main sitemap entries are emitted on the sale pass only; lease pass is intentionally empty.",
+      };
+    }
+    const entries = await fetchColliersMainEntries();
+    const want = max && max > 0 ? Math.min(max, entries.length) : entries.length;
+    const listings = entries.slice(0, want).map((entry) => ({
+      id: entry.id,
+      url: entry.url,
+      lastUpdated: entry.lastmod ? entry.lastmod.slice(0, 10) : null,
+    }));
+    return {
+      company: "Colliers",
+      sourceUrl: COLLIERS_MAIN_SOURCE_URL,
+      method:
+        "Public colliers.com XML sitemap enumeration (/sitemap -> en ?type=properties): url + lastmod only (monitor mode; detail render skipped)",
+      totalAvailable: entries.length,
+      listings,
+      note: "Monitor mode: sitemap url + lastmod only (id matches the full-path main: external id). Status, price, and Sale/Lease classification are detail-only and deferred to the downstream render of new/changed listings.",
+    };
+  }
   const all = await colliersMainEnrichAll(max);
   const ok = all.filter((l) => l && l.url && !l.detailError && !l.skip);
   const notFound = all.filter((l) => l?.skip === "not_found").length;
@@ -5277,7 +5423,7 @@ function transwesternDescription($: cheerio.CheerioAPI, doc: ScrapedDoc): string
   return candidate;
 }
 
-async function enrichTranswesternListing(row: any, bucket: string, tx: Tx): Promise<any> {
+async function enrichTranswesternListing(row: any, bucket: string, tx: Tx, monitor: boolean): Promise<any> {
   const detailUrl = transwesternDetailUrl(row.PageUrl);
   const feedImage = canonicalTranswesternUrl(clean(row.PropertyImage));
   const base = {
@@ -5302,6 +5448,10 @@ async function enrichTranswesternListing(row: any, bucket: string, tx: Tx): Prom
     rawTranswesternFeed: row,
     transwesternBucket: bucket,
   };
+  // Monitor mode: emit the freely-available feed fields only (id/url/price/size)
+  // and skip the detail scrape. Status has no feed field, so it stays absent
+  // (do not render just to recover status), exactly per the design 14.1 intent.
+  if (monitor) return prune(base);
   if (!detailUrl) return prune({ ...base, detailError: "missing or invalid PageUrl" });
   try {
     const doc = await scrapeDoc(detailUrl, { waitFor: 1500, timeout: 60000 });
@@ -5355,7 +5505,7 @@ async function enrichTranswesternListing(row: any, bucket: string, tx: Tx): Prom
   }
 }
 
-async function srcTranswestern(tx: Tx, max: number): Promise<SourceResult> {
+async function srcTranswestern(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   const buckets = TRANSWESTERN_BUCKETS[tx];
   const rowsBySlug = new Map<string, { row: any; bucket: string }>();
   const bucketCounts: Record<string, number> = {};
@@ -5373,7 +5523,7 @@ async function srcTranswestern(tx: Tx, max: number): Promise<SourceResult> {
   const selected = [...rowsBySlug.values()].slice(0, Math.min(max, Number.MAX_SAFE_INTEGER));
   let done = 0;
   const listings = await pmap(selected, CONCURRENCY, async ({ row, bucket }) => {
-    const listing = await enrichTranswesternListing(row, bucket, tx);
+    const listing = await enrichTranswesternListing(row, bucket, tx, monitor);
     done++;
     if (done % 25 === 0 || done === selected.length) {
       console.error(`  transwestern/${tx}: detail enriched ${done}/${selected.length}`);
@@ -5397,30 +5547,30 @@ const UNSUPPORTED: Record<string, string> = {};
 
 // ---------- main ----------
 
-async function runSource(key: SourceKey, tx: Tx, max: number): Promise<SourceResult> {
+async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   switch (key) {
     case "cbre":
-      return srcCbre(tx, max);
+      return srcCbre(tx, max, monitor);
     case "cbre-dealflow":
-      return srcCbreDealflow(tx, max);
+      return srcCbreDealflow(tx, max, monitor);
     case "jll":
-      return srcJll(tx, max);
+      return srcJll(tx, max, monitor);
     case "jll-investor":
-      return srcJllInvestor(tx, max);
+      return srcJllInvestor(tx, max, monitor);
     case "cushman-wakefield":
-      return srcCushman(tx, max);
+      return srcCushman(tx, max, monitor);
     case "colliers":
-      return srcColliers(tx, max);
+      return srcColliers(tx, max, monitor);
     case "colliers-main":
-      return srcColliersMain(tx, max);
+      return srcColliersMain(tx, max, monitor);
     case "newmark":
-      return srcNewmark(tx, max);
+      return srcNewmark(tx, max, monitor);
     case "marcus-millichap":
-      return srcMarcusMillichap(tx, max);
+      return srcMarcusMillichap(tx, max, monitor);
     case "avison-young":
-      return srcAvisonYoung(tx, max);
+      return srcAvisonYoung(tx, max, monitor);
     case "savills":
-      return srcSavills(tx, max);
+      return srcSavills(tx, max, monitor);
     case "svn":
       return srcBuildout(
         "SVN",
@@ -5428,6 +5578,7 @@ async function runSource(key: SourceKey, tx: Tx, max: number): Promise<SourceRes
         "https://svn.com/properties/",
         tx,
         max,
+        monitor,
         {
           preferDirectJson: true,
           directReferer: "https://svn.com/properties/",
@@ -5447,6 +5598,7 @@ async function runSource(key: SourceKey, tx: Tx, max: number): Promise<SourceRes
         "https://www.lee-associates.com/properties/",
         tx,
         max,
+        monitor,
         {
           preferDirectJson: true,
           directReferer: "https://www.lee-associates.com/properties/",
@@ -5460,9 +5612,9 @@ async function runSource(key: SourceKey, tx: Tx, max: number): Promise<SourceRes
         }
       );
     case "nai-global":
-      return srcNaiGlobal(tx, max);
+      return srcNaiGlobal(tx, max, monitor);
     case "transwestern":
-      return srcTranswestern(tx, max);
+      return srcTranswestern(tx, max, monitor);
     default:
       throw new Error(`unhandled source ${key}`);
   }
@@ -5484,7 +5636,7 @@ async function main() {
         `collecting ${key}/${tx} (max ${Number.isFinite(MAX_ITEMS) ? MAX_ITEMS : "unlimited"})...`
       );
       try {
-        const res = await runSource(key, tx, MAX_ITEMS);
+        const res = await runSource(key, tx, MAX_ITEMS, MONITOR);
         sources.push({
           sourceKey: key,
           transaction: tx,
@@ -5534,6 +5686,7 @@ async function main() {
       transactions: TRANSACTIONS,
       maxItemsPerSource: Number.isFinite(MAX_ITEMS) ? MAX_ITEMS : null,
       pageCap: PAGE_CAP,
+      mode: MONITOR ? "monitor" : "full",
       startedAt,
       finishedAt: new Date().toISOString(),
     },

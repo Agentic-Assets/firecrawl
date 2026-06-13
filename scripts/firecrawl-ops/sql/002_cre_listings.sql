@@ -161,3 +161,22 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listing_images (
 
 CREATE INDEX IF NOT EXISTS cre_listing_images_listing_idx ON credeals.cre_listing_images (listing_id);
 COMMENT ON TABLE credeals.cre_listing_images IS 'Property photo URLs for a listing, ordered by display_order; is_primary marks the hero image.';
+
+-- =============================================================================
+-- Change-tracking additions (design doc section 7). ADDITIVE and idempotent;
+-- re-running is safe. The status CHECK only ADDS allowed values
+-- (under_contract, pending, off_market), so no existing row can violate it.
+-- The new columns are nullable with no default (metadata-only ADD COLUMN).
+-- =============================================================================
+ALTER TABLE credeals.cre_listings DROP CONSTRAINT IF EXISTS cre_listings_status_check;
+ALTER TABLE credeals.cre_listings ADD CONSTRAINT cre_listings_status_check
+    CHECK (status IN ('active', 'inactive', 'under_contract', 'pending',
+                      'sold', 'leased', 'off_market', 'expired', 'withdrawn'));
+
+ALTER TABLE credeals.cre_listings ADD COLUMN IF NOT EXISTS last_seen_at   timestamptz;
+ALTER TABLE credeals.cre_listings ADD COLUMN IF NOT EXISTS source_lastmod timestamptz;
+ALTER TABLE credeals.cre_listings ADD COLUMN IF NOT EXISTS canonical_key  text;
+
+COMMENT ON COLUMN credeals.cre_listings.last_seen_at   IS 'Reserved / currently unwritten. Enumeration recency and disappearance detection live in cre_source_index (last_enumerated_at, soft_deleted); the observe-only monitor deliberately does not write this column because doing so every run would churn updated_at (exposed in EQUIRE views). Kept nullable for a possible future per-listing signal; distinct from scraped_at (last detail scrape).';
+COMMENT ON COLUMN credeals.cre_listings.source_lastmod IS 'Full-precision upstream last-modified (e.g. sitemap <lastmod>), used to prioritize re-scrapes. Not day-truncated. Not necessarily the first-listed date.';
+COMMENT ON COLUMN credeals.cre_listings.canonical_key  IS 'lower(address)+state(+rounded geo) key for advisory re-listing detection within a brokerage. Geoless sources downgrade to address+state-only (weaker advisory).';

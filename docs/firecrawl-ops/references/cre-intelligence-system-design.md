@@ -1,7 +1,28 @@
 # CRE Listing Intelligence: Unified System Architecture
 
-Owner: EQUIRE deal-intelligence feed. Status: design, ready for phased build.
-Last reviewed against code: 2026-06-13 (collect.ts 5,558 lines; cre_ingest.py 867 lines; sql/001-006).
+Owner: EQUIRE deal-intelligence feed.
+Last reviewed against code: 2026-06-13.
+
+> **Implementation status (2026-06-13).** Subsystem 1 (acquisition) and the
+> change-tracking schema are SHIPPED; the monitor runs observe-only. Live now:
+> migration `007` (`cre_listing_events`, `cre_source_index`,
+> `cre_enrichment_queue`, `cre_source_baseline`) applied to prod; the widened
+> status CHECK and neutral `source_lastmod` / `canonical_key` columns;
+> `norm_status` in `cre_ingest.py`; `collect.ts --monitor`; `cre_monitor.py`
+> (diff/event/snapshot) and `cre_gate.py` (coverage gate), both adversarially
+> reviewed. One important divergence from this document: the shipped change
+> detector is a SEPARATE observe-only path (`cre_monitor.py`) that NEVER writes
+> `cre_listings.status` or `deleted_at`. It is not the in-ingest `_before` CTE
+> sketched in sections 3, 6, and 7, which are kept here as the original design
+> alternative. Not yet built: in-ingest event emission, `cre_backfill_status.py`,
+> `cre_notify.sh`, the `--ids` / `--queue` id-scoped collect mode, the
+> `cre_enrichment_queue` drain worker, live launchd tiers, and the EQUIRE
+> view-gate / status activation (gated on CRE_EQUIRE coordination, see 12.4).
+> Canonical pointers: monitor operations and gotchas ->
+> `cre-monitor-subsystem.md`; live per-source counts -> `START_HERE.md` and
+> `BROKERAGE_STATUS_2026-06-12.md`; the board-impact decision ->
+> `cre-phase2-board-impact-2026-06-13.md`. Inline code line numbers below are
+> approximate; re-verify against current source.
 
 ## 1. Purpose and goals
 
@@ -11,7 +32,7 @@ EQUIRE needs one system that does three things across many brokerage sites:
 2. DETECT NEW listings added to any source, with low latency and without re-scraping everything.
 3. DETECT CHANGES to existing listings: status lifecycle (for_sale to under_contract to pending to sold or leased or withdrawn) and price moves, plus disappearance and re-listing.
 
-The current system does (1) well (about 34,000 active rows from 15 source adapters across 13 parent brokerages) and does (2) and (3) only implicitly. This document defines a cohesive architecture that keeps the working acquisition layer, adds a persisted change ledger and a normalized status, and layers an incremental monitor and safety gates on top, with every adversarial review fix folded in.
+The current system does (1) well (about 72,500 active rows from 15 source adapters across 12 parent brokerages; live per-source counts in `START_HERE.md` and `BROKERAGE_STATUS_2026-06-12.md`) and does (2) and (3) only implicitly. This document defines a cohesive architecture that keeps the working acquisition layer, adds a persisted change ledger and a normalized status, and layers an incremental monitor and safety gates on top, with every adversarial review fix folded in.
 
 ## 2. What already exists (verified) vs what must be built
 
@@ -97,9 +118,14 @@ For each enumeration-capable source: (1) enumerate the cheapest id inventory; (2
 - The monitor never resurrects daily-killed rows. The enrichment ingest uses the change-aware upsert (Subsystem 3), which does COALESCE(status) and clears deleted_at only when the detail render confirms a positive active status. A sold listing that lingers in a sitemap with a bumped lastmod gets re-rendered, sees its terminal status, and stays terminal.
 - The monitor is signal-only for disappearance. enumeration_gone never drives a soft-delete; it emits an event. Soft-delete stays the gated daily mark-missing job. For non-sitemap sources, NEW and gone candidates require confirmation across N >= 2 consecutive passes plus an enumerated-count-vs-totalAvailable sanity check before emitting, which kills transient-miss false positives and feed-redirect false NEWs.
 - Mutual flock. cre_monitor, cre_daily_update, and run_colliers_main_full all acquire the SAME lock, so a monitor pass yields to the live colliers-main enrichment the task warns about.
-- Initial backfill seeds cre_source_index from current cre_listings INCLUDING soft-deleted rows with an explicit soft_deleted flag, so run one neither flags 34k rows as NEW nor suppresses real reappearance.
+- Initial backfill seeds cre_source_index from current cre_listings INCLUDING soft-deleted rows with an explicit soft_deleted flag, so run one neither flags ~72k rows as NEW nor suppresses real reappearance.
 
 ## 6. Subsystem 3: change detector
+
+> Shipped as the observe-only `cre_monitor.py` (never writes `status` or
+> `deleted_at`), not the in-ingest CTE described below. This section is the
+> original design alternative; see the status block at the top and
+> `cre-monitor-subsystem.md` for what actually runs.
 
 The center of gravity is the existing single-statement CTE upsert (cre_ingest.py:549-655), the one place OLD (t.*) and NEW (EXCLUDED.*) are both in scope.
 
@@ -135,6 +161,12 @@ Because raw_data already retains every source status, a one-shot cre_backfill_st
 The four EQUIRE views and search_cre_listings() gate on status='active' (005). The instant status is populated, every under_contract/pending/sold/off_market row drops out of all four surfaces. This is a prerequisite, not an open question. The views are updated to gate on status IN ('active','under_contract','pending') with status surfaced as a badge column, and a new v_cre_recent_changes view exposes the event ledger for the last 7 days. The coverage change is coordinated with the CRE_EQUIRE codebase before status is populated.
 
 ## 7. Schema migrations (DDL sketches)
+
+> The shipped DDL is `sql/007_cre_change_tracking.sql` (canonical). It adds
+> columns beyond this sketch (`source_status_value`, `sale_price_text`,
+> `lease_rate_text`, `source_url`, `content_hash`) and a
+> `cre_listing_events_idem_uq` unique index per 12.6. Treat the sketch below as
+> historical; read the live `007` file before changing schema.
 
 Migration ordering note (folds in the ordering-bug fix): 000_run_all.sql runs views (005) LAST, in order 001,002,003,004,006,005. Any new view that selects from a new table must be created AFTER that table. So 007 (the new tables) is registered between 004 and 006, and v_cre_recent_changes lives in 005 (which still runs last) so the events table exists before the view.
 
@@ -348,6 +380,12 @@ so norm_status() returns NULL. The EQUIRE view gate MUST be
 `status IN ('active','under_contract','pending') OR status IS NULL`, else
 populating status silently drops ~19k CBRE rows. Confirm with CRE_EQUIRE.
 
+> Resolved: see `cre-phase2-board-impact-2026-06-13.md`. The shipped design keeps
+> the stored `status` non-null (INSERT defaults to `active`, UPDATE uses
+> `COALESCE`), so the gate is `status IN ('active','under_contract','pending')`
+> with no NULL branch needed. That memo quantifies board impact and holds the
+> CRE_EQUIRE coordination decision; it is not yet applied.
+
 ### 12.5 Explicit per-(sourceKey x raw_data-shape) status/price JSON-path map
 raw_data is flat for single-mode listings but `{primary, secondary_pass}` for
 dual sale+lease rows (cre_ingest.py merge). norm_status() and price extraction
@@ -383,9 +421,9 @@ timezone-ambiguous, or absent. If colliers-main lastmod bumps globally per regen
 "re-render only advanced-lastmod URLs" degrades to "re-render everything" and the
 Tier-B saving evaporates. Verify per-URL meaningfulness before gating on it.
 
-### 12.10 Transaction lock blast radius on the ~33k-row live table
+### 12.10 Transaction lock blast radius on the ~72k-row live table
 The change-emitting upsert adds a _before snapshot TEMP TABLE + 4-5 event CTEs to
-the SAME ~33k-row COPY+upsert transaction (statement_timeout=600s, ON_ERROR_STOP).
+the SAME ~72k-row COPY+upsert transaction (statement_timeout=600s, ON_ERROR_STOP).
 Benchmark duration/lock against a table copy first; if it materially extends the
 lock, emit events in a SECOND transaction from the _up/_before temp tables rather
 than risk a timeout aborting the whole nightly ingest.
@@ -565,6 +603,13 @@ throttle risk.
 | nai-global | Feed query (line 3513) lacks `listingStatus`/`updatedAt`. Probe whether `public_api` returns them unauthenticated; if so, status/price monitoring becomes free and drops ~241 detail POSTs/cycle. The full `listingStatus` enum + distribution is in the kept `INFABODE_LISTING_STATUS_POLICY` note. | med |
 
 ### 14.4 Build sequence (what this section authorizes next)
+
+> Status (2026-06-13): steps 1-5 are SHIPPED (007 applied; enumeration-key
+> invariant test; both capture wins; `--monitor` mode; `cre_monitor.py` /
+> `cre_gate.py`). Step 6 (live launchd tiers) plus the first live
+> `cre_monitor.py --apply` run and gate wiring into `cre_daily_update.sh` stay
+> gated for explicit go-ahead. See the status block at top and
+> `cre-monitor-subsystem.md`.
 
 1. **Schema foundation (additive, this is the gating dependency):** apply
    migration 007 (`cre_source_index`, `cre_listing_events`, `cre_enrichment_queue`,

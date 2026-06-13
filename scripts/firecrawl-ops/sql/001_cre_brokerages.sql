@@ -31,7 +31,8 @@ COMMENT ON COLUMN credeals.cre_brokerages.scrape_config IS 'jsonb: {proxy, wait_
 COMMENT ON COLUMN credeals.cre_brokerages.active       IS 'False disables the broker from scheduled scrape runs (e.g. access-gated or consistently failing sites).';
 
 -- -----------------------------------------------------------------------------
--- Seed data: 10 national CRE brokerages.
+-- Seed data: 12 national CRE brokerage slugs (15 collector source keys fold in;
+-- cbre-dealflow -> cbre, jll-investor -> jll, colliers-main -> colliers).
 -- proxy / wait_for_ms values come from live Firecrawl testing (2026-06-11).
 -- CBRE is the reference implementation (proxy=stealth, wait_for=6000).
 -- -----------------------------------------------------------------------------

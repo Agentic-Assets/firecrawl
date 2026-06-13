@@ -26,6 +26,7 @@
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 002_cre_listings.sql
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 003_cre_scrape_tracking.sql
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 004_cre_indexes.sql
+--     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 007_cre_change_tracking.sql
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 005_cre_views.sql
 --
 -- Option C -- Supabase SQL editor: paste the contents of 001 -> 006 in order.
@@ -33,11 +34,12 @@
 -- -----------------------------------------------------------------------------
 -- DEPENDENCY ORDER (do not reorder)
 --   001 cre_brokerages          base registry (FK target)
---   002 cre_listings (+children) references cre_brokerages
+--   002 cre_listings (+children) references cre_brokerages; + change-tracking ALTERs
 --   003 cre_scrape_tracking     references cre_brokerages, cre_listings
---   004 cre_indexes             indexes on cre_listings
+--   004 cre_indexes             indexes on cre_listings (+ change-tracking indexes)
+--   007 cre_change_tracking     monitor tables (events, source_index, queue, baseline)
 --   006 cre_contact_urls        contact profile/avatar/VCard URL fields
---   005 cre_views               views, search fn, updated_at triggers
+--   005 cre_views               views (incl v_cre_recent_changes), search fn, triggers
 --
 -- Extensions: pgcrypto (gen_random_uuid) is already installed on this project.
 -- pg_trgm / postgis / vector / uuid-ossp are present and not required by these
@@ -61,6 +63,9 @@ CREATE SCHEMA IF NOT EXISTS credeals;
 
 \echo '=== 004_cre_indexes.sql ==='
 \i 004_cre_indexes.sql
+
+\echo '=== 007_cre_change_tracking.sql ==='
+\i 007_cre_change_tracking.sql
 
 \echo '=== 006_cre_contact_urls.sql ==='
 \i 006_cre_contact_urls.sql

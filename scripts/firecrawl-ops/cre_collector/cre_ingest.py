@@ -299,6 +299,234 @@ def transaction_type_of(listing):
     return mode if mode in ("sale", "lease") else None
 
 
+# ---------------------------------------------------------------------------
+# Status normalization (change-tracking core; PURE-ADDITIVE)
+#
+# These symbols are imported by the change-tracking / monitor layer; the
+# production upsert path in build_sql() never calls them and is unchanged.
+# Design: cre-intelligence-system-design.md sections 6 and 12.5.
+#
+# Two-tier read, modeled on transaction_type_of (read-explicit-then-fallback):
+#   1. STATUS_SOURCE_PATHS gives an ordered list of dotted paths to each
+#      source's native status signal, covering BOTH the flat listing dict and
+#      the {primary, secondary_pass} dual shape produced by merge_rows().
+#   2. STATUS_RULES is a conservative word-boundary TEXT fallback over only
+#      title/name/headline/url-slug.
+#
+# Invariant: never default to "active". collect.ts prune() drops false/null
+# (e.g. underContract:false, absent marcusFlags), so absence is NOT a status;
+# norm_status() returns None when there is no signal. The INSERT path defaults
+# to 'active' and the UPDATE path COALESCEs EXCLUDED.status onto t.status, so a
+# None here must read as "no opinion", never as a downgrade to active.
+# ---------------------------------------------------------------------------
+
+# Ordered word-boundary text -> canonical status. First match wins. Never
+# produces "active" (active is the default elsewhere, never inferred here).
+# Canonical statuses match the widened DB CHECK:
+#   sold, under_contract, pending, leased, off_market.
+STATUS_RULES = [
+    (re.compile(r"\b(?:sold|closed)\b", re.I), "sold"),
+    (re.compile(r"\b(?:under\s+contract|in\s+contract|under\s+offer)\b", re.I), "under_contract"),
+    (re.compile(r"\b(?:sale\s+pending|pending)\b", re.I), "pending"),
+    (re.compile(r"\bleased\b", re.I), "leased"),
+    (re.compile(r"\b(?:withdrawn|off\s+market)\b", re.I), "off_market"),
+]
+
+# Terminal statuses (a value here from EITHER dual pass wins over a
+# non-terminal / None signal from the other pass).
+_TERMINAL_STATUSES = {"sold", "under_contract", "pending", "leased", "off_market"}
+
+# Explicit per-(sourceKey x raw_data-shape) status signal map (design 12.5).
+# Each value is an ordered list of dotted paths into a single (flat) listing
+# dict. norm_status() applies these paths to the flat dict AND to each of the
+# {primary, secondary_pass} sub-passes. A path may resolve to a string (mapped
+# through STATUS_RULES) or to a boolean signal (handled by _STATUS_BOOL_PATHS).
+# Sources with NO native status get an empty list -> disappearance-only tier
+# (norm_status returns None) so their rows are never mislabeled (notably CBRE's
+# ~19k rows, which emit no status field).
+STATUS_SOURCE_PATHS = {
+    # Status-transition tier (native signal present in raw_data).
+    "jll-investor": ["status", "jllInvestorSearchRow.status", "jllInvestorDetail.stageName"],
+    "nai-global": ["listingStatus"],
+    "svn": ["closed", "underContract"],
+    "lee-associates": ["closed", "underContract"],
+    "colliers": ["status"],
+    "cbre-dealflow": ["status", "cbreDealflowCard.status", "cbreDealflowDetail.status"],
+    "cushman-wakefield": ["listingStatus", "rawCushmanApi.listing_status"],
+    "colliers-main": ["status", "colliersMain.propertyStatus"],
+    # Freshness-only flags, NOT terminal -> explicitly map to no signal.
+    "marcus-millichap": [],
+    # Disappearance-only tier (no native status field; lifecycle = vanishing).
+    "cbre": [],
+    "jll": [],
+    "newmark": [],
+    "avison-young": [],
+    "savills": [],
+    "transwestern": [],
+}
+
+# Boolean status signals: a path that resolves to True maps to this canonical
+# token (then run through STATUS_RULES); False/None contributes no signal
+# (prune() has already stripped False, so absence is normal).
+_STATUS_BOOL_PATHS = {
+    "closed": "closed",
+    "underContract": "under contract",
+}
+
+# Text fields scanned by the conservative fallback. Never the whole blob.
+_STATUS_TEXT_FIELDS = ("title", "name", "headline")
+
+
+def _dig(obj, dotted_path):
+    """Resolve a dotted path against a dict, returning None if any hop misses."""
+    cur = obj
+    for part in dotted_path.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+        if cur is None:
+            return None
+    return cur
+
+
+def _status_from_signal(value):
+    """Map one resolved string signal to a canonical status, or None.
+
+    Boolean source signals (closed/underContract) are coerced to their
+    canonical token by the caller before reaching here.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+    s = value.strip()
+    if not s:
+        return None
+    for rx, canonical in STATUS_RULES:
+        if rx.search(s):
+            return canonical
+    return None
+
+
+def _explicit_status_from_pass(sub, paths):
+    """Best canonical status from one flat sub-pass given its source paths.
+
+    A terminal status wins immediately; otherwise keep scanning the ordered
+    paths. Boolean paths (closed/underContract) are coerced to their canonical
+    token before STATUS_RULES.
+    """
+    if not isinstance(sub, dict):
+        return None
+    best = None
+    for path in paths:
+        raw = _dig(sub, path)
+        if raw is None:
+            continue
+        if isinstance(raw, bool):
+            if not raw:
+                continue
+            raw = _STATUS_BOOL_PATHS.get(path.split(".")[-1])
+            if raw is None:
+                continue
+        status = _status_from_signal(raw)
+        if status in _TERMINAL_STATUSES:
+            return status
+        if status and best is None:
+            best = status
+    return best
+
+
+def _text_status_from_pass(sub):
+    """Conservative word-boundary status scan of only title/name/headline/slug."""
+    if not isinstance(sub, dict):
+        return None
+    for field in _STATUS_TEXT_FIELDS:
+        v = sub.get(field)
+        if isinstance(v, str) and v.strip():
+            status = _status_from_signal(v)
+            if status:
+                return status
+    url = sub.get("url")
+    if isinstance(url, str) and url:
+        slug = url.rsplit("/", 1)[-1].split("?")[0].replace("-", " ").replace("_", " ")
+        status = _status_from_signal(slug)
+        if status:
+            return status
+    return None
+
+
+def norm_status(listing) -> "Optional[str]":
+    """Canonical listing status, or None when there is no signal.
+
+    Mirrors transaction_type_of's read-explicit-then-fallback shape:
+      (a) read the source's native status via STATUS_SOURCE_PATHS, handling
+          both the flat dict and the {primary, secondary_pass} dual shape; a
+          terminal status from EITHER pass wins;
+      (b) otherwise a conservative word-boundary scan of title/name/headline/
+          url-slug only (never the whole blob);
+      (c) otherwise None.
+
+    Never returns "active": absence is no opinion, not a downgrade. prune()
+    drops false/null upstream, so a missing flag must not be read as a status.
+    """
+    if not isinstance(listing, dict):
+        return None
+    source_key = listing.get("sourceKey")
+    paths = STATUS_SOURCE_PATHS.get(source_key, [])
+
+    # Both raw_data shapes: flat listing, plus dual {primary, secondary_pass}.
+    subs = [listing]
+    for nested_key in ("primary", "secondary_pass"):
+        nested = listing.get(nested_key)
+        if isinstance(nested, dict):
+            subs.append(nested)
+
+    # (a) Explicit native status. Terminal from any pass wins immediately.
+    best_explicit = None
+    if paths:
+        for sub in subs:
+            status = _explicit_status_from_pass(sub, paths)
+            if status in _TERMINAL_STATUSES:
+                return status
+            if status and best_explicit is None:
+                best_explicit = status
+        if best_explicit is not None:
+            return best_explicit
+
+    # (b) Conservative text fallback over scoped fields only.
+    for sub in subs:
+        status = _text_status_from_pass(sub)
+        if status:
+            return status
+
+    # (c) No signal: None, never "active".
+    return None
+
+
+def _canonical_key(listing) -> "Optional[str]":
+    """Advisory re-listing key: lower(address)|state[|round(lat,4)].
+
+    Geo-bearing rows use lower(trimmed address)|state|round(lat,4); geoless
+    rows (e.g. all jll-investor) degrade to lower(address)|state only. Returns
+    None when there is no address. Advisory only (design section 6, item 5).
+    """
+    if not isinstance(listing, dict):
+        return None
+    address = listing.get("address") or listing.get("street")
+    if not isinstance(address, str) or not address.strip():
+        return None
+    addr = address.strip().lower()
+    state = listing.get("state")
+    state_part = state.strip().lower() if isinstance(state, str) else ""
+    key = f"{addr}|{state_part}"
+    lat = listing.get("lat")
+    if lat is None:
+        lat = listing.get("latitude")
+    if isinstance(lat, (int, float)) and not isinstance(lat, bool):
+        key = f"{key}|{round(float(lat), 4)}"
+    return key
+
+
 def to_row(listing, brokers_by_idx, scraped_at):
     """Map one collector listing to a staging row dict, or None to skip."""
     source_key = listing.get("sourceKey")

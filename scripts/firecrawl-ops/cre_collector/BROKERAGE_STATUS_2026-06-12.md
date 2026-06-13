@@ -33,39 +33,21 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 
 ## Completed Or Closest To Complete
 
-CBRE is complete for its public feed. CBRE Deal Flow is complete for the public
-RCM cards exposed through the public endpoint, has been live-ingested, and has
-had 21 stale URL-hash duplicate rows soft-deleted. Cushman & Wakefield is complete for its public API feed and is now
-live-ingested with source-scoped reconciliation. SVN is complete for its public
-Buildout feed after durable page-cache assembly, source-scoped reconciliation,
-and Supabase validation.
+Per-source completion state is in the Summary table above (the "Current status"
+column); it is not re-narrated here.
 
 ## Not Complete Yet
 
-JLL main property search is now complete for its public rendered feed after full
-detail enrichment, live ingest, validation, and stale same-URL cleanup. Avison
-Young is now complete for the public SharpLaunch feed plus public detail-page
-fields after full detail enrichment and additive live ingest. Savills is
-explicitly partial. Main Colliers (`colliers-main`) is no longer blocked: a
-public XML sitemap path (`/sitemap` -> `en/sitemap?type=properties`, 15,896
-detail URLs) fetched through local Firecrawl plus detail-render JSON-LD parse
-replaced the blocked Coveo POST route. A bounded 2,000-URL batch (943 rows) is
-live; the full run is in progress as of 2026-06-13.
-JLL Investor Center
-completed a full sitemap detail ingest on 2026-06-12 22:47 UTC with 934 active
-U.S. sale rows retained from 1,857 scanned sitemap URLs; source-scoped
-soft-delete cleanup was applied with user approval. Colliers SalesTracker is
-complete for the public RCM investment-sale subset and is now supplemented by
-the `colliers-main` sitemap source (full run in progress). Marcus & Millichap is complete for the
-defensible public sale feed after full ActivityId expansion, detail enrichment,
-source-scoped ingest, and Supabase validation; public lease remains blocked.
+Main Colliers (`colliers-main`) is no longer blocked: a public XML sitemap path
+(`/sitemap` -> `en/sitemap?type=properties`, 15,896 detail URLs) fetched through
+local Firecrawl plus detail-render JSON-LD parse replaced the blocked Coveo POST
+route. A bounded 2,000-URL batch (943 rows) is live; the full run is in progress
+as of 2026-06-13.
+
 Savills remains weak for EQUIRE sale coverage because no safe repeatable public
 U.S. commercial sale path was found in the latest recheck, but the commercial
-lease path now exposes two defensible Chicago retail listings and those rows
-are live-ingested additively. Lee and SVN are now complete for their public Buildout feeds after durable page-cache assembly, source-scoped
-reconciliation, and Supabase validation. Transwestern is now complete for its
-public GET feed after full collection, cleaned artifact ingest, source-scoped
-reconciliation, and Supabase validation.
+lease path now exposes two defensible Chicago retail listings and those rows are
+live-ingested additively.
 
 NAI Global is complete only for the active public Infabode inventory whose
 `publicPost.listingStatus` contains `FOR_SALE_ON_MARKET`. The same public feed

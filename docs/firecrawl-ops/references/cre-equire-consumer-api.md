@@ -91,9 +91,11 @@ ORDER BY j.started_at DESC
 LIMIT 20;
 ```
 
-Once the change-tracking layer (migration 007) lands, recent status/price
-changes will be exposed through `v_cre_recent_changes` over `cre_listing_events`;
-see `cre-intelligence-system-design.md` sections 6-7.
+The change-tracking layer (migration 007) has landed: recent status/price
+changes are exposed through `v_cre_recent_changes` over `cre_listing_events`
+(rolling 7-day window). The ledger is currently populated by the observe-only
+`cre_monitor.py`; see `cre-monitor-subsystem.md` for the run model and
+`cre-intelligence-system-design.md` sections 6-7 for the design.
 
 ## 3. Environment variables
 

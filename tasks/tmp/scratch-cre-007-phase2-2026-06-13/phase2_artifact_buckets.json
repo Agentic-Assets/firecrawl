@@ -1,0 +1,251 @@
+{
+  "avison-young": {
+    "artifact": "avison_full_detail_2026-06-12.json",
+    "leased": 0,
+    "null_status": 2199,
+    "off_market": 0,
+    "pending": 0,
+    "samples": [],
+    "sold": 0,
+    "status_tier": "disappearance-only-null",
+    "terminal": 0,
+    "total_rows": 2199,
+    "under_contract": 0
+  },
+  "cbre": {
+    "artifact": "full_latest_2026-06-11_230423.json",
+    "leased": 79,
+    "null_status": 18912,
+    "off_market": 0,
+    "pending": 2,
+    "samples": [
+      "leased :: FULLY LEASED OFFICE BUILDING FOR SALE",
+      "leased :: Enterprise Rent-A-Car",
+      "under_contract :: UNDER CONTRACT - Industrial Investment Sale - 4001 Carolina Avenue - 1",
+      "leased :: South Hill Business Campus"
+    ],
+    "sold": 9,
+    "status_tier": "disappearance-only-null",
+    "terminal": 88,
+    "total_rows": 19023,
+    "under_contract": 21
+  },
+  "cbre-dealflow": {
+    "artifact": "cbre_dealflow_full_2026-06-12_041740.json",
+    "leased": 2,
+    "null_status": 1627,
+    "off_market": 0,
+    "pending": 0,
+    "samples": [
+      "under_contract :: Edgewater",
+      "under_contract :: Wendy's - Waco",
+      "under_contract :: 104th & Peoria",
+      "under_contract :: 2210 E Route 66"
+    ],
+    "sold": 0,
+    "status_tier": "has-native-status",
+    "terminal": 2,
+    "total_rows": 1836,
+    "under_contract": 207
+  },
+  "colliers": {
+    "artifact": "colliers_salestracker_full_2026-06-12_050241.json",
+    "leased": 4,
+    "null_status": 826,
+    "off_market": 0,
+    "pending": 0,
+    "samples": [
+      "under_contract :: 310 McNary",
+      "sold :: 5033 S 71st St",
+      "sold :: 34011 Sunset Lane",
+      "under_contract :: SEC Peoria Ave & 95th Ave"
+    ],
+    "sold": 277,
+    "status_tier": "has-native-status",
+    "terminal": 281,
+    "total_rows": 1172,
+    "under_contract": 65
+  },
+  "colliers-main": {
+    "artifact": "colliers_main_full_2026-06-13.json",
+    "leased": 467,
+    "null_status": 11618,
+    "off_market": 0,
+    "pending": 5,
+    "samples": [
+      "leased :: Leased | 10,500\u00b1 SF Stand-alone Warehouse",
+      "leased :: 480 W Antelope Dr, Layton",
+      "sold :: 1101 W Melinda Ln, Phoenix",
+      "sold :: 1740 Elmview Dr, 2403 Naomi Street, 515 Melbourne Street, 4729 Ramus S"
+    ],
+    "sold": 611,
+    "status_tier": "has-native-status",
+    "terminal": 1078,
+    "total_rows": 12726,
+    "under_contract": 25
+  },
+  "cushman-wakefield": {
+    "artifact": "cushman_full_2026-06-12_022841.json",
+    "leased": 7,
+    "null_status": 11293,
+    "off_market": 2,
+    "pending": 0,
+    "samples": [
+      "leased :: 100% Leased Investment For Sale",
+      "sold :: 20 E Thomas",
+      "under_contract :: 25435 Harvard Road",
+      "under_contract :: 3121 West Market Street"
+    ],
+    "sold": 7,
+    "status_tier": "has-native-status",
+    "terminal": 16,
+    "total_rows": 11318,
+    "under_contract": 9
+  },
+  "jll": {
+    "artifact": "jll_full_detail_enriched_2026-06-12.json",
+    "leased": 0,
+    "null_status": 10601,
+    "off_market": 0,
+    "pending": 0,
+    "samples": [
+      "under_contract :: Under Contract - Bank Site for Sale - Savanne Rd - Houma, LA",
+      "under_contract :: W Davis St & Pentair - Under Contract",
+      "under_contract :: SpeedSportz (23050 Speed St) - Under Contract"
+    ],
+    "sold": 0,
+    "status_tier": "disappearance-only-null",
+    "terminal": 0,
+    "total_rows": 10604,
+    "under_contract": 3
+  },
+  "jll-investor": {
+    "artifact": "jll_investor_full_sitemap_detail_2026-06-12.json",
+    "leased": 1,
+    "null_status": 719,
+    "off_market": 0,
+    "pending": 0,
+    "samples": [
+      "under_contract :: 15.27 Acres on Calder Drive - League City, TX",
+      "under_contract :: La Fortuna Towns",
+      "under_contract :: Bridge & Fulton Development Site",
+      "under_contract :: Tarheel Lodging"
+    ],
+    "sold": 0,
+    "status_tier": "has-native-status",
+    "terminal": 1,
+    "total_rows": 934,
+    "under_contract": 214
+  },
+  "lee-associates": {
+    "artifact": "lee_full_cache_2026-06-12_assembled.json",
+    "leased": 3,
+    "null_status": 9143,
+    "off_market": 0,
+    "pending": 0,
+    "samples": [
+      "leased :: Net Leased Warehouse For Sale in New Iberia",
+      "leased :: NNN Leased Investment Opportunity",
+      "leased :: Absolute Net Leased Food Lion",
+      "under_contract :: 715 & 717 W. Morgan"
+    ],
+    "sold": 0,
+    "status_tier": "has-native-status",
+    "terminal": 3,
+    "total_rows": 9223,
+    "under_contract": 77
+  },
+  "marcus-millichap": {
+    "artifact": "marcus_full_2026-06-12_130035.json",
+    "leased": 12,
+    "null_status": 3112,
+    "off_market": 0,
+    "pending": 0,
+    "samples": [
+      "leased :: Harlem Amor - Net-Leased Bar/Restaurant",
+      "leased :: 4-Tenant Neighborhood Center | 100% Leased With Service-Oriented Tenan",
+      "leased :: Irreplaceable Lakeview Net-Leased Medical | 3% Annual Rent Increases",
+      "leased :: Net-Leased Retail w/Development Upside"
+    ],
+    "sold": 0,
+    "status_tier": "disappearance-only-null",
+    "terminal": 12,
+    "total_rows": 3124,
+    "under_contract": 0
+  },
+  "nai-global": {
+    "artifact": "nai_active_only_from_full_2026-06-12_044310.json",
+    "leased": 0,
+    "null_status": 241,
+    "off_market": 0,
+    "pending": 0,
+    "samples": [],
+    "sold": 0,
+    "status_tier": "has-native-status",
+    "terminal": 0,
+    "total_rows": 241,
+    "under_contract": 0
+  },
+  "newmark": {
+    "artifact": "newmark_full_refined_2026-06-12.json",
+    "leased": 57,
+    "null_status": 4305,
+    "off_market": 0,
+    "pending": 4,
+    "samples": [
+      "leased :: Cathedral City Marketplace",
+      "leased :: TJ Maxx, Santa Monica",
+      "leased :: 350 N McClintock Dr",
+      "leased :: 315 7th Ave"
+    ],
+    "sold": 5,
+    "status_tier": "disappearance-only-null",
+    "terminal": 62,
+    "total_rows": 4371,
+    "under_contract": 0
+  },
+  "savills": {
+    "artifact": "full_latest_2026-06-11_230423.json",
+    "leased": 0,
+    "null_status": 100,
+    "off_market": 0,
+    "pending": 0,
+    "samples": [],
+    "sold": 0,
+    "status_tier": "disappearance-only-null",
+    "terminal": 0,
+    "total_rows": 100,
+    "under_contract": 0
+  },
+  "svn": {
+    "artifact": "full_latest_2026-06-11_230423.json",
+    "leased": 24,
+    "null_status": 4981,
+    "off_market": 0,
+    "pending": 0,
+    "samples": [
+      "leased :: Fully Leased NNN Strip - Target Outparcel - Greenville, SC MSA",
+      "leased :: 7-Eleven Corporate NNN Retail Store (Presently Dark) Leased until 5/30",
+      "leased :: Recently Renovated Industrial Building for Sale; Partially Leased",
+      "leased :: Onslow Co. Jacksonville, NC - Leased Office Property"
+    ],
+    "sold": 0,
+    "status_tier": "has-native-status",
+    "terminal": 24,
+    "total_rows": 5307,
+    "under_contract": 302
+  },
+  "transwestern": {
+    "artifact": "transwestern_full_2026-06-12_121302_cleaned.json",
+    "leased": 0,
+    "null_status": 2021,
+    "off_market": 0,
+    "pending": 0,
+    "samples": [],
+    "sold": 0,
+    "status_tier": "disappearance-only-null",
+    "terminal": 0,
+    "total_rows": 2021,
+    "under_contract": 0
+  }
+}

@@ -13,14 +13,21 @@ Runs entirely against the local self-hosted Firecrawl API.
 
 | File | Purpose |
 |------|---------|
-| `collect.ts` | 15-source collector (TypeScript, Firecrawl JS SDK pinned to local API) |
+| `collect.ts` | 15-source collector (TypeScript, Firecrawl JS SDK pinned to local API); `--monitor` adds a cheap enumeration-only pass |
 | `cre_ingest.py` | Collector JSON -> `credeals` schema upsert (stdlib + psql) |
+| `cre_monitor.py` | OBSERVE-ONLY change-tracking diff/event/snapshot runner (007 tables). Never writes `status`/`deleted_at`. See the monitor subsystem reference |
+| `cre_gate.py` | Per-source coverage-and-anomaly gate (reads `cre_source_baseline`); emits `mark_missing_safe` rollup |
 | `cre_daily_update.sh` | Daily refresh: healthcheck -> collect all -> ingest |
+| `cre_validate.py` | Post-ingest Supabase validation (`npm run validate:supabase`) |
+| `run_colliers_main_full.sh` | Resumable colliers-main batch runner (full ~15,896-URL detail run) |
+| `launchd/` | launchd plist and setup for scheduled daily runs on macOS |
+| `tests/` | Test suite for collector and ingestor |
 | `START_HERE.md` | Current status and new-session runbook |
 | `BROKERAGE_STATUS_2026-06-12.md` | Per-broker coverage status, counts, and next upgrade order (live) |
 | `HANDOFF_COLLIERS_MAIN_2026-06-13.md` | Active handoff: colliers-main full detail run (in progress) |
 | `archive/` | Dated buildout history: handoff log, lessons, validation snapshots, egress/security audits (see `archive/README.md`) |
 | `../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` | Canonical architecture + go-forward monitoring plan (section 14) |
+| `../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` | Monitor/change-tracking subsystem: components, run model, hard gotchas |
 | `../../../docs/firecrawl-ops/references/cre-equire-consumer-api.md` | How EQUIRE reads the data: views, SQL, env, quick start |
 | `../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md` | Reusable process for upgrading one brokerage to full public-feed coverage |
 | `out/` | Run artifacts (gitignored) |
@@ -51,38 +58,40 @@ bash cre_daily_update.sh --no-mark-missing
 
 Flags: `--source=all|csv` `--transaction=sale|lease|both` `--max-items` (0 =
 unlimited) `--page-cap` (rendered-page sources, default 60; use 400 for full
-runs) `--concurrency` (1-6, default 3) `--out=path`.
+runs) `--concurrency` (1-6, default 3) `--out=path` `--monitor` (cheap
+enumeration-only pass; see Monitor mode below).
 
 Env: `FIRECRAWL_API_URL` (default `http://localhost:3002`),
 `FIRECRAWL_API_KEY` (any non-empty value for self-hosted).
 
-### Source status
+### Sources
 
-Latest full ingested all-source run started 2026-06-12 04:04:23 UTC. Several
-sources were upgraded after that run on 2026-06-12 local time through
-source-specific full runs and validation: CBRE Deal Flow, Cushman & Wakefield,
-NAI Global active feed, Colliers SalesTracker, Transwestern, Marcus &
-Millichap public sale, Lee & Associates, Newmark refined contacts/state, JLL
-Investor Center full sitemap detail run, and Avison Young full detail-enriched
-run.
+Method and transaction support per source. Live row counts and per-source
+coverage status live in `START_HERE.md` (Latest Source Matrix) and
+`BROKERAGE_STATUS_2026-06-12.md`; this table is method/support only and carries
+no counts, so it does not drift.
 
-| Source key | Method | Sale | Lease | Notes |
-|------------|--------|------|-------|-------|
-| `cbre` | Internal JSON API, stealth proxy | 4,222 | 13,145 | Cloudflare; waitFor 4000; 1,661 sale_or_lease; 19,028 active total |
-| `cbre-dealflow` | Public RCM ListingEngine endpoint | 1,809 public cards collected of 2,042 reported | 27 of 27 | Full source-specific run live-ingested additively from `out/cbre_dealflow_full_2026-06-12_041740.json`; ids prefixed `dealflow:` and folded into parent `cbre` |
-| `jll` | Search pages, waitFor 8000 | 1,247 | 8,733 | tenure=sale / tenure=rent; 761 sale_or_lease; 10,741 active total |
-| `jll-investor` | `__NEXT_DATA__` first search page plus detail enrichment | 934 active from full sitemap run | n/a | Complete: full sitemap detail run live-ingested 2026-06-12 22:47 UTC; 50 stale probe rows soft-deleted; no coordinates available from the Investor detail path (known limitation) |
-| `cushman-wakefield` | Public `/api/properties/search` JSON plus detail enrichment | 2,743 live total | 8,575 live total | Full API pagination verified; detail pages enrich docs, photos, visible contacts, JSON-LD, and VCard/profile URLs. Use `CUSHMAN_QUERY='1800 Central'` for targeted probes |
-| `newmark` | Algolia API plus public People exact-name lookup | 1,121 live rows | 3,250 live rows | Complete public Algolia feed from `out/newmark_full_refined_2026-06-12.json`; no-state DC recovery, raw hit preservation, 3,961 contact/profile rows, source-scoped cleanup |
-| `marcus-millichap` | Public map ActivityId feed, mappropertydetail tiles, plus public detail HTML | 3,124 active live rows | n/a | Complete for public sale feed; source-scoped `--mark-missing` applied from `out/marcus_full_2026-06-12_130035.json`; public lease unsupported; gated deal-room URLs remain raw metadata only |
-| `avison-young` | Public SharpLaunch feed plus detail pages | 636 live rows | 1,432 live rows plus 133 sale_or_lease | Complete public feed from `out/avison_full_detail_2026-06-12.json`; 2,201 active rows, 2,571 document URLs, 31,570 image URLs, 4,128 contacts, 0 photo leaks; VCards absent and profile URLs sparse |
-| `savills` | Server-rendered pages /page/N | 101 active | 3 active | near-empty US lease inventory (3 rows live); foreign fallback cards filtered; US parser accepts state names, ZIP-only rows, and city/state/ZIP variants |
-| `svn` | Buildout inventory API | 2,660 live | 2,192 live plus 435 sale_or_lease | 5,287 active rows live; source-scoped ingest complete; 34 soft-deleted |
-| `lee-associates` | Buildout inventory API with durable page cache/window assembly | 2,611 live sale rows | 5,691 live lease rows plus 921 sale_or_lease | Complete public Buildout feed from `out/lee_full_cache_2026-06-12_assembled.json`; source-scoped `--mark-missing` applied after cache pages 0-332 assembled cleanly |
-| `nai-global` | Public Infabode GraphQL feed and `publicPost` details | 183 live | 58 live | Stable `infabode:` ids and detail URLs; contacts only when public fields exist; 241 active rows live |
-| `colliers` | Public SalesTracker RCM GET list/map plus SLP detail | 1,172 unique active | n/a | Investment-sale subset; retained alongside `colliers-main`; no POST/gated path |
-| `colliers-main` | Public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`) through local Firecrawl + per-listing detail render | 15,896 sitemap URLs; bounded 2,000 batch live (943 rows) | included | Main `www.colliers.com` unblocked via sitemap + `RealEstateListing` JSON-LD/markdown parse; folds into `colliers` brokerage with `main:` prefix; 404s and alternate-template pages tombstoned; durable resumable cache; full run in progress 2026-06-13. See `HANDOFF_COLLIERS_MAIN_2026-06-13.md` |
-| `transwestern` | Public GET feed plus detail pages | 389 live | 1,502 live plus 130 sale_or_lease | Complete public GET feed; 2,021 active rows live; full run, live ingest, and validation done |
+| Source key | Method | Sale | Lease |
+|------------|--------|------|-------|
+| `cbre` | Internal JSON API, stealth proxy (Cloudflare) | yes | yes |
+| `cbre-dealflow` | Public RCM ListingEngine endpoint; folds into `cbre` (`dealflow:` ids) | yes | yes |
+| `jll` | Rendered search pages (tenure=sale/rent) + `__NEXT_DATA__` detail | yes | yes |
+| `jll-investor` | Public XML sitemap + detail `__NEXT_DATA__`; folds into `jll` (`investor:` ids) | yes | n/a |
+| `cushman-wakefield` | Public `/api/properties/search` JSON + detail enrichment | yes | yes |
+| `newmark` | Algolia API + public People exact-name lookup | yes | yes |
+| `marcus-millichap` | Public map ActivityId feed, `mappropertydetail` tiles, detail HTML | yes | n/a |
+| `avison-young` | Public SharpLaunch feed + detail pages | yes | yes |
+| `savills` | Server-rendered pages `/page/N` | yes | yes (tiny US subset) |
+| `svn` | Buildout inventory API (client-side sale/lease partition) | yes | yes |
+| `lee-associates` | Buildout inventory API + durable page cache | yes | yes |
+| `nai-global` | Public Infabode GraphQL + `publicPost` details (FOR_SALE_ON_MARKET only) | yes | yes |
+| `colliers` | Public SalesTracker RCM GET + anonymous SLP detail (investment-sale subset) | yes | n/a |
+| `colliers-main` | Public XML sitemap + detail-render JSON-LD; folds into `colliers` (`main:` ids) | yes | yes |
+| `transwestern` | Public GET feed + detail pages | yes | yes |
+
+`n/a` lease = the lease pass is intentionally skipped (sale-only public
+inventory). `colliers-main` collects both but its `--monitor` pass enumerates
+the sale pass only.
 
 Buildout semantics (svn, lee-associates): the inventory feed has **no
 server-side sale/lease filter** (`lease=true` is ignored). Items carry
@@ -115,7 +124,7 @@ persisted into artifacts. Never commit them.
 
 Key behavior:
 - Dedup key `(brokerage_id, external_id)`; sub-sources fold into the parent
-  brokerage with prefixed ids (`dealflow:`, `investor:`). Missing ids get
+  brokerage with prefixed ids (`dealflow:`, `investor:`, `main:`). Missing ids get
   `url:<sha1-16>` synthesized from the listing URL.
 - A listing collected in both sale and lease passes merges to
   `transaction_type='sale_or_lease'`.
@@ -160,6 +169,35 @@ Read `archive/SUPABASE_SECURITY_NOTE_2026-06-12.md` before changing grants,
 views, or function privileges. The display app hardened view security and revoked
 public execute on helper functions while preserving service-role collector use.
 
+## Monitor mode (change tracking, 007)
+
+`collect.ts --monitor` runs each source's cheap enumeration step only (skips the
+per-listing detail render) and writes the same artifact JSON shape with
+`runMeta.mode="monitor"`. That artifact is consumed by `cre_monitor.py` (the
+observe-only diff/event runner) and `cre_gate.py` (the coverage gate), NOT by
+`cre_ingest.py`. Full operational rules, the run model, and all gotchas live in
+`../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md`. The hardest
+rules to remember:
+
+- **Never feed a monitor artifact to `cre_ingest.py` (and never with
+  `--mark-missing`).** Monitor artifacts are sparse; the ingest upsert would
+  erase enriched prices, `raw_data`, and child rows. Monitor artifacts go
+  through `cre_monitor.py` only.
+- **`jll` and `jll-investor` are excluded from monitor mode** (emit 0 monitor
+  rows, stay on the full-sweep cadence): their persisted `external_id` is
+  detail-derived and unrecoverable from cheap enumeration. A source emitting 0
+  monitor rows is safely ignored by disappearance detection.
+- **`nai-global` and `colliers-main` monitor emit supersets** (skip detail-only
+  filters); `colliers-main` emits on the sale pass only; `marcus-millichap`
+  keeps the lightweight `mappropertydetail` POST. Enumeration-only sources
+  (`cbre`, `savills`, `svn`, `lee-associates`) get no collect speedup, only
+  downstream write savings.
+- The enumeration key (`to_row` external_id) is identical across monitor, full,
+  ingest, and gate. Preserve that invariant when adding monitor support.
+
+`--apply` runs, launchd scheduling, gate wiring into the daily script, and
+Phase-2 status activation are gated for explicit go-ahead.
+
 ## Daily updates
 
 `cre_daily_update.sh` = healthcheck -> full collect (sale+lease, unlimited)
@@ -171,7 +209,7 @@ additive with `bash cre_daily_update.sh --no-mark-missing`. Latest measured full
 
 ## Adding a source
 
-1. Write `srcNewSource(tx, max)` in `collect.ts` returning `SourceResult`;
+1. Write `srcNewSource(tx, max, monitor)` in `collect.ts` returning `SourceResult`;
    register it in `SOURCE_KEYS` + `runSource`.
 2. Map its key in `cre_ingest.py` `SOURCE_TO_BROKERAGE` (new slug -> add a
    seed row in `../sql/001_cre_brokerages.sql` and apply it).

@@ -8,8 +8,10 @@ CRE data collector originally written for CBRE's US commercial for-sale inventor
 | File | Description |
 |------|-------------|
 | `script.ts` | Original TypeScript collector using the cloud Firecrawl SDK |
-| `data.json` | Pre-collected dataset: 5,877 CBRE US for-sale listings (11MB, collected 2026-06-11) |
+| `data.json` | Pre-collected dataset: 5,879 CBRE US for-sale listings (11MB, 2026-06-11 snapshot; live API totals differ) |
 | `README.md` | Original Prometheus README |
+| `multi_source/` | Multi-source reference implementation (README.md, 14-row sample data.json, script.ts); the cre_collector was adapted from this |
+| `archive/` | prometheus-script-multi-source-2026-06-11.zip (archived multi-source run) |
 
 **These files are reference material. Do not modify them.**
 
@@ -48,7 +50,7 @@ html = d['data']['rawHtml']
 parsed = json.loads(html[html.find('{'):html.rfind('}')+1])
 print('DocumentCount:', parsed['DocumentCount'])
 "
-# -> DocumentCount: 5877
+# -> DocumentCount: 5879
 ```
 
 Note `waitFor: 4000`: the API endpoint renders much faster than the SPA detail pages.
@@ -97,18 +99,18 @@ asset_base = data['assetBaseUrl']   # https://www.cbre.com/resources/fileassets/
 | `brochures[*]` | `cre_listing_documents` | `assetBaseUrl + id + '/' + path` |
 | `photos[*]` | `cre_listing_images` | same asset URL construction |
 
-## Similar APIs to investigate for other brokers
+## Broker API discovery log
 
-The Prometheus discovery confirms CBRE has an undocumented internal JSON API.
-Other large Next.js/React SPA brokerages may have similar patterns:
-- JLL: current collector uses public search pages. A structured API would reduce scrape time.
-- Colliers: SalesTracker investment-sale via public RCM GET (`colliers`), plus
-  the full main site via the public XML sitemap (`colliers-main`, unblocked
-  2026-06-13). The Coveo POST path is not needed.
-- Cushman & Wakefield: complete; public `/api/properties/search` pagination with
-  detail enrichment, full run, live ingest, and Supabase validation done.
-- Transwestern: complete; public GET feed, full run, live ingest, source-scoped
-  reconciliation, and Supabase validation done.
-
-Finding these APIs eliminates Cloudflare bypass overhead and yields structured data
+Other large Next.js/React SPA brokerages may have similar internal API patterns.
+Finding them eliminates Cloudflare bypass overhead and yields structured data
 directly, which is far preferable to parsing markdown from rendered pages.
+
+Resolved (implemented in `../cre_collector/collect.ts`):
+- Cushman & Wakefield: public `/api/properties/search` pagination with detail enrichment. Complete.
+- Transwestern: public GET feed with detail pages. Complete.
+
+Open:
+- JLL: current collector uses public search pages. A structured API would reduce scrape time.
+
+Colliers: two folded sources (`colliers` SalesTracker + `colliers-main` sitemap).
+See `../cre_collector/CLAUDE.md` for mechanics and current run status.
