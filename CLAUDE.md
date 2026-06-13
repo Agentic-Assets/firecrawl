@@ -71,7 +71,7 @@ feeds EQUIRE's deal intelligence platform. See each subdirectory's `CLAUDE.md`.
 
 Key components:
 - `scripts/firecrawl-ops/cre_collector/`  -  PRODUCTION multi-source collector + ingestor:
-  `collect.ts` (14 sources, sale + lease, full pagination through local Firecrawl),
+  `collect.ts` (15 sources, sale + lease, full pagination through local Firecrawl),
   `cre_ingest.py` (collector JSON -> `credeals` upserts via psql),
   `cre_daily_update.sh` (daily refresh; use `--no-mark-missing` until every source is clean)
 - `scripts/firecrawl-ops/cre_scrapers/`  -  legacy Python scraper package
@@ -81,7 +81,8 @@ Key components:
 - `scripts/firecrawl-ops/cre_pipeline.py`  -  legacy CLI for the Python scraper package
 - `scripts/firecrawl-ops/prometheus/`  -  reference Prometheus/CBRE API collector + 11MB dataset
 - `scripts/firecrawl-ops/cbre_scrape.py`  -  original single-broker CBRE page scraper (still valid)
-- `docs/firecrawl-ops/references/cre-listing-system-design.md`  -  full architecture doc
+- `docs/firecrawl-ops/references/cre-intelligence-system-design.md`  -  canonical architecture + go-forward monitoring plan
+- `docs/firecrawl-ops/references/cre-equire-consumer-api.md`  -  EQUIRE consumer/API reference (views, SQL, env, quick start)
 
 Current source status changes quickly. Treat these as the canonical status
 entrypoints before quoting coverage or making collector changes:

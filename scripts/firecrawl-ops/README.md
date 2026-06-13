@@ -173,9 +173,11 @@ High-signal cautions:
 - Avison Young uses a public SharpLaunch feed.
 - SVN and Lee use Buildout inventory feeds; sustained paging can trigger HTML
   interstitials.
-- Colliers has partial public SalesTracker investment-sale support. The main
-  Colliers Coveo sale and lease search remains blocked until a usable public
-  path or authorized integration exists.
+- Colliers has two folded sources: SalesTracker investment-sale (`colliers`,
+  public RCM GET) and the full main site (`colliers-main`), unblocked 2026-06-13
+  via the public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`) through
+  local Firecrawl plus detail-render JSON-LD parse. The Coveo POST path is no
+  longer needed.
 - Transwestern is complete for its public GET feed after full run, live ingest,
   source-scoped reconciliation, and Supabase validation (2,021 active rows).
 - JLL Investor Center is complete for the public sitemap detail path: 934

@@ -6,7 +6,8 @@ enrichment. It is no longer the production daily bulk path. Use
 `../cre_collector/collect.ts`, `../cre_collector/cre_ingest.py`, and
 `../cre_collector/cre_daily_update.sh` for daily sale and lease inventory.
 
-Full system design: `docs/firecrawl-ops/references/cre-listing-system-design.md`
+Full system design: `docs/firecrawl-ops/references/cre-intelligence-system-design.md`
+(EQUIRE consumer/API reference: `docs/firecrawl-ops/references/cre-equire-consumer-api.md`)
 
 ## Package layout
 

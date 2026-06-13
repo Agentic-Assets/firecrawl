@@ -24,9 +24,10 @@ For CRE listing work, read in order:
 
 1. `cre_collector/START_HERE.md`
 2. `cre_collector/CLAUDE.md`
-3. `cre_collector/VALIDATION_2026-06-12.md`
-4. `cre_collector/BROKERAGE_STATUS_2026-06-12.md`
-5. `../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md`
+3. `cre_collector/BROKERAGE_STATUS_2026-06-12.md`
+4. `../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` (architecture + go-forward plan)
+5. `../../docs/firecrawl-ops/references/cre-equire-consumer-api.md` (how EQUIRE reads the data)
+6. `../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md`
 
 For local Firecrawl stack work, read:
 

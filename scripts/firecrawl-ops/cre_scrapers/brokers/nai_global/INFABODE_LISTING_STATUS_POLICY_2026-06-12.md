@@ -136,7 +136,7 @@ sed -n '1,320p' CLAUDE.md
 sed -n '1,260p' scripts/firecrawl-ops/cre_collector/START_HERE.md
 sed -n '1,280p' scripts/firecrawl-ops/cre_collector/CLAUDE.md
 sed -n '1,320p' scripts/firecrawl-ops/cre_collector/BROKERAGE_STATUS_2026-06-12.md
-sed -n '1,360p' scripts/firecrawl-ops/cre_collector/HANDOFF_LOG_2026-06-11.md
+sed -n '1,360p' scripts/firecrawl-ops/cre_collector/archive/HANDOFF_LOG_2026-06-11.md
 sed -n '1,260p' scripts/firecrawl-ops/cre_scrapers/CLAUDE.md
 sed -n '1,700p' scripts/firecrawl-ops/cre_scrapers/brokers/nai_global/README.md
 rg -n "Nai|nai-global|Infabode|infabode|listingStatus|NAI_" \

@@ -490,3 +490,100 @@ for deltas. Far below the full daily run. Tier-2 every 6-8h adds the ~239 + ~114
 | savills | full_sweep_only | A_daily_full_then_events | ~3-6 renders (sale /page/N + 1 lease NEXT_DATA); tiny inventory (~101 sale + ~3 lease) | 0 (adapter never detail-renders Savills) | ~hours to 24h; cost unconstrained | no |
 | nai-global | full_sweep_only | A_daily_full_then_events | full offset walk in steps of 18 over content types 4+10 across 118 orgs (~tens of GraphQL POSTs) | only NEW ids need 1 publicPost POST; full walk still required to find them | 24h at best; no latency win (publishedAt is a field, not a filter/sort) | yes: does Infabode PostFilter accept publishedAfter/orderBy:publishedAt |
 
+## 14. Verified per-source method audit and improvement backlog (2026-06-13)
+
+Section 13's matrix was re-verified against the actual `collect.ts` source by a
+14-agent read-only audit (one agent per source, citing line numbers). The audit
+confirmed the architecture and surfaced two things section 13 understated, plus a
+concrete improvement per source. This section is the actionable build backlog.
+
+### 14.1 The systemic insight: most sources already carry status/price in the cheap feed
+
+Section 13 marks most sources `full_sweep_only`, implying the cheap enumeration
+only detects NEW ids. The code audit shows the enumeration response **already
+carries `status` and usually `price`** for the majority of sources. The collector
+throws this away because it unconditionally runs full detail enrichment on every
+row. So the single highest-leverage change is a **monitor mode** that:
+
+1. runs the cheap enumeration,
+2. diffs `(external_id, status, price[, lastmod])` against `cre_source_index`,
+3. renders/enriches detail **only** for new ids and rows whose status/price/lastmod changed.
+
+Sources where status/price change-detection is **free in the enumeration**
+(no detail render needed) once monitor mode diffs the feed fields:
+`avison-young`, `colliers` (SalesTracker), `marcus-millichap`, `cushman-wakefield`
+(`listing_status`), `cbre` (`LastUpdated`+`Amount`), `cbre-dealflow` (card
+`.status`), `newmark` (`status`+`updateDate`), `lee-associates` and `svn`
+(Buildout inventory fields). `transwestern` gets free price/new-id but status
+still needs a render (no status field in feed). The two `sitemap-lastmod`
+sources (`colliers-main`, `jll-investor`) get free NEW detection and
+lastmod-gated CHANGED (render only advanced URLs).
+
+### 14.2 Reconciled tiering rule (throttle demotes)
+
+The unified algorithm is identical for every source (enumerate -> diff -> gate
+detail to deltas). Tier is a function of two axes only:
+
+- **Tier 1 (poll sub-daily/hourly):** cheap enumeration (<= ~30 calls or 1-2
+  feed/sitemap GETs) AND low/no throttle. Status/price usually free.
+  -> `marcus-millichap`, `newmark`, `avison-young`, `colliers` (SalesTracker),
+  `cbre-dealflow`, `nai-global`, `transwestern`.
+- **Tier 2 (poll a few x/day, render-gated):** moderate throttle (Cloudflare) OR
+  moderate enumeration cost.
+  -> `cbre` (~88 stealth JSON GETs), `cushman-wakefield` (~114 API GETs),
+  `colliers-main` (2 sitemap GETs but Cloudflare + 15.9k universe, lastmod
+  delta-render), `jll-investor` (2 sitemap GETs, render to confirm US),
+  `savills` (~7 renders, tiny).
+- **Tier 3 (daily sweep only):** HIGH throttle regardless of data richness, or
+  render-to-list with no cheap id path.
+  -> `svn` and `lee-associates` (Buildout throttles sustained paging),
+  `jll` (~229 SPA renders; can move toward Tier 2 via the `_next/data` win below).
+
+Note the refinement vs section 13: `cbre` and `colliers-main` are Tier 2, not
+Tier 1, because of moderate Cloudflare throttle; `svn` is Tier 3 with `lee`
+because both are Buildout (high throttle). Data richness does not override
+throttle risk.
+
+### 14.3 Per-source improvement backlog (concrete, with line refs)
+
+| source | improvement | effort |
+|---|---|---|
+| marcus-millichap | Map feed (1 POST) already returns `ListingPrice`, `CapRate`, `NewlyListed`/`NewlyReduced` (lines 2382-2409). Monitor mode: diff ActivityId set + price/flags; skip the per-row `mappropertydetail` fetch except for NEW ids. Full sweep drops from 1+N POSTs to 1 POST. | low |
+| newmark | Listing hits already carry `sale_price`, `status`, `updateDate` (lines 1075, 1091). Add `--monitor`/`contacts=false` to skip the per-hit People Algolia lookup (lines 1042-1056, ~4,371 extra calls); ~95% fewer requests with full change fidelity. | low |
+| avison-young | SharpLaunch feed returns `updated_at`, `sale_price`, `cap_rate` per row (lines 3002-3016). Wire `updated_at` as the delta key; enrich only changed rows. Consider dropping `status=active` filter (line 2707) to capture sold/pending (active->sold status change vs mere disappearance). | low |
+| colliers (SalesTracker) | Card HTML already parses `.status` and `.price` (lines 4340-4345). Monitor mode: skip `enrichColliersCard` (one detail GET/card, ~1,300) except for new/changed cards. ~1,329 calls -> ~29 + deltas. | low |
+| cushman-wakefield | `listing_status` is in the API response (line 2170). Diff id+status on the ~114-GET sweep; detail-render only new/changed. | low |
+| cbre | Feed carries `Common.LastUpdated` (line 453) and `Common.Amount`. Snapshot `(PrimaryKey, LastUpdated, Amount)`; re-ingest only changed rows. Also capture `Common.Created` for a true `listing_date`/NEW signal (currently dropped). | low |
+| cbre-dealflow | Card `.status` is parsed (line 3924) -> status-change free from the list feed. Price only on detail (line 4081); probe whether `GetMapData` carries asking price for a price-aware enumeration. | low/med |
+| colliers-main | Cache (`colliersMainEnrichAll`) skips re-render whenever the id is cached, ignoring `lastmod`. Store `lastmod` in the cache and re-render only when sitemap `lastmod` advances -> true delta monitoring (2 sitemap GETs + small render tail vs 15,896). | med |
+| jll-investor | `jllInvestorDetailUrlsFromSitemap` (lines 1604-1609) regex-strips the URL and discards `<lastmod>`. Reuse `extractSitemapUrlEntries()` (the Colliers helper, lines 4631-4638) to get `{url, lastmod}` -> seed `lastUpdated` and enable lastmod-gated re-render. | low |
+| jll | README confirms the `_next/data/<buildId>/.../property-search.json?...&page=N` route returns pure JSON (count + 50 rows) via local Firecrawl in 1-2s. Read `buildId` from one rendered page, switch the ~228 paged enumerations from 8s renders to JSON GETs (~8x faster) -> moves jll from Tier 3 toward Tier 2. | med |
+| lee-associates | Buildout inventory carries `under_contract`/`closed`/`sale`/`Price` (lines 823-868) -> status/price free. The durable page cache never invalidates; add a TTL (re-fetch pages older than ~24h) for daily change detection at ~333 GETs, 0 renders. | med |
+| svn | Buildout inventory likely carries a per-row `updated_at` that `srcBuildout` (lines 846-868) never reads (it pushes no `lastUpdated`, unlike every other adapter). Inspect a live page-0 row; if present, map `lastUpdated` for delta-ingest. | low |
+| transwestern | Feed returns `Price`/coords/type but `Price` is usually 0 and there is NO status field. Monitor by diffing the `PageUrl` slug set (4-5 GETs); render detail only for new slugs or price-became-nonzero. Also dedupe the "Sale or Lease" bucket fetched twice. | low |
+| savills | Sale path uses Cheerio cards; lease path parses `__NEXT_DATA__`. Check if `initialReduxState.properties` exists on sale list pages too -> collapse both to `savillsNextDataProperties()` for free structured price/status. Tiny inventory, low priority. | low |
+| nai-global | Feed query (line 3513) lacks `listingStatus`/`updatedAt`. Probe whether `public_api` returns them unauthenticated; if so, status/price monitoring becomes free and drops ~241 detail POSTs/cycle. The full `listingStatus` enum + distribution is in the kept `INFABODE_LISTING_STATUS_POLICY` note. | med |
+
+### 14.4 Build sequence (what this section authorizes next)
+
+1. **Schema foundation (additive, this is the gating dependency):** apply
+   migration 007 (`cre_source_index`, `cre_listing_events`, `cre_enrichment_queue`,
+   `cre_source_baseline`) + the idempotent 002/004 ALTERs (widen status CHECK,
+   add `last_seen_at`/`source_lastmod`/`canonical_key`). See section 7. Without
+   `cre_source_index` there is nothing to diff against.
+2. **Enumeration-key invariant test** (pure code, zero risk): one test asserting
+   each source's monitor enumeration key matches the ingest `external_id`
+   (Marcus DealId vs ActivityId; Buildout `-sale`/`-lease` strip; colliers-main
+   `main:` prefix; jll-investor post-US-filter id set). Section 12.3.
+3. **Two one-line capture wins:** jll-investor `<lastmod>`; cbre `Common.Created`.
+4. **Monitor mode in the adapters** (14.1): a `--monitor` path that returns the
+   cheap enumeration's `(id, status, price, lastmod)` without forcing detail
+   enrichment, per the backlog in 14.3.
+5. **The generic diff+event runner** consuming the capability registry, writing
+   `cre_listing_events` and refreshing `cre_source_index`.
+6. **Tiered launchd schedules** (section 9) once the runner is proven on one Tier-1
+   source end to end.
+
+The EQUIRE-facing view-gate / NULL-status change (section 12.4) stays pending
+CRE_EQUIRE coordination and is NOT part of the additive build.
+

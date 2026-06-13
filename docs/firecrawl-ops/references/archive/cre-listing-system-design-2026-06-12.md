@@ -1,4 +1,10 @@
-# EQUIRE CRE Listing Intelligence System
+# EQUIRE CRE Listing Intelligence System (ARCHIVED 2026-06-13)
+
+> SUPERSEDED. The canonical architecture is now
+> `../cre-intelligence-system-design.md` and the EQUIRE consumer/SQL/env/
+> quick-start content was extracted into `../cre-equire-consumer-api.md`. This
+> file is retained only for historical reference; its broker coverage table and
+> "Colliers blocked" status are out of date. Do not cite it for current status.
 
 > Production design for the commercial-real-estate listing pipeline that feeds
 > EQUIRE's sourcing and deal-intelligence agents. Verified Firecrawl behavior as

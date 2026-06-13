@@ -23,7 +23,15 @@ The scripts use the local v2 scrape endpoint at `http://localhost:3002/v2/scrape
 
 ## Historically Useful Sources
 
-These have been useful in prior local probes and are good first-pass candidates:
+> Note (2026-06-13): Colliers, Cushman & Wakefield, JLL, Avison Young, Newmark,
+> Marcus & Millichap, SVN, NAI Global, Lee & Associates, Transwestern, and CBRE
+> have GRADUATED from probe candidates to full production collector sources. For
+> live source status see
+> `scripts/firecrawl-ops/cre_collector/BROKERAGE_STATUS_2026-06-12.md` and
+> `docs/firecrawl-ops/references/cre-intelligence-system-design.md`. Treat this
+> matrix as a starting point for NEW/unproven sources only, not a status board.
+
+These were useful in prior local probes and are good first-pass candidates:
 
 - CBRE Insights
 - Cushman & Wakefield MarketBeats
@@ -51,7 +59,9 @@ Treat these as likely requiring manual access, authenticated browser flows, or a
 1. Run `cre_access_matrix.py` against the current source set.
 2. Keep URLs with `accessible` or `partial` status.
 3. Save the output JSON with the run date.
-4. Use `v2/map` or targeted `v2/scrape` on the promising domains.
+4. For a NEW source, prefer a public JSON/API/sitemap feed. The production bulk
+   path is a `collect.ts` adapter using `/v2/scrape` (not `/v2/map`); use
+   `/v2/map` only for ad hoc URL discovery during investigation.
 5. Escalate low-content or blocked sources only if the user has a legitimate authenticated route.
 
 ## Notes

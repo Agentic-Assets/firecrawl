@@ -98,8 +98,8 @@ Each source should have:
 
 - `scripts/firecrawl-ops/cre_scrapers/brokers/<broker>/README.md`
 - Status in `scripts/firecrawl-ops/cre_collector/CLAUDE.md`
-- Current session notes in `scripts/firecrawl-ops/cre_collector/HANDOFF_LOG_2026-06-11.md`
-- Any source lesson in `scripts/firecrawl-ops/cre_collector/LESSONS_2026-06-11.md`
+- A dated handoff note for the current work session (the 2026-06 buildout
+  handoff and lessons are archived in `scripts/firecrawl-ops/cre_collector/archive/`)
 - If the source changes counts or coverage, update `START_HERE.md` and the dated brokerage status report.
 
 ## Cushman Pattern To Reuse

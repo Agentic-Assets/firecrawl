@@ -241,8 +241,8 @@ Collector behavior after patch:
 
 ### 2026-06-12 sitemap/detail expansion proof
 
-See `JLL_INVESTOR_SITEMAP_DETAIL_2026-06-12.md` for the implemented public
-sitemap/detail path.
+See `archive/JLL_INVESTOR_SITEMAP_DETAIL_2026-06-12.md` for the implemented
+public sitemap/detail path.
 
 Review probe:
 

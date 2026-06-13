@@ -102,12 +102,13 @@ asset_base = data['assetBaseUrl']   # https://www.cbre.com/resources/fileassets/
 The Prometheus discovery confirms CBRE has an undocumented internal JSON API.
 Other large Next.js/React SPA brokerages may have similar patterns:
 - JLL: current collector uses public search pages. A structured API would reduce scrape time.
-- Colliers: SalesTracker investment-sale has partial public GET coverage, while
-  main Colliers Coveo sale/lease search remains blocked.
-- Cushman & Wakefield: public `/api/properties/search` pagination works in code
-  with detail enrichment, pending full upgraded run and Supabase ingest.
-- Transwestern: public GET feed has targeted probe and dry-run proof, pending
-  full run, live ingest, and Supabase validation.
+- Colliers: SalesTracker investment-sale via public RCM GET (`colliers`), plus
+  the full main site via the public XML sitemap (`colliers-main`, unblocked
+  2026-06-13). The Coveo POST path is not needed.
+- Cushman & Wakefield: complete; public `/api/properties/search` pagination with
+  detail enrichment, full run, live ingest, and Supabase validation done.
+- Transwestern: complete; public GET feed, full run, live ingest, source-scoped
+  reconciliation, and Supabase validation done.
 
 Finding these APIs eliminates Cloudflare bypass overhead and yields structured data
 directly, which is far preferable to parsing markdown from rendered pages.

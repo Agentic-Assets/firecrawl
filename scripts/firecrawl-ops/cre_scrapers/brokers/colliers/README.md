@@ -1,30 +1,61 @@
 # Colliers Scraper Notes
 
-Colliers now has partial production collector support through SalesTracker.
-The main Colliers sale plus lease search on `www.colliers.com/en/properties`
-remains blocked.
+Colliers has TWO production collector sources, both folded into the `colliers`
+brokerage:
 
-## Blocker
+1. **`colliers` (SalesTracker)** -- public RCM ListingEngine GET endpoints at
+   `sales.colliers.com` / `my.rcm1.com`; investment-sale subset (~1,172 rows).
+2. **`colliers-main` (main site)** -- the full `www.colliers.com` public
+   inventory, unblocked 2026-06-13 via the public XML sitemap (no Coveo POST,
+   no auth). Folded with id prefix `main:`. See below.
 
-The property search at `https://www.colliers.com/en/properties` loads results
-through Coveo POST requests behind consent and application-gateway behavior.
-No stable public GET endpoint or server-rendered listing markup has been
-verified for the main site.
+The old "main site blocked" verdict is HISTORICAL and superseded; the sitemap
+path is the production discovery method for the main site. The dated
+investigation notes that reached the blocked verdict are in `archive/`.
 
-The supported production path is limited to Colliers SalesTracker at
-`https://sales.colliers.com/`, which is investment-sale oriented and uses
-public RCM ListingEngine GET endpoints.
+## Main site (`colliers-main`): public XML sitemap path (durable)
 
-## Research Path
+Discovery is GET-only, robots-compliant, and needs no Coveo POST, no auth, and
+no gated documents. The earlier rechecks only tried `sitemap.xml` /
+`en/sitemap.xml` via direct GET (Cloudflare 403); the unlock is the **bare
+`/sitemap` path through local Firecrawl**.
 
-Use this folder for request-replay experiments, but keep production ingest disabled until a repeatable public path exists.
+1. `https://www.colliers.com/robots.txt` (via local Firecrawl): `User-agent: *`
+   has only `Crawl-Delay: 30` and no `Disallow` for general crawlers (the 72
+   `Disallow: /` entries target specific abusive bots). It declares
+   `Sitemap: https://www.colliers.com/sitemap`.
+2. `https://www.colliers.com/sitemap` (via local Firecrawl): HTTP 200 XML
+   `<sitemapindex>` with 354 child sitemaps. The US-properties child is
+   `https://www.colliers.com/en/sitemap?type=properties`.
+3. `https://www.colliers.com/en/sitemap?type=properties`: HTTP 200 XML
+   `<urlset>` with ~15,896 `usa#######` property detail URLs, **every one
+   carrying `<lastmod>`** (real refresh semantics; 548 distinct dates confirmed,
+   so this supports CHANGED-detection, not only NEW-detection). Slug transaction
+   hints are unreliable (~10,160 have none), so **transaction must come from
+   detail content, not the slug**.
+4. Each detail page renders through local Firecrawl `proxy: stealth` (direct GET
+   is Cloudflare 403). Each page exposes a schema.org `RealEstateListing`
+   JSON-LD block (`name` = "<Type> For <Sale|Lease|Sublease|Sale or Lease> --
+   <street>, <city>, <state> <zip>, USA", `about.category`, canonical
+   `usa#######` URL, primary image) plus markdown carrying price (`$ ... USD`),
+   `Building Size`, `Land Area`, `Property Status`, a `Related Documents` block
+   with named PDF blob URLs, a Google maps link exposing `q=<lat>,<lng>`, and
+   photos on `listingsprod.blob.core.windows.net/ourlistings-usa/...`. Broker
+   headshots are on `colliersapps.blob.core.windows.net/people/...`.
 
-## 2026-06-12 Deep Dive Notes
+Etiquette: robots `Crawl-Delay: 30` is advisory for a single crawler identity;
+collection runs through the stealth proxy pool (same posture as CBRE/JLL/Cushman).
+Keep detail concurrency modest. Documents/images are stored as URLs only.
 
-Status: partial. Main Colliers sale plus lease coverage remains blocked. The
-current `www.colliers.com/en/properties` Coveo path is still not safely
-collectable as a public GET feed. SalesTracker investment-sale coverage is now
-implemented in `scripts/firecrawl-ops/cre_collector/collect.ts`.
+Monitoring: the sitemap is the cheapest enumeration (2 stealth XML GETs for the
+full id set + per-URL lastmod). The durable detail cache should re-render only
+URLs whose `lastmod` advanced (see `cre-intelligence-system-design.md` section
+14, colliers-main improvement). SalesTracker tolerates `PageSize` up to 250.
+
+## SalesTracker (`colliers`): historical implementation notes
+
+SalesTracker investment-sale coverage is implemented in
+`scripts/firecrawl-ops/cre_collector/collect.ts` (`srcColliers`).
 
 Partial path found: Colliers SalesTracker at `https://sales.colliers.com/`
 embeds RCM ListingEngine, and these public GET endpoints worked in bounded
@@ -197,8 +228,9 @@ Supabase proof:
   live Colliers rows including `438 South 3rd Street`, `707 Richards`, and
   `630 Comanche Trail`.
 
-Remaining limit:
+Remaining limit (SalesTracker only):
 
-- This is not complete Colliers coverage. It is only the public SalesTracker
-  investment-sale subset. The main Colliers Coveo sale/lease inventory remains
-  blocked until a safe public non-POST path or authorized integration exists.
+- The SalesTracker run above covers only the public investment-sale subset
+  (~1,172 rows). Full main-site sale + lease coverage is now handled by the
+  separate `colliers-main` sitemap source documented at the top of this file;
+  the "blocked until a non-POST path exists" note here is HISTORICAL.

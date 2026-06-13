@@ -6,23 +6,22 @@ database (EQUIRE feed). It supersedes the per-broker Python scrapers in
 `../cre_scrapers/` for bulk collection (those remain useful for detail-page
 enrichment).
 
-Adapted from the Prometheus cloud collector preserved at
-`../prometheus/multi_source/script.ts`. Runs entirely against the local
-self-hosted Firecrawl API.
+Adapted from the Prometheus cloud collector reference in `../prometheus/`.
+Runs entirely against the local self-hosted Firecrawl API.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `collect.ts` | 14-source collector (TypeScript, Firecrawl JS SDK pinned to local API) |
+| `collect.ts` | 15-source collector (TypeScript, Firecrawl JS SDK pinned to local API) |
 | `cre_ingest.py` | Collector JSON -> `credeals` schema upsert (stdlib + psql) |
 | `cre_daily_update.sh` | Daily refresh: healthcheck -> collect all -> ingest |
 | `START_HERE.md` | Current status and new-session runbook |
-| `HANDOFF_LOG_2026-06-11.md` | Detailed evidence log from buildout and verification |
-| `LESSONS_2026-06-11.md` | Operational lessons and future verification pattern |
-| `VALIDATION_2026-06-12.md` | Supabase reconciliation, quality checks, and current gaps |
-| `BROKERAGE_STATUS_2026-06-12.md` | Per-broker coverage status, counts, and next upgrade order |
-| `SUPABASE_SECURITY_NOTE_2026-06-12.md` | Display-app security follow-up for RLS, view, and function grants |
+| `BROKERAGE_STATUS_2026-06-12.md` | Per-broker coverage status, counts, and next upgrade order (live) |
+| `HANDOFF_COLLIERS_MAIN_2026-06-13.md` | Active handoff: colliers-main full detail run (in progress) |
+| `archive/` | Dated buildout history: handoff log, lessons, validation snapshots, egress/security audits (see `archive/README.md`) |
+| `../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` | Canonical architecture + go-forward monitoring plan (section 14) |
+| `../../../docs/firecrawl-ops/references/cre-equire-consumer-api.md` | How EQUIRE reads the data: views, SQL, env, quick start |
 | `../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md` | Reusable process for upgrading one brokerage to full public-feed coverage |
 | `out/` | Run artifacts (gitignored) |
 
@@ -157,8 +156,8 @@ advisor INFO notices for "RLS enabled no policy" on these tables are accepted
 private-schema notices, not public access gaps. EQUIRE should query these
 objects from server-side code or a deliberately designed API layer.
 
-Read `SUPABASE_SECURITY_NOTE_2026-06-12.md` before changing grants, views,
-or function privileges. The display app hardened view security and revoked
+Read `archive/SUPABASE_SECURITY_NOTE_2026-06-12.md` before changing grants,
+views, or function privileges. The display app hardened view security and revoked
 public execute on helper functions while preserving service-role collector use.
 
 ## Daily updates

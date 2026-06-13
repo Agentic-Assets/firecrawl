@@ -60,14 +60,15 @@ Read these in order:
 2. `scripts/firecrawl-ops/CLAUDE.md`
 3. `scripts/firecrawl-ops/cre_collector/CLAUDE.md`
 4. This file
-5. `HANDOFF_LOG_2026-06-11.md`
-6. `LESSONS_2026-06-11.md`
-7. `VALIDATION_2026-06-12.md`
-8. `BROKERAGE_STATUS_2026-06-12.md`
-9. `SUPABASE_SECURITY_NOTE_2026-06-12.md`
-10. `CONTRACT_SYNC_2026-06-12.md`
-11. `SUPABASE_EGRESS_AUDIT_2026-06-12.md`
-12. `docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md`
+5. `BROKERAGE_STATUS_2026-06-12.md` (live per-broker coverage and counts)
+6. `docs/firecrawl-ops/references/cre-intelligence-system-design.md` (canonical architecture + go-forward monitoring plan, section 14)
+7. `docs/firecrawl-ops/references/cre-equire-consumer-api.md` (how EQUIRE reads the data: views, SQL, env, quick start)
+8. `docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md` (reusable per-source completion process)
+9. `HANDOFF_COLLIERS_MAIN_2026-06-13.md` (active handoff: colliers-main full run in progress)
+
+Historical buildout/validation detail (handoff log, lessons, validation
+snapshots, egress and security audits) lives in `archive/`; see
+`archive/README.md` for the index and the durable nuggets each file still holds.
 
 Then run:
 
@@ -100,7 +101,7 @@ The ingestor reads `POSTGRES_URL_NON_POOLING` or `POSTGRES_URL` from the EQUIRE 
 The collector-owned `cre_*` base tables and `v_cre_*` views are service-role only. `anon` and `authenticated` do not have table or view `SELECT`. RLS is enabled with no public row policies by design. The display views use `security_invoker=true`, and `search_cre_listings(...)` plus `update_cre_listing_timestamp()` are executable by `service_role`, not by public browser roles.
 
 If the UI-side live-board plan docs disagree with this posture, prefer
-`CONTRACT_SYNC_2026-06-12.md` plus the later UI-side hardening SQL notes.
+`archive/CONTRACT_SYNC_2026-06-12.md` plus the later UI-side hardening SQL notes.
 
 Document and image tables store source URLs only. Do not download public PDFs or
 images into Supabase storage for the bulk collector.
