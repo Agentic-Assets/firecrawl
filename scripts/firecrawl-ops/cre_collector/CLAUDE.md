@@ -81,7 +81,8 @@ run.
 | `svn` | Buildout inventory API | 2,660 live | 2,192 live plus 435 sale_or_lease | 5,287 active rows live; source-scoped ingest complete; 34 soft-deleted |
 | `lee-associates` | Buildout inventory API with durable page cache/window assembly | 2,611 live sale rows | 5,691 live lease rows plus 921 sale_or_lease | Complete public Buildout feed from `out/lee_full_cache_2026-06-12_assembled.json`; source-scoped `--mark-missing` applied after cache pages 0-332 assembled cleanly |
 | `nai-global` | Public Infabode GraphQL feed and `publicPost` details | 183 live | 58 live | Stable `infabode:` ids and detail URLs; contacts only when public fields exist; 241 active rows live |
-| `colliers` | Public SalesTracker RCM GET list/map plus SLP detail | 3 in probe, 1,653 SalesTracker filtered total | 0, main lease search blocked | Partial investment-sale coverage only; main `www.colliers.com/en/properties` Coveo sale/lease path remains blocked; no POST, agreement, or gated document path is used |
+| `colliers` | Public SalesTracker RCM GET list/map plus SLP detail | 1,172 unique active | n/a | Investment-sale subset; retained alongside `colliers-main`; no POST/gated path |
+| `colliers-main` | Public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`) through local Firecrawl + per-listing detail render | 15,896 sitemap URLs; bounded 2,000 batch live (943 rows) | included | Main `www.colliers.com` unblocked via sitemap + `RealEstateListing` JSON-LD/markdown parse; folds into `colliers` brokerage with `main:` prefix; 404s and alternate-template pages tombstoned; durable resumable cache; full run in progress 2026-06-13. See `HANDOFF_COLLIERS_MAIN_2026-06-13.md` |
 | `transwestern` | Public GET feed plus detail pages | 389 live | 1,502 live plus 130 sale_or_lease | Complete public GET feed; 2,021 active rows live; full run, live ingest, and validation done |
 
 Buildout semantics (svn, lee-associates): the inventory feed has **no
@@ -164,8 +165,8 @@ public execute on helper functions while preserving service-role collector use.
 
 `cre_daily_update.sh` = healthcheck -> full collect (sale+lease, unlimited)
 -> ingest -> prune old artifacts (keeps 14 runs). Logs in `out/daily/`.
-The script default includes `--mark-missing`; while Colliers main Coveo
-coverage remains blocked and Savills remains partial, keep daily ingest
+The script default includes `--mark-missing`; while the `colliers-main` full
+run is still in progress and Savills remains partial, keep daily ingest
 additive with `bash cre_daily_update.sh --no-mark-missing`. Latest measured full collection was about 27 minutes at concurrency
 3; additive ingest finished in under a minute.
 

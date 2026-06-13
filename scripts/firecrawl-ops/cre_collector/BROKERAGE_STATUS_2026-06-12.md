@@ -27,7 +27,8 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 | Marcus & Millichap | Complete public sale feed, live-ingested and validated; public lease blocked | 3,124 active sale rows | Public `mapproperties` ActivityIds, `mappropertydetail` tiles, direct public detail HTML, image URLs, visible contacts/profile URLs, and gated deal-room URLs retained only in raw metadata | Public lease remains unproven; auctions need a product decision before inclusion |
 | NAI Global | Complete public active feed, status-filtered | 241 active rows, 183 sale + 58 lease | Public Infabode feed plus `publicPost` detail enrichment, stable `infabode:<id>` IDs, source/original URLs, image URLs, one document URL, and raw status proof | Do not ingest historical/`UNKNOWN` Infabode rows as active inventory; optional future archive table only |
 | Lee & Associates | Complete public Buildout feed, live-ingested and validated | 9,223 active rows, 2,611 sale + 5,691 lease + 921 sale_or_lease | Public Buildout inventory feed with durable page cache/window fill, broker refs, document URLs, image URLs, and source-scoped reconciliation | Optional future detail-page enrichment only if a safe public path is proven |
-| Colliers | Partial, live-ingested SalesTracker subset | 1,300 SalesTracker cards collected, 1,172 unique active Supabase rows | Public SalesTracker RCM GET list/map endpoints plus anonymous SLP detail enrichment for investment-sale cards | Main `www.colliers.com/en/properties` Coveo sale/lease path remains blocked; SalesTracker filtered total reports 1,653 but public card pagination exposed 1,300 unique cards |
+| Colliers (SalesTracker) | Complete public RCM investment-sale subset, live-ingested | 1,172 unique active Supabase rows | Public SalesTracker RCM GET list/map endpoints plus anonymous SLP detail enrichment | Retained alongside the new main-site source; SalesTracker filtered total reports 1,653 but public card pagination exposed 1,300 unique cards |
+| Colliers main (`colliers-main`) | Unblocked via public sitemap; full run in progress 2026-06-13 | 15,896 sitemap detail URLs; bounded 2,000-URL batch live (943 rows) | Public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`) through local Firecrawl plus per-listing detail-render `RealEstateListing` JSON-LD + markdown parse; folded into `colliers` with `main:` prefix; no Coveo POST/auth/gated path | Complete the full ~15,896-URL run, ingest, and validate before claiming complete main-site coverage. See `HANDOFF_COLLIERS_MAIN_2026-06-13.md` |
 | Transwestern | Complete public feed, live-ingested and validated | 2,021 active rows, 389 sale + 1,502 lease + 130 sale_or_lease | Public properties GET feed plus detail-page enrichment for property docs, images, contacts, profile URLs, and VCards; footer descriptions suppressed | Optional future accuracy work: availability parser hardening and detail-cache speedup |
 
 ## Completed Or Closest To Complete
@@ -45,12 +46,17 @@ JLL main property search is now complete for its public rendered feed after full
 detail enrichment, live ingest, validation, and stale same-URL cleanup. Avison
 Young is now complete for the public SharpLaunch feed plus public detail-page
 fields after full detail enrichment and additive live ingest. Savills is
-explicitly partial, and main Colliers Coveo sale/lease coverage remains blocked.
+explicitly partial. Main Colliers (`colliers-main`) is no longer blocked: a
+public XML sitemap path (`/sitemap` -> `en/sitemap?type=properties`, 15,896
+detail URLs) fetched through local Firecrawl plus detail-render JSON-LD parse
+replaced the blocked Coveo POST route. A bounded 2,000-URL batch (943 rows) is
+live; the full run is in progress as of 2026-06-13.
 JLL Investor Center
 completed a full sitemap detail ingest on 2026-06-12 22:47 UTC with 934 active
 U.S. sale rows retained from 1,857 scanned sitemap URLs; source-scoped
 soft-delete cleanup was applied with user approval. Colliers SalesTracker is
-complete only for the public RCM investment-sale subset. Marcus & Millichap is complete for the
+complete for the public RCM investment-sale subset and is now supplemented by
+the `colliers-main` sitemap source (full run in progress). Marcus & Millichap is complete for the
 defensible public sale feed after full ActivityId expansion, detail enrichment,
 source-scoped ingest, and Supabase validation; public lease remains blocked.
 Savills remains weak for EQUIRE sale coverage because no safe repeatable public
@@ -92,6 +98,6 @@ Result:
 2. ~~Avison Young full detail enrichment~~ (complete: full detail-enriched run live-ingested additively and validated; VCards absent from the public path).
 3. Savills, because sale remains not CRE-defensible and the lease subset is only 3 defensible rows.
 4. ~~JLL Investor full run and ingest proof~~ (complete: 1,857 sitemap detail URLs scanned, 934 active U.S. sale rows live-ingested and reconciled, 2026-06-12 22:47 UTC).
-5. Main Colliers Coveo sale/lease coverage only after a safe non-POST-blocked path exists.
+5. ~~Main Colliers Coveo sale/lease coverage only after a safe non-POST-blocked path exists.~~ (unblocked 2026-06-13 via the public XML sitemap + detail-render path; `colliers-main` source built, bounded batch live, full run in progress.)
 6. Marcus auctions only after EQUIRE decides whether public auction inventory
    belongs in the listing surface.

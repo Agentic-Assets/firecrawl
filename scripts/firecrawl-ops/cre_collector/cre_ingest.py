@@ -24,8 +24,9 @@ Usage:
 
 Source-to-brokerage mapping: sub-sources fold into their parent brokerage with
 a prefixed external_id (cbre-dealflow -> cbre, "dealflow:<id>"; jll-investor ->
-jll, "investor:<id>"). `savills` requires the savills seed row in
-credeals.cre_brokerages (sql/001_cre_brokerages.sql).
+jll, "investor:<id>"; colliers-main -> colliers, "main:<id>"). `savills`
+requires the savills seed row in credeals.cre_brokerages
+(sql/001_cre_brokerages.sql).
 """
 
 import argparse
@@ -62,6 +63,7 @@ SOURCE_TO_BROKERAGE = {
     "jll-investor": ("jll", "investor:"),
     "cushman-wakefield": ("cushman-wakefield", ""),
     "colliers": ("colliers", ""),
+    "colliers-main": ("colliers", "main:"),
     "newmark": ("newmark", ""),
     "marcus-millichap": ("marcus-millichap", ""),
     "avison-young": ("avison-young", ""),

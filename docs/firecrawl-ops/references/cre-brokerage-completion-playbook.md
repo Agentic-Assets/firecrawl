@@ -115,3 +115,38 @@ Cushman & Wakefield was upgraded by:
 - Proving the known 1800 Central listing captured 2 PDFs, 15 photos, and the broker contact links.
 
 This is the model process for the remaining partial brokerage sources.
+
+## Sitemap-Discovery Pattern To Reuse (Cloudflare-protected sites)
+
+Colliers main (`colliers-main`, 2026-06-13) was unblocked when neither a public
+search GET nor a usable Coveo POST existed, by discovering listings through the
+site's own XML sitemap. Reuse this when a brokerage hides search behind
+Cloudflare/JS but still publishes a sitemap:
+
+1. Fetch `robots.txt` through local Firecrawl (not direct GET, which Cloudflare
+   403s). Read the declared `Sitemap:` URL and confirm `User-agent: *` allows
+   crawling. Try the bare `/sitemap` path, not only `sitemap.xml`.
+2. Fetch the sitemap through local Firecrawl. Walk the `<sitemapindex>` to the
+   relevant child (e.g. `?type=properties`), then parse the `<urlset>` for
+   detail `<loc>` URLs plus `<lastmod>` (refresh semantics). Generic helpers
+   `extractSitemapLocs()` / `extractSitemapUrlEntries()` in `collect.ts` do this.
+3. Render each detail URL through local Firecrawl with `proxy: stealth` and a
+   `waitFor`. Parse `RealEstateListing` JSON-LD for the reliable fields
+   (transaction in `name`, category, canonical URL, primary image) and the
+   markdown/HTML for the rest (price, size, coordinates, photos, named PDF docs,
+   broker contacts).
+4. Handle Cloudflare rate-limiting: under sustained paging the site returns 429
+   "Just a moment..." challenge shells. Detect them and retry with backoff; the
+   stealth proxy rotates IPs per request, so a retry usually lands clean
+   (`scrapeColliersMainDetailDoc`).
+5. Tombstone non-listings so they are cached, not re-fetched, and never
+   ingested: 404 / "Property Not Found" (`skip:"not_found"`) and real 200 pages
+   on an alternate template with no JSON-LD (`skip:"no_structured_data"`).
+6. Cache enriched rows in a durable JSONL file so a multi-hour run resumes
+   across attempts; memoize across the sale and lease passes and partition by
+   transaction client-side.
+7. Fold into the parent brokerage with a prefixed external_id (`main:<id>`) in
+   `SOURCE_TO_BROKERAGE`, and add a matching `external_id LIKE` branch to
+   `cre_validate.py`'s source-key CASE so the report attributes folded rows.
+
+Document/image URLs only; no POST replay, auth, or gated documents.

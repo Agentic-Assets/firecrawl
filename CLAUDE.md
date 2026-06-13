@@ -94,8 +94,12 @@ Latest verified all-source run started `2026-06-12T04:04:23Z` and produced
 Investor Center full sitemap detail path (934 active sale rows, 1,857 sitemap
 URLs scanned, live-ingested and source-scoped reconciliation completed
 2026-06-12) with live ingest, source-scoped reconciliation, and Supabase
-validation. Colliers has partial public SalesTracker investment-sale coverage,
-but main Colliers Coveo sale/lease search remains blocked. Marcus public lease
+validation. Colliers now has two folded sources under the `colliers` brokerage:
+SalesTracker (`colliers`, public RCM investment-sale subset, 1,172 rows) and the
+main site (`colliers-main`), unblocked 2026-06-13 via the public XML sitemap
+(`/sitemap` -> `en/sitemap?type=properties`, 15,896 detail URLs) through local
+Firecrawl plus detail-render JSON-LD parse (no Coveo POST). A bounded 2,000-URL
+batch is live (943 rows); the full run is in progress. Marcus public lease
 remains unsupported.
 
 CBRE has an internal JSON API (`/listings-api/propertylistings/query`) that bypasses

@@ -130,9 +130,13 @@ Current source status belongs in `cre_collector/START_HERE.md` and
 
 Important current cautions:
 
-- Colliers has partial public SalesTracker investment-sale support. The main
-  Colliers Coveo sale and lease search remains blocked until a public GET,
-  Firecrawl-compatible action path, or authorized integration exists.
+- Colliers has two folded sources under the `colliers` brokerage: SalesTracker
+  (`colliers`, public RCM investment-sale subset) and main site (`colliers-main`,
+  the public XML sitemap `/sitemap` -> `en/sitemap?type=properties` through local
+  Firecrawl plus detail-render JSON-LD parse, `main:` id prefix). The Coveo POST
+  search is no longer needed. A bounded 2,000-URL batch is live; the full
+  ~15,896-URL run is in progress as of 2026-06-13
+  (`cre_collector/HANDOFF_COLLIERS_MAIN_2026-06-13.md`).
 - Lee and Associates is complete for the public Buildout feed after durable
   page-cache assembly, live ingest, source-scoped reconciliation, and Supabase
   validation.
