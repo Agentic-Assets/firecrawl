@@ -21,7 +21,7 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 | Cushman & Wakefield | Complete public feed, live-ingested and validated | 11,318 active rows, 2,743 sale + 8,575 lease | Public search API pagination plus detail-page enrichment for facts, document URLs, image URLs, contacts, profile URLs, VCard URLs, JSON-LD | Optional future field audit only if missing fields are discovered |
 | JLL | Complete main public property feed, live-ingested and validated | 10,741 active main JLL rows, 1,247 sale + 8,733 lease + 761 sale_or_lease | Rendered public search pagination across property type filters plus detail-page `__NEXT_DATA__` enrichment for documents, image galleries, broker contacts/profile URLs, richer facts, and source-scoped stale same-URL cleanup | 135 latest-batch duplicate source URL groups remain as sale/lease same-page variants; JLL Investor is now complete as a separate folded source (934 active sale rows) |
 | Newmark | Complete public Algolia feed with contact enrichment, live-ingested and validated | 4,371 active rows, 1,121 sale + 3,250 lease | Public Algolia listing feed, state/property-type split, no-state DC recovery, raw hit preservation, broker provenance, public People exact-name contacts/profile URLs, image URLs | Listing documents, full galleries, second/third broker joins, and VCards remain unproven |
-| Avison Young | Public feed complete; bounded detail enrichment verified | 2,200 staged unique rows, 636 sale + 1,431 lease + 133 sale_or_lease | Public SharpLaunch active website/team_member feed, client-side transaction partition, contact joins, CDN image/avatar URLs, and bounded detail enrichment for selected rows | Full-feed detail enrichment is not run by default; VCards remain unproven in sampled pages |
+| Avison Young | Complete public feed, detail-enriched, live-ingested and validated | 2,201 active rows, 636 sale + 1,432 lease + 133 sale_or_lease | Public SharpLaunch active website/team_member feed, client-side transaction partition, contact joins, public PDF URLs, full SharpLaunch image galleries, profile URLs where public, and non-property photo filtering | VCards absent from the public path; broker profile URLs remain sparse |
 | Savills | Partial, lease has small defensible public CRE subset live-ingested; sale still not CRE-defensible | 104 active rows, 101 sale + 3 lease | Server-rendered commercial lease `__NEXT_DATA__` for two Chicago retail listings with PDF/image/contact URLs; legacy global sale cards remain separate caveat | Find a public U.S. commercial sale source before claiming sale coverage; product decision needed on whether to retain legacy global/residential sale rows |
 | JLL Investor Center | Complete public sitemap detail feed, live-ingested and validated | 934 active U.S. sale rows from 1,857 sitemap detail URLs scanned | Public XML sitemap discovery, public detail-page `__NEXT_DATA__`, U.S. filtering, URL-only docs/images/contacts | All rows lack coordinates (Investor path exposes none); lease not applicable; 50 stale early-probe rows soft-deleted after user approval |
 | Marcus & Millichap | Complete public sale feed, live-ingested and validated; public lease blocked | 3,124 active sale rows | Public `mapproperties` ActivityIds, `mappropertydetail` tiles, direct public detail HTML, image URLs, visible contacts/profile URLs, and gated deal-room URLs retained only in raw metadata | Public lease remains unproven; auctions need a product decision before inclusion |
@@ -43,9 +43,10 @@ and Supabase validation.
 
 JLL main property search is now complete for its public rendered feed after full
 detail enrichment, live ingest, validation, and stale same-URL cleanup. Avison
-Young now has bounded detail enrichment proof, but not a full-feed
-detail-enriched live run. Savills is explicitly partial, and main
-Colliers Coveo sale/lease coverage remains blocked. JLL Investor Center
+Young is now complete for the public SharpLaunch feed plus public detail-page
+fields after full detail enrichment and additive live ingest. Savills is
+explicitly partial, and main Colliers Coveo sale/lease coverage remains blocked.
+JLL Investor Center
 completed a full sitemap detail ingest on 2026-06-12 22:47 UTC with 934 active
 U.S. sale rows retained from 1,857 scanned sitemap URLs; source-scoped
 soft-delete cleanup was applied with user approval. Colliers SalesTracker is
@@ -88,8 +89,8 @@ Result:
 ## Next Broker Order
 
 1. ~~JLL main detail enrichment~~ (complete: full detail enrichment live-ingested and validated).
-2. Avison Young, only if we decide to schedule bounded or full-feed detail enrichment beyond the verified sample.
-3. Savills, because sale remains not CRE-defensible and the lease subset is only 2 defensible rows.
+2. ~~Avison Young full detail enrichment~~ (complete: full detail-enriched run live-ingested additively and validated; VCards absent from the public path).
+3. Savills, because sale remains not CRE-defensible and the lease subset is only 3 defensible rows.
 4. ~~JLL Investor full run and ingest proof~~ (complete: 1,857 sitemap detail URLs scanned, 934 active U.S. sale rows live-ingested and reconciled, 2026-06-12 22:47 UTC).
 5. Main Colliers Coveo sale/lease coverage only after a safe non-POST-blocked path exists.
 6. Marcus auctions only after EQUIRE decides whether public auction inventory

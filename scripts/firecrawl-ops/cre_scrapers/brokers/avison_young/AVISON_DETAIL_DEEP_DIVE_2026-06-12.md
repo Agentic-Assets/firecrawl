@@ -42,19 +42,20 @@ npx tsx collect.ts --source=avison-young --transaction=both --max-items=6 --conc
 # (repeated after each patch: patched2, patched3, final)
 ```
 
-## Current Feed State (2026-06-12 probes)
+## Current Feed State (2026-06-12 full detail run)
 
-SharpLaunch active feed at time of deep dive:
+SharpLaunch active feed at time of full detail-enriched run:
 - Total active items: 2,201
 - US-compatible items: 2,199 (2 non-US filtered)
 - Sale rows: 769
 - Lease rows: 1,563 (includes subleases)
 - Dual sale+lease rows: 133
-- Effective unique staged rows after ingestor merge: ~2,199
+- Effective unique staged rows after ingestor merge: 2,199
+- Live Supabase active rows after additive ingest: 2,201
 
-Note: slight drift from the previously ingested 2,200-row live Supabase count.
-One row changed status between the earlier ingest and this probe. This is
-normal live-feed drift.
+Note: slight drift from the previously ingested 2,200-row live Supabase count
+is normal live-feed drift. The additive ingest did not use `--mark-missing`, so
+the live active count is 2,201 while the latest batch active count is 2,199.
 
 All sampled rows have both `external_url` (Avison detail page) and `url`
 (SharpLaunch microsite). URL coverage is 100% in the probe sample.
@@ -101,23 +102,24 @@ Sample profile URL:
 https://www.avisonyoung.us/web/phoenix/professionals/-/ayp/view/matt-schrauth/in/phoenix
 ```
 
-## Marginal Value of Full-Feed Detail Enrichment
+## Full-Feed Detail Enrichment Result
 
-Compared to the current SharpLaunch-only live state (2,186 image URLs, 0
+Compared to the earlier SharpLaunch-only live state (2,186 image URLs, 0
 document URLs, sparse contacts only):
 
-| Field | Current (SharpLaunch-only) | After full detail enrichment |
+| Field | SharpLaunch-only baseline | After full detail enrichment |
 |---|---|---|
-| Image URLs | ~2,186 (1 per listing) | ~18,000-22,000 (9.9 avg from probe) |
-| PDF document URLs | 0 | ~1,600-2,200 (~0.9 avg; 11/12 listings had at least one) |
-| JSON-LD | 0 | ~100% of rows |
-| Broker profile URLs | 0 | ~5-10% of contacts |
+| Image URLs | 2,186 live child rows | 31,570 live child rows |
+| PDF document URLs | 0 | 2,571 live child rows |
+| Contacts | 4,125 live child rows | 4,128 live child rows |
+| JSON-LD | 0 | Detail metadata on all 2,332 collected rows; JSON-LD counts are not stored as top-level listing fields |
+| Broker profile URLs | sparse | sparse, not guaranteed |
 | VCard URLs | 0 | 0 (unproven; 0/18 contacts in probe) |
 
-Verdict: **full-feed detail enrichment is worth running.** The main gains are:
-- PDFs: ~1,600-2,200 public document URLs (currently zero)
-- Images: ~10x more image URLs per listing (currently 1 per listing)
-- JSON-LD: structured listing facts for all rows
+Verdict: **full-feed detail enrichment was worth running and is now
+live-ingested.** The main gains are public PDF URLs and a much richer image
+gallery surface. The final artifact had 2,721 document URLs and 33,945 image
+URLs before ingest deduplication and child-row refresh.
 
 ## VCard Status
 
@@ -175,9 +177,9 @@ or on the detail pages.
   produce 0 image URLs after the photo filter fix, rather than storing a
   misleading generic image URL.
 
-## Recommended Next Command
+## Full Detail Run And Ingest Proof
 
-Full-feed detail-enriched run, output to a dated file, then dry-run ingest:
+Executed command:
 
 ```bash
 cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
@@ -190,20 +192,39 @@ AVISON_YOUNG_DETAIL_LIMIT=2200 AVISON_YOUNG_DETAIL_CONCURRENCY=4 \
 python3 cre_ingest.py \
   --in out/avison_full_detail_2026-06-12.json \
   --dry-run --keep-artifacts /tmp/avison_full_detail_ingest_check
-```
 
-After dry-run review:
-
-```bash
 python3 cre_ingest.py \
   --in out/avison_full_detail_2026-06-12.json \
   --keep-artifacts /tmp/avison_full_detail_live_ingest
+
+python3 cre_validate.py --format json
 ```
 
-Do NOT use `--mark-missing` on the first live pass because this is an additive
-detail upgrade over the existing 2,200 SharpLaunch-only rows. A `--mark-missing`
-source-scoped pass can follow if the dry-run count matches the expected row
-count and all prior Avison probe rows are confirmed gone.
+Collector result:
+
+- Artifact: `out/avison_full_detail_2026-06-12.json` (15.0 MB).
+- Log: `out/avison_full_detail_2026-06-12.log`.
+- Runtime: `2026-06-12T23:47:23.095Z` to `2026-06-13T00:35:38.996Z`.
+- Collected rows: 2,332, including 769 sale-bucket rows and 1,563 lease-bucket
+  rows.
+- Unique artifact keys: 2,199.
+- Documents: 2,721 in artifact, 2,571 live child rows after ingest.
+- Photos: 33,945 in artifact, 31,570 live child rows after ingest.
+- Detail metadata present on all 2,332 collected rows, with 0 artifact-level
+  `detailScrape` errors.
+- Photo leak check: 0 listing photo URLs matching `150x150`, `ay_logo`,
+  `sharplaunch_header`, or `/media/`.
+
+Ingest result:
+
+- Dry-run staged 2,199 unique rows and skipped 0 missing URLs.
+- Live additive ingest completed without `--mark-missing`.
+- Live validation found 2,201 active rows, 636 sale, 1,432 lease, 133
+  `sale_or_lease`, 4,128 contacts, 2,571 documents, 31,570 images, and 0
+  soft-deleted Avison rows.
+- Quality checks found no missing state/title/coordinate flags. Two sale-PSF
+  flags and four duplicate source URL groups remain as known data-quality
+  patterns, not ingest failures.
 
 The `AVISON_YOUNG_DETAIL_LIMIT=2200` env var ensures the full-feed run
 treats all rows as bounded for detail enrichment. Without it, the full-feed
@@ -211,16 +232,11 @@ treats all rows as bounded for detail enrichment. Without it, the full-feed
 
 ## Can Avison Young Be Called Complete?
 
-Not yet. The source is complete for the SharpLaunch discovery spine (2,199
-active US rows). It is not yet complete for detail enrichment (PDF documents,
-full image galleries, JSON-LD facts). The photo filter bug fix is applied and
-typecheck passes, but the full-feed detail run has not been live-ingested.
+Yes, with public-path qualifications. Avison Young is complete for the
+SharpLaunch discovery spine and publicly accessible detail-page fields. The
+full detail-enriched artifact was dry-run checked, live-ingested additively, and
+validated in Supabase.
 
-Current state: **SharpLaunch public feed complete; detail enrichment verified
-and ready to run but not yet live at full-feed scale.**
-
-Once the recommended full detail-enriched command above is run and live-ingested,
-Avison Young can be called complete for its public feed with the same
-qualification as Cushman: "complete for all publicly accessible detail-page
-fields; VCards and private broker profile URLs remain absent from the public
-path."
+Current state: **complete public SharpLaunch feed plus public detail-page
+enrichment.** VCards remain absent from the public path, and broker profile
+URLs are sparse rather than guaranteed.

@@ -118,7 +118,7 @@ Run metadata: started `2026-06-12T04:04:23.566Z`, finished
 | Cushman & Wakefield | 11,318 | Active | Public /api/properties/search JSON with full pagination and detail enrichment; 2,743 sale / 8,575 lease. |
 | Newmark | 4,371 | Active | Public Algolia API. State and property-type sub-splits avoid most 1,000-hit caps. Latest lease collected 3,247 of 3,250 source total. |
 | Marcus & Millichap | 3,124 | Active | Public map ActivityId feed plus detail HTML; sale only; public lease unsupported. |
-| Avison Young | 2,200 | Active | Full SharpLaunch feed live-ingested; 636 sale / 1,431 lease / 133 sale_or_lease. Detail-page enrichment implemented but not yet run feed-wide. |
+| Avison Young | 2,201 | Active | Full SharpLaunch feed with detail-page enrichment live-ingested 2026-06-13 00:35 UTC; 636 sale / 1,432 lease / 133 sale_or_lease; 2,571 document URLs, 31,570 image URLs, 4,128 contacts; VCards absent from the public path by design. |
 | Savills | 104 | Active, limited | 101 sale + 3 lease; server-rendered US pages; partial coverage. |
 | SVN | 5,287 | Active | Buildout inventory API, sale and lease; 2,660 sale / 2,192 lease / 435 sale_or_lease. |
 | NAI Global | 241 | Active | 183 sale / 58 lease; public Infabode GraphQL feed and publicPost details; stable infabode ids and detail URLs. |

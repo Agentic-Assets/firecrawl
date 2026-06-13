@@ -63,8 +63,9 @@ Latest full ingested all-source run started 2026-06-12 04:04:23 UTC. Several
 sources were upgraded after that run on 2026-06-12 local time through
 source-specific full runs and validation: CBRE Deal Flow, Cushman & Wakefield,
 NAI Global active feed, Colliers SalesTracker, Transwestern, Marcus &
-Millichap public sale, Lee & Associates, Newmark refined contacts/state, and
-JLL Investor Center full sitemap detail run.
+Millichap public sale, Lee & Associates, Newmark refined contacts/state, JLL
+Investor Center full sitemap detail run, and Avison Young full detail-enriched
+run.
 
 | Source key | Method | Sale | Lease | Notes |
 |------------|--------|------|-------|-------|
@@ -75,7 +76,7 @@ JLL Investor Center full sitemap detail run.
 | `cushman-wakefield` | Public `/api/properties/search` JSON plus detail enrichment | 2,743 live total | 8,575 live total | Full API pagination verified; detail pages enrich docs, photos, visible contacts, JSON-LD, and VCard/profile URLs. Use `CUSHMAN_QUERY='1800 Central'` for targeted probes |
 | `newmark` | Algolia API plus public People exact-name lookup | 1,121 live rows | 3,250 live rows | Complete public Algolia feed from `out/newmark_full_refined_2026-06-12.json`; no-state DC recovery, raw hit preservation, 3,961 contact/profile rows, source-scoped cleanup |
 | `marcus-millichap` | Public map ActivityId feed, mappropertydetail tiles, plus public detail HTML | 3,124 active live rows | n/a | Complete for public sale feed; source-scoped `--mark-missing` applied from `out/marcus_full_2026-06-12_130035.json`; public lease unsupported; gated deal-room URLs remain raw metadata only |
-| `avison-young` | Public SharpLaunch feed | 636 staged sale rows | 1,431 staged lease rows plus 133 sale_or_lease | Full SharpLaunch run live-ingested additively; still needs optional detail-page enrichment for PDFs, richer galleries, JSON-LD, VCard/profile URLs |
+| `avison-young` | Public SharpLaunch feed plus detail pages | 636 live rows | 1,432 live rows plus 133 sale_or_lease | Complete public feed from `out/avison_full_detail_2026-06-12.json`; 2,201 active rows, 2,571 document URLs, 31,570 image URLs, 4,128 contacts, 0 photo leaks; VCards absent and profile URLs sparse |
 | `savills` | Server-rendered pages /page/N | 101 active | 3 active | near-empty US lease inventory (3 rows live); foreign fallback cards filtered; US parser accepts state names, ZIP-only rows, and city/state/ZIP variants |
 | `svn` | Buildout inventory API | 2,660 live | 2,192 live plus 435 sale_or_lease | 5,287 active rows live; source-scoped ingest complete; 34 soft-deleted |
 | `lee-associates` | Buildout inventory API with durable page cache/window assembly | 2,611 live sale rows | 5,691 live lease rows plus 921 sale_or_lease | Complete public Buildout feed from `out/lee_full_cache_2026-06-12_assembled.json`; source-scoped `--mark-missing` applied after cache pages 0-332 assembled cleanly |

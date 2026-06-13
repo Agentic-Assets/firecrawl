@@ -162,9 +162,10 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
   continuation, including CBRE 5 and Savills 2 from the earlier audit. Do not
   treat active row count as a pure latest-run count for unreconciled sources
   until a clean source run marks missing rows.
-- Some supported adapters are intentionally shallow: Avison Young and Savills
-  have first-page, first-batch, or source-fit limitations documented in
-  `CLAUDE.md`. Marcus & Millichap was removed from this shallow list for the
+- Some supported adapters are intentionally shallow: Savills has source-fit
+  limitations documented in `CLAUDE.md`. Avison Young was removed from this
+  shallow list after the 2026-06-12 full detail-enriched run, additive live
+  ingest, and validation. Marcus & Millichap was removed from this shallow list for the
   public sale feed after the 2026-06-12 ActivityId expansion, full run,
   source-scoped reconciliation, and live validation; public lease remains
   blocked. Cushman was removed from this list after the 2026-06-12 API upgrade,
@@ -181,6 +182,60 @@ One duplicate `source_url` group exists by design: NAI Global cards do not expos
   Savills sale remains partial and not CRE-defensible because the current sale
   route is global/residential, while the corrected commercial sale route exposed
   only a Toronto, Canada object.
+
+## 2026-06-12 Avison Young Full Detail-Enriched Ingest
+
+Commands:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+AVISON_YOUNG_DETAIL_LIMIT=2200 AVISON_YOUNG_DETAIL_CONCURRENCY=4 \
+  npx tsx collect.ts --source=avison-young --transaction=both \
+  --max-items=0 --concurrency=4 \
+  --out=out/avison_full_detail_2026-06-12.json
+python3 cre_ingest.py --in out/avison_full_detail_2026-06-12.json \
+  --dry-run --keep-artifacts /tmp/avison_full_detail_ingest_check
+python3 cre_ingest.py --in out/avison_full_detail_2026-06-12.json \
+  --keep-artifacts /tmp/avison_full_detail_live_ingest
+python3 cre_validate.py --format json
+```
+
+Collector result:
+
+- Artifact: `out/avison_full_detail_2026-06-12.json`.
+- Log: `out/avison_full_detail_2026-06-12.log`.
+- Runtime: started `2026-06-12T23:47:23.095Z`, finished
+  `2026-06-13T00:35:38.996Z`.
+- Collected raw rows: 2,332, including 769 sale-bucket rows and 1,563
+  lease-bucket rows.
+- Unique artifact keys: 2,199 after sale/lease overlap.
+- Detail coverage in artifact: 2,721 document URLs, 33,945 image URLs, detail
+  metadata on all 2,332 rows, and 0 artifact `detailScrape` errors.
+- Photo leak check: 0 listing photo URLs matching `150x150`, `ay_logo`,
+  `sharplaunch_header`, or `/media/`.
+- The log contains three isolated SharpLaunch empty-document scrape failures
+  after retries; they did not become artifact-level detail errors or block the
+  run.
+
+Ingest proof:
+
+- Dry-run staged 2,199 unique rows and skipped 0 missing URLs.
+- Live additive ingest completed without `--mark-missing`.
+- Live validation for brokerage slug `avison-young`: 2,201 active rows, 636
+  sale, 1,432 lease, 133 `sale_or_lease`, and 0 soft-deleted rows.
+- Live child rows: 4,128 contacts, 2,571 documents, and 31,570 images.
+- Latest scraped timestamp: `2026-06-13 00:35:38Z`.
+- Quality checks: no missing state/title/coordinate flags; 2 sale-PSF flags;
+  4 duplicate source URL groups / 8 rows remain as a pre-existing pattern.
+
+Remaining limits:
+
+- Avison Young can now be called complete for the public SharpLaunch feed plus
+  publicly accessible detail-page fields. VCards remain absent from the public
+  path, and broker profile URLs are sparse rather than guaranteed.
+- Full-feed detail runs still require `AVISON_YOUNG_DETAIL_LIMIT`; an
+  unlimited `--max-items=0` run without that env var remains SharpLaunch-only by
+  default.
 
 ## Access Model
 
@@ -294,11 +349,12 @@ Ingest proof:
 - Transaction split: 636 sale, 1,431 lease, and 133 `sale_or_lease`.
 - Latest-batch quality checks: 0 missing URLs, 0 missing titles, 0 missing raw data, 0 bad state codes, 0 impossible coordinates, 0 bad cap rates, 4,125 contact child rows, 2,186 image child rows, and 0 orphan contact/image rows.
 
-Remaining limit:
+Superseded limit:
 
-- The full SharpLaunch feed is now loaded. Bounded detail-page enrichment is
-  implemented and verified for selected rows, but the full 2,200-row feed has
-  not been detail-enriched live.
+- This section is the SharpLaunch-only baseline. The full feed was later
+  detail-enriched and live-ingested from
+  `out/avison_full_detail_2026-06-12.json`; see the full detail-enriched ingest
+  section below for current counts.
 
 Bounded detail proof:
 
