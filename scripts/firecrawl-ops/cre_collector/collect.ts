@@ -4981,17 +4981,33 @@ async function colliersMainEnrichAll(max: number): Promise<any[]> {
   if (cached.size) {
     console.error(`  colliers-main: loaded ${cached.size} cached detail row(s) from ${cachePath}`);
   }
+  // Per-run cap on NEW detail fetches. Each detail render leaks ~0.8 MB in the
+  // fetch/SDK layer, so an unbounded ~15.9k-URL run exhausts the V8 heap. With a
+  // cap the process exits (freeing everything) before OOM; the durable cache
+  // lets the run_colliers_main_full.sh driver resume until every URL is cached,
+  // then a final cache-only pass assembles the artifact with zero fetches.
+  // 0 = unlimited. Deferred URLs are not cached, so a later run retries them.
+  const fetchCap = boundedInt(process.env.COLLIERS_MAIN_MAX_FETCHES_PER_RUN, 0, 0, 1_000_000);
+  let fetchBudget = fetchCap > 0 ? fetchCap : Infinity;
   let done = 0;
   let fromCache = 0;
+  let fetched = 0;
   let errors = 0;
+  let deferred = 0;
   const listings = await pmap(selected, COLLIERS_MAIN_DETAIL_CONCURRENCY, async (entry) => {
     let listing = cached.get(entry.id);
     if (listing) {
       fromCache++;
+    } else if (fetchBudget <= 0) {
+      deferred++;
+      done++;
+      return null; // defer to a later run; not cached, so it is retried then
     } else {
+      fetchBudget--;
       try {
         const docDoc = await scrapeColliersMainDetailDoc(entry.url);
         listing = parseColliersMainDetail(entry, docDoc);
+        fetched++;
       } catch (err) {
         console.error(`  colliers-main: detail failed for ${entry.url}: ${err}`);
         listing = prune({
@@ -5008,13 +5024,19 @@ async function colliersMainEnrichAll(max: number): Promise<any[]> {
     done++;
     if (done % 100 === 0 || done === selected.length) {
       console.error(
-        `  colliers-main: enriched ${done}/${selected.length} (cache ${fromCache}, errors ${errors})`
+        `  colliers-main: enriched ${done}/${selected.length} (cache ${fromCache}, fetched ${fetched}, errors ${errors}, deferred ${deferred})`
       );
     }
     return listing;
   });
-  colliersMainEnrichedMemo = listings;
-  return listings;
+  const result = listings.filter(Boolean);
+  if (deferred > 0) {
+    console.error(
+      `  colliers-main: ${deferred} URL(s) deferred under fetch cap ${fetchCap}; re-run to continue (${result.length} ready, ${fetched} newly fetched this run)`
+    );
+  }
+  colliersMainEnrichedMemo = result;
+  return result;
 }
 
 async function srcColliersMain(tx: Tx, max: number): Promise<SourceResult> {
