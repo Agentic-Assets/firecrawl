@@ -107,6 +107,11 @@ COMMENT ON COLUMN credeals.cre_listings.listing_date    IS 'Source-provided orig
 COMMENT ON COLUMN credeals.cre_listings.updated_date    IS 'Source-provided listing recency or last-modified date from the upstream brokerage when exposed. Not necessarily the first-listed/on-market date.';
 COMMENT ON COLUMN credeals.cre_listings.deleted_at      IS 'Soft-delete marker. Non-null means the listing was de-listed upstream or pruned; views exclude these.';
 
+-- RLS: collector-owned base table. Enabled, no public policy; service-role /
+-- direct-postgres bypasses it (see 001 header note + SUPABASE_SECURITY_NOTE_2026-06-12.md).
+-- Idempotent: ENABLE is a no-op when already enabled.
+ALTER TABLE credeals.cre_listings ENABLE ROW LEVEL SECURITY;
+
 -- -----------------------------------------------------------------------------
 -- cre_listing_contacts -- listing brokers / agents.
 -- Feeds EQUIRE deal_parties (party_type = 'broker') and broker-reliability memory.
@@ -128,6 +133,7 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listing_contacts (
 
 CREATE INDEX IF NOT EXISTS cre_listing_contacts_listing_idx ON credeals.cre_listing_contacts (listing_id);
 COMMENT ON TABLE credeals.cre_listing_contacts IS 'Listing brokers/agents. Populates EQUIRE deal_parties (broker) and outreach workflows.';
+ALTER TABLE credeals.cre_listing_contacts ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).
 
 -- -----------------------------------------------------------------------------
 -- cre_listing_documents -- brochures, OMs, flyers, floor plans.
@@ -146,6 +152,7 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listing_documents (
 
 CREATE INDEX IF NOT EXISTS cre_listing_documents_listing_idx ON credeals.cre_listing_documents (listing_id);
 COMMENT ON TABLE credeals.cre_listing_documents IS 'Brochure / OM / flyer / floor-plan URLs for a listing. Download+parse on demand via Firecrawl /v2/parse (stealth).';
+ALTER TABLE credeals.cre_listing_documents ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).
 
 -- -----------------------------------------------------------------------------
 -- cre_listing_images -- property photos.
@@ -161,6 +168,7 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listing_images (
 
 CREATE INDEX IF NOT EXISTS cre_listing_images_listing_idx ON credeals.cre_listing_images (listing_id);
 COMMENT ON TABLE credeals.cre_listing_images IS 'Property photo URLs for a listing, ordered by display_order; is_primary marks the hero image.';
+ALTER TABLE credeals.cre_listing_images ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).
 
 -- =============================================================================
 -- Change-tracking additions (design doc section 7). ADDITIVE and idempotent;
@@ -168,10 +176,51 @@ COMMENT ON TABLE credeals.cre_listing_images IS 'Property photo URLs for a listi
 -- (under_contract, pending, off_market), so no existing row can violate it.
 -- The new columns are nullable with no default (metadata-only ADD COLUMN).
 -- =============================================================================
-ALTER TABLE credeals.cre_listings DROP CONSTRAINT IF EXISTS cre_listings_status_check;
-ALTER TABLE credeals.cre_listings ADD CONSTRAINT cre_listings_status_check
-    CHECK (status IN ('active', 'inactive', 'under_contract', 'pending',
-                      'sold', 'leased', 'off_market', 'expired', 'withdrawn'));
+-- Status CHECK. Ingestor-writable values: active, inactive (mark-missing),
+-- under_contract, pending, sold, leased, off_market. 'expired' / 'withdrawn'
+-- are reserved for manual/enrichment use (no ingestor path writes them today).
+-- Rebuild ONLY when the live definition is missing or pre-dates the Phase-2
+-- widening, so a re-run on a populated table does not take ACCESS EXCLUSIVE +
+-- a full validating scan every time (advisor review 2026-06-13, finding 13).
+DO $$
+DECLARE cdef text;
+BEGIN
+    SELECT pg_get_constraintdef(oid) INTO cdef
+    FROM pg_constraint
+    WHERE conrelid = 'credeals.cre_listings'::regclass
+      AND conname  = 'cre_listings_status_check';
+
+    IF cdef IS NULL
+       OR cdef NOT LIKE '%under_contract%'
+       OR cdef NOT LIKE '%pending%'
+       OR cdef NOT LIKE '%off_market%' THEN
+        ALTER TABLE credeals.cre_listings DROP CONSTRAINT IF EXISTS cre_listings_status_check;
+        ALTER TABLE credeals.cre_listings ADD CONSTRAINT cre_listings_status_check
+            CHECK (status IN ('active', 'inactive', 'under_contract', 'pending',
+                              'sold', 'leased', 'off_market', 'expired', 'withdrawn'));
+    END IF;
+END $$;
+
+-- Fraction-range guards for cap_rate / occupancy_rate ([0,1] contract; cap_rate
+-- mirrors norm_cap_rate()'s accepted band of (0, 0.5)). Defends against a future
+-- writer storing 6.5 instead of 0.065. Idempotent: added only if absent. Live
+-- data already complies (cap_rate max ~0.42), so a first apply validates cleanly
+-- (advisor review 2026-06-13, finding 12).
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conrelid='credeals.cre_listings'::regclass
+                     AND conname='cre_listings_cap_rate_range_check') THEN
+        ALTER TABLE credeals.cre_listings ADD CONSTRAINT cre_listings_cap_rate_range_check
+            CHECK (cap_rate IS NULL OR (cap_rate > 0 AND cap_rate < 0.5));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conrelid='credeals.cre_listings'::regclass
+                     AND conname='cre_listings_occupancy_rate_range_check') THEN
+        ALTER TABLE credeals.cre_listings ADD CONSTRAINT cre_listings_occupancy_rate_range_check
+            CHECK (occupancy_rate IS NULL OR (occupancy_rate >= 0 AND occupancy_rate <= 1));
+    END IF;
+END $$;
 
 ALTER TABLE credeals.cre_listings ADD COLUMN IF NOT EXISTS last_seen_at   timestamptz;
 ALTER TABLE credeals.cre_listings ADD COLUMN IF NOT EXISTS source_lastmod timestamptz;

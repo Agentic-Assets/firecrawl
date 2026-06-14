@@ -35,14 +35,15 @@ CREATE INDEX IF NOT EXISTS cre_scrape_jobs_started_idx    ON credeals.cre_scrape
 
 COMMENT ON TABLE  credeals.cre_scrape_jobs        IS 'One row per CRE scrape run. Tracks discovery/scrape/save counts and final status for operator audit.';
 COMMENT ON COLUMN credeals.cre_scrape_jobs.status IS 'running | completed (clean) | partial (some errors) | failed (run aborted).';
+ALTER TABLE credeals.cre_scrape_jobs ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).
 
 -- -----------------------------------------------------------------------------
 -- cre_scrape_log -- one row per URL attempt within a job.
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS credeals.cre_scrape_log (
     id            uuid        DEFAULT gen_random_uuid() PRIMARY KEY,
-    job_id        uuid        REFERENCES credeals.cre_scrape_jobs(id),
-    listing_id    uuid        REFERENCES credeals.cre_listings(id),  -- null on error/skip before a row exists
+    job_id        uuid        REFERENCES credeals.cre_scrape_jobs(id) ON DELETE SET NULL,
+    listing_id    uuid        REFERENCES credeals.cre_listings(id) ON DELETE SET NULL,  -- null on error/skip before a row exists; SET NULL so listing/job pruning is not blocked
     url           text,
     status        text        CHECK (status IN ('success', 'error', 'skipped', 'duplicate')),
     http_status   integer,
@@ -56,3 +57,4 @@ CREATE INDEX IF NOT EXISTS cre_scrape_log_listing_idx ON credeals.cre_scrape_log
 
 COMMENT ON TABLE  credeals.cre_scrape_log        IS 'Per-URL scrape attempt log. status duplicate = matched an existing cre_listings row; skipped = filtered before fetch.';
 COMMENT ON COLUMN credeals.cre_scrape_log.status IS 'success | error | skipped | duplicate.';
+ALTER TABLE credeals.cre_scrape_log ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).

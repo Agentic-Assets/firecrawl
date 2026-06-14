@@ -30,6 +30,15 @@ COMMENT ON COLUMN credeals.cre_brokerages.slug         IS 'Stable lowercase iden
 COMMENT ON COLUMN credeals.cre_brokerages.scrape_config IS 'jsonb: {proxy, wait_for_ms, timeout_ms, pagination_strategy, notes}. Verified against live site behavior.';
 COMMENT ON COLUMN credeals.cre_brokerages.active       IS 'False disables the broker from scheduled scrape runs (e.g. access-gated or consistently failing sites).';
 
+-- RLS posture (defense in depth): collector-owned base table. RLS is ENABLED
+-- with NO public row policy. The service-role / direct-postgres connection the
+-- collector and ingestor use bypasses RLS, so this never blocks ingest; it only
+-- ensures no rows leak if the table is ever reached via the Data API. Do NOT add
+-- anon/authenticated policies (see cre_collector/archive/SUPABASE_SECURITY_NOTE_2026-06-12.md;
+-- the 007 monitor tables already follow this pattern). ENABLE is a safe no-op if
+-- already enabled, so 000_run_all.sql stays idempotent.
+ALTER TABLE credeals.cre_brokerages ENABLE ROW LEVEL SECURITY;
+
 -- -----------------------------------------------------------------------------
 -- Seed data: 12 national CRE brokerage slugs (15 collector source keys fold in;
 -- cbre-dealflow -> cbre, jll-investor -> jll, colliers-main -> colliers).
@@ -132,7 +141,7 @@ INSERT INTO credeals.cre_brokerages (name, slug, base_url, search_url, descripti
  'https://transwestern.com',
  'https://transwestern.com/properties',
  'Transwestern. Public property search exposes a repeatable GET feed at /properties?call=ajax with DealsType buckets for Sale, Lease, Sublease, and Sale or Lease. Detail pages expose broker profile links, vCards, flyer/PDF URLs, gallery image URLs, property facts, and availability tables.',
- '{"proxy": "auto", "wait_for_ms": 1500, "timeout_ms": 60000, "pagination_strategy": "public_ajax_get_deal_buckets", "search_url_pattern": "/properties?call=ajax&DealsType={Sale|Lease|Sublease|Sale%20or%20Lease}", "listing_url_pattern": "/property/{PageUrl}", "notes": "Collected by cre_collector source key transwestern. Use GET, not the browser POST body. Skip feed rows whose PageUrl is empty or '-'."}'::jsonb,
+ '{"proxy": "auto", "wait_for_ms": 1500, "timeout_ms": 60000, "pagination_strategy": "public_ajax_get_deal_buckets", "search_url_pattern": "/properties?call=ajax&DealsType={Sale|Lease|Sublease|Sale%20or%20Lease}", "listing_url_pattern": "/property/{PageUrl}", "notes": "Collected by cre_collector source key transwestern. Use GET, not the browser POST body. Skip feed rows whose PageUrl is empty or ''-''."}'::jsonb,
  true)
 
 ON CONFLICT (slug) DO UPDATE SET

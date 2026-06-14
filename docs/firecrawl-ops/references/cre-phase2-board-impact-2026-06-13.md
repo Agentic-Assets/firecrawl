@@ -170,3 +170,17 @@ predicate parses against the live schema and is a zero-row no-op today (72,544
 active, 0 under_contract, 0 pending, 0 NULL), so it applies cleanly in the same
 gated change set as T3.2 / T3.1. It is a display-layer no-op until T3.1 writes
 status, so it must not be treated as the go-live lever on its own.
+
+**Function body, not just views (best-practices review 2026-06-13, finding 1).**
+`search_cre_listings()` carries the same widened predicate in its body. The live
+function is still on `status = 'active'`; applying the view DDL alone does NOT
+redeploy the function. The gated 005 apply MUST run the `CREATE OR REPLACE
+FUNCTION` block, and the runbook must verify it immediately after:
+`SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname='credeals' AND p.proname='search_cre_listings';`
+and confirm the body contains `under_contract`. Otherwise EQUIRE agent searches
+would silently exclude every under_contract / pending row even after activation.
+The same 005 apply also refreshes `v_cre_listings_full` to pick up
+`last_seen_at` / `source_lastmod` / `canonical_key`, which the live view is
+currently missing because of a stale `l.*` (finding 2). Full review and
+fresh-DB smoke-test evidence:
+`scripts/firecrawl-ops/sql/advisor-reports/2026-06-13-cre-best-practices-review.md`.

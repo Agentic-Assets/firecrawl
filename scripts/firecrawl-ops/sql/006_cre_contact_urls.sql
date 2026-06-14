@@ -13,6 +13,11 @@ COMMENT ON COLUMN credeals.cre_listing_contacts.profile_url IS 'Public broker pr
 COMMENT ON COLUMN credeals.cre_listing_contacts.avatar_url IS 'Public broker headshot/avatar URL from the listing page, when exposed.';
 COMMENT ON COLUMN credeals.cre_listing_contacts.vcard_url IS 'Public VCard/contact-card URL from the listing page, when exposed. URL only.';
 
+-- NOTE: l.* freezes to the columns that exist when this CREATE OR REPLACE runs.
+-- Any later ALTER ... ADD COLUMN on cre_listings is NOT reflected until this view
+-- is re-applied. 000_run_all.sql adds the change-tracking columns (002) before
+-- this runs, so a full re-apply is correct; a live one-off must re-run this view
+-- (or 005) to surface new columns (advisor review 2026-06-13, finding 2).
 CREATE OR REPLACE VIEW credeals.v_cre_listings_full AS
 SELECT
     l.*,
@@ -52,3 +57,8 @@ LEFT JOIN LATERAL (
 WHERE l.deleted_at IS NULL;
 
 COMMENT ON VIEW credeals.v_cre_listings_full IS 'Listing + brokerage name + contacts/documents/images as JSON arrays. Excludes soft-deleted. Primary agent read.';
+-- Self-contained security posture: keep security_invoker even if 006 is applied
+-- standalone (not relying on 005 to restore it). Views bypass RLS by default in
+-- Postgres; security_invoker=true makes this view honor the caller's RLS so it
+-- can never leak rows past the collector-owned tables (advisor review 2026-06-13, finding 3).
+ALTER VIEW credeals.v_cre_listings_full SET (security_invoker = true);

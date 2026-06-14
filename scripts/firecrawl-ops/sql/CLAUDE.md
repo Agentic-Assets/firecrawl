@@ -2,7 +2,7 @@
 
 ## Most Critical Rule
 
-**Idempotent `credeals` DDL only on Supabase `fhqycqubkkrdgzswccwd`.** Apply via `000_run_all.sql` in dependency order: `001`→`002`→`003`→`004`→`007`→`008`→`006`→`005`. **`001_cre_brokerages.sql` seed slugs must match `../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE`.** Never commit or print `DATABASE_URL`. Advisor triage: `advisor-reports/` (plan `2026-06-13-cre-execution-readiness.md`; live apply log `2026-06-13-cre-remediation-apply-log.md`).
+**Idempotent `credeals` DDL only on Supabase `fhqycqubkkrdgzswccwd`.** Apply via `000_run_all.sql` in dependency order: `001`→`002`→`003`→`004`→`007`→`008`→`006`→`005`. **`001_cre_brokerages.sql` seed slugs must match `../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE`.** Never commit or print `DATABASE_URL`. Advisor triage: `advisor-reports/` (plan `2026-06-13-cre-execution-readiness.md`; live apply log `2026-06-13-cre-remediation-apply-log.md`; best-practices review + fresh-DB smoke test `2026-06-13-cre-best-practices-review.md`).
 
 ## Folder-Specific Commands
 

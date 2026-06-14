@@ -281,7 +281,10 @@ BEGIN
     END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
         GRANT EXECUTE ON FUNCTION credeals.search_cre_listings(text, text, text, text, text) TO service_role;
-        GRANT EXECUTE ON FUNCTION credeals.update_cre_listing_timestamp() TO service_role;
+        -- update_cre_listing_timestamp() is a trigger function: it fires in the
+        -- table owner's context and the trigger engine does not check per-role
+        -- EXECUTE, so no service_role GRANT is needed. The REVOKEs above stay as
+        -- defense in depth (advisor review 2026-06-13, finding 21).
     END IF;
 END
 $$;
@@ -323,3 +326,37 @@ ORDER BY e.detected_at DESC;
 
 COMMENT ON VIEW credeals.v_cre_recent_changes IS 'Last 7 days of cre_listing_events with listing title/url + brokerage slug. Operator/prospecting-ops freshness read. Additive; existing display views unchanged.';
 ALTER VIEW credeals.v_cre_recent_changes SET (security_invoker = true);
+
+-- ===========================================================================
+-- Declarative service-role-only posture for the display views. These views
+-- carry no PUBLIC/anon/authenticated grant by default, but stating the REVOKE
+-- explicitly keeps the surface safe even if a future migration runs a broad
+-- GRANT SELECT ON ALL TABLES IN SCHEMA credeals. service_role is unaffected
+-- (it is not a member of PUBLIC/anon/authenticated) (advisor review 2026-06-13, finding 22).
+-- ===========================================================================
+REVOKE SELECT ON
+    credeals.v_cre_listings_full,
+    credeals.v_cre_active_for_sale,
+    credeals.v_cre_active_for_lease,
+    credeals.v_cre_market_summary,
+    credeals.v_cre_recent_changes
+FROM PUBLIC;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE SELECT ON
+            credeals.v_cre_listings_full, credeals.v_cre_active_for_sale,
+            credeals.v_cre_active_for_lease, credeals.v_cre_market_summary,
+            credeals.v_cre_recent_changes
+        FROM anon;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        REVOKE SELECT ON
+            credeals.v_cre_listings_full, credeals.v_cre_active_for_sale,
+            credeals.v_cre_active_for_lease, credeals.v_cre_market_summary,
+            credeals.v_cre_recent_changes
+        FROM authenticated;
+    END IF;
+END
+$$;

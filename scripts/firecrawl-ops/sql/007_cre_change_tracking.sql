@@ -28,8 +28,8 @@
 CREATE TABLE IF NOT EXISTS credeals.cre_listing_events (
     id                  uuid        DEFAULT gen_random_uuid() PRIMARY KEY,
     listing_id          uuid        NOT NULL REFERENCES credeals.cre_listings(id) ON DELETE CASCADE,
-    brokerage_id        uuid        REFERENCES credeals.cre_brokerages(id),
-    scrape_job_id       uuid        REFERENCES credeals.cre_scrape_jobs(id),  -- per-run row, inserted first
+    brokerage_id        uuid        REFERENCES credeals.cre_brokerages(id) ON DELETE SET NULL,
+    scrape_job_id       uuid        REFERENCES credeals.cre_scrape_jobs(id) ON DELETE SET NULL,  -- per-run row, inserted first; SET NULL keeps the append-only ledger from blocking brokerage/job pruning (listing_id is the primary anchor)
     event_type          text        NOT NULL CHECK (event_type IN
                           ('new', 'status_change', 'price_change', 'disappeared', 'reappeared', 'possible_relist')),
     field               text,                       -- which field changed (status, sale_price_usd, ...)
@@ -49,8 +49,11 @@ CREATE INDEX IF NOT EXISTS cre_listing_events_type_idx      ON credeals.cre_list
 CREATE INDEX IF NOT EXISTS cre_listing_events_brokerage_idx ON credeals.cre_listing_events (brokerage_id, detected_at DESC);
 -- Within-run idempotency guard: re-emitting the same event under the same run is a no-op.
 -- (Cross-run idempotency comes from cre_source_index state: a re-run sees no delta.)
+-- NULLS NOT DISTINCT so a NULL scrape_job_id collapses to a single dedup key
+-- (a standard unique index treats every NULL as distinct, defeating the guard
+-- if a run ever inserts events without a job id) (advisor review 2026-06-13, finding 8).
 CREATE UNIQUE INDEX IF NOT EXISTS cre_listing_events_idem_uq
-    ON credeals.cre_listing_events (listing_id, event_type, COALESCE(field, ''), COALESCE(new_value, ''), scrape_job_id);
+    ON credeals.cre_listing_events (listing_id, event_type, COALESCE(field, ''), COALESCE(new_value, ''), scrape_job_id) NULLS NOT DISTINCT;
 
 ALTER TABLE credeals.cre_listing_events ENABLE ROW LEVEL SECURITY;
 
@@ -103,7 +106,10 @@ CREATE TABLE IF NOT EXISTS credeals.cre_enrichment_queue (
     done_at      timestamptz,
     attempts     int         DEFAULT 0,
     last_error   text,
-    UNIQUE (brokerage_id, external_id, reason)
+    -- NULLS NOT DISTINCT so the dedup holds even if brokerage_id is NULL; a plain
+    -- UNIQUE would treat NULL brokerage_id rows as all-distinct and let duplicate
+    -- work items accumulate (advisor review 2026-06-13, finding 4).
+    UNIQUE NULLS NOT DISTINCT (brokerage_id, external_id, reason)
 );
 
 CREATE INDEX IF NOT EXISTS cre_enrichment_queue_drain_idx ON credeals.cre_enrichment_queue (priority, enqueued_at) WHERE done_at IS NULL;
