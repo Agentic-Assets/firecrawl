@@ -6,6 +6,11 @@
 export const brokerIndex = new Map<string, number>();
 export const brokers: any[] = [];
 
+export function resetBrokerStateForTests(): void {
+  brokers.length = 0;
+  brokerIndex.clear();
+}
+
 export function brokerRef(b: {
   name: string | null;
   email?: string | null;

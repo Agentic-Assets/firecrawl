@@ -381,6 +381,26 @@ export async function enrichJllListing(base: any): Promise<any> {
 export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   const tenure = tx === "sale" ? "sale" : "rent";
   const sourceUrl = `https://property.jll.com/search?tenureTypes=${tenure}`;
+  if (monitor) {
+    // Monitor mode is NOT supported for jll: the persisted external id is the
+    // detail-page numeric property.id (enrichJllListing, id = property.id), which
+    // cannot be recovered from the search card (the cheap key is only the URL
+    // slug). Verified 11,230/11,230 slug != property.id against a full artifact.
+    // Emitting slug-keyed rows would make every row read as NEW each run and
+    // pollute the change ledger / enrichment queue, so jll stays on the
+    // full-sweep cadence and emits no monitor rows. Short-circuit BEFORE the
+    // search-page enumeration: the rows are discarded anyway, so paging every
+    // propertyType filter would burn minutes for an empty result. A cheap path
+    // would need URL-keyed reconciliation in cre_monitor.py (out of scope here).
+    return {
+      company: "JLL",
+      sourceUrl,
+      method: "Monitor mode unsupported (detail-derived numeric external id); full-sweep cadence only",
+      totalAvailable: null,
+      listings: [],
+      note: "Monitor mode emits no rows for jll: its external id is the detail-page numeric property.id and cannot be derived from the search-card URL slug. Refresh this source via the full (non-monitor) collection path.",
+    };
+  }
   const listings: any[] = [];
   const byUrl = new Map<string, any>();
   const filterTotals: Record<string, number | null> = {};
@@ -434,24 +454,6 @@ export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<Sou
   if (!listings.length) throw new Error("no listing cards found on JLL search page");
   const knownTotals = Object.values(filterTotals).filter((n): n is number => typeof n === "number");
   const total = knownTotals.length ? knownTotals.reduce((sum, n) => sum + n, 0) : null;
-  if (monitor) {
-    // Monitor mode is NOT supported for jll: the persisted external id is the
-    // detail-page numeric property.id (enrichJllListing, id = property.id), which
-    // cannot be recovered from the search card (the cheap key is only the URL
-    // slug). Verified 11,230/11,230 slug != property.id against a full artifact.
-    // Emitting slug-keyed rows would make every row read as NEW each run and
-    // pollute the change ledger / enrichment queue, so jll stays on the
-    // full-sweep cadence and emits no monitor rows. A cheap path would need
-    // URL-keyed reconciliation in cre_monitor.py (out of scope here).
-    return {
-      company: "JLL",
-      sourceUrl,
-      method: "Monitor mode unsupported (detail-derived numeric external id); full-sweep cadence only",
-      totalAvailable: total,
-      listings: [],
-      note: "Monitor mode emits no rows for jll: its external id is the detail-page numeric property.id and cannot be derived from the search-card URL slug. Refresh this source via the full (non-monitor) collection path.",
-    };
-  }
   let enrichedCount = 0;
   const enriched = await pmap(listings, JLL_DETAIL_CONCURRENCY, async (listing) => {
     const row = await enrichJllListing(listing);

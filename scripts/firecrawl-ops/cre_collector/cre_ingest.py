@@ -302,9 +302,11 @@ def transaction_type_of(listing):
 # ---------------------------------------------------------------------------
 # Status normalization (change-tracking core; PURE-ADDITIVE)
 #
-# These symbols are imported by the change-tracking / monitor layer; the
-# production upsert path in build_sql() never calls them and is unchanged.
-# Design: cre-intelligence-system-design.md sections 6 and 12.5.
+# These symbols are imported by the change-tracking / monitor layer AND, since
+# Phase-2 status activation (2026-06-13), by the production upsert path itself:
+# to_row()/build_sql() now stage status, source_lastmod, and canonical_key.
+# Design: cre-intelligence-system-design.md sections 6 and 12.5; board impact:
+# cre-phase2-board-impact-2026-06-13.md.
 #
 # Two-tier read, modeled on transaction_type_of (read-explicit-then-fallback):
 #   1. STATUS_SOURCE_PATHS gives an ordered list of dotted paths to each
@@ -316,8 +318,10 @@ def transaction_type_of(listing):
 # Invariant: never default to "active". collect.ts prune() drops false/null
 # (e.g. underContract:false, absent marcusFlags), so absence is NOT a status;
 # norm_status() returns None when there is no signal. The INSERT path defaults
-# to 'active' and the UPDATE path COALESCEs EXCLUDED.status onto t.status, so a
-# None here must read as "no opinion", never as a downgrade to active.
+# to 'active' (COALESCE(status,'active')); the upsert UPDATE keeps existing
+# status sticky (resetting only resurrected rows to 'active'); and a separate
+# targeted UPDATE upgrades a row to its real signal when this run carries one.
+# So a None here reads as "no opinion", never a downgrade to active (Choice a).
 # ---------------------------------------------------------------------------
 
 # Ordered word-boundary text -> canonical status. First match wins. Never
@@ -527,6 +531,47 @@ def _canonical_key(listing) -> "Optional[str]":
     return key
 
 
+def parse_source_lastmod(value):
+    """Parse a source lastmod / dateModified string to a full-precision ISO-8601
+    string (timestamptz-castable), or None. Never day-truncates: whatever
+    precision the source carries is preserved. Returns None when unparseable.
+
+    Single source of truth for source_lastmod across the ingest upsert and the
+    observe-only monitor (cre_monitor imports this so the two agree exactly).
+    """
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    candidate = s[:-1] + "+00:00" if s.endswith("Z") else s
+    try:
+        return datetime.fromisoformat(candidate).isoformat()
+    except ValueError:
+        pass
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?", s)
+    if m:
+        cand = m.group(0).replace(" ", "T")
+        try:
+            datetime.fromisoformat(cand)  # reject out-of-range month/day/hour (e.g. 2024-13-45)
+            return cand
+        except ValueError:
+            return None
+    return None
+
+
+def group_source_lastmod(flat_listings):
+    """First non-None parsed lastmod across a group's FLAT listings, preferring
+    lastUpdated then dateModified. Mirrors the first-non-None rule used for
+    canonical_key (within a sale+lease group these values agree)."""
+    for listing in flat_listings:
+        for field in ("lastUpdated", "dateModified"):
+            parsed = parse_source_lastmod(listing.get(field))
+            if parsed:
+                return parsed
+    return None
+
+
 def to_row(listing, brokers_by_idx, scraped_at):
     """Map one collector listing to a staging row dict, or None to skip."""
     source_key = listing.get("sourceKey")
@@ -661,6 +706,9 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "lease_rate_max": lease_max,
         "description": desc[:20000] if isinstance(desc, str) else None,
         "updated_date": iso_date_or_none(listing.get("lastUpdated")),
+        "status": norm_status(listing),
+        "source_lastmod": group_source_lastmod([listing]),
+        "canonical_key": _canonical_key(listing),
         "scraped_at": scraped_at,
         "raw_data": listing,
         "contacts": contacts,
@@ -681,12 +729,22 @@ def merge_rows(a, b):
         "property_type", "title", "address", "city", "state", "zip", "lat", "lng",
         "size_sf", "lot_size_sf", "year_built", "sale_price_usd", "sale_price_per_sf",
         "cap_rate", "lease_rate_min", "lease_rate_max", "description", "updated_date",
+        "source_lastmod", "canonical_key",
     ):
         if a[k] is None and b[k] is not None:
             a[k] = b[k]
     for k in ("contacts", "documents", "images"):
         if not a[k] and b[k]:
             a[k] = b[k]
+    # status: a real DROP signal (sold/leased/off_market) from EITHER pass wins
+    # over a transitional/None one; otherwise keep the first non-None signal
+    # (mirrors norm_status terminal-wins across the sale+lease passes).
+    _DROP = {"sold", "leased", "off_market"}
+    sa, sb = a.get("status"), b.get("status")
+    if sa not in _DROP and sb in _DROP:
+        a["status"] = sb
+    elif sa is None:
+        a["status"] = sb
     # keep both raw payloads when the passes differ
     if b["raw_data"] is not a["raw_data"]:
         a["raw_data"] = {"primary": a["raw_data"], "secondary_pass": b["raw_data"]}
@@ -723,6 +781,7 @@ STAGE_COLS = [
     "lot_size_sf", "year_built", "sale_price_usd", "sale_price_per_sf",
     "cap_rate", "lease_rate_min", "lease_rate_max", "description",
     "updated_date", "scraped_at", "raw_data", "contacts", "documents", "images",
+    "status", "source_lastmod", "canonical_key",
 ]
 
 
@@ -741,7 +800,7 @@ CREATE TEMP TABLE _stage (
     sale_price_per_sf numeric, cap_rate numeric, lease_rate_min numeric,
     lease_rate_max numeric, description text, updated_date timestamptz,
     scraped_at timestamptz, raw_data jsonb, contacts jsonb, documents jsonb,
-    images jsonb
+    images jsonb, status text, source_lastmod timestamptz, canonical_key text
 ) ON COMMIT DROP;""")
     w(f"COPY _stage ({', '.join(STAGE_COLS)}) FROM stdin;")
     for r in rows:
@@ -781,18 +840,18 @@ WITH ins AS (
         property_type, title, address, city, state, zip, lat, lng, size_sf,
         lot_size_sf, year_built, sale_price_usd, sale_price_per_sf, cap_rate,
         lease_rate_min, lease_rate_max, description, updated_date, scraped_at,
-        raw_data
+        raw_data, source_lastmod, canonical_key
     )
-    SELECT brokerage_id, external_id, source_url, 'active', transaction_type,
+    SELECT brokerage_id, external_id, source_url, COALESCE(status, 'active'), transaction_type,
            property_type, title, address, city, state, zip, lat, lng, size_sf,
            lot_size_sf, year_built, sale_price_usd, sale_price_per_sf, cap_rate,
            lease_rate_min, lease_rate_max, description, updated_date, scraped_at,
-           raw_data
+           raw_data, source_lastmod, canonical_key
     FROM _src
     ON CONFLICT (brokerage_id, external_id) WHERE external_id IS NOT NULL
     DO UPDATE SET
         source_url        = EXCLUDED.source_url,
-        status            = 'active',
+        status            = CASE WHEN t.deleted_at IS NOT NULL THEN 'active' ELSE t.status END,
         transaction_type  = EXCLUDED.transaction_type,
         property_type     = COALESCE(EXCLUDED.property_type, t.property_type),
         title             = COALESCE(EXCLUDED.title, t.title),
@@ -817,11 +876,29 @@ WITH ins AS (
         updated_date      = COALESCE(EXCLUDED.updated_date, t.updated_date),
         scraped_at        = EXCLUDED.scraped_at,
         raw_data          = EXCLUDED.raw_data,
+        source_lastmod    = COALESCE(EXCLUDED.source_lastmod, t.source_lastmod),
+        canonical_key     = COALESCE(EXCLUDED.canonical_key, t.canonical_key),
         deleted_at        = NULL,
         updated_at        = now()
     RETURNING t.id, t.brokerage_id, t.external_id
 )
 SELECT * FROM ins;
+
+-- Phase-2 status activation (design 12.5; Choice a COALESCE, board-impact doc
+-- 2026-06-13): upgrade a row to the source's real terminal / under_contract /
+-- pending signal when this run carries one. The upsert above keeps existing
+-- status sticky (only resurrected rows reset to 'active'), and norm_status never
+-- yields 'active', so a no-signal pass can never downgrade a prior real signal.
+-- No-signal rows stay 'active'; their lifecycle stays governed by disappearance
+-- / --mark-missing, not by a NULL status (no coverage cliff). _src is one row
+-- per (brokerage_id, external_id), so this join is 1:1.
+UPDATE credeals.cre_listings t
+SET status = s.status
+FROM _src s
+WHERE t.brokerage_id = s.brokerage_id
+  AND t.external_id = s.external_id
+  AND s.status IS NOT NULL
+  AND t.status IS DISTINCT FROM s.status;
 
 -- Children: refresh wholesale only when the latest source row did not hit a
 -- detail-page error. This protects previously good documents/images/contacts

@@ -8,10 +8,50 @@ import { clean, num, pmap } from "../lib/util.js";
 
 // --- CBRE: internal listings JSON API, paginated, behind Cloudflare (stealth) ---
 
+export function cbreAspect(tx: Tx): string {
+  return tx === "sale" ? "isSale" : "isLetting";
+}
+
+export function cbreListingSlug(parts: {
+  name: string | null;
+  street: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+}): string {
+  return [parts.name, parts.street, parts.city, parts.state, parts.zip]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+export function cbreListingUrl(primaryKey: string, slug: string): string {
+  return `https://www.cbre.com/properties/properties-for-lease/commercial-space/details/${primaryKey}/${slug}`;
+}
+
+export function cbreBrochureUrl(uri: string | null): string {
+  const u = clean(uri);
+  return u?.startsWith("http") ? u : `https://www.cbre.com${u ?? ""}`;
+}
+
+export function cbrePhotoUrl(resourceUri: string | null): string | null {
+  const u = clean(resourceUri);
+  if (!u) return null;
+  return u.startsWith("http") ? u : `https://www.cbre.com${u}`;
+}
+
+export function cbreTransactionType(aspects: string[]): string {
+  const isSale = aspects.includes("isSale");
+  const isLet = aspects.includes("isLetting");
+  return isSale && isLet ? "Sale/Lease" : isLet ? "Lease" : "Sale";
+}
+
 export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
   // Enumeration-only source: the listings-api JSON already returns fully mapped
   // rows with no per-listing detail render, so monitor output == full output.
-  const aspect = tx === "sale" ? "isSale" : "isLetting";
+  const aspect = cbreAspect(tx);
   const opts: ScrapeOpts = { proxy: "stealth", waitFor: 4000, timeout: 120000 };
   const base = `https://www.cbre.com/listings-api/propertylistings/query?site=us-comm&Common.Aspects=${aspect}&PageSize=200`;
   const first = await scrapeJson(`${base}&Page=1`, opts);
@@ -58,12 +98,7 @@ export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<S
     const city = clean(addr["Common.Locallity"]);
     const state = clean(addr["Common.Region"]);
     const zip = clean(addr["Common.PostCode"]);
-    const slug = [name, street, city, state, zip]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
+    const slug = cbreListingSlug({ name, street, city, state, zip });
     const brokerIds = (Array.isArray(d["Common.Agents"]) ? d["Common.Agents"] : [])
       .map((a: any) =>
         brokerRef({
@@ -75,13 +110,11 @@ export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<S
         })
       )
       .filter((x: number | null): x is number => x !== null);
-    const isSale = aspects.includes("isSale");
-    const isLet = aspects.includes("isLetting");
     return {
       id: d["Common.PrimaryKey"],
       name,
       headline: text(d["Common.Strapline"]),
-      transactionType: isSale && isLet ? "Sale/Lease" : isLet ? "Lease" : "Sale",
+      transactionType: cbreTransactionType(aspects),
       assetType: clean(d["Common.UsageType"]),
       description: text(d["Common.LongDescription"]),
       street,
@@ -101,9 +134,7 @@ export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<S
       brochures: (Array.isArray(d["Common.Brochures"]) ? d["Common.Brochures"] : []).map(
         (b: any) => ({
           name: clean(b["Common.BrochureName"]),
-          url: clean(b["Common.Uri"])?.startsWith("http")
-            ? clean(b["Common.Uri"])
-            : `https://www.cbre.com${clean(b["Common.Uri"]) ?? ""}`,
+          url: cbreBrochureUrl(clean(b["Common.Uri"])),
         })
       ),
       photos: (Array.isArray(d["Common.Photos"]) ? d["Common.Photos"] : [])
@@ -112,11 +143,10 @@ export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<S
             (p["Common.ImageResources"] ?? []).find(
               (x: any) => x["Common.Breakpoint"] === "original"
             ) ?? (p["Common.ImageResources"] ?? [])[0];
-          const u = r && clean(r["Common.Resource.Uri"]);
-          return u ? (u.startsWith("http") ? u : `https://www.cbre.com${u}`) : null;
+          return r ? cbrePhotoUrl(clean(r["Common.Resource.Uri"])) : null;
         })
         .filter(Boolean),
-      url: `https://www.cbre.com/properties/properties-for-lease/commercial-space/details/${d["Common.PrimaryKey"]}/${slug}`,
+      url: cbreListingUrl(d["Common.PrimaryKey"], slug),
       lastUpdated: clean(d["Common.LastUpdated"])?.slice(0, 10) ?? null,
       created: clean(d["Common.Created"])?.slice(0, 10) ?? null,
     };

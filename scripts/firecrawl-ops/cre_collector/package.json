@@ -7,6 +7,8 @@
   "scripts": {
     "collect": "tsx collect.ts",
     "typecheck": "tsc --noEmit",
+    "test:unit": "node --import tsx --test tests/ts/*.test.ts tests/ts/**/*.test.ts",
+    "test": "npm run typecheck && npm run test:unit",
     "validate:supabase": "python3 cre_validate.py"
   },
   "dependencies": {

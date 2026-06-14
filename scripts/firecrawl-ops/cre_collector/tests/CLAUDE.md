@@ -10,6 +10,8 @@
 
 ## Folder-Specific Commands
 
+**Python (ingest, monitor, gate):**
+
 ```bash
 cd scripts/firecrawl-ops/cre_collector
 python3 -m pytest tests/ -q
@@ -17,9 +19,20 @@ python3 -m pytest tests/test_enum_key_invariant.py -q
 python3 -m pytest tests/test_norm_status_canonical_and_guards.py -q   # portable CI signal (no out/)
 ```
 
-Requires `pytest` on the host (not pinned in `package.json`). Full suite: **237**
-tests (`python3 -m pytest tests/ -q`). `collect.ts` coverage: `npm run typecheck`
-(parent dir, not this folder).
+Requires `pytest` on the host (not pinned in `package.json`). Full suite: **248**
+pytest tests (`python3 -m pytest tests/ -q`).
+
+**TypeScript (collector helpers, adapters):**
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+npm run test:unit
+npm run typecheck
+npm test   # typecheck + test:unit
+```
+
+Uses Node built-in `node:test` + existing `tsx` devDependency (no vitest/jest).
+Add files as `tests/ts/*.test.ts` or `tests/ts/**/*.test.ts`. See `tests/ts/README.md`.
 
 ## Test Files
 
@@ -35,9 +48,53 @@ tests (`python3 -m pytest tests/ -q`). `collect.ts` coverage: `npm run typecheck
 
 `conftest.py` prepends parent `cre_collector/` to `sys.path` (no package install).
 
+## TypeScript unit tests (`tests/ts/`)
+
+**Pure-transform, no-network tests only.** Import and call real functions from
+`lib/`, `sources/`, or `types.ts`. No live Firecrawl, no `collect.ts` E2E runs.
+
+**Import gotcha:** `lib/config.ts` runs `parseArgs()` at import time from
+`process.argv`. Tests that need scrape/util helpers without CLI side effects
+should import those modules directly, not `config.ts` or `collect.ts`.
+
+**ESM:** use `.js` suffix on relative imports in test files (matches production).
+
+| File | Focus |
+|------|-------|
+| `smoke.test.ts` | Harness wiring smoke check |
+| `lib/util.test.ts` | `clean`, `num`, `boundedInt`, `moneyToNumber`, `isPerSfPriceText`, `prune`, `pmap` |
+| `lib/html.test.ts` | `decodeHtmlEntities`, `jsonLdObjects`, `firstJsonLd`, sitemap XML, `dedupeStrings` |
+| `lib/scrape.test.ts` | `parseJsonBody`, `repairUnescapedJsonStringQuotes` (no network) |
+| `lib/broker.test.ts` | `brokerRef` dedupe and field merge (`resetBrokerStateForTests`) |
+| `sources/transwestern.test.ts` | URL helpers, price/size text, facts/availability HTML parsers |
+| `sources/buildout.test.ts` | inventory URL, env helpers, cache path/window |
+| `sources/marcus-millichap.test.ts` | URL/location parsers, tile HTML mapping |
+| `sources/cbre-dealflow.test.ts` | location, listing PV, engine key extraction |
+| `sources/savills.test.ts` | ZIP state inference, location, sqft, image URLs |
+| `sources/newmark.test.ts` | `normalizePersonName`, `newmarkState` |
+| `sources/cbre.test.ts` | `cbreAspect`, `cbreListingSlug`, `cbreListingUrl`, `cbreBrochureUrl`, `cbrePhotoUrl`, `cbreTransactionType` |
+| `sources/jll.test.ts` | search URL helpers, `__NEXT_DATA__`, contacts, `parseJllSearchPage`, detail cache round-trip |
+| `sources/jll-investor.test.ts` | investor sitemap/search helpers, document/image URLs, contacts |
+| `sources/colliers.test.ts` | RCM URLs, location, cards, detail contacts/images |
+| `sources/colliers-main.test.ts` | challenge detection, sitemap, address/JSON-LD, detail cache JSONL |
+| `sources/cushman-wakefield.test.ts` | URL canonicalization, asset dedupe, markdown/numeric parsers, contacts |
+| `sources/avison-young.test.ts` | SharpLaunch CDN/URL, transaction classification, detail extraction |
+| `sources/nai-global.test.ts` | Infabode location, price/size/status, `naiListingFromFeed` |
+
+Full suite: **157** TypeScript unit tests (`npm run test:unit`).
+
+**Argv isolation:** source adapters import `lib/config.ts`; trim `process.argv` to
+`[node, script]` before those imports in test files (see `lib/scrape.test.ts`).
+
+**Still E2E/probe only:** async `src*()` collectors and network-bound enrich/fetch
+orchestrators (`scrapeJson`, `scrapeDoc`, `fetch`, Firecrawl). Golden-file adapter
+output tests remain future work.
+
 ## Module Boundaries
 
-Owns Python ingest, monitor, and gate unit contracts. Does **not** own E2E `collect.ts` runs, live `cre_ingest.py --apply`, or `cre_validate.py` / `npm run validate:supabase`.
+Owns Python ingest, monitor, and gate unit contracts **and** TypeScript
+collector unit contracts under `tests/ts/`. Does **not** own E2E `collect.ts`
+runs, live `cre_ingest.py --apply`, or `cre_validate.py` / `npm run validate:supabase`.
 
 Overlap across `test_gate.py`, `test_cre_gate.py`, and `test_monitor.py` is intentional regression coverage.
 

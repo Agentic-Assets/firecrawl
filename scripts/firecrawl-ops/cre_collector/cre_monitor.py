@@ -46,7 +46,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -67,9 +66,11 @@ from cre_ingest import (  # noqa: E402
     _dig,
     copy_field,
     find_psql,
+    group_source_lastmod,
     load_db_url,
     merge_rows,
     norm_status,
+    parse_source_lastmod,
     sql_lit,
     to_row,
 )
@@ -112,42 +113,9 @@ def coverage_decision(*, in_baseline, errored, force_disappear, prior_live,
 # ---------------------------------------------------------------------------
 
 
-def parse_source_lastmod(value):
-    """Parse a source lastmod / dateModified string to a full-precision ISO-8601
-    string (timestamptz-castable), or None. Never day-truncates: whatever
-    precision the source carries is preserved. Returns None when unparseable.
-    """
-    if not isinstance(value, str):
-        return None
-    s = value.strip()
-    if not s:
-        return None
-    candidate = s[:-1] + "+00:00" if s.endswith("Z") else s
-    try:
-        return datetime.fromisoformat(candidate).isoformat()
-    except ValueError:
-        pass
-    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?", s)
-    if m:
-        cand = m.group(0).replace(" ", "T")
-        try:
-            datetime.fromisoformat(cand)  # reject out-of-range month/day/hour (e.g. 2024-13-45)
-            return cand
-        except ValueError:
-            return None
-    return None
-
-
-def group_source_lastmod(flat_listings):
-    """First non-None parsed lastmod across a group's FLAT listings, preferring
-    lastUpdated then dateModified. Mirrors the first-non-None rule used for
-    canonical_key (within a sale+lease group these values agree)."""
-    for listing in flat_listings:
-        for field in ("lastUpdated", "dateModified"):
-            parsed = parse_source_lastmod(listing.get(field))
-            if parsed:
-                return parsed
-    return None
+# parse_source_lastmod and group_source_lastmod now live in cre_ingest (imported
+# above) so the daily ingest upsert and this observe-only monitor derive
+# source_lastmod from one shared implementation and can never diverge.
 
 
 def raw_source_status(listing):

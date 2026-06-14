@@ -8,5 +8,11 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["collect.ts", "types.ts", "lib/**/*.ts", "sources/**/*.ts"]
+  "include": [
+    "collect.ts",
+    "types.ts",
+    "lib/**/*.ts",
+    "sources/**/*.ts",
+    "tests/ts/**/*.ts"
+  ]
 }

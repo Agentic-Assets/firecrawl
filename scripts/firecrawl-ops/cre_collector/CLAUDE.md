@@ -51,6 +51,8 @@ Runs entirely against the local self-hosted Firecrawl API.
 cd scripts/firecrawl-ops/cre_collector
 npm install                      # once
 npm run typecheck                # TypeScript validation
+npm test                         # typecheck + unit tests (lib/, sources/ helpers)
+npm run test:unit                # TypeScript unit tests only
 
 # Small probe of one source, both transactions
 npx tsx collect.ts --source=svn --transaction=both --max-items=6 --out=/tmp/probe.json

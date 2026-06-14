@@ -285,6 +285,25 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
       note: "Investment-sale platform; no lease inventory.",
     };
   }
+  if (monitor) {
+    // Monitor mode is NOT supported for jll-investor: the persisted external id
+    // is the detail-page Salesforce listing.id (enrichJllInvestorListing), which
+    // cannot be recovered from the sitemap (the cheap key is only the URL slug).
+    // Verified 934/934 slug != listing.id against the full sitemap artifact.
+    // Emitting slug-keyed rows would make every row read as NEW each run and
+    // pollute the change ledger / enrichment queue, so jll-investor stays on the
+    // full-sweep cadence and emits no monitor rows. Short-circuit BEFORE the
+    // sitemap scrape + detail enumeration: the rows are discarded anyway. A cheap
+    // path would need URL-keyed reconciliation in cre_monitor.py (out of scope).
+    return {
+      company: "JLL Investor Center",
+      sourceUrl: JLL_INVESTOR_US_SITEMAP_URL,
+      method: "Monitor mode unsupported (detail-derived Salesforce external id); full-sweep cadence only",
+      totalAvailable: null,
+      listings: [],
+      note: "Monitor mode emits no rows for jll-investor: its external id is the detail-page Salesforce listing.id and cannot be derived from the sitemap URL slug. Refresh this source via the full (non-monitor) collection path.",
+    };
+  }
   const indexHtml = await scrapeRaw(JLL_INVESTOR_SITEMAP_INDEX_URL, { waitFor: 1000, timeout: 60000 });
   const sitemapUrl =
     jllInvestorSitemapUrls(indexHtml).find((url) => url === JLL_INVESTOR_US_SITEMAP_URL) ??
@@ -300,25 +319,6 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
       return true;
     });
   if (!detailEntries.length) throw new Error("no listing URLs found in JLL Investor Center US sitemap");
-
-  if (monitor) {
-    // Monitor mode is NOT supported for jll-investor: the persisted external id
-    // is the detail-page Salesforce listing.id (enrichJllInvestorListing), which
-    // cannot be recovered from the sitemap (the cheap key is only the URL slug).
-    // Verified 934/934 slug != listing.id against the full sitemap artifact.
-    // Emitting slug-keyed rows would make every row read as NEW each run and
-    // pollute the change ledger / enrichment queue, so jll-investor stays on the
-    // full-sweep cadence and emits no monitor rows. A cheap path would need
-    // URL-keyed reconciliation in cre_monitor.py (out of scope here).
-    return {
-      company: "JLL Investor Center",
-      sourceUrl: sitemapUrl,
-      method: "Monitor mode unsupported (detail-derived Salesforce external id); full-sweep cadence only",
-      totalAvailable: detailEntries.length,
-      listings: [],
-      note: "Monitor mode emits no rows for jll-investor: its external id is the detail-page Salesforce listing.id and cannot be derived from the sitemap URL slug. Refresh this source via the full (non-monitor) collection path.",
-    };
-  }
 
   const candidateLimit = jllInvestorSitemapCandidateLimit(max, detailEntries.length);
   const candidates = detailEntries.slice(0, candidateLimit);
