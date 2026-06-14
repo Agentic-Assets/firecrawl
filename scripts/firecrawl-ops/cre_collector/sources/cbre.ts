@@ -32,7 +32,14 @@ export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<S
     });
     docsArr.push(...rest);
   }
-  const docs = docsArr.flat().slice(0, want);
+  // Only page 1 is structurally validated; a later page that returns parseable
+  // JSON without a Documents array silently contributes []. If the total
+  // collected falls short of `want` (= min(max, DocumentCount)), an empty/short
+  // later page truncated this pass. This excludes --max-items (folded into
+  // `want`) and natural exhaustion (a complete run reaches `want`).
+  const collectedDocs = docsArr.flat();
+  const truncated = collectedDocs.length < want;
+  const docs = collectedDocs.slice(0, want);
   const text = (loc: any) =>
     Array.isArray(loc) && loc.length ? clean(loc[0]["Common.Text"]) : null;
   const listings = docs.map((d: any) => {
@@ -120,5 +127,6 @@ export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<S
     method: "CBRE public listings API (JSON, paginated, stealth proxy)",
     totalAvailable: total,
     listings,
+    truncated,
   };
 }

@@ -33,6 +33,7 @@ Owns macOS schedules, flock serialization, tier dispatch. Delegates collect/inge
 
 ## References
 
+- `../CLAUDE.md` — ingest, mark-missing guards, daily script defaults
 - `README.md` — gates, install, logs
 - `../START_HERE.md` — gate/monitor wiring status
 - `../../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` — section 9, 14.4 step 6

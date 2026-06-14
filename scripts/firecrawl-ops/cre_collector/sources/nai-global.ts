@@ -217,6 +217,13 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
     }
   }
   if (!rows.length) throw new Error(`no ${tx} listing rows found in NAI Global Infabode feed`);
+  // The loop ends for exactly one of three reasons: a short page (real feed
+  // end, the normal termination), rows.length >= max (intentional --max-items),
+  // or offset reaching the PAGE_CAP ceiling. Only the last is truncation: the
+  // last fetched page was full (no short-page break) yet more feed remained, so
+  // this pass KNOWINGLY left rows unread. Not flagged on natural exhaustion or
+  // an intentional max cap, so it is true only on a real PAGE_CAP clip.
+  const truncated = !stoppedOnShortPage && rows.length < max;
   if (monitor) {
     // Monitor mode: emit feed rows only (detail=null) and skip both the per-row
     // publicPost detail GraphQL fetch and the detail-dependent
@@ -229,6 +236,7 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
       method: "Infabode public GraphQL feed enumeration only (monitor mode; publicPost detail enrichment and FOR_SALE_ON_MARKET filter skipped)",
       totalAvailable: stoppedOnShortPage ? listings.length : null,
       listings,
+      truncated,
       note: "Monitor mode: feed fields only (id, name, location, lastUpdated/publishedAt, photos, url). listingStatus and price are detail-only, so the FOR_SALE_ON_MARKET filter is deferred and off-market rows may be emitted (resolved downstream on render).",
     };
   }
@@ -255,6 +263,7 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
     method: "Infabode public GraphQL feed plus publicPost detail enrichment, offset paginated, filtered to FOR_SALE_ON_MARKET",
     totalAvailable: stoppedOnShortPage ? activeListings.length : null,
     listings: activeListings,
+    truncated,
     note:
       `${NAI_SOURCE_IDS.length} documented NAI source organization ids; stable Infabode IDs and detail URLs captured. ` +
       `Documents and contacts remain URL-only when public fields exist. ` +

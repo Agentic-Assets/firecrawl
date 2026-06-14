@@ -120,6 +120,10 @@ export async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise
   for (const h of first.hits) hitMap.set(h.objectID ?? h.slug ?? JSON.stringify(h), h);
 
   // Algolia caps retrievable hits (~1000/query). Split by state facet for full coverage.
+  // Set when a facet (or facet combo, or the no-state recovery) exceeds the
+  // ~1000-hit cap with no further way to sub-split: that pass KNOWINGLY left
+  // hits unreachable, so the enumeration is partial for this run only.
+  let coverageTruncated = false;
   if (total > first.hits.length && hitMap.size < Math.min(max, total)) {
     const states: string[] = Object.keys(first.facets?.state ?? {});
     console.error(`  newmark/${tx}: ${total} total > single-query cap, splitting across ${states.length} states`);
@@ -132,6 +136,7 @@ export async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise
         const types: string[] = Object.keys(r.facets?.property_types ?? {});
         if (!types.length) {
           console.error(`  newmark/${tx}: WARNING state ${st} has ${r.nbHits} hits, >1000 cap and no property_types facet; coverage truncated`);
+          coverageTruncated = true;
           return;
         }
         console.error(`  newmark/${tx}: state ${st} has ${r.nbHits} hits, sub-splitting across ${types.length} property types`);
@@ -140,6 +145,7 @@ export async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise
           for (const h of r2.hits ?? []) hitMap.set(h.objectID ?? h.slug ?? JSON.stringify(h), h);
           if ((r2.nbHits ?? 0) > 1000) {
             console.error(`  newmark/${tx}: WARNING ${st}/${pt} still ${r2.nbHits} hits, >1000 cap; coverage truncated`);
+            coverageTruncated = true;
           }
         });
       }
@@ -163,6 +169,7 @@ export async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise
       }
       if ((r.nbHits ?? 0) > 1000) {
         console.error(`  newmark/${tx}: WARNING no-state recovery returned ${r.nbHits} hits, >1000 cap; coverage may be truncated`);
+        coverageTruncated = true;
       }
     }
   }
@@ -228,5 +235,8 @@ export async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise
     method: "Newmark Algolia search API (JSON; credentials read from the page; state/property-type split plus no-state recovery)",
     totalAvailable: total,
     listings,
+    // True only when an Algolia facet exceeded the ~1000-hit cap with no further
+    // sub-split this run; the enumeration is then a known under-count.
+    truncated: coverageTruncated,
   };
 }

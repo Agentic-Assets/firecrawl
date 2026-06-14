@@ -330,7 +330,15 @@ export async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise
     });
     chunks.push(...rest);
   }
-  const rows = chunks.flat().slice(0, want);
+  // Only the first page is validated (we throw on empty `content`); a later page
+  // that returns parseable JSON without a `content` array silently contributes
+  // []. If the collected count falls short of `want` (= min(max, total_item)),
+  // an empty/short later page (or a provider cap below the reported total)
+  // truncated this pass. This excludes --max-items (folded into `want`) and
+  // natural exhaustion (a complete run reaches `want`).
+  const collectedRows = chunks.flat();
+  const truncated = collectedRows.length < want;
+  const rows = collectedRows.slice(0, want);
   let done = 0;
   // Monitor mode: skip the per-listing detail scrape and map rows with the cheap
   // base mapping (listingStatus is free here; real price is detail-only).
@@ -350,5 +358,6 @@ export async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise
     method: "Cushman public /api/properties/search JSON pagination plus detail-page raw HTML enrichment",
     totalAvailable: total,
     listings,
+    truncated,
   };
 }
