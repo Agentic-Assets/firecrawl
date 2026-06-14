@@ -8,6 +8,17 @@
 -- search_cre_listings() rather than touching base tables, so the contract
 -- is stable even as the schema evolves.
 --
+-- On-market predicate: the display/search surfaces filter
+-- status IN ('active','under_contract','pending'), not status='active' alone.
+-- With the Phase-2 COALESCE activation in cre_ingest.py, status is never NULL
+-- (no-signal rows stay 'active'), and under-contract / pending are high-value
+-- deal signals EQUIRE agents should see. This matches the EQUIRE board gate
+-- (Option B). Terminal rows (sold / leased / off_market) and soft-deleted rows
+-- (deleted_at IS NOT NULL) stay excluded. The views keep their historical names
+-- (v_cre_active_for_*) to preserve the EQUIRE read contract; "active" in those
+-- names now reads as "on market". Until T3.1 status activation runs, the board
+-- is 100% 'active', so this widening is a no-op (zero row delta).
+--
 -- Requires: 001..004. Idempotent: views use CREATE OR REPLACE; the trigger
 -- function is CREATE OR REPLACE and triggers are dropped-then-created.
 -- =============================================================================
@@ -77,7 +88,8 @@ ALTER VIEW credeals.v_cre_listings_full SET (security_invoker = true);
 
 -- ===========================================================================
 -- VIEW: v_cre_active_for_sale
--- Active sale listings with brokerage name and the primary contact inlined.
+-- On-market sale listings (active / under_contract / pending) with brokerage
+-- name and the primary contact inlined.
 -- Drives mandate-fit screening and OriginationBrief seeding.
 -- ===========================================================================
 CREATE OR REPLACE VIEW credeals.v_cre_active_for_sale AS
@@ -106,15 +118,16 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) pc ON true
 WHERE l.deleted_at IS NULL
-  AND l.status = 'active'
+  AND l.status IN ('active', 'under_contract', 'pending')
   AND l.transaction_type IN ('sale', 'sale_or_lease');
 
-COMMENT ON VIEW credeals.v_cre_active_for_sale IS 'Active for-sale listings with brokerage + primary contact. Mandate-fit screening / OriginationBrief seed.';
+COMMENT ON VIEW credeals.v_cre_active_for_sale IS 'On-market for-sale listings (active/under_contract/pending) with brokerage + primary contact. Mandate-fit screening / OriginationBrief seed.';
 ALTER VIEW credeals.v_cre_active_for_sale SET (security_invoker = true);
 
 -- ===========================================================================
 -- VIEW: v_cre_active_for_lease
--- Active lease listings with brokerage name and primary contact.
+-- On-market lease listings (active / under_contract / pending) with brokerage
+-- name and primary contact.
 -- ===========================================================================
 CREATE OR REPLACE VIEW credeals.v_cre_active_for_lease AS
 SELECT
@@ -143,10 +156,10 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) pc ON true
 WHERE l.deleted_at IS NULL
-  AND l.status = 'active'
+  AND l.status IN ('active', 'under_contract', 'pending')
   AND l.transaction_type IN ('lease', 'sale_or_lease');
 
-COMMENT ON VIEW credeals.v_cre_active_for_lease IS 'Active for-lease listings with brokerage + primary contact, including divisibility and lease terms.';
+COMMENT ON VIEW credeals.v_cre_active_for_lease IS 'On-market for-lease listings (active/under_contract/pending) with brokerage + primary contact, including divisibility and lease terms.';
 ALTER VIEW credeals.v_cre_active_for_lease SET (security_invoker = true);
 
 -- ===========================================================================
@@ -172,17 +185,17 @@ SELECT
     max(l.scraped_at)                                                     AS last_scraped_at
 FROM credeals.cre_listings l
 WHERE l.deleted_at IS NULL
-  AND l.status = 'active'
+  AND l.status IN ('active', 'under_contract', 'pending')
   AND l.city IS NOT NULL
   AND l.state IS NOT NULL
 GROUP BY l.city, l.state, l.property_type;
 
-COMMENT ON VIEW credeals.v_cre_market_summary IS 'Per-(city,state,property_type) aggregates: counts, avg price/PSF/size, median cap rate, avg occupancy. MarketStrategistAgent input.';
+COMMENT ON VIEW credeals.v_cre_market_summary IS 'Per-(city,state,property_type) aggregates over on-market listings (active/under_contract/pending): counts, avg price/PSF/size, median cap rate, avg occupancy. MarketStrategistAgent input.';
 ALTER VIEW credeals.v_cre_market_summary SET (security_invoker = true);
 
 -- ===========================================================================
 -- FUNCTION: search_cre_listings(...)
--- Full-text search over active listings with optional structured filters.
+-- Full-text search over on-market listings with optional structured filters.
 -- ts_rank-ordered. The canonical entry point for ListingHunterAgent and the
 -- deal-assistant sourcing tools. Empty/NULL query -> filter-only browse.
 -- ===========================================================================
@@ -235,7 +248,7 @@ AS $$
     FROM credeals.cre_listings l
     JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
     WHERE l.deleted_at IS NULL
-      AND l.status = 'active'
+      AND l.status IN ('active', 'under_contract', 'pending')
       AND (query IS NULL OR btrim(query) = '' OR
            to_tsvector('english',
                coalesce(l.title, '') || ' ' || coalesce(l.address, '') || ' ' ||
@@ -251,7 +264,7 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION credeals.search_cre_listings(text, text, text, text, text)
-    IS 'FTS + optional filters (city/state/type/transaction) over active listings, ts_rank-ordered, capped at 200. Canonical agent search entry point.';
+    IS 'FTS + optional filters (city/state/type/transaction) over on-market listings (active/under_contract/pending), ts_rank-ordered, capped at 200. Canonical agent search entry point.';
 
 REVOKE EXECUTE ON FUNCTION credeals.search_cre_listings(text, text, text, text, text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION credeals.update_cre_listing_timestamp() FROM PUBLIC;

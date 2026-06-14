@@ -2,7 +2,7 @@
 
 ## Most Critical Rule
 
-**Idempotent `credeals` DDL only on Supabase `fhqycqubkkrdgzswccwd`.** Apply via `000_run_all.sql` in dependency order: `001`→`002`→`003`→`004`→`007`→`006`→`005`. **`001_cre_brokerages.sql` seed slugs must match `../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE`.** Never commit or print `DATABASE_URL`.
+**Idempotent `credeals` DDL only on Supabase `fhqycqubkkrdgzswccwd`.** Apply via `000_run_all.sql` in dependency order: `001`→`002`→`003`→`004`→`007`→`008`→`006`→`005`. **`001_cre_brokerages.sql` seed slugs must match `../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE`.** Never commit or print `DATABASE_URL`. Advisor triage: `advisor-reports/` (plan `2026-06-13-cre-execution-readiness.md`; live apply log `2026-06-13-cre-remediation-apply-log.md`).
 
 ## Folder-Specific Commands
 
@@ -22,7 +22,7 @@ Set `DATABASE_URL` from `~/.pgpass` or a local secrets source. Alternatives: Sup
 
 ## Module Boundaries
 
-Owns DDL, brokerage seeds, indexes, views, and 007 monitor tables. Does **not** own runtime ingest SQL (`cre_ingest.py`) or observe-only monitor writes (`cre_monitor.py`, `cre_gate.py`). Child FKs (`cre_listing_contacts`, `cre_listing_documents`, `cre_listing_images`, `cre_scrape_log`) are `ON DELETE CASCADE`.
+Owns DDL, brokerage seeds, indexes (`004`, `008` FK covers on 007), views, and 007 monitor tables. Does **not** own runtime ingest SQL (`cre_ingest.py`) or observe-only monitor writes (`cre_monitor.py`, `cre_gate.py`). Child FKs (`cre_listing_contacts`, `cre_listing_documents`, `cre_listing_images`, `cre_scrape_log`) are `ON DELETE CASCADE`.
 
 ## Integration Points
 

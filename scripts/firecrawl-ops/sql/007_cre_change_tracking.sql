@@ -131,3 +131,12 @@ CREATE TABLE IF NOT EXISTS credeals.cre_source_baseline (
 ALTER TABLE credeals.cre_source_baseline ENABLE ROW LEVEL SECURITY;
 
 COMMENT ON TABLE credeals.cre_source_baseline IS 'Per-source health baseline (rolling median active rows + last accepted run) for the coverage-and-anomaly gate. Updated only after a clean gated run.';
+
+-- FK covering indexes (Splinter 0001_unindexed_foreign_keys). Also shipped in
+-- 008_cre_fk_indexes.sql for live-project apply traceability; IF NOT EXISTS
+-- in both places keeps 000_run_all idempotent.
+CREATE INDEX IF NOT EXISTS cre_listing_events_scrape_job_idx
+    ON credeals.cre_listing_events (scrape_job_id);
+
+CREATE INDEX IF NOT EXISTS cre_source_baseline_last_accepted_job_idx
+    ON credeals.cre_source_baseline (last_accepted_job_id);

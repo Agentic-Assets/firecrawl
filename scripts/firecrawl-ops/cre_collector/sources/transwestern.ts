@@ -309,11 +309,15 @@ export async function srcTranswestern(tx: Tx, max: number, monitor: boolean): Pr
   }
   const selected = [...rowsBySlug.values()].slice(0, Math.min(max, Number.MAX_SAFE_INTEGER));
   let done = 0;
+  // In monitor mode enrichTranswesternListing returns feed-only fields and never
+  // scrapes detail pages, so the progress verb must reflect enumeration, not the
+  // detail enrichment that only the full path performs.
+  const progressVerb = monitor ? "enumerated" : "detail enriched";
   const listings = await pmap(selected, CONCURRENCY, async ({ row, bucket }) => {
     const listing = await enrichTranswesternListing(row, bucket, tx, monitor);
     done++;
     if (done % 25 === 0 || done === selected.length) {
-      console.error(`  transwestern/${tx}: detail enriched ${done}/${selected.length}`);
+      console.error(`  transwestern/${tx}: ${progressVerb} ${done}/${selected.length}`);
     }
     return listing;
   });

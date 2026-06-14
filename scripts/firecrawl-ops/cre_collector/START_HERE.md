@@ -82,16 +82,33 @@ are open:
    - Full operational rules and gotchas:
      `docs/firecrawl-ops/references/cre-monitor-subsystem.md`.
 
-   DONE 2026-06-13 (gated, verified): first `cre_gate.py --apply
-   --update-baseline` then `cre_monitor.py --apply` seed on `avison-young`
-   (`cre_source_baseline`=1, `cre_source_index`=2199, 0 events / 0 queue /
-   0 soft-deletes, board unchanged at 72,544). See
-   `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md`.
+   DONE 2026-06-13 (gated, verified): the observe-only seed now spans ALL 11
+   monitor-enabled sources. `cre_gate.py --apply --update-baseline` then
+   `cre_monitor.py --apply` on the all-source `--monitor` artifact
+   (`out/monitor/seed_all_2026-06-13.json`, mode=monitor, page-cap 60 to match
+   the scheduled tier) seeded `cre_source_baseline`=11 sources and
+   `cre_source_index`=73,693 rows, with 0 events / 0 queue and the board
+   unchanged (72,544 live active, 0 live non-active, 0 NULL status). The 10 new
+   sources were baseline-seeded silently; `avison-young` re-enumerated to the
+   same 2,199 keys (0-event diff). `jll`/`jll-investor` now short-circuit their
+   monitor pass before enumeration (no wasted paging). See
+   `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` and the Phase-2 board-impact doc.
 
-   STILL GATED for explicit go-ahead: scaling the seed to the other ~10
-   monitor-enabled sources (a full `--monitor` collect + apply), the tiered
-   launchd schedules (section 9), wiring `cre_gate.py` into `cre_daily_update.sh`,
-   and Phase-2 status activation.
+   Phase-2 status activation is now WIRED and hardened in `cre_ingest.py`
+   (Choice (a) COALESCE + terminal-stickiness guard + default-off status-flip
+   circuit breaker `CRE_STATUS_FLIP_MAX_FRACTION`; 254 pytest pass). It activates
+   on the next daily/manual full ingest, NOT from the monitor path. The matching
+   EQUIRE board-gate widening (Option B) is committed on
+   `dynamically-display-cre-listing-data` branch `feat/multi-source-live-listings`
+   (not deployed). Gate-0 (prod status CHECK) verified to already allow
+   uc/pending/off_market.
+
+   STILL GATED for explicit go-ahead: deploying the T3.2 consumer branch (must
+   deploy BEFORE T3.1 activates), triggering the first live T3.1 activation, the
+   tiered launchd schedules (section 9), wiring `cre_gate.py` into
+   `cre_daily_update.sh`, and applying the widened agent-facing `005` views (now
+   `status IN ('active','under_contract','pending')` on this branch; live DDL
+   apply gated, verified read-only 2026-06-13 as a zero-row no-op today).
 
 The EQUIRE-facing view-gate / status activation (sections 12.4, Phase-2) stays
 pending CRE_EQUIRE coordination and is NOT part of the additive build. Board

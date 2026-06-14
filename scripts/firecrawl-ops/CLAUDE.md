@@ -142,9 +142,19 @@ or images into Supabase storage for the bulk collector.
 Track 1 shipped: monitor hardening, `collect.ts` modular split, coverage gate
 triple-gating, four detail-id monitor exclusions. First gated `cre_monitor.py
 --apply` seed completed on `avison-young` (baseline + index only; observe-only).
-Track 2 still gated: scale seed to other monitor-enabled sources, launchd,
-`cre_gate.py` wiring into the daily script, Phase-2 status activation. See
-`cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md`.
+Track 2 shipped 2026-06-13: observe-only seed scaled to all 11 monitor-enabled
+sources (`cre_source_baseline`=11, `cre_source_index`=73,693, 0 events, board
+unchanged); `jll`/`jll-investor` monitor short-circuit; Phase-2 status
+activation wired + hardened in `cre_ingest.py` (COALESCE + terminal guard +
+default-off `CRE_STATUS_FLIP_MAX_FRACTION` breaker); EQUIRE board-gate widening
+(Option B) committed on `dynamically-display-cre-listing-data`; the agent-facing
+`005` views widened to the on-market set (`active`/`under_contract`/`pending`)
+on the collector branch (apply gated, verified a zero-row no-op today).
+Track 2 still gated: deploy the consumer branch (before live activation),
+trigger first live status activation, launchd, `cre_gate.py` wiring into the
+daily script, applying the widened `005` views (live DDL). See
+`cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` and the phase2
+board-impact doc's activation runbook.
 
 | Module | Role |
 |---|---|

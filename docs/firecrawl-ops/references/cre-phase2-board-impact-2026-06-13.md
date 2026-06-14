@@ -17,7 +17,7 @@ The 2026-06-13 `avison-young` monitor `--apply` seed was observe-only
 
 Activating accurate status moves a small, well-understood slice of the board:
 
-- **Terminal (sold / leased / off_market): ~569 rows (0.8% of the board) correctly drop.** Pure accuracy win, happens under any gate option. These are rows currently shown as "active" that the source itself marks sold/leased.
+- **Terminal (sold / leased / off_market): ~569 rows (0.8% of the board) correctly drop** on the current board. Pure accuracy win, happens under any gate option. These are rows currently shown as "active" that the source itself marks sold/leased. Treat ~569 as a current-board floor: once the full `colliers-main` run ingests it rises to roughly ~1,567 (up to ~1,840 at the in-flight artifact's 8.5% terminal rate). The qualitative low-blast-radius conclusion holds at both ends of the range; only the number moves. Re-run `phase2_derive.py` after that ingest before quoting a number.
 - **Under-contract + pending: ~905 rows (1.2%).** These drop too *unless* the board gate keeps them. This is the one real choice (Option A vs B below).
 - **~71,070 rows (98%) are unaffected.** They carry no terminal/uc/pending signal, so they stay visible.
 
@@ -110,3 +110,63 @@ If Phase-2 activation instead writes NULL (Choice b), append `OR status IS NULL`
 
 This edit, the ingestor status-wiring, and the first live activation stay **gated for
 your go-ahead**: they touch a second production repo and what live users see.
+
+## Implementation status and activation runbook (2026-06-13)
+
+The Track-2 observe-only seed and the Phase-2 code are in place; the live
+activation and the consumer deploy stay gated for go-ahead.
+
+**Done (verified):**
+- **Gate-0 CLEARED.** Prod `cre_listings_status_check` already allows
+  `under_contract`, `pending`, `sold`, `leased`, `off_market` (verified
+  2026-06-13 on `fhqycqubkkrdgzswccwd`). No migration re-apply is needed; the
+  Phase-2 targeted UPDATE cannot raise a check_violation.
+- **T2.3 seed applied (observe-only).** `cre_gate.py --apply --update-baseline`
+  then `cre_monitor.py --apply` on the all-source monitor artifact seeded
+  `cre_source_baseline` (11 sources) and `cre_source_index` (73,693 rows) with
+  0 events and 0 enrichment-queue rows. Board verified unchanged: 72,544 live
+  active, 0 live non-active, 0 NULL status, 5,269 soft-deleted.
+- **T3.1 wired and hardened** in `cre_ingest.py` (Choice (a) COALESCE):
+  a terminal-stickiness guard (a sold/leased/off_market row is never downgraded
+  to under_contract/pending by a cross-run re-signal) and a status-flip
+  pre-flight (per-source `RAISE NOTICE` observability always on; optional
+  circuit breaker via `CRE_STATUS_FLIP_MAX_FRACTION`, default OFF so the
+  unattended daily ingest is never blocked). 254 pytest pass; the PL/pgSQL
+  pre-flight block was validated live against the schema.
+- **T3.2 consumer edit committed** to `dynamically-display-cre-listing-data`
+  branch `feat/multi-source-live-listings` (not merged, not deployed). The
+  adversarial sweep found six sites, not two; all are widened: the shared board
+  gate (`lib/listing-filters.ts`), the stats count (`lib/db/credeals.ts`
+  `BOARD_STATS_QUERY`), the on-market header stat and copy (`app/page.tsx`),
+  the coverage-summary copy, the detail-page status badges
+  (`property-detail.tsx`), and the test assertions. Typecheck, 50 tests, and
+  lint are clean.
+
+**Authoritative activation order (load-bearing, the one rule to not get wrong):**
+1. **Deploy T3.2 first.** The widened `status IN (...)` predicate is provably a
+   no-op until status data exists (the board is 100% active today), so it is the
+   zero-risk, fully reversible half of the pair. Merge and deploy the consumer
+   branch.
+2. **Then activate T3.1.** It lands on the next daily ingest (or a manual
+   `cre_ingest.py --apply` on a full, non-monitor artifact). For the first
+   activation run, set `CRE_STATUS_FLIP_MAX_FRACTION` (e.g. `0.5`) so a source
+   parsing regression aborts the whole run, and inspect the per-source
+   `status-flip` NOTICE counts against the expected range before treating the
+   run as healthy. Do NOT activate before step 1 deploys, or ~905
+   under_contract/pending rows briefly drop off the active board with no UI
+   trace or soft-delete event.
+
+**005 views widened (prepared on branch; apply gated).** The four agent-facing
+surfaces in `sql/005_cre_views.sql` (`v_cre_active_for_sale`,
+`v_cre_active_for_lease`, `v_cre_market_summary`, and `search_cre_listings`, the
+canonical EQUIRE agent search entry point) now filter
+`status IN ('active','under_contract','pending')` instead of `status='active'`,
+matching the Option B board gate so EQUIRE agents see under-contract / pending
+deals. The views keep their historical `v_cre_active_for_*` names to preserve the
+EQUIRE read contract; an authoritative header note in 005 records the on-market
+semantics. The edit is on the feature branch only; the live `CREATE OR REPLACE`
+apply stays **gated** (live DDL). Verified read-only 2026-06-13: the widened
+predicate parses against the live schema and is a zero-row no-op today (72,544
+active, 0 under_contract, 0 pending, 0 NULL), so it applies cleanly in the same
+gated change set as T3.2 / T3.1. It is a display-layer no-op until T3.1 writes
+status, so it must not be treated as the go-live lever on its own.

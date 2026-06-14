@@ -785,12 +785,43 @@ STAGE_COLS = [
 ]
 
 
+def _flip_circuit_breaker():
+    """Optional Phase-2 status-flip guard (board-impact doc 2026-06-13, finding 4).
+
+    Default OFF so the unattended daily ingest is never blocked by it. Set
+    CRE_STATUS_FLIP_MAX_FRACTION to a fraction in (0, 1] to abort the whole ingest
+    transaction when any one source would move more than that share of its
+    currently-active rows to a non-active status in a single run (the signature of
+    a source parsing regression). CRE_STATUS_FLIP_MIN_BASE (default 200) suppresses
+    the check for small-inventory sources where the ratio is noisy. Returns
+    (fraction, min_base) when enabled, else None.
+    """
+    raw = os.environ.get("CRE_STATUS_FLIP_MAX_FRACTION")
+    if not raw:
+        return None
+    try:
+        frac = float(raw)
+    except ValueError:
+        return None
+    if not (0 < frac <= 1):
+        return None
+    try:
+        min_base = int(os.environ.get("CRE_STATUS_FLIP_MIN_BASE", "200"))
+    except ValueError:
+        min_base = 200
+    return frac, max(1, min_base)
+
+
 def build_sql(rows, job_meta, started_at, mark_missing_slugs):
     lines = []
     w = lines.append
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
     w("SET LOCAL statement_timeout = '600s';")
+    _cb = _flip_circuit_breaker()
+    if _cb is not None:
+        w(f"SET LOCAL cre.flip_max_fraction = '{_cb[0]}';")
+        w(f"SET LOCAL cre.flip_min_base = '{_cb[1]}';")
     w("""
 CREATE TEMP TABLE _stage (
     slug text, external_id text, source_url text, transaction_type text,
@@ -884,6 +915,65 @@ WITH ins AS (
 )
 SELECT * FROM ins;
 
+-- Phase-2 status-flip pre-flight (board-impact doc 2026-06-13, finding 4):
+-- per-source observability plus an optional circuit breaker. Reads the
+-- cre.flip_max_fraction / cre.flip_min_base GUCs set above from
+-- CRE_STATUS_FLIP_MAX_FRACTION (unset => breaker disabled, NOTICE-only). The
+-- breaker raises (rolling back the whole transaction under ON_ERROR_STOP, so
+-- nothing is written) when any one source would move more than that fraction of
+-- its active inventory to a non-active status this run -- the signature of a
+-- source parsing regression. NOTICE lines make the per-source flip counts of the
+-- first monitored activation run inspectable. Default disabled so the unattended
+-- daily ingest is never blocked.
+DO $$
+DECLARE
+    rec record;
+    v_total bigint := 0;
+    v_cap numeric := NULLIF(current_setting('cre.flip_max_fraction', true), '')::numeric;
+    v_min_base int := COALESCE(NULLIF(current_setting('cre.flip_min_base', true), '')::int, 200);
+    v_tripped text := NULL;
+BEGIN
+    FOR rec IN
+        SELECT b.slug AS slug,
+               count(*) FILTER (
+                   WHERE s.status IS NOT NULL
+                     AND t.status IS DISTINCT FROM s.status
+                     AND NOT (t.status IN ('sold','leased','off_market')
+                              AND s.status IN ('under_contract','pending'))
+               ) AS changes,
+               count(*) FILTER (
+                   WHERE s.status IS NOT NULL AND t.status = 'active'
+               ) AS leaving_active,
+               count(*) FILTER (WHERE t.status = 'active') AS active_base
+        FROM _src s
+        JOIN credeals.cre_listings t
+          ON t.brokerage_id = s.brokerage_id AND t.external_id = s.external_id
+        JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+        GROUP BY b.slug
+        HAVING count(*) FILTER (
+                   WHERE s.status IS NOT NULL
+                     AND t.status IS DISTINCT FROM s.status
+                     AND NOT (t.status IN ('sold','leased','off_market')
+                              AND s.status IN ('under_contract','pending'))
+               ) > 0
+    LOOP
+        v_total := v_total + rec.changes;
+        RAISE NOTICE 'status-flip %: % change(s), % leaving active of % active base',
+            rec.slug, rec.changes, rec.leaving_active, rec.active_base;
+        IF v_cap IS NOT NULL AND rec.active_base >= v_min_base
+           AND rec.leaving_active::numeric / rec.active_base > v_cap THEN
+            v_tripped := COALESCE(v_tripped || ', ', '') ||
+                format('%s (%s/%s)', rec.slug, rec.leaving_active, rec.active_base);
+        END IF;
+    END LOOP;
+    IF v_total > 0 THEN
+        RAISE NOTICE 'status-flip TOTAL: % row(s) change status this run', v_total;
+    END IF;
+    IF v_tripped IS NOT NULL THEN
+        RAISE EXCEPTION 'status-flip circuit breaker tripped (max fraction %): %', v_cap, v_tripped;
+    END IF;
+END $$;
+
 -- Phase-2 status activation (design 12.5; Choice a COALESCE, board-impact doc
 -- 2026-06-13): upgrade a row to the source's real terminal / under_contract /
 -- pending signal when this run carries one. The upsert above keeps existing
@@ -892,13 +982,24 @@ SELECT * FROM ins;
 -- No-signal rows stay 'active'; their lifecycle stays governed by disappearance
 -- / --mark-missing, not by a NULL status (no coverage cliff). _src is one row
 -- per (brokerage_id, external_id), so this join is 1:1.
+--
+-- Terminal stickiness (guard clause below): a terminal label
+-- (sold/leased/off_market) is never overwritten by a transitional
+-- (under_contract/pending) re-signal across runs, matching the "only ever
+-- upgraded" invariant (sold > under_contract). A genuinely re-listed terminal row
+-- recovers via the disappear -> reappear resurrection path (the ON CONFLICT CASE
+-- resets deleted_at-bearing rows to 'active'), not in place: norm_status never
+-- emits 'active', so a continuously-present row keeps its terminal label. This is
+-- the accepted recovery semantics (board-impact doc; not an oversight).
 UPDATE credeals.cre_listings t
 SET status = s.status
 FROM _src s
 WHERE t.brokerage_id = s.brokerage_id
   AND t.external_id = s.external_id
   AND s.status IS NOT NULL
-  AND t.status IS DISTINCT FROM s.status;
+  AND t.status IS DISTINCT FROM s.status
+  AND NOT (t.status IN ('sold','leased','off_market')
+           AND s.status IN ('under_contract','pending'));
 
 -- Children: refresh wholesale only when the latest source row did not hit a
 -- detail-page error. This protects previously good documents/images/contacts

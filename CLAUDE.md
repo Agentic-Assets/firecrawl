@@ -131,10 +131,23 @@ Canonical entrypoints (live counts and per-source status only in `START_HERE.md`
 gate triple-gating, four detail-id monitor exclusions, first gated
 `cre_monitor.py --apply` seed on `avison-young`.
 
-**Track 2 (gated):** scale monitor seed to other monitor-enabled sources,
-launchd schedules, `cre_gate.py` wiring into the daily script, Phase-2 status
-activation in `cre_ingest.py` plus the EQUIRE board gate (see phase2 board
-impact doc). Tier-B `cre_enrichment_queue` worker remains deferred.
+**Track 2 (shipped 2026-06-13):** observe-only seed scaled to all 11
+monitor-enabled sources (`cre_source_baseline`=11, `cre_source_index`=73,693, 0
+events, board unchanged); `jll`/`jll-investor` monitor short-circuit before
+enumeration; Phase-2 status activation WIRED + hardened in `cre_ingest.py`
+(Choice (a) COALESCE, terminal-stickiness guard, default-off
+`CRE_STATUS_FLIP_MAX_FRACTION` circuit breaker); the EQUIRE board-gate widening
+(Option B, 6 sites) committed on `dynamically-display-cre-listing-data` branch
+`feat/multi-source-live-listings`; the agent-facing `005` views widened to
+`status IN ('active','under_contract','pending')` on this branch (apply gated,
+verified read-only as a zero-row no-op today). Gate-0 prod status CHECK verified.
+
+**Track 2 (still gated for go-ahead):** deploy the consumer board-gate branch
+(must precede live T3.1 activation), trigger the first live status activation,
+launchd schedules, `cre_gate.py` wiring into the daily script, and applying the
+widened `005` views (live DDL, alongside the consumer deploy). See the phase2
+board-impact doc's activation runbook. Tier-B `cre_enrichment_queue` worker
+remains deferred.
 
 ### Next steps (CRE)
 

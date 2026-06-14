@@ -20,7 +20,7 @@ Pure transform, no network / DB. Design: cre-phase2-board-impact-2026-06-13.md.
 
 from datetime import datetime, timezone
 
-from cre_ingest import build_sql, merge_rows, to_row
+from cre_ingest import _flip_circuit_breaker, build_sql, merge_rows, to_row
 
 _SCRAPED_AT = datetime(2026, 6, 13, 0, 0, 0, tzinfo=timezone.utc).isoformat()
 
@@ -128,3 +128,52 @@ def test_neutral_columns_coalesced_in_upsert():
     assert "COALESCE(EXCLUDED.canonical_key, t.canonical_key)" in sql
     # staged + inserted
     assert "status text, source_lastmod timestamptz, canonical_key text" in sql
+
+
+# --- terminal-stickiness guard (review LOW: code must match the prose) --------
+
+def test_targeted_upgrade_never_downgrades_terminal_to_transitional():
+    sql = _sql()
+    # A sold/leased/off_market row is never overwritten by an under_contract /
+    # pending re-signal: the targeted UPDATE carries the guard clause.
+    assert "NOT (t.status IN ('sold','leased','off_market')" in sql
+    assert "AND s.status IN ('under_contract','pending'))" in sql
+
+
+# --- flip-rate circuit breaker (review HIGH: bound mass-flip blast radius) -----
+
+def test_flip_breaker_helper_disabled_when_env_unset(monkeypatch):
+    monkeypatch.delenv("CRE_STATUS_FLIP_MAX_FRACTION", raising=False)
+    assert _flip_circuit_breaker() is None
+
+
+def test_flip_breaker_helper_rejects_out_of_range_and_garbage(monkeypatch):
+    for bad in ("0", "1.5", "-0.2", "abc", ""):
+        monkeypatch.setenv("CRE_STATUS_FLIP_MAX_FRACTION", bad)
+        assert _flip_circuit_breaker() is None
+
+
+def test_flip_breaker_helper_parses_fraction_and_min_base(monkeypatch):
+    monkeypatch.setenv("CRE_STATUS_FLIP_MAX_FRACTION", "0.5")
+    monkeypatch.setenv("CRE_STATUS_FLIP_MIN_BASE", "75")
+    assert _flip_circuit_breaker() == (0.5, 75)
+
+
+def test_flip_preflight_block_always_emitted_and_notice_only_by_default(monkeypatch):
+    monkeypatch.delenv("CRE_STATUS_FLIP_MAX_FRACTION", raising=False)
+    sql = _sql()
+    # Observability block + GUC reads are always present...
+    assert "status-flip pre-flight" in sql
+    assert "current_setting('cre.flip_max_fraction', true)" in sql
+    assert "RAISE NOTICE 'status-flip" in sql
+    assert "circuit breaker tripped" in sql
+    # ...but with the env unset, no GUC is set, so the breaker can never fire.
+    assert "SET LOCAL cre.flip_max_fraction" not in sql
+
+
+def test_flip_breaker_sets_guc_when_enabled(monkeypatch):
+    monkeypatch.setenv("CRE_STATUS_FLIP_MAX_FRACTION", "0.5")
+    monkeypatch.setenv("CRE_STATUS_FLIP_MIN_BASE", "200")
+    sql = _sql()
+    assert "SET LOCAL cre.flip_max_fraction = '0.5';" in sql
+    assert "SET LOCAL cre.flip_min_base = '200';" in sql
