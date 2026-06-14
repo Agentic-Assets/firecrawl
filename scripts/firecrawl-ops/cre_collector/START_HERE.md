@@ -1,5 +1,25 @@
 # CRE Collector Start Here
 
+**2026-06-14 (data + automation completion).** `colliers-main` full run COMPLETE
+and ingested additively: **15,829 active** (5,750 sale + 8,897 lease + 1,182
+sale_or_lease), 0 soft-deleted, 0 duplicate external_ids. Live board now
+**87,328 active** (0 non-active, 0 NULL status). Phase-2 status activation is now
+OPT-IN in `cre_ingest.py` (default OFF; `--activate-status` / `CRE_ACTIVATE_STATUS`),
+so routine and scheduled ingests refresh listing data without flipping board
+state; the status-display rollout (consumer board-gate, live activation, widened
+`005` views) stays deferred. Live DB hardening applied (cap_rate/occupancy range
+CHECKs, 4 audit FKs `ON DELETE SET NULL`, 2 unique indexes `NULLS NOT DISTINCT`,
+`v_cre_listings_full` `security_invoker`; staged at
+`../sql/advisor-reports/2026-06-13-cre-live-hardening.sql`). Data-quality
+cleanups: 50 board-invisible JLL rows -> `inactive`, transwestern notes restored,
+Savills residential contamination removed (101 sale + 1 ghost lease soft-deleted;
+2 defensible Chicago retail lease rows remain). Automation LIVE: launchd
+`ai.agentic.cre-monitor` (every 3h, `CRE_MONITOR_APPLY=1` change-event recording)
+and `ai.agentic.cre-daily` (06:30, `--no-mark-missing`, status OFF) loaded;
+`cre_gate.py` wired into `cre_daily_update.sh` with a `--strict` mark-missing
+fail-safe. Weekly `--mark-missing` tier intentionally NOT loaded (reconcile
+held). 261 pytest pass.
+
 Last updated: 2026-06-13. Change-tracking / monitor layer (migration 007 +
 `cre_monitor.py` + `cre_gate.py` + `collect.ts --monitor`) built, hardened, and
 adversarially reviewed. 2026-06-13 session: `collect.ts` split into cohesive
@@ -44,6 +64,9 @@ Result:
   JLL Investor full sitemap detail ingest, and narrow stale-row cleanups,
   live Supabase active rows total 72,544 as of 2026-06-13 (the +944 over the
   2026-06-12 figure is the colliers-main bounded 943-row batch).
+- 2026-06-14: the colliers-main full run was ingested additively (colliers
+  brokerage 2,115 -> 17,001 active) and the Savills residential cleanup removed
+  102 rows, so the live board is **87,328 active** (0 non-active, 0 NULL status).
 
 ## Next Steps
 
@@ -127,12 +150,12 @@ impact is quantified in
 | Newmark | 4,371 active rows, 1,121 sale + 3,250 lease | Complete public Algolia feed with no-state DC recovery, public People contacts/profile URLs, raw hit preservation, and source-scoped cleanup |
 | Marcus & Millichap | 3,124 active sale rows | Complete public sale feed via public map ActivityIds, `mappropertydetail` tiles, and detail HTML; live-ingested with source-scoped mark-missing cleanup; lease unsupported |
 | Avison Young | 2,201 active rows, 636 sale + 1,432 lease + 133 sale_or_lease | Complete public SharpLaunch feed with detail-page enrichment, live-ingested additively; 2,571 document URL rows, 31,570 image URL rows, 4,128 contacts, no photo leaks, VCards absent |
-| Savills | 104 active rows, 101 sale + 3 lease | Partial; 3 U.S. retail lease rows are now live with PDF/image/contact URLs, while current sale rows remain global/residential and not CRE-defensible |
+| Savills | 2 active lease rows | Sale is STRUCTURALLY CAPPED (no public U.S. commercial-sale feed; the 101 "sale" rows were mis-categorized residential and were soft-deleted 2026-06-14 with 1 non-U.S. ghost lease). 2 defensible Chicago retail lease rows remain with PDF/image/contact URLs |
 | SVN | 5,287 active rows, 2,660 sale + 2,192 lease + 435 sale_or_lease | Complete public Buildout feed, assembled from durable page cache and live-ingested with source-scoped mark-missing cleanup |
 | NAI Global | 241 active rows, 183 sale + 58 lease live-ingested with mark-missing cleanup | Complete public active feed via Infabode GraphQL and `publicPost`, filtered to `FOR_SALE_ON_MARKET`; historical/unknown rows excluded |
 | Lee & Associates | 9,223 active rows, 2,611 sale + 5,691 lease + 921 sale_or_lease | Complete public Buildout feed, assembled from durable page cache and live-ingested with source-scoped mark-missing cleanup |
 | Colliers (SalesTracker) | 1,300 SalesTracker cards collected, 1,172 unique rows live-ingested | Investment-sale subset via public RCM GET endpoints; retained alongside the new main-site source |
-| Colliers main (`colliers-main`) | 15,896 sitemap detail URLs discovered; bounded 2,000-URL batch live (943 rows: 346 sale, 518 lease, 79 sale_or_lease) | Main `www.colliers.com` unblocked via public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`) plus detail-render JSON-LD parse, folded into `colliers` with `main:` prefix. Full ~15,896 run in progress 2026-06-13. See `HANDOFF_COLLIERS_MAIN_2026-06-13.md` |
+| Colliers main (`colliers-main`) | 15,829 active rows, 5,750 sale + 8,897 lease + 1,182 sale_or_lease | COMPLETE 2026-06-14: full ~15,883-URL sitemap detail run converged (0 errors) and ingested additively (status OFF), 0 soft-deleted, 0 dup external_ids. Main `www.colliers.com` via public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`) plus detail-render JSON-LD parse, folded into `colliers` with `main:` prefix. Durable cache `out/cache/colliers-main/` (15,888 rows). See `HANDOFF_COLLIERS_MAIN_2026-06-13.md` |
 | Transwestern | 2,021 active rows, 389 sale + 1,502 lease + 130 sale_or_lease | Complete public GET feed, detail-enriched and live-ingested with source-scoped mark-missing cleanup |
 
 ## Start A New Session
@@ -197,7 +220,7 @@ images into Supabase storage for the bulk collector.
 - Cushman & Wakefield is now current in Supabase from `out/cushman_full_2026-06-12_022841.json`: 11,318 active rows, 18,343 document URL rows, 24,278 image URL rows, 21,110 contact rows, 21,110 profile URLs, and 20,301 VCard URLs. Source-scoped `--mark-missing` soft-deleted 24 old probe rows.
 - CBRE Deal Flow has been ingested from the public RCM endpoint. Do not use its reported 2,042 sale total as collected count; the public card pagination exposed 1,809 sale cards in the full run. A narrow cleanup soft-deleted 21 stale `dealflow:url:<sha1>` rows that duplicated newer enriched Deal Flow IDs.
 - Do not store source PDF or image binaries in Supabase. Store URLs only.
-- Colliers now has two folded sources under the `colliers` brokerage. SalesTracker (`colliers`, 1,172 investment-sale rows) via public RCM GET. Main site (`colliers-main`) via the public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`, 15,896 detail URLs) fetched through local Firecrawl plus detail-render JSON-LD parse; ids prefixed `main:`. The Coveo POST search is still not used and not needed. A bounded 2,000-URL batch is live (943 rows); the full run is in progress as of 2026-06-13 (`HANDOFF_COLLIERS_MAIN_2026-06-13.md`). Do not claim complete main-site coverage until the full run is ingested and validated.
+- Colliers now has two folded sources under the `colliers` brokerage. SalesTracker (`colliers`, 1,172 investment-sale rows) via public RCM GET. Main site (`colliers-main`, COMPLETE 2026-06-14: 15,829 active rows) via the public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`, ~15,883 detail URLs) fetched through local Firecrawl plus detail-render JSON-LD parse; ids prefixed `main:`. The Coveo POST search is still not used and not needed. Full run converged via `run_colliers_main_full.sh` (chunked, resumable cache) and was ingested additively (status OFF); colliers brokerage total 17,001 active.
 - Do not ingest NAI Global's unbounded Infabode feed as active inventory. Use only rows whose public `publicPost.listingStatus` contains `FOR_SALE_ON_MARKET`. The 2026-06-12 active artifact `out/nai_active_only_from_full_2026-06-12_044310.json` was live-ingested with source-scoped `--mark-missing`; 19 old rendered-card probe rows were soft-deleted.
 - Transwestern is now current in Supabase from `out/transwestern_full_2026-06-12_121302_cleaned.json`: 2,021 active rows, 3,054 document URL rows, 4,838 image URL rows, 3,746 contact/profile/VCard URL rows, and 0 bad descriptions or bad asset URLs. The live DB needed the existing `sql/001_cre_brokerages.sql` Transwestern seed inserted before ingest.
 - Marcus & Millichap is now current in Supabase from `out/marcus_full_2026-06-12_130035.json`: 3,124 active public sale rows, 16,771 image URL rows, 7,915 contact/profile URL rows, 0 document rows, and 0 final detail errors. Gated deal-room URLs stay in raw metadata only. Public lease remains unsupported.
@@ -213,10 +236,13 @@ images into Supabase storage for the bulk collector.
   filter fix. The full detail run used `AVISON_YOUNG_DETAIL_LIMIT=2200` and was
   live-ingested additively without `--mark-missing`. VCards remain absent from
   the public path, and broker profile URLs are sparse.
-- Savills commercial lease path is live-ingested additively from
-  `out/savills_lease_public_2026-06-12_live_candidate.json`: 3 U.S. retail
-  lease rows live (updated from the original 2-row ingest artifact), 4 PDF URL rows,
-  24 image URL rows, and 0 skipped missing URLs. Savills sale remains not CRE-defensible.
+- Savills sale is STRUCTURALLY CAPPED, not completable: the public U.S. sale
+  surface serves Savills Residential luxury homes only (no public commercial-sale
+  JSON / `__NEXT_DATA__` feed). On 2026-06-14 the 101 mis-categorized residential
+  "sale" rows and 1 non-U.S. ghost lease row (`cyelit10899`) were soft-deleted,
+  leaving 2 defensible Chicago retail lease rows. Treat current coverage as the
+  permanent Savills baseline. One un-probed path before ruling out commercial
+  sale entirely: `/com/en/list/commercial/property-for-sale/united-states-of-america`.
 - `cre_ingest.py` now drops non-HTTP contact profile/avatar/VCard URLs and
   non-HTTP document URLs. Reingesting the complete Lee and SVN artifacts
   refreshed child rows and reduced active bad contact avatar URLs from 37 to 0.

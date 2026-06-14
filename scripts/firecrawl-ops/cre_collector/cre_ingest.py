@@ -812,6 +812,43 @@ def _flip_circuit_breaker():
     return frac, max(1, min_base)
 
 
+def _status_activation_enabled(cli_flag=False):
+    """Phase-2 source-derived status activation is OPT-IN (default OFF).
+
+    Writing a real sold / under_contract / pending / leased / off_market signal
+    onto cre_listings.status is the board-coupled Phase-2 feature. It must not
+    run until the EQUIRE consumer board-gate (Option B) and the widened 005
+    views are live, or non-active rows silently drop off an 'active'-only board
+    (cre-phase2-board-impact-2026-06-13.md). Default OFF so routine and
+    scheduled ingests refresh listing data (prices, children, dedup, resurrect,
+    new inventory) without ever flipping board state. Enable deliberately with
+    --activate-status or CRE_ACTIVATE_STATUS=1 once the consumer layer ships.
+    """
+    if cli_flag:
+        return True
+    return os.environ.get("CRE_ACTIVATE_STATUS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def apply_status_activation_gate(rows, activate_status):
+    """Suppress source-derived status unless activation is explicitly enabled.
+
+    When OFF (default), strip the staged status so the upsert inserts
+    COALESCE(NULL,'active') -> 'active' for new rows and the targeted activation
+    UPDATE is a no-op (its ``s.status IS NOT NULL`` filter matches nothing), so
+    no existing row is flipped to a non-active status. Returns the number of
+    rows whose non-null status signal was suppressed (observability). When ON,
+    rows are left untouched and normal Phase-2 activation runs.
+    """
+    if activate_status:
+        return 0
+    suppressed = 0
+    for r in rows:
+        if r.get("status") is not None:
+            r["status"] = None
+            suppressed += 1
+    return suppressed
+
+
 def build_sql(rows, job_meta, started_at, mark_missing_slugs):
     lines = []
     w = lines.append
@@ -1144,6 +1181,11 @@ def main():
                          "applies only to brokerages whose every source pass ran error-free "
                          "and staged >= --mark-missing-floor rows")
     ap.add_argument("--mark-missing-floor", type=int, default=100)
+    ap.add_argument("--activate-status", action="store_true",
+                    help="enable Phase-2 source-derived status activation "
+                         "(default OFF; also via CRE_ACTIVATE_STATUS=1). Only use once "
+                         "the EQUIRE consumer board-gate is deployed, or non-active rows "
+                         "silently drop off the 'active'-only board")
     ap.add_argument("--keep-artifacts", default=None, help="dir to keep the generated SQL in")
     args = ap.parse_args()
 
@@ -1180,6 +1222,20 @@ def main():
     for r in rows:
         r.pop("_modes", None)
     started_at = started_at or datetime.now(timezone.utc).isoformat()
+
+    # Phase-2 status activation is opt-in (default OFF). With it off, suppress
+    # source-derived statuses so this ingest refreshes listing data without
+    # flipping board state (no non-active row reaches the 'active'-only board).
+    activate_status = _status_activation_enabled(args.activate_status)
+    suppressed = apply_status_activation_gate(rows, activate_status)
+    if activate_status:
+        print("status activation: ENABLED (Phase-2 source statuses will be written)", file=sys.stderr)
+    else:
+        print(
+            f"status activation: OFF (default) -- suppressed {suppressed} source status "
+            "signal(s); rows stay 'active'. Enable with --activate-status / CRE_ACTIVATE_STATUS=1.",
+            file=sys.stderr,
+        )
 
     # Per-brokerage job stats + mark-missing eligibility.
     slug_stats = {}

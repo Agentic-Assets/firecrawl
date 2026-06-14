@@ -6,9 +6,10 @@
   Runs cre_run_tier.sh monitor, which is guarded: if cre_monitor.py does not
   yet exist the script exits cleanly with a "not yet implemented" message.
 
-  NOTE: DO NOT load this plist until the monitor runner is proven on at least
-  one Tier-1 source (design-doc section 10 Phase 3 and section 14.4 step 3).
-  See launchd/README.md for gated install instructions.
+  STATUS 2026-06-14: AUTHORIZED and loaded. Monitor runner proven on the
+  all-source observe-only seed; CRE_MONITOR_APPLY=1 enables change-event
+  recording (007 tables only; never cre_listings.status/deleted_at).
+  See launchd/README.md for install/unload instructions.
 -->
 <plist version="1.0">
 <dict>
@@ -94,6 +95,12 @@
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin</string>
+        <!-- Authorized 2026-06-14: enable observe-only change-event recording.
+             cre_monitor.py --apply writes ONLY the 007 tables (events / source_index /
+             enrichment_queue) and neutral source_lastmod / canonical_key; it never
+             writes cre_listings.status or deleted_at. -->
+        <key>CRE_MONITOR_APPLY</key>
+        <string>1</string>
     </dict>
 </dict>
 </plist>

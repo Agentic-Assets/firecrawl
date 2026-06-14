@@ -115,6 +115,13 @@ Key behavior:
   and wholesale-replaces contacts/documents/images **unless**
   `jsonb_path_exists(raw_data, '$.**.detailError')` (preserves children on
   transient detail failures).
+- **Status activation is OPT-IN and default-OFF.** Source-derived statuses are
+  suppressed unless `--activate-status` is passed on the CLI or
+  `CRE_ACTIVATE_STATUS=1` is set in the environment. New helpers:
+  `_status_activation_enabled()` and `apply_status_activation_gate()`. When off,
+  the upsert inserts `COALESCE->'active'` and the activation UPDATE is a no-op.
+  Do NOT assume status activation fires on the next daily/manual full ingest;
+  it requires the explicit flag plus consumer-side gate deploy first.
 - `--mark-missing`: soft-deletes unseen rows (`status='inactive'`,
   `deleted_at=now()`). Per brokerage, only when every source pass for that
   brokerage ran error-free, staged `>= --mark-missing-floor` (default 100), and
@@ -148,8 +155,14 @@ or view privileges. Consumer API details: `cre-equire-consumer-api.md`.
 - Per-source monitor behavior (excluded sources, supersets, detail skips):
   `sources/CLAUDE.md` + `cre-monitor-subsystem.md`.
 - Scheduled monitor tier uses default `--page-cap=60` unless overridden; see
-  `launchd/CLAUDE.md`. `--apply`, launchd load, and gate wiring into daily are
-  gated for explicit go-ahead (`cre_gate.py` is not in `cre_daily_update.sh` yet).
+  `launchd/CLAUDE.md`. Monitor (`ai.agentic.cre-monitor`, every 3h at :15,
+  `CRE_MONITOR_APPLY=1`) and daily (`ai.agentic.cre-daily`, 06:30 daily,
+  `--no-mark-missing`, status activation OFF) launchd tiers are LOADED as of
+  2026-06-14. Weekly reconcile tier (`ai.agentic.cre-weekly`) is intentionally
+  NOT loaded (held for explicit go-ahead). `cre_gate.py` is now wired into
+  `cre_daily_update.sh` as observe-only step [3/4] (`--in RUN --apply --strict
+  --out gate.json`); if the strict gate detects any partial/regressed source,
+  the script auto-downgrades to `--no-mark-missing`.
 
 ## Daily updates
 
@@ -160,7 +173,10 @@ use `bash cre_daily_update.sh --no-mark-missing` while partial sources remain
 (colliers-main full run, Savills). See `START_HERE.md` Known Limits.
 
 Tiered schedules (monitor / daily additive / weekly reconcile):
-`launchd/CLAUDE.md`. Do not `launchctl load` until that tier's README gates pass.
+`launchd/CLAUDE.md`. Monitor and daily tiers are loaded (2026-06-14). Weekly
+reconcile tier is intentionally NOT loaded; do not `launchctl load` it until
+explicit go-ahead. Step [3/4] of the daily script now runs `cre_gate.py`
+observe-only; see Monitor mode section above.
 
 ## Adding a source
 

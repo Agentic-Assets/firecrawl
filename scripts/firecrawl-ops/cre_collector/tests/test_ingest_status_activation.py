@@ -14,13 +14,24 @@ to_row() + build_sql():
     sticky on update (resetting only resurrected rows to 'active'), and runs a
     separate targeted UPDATE that only ever upgrades a row to a real signal
     (Choice a COALESCE: a no-signal pass can never downgrade).
+  - status activation is OPT-IN: apply_status_activation_gate() suppresses the
+    source-derived status (default OFF) so an ingest refreshes listing data
+    without flipping board state; _status_activation_enabled() reads
+    --activate-status / CRE_ACTIVATE_STATUS.
 
 Pure transform, no network / DB. Design: cre-phase2-board-impact-2026-06-13.md.
 """
 
 from datetime import datetime, timezone
 
-from cre_ingest import _flip_circuit_breaker, build_sql, merge_rows, to_row
+from cre_ingest import (
+    _flip_circuit_breaker,
+    _status_activation_enabled,
+    apply_status_activation_gate,
+    build_sql,
+    merge_rows,
+    to_row,
+)
 
 _SCRAPED_AT = datetime(2026, 6, 13, 0, 0, 0, tzinfo=timezone.utc).isoformat()
 
@@ -177,3 +188,58 @@ def test_flip_breaker_sets_guc_when_enabled(monkeypatch):
     sql = _sql()
     assert "SET LOCAL cre.flip_max_fraction = '0.5';" in sql
     assert "SET LOCAL cre.flip_min_base = '200';" in sql
+
+
+# --- status activation opt-in gate (default OFF; board-state safety) ----------
+
+def test_status_activation_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("CRE_ACTIVATE_STATUS", raising=False)
+    assert _status_activation_enabled() is False
+    assert _status_activation_enabled(cli_flag=False) is False
+
+
+def test_status_activation_enabled_by_cli_flag():
+    assert _status_activation_enabled(cli_flag=True) is True
+
+
+def test_status_activation_enabled_by_env(monkeypatch):
+    for val in ("1", "true", "TRUE", "yes", "on"):
+        monkeypatch.setenv("CRE_ACTIVATE_STATUS", val)
+        assert _status_activation_enabled() is True
+
+
+def test_status_activation_env_off_values(monkeypatch):
+    for val in ("0", "false", "no", "off", ""):
+        monkeypatch.setenv("CRE_ACTIVATE_STATUS", val)
+        assert _status_activation_enabled() is False
+
+
+def test_gate_suppresses_status_when_disabled():
+    rows = [
+        _row(_cushman("Under Contract", _id="1", url="https://www.cushmanwakefield.com/p/1")),
+        _row(_cushman("Sold", _id="2", url="https://www.cushmanwakefield.com/p/2")),
+    ]
+    assert [r["status"] for r in rows] == ["under_contract", "sold"]
+    suppressed = apply_status_activation_gate(rows, activate_status=False)
+    assert suppressed == 2
+    assert all(r["status"] is None for r in rows)
+
+
+def test_gate_preserves_status_when_enabled():
+    rows = [_row(_cushman("Under Contract"))]
+    suppressed = apply_status_activation_gate(rows, activate_status=True)
+    assert suppressed == 0
+    assert rows[0]["status"] == "under_contract"
+
+
+def test_gate_no_signal_rows_untouched_when_disabled():
+    rows = [_row({
+        "sourceKey": "cbre",
+        "url": "https://www.cbre.com/p/abc",
+        "id": "K1",
+        "transactionMode": "sale",
+    })]
+    assert rows[0]["status"] is None
+    suppressed = apply_status_activation_gate(rows, activate_status=False)
+    assert suppressed == 0
+    assert rows[0]["status"] is None

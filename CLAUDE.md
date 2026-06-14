@@ -101,10 +101,11 @@ EQUIRE. See each subdirectory's `CLAUDE.md` for module detail.
 Key components:
 - `scripts/firecrawl-ops/cre_collector/` — production collector + ingestor:
   `collect.ts` (CLI entry, 15 sources), `types.ts`, `lib/`, `sources/<broker>.ts`,
-  `cre_ingest.py` (full artifact upsert via psql), `cre_monitor.py` and
-  `cre_gate.py` (observe-only 007 change tracking), `cre_daily_update.sh`
-  (daily refresh; use `--no-mark-missing` while `colliers-main` is mid-run or
-  Savills sale stays partial)
+  `cre_ingest.py` (full artifact upsert via psql; status activation OPT-IN
+  default-off via `--activate-status`/`CRE_ACTIVATE_STATUS=1`), `cre_monitor.py`
+  and `cre_gate.py` (observe-only 007 change tracking; gate wired into daily
+  script as step [3/4]), `cre_daily_update.sh` (daily refresh; use
+  `--no-mark-missing` while Savills sale is structurally capped)
 - `scripts/firecrawl-ops/cre_scrapers/` — legacy Python package for source
   experiments and detail enrichment. Not the daily bulk path.
 - `scripts/firecrawl-ops/sql/` — Supabase migrations for `cre_*` tables
@@ -123,7 +124,7 @@ Canonical entrypoints (live counts and per-source status only in `START_HERE.md`
 - `scripts/firecrawl-ops/cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` —
   monitor hardening, modular refactor, first `--apply` seed
 - `scripts/firecrawl-ops/cre_collector/HANDOFF_COLLIERS_MAIN_2026-06-13.md` —
-  in-flight colliers-main full detail run
+  colliers-main full detail run (COMPLETE as of 2026-06-14; 15,829 active rows)
 
 ### Monitor tracks (2026-06-13)
 
@@ -142,17 +143,35 @@ enumeration; Phase-2 status activation WIRED + hardened in `cre_ingest.py`
 `status IN ('active','under_contract','pending')` on this branch (apply gated,
 verified read-only as a zero-row no-op today). Gate-0 prod status CHECK verified.
 
-**Track 2 (still gated for go-ahead):** deploy the consumer board-gate branch
-(must precede live T3.1 activation), trigger the first live status activation,
-launchd schedules, `cre_gate.py` wiring into the daily script, and applying the
-widened `005` views (live DDL, alongside the consumer deploy). See the phase2
-board-impact doc's activation runbook. Tier-B `cre_enrichment_queue` worker
-remains deferred.
+**Track 2 (additionally shipped 2026-06-14):** colliers-main full run COMPLETE
+and ingested additively (status activation OFF); colliers brokerage total 17,001
+active (15,829 main-site rows: 5,750 sale + 8,897 lease + 1,182 sale_or_lease,
+0 soft-deleted, 0 duplicate external_ids); live board total 87,328 active (0
+non-active, 0 NULL status). Status activation changed to OPT-IN default-off
+(requires `--activate-status` or `CRE_ACTIVATE_STATUS=1`; new helpers
+`_status_activation_enabled()` and `apply_status_activation_gate()`). 261 pytest
+pass. `cre_gate.py` wired into `cre_daily_update.sh` as observe-only step [3/4]
+with auto-downgrade fail-safe. Monitor (`ai.agentic.cre-monitor`, every 3h at
+:15, `CRE_MONITOR_APPLY=1`) and daily (`ai.agentic.cre-daily`, 06:30 daily,
+`--no-mark-missing`, status activation OFF) launchd tiers LOADED. Weekly
+reconcile tier NOT loaded (held for explicit go-ahead). Live DB hardening applied
+(cap_rate/occupancy_rate CHECKs, FK ON DELETE SET NULL, NULLS NOT DISTINCT
+indexes, security_invoker reasserted; no board change). Data-quality cleanups:
+50 JLL board-invisible rows set inactive, transwestern config restored, Savills
+residential contamination removed (101 mis-categorized sale + 1 ghost lease
+soft-deleted; 2 defensible Chicago retail lease rows remain). Savills sale is
+structurally capped (no public US commercial-sale feed).
+
+**Still gated for go-ahead:** deploy the consumer board-gate branch (must
+precede live T3.1 activation), trigger the first live status activation, and
+apply the widened `005` views (live DDL, alongside the consumer deploy). See the
+phase2 board-impact doc's activation runbook. Tier-B `cre_enrichment_queue`
+worker remains deferred.
 
 ### Next steps (CRE)
 
 Canonical plan: section 14 of `cre-intelligence-system-design.md`. Live run
-status (colliers-main full run, monitor rollout order) lives in
+status (monitor rollout order, next open items) lives in
 `cre_collector/START_HERE.md` and dated `HANDOFF_*` docs; do not restate here.
 
 CBRE has an internal JSON API (`/listings-api/propertylistings/query`). Route

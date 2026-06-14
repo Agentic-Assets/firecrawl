@@ -99,8 +99,8 @@ python3 cre_ingest.py --in /tmp/probe.json --dry-run
 bash cre_daily_update.sh --no-mark-missing
 ```
 
-Use `--mark-missing` only after a clean all-source full run. While
-`colliers-main` is mid-run or Savills sale stays partial, keep daily ingest
+Use `--mark-missing` only after a clean all-source full run and explicit
+go-ahead. While Savills sale is structurally capped, keep daily ingest
 additive with `--no-mark-missing`.
 
 Change tracking (007 tables) runs through a separate observe-only path:
@@ -137,7 +137,7 @@ Supabase objects live under `credeals`, not `public`:
 Document and image tables store source URLs only. Do not download public PDFs
 or images into Supabase storage for the bulk collector.
 
-## Monitor rollout (2026-06-13)
+## Monitor rollout (2026-06-13/14)
 
 Track 1 shipped: monitor hardening, `collect.ts` modular split, coverage gate
 triple-gating, four detail-id monitor exclusions. First gated `cre_monitor.py
@@ -150,11 +150,35 @@ default-off `CRE_STATUS_FLIP_MAX_FRACTION` breaker); EQUIRE board-gate widening
 (Option B) committed on `dynamically-display-cre-listing-data`; the agent-facing
 `005` views widened to the on-market set (`active`/`under_contract`/`pending`)
 on the collector branch (apply gated, verified a zero-row no-op today).
-Track 2 still gated: deploy the consumer branch (before live activation),
-trigger first live status activation, launchd, `cre_gate.py` wiring into the
-daily script, applying the widened `005` views (live DDL). See
-`cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` and the phase2
-board-impact doc's activation runbook.
+Gate-0 prod status CHECK verified.
+Track 2 additionally shipped 2026-06-14: colliers-main full run COMPLETE and
+ingested additively (status activation OFF); colliers brokerage total now 17,001
+active (15,829 from main: 5,750 sale + 8,897 lease + 1,182 sale_or_lease, 0
+soft-deleted, 0 duplicate external_ids); live board total now 87,328 active.
+Status activation is now OPT-IN default-off in `cre_ingest.py` (requires
+`--activate-status` flag or `CRE_ACTIVATE_STATUS=1`; new helpers
+`_status_activation_enabled()` and `apply_status_activation_gate()`).
+`cre_gate.py` wired into `cre_daily_update.sh` as observe-only step [3/4]
+(`--in RUN --apply --strict --out gate.json`), with auto-downgrade to
+`--no-mark-missing` if the strict gate detects any partial/regressed source.
+Monitor and daily launchd tiers loaded: `ai.agentic.cre-monitor` (every 3h
+at :15, `CRE_MONITOR_APPLY=1`; records 007 change events, never touches
+`status`/`deleted_at`) and `ai.agentic.cre-daily` (06:30 daily, runs
+`cre_daily_update.sh --no-mark-missing`, status activation OFF). Weekly
+reconcile tier (`ai.agentic.cre-weekly`) intentionally NOT loaded (held for
+explicit go-ahead). Live DB hardening applied (cap_rate/occupancy_rate CHECKs,
+4 FK ON DELETE SET NULL, 2 NULLS NOT DISTINCT unique indexes,
+`v_cre_listings_full` security_invoker reasserted; no board change).
+Data-quality cleanups applied: 50 board-invisible JLL rows corrected to
+`status='inactive'`; transwestern scrape_config notes restored; Savills
+residential contamination removed (101 mis-categorized sale rows + 1 ghost
+lease soft-deleted), leaving 2 defensible Chicago retail lease rows. Savills
+sale is structurally capped with no public US commercial-sale feed.
+Still gated for go-ahead: deploy the consumer board-gate branch (must precede
+live T3.1 activation), trigger first live status activation, apply the widened
+`005` views (live DDL, alongside the consumer deploy). See the phase2
+board-impact doc's activation runbook. Tier-B `cre_enrichment_queue` worker
+remains deferred.
 
 | Module | Role |
 |---|---|
@@ -177,11 +201,11 @@ Durable cautions:
 
 - Colliers has two folded sources under the `colliers` brokerage: `colliers`
   (SalesTracker investment-sale subset) and `colliers-main` (full public site
-  via XML sitemap, `main:` ids). The main-site full run is still in progress;
-  see `cre_collector/HANDOFF_COLLIERS_MAIN_2026-06-13.md`.
+  via XML sitemap, `main:` ids). The main-site full run is COMPLETE as of
+  2026-06-14 (15,829 active rows ingested additively; colliers total 17,001).
 - Keep daily ingest additive (`cre_daily_update.sh --no-mark-missing`) while
-  `colliers-main` is mid-run and Savills sale stays partial. Use the default
-  `--mark-missing` only after a clean all-source run.
+  Savills sale remains structurally capped (no public US commercial-sale feed).
+  Use `--mark-missing` only after a clean all-source run and explicit go-ahead.
 
 ## Local Firecrawl Ops
 

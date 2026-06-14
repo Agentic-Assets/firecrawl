@@ -43,14 +43,14 @@ for arg in "$@"; do
   [ "$arg" = "--no-mark-missing" ] && MARK_MISSING=""
 done
 
-echo "[1/3] healthcheck" | tee -a "$LOG"
+echo "[1/4] healthcheck" | tee -a "$LOG"
 FC_DIR="${FC_DIR:-$DIR/../../..}"
 bash "$FC_DIR/scripts/firecrawl-ops/firecrawl_healthcheck.sh" >>"$LOG" 2>&1 || {
   echo "local Firecrawl stack unhealthy; aborting (see $LOG)" | tee -a "$LOG"
   exit 1
 }
 
-echo "[2/3] collect: sources=$SOURCES (sale+lease, unlimited)" | tee -a "$LOG"
+echo "[2/4] collect: sources=$SOURCES (sale+lease, unlimited)" | tee -a "$LOG"
 npx tsx collect.ts \
   --source="$SOURCES" \
   --transaction=both \
@@ -59,13 +59,31 @@ npx tsx collect.ts \
   --concurrency="$CONCURRENCY" \
   --out="$RUN_JSON" >>"$LOG" 2>&1
 
-echo "[3/3] ingest -> credeals" | tee -a "$LOG"
+echo "[3/4] coverage gate (observe-only; advisory mark-missing fail-safe)" | tee -a "$LOG"
+GATE_JSON="$OUT_DIR/gate_$STAMP.json"
+# Observe-only: --apply reads cre_source_baseline (no --update-baseline => no DB
+# writes); --strict exits nonzero if any source's coverage is a 'hold' (partial
+# or regressed enumeration). When mark-missing is requested, a hold downgrades
+# this run to additive so a gappy pass can never soft-delete live listings.
+# cre_ingest.py keeps its own folded-coverage + floor guard as a second layer.
+GATE_RC=0
+python3 cre_gate.py --in "$RUN_JSON" --apply --strict --out "$GATE_JSON" >>"$LOG" 2>&1 || GATE_RC=$?
+if [ -n "$MARK_MISSING" ] && [ "$GATE_RC" -ne 0 ]; then
+  echo "  coverage gate held (rc=$GATE_RC); downgrading to --no-mark-missing this run" | tee -a "$LOG"
+  MARK_MISSING=""
+fi
+
+echo "[4/4] ingest -> credeals" | tee -a "$LOG"
 # shellcheck disable=SC2086
+# Status activation stays OFF here (cre_ingest.py default). The daily refresh
+# updates listing data without flipping board state; activate deliberately with
+# CRE_ACTIVATE_STATUS=1 only after the EQUIRE consumer board-gate is deployed.
 python3 cre_ingest.py --in "$RUN_JSON" $MARK_MISSING >>"$LOG" 2>&1
 
 # Keep the last 14 daily artifacts; raw runs are large.
 ls -t "$OUT_DIR"/run_*.json 2>/dev/null | tail -n +15 | xargs rm -f 2>/dev/null || true
 ls -t "$OUT_DIR"/run_*.log 2>/dev/null | tail -n +30 | xargs rm -f 2>/dev/null || true
+ls -t "$OUT_DIR"/gate_*.json 2>/dev/null | tail -n +15 | xargs rm -f 2>/dev/null || true
 
 echo "daily update complete: $RUN_JSON" | tee -a "$LOG"
 tail -12 "$LOG" | grep -A 12 "cre_listings after ingest" || true
