@@ -1,9 +1,17 @@
 # CRE Monitor Subsystem (change-tracking layer)
 
-Status as of 2026-06-13: built and adversarially reviewed
-(`approve_for_gated_live_use`). Schema applied to prod. The first live `--apply`
-run, the launchd schedule, and the gate wiring into the daily script are still
-gated for explicit go-ahead. Phase-2 status activation is a separate path (see
+Status as of 2026-06-13: built, hardened, and adversarially reviewed. Schema
+applied to prod. The first gated `--apply` seed has run on one source
+(`avison-young`): `cre_source_baseline` and `cre_source_index` seeded, zero
+events / queue / soft-deletes, board unchanged. See
+`../../../scripts/firecrawl-ops/cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md`.
+Since the original build: monitor exclusions are now four (`jll`, `jll-investor`,
+`cbre-dealflow`, `colliers`); the coverage gate also refuses disappearance on
+errored or truncated passes (non-overridable by `--force-disappear`); and
+`collect.ts` is split into `types.ts` / `lib/` / `sources/<broker>.ts` modules.
+Still gated for explicit go-ahead: scaling the seed to the remaining
+monitor-enabled sources, the launchd schedule, the gate wiring into the daily
+script, and Phase-2 status activation (separate path, see
 `cre-phase2-board-impact-2026-06-13.md`).
 
 This is the additive change-tracking layer that sits on top of the existing
@@ -92,8 +100,8 @@ the hard gotchas a new session needs before running anything.
    re-enumerated at least `DISAPPEAR_COVERAGE_FRACTION` (0.7) of its prior live
    index population. `--force-disappear` bypasses the coverage fraction but NOT
    `run_source_keys` membership. Additionally, the coverage gate refuses
-   disappearance for any source whose enumeration pass reported an error this
-   run; that error gate is NOT overridable by `--force-disappear`.
+   disappearance for any source whose enumeration pass reported an error or
+   `truncated` this run; that gate is NOT overridable by `--force-disappear`.
 
 6. **Monitor emits supersets for `nai-global` and `colliers-main`.** Monitor
    skips detail-dependent filters (NAI `FOR_SALE_ON_MARKET`, colliers-main

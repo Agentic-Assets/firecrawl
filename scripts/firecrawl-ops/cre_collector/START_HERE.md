@@ -1,8 +1,17 @@
 # CRE Collector Start Here
 
 Last updated: 2026-06-13. Change-tracking / monitor layer (migration 007 +
-`cre_monitor.py` + `cre_gate.py` + `collect.ts --monitor`) built and
-adversarially reviewed; see `docs/firecrawl-ops/references/cre-monitor-subsystem.md`.
+`cre_monitor.py` + `cre_gate.py` + `collect.ts --monitor`) built, hardened, and
+adversarially reviewed. 2026-06-13 session: `collect.ts` split into cohesive
+modules (`types.ts`, `lib/`, `sources/<broker>.ts`; `collect.ts` stays the CLI
+entry); monitor exclusions expanded to four (`jll`, `jll-investor`,
+`cbre-dealflow`, `colliers`) for detail-derived ids; the coverage gate now
+refuses disappearance on errored or truncated passes; 237 tests pass; committed
+at `8d38e9cac`. The first gated `cre_monitor.py --apply` seed ran on
+`avison-young` (seeded `cre_source_baseline`=1 and `cre_source_index`=2199, zero
+events/queue/soft-deletes, board unchanged at 72,544). See
+`HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` and
+`docs/firecrawl-ops/references/cre-monitor-subsystem.md`.
 Prior listing-ingest evidence (2026-06-12 local time), from run finished at `2026-06-12T04:31:24.562Z`, validation on 2026-06-12, CBRE Deal Flow plus Colliers SalesTracker full ingests, NAI active-status-filtered ingest, Cushman full live ingest, Transwestern full live ingest, Marcus & Millichap full public sale ingest, and Lee & Associates full Buildout ingest on 2026-06-12. JLL Investor full sitemap detail ingest finished 2026-06-12 22:47 UTC (934 U.S. sale rows live); 50 stale early-probe rows soft-deleted 2026-06-12 ~23:25 UTC after user approval. Avison Young full detail-enriched ingest finished 2026-06-13 00:35 UTC and was live-ingested additively with 2,201 active rows.
 
 This directory is the production daily path for public commercial real estate listing inventory feeding EQUIRE. Use it for sale and lease listings. The older `../cre_scrapers/` Python package is legacy support for source probes and detail-page enrichment.
@@ -48,28 +57,41 @@ are open:
    When it converges, ingest `out/colliers_main_full_2026-06-13.json`
    additively (`--no-mark-missing`) and validate. Do not claim complete
    main-site coverage until then. See `HANDOFF_COLLIERS_MAIN_2026-06-13.md`.
-2. **Built: change-tracking / monitor layer (007, observe-only).** Per section
-   14.4, complete and adversarially reviewed (`approve_for_gated_live_use`):
+2. **Change-tracking / monitor layer (007, observe-only) - hardened, first
+   seed live.** Per section 14.4, complete and adversarially reviewed:
    - Migration 007 applied to prod (`cre_source_index`, `cre_listing_events`,
      `cre_enrichment_queue`, `cre_source_baseline`) plus the 002/004/005 ALTERs
      (widened status CHECK; neutral `source_lastmod`/`canonical_key` columns;
      `v_cre_recent_changes`). Registered in `../sql/000_run_all.sql`.
-   - `collect.ts --monitor`: cheap enumeration-only pass across all 15 sources
-     (skips detail render). `jll` and `jll-investor` deliberately emit 0 monitor
-     rows because their persisted `external_id` is detail-derived (numeric JLL
-     `property.id` / Salesforce `listing.id`) and cannot be matched from the
-     cheap enumeration (verified 11,230/11,230 and 934/934 slug mismatch), so
-     they stay on the full-sweep cadence. The capture wins (jll-investor
-     `<lastmod>`, cbre `Common.Created`) landed.
-   - `cre_monitor.py` (diff/event/snapshot runner) and `cre_gate.py` (coverage
-     gate) built and tested (`python3 -m pytest tests/`, 222 passing). Both are
-     observe-only: neither writes `cre_listings.status` or `deleted_at`.
+   - `collect.ts --monitor`: cheap enumeration-only pass. Four sources emit 0
+     monitor rows because their persisted `external_id` is detail-derived and
+     unrecoverable from cheap enumeration, so they stay on the full-sweep
+     cadence: `jll` (numeric `property.id`), `jll-investor` (Salesforce
+     `listing.id`), `cbre-dealflow` (`data.projectid` vs URL `listingPv`,
+     ~78% mismatch), and `colliers` SalesTracker (SLP `ProjectId` vs
+     index-paired map id, ~45% mismatch). `colliers-main` (sitemap `usa#####`)
+     stays monitor-enabled. A 0-row monitor run writes an empty artifact instead
+     of throwing.
+   - `cre_monitor.py` + `cre_gate.py`: observe-only (never write
+     `cre_listings.status`/`deleted_at`). Disappearance is triple-gated: the 0.7
+     coverage fraction, `run_source_keys` membership, and a refusal for any
+     source whose pass errored OR truncated this run (the last is not overridable
+     by `--force-disappear`). `python3 -m pytest tests/`: 237 passing.
+   - `collect.ts` is now modular (`types.ts`, `lib/`, `sources/<broker>.ts`);
+     `collect.ts` stays the unchanged CLI entry. `npm run typecheck` clean.
    - Full operational rules and gotchas:
      `docs/firecrawl-ops/references/cre-monitor-subsystem.md`.
 
-   GATED for explicit go-ahead: the first live `cre_monitor.py --apply` run, the
-   tiered launchd schedules (section 9), and wiring `cre_gate.py` into
-   `cre_daily_update.sh`.
+   DONE 2026-06-13 (gated, verified): first `cre_gate.py --apply
+   --update-baseline` then `cre_monitor.py --apply` seed on `avison-young`
+   (`cre_source_baseline`=1, `cre_source_index`=2199, 0 events / 0 queue /
+   0 soft-deletes, board unchanged at 72,544). See
+   `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md`.
+
+   STILL GATED for explicit go-ahead: scaling the seed to the other ~10
+   monitor-enabled sources (a full `--monitor` collect + apply), the tiered
+   launchd schedules (section 9), wiring `cre_gate.py` into `cre_daily_update.sh`,
+   and Phase-2 status activation.
 
 The EQUIRE-facing view-gate / status activation (sections 12.4, Phase-2) stays
 pending CRE_EQUIRE coordination and is NOT part of the additive build. Board
@@ -110,6 +132,7 @@ Read these in order:
 8. `docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md` (reusable per-source completion process)
 9. `docs/firecrawl-ops/references/cre-monitor-subsystem.md` (monitor/change-tracking layer: components, run model, hard gotchas) when touching 007, `--monitor`, `cre_monitor.py`, or `cre_gate.py`
 10. `HANDOFF_COLLIERS_MAIN_2026-06-13.md` (active handoff: colliers-main full run in progress)
+11. `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` (monitor hardening + collect.ts modular refactor + first gated `--apply` seed) when touching the monitor layer or scaling the seed
 
 Historical buildout/validation detail (handoff log, lessons, validation
 snapshots, egress and security audits) lives in `archive/`; see

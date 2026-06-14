@@ -23,6 +23,14 @@ Last reviewed against code: 2026-06-13.
 > `BROKERAGE_STATUS_2026-06-12.md`; the board-impact decision ->
 > `cre-phase2-board-impact-2026-06-13.md`. Inline code line numbers below are
 > approximate; re-verify against current source.
+>
+> **Update 2026-06-13.** The first gated `cre_monitor.py --apply` seed has run on
+> one source (`avison-young`): `cre_source_baseline` and `cre_source_index` seeded,
+> zero events / queue / soft-deletes, board unchanged. Monitor exclusions are now
+> four (added `cbre-dealflow` and `colliers` for detail-derived ids); the coverage
+> gate also refuses disappearance on errored or truncated passes; and `collect.ts`
+> is split into `types.ts` / `lib/` / `sources/<broker>.ts` modules. Details:
+> `../../../scripts/firecrawl-ops/cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md`.
 
 ## 1. Purpose and goals
 
@@ -37,7 +45,7 @@ The current system does (1) well (about 72,500 active rows from 15 source adapte
 ## 2. What already exists (verified) vs what must be built
 
 ### Already exists and is reused as-is
-- collect.ts: 15 source adapters dispatched by a 15-case `runSource` switch (lines 5400-5469), each returning the shared `SourceResult` contract (342-349) and the flat listing field vocabulary (336-340). Shared primitives: `scrapeRaw`/`scrapeDoc`/`scrapeJson` with retry and JSON repair, `pmap` bounded concurrency, `brokerRef` global dedup, two sitemap parsers (`extractSitemapLocs`, `extractSitemapUrlEntries` returning {loc, lastmod} at 4627-4638), `colliersMainIsChallenge` (4585), durable JSONL detail cache, and the bounded-fetch resume pattern (4944-5040).
+- Collector layout: `collect.ts` (~248-line CLI) + `types.ts` + `lib/{config,scrape,util,broker,html}.ts` + `sources/<broker>.ts`. Fifteen source adapters register in `collect.ts` (`SOURCE_KEYS`, `runSource`); each exports `src*(tx, max, monitor)` returning the shared `SourceResult` contract from `types.ts`. Shared primitives live in `lib/`: `scrapeRaw`/`scrapeDoc`/`scrapeJson` with retry and JSON repair, `pmap` bounded concurrency, `brokerRef` global dedup, sitemap parsers (`extractSitemapLocs`, `extractSitemapUrlEntries`), durable JSONL detail caches, and bounded-fetch resume patterns in the per-source modules. Per-source file map and monitor matrix: `scripts/firecrawl-ops/cre_collector/sources/CLAUDE.md`.
 - cre_ingest.py: COPY-to-staging then single-statement CTE upsert keyed on (brokerage_id, external_id), with prefixed id folding (`dealflow:`, `investor:`, `main:`) and per-brokerage mark-missing eligibility (797-812). `raw_data = listing` (437) so every source payload, including source status fields, is already persisted.
 - SQL schema sql/001-006: `cre_listings` with a status CHECK allowing six values (002:27-28), child tables, `cre_scrape_jobs`/`cre_scrape_log` (003), GIN index on raw_data (004), four EQUIRE views plus `search_cre_listings()` all gating on `status = 'active' AND deleted_at IS NULL` (005:73,108-109,145-146,174-175,237-238), and the BEFORE UPDATE `updated_at` trigger (005:279-283).
 - Ops: cre_daily_update.sh (healthcheck, full collect at page-cap 400 concurrency 3 in about 27 minutes, ingest, prune), run_colliers_main_full.sh (bounded-chunk resumable driver with convergence detection), cre_validate.py (read-only 8-query quality reporter), and the launchd plist template.
@@ -91,8 +99,8 @@ The single most important invariant: the monitor index, the ingest dedup key, an
 
 ## 4. Subsystem 1: reusable acquisition
 
-### Decision: do NOT rewrite collect.ts into a framework first
-The adversarial review is correct that a 5,558-line to 25-module refactor delivers only ergonomics (adding source 16 is four touchpoints instead of two lists) and is sequenced ahead of its consumers. Sources are added rarely. The refactor is deferred to the last phase and only after the change-detection and monitor consumers exist to dictate a thin interface. Until then, collect.ts stays the single tsx entrypoint so cre_daily_update.sh and launchd are untouched.
+### Acquisition layout (mechanical split shipped 2026-06-13)
+The monolith split into `types.ts`, `lib/`, and `sources/<broker>.ts` modules shipped 2026-06-13; behavior unchanged. The CLI entrypoint remains `tsx collect.ts`, so `cre_daily_update.sh` and launchd are untouched. Still not built: `--ids`/`--queue` id-scoped collect mode and the `cre_enrichment_queue` drain worker.
 
 ### What is built now in the acquisition layer (minimal, consumer-driven)
 1. Extract the two sitemap parsers and the per-source bulk-list enumeration cores into exported helper functions (no behavior change to the full run) so the monitor can import them.
@@ -530,10 +538,11 @@ for deltas. Far below the full daily run. Tier-2 every 6-8h adds the ~239 + ~114
 
 ## 14. Verified per-source method audit and improvement backlog (2026-06-13)
 
-Section 13's matrix was re-verified against the actual `collect.ts` source by a
-14-agent read-only audit (one agent per source, citing line numbers). The audit
-confirmed the architecture and surfaced two things section 13 understated, plus a
-concrete improvement per source. This section is the actionable build backlog.
+Section 13's matrix was re-verified against the split collector modules
+(`sources/<broker>.ts`, `lib/`, `types.ts`) by a 14-agent read-only audit (one
+agent per source). The audit confirmed the architecture and surfaced two things
+section 13 understated, plus a concrete improvement per source. This section is
+the actionable build backlog.
 
 ### 14.1 The systemic insight: most sources already carry status/price in the cheap feed
 
@@ -582,34 +591,35 @@ Tier 1, because of moderate Cloudflare throttle; `svn` is Tier 3 with `lee`
 because both are Buildout (high throttle). Data richness does not override
 throttle risk.
 
-### 14.3 Per-source improvement backlog (concrete, with line refs)
+### 14.3 Per-source improvement backlog (concrete, with module refs)
 
 | source | improvement | effort |
 |---|---|---|
-| marcus-millichap | Map feed (1 POST) already returns `ListingPrice`, `CapRate`, `NewlyListed`/`NewlyReduced` (lines 2382-2409). Monitor mode: diff ActivityId set + price/flags; skip the per-row `mappropertydetail` fetch except for NEW ids. Full sweep drops from 1+N POSTs to 1 POST. | low |
-| newmark | Listing hits already carry `sale_price`, `status`, `updateDate` (lines 1075, 1091). Add `--monitor`/`contacts=false` to skip the per-hit People Algolia lookup (lines 1042-1056, ~4,371 extra calls); ~95% fewer requests with full change fidelity. | low |
-| avison-young | SharpLaunch feed returns `updated_at`, `sale_price`, `cap_rate` per row (lines 3002-3016). Wire `updated_at` as the delta key; enrich only changed rows. Consider dropping `status=active` filter (line 2707) to capture sold/pending (active->sold status change vs mere disappearance). | low |
-| colliers (SalesTracker) | Card HTML already parses `.status` and `.price` (lines 4340-4345). Monitor mode: skip `enrichColliersCard` (one detail GET/card, ~1,300) except for new/changed cards. ~1,329 calls -> ~29 + deltas. | low |
-| cushman-wakefield | `listing_status` is in the API response (line 2170). Diff id+status on the ~114-GET sweep; detail-render only new/changed. | low |
-| cbre | Feed carries `Common.LastUpdated` (line 453) and `Common.Amount`. Snapshot `(PrimaryKey, LastUpdated, Amount)`; re-ingest only changed rows. Also capture `Common.Created` for a true `listing_date`/NEW signal (currently dropped). | low |
-| cbre-dealflow | Card `.status` is parsed (line 3924) -> status-change free from the list feed. Price only on detail (line 4081); probe whether `GetMapData` carries asking price for a price-aware enumeration. | low/med |
-| colliers-main | Cache (`colliersMainEnrichAll`) skips re-render whenever the id is cached, ignoring `lastmod`. Store `lastmod` in the cache and re-render only when sitemap `lastmod` advances -> true delta monitoring (2 sitemap GETs + small render tail vs 15,896). | med |
-| jll-investor | `jllInvestorDetailUrlsFromSitemap` (lines 1604-1609) regex-strips the URL and discards `<lastmod>`. Reuse `extractSitemapUrlEntries()` (the Colliers helper, lines 4631-4638) to get `{url, lastmod}` -> seed `lastUpdated` and enable lastmod-gated re-render. | low |
-| jll | README confirms the `_next/data/<buildId>/.../property-search.json?...&page=N` route returns pure JSON (count + 50 rows) via local Firecrawl in 1-2s. Read `buildId` from one rendered page, switch the ~228 paged enumerations from 8s renders to JSON GETs (~8x faster) -> moves jll from Tier 3 toward Tier 2. | med |
-| lee-associates | Buildout inventory carries `under_contract`/`closed`/`sale`/`Price` (lines 823-868) -> status/price free. The durable page cache never invalidates; add a TTL (re-fetch pages older than ~24h) for daily change detection at ~333 GETs, 0 renders. | med |
-| svn | Buildout inventory likely carries a per-row `updated_at` that `srcBuildout` (lines 846-868) never reads (it pushes no `lastUpdated`, unlike every other adapter). Inspect a live page-0 row; if present, map `lastUpdated` for delta-ingest. | low |
-| transwestern | Feed returns `Price`/coords/type but `Price` is usually 0 and there is NO status field. Monitor by diffing the `PageUrl` slug set (4-5 GETs); render detail only for new slugs or price-became-nonzero. Also dedupe the "Sale or Lease" bucket fetched twice. | low |
-| savills | Sale path uses Cheerio cards; lease path parses `__NEXT_DATA__`. Check if `initialReduxState.properties` exists on sale list pages too -> collapse both to `savillsNextDataProperties()` for free structured price/status. Tiny inventory, low priority. | low |
-| nai-global | Feed query (line 3513) lacks `listingStatus`/`updatedAt`. Probe whether `public_api` returns them unauthenticated; if so, status/price monitoring becomes free and drops ~241 detail POSTs/cycle. The full `listingStatus` enum + distribution is in the kept `INFABODE_LISTING_STATUS_POLICY` note. | med |
+| marcus-millichap | Map feed (1 POST) already returns `ListingPrice`, `CapRate`, `NewlyListed`/`NewlyReduced` (`sources/marcus-millichap.ts`). Monitor mode: diff ActivityId set + price/flags; skip the per-row `mappropertydetail` fetch except for NEW ids. Full sweep drops from 1+N POSTs to 1 POST. | low |
+| newmark | Listing hits already carry `sale_price`, `status`, `updateDate` (`sources/newmark.ts`). `--monitor` skips the per-hit People Algolia lookup (~4,371 extra calls on full runs); ~95% fewer requests with full change fidelity. | low |
+| avison-young | SharpLaunch feed returns `updated_at`, `sale_price`, `cap_rate` per row (`sources/avison-young.ts`). Wire `updated_at` as the delta key; enrich only changed rows. Consider dropping `status=active` filter to capture sold/pending (active->sold status change vs mere disappearance). | low |
+| colliers (SalesTracker) | Card HTML already parses `.status` and `.price` (`sources/colliers.ts`). Monitor mode: skip `enrichColliersCard` (one detail GET/card, ~1,300) except for new/changed cards. ~1,329 calls -> ~29 + deltas. | low |
+| cushman-wakefield | `listing_status` is in the API response (`sources/cushman-wakefield.ts`). Diff id+status on the ~114-GET sweep; detail-render only new/changed. | low |
+| cbre | Feed carries `Common.LastUpdated` and `Common.Amount` (`sources/cbre.ts`). Snapshot `(PrimaryKey, LastUpdated, Amount)`; re-ingest only changed rows. Also capture `Common.Created` for a true `listing_date`/NEW signal (currently dropped). | low |
+| cbre-dealflow | Card `.status` is parsed (`sources/cbre-dealflow.ts`) -> status-change free from the list feed. Price only on detail; probe whether `GetMapData` carries asking price for a price-aware enumeration. | low/med |
+| colliers-main | Cache (`colliersMainEnrichAll`) skips re-render whenever the id is cached, ignoring `lastmod`. Store `lastmod` in the cache and re-render only when sitemap `lastmod` advances (`sources/colliers-main.ts`) -> true delta monitoring (2 sitemap GETs + small render tail vs 15,896). | med |
+| jll-investor | `jllInvestorDetailUrlsFromSitemap` regex-strips the URL and discards `<lastmod>`. Reuse `extractSitemapUrlEntries()` from `lib/html.ts` to get `{url, lastmod}` (`sources/jll-investor.ts`) -> seed `lastUpdated` and enable lastmod-gated re-render. | low |
+| jll | README confirms the `_next/data/<buildId>/.../property-search.json?...&page=N` route returns pure JSON (`sources/jll.ts`). Read `buildId` from one rendered page, switch the ~228 paged enumerations from 8s renders to JSON GETs (~8x faster) -> moves jll from Tier 3 toward Tier 2. | med |
+| lee-associates | Buildout inventory carries `under_contract`/`closed`/`sale`/`Price` (`sources/buildout.ts`) -> status/price free. The durable page cache never invalidates; add a TTL (re-fetch pages older than ~24h) for daily change detection at ~333 GETs, 0 renders. | med |
+| svn | Buildout inventory likely carries a per-row `updated_at` that `srcBuildout` never reads (`sources/buildout.ts`; it pushes no `lastUpdated`, unlike every other adapter). Inspect a live page-0 row; if present, map `lastUpdated` for delta-ingest. | low |
+| transwestern | Feed returns `Price`/coords/type but `Price` is usually 0 and there is NO status field (`sources/transwestern.ts`). Monitor by diffing the `PageUrl` slug set (4-5 GETs); render detail only for new slugs or price-became-nonzero. Also dedupe the "Sale or Lease" bucket fetched twice. | low |
+| savills | Sale path uses Cheerio cards; lease path parses `__NEXT_DATA__` (`sources/savills.ts`). Check if `initialReduxState.properties` exists on sale list pages too -> collapse both to `savillsNextDataProperties()` for free structured price/status. Tiny inventory, low priority. | low |
+| nai-global | Feed query lacks `listingStatus`/`updatedAt` (`sources/nai-global.ts`). Probe whether `public_api` returns them unauthenticated; if so, status/price monitoring becomes free and drops ~241 detail POSTs/cycle. The full `listingStatus` enum + distribution is in the kept `INFABODE_LISTING_STATUS_POLICY` note. | med |
 
 ### 14.4 Build sequence (what this section authorizes next)
 
 > Status (2026-06-13): steps 1-5 are SHIPPED (007 applied; enumeration-key
 > invariant test; both capture wins; `--monitor` mode; `cre_monitor.py` /
-> `cre_gate.py`). Step 6 (live launchd tiers) plus the first live
-> `cre_monitor.py --apply` run and gate wiring into `cre_daily_update.sh` stay
-> gated for explicit go-ahead. See the status block at top and
-> `cre-monitor-subsystem.md`.
+> `cre_gate.py`). The first gated `cre_monitor.py --apply` seed is DONE on
+> `avison-young` (baseline/index seeded, zero events). Scaling `--apply` to
+> additional sources, live launchd tiers, and gate wiring into
+> `cre_daily_update.sh` stay gated for explicit go-ahead. See the status block
+> at top and `cre-monitor-subsystem.md`.
 
 1. **Schema foundation (additive, this is the gating dependency):** apply
    migration 007 (`cre_source_index`, `cre_listing_events`, `cre_enrichment_queue`,
