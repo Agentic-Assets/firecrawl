@@ -344,6 +344,20 @@ def test_parse_source_lastmod_full_precision_not_truncated():
     assert m.parse_source_lastmod(None) is None
 
 
+def test_build_write_sql_pins_standard_conforming_strings():
+    # Scraped event free-text (sale_price_text, source_url, new_value, ...) is
+    # inlined into INSERT literals via _sql_text -> sql_lit (quote-doubling).
+    # That escaping is only injection-safe under standard_conforming_strings=on,
+    # so the monitor's write transaction must pin the GUC itself, before the
+    # first literal-bearing INSERT, rather than trust the server default.
+    g = _g("810", status="sold", sale_price_usd=900000)
+    sql = m.build_write_sql([g], [], {}, {}, [], RUN, "2026-06-13T00:00:00Z",
+                            "monitor pin test", ["colliers"])
+    assert "SET LOCAL standard_conforming_strings = on;" in sql
+    set_idx = sql.index("standard_conforming_strings")
+    assert sql.index("BEGIN;") < set_idx < sql.index("INSERT INTO credeals.cre_scrape_jobs")
+
+
 def test_observe_only_generated_sql_has_no_listing_status_or_deleted_write():
     # End-to-end structural check on the write SQL: the only cre_listings write
     # is the neutral-column UPDATE; status / deleted_at are never assigned.

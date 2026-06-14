@@ -141,6 +141,20 @@ def test_neutral_columns_coalesced_in_upsert():
     assert "status text, source_lastmod timestamptz, canonical_key text" in sql
 
 
+# --- SQL-literal injection invariant (security hardening) ---------------------
+
+def test_build_sql_pins_standard_conforming_strings():
+    # sql_lit() escapes a single quote by doubling it; that is provably
+    # sufficient ONLY when standard_conforming_strings is ON (a backslash inside
+    # a '...' literal is then literal, so a scraped value cannot break out via
+    # \'). The generated transaction must pin the GUC itself rather than rely on
+    # the server/role default, before any literal- or COPY-bearing statement.
+    sql = _sql()
+    assert "SET LOCAL standard_conforming_strings = on;" in sql
+    set_idx = sql.index("standard_conforming_strings")
+    assert sql.index("BEGIN;") < set_idx < sql.index("COPY _stage")
+
+
 # --- terminal-stickiness guard (review LOW: code must match the prose) --------
 
 def test_targeted_upgrade_never_downgrades_terminal_to_transitional():

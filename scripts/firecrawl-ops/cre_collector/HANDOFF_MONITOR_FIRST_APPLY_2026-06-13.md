@@ -1,5 +1,20 @@
 # Handoff: Monitor hardening, collect.ts modular refactor, first gated --apply seed
 
+> **UPDATE 2026-06-14: several "Next steps" below have shipped.** This handoff
+> records the 2026-06-13 state when only the `avison-young` seed had run. Since
+> then: T2.3 (observe-only seed scaled to all 11 monitor-enabled sources;
+> `cre_source_baseline`=11, `cre_source_index`=73,693, 0 events) SHIPPED; T3.1
+> status activation is WIRED in `cre_ingest.py` but is now **OPT-IN and
+> default-OFF** (requires `--activate-status` / `CRE_ACTIVATE_STATUS=1`; helpers
+> `_status_activation_enabled()` and `apply_status_activation_gate()`), so it does
+> NOT "land on the next daily ingest" as the T3.1 bullet below states; and the
+> launchd monitor + daily tiers plus the `cre_gate.py` wiring into
+> `cre_daily_update.sh` SHIPPED (tiers loaded but currently TCC-blocked). STILL
+> gated: deploy the T3.2 consumer branch (must precede live activation), trigger
+> the first live status activation, apply the widened `005` views, and load the
+> weekly `--mark-missing` tier. Current status: `START_HERE.md`; activation
+> ordering: `docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md`.
+
 Date: 2026-06-13 (UTC writes stamped 2026-06-14). Branch:
 `feat/cre-brokerage-collectors-2026-06-12`. This records the monitor-layer
 hardening, the `collect.ts` module split, and the first live `cre_monitor.py

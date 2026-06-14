@@ -50,7 +50,7 @@ Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for in
 |----------|---------|
 | Monitor ≈ full (same rows) | cbre, buildout (svn/lee), savills |
 | Monitor = enum, skips detail | cushman, marcus, nai, colliers-main, newmark (skips People lookup), avison-young, transwestern |
-| Monitor returns `[]` | jll, jll-investor, cbre-dealflow, colliers (ST) — id only on detail page |
+| Monitor returns `[]` | jll, jll-investor, cbre-dealflow, colliers (ST) - id only on detail page |
 
 Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-sweep cadence.
 
@@ -70,7 +70,7 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `buildout.ts` | Shared inventory; svn/lee wired in `collect.ts` |
 | `savills.ts` | Sale: paginated cards; lease: `__NEXT_DATA__` single page |
 
-## Buildout (`buildout.ts`) — Shared Adapter
+## Buildout (`buildout.ts`) - Shared Adapter
 
 - **No server-side sale/lease filter**; one inventory fetch per `pluginKey`, `buildoutCache` shared across sale+lease passes.
 - **svn/lee**: `requireCompletePages: true` (any page fail aborts); durable page cache at `out/cache/buildout/{slug}/page-NNNN.json`.

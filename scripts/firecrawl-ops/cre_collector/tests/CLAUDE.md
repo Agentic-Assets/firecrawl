@@ -19,8 +19,10 @@ python3 -m pytest tests/test_enum_key_invariant.py -q
 python3 -m pytest tests/test_norm_status_canonical_and_guards.py -q   # portable CI signal (no out/)
 ```
 
-Requires `pytest` on the host (not pinned in `package.json`). Full suite: **248**
-pytest tests (`python3 -m pytest tests/ -q`).
+Requires `pytest` on the host (not pinned in `package.json`). Full suite:
+**261** pytest pass as of 2026-06-14 (`python3 -m pytest tests/ -q`); the count
+includes parametrized and data-driven cases, so re-run to confirm rather than
+counting `def test_`.
 
 **TypeScript (collector helpers, adapters):**
 
@@ -45,6 +47,7 @@ Add files as `tests/ts/*.test.ts` or `tests/ts/**/*.test.ts`. See `tests/ts/READ
 | `test_norm_status_shapes.py` | `norm_status` and `STATUS_SOURCE_PATHS` against gitignored `out/*.json` (skips when absent) |
 | `test_norm_status_canonical_and_guards.py` | `_canonical_key`, word-boundary guards, source-classification completeness; no `out/` dependency |
 | `test_enum_key_invariant.py` | Enumeration id equals ingest `external_id` for every `SOURCE_TO_BROKERAGE` key |
+| `test_ingest_status_activation.py` | OPT-IN status activation: `_status_activation_enabled()`, `apply_status_activation_gate()`, default-off no-op, terminal-stickiness guard |
 
 `conftest.py` prepends parent `cre_collector/` to `sys.path` (no package install).
 
@@ -81,7 +84,8 @@ should import those modules directly, not `config.ts` or `collect.ts`.
 | `sources/avison-young.test.ts` | SharpLaunch CDN/URL, transaction classification, detail extraction |
 | `sources/nai-global.test.ts` | Infabode location, price/size/status, `naiListingFromFeed` |
 
-Full suite: **157** TypeScript unit tests (`npm run test:unit`).
+Full suite: ~**157** TypeScript unit tests (`npm run test:unit`); re-run to
+confirm the exact count rather than trusting this figure.
 
 **Argv isolation:** source adapters import `lib/config.ts`; trim `process.argv` to
 `[node, script]` before those imports in test files (see `lib/scrape.test.ts`).

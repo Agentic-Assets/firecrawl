@@ -242,7 +242,14 @@ def build_baseline_sql(updates, scraped_at, job_id):
     """
     sa_lit = f"{sql_lit(scraped_at)}::timestamptz" if scraped_at else "NULL"
     job_lit = f"{sql_lit(job_id)}::uuid" if job_id else "NULL"
-    lines = ["\\set ON_ERROR_STOP on", "BEGIN;"]
+    # Pin standard_conforming_strings before the INSERTs: scraped_at/source_key
+    # are inlined via sql_lit (quote-doubling), which is injection-safe only
+    # under this GUC. Self-enforce it rather than trust the server default.
+    lines = [
+        "\\set ON_ERROR_STOP on",
+        "BEGIN;",
+        "SET LOCAL standard_conforming_strings = on;",
+    ]
     for u in updates:
         slug_lit = sql_lit(u["slug"]) if u["slug"] and u["slug"] != UNMAPPED_SLUG else "NULL"
         lines.append(

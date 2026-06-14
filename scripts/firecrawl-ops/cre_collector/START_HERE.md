@@ -13,12 +13,15 @@ CHECKs, 4 audit FKs `ON DELETE SET NULL`, 2 unique indexes `NULLS NOT DISTINCT`,
 `../sql/advisor-reports/2026-06-13-cre-live-hardening.sql`). Data-quality
 cleanups: 50 board-invisible JLL rows -> `inactive`, transwestern notes restored,
 Savills residential contamination removed (101 sale + 1 ghost lease soft-deleted;
-2 defensible Chicago retail lease rows remain). Automation LIVE: launchd
+2 defensible Chicago retail lease rows remain). Automation LOADED but BLOCKED (TCC): launchd
 `ai.agentic.cre-monitor` (every 3h, `CRE_MONITOR_APPLY=1` change-event recording)
-and `ai.agentic.cre-daily` (06:30, `--no-mark-missing`, status OFF) loaded;
-`cre_gate.py` wired into `cre_daily_update.sh` with a `--strict` mark-missing
-fail-safe. Weekly `--mark-missing` tier intentionally NOT loaded (reconcile
-held). 261 pytest pass.
+and `ai.agentic.cre-daily` (06:30, `--no-mark-missing`, status OFF) are loaded,
+and `cre_gate.py` is wired into `cre_daily_update.sh` with a `--strict`
+mark-missing fail-safe. HOWEVER both tiers exit 126 on every scheduled fire
+because the launchd user-agent lacks macOS Full Disk Access to `~/Documents`;
+no scheduled run has succeeded yet, so the empty change-event ledger is a
+non-signal. One-time fix in Known Limits below. Weekly `--mark-missing` tier
+intentionally NOT loaded (reconcile held). 261 pytest pass.
 
 Last updated: 2026-06-13. Change-tracking / monitor layer (migration 007 +
 `cre_monitor.py` + `cre_gate.py` + `collect.ts --monitor`) built, hardened, and
@@ -126,12 +129,14 @@ are open:
    (not deployed). Gate-0 (prod status CHECK) verified to already allow
    uc/pending/off_market.
 
-   STILL GATED for explicit go-ahead: deploying the T3.2 consumer branch (must
-   deploy BEFORE T3.1 activates), triggering the first live T3.1 activation, the
-   tiered launchd schedules (section 9), wiring `cre_gate.py` into
-   `cre_daily_update.sh`, and applying the widened agent-facing `005` views (now
-   `status IN ('active','under_contract','pending')` on this branch; live DDL
-   apply gated, verified read-only 2026-06-13 as a zero-row no-op today).
+   STILL GATED for explicit go-ahead (2026-06-13 snapshot, updated 2026-06-14):
+   deploying the T3.2 consumer branch (must deploy BEFORE T3.1 activates),
+   triggering the first live T3.1 activation, and applying the widened
+   agent-facing `005` views (now `status IN ('active','under_contract','pending')`
+   on this branch; live DDL apply gated, verified read-only as a zero-row no-op).
+   NOTE: the tiered launchd schedules (section 9) and the `cre_gate.py` wiring
+   into `cre_daily_update.sh` SHIPPED 2026-06-14 (loaded; currently TCC-blocked,
+   see Known Limits) and are no longer gated.
 
 The EQUIRE-facing view-gate / status activation (sections 12.4, Phase-2) stays
 pending CRE_EQUIRE coordination and is NOT part of the additive build. Board
@@ -216,6 +221,17 @@ images into Supabase storage for the bulk collector.
 
 ## Known Limits To Respect
 
+- **launchd automation is BLOCKED by macOS Full Disk Access (TCC), 2026-06-14.**
+  `ai.agentic.cre-monitor` and `ai.agentic.cre-daily` are loaded but exit 126 on
+  every fire: the repo lives under `~/Documents`, and a launchd user-agent does
+  not inherit the Terminal's file access. The error in `out/daily/cre-*.err.log`
+  is `getcwd ... Operation not permitted` plus `/bin/bash: cre_run_tier.sh:
+  Operation not permitted`. FIX (one-time, user GUI action): System Settings ->
+  Privacy & Security -> Full Disk Access -> add `/bin/bash` (use Cmd+Shift+G to
+  type the path), then `launchctl kickstart -k gui/$(id -u)/ai.agentic.cre-monitor`
+  and re-check `launchctl list | grep ai.agentic.cre` for a 0 in the exit-status
+  column. `chmod +x cre_run_tier.sh` is already applied but is NOT the fix (a
+  `/bin/bash <script>` invocation does not need the execute bit).
 - Do not use `--mark-missing` after a run with Lee or other source errors.
 - Cushman & Wakefield is now current in Supabase from `out/cushman_full_2026-06-12_022841.json`: 11,318 active rows, 18,343 document URL rows, 24,278 image URL rows, 21,110 contact rows, 21,110 profile URLs, and 20,301 VCard URLs. Source-scoped `--mark-missing` soft-deleted 24 old probe rows.
 - CBRE Deal Flow has been ingested from the public RCM endpoint. Do not use its reported 2,042 sale total as collected count; the public card pagination exposed 1,809 sale cards in the full run. A narrow cleanup soft-deleted 21 stale `dealflow:url:<sha1>` rows that duplicated newer enriched Deal Flow IDs.

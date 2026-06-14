@@ -855,6 +855,13 @@ def build_sql(rows, job_meta, started_at, mark_missing_slugs):
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
     w("SET LOCAL statement_timeout = '600s';")
+    # Pin standard_conforming_strings so sql_lit()'s quote-doubling is provably
+    # sufficient regardless of the server/role default: with it ON, a backslash
+    # inside a '...' literal is literal, so a doubled single quote is the only
+    # escape a scraped value can need. Set before any literal- or COPY-bearing
+    # statement below. (Never wrap an interpolated value in an E'...' literal:
+    # E-strings reprocess backslashes and would defeat sql_lit.)
+    w("SET LOCAL standard_conforming_strings = on;")
     _cb = _flip_circuit_breaker()
     if _cb is not None:
         w(f"SET LOCAL cre.flip_max_fraction = '{_cb[0]}';")

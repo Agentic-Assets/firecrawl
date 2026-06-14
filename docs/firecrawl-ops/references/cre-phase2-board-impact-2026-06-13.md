@@ -1,5 +1,20 @@
 # Phase-2 Status Activation: Board Impact Analysis
 
+> **PRE-2026-06-14 SNAPSHOT (stale totals, design still valid).** This analysis
+> was computed against the board BEFORE the full `colliers-main` ingest landed:
+> it assumes a 72,544-row board, the 943-row bounded `colliers-main` batch, and
+> 254 passing tests. As of 2026-06-14 the board is ~87,328 active, `colliers-main`
+> is COMPLETE (15,829 rows), and the suite is 261 pytest. The terminal-drop and
+> under-contract/pending row counts below are therefore STALE and undercount the
+> real impact; they are not authoritative until `phase2_derive.py` is re-run on
+> the post-colliers-full board (the doc itself flags this in the Headline and the
+> colliers-main caveat). Also note: status activation is now OPT-IN and default-OFF
+> in `cre_ingest.py` (requires `--activate-status` / `CRE_ACTIVATE_STATUS=1`); it
+> does NOT fire on the next ingest as the "Authoritative activation order" text
+> below implies. The qualitative conclusions (low blast radius, Choice (a)
+> COALESCE, Option B gate, the consumer-deploy-first ordering) still hold. Live
+> board and per-source counts: `START_HERE.md`.
+
 Read-only. Computed 2026-06-13 by running the production `norm_status` over the
 freshest full-run artifact per source (grouped by `(sourceKey, external_id)` via
 `to_row`, terminal-wins across sale+lease passes), cross-referenced against the

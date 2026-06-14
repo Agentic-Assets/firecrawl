@@ -99,34 +99,34 @@ Client API: [Supabase Python reference](https://supabase.com/docs/reference/pyth
 EQUIRE. See each subdirectory's `CLAUDE.md` for module detail.
 
 Key components:
-- `scripts/firecrawl-ops/cre_collector/` — production collector + ingestor:
+- `scripts/firecrawl-ops/cre_collector/` - production collector + ingestor:
   `collect.ts` (CLI entry, 15 sources), `types.ts`, `lib/`, `sources/<broker>.ts`,
   `cre_ingest.py` (full artifact upsert via psql; status activation OPT-IN
   default-off via `--activate-status`/`CRE_ACTIVATE_STATUS=1`), `cre_monitor.py`
   and `cre_gate.py` (observe-only 007 change tracking; gate wired into daily
   script as step [3/4]), `cre_daily_update.sh` (daily refresh; use
   `--no-mark-missing` while Savills sale is structurally capped)
-- `scripts/firecrawl-ops/cre_scrapers/` — legacy Python package for source
+- `scripts/firecrawl-ops/cre_scrapers/` - legacy Python package for source
   experiments and detail enrichment. Not the daily bulk path.
-- `scripts/firecrawl-ops/sql/` — Supabase migrations for `cre_*` tables
+- `scripts/firecrawl-ops/sql/` - Supabase migrations for `cre_*` tables
   (target: project `fhqycqubkkrdgzswccwd`; apply via `000_run_all.sql`)
-- `scripts/firecrawl-ops/prometheus/` — reference Prometheus/CBRE API collector
-- `docs/firecrawl-ops/references/cre-intelligence-system-design.md` — architecture
-- `docs/firecrawl-ops/references/cre-equire-consumer-api.md` — EQUIRE consumer API
-- `docs/firecrawl-ops/references/cre-monitor-subsystem.md` — monitor run model
-- `docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md` —
+- `scripts/firecrawl-ops/prometheus/` - reference Prometheus/CBRE API collector
+- `docs/firecrawl-ops/references/cre-intelligence-system-design.md` - architecture
+- `docs/firecrawl-ops/references/cre-equire-consumer-api.md` - EQUIRE consumer API
+- `docs/firecrawl-ops/references/cre-monitor-subsystem.md` - monitor run model
+- `docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md` -
   Phase-2 status activation board impact (gated)
 
 Canonical entrypoints (live counts and per-source status only in `START_HERE.md`):
-- `scripts/firecrawl-ops/cre_collector/START_HERE.md` — runbook, status matrix
-- `scripts/firecrawl-ops/cre_collector/CLAUDE.md` — collector/ingestor reference
-- `scripts/firecrawl-ops/cre_collector/BROKERAGE_STATUS_2026-06-12.md` — upgrade order
-- `scripts/firecrawl-ops/cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` —
+- `scripts/firecrawl-ops/cre_collector/START_HERE.md` - runbook, status matrix
+- `scripts/firecrawl-ops/cre_collector/CLAUDE.md` - collector/ingestor reference
+- `scripts/firecrawl-ops/cre_collector/BROKERAGE_STATUS_2026-06-12.md` - upgrade order
+- `scripts/firecrawl-ops/cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` -
   monitor hardening, modular refactor, first `--apply` seed
-- `scripts/firecrawl-ops/cre_collector/HANDOFF_COLLIERS_MAIN_2026-06-13.md` —
+- `scripts/firecrawl-ops/cre_collector/HANDOFF_COLLIERS_MAIN_2026-06-13.md` -
   colliers-main full detail run (COMPLETE as of 2026-06-14; 15,829 active rows)
 
-### Monitor tracks (2026-06-13)
+### Monitor tracks (2026-06-13/14)
 
 **Track 1 (shipped):** monitor hardening, `collect.ts` modular split, coverage
 gate triple-gating, four detail-id monitor exclusions, first gated
@@ -153,8 +153,13 @@ non-active, 0 NULL status). Status activation changed to OPT-IN default-off
 pass. `cre_gate.py` wired into `cre_daily_update.sh` as observe-only step [3/4]
 with auto-downgrade fail-safe. Monitor (`ai.agentic.cre-monitor`, every 3h at
 :15, `CRE_MONITOR_APPLY=1`) and daily (`ai.agentic.cre-daily`, 06:30 daily,
-`--no-mark-missing`, status activation OFF) launchd tiers LOADED. Weekly
-reconcile tier NOT loaded (held for explicit go-ahead). Live DB hardening applied
+`--no-mark-missing`, status activation OFF) launchd tiers are LOADED BUT BLOCKED:
+every scheduled fire exits 126 because the repo lives under `~/Documents`
+(TCC-protected) and the launchd user-agent lacks macOS Full Disk Access. No
+scheduled run has succeeded yet, so the empty event ledger is a non-signal. Fix
+is a one-time Full Disk Access grant to `/bin/bash` (see START_HERE Known
+Limits). Weekly reconcile tier NOT loaded (held for explicit go-ahead). Live DB
+hardening applied
 (cap_rate/occupancy_rate CHECKs, FK ON DELETE SET NULL, NULLS NOT DISTINCT
 indexes, security_invoker reasserted; no board change). Data-quality cleanups:
 50 JLL board-invisible rows set inactive, transwestern config restored, Savills

@@ -1,18 +1,26 @@
 # CRE Monitor Subsystem (change-tracking layer)
 
-Status as of 2026-06-13: built, hardened, and adversarially reviewed. Schema
-applied to prod. The first gated `--apply` seed has run on one source
-(`avison-young`): `cre_source_baseline` and `cre_source_index` seeded, zero
-events / queue / soft-deletes, board unchanged. See
+Status as of 2026-06-14: built, hardened, and adversarially reviewed. Schema
+applied to prod. The observe-only seed now spans all 11 monitor-enabled sources
+(`cre_source_baseline`=11, `cre_source_index`=73,693), zero events / queue /
+soft-deletes, board unchanged. See
 `../../../scripts/firecrawl-ops/cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md`.
 Since the original build: monitor exclusions are now four (`jll`, `jll-investor`,
 `cbre-dealflow`, `colliers`); the coverage gate also refuses disappearance on
 errored or truncated passes (non-overridable by `--force-disappear`); and
 `collect.ts` is split into `types.ts` / `lib/` / `sources/<broker>.ts` modules.
-Still gated for explicit go-ahead: scaling the seed to the remaining
-monitor-enabled sources, the launchd schedule, the gate wiring into the daily
-script, and Phase-2 status activation (separate path, see
-`cre-phase2-board-impact-2026-06-13.md`).
+
+Shipped 2026-06-14: the seed scaled to all 11 monitor-enabled sources, the
+launchd monitor + daily tiers were loaded, and `cre_gate.py` was wired into
+`cre_daily_update.sh` as observe-only step [3/4]. KNOWN BLOCKER (2026-06-14):
+both launchd tiers currently exit 126 on every fire because the repo lives under
+`~/Documents` and the launchd user-agent lacks macOS Full Disk Access (TCC), so
+no scheduled monitor or daily run has succeeded yet (the empty event ledger is a
+non-signal, not a quiet market). The fix is a one-time Full Disk Access grant
+(see `cre_collector/START_HERE.md` Known Limits). Still gated for explicit
+go-ahead (separate from the TCC fix): Phase-2 status activation (see
+`cre-phase2-board-impact-2026-06-13.md`) and the consumer board-gate / `005`
+view widening.
 
 This is the additive change-tracking layer that sits on top of the existing
 collector + ingestor. It detects new / changed / disappeared listings cheaply,
@@ -143,10 +151,12 @@ python3 cre_gate.py --in out/monitor_run.json --apply
 python3 cre_monitor.py --in out/monitor_run.json --apply
 ```
 
-`--apply`, the launchd schedule, the `cre_gate` wiring into
-`cre_daily_update.sh`, and Phase-2 status activation are all gated for explicit
-go-ahead. The full-detail daily collect + `cre_ingest` path is unchanged and
-remains the source of truth for listing content.
+`--apply` change-event recording, the launchd monitor + daily tiers, and the
+`cre_gate` wiring into `cre_daily_update.sh` shipped 2026-06-14 (the launchd
+tiers are loaded but currently TCC-blocked, exiting 126; see the START_HERE
+Known Limits for the Full Disk Access fix). Phase-2 status activation remains
+gated for explicit go-ahead. The full-detail daily collect + `cre_ingest` path
+is unchanged and remains the source of truth for listing content.
 
 ## Tests
 

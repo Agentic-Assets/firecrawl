@@ -4,11 +4,21 @@ Three flock-serialized launchd tiers that automate the CRE listing pipeline.
 All tiers are authored here and gated: **do not load any plist until the
 prerequisite listed for that tier is satisfied.**
 
+> Current state (2026-06-14): the monitor and daily tiers ARE loaded, but both
+> are BLOCKED. Every scheduled fire exits 126 because the repo lives under
+> `~/Documents` (TCC) and the launchd user-agent lacks macOS Full Disk Access,
+> so `/bin/bash` cannot read `cre_run_tier.sh` or `getcwd` the working dir. No
+> scheduled run has succeeded yet; the empty event ledger is a non-signal. The
+> fix is a one-time Full Disk Access grant to `/bin/bash` (System Settings ->
+> Privacy & Security -> Full Disk Access); `chmod +x cre_run_tier.sh` is applied
+> but is NOT the fix. Full steps: `../START_HERE.md` Known Limits. The weekly
+> `--mark-missing` tier remains intentionally unloaded.
+
 ---
 
 ## Tiers
 
-### monitor — `ai.agentic.cre-monitor.plist`
+### monitor - `ai.agentic.cre-monitor.plist`
 
 Runs at minute :15 of every third hour (00:15, 03:15, 06:15, 09:15, 12:15,
 15:15, 18:15, 21:15 local time).
@@ -26,12 +36,15 @@ Gate: `cre_monitor.py` and `cre_gate.py` both exist and are unit-tested.
 `cre_run_tier.sh monitor` now runs `collect.ts --monitor` (cheap enumeration)
 then `cre_monitor.py --in <artifact>` in observe-only mode. Passing `--apply`
 requires setting `CRE_MONITOR_APPLY=1` in the environment.
-**Loading this plist and enabling `--apply` (via `CRE_MONITOR_APPLY=1`) remain
-GATED: do not load this plist or enable --apply without explicit go-ahead.**
+**Status (2026-06-14): this plist is LOADED with `CRE_MONITOR_APPLY=1`, but it
+is TCC-blocked (exit 126 every fire) until the one-time Full Disk Access grant
+above lands. The monitor is observe-only by design (007 tables + neutral
+columns; never `status`/`deleted_at`), so the `--apply` cadence is safe once
+unblocked.**
 
 ---
 
-### daily — `ai.agentic.cre-daily.plist`
+### daily - `ai.agentic.cre-daily.plist`
 
 Runs at 06:30 local time every day.
 
@@ -44,11 +57,13 @@ live.
 
 Gate: safe to load once the daily script is stable and the stack is healthy.
 The shared flock guarantees it will not overlap with an active monitor or
-weekly run.
+weekly run. Status (2026-06-14): LOADED with `--no-mark-missing` and status
+activation OFF, but TCC-blocked (exit 126) until the Full Disk Access grant
+above lands.
 
 ---
 
-### weekly — `ai.agentic.cre-weekly.plist`
+### weekly - `ai.agentic.cre-weekly.plist`
 
 Runs Sunday at 03:00 local time.
 

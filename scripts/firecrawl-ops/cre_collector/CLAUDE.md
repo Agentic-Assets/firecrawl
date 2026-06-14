@@ -11,9 +11,9 @@ Runs entirely against the local self-hosted Firecrawl API.
 
 ## Read order
 
-1. `START_HERE.md` — live counts, next steps, session bootstrap, Known Limits
-2. `BROKERAGE_STATUS_2026-06-12.md` — per-broker completion status and upgrade order
-3. This file — orchestration, ingest contract, monitor safety rails
+1. `START_HERE.md` - live counts, next steps, session bootstrap, Known Limits
+2. `BROKERAGE_STATUS_2026-06-12.md` - per-broker completion status and upgrade order
+3. This file - orchestration, ingest contract, monitor safety rails
 4. Module docs (each has its own `CLAUDE.md`): `sources/`, `lib/`, `launchd/`, `tests/`
 5. `../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` when touching
    `--monitor`, 007 change-tracking tables, `cre_monitor.py`, or `cre_gate.py`
@@ -24,20 +24,21 @@ Runs entirely against the local self-hosted Firecrawl API.
 |------------|---------|
 | `collect.ts` | Orchestrator: 15 sources, CLI, broker merge, artifact write |
 | `types.ts` | Shared listing vocabulary + `SourceResult` (`truncated?`, etc.) |
-| `sources/` | Per-broker adapters — see `sources/CLAUDE.md` |
-| `lib/` | Shared scrape/config/util — see `lib/CLAUDE.md` |
+| `sources/` | Per-broker adapters - see `sources/CLAUDE.md` |
+| `lib/` | Shared scrape/config/util - see `lib/CLAUDE.md` |
 | `cre_ingest.py` | Collector JSON → `credeals` upsert (stdlib + psql) |
 | `cre_monitor.py` | Observe-only diff/event runner (007 tables); never writes `status`/`deleted_at` |
 | `cre_gate.py` | Per-source coverage gate (`cre_source_baseline`); emits `mark_missing_safe` rollup |
 | `cre_daily_update.sh` | healthcheck → full collect → ingest → prune `out/daily/` artifacts |
 | `cre_validate.py` | Post-ingest Supabase validation (`npm run validate:supabase`); not in daily script |
 | `run_colliers_main_full.sh` | Resumable colliers-main batch driver (~15,896 URLs) |
-| `launchd/` | macOS tier schedules — see `launchd/CLAUDE.md` |
-| `tests/` | pytest contracts — see `tests/CLAUDE.md` |
+| `launchd/` | macOS tier schedules - see `launchd/CLAUDE.md` |
+| `tests/` | pytest contracts - see `tests/CLAUDE.md` |
 | `START_HERE.md` | Current status and new-session runbook |
 | `BROKERAGE_STATUS_2026-06-12.md` | Per-broker coverage counts (live) |
 | `HANDOFF_COLLIERS_MAIN_2026-06-13.md` | colliers-main full detail run handoff |
 | `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` | Monitor hardening, module split, first `--apply` seed |
+| `SECURITY_REVIEW_2026-06-14.md` | Branch security review: verdict, the `standard_conforming_strings` pin fix, deferred base-table REVOKE |
 | `archive/` | Dated buildout history (see `archive/README.md`) |
 | `../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` | Architecture + go-forward plan (§14) |
 | `../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` | Monitor run model and operational gotchas |
@@ -158,8 +159,12 @@ or view privileges. Consumer API details: `cre-equire-consumer-api.md`.
   `launchd/CLAUDE.md`. Monitor (`ai.agentic.cre-monitor`, every 3h at :15,
   `CRE_MONITOR_APPLY=1`) and daily (`ai.agentic.cre-daily`, 06:30 daily,
   `--no-mark-missing`, status activation OFF) launchd tiers are LOADED as of
-  2026-06-14. Weekly reconcile tier (`ai.agentic.cre-weekly`) is intentionally
-  NOT loaded (held for explicit go-ahead). `cre_gate.py` is now wired into
+  2026-06-14 but currently BLOCKED: every scheduled fire exits 126 because the
+  repo lives under `~/Documents` (TCC) and the launchd user-agent lacks macOS
+  Full Disk Access. No scheduled run has succeeded yet; the empty event ledger
+  is a non-signal. One-time fix (Full Disk Access grant to `/bin/bash`) is in
+  `START_HERE.md` Known Limits. Weekly reconcile tier (`ai.agentic.cre-weekly`)
+  is intentionally NOT loaded (held for explicit go-ahead). `cre_gate.py` is now wired into
   `cre_daily_update.sh` as observe-only step [3/4] (`--in RUN --apply --strict
   --out gate.json`); if the strict gate detects any partial/regressed source,
   the script auto-downgrades to `--no-mark-missing`.
@@ -173,10 +178,11 @@ use `bash cre_daily_update.sh --no-mark-missing` while partial sources remain
 (colliers-main full run, Savills). See `START_HERE.md` Known Limits.
 
 Tiered schedules (monitor / daily additive / weekly reconcile):
-`launchd/CLAUDE.md`. Monitor and daily tiers are loaded (2026-06-14). Weekly
-reconcile tier is intentionally NOT loaded; do not `launchctl load` it until
-explicit go-ahead. Step [3/4] of the daily script now runs `cre_gate.py`
-observe-only; see Monitor mode section above.
+`launchd/CLAUDE.md`. Monitor and daily tiers are loaded (2026-06-14) but
+currently TCC-blocked (exit 126; see Monitor mode section and `START_HERE.md`
+Known Limits). Weekly reconcile tier is intentionally NOT loaded; do not
+`launchctl load` it until explicit go-ahead. Step [3/4] of the daily script now
+runs `cre_gate.py` observe-only; see Monitor mode section above.
 
 ## Adding a source
 

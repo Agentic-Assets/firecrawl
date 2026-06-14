@@ -511,6 +511,11 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
     w("SET LOCAL statement_timeout = '600s';")
+    # Pin standard_conforming_strings before any literal-bearing INSERT below:
+    # scraped event free-text (sale_price_text, source_url, new_value, ...) is
+    # inlined via _sql_text -> sql_lit (quote-doubling), which is injection-safe
+    # only when this GUC is ON. Self-enforce it rather than trust the default.
+    w("SET LOCAL standard_conforming_strings = on;")
 
     # (1) per-run monitor job row FIRST (events.scrape_job_id FK target).
     if len(slugs) == 1:

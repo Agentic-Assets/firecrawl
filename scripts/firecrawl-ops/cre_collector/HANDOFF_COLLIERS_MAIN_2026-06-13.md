@@ -1,5 +1,14 @@
 # Handoff: Colliers Main Site Collector - 2026-06-13
 
+> **UPDATE 2026-06-14: full run COMPLETE.** This handoff was written mid-run
+> ("full run in progress"). The full ~15,883-URL sitemap detail run has since
+> converged (0 errors) and was ingested additively with status activation OFF:
+> **15,829 active rows** (5,750 sale + 8,897 lease + 1,182 sale_or_lease), 0
+> soft-deleted, 0 duplicate external_ids. The colliers brokerage total is now
+> 17,001 active (15,829 main + 1,172 SalesTracker). Everywhere below that says
+> "in progress" or "when the full run completes" is DONE. Current per-source
+> counts: `START_HERE.md` and `BROKERAGE_STATUS_2026-06-12.md`.
+
 Session goal: close the largest remaining CRE gap, main
 `www.colliers.com/en/properties` sale and lease inventory, which prior rechecks
 marked blocked behind a Cloudflare-protected Coveo POST search.

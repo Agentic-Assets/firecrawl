@@ -15,9 +15,14 @@ Last reviewed against code: 2026-06-13.
 > `cre_listings.status` or `deleted_at`. It is not the in-ingest `_before` CTE
 > sketched in sections 3, 6, and 7, which are kept here as the original design
 > alternative. Not yet built: in-ingest event emission, `cre_backfill_status.py`,
-> `cre_notify.sh`, the `--ids` / `--queue` id-scoped collect mode, the
-> `cre_enrichment_queue` drain worker, live launchd tiers, and the EQUIRE
-> view-gate / status activation (gated on CRE_EQUIRE coordination, see 12.4).
+> `cre_notify.sh`, the `--ids` / `--queue` id-scoped collect mode, and the
+> `cre_enrichment_queue` drain worker. Shipped since this banner (2026-06-14):
+> the launchd monitor + daily tiers are LOADED (currently TCC-blocked, exit 126,
+> until a one-time Full Disk Access grant; see `START_HERE.md` Known Limits), and
+> Phase-2 status activation is WIRED in `cre_ingest.py` but OPT-IN and default-OFF
+> (`--activate-status` / `CRE_ACTIVATE_STATUS=1`). Still gated on CRE_EQUIRE
+> coordination (see 12.4): the EQUIRE view-gate, the first live status activation,
+> and the weekly `--mark-missing` tier.
 > Canonical pointers: monitor operations and gotchas ->
 > `cre-monitor-subsystem.md`; live per-source counts -> `START_HERE.md` and
 > `BROKERAGE_STATUS_2026-06-12.md`; the board-impact decision ->
@@ -40,7 +45,7 @@ EQUIRE needs one system that does three things across many brokerage sites:
 2. DETECT NEW listings added to any source, with low latency and without re-scraping everything.
 3. DETECT CHANGES to existing listings: status lifecycle (for_sale to under_contract to pending to sold or leased or withdrawn) and price moves, plus disappearance and re-listing.
 
-The current system does (1) well (about 72,500 active rows from 15 source adapters across 12 parent brokerages; live per-source counts in `START_HERE.md` and `BROKERAGE_STATUS_2026-06-12.md`) and does (2) and (3) only implicitly. This document defines a cohesive architecture that keeps the working acquisition layer, adds a persisted change ledger and a normalized status, and layers an incremental monitor and safety gates on top, with every adversarial review fix folded in.
+The current system does (1) well (about 87,300 active rows as of 2026-06-14 from 15 source adapters across 12 parent brokerages; live per-source counts in `START_HERE.md` and `BROKERAGE_STATUS_2026-06-12.md`) and does (2) and (3) only implicitly. This document defines a cohesive architecture that keeps the working acquisition layer, adds a persisted change ledger and a normalized status, and layers an incremental monitor and safety gates on top, with every adversarial review fix folded in.
 
 ## 2. What already exists (verified) vs what must be built
 

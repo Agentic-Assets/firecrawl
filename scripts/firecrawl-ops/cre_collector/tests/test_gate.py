@@ -427,6 +427,19 @@ class TestMonitorSQLSafetyAssertion:
             f"build_baseline_sql must not set any 'status' column; found: {matches}"
         )
 
+    def test_sql_pins_standard_conforming_strings(self):
+        # The baseline upsert inlines scraped_at and source_key via sql_lit
+        # (quote-doubling), which is injection-safe only under
+        # standard_conforming_strings=on. The transaction pins the GUC itself,
+        # before the first INSERT, rather than trust the server default.
+        sql = self._make_sql()
+        assert "SET LOCAL standard_conforming_strings = on;" in sql
+        assert (
+            sql.index("BEGIN;")
+            < sql.index("standard_conforming_strings")
+            < sql.index("INSERT INTO")
+        )
+
 
 # ---------------------------------------------------------------------------
 # Gate: verdict logic (full precedence coverage)

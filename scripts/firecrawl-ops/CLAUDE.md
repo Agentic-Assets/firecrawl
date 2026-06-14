@@ -161,12 +161,16 @@ Status activation is now OPT-IN default-off in `cre_ingest.py` (requires
 `cre_gate.py` wired into `cre_daily_update.sh` as observe-only step [3/4]
 (`--in RUN --apply --strict --out gate.json`), with auto-downgrade to
 `--no-mark-missing` if the strict gate detects any partial/regressed source.
-Monitor and daily launchd tiers loaded: `ai.agentic.cre-monitor` (every 3h
-at :15, `CRE_MONITOR_APPLY=1`; records 007 change events, never touches
-`status`/`deleted_at`) and `ai.agentic.cre-daily` (06:30 daily, runs
-`cre_daily_update.sh --no-mark-missing`, status activation OFF). Weekly
-reconcile tier (`ai.agentic.cre-weekly`) intentionally NOT loaded (held for
-explicit go-ahead). Live DB hardening applied (cap_rate/occupancy_rate CHECKs,
+Monitor and daily launchd tiers loaded but BLOCKED: `ai.agentic.cre-monitor`
+(every 3h at :15, `CRE_MONITOR_APPLY=1`; records 007 change events, never
+touches `status`/`deleted_at`) and `ai.agentic.cre-daily` (06:30 daily, runs
+`cre_daily_update.sh --no-mark-missing`, status activation OFF) both exit 126
+on every scheduled fire because the repo lives under `~/Documents` (TCC) and
+the launchd user-agent lacks macOS Full Disk Access; no scheduled run has
+succeeded yet. Fix is a one-time Full Disk Access grant to `/bin/bash` (see
+`cre_collector/START_HERE.md` Known Limits). Weekly reconcile tier
+(`ai.agentic.cre-weekly`) intentionally NOT loaded (held for explicit
+go-ahead). Live DB hardening applied (cap_rate/occupancy_rate CHECKs,
 4 FK ON DELETE SET NULL, 2 NULLS NOT DISTINCT unique indexes,
 `v_cre_listings_full` security_invoker reasserted; no board change).
 Data-quality cleanups applied: 50 board-invisible JLL rows corrected to
