@@ -1,3 +1,5 @@
+Historical probe artifact (pre-2026-06-13). Production path: cre_collector/sources/.
+
 # Transwestern Performance And Accuracy Note - 2026-06-12
 
 Scope: Transwestern collector review only. No full run was started by this

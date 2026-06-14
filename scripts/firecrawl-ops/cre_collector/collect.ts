@@ -197,7 +197,7 @@ async function main() {
     sources.filter((s) => s.listingsCollected > 0).map((s) => s.sourceKey)
   ).size;
   if (listings.length === 0) {
-    // Full mode: zero listings means collection genuinely failed -> hard error.
+    // Full mode: zero listings means collection failed -> hard error.
     // Monitor mode: zero listings is legitimate (e.g. monitoring only sources that
     // are excluded from monitor: jll, jll-investor, cbre-dealflow, colliers), so
     // write an empty artifact instead of failing the pipeline. Per-source errors are

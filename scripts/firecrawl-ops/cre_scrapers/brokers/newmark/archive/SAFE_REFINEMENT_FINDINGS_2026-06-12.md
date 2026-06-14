@@ -1,3 +1,5 @@
+Historical probe artifact (pre-2026-06-13). Production path: cre_collector/sources/.
+
 # Newmark Safe Refinement Findings - 2026-06-12
 
 Timestamp: 2026-06-12 08:02 CDT.

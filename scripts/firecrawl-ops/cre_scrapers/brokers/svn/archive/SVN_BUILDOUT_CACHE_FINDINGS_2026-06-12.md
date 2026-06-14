@@ -1,3 +1,5 @@
+Historical probe artifact (pre-2026-06-13). Production path: cre_collector/sources/.
+
 # SVN Buildout Cache Findings - 2026-06-12
 
 Scope: SVN only, source key `svn`.

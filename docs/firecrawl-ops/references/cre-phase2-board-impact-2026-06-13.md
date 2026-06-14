@@ -9,6 +9,10 @@ re-runnable derivation script:
 `phase2_artifact_buckets.json`). Re-run `phase2_derive.py` after the
 `colliers-main` full ingest lands to refresh the terminal-drop totals.
 
+The 2026-06-13 `avison-young` monitor `--apply` seed was observe-only
+(`cre_source_baseline`, `cre_source_index`); Phase-2 status activation in
+`cre_ingest.py` and the EQUIRE board gate remain separate, gated work.
+
 ## Headline
 
 Activating accurate status moves a small, well-understood slice of the board:

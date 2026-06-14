@@ -1,3 +1,5 @@
+Historical probe artifact (pre-2026-06-13). Production path: cre_collector/sources/.
+
 # Colliers Main Sitemap Unlock - 2026-06-12
 
 Scope: main Colliers public sale and lease inventory at

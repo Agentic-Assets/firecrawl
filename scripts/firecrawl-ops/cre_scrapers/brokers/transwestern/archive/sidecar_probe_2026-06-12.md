@@ -1,3 +1,5 @@
+Historical probe artifact (pre-2026-06-13). Production path: cre_collector/sources/.
+
 # Transwestern Sidecar Probe - 2026-06-12
 
 Scope: Transwestern only, remaining-brokerage sidecar check. No live ingest was

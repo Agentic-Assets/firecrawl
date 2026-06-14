@@ -1,3 +1,5 @@
+Historical probe artifact (pre-2026-06-13). Production path: cre_collector/sources/.
+
 # Lee & Associates Buildout Throttling And Resumability Deep Dive
 
 Date: 2026-06-12 local time.

@@ -8,7 +8,9 @@ is current status; live status is in `../BROKERAGE_STATUS_2026-06-12.md`,
 The files kept here each hold durable operational knowledge worth keeping
 findable without duplicating it into the live docs. Point-in-time session
 transcripts, completed goal records, and stale gap/QA snapshots were pruned
-2026-06-13. Index of the durable nuggets:
+2026-06-13. Pruned files are preserved in
+`tasks/tmp/cre-archive-pruned-2026-06-13.tar.gz` (relative to the repo root).
+Index of the durable nuggets:
 
 - `HANDOFF_LOG_2026-06-11.md` -- chronological build evidence. Durable nuggets:
   the working Cushman public API URL shape

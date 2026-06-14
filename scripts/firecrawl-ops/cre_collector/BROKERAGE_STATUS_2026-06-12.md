@@ -46,7 +46,7 @@ as of 2026-06-13.
 
 Savills remains weak for EQUIRE sale coverage because no safe repeatable public
 U.S. commercial sale path was found in the latest recheck, but the commercial
-lease path now exposes two defensible Chicago retail listings and those rows are
+lease path now exposes three defensible Chicago retail lease listings and those rows are
 live-ingested additively.
 
 NAI Global is complete only for the active public Infabode inventory whose

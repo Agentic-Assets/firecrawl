@@ -1,5 +1,10 @@
 # Colliers Scraper Notes
 
+**Production path:** `../../../../cre_collector/sources/colliers.ts` (SalesTracker,
+source key `colliers`) and `../../../../cre_collector/sources/colliers-main.ts`
+(main site sitemap, source key `colliers-main`). Both fold into the `colliers`
+brokerage via `cre_ingest.py` id prefixes (`main:` for main-site rows).
+
 Colliers has TWO production collector sources, both folded into the `colliers`
 brokerage:
 
@@ -56,7 +61,7 @@ URLs whose `lastmod` advanced (see `cre-intelligence-system-design.md` section
 ## SalesTracker (`colliers`): historical implementation notes
 
 SalesTracker investment-sale coverage is implemented in
-`scripts/firecrawl-ops/cre_collector/collect.ts` (`srcColliers`).
+`../../../../cre_collector/sources/colliers.ts`.
 
 Partial path found: Colliers SalesTracker at `https://sales.colliers.com/`
 embeds RCM ListingEngine, and these public GET endpoints worked in bounded
@@ -98,7 +103,7 @@ Artifacts:
 
 Production collector change:
 
-- Added `srcColliers()` in `scripts/firecrawl-ops/cre_collector/collect.ts`.
+- Added `srcColliers()` in `../../../../cre_collector/sources/colliers.ts`.
 - Uses only public GET endpoints from `https://sales.colliers.com/` and
   `https://my.rcm1.com`.
 - Does not call the main Coveo POST API.

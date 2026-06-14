@@ -1,3 +1,5 @@
+Historical probe artifact (pre-2026-06-13). Production path: cre_collector/sources/.
+
 # JLL Detail Enrichment Safe Paths - 2026-06-12
 
 Scope: source keys `jll` and `jll-investor` in

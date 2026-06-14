@@ -1,3 +1,5 @@
+Historical probe artifact (pre-2026-06-13). Production path: cre_collector/sources/.
+
 # Avison Young Detail Enrichment - 2026-06-12
 
 Scope: `avison-young` only. Public URL-only enrichment. No PDF or image

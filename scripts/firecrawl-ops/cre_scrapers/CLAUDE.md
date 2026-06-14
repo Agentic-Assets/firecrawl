@@ -2,9 +2,13 @@
 
 Legacy Python scraper package for the EQUIRE CRE listing intelligence pipeline.
 This package is useful for broker-specific experiments and detail-page
-enrichment. It is no longer the production daily bulk path. Use
-`../cre_collector/collect.ts`, `../cre_collector/cre_ingest.py`, and
-`../cre_collector/cre_daily_update.sh` for daily sale and lease inventory.
+enrichment. It is no longer the production daily bulk path.
+
+**Production path:** broker adapters live in `../cre_collector/sources/*.ts`,
+orchestrated by `../cre_collector/collect.ts`, ingested via
+`../cre_collector/cre_ingest.py`, and refreshed by
+`../cre_collector/cre_daily_update.sh`. Monitor/change tracking uses
+`collect.ts --monitor` → `cre_monitor.py` / `cre_gate.py` (never ingest).
 
 Reference docs (read parent `../CLAUDE.md` Start Here for routing):
 
@@ -134,7 +138,7 @@ python3 -m compileall -q cre_scrapers && echo OK
 
 CBRE uses an internal JSON API, not page scraping. See `../prometheus/CLAUDE.md`
 for the endpoint, verified curl, and response shape. Production implementation:
-`../cre_collector/collect.ts`.
+`../cre_collector/sources/cbre.ts`.
 
 Check network requests via browser devtools before building a page scraper for
 any large Next.js/React SPA brokerage; a similar API pattern may exist.
@@ -152,8 +156,9 @@ any large Next.js/React SPA brokerage; a similar API pattern may exist.
 6. Register the slug in `get_scraper()` inside `__init__.py`.
 7. Test: `python3 -c "from cre_scrapers.<module> import <Class>; <Class>().run(max_listings=3)"`
 
-For production daily inventory, also add the source to `../cre_collector/collect.ts`
-and `../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE`.
+For production daily inventory, also add a source adapter in
+`../cre_collector/sources/`, register it in `../cre_collector/collect.ts`, and
+map it in `../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE`.
 
 ## Known issues / gotchas
 

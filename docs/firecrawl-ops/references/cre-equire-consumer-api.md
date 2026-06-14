@@ -22,8 +22,12 @@ query them from server-side code or a deliberate API layer.
   brokerage name and primary contact inlined.
 - `v_cre_market_summary` -- per (city, state, property_type) counts, avg
   price/PSF/size, median cap rate, avg occupancy.
+- `v_cre_recent_changes` -- rolling 7-day `cre_listing_events` feed with listing
+  title, `source_url`, and `brokerage_slug` inlined (operator/prospecting-ops
+  freshness read).
 - `search_cre_listings(query, p_city, p_state, p_type, p_transaction)` -- FTS +
-  optional filters, `ts_rank`-ordered, capped at 200.
+  optional filters, `ts_rank`-ordered, capped at 200. Semantic vector embedding
+  search is deferred (not started); FTS is the current discovery path.
 
 ## 2. Query patterns by agent workflow
 
@@ -154,6 +158,12 @@ resumable chunks). Additive live ingest through `psql` takes under a minute.
 source is still being completed (currently the colliers-main full detail run and
 Savills coverage). Use the default (with `--mark-missing`) only after a clean
 all-source run with acceptable per-broker mark-missing guards.
+
+**Monitor vs ingest.** Full detail collect plus `cre_ingest.py` remains the
+source of truth for listing content (daily). The observe-only monitor path
+(`collect.ts --monitor` then `cre_monitor.py` / `cre_gate.py`) runs on a
+separate cadence, writes only 007 tables and neutral listing columns, and must
+never feed `cre_ingest.py`. See `cre-monitor-subsystem.md`.
 
 **Document enrichment (on demand).** Do not bulk-download brochures. When a
 candidate is promoted, fetch its `cre_listing_documents` URLs through Firecrawl

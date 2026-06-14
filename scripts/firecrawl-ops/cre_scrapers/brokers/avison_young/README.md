@@ -1,7 +1,15 @@
 # Avison Young Scraper Notes
 
-Production bulk collection uses the Avison Young SharpLaunch public feed in
-`cre_collector/collect.ts`.
+**Production path:** `../../../../cre_collector/sources/avison-young.ts` (source
+key `avison-young` in `collect.ts`).
+
+**Monitor (2026-06-13):** First gated `cre_monitor.py --apply` seed source.
+Monitor-enabled enumeration runs through `collect.ts --monitor`; artifacts go to
+`cre_monitor.py` only, never `cre_ingest.py`. See
+`../../../../cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md`.
+
+Production bulk collection uses the Avison Young SharpLaunch public feed via
+the adapter above.
 
 ## Site Structure
 

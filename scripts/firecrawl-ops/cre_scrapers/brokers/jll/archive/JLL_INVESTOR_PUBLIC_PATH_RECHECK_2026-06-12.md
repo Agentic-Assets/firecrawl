@@ -1,3 +1,5 @@
+Historical probe artifact (pre-2026-06-13). Production path: cre_collector/sources/.
+
 # JLL Investor Center Public Path Recheck - 2026-06-12
 
 Scope: source key `jll-investor` only. This is a no-ingest, no-code-change
