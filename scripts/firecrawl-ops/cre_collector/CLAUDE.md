@@ -62,7 +62,8 @@ runs) `--concurrency` (1-6, default 3) `--out=path` `--monitor` (cheap
 enumeration-only pass; see Monitor mode below).
 
 Env: `FIRECRAWL_API_URL` (default `http://localhost:3002`),
-`FIRECRAWL_API_KEY` (any non-empty value for self-hosted).
+`FIRECRAWL_API_KEY` (optional; defaults to `local-self-hosted` when unset;
+self-hosted accepts any non-empty value if you set one).
 
 ### Sources
 
@@ -84,7 +85,7 @@ no counts, so it does not drift.
 | `savills` | Server-rendered pages `/page/N` | yes | yes (tiny US subset) |
 | `svn` | Buildout inventory API (client-side sale/lease partition) | yes | yes |
 | `lee-associates` | Buildout inventory API + durable page cache | yes | yes |
-| `nai-global` | Public Infabode GraphQL + `publicPost` details (FOR_SALE_ON_MARKET only) | yes | yes |
+| `nai-global` | Public Infabode GraphQL + `publicPost` details; filtered to `FOR_SALE_ON_MARKET` on both sale and lease passes | yes | yes |
 | `colliers` | Public SalesTracker RCM GET + anonymous SLP detail (investment-sale subset) | yes | n/a |
 | `colliers-main` | Public XML sitemap + detail-render JSON-LD; folds into `colliers` (`main:` ids) | yes | yes |
 | `transwestern` | Public GET feed + detail pages | yes | yes |
@@ -95,17 +96,19 @@ the sale pass only.
 
 Buildout semantics (svn, lee-associates): the inventory feed has **no
 server-side sale/lease filter** (`lease=true` is ignored). Items carry
-`sale: boolean` (false = lease availability), `also_for_sale_or_lease`,
-`sublease`, `closed`. The collector fetches the full inventory once per
-brokerage (cached across both transaction passes), skips `closed`, and
-partitions client-side. Dual-mode properties appear twice (`-sale`/`-lease`
-propertyId suffixes); the ingestor merges them.
+`sale: boolean` (false = lease availability), `also_for_sale_or_lease`, and
+`closed`. The collector fetches the full inventory once per brokerage (cached
+across both transaction passes), skips `closed`, and partitions client-side.
+Dual-mode properties appear twice in Buildout `show_link` URLs (`-sale`/`-lease`
+suffixes); `cre_ingest.py` merges those into `transaction_type='sale_or_lease'`.
 
 Rate limiting: Buildout occasionally returns HTML interstitials under
-sustained paging. `scrapeJson` retries with backoff; the inventory fetch
-tolerates isolated page failures but aborts the source if more than ~3% of
-pages fail, then caches that failure for the second transaction pass. This
-prevents a gappy run from soft-deleting live rows downstream. Lee now uses the
+sustained paging. `scrapeJson` retries with backoff. Default Buildout paging
+tolerates isolated page failures but aborts if more than ~3% of pages fail
+(`failureLimit = max(3, floor(pages * 0.03))`). **Production `svn` and
+`lee-associates` set `requireCompletePages: true`**, so any failed page aborts
+the source; then caches that failure for the second transaction pass. This
+prevents a gappy run from soft-deleting live rows downstream. Lee uses the
 durable Buildout page cache controls documented in its broker README; assemble
 from cache only after pages 0 through 332 are present.
 
@@ -118,9 +121,10 @@ Document and image child rows store external URLs only. The collector does not
 download or upload PDF/image binaries into Supabase storage.
 
 Credentials: reads `POSTGRES_URL_NON_POOLING` (preferred) or `POSTGRES_URL`
-at runtime from `dynamically-display-cre-listing-data/.env.local` (fallback
-`CRE_EQUIRE/.env.local`), or `--env-file`. Values are never printed or
-persisted into artifacts. Never commit them.
+at runtime from `~/Documents/GitHub/agentic-assets/dynamically-display-cre-listing-data/.env.local`
+(fallback `~/Documents/GitHub/agentic-assets/CRE_EQUIRE/.env.local`), or
+`--env-file`. Live runs print only the env file path, never the URL. Never
+commit credentials.
 
 Key behavior:
 - Dedup key `(brokerage_id, external_id)`; sub-sources fold into the parent
@@ -128,12 +132,14 @@ Key behavior:
   `url:<sha1-16>` synthesized from the listing URL.
 - A listing collected in both sale and lease passes merges to
   `transaction_type='sale_or_lease'`.
-- `cap_rate` stored as fraction [0,1]. Lease rates parsed only when
-  explicitly $/SF (monthly per-SF annualized); everything else stays in
-  `raw_data` (full original payload, always kept).
+- `cap_rate` stored as a decimal fraction (e.g. `0.065` for 6.5%); values
+  `>= 0.5` are dropped as implausible. Lease rates parsed only when explicitly
+  $/SF (monthly per-SF annualized); everything else stays in `raw_data` (full
+  original payload, always kept).
 - Upsert refreshes content fields, resurrects soft-deleted rows
-  (`deleted_at=NULL`), and wholesale-replaces child rows for touched
-  listings.
+  (`deleted_at=NULL`), and wholesale-replaces contacts/documents/images for
+  upserted listings **unless** `raw_data` contains `detailError` (preserves
+  prior children on transient detail failures).
 - `--mark-missing`: soft-deletes rows a full run no longer sees. Guarded per
   brokerage: only applies when every source pass for that brokerage ran
   error-free AND staged >= `--mark-missing-floor` (default 100) rows. Never
@@ -183,10 +189,14 @@ rules to remember:
   `--mark-missing`).** Monitor artifacts are sparse; the ingest upsert would
   erase enriched prices, `raw_data`, and child rows. Monitor artifacts go
   through `cre_monitor.py` only.
-- **`jll` and `jll-investor` are excluded from monitor mode** (emit 0 monitor
-  rows, stay on the full-sweep cadence): their persisted `external_id` is
-  detail-derived and unrecoverable from cheap enumeration. A source emitting 0
-  monitor rows is safely ignored by disappearance detection.
+- **`jll`, `jll-investor`, `cbre-dealflow`, and `colliers` (SalesTracker) are excluded from monitor mode** (emit 0 monitor
+  rows, stay on the full-sweep cadence): persisted `external_id` is
+  detail-derived and unrecoverable from cheap enumeration (`cbre-dealflow`:
+  ingest persists `data.projectid`, monitor yields the URL `listingPv` token;
+  `colliers` SalesTracker: ingest persists the SLP-detail `ProjectId`, monitor
+  yields a `GetMapData` index-paired `ProjectId`). `colliers-main`
+  (XML-sitemap ids) is unaffected and stays monitor-enabled. A source emitting
+  0 monitor rows is safely ignored by disappearance detection.
 - **`nai-global` and `colliers-main` monitor emit supersets** (skip detail-only
   filters); `colliers-main` emits on the sale pass only; `marcus-millichap`
   keeps the lightweight `mappropertydetail` POST. Enumeration-only sources
@@ -194,6 +204,9 @@ rules to remember:
   downstream write savings.
 - The enumeration key (`to_row` external_id) is identical across monitor, full,
   ingest, and gate. Preserve that invariant when adding monitor support.
+- **The coverage gate refuses disappearance for any source whose enumeration
+  pass errored this run.** That error gate is NOT overridable by
+  `--force-disappear`.
 
 `--apply` runs, launchd scheduling, gate wiring into the daily script, and
 Phase-2 status activation are gated for explicit go-ahead.
@@ -201,11 +214,13 @@ Phase-2 status activation are gated for explicit go-ahead.
 ## Daily updates
 
 `cre_daily_update.sh` = healthcheck -> full collect (sale+lease, unlimited)
--> ingest -> prune old artifacts (keeps 14 runs). Logs in `out/daily/`.
+-> ingest -> prune old artifacts (keeps 14 `run_*.json`, 29 `run_*.log`).
+Logs in `out/daily/`.
 The script default includes `--mark-missing`; while the `colliers-main` full
 run is still in progress and Savills remains partial, keep daily ingest
-additive with `bash cre_daily_update.sh --no-mark-missing`. Latest measured full collection was about 27 minutes at concurrency
-3; additive ingest finished in under a minute.
+additive with `bash cre_daily_update.sh --no-mark-missing`. Latest measured
+full collection was about 27 minutes at concurrency 3; additive ingest finished
+in under a minute.
 
 ## Adding a source
 
