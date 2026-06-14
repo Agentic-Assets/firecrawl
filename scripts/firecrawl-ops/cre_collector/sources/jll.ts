@@ -1,0 +1,476 @@
+// sources/jll.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
+import * as cheerio from "cheerio";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { createHash } from "node:crypto";
+import { brokerRef, brokers } from "../lib/broker.js";
+import { CONCURRENCY, PAGE_CAP } from "../lib/config.js";
+import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
+import { scrapeDoc, scrapeRaw } from "../lib/scrape.js";
+import { ScrapedDoc, SourceResult, Tx } from "../types.js";
+import { boundedInt, clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
+
+
+// --- JLL: rendered search pages ---
+
+export const JLL_PROPERTY_TYPES = [
+  "office",
+  "industrial",
+  "retail",
+  "land",
+  "medical",
+  "multifamily",
+  "lab",
+  "coworking",
+  "data-center",
+] as const;
+export const JLL_DETAIL_CONCURRENCY = boundedInt(
+  process.env.JLL_DETAIL_CONCURRENCY,
+  Math.min(CONCURRENCY, 3),
+  1,
+  10
+);
+export const JLL_DETAIL_WAIT_MS = boundedInt(process.env.JLL_DETAIL_WAIT_MS, 1000, 0, 30000);
+export const JLL_DETAIL_FALLBACK_WAIT_MS = boundedInt(
+  process.env.JLL_DETAIL_FALLBACK_WAIT_MS,
+  8000,
+  1000,
+  60000
+);
+
+export function jllPropertyTypeLabel(propertyType: string): string {
+  return propertyType
+    .split("-")
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+export function normalizedJllListingUrl(href: string): string {
+  const abs = href.startsWith("http") ? href : `https://property.jll.com${href}`;
+  const url = new URL(abs);
+  url.hash = "";
+  url.search = "";
+  return url.toString().replace(/\/$/, "");
+}
+
+export function jllFilteredSearchUrl(tenure: "sale" | "rent", propertyType: string, page: number): string {
+  const url = new URL("https://property.jll.com/search");
+  url.searchParams.set("tenureTypes", tenure);
+  url.searchParams.set("propertyTypes", propertyType);
+  url.searchParams.set("page", String(page));
+  return url.toString();
+}
+
+export function parseJllSearchPage(html: string, tx: Tx, propertyType: string, page: number): {
+  total: number | null;
+  listings: any[];
+} {
+  const $ = cheerio.load(html);
+  const total =
+    Number(
+      (($("h2").text() || html).match(/([0-9][0-9,]*)\s+propert(?:y|ies)/i) ?? [])[1]?.replace(/,/g, "")
+    ) || null;
+  const seenHere = new Set<string>();
+  const listings: any[] = [];
+  $('a.text-base[href*="/listings/"]').each((_, el) => {
+    const href = $(el).attr("href");
+    if (!href) return;
+    const url = normalizedJllListingUrl(href);
+    if (seenHere.has(url)) return;
+    seenHere.add(url);
+    const lines: string[] = [];
+    $(el)
+      .find("*")
+      .addBack()
+      .contents()
+      .each((__, n) => {
+        if (n.type === "text") {
+          const t = clean((n as any).data);
+          if (t && t !== "&nbsp;") lines.push(t);
+        }
+      });
+    const flat = lines.join(" | ");
+    const priceText = (flat.match(/\$[0-9][0-9,.]*(?:\s*-\s*\$[0-9][0-9,.]*)?/) ?? [])[0] ?? null;
+    const sizeText = (flat.match(/([0-9][0-9,.]*\s*(?:SF|Acres?))/i) ?? [])[1] ?? null;
+    const addr =
+      lines.find(
+        (l) => /,\s*[A-Z]{2}[, ]/.test(l) || /,\s*[A-Z]{2}$/.test(l.replace(/,?\s*\d{5}$/, ""))
+      ) ?? lines[1] ?? null;
+    const m = (addr ?? "").match(/^(.*?),\s*([A-Z]{2}),?\s*(\d{5})?/);
+    listings.push({
+      id: url.split("/listings/")[1] ?? null,
+      name: lines[0] ?? null,
+      transactionType: tx === "sale" ? "Sale" : "Lease",
+      assetType: jllPropertyTypeLabel(propertyType),
+      city: m ? clean(m[1]) : null,
+      state: m ? m[2] : null,
+      postalCode: m?.[3] ?? null,
+      country: "US",
+      salePriceUsd: tx === "sale" ? moneyToNumber(priceText) : null,
+      salePriceText: tx === "sale" ? priceText : null,
+      leaseRateText: tx === "lease" ? priceText : null,
+      sizeText,
+      brokerIds: [],
+      url,
+      jllPropertyTypeFilters: [propertyType],
+      jllSearchPages: [page],
+      jllFilterTotals: total === null ? {} : { [propertyType]: total },
+    });
+  });
+  return { total, listings };
+}
+
+export async function fetchJllSearchPage(tx: Tx, propertyType: string, page: number): Promise<{
+  total: number | null;
+  listings: any[];
+}> {
+  const searchUrl = jllFilteredSearchUrl(tx === "sale" ? "sale" : "rent", propertyType, page);
+  const waits = [8000, 12000, 16000];
+  let lastParsed: { total: number | null; listings: any[] } | null = null;
+  for (const waitFor of waits) {
+    const html = await scrapeRaw(searchUrl, { waitFor });
+    const parsed = parseJllSearchPage(html, tx, propertyType, page);
+    lastParsed = parsed;
+    if (parsed.listings.length > 0 || parsed.total === 0) return parsed;
+    console.error(
+      `  jll/${tx}/${propertyType}: page ${page} rendered 0 cards (total ${parsed.total ?? "?"}); retrying with waitFor=${waitFor}`
+    );
+  }
+  return lastParsed ?? { total: null, listings: [] };
+}
+
+export function mergeJllListing(existing: any, candidate: any, propertyType: string, page: number) {
+  existing.jllPropertyTypeFilters = Array.from(
+    new Set([...(existing.jllPropertyTypeFilters ?? []), propertyType])
+  );
+  existing.jllSearchPages = Array.from(new Set([...(existing.jllSearchPages ?? []), page]));
+  existing.jllFilterTotals = {
+    ...(existing.jllFilterTotals ?? {}),
+    ...(candidate.jllFilterTotals ?? {}),
+  };
+  const labels = existing.jllPropertyTypeFilters.map(jllPropertyTypeLabel);
+  existing.assetType = labels.join(", ");
+}
+
+export function jllNextData(rawHtml: string): any | null {
+  const $ = cheerio.load(rawHtml);
+  const text = $("#__NEXT_DATA__").first().text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+export function jllDetailCacheDir(): string {
+  return process.env.JLL_DETAIL_CACHE_DIR ?? "out/cache/jll-detail";
+}
+
+export function jllDetailCachePath(url: string): string {
+  const key = createHash("sha1").update(normalizedJllListingUrl(url)).digest("hex");
+  return `${jllDetailCacheDir()}/${key}.json`;
+}
+
+export function readJllDetailCache(url: string): ScrapedDoc | null {
+  const path = jllDetailCachePath(url);
+  if (!existsSync(path)) return null;
+  try {
+    const cached = JSON.parse(readFileSync(path, "utf8"));
+    if (cached.url !== normalizedJllListingUrl(url)) return null;
+    if (typeof cached.rawHtml !== "string") return null;
+    return {
+      rawHtml: cached.rawHtml,
+      markdown: typeof cached.markdown === "string" ? cached.markdown : "",
+      links: Array.isArray(cached.links) ? cached.links.filter((link: any) => typeof link === "string") : [],
+      metadata: cached.metadata,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function writeJllDetailCache(url: string, doc: ScrapedDoc): void {
+  const path = jllDetailCachePath(url);
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(
+    tmp,
+    JSON.stringify(
+      {
+        url: normalizedJllListingUrl(url),
+        cachedAt: new Date().toISOString(),
+        rawHtml: doc.rawHtml,
+        markdown: doc.markdown,
+        links: doc.links,
+        metadata: doc.metadata,
+      },
+      null,
+      2
+    )
+  );
+  renameSync(tmp, path);
+}
+
+export async function scrapeJllDetailDoc(
+  url: string,
+  opts: { refresh?: boolean; waitFor?: number } = {}
+): Promise<ScrapedDoc> {
+  const cached = opts.refresh ? null : readJllDetailCache(url);
+  if (cached) return cached;
+  const doc = await scrapeDoc(url, { waitFor: opts.waitFor ?? JLL_DETAIL_WAIT_MS, timeout: 120000 });
+  writeJllDetailCache(url, doc);
+  return doc;
+}
+
+export function jllPublicProfileUrl(pageUrl: any): string | null {
+  const slug = clean(pageUrl);
+  if (!slug) return null;
+  if (/^https?:\/\//i.test(slug)) return slug;
+  return `https://www.us.jll.com/en/people/${slug.replace(/^\/+/, "")}`;
+}
+
+export function jllStringUrls(values: any): string[] {
+  if (!Array.isArray(values)) return [];
+  return dedupeStrings(values.map((value) => clean(value))).filter((url) => /^https?:\/\//i.test(url));
+}
+
+export function jllSurfaceAreaSqft(property: any): number | null {
+  const direct = num(property?.surfaceArea);
+  if (direct) return direct;
+  const areas = Array.isArray(property?.surfaceAreas) ? property.surfaceAreas : [];
+  const feet = areas
+    .flatMap((area: any) => [area, ...(Array.isArray(area?.metrics) ? area.metrics : [])])
+    .find((area: any) => clean(area?.unit)?.toLowerCase() === "feet");
+  const value = feet?.value;
+  if (typeof value === "number") return num(value);
+  if (value && typeof value === "object") return num(value.max) ?? num(value.min);
+  return null;
+}
+
+export function jllDescription(property: any): string | null {
+  const sections = Array.isArray(property?.descriptionSections) ? property.descriptionSections : [];
+  const pieces = sections
+    .flatMap((section: any) => [stripHtmlText(section?.title), stripHtmlText(section?.content)])
+    .filter(Boolean);
+  const highlights = Array.isArray(property?.highlights)
+    ? property.highlights.map((item: any) => stripHtmlText(item)).filter(Boolean)
+    : [];
+  return clean([...pieces, ...highlights].join("\n\n"));
+}
+
+export function jllContacts(brokersRaw: any[]): any[] {
+  const contacts = (Array.isArray(brokersRaw) ? brokersRaw : [])
+    .map((broker: any) =>
+      prune({
+        name: clean(broker?.name),
+        title: clean(broker?.jobTitle),
+        email: clean(broker?.email),
+        phone: clean(broker?.telephone),
+        company: "JLL",
+        office: clean(broker?.office ?? broker?.city),
+        profileUrl: jllPublicProfileUrl(broker?.pageUrl),
+        avatarUrl: clean(broker?.photo),
+        linkedInUrl: clean(broker?.linkedin),
+        licenses: broker?.brokerLicenses,
+        entityLicenses: broker?.entityLicenses,
+      })
+    )
+    .filter(Boolean);
+  const seen = new Set<string>();
+  return contacts.filter((contact: any) => {
+    const key = contact.email ?? contact.profileUrl ?? contact.name ?? JSON.stringify(contact);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export async function enrichJllListing(base: any): Promise<any> {
+  if (!base.url) return base;
+  try {
+    let doc = await scrapeJllDetailDoc(base.url);
+    let next = jllNextData(doc.rawHtml);
+    let pageProps = next?.props?.pageProps;
+    let property = pageProps?.property;
+    if (!property && JLL_DETAIL_FALLBACK_WAIT_MS > JLL_DETAIL_WAIT_MS) {
+      doc = await scrapeJllDetailDoc(base.url, { refresh: true, waitFor: JLL_DETAIL_FALLBACK_WAIT_MS });
+      next = jllNextData(doc.rawHtml);
+      pageProps = next?.props?.pageProps;
+      property = pageProps?.property;
+    }
+    if (!property) return prune({ ...base, detailError: "missing property in __NEXT_DATA__" });
+
+    const contactsDetailed = jllContacts(Array.isArray(pageProps?.brokers) ? pageProps.brokers : property?.brokers);
+    const brokerIds = contactsDetailed
+      .map((contact: any) =>
+        brokerRef({
+          name: clean(contact.name),
+          email: clean(contact.email),
+          phone: clean(contact.phone),
+          office: clean(contact.office),
+          avatarUrl: clean(contact.avatarUrl),
+          company: "JLL",
+        })
+      )
+      .filter((id: number | null): id is number => id !== null);
+    const brochures = [...jllStringUrls(property.brochures), ...jllStringUrls(property.floorPlans)];
+    const images = jllStringUrls(property.images);
+    const detailUrl = clean(property.pageUrl) ?? clean(pageProps?.relativeUrl);
+    const url = detailUrl ? normalizedJllListingUrl(detailUrl) : base.url;
+
+    return prune({
+      ...base,
+      id: clean(property.id) ?? base.id,
+      name: clean(property.title) ?? base.name,
+      assetType: Array.isArray(property.propertyTypes)
+        ? property.propertyTypes.map(jllPropertyTypeLabel).join(", ")
+        : clean(property.propertyType) ?? base.assetType,
+      description: jllDescription(property) ?? base.description,
+      street: clean(property.address) ?? base.street,
+      city: clean(property.city) ?? base.city,
+      state: clean(property.state) ?? base.state,
+      postalCode: clean(property.postcode) ?? base.postalCode,
+      latitude: num(property.latitude) ?? base.latitude,
+      longitude: num(property.longitude) ?? base.longitude,
+      salePriceText: clean(property.salePrice) ?? base.salePriceText,
+      leaseRateText: clean(property.rentPrice) ?? base.leaseRateText,
+      sizeText: clean(property.surfaceArea) ?? base.sizeText,
+      buildingSizeSqft: jllSurfaceAreaSqft(property) ?? base.buildingSizeSqft,
+      brokerIds,
+      contactsDetailed,
+      brochures: brochures.map((docUrl) => ({ name: titleFromFilename(docUrl), url: docUrl })),
+      photos: images.length ? images : base.photos ?? [],
+      url,
+      lastUpdated: base.lastUpdated,
+      jllDetail: {
+        id: clean(property.id),
+        refId: clean(property.refId),
+        pageUrl: clean(property.pageUrl),
+        relativeUrl: clean(pageProps?.relativeUrl),
+        tenureTypes: property.tenureTypes,
+        propertyTypes: property.propertyTypes,
+        labels: property.labels,
+        amenities: property.amenities,
+        amenitiesData: property.amenitiesData,
+        highlights: property.highlights,
+        customRefId: clean(property.customRefId),
+        buildingClass: clean(property.buildingClass),
+        parkingDetails: property.parkingDetails,
+        locationDescription: stripHtmlText(property.locationDescription),
+        submarket: clean(property.submarket),
+        videos: property.videos,
+        virtualTours: property.virtualTours,
+        view360URLs: property.view360URLs,
+        brokerCount: contactsDetailed.length,
+        brochureCount: brochures.length,
+        imageCount: images.length,
+        scrape: {
+          markdownLength: doc.markdown.length,
+          rawHtmlLength: doc.rawHtml.length,
+          linkCount: doc.links.length,
+        },
+      },
+    });
+  } catch (err) {
+    console.error(`  jll: detail failed for ${base.url}: ${err}`);
+    return prune({ ...base, detailError: String(err) });
+  }
+}
+
+export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+  const tenure = tx === "sale" ? "sale" : "rent";
+  const sourceUrl = `https://property.jll.com/search?tenureTypes=${tenure}`;
+  const listings: any[] = [];
+  const byUrl = new Map<string, any>();
+  const filterTotals: Record<string, number | null> = {};
+  const maxByFilterPage: Record<string, number | null> = {};
+
+  for (let page = 1; listings.length < max && page <= PAGE_CAP; page++) {
+    const activePropertyTypes = JLL_PROPERTY_TYPES.filter((propertyType) => {
+      const maxPage = maxByFilterPage[propertyType];
+      return maxPage === undefined || maxPage === null || page <= maxPage;
+    });
+    if (!activePropertyTypes.length) break;
+
+    const pageResults = await pmap(activePropertyTypes, CONCURRENCY, async (propertyType) => {
+      const parsed = await fetchJllSearchPage(tx, propertyType, page);
+      if (filterTotals[propertyType] === undefined) {
+        filterTotals[propertyType] = parsed.total;
+        maxByFilterPage[propertyType] =
+          parsed.total === null ? null : Math.max(1, Math.ceil(parsed.total / 50));
+      }
+      console.error(
+        `  jll/${tx}/${propertyType}: page ${page}, ${parsed.listings.length} cards (filter total ${parsed.total ?? "?"})`
+      );
+      return { propertyType, ...parsed };
+    });
+
+    let addedOrSeenOnPage = 0;
+    for (let offset = 0; ; offset++) {
+      let advanced = false;
+      for (const result of pageResults) {
+        const candidate = result.listings[offset];
+        if (!candidate) continue;
+        advanced = true;
+        addedOrSeenOnPage++;
+        const existing = byUrl.get(candidate.url);
+        if (existing) {
+          mergeJllListing(existing, candidate, result.propertyType, page);
+          continue;
+        }
+        if (listings.length >= max) continue;
+        byUrl.set(candidate.url, candidate);
+        listings.push(candidate);
+      }
+      if (!advanced) break;
+    }
+
+    console.error(
+      `  jll/${tx}: page ${page}, ${listings.length} unique collected across ${activePropertyTypes.length} property filters`
+    );
+    if (addedOrSeenOnPage === 0) break;
+  }
+  if (!listings.length) throw new Error("no listing cards found on JLL search page");
+  const knownTotals = Object.values(filterTotals).filter((n): n is number => typeof n === "number");
+  const total = knownTotals.length ? knownTotals.reduce((sum, n) => sum + n, 0) : null;
+  if (monitor) {
+    // Monitor mode is NOT supported for jll: the persisted external id is the
+    // detail-page numeric property.id (enrichJllListing, id = property.id), which
+    // cannot be recovered from the search card (the cheap key is only the URL
+    // slug). Verified 11,230/11,230 slug != property.id against a full artifact.
+    // Emitting slug-keyed rows would make every row read as NEW each run and
+    // pollute the change ledger / enrichment queue, so jll stays on the
+    // full-sweep cadence and emits no monitor rows. A cheap path would need
+    // URL-keyed reconciliation in cre_monitor.py (out of scope here).
+    return {
+      company: "JLL",
+      sourceUrl,
+      method: "Monitor mode unsupported (detail-derived numeric external id); full-sweep cadence only",
+      totalAvailable: total,
+      listings: [],
+      note: "Monitor mode emits no rows for jll: its external id is the detail-page numeric property.id and cannot be derived from the search-card URL slug. Refresh this source via the full (non-monitor) collection path.",
+    };
+  }
+  let enrichedCount = 0;
+  const enriched = await pmap(listings, JLL_DETAIL_CONCURRENCY, async (listing) => {
+    const row = await enrichJllListing(listing);
+    enrichedCount++;
+    if (enrichedCount % 100 === 0 || enrichedCount === listings.length) {
+      console.error(`  jll/${tx}: detail enriched ${enrichedCount}/${listings.length}`);
+    }
+    return row;
+  });
+  const totalEvidence = JLL_PROPERTY_TYPES.map(
+    (propertyType) => `${propertyType}=${filterTotals[propertyType] ?? "?"}`
+  ).join(", ");
+  return {
+    company: "JLL",
+    sourceUrl,
+    method:
+      "Rendered search pages parsed across public propertyTypes filters, then detail __NEXT_DATA__ enrichment with URL-only assets",
+    totalAvailable: total,
+    listings: enriched,
+    note: `Per-filter source totals before cross-filter de-dupe: ${totalEvidence}. Detail enrichment stores public brochure/image/profile URLs only and retains per-row detailError if a detail scrape fails.`,
+  };
+}

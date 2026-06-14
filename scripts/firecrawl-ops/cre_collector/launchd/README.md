@@ -22,10 +22,12 @@ source enumeration, diffs `(external_id, status, price, lastmod)` against
 `--mark-missing`. New-listing latency for Tier-1 sources drops from ~24h to
 the monitor interval.
 
-Gate: `cre_monitor.py` does not exist yet. `cre_run_tier.sh` checks for it
-and exits cleanly with a "not yet implemented" message if it is absent.
-**Do not load this plist until Phase 3 of the design-doc build sequence is
-complete and the monitor runner is proven on at least one Tier-1 source.**
+Gate: `cre_monitor.py` and `cre_gate.py` both exist and are unit-tested.
+`cre_run_tier.sh monitor` now runs `collect.ts --monitor` (cheap enumeration)
+then `cre_monitor.py --in <artifact>` in observe-only mode. Passing `--apply`
+requires setting `CRE_MONITOR_APPLY=1` in the environment.
+**Loading this plist and enabling `--apply` (via `CRE_MONITOR_APPLY=1`) remain
+GATED: do not load this plist or enable --apply without explicit go-ahead.**
 
 ---
 

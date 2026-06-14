@@ -27,6 +27,7 @@ no logic is re-implemented here.
 """
 
 import json
+import math
 import os
 import re
 import tempfile
@@ -166,7 +167,7 @@ class TestLoadArtifactGroups:
         }
         path = _write_artifact(_minimal_artifact(listing))
         try:
-            groups, _, per_source, skipped = m.load_artifact_groups([path])
+            groups, _, per_source, skipped, _ = m.load_artifact_groups([path])
         finally:
             os.unlink(path)
         assert len(groups) == 1
@@ -178,7 +179,7 @@ class TestLoadArtifactGroups:
         listing = {"sourceKey": "colliers", "id": "no-url", "transactionMode": "sale"}
         path = _write_artifact(_minimal_artifact(listing))
         try:
-            groups, _, _, skipped = m.load_artifact_groups([path])
+            groups, _, _, skipped, _ = m.load_artifact_groups([path])
         finally:
             os.unlink(path)
         assert len(groups) == 0
@@ -191,7 +192,7 @@ class TestLoadArtifactGroups:
                "id": "2", "transactionMode": "sale"}
         path = _write_artifact(_minimal_artifact(l1, l2))
         try:
-            groups, _, per_source, skipped = m.load_artifact_groups([path])
+            groups, _, per_source, skipped, _ = m.load_artifact_groups([path])
         finally:
             os.unlink(path)
         assert len(groups) == 2
@@ -213,7 +214,7 @@ class TestLoadArtifactGroups:
         }
         path = _write_artifact(_minimal_artifact(sale, lease))
         try:
-            groups, _, per_source, skipped = m.load_artifact_groups([path])
+            groups, _, per_source, skipped, _ = m.load_artifact_groups([path])
         finally:
             os.unlink(path)
         # Both listings share propertyId=999 (suffix stripped) -> one group
@@ -226,6 +227,87 @@ class TestLoadArtifactGroups:
         # Both raw flat dicts are preserved in flat_listings
         grp = groups[("svn", "999")]
         assert len(grp["flat_listings"]) == 2
+
+    def test_errored_source_key_collected_into_fifth_value(self):
+        """A sources[] entry with a truthy 'error' surfaces its sourceKey in the
+        5th return value. The coverage gate consumes this to refuse disappearance
+        for a truncated/failed pass."""
+        payload = _minimal_artifact({
+            "sourceKey": "colliers",
+            "url": "https://sales.colliers.com/#project-err-1",
+            "id": "err-1",
+            "transactionMode": "sale",
+        })
+        payload["sources"] = [
+            {"sourceKey": "savills", "error": "timeout fetching /page/3"},
+            {"sourceKey": "colliers"},  # no error key -> not collected
+        ]
+        path = _write_artifact(payload)
+        try:
+            groups, _, _, _, errored = m.load_artifact_groups([path])
+        finally:
+            os.unlink(path)
+        assert errored == {"savills"}
+        # The non-errored source still produced its group.
+        assert ("colliers", "err-1") in groups
+
+    def test_no_error_sources_return_empty_set(self):
+        """No sources[] entry carries an error -> the 5th value is an empty set."""
+        payload = _minimal_artifact({
+            "sourceKey": "colliers",
+            "url": "https://sales.colliers.com/#project-ok-1",
+            "id": "ok-1",
+            "transactionMode": "sale",
+        })
+        # A falsy error (None / "") must NOT count as errored.
+        payload["sources"] = [
+            {"sourceKey": "colliers", "error": None},
+            {"sourceKey": "svn", "error": ""},
+        ]
+        path = _write_artifact(payload)
+        try:
+            _, _, _, _, errored = m.load_artifact_groups([path])
+        finally:
+            os.unlink(path)
+        assert errored == set()
+
+    def test_errored_entry_without_source_key_is_ignored(self):
+        """An errored sources[] entry with no sourceKey cannot be attributed, so it
+        is dropped rather than poisoning the errored set with None/''."""
+        payload = _minimal_artifact({
+            "sourceKey": "colliers",
+            "url": "https://sales.colliers.com/#project-anon-err",
+            "id": "anon-err",
+            "transactionMode": "sale",
+        })
+        payload["sources"] = [{"error": "boom, but no sourceKey"}]
+        path = _write_artifact(payload)
+        try:
+            _, _, _, _, errored = m.load_artifact_groups([path])
+        finally:
+            os.unlink(path)
+        assert errored == set()
+
+    def test_truncated_source_key_collected_into_fifth_value(self):
+        """A sources[] entry with truncated=true (a partial pass that did NOT throw)
+        is folded into the errored set so the coverage gate refuses disappearance for
+        it, exactly like an errored pass. A falsy truncated must not count."""
+        payload = _minimal_artifact({
+            "sourceKey": "newmark",
+            "url": "https://www.nmrk.com/properties/trunc-1",
+            "id": "trunc-1",
+            "transactionMode": "sale",
+        })
+        payload["sources"] = [
+            {"sourceKey": "newmark", "truncated": True, "listingsCollected": 990},
+            {"sourceKey": "svn", "truncated": False},  # falsy -> not collected
+        ]
+        path = _write_artifact(payload)
+        try:
+            _, _, _, _, errored = m.load_artifact_groups([path])
+        finally:
+            os.unlink(path)
+        assert errored == {"newmark"}
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +334,7 @@ class TestFinalizeGroupTerminalWins:
         }
         path = _write_artifact(_minimal_artifact(sale_flat, lease_flat))
         try:
-            groups, _, _, _ = m.load_artifact_groups([path])
+            groups, _, _, _, _ = m.load_artifact_groups([path])
         finally:
             os.unlink(path)
         assert len(groups) == 1
@@ -271,7 +353,7 @@ class TestFinalizeGroupTerminalWins:
         }
         path = _write_artifact(_minimal_artifact(listing))
         try:
-            groups, _, _, _ = m.load_artifact_groups([path])
+            groups, _, _, _, _ = m.load_artifact_groups([path])
         finally:
             os.unlink(path)
         finalized = m.finalize_group(list(groups.values())[0])
@@ -288,7 +370,7 @@ class TestFinalizeGroupTerminalWins:
         }
         path = _write_artifact(_minimal_artifact(listing))
         try:
-            groups, _, _, _ = m.load_artifact_groups([path])
+            groups, _, _, _, _ = m.load_artifact_groups([path])
         finally:
             os.unlink(path)
         finalized = m.finalize_group(list(groups.values())[0])
@@ -306,7 +388,7 @@ class TestFinalizeGroupTerminalWins:
         }
         path = _write_artifact(_minimal_artifact(listing))
         try:
-            groups, _, _, _ = m.load_artifact_groups([path])
+            groups, _, _, _, _ = m.load_artifact_groups([path])
         finally:
             os.unlink(path)
         finalized = m.finalize_group(list(groups.values())[0])
@@ -707,6 +789,50 @@ class TestSQLSafety:
                 f"cre_listings must not be an INSERT target in the monitor SQL; got {target!r}"
             )
 
+    def test_full_payload_emits_queue_and_disappear_blocks_still_observe_only(self):
+        """With NON-EMPTY enqueue_new AND enqueue_changed AND disappear_marks, the
+        generated SQL must contain the enrichment-queue INSERT, the step-3
+        cre_source_index upsert, and the step-3b cre_source_index disappearance
+        UPDATE, while STILL never writing cre_listings.status or deleted_at."""
+        finalized = [_gfin("Z1", status="sold", sale_price_usd=900_000)]
+        events = [
+            m._event("L1", BID, "colliers", "new"),
+            m._event("L2", BID, "colliers", "status_change",
+                     field="status", old_value="active", new_value="sold"),
+        ]
+        enqueue_new = {(BID, "colliers", "NEW1"): "https://example.com/new1"}
+        enqueue_changed = {(BID, "colliers", "CHG1"): "https://example.com/chg1"}
+        disappear_marks = [(BID, "GONE1")]
+        sql = m.build_write_sql(
+            finalized, events, enqueue_new, enqueue_changed, disappear_marks,
+            RUN, "2026-06-13T00:00:00Z", "monitor observe-only test", ["colliers"],
+        )
+        # (a) enrichment queue INSERT present (driven by enqueue_new + enqueue_changed)
+        assert "INSERT INTO credeals.cre_enrichment_queue" in sql
+        # both a 'new' and a 'changed' reason row are staged
+        assert "'new'" in sql and "'changed'" in sql
+        # (b) step-3 cre_source_index upsert body present
+        assert "INSERT INTO credeals.cre_source_index AS si" in sql
+        # (c) step-3b disappearance UPDATE targets cre_source_index (driven by marks)
+        assert "UPDATE credeals.cre_source_index si" in sql
+        assert "SET soft_deleted = true" in sql
+        # Observe-only invariant preserved (same grep as the other build_write_sql tests).
+        non_comment = "\n".join(
+            line for line in sql.split("\n")
+            if not line.strip().startswith("--")
+        )
+        assert not re.search(r"\bstatus\s*=", non_comment), (
+            "status assignment found in generated SQL (outside comments)"
+        )
+        assert not re.search(r"deleted_at\s*=", non_comment), (
+            "deleted_at assignment found in generated SQL (outside comments)"
+        )
+        # The single cre_listings UPDATE remains the neutral-columns-only update.
+        assert len(re.findall(r"UPDATE credeals\.cre_listings", sql)) == 1
+        # cre_listings is never an INSERT target even with the full payload.
+        for target in re.findall(r"INSERT\s+INTO\s+(credeals\.\w+)", sql, re.I):
+            assert target != "credeals.cre_listings"
+
 
 # ---------------------------------------------------------------------------
 # 7. Gate verdict_for: first_seen / hold / ok precedence
@@ -891,3 +1017,129 @@ class TestBrokerageRollup:
             "cbre-dealflow": {"mark_missing_safe": True},
         })
         assert sorted(rollup["cbre"]["source_keys"]) == ["cbre", "cbre-dealflow"]
+
+
+# ---------------------------------------------------------------------------
+# 10. coverage_decision: the pure per-source disappearance-coverage gate
+# ---------------------------------------------------------------------------
+
+
+class TestCoverageDecision:
+    """coverage_decision precedence (each step short-circuits):
+        1. in_baseline                      -> None  (first-ever enumeration)
+        2. errored                          -> False (NOT overridable by force)
+        3. force_disappear or prior_live==0 -> True
+        4. enum_count >= fraction * prior_live
+
+    The fraction is read from the module constant so a constant change is caught
+    here rather than hidden behind a hardcoded 0.7.
+    """
+
+    FRAC = m.DISAPPEAR_COVERAGE_FRACTION
+
+    def _decide(self, **kw):
+        base = dict(in_baseline=False, errored=False, force_disappear=False,
+                    prior_live=100, enum_count=100)
+        base.update(kw)
+        return m.coverage_decision(**base)
+
+    def test_enum_just_below_fraction_is_false(self):
+        prior_live = 100
+        threshold = self.FRAC * prior_live
+        just_below = math.ceil(threshold) - 1
+        assert just_below < threshold, "test arithmetic: value must be below threshold"
+        assert self._decide(prior_live=prior_live, enum_count=just_below) is False
+
+    def test_enum_at_or_above_fraction_is_true(self):
+        prior_live = 100
+        threshold = self.FRAC * prior_live
+        at_or_above = math.ceil(threshold)
+        assert at_or_above >= threshold, "test arithmetic: value must reach threshold"
+        assert self._decide(prior_live=prior_live, enum_count=at_or_above) is True
+
+    def test_in_baseline_returns_none(self):
+        # Even with a zero enumeration, a first-ever source is seeded (None), not gated.
+        assert self._decide(in_baseline=True, prior_live=100, enum_count=0) is None
+
+    def test_prior_live_zero_returns_true(self):
+        # Nothing live to protect -> disappearance permitted.
+        assert self._decide(prior_live=0, enum_count=0) is True
+
+    def test_force_disappear_bypasses_fraction(self):
+        # enum_count far below threshold, but the explicit override wins.
+        assert self._decide(force_disappear=True, prior_live=1000, enum_count=1) is True
+
+    def test_errored_returns_false(self):
+        # A truncated/failed pass refuses disappearance even at full coverage.
+        assert self._decide(errored=True, prior_live=1000, enum_count=1000) is False
+
+    def test_errored_is_not_overridable_by_force_disappear(self):
+        # The error gate is the hard, non-overridable mass-soft-delete guard:
+        # forcing disappearance on a known-truncated pass is exactly the hazard the
+        # gate exists to prevent, so force_disappear must NOT flip it to True.
+        assert self._decide(errored=True, force_disappear=True,
+                            prior_live=1000, enum_count=1000) is False
+
+    def test_in_baseline_precedence_over_errored_and_force(self):
+        # in_baseline is evaluated first, so it wins over both errored and force.
+        assert self._decide(in_baseline=True, errored=True, force_disappear=True,
+                            prior_live=1000, enum_count=0) is None
+
+
+# ---------------------------------------------------------------------------
+# 11. run_source_keys guard: a source absent from this run never disappears
+# ---------------------------------------------------------------------------
+
+
+class TestRunSourceKeysDisappearGuard:
+    """jll / jll-investor (and other 0-monitor-row sources) are absent from
+    run_source_keys. Their prior index rows must NEVER produce disappeared events
+    or disappear_marks, even though they are gone from this run's enumeration.
+    This is the 0-row exclusion safety property that stops the monitor from mass
+    soft-deleting a source it simply did not enumerate this run."""
+
+    def test_prior_rows_for_absent_source_never_disappear(self):
+        present = _gfin("P1", source_key="colliers")
+        gone_jll = _gfin("INV1", source_key="jll")
+        current = {(BID, "P1"): present}
+        prior_index = {
+            (BID, "P1"): _idx(present),
+            (BID, "INV1"): _idx(gone_jll),  # jll row, gone from this run
+        }
+        prior_listings = {
+            (BID, "P1"): {"id": "L-P1", "status": "active", "deleted": False},
+            (BID, "INV1"): {"id": "L-INV1", "status": "active", "deleted": False},
+        }
+        events, _, _, marks, _ = m.derive_events(
+            current, prior_index, prior_listings, {},
+            {"colliers"},                     # run_source_keys EXCLUDES jll
+            set(),                            # colliers has prior rows -> not baseline
+            {"colliers": True, "jll": True},  # jll coverage True is irrelevant: skipped first
+            RUN,
+        )
+        assert [e for e in events if e["event_type"] == "disappeared"] == []
+        assert marks == []
+
+    def test_contrast_in_run_source_does_disappear(self):
+        """Positive control: when the SAME gone row's source IS in run_source_keys
+        and coverage passes, it DOES disappear, proving the guard above (not some
+        unrelated suppression) is what protects the absent source."""
+        present = _gfin("P1", source_key="colliers")
+        gone = _gfin("G1", source_key="colliers")
+        current = {(BID, "P1"): present}
+        prior_index = {
+            (BID, "P1"): _idx(present),
+            (BID, "G1"): _idx(gone),
+        }
+        prior_listings = {
+            (BID, "P1"): {"id": "L-P1", "status": "active", "deleted": False},
+            (BID, "G1"): {"id": "L-G1", "status": "active", "deleted": False},
+        }
+        events, _, _, marks, _ = m.derive_events(
+            current, prior_index, prior_listings, {},
+            {"colliers"}, set(), {"colliers": True}, RUN,
+        )
+        disappeared = [e for e in events if e["event_type"] == "disappeared"]
+        assert len(disappeared) == 1
+        assert disappeared[0]["listing_id"] == "L-G1"
+        assert (BID, "G1") in marks

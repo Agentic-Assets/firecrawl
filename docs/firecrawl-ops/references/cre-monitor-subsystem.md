@@ -59,15 +59,20 @@ the hard gotchas a new session needs before running anything.
    rows. Monitor artifacts go through `cre_monitor.py` ONLY. "Same JSON shape"
    means shape-compatible for the diff layer, not safe for the listings upsert.
 
-2. **`jll` and `jll-investor` are excluded from monitor mode** (they return zero
+2. **`jll`, `jll-investor`, `cbre-dealflow`, and `colliers` (SalesTracker) are excluded from monitor mode** (they return zero
    monitor listings and stay on the full-sweep cadence). Their persisted
-   `external_id` is detail-derived (jll: numeric `property.id` from
-   `__NEXT_DATA__`; jll-investor: Salesforce `listing.id`), and the cheap
-   enumeration only yields the URL slug. Verified 11,230/11,230 (jll) and
-   934/934 (jll-investor) slug-vs-persisted-id mismatch against full artifacts.
-   Emitting slug-keyed monitor rows would make every row read as NEW each run
-   and flood `cre_listing_events` / `cre_enrichment_queue`. A cheap path would
-   require URL-keyed reconciliation inside `cre_monitor.py` (not built).
+   `external_id` is detail-derived and unrecoverable from cheap enumeration:
+   jll uses the numeric `property.id` from `__NEXT_DATA__`; jll-investor uses
+   the Salesforce `listing.id`; `cbre-dealflow` ingest persists `data.projectid`
+   while the monitor card yields the URL `listingPv` token (~78% mismatch across
+   ~1,836 rows); `colliers` (SalesTracker) ingest persists the SLP-detail
+   `ProjectId` while the monitor card yields a `GetMapData` `ProjectId` paired
+   by array index (~45% mismatch across ~1,300 rows). `colliers-main`
+   (XML-sitemap ids) is unaffected and stays monitor-enabled. Verified
+   11,230/11,230 (jll) and 934/934 (jll-investor) slug-vs-persisted-id mismatch
+   against full artifacts. Emitting mismatched keys would make those rows read as
+   NEW each run and flood `cre_listing_events` / `cre_enrichment_queue`. A cheap
+   path would require URL-keyed reconciliation inside `cre_monitor.py` (not built).
 
 3. **The enumeration-key invariant is load-bearing.** monitor key ==
    ingest `external_id`, because both reuse `cre_ingest.to_row`. Any source
@@ -82,11 +87,13 @@ the hard gotchas a new session needs before running anything.
    holds even under `--force-disappear`. That is why excluding jll / jll-investor
    is safe and not a mass-disappearance risk.
 
-5. **Disappearance is double-gated.** A `disappeared` event fires only if the
-   source is in `run_source_keys` AND it re-enumerated at least
-   `DISAPPEAR_COVERAGE_FRACTION` (0.7) of its prior live index population.
-   `--force-disappear` bypasses the coverage fraction but NOT `run_source_keys`
-   membership.
+5. **Disappearance is double-gated (triple-gated with the error block).** A
+   `disappeared` event fires only if the source is in `run_source_keys` AND it
+   re-enumerated at least `DISAPPEAR_COVERAGE_FRACTION` (0.7) of its prior live
+   index population. `--force-disappear` bypasses the coverage fraction but NOT
+   `run_source_keys` membership. Additionally, the coverage gate refuses
+   disappearance for any source whose enumeration pass reported an error this
+   run; that error gate is NOT overridable by `--force-disappear`.
 
 6. **Monitor emits supersets for `nai-global` and `colliers-main`.** Monitor
    skips detail-dependent filters (NAI `FOR_SALE_ON_MARKET`, colliers-main

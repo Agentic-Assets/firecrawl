@@ -228,9 +228,10 @@ def load_artifact_groups(paths):
               merged_row, flat_listings}
       per_source_flat: source_key -> count of to_row-successful flat listings
       errored_source_keys: set of source_key whose enumeration reported an error
-              on ANY transaction pass this run (truncated/failed pass). Disappearance
-              must be refused for these (a partial pass is not a safe disappearance
-              signal), even if the surviving rows clear the coverage fraction.
+              OR a truncated/partial pass (sources[].error set, or sources[].truncated
+              true) on ANY transaction pass this run. Disappearance must be refused
+              for these (a partial pass is not a safe disappearance signal), even if
+              the surviving rows clear the coverage fraction.
     """
     groups = {}
     per_source_flat = defaultdict(int)
@@ -245,7 +246,7 @@ def load_artifact_groups(paths):
         run_started_at = run_started_at or run_meta.get("startedAt")
         scraped_at = run_meta.get("finishedAt") or datetime.now(timezone.utc).isoformat()
         for src in data.get("sources") or []:
-            if src.get("error"):
+            if src.get("error") or src.get("truncated"):
                 sk = src.get("sourceKey")
                 if sk:
                     errored_source_keys.add(sk)

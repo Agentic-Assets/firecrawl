@@ -9,7 +9,9 @@
 # the next scheduled interval.
 #
 # Tier semantics:
-#   monitor  — cheap enumeration diff (cre_monitor.py); NOT YET IMPLEMENTED
+#   monitor  — cheap enumeration diff: runs collect.ts --monitor then cre_monitor.py
+#              observe-only by default; pass CRE_MONITOR_APPLY=1 to enable --apply
+#              (GATED: requires explicit go-ahead before enabling --apply or loading the plist)
 #   daily    — full collect + additive ingest with --no-mark-missing (safe default)
 #   weekly   — full collect + ingest with --mark-missing (ONLY tier permitted to
 #              soft-delete rows; runs after proven convergence on Tier-1 sources)
@@ -64,14 +66,24 @@ echo "[cre_run_tier] START tier=${TIER} at $(ts)"
 case "${TIER}" in
 
     monitor)
-        if [[ ! -f "${MONITOR_SCRIPT}" ]]; then
-            echo "[cre_run_tier] NOT YET IMPLEMENTED: ${MONITOR_SCRIPT} does not exist." >&2
-            echo "[cre_run_tier] The monitor tier will run once cre_monitor.py is built (design-doc section 10 Phase 3)." >&2
-            echo "[cre_run_tier] Exiting cleanly — no data was modified." >&2
-            exit 0
+        MONITOR_STAMP="$(date +%Y-%m-%d_%H%M)"
+        MONITOR_OUT_DIR="${COLLECTOR_DIR}/out/monitor"
+        mkdir -p "${MONITOR_OUT_DIR}"
+        MONITOR_ARTIFACT="${MONITOR_OUT_DIR}/monitor_${MONITOR_STAMP}.json"
+
+        echo "[cre_run_tier] [1/2] collect --monitor -> ${MONITOR_ARTIFACT}"
+        npx tsx collect.ts \
+            --source=all \
+            --monitor \
+            --out="${MONITOR_ARTIFACT}"
+
+        APPLY_FLAG=""
+        if [ "${CRE_MONITOR_APPLY:-0}" = "1" ]; then
+            APPLY_FLAG="--apply"
         fi
-        echo "[cre_run_tier] Running monitor pipeline: python3 ${MONITOR_SCRIPT}"
-        python3 "${MONITOR_SCRIPT}"
+        echo "[cre_run_tier] [2/2] cre_monitor.py --in ${MONITOR_ARTIFACT} ${APPLY_FLAG:-(observe-only; CRE_MONITOR_APPLY not set)}"
+        # shellcheck disable=SC2086
+        python3 "${MONITOR_SCRIPT}" --in "${MONITOR_ARTIFACT}" ${APPLY_FLAG}
         ;;
 
     daily)

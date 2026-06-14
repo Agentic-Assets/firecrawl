@@ -1,0 +1,309 @@
+async function buildoutInventory(
+async function cbreDealflowGetText(url
+async function cbreDealflowPostJson(path
+async function colliersGetJson(url
+async function colliersGetText(url
+async function colliersMainEnrichAll(max
+async function directBuildoutJson(url
+async function enrichAvisonYoungListing(base
+async function enrichCbreDealflowCard(card
+async function enrichColliersCard(card
+async function enrichCushmanListing(row
+async function enrichJllInvestorListing(base
+async function enrichJllListing(base
+async function enrichMarcusListing(base
+async function enrichTranswesternListing(row
+async function fetchAvisonYoungApiKey()
+async function fetchAvisonYoungEntity(entity
+async function fetchBuildoutInventoryPage(
+async function fetchColliersMainEntries()
+async function fetchJllSearchPage(tx
+async function fetchMarcusDetailHtml(url
+async function fetchMarcusMapListing(mapRow
+async function fetchMarcusMapRows()
+async function fetchNaiFeedPage(offset
+async function fetchNaiPublicPost(id
+async function getAvisonYoungFeed()
+async function main() {
+async function marcusPost(path
+async function naiGraphqlPost(url
+async function newmarkAlgoliaJson(url
+async function pmap<T, R>(items
+async function runSource(key
+async function scrapeColliersMainDetailDoc(url
+async function scrapeDoc(url
+async function scrapeJllDetailDoc(
+async function scrapeJson(url
+async function scrapeRaw(url
+async function sleepBuildoutJitter()
+async function srcAvisonYoung(tx
+async function srcBuildout(
+async function srcCbre(tx
+async function srcCbreDealflow(tx
+async function srcColliers(tx
+async function srcColliersMain(tx
+async function srcCushman(tx
+async function srcJll(tx
+async function srcJllInvestor(tx
+async function srcMarcusMillichap(tx
+async function srcNaiGlobal(tx
+async function srcNewmark(tx
+async function srcSavills(tx
+async function srcSavillsCommercialLease(max
+async function srcTranswestern(tx
+const API_URL
+const AVISON_YOUNG_API_BASE
+const AVISON_YOUNG_CDN_BASE
+const AVISON_YOUNG_DETAIL_CONCURRENCY
+const AVISON_YOUNG_FALLBACK_API_KEY
+const AVISON_YOUNG_HOST
+const AVISON_YOUNG_PAGE_URL
+const CBRE_DEALFLOW_BASE
+const CBRE_DEALFLOW_DETAIL_CONCURRENCY
+const CBRE_DEALFLOW_FALLBACK_ENGINE_KEY
+const CBRE_DEALFLOW_PAGE_SIZE
+const CBRE_DEALFLOW_PROJECT_TYPE_BY_TX
+const CBRE_DEALFLOW_SOURCE_URL
+const COLLIERS_DETAIL_CONCURRENCY
+const COLLIERS_FALLBACK_ENGINE_KEY
+const COLLIERS_MAIN_DETAIL_CONCURRENCY
+const COLLIERS_MAIN_DETAIL_WAIT_MS
+const COLLIERS_MAIN_HOST
+const COLLIERS_MAIN_SCRAPE_OPTS
+const COLLIERS_MAIN_SITEMAP_INDEX
+const COLLIERS_MAIN_SOURCE_URL
+const COLLIERS_PAGE_SIZE
+const COLLIERS_RCM_BASE
+const COLLIERS_SALESTRACKER_BASE
+const COLLIERS_SOURCE_URL
+const CONCURRENCY
+const CUSHMAN_API_BASE
+const CUSHMAN_API_CONCURRENCY
+const CUSHMAN_DETAIL_CONCURRENCY
+const CUSHMAN_HOST
+const CUSHMAN_PAGE_SIZE
+const CUSHMAN_QUERY
+const JLL_DETAIL_CONCURRENCY
+const JLL_DETAIL_FALLBACK_WAIT_MS
+const JLL_DETAIL_WAIT_MS
+const JLL_INVESTOR_DETAIL_CONCURRENCY
+const JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS
+const JLL_INVESTOR_DETAIL_WAIT_MS
+const JLL_INVESTOR_HOST
+const JLL_INVESTOR_SEARCH_URL
+const JLL_INVESTOR_SITEMAP_INDEX_URL
+const JLL_INVESTOR_SITEMAP_SCAN_LIMIT
+const JLL_INVESTOR_US_SITEMAP_URL
+const JLL_PROPERTY_TYPES
+const MARCUS_BASE
+const MARCUS_PROPERTIES_URL
+const MAX_ITEMS
+const MONITOR
+const NAI_CONTENT_TYPE_BY_TX
+const NAI_DETAIL_CONCURRENCY
+const NAI_DETAIL_QUERY
+const NAI_FEED_QUERY
+const NAI_LISTING_URL_BASE
+const NAI_PAGE_SIZE
+const NAI_PUBLIC_API_URL
+const NAI_PUBLIC_POST_URL
+const NAI_SOURCE_IDS
+const NAI_WIDGET_URL
+const OUT_PATH
+const PAGE_CAP
+const SOURCE_KEYS
+const TRANSACTIONS
+const TRANSWESTERN_BUCKETS
+const TRANSWESTERN_HOST
+const UNSUPPORTED
+const US_STATE_NAME_TO_ABBR
+const brokerIndex
+const brokers
+const buildoutCache
+const buildoutFailureCache
+const firecrawl
+const naiFeedPageCache
+const newmarkPeopleCache
+const rawMax
+const requestedSources
+const sourceArg
+const txArg
+function acresFromText(text
+function appendColliersMainCache(path
+function appendMarcusDetailCache(path
+function avisonYoungAbsoluteUrl(value
+function avisonYoungBaseListing(row
+function avisonYoungContact(member
+function avisonYoungDetailLimit(max
+function avisonYoungLeaseRateText(row
+function avisonYoungMatchesTx(row
+function avisonYoungNameSlug(name
+function avisonYoungSizeText(row
+function avisonYoungTransactionType(row
+function avisonYoungTransactions(row
+function baseCushmanListing(row
+function boundedInt(value
+function brokerRef(b
+function buildoutCacheDir()
+function buildoutCacheSlug(company
+function buildoutInventoryUrl(pluginKey
+function buildoutJitterMs()
+function buildoutPageCachePath(company
+function buildoutPageWindow(pages
+function canonicalCushmanAssetUrl(url
+function canonicalCushmanUrl(url
+function canonicalTranswesternUrl(href
+function cbreDealflowCardContacts($
+function cbreDealflowContacts(data
+function cbreDealflowDescription(data
+function cbreDealflowDocumentUrls(data
+function cbreDealflowHeaders(accept
+function cbreDealflowImageUrls(data
+function cbreDealflowTextFromHtml(html
+function cbreDealflowUrl(href
+function clean(s
+function colliersAcresToNumber(value
+function colliersContactsFromCard($
+function colliersDetailContacts(detail
+function colliersDetailImages(detail
+function colliersHeaders(accept
+function colliersListUrl(engineKey
+function colliersMainAbs(href
+function colliersMainDetailCachePath()
+function colliersMainIdFromUrl(url
+function colliersMainIsChallenge(doc
+function colliersMainJsonLd(rawHtml
+function colliersMainTransaction(
+function colliersMapUrl(engineKey
+function colliersProjectField(details
+function colliersSlpInitUrl(pv
+function colliersSqftToNumber(value
+function colliersUrl(href
+function cushmanSearchApiUrl(tx
+function decodeHtmlEntities(s
+function dedupeAssetsBestWidth(urls
+function dedupeStrings(values
+function enrichAvisonYoungContacts(contacts
+function envBool(name
+function envInt(name
+function extractAvisonYoungContactUrls(docs
+function extractAvisonYoungDocuments(docs
+function extractAvisonYoungJsonLd(docs
+function extractAvisonYoungPhotos(docs
+function extractAvisonYoungUrls(doc
+function extractCbreDealflowEngineKey(html
+function extractColliersEngineKey(html
+function extractCssUrl(style
+function extractCushmanAssetUrls(doc
+function extractCushmanContacts(doc
+function extractCushmanDocuments(assetUrls
+function extractCushmanPhotos(assetUrls
+function extractMarcusContacts($
+function extractMarcusDetailImages($
+function extractSitemapLocs(xml
+function extractSitemapUrlEntries(xml
+function extractTranswesternContacts(doc
+function extractTranswesternDocuments(doc
+function extractTranswesternPhotos(doc
+function firstJsonLd(rawHtml
+function firstNumberText(text
+function inferStateFromZip(zip
+function isAvisonYoungPropertyPhoto(url
+function isAvisonYoungUsCompatible(row
+function isPerSfPriceText(t
+function jllContacts(brokersRaw
+function jllDescription(property
+function jllDetailCacheDir()
+function jllDetailCachePath(url
+function jllFilteredSearchUrl(tenure
+function jllInvestorContacts(listing
+function jllInvestorDocumentUrls(listing
+function jllInvestorImageUrls(listing
+function jllInvestorNextData(rawHtml
+function jllInvestorSearchFallback(rawHtml
+function jllInvestorSearchListing(row
+function jllInvestorSitemapCandidateLimit(max
+function jllInvestorSitemapUrls(rawHtml
+function jllInvestorStatus(row
+function jllInvestorUrlFromAlias(alias
+function jllNextData(rawHtml
+function jllPropertyTypeLabel(propertyType
+function jllPublicProfileUrl(pageUrl
+function jllStringUrls(values
+function jllSurfaceAreaSqft(property
+function jsonLdObjects(rawHtml
+function listingPvFromCbreDealflowUrl(url
+function listingPvFromColliersUrl(url
+function marcusDetailCachePath()
+function marcusHeaders()
+function marcusListingCacheKey(listing
+function marcusMapDetailBody(activityId
+function marcusSearchBody(pageSize
+function marcusUrl(href
+function markdownLabel(markdown
+function mergeJllListing(existing
+function moneyToNumber(t
+function naiDocumentUrls(detail
+function naiImageUrls(row
+function naiListingFromFeed(row
+function naiListingStatus(detail
+function naiLocation(partsSource
+function naiPriceText(detail
+function naiSizeText(detail
+function newmarkAbsoluteUrl(value
+function newmarkState(hit
+function normalizePersonName(value
+function normalizedJllListingUrl(href
+function num(v
+function parseCbreDealflowCards(html
+function parseCbreDealflowDetailData(html
+function parseCbreDealflowFilters(filters
+function parseCbreDealflowLocation(text
+function parseColliersCards(html
+function parseColliersLocation(text
+function parseColliersMainAddress(addr
+function parseColliersMainDetail(entry
+function parseJllSearchPage(html
+function parseJsonBody(body
+function parseMarcusAddress(address
+function parseMarcusLocation(location
+function parseMarcusSpecifications($
+function parseMarcusTileHtml(tileHtml
+function parseSavillsNextData(html
+function parseSavillsUsLocation(address2
+function parseTranswesternAvailability($
+function parseTranswesternFacts($
+function pmediaId(url
+function prune(v
+function readBuildoutPageCache(
+function readColliersMainCache(path
+function readJllDetailCache(url
+function readMarcusDetailCache(path
+function repairUnescapedJsonStringQuotes(body
+function savillsContact(agent
+function savillsDocumentUrls(row
+function savillsImageUrls(row
+function savillsNextDataProperties(html
+function savillsSqft(text
+function savillsTotalItems(html
+function sharpLaunchCdnUrl(path
+function sqftFromText(text
+function stripHtmlText(html
+function titleFromFilename(url
+function transwesternDescription($
+function transwesternDetailUrl(pageUrl
+function transwesternFeedUrl(bucket
+function transwesternPriceText(row
+function transwesternSizeText(row
+function transwesternTransactionType(bucket
+function writeBuildoutPageCache(
+function writeJllDetailCache(url
+type BuildoutInventoryOpts
+type CbreDealflowCard
+type ColliersCard
+type ColliersMainEntry
+type ScrapeOpts
+type ScrapedDoc
+type SourceKey
+type SourceResult
+type Tx
