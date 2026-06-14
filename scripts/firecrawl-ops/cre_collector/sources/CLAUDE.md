@@ -6,8 +6,13 @@
 
 ## Adapter Contract
 
-- Return `{ company, sourceUrl, method, totalAvailable, listings, note? }`.
+- Return `{ company, sourceUrl, method, totalAvailable, listings, note?, truncated? }`.
 - Listings: `id`, `name`, `transactionType`, address/geo, prices, `brokerIds` (`brokerRef()`), `brochures`, `photos`, `url`, `lastUpdated`; use `prune()` before emit.
+- **`truncated?: boolean`**: set when this pass collected less than the feed's
+  reported total (or hit a hard cap). `cre_monitor.py` treats `truncated` like
+  `error` for disappearance gating. Adapters that set it: `newmark` (Algolia
+  ~1000-hit cap unsplit), `cbre` and `cushman-wakefield` (collected <
+  `min(max, reported total)`), `nai-global` (`--page-cap` clip with a full last page).
 - **`monitor=true`**: cheap enumeration only. Skip detail unless the feed is already complete.
 - Folded sub-sources get ingest prefixes (`dealflow:`, `investor:`, `main:`), not adapter prefixes. `colliers-main` emits bare `usa#####`; ingest adds `main:`.
 

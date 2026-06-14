@@ -73,11 +73,13 @@ cd scripts/firecrawl-ops/cre_collector
 
 Read these before making claims or changing behavior:
 
-1. `START_HERE.md`
+1. `START_HERE.md` (live counts, status matrix, next steps)
 2. `CLAUDE.md`
-3. `VALIDATION_2026-06-12.md`
+3. `archive/VALIDATION_2026-06-12.md`
 4. `BROKERAGE_STATUS_2026-06-12.md`
 5. `../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md`
+6. `../../docs/firecrawl-ops/references/cre-monitor-subsystem.md`
+7. `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` (when touching monitor or scaling the seed)
 
 Common commands:
 
@@ -95,22 +97,13 @@ bash cre_daily_update.sh --no-mark-missing
 ```
 
 Use `--mark-missing` only when every relevant source pass completed cleanly
-and staged enough rows for the per-broker guardrails. If any source is blocked
-or partial, keep the ingest additive.
+and staged enough rows for the per-broker guardrails. While `colliers-main` is
+mid-run or Savills sale stays partial, keep the ingest additive
+(`--no-mark-missing`).
 
-Current documented baseline from the 2026-06-12 validation cycle:
-
-- Latest full artifact: `cre_collector/out/full_latest_2026-06-11_230423.json`
-- Raw listing records: 35,510
-- Staged unique upsert rows: 33,488
-- Active Supabase rows after additive carryover: 34,218 (intermediate count
-  right after the 04:04 UTC full run; later source-specific completions raised
-  the live total to 71,600 active rows as of 2026-06-12T23:26 UTC)
-- Full collection time: about 27 minutes at concurrency 3
-- `--mark-missing` was skipped because Lee and Associates failed
-
-Recent post-run changes are documented in `cre_collector/START_HERE.md`.
-Do not quote source coverage from memory or from `cre_scrapers/config.py`.
+Live row counts, baseline artifacts, and per-source status belong in
+`cre_collector/START_HERE.md`. Do not quote coverage from memory or from
+`cre_scrapers/config.py`.
 
 ## CRE Database Target
 
@@ -137,10 +130,15 @@ Core objects:
 | `cre_listing_images` | Source image URLs |
 | `cre_scrape_jobs` | One row per scrape run |
 | `cre_scrape_log` | One row per attempted source URL |
+| `cre_listing_events` | Append-only change ledger (007) |
+| `cre_source_index` | Per-source enumeration snapshot (007) |
+| `cre_enrichment_queue` | Tier-B detail-render work queue (007; worker deferred) |
+| `cre_source_baseline` | Per-source coverage health baseline (007) |
 | `v_cre_listings_full` | Listing plus child data as JSON arrays |
 | `v_cre_active_for_sale` | Active for-sale listings |
 | `v_cre_active_for_lease` | Active for-lease listings |
 | `v_cre_market_summary` | Per-market aggregates |
+| `v_cre_recent_changes` | Seven-day change ledger feed (007+005) |
 | `search_cre_listings(...)` | Full text search plus filters |
 
 The collector stores source URLs for documents and images. It does not
@@ -149,6 +147,28 @@ download source PDFs or image binaries into Supabase storage.
 The ingestor reads `POSTGRES_URL_NON_POOLING` or `POSTGRES_URL` from EQUIRE
 environment files and shells out to `psql`. It must never print or persist
 credential values.
+
+Change tracking (007) runs through a separate observe-only path:
+`collect.ts --monitor` feeds `cre_monitor.py` and `cre_gate.py`, never
+`cre_ingest.py`. See `../../docs/firecrawl-ops/references/cre-monitor-subsystem.md`.
+
+### Monitor rollout (2026-06-13)
+
+Track 1 shipped: monitor hardening, `collect.ts` modular split (`types.ts`,
+`lib/`, `sources/`), coverage gate triple-gating, four detail-id monitor
+exclusions. First gated `cre_monitor.py --apply` seed on `avison-young`
+(baseline + index only). Track 2 still gated: scale seed, launchd, gate wiring,
+Phase-2 status activation. See `cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md`.
+
+| Module | Role |
+|---|---|
+| `collect.ts` | CLI entry; orchestrates source runs and `--monitor` |
+| `types.ts` | Shared listing types and `SourceResult` contract |
+| `lib/` | `config`, `scrape`, `util`, `broker`, `html` primitives |
+| `sources/*.ts` | Per-broker adapters (one file per source key) |
+| `cre_ingest.py` | Full artifact upsert into `cre_listings` (+ children) |
+| `cre_monitor.py` | Observe-only diff/events/index (007 tables) |
+| `cre_gate.py` | Per-source coverage baseline and `mark_missing_safe` rollup |
 
 ## Source Coverage Notes
 
@@ -159,30 +179,29 @@ cre_collector/START_HERE.md
 cre_collector/BROKERAGE_STATUS_2026-06-12.md
 ```
 
-High-signal cautions:
+High-signal cautions (no counts here; see `START_HERE.md`):
 
 - CBRE main inventory is active through an internal JSON API behind
   Cloudflare, using local Firecrawl stealth.
 - CBRE Deal Flow is a separate public RCM ListingEngine source folded into
   parent CBRE with prefixed IDs.
 - Cushman is complete for its public API feed after full run, live ingest,
-  source-scoped reconciliation, and Supabase validation (11,318 active rows).
+  source-scoped reconciliation, and Supabase validation.
 - Newmark uses Algolia credentials embedded in the public page.
 - Marcus and Millichap has public sale API coverage and detail enrichment;
   lease inventory is not proven.
 - Avison Young uses a public SharpLaunch feed.
 - SVN and Lee use Buildout inventory feeds; sustained paging can trigger HTML
-  interstitials.
+  interstitials. Lee is complete via durable page cache.
 - Colliers has two folded sources: SalesTracker investment-sale (`colliers`,
   public RCM GET) and the full main site (`colliers-main`), unblocked 2026-06-13
-  via the public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`) through
-  local Firecrawl plus detail-render JSON-LD parse. The Coveo POST path is no
-  longer needed.
+  via the public XML sitemap through local Firecrawl plus detail-render JSON-LD
+  parse. The full main-site detail run is still in progress.
 - Transwestern is complete for its public GET feed after full run, live ingest,
-  source-scoped reconciliation, and Supabase validation (2,021 active rows).
-- JLL Investor Center is complete for the public sitemap detail path: 934
-  active U.S. sale rows live-ingested and reconciled on 2026-06-12. No
+  source-scoped reconciliation, and Supabase validation.
+- JLL Investor Center is complete for the public sitemap detail path. No
   coordinates are available from the Investor detail path (known limitation).
+- Savills sale inventory stays partial (global/residential rows, not CRE-defensible).
 
 ## Local CLI Wrapper
 

@@ -33,11 +33,10 @@ No Coveo POST, no auth, no gated documents. Documents/images are URL-only.
 
 ## Code (this branch)
 
-- `collect.ts`: `colliers-main` added to `SOURCE_KEYS` and `runSource`. New
-  source section after `srcColliers`:
+- `collect.ts`: `colliers-main` registered in `SOURCE_KEYS` and `runSource`.
+- `sources/colliers-main.ts`: `srcColliersMain()` and detail/sitemap helpers:
   - `fetchColliersMainEntries()` - sitemap index -> properties urlset -> dedup
-    `usa#######` entries with lastmod. Generic helpers `extractSitemapLocs()`
-    and `extractSitemapUrlEntries()` are reusable for any future sitemap source.
+    `usa#######` entries with lastmod.
   - `scrapeColliersMainDetailDoc()` - challenge-aware retry: detects 429/503/
     "Just a moment..." and retries with backoff, relying on the stealth proxy
     rotating IPs per request. Env `COLLIERS_MAIN_CHALLENGE_RETRIES` (default 4).
@@ -49,10 +48,12 @@ No Coveo POST, no auth, no gated documents. Documents/images are URL-only.
   - `colliersMainEnrichAll()` - enrich once, memoized across sale/lease passes,
     backed by a durable JSONL cache at `out/cache/colliers-main/detail-cache.jsonl`
     so a long run resumes across attempts.
-  - `srcColliersMain()` - sale pass returns Sale + Sale/Lease; lease pass returns
-    Lease + Sale/Lease; a listing in both passes merges to sale_or_lease.
+  - Sale pass returns Sale + Sale/Lease; lease pass returns Lease + Sale/Lease;
+    a listing in both passes merges to sale_or_lease.
   - Env knobs: `COLLIERS_MAIN_DETAIL_CONCURRENCY` (default min(CONCURRENCY,3)),
     `COLLIERS_MAIN_DETAIL_WAIT_MS` (default 4000), `COLLIERS_MAIN_CHALLENGE_RETRIES`.
+- `lib/html.ts`: reusable `extractSitemapLocs()` and `extractSitemapUrlEntries()`
+  for any future sitemap-driven source.
 - `cre_ingest.py`: `SOURCE_TO_BROKERAGE["colliers-main"] = ("colliers", "main:")`.
   Folds into the colliers brokerage with `main:<usaID>` external_ids, mirroring
   `cbre-dealflow` and `jll-investor`. SalesTracker `colliers` rows are untouched.
@@ -108,5 +109,5 @@ sitemap. The recipe: find the sitemap via robots.txt, fetch it through local
 Firecrawl (not direct GET), enumerate detail URLs, render each with stealth +
 waitFor + challenge-aware retry, parse JSON-LD for the reliable fields and HTML
 for the rest, tombstone 404s and alternate-template pages, cache durably for
-resumability. `extractSitemapLocs`/`extractSitemapUrlEntries` and the challenge
-detection are written generically. See the brokerage completion playbook.
+resumability. Sitemap helpers live in `lib/html.ts`; challenge detection in
+`sources/colliers-main.ts`. See the brokerage completion playbook.

@@ -17,7 +17,9 @@ python3 -m pytest tests/test_enum_key_invariant.py -q
 python3 -m pytest tests/test_norm_status_canonical_and_guards.py -q   # portable CI signal (no out/)
 ```
 
-Requires `pytest` on the host (not pinned in `package.json`). `collect.ts` coverage: `npm run typecheck` (parent dir, not this folder).
+Requires `pytest` on the host (not pinned in `package.json`). Full suite: **237**
+tests (`python3 -m pytest tests/ -q`). `collect.ts` coverage: `npm run typecheck`
+(parent dir, not this folder).
 
 ## Test Files
 
@@ -25,7 +27,7 @@ Requires `pytest` on the host (not pinned in `package.json`). `collect.ts` cover
 |------|-------|
 | `test_cre_gate.py` | `cre_gate`: `verdict_for`, `rolling_median`, `select_baseline_updates`, `count_artifacts` |
 | `test_gate.py` | Gate plus ingest monitor helpers: `norm_status` terminal-wins, `rolling_median`, `select_baseline_updates`, `build_baseline_sql` safety, `rollup_brokerages` |
-| `test_monitor.py` | Broad `cre_monitor` coverage (some gate overlap): `load_artifact_groups`, `finalize_group`, `compute_fingerprint`, `derive_events`, `build_write_sql` SQL safety |
+| `test_monitor.py` | Broad `cre_monitor` coverage: `load_artifact_groups` (errored/truncated fifth-value fold), `coverage_decision` (0.7 boundary, errored not overridable by force), `finalize_group`, `compute_fingerprint`, `derive_events`, `build_write_sql` SQL safety |
 | `test_monitor_events.py` | `derive_events` event types, baseline-seed suppression, idempotency, `build_write_sql` safety |
 | `test_norm_status_shapes.py` | `norm_status` and `STATUS_SOURCE_PATHS` against gitignored `out/*.json` (skips when absent) |
 | `test_norm_status_canonical_and_guards.py` | `_canonical_key`, word-boundary guards, source-classification completeness; no `out/` dependency |
@@ -43,7 +45,7 @@ Overlap across `test_gate.py`, `test_cre_gate.py`, and `test_monitor.py` is inte
 
 - **`cre_ingest`**: `to_row`, `merge_rows`, `norm_status`, `_canonical_key`, `SOURCE_TO_BROKERAGE`, `STATUS_SOURCE_PATHS`
 - **`cre_gate`**: `verdict_for`, `rolling_median`, `select_baseline_updates`, `build_baseline_sql`, `rollup_brokerages`, `count_artifacts`
-- **`cre_monitor`**: `load_artifact_groups`, `finalize_group`, `compute_fingerprint`, `derive_events`, `build_write_sql`
+- **`cre_monitor`**: `load_artifact_groups`, `coverage_decision`, `finalize_group`, `compute_fingerprint`, `derive_events`, `build_write_sql`
 - Id prefix, status paths, gate floors, or observe-only SQL changes need matching test updates in the same PR.
 
 ## References

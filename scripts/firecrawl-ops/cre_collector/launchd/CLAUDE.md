@@ -21,13 +21,13 @@ Install/unload: `README.md` (copy to `~/Library/LaunchAgents/`, `launchctl load 
 
 ## Module Boundaries
 
-Owns macOS schedules, flock serialization, tier dispatch. Delegates collect/ingest to `cre_daily_update.sh` (daily/weekly) and enumeration diff to `cre_monitor.py` (monitor, observe-only). Plists hardcode this Mac's absolute repo path; update paths if the clone moves.
+Owns macOS schedules, flock serialization, tier dispatch. Delegates collect/ingest to `cre_daily_update.sh` (daily/weekly). Monitor tier: `collect.ts --monitor` (enumeration artifact) then `cre_monitor.py` (observe-only diff; `CRE_MONITOR_APPLY=1` for `--apply`). Plists hardcode this Mac's absolute repo path; update paths if the clone moves.
 
 ## Integration Points
 
 | Tier | Schedule | Downstream |
 |------|----------|------------|
-| monitor | :15 every 3h | `cre_monitor.py` |
+| monitor | :15 every 3h | `collect.ts --monitor` → `cre_monitor.py` |
 | daily | 06:30 | `cre_daily_update.sh --no-mark-missing` |
 | weekly | Sun 03:00 | `cre_daily_update.sh --mark-missing` |
 

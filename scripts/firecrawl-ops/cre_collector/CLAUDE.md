@@ -23,6 +23,7 @@ Runs entirely against the local self-hosted Firecrawl API.
 | File / dir | Purpose |
 |------------|---------|
 | `collect.ts` | Orchestrator: 15 sources, CLI, broker merge, artifact write |
+| `types.ts` | Shared listing vocabulary + `SourceResult` (`truncated?`, etc.) |
 | `sources/` | Per-broker adapters — see `sources/CLAUDE.md` |
 | `lib/` | Shared scrape/config/util — see `lib/CLAUDE.md` |
 | `cre_ingest.py` | Collector JSON → `credeals` upsert (stdlib + psql) |
@@ -36,6 +37,7 @@ Runs entirely against the local self-hosted Firecrawl API.
 | `START_HERE.md` | Current status and new-session runbook |
 | `BROKERAGE_STATUS_2026-06-12.md` | Per-broker coverage counts (live) |
 | `HANDOFF_COLLIERS_MAIN_2026-06-13.md` | colliers-main full detail run handoff |
+| `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` | Monitor hardening, module split, first `--apply` seed |
 | `archive/` | Dated buildout history (see `archive/README.md`) |
 | `../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` | Architecture + go-forward plan (§14) |
 | `../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` | Monitor run model and operational gotchas |

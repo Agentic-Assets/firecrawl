@@ -95,52 +95,58 @@ Client API: [Supabase Python reference](https://supabase.com/docs/reference/pyth
 
 ## CRE listing intelligence (EQUIRE feed)
 
-`scripts/firecrawl-ops/` also contains a full CRE listing ingestion system that
-feeds EQUIRE's deal intelligence platform. See each subdirectory's `CLAUDE.md`.
+`scripts/firecrawl-ops/` contains the production CRE listing ingestion system for
+EQUIRE. See each subdirectory's `CLAUDE.md` for module detail.
 
 Key components:
-- `scripts/firecrawl-ops/cre_collector/`  -  PRODUCTION multi-source collector + ingestor:
-  `collect.ts` (15 sources, sale + lease, full pagination through local Firecrawl),
-  `cre_ingest.py` (collector JSON -> `credeals` upserts via psql),
-  `cre_daily_update.sh` (daily refresh; use `--no-mark-missing` until every source is clean)
-- `scripts/firecrawl-ops/cre_scrapers/`  -  legacy Python scraper package
-  for source experiments and detail-page enrichment. Do not treat it as the daily bulk path.
-- `scripts/firecrawl-ops/sql/`  -  Supabase migrations for `cre_*` tables
+- `scripts/firecrawl-ops/cre_collector/` — production collector + ingestor:
+  `collect.ts` (CLI entry, 15 sources), `types.ts`, `lib/`, `sources/<broker>.ts`,
+  `cre_ingest.py` (full artifact upsert via psql), `cre_monitor.py` and
+  `cre_gate.py` (observe-only 007 change tracking), `cre_daily_update.sh`
+  (daily refresh; use `--no-mark-missing` while `colliers-main` is mid-run or
+  Savills sale stays partial)
+- `scripts/firecrawl-ops/cre_scrapers/` — legacy Python package for source
+  experiments and detail enrichment. Not the daily bulk path.
+- `scripts/firecrawl-ops/sql/` — Supabase migrations for `cre_*` tables
   (target: project `fhqycqubkkrdgzswccwd`; apply via `000_run_all.sql`)
-- `scripts/firecrawl-ops/cre_pipeline.py`  -  legacy CLI for the Python scraper package
-- `scripts/firecrawl-ops/prometheus/`  -  reference Prometheus/CBRE API collector + 11MB dataset
-- `scripts/firecrawl-ops/cbre_scrape.py`  -  original single-broker CBRE page scraper (still valid)
-- `docs/firecrawl-ops/references/cre-intelligence-system-design.md`  -  canonical architecture + go-forward monitoring plan
-- `docs/firecrawl-ops/references/cre-equire-consumer-api.md`  -  EQUIRE consumer/API reference (views, SQL, env, quick start)
+- `scripts/firecrawl-ops/prometheus/` — reference Prometheus/CBRE API collector
+- `docs/firecrawl-ops/references/cre-intelligence-system-design.md` — architecture
+- `docs/firecrawl-ops/references/cre-equire-consumer-api.md` — EQUIRE consumer API
+- `docs/firecrawl-ops/references/cre-monitor-subsystem.md` — monitor run model
+- `docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md` —
+  Phase-2 status activation board impact (gated)
 
-Current source status changes quickly. Treat these as the canonical
-entrypoints before quoting coverage or making collector changes (start a new
-CRE session here):
-- `scripts/firecrawl-ops/cre_collector/START_HERE.md`  -  new-session runbook, live status matrix, and Next Steps
-- `scripts/firecrawl-ops/cre_collector/CLAUDE.md`  -  collector/ingestor reference
-- `scripts/firecrawl-ops/cre_collector/BROKERAGE_STATUS_2026-06-12.md`  -  per-source coverage, counts, upgrade order
+Canonical entrypoints (live counts and per-source status only in `START_HERE.md`):
+- `scripts/firecrawl-ops/cre_collector/START_HERE.md` — runbook, status matrix
+- `scripts/firecrawl-ops/cre_collector/CLAUDE.md` — collector/ingestor reference
+- `scripts/firecrawl-ops/cre_collector/BROKERAGE_STATUS_2026-06-12.md` — upgrade order
+- `scripts/firecrawl-ops/cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` —
+  monitor hardening, modular refactor, first `--apply` seed
+- `scripts/firecrawl-ops/cre_collector/HANDOFF_COLLIERS_MAIN_2026-06-13.md` —
+  in-flight colliers-main full detail run
 
-For live per-source counts, the latest baseline, and per-source collection
-methods (including the folded `colliers` / `colliers-main` sources and which
-sources stay partial), see `START_HERE.md`, `BROKERAGE_STATUS_2026-06-12.md`,
-and `cre_collector/CLAUDE.md`.
+### Monitor tracks (2026-06-13)
+
+**Track 1 (shipped):** monitor hardening, `collect.ts` modular split, coverage
+gate triple-gating, four detail-id monitor exclusions, first gated
+`cre_monitor.py --apply` seed on `avison-young`.
+
+**Track 2 (gated):** scale monitor seed to other monitor-enabled sources,
+launchd schedules, `cre_gate.py` wiring into the daily script, Phase-2 status
+activation in `cre_ingest.py` plus the EQUIRE board gate (see phase2 board
+impact doc). Tier-B `cre_enrichment_queue` worker remains deferred.
 
 ### Next steps (CRE)
 
-Canonical go-forward plan: section 14 of
-`docs/firecrawl-ops/references/cre-intelligence-system-design.md` (per-source
-method audit plus the authorized build sequence in 14.4). Live run status (the
-in-flight `colliers-main` full run, the additive change-tracking / monitor build
-order) lives in `cre_collector/START_HERE.md` and the dated `HANDOFF_*` docs;
-do not restate it here.
+Canonical plan: section 14 of `cre-intelligence-system-design.md`. Live run
+status (colliers-main full run, monitor rollout order) lives in
+`cre_collector/START_HERE.md` and dated `HANDOFF_*` docs; do not restate here.
 
-CBRE has an internal JSON API (`/listings-api/propertylistings/query`) that bypasses
-the need for page scraping  -  see `scripts/firecrawl-ops/prometheus/CLAUDE.md`.
-Cloudflare still applies; route through local Firecrawl with `proxy=stealth, rawHtml`.
+CBRE has an internal JSON API (`/listings-api/propertylistings/query`). Route
+through local Firecrawl with `proxy=stealth, rawHtml` (see `prometheus/CLAUDE.md`).
 
-The current ingestor uses `POSTGRES_URL_NON_POOLING` or `POSTGRES_URL` from the
-EQUIRE `.env.local` file and shells out to `psql`. It does not print the URL.
-Older REST/service-key loader docs apply only to the legacy Python scraper path.
+The ingestor uses `POSTGRES_URL_NON_POOLING` or `POSTGRES_URL` from the EQUIRE
+`.env.local` file and shells out to `psql`. It does not print the URL.
 
 Verified local baseline on 2026-05-23:
 - OrbStack Docker compose stack

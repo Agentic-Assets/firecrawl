@@ -28,6 +28,9 @@ For CRE listing work, read in order:
 4. `../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` (architecture + go-forward plan)
 5. `../../docs/firecrawl-ops/references/cre-equire-consumer-api.md` (how EQUIRE reads the data)
 6. `../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md`
+7. `../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` (monitor run model + gotchas)
+8. `../../docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md` (Phase-2 status activation board impact)
+9. `cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` (monitor hardening, modular refactor, first `--apply` seed)
 
 For local Firecrawl stack work, read:
 
@@ -47,6 +50,7 @@ scripts/firecrawl-ops/
   cre_collector/               Production CRE collector, Supabase ingestor, and
                                observe-only monitor/change-tracking layer
                                (cre_monitor.py, cre_gate.py, collect.ts --monitor)
+                               collect.ts (CLI entry), types.ts, lib/, sources/
   cre_scrapers/                Legacy Python probes and detail enrichment
   sql/                         Idempotent credeals schema migrations
   prometheus/                  Original Prometheus CBRE reference dataset
@@ -95,9 +99,9 @@ python3 cre_ingest.py --in /tmp/probe.json --dry-run
 bash cre_daily_update.sh --no-mark-missing
 ```
 
-Use `--mark-missing` only after a clean all-source full run. While Lee and
-Associates or another source is blocked, keep daily ingest additive with
-`--no-mark-missing`.
+Use `--mark-missing` only after a clean all-source full run. While
+`colliers-main` is mid-run or Savills sale stays partial, keep daily ingest
+additive with `--no-mark-missing`.
 
 Change tracking (007 tables) runs through a separate observe-only path:
 `collect.ts --monitor` produces a cheap enumeration artifact consumed by
@@ -132,6 +136,25 @@ Supabase objects live under `credeals`, not `public`:
 
 Document and image tables store source URLs only. Do not download public PDFs
 or images into Supabase storage for the bulk collector.
+
+## Monitor rollout (2026-06-13)
+
+Track 1 shipped: monitor hardening, `collect.ts` modular split, coverage gate
+triple-gating, four detail-id monitor exclusions. First gated `cre_monitor.py
+--apply` seed completed on `avison-young` (baseline + index only; observe-only).
+Track 2 still gated: scale seed to other monitor-enabled sources, launchd,
+`cre_gate.py` wiring into the daily script, Phase-2 status activation. See
+`cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md`.
+
+| Module | Role |
+|---|---|
+| `collect.ts` | CLI entry; orchestrates source runs and `--monitor` |
+| `types.ts` | Shared listing types and `SourceResult` contract |
+| `lib/` | `config`, `scrape`, `util`, `broker`, `html` primitives |
+| `sources/*.ts` | Per-broker adapters (one file per source key) |
+| `cre_ingest.py` | Full artifact upsert into `cre_listings` (+ children) |
+| `cre_monitor.py` | Observe-only diff/events/index (007 tables) |
+| `cre_gate.py` | Per-source coverage baseline and `mark_missing_safe` rollup |
 
 ## Broker Status Rules
 
