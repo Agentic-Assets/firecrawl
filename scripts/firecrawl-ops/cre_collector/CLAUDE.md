@@ -27,8 +27,9 @@ Runs entirely against the local self-hosted Firecrawl API.
 | `sources/` | Per-broker adapters - see `sources/CLAUDE.md` |
 | `lib/` | Shared scrape/config/util - see `lib/CLAUDE.md` |
 | `cre_ingest.py` | Collector JSON → `credeals` upsert (stdlib + psql) |
-| `cre_monitor.py` | Observe-only diff/event runner (007 tables); never writes `status`/`deleted_at` |
+| `cre_monitor.py` | Observe-only diff/event runner (007 tables); never writes `status`/`deleted_at`; enqueues new/changed into `cre_enrichment_queue` |
 | `cre_gate.py` | Per-source coverage gate (`cre_source_baseline`); emits `mark_missing_safe` rollup |
+| `cre_enrich.py` | Tier-B queue worker: claims a batch from `cre_enrichment_queue`, runs `collect.ts --enrich-input` (targeted detail), re-ingests additively (`cre_ingest.py --in`), deletes done rows. Additive by construction (never `--mark-missing`/`--activate-status`); URL-keyed completion; pure builders + thin `run()` |
 | `cre_daily_update.sh` | healthcheck → full collect → ingest → prune `out/daily/` artifacts |
 | `cre_status.sh` | Read-only run-health heartbeat: launchd state, per-tier staleness vs cadence, last-run verdict (from `out/daily/last_run_<tier>.json`), last-ingest counts, `out/` footprint + lock state (hung/stale), stack/env/TCC. Exits nonzero if unhealthy. `--full-health` runs the full healthcheck |
 | `cre_setup.sh` | One-command preflight + bootstrap for a fresh clone (toolchain, deps, env, offline smoke); run first. See `SETUP.md` |
@@ -42,6 +43,8 @@ Runs entirely against the local self-hosted Firecrawl API.
 | `HANDOFF_COLLIERS_MAIN_2026-06-13.md` | colliers-main full detail run handoff |
 | `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` | Monitor hardening, module split, first `--apply` seed |
 | `SECURITY_REVIEW_2026-06-14.md` | Branch security review: verdict, the `standard_conforming_strings` pin fix, deferred base-table REVOKE |
+| `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` | Tier-B enrichment-queue worker + cadence restructure (monitor 2x/day, enrich every 4h, weekly additive full backstop, daily retired). IMPLEMENTED in code 2026-06-15 (`cre_enrich.py`, `collect.ts --enrich-input`/`lib/enrich.ts`, `sql/010`, restructured launchd tiers); live launchd cutover (Section 9) still GATED |
+| `workflows/` | Executable Workflow scripts; `cre_enrichment_worker.workflow.js` is the build/test/review/cutover plan for the enrichment design above |
 | `archive/` | Dated buildout history (see `archive/README.md`) |
 | `../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` | Architecture + go-forward plan (§14) |
 | `../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` | Monitor run model and operational gotchas |
@@ -193,12 +196,14 @@ or view privileges. Consumer API details: `cre-equire-consumer-api.md`.
 - Scheduled monitor tier uses default `--page-cap=60` unless overridden; see
   `launchd/CLAUDE.md`. Monitor (`ai.agentic.cre-monitor`, every 3h at :15,
   `CRE_MONITOR_APPLY=1`) and daily (`ai.agentic.cre-daily`, 06:30 daily,
-  `--no-mark-missing`, status activation OFF) launchd tiers are LOADED as of
-  2026-06-14 but currently BLOCKED: every scheduled fire exits 126 because the
-  repo lives under `~/Documents` (TCC) and the launchd user-agent lacks macOS
-  Full Disk Access. No scheduled run has succeeded yet; the empty event ledger
-  is a non-signal. One-time fix (Full Disk Access grant to `/bin/bash`) is in
-  `START_HERE.md` Known Limits. Weekly reconcile tier (`ai.agentic.cre-weekly`)
+  `--no-mark-missing`, status activation OFF) launchd tiers are LOADED and now
+  EXECUTE on schedule: the repo was relocated out of `~/Documents` to
+  `/Users/caymanseagraves/Github/agentic-assets/firecrawl`, so the prior macOS
+  TCC / Full Disk Access exit-126 block is resolved. The monitor tier has a
+  confirmed clean scheduled run (`out/daily/last_run_monitor.json` rc:0,
+  2026-06-15); a later monitor fire correctly skips when the daily tier holds
+  the run lock, and the daily tier executes the additive collect on schedule.
+  See `START_HERE.md` Known Limits. Weekly reconcile tier (`ai.agentic.cre-weekly`)
   is intentionally NOT loaded (held for explicit go-ahead). `cre_gate.py` is now wired into
   `cre_daily_update.sh` as observe-only step [3/4] (`--in RUN --apply --strict
   --out gate.json`); if the strict gate detects any partial/regressed source,
@@ -215,8 +220,9 @@ structurally capped (colliers-main is now complete). See `START_HERE.md` Known
 Limits and Operational Recovery.
 
 Tiered schedules (monitor / daily additive / weekly reconcile):
-`launchd/CLAUDE.md`. Monitor and daily tiers are loaded (2026-06-14) but
-currently TCC-blocked (exit 126; see Monitor mode section and `START_HERE.md`
+`launchd/CLAUDE.md`. Monitor and daily tiers are loaded and now run on schedule
+from the repo's relocated `~/Github` location (the prior TCC exit-126 block is
+resolved; see Monitor mode section and `START_HERE.md`
 Known Limits). Weekly reconcile tier is intentionally NOT loaded; do not
 `launchctl load` it until explicit go-ahead. Step [3/4] of the daily script now
 runs `cre_gate.py` observe-only; see Monitor mode section above.

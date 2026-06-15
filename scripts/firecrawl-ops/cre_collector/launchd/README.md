@@ -1,19 +1,36 @@
 # CRE Launchd Schedule
 
-Three lock-serialized launchd tiers that automate the CRE listing pipeline.
-All tiers are authored here and gated: **do not load any plist until the
-prerequisite listed for that tier is satisfied.**
+Lock-serialized launchd tiers that automate the CRE listing pipeline. All tiers
+are authored here and gated: **do not load any plist until the prerequisite
+listed for that tier is satisfied.**
 
-> Current state (2026-06-14): the monitor and daily tiers ARE loaded on this
-> Mac, but both are BLOCKED. Every scheduled fire exits 126 because the repo
-> lives under `~/Documents` (TCC) and the launchd user-agent lacks macOS Full
-> Disk Access, so `/bin/bash` cannot read `cre_run_tier.sh` or `getcwd` the
-> working dir. No scheduled run has succeeded yet; the empty event ledger is a
-> non-signal. Two fixes: clone outside `~/Documents` (recommended), or grant a
-> one-time Full Disk Access to `/bin/bash` (System Settings -> Privacy &
-> Security -> Full Disk Access); `chmod +x cre_run_tier.sh` is NOT the fix.
-> Full steps: `../START_HERE.md` Known Limits and `../SETUP.md`. The weekly
-> `--mark-missing` tier remains intentionally unloaded.
+Tier set (cadence restructure SHIPPED in code 2026-06-15):
+
+- **monitor** (2x/day, 06:10 / 18:10): cheap enumeration diff; enqueues
+  new/changed listings into `cre_enrichment_queue`.
+- **enrich** (every 4h, 00:30 / 04:30 / 08:30 / 12:30 / 16:30 / 20:30): drains
+  that queue, scrapes ONLY the flagged listings' detail, re-ingests additively.
+- **weekly** (Sun 03:00): full collect + ingest backstop; additive by default
+  (`--no-mark-missing`), so safe to load. It also refreshes detail and recovers
+  dead-lettered queue rows.
+- **daily**: RETIRED. monitor (2x/day) + enrich (every 4h) replace its freshness
+  role at a fraction of the cost. The template + dispatcher case are kept for
+  rollback only.
+
+Full design + the gated cutover runbook:
+`../ENRICHMENT_WORKER_DESIGN_2026-06-15.md` (Section 2 tier model, Section 9
+cutover).
+
+> Current LIVE state (2026-06-15): the OLD tiers are still loaded on this Mac
+> (`ai.agentic.cre-monitor` every 3h + `ai.agentic.cre-daily` 06:30), both
+> EXECUTING on schedule. The repo was relocated out of `~/Documents` to
+> `~/Github/agentic-assets/firecrawl`, so the launchd user-agent no longer needs
+> macOS Full Disk Access and scheduled fires no longer exit 126. The monitor
+> tier has a confirmed clean run (`../out/daily/last_run_monitor.json` rc:0,
+> 2026-06-15). The restructured monitor (2x/day), the new enrich tier, and the
+> additive weekly backstop are installable but NOT yet loaded; running the
+> Section 9 cutover is held for explicit go-ahead. On a fresh machine, keep the
+> clone outside `~/Documents` so TCC never applies (`../SETUP.md`).
 >
 > Setup is portable: render + install plists per-machine with
 > `install_launchd.sh` (see below). The bare `ai.agentic.cre-*.plist` on this
@@ -25,46 +42,55 @@ prerequisite listed for that tier is satisfied.**
 
 ### monitor - `ai.agentic.cre-monitor.plist`
 
-Runs at minute :15 of every third hour (00:15, 03:15, 06:15, 09:15, 12:15,
-15:15, 18:15, 21:15 local time).
+Runs twice daily at 06:10 and 18:10 local time (restructured from the prior
+every-3h cadence; the enrich tier now carries the detail-refresh load between
+monitor passes).
 
 What it does: invokes `cre_run_tier.sh monitor`, which runs the incremental
 enumeration-diff pipeline (`cre_monitor.py`). The monitor performs cheap
 source enumeration, diffs `(external_id, status, price, lastmod)` against
-`cre_source_index`, and enqueues only new or changed ids for detail enrichment
-(Tier-B sitemap sources) or records change events directly from the feed
-(Tier-A bulk-API sources). It does NOT run the full collect; it never calls
-`--mark-missing`. New-listing latency for Tier-1 sources drops from ~24h to
-the monitor interval.
+`cre_source_index`, and enqueues only new or changed ids into
+`cre_enrichment_queue` for the enrich tier to drain (Tier-B sitemap sources) or
+records change events directly from the feed (Tier-A bulk-API sources). It does
+NOT run the full collect; it never calls `--mark-missing`.
 
 Gate: `cre_monitor.py` and `cre_gate.py` both exist and are unit-tested.
-`cre_run_tier.sh monitor` now runs `collect.ts --monitor` (cheap enumeration)
-then `cre_monitor.py --in <artifact>` in observe-only mode. Passing `--apply`
+`cre_run_tier.sh monitor` runs `collect.ts --monitor` (cheap enumeration) then
+`cre_monitor.py --in <artifact>` in observe-only mode. Passing `--apply`
 requires setting `CRE_MONITOR_APPLY=1` in the environment.
-**Status (2026-06-14): this plist is LOADED with `CRE_MONITOR_APPLY=1`, but it
-is TCC-blocked (exit 126 every fire) until the one-time Full Disk Access grant
-above lands. The monitor is observe-only by design (007 tables + neutral
-columns; never `status`/`deleted_at`), so the `--apply` cadence is safe once
-unblocked.**
+**Status (2026-06-15): the monitor plist is LOADED with `CRE_MONITOR_APPLY=1`
+and runs successfully on schedule (last run rc:0, 2026-06-15) at the OLD every-3h
+cadence. The monitor is observe-only by design (007 tables + neutral columns;
+never `status`/`deleted_at`), so the `--apply` cadence is safe. Reloading it at
+the new 2x/day cadence is part of the gated Section 9 cutover.**
 
 ---
 
-### daily - `ai.agentic.cre-daily.plist`
+### enrich - `ai.agentic.cre-enrich.plist` (NEW)
 
-Runs at 06:30 local time every day.
+Runs every 4h at 00:30 / 04:30 / 08:30 / 12:30 / 16:30 / 20:30 local time
+(offset 30 min from the monitor so the two never collide; the shared lock is the
+backstop if they ever do).
 
-What it does: invokes `cre_run_tier.sh daily`, which calls
-`cre_daily_update.sh --no-mark-missing`. This is the full collect-plus-ingest
-cycle (all 15 sources, sale and lease, unlimited pagination) run additively:
-rows are upserted and updated but no rows are soft-deleted. The daily run is
-the reference pass for Tier-A change-event emission once the event ledger is
-live.
+What it does: invokes `cre_run_tier.sh enrich`, which runs
+`cre_enrich.py --batch ${CRE_ENRICH_BATCH:-200}`. The worker claims a batch from
+`cre_enrichment_queue` (the rows the monitor flagged new/changed), runs
+`collect.ts --enrich-input` to render ONLY those listings' detail pages, then
+re-ingests the result additively via `cre_ingest.py --in` and deletes the rows it
+completed so a later change to the same listing can re-enqueue. This closes the
+loop the monitor's enqueue path always fed and replaces the nightly full
+re-render of every listing.
 
-Gate: safe to load once the daily script is stable and the stack is healthy.
-The shared lock guarantees it will not overlap with an active monitor or
-weekly run. Status (2026-06-14): LOADED with `--no-mark-missing` and status
-activation OFF, but TCC-blocked (exit 126) until the Full Disk Access grant
-above lands.
+Additive by construction: the worker ALWAYS ingests with `--in` only and NEVER
+passes `--mark-missing` or `--activate-status`, so it cannot soft-delete or flip
+board state. A whole-run failure (collect rc != 0, or `enriched.json` missing /
+invalid / empty) releases the claims without ingesting and exits nonzero; a
+crashed run's claims are reclaimed after 1h. Dead-lettered rows (attempts >= 5)
+surface in `v_cre_enrichment_dead` and ride the weekly additive backstop.
+
+Gate: safe to load once `cre_enrich.py` is unit-tested and `010` is applied
+(the queue-health views). The shared lock guarantees it cannot overlap monitor
+or weekly.
 
 ---
 
@@ -73,25 +99,44 @@ above lands.
 Runs Sunday at 03:00 local time.
 
 What it does: invokes `cre_run_tier.sh weekly`, which calls
-`cre_daily_update.sh --mark-missing`. This is the completeness backstop and
-the ONLY tier permitted to soft-delete (disappear) rows.
+`cre_daily_update.sh` with a conditional mark-missing flag. It is the full
+collect-plus-ingest completeness + detail-refresh + dead-letter-recovery backstop.
 
-CRITICAL CONSTRAINT: `--mark-missing` will soft-delete rows that a full,
-clean run did not see. A partial or error-prone run with `--mark-missing`
-active can silently remove live listings. Therefore:
-- This tier must only be loaded after `cre_gate.py` is live and gating
-  mark-missing eligibility per source (design-doc section 9, Phase 1).
-- The runner must be proven on at least one Tier-1 source with a clean
-  convergence record before the weekly plist is loaded.
-- The gate must be prefix-aware (scope soft-delete by brokerage_id and
-  external_id prefix) so a partial colliers-main run does not delete
-  colliers SalesTracker rows or vice versa.
+ADDITIVE BY DEFAULT: with `CRE_WEEKLY_MARK_MISSING` unset, the dispatcher passes
+`--no-mark-missing`, so the weekly tier upserts and refreshes but never
+soft-deletes. That makes it **safe to load** as the backstop, and the Section 9
+cutover loads it for exactly that reason.
+
+`--mark-missing` is a SEPARATE, GATED escalation: it fires only when
+`CRE_WEEKLY_MARK_MISSING=1` is set in this tier's environment. weekly is still
+the ONLY tier permitted to soft-delete (disappear) rows, and even when escalated
+the soft-delete stays triple-gated (dispatcher branch + `cre_gate.py --strict`
+auto-downgrade + per-brokerage ingest eligibility). Therefore the escalation
+must only be enabled after:
+- `cre_gate.py` is live and gating mark-missing eligibility per source
+  (design-doc Section 2.1); it is now wired into `cre_daily_update.sh` as
+  observe-only step [3/4].
+- The runner is proven on at least one Tier-1 source with a clean convergence
+  record.
+- The gate is prefix-aware (scope soft-delete by brokerage_id and external_id
+  prefix) so a partial colliers-main run does not delete colliers SalesTracker
+  rows or vice versa.
+
+---
+
+### daily - `ai.agentic.cre-daily.plist` (RETIRED)
+
+The heavy daily full re-scrape is retired: monitor (2x/day) + enrich (every 4h)
+replace its freshness role at a fraction of the cost. The template and the
+`cre_run_tier.sh daily` case (`cre_daily_update.sh --no-mark-missing`) are kept
+for rollback only and are no longer scheduled. The Section 9 cutover unloads the
+live daily plist.
 
 ---
 
 ## Shared-lock guarantee
 
-All three tiers acquire the same exclusive lock before doing any work. The lock
+Every tier acquires the same exclusive lock before doing any work. The lock
 is a portable atomic `mkdir` (no `flock` dependency, since stock macOS does not
 ship flock) with PID-based stale-lock recovery:
 
@@ -106,8 +151,8 @@ If a tier is already running (the lock dir exists and its recorded PID is still
 alive) the competing tier exits immediately and silently (exit 0). launchd sees
 a clean exit and will not retry until the next scheduled interval. A lock left
 by a crashed run (PID no longer alive) is reclaimed automatically. This prevents
-the daily and monitor tiers from overlapping mid-run, and prevents the weekly
-`--mark-missing` pass from starting while an additive daily run is in progress.
+the monitor, enrich, and weekly tiers from overlapping mid-run, and prevents the
+weekly pass from starting while an enrich or monitor run is in progress.
 
 > History: the lock used to be `flock -n 9`. Because macOS ships no `flock`, the
 > missing binary returned 127 and was misread as "lock held", so every scheduled
@@ -115,8 +160,8 @@ the daily and monitor tiers from overlapping mid-run, and prevents the weekly
 
 Manual runs of `cre_run_tier.sh` from the terminal acquire the same lock, so
 scheduled and ad-hoc runs serialize correctly. (Running `cre_daily_update.sh`
-directly does not take the lock; prefer `cre_run_tier.sh daily` for a locked,
-marker-writing run.)
+directly does not take the lock; prefer `cre_run_tier.sh weekly` for a locked,
+marker-writing full run.)
 
 The lock owner records `<pid> <start-epoch>` in `${LOCKDIR}/pid`, so
 `cre_status.sh` can tell three states apart: no lock held; a live lock held
@@ -129,31 +174,34 @@ surfaced so you are not surprised). To clear a wedged lock by hand, see
 
 ## Install and uninstall (gated)
 
-Plists are portable: the committed source of truth is the three
+Plists are portable: the committed source of truth is the
 **`*.plist.template`** files (path-agnostic tokens), and `install_launchd.sh`
 renders a machine-specific copy, validates it with `plutil`, and installs it.
-Rendered `ai.agentic.cre-*.plist` files are gitignored. The runner
-(`cre_run_tier.sh`) self-locates, so nothing here hardcodes a clone path.
+`install_launchd.sh all` covers the active set (monitor, enrich, weekly); the
+retired daily template installs only if named explicitly. Rendered
+`ai.agentic.cre-*.plist` files are gitignored. The runner (`cre_run_tier.sh`)
+self-locates, so nothing here hardcodes a clone path.
 
 Read the gate conditions above before loading any tier. **Rendering and
 installing never loads a job; loading requires `--load`.**
 
 ```bash
-# Render + install all three (NO load), safe anywhere:
+# Render + install the active set monitor/enrich/weekly (NO load), safe anywhere:
 bash install_launchd.sh all
 
 # If the EQUIRE .env.local is not at a default ~/Documents path, bake it in:
 bash install_launchd.sh --env-file /path/to/EQUIRE/.env.local all
 
-# Load the safe tiers when their gate is met (monitor after stack+DB verified,
-# daily once the stack is stable):
-bash install_launchd.sh --load monitor daily
+# Load the freshness tiers when their gate is met (monitor after stack+DB
+# verified, enrich once cre_enrich.py is tested and 010 is applied):
+bash install_launchd.sh --load monitor enrich
 
-# weekly: load ONLY after cre_gate.py is live and proven on a Tier-1 source:
+# weekly: additive by default, so safe to load as the backstop. The
+# CRE_WEEKLY_MARK_MISSING=1 soft-delete escalation stays a separate gated step.
 bash install_launchd.sh --load weekly
 
 # Preview a rendered plist without installing:
-bash install_launchd.sh --print daily
+bash install_launchd.sh --print enrich
 ```
 
 Uninstall (unload + remove the installed copies; templates are untouched):
@@ -163,8 +211,8 @@ bash install_launchd.sh --uninstall all
 ```
 
 Verify run health (preferred): one read-only command summarizes every tier
-(loaded? running? last exit; staleness vs cadence; last-run verdict; stack/env/
-TCC state) and exits nonzero if anything is unhealthy:
+(loaded? running? last exit; staleness vs cadence; last-run verdict; stack/env
+state) and exits nonzero if anything is unhealthy:
 
 ```bash
 bash ../cre_status.sh                # offline heartbeat
@@ -176,7 +224,7 @@ Low-level check of a single loaded job:
 ```bash
 launchctl list | grep ai.agentic.cre
 # A non-zero PID in column 1 means the job is running now.
-# Column 2 is the LAST run's exit code (0 = success, 126 = TCC block). It is
+# Column 2 is the LAST run's exit code (0 = success; nonzero = a failed run). It is
 # ephemeral (reset on reboot/reload) and says nothing about WHEN the job last
 # ran, which is why cre_status.sh adds the staleness and last-run-verdict checks.
 ```
@@ -188,11 +236,14 @@ launchctl list | grep ai.agentic.cre
 All tiers write stdout and stderr into `out/daily/` beside the existing daily
 run logs:
 
-| tier    | stdout                        | stderr                        |
-|---------|-------------------------------|-------------------------------|
+| tier    | stdout                          | stderr                          |
+|---------|---------------------------------|---------------------------------|
 | monitor | `out/daily/cre-monitor.out.log` | `out/daily/cre-monitor.err.log` |
-| daily   | `out/daily/cre-daily.out.log`   | `out/daily/cre-daily.err.log`   |
+| enrich  | `out/daily/cre-enrich.out.log`  | `out/daily/cre-enrich.err.log`  |
 | weekly  | `out/daily/cre-weekly.out.log`  | `out/daily/cre-weekly.err.log`  |
+| daily   | `out/daily/cre-daily.out.log`   | `out/daily/cre-daily.err.log`   |
+
+(daily logs exist only if the retired rollback case is run.)
 
 Each run also emits a timestamped START/END line via `cre_run_tier.sh` so you
 can grep for the exact wall-clock boundaries of any tier run, and writes a
@@ -202,15 +253,15 @@ machine-readable verdict to `out/daily/last_run_<tier>.json`
 The monitor tier additionally redirects its heavy child output (`collect.ts
 --monitor` + `cre_monitor.py`) to a **per-run** log
 `out/monitor/monitor_<stamp>.log` beside its `monitor_<stamp>.json` artifact,
-rather than to the append-only launchd redirect file. This matters because the
-monitor fires 8x/day and each enumeration artifact is large; left unbounded it
-would fill the disk in weeks.
+rather than to the append-only launchd redirect file. This matters because each
+enumeration artifact is large; left unbounded it would fill the disk over time.
 
 **Disk is self-bounding.** On every real run (pass or fail), `cre_run_tier.sh`
 `finish()` prunes runtime artifacts: it keeps the newest 24 `monitor_*.json` and
 24 `monitor_*.log` under `out/monitor/` (~3 days) and caps each append-only
 `cre-*.{out,err}.log` at 10 MB (trimming to the last half from the next fire on).
-The daily script prunes its own `out/daily/` artifacts separately (14
-`run_*.json`, 29 `run_*.log`, 14 `gate_*.json`). No cron or manual cleanup is
+`cre_daily_update.sh` (driven by the weekly tier) prunes its own `out/daily/`
+artifacts separately (14 `run_*.json`, 29 `run_*.log`, 14 `gate_*.json`). No
+cron or manual cleanup is
 needed; `cre_status.sh` still warns if the footprint grows past ~4GB
 (`out/daily`) / ~8GB (`out/monitor`) as a backstop.

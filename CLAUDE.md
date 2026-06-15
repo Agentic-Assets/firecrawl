@@ -104,8 +104,11 @@ Key components:
   `cre_ingest.py` (full artifact upsert via psql; status activation OPT-IN
   default-off via `--activate-status`/`CRE_ACTIVATE_STATUS=1`), `cre_monitor.py`
   and `cre_gate.py` (observe-only 007 change tracking; gate wired into daily
-  script as step [3/4]), `cre_daily_update.sh` (daily refresh; use
-  `--no-mark-missing` while Savills sale is structurally capped),
+  script as step [3/4]; monitor enqueues new/changed into `cre_enrichment_queue`),
+  `cre_enrich.py` (Tier-B queue worker: drains `cre_enrichment_queue`, runs
+  `collect.ts --enrich-input` targeted detail, re-ingests additively; never
+  soft-deletes or activates status), `cre_daily_update.sh` (full collect refresh;
+  use `--no-mark-missing` while Savills sale is structurally capped),
   `launchd/cre_run_tier.sh` (portable-lock tier dispatcher; writes a
   per-run verdict marker), `cre_status.sh` (read-only run-health heartbeat:
   schedules, staleness, last-run verdict, TCC/stack/env state)
@@ -161,12 +164,14 @@ non-active, 0 NULL status). Status activation changed to OPT-IN default-off
 pass. `cre_gate.py` wired into `cre_daily_update.sh` as observe-only step [3/4]
 with auto-downgrade fail-safe. Monitor (`ai.agentic.cre-monitor`, every 3h at
 :15, `CRE_MONITOR_APPLY=1`) and daily (`ai.agentic.cre-daily`, 06:30 daily,
-`--no-mark-missing`, status activation OFF) launchd tiers are LOADED BUT BLOCKED:
-every scheduled fire exits 126 because the repo lives under `~/Documents`
-(TCC-protected) and the launchd user-agent lacks macOS Full Disk Access. No
-scheduled run has succeeded yet, so the empty event ledger is a non-signal. Fix
-is a one-time Full Disk Access grant to `/bin/bash` (see START_HERE Known
-Limits). Weekly reconcile tier NOT loaded (held for explicit go-ahead). Live DB
+`--no-mark-missing`, status activation OFF) launchd tiers are LOADED AND
+EXECUTING on schedule: the repo was relocated out of `~/Documents` to
+`/Users/caymanseagraves/Github/agentic-assets/firecrawl`, so the prior macOS
+TCC / Full Disk Access exit-126 block no longer applies. The monitor tier has a
+confirmed clean scheduled run (`out/daily/last_run_monitor.json` rc:0,
+2026-06-15); a later monitor fire correctly skips when the daily tier holds the
+run lock. The daily tier executes on schedule (additive `--no-mark-missing`).
+Weekly reconcile tier NOT loaded (held for explicit go-ahead). Live DB
 hardening applied
 (cap_rate/occupancy_rate CHECKs, FK ON DELETE SET NULL, NULLS NOT DISTINCT
 indexes, security_invoker reasserted; no board change). Data-quality cleanups:
@@ -178,8 +183,13 @@ structurally capped (no public US commercial-sale feed).
 **Still gated for go-ahead:** deploy the consumer board-gate branch (must
 precede live T3.1 activation), trigger the first live status activation, and
 apply the widened `005` views (live DDL, alongside the consumer deploy). See the
-phase2 board-impact doc's activation runbook. Tier-B `cre_enrichment_queue`
-worker remains deferred.
+phase2 board-impact doc's activation runbook. The Tier-B `cre_enrichment_queue`
+worker (`cre_enrich.py`) and the cadence restructure (monitor 2x/day + enrich
+every 4h + additive weekly backstop; daily retired) SHIPPED in code 2026-06-15;
+the live launchd cutover (apply `sql/010`, reload monitor at 2x/day, load enrich,
+unload daily, load the additive weekly) is held for go-ahead per
+`cre_collector/ENRICHMENT_WORKER_DESIGN_2026-06-15.md` Section 9. The
+`CRE_WEEKLY_MARK_MISSING=1` soft-delete escalation stays separately gated.
 
 ### Next steps (CRE)
 

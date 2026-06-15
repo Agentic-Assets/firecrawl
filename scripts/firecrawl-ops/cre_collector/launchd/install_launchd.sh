@@ -11,11 +11,15 @@
 # README.md). Rendering + installing is always safe.
 #
 # Usage:
-#   bash install_launchd.sh <monitor|daily|weekly|all>          # render + install (no load)
-#   bash install_launchd.sh --load <monitor|daily|weekly|all>   # also launchctl load -w
-#   bash install_launchd.sh --print <monitor|daily|weekly>      # print rendered plist, install nothing
-#   bash install_launchd.sh --env-file /path/.env.local all     # inject CRE_ENV_FILE into the plists
-#   bash install_launchd.sh --uninstall <monitor|daily|weekly|all>
+#   bash install_launchd.sh <monitor|enrich|weekly|daily|all>          # render + install (no load)
+#   bash install_launchd.sh --load <monitor|enrich|weekly|daily|all>   # also launchctl load -w
+#   bash install_launchd.sh --print <monitor|enrich|weekly|daily>      # print rendered plist, install nothing
+#   bash install_launchd.sh --env-file /path/.env.local all            # inject CRE_ENV_FILE into the plists
+#   bash install_launchd.sh --uninstall <monitor|enrich|weekly|daily|all>
+#
+# Tiers: monitor (2x/day), enrich (every 4h), weekly (additive backstop). The
+# daily tier is RETIRED (replaced by monitor+enrich) but its template is kept for
+# rollback; `all` no longer includes it. Pass `daily` explicitly to render it.
 #
 # CRE_ENV_FILE: if set in the environment (or via --env-file), it is baked into
 # the rendered plists so the ingestor finds POSTGRES_URL regardless of where the
@@ -43,15 +47,15 @@ while [ $# -gt 0 ]; do
       shift
       [ $# -gt 0 ] || { echo "error: --env-file requires a path argument" >&2; exit 2; }
       CRE_ENV_FILE_ARG="$1" ;;
-    monitor|daily|weekly) TIERS+=("$1") ;;
-    all)         TIERS=(monitor daily weekly) ;;
+    monitor|enrich|weekly|daily) TIERS+=("$1") ;;
+    all)         TIERS=(monitor enrich weekly) ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
 
 if [ "${#TIERS[@]}" -eq 0 ]; then
-  echo "usage: install_launchd.sh [--load|--print|--uninstall] [--env-file PATH] <monitor|daily|weekly|all>" >&2
+  echo "usage: install_launchd.sh [--load|--print|--uninstall] [--env-file PATH] <monitor|enrich|weekly|daily|all>" >&2
   exit 2
 fi
 

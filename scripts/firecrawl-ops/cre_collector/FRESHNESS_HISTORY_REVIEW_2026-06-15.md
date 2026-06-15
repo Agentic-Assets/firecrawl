@@ -1,5 +1,13 @@
 # CRE Collector: Freshness, Accuracy, and Historic-Retention Review
 
+> **UPDATE 2026-06-15 (post-relocation):** Finding H1 (TCC exit 126) is RESOLVED.
+> The collector repo was relocated out of `~/Documents` to
+> `~/Github/agentic-assets/firecrawl`, so the launchd tiers no longer exit 126.
+> The monitor tier has a confirmed clean scheduled run
+> (`out/daily/last_run_monitor.json` rc:0, 2026-06-15) and the daily tier
+> executes the additive collect on schedule. Section 4's Full Disk Access
+> runbook and the H1 finding below are retained as point-in-time history.
+
 **Date:** 2026-06-15
 **Scope:** ingest reconciliation lifecycle (`cre_ingest.py`), schema and history retention
 (`sql/002,005,007`), the Savills source cap (`sources/savills.ts`), and the freshness model

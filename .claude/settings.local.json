@@ -58,7 +58,13 @@
       "Bash(bash -c ' *)",
       "Bash(ps -o pid,etime,command -p 94015)",
       "Bash(mv -f cre_daily_update.sh.new cre_daily_update.sh)",
-      "Bash(bash -n cre_daily_update.sh)"
+      "Bash(bash -n cre_daily_update.sh)",
+      "Bash(cat out/daily/cre-daily.out.log)",
+      "Bash(tail -n 20 out/daily/cre-daily.err.log)",
+      "Bash(cat out/daily/last_run_daily.json)",
+      "Bash(tail -n 25 out/daily/run_2026-06-15_0853.log)",
+      "Bash(exit 0)",
+      "Bash(ps -o etime= -p 45208)"
     ],
     "deny": [
       "Bash(rm -rf /:*)",

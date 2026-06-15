@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   ai.agentic.cre-monitor.plist (TEMPLATE)
-  CRE monitor tier - cheap enumeration diff every 3 hours at :15.
+  CRE monitor tier - cheap enumeration diff twice daily (06:10 and 18:10).
   Runs cre_run_tier.sh monitor (collect.ts --monitor then cre_monitor.py).
   CRE_MONITOR_APPLY=1 enables observe-only change-event recording (007 tables
   only; never cre_listings.status/deleted_at).
@@ -27,58 +27,25 @@
     <string>__COLLECTOR_DIR__</string>
 
     <!--
-      Every 3 hours at minute 15.  launchd has no native "every N hours"
-      repeat, so we enumerate the eight start times explicitly.
+      Twice daily at 06:10 and 18:10.  The enrich tier (every 4h, offset to :30)
+      now carries the intra-day detail-refresh role the old every-3h cadence
+      filled; the monitor only needs to re-enumerate and re-enqueue twice a day.
+      06:10 / 18:10 are offset 20 min before the enrich :30 fires so the shared
+      mkdir lock rarely contends.
     -->
     <key>StartCalendarInterval</key>
     <array>
         <dict>
             <key>Hour</key>
-            <integer>0</integer>
-            <key>Minute</key>
-            <integer>15</integer>
-        </dict>
-        <dict>
-            <key>Hour</key>
-            <integer>3</integer>
-            <key>Minute</key>
-            <integer>15</integer>
-        </dict>
-        <dict>
-            <key>Hour</key>
             <integer>6</integer>
             <key>Minute</key>
-            <integer>15</integer>
-        </dict>
-        <dict>
-            <key>Hour</key>
-            <integer>9</integer>
-            <key>Minute</key>
-            <integer>15</integer>
-        </dict>
-        <dict>
-            <key>Hour</key>
-            <integer>12</integer>
-            <key>Minute</key>
-            <integer>15</integer>
-        </dict>
-        <dict>
-            <key>Hour</key>
-            <integer>15</integer>
-            <key>Minute</key>
-            <integer>15</integer>
+            <integer>10</integer>
         </dict>
         <dict>
             <key>Hour</key>
             <integer>18</integer>
             <key>Minute</key>
-            <integer>15</integer>
-        </dict>
-        <dict>
-            <key>Hour</key>
-            <integer>21</integer>
-            <key>Minute</key>
-            <integer>15</integer>
+            <integer>10</integer>
         </dict>
     </array>
 

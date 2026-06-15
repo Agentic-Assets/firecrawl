@@ -4,7 +4,7 @@ import { brokerRef, brokers } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, dedupeStrings, extractSitemapUrlEntries, titleFromFilename } from "../lib/html.js";
 import { scrapeDoc, scrapeRaw } from "../lib/scrape.js";
-import { SourceResult, Tx } from "../types.js";
+import { ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, num, pmap, prune } from "../lib/util.js";
 
 
@@ -195,6 +195,79 @@ export function jllInvestorContacts(listing: any): any[] {
   });
 }
 
+// Pure transform (no network): given the base row and an already-scraped detail
+// doc, return the enriched listing row (or a `detailError` row when the page has
+// no pdp listing in __NEXT_DATA__). Factored out of enrichJllInvestorListing so
+// the enrichment worker and the unit test can reuse it against a saved fixture.
+// `base.url` flows through unchanged, satisfying the worker's URL-keyed
+// completion match.
+export function parseJllInvestorDetail(base: any, doc: ScrapedDoc): any {
+  const next = jllInvestorNextData(doc.rawHtml);
+  const listing = next?.props?.pageProps?.initialState?.pdp?.listing;
+  if (!listing) {
+    return prune({ ...base, detailError: "missing pdp listing in __NEXT_DATA__" });
+  }
+  const contactsDetailed = jllInvestorContacts(listing);
+  const brokerIds = contactsDetailed
+    .map((contact: any) =>
+      brokerRef({
+        name: clean(contact.name),
+        email: clean(contact.email),
+        phone: clean(contact.phone),
+        office: clean(contact.office),
+        avatarUrl: clean(contact.avatarUrl),
+        company: "JLL",
+      })
+    )
+    .filter((id: number | null): id is number => id !== null);
+  const documentUrls = jllInvestorDocumentUrls(listing);
+  return prune({
+    ...base,
+    id: clean(listing.id) ?? base.id,
+    name: clean(listing.name) ?? base.name,
+    assetType:
+      clean(listing.assetType) ??
+      clean(listing.rawAssetType) ??
+      (Array.isArray(listing.assetTypesPrimaryList)
+        ? listing.assetTypesPrimaryList.map(clean).filter(Boolean).join(", ")
+        : base.assetType),
+    description: clean(listing.description) ?? base.description,
+    street: clean(listing.fullLocation) ?? base.street,
+    city: clean(listing.city) ?? base.city,
+    state: clean(listing.state) ?? base.state,
+    country: clean(listing.country) === "United States" ? "US" : clean(listing.country) ?? base.country,
+    latitude: num(listing.latitude) ?? base.latitude,
+    longitude: num(listing.longitude) ?? base.longitude,
+    status: jllInvestorStatus(listing),
+    sizeText: clean(listing.numberOfUnits ? `${listing.numberOfUnits} units` : null) ?? base.sizeText,
+    brokerIds,
+    contactsDetailed,
+    brochures: documentUrls.map((url) => ({ name: titleFromFilename(url), url })),
+    photos: jllInvestorImageUrls(listing, base.photos ?? []),
+    lastUpdated:
+      clean(listing.dateModified ?? listing.datePublished) ??
+      (base.lastmod ? String(base.lastmod).slice(0, 10) : null),
+    jllInvestorDetail: {
+      id: clean(listing.id),
+      alias: clean(listing.alias),
+      dealType: clean(listing.dealType),
+      stageName: clean(listing.stageName),
+      isUnderContract: Boolean(listing.isUnderContract),
+      highlights: listing.highlights,
+      customAttributes: listing.customAttributes,
+      documentsCA: listing.documentsCA,
+      rawPriceRange: listing.priceRange,
+      datePublished: clean(listing.datePublished),
+      dateModified: clean(listing.dateModified),
+      scrape: {
+        markdownLength: doc.markdown.length,
+        rawHtmlLength: doc.rawHtml.length,
+        linkCount: doc.links.length,
+      },
+    },
+  });
+}
+
 export async function enrichJllInvestorListing(base: any): Promise<any> {
   if (!base.url) return base;
   try {
@@ -203,71 +276,8 @@ export async function enrichJllInvestorListing(base: any): Promise<any> {
     let listing = next?.props?.pageProps?.initialState?.pdp?.listing;
     if (!listing && JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS > JLL_INVESTOR_DETAIL_WAIT_MS) {
       doc = await scrapeDoc(base.url, { waitFor: JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS, timeout: 120000 });
-      next = jllInvestorNextData(doc.rawHtml);
-      listing = next?.props?.pageProps?.initialState?.pdp?.listing;
     }
-    if (!listing) {
-      return prune({ ...base, detailError: "missing pdp listing in __NEXT_DATA__" });
-    }
-    const contactsDetailed = jllInvestorContacts(listing);
-    const brokerIds = contactsDetailed
-      .map((contact: any) =>
-        brokerRef({
-          name: clean(contact.name),
-          email: clean(contact.email),
-          phone: clean(contact.phone),
-          office: clean(contact.office),
-          avatarUrl: clean(contact.avatarUrl),
-          company: "JLL",
-        })
-      )
-      .filter((id: number | null): id is number => id !== null);
-    const documentUrls = jllInvestorDocumentUrls(listing);
-    return prune({
-      ...base,
-      id: clean(listing.id) ?? base.id,
-      name: clean(listing.name) ?? base.name,
-      assetType:
-        clean(listing.assetType) ??
-        clean(listing.rawAssetType) ??
-        (Array.isArray(listing.assetTypesPrimaryList)
-          ? listing.assetTypesPrimaryList.map(clean).filter(Boolean).join(", ")
-          : base.assetType),
-      description: clean(listing.description) ?? base.description,
-      street: clean(listing.fullLocation) ?? base.street,
-      city: clean(listing.city) ?? base.city,
-      state: clean(listing.state) ?? base.state,
-      country: clean(listing.country) === "United States" ? "US" : clean(listing.country) ?? base.country,
-      latitude: num(listing.latitude) ?? base.latitude,
-      longitude: num(listing.longitude) ?? base.longitude,
-      status: jllInvestorStatus(listing),
-      sizeText: clean(listing.numberOfUnits ? `${listing.numberOfUnits} units` : null) ?? base.sizeText,
-      brokerIds,
-      contactsDetailed,
-      brochures: documentUrls.map((url) => ({ name: titleFromFilename(url), url })),
-      photos: jllInvestorImageUrls(listing, base.photos ?? []),
-      lastUpdated:
-        clean(listing.dateModified ?? listing.datePublished) ??
-        (base.lastmod ? String(base.lastmod).slice(0, 10) : null),
-      jllInvestorDetail: {
-        id: clean(listing.id),
-        alias: clean(listing.alias),
-        dealType: clean(listing.dealType),
-        stageName: clean(listing.stageName),
-        isUnderContract: Boolean(listing.isUnderContract),
-        highlights: listing.highlights,
-        customAttributes: listing.customAttributes,
-        documentsCA: listing.documentsCA,
-        rawPriceRange: listing.priceRange,
-        datePublished: clean(listing.datePublished),
-        dateModified: clean(listing.dateModified),
-        scrape: {
-          markdownLength: doc.markdown.length,
-          rawHtmlLength: doc.rawHtml.length,
-          linkCount: doc.links.length,
-        },
-      },
-    });
+    return parseJllInvestorDetail(base, doc);
   } catch (err) {
     console.error(`  jll-investor: detail failed for ${base.url}: ${err}`);
     return prune({ ...base, detailError: String(err) });

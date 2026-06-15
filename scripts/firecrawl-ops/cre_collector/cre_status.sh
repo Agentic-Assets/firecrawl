@@ -32,6 +32,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 OUT_DAILY="$DIR/out/daily"
 OUT_MONITOR="$DIR/out/monitor"
+OUT_ENRICH="$DIR/out/enrich"
 FC_DIR="${FC_DIR:-$DIR/../../..}"
 API_URL="${API_URL:-http://localhost:3002}"
 
@@ -53,10 +54,11 @@ section() { printf '\n== %s ==\n' "$1"; }
 
 now_epoch="$(date +%s)"
 
-# 1.5x the nominal cadence: monitor every 3h, daily 24h, weekly 7d.
+# 1.5x the nominal cadence: monitor 2x/day (12h), enrich every 4h, weekly 7d.
 stale_threshold() {
   case "$1" in
-    monitor) echo $(( 4 * 3600 + 1800 )) ;;   # 4.5h
+    monitor) echo $(( 18 * 3600 )) ;;          # 18h  (1.5x the 12h 2x/day cadence)
+    enrich)  echo $(( 6 * 3600 )) ;;           # 6h   (1.5x the 4h cadence)
     daily)   echo $(( 36 * 3600 )) ;;          # 36h
     weekly)  echo $(( 10 * 86400 )) ;;         # 10d
   esac
@@ -65,6 +67,7 @@ stale_threshold() {
 newest_artifact() {
   case "$1" in
     monitor)      ls -t "$OUT_MONITOR"/monitor_*.json 2>/dev/null | head -1 ;;
+    enrich)       ls -t "$OUT_ENRICH"/*.json 2>/dev/null | head -1 ;;
     daily|weekly) ls -t "$OUT_DAILY"/run_*.log 2>/dev/null | head -1 ;;
   esac
 }
@@ -100,7 +103,7 @@ dir_size_kb() { du -sk "$1" 2>/dev/null | awk '{print $1}'; }
 section "launchd schedules"
 # ---------------------------------------------------------------------------
 LCTL="$(launchctl list 2>/dev/null | grep 'ai.agentic.cre' || true)"
-for tier in monitor daily weekly; do
+for tier in monitor enrich weekly; do
   label="ai.agentic.cre-$tier"
   line="$(printf '%s\n' "$LCTL" | awk -v l="$label" '$3==l {print; exit}')"
   if [ -z "$line" ]; then
@@ -127,7 +130,7 @@ done
 # ---------------------------------------------------------------------------
 section "last run per tier"
 # ---------------------------------------------------------------------------
-for tier in monitor daily weekly; do
+for tier in monitor enrich weekly; do
   marker="$OUT_DAILY/last_run_$tier.json"
   verdict=""
   if [ -f "$marker" ]; then
@@ -285,7 +288,7 @@ esac
 section "recent launchd stderr (newest tail)"
 # ---------------------------------------------------------------------------
 shown=0
-for tier in monitor daily weekly; do
+for tier in monitor enrich weekly; do
   errlog="$OUT_DAILY/cre-$tier.err.log"
   [ -s "$errlog" ] || continue
   shown=1

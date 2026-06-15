@@ -25,13 +25,13 @@ resolution.
 
 Shipped 2026-06-14: the seed scaled to all 11 monitor-enabled sources, the
 launchd monitor + daily tiers were loaded, and `cre_gate.py` was wired into
-`cre_daily_update.sh` as observe-only step [3/4]. KNOWN BLOCKER (2026-06-14):
-both launchd tiers currently exit 126 on every fire because the repo lives under
-`~/Documents` and the launchd user-agent lacks macOS Full Disk Access (TCC), so
-no scheduled monitor or daily run has succeeded yet (the empty event ledger is a
-non-signal, not a quiet market). The fix is a one-time Full Disk Access grant
-(see `cre_collector/START_HERE.md` Known Limits). Still gated for explicit
-go-ahead (separate from the TCC fix): Phase-2 status activation (see
+`cre_daily_update.sh` as observe-only step [3/4]. RESOLVED 2026-06-15: the repo
+was relocated out of `~/Documents` to `~/Github/agentic-assets/firecrawl`, so
+TCC / Full Disk Access is no longer a blocker and scheduled fires no longer exit
+126. Both launchd tiers now execute on schedule; the monitor tier confirmed a
+clean run (`out/daily/last_run_monitor.json` rc:0, 2026-06-15). The earlier
+empty event ledger reflected blocked fires, not a quiet market. Still gated for
+explicit go-ahead: Phase-2 status activation (see
 `cre-phase2-board-impact-2026-06-13.md`) and the consumer board-gate / `005`
 view widening.
 
@@ -166,8 +166,8 @@ python3 cre_monitor.py --in out/monitor_run.json --apply
 
 `--apply` change-event recording, the launchd monitor + daily tiers, and the
 `cre_gate` wiring into `cre_daily_update.sh` shipped 2026-06-14 (the launchd
-tiers are loaded but currently TCC-blocked, exiting 126; see the START_HERE
-Known Limits for the Full Disk Access fix). Phase-2 status activation remains
+tiers are loaded and now execute on schedule as of 2026-06-15; the monitor tier
+confirmed a clean run, `out/daily/last_run_monitor.json` rc:0). Phase-2 status activation remains
 gated for explicit go-ahead. The full-detail daily collect + `cre_ingest` path
 is unchanged and remains the source of truth for listing content.
 

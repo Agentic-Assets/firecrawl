@@ -17,30 +17,13 @@ import { srcNaiGlobal } from "./sources/nai-global.js";
 import { srcNewmark } from "./sources/newmark.js";
 import { srcSavills } from "./sources/savills.js";
 import { srcTranswestern } from "./sources/transwestern.js";
-import { SourceResult, Tx } from "./types.js";
+import { SOURCE_KEYS, SourceKey, SourceResult, Tx } from "./types.js";
 import { prune } from "./lib/util.js";
+import { readFileSync } from "node:fs";
+import { EnrichItem, groupEnrichItems, resolveEnricher, runEnrichGroups } from "./lib/enrich.js";
 
 
 // ---------- CLI ----------
-
-const SOURCE_KEYS = [
-  "cbre",
-  "cbre-dealflow",
-  "jll",
-  "jll-investor",
-  "cushman-wakefield",
-  "colliers",
-  "colliers-main",
-  "newmark",
-  "marcus-millichap",
-  "avison-young",
-  "savills",
-  "svn",
-  "nai-global",
-  "lee-associates",
-  "transwestern",
-] as const;
-type SourceKey = (typeof SOURCE_KEYS)[number];
 
 const sourceArg = (flags.source ?? "all").toLowerCase();
 const requestedSources: SourceKey[] =
@@ -242,7 +225,84 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+// ---------- enrich mode ----------
+
+// Display company per source key, mirroring the `res.company` the full path
+// attaches as `sourceCompany`. The enrich path's per-listing rows do not carry a
+// company field (the enrichers return parsed listing fields only), so it is
+// supplied here. `sourceCompany` is metadata; `sourceKey` is what cre_ingest
+// maps to a brokerage, so an absent/loose company never affects ingest keys.
+const ENRICH_COMPANY: Partial<Record<SourceKey, string>> = {
+  "colliers-main": "Colliers",
+  "jll-investor": "JLL Investor Center",
+  cbre: "CBRE",
+  "cbre-dealflow": "CBRE",
+  jll: "JLL",
+  "cushman-wakefield": "Cushman & Wakefield",
+  colliers: "Colliers",
+  newmark: "Newmark",
+  "marcus-millichap": "Marcus & Millichap",
+  "avison-young": "Avison Young",
+  savills: "Savills",
+  svn: "SVN",
+  "nai-global": "NAI Global",
+  "lee-associates": "Lee & Associates",
+  transwestern: "Transwestern",
+};
+
+// Targeted-detail (enrich) mode: read a worker claim batch, group by sourceKey,
+// dispatch each group to its registered enricher (generic fallback when none),
+// and emit the standard artifact with runMeta.mode="enrich". cre_ingest.py
+// consumes this artifact unchanged.
+async function enrichMain(claimPath: string): Promise<void> {
+  const startedAt = new Date().toISOString();
+  const raw = readFileSync(claimPath, "utf8");
+  const parsed = JSON.parse(raw) as { items?: EnrichItem[] };
+  const items = Array.isArray(parsed.items) ? parsed.items : [];
+
+  const groups = groupEnrichItems(items);
+  const companyFor = (key: string) => ENRICH_COMPANY[key as SourceKey] ?? key;
+  const { sources, listings } = await runEnrichGroups(groups, resolveEnricher, companyFor);
+
+  console.error(
+    `enrich done: ${listings.length} listing(s) from ${groups.size} source group(s), ${brokers.length} unique brokers`
+  );
+
+  const out = {
+    description:
+      "Commercial real estate listings (for sale and for lease) collected from major brokerage websites via local self-hosted Firecrawl, normalized to a common structure.",
+    runMeta: {
+      apiUrl: API_URL,
+      mode: "enrich",
+      enrichInput: claimPath,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+    },
+    sources,
+    listings,
+    brokers: brokers.map((b) => prune(b) ?? {}),
+    totalListings: listings.length,
+  };
+  const json = JSON.stringify(out);
+  if (OUT_PATH) {
+    mkdirSync(dirname(OUT_PATH), { recursive: true });
+    writeFileSync(OUT_PATH, json);
+    console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
+  } else {
+    process.stdout.write(json);
+  }
+}
+
+async function dispatch(): Promise<void> {
+  const enrichInput = flags["enrich-input"];
+  if (enrichInput) {
+    await enrichMain(enrichInput);
+  } else {
+    await main();
+  }
+}
+
+dispatch().catch((err) => {
   console.error(err);
   process.exit(1);
 });

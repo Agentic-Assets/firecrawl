@@ -3,6 +3,30 @@
 
 export type Tx = "sale" | "lease";
 
+// Canonical source-key tuple (one source of truth for collect.ts and
+// lib/enrich.ts). Exported here so the enrichment registry can type itself as
+// Partial<Record<SourceKey, ...>> without importing collect.ts. The tuple is
+// byte-identical to the prior collect.ts-local literals; runtime behavior is
+// unchanged.
+export const SOURCE_KEYS = [
+  "cbre",
+  "cbre-dealflow",
+  "jll",
+  "jll-investor",
+  "cushman-wakefield",
+  "colliers",
+  "colliers-main",
+  "newmark",
+  "marcus-millichap",
+  "avison-young",
+  "savills",
+  "svn",
+  "nai-global",
+  "lee-associates",
+  "transwestern",
+] as const;
+export type SourceKey = (typeof SOURCE_KEYS)[number];
+
 export type ScrapeOpts = {
   waitFor?: number;
   proxy?: "stealth" | "basic" | "auto";

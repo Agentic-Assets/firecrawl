@@ -1,5 +1,13 @@
 # CRE Collector Cloud Hosting Options (where to run the pipeline)
 
+> **UPDATE 2026-06-15:** The "currently blocked by macOS Full Disk Access / TCC"
+> premise below is RESOLVED. The collector repo was relocated out of
+> `~/Documents` to `~/Github/agentic-assets/firecrawl`, so the local Mac mini
+> launchd tiers now execute on schedule (monitor tier confirmed rc:0,
+> 2026-06-15). The Phase 0 "fix the Mac mini first" step is therefore already
+> done; the cloud-vs-local cost and anti-bot analysis below is retained as the
+> 2026-06-14 decision aid.
+
 Status as of 2026-06-14: research synthesis and recommendation. Not yet
 actioned. This document evaluates where and how to run the CRE listing
 collection pipeline, with a focus on moving it off the local Mac mini (currently

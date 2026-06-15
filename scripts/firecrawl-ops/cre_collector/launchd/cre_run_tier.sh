@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# cre_run_tier.sh: lock-serialized dispatcher for the three CRE launchd tiers.
+# cre_run_tier.sh: lock-serialized dispatcher for the CRE launchd tiers.
 #
-# Usage: cre_run_tier.sh <monitor|daily|weekly>
+# Usage: cre_run_tier.sh <monitor|enrich|weekly|daily>
 #
-# All three tiers share one exclusive lock (a portable mkdir lock, no flock
+# All tiers share one exclusive lock (a portable mkdir lock, no flock
 # dependency) so they cannot overlap with each other or with any manual run
 # that acquires the same lock. If the lock is already held the script exits
 # silently (exit 0) and launchd retries on the next scheduled interval. Each
@@ -14,9 +14,20 @@
 #   monitor  : cheap enumeration diff: runs collect.ts --monitor then cre_monitor.py
 #              observe-only by default; pass CRE_MONITOR_APPLY=1 to enable --apply
 #              (GATED: requires explicit go-ahead before enabling --apply or loading the plist)
-#   daily    : full collect + additive ingest with --no-mark-missing (safe default)
-#   weekly   : full collect + ingest with --mark-missing (ONLY tier permitted to
-#              soft-delete rows; runs after proven convergence on Tier-1 sources)
+#   enrich   : drain cre_enrichment_queue: runs cre_enrich.py to claim a batch of
+#              monitor-flagged new/changed listings, scrape only those detail
+#              pages, and re-ingest ADDITIVELY (cre_ingest.py --in). Never passes
+#              --mark-missing nor --activate-status; cannot soft-delete or flip
+#              board state. Batch size from CRE_ENRICH_BATCH (default 200).
+#   weekly   : full collect + ingest backstop. ADDITIVE by default
+#              (--no-mark-missing); soft-delete (--mark-missing) fires ONLY when
+#              CRE_WEEKLY_MARK_MISSING=1 is set in this tier's environment. The
+#              weekly tier is the ONLY tier permitted to soft-delete rows, and
+#              only under that explicit escalation (still triple-gated downstream
+#              by cre_gate.py --strict and per-brokerage ingest eligibility).
+#   daily    : RETIRED. Replaced by monitor (2x/day) + enrich (every 4h). The
+#              case is kept for rollback only; the plist is no longer scheduled.
+#              Runs cre_daily_update.sh --no-mark-missing (additive).
 
 set -euo pipefail
 
@@ -30,6 +41,7 @@ COLLECTOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DAILY_OUT_DIR="${COLLECTOR_DIR}/out/daily"
 LOCKDIR="${DAILY_OUT_DIR}/.cre.lock"   # mkdir-based lock dir (portable; no flock dependency)
 MONITOR_SCRIPT="${COLLECTOR_DIR}/cre_monitor.py"
+ENRICH_SCRIPT="${COLLECTOR_DIR}/cre_enrich.py"
 DAILY_SCRIPT="${COLLECTOR_DIR}/cre_daily_update.sh"
 
 ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
@@ -39,9 +51,9 @@ ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 # ---------------------------------------------------------------------------
 TIER="${1:-}"
 case "${TIER}" in
-    monitor|daily|weekly) ;;
+    monitor|enrich|weekly|daily) ;;
     *)
-        echo "[cre_run_tier] ERROR: first argument must be monitor, daily, or weekly (got: '${TIER}')" >&2
+        echo "[cre_run_tier] ERROR: first argument must be monitor, enrich, weekly, or daily (got: '${TIER}')" >&2
         exit 1
         ;;
 esac
@@ -169,7 +181,7 @@ prune_runtime_artifacts() {
         _keep_newest "${COLLECTOR_DIR}/out/monitor" 'monitor_*.json' 24
         _keep_newest "${COLLECTOR_DIR}/out/monitor" 'monitor_*.log'  24
         local L
-        for L in cre-monitor cre-daily cre-weekly; do
+        for L in cre-monitor cre-enrich cre-weekly cre-daily; do
             _cap_log "${DAILY_OUT_DIR}/${L}.out.log" 10485760   # 10 MB
             _cap_log "${DAILY_OUT_DIR}/${L}.err.log" 10485760
         done
@@ -230,15 +242,32 @@ case "${TIER}" in
         python3 "${MONITOR_SCRIPT}" --in "${MONITOR_ARTIFACT}" ${APPLY_FLAG} >>"${MONITOR_LOG}" 2>&1
         ;;
 
-    daily)
-        echo "[cre_run_tier] Running daily full collect + additive ingest (--no-mark-missing)"
-        bash "${DAILY_SCRIPT}" --no-mark-missing
+    enrich)
+        echo "[cre_run_tier] Running enrich queue worker (additive; --in only, never --mark-missing/--activate-status)"
+        python3 "${ENRICH_SCRIPT}" --batch "${CRE_ENRICH_BATCH:-200}"
         ;;
 
     weekly)
-        echo "[cre_run_tier] Running weekly full collect + reconcile (--mark-missing ENABLED)"
-        echo "[cre_run_tier] WARNING: this is the ONLY tier permitted to soft-delete rows."
-        bash "${DAILY_SCRIPT}" --mark-missing
+        # Additive by default. Soft-delete (--mark-missing) is gated behind the
+        # explicit CRE_WEEKLY_MARK_MISSING=1 escalation; even when set it stays
+        # triple-gated downstream (cre_gate.py --strict auto-downgrade +
+        # per-brokerage ingest eligibility). Default keeps weekly safe to load.
+        MM="--no-mark-missing"
+        [ "${CRE_WEEKLY_MARK_MISSING:-0}" = "1" ] && MM="--mark-missing"
+        if [ "${MM}" = "--mark-missing" ]; then
+            echo "[cre_run_tier] Running weekly full collect + reconcile (--mark-missing ENABLED via CRE_WEEKLY_MARK_MISSING=1)"
+            echo "[cre_run_tier] WARNING: this is the ONLY tier permitted to soft-delete rows."
+        else
+            echo "[cre_run_tier] Running weekly full collect + additive ingest (--no-mark-missing; CRE_WEEKLY_MARK_MISSING not set)"
+        fi
+        bash "${DAILY_SCRIPT}" "${MM}"
+        ;;
+
+    daily)
+        # RETIRED: replaced by monitor (2x/day) + enrich (every 4h). Kept for
+        # rollback only; the daily plist is no longer scheduled.
+        echo "[cre_run_tier] Running daily full collect + additive ingest (--no-mark-missing) [RETIRED tier, rollback only]"
+        bash "${DAILY_SCRIPT}" --no-mark-missing
         ;;
 
 esac

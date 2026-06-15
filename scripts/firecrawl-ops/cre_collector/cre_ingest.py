@@ -948,7 +948,27 @@ WITH ins AS (
         -- reappears stays with its terminal label; the board gate excludes it.
         status            = CASE WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'
                                  THEN 'active' ELSE t.status END,
-        transaction_type  = EXCLUDED.transaction_type,
+        -- transaction_type NEVER narrows a known type. A partial/generic re-ingest
+        -- (the generic enricher emits no transactionType, and the enrichment queue
+        -- has no transaction column so cre_enrich tags every claimed row "sale")
+        -- must not flip an existing 'lease'/'sale_or_lease' row to 'sale' and drop
+        -- it off the for-lease board (v_cre_active_for_lease filters
+        -- transaction_type IN ('lease','sale_or_lease')). Rules, mirroring
+        -- merge_rows() across the sale+lease passes:
+        --   existing 'sale_or_lease'                  -> keep (never narrow)
+        --   incoming 'sale_or_lease'                  -> take (upgrade)
+        --   existing NULL                             -> take incoming
+        --   existing/incoming differ (sale vs lease)  -> 'sale_or_lease' (serves both)
+        --   same single mode, or incoming NULL        -> keep existing
+        transaction_type  = CASE
+                              WHEN t.transaction_type = 'sale_or_lease' THEN 'sale_or_lease'
+                              WHEN EXCLUDED.transaction_type = 'sale_or_lease' THEN 'sale_or_lease'
+                              WHEN t.transaction_type IS NULL THEN EXCLUDED.transaction_type
+                              WHEN EXCLUDED.transaction_type IS NOT NULL
+                                   AND EXCLUDED.transaction_type IS DISTINCT FROM t.transaction_type
+                                   THEN 'sale_or_lease'
+                              ELSE t.transaction_type
+                            END,
         property_type     = COALESCE(EXCLUDED.property_type, t.property_type),
         title             = COALESCE(EXCLUDED.title, t.title),
         address           = COALESCE(EXCLUDED.address, t.address),

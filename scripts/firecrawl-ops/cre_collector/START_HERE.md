@@ -13,17 +13,18 @@ CHECKs, 4 audit FKs `ON DELETE SET NULL`, 2 unique indexes `NULLS NOT DISTINCT`,
 `../sql/advisor-reports/2026-06-13-cre-live-hardening.sql`). Data-quality
 cleanups: 50 board-invisible JLL rows -> `inactive`, transwestern notes restored,
 Savills residential contamination removed (101 sale + 1 ghost lease soft-deleted;
-2 defensible Chicago retail lease rows remain). Automation LOADED but BLOCKED (TCC): launchd
-`ai.agentic.cre-monitor` (every 3h, `CRE_MONITOR_APPLY=1` change-event recording)
-and `ai.agentic.cre-daily` (06:30, `--no-mark-missing`, status OFF) are loaded,
-and `cre_gate.py` is wired into `cre_daily_update.sh` with a `--strict`
-mark-missing fail-safe. HOWEVER both tiers exit 126 on every scheduled fire
-because the launchd user-agent lacks macOS Full Disk Access to `~/Documents`;
-no scheduled run has succeeded yet, so the empty change-event ledger is a
-non-signal. One-time fix in Known Limits below. Weekly `--mark-missing` tier
-intentionally NOT loaded (reconcile held). 290 pytest pass. Run-health at a
+2 defensible Chicago retail lease rows remain). Automation LOADED and EXECUTING
+on schedule: launchd `ai.agentic.cre-monitor` (every 3h, `CRE_MONITOR_APPLY=1`
+change-event recording) and `ai.agentic.cre-daily` (06:30, `--no-mark-missing`,
+status OFF) are loaded, and `cre_gate.py` is wired into `cre_daily_update.sh`
+with a `--strict` mark-missing fail-safe. The repo was relocated out of
+`~/Documents` to `~/Github/agentic-assets/firecrawl`, so the prior macOS Full
+Disk Access exit-126 block no longer applies. The monitor tier has a confirmed
+clean scheduled run (`out/daily/last_run_monitor.json` rc:0, 2026-06-15); the
+daily tier executes the additive collect on schedule. Weekly `--mark-missing`
+tier intentionally NOT loaded (reconcile held). 290 pytest pass. Run-health at a
 glance: `bash cre_status.sh` (read-only heartbeat; flags stale schedules,
-last-run failures, the TCC-126 block, and stack/env state).
+last-run failures, and stack/env state).
 
 Last updated: 2026-06-13. Change-tracking / monitor layer (migration 007 +
 `cre_monitor.py` + `cre_gate.py` + `collect.ts --monitor`) built, hardened, and
@@ -141,8 +142,9 @@ are open:
    agent-facing `005` views (now `status IN ('active','under_contract','pending')`
    on this branch; live DDL apply gated, verified read-only as a zero-row no-op).
    NOTE: the tiered launchd schedules (section 9) and the `cre_gate.py` wiring
-   into `cre_daily_update.sh` SHIPPED 2026-06-14 (loaded; currently TCC-blocked,
-   see Known Limits) and are no longer gated.
+   into `cre_daily_update.sh` SHIPPED 2026-06-14 (loaded and executing on
+   schedule after the repo relocation out of `~/Documents`) and are no longer
+   gated.
 
 The EQUIRE-facing view-gate / status activation (sections 12.4, Phase-2) stays
 pending CRE_EQUIRE coordination and is NOT part of the additive build. Board
@@ -184,6 +186,7 @@ Read these in order:
 9. `docs/firecrawl-ops/references/cre-monitor-subsystem.md` (monitor/change-tracking layer: components, run model, hard gotchas) when touching 007, `--monitor`, `cre_monitor.py`, or `cre_gate.py`
 10. `HANDOFF_COLLIERS_MAIN_2026-06-13.md` (colliers-main full run, COMPLETE 2026-06-14: converged + ingested additively, 15,829 active main-site rows)
 11. `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` (monitor hardening + collect.ts modular refactor + first gated `--apply` seed) when touching the monitor layer or scaling the seed
+12. `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` (Tier-B `cre_enrich.py` queue worker + cadence restructure: monitor 2x/day, enrich every 4h, weekly additive backstop, daily retired; IMPLEMENTED in code, live cutover gated) when touching `cre_enrich.py`, `collect.ts --enrich-input`/`lib/enrich.ts`, `sql/010`, or the launchd tier set
 
 Historical buildout/validation detail (handoff log, lessons, validation
 snapshots, egress and security audits) lives in `archive/`; see
@@ -233,21 +236,25 @@ images into Supabase storage for the bulk collector.
 
 ## Known Limits To Respect
 
-- **launchd automation is BLOCKED by macOS Full Disk Access (TCC), 2026-06-14.**
-  `ai.agentic.cre-monitor` and `ai.agentic.cre-daily` are loaded but exit 126 on
-  every fire: the repo lives under `~/Documents`, and a launchd user-agent does
-  not inherit the Terminal's file access. The error in `out/daily/cre-*.err.log`
-  is `getcwd ... Operation not permitted` plus `/bin/bash: cre_run_tier.sh:
-  Operation not permitted`. TWO FIXES: (a, recommended for new machines) clone
-  the repo OUTSIDE `~/Documents` (for example `~/code/firecrawl`) so TCC never
-  applies; `cre_setup.sh` flags whether you are clear. (b, in place) System
-  Settings -> Privacy & Security -> Full Disk Access -> add `/bin/bash` (use
-  Cmd+Shift+G to type the path), then
-  `launchctl kickstart -k gui/$(id -u)/ai.agentic.cre-monitor` and re-check
-  `launchctl list | grep ai.agentic.cre` for a 0 in the exit-status column.
-  `chmod +x cre_run_tier.sh` is already applied but is NOT the fix (a
-  `/bin/bash <script>` invocation does not need the execute bit). Full
-  fresh-machine setup: `SETUP.md`.
+- **launchd automation RUNS on schedule (TCC resolved 2026-06-15).** The repo
+  was relocated out of `~/Documents` to `~/Github/agentic-assets/firecrawl`, so
+  a launchd user-agent no longer needs macOS Full Disk Access and scheduled
+  fires no longer exit 126. `ai.agentic.cre-monitor` has a confirmed clean run
+  (`out/daily/last_run_monitor.json` rc:0, 2026-06-15) and `ai.agentic.cre-daily`
+  runs the additive `--no-mark-missing` collect on schedule. On a fresh machine,
+  keep the clone OUTSIDE `~/Documents` so TCC never applies; `cre_setup.sh` flags
+  whether you are clear. Full fresh-machine setup: `SETUP.md`.
+- **Enrichment worker + cadence restructure SHIPPED in code 2026-06-15; live
+  launchd cutover GATED.** `cre_enrich.py` (Tier-B queue worker), `collect.ts
+  --enrich-input` (`lib/enrich.ts`: colliers-main + jll-investor enrichers, JSON-LD
+  generic fallback), `sql/010_cre_enrichment_ops.sql` (two health views, wired into
+  `000_run_all.sql` after `009`), the restructured launchd tiers (monitor 2x/day at
+  06:10/18:10, new enrich every 4h, weekly additive backstop, daily retired), and
+  `cre_status.sh`'s enrich tier are all in the tree. The LIVE Mac still has the OLD
+  tiers loaded (`ai.agentic.cre-monitor` every 3h + `ai.agentic.cre-daily` 06:30).
+  Running the cutover (apply `010`, reload monitor at 2x/day, load enrich, unload
+  daily, load the additive weekly backstop) is held for go-ahead. Runbook:
+  `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` Section 9.
 - Do not use `--mark-missing` after a run with Lee or other source errors.
 - Cushman & Wakefield is now current in Supabase from `out/cushman_full_2026-06-12_022841.json`: 11,318 active rows, 18,343 document URL rows, 24,278 image URL rows, 21,110 contact rows, 21,110 profile URLs, and 20,301 VCard URLs. Source-scoped `--mark-missing` soft-deleted 24 old probe rows.
 - CBRE Deal Flow has been ingested from the public RCM endpoint. Do not use its reported 2,042 sale total as collected count; the public card pagination exposed 1,809 sale cards in the full run. A narrow cleanup soft-deleted 21 stale `dealflow:url:<sha1>` rows that duplicated newer enriched Deal Flow IDs.
@@ -294,10 +301,17 @@ images into Supabase storage for the bulk collector.
   applied. Apply via `000_run_all.sql` (idempotent). Do NOT apply without
   explicit go-ahead.
 - **Weekly mark-missing, status-activation go-live, and the consumer board-gate
-  deploy remain GATED for explicit go-ahead.** Do not `launchctl load` the weekly
-  reconcile tier, pass `--activate-status`, or apply the widened `005` views
-  until coordinated with the EQUIRE CRE_EQUIRE deploy. See the phase2 board-impact
-  doc's activation runbook.
+  deploy remain GATED for explicit go-ahead.** Do not pass `--activate-status`,
+  enable the `CRE_WEEKLY_MARK_MISSING=1` soft-delete escalation on the weekly
+  tier, or apply the widened `005` views until coordinated with the EQUIRE
+  CRE_EQUIRE deploy. See the phase2 board-impact doc's activation runbook. The
+  weekly tier itself is now ADDITIVE by default (`--no-mark-missing`), so loading
+  it as the backstop is safe; only the soft-delete escalation is held.
+- **Enrichment cutover (Section 9) is GATED.** The enrichment worker + cadence
+  restructure shipped in code; the live launchd cutover (apply `sql/010`, reload
+  monitor at 2x/day, load enrich, unload daily, load the additive weekly backstop)
+  is held for go-ahead. Until then the old monitor-3h + daily-06:30 tiers stay
+  loaded. Runbook: `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` Section 9.
 - Do not treat legacy `cre_scrapers` active flags as production collector status.
 - Do not stage `node_modules/`, `out/`, `__pycache__/`, or generated SQL artifacts.
 
@@ -306,7 +320,7 @@ images into Supabase storage for the bulk collector.
 Routine recovery for the scheduled tiers. All paths are under
 `scripts/firecrawl-ops/cre_collector/`. Start with `bash cre_status.sh`, which
 names the specific fault (stale schedule, last-run failure, hung/stale lock,
-oversized `out/` footprint, TCC-126 block).
+oversized `out/` footprint).
 
 - **Re-kick a missed or failed scheduled run.** launchd does not backfill a
   skipped fire; force one immediately:

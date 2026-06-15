@@ -17,8 +17,10 @@ Last reviewed against code: 2026-06-13.
 > alternative. Not yet built: in-ingest event emission, `cre_backfill_status.py`,
 > `cre_notify.sh`, the `--ids` / `--queue` id-scoped collect mode, and the
 > `cre_enrichment_queue` drain worker. Shipped since this banner (2026-06-14):
-> the launchd monitor + daily tiers are LOADED (currently TCC-blocked, exit 126,
-> until a one-time Full Disk Access grant; see `START_HERE.md` Known Limits), and
+> the launchd monitor + daily tiers are LOADED and EXECUTING on schedule (the
+> repo was relocated out of `~/Documents`, so the prior TCC / Full Disk Access
+> exit-126 block no longer applies; monitor tier confirmed rc:0 on 2026-06-15),
+> and
 > Phase-2 status activation is WIRED in `cre_ingest.py` but OPT-IN and default-OFF
 > (`--activate-status` / `CRE_ACTIVATE_STATUS=1`). Still gated on CRE_EQUIRE
 > coordination (see 12.4): the EQUIRE view-gate, the first live status activation,

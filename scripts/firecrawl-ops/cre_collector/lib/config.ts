@@ -13,6 +13,7 @@ export const { values: flags } = parseArgs({
     out: { type: "string" }, // output JSON path (default stdout)
     concurrency: { type: "string" }, // concurrent page fetches within a source
     monitor: { type: "boolean" }, // cheap-enumeration-only pass: skip detail render/enrichment
+    "enrich-input": { type: "string" }, // path to a claim.json; targeted-detail (enrich) mode
   },
 });
 export const PAGE_CAP = Math.max(1, Number(flags["page-cap"] ?? "60"));
