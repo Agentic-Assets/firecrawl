@@ -215,56 +215,175 @@ export function savillsContact(agent: any): any | null {
   };
 }
 
+// A Savills public sale card is only kept when it is a commercial-surface
+// listing. The generic /property-for-sale/ surface is residential luxury
+// homes; this guard prevents residential contamination (101 homes were
+// ingested and soft-deleted on 2026-06-14) if the sale path ever runs
+// additively again. Returns true only for commercial-classified cards.
+// Default-deny: when no commercial signal is found the card is dropped,
+// because the generic surface is residential and the US commercial-sale feed
+// returns 0 rows (verified via a 22-URL probe matrix, 2026-06-12).
+export function savillsSaleCardIsCommercial(card: {
+  propertyType?: string | null;
+  href?: string | null;
+  cardText?: string | null;
+}): boolean {
+  // Commercial keywords that identify a non-residential asset class.
+  // Multi-word keywords ("mixed use") use a literal substring match;
+  // single-word keywords use a word-boundary regex to avoid false positives
+  // (e.g. "warehouse" contains "house", a residential keyword).
+  const COMMERCIAL_KEYWORDS = [
+    "office", "retail", "industrial", "warehouse",
+    "mixed use", "mixed-use", "land", "hospitality",
+    "hotel", "leisure", "commercial", "development",
+  ];
+  // Residential keywords that force a false result. Word-boundary matched so
+  // "warehouse" does NOT trigger "house".
+  const RESIDENTIAL_KEYWORDS = [
+    "house", "apartment", "flat", "bedroom",
+    "residential", "villa", "cottage",
+  ];
+
+  const href = (card.href ?? "").toLowerCase();
+  const propertyType = (card.propertyType ?? "").toLowerCase();
+  const cardText = (card.cardText ?? "").toLowerCase();
+  const combined = `${href} ${propertyType} ${cardText}`;
+
+  // URL segment /commercial/ is a definitive commercial signal.
+  if (href.includes("/commercial/")) return true;
+
+  // Residential markers force false. Use word-boundary regex so substrings
+  // inside other words (e.g. "house" inside "warehouse") do not trigger.
+  for (const kw of RESIDENTIAL_KEYWORDS) {
+    if (new RegExp(`\\b${kw}\\b`).test(combined)) return false;
+  }
+
+  // Commercial keyword match in property type, href, or card text.
+  // Multi-word keywords use a literal includes; single-word ones use
+  // word-boundary matching to be consistent.
+  for (const kw of COMMERCIAL_KEYWORDS) {
+    if (kw.includes(" ")) {
+      if (combined.includes(kw)) return true;
+    } else {
+      if (new RegExp(`\\b${kw}\\b`).test(combined)) return true;
+    }
+  }
+
+  // No commercial signal found: default-deny (the generic surface is residential).
+  return false;
+}
+
+// Maps a single Savills __NEXT_DATA__ property row to a lease listing object,
+// or returns null when the row has no parseable US location. Extracted so the
+// mapping logic is unit-testable without a network fetch.
+export function mapSavillsLeaseRow(row: any, sourceUrl: string): any | null {
+  const location = parseSavillsUsLocation(clean(row.AddressLine2));
+  if (!location) return null;
+  const contactsDetailed = [savillsContact(row.PrimaryAgent), savillsContact(row.SecondaryAgent)].filter(Boolean);
+  const brokerIds = contactsDetailed
+    .map((contact) => brokerRef(contact))
+    .filter((id): id is number => id !== null);
+  const propertyType = clean(row.PropertyTypes?.[0]?.Caption);
+  const detailId = clean(row.ExternalPropertyIDFormatted) ?? clean(row.ExternalPropertyID)?.toLowerCase();
+  const url = detailId ? `https://search.savills.com/com/en/property-detail/${detailId}` : sourceUrl;
+  return {
+    id: clean(row.ExternalPropertyID) ?? detailId,
+    name: clean(row.AddressLine1) ?? clean(row.PropertyPageTitle),
+    transactionType: "Lease",
+    assetType: propertyType,
+    street: clean(row.AddressLine1),
+    city: location.city,
+    state: location.state,
+    postalCode: location.postalCode,
+    country: "US",
+    latitude: num(row.Latitude),
+    longitude: num(row.Longitude),
+    leaseRateText: clean(row.GuidePriceText) ?? clean(row.DisplayPriceText),
+    sizeText: clean(row.SizeFormatted) ?? clean(row.FooterSizeFormatted),
+    buildingSizeSqft: savillsSqft(clean(row.SizeFormatted) ?? clean(row.FooterSizeFormatted)),
+    description: clean((row.LongDescription ?? []).map((part: any) => [part.Head, part.Body].filter(Boolean).join("\n")).join("\n\n")),
+    brokerIds,
+    contactsDetailed,
+    brochures: savillsDocumentUrls(row),
+    photos: savillsImageUrls(row),
+    url,
+    rawSavillsProperty: row,
+  };
+}
+
 export async function srcSavillsCommercialLease(max: number): Promise<SourceResult> {
   const sourceUrl = "https://search.savills.com/com/en/list/commercial/property-to-let/united-states-of-america";
   const html = await scrapeRaw(sourceUrl, { waitFor: 6000 });
-  const rows = savillsNextDataProperties(html).filter((row) => row?.IsCommercial === true);
-  const selected = rows.slice(0, Math.min(max, rows.length));
+  const firstPageRows = savillsNextDataProperties(html).filter((row) => row?.IsCommercial === true);
+  const total = savillsTotalItems(html, firstPageRows.length);
   const listings: any[] = [];
   let nonUsFiltered = 0;
-  for (const row of selected) {
-    const location = parseSavillsUsLocation(clean(row.AddressLine2));
-    if (!location) {
+  let emptyStreak = 0;
+
+  // Process first-page rows.
+  for (const row of firstPageRows) {
+    if (listings.length >= max) break;
+    const mapped = mapSavillsLeaseRow(row, sourceUrl);
+    if (!mapped) {
       nonUsFiltered++;
       continue;
     }
-    const contactsDetailed = [savillsContact(row.PrimaryAgent), savillsContact(row.SecondaryAgent)].filter(Boolean);
-    const brokerIds = contactsDetailed
-      .map((contact) => brokerRef(contact))
-      .filter((id): id is number => id !== null);
-    const propertyType = clean(row.PropertyTypes?.[0]?.Caption);
-    const detailId = clean(row.ExternalPropertyIDFormatted) ?? clean(row.ExternalPropertyID)?.toLowerCase();
-    const url = detailId ? `https://search.savills.com/com/en/property-detail/${detailId}` : sourceUrl;
-    listings.push({
-      id: clean(row.ExternalPropertyID) ?? detailId,
-      name: clean(row.AddressLine1) ?? clean(row.PropertyPageTitle),
-      transactionType: "Lease",
-      assetType: propertyType,
-      street: clean(row.AddressLine1),
-      city: location.city,
-      state: location.state,
-      postalCode: location.postalCode,
-      country: "US",
-      latitude: num(row.Latitude),
-      longitude: num(row.Longitude),
-      leaseRateText: clean(row.GuidePriceText) ?? clean(row.DisplayPriceText),
-      sizeText: clean(row.SizeFormatted) ?? clean(row.FooterSizeFormatted),
-      buildingSizeSqft: savillsSqft(clean(row.SizeFormatted) ?? clean(row.FooterSizeFormatted)),
-      description: clean((row.LongDescription ?? []).map((part: any) => [part.Head, part.Body].filter(Boolean).join("\n")).join("\n\n")),
-      brokerIds,
-      contactsDetailed,
-      brochures: savillsDocumentUrls(row),
-      photos: savillsImageUrls(row),
-      url,
-      rawSavillsProperty: row,
-    });
+    listings.push(mapped);
   }
+
+  // Paginate additional pages while there are more items to collect.
+  // Mirrors the sale-path pagination shape: /page/N with an empty-streak break.
+  // The IsCommercial filter is preserved on every page.
+  const seenIds = new Set<string>(listings.map((l) => l.id ?? l.url));
+  for (
+    let page = 2;
+    listings.length < max &&
+    (total === null || listings.length < total) &&
+    page <= Math.max(PAGE_CAP, 10);
+    page++
+  ) {
+    const pageUrl = `${sourceUrl}/page/${page}`;
+    const pageHtml = await scrapeRaw(pageUrl, { waitFor: 6000 });
+    const pageRows = savillsNextDataProperties(pageHtml).filter((row) => row?.IsCommercial === true);
+    if (!pageRows.length) {
+      if (++emptyStreak >= 3) break;
+      continue;
+    }
+    emptyStreak = 0;
+    let pageAdded = 0;
+    for (const row of pageRows) {
+      if (listings.length >= max) break;
+      const mapped = mapSavillsLeaseRow(row, sourceUrl);
+      if (!mapped) {
+        nonUsFiltered++;
+        continue;
+      }
+      const uid = mapped.id ?? mapped.url;
+      if (seenIds.has(uid)) continue;
+      seenIds.add(uid);
+      listings.push(mapped);
+      pageAdded++;
+    }
+    if (!pageAdded) {
+      if (++emptyStreak >= 3) break;
+    }
+    console.error(`  savills/lease: page ${page}, ${listings.length} collected (total ${total ?? "?"})`);
+  }
+
+  // Set truncated when the collected set is smaller than the reported total,
+  // so cre_monitor.py gates disappearance events correctly.
+  const effectiveTotal = total ?? 0;
+  const truncated = effectiveTotal > 0 && listings.length < Math.min(max, effectiveTotal)
+    ? true
+    : undefined;
+
   return {
     company: "Savills",
     sourceUrl,
-    method: "Server-rendered commercial lease page parsed from public __NEXT_DATA__ property objects",
-    totalAvailable: savillsTotalItems(html, listings.length + nonUsFiltered),
+    method: "Server-rendered commercial lease page parsed from public __NEXT_DATA__ property objects, paginated via /page/N",
+    totalAvailable: total,
     listings,
+    truncated,
     note: nonUsFiltered
       ? `${nonUsFiltered} non-US or non-US-office commercial lease row(s) filtered out`
       : "Commercial sale route was checked separately; the only public commercial sale object observed was Toronto, Canada.",
@@ -281,6 +400,10 @@ export async function srcSavills(tx: Tx, max: number, _monitor: boolean): Promis
   const listings: any[] = [];
   let total: number | null = null;
   let nonUsFiltered = 0;
+  // Tracks cards filtered out by the commercial guard. The generic
+  // /property-for-sale/ surface is residential luxury homes; these cards are
+  // dropped to prevent residential contamination.
+  let nonCommercialFiltered = 0;
   let emptyStreak = 0;
   for (let page = 1; listings.length < max && page <= Math.max(PAGE_CAP, 10); page++) {
     const before = listings.length;
@@ -332,6 +455,20 @@ export async function srcSavills(tx: Tx, max: number, _monitor: boolean): Promis
         nonUsFiltered++;
         return;
       }
+      // L5: commercial-surface guard. The generic /property-for-sale/ surface is
+      // residential luxury homes. Drop any card that does not pass the commercial
+      // filter to prevent re-ingestion of residential listings.
+      const propertyTypeText = clean(card.find("[class*='sv-details__type']").first().text())
+        ?? clean(card.find("[class*='property-type']").first().text());
+      const isCommercial = savillsSaleCardIsCommercial({
+        propertyType: propertyTypeText,
+        href: abs,
+        cardText: clean(card.text()),
+      });
+      if (!isCommercial) {
+        nonCommercialFiltered++;
+        return;
+      }
       const img = card.find("img").attr("src") ?? card.find("img").attr("data-src") ?? null;
       listings.push({
         id: abs.split("/property-detail/")[1] ?? null,
@@ -360,17 +497,22 @@ export async function srcSavills(tx: Tx, max: number, _monitor: boolean): Promis
     }
     console.error(`  savills/sale: page ${page}, ${listings.length} collected (total ${total ?? "?"})`);
   }
-  if (!listings.length && !nonUsFiltered) {
+  // Allow an all-residential-filtered result: the generic sale surface yields
+  // ~0 US commercial rows (verified), so filtering all cards as non-commercial
+  // is the expected capped outcome, not an error. Only throw when no links at
+  // all were found AND nothing was filtered by any guard.
+  if (!listings.length && !nonUsFiltered && !nonCommercialFiltered) {
     throw new Error("no property-detail links found on Savills list page");
   }
+  const noteParts: string[] = [];
+  if (nonUsFiltered) noteParts.push(`${nonUsFiltered} non-US fallback card(s) filtered out`);
+  if (nonCommercialFiltered) noteParts.push(`${nonCommercialFiltered} non-commercial card(s) filtered out by IsCommercial guard`);
   return {
     company: "Savills",
     sourceUrl: base,
     method: "Server-rendered list pages parsed (cards), paginated via /page/N",
     totalAvailable: total,
     listings,
-    note: nonUsFiltered
-      ? `${nonUsFiltered} non-US fallback card(s) filtered out`
-      : undefined,
+    note: noteParts.length ? noteParts.join("; ") : undefined,
   };
 }

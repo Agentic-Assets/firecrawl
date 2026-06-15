@@ -273,8 +273,11 @@ images into Supabase storage for the bulk collector.
   JSON / `__NEXT_DATA__` feed). On 2026-06-14 the 101 mis-categorized residential
   "sale" rows and 1 non-U.S. ghost lease row (`cyelit10899`) were soft-deleted,
   leaving 2 defensible Chicago retail lease rows. Treat current coverage as the
-  permanent Savills baseline. One un-probed path before ruling out commercial
-  sale entirely: `/com/en/list/commercial/property-for-sale/united-states-of-america`.
+  permanent Savills baseline. The commercial-sale route
+  `/com/en/list/commercial/property-for-sale/united-states-of-america` WAS probed
+  (22-URL test matrix, all returned HTTP 200 with `totalItems:0` or non-US
+  Canada/UK/Ireland objects). The cap is confirmed: no public US commercial-sale
+  feed exists on Savills. See `FRESHNESS_HISTORY_REVIEW_2026-06-15.md` section R1.
 - `cre_ingest.py` now drops non-HTTP contact profile/avatar/VCard URLs and
   non-HTTP document URLs. Reingesting the complete Lee and SVN artifacts
   refreshed child rows and reduced active bad contact avatar URLs from 37 to 0.
@@ -282,6 +285,19 @@ images into Supabase storage for the bulk collector.
   For parent slugs with sub-sources, such as `cbre` plus `cbre-dealflow` or
   `jll` plus `jll-investor`, all known source keys must be present in the same
   ingest batch before parent-level soft deletes can activate.
+- **New additive migrations (2026-06-15) must be applied to prod before history
+  activates.** Migration `009_cre_history_retention.sql` adds
+  `cre_listing_price_history`, `cre_listing_contacts_archive`,
+  `cre_listing_documents_archive`, three `prior_*` columns on `cre_source_index`,
+  and the `trg_cre_listings_block_history_delete` retention trigger. All
+  existence-guarded: the ingestor is a no-op on the new tables until 009 is
+  applied. Apply via `000_run_all.sql` (idempotent). Do NOT apply without
+  explicit go-ahead.
+- **Weekly mark-missing, status-activation go-live, and the consumer board-gate
+  deploy remain GATED for explicit go-ahead.** Do not `launchctl load` the weekly
+  reconcile tier, pass `--activate-status`, or apply the widened `005` views
+  until coordinated with the EQUIRE CRE_EQUIRE deploy. See the phase2 board-impact
+  doc's activation runbook.
 - Do not treat legacy `cre_scrapers` active flags as production collector status.
 - Do not stage `node_modules/`, `out/`, `__pycache__/`, or generated SQL artifacts.
 

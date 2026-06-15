@@ -427,3 +427,174 @@ citation was checked against the working tree at the time of review. Related: `S
 (live counts and per-source status), `CLAUDE.md` (collector reference),
 `cre-intelligence-system-design.md` sections 9 and 12-14 (the design's own open-item list, which
 several findings independently confirm).
+
+---
+
+## 7. Resolution (2026-06-15)
+
+All code, SQL, and tests for this review were implemented by 5 parallel agents
+(A-E) on branch `feat/cre-brokerage-collectors-2026-06-12`. Below is a
+per-item account of what SHIPPED versus what remains DEFERRED or GATED.
+
+### Items SHIPPED (code + SQL + tests)
+
+**M1 (count-aware folded coverage, BUG)** - SHIPPED in `cre_ingest.py`.
+`discovered_by_source_key` dict accumulates `listingsCollected` per `sourceKey`
+from `source_entries`. `has_complete_folded_coverage` now requires each folded
+key to have a nonzero count (singletons still short-circuit on `len(known_keys)
+== 1`). Tests: `tests/test_folded_coverage_count_aware.py` (7 tests: M1 bug
+scenario, control, singleton regression, L4a flip-metric assertion).
+
+**L1 (price COALESCE-keep, BUG)** - SHIPPED in `cre_ingest.py`. All four price
+columns (`sale_price_usd`, `sale_price_per_sf`, `lease_rate_min`,
+`lease_rate_max`) now use `COALESCE(EXCLUDED.x, t.x)` in the upsert
+`DO UPDATE SET` block, matching `cap_rate`. Tests:
+`tests/test_price_coalesce.py` (9 tests).
+
+**M5 (revival terminal-stickiness)** - SHIPPED in `cre_ingest.py`. The revival
+CASE now reads `AND t.status = 'inactive'` so only mark-missing-soft-deleted
+rows (not real terminals) are reset to `active`. Tests:
+`tests/test_revival_terminal_stickiness.py` (4 tests). NOTE: the existing
+assertion in `test_ingest_status_activation.py::
+test_update_keeps_status_sticky_resetting_only_resurrected` is now stale (it
+asserts the old unconditional CASE form); it is in a file owned by neither
+Agent A nor any other review owner and must be updated by the integration owner
+before merging.
+
+**M3 (disappeared event on mark-missing)** - SHIPPED in `cre_ingest.py`. The
+mark-missing block is now a CTE chain: `CREATE TEMP TABLE _retired ON COMMIT
+DROP AS SELECT l.id, l.brokerage_id, l.status AS prior_status ...`; the
+soft-delete UPDATE runs `FROM _retired`; an `INSERT INTO
+credeals.cre_listing_events` with `event_type='disappeared'`, `field='status'`,
+`old_value=r.prior_status`, `new_value='inactive'`,
+`source_value='mark_missing'` follows in the same transaction. Tests:
+`tests/test_disappeared_event_on_mark_missing.py` (8 tests).
+
+**H4a-write (price-history INSERT in ingest)** - SHIPPED in `cre_ingest.py`.
+`CREATE TEMP TABLE _prior_vals` captures watched fields BEFORE the `_up` upsert.
+After the upsert and the status-activation UPDATE, a price-history INSERT
+selects rows where any of the 6 watched fields IS DISTINCT FROM the prior value.
+Existence-guarded via `to_regclass('credeals.cre_listing_price_history')` (the
+guard is emitted in apply mode; dry-run emits the plain INSERT so tests can
+assert the shape). New `history_guard: bool = True` parameter on `build_sql()`;
+`main()` passes `history_guard=not args.dry_run`. Tests:
+`tests/test_price_history_snapshot.py` (9 tests).
+
+**M2-archive-write (contacts + documents snapshot at retirement)** - SHIPPED in
+`cre_ingest.py`. Inside the `if mark_missing_slugs:` block, after the `_retired`
+CTE, existence-guarded INSERTs snapshot the retired listings' final contacts and
+documents into `cre_listing_contacts_archive` and
+`cre_listing_documents_archive`. Images explicitly excluded. Tests:
+`tests/test_child_history_archive_on_retirement.py` (7 tests).
+
+**L4a (widen flip-breaker trip metric)** - SHIPPED in `cre_ingest.py`.
+`leaving_active` FILTER now counts any reclassification to a non-active status
+(not only departures from `active`), with a terminal-progression exemption.
+Assertion in `tests/test_disappeared_event_on_mark_missing.py`.
+
+**H4a-table (cre_listing_price_history)** - SHIPPED in
+`sql/009_cre_history_retention.sql`. Table with 10-column contract
+(`listing_id, observed_at, sale_price_usd, sale_price_per_sf, lease_rate_min,
+lease_rate_max, status, cap_rate, source_lastmod, transaction_type`), FK ON
+DELETE CASCADE to `cre_listings`, composite index on `(listing_id,
+observed_at DESC)`, RLS enabled. NOT YET APPLIED to prod (gated; existence
+guard in ingestor makes pre-apply runs a no-op).
+
+**H4b-columns (prior_* on cre_source_index)** - SHIPPED in
+`sql/009_cre_history_retention.sql`. Three `ADD COLUMN IF NOT EXISTS` statements
+on `credeals.cre_source_index`: `prior_sale_price numeric`, `prior_lease_rate
+numeric`, `prior_status text`. NOT YET APPLIED to prod (gated; monitor's read
+path assumes columns exist post-migration, consistent with monitor being gated).
+
+**M2-archive-tables (contacts + documents archive)** - SHIPPED in
+`sql/009_cre_history_retention.sql`. `cre_listing_contacts_archive` (11 columns
+plus `id`/`archived_at`) and `cre_listing_documents_archive` (4 columns plus
+`id`/`archived_at`), no FK to `cre_listings` (survives a future hard delete),
+RLS enabled. NOT YET APPLIED to prod (gated).
+
+**L2-trigger+index (retention guard)** - SHIPPED in
+`sql/009_cre_history_retention.sql`. `credeals.cre_block_history_delete()`
+BEFORE DELETE trigger function raises on any `deleted_at IS NOT NULL` row unless
+`cre.allow_history_delete = 'on'`. Trigger `trg_cre_listings_block_history_delete`
+on `credeals.cre_listings`. Partial index `cre_listings_deleted_at_idx` on
+`(deleted_at) WHERE deleted_at IS NOT NULL`. NOT YET APPLIED to prod (gated).
+
+**000_run_all.sql** - UPDATED: `009_cre_history_retention.sql` registered after
+008 and before 006 in the dependency order comment, Option B command list, and
+the executable body.
+
+**H4b-populate (prior price in monitor)** - SHIPPED in `cre_monitor.py`.
+`load_prior_state()` now reads `prior_sale_price`, `prior_lease_rate`,
+`prior_status` from `cre_source_index` (COALESCE text casts, local
+`_num_or_none()` helper). `derive_events()` price_change branch populates
+`old_value` from `prior.get('prior_sale_price')` with lease-rate fallback.
+`_ENUM_COLS` and the COPY loop now carry `cur_sale_price` and `cur_lease_rate`;
+the `cre_source_index` INSERT/ON CONFLICT maps this run's values to the `prior_*`
+columns for the next run. Tests: `tests/test_monitor_old_value.py` (10 tests).
+
+**L5 (Savills IsCommercial sale-path guard)** - SHIPPED in
+`sources/savills.ts`. Exported `savillsSaleCardIsCommercial()` helper with
+word-boundary regex for residential keywords and commercial keyword/href checks.
+Applied in the sale loop; non-commercial cards are filtered and counted in
+`nonCommercialFiltered`. The terminal error guard spares the non-commercial case.
+
+**L3 (Savills lease pagination)** - SHIPPED in `sources/savills.ts`.
+`srcSavillsCommercialLease()` now paginates via `/page/N`, mirrors the sale
+loop, and uses an exported `mapSavillsLeaseRow()` helper (pure, unit-testable).
+`truncated: true` is set when collected count is less than
+`Math.min(max, total)`. Tests: `tests/ts/sources/savills-commercial.test.ts`
+(12 tests).
+
+**R1 (Savills doc fix)** - SHIPPED in `START_HERE.md`. The "One un-probed path"
+wording at line 276-277 is corrected to state the route WAS probed (22-URL
+matrix, HTTP 200, `totalItems:0`) and the cap is confirmed.
+
+**H3 (disappearance-only signal staleness in cre_status.sh)** - SHIPPED in
+`cre_status.sh`. New read-only section before the summary checks the four
+no-status-field sources (`cbre`, `nai-global`, `avison-young`,
+`marcus-millichap`) against an 8-day threshold using local
+`out/monitor/monitor_*.json` artifact mtimes. Fresh clones with no artifacts
+emit a note, not a warning. Stale sources increment PROBLEMS via `warn()`.
+
+**L4b (CRE_STATUS_FLIP_MAX_FRACTION in plist templates)** - SHIPPED in
+`launchd/ai.agentic.cre-daily.plist.template` and
+`launchd/ai.agentic.cre-weekly.plist.template`. `CRE_STATUS_FLIP_MAX_FRACTION`
+key set to `0.30` in both templates, with an XML comment noting it is inert
+until status activation is enabled.
+
+### Items DEFERRED
+
+**H1 (TCC / Full Disk Access)** - DEFERRED (operational). Fix is a one-time
+Full Disk Access grant to `/bin/bash` or a repo clone outside `~/Documents`.
+No code change needed; see `START_HERE.md` Known Limits and section 4 of this doc.
+
+**H2 (load weekly mark-missing)** - GATED. Do not load the weekly reconcile
+tier until M1 (now shipped), H3 (now shipped), H1 (TCC), and the gate are
+proven on a live run.
+
+**M4 (four detail-id monitor exclusions)** - DEFERRED by design. No change;
+the exclusions are intentional and documented.
+
+**M6/L6 (disappearance-only lifecycle, source_lastmod noise)** - DEFERRED. Fold
+into future H4(b) prior-price work and per-source lastmod verification.
+
+**L4 min_base exemption** - DEFERRED. The 200-row exemption in the flip breaker
+is left unchanged (review's "reconsider" is deferred per spec).
+
+**cre_enrichment_queue drain worker** - DEFERRED. Not built; Tier-B enrichment
+queue drain remains out of scope.
+
+### Items GATED for explicit go-ahead
+
+The following remain unchanged and require Cayman's go-ahead before actioning:
+
+- Apply `009_cre_history_retention.sql` to prod (all new tables / columns /
+  trigger become live). Must precede any history writes, but the ingestor runs
+  safely before apply via the existence guard.
+- Deploy the EQUIRE consumer board-gate branch (must precede T3.1 status
+  activation).
+- Trigger the first live T3.1 status activation (`--activate-status` /
+  `CRE_ACTIVATE_STATUS=1`).
+- Apply the widened agent-facing `005` views (`status IN
+  ('active','under_contract','pending')`).
+- Load the weekly reconcile tier (`ai.agentic.cre-weekly`).

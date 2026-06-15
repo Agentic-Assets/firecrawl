@@ -119,9 +119,15 @@ Key behavior:
 - Sale + lease passes merge to `transaction_type='sale_or_lease'`.
 - `cap_rate` stored as a decimal fraction (e.g. `0.065`); `norm_cap_rate` drops
   non-numeric, `<= 0`, percent inputs `>= 30`, and `>= 0.5`. Upsert uses
-  `COALESCE` so a null new cap rate keeps the existing DB value.
+  `COALESCE` so a null new cap rate keeps the existing DB value. Price columns
+  (`sale_price_usd`, `sale_price_per_sf`, `lease_rate_min`, `lease_rate_max`)
+  also COALESCE-keep: a transient parse miss does not blank a previously-good
+  numeric price.
 - Upsert sets `status='active'`, resurrects soft-deleted rows (`deleted_at=NULL`),
-  and wholesale-replaces contacts/documents/images **unless**
+  but only resets status to `'active'` when the prior status was `'inactive'` (a
+  mark-missing soft-delete); a real terminal (`sold`/`leased`/`off_market`) that
+  flickered back into a feed keeps its prior status label. Wholesale-replaces
+  contacts/documents/images **unless**
   `jsonb_path_exists(raw_data, '$.**.detailError')` (preserves children on
   transient detail failures).
 - **Status activation is OPT-IN and default-OFF.** Source-derived statuses are
@@ -131,11 +137,32 @@ Key behavior:
   the upsert inserts `COALESCE->'active'` and the activation UPDATE is a no-op.
   Do NOT assume status activation fires on the next daily/manual full ingest;
   it requires the explicit flag plus consumer-side gate deploy first.
-- `--mark-missing`: soft-deletes unseen rows (`status='inactive'`,
-  `deleted_at=now()`). Per brokerage, only when every source pass for that
+- **Ingest-written value history (2026-06-15, existence-guarded pre-apply):**
+  `build_sql()` now captures a `_prior_vals` temp table of watched fields BEFORE
+  the upsert, then writes one row to `cre_listing_price_history` per listing
+  where a watched field (`sale_price_usd`, `sale_price_per_sf`, `lease_rate_min`,
+  `lease_rate_max`, `status`, `cap_rate`) IS DISTINCT FROM its prior value.
+  First-ever inserts produce no history row (history starts at the first CHANGE).
+  The INSERT is existence-guarded via `to_regclass`; it is a no-op until
+  `009_cre_history_retention.sql` is applied to prod. Dry-run emits the plain
+  unguarded INSERT so tests can assert the shape.
+- **Contacts + documents archived at retirement (2026-06-15, existence-guarded):**
+  When `--mark-missing` fires, the soft-delete block first captures retired rows
+  in a `_retired` temp table (with `prior_status`), then runs the UPDATE, then
+  INSERTs one `cre_listing_events` row per retired listing with
+  `event_type='disappeared'` / `source_value='mark_missing'`, and then (guarded)
+  snapshots the retired listings' final contacts and documents into
+  `cre_listing_contacts_archive` and `cre_listing_documents_archive`. Images are
+  excluded (high volume, low historical value). These tables have no FK to
+  `cre_listings` so they survive a future hard delete of the source row.
+- **`--mark-missing`: soft-deletes unseen rows (`status='inactive'`,
+  `deleted_at=now()`).** Per brokerage, only when every source pass for that
   brokerage ran error-free, staged `>= --mark-missing-floor` (default 100), and
-  **folded coverage is complete** (e.g. `cbre` + `cbre-dealflow`, `jll` +
-  `jll-investor`, `colliers` + `colliers-main` must all appear in the artifact).
+  **folded coverage is count-aware and complete**: every folded key (e.g. `cbre` +
+  `cbre-dealflow`, `jll` + `jll-investor`, `colliers` + `colliers-main`) must
+  appear in the artifact AND have a nonzero `listingsCollected` count
+  (`discovered_by_source_key` dict built from `source_entries`). Singletons still
+  short-circuit on `len(known_keys) == 1`.
   Never use on partial/subset runs.
 - `--dry-run --keep-artifacts DIR` writes SQL without connecting.
 

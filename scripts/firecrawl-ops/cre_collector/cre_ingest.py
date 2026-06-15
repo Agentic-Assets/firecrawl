@@ -853,7 +853,7 @@ def apply_status_activation_gate(rows, activate_status):
     return suppressed
 
 
-def build_sql(rows, job_meta, started_at, mark_missing_slugs):
+def build_sql(rows, job_meta, started_at, mark_missing_slugs, history_guard=True):
     lines = []
     w = lines.append
     w("\\set ON_ERROR_STOP on")
@@ -912,6 +912,18 @@ CREATE TEMP TABLE _src ON COMMIT DROP AS
 SELECT b.id AS brokerage_id, s.*
 FROM _stage s JOIN credeals.cre_brokerages b ON b.slug = s.slug;
 
+-- (H4a) Capture prior watched values BEFORE the upsert mutates them, so the
+-- append-only price history records a row only on a REAL change. This reads
+-- only cre_listings (always present) and is not guarded itself. New listings
+-- have no row here and get no history entry (history starts at the first
+-- change, which avoids bloat on the initial insert path).
+CREATE TEMP TABLE _prior_vals ON COMMIT DROP AS
+SELECT t.id, t.brokerage_id, t.external_id,
+       t.sale_price_usd, t.sale_price_per_sf, t.lease_rate_min, t.lease_rate_max,
+       t.status, t.cap_rate
+FROM credeals.cre_listings t
+JOIN _src s ON s.brokerage_id = t.brokerage_id AND s.external_id = t.external_id;
+
 CREATE TEMP TABLE _up ON COMMIT DROP AS
 WITH ins AS (
     INSERT INTO credeals.cre_listings AS t (
@@ -930,7 +942,12 @@ WITH ins AS (
     ON CONFLICT (brokerage_id, external_id) WHERE external_id IS NOT NULL
     DO UPDATE SET
         source_url        = EXCLUDED.source_url,
-        status            = CASE WHEN t.deleted_at IS NOT NULL THEN 'active' ELSE t.status END,
+        -- (M5) Revival resets to 'active' only when the prior status was 'inactive'
+        -- (a mark-missing soft-delete marker), not a real terminal (sold/leased/
+        -- off_market) that flickered back into the feed. A terminal-bearing row that
+        -- reappears stays with its terminal label; the board gate excludes it.
+        status            = CASE WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'
+                                 THEN 'active' ELSE t.status END,
         transaction_type  = EXCLUDED.transaction_type,
         property_type     = COALESCE(EXCLUDED.property_type, t.property_type),
         title             = COALESCE(EXCLUDED.title, t.title),
@@ -946,11 +963,16 @@ WITH ins AS (
                             END,
         lot_size_sf       = COALESCE(EXCLUDED.lot_size_sf, t.lot_size_sf),
         year_built        = COALESCE(EXCLUDED.year_built, t.year_built),
-        sale_price_usd    = EXCLUDED.sale_price_usd,
-        sale_price_per_sf = EXCLUDED.sale_price_per_sf,
+        -- (L1) COALESCE-keep: a transient parse miss (regex miss, "Call for offer")
+        -- keeps the prior good numeric value rather than overwriting with NULL.
+        -- A real new numeric value still overwrites because COALESCE picks the first
+        -- non-NULL, which is EXCLUDED when present. Mirrors cap_rate, property_type,
+        -- and other neighbors that already use COALESCE-keep.
+        sale_price_usd    = COALESCE(EXCLUDED.sale_price_usd, t.sale_price_usd),
+        sale_price_per_sf = COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf),
         cap_rate          = COALESCE(EXCLUDED.cap_rate, t.cap_rate),
-        lease_rate_min    = EXCLUDED.lease_rate_min,
-        lease_rate_max    = EXCLUDED.lease_rate_max,
+        lease_rate_min    = COALESCE(EXCLUDED.lease_rate_min, t.lease_rate_min),
+        lease_rate_max    = COALESCE(EXCLUDED.lease_rate_max, t.lease_rate_max),
         description       = COALESCE(EXCLUDED.description, t.description),
         updated_date      = COALESCE(EXCLUDED.updated_date, t.updated_date),
         scraped_at        = EXCLUDED.scraped_at,
@@ -973,6 +995,12 @@ SELECT * FROM ins;
 -- source parsing regression. NOTICE lines make the per-source flip counts of the
 -- first monitored activation run inspectable. Default disabled so the unattended
 -- daily ingest is never blocked.
+-- (L4a) leaving_active counts ANY non-active reclassification this run, not only
+-- departures from 'active'. This catches under_contract -> sold and other
+-- non-active transitions that the prior active-only filter missed, giving a
+-- better signal of a source regression. The trip denominator (active_base) is
+-- unchanged; the terminal-guard clause preserves the intentional exemption for
+-- normal sold/leased progression out of under_contract/pending.
 DO $$
 DECLARE
     rec record;
@@ -990,7 +1018,11 @@ BEGIN
                               AND s.status IN ('under_contract','pending'))
                ) AS changes,
                count(*) FILTER (
-                   WHERE s.status IS NOT NULL AND t.status = 'active'
+                   WHERE s.status IS NOT NULL
+                     AND t.status IS DISTINCT FROM s.status
+                     AND s.status <> 'active'
+                     AND NOT (t.status IN ('sold','leased','off_market')
+                              AND s.status IN ('under_contract','pending'))
                ) AS leaving_active,
                count(*) FILTER (WHERE t.status = 'active') AS active_base
         FROM _src s
@@ -1034,7 +1066,7 @@ END $$;
 -- Terminal stickiness (guard clause below): a terminal label
 -- (sold/leased/off_market) is never overwritten by a transitional
 -- (under_contract/pending) re-signal across runs, matching the "only ever
--- upgraded" invariant (sold > under_contract). A genuinely re-listed terminal row
+-- upgraded" invariant (sold > under_contract). A truly re-listed terminal row
 -- recovers via the disappear -> reappear resurrection path (the ON CONFLICT CASE
 -- resets deleted_at-bearing rows to 'active'), not in place: norm_status never
 -- emits 'active', so a continuously-present row keeps its terminal label. This is
@@ -1095,18 +1127,115 @@ WHERE u.id IN (SELECT id FROM _child_refresh)
   AND jsonb_typeof(s.images) = 'array' AND x->>'url' IS NOT NULL;
 """)
 
+    # (H4a) Append-only price/status history: one row per listing whose watched
+    # value actually changed this run. The diff is computed from the new effective
+    # values (post-upsert, post-activation) vs _prior_vals (pre-upsert snapshot).
+    # When history_guard=True (real apply), the INSERT is wrapped in a DO $$ IF
+    # to_regclass(...) IS NOT NULL $$ block so a pre-apply prod ingest is a no-op.
+    # When history_guard=False (--dry-run path), the INSERT is emitted as a plain
+    # top-level statement so offline tests can assert on it directly.
+    _history_col_list = (
+        "(listing_id, observed_at, sale_price_usd, sale_price_per_sf,\n"
+        "     lease_rate_min, lease_rate_max, status, cap_rate, source_lastmod, transaction_type)"
+    )
+    _history_insert_body = f"""INSERT INTO credeals.cre_listing_price_history
+    {_history_col_list}
+SELECT t.id, now(), t.sale_price_usd, t.sale_price_per_sf,
+       t.lease_rate_min, t.lease_rate_max, t.status, t.cap_rate, t.source_lastmod, t.transaction_type
+FROM credeals.cre_listings t
+JOIN _prior_vals p ON p.id = t.id
+WHERE t.sale_price_usd    IS DISTINCT FROM p.sale_price_usd
+   OR t.sale_price_per_sf IS DISTINCT FROM p.sale_price_per_sf
+   OR t.lease_rate_min    IS DISTINCT FROM p.lease_rate_min
+   OR t.lease_rate_max    IS DISTINCT FROM p.lease_rate_max
+   OR t.status            IS DISTINCT FROM p.status
+   OR t.cap_rate          IS DISTINCT FROM p.cap_rate;"""
+    if history_guard:
+        w(f"""
+-- (H4a) Append-only price/status history. Existence-guarded: no-op when the
+-- table is not yet applied to prod. Only fires when a watched field changed.
+DO $$ BEGIN
+  IF to_regclass('credeals.cre_listing_price_history') IS NOT NULL THEN
+    {_history_insert_body}
+  END IF;
+END $$;""")
+    else:
+        w(f"""
+-- (H4a) Append-only price/status history (unguarded for dry-run/offline tests).
+{_history_insert_body}""")
+
     if mark_missing_slugs:
         slug_list = ", ".join("'" + s.replace("'", "''") + "'" for s in sorted(mark_missing_slugs))
+        # (M3) Capture the soon-to-be-retired listings BEFORE the UPDATE overwrites
+        # status, so the disappeared event can record the prior status as old_value.
+        # The _retired temp table also drives the M2 archive INSERTs below.
         w(f"""
--- Full-run reconciliation: soft-delete listings this clean full run no longer sees.
-UPDATE credeals.cre_listings l
-SET deleted_at = now(), status = 'inactive', updated_at = now()
-FROM credeals.cre_brokerages b
-WHERE l.brokerage_id = b.id
-  AND b.slug IN ({slug_list})
+-- Full-run reconciliation: soft-delete listings this clean full run no longer
+-- sees. Capture the retired set FIRST (with prior status) so the disappeared
+-- event and the contact/document archive snapshot reference the same rows in
+-- this one transaction.
+CREATE TEMP TABLE _retired ON COMMIT DROP AS
+SELECT l.id, l.brokerage_id, l.status AS prior_status
+FROM credeals.cre_listings l
+JOIN credeals.cre_brokerages b ON l.brokerage_id = b.id
+WHERE b.slug IN ({slug_list})
   AND l.deleted_at IS NULL
   AND l.external_id IS NOT NULL
-  AND NOT EXISTS (SELECT 1 FROM _up u WHERE u.id = l.id);""")
+  AND NOT EXISTS (SELECT 1 FROM _up u WHERE u.id = l.id);
+
+UPDATE credeals.cre_listings l
+SET deleted_at = now(), status = 'inactive', updated_at = now()
+FROM _retired r
+JOIN credeals.cre_brokerages b ON b.id = r.brokerage_id
+WHERE l.id = r.id
+  AND b.slug IN ({slug_list});
+
+INSERT INTO credeals.cre_listing_events
+    (listing_id, brokerage_id, event_type, field, old_value, new_value,
+     source_value, detected_at)
+SELECT r.id, r.brokerage_id, 'disappeared', 'status', r.prior_status, 'inactive',
+       'mark_missing', now()
+FROM _retired r
+ON CONFLICT (listing_id, event_type, COALESCE(field, ''), COALESCE(new_value, ''), scrape_job_id)
+DO NOTHING;""")
+        # (M2) Snapshot contacts and documents of the retired listings into the
+        # append-only archives. Images are excluded (high volume, low historical
+        # value). Guarded so a pre-apply ingest is a no-op. Column lists are
+        # verbatim from spec section 2.5 / 3.4 so both sides of the contract agree.
+        _contacts_insert = """INSERT INTO credeals.cre_listing_contacts_archive
+    (source_listing_id, name, title, email, phone, brokerage_name,
+     profile_url, avatar_url, vcard_url, is_primary)
+SELECT c.listing_id, c.name, c.title, c.email, c.phone, c.brokerage_name,
+       c.profile_url, c.avatar_url, c.vcard_url, c.is_primary
+FROM credeals.cre_listing_contacts c
+JOIN _retired r ON r.id = c.listing_id;"""
+        _documents_insert = """INSERT INTO credeals.cre_listing_documents_archive
+    (source_listing_id, doc_type, title, url)
+SELECT d.listing_id, d.doc_type, d.title, d.url
+FROM credeals.cre_listing_documents d
+JOIN _retired r ON r.id = d.listing_id;"""
+        if history_guard:
+            w(f"""
+-- (M2) Archive final contacts of retired listings. Existence-guarded.
+DO $$ BEGIN
+  IF to_regclass('credeals.cre_listing_contacts_archive') IS NOT NULL THEN
+    {_contacts_insert}
+  END IF;
+END $$;
+
+-- (M2) Archive final documents of retired listings. Existence-guarded.
+DO $$ BEGIN
+  IF to_regclass('credeals.cre_listing_documents_archive') IS NOT NULL THEN
+    {_documents_insert}
+  END IF;
+END $$;""")
+        else:
+            w(f"""
+-- (M2) Archive final contacts of retired listings (unguarded for dry-run).
+{_contacts_insert}
+
+-- (M2) Archive final documents of retired listings (unguarded for dry-run).
+{_documents_insert}""")
 
     w(f"""
 INSERT INTO credeals.cre_scrape_jobs
@@ -1260,8 +1389,14 @@ def main():
         )
 
     # Per-brokerage job stats + mark-missing eligibility.
+    # (M1) Build a per-source-key discovered count so the folded-coverage check
+    # can require a nonzero contribution from EVERY folded key, not just presence.
+    # A folded source (e.g. colliers-main) that returned zero rows without an error
+    # would otherwise satisfy the key-presence check while contributing nothing,
+    # which could cause the whole brokerage's rows to be soft-deleted.
     slug_stats = {}
     source_keys_by_slug_seen = {}
+    discovered_by_source_key = {}
     for e in source_entries:
         source_key = e.get("sourceKey")
         mapping = SOURCE_TO_BROKERAGE.get(source_key)
@@ -1270,7 +1405,9 @@ def main():
         slug = mapping[0]
         source_keys_by_slug_seen.setdefault(slug, set()).add(source_key)
         st = slug_stats.setdefault(slug, {"discovered": 0, "errors": 0, "notes": []})
-        st["discovered"] += e.get("listingsCollected") or 0
+        collected = e.get("listingsCollected") or 0
+        st["discovered"] += collected
+        discovered_by_source_key[source_key] = discovered_by_source_key.get(source_key, 0) + collected
         if e.get("error"):
             st["errors"] += 1
             st["notes"].append(f"{e.get('sourceKey')}/{e.get('transaction')}: {e['error'][:160]}")
@@ -1282,7 +1419,14 @@ def main():
         for slug, st in slug_stats.items():
             known_keys = SOURCE_KEYS_BY_SLUG.get(slug, {slug})
             seen_keys = source_keys_by_slug_seen.get(slug, set())
-            has_complete_folded_coverage = len(known_keys) == 1 or known_keys <= seen_keys
+            # (M1) Count-aware folded coverage: every folded key must have a nonzero
+            # discovered count this run. Singletons (len == 1) skip the count check
+            # because the --mark-missing-floor staged-count check already covers them.
+            has_complete_folded_coverage = (
+                len(known_keys) == 1
+                or (known_keys <= seen_keys
+                    and all(discovered_by_source_key.get(k, 0) > 0 for k in known_keys))
+            )
             if (
                 st["errors"] == 0
                 and slug_saved.get(slug, 0) >= args.mark_missing_floor
@@ -1292,7 +1436,8 @@ def main():
             elif len(known_keys) > 1 and not has_complete_folded_coverage:
                 st["notes"].append(
                     "mark-missing skipped: folded source coverage incomplete "
-                    f"(saw {sorted(seen_keys)}, need {sorted(known_keys)})"
+                    f"(saw {sorted(seen_keys)}, need {sorted(known_keys)}; "
+                    f"zero-count keys: {sorted(k for k in known_keys if discovered_by_source_key.get(k, 0) == 0)})"
                 )
         ineligible = set(slug_stats) - mark_missing_slugs
         if ineligible:
@@ -1314,7 +1459,8 @@ def main():
         if slug_saved.get(slug, 0) > 0 or st["discovered"] > 0 or st["errors"] > 0
     ]
 
-    sql = build_sql(rows, job_meta, started_at, mark_missing_slugs)
+    sql = build_sql(rows, job_meta, started_at, mark_missing_slugs,
+                    history_guard=not args.dry_run)
 
     print(f"staged listings: {len(rows)} (skipped, no URL: {skipped_no_url})", file=sys.stderr)
     for sk in sorted(per_source_counts):

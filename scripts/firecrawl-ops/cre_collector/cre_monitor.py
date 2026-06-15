@@ -415,16 +415,28 @@ def derive_events(current_records, prior_index, prior_listings, soft_deleted_can
             enqueue_changed[(bid, sk, eid)] = g["url"]
 
         # PRICE_CHANGE: the combined fingerprint advanced while the status
-        # component held constant, so the move is in price. cre_source_index
-        # persists only the combined fingerprint (no prior price column), so the
-        # prior price value cannot be recovered: old_value is null and the prior
-        # fingerprint is carried in source_value as evidence.
+        # component held constant, so the move is in price. When the prior run
+        # persisted prior_sale_price or prior_lease_rate (H4b), carry that as
+        # old_value so the event has a real before-value instead of NULL.
+        # The prior fingerprint is still carried in source_value as evidence.
+        # Use .get with default None so runs without the new columns (pre-migration
+        # DB or an older prior_index entry that lacks these keys) preserve the
+        # pre-H4b behavior of old_value=None without raising a KeyError.
         if (prior["fingerprint"] and prior["fingerprint"] != g["fingerprint"]
                 and not status_moved):
             field, new_value = _price_field_and_value(g)
+            prior_price = prior.get("prior_sale_price")
+            if prior_price is None:
+                prior_price = prior.get("prior_lease_rate")
+            old_value_str = None
+            if prior_price is not None:
+                if isinstance(prior_price, float) and prior_price.is_integer():
+                    old_value_str = str(int(prior_price))
+                else:
+                    old_value_str = str(prior_price)
             events.append(_event(
                 listing["id"], bid, sk, "price_change",
-                field=field, old_value=None, new_value=new_value,
+                field=field, old_value=old_value_str, new_value=new_value,
                 source_value=prior["fingerprint"],
                 sale_price_text=g["sale_price_text"],
                 lease_rate_text=g["lease_rate_text"],
@@ -486,6 +498,7 @@ def _dedupe_events(events, run_uuid):
 _ENUM_COLS = [
     "slug", "external_id", "source_key", "url", "source_lastmod",
     "fingerprint", "observed_status", "canonical_key",
+    "cur_sale_price", "cur_lease_rate",
 ]
 
 
@@ -546,10 +559,16 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w("CREATE TEMP TABLE _enum (")
     w("    slug text, external_id text, source_key text, url text,")
     w("    source_lastmod timestamptz, fingerprint text, observed_status text,")
-    w("    canonical_key text")
+    w("    canonical_key text,")
+    w("    cur_sale_price numeric, cur_lease_rate numeric")
     w(") ON COMMIT DROP;")
     w(f"COPY _enum ({', '.join(_ENUM_COLS)}) FROM stdin;")
     for g in finalized:
+        # cur_sale_price and cur_lease_rate store THIS run's price values so the
+        # NEXT run can read them as prior_sale_price / prior_lease_rate. The naming
+        # is from the READER's perspective: what this run writes as "current" is
+        # the prior value for the run that reads it. This is the same one-slot
+        # history pattern the fingerprint already uses.
         record = {
             "slug": g["slug"],
             "external_id": g["external_id"],
@@ -559,6 +578,8 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
             "fingerprint": g["fingerprint"],
             "observed_status": g["norm_status"],
             "canonical_key": g["canonical_key"],
+            "cur_sale_price": g["sale_price_usd"],
+            "cur_lease_rate": g["lease_rate_min"],
         }
         w("\t".join(copy_field(record[c]) for c in _ENUM_COLS))
     w("\\.")
@@ -615,13 +636,27 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
         w("ON CONFLICT (listing_id, event_type, COALESCE(field, ''), COALESCE(new_value, ''), scrape_job_id) DO NOTHING;")
 
     # (3) refresh cre_source_index from the enumeration (present rows).
+    # H4b: prior_sale_price, prior_lease_rate, and prior_status store THIS run's
+    # observed price and status so the NEXT run can read them as the prior value
+    # when populating old_value on a price_change event. The columns are named from
+    # the READER's perspective: at write time they hold the CURRENT run's value,
+    # which becomes the prior value for whatever run reads next. This is the same
+    # one-slot history pattern the fingerprint already uses (fingerprint is read
+    # BEFORE the upsert, then overwritten with the current value).
+    # NOTE: these columns require Owner B's 009 migration to be applied. The
+    # monitor apply path is gated and only runs after 009 is deployed, consistent
+    # with how the monitor already assumes 007 columns exist.
     w("")
     w("-- (3) refresh the enumeration snapshot. first_seen is preserved on conflict.")
+    w("--     prior_sale_price / prior_lease_rate / prior_status store THIS run's price")
+    w("--     so the NEXT run reads them as the prior value for price_change old_value.")
     w("INSERT INTO credeals.cre_source_index AS si")
     w("    (brokerage_id, external_id, source_key, url, source_lastmod, fingerprint,")
-    w("     observed_status, soft_deleted, first_seen, last_seen, last_enumerated_at)")
+    w("     observed_status, soft_deleted, first_seen, last_seen, last_enumerated_at,")
+    w("     prior_sale_price, prior_lease_rate, prior_status)")
     w("SELECT brokerage_id, external_id, source_key, url, source_lastmod, fingerprint,")
-    w("       observed_status, false, now(), now(), now()")
+    w("       observed_status, false, now(), now(), now(),")
+    w("       cur_sale_price, cur_lease_rate, observed_status")
     w("FROM _enum_b")
     w("ON CONFLICT (brokerage_id, external_id) DO UPDATE SET")
     w("    last_seen          = now(),")
@@ -631,7 +666,10 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w("    source_lastmod     = COALESCE(EXCLUDED.source_lastmod, si.source_lastmod),")
     w("    url                = EXCLUDED.url,")
     w("    source_key         = COALESCE(EXCLUDED.source_key, si.source_key),")
-    w("    soft_deleted       = false;")
+    w("    soft_deleted       = false,")
+    w("    prior_sale_price   = EXCLUDED.prior_sale_price,")
+    w("    prior_lease_rate   = EXCLUDED.prior_lease_rate,")
+    w("    prior_status       = EXCLUDED.prior_status;")
 
     # (3b) mark coverage-gated disappeared ids gone in the MONITOR index only.
     if disappear_marks:
@@ -765,19 +803,39 @@ def load_prior_state(db_url, slugs):
     prior_index = {}
     prior_listings = {}
     soft_deleted_canon = defaultdict(list)
+
+    def _num_or_none(text):
+        """Parse a psql text column to float, returning None when empty or invalid."""
+        if not text:
+            return None
+        try:
+            return float(text)
+        except (ValueError, TypeError):
+            return None
+
     if brokerage_ids:
+        # H4b: read prior_sale_price, prior_lease_rate, prior_status from
+        # cre_source_index so derive_events can populate a real old_value on
+        # price_change events. These columns require Owner B's 009 migration.
+        # The monitor apply path is gated and only runs after 009 is applied,
+        # consistent with how the monitor already assumes 007 columns exist.
         for row in _psql_read(db_url, (
             "SELECT brokerage_id, external_id, COALESCE(fingerprint, ''), soft_deleted, "
-            "COALESCE(observed_status, ''), COALESCE(source_key, ''), COALESCE(url, '') "
+            "COALESCE(observed_status, ''), COALESCE(source_key, ''), COALESCE(url, ''), "
+            "COALESCE(prior_sale_price::text, ''), COALESCE(prior_lease_rate::text, ''), "
+            "COALESCE(prior_status, '') "
             f"FROM credeals.cre_source_index WHERE brokerage_id IN {_in_list(brokerage_ids)};"
         )):
-            bid, eid, fp, soft, obs, sk, url = row
+            bid, eid, fp, soft, obs, sk, url, psp, plr, pst = row
             prior_index[(bid, eid)] = {
                 "fingerprint": fp or None,
                 "soft_deleted": soft == "t",
                 "observed_status": obs or None,
                 "source_key": sk or None,
                 "url": url or None,
+                "prior_sale_price": _num_or_none(psp),
+                "prior_lease_rate": _num_or_none(plr),
+                "prior_status": pst or None,
             }
         for row in _psql_read(db_url, (
             "SELECT id, brokerage_id, external_id, COALESCE(status, ''), (deleted_at IS NOT NULL) "

@@ -121,7 +121,12 @@ def test_insert_defaults_status_active_via_coalesce():
 
 def test_update_keeps_status_sticky_resetting_only_resurrected():
     sql = _sql()
-    assert "status            = CASE WHEN t.deleted_at IS NOT NULL THEN 'active' ELSE t.status END" in sql
+    # M5 (2026-06-15): revival resets to 'active' only when the prior status was
+    # 'inactive' (the mark-missing soft-delete marker), so a real terminal that
+    # flickers back into the feed keeps its terminal label.
+    assert "status            = CASE WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'" in sql
+    # The old unconditional revival form must be gone.
+    assert "status            = CASE WHEN t.deleted_at IS NOT NULL THEN 'active' ELSE t.status END" not in sql
     # The old unconditional downgrade must be gone.
     assert "status            = 'active'," not in sql
 

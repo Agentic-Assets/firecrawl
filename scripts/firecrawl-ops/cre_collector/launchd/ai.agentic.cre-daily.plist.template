@@ -46,7 +46,13 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>__BIN_PATH__</string>__ENV_EXTRA__
+        <string>__BIN_PATH__</string>
+        <!-- Status-flip circuit breaker: 0.30 is a conservative ceiling. This
+             is inert until status activation is turned on (default-off in
+             cre_ingest.py). Once active, it prevents a bad run from flipping
+             more than 30% of a brokerage's rows to non-active in one shot. -->
+        <key>CRE_STATUS_FLIP_MAX_FRACTION</key>
+        <string>0.30</string>__ENV_EXTRA__
     </dict>
 </dict>
 </plist>

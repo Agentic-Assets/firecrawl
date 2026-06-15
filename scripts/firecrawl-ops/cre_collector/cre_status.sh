@@ -243,6 +243,25 @@ case "$DIR" in
   *)
     ok "clone outside ~/Documents (no TCC blocker for launchd)" ;;
 esac
+# Mirror what the scheduled tiers actually use. An interactive shell has no
+# CRE_ENV_FILE, so load_db_url() would fall back to the ~/Documents default and
+# misreport the source. Pull CRE_ENV_FILE from the installed plist (read-only)
+# so the heartbeat reflects the same non-TCC env file the launchd runs resolve.
+env_src="interactive default"
+if [ -z "${CRE_ENV_FILE:-}" ]; then
+  for _plist in "$HOME/Library/LaunchAgents/ai.agentic.cre-monitor.plist" \
+                "$HOME/Library/LaunchAgents/ai.agentic.cre-daily.plist"; do
+    [ -f "$_plist" ] || continue
+    _cef="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CRE_ENV_FILE' "$_plist" 2>/dev/null || true)"
+    if [ -n "$_cef" ]; then
+      export CRE_ENV_FILE="$_cef"
+      env_src="launchd plist CRE_ENV_FILE"
+      break
+    fi
+  done
+else
+  env_src="shell CRE_ENV_FILE"
+fi
 ENVP="$(python3 - <<'PY' 2>/dev/null
 import contextlib, io
 import cre_ingest
@@ -257,7 +276,7 @@ except Exception as exc:  # noqa: BLE001
 PY
 )"
 case "$ENVP" in
-  OK*)     ok "POSTGRES_URL env file found at $(printf '%s' "$ENVP" | cut -f2-)" ;;
+  OK*)     ok "POSTGRES_URL env file found at $(printf '%s' "$ENVP" | cut -f2-) (via $env_src)" ;;
   MISSING) warn "no POSTGRES_URL env file found (ingest will fail until CRE_ENV_FILE is set)" ;;
   *)       warn "env discovery error: $ENVP" ;;
 esac
@@ -278,6 +297,100 @@ for tier in monitor daily weekly; do
   printf '%s\n' "$tailout" | sed 's/^/        /'
 done
 [ "$shown" -eq 0 ] && note "no non-empty launchd stderr logs"
+
+# ---------------------------------------------------------------------------
+section "disappearance-only signal staleness"
+# ---------------------------------------------------------------------------
+# CBRE, NAI, Avison, and Marcus-Millichap have no status field in their feeds.
+# The only sold-signal for these sources is their vanishing from a full sweep,
+# which the weekly mark-missing reconciliation detects. If the monitor has not
+# enumerated these sources recently the sold-signal is stale and the board will
+# silently carry rows that may already be sold.
+#
+# This check uses the local monitor artifacts under out/monitor/ as the
+# read-only proxy for cre_source_index.last_enumerated_at: the monitor writes
+# the artifact at the same time it updates cre_source_index, so the artifact
+# mtime is equivalent to last_enumerated_at without requiring a DB connection.
+# A DB-backed exact read is explicitly deferred to keep cre_status.sh no-DB.
+#
+# Threshold: 8 days, conservatively longer than the 7-day weekly cadence so a
+# normal weekly sweep does not trip the alarm.
+SIGNAL_STALE_SECS=$(( 8 * 86400 ))
+
+# The four disappearance-only sources (no status field; sold signal = gone from sweep).
+DISAPPEAR_ONLY_SOURCES="cbre nai-global avison-young marcus-millichap"
+
+newest_mon_art() {
+  # Return path of the newest out/monitor/monitor_*.json file (may be empty).
+  ls -t "$OUT_MONITOR"/monitor_*.json 2>/dev/null | head -1
+}
+
+# Find newest monitor artifact that mentions a given source key with grouped > 0.
+# Uses light grep: looks for the source key string in the artifact content.
+# Acceptable fallback: an artifact that mentions the key at all signals enumeration.
+source_last_seen_artifact() {
+  local sk="$1"
+  ls -t "$OUT_MONITOR"/monitor_*.json 2>/dev/null | while read -r f; do
+    # Check if the file mentions this source key under by_source with grouped > 0.
+    # We look for "grouped":[^0}] after the source key to find a nonzero grouped count.
+    # Because exact JSON parsing is not available, check for the key and grouped presence.
+    if grep -q "\"$sk\"" "$f" 2>/dev/null; then
+      # Attempt to find a grouped > 0 signal: look for "grouped":N where N is nonzero.
+      # The by_source block for a source looks like: "cbre":{"enumerated_flat":N,"grouped":N,...}
+      # We extract the block and check for a nonzero grouped value.
+      local block
+      block="$(grep -o "\"$sk\":{[^}]*}" "$f" 2>/dev/null | head -1)"
+      if [ -n "$block" ]; then
+        local grp
+        grp="$(printf '%s' "$block" | grep -o '"grouped":[0-9]*' | grep -o '[0-9]*$')"
+        if [ -n "$grp" ] && [ "$grp" -gt 0 ] 2>/dev/null; then
+          echo "$f"
+          return 0
+        fi
+      fi
+      # Fallback: if we cannot parse grouped but the key is present, count the file.
+      # This avoids false "never seen" when the JSON shape is unexpected.
+      echo "$f"
+      return 0
+    fi
+  done
+}
+
+# Check for any monitor artifact at all (coarse staleness signal).
+NEWEST_MON="$(newest_mon_art)"
+
+if [ -z "$NEWEST_MON" ]; then
+  # No monitor artifacts on this clone yet (fresh setup or artifacts pruned).
+  # Note, do not warn: a brand-new setup has never run the monitor.
+  note "no monitor artifacts found under out/monitor/ (monitor has never run on this clone)"
+  note "disappearance-only sources rely on the monitor sweep for their sold-signal:"
+  for sk in $DISAPPEAR_ONLY_SOURCES; do
+    note "  $sk"
+  done
+else
+  # Check each disappearance-only source individually.
+  for sk in $DISAPPEAR_ONLY_SOURCES; do
+    seen_file="$(source_last_seen_artifact "$sk")"
+    if [ -z "$seen_file" ]; then
+      # Source was never seen in any monitor artifact.
+      NEWEST_AGE=$(( now_epoch - $(file_mtime "$NEWEST_MON") ))
+      if [ "$NEWEST_AGE" -gt "$SIGNAL_STALE_SECS" ]; then
+        warn "$sk: never enumerated in any monitor artifact and newest artifact is $(human_age "$NEWEST_AGE") old (sold-signal is stale)"
+      else
+        note "$sk: not found in monitor artifacts yet (sold-signal will be available once the monitor has enumerated it)"
+      fi
+    else
+      seen_mtime="$(file_mtime "$seen_file")"
+      seen_age=$(( now_epoch - ${seen_mtime:-now_epoch} ))
+      if [ "$seen_age" -gt "$SIGNAL_STALE_SECS" ]; then
+        warn "$sk: last enumerated $(human_age "$seen_age") ago (threshold: $(human_age "$SIGNAL_STALE_SECS")); sold-signal is stale"
+        note "  last artifact with $sk: ${seen_file#"$DIR"/}"
+      else
+        ok "$sk: enumerated $(human_age "$seen_age") ago (within $(human_age "$SIGNAL_STALE_SECS") threshold)"
+      fi
+    fi
+  done
+fi
 
 # ---------------------------------------------------------------------------
 section "summary"

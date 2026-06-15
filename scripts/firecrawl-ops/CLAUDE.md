@@ -126,9 +126,12 @@ Supabase objects live under `credeals`, not `public`:
 - `cre_scrape_jobs`
 - `cre_scrape_log`
 - `cre_listing_events` (change ledger, 007)
-- `cre_source_index` (enumeration snapshot, 007)
+- `cre_source_index` (enumeration snapshot + prior price columns, 007+009)
 - `cre_enrichment_queue` (detail-render work queue, 007)
 - `cre_source_baseline` (coverage health baseline, 007)
+- `cre_listing_price_history` (append-only watched-field snapshots, 009; existence-guarded pre-apply)
+- `cre_listing_contacts_archive` (contacts snapshot at retirement, 009; existence-guarded pre-apply)
+- `cre_listing_documents_archive` (documents snapshot at retirement, 009; existence-guarded pre-apply)
 - `v_cre_listings_full`
 - `v_cre_active_for_sale`
 - `v_cre_active_for_lease`
@@ -180,10 +183,25 @@ Data-quality cleanups applied: 50 board-invisible JLL rows corrected to
 residential contamination removed (101 mis-categorized sale rows + 1 ghost
 lease soft-deleted), leaving 2 defensible Chicago retail lease rows. Savills
 sale is structurally capped with no public US commercial-sale feed.
-Still gated for go-ahead: deploy the consumer board-gate branch (must precede
-live T3.1 activation), trigger first live status activation, apply the widened
-`005` views (live DDL, alongside the consumer deploy). See the phase2
-board-impact doc's activation runbook. Tier-B `cre_enrichment_queue` worker
+Track 3 shipped 2026-06-15 (freshness/history remediation): count-aware folded
+coverage guard in `main()` (M1 data-loss fix); price COALESCE-keep on all 4
+price columns (L1); revival terminal-stickiness guard (M5); `disappeared` event
+emitted in the same transaction as mark-missing (M3); ingest-written
+`cre_listing_price_history` (H4a, existence-guarded); contacts + documents
+archive at retirement (M2, existence-guarded); flip-breaker metric widened (L4a);
+monitor `old_value` populated from `prior_sale_price`/`prior_lease_rate` (H4b);
+Savills `IsCommercial` sale guard and lease pagination (L5/L3); signal-staleness
+check for disappearance-only sources in `cre_status.sh` (H3);
+`CRE_STATUS_FLIP_MAX_FRACTION=0.30` added to daily + weekly plist templates
+(L4b). New migration `009_cre_history_retention.sql` adds the history + archive
+tables and the `trg_cre_listings_block_history_delete` retention trigger
+(registered in `000_run_all.sql`). NOTED STALE ASSERTION: one existing test in
+`test_ingest_status_activation.py` asserts the old unconditional revival CASE
+form; update that assertion before merging.
+Still gated for go-ahead: apply `009_cre_history_retention.sql` to prod;
+deploy the consumer board-gate branch (must precede live T3.1 activation);
+trigger first live status activation; apply the widened `005` views (live DDL,
+alongside the consumer deploy). Tier-B `cre_enrichment_queue` worker
 remains deferred.
 
 | Module | Role |

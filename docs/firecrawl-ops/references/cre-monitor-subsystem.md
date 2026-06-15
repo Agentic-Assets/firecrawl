@@ -10,6 +10,19 @@ Since the original build: monitor exclusions are now four (`jll`, `jll-investor`
 errored or truncated passes (non-overridable by `--force-disappear`); and
 `collect.ts` is split into `types.ts` / `lib/` / `sources/<broker>.ts` modules.
 
+**Update 2026-06-15 (H4b-populate).** `cre_monitor.py` now populates `old_value`
+on `price_change` events. `load_prior_state()` reads three new columns from
+`cre_source_index` (`prior_sale_price`, `prior_lease_rate`, `prior_status`) added
+by migration `009_cre_history_retention.sql`. `derive_events()` uses
+`prior.get('prior_sale_price')` with lease-rate fallback; integer-valued floats
+render without decimal; `None` when no prior (pre-migration behavior). The index
+upsert now stores this run's `cur_sale_price`/`cur_lease_rate` into the `prior_*`
+columns so the next run reads them as prior. These columns require 009 to be
+applied; the monitor tier is gated and will not run until after 009 apply.
+Count-aware folded coverage (M1) is also now in `cre_ingest.py`; see
+`cre_collector/FRESHNESS_HISTORY_REVIEW_2026-06-15.md` section 7 for the full
+resolution.
+
 Shipped 2026-06-14: the seed scaled to all 11 monitor-enabled sources, the
 launchd monitor + daily tiers were loaded, and `cre_gate.py` was wired into
 `cre_daily_update.sh` as observe-only step [3/4]. KNOWN BLOCKER (2026-06-14):

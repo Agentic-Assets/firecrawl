@@ -36,6 +36,26 @@ Last reviewed against code: 2026-06-13.
 > gate also refuses disappearance on errored or truncated passes; and `collect.ts`
 > is split into `types.ts` / `lib/` / `sources/<broker>.ts` modules. Details:
 > `../../../scripts/firecrawl-ops/cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md`.
+>
+> **Update 2026-06-15 (freshness/history remediation).** History is now ingest-written,
+> not solely monitor-written. Key changes: (1) `cre_ingest.py` writes one row to
+> `cre_listing_price_history` per listing per run where any watched field changed,
+> captures prior values in `_prior_vals` BEFORE the upsert, and existence-guards the
+> INSERT so a pre-apply prod run is a no-op. (2) `cre_ingest.py` emits a
+> `disappeared` event in the same transaction as every mark-missing soft-delete, and
+> snapshots the retired listings' contacts + documents into append-only archive tables
+> (also existence-guarded). (3) The folded-coverage check in `main()` is count-aware:
+> each folded key now requires a nonzero `listingsCollected` count (M1 data-loss bug
+> fixed). (4) All four price columns now COALESCE-keep in the upsert (L1 bug fixed).
+> (5) `cre_monitor.py` now populates `old_value` on `price_change` events from the
+> new `prior_sale_price`/`prior_lease_rate` columns on `cre_source_index`. (6) New
+> migration `009_cre_history_retention.sql` adds `cre_listing_price_history`,
+> `cre_listing_contacts_archive`, `cre_listing_documents_archive`, three `prior_*`
+> columns on `cre_source_index`, and the `trg_cre_listings_block_history_delete`
+> retention trigger. Migration registered in `000_run_all.sql` (after 008, before
+> 006). NOT YET APPLIED to prod (gated; existence guards make pre-apply runs safe).
+> See `cre_collector/FRESHNESS_HISTORY_REVIEW_2026-06-15.md` section 7 for the full
+> per-item resolution.
 
 ## 1. Purpose and goals
 
@@ -139,6 +159,17 @@ For each enumeration-capable source: (1) enumerate the cheapest id inventory; (2
 > `deleted_at`), not the in-ingest CTE described below. This section is the
 > original design alternative; see the status block at the top and
 > `cre-monitor-subsystem.md` for what actually runs.
+>
+> **2026-06-15 addendum:** ingest-side history IS now written (see the 2026-06-15
+> update banner at the top). `cre_ingest.py` captures a `_prior_vals` snapshot and
+> writes to `cre_listing_price_history` on every run where a watched field changed.
+> The `disappeared` event is also now emitted by the ingestor in the same
+> transaction as mark-missing (using a `_retired` CTE). The in-ingest `_before`
+> CTE described below remains an unbuilt design alternative; the shipped mechanism
+> is the `_prior_vals` pre-capture pattern (H4a-write). The monitor's `old_value`
+> gap (described in section (2) below) is now resolved: `cre_monitor.py` reads
+> `prior_sale_price`/`prior_lease_rate` from `cre_source_index` (new columns from
+> migration 009) and populates `old_value` on `price_change` events.
 
 The center of gravity is the existing single-statement CTE upsert (cre_ingest.py:549-655), the one place OLD (t.*) and NEW (EXCLUDED.*) are both in scope.
 

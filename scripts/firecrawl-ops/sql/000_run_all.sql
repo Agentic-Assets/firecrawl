@@ -28,6 +28,7 @@
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 004_cre_indexes.sql
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 007_cre_change_tracking.sql
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 008_cre_fk_indexes.sql
+--     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 009_cre_history_retention.sql
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 006_cre_contact_urls.sql
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 005_cre_views.sql
 --
@@ -41,6 +42,7 @@
 --   004 cre_indexes             indexes on cre_listings (+ change-tracking indexes)
 --   007 cre_change_tracking     monitor tables (events, source_index, queue, baseline)
 --   008 cre_fk_indexes          FK covering indexes on 007 monitor tables (advisor 0001)
+--   009 cre_history_retention   price-history + child archive tables + retention trigger
 --   006 cre_contact_urls        contact profile/avatar/VCard URL fields
 --   005 cre_views               views (incl v_cre_recent_changes), search fn, triggers
 --
@@ -72,6 +74,9 @@ CREATE SCHEMA IF NOT EXISTS credeals;
 
 \echo '=== 008_cre_fk_indexes.sql ==='
 \i 008_cre_fk_indexes.sql
+
+\echo '=== 009_cre_history_retention.sql ==='
+\i 009_cre_history_retention.sql
 
 \echo '=== 006_cre_contact_urls.sql ==='
 \i 006_cre_contact_urls.sql
