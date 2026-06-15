@@ -54,7 +54,11 @@
       "Read(//Users/caymanseagraves/Downloads/**)",
       "Bash(mkdir -p /tmp/prometheus-script-new)",
       "Bash(unzip -o \"prometheus-script \\(1\\).zip\" -d /tmp/prometheus-script-new)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(bash -c ' *)",
+      "Bash(ps -o pid,etime,command -p 94015)",
+      "Bash(mv -f cre_daily_update.sh.new cre_daily_update.sh)",
+      "Bash(bash -n cre_daily_update.sh)"
     ],
     "deny": [
       "Bash(rm -rf /:*)",

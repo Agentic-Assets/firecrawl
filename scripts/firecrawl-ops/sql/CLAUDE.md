@@ -19,6 +19,14 @@ Set `DATABASE_URL` from `~/.pgpass` or a local secrets source. Alternatives: Sup
 - Dedup key: `(brokerage_id, external_id)` unique where `external_id IS NOT NULL`.
 - `cap_rate` / `occupancy_rate` are fractions in `[0,1]` (6.5% → `0.065`).
 - Soft delete: `cre_listings.deleted_at`; views exclude deleted rows.
+- Date semantics: `listing_date` is source-proven first-listed/published only,
+  `updated_date` is broker/source recency, `scraped_at` is collector snapshot
+  time, `updated_at` is DB/index mutation time, and `created_at` / `deleted_at`
+  are database lifecycle markers. `last_seen_at` is reserved nullable
+  per-listing enumeration state; current observe-only monitor state lives in
+  `cre_source_index` to avoid churning `updated_at`. UI copy should say "Source
+  updated", "Snapshot collected", or "Latest indexed" according to the column
+  provenance, never generic "updated".
 
 ## Module Boundaries
 

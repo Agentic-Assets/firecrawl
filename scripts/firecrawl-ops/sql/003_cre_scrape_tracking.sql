@@ -35,6 +35,9 @@ CREATE INDEX IF NOT EXISTS cre_scrape_jobs_started_idx    ON credeals.cre_scrape
 
 COMMENT ON TABLE  credeals.cre_scrape_jobs        IS 'One row per CRE scrape run. Tracks discovery/scrape/save counts and final status for operator audit.';
 COMMENT ON COLUMN credeals.cre_scrape_jobs.status IS 'running | completed (clean) | partial (some errors) | failed (run aborted).';
+COMMENT ON COLUMN credeals.cre_scrape_jobs.started_at   IS 'Collector job start timestamp for a broker/source run. Use with completed_at to assess run freshness.';
+COMMENT ON COLUMN credeals.cre_scrape_jobs.completed_at IS 'Collector job completion timestamp for a broker/source run. This is run-level collector timing, not listing-source recency.';
+COMMENT ON COLUMN credeals.cre_scrape_jobs.created_at   IS 'Database row creation timestamp for the collector job record.';
 ALTER TABLE credeals.cre_scrape_jobs ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).
 
 -- -----------------------------------------------------------------------------
@@ -57,4 +60,5 @@ CREATE INDEX IF NOT EXISTS cre_scrape_log_listing_idx ON credeals.cre_scrape_log
 
 COMMENT ON TABLE  credeals.cre_scrape_log        IS 'Per-URL scrape attempt log. status duplicate = matched an existing cre_listings row; skipped = filtered before fetch.';
 COMMENT ON COLUMN credeals.cre_scrape_log.status IS 'success | error | skipped | duplicate.';
+COMMENT ON COLUMN credeals.cre_scrape_log.scraped_at IS 'Per-URL collector attempt timestamp. This records when our scraper attempted the URL, not when the source listing changed.';
 ALTER TABLE credeals.cre_scrape_log ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).

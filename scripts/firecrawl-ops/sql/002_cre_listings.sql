@@ -103,9 +103,11 @@ COMMENT ON COLUMN credeals.cre_listings.occupancy_rate  IS 'Occupancy as a fract
 COMMENT ON COLUMN credeals.cre_listings.markdown        IS 'Full scraped markdown. Primary-source grounding for any EQUIRE claim derived from this listing.';
 COMMENT ON COLUMN credeals.cre_listings.raw_data        IS 'jsonb: full Firecrawl structured-extraction output plus any broker-specific fields not mapped to columns.';
 COMMENT ON COLUMN credeals.cre_listings.scraped_at      IS 'Timestamp when our collector last scraped or refreshed the listing snapshot. This is our collection time, not a broker listing date.';
-COMMENT ON COLUMN credeals.cre_listings.listing_date    IS 'Source-provided original listing or published date only when the upstream brokerage explicitly exposes one. Do not infer this from scrape time, updated_at, or generic lastUpdated fields.';
-COMMENT ON COLUMN credeals.cre_listings.updated_date    IS 'Source-provided listing recency or last-modified date from the upstream brokerage when exposed. Not necessarily the first-listed/on-market date.';
-COMMENT ON COLUMN credeals.cre_listings.deleted_at      IS 'Soft-delete marker. Non-null means the listing was de-listed upstream or pruned; views exclude these.';
+COMMENT ON COLUMN credeals.cre_listings.listing_date    IS 'Source-provided original listing or published date only when the upstream brokerage explicitly exposes one. Do not infer this from scrape time, updated_at, or generic lastUpdated fields. Treat as source-proven only when raw_data/source provenance identifies a first-listed/datePublished/datePosted/on-market field.';
+COMMENT ON COLUMN credeals.cre_listings.updated_date    IS 'Source-provided listing recency or last-modified date from the upstream brokerage when exposed. Current collectors commonly map broker lastUpdated/dateModified/updateDate/publishedAt/on_market_at-style fields here. This is not necessarily the first-listed/on-market date.';
+COMMENT ON COLUMN credeals.cre_listings.created_at      IS 'Database row creation timestamp. This is when our index first created the row, not a broker listing date.';
+COMMENT ON COLUMN credeals.cre_listings.updated_at      IS 'Database row mutation timestamp maintained by trigger/upsert logic. This is not source listing recency and not a first-listed date.';
+COMMENT ON COLUMN credeals.cre_listings.deleted_at      IS 'Soft-delete marker. Non-null means the listing was de-listed upstream or pruned; active listing views exclude these rows.';
 
 -- RLS: collector-owned base table. Enabled, no public policy; service-role /
 -- direct-postgres bypasses it (see 001 header note + SUPABASE_SECURITY_NOTE_2026-06-12.md).
@@ -226,6 +228,6 @@ ALTER TABLE credeals.cre_listings ADD COLUMN IF NOT EXISTS last_seen_at   timest
 ALTER TABLE credeals.cre_listings ADD COLUMN IF NOT EXISTS source_lastmod timestamptz;
 ALTER TABLE credeals.cre_listings ADD COLUMN IF NOT EXISTS canonical_key  text;
 
-COMMENT ON COLUMN credeals.cre_listings.last_seen_at   IS 'Reserved / currently unwritten. Enumeration recency and disappearance detection live in cre_source_index (last_enumerated_at, soft_deleted); the observe-only monitor deliberately does not write this column because doing so every run would churn updated_at (exposed in EQUIRE views). Kept nullable for a possible future per-listing signal; distinct from scraped_at (last detail scrape).';
+COMMENT ON COLUMN credeals.cre_listings.last_seen_at   IS 'Reserved nullable per-listing enumeration timestamp. If written, it means the listing was last re-observed in a source enumeration and is distinct from scraped_at (last detail scrape). Current observe-only monitor state lives in cre_source_index (last_enumerated_at, soft_deleted) to avoid churning updated_at every run.';
 COMMENT ON COLUMN credeals.cre_listings.source_lastmod IS 'Full-precision upstream last-modified (e.g. sitemap <lastmod>), used to prioritize re-scrapes. Not day-truncated. Not necessarily the first-listed date.';
 COMMENT ON COLUMN credeals.cre_listings.canonical_key  IS 'lower(address)+state(+rounded geo) key for advisory re-listing detection within a brokerage. Geoless sources downgrade to address+state-only (weaker advisory).';

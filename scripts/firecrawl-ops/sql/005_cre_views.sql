@@ -84,6 +84,12 @@ LEFT JOIN LATERAL (
 WHERE l.deleted_at IS NULL;
 
 COMMENT ON VIEW credeals.v_cre_listings_full IS 'Listing + brokerage name + contacts/documents/images as JSON arrays. Excludes soft-deleted. Primary agent read.';
+COMMENT ON COLUMN credeals.v_cre_listings_full.scraped_at IS 'Pass-through from cre_listings.scraped_at. Collector snapshot time, not broker listing date.';
+COMMENT ON COLUMN credeals.v_cre_listings_full.listing_date IS 'Pass-through from cre_listings.listing_date. Source-provided first-listed/published date only when explicitly exposed; otherwise null or provisional. Do not label as Listed unless provenance proves it.';
+COMMENT ON COLUMN credeals.v_cre_listings_full.updated_date IS 'Pass-through from cre_listings.updated_date. Broker/source last-updated or recency field when exposed; not necessarily first-listed/on-market.';
+COMMENT ON COLUMN credeals.v_cre_listings_full.created_at IS 'Pass-through from cre_listings.created_at. Database row creation time, not source listing recency.';
+COMMENT ON COLUMN credeals.v_cre_listings_full.updated_at IS 'Pass-through from cre_listings.updated_at. Database row mutation time, not source listing recency.';
+COMMENT ON COLUMN credeals.v_cre_listings_full.deleted_at IS 'Pass-through from cre_listings.deleted_at. Soft-delete marker; non-null means excluded from active listing surfaces.';
 ALTER VIEW credeals.v_cre_listings_full SET (security_invoker = true);
 
 -- ===========================================================================
@@ -122,6 +128,9 @@ WHERE l.deleted_at IS NULL
   AND l.transaction_type IN ('sale', 'sale_or_lease');
 
 COMMENT ON VIEW credeals.v_cre_active_for_sale IS 'On-market for-sale listings (active/under_contract/pending) with brokerage + primary contact. Mandate-fit screening / OriginationBrief seed.';
+COMMENT ON COLUMN credeals.v_cre_active_for_sale.scraped_at IS 'Pass-through from cre_listings.scraped_at. Collector snapshot time, not broker listing date.';
+COMMENT ON COLUMN credeals.v_cre_active_for_sale.listing_date IS 'Pass-through from cre_listings.listing_date. Source-provided first-listed/published date only when explicitly exposed; otherwise null or provisional.';
+COMMENT ON COLUMN credeals.v_cre_active_for_sale.updated_at IS 'Pass-through from cre_listings.updated_at. Database row mutation time, not source listing recency.';
 ALTER VIEW credeals.v_cre_active_for_sale SET (security_invoker = true);
 
 -- ===========================================================================
@@ -160,6 +169,9 @@ WHERE l.deleted_at IS NULL
   AND l.transaction_type IN ('lease', 'sale_or_lease');
 
 COMMENT ON VIEW credeals.v_cre_active_for_lease IS 'On-market for-lease listings (active/under_contract/pending) with brokerage + primary contact, including divisibility and lease terms.';
+COMMENT ON COLUMN credeals.v_cre_active_for_lease.scraped_at IS 'Pass-through from cre_listings.scraped_at. Collector snapshot time, not broker listing date.';
+COMMENT ON COLUMN credeals.v_cre_active_for_lease.listing_date IS 'Pass-through from cre_listings.listing_date. Source-provided first-listed/published date only when explicitly exposed; otherwise null or provisional.';
+COMMENT ON COLUMN credeals.v_cre_active_for_lease.updated_at IS 'Pass-through from cre_listings.updated_at. Database row mutation time, not source listing recency.';
 ALTER VIEW credeals.v_cre_active_for_lease SET (security_invoker = true);
 
 -- ===========================================================================
