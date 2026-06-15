@@ -105,7 +105,10 @@ Key components:
   default-off via `--activate-status`/`CRE_ACTIVATE_STATUS=1`), `cre_monitor.py`
   and `cre_gate.py` (observe-only 007 change tracking; gate wired into daily
   script as step [3/4]), `cre_daily_update.sh` (daily refresh; use
-  `--no-mark-missing` while Savills sale is structurally capped)
+  `--no-mark-missing` while Savills sale is structurally capped),
+  `launchd/cre_run_tier.sh` (portable-lock tier dispatcher; writes a
+  per-run verdict marker), `cre_status.sh` (read-only run-health heartbeat:
+  schedules, staleness, last-run verdict, TCC/stack/env state)
 - `scripts/firecrawl-ops/cre_scrapers/` - legacy Python package for source
   experiments and detail enrichment. Not the daily bulk path.
 - `scripts/firecrawl-ops/sql/` - Supabase migrations for `cre_*` tables
@@ -116,8 +119,13 @@ Key components:
 - `docs/firecrawl-ops/references/cre-monitor-subsystem.md` - monitor run model
 - `docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md` -
   Phase-2 status activation board impact (gated)
+- `docs/firecrawl-ops/references/cre-cloud-hosting-options-2026-06-14.md` -
+  where to run the pipeline (cloud vs Mac mini); split-architecture
+  recommendation, platform comparison, anti-bot IP risk (decision aid, not actioned)
 
 Canonical entrypoints (live counts and per-source status only in `START_HERE.md`):
+- `scripts/firecrawl-ops/cre_collector/SETUP.md` - fresh-clone setup runbook
+  (Mac mini + dev); run `cre_setup.sh` first, then `launchd/install_launchd.sh`
 - `scripts/firecrawl-ops/cre_collector/START_HERE.md` - runbook, status matrix
 - `scripts/firecrawl-ops/cre_collector/CLAUDE.md` - collector/ingestor reference
 - `scripts/firecrawl-ops/cre_collector/BROKERAGE_STATUS_2026-06-12.md` - upgrade order
@@ -149,7 +157,7 @@ active (15,829 main-site rows: 5,750 sale + 8,897 lease + 1,182 sale_or_lease,
 0 soft-deleted, 0 duplicate external_ids); live board total 87,328 active (0
 non-active, 0 NULL status). Status activation changed to OPT-IN default-off
 (requires `--activate-status` or `CRE_ACTIVATE_STATUS=1`; new helpers
-`_status_activation_enabled()` and `apply_status_activation_gate()`). 261 pytest
+`_status_activation_enabled()` and `apply_status_activation_gate()`). 290 pytest
 pass. `cre_gate.py` wired into `cre_daily_update.sh` as observe-only step [3/4]
 with auto-downgrade fail-safe. Monitor (`ai.agentic.cre-monitor`, every 3h at
 :15, `CRE_MONITOR_APPLY=1`) and daily (`ai.agentic.cre-daily`, 06:30 daily,

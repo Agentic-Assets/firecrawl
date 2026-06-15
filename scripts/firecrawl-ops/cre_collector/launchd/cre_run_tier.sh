@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# cre_run_tier.sh — flock-serialized dispatcher for the three CRE launchd tiers.
+# cre_run_tier.sh: lock-serialized dispatcher for the three CRE launchd tiers.
 #
 # Usage: cre_run_tier.sh <monitor|daily|weekly>
 #
-# All three tiers share one exclusive lock so they cannot overlap with each
-# other or with any manual run that acquires the same lockfile.  If the lock
-# is already held the script exits silently (exit 0) — launchd will retry on
-# the next scheduled interval.
+# All three tiers share one exclusive lock (a portable mkdir lock, no flock
+# dependency) so they cannot overlap with each other or with any manual run
+# that acquires the same lock. If the lock is already held the script exits
+# silently (exit 0) and launchd retries on the next scheduled interval. Each
+# real run writes out/daily/last_run_<tier>.json with its exit verdict for
+# cre_status.sh to read.
 #
 # Tier semantics:
-#   monitor  — cheap enumeration diff: runs collect.ts --monitor then cre_monitor.py
+#   monitor  : cheap enumeration diff: runs collect.ts --monitor then cre_monitor.py
 #              observe-only by default; pass CRE_MONITOR_APPLY=1 to enable --apply
 #              (GATED: requires explicit go-ahead before enabling --apply or loading the plist)
-#   daily    — full collect + additive ingest with --no-mark-missing (safe default)
-#   weekly   — full collect + ingest with --mark-missing (ONLY tier permitted to
+#   daily    : full collect + additive ingest with --no-mark-missing (safe default)
+#   weekly   : full collect + ingest with --mark-missing (ONLY tier permitted to
 #              soft-delete rows; runs after proven convergence on Tier-1 sources)
 
 set -euo pipefail
@@ -21,10 +23,16 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-COLLECTOR_DIR="/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector"
-LOCKFILE="${COLLECTOR_DIR}/out/daily/.cre.lock"
+# Self-locate the collector dir from this script's own path (launchd/..), so the
+# runner is portable across machines and clone locations. launchd plists still
+# need absolute paths; generate them per-machine with install_launchd.sh.
+COLLECTOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DAILY_OUT_DIR="${COLLECTOR_DIR}/out/daily"
+LOCKDIR="${DAILY_OUT_DIR}/.cre.lock"   # mkdir-based lock dir (portable; no flock dependency)
 MONITOR_SCRIPT="${COLLECTOR_DIR}/cre_monitor.py"
 DAILY_SCRIPT="${COLLECTOR_DIR}/cre_daily_update.sh"
+
+ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 
 # ---------------------------------------------------------------------------
 # Argument validation
@@ -38,12 +46,150 @@ case "${TIER}" in
         ;;
 esac
 
+# Ensure the shared artifact dir exists before locking or writing run markers.
+# (Stock macOS does not ship flock, and the old `flock -n 9` returned 127 when
+# absent, which read as "lock held" and made every scheduled tier exit 0
+# silently. The mkdir lock below has no external dependency.)
+mkdir -p "${DAILY_OUT_DIR}"
+
 # ---------------------------------------------------------------------------
-# Acquire exclusive lock (non-blocking).  Exit silently if already locked.
+# Acquire exclusive lock (portable, non-blocking, stdlib-only).
+#
+# An atomic `mkdir` is the lock gate; the PID file inside lets a later run
+# reclaim a lock left behind by a crashed process (stale-lock recovery).
 # ---------------------------------------------------------------------------
-exec 9>"${LOCKFILE}"
-if ! flock -n 9; then
-    echo "[cre_run_tier] Another CRE tier is running — skipping ${TIER} at $(date -u '+%Y-%m-%dT%H:%M:%SZ')" >&2
+LOCK_HELD=0
+RUN_START="$(ts)"
+MARKER="${DAILY_OUT_DIR}/last_run_${TIER}.json"
+
+# Write our identity (pid + start epoch) into the lock we just created. The
+# epoch lets cre_status.sh flag a lock held far longer than any legitimate run.
+_write_lock_owner() { printf '%s %s\n' "$$" "$(date +%s)" >"${LOCKDIR}/pid"; }
+
+# Read the recorded owner pid (first field of "pid epoch"); empty if absent.
+_lock_owner_pid() { [ -f "${LOCKDIR}/pid" ] && cut -d' ' -f1 "${LOCKDIR}/pid" 2>/dev/null || true; }
+
+acquire_lock() {
+    if mkdir "${LOCKDIR}" 2>/dev/null; then
+        _write_lock_owner
+        LOCK_HELD=1
+        return 0
+    fi
+    # Lock dir exists. Identify the recorded owner.
+    local owner=""
+    owner="$(_lock_owner_pid)"
+    if [ -z "${owner}" ]; then
+        # No pid yet: the holder is between mkdir and writing its pid. Treat as
+        # held (NOT stale) so we never delete a lock that is being created.
+        return 1
+    fi
+    if kill -0 "${owner}" 2>/dev/null; then
+        return 1   # held by a live process
+    fi
+    # Owner looks dead -> stale. Serialize reclamation behind a nested atomic
+    # guard so two racing reclaimers cannot both rm+mkdir and double-acquire.
+    if ! mkdir "${LOCKDIR}.reclaim" 2>/dev/null; then
+        return 1   # another process is already reclaiming; retry next fire
+    fi
+    # Re-check liveness INSIDE the critical section: the original owner may have
+    # already reclaimed (and now be live), in which case we must not disturb it.
+    local cur=""
+    cur="$(_lock_owner_pid)"
+    if [ -n "${cur}" ] && kill -0 "${cur}" 2>/dev/null; then
+        rm -rf "${LOCKDIR}.reclaim" 2>/dev/null || true
+        return 1
+    fi
+    echo "[cre_run_tier] reclaiming stale lock (owner='${owner}' not alive) at $(ts)" >&2
+    rm -rf "${LOCKDIR}"
+    local got=1
+    if mkdir "${LOCKDIR}" 2>/dev/null; then
+        _write_lock_owner
+        got=0
+    fi
+    rm -rf "${LOCKDIR}.reclaim" 2>/dev/null || true
+    [ "${got}" = "0" ] || return 1
+    # Post-acquire verification: confirm we are the recorded owner before running.
+    [ "$(_lock_owner_pid)" = "$$" ] || return 1
+    LOCK_HELD=1
+    return 0
+}
+
+write_marker() {
+    # Persist a tiny machine-readable verdict so cre_status.sh (and a coding
+    # agent on the Mac mini) can tell success from failure without scraping
+    # log tails. Best-effort: never let marker IO fail the run.
+    local rc="$1" okflag="false"
+    [ "${rc}" = "0" ] && okflag="true"
+    { cat >"${MARKER}" <<EOF
+{"tier":"${TIER}","start":"${RUN_START}","end":"$(ts)","rc":${rc},"ok":${okflag}}
+EOF
+    } 2>/dev/null || true
+}
+
+# --- disk maintenance (runs in finish() on every real run) -----------------
+# Keep the newest $3 files matching glob $2 in dir $1; space-safe; no-op when
+# few match. Mirrors cre_daily_update.sh prune_keep, for out/monitor/ artifacts.
+_keep_newest() {
+    local dir="$1" pattern="$2" keep="$3"
+    [ -d "${dir}" ] || return 0
+    local -a m=()
+    local f
+    shopt -s nullglob
+    for f in "${dir}"/$pattern; do m+=("$f"); done
+    shopt -u nullglob
+    [ "${#m[@]}" -le "${keep}" ] && return 0
+    local path
+    for f in "${m[@]}"; do
+        printf '%s\t%s\n' "$(stat -f '%m' "$f" 2>/dev/null || stat -c '%Y' "$f" 2>/dev/null || echo 0)" "$f"
+    done | sort -rn | tail -n "+$(( keep + 1 ))" | cut -f2- | while IFS= read -r path; do
+        if [ -n "${path}" ]; then rm -f "${path}"; fi
+    done
+}
+
+# Trim an append-only log to its last half when it exceeds $2 bytes. The running
+# launchd job keeps its own fd open, so this takes effect from the next fire on.
+_cap_log() {
+    local f="$1" max="$2" size tmp
+    [ -f "${f}" ] || return 0
+    size="$(stat -f '%z' "${f}" 2>/dev/null || stat -c '%s' "${f}" 2>/dev/null || echo 0)"
+    [ "${size}" -gt "${max}" ] || return 0
+    tmp="${f}.trim.$$"
+    if tail -c "$(( max / 2 ))" "${f}" >"${tmp}" 2>/dev/null; then
+        mv -f "${tmp}" "${f}" 2>/dev/null || rm -f "${tmp}" 2>/dev/null || true
+    else
+        rm -f "${tmp}" 2>/dev/null || true
+    fi
+}
+
+prune_runtime_artifacts() {
+    # Monitor enumeration artifacts (~100MB each, 8/day) would fill the disk in
+    # weeks; keep ~3 days. Keep the per-run monitor logs bounded too, and cap the
+    # append-only launchd redirect logs. Best-effort; never fail the run.
+    {
+        _keep_newest "${COLLECTOR_DIR}/out/monitor" 'monitor_*.json' 24
+        _keep_newest "${COLLECTOR_DIR}/out/monitor" 'monitor_*.log'  24
+        local L
+        for L in cre-monitor cre-daily cre-weekly; do
+            _cap_log "${DAILY_OUT_DIR}/${L}.out.log" 10485760   # 10 MB
+            _cap_log "${DAILY_OUT_DIR}/${L}.err.log" 10485760
+        done
+    } 2>/dev/null || true
+}
+
+finish() {
+    local rc=$?
+    if [ "${LOCK_HELD}" = "1" ]; then
+        write_marker "${rc}"
+        prune_runtime_artifacts            # bound disk on every real run, pass or fail
+        rm -rf "${LOCKDIR}" 2>/dev/null || true
+        rm -rf "${LOCKDIR}.reclaim" 2>/dev/null || true
+    fi
+    exit "${rc}"
+}
+trap finish EXIT
+
+if ! acquire_lock; then
+    echo "[cre_run_tier] Another CRE tier is running, skipping ${TIER} at $(ts)" >&2
     exit 0
 fi
 
@@ -53,12 +199,7 @@ fi
 # ---------------------------------------------------------------------------
 cd "${COLLECTOR_DIR}"
 
-# ---------------------------------------------------------------------------
-# Timestamp helpers
-# ---------------------------------------------------------------------------
-ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
-
-echo "[cre_run_tier] START tier=${TIER} at $(ts)"
+echo "[cre_run_tier] START tier=${TIER} at ${RUN_START}"
 
 # ---------------------------------------------------------------------------
 # Dispatch
@@ -70,12 +211,15 @@ case "${TIER}" in
         MONITOR_OUT_DIR="${COLLECTOR_DIR}/out/monitor"
         mkdir -p "${MONITOR_OUT_DIR}"
         MONITOR_ARTIFACT="${MONITOR_OUT_DIR}/monitor_${MONITOR_STAMP}.json"
+        MONITOR_LOG="${MONITOR_OUT_DIR}/monitor_${MONITOR_STAMP}.log"
 
-        echo "[cre_run_tier] [1/2] collect --monitor -> ${MONITOR_ARTIFACT}"
+        # Heavy child output goes to a per-run, pruned log (not the append-only
+        # launchd redirect file, which would otherwise grow unbounded 8x/day).
+        echo "[cre_run_tier] [1/2] collect --monitor -> ${MONITOR_ARTIFACT} (log: ${MONITOR_LOG})"
         npx tsx collect.ts \
             --source=all \
             --monitor \
-            --out="${MONITOR_ARTIFACT}"
+            --out="${MONITOR_ARTIFACT}" >>"${MONITOR_LOG}" 2>&1
 
         APPLY_FLAG=""
         if [ "${CRE_MONITOR_APPLY:-0}" = "1" ]; then
@@ -83,7 +227,7 @@ case "${TIER}" in
         fi
         echo "[cre_run_tier] [2/2] cre_monitor.py --in ${MONITOR_ARTIFACT} ${APPLY_FLAG:-(observe-only; CRE_MONITOR_APPLY not set)}"
         # shellcheck disable=SC2086
-        python3 "${MONITOR_SCRIPT}" --in "${MONITOR_ARTIFACT}" ${APPLY_FLAG}
+        python3 "${MONITOR_SCRIPT}" --in "${MONITOR_ARTIFACT}" ${APPLY_FLAG} >>"${MONITOR_LOG}" 2>&1
         ;;
 
     daily)

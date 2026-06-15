@@ -21,7 +21,9 @@ mark-missing fail-safe. HOWEVER both tiers exit 126 on every scheduled fire
 because the launchd user-agent lacks macOS Full Disk Access to `~/Documents`;
 no scheduled run has succeeded yet, so the empty change-event ledger is a
 non-signal. One-time fix in Known Limits below. Weekly `--mark-missing` tier
-intentionally NOT loaded (reconcile held). 261 pytest pass.
+intentionally NOT loaded (reconcile held). 290 pytest pass. Run-health at a
+glance: `bash cre_status.sh` (read-only heartbeat; flags stale schedules,
+last-run failures, the TCC-126 block, and stack/env state).
 
 Last updated: 2026-06-13. Change-tracking / monitor layer (migration 007 +
 `cre_monitor.py` + `cre_gate.py` + `collect.ts --monitor`) built, hardened, and
@@ -78,11 +80,14 @@ Canonical go-forward plan: section 14 of
 per-source method audit plus the authorized build sequence in 14.4). Two tracks
 are open:
 
-1. **In flight: `colliers-main` full run.** The full ~15,896-URL detail run is
-   still going against a resumable JSONL cache (`out/cache/colliers-main/`).
-   When it converges, ingest `out/colliers_main_full_2026-06-13.json`
-   additively (`--no-mark-missing`) and validate. Do not claim complete
-   main-site coverage until then. See `HANDOFF_COLLIERS_MAIN_2026-06-13.md`.
+1. **DONE 2026-06-14: `colliers-main` full run.** The full ~15,883-URL sitemap
+   detail run converged (0 errors) against the resumable JSONL cache
+   (`out/cache/colliers-main/`, 15,888 rows) and was ingested additively
+   (`--no-mark-missing`, status activation OFF): 15,829 active rows (5,750 sale
+   + 8,897 lease + 1,182 sale_or_lease), 0 soft-deleted, 0 duplicate
+   external_ids. Colliers brokerage total is now 17,001 active and the live
+   board is 87,328 active. Main-site coverage is complete. See
+   `HANDOFF_COLLIERS_MAIN_2026-06-13.md`.
 2. **Change-tracking / monitor layer (007, observe-only) - hardened, first
    seed live.** Per section 14.4, complete and adversarially reviewed:
    - Migration 007 applied to prod (`cre_source_index`, `cre_listing_events`,
@@ -102,7 +107,7 @@ are open:
      `cre_listings.status`/`deleted_at`). Disappearance is triple-gated: the 0.7
      coverage fraction, `run_source_keys` membership, and a refusal for any
      source whose pass errored OR truncated this run (the last is not overridable
-     by `--force-disappear`). `python3 -m pytest tests/`: 237 passing.
+     by `--force-disappear`). `python3 -m pytest tests/`: 290 passing.
    - `collect.ts` is now modular (`types.ts`, `lib/`, `sources/<broker>.ts`);
      `collect.ts` stays the unchanged CLI entry. `npm run typecheck` clean.
    - Full operational rules and gotchas:
@@ -122,7 +127,8 @@ are open:
 
    Phase-2 status activation is now WIRED and hardened in `cre_ingest.py`
    (Choice (a) COALESCE + terminal-stickiness guard + default-off status-flip
-   circuit breaker `CRE_STATUS_FLIP_MAX_FRACTION`; 254 pytest pass). It activates
+   circuit breaker `CRE_STATUS_FLIP_MAX_FRACTION`; 254 pytest pass at that
+   2026-06-13 session, 290 now). It activates
    on the next daily/manual full ingest, NOT from the monitor path. The matching
    EQUIRE board-gate widening (Option B) is committed on
    `dynamically-display-cre-listing-data` branch `feat/multi-source-live-listings`
@@ -176,19 +182,25 @@ Read these in order:
 7. `docs/firecrawl-ops/references/cre-equire-consumer-api.md` (how EQUIRE reads the data: views, SQL, env, quick start)
 8. `docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md` (reusable per-source completion process)
 9. `docs/firecrawl-ops/references/cre-monitor-subsystem.md` (monitor/change-tracking layer: components, run model, hard gotchas) when touching 007, `--monitor`, `cre_monitor.py`, or `cre_gate.py`
-10. `HANDOFF_COLLIERS_MAIN_2026-06-13.md` (active handoff: colliers-main full run in progress)
+10. `HANDOFF_COLLIERS_MAIN_2026-06-13.md` (colliers-main full run, COMPLETE 2026-06-14: converged + ingested additively, 15,829 active main-site rows)
 11. `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` (monitor hardening + collect.ts modular refactor + first gated `--apply` seed) when touching the monitor layer or scaling the seed
 
 Historical buildout/validation detail (handoff log, lessons, validation
 snapshots, egress and security audits) lives in `archive/`; see
 `archive/README.md` for the index and the durable nuggets each file still holds.
 
+**Fresh machine (new clone, Mac mini, or this MacBook Pro)?** Start with
+`SETUP.md` and run `bash cre_setup.sh` (one-command preflight + bootstrap:
+toolchain, deps, env, stack, offline smoke). Then continue below.
+
 Then run:
 
 ```bash
-cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl
+cd <repo>                         # the firecrawl clone root on this machine
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 cd scripts/firecrawl-ops/cre_collector
+bash cre_setup.sh --check        # read-only health snapshot (skip if you just ran full setup)
+bash cre_status.sh               # run-health heartbeat (schedules, last runs, staleness)
 npm run typecheck
 python3 -m py_compile cre_ingest.py
 npm run validate:supabase -- --out /tmp/cre_validate_latest.md
@@ -199,7 +211,7 @@ npm run validate:supabase -- --out /tmp/cre_validate_latest.md
 Use this while any all-source errors or partial source decisions remain:
 
 ```bash
-cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+cd <repo>/scripts/firecrawl-ops/cre_collector   # the firecrawl clone root on this machine
 bash cre_daily_update.sh --no-mark-missing
 ```
 
@@ -226,12 +238,16 @@ images into Supabase storage for the bulk collector.
   every fire: the repo lives under `~/Documents`, and a launchd user-agent does
   not inherit the Terminal's file access. The error in `out/daily/cre-*.err.log`
   is `getcwd ... Operation not permitted` plus `/bin/bash: cre_run_tier.sh:
-  Operation not permitted`. FIX (one-time, user GUI action): System Settings ->
-  Privacy & Security -> Full Disk Access -> add `/bin/bash` (use Cmd+Shift+G to
-  type the path), then `launchctl kickstart -k gui/$(id -u)/ai.agentic.cre-monitor`
-  and re-check `launchctl list | grep ai.agentic.cre` for a 0 in the exit-status
-  column. `chmod +x cre_run_tier.sh` is already applied but is NOT the fix (a
-  `/bin/bash <script>` invocation does not need the execute bit).
+  Operation not permitted`. TWO FIXES: (a, recommended for new machines) clone
+  the repo OUTSIDE `~/Documents` (for example `~/code/firecrawl`) so TCC never
+  applies; `cre_setup.sh` flags whether you are clear. (b, in place) System
+  Settings -> Privacy & Security -> Full Disk Access -> add `/bin/bash` (use
+  Cmd+Shift+G to type the path), then
+  `launchctl kickstart -k gui/$(id -u)/ai.agentic.cre-monitor` and re-check
+  `launchctl list | grep ai.agentic.cre` for a 0 in the exit-status column.
+  `chmod +x cre_run_tier.sh` is already applied but is NOT the fix (a
+  `/bin/bash <script>` invocation does not need the execute bit). Full
+  fresh-machine setup: `SETUP.md`.
 - Do not use `--mark-missing` after a run with Lee or other source errors.
 - Cushman & Wakefield is now current in Supabase from `out/cushman_full_2026-06-12_022841.json`: 11,318 active rows, 18,343 document URL rows, 24,278 image URL rows, 21,110 contact rows, 21,110 profile URLs, and 20,301 VCard URLs. Source-scoped `--mark-missing` soft-deleted 24 old probe rows.
 - CBRE Deal Flow has been ingested from the public RCM endpoint. Do not use its reported 2,042 sale total as collected count; the public card pagination exposed 1,809 sale cards in the full run. A narrow cleanup soft-deleted 21 stale `dealflow:url:<sha1>` rows that duplicated newer enriched Deal Flow IDs.
@@ -268,3 +284,39 @@ images into Supabase storage for the bulk collector.
   ingest batch before parent-level soft deletes can activate.
 - Do not treat legacy `cre_scrapers` active flags as production collector status.
 - Do not stage `node_modules/`, `out/`, `__pycache__/`, or generated SQL artifacts.
+
+## Operational Recovery
+
+Routine recovery for the scheduled tiers. All paths are under
+`scripts/firecrawl-ops/cre_collector/`. Start with `bash cre_status.sh`, which
+names the specific fault (stale schedule, last-run failure, hung/stale lock,
+oversized `out/` footprint, TCC-126 block).
+
+- **Re-kick a missed or failed scheduled run.** launchd does not backfill a
+  skipped fire; force one immediately:
+  ```bash
+  launchctl kickstart -k gui/$(id -u)/ai.agentic.cre-daily     # or cre-monitor
+  ```
+  Then watch `out/daily/cre-daily.out.log` / `out/daily/cre-daily.err.log` and
+  re-run `bash cre_status.sh`. A manual catch-up run from the terminal that
+  takes the same lock is `bash launchd/cre_run_tier.sh daily`.
+- **Clear a wedged lock.** The tiers serialize on the portable `mkdir` lock dir
+  `out/daily/.cre.lock` (plus a transient `out/daily/.cre.lock.reclaim` during
+  stale reclaim). `cre_run_tier.sh` auto-reclaims a lock whose recorded PID is
+  dead, so a wedged lock means the owner is still alive or `cre_status.sh`
+  flagged it "possible hung run". Confirm no live run first
+  (`launchctl list | grep ai.agentic.cre` shows a non-zero PID in column 1, or
+  `ps aux | grep cre_`), then:
+  ```bash
+  rm -rf out/daily/.cre.lock out/daily/.cre.lock.reclaim
+  ```
+  Never remove the lock while a real run is active; it exists to keep the daily
+  additive pass and the weekly `--mark-missing` pass from overlapping.
+- **Reclaim disk.** Both runners self-prune on exit (daily keeps 14
+  `run_*.json` / 29 `run_*.log` / 14 `gate_*.json` under `out/daily/`; the tier
+  dispatcher keeps 24 `monitor_*.json` + 24 `monitor_*.log` under `out/monitor/`
+  and caps the launchd `cre-*.{out,err}.log` files), so growth is bounded
+  without intervention. `cre_status.sh` warns past ~4GB (`out/daily`) / ~8GB
+  (`out/monitor`). If a crash left orphaned artifacts, they are safe to delete
+  manually (`out/` is gitignored); the durable source caches under
+  `out/cache/` are the only artifacts worth preserving for resumable runs.

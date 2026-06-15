@@ -9,11 +9,14 @@ Current state (2026-06-14): monitor and daily tiers are LOADED but BLOCKED. Ever
 ## Folder-Specific Commands
 
 ```bash
-bash launchd/cre_run_tier.sh {monitor|daily|weekly}   # manual; same flock as plists
-launchctl list | grep ai.agentic.cre                  # PID col 1 = running
+bash launchd/install_launchd.sh all                   # render + install plists (gated, NO load)
+bash launchd/install_launchd.sh --load monitor daily  # install + load (when gate met)
+bash launchd/cre_run_tier.sh {monitor|daily|weekly}   # manual; same portable lock as plists
+bash cre_status.sh                                    # read-only run-health heartbeat (preferred)
+launchctl list | grep ai.agentic.cre                  # PID col 1 = running; col 2 = last exit (ephemeral)
 ```
 
-Install/unload: `README.md` (copy to `~/Library/LaunchAgents/`, `launchctl load -w` / `unload`).
+Install/unload: `README.md`. `install_launchd.sh` renders `*.plist.template` per-machine, validates with `plutil`, installs to `~/Library/LaunchAgents/`; `--load` to load, `--uninstall` to remove.
 
 ## Naming Patterns
 
@@ -23,7 +26,9 @@ Install/unload: `README.md` (copy to `~/Library/LaunchAgents/`, `launchctl load 
 
 ## Module Boundaries
 
-Owns macOS schedules, flock serialization, tier dispatch. Delegates collect/ingest to `cre_daily_update.sh` (daily/weekly). Monitor tier: `collect.ts --monitor` (enumeration artifact) then `cre_monitor.py` (observe-only diff; `CRE_MONITOR_APPLY=1` for `--apply`). Plists hardcode this Mac's absolute repo path; update paths if the clone moves.
+Owns macOS schedules, lock serialization (portable atomic `mkdir` lock with PID-based stale recovery; no `flock` dependency, since stock macOS ships none), tier dispatch, and a per-run verdict marker (`out/daily/last_run_<tier>.json`). Delegates collect/ingest to `cre_daily_update.sh` (daily/weekly). Monitor tier: `collect.ts --monitor` (enumeration artifact) then `cre_monitor.py` (observe-only diff; `CRE_MONITOR_APPLY=1` for `--apply`), with both children redirected to a per-run, pruned `out/monitor/monitor_<stamp>.log` (not the append-only launchd redirect, which fires 8x/day). Plists are rendered per-machine from `*.plist.template` by `install_launchd.sh` (tokens for collector path, PATH, optional `CRE_ENV_FILE`); `cre_run_tier.sh` self-locates, so no committed file hardcodes a clone path.
+
+**Disk self-bounds on every run.** `finish()` (EXIT trap, pass or fail) prunes runtime artifacts: keep newest 24 `monitor_*.json` + 24 `monitor_*.log` under `out/monitor/`, and cap each `cre-*.{out,err}.log` at 10MB (`_keep_newest` / `_cap_log`, both space-safe, BSD/GNU `stat` fallback). The lock owner records `<pid> <start-epoch>` so `cre_status.sh` can flag a hung lock (held beyond any real run) or a stale lock (dead PID). No cron cleanup needed.
 
 ## Integration Points
 

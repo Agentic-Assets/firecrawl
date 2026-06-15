@@ -1,0 +1,5 @@
+# Rendered, machine-specific plists are generated from *.plist.template by
+# install_launchd.sh. Only the templates are committed (the source of truth).
+ai.agentic.cre-daily.plist
+ai.agentic.cre-monitor.plist
+ai.agentic.cre-weekly.plist

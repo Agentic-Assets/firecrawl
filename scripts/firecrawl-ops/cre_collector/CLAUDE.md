@@ -30,10 +30,13 @@ Runs entirely against the local self-hosted Firecrawl API.
 | `cre_monitor.py` | Observe-only diff/event runner (007 tables); never writes `status`/`deleted_at` |
 | `cre_gate.py` | Per-source coverage gate (`cre_source_baseline`); emits `mark_missing_safe` rollup |
 | `cre_daily_update.sh` | healthcheck → full collect → ingest → prune `out/daily/` artifacts |
+| `cre_status.sh` | Read-only run-health heartbeat: launchd state, per-tier staleness vs cadence, last-run verdict (from `out/daily/last_run_<tier>.json`), last-ingest counts, `out/` footprint + lock state (hung/stale), stack/env/TCC. Exits nonzero if unhealthy. `--full-health` runs the full healthcheck |
+| `cre_setup.sh` | One-command preflight + bootstrap for a fresh clone (toolchain, deps, env, offline smoke); run first. See `SETUP.md` |
 | `cre_validate.py` | Post-ingest Supabase validation (`npm run validate:supabase`); not in daily script |
 | `run_colliers_main_full.sh` | Resumable colliers-main batch driver (~15,896 URLs) |
-| `launchd/` | macOS tier schedules - see `launchd/CLAUDE.md` |
+| `launchd/` | macOS tier schedules (portable `*.plist.template` + `install_launchd.sh`) - see `launchd/CLAUDE.md` |
 | `tests/` | pytest contracts - see `tests/CLAUDE.md` |
+| `SETUP.md` | Fresh-clone setup runbook (Mac mini production + dev): `cre_setup.sh`, env, launchd generator |
 | `START_HERE.md` | Current status and new-session runbook |
 | `BROKERAGE_STATUS_2026-06-12.md` | Per-broker coverage counts (live) |
 | `HANDOFF_COLLIERS_MAIN_2026-06-13.md` | colliers-main full detail run handoff |
@@ -44,13 +47,15 @@ Runs entirely against the local self-hosted Firecrawl API.
 | `../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` | Monitor run model and operational gotchas |
 | `../../../docs/firecrawl-ops/references/cre-equire-consumer-api.md` | How EQUIRE reads the data |
 | `../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md` | Brokerage upgrade process |
+| `../../../docs/firecrawl-ops/references/cre-cloud-hosting-options-2026-06-14.md` | Where to run the pipeline (cloud vs Mac mini): platform comparison, anti-bot IP risk, recommendation (decision aid, not actioned) |
 | `out/` | Run artifacts (gitignored) |
 
 ## Quick start
 
 ```bash
 cd scripts/firecrawl-ops/cre_collector
-npm install                      # once
+bash cre_setup.sh                # fresh clone: preflight + bootstrap (deps, checks, smoke). See SETUP.md
+npm install                      # once (cre_setup.sh does this for you)
 npm run typecheck                # TypeScript validation
 npm test                         # typecheck + unit tests (lib/, sources/ helpers)
 npm run test:unit                # TypeScript unit tests only
@@ -98,10 +103,13 @@ via psql (`PSQL_BIN`, else `/opt/homebrew/opt/libpq/bin/psql`,
 `/usr/local/opt/libpq/bin/psql`, then `PATH`). Document and image child rows
 store external URLs only.
 
-Credentials: reads `POSTGRES_URL_NON_POOLING` (preferred) or `POSTGRES_URL`
-from `~/Documents/GitHub/agentic-assets/dynamically-display-cre-listing-data/.env.local`
-(fallback `~/Documents/GitHub/agentic-assets/CRE_EQUIRE/.env.local`), or
-`--env-file`. Live runs print only the env file path, never the URL.
+Credentials: reads `POSTGRES_URL_NON_POOLING` (preferred) or `POSTGRES_URL`.
+Discovery order: `--env-file` flag, then `CRE_ENV_FILE` env var, then the
+`~/Documents/GitHub/agentic-assets/dynamically-display-cre-listing-data/.env.local`
+default (fallback `~/Documents/GitHub/agentic-assets/CRE_EQUIRE/.env.local`).
+Set `CRE_ENV_FILE` on any machine where the EQUIRE repo is not at the default
+`~/Documents` path. `cre_monitor.py` and `cre_gate.py` import the same loader.
+Live runs print only the env file path, never the URL.
 
 Key behavior:
 - Dedup key `(brokerage_id, external_id)`; sub-sources fold into the parent
@@ -172,10 +180,12 @@ or view privileges. Consumer API details: `cre-equire-consumer-api.md`.
 ## Daily updates
 
 `cre_daily_update.sh` = healthcheck → full collect (sale+lease, unlimited,
-`CRE_PAGE_CAP` default 400) → ingest → prune (keeps 14 `run_*.json`, 29
-`run_*.log` under `out/daily/`). Script default includes `--mark-missing`;
-use `bash cre_daily_update.sh --no-mark-missing` while partial sources remain
-(colliers-main full run, Savills). See `START_HERE.md` Known Limits.
+`CRE_PAGE_CAP` default 400) → observe-only gate [3/4] → ingest → prune (EXIT
+trap; keeps 14 `run_*.json`, 29 `run_*.log`, 14 `gate_*.json` under
+`out/daily/`). Script default includes `--mark-missing`; use
+`bash cre_daily_update.sh --no-mark-missing` while Savills sale stays
+structurally capped (colliers-main is now complete). See `START_HERE.md` Known
+Limits and Operational Recovery.
 
 Tiered schedules (monitor / daily additive / weekly reconcile):
 `launchd/CLAUDE.md`. Monitor and daily tiers are loaded (2026-06-14) but

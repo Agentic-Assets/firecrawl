@@ -1,18 +1,23 @@
 # CRE Launchd Schedule
 
-Three flock-serialized launchd tiers that automate the CRE listing pipeline.
+Three lock-serialized launchd tiers that automate the CRE listing pipeline.
 All tiers are authored here and gated: **do not load any plist until the
 prerequisite listed for that tier is satisfied.**
 
-> Current state (2026-06-14): the monitor and daily tiers ARE loaded, but both
-> are BLOCKED. Every scheduled fire exits 126 because the repo lives under
-> `~/Documents` (TCC) and the launchd user-agent lacks macOS Full Disk Access,
-> so `/bin/bash` cannot read `cre_run_tier.sh` or `getcwd` the working dir. No
-> scheduled run has succeeded yet; the empty event ledger is a non-signal. The
-> fix is a one-time Full Disk Access grant to `/bin/bash` (System Settings ->
-> Privacy & Security -> Full Disk Access); `chmod +x cre_run_tier.sh` is applied
-> but is NOT the fix. Full steps: `../START_HERE.md` Known Limits. The weekly
+> Current state (2026-06-14): the monitor and daily tiers ARE loaded on this
+> Mac, but both are BLOCKED. Every scheduled fire exits 126 because the repo
+> lives under `~/Documents` (TCC) and the launchd user-agent lacks macOS Full
+> Disk Access, so `/bin/bash` cannot read `cre_run_tier.sh` or `getcwd` the
+> working dir. No scheduled run has succeeded yet; the empty event ledger is a
+> non-signal. Two fixes: clone outside `~/Documents` (recommended), or grant a
+> one-time Full Disk Access to `/bin/bash` (System Settings -> Privacy &
+> Security -> Full Disk Access); `chmod +x cre_run_tier.sh` is NOT the fix.
+> Full steps: `../START_HERE.md` Known Limits and `../SETUP.md`. The weekly
 > `--mark-missing` tier remains intentionally unloaded.
+>
+> Setup is portable: render + install plists per-machine with
+> `install_launchd.sh` (see below). The bare `ai.agentic.cre-*.plist` on this
+> Mac are gitignored local artifacts; the committed source is the templates.
 
 ---
 
@@ -56,7 +61,7 @@ the reference pass for Tier-A change-event emission once the event ledger is
 live.
 
 Gate: safe to load once the daily script is stable and the stack is healthy.
-The shared flock guarantees it will not overlap with an active monitor or
+The shared lock guarantees it will not overlap with an active monitor or
 weekly run. Status (2026-06-14): LOADED with `--no-mark-missing` and status
 activation OFF, but TCC-blocked (exit 126) until the Full Disk Access grant
 above lands.
@@ -84,68 +89,96 @@ active can silently remove live listings. Therefore:
 
 ---
 
-## Shared-flock guarantee
+## Shared-lock guarantee
 
-All three tiers acquire the same exclusive lock before doing any work:
+All three tiers acquire the same exclusive lock before doing any work. The lock
+is a portable atomic `mkdir` (no `flock` dependency, since stock macOS does not
+ship flock) with PID-based stale-lock recovery:
 
 ```
-LOCKFILE=/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock
-exec 9>"$LOCKFILE"
-flock -n 9 || exit 0
+# COLLECTOR_DIR is self-located by cre_run_tier.sh (launchd/..); no hardcoded path.
+LOCKDIR="${COLLECTOR_DIR}/out/daily/.cre.lock"   # a directory, not a file
+mkdir "$LOCKDIR" 2>/dev/null || { still-alive owner? exit 0 : reclaim stale }
+trap 'rm -rf "$LOCKDIR"' EXIT                     # released on any exit
 ```
 
-If a tier is already running the competing tier exits immediately and silently
-(exit 0). launchd sees a clean exit and will not retry until the next
-scheduled interval. This prevents the daily and monitor tiers from overlapping
-mid-run, and prevents the weekly `--mark-missing` pass from starting while an
-additive daily run is still in progress.
+If a tier is already running (the lock dir exists and its recorded PID is still
+alive) the competing tier exits immediately and silently (exit 0). launchd sees
+a clean exit and will not retry until the next scheduled interval. A lock left
+by a crashed run (PID no longer alive) is reclaimed automatically. This prevents
+the daily and monitor tiers from overlapping mid-run, and prevents the weekly
+`--mark-missing` pass from starting while an additive daily run is in progress.
 
-Manual runs of `cre_daily_update.sh` or `cre_run_tier.sh` from the terminal
-also acquire the same lock (they call `cre_run_tier.sh` under the hood or can
-be wrapped with the same flock command), so scheduled and ad-hoc runs
-serialize correctly.
+> History: the lock used to be `flock -n 9`. Because macOS ships no `flock`, the
+> missing binary returned 127 and was misread as "lock held", so every scheduled
+> tier exited 0 without doing any work. The mkdir lock removes that dependency.
+
+Manual runs of `cre_run_tier.sh` from the terminal acquire the same lock, so
+scheduled and ad-hoc runs serialize correctly. (Running `cre_daily_update.sh`
+directly does not take the lock; prefer `cre_run_tier.sh daily` for a locked,
+marker-writing run.)
+
+The lock owner records `<pid> <start-epoch>` in `${LOCKDIR}/pid`, so
+`cre_status.sh` can tell three states apart: no lock held; a live lock held
+beyond any legitimate run length (flagged "possible hung run"); or a stale lock
+whose recorded PID is no longer alive (auto-reclaimed by the next tier, but
+surfaced so you are not surprised). To clear a wedged lock by hand, see
+`../START_HERE.md` Operational Recovery.
 
 ---
 
 ## Install and uninstall (gated)
 
-Read the gate conditions above before loading any plist. When the prerequisites
-are met, install by copying to `~/Library/LaunchAgents/` and loading:
+Plists are portable: the committed source of truth is the three
+**`*.plist.template`** files (path-agnostic tokens), and `install_launchd.sh`
+renders a machine-specific copy, validates it with `plutil`, and installs it.
+Rendered `ai.agentic.cre-*.plist` files are gitignored. The runner
+(`cre_run_tier.sh`) self-locates, so nothing here hardcodes a clone path.
+
+Read the gate conditions above before loading any tier. **Rendering and
+installing never loads a job; loading requires `--load`.**
 
 ```bash
-# monitor (load only after Phase 3 + Tier-1 source proven)
-cp /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector/launchd/ai.agentic.cre-monitor.plist \
-   ~/Library/LaunchAgents/ai.agentic.cre-monitor.plist
-launchctl load -w ~/Library/LaunchAgents/ai.agentic.cre-monitor.plist
+# Render + install all three (NO load), safe anywhere:
+bash install_launchd.sh all
 
-# daily (safe once stack is stable)
-cp /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector/launchd/ai.agentic.cre-daily.plist \
-   ~/Library/LaunchAgents/ai.agentic.cre-daily.plist
-launchctl load -w ~/Library/LaunchAgents/ai.agentic.cre-daily.plist
+# If the EQUIRE .env.local is not at a default ~/Documents path, bake it in:
+bash install_launchd.sh --env-file /path/to/EQUIRE/.env.local all
 
-# weekly (load ONLY after cre_gate.py is live and proven on a Tier-1 source)
-cp /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector/launchd/ai.agentic.cre-weekly.plist \
-   ~/Library/LaunchAgents/ai.agentic.cre-weekly.plist
-launchctl load -w ~/Library/LaunchAgents/ai.agentic.cre-weekly.plist
+# Load the safe tiers when their gate is met (monitor after stack+DB verified,
+# daily once the stack is stable):
+bash install_launchd.sh --load monitor daily
+
+# weekly: load ONLY after cre_gate.py is live and proven on a Tier-1 source:
+bash install_launchd.sh --load weekly
+
+# Preview a rendered plist without installing:
+bash install_launchd.sh --print daily
 ```
 
-Uninstall:
+Uninstall (unload + remove the installed copies; templates are untouched):
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/ai.agentic.cre-monitor.plist
-launchctl unload ~/Library/LaunchAgents/ai.agentic.cre-daily.plist
-launchctl unload ~/Library/LaunchAgents/ai.agentic.cre-weekly.plist
-rm ~/Library/LaunchAgents/ai.agentic.cre-monitor.plist
-rm ~/Library/LaunchAgents/ai.agentic.cre-daily.plist
-rm ~/Library/LaunchAgents/ai.agentic.cre-weekly.plist
+bash install_launchd.sh --uninstall all
 ```
 
-Verify a loaded job:
+Verify run health (preferred): one read-only command summarizes every tier
+(loaded? running? last exit; staleness vs cadence; last-run verdict; stack/env/
+TCC state) and exits nonzero if anything is unhealthy:
+
+```bash
+bash ../cre_status.sh                # offline heartbeat
+bash ../cre_status.sh --full-health  # also runs the full firecrawl healthcheck
+```
+
+Low-level check of a single loaded job:
 
 ```bash
 launchctl list | grep ai.agentic.cre
 # A non-zero PID in column 1 means the job is running now.
-# Exit code 0 in column 2 means the last run succeeded.
+# Column 2 is the LAST run's exit code (0 = success, 126 = TCC block). It is
+# ephemeral (reset on reboot/reload) and says nothing about WHEN the job last
+# ran, which is why cre_status.sh adds the staleness and last-run-verdict checks.
 ```
 
 ---
@@ -162,4 +195,22 @@ run logs:
 | weekly  | `out/daily/cre-weekly.out.log`  | `out/daily/cre-weekly.err.log`  |
 
 Each run also emits a timestamped START/END line via `cre_run_tier.sh` so you
-can grep for the exact wall-clock boundaries of any tier run.
+can grep for the exact wall-clock boundaries of any tier run, and writes a
+machine-readable verdict to `out/daily/last_run_<tier>.json`
+(`{tier,start,end,rc,ok}`) that `cre_status.sh` reads.
+
+The monitor tier additionally redirects its heavy child output (`collect.ts
+--monitor` + `cre_monitor.py`) to a **per-run** log
+`out/monitor/monitor_<stamp>.log` beside its `monitor_<stamp>.json` artifact,
+rather than to the append-only launchd redirect file. This matters because the
+monitor fires 8x/day and each enumeration artifact is large; left unbounded it
+would fill the disk in weeks.
+
+**Disk is self-bounding.** On every real run (pass or fail), `cre_run_tier.sh`
+`finish()` prunes runtime artifacts: it keeps the newest 24 `monitor_*.json` and
+24 `monitor_*.log` under `out/monitor/` (~3 days) and caps each append-only
+`cre-*.{out,err}.log` at 10 MB (trimming to the last half from the next fire on).
+The daily script prunes its own `out/daily/` artifacts separately (14
+`run_*.json`, 29 `run_*.log`, 14 `gate_*.json`). No cron or manual cleanup is
+needed; `cre_status.sh` still warns if the footprint grows past ~4GB
+(`out/daily`) / ~8GB (`out/monitor`) as a backstop.

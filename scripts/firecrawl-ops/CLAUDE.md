@@ -20,7 +20,8 @@ Do not commit secrets, local artifacts, `out/`, `node_modules/`,
 
 ## Start Here
 
-For CRE listing work, read in order:
+For CRE listing work, read in order (fresh machine? `cre_collector/SETUP.md`
+first and run `bash cre_collector/cre_setup.sh`):
 
 1. `cre_collector/START_HERE.md`
 2. `cre_collector/CLAUDE.md`
@@ -31,6 +32,7 @@ For CRE listing work, read in order:
 7. `../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` (monitor run model + gotchas)
 8. `../../docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md` (Phase-2 status activation board impact)
 9. `cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` (monitor hardening, modular refactor, first `--apply` seed)
+10. `../../docs/firecrawl-ops/references/cre-cloud-hosting-options-2026-06-14.md` (where to run the pipeline: cloud vs Mac mini, platform comparison, anti-bot IP risk; decision aid, not actioned)
 
 For local Firecrawl stack work, read:
 

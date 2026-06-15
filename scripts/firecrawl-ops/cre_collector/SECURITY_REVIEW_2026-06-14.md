@@ -124,7 +124,9 @@ Verification.
   - `tests/test_ingest_status_activation.py::test_build_sql_pins_standard_conforming_strings`
   - `tests/test_monitor_events.py::test_build_write_sql_pins_standard_conforming_strings`
   - `tests/test_gate.py::TestMonitorSQLSafetyAssertion::test_sql_pins_standard_conforming_strings`
-- Full Python suite: 264 passed (261 baseline plus 3 new).
+- Full Python suite: 264 passed (261 baseline plus 3 new) at the time of this
+  review. The suite has since grown to 277 (env-discovery and shell-syntax
+  guards added); this 264 figure is the point-in-time count for this change set.
 - `py_compile` clean on all three source files.
 - The existing observe only SQL safety greps are unaffected: the added line
   contains no `status` or `deleted_at` substring and no `INSERT INTO`.

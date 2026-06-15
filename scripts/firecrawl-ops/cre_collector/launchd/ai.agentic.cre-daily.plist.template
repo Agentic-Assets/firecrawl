@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ai.agentic.cre-daily.plist (TEMPLATE)
+  CRE daily full-reconcile tier - runs at 06:30 local time every day.
+  Runs cre_run_tier.sh daily, which invokes cre_daily_update.sh --no-mark-missing.
+  The shared portable mkdir lock in cre_run_tier.sh (no flock dependency) prevents
+  this from overlapping with the monitor or weekly tiers.
+
+  This is a TEMPLATE. Do not load it directly. Render a machine-specific copy
+  with launchd/install_launchd.sh, which fills in this machine's collector path,
+  PATH, and optional CRE_ENV_FILE. See launchd/README.md for gated install.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.agentic.cre-daily</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__COLLECTOR_DIR__/launchd/cre_run_tier.sh</string>
+        <string>daily</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__COLLECTOR_DIR__</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__COLLECTOR_DIR__/out/daily/cre-daily.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__COLLECTOR_DIR__/out/daily/cre-daily.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__BIN_PATH__</string>__ENV_EXTRA__
+    </dict>
+</dict>
+</plist>

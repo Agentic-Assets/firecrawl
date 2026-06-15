@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  ai.agentic.cre-monitor.plist
-  CRE monitor tier — cheap enumeration diff every 3 hours at :15.
-  Runs cre_run_tier.sh monitor, which is guarded: if cre_monitor.py does not
-  yet exist the script exits cleanly with a "not yet implemented" message.
+  ai.agentic.cre-monitor.plist (TEMPLATE)
+  CRE monitor tier - cheap enumeration diff every 3 hours at :15.
+  Runs cre_run_tier.sh monitor (collect.ts --monitor then cre_monitor.py).
+  CRE_MONITOR_APPLY=1 enables observe-only change-event recording (007 tables
+  only; never cre_listings.status/deleted_at).
 
-  STATUS 2026-06-14: AUTHORIZED and loaded. Monitor runner proven on the
-  all-source observe-only seed; CRE_MONITOR_APPLY=1 enables change-event
-  recording (007 tables only; never cre_listings.status/deleted_at).
-  See launchd/README.md for install/unload instructions.
+  This is a TEMPLATE. Do not load it directly. Render a machine-specific copy
+  with launchd/install_launchd.sh, which fills in this machine's collector path,
+  PATH, and optional CRE_ENV_FILE. See launchd/README.md for gated install.
 -->
 <plist version="1.0">
 <dict>
@@ -19,12 +19,12 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector/launchd/cre_run_tier.sh</string>
+        <string>__COLLECTOR_DIR__/launchd/cre_run_tier.sh</string>
         <string>monitor</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector</string>
+    <string>__COLLECTOR_DIR__</string>
 
     <!--
       Every 3 hours at minute 15.  launchd has no native "every N hours"
@@ -86,21 +86,20 @@
     <false/>
 
     <key>StandardOutPath</key>
-    <string>/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector/out/daily/cre-monitor.out.log</string>
+    <string>__COLLECTOR_DIR__/out/daily/cre-monitor.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector/out/daily/cre-monitor.err.log</string>
+    <string>__COLLECTOR_DIR__/out/daily/cre-monitor.err.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin</string>
-        <!-- Authorized 2026-06-14: enable observe-only change-event recording.
-             cre_monitor.py --apply writes ONLY the 007 tables (events / source_index /
-             enrichment_queue) and neutral source_lastmod / canonical_key; it never
-             writes cre_listings.status or deleted_at. -->
+        <string>__BIN_PATH__</string>
+        <!-- Observe-only change-event recording. cre_monitor.py --apply writes
+             ONLY the 007 tables (events / source_index / enrichment_queue) and
+             neutral source_lastmod / canonical_key; never status or deleted_at. -->
         <key>CRE_MONITOR_APPLY</key>
-        <string>1</string>
+        <string>1</string>__ENV_EXTRA__
     </dict>
 </dict>
 </plist>

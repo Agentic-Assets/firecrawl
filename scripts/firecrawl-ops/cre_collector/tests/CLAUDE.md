@@ -20,9 +20,10 @@ python3 -m pytest tests/test_norm_status_canonical_and_guards.py -q   # portable
 ```
 
 Requires `pytest` on the host (not pinned in `package.json`). Full suite:
-**261** pytest pass as of 2026-06-14 (`python3 -m pytest tests/ -q`); the count
-includes parametrized and data-driven cases, so re-run to confirm rather than
-counting `def test_`.
+**290** pytest pass as of 2026-06-14 (`python3 -m pytest tests/ -q`); the count
+includes parametrized and data-driven cases (the shell-syntax guard is
+parametrized over every `*.sh` in the collector, so adding a script raises the
+count), so re-run to confirm rather than counting `def test_`.
 
 **TypeScript (collector helpers, adapters):**
 
@@ -48,6 +49,10 @@ Add files as `tests/ts/*.test.ts` or `tests/ts/**/*.test.ts`. See `tests/ts/READ
 | `test_norm_status_canonical_and_guards.py` | `_canonical_key`, word-boundary guards, source-classification completeness; no `out/` dependency |
 | `test_enum_key_invariant.py` | Enumeration id equals ingest `external_id` for every `SOURCE_TO_BROKERAGE` key |
 | `test_ingest_status_activation.py` | OPT-IN status activation: `_status_activation_enabled()`, `apply_status_activation_gate()`, default-off no-op, terminal-stickiness guard |
+| `test_env_discovery.py` | `load_db_url` env-file precedence (`--env-file` > `CRE_ENV_FILE` > `~/Documents` defaults), `~` expansion, non-pooling preferred, missing-everywhere exits |
+| `test_shell_scripts_syntax.py` | `bash -n` syntax guard over every `*.sh` in the collector (cre_status, cre_run_tier, cre_daily_update, cre_setup, install_launchd, ...); skips if bash absent |
+| `test_daily_scripts.py` | Disk-management shell helpers: extracts and runs `prune_keep` (cre_daily_update.sh) and `_keep_newest` (cre_run_tier.sh) in a tmp dir; asserts newest-N retention, no-op under threshold, space-safe `OUT_DIR`, and that the `run_*.json` glob spares `last_run_<tier>.json` markers; skips if bash absent |
+| `test_ingest_mark_missing.py` | Folded-coverage `--mark-missing` guard via `cre_ingest.py --dry-run --keep-artifacts` (no DB): parent soft-deletes hold until every sub-source is present (`cbre`+`cbre-dealflow`), fire for complete coverage and singletons (`svn`), and stay blocked when a sub-source pass errored |
 
 `conftest.py` prepends parent `cre_collector/` to `sys.path` (no package install).
 

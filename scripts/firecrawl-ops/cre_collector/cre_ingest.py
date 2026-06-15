@@ -44,6 +44,10 @@ from datetime import datetime, timezone
 # Configuration
 # ---------------------------------------------------------------------------
 
+# Default search paths for the EQUIRE env file that holds POSTGRES_URL*.
+# These assume the standard ~/Documents layout. On any other machine (or when
+# the EQUIRE repo lives elsewhere), set CRE_ENV_FILE or pass --env-file instead
+# of editing this list; both are tried before these defaults (see load_db_url).
 ENV_FILE_CANDIDATES = [
     "~/Documents/GitHub/agentic-assets/dynamically-display-cre-listing-data/.env.local",
     "~/Documents/GitHub/agentic-assets/CRE_EQUIRE/.env.local",
@@ -1141,7 +1145,18 @@ def sql_lit(s):
 
 
 def load_db_url(env_file):
-    candidates = [env_file] if env_file else [os.path.expanduser(p) for p in ENV_FILE_CANDIDATES]
+    if env_file:
+        # Expand ~ for parity with the CRE_ENV_FILE / defaults branches below,
+        # so a --env-file value that was not shell-expanded still resolves.
+        candidates = [os.path.expanduser(env_file)]
+    else:
+        # CRE_ENV_FILE (if set) takes precedence over the hardcoded ~/Documents
+        # defaults so the pipeline is portable to any clone location / machine.
+        candidates = []
+        env_override = os.environ.get("CRE_ENV_FILE")
+        if env_override:
+            candidates.append(os.path.expanduser(env_override))
+        candidates.extend(os.path.expanduser(p) for p in ENV_FILE_CANDIDATES)
     for path in candidates:
         if not path or not os.path.isfile(path):
             continue
@@ -1157,8 +1172,8 @@ def load_db_url(env_file):
         if url:
             return url, path
     sys.exit(
-        "No POSTGRES_URL_NON_POOLING/POSTGRES_URL found. Pass --env-file "
-        "pointing at an env file that has one (values are never printed)."
+        "No POSTGRES_URL_NON_POOLING/POSTGRES_URL found. Set CRE_ENV_FILE or pass "
+        "--env-file pointing at an env file that has one (values are never printed)."
     )
 
 

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  ai.agentic.cre-weekly.plist
-  CRE weekly completeness-backstop tier — runs Sunday at 03:00 local time.
+  ai.agentic.cre-weekly.plist (TEMPLATE)
+  CRE weekly completeness-backstop tier - runs Sunday at 03:00 local time.
   Runs cre_run_tier.sh weekly, which invokes cre_daily_update.sh --mark-missing.
 
   CRITICAL: This is the ONLY tier permitted to pass --mark-missing and
@@ -10,9 +10,9 @@
   only be loaded after the runner is proven on at least one Tier-1 source
   AND after cre_gate.py is live and gating mark-missing eligibility.
 
-  The shared flock in cre_run_tier.sh prevents overlap with monitor/daily.
-
-  NOTE: See launchd/README.md for gated install instructions.
+  This is a TEMPLATE. Do not load it directly. Render a machine-specific copy
+  with launchd/install_launchd.sh, which fills in this machine's collector path,
+  PATH, and optional CRE_ENV_FILE. See launchd/README.md for gated install.
 -->
 <plist version="1.0">
 <dict>
@@ -22,12 +22,12 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector/launchd/cre_run_tier.sh</string>
+        <string>__COLLECTOR_DIR__/launchd/cre_run_tier.sh</string>
         <string>weekly</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector</string>
+    <string>__COLLECTOR_DIR__</string>
 
     <!-- Sunday (Weekday 0) at 03:00 -->
     <key>StartCalendarInterval</key>
@@ -44,15 +44,15 @@
     <false/>
 
     <key>StandardOutPath</key>
-    <string>/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector/out/daily/cre-weekly.out.log</string>
+    <string>__COLLECTOR_DIR__/out/daily/cre-weekly.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector/out/daily/cre-weekly.err.log</string>
+    <string>__COLLECTOR_DIR__/out/daily/cre-weekly.err.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>__BIN_PATH__</string>__ENV_EXTRA__
     </dict>
 </dict>
 </plist>
