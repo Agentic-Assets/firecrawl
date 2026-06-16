@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 # imports these symbols; it never re-derives ids or re-implements status logic.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cre_ingest import (  # noqa: E402
-    SOURCE_TO_BROKERAGE,
+    SOURCE_TO_BROKERAGE,  # noqa: F401  re-exported for tests / other modules
     STATUS_SOURCE_PATHS,
     _STATUS_BOOL_PATHS,
     _TERMINAL_STATUSES,
@@ -70,7 +70,7 @@ from cre_ingest import (  # noqa: E402
     load_db_url,
     merge_rows,
     norm_status,
-    parse_source_lastmod,
+    parse_source_lastmod,  # noqa: F401  re-exported for tests / other modules
     sql_lit,
     to_row,
 )

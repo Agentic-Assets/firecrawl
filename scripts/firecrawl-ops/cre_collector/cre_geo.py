@@ -216,7 +216,6 @@ def derive_geo(listing_or_row, crosswalk):
 
     src_county = _get("county")
     src_submarket = _get("submarket")
-    src_market = _get("market")
 
     # ---- 1. Source-verbatim ----
     if src_county:
@@ -234,8 +233,8 @@ def derive_geo(listing_or_row, crosswalk):
             if cw_rec:
                 cbsa_code = cw_rec.get("cbsa_code")
                 cbsa_name = cw_rec.get("cbsa_name")
-        # Market: keep source value; fall back to cbsa_name (COALESCE-keep).
-        market = src_market or cbsa_name
+        # market/submarket are source-authoritative (not geo-derived here); the
+        # backfill SQL writes only the county/CBSA/geo_source columns.
         return src_county, cbsa_code, cbsa_name, src_submarket, "source"
 
     # ---- 2. ZIP crosswalk ----
@@ -244,7 +243,6 @@ def derive_geo(listing_or_row, crosswalk):
         rec = crosswalk.by_zip(postal)
         if rec:
             cbsa_name = rec.get("cbsa_name")
-            # market: keep source value; fall back to cbsa_name.
             return (
                 rec.get("county"),
                 rec.get("cbsa_code"),

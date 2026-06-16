@@ -336,11 +336,15 @@ def _psql_query(db_url, sql):
     """Run one statement-set and return the RETURNING tuples as a list of tuples.
 
     Uses -tA -F$'\\t' so NULL renders as an empty field (mirrors
-    cre_monitor._psql_read). Never prints the DB url.
+    cre_monitor._psql_read). SQL is fed on STDIN via `-f -` (not `-c`): the claim
+    script carries a psql meta-command head (`\\set ON_ERROR_STOP on`) plus a
+    BEGIN/COMMIT block, and `-c` does not process backslash meta-commands (it
+    mis-parses the script). Never prints the DB url.
     """
     psql = find_psql()
     proc = subprocess.run(
-        [psql, db_url, "-tA", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-c", sql],
+        [psql, db_url, "-q", "-tA", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-f", "-"],
+        input=sql,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     if proc.returncode != 0:
@@ -354,11 +358,18 @@ def _psql_query(db_url, sql):
 
 
 def _psql_exec(db_url, sql):
-    """Run one transaction script via psql -f. Never prints the DB url."""
+    """Run one transaction script on STDIN via psql -f -. Never prints the DB url.
+
+    The scripts carry a psql meta-command head (`\\set ON_ERROR_STOP on`) plus a
+    BEGIN/COMMIT block, so they must be fed on stdin (`-f -`), NOT `-c`: `-c` does
+    not process backslash meta-commands and mis-parses the script (the `\\set`
+    swallows the rest as its value). `-q` suppresses command-status tags.
+    """
     psql = find_psql()
     proc = subprocess.run(
-        [psql, db_url, "-q", "-v", "ON_ERROR_STOP=1", "-c", sql],
-        stdout=sys.stderr, stderr=sys.stderr,
+        [psql, db_url, "-q", "-v", "ON_ERROR_STOP=1", "-f", "-"],
+        input=sql,
+        stdout=sys.stderr, stderr=sys.stderr, text=True,
     )
     if proc.returncode != 0:
         sys.exit(f"psql exec failed ({proc.returncode})")

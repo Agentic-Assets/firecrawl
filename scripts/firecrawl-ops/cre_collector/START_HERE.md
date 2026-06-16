@@ -1,5 +1,35 @@
 # CRE Collector Start Here
 
+**2026-06-15 (Phase-2 data-lift LIVE).** DDL `011` -> `012` -> `013` -> `014`
+applied to prod (project `fhqycqubkkrdgzswccwd`, schema `credeals`) in order via
+psql (non-pooling, `ON_ERROR_STOP`): `011` added `cre_listing_media` +
+`cre_listing_links` (+ archive mirrors) and the widening
+`cre_listing_documents.doc_type` CHECK rebuild (adds `financials`, `rent_roll`);
+`012` added institutional + geo scalar columns (incl. `cbsa_code`, `cbsa_name`,
+`geo_source`, `extra_facts`) on `cre_listings` plus `license` on
+`cre_listing_contacts`; `013` added `cre_listing_om_facts`; `014` added the
+`cre_zip_cbsa_crosswalk` reference table. `cre_zip_cbsa_crosswalk` LOADED (33,791
+rows; 24,734 with a CBSA, 0 NULL centroids). The three additive backfills then
+ran (all COALESCE-keep, status never touched): `cre_backfill_raw_data.py --apply`
+filled active-row coverage canonical_url 0 -> 87,324, cap_rate 2,235, submarket
+12,465, building_class 9,138, property_subtype 8,330, year_built 13,031, plus
+M&M tenant_name 823 / guarantor 833 / grm 624 (0 decode failures on all 87,328
+rows); `om_classify_existing.py --apply` upgraded 14,087 of 70,414 brochure rows
+(flyer 11,416, floor_plan 1,843, om 791, financials 37; upgrade-only);
+`cre_geo_backfill.py --apply` derived 85,618 of 87,328 rows (county 85,618,
+cbsa_code/cbsa_name 83,815, geo_source 85,618; crosswalk_zip 77,499, source
+4,368, crosswalk_latlng 3,751, 1,710 no hit). Board UNCHANGED at **87,328 active**
+(0 non-active, 92,699 total); status was NEVER touched (activation stays OPT-IN
+default-off). Consumer views resolve unchanged (`v_cre_active_for_sale` 33,824,
+`v_cre_active_for_lease` 58,727, `v_cre_listings_full` 87,328).
+`cre_listing_om_facts`, `cre_listing_media`, and `cre_listing_links` stay EMPTY.
+738 pytest pass (code unchanged this session). STILL GATED for separate
+go-ahead: OM-parse (`om_parse.py`), live status activation, the consumer
+board-gate deploy + widened `005`/`006` views, the media backfill
+(`backfill_media_from_raw_data.py`; no longer DDL-blocked now that `011` is
+applied), `sql/010` + the enrichment-cadence cutover, and the weekly
+mark-missing soft-delete escalation.
+
 **2026-06-14 (data + automation completion).** `colliers-main` full run COMPLETE
 and ingested additively: **15,829 active** (5,750 sale + 8,897 lease + 1,182
 sale_or_lease), 0 soft-deleted, 0 duplicate external_ids. Live board now
@@ -292,14 +322,19 @@ images into Supabase storage for the bulk collector.
   For parent slugs with sub-sources, such as `cbre` plus `cbre-dealflow` or
   `jll` plus `jll-investor`, all known source keys must be present in the same
   ingest batch before parent-level soft deletes can activate.
-- **New additive migrations (2026-06-15) must be applied to prod before history
-  activates.** Migration `009_cre_history_retention.sql` adds
+- **Additive migrations (2026-06-15) are APPLIED to prod; history is live.**
+  Migration `009_cre_history_retention.sql` (APPLIED 2026-06-15, verified) added
   `cre_listing_price_history`, `cre_listing_contacts_archive`,
   `cre_listing_documents_archive`, three `prior_*` columns on `cre_source_index`,
-  and the `trg_cre_listings_block_history_delete` retention trigger. All
-  existence-guarded: the ingestor is a no-op on the new tables until 009 is
-  applied. Apply via `000_run_all.sql` (idempotent). Do NOT apply without
-  explicit go-ahead.
+  and the `trg_cre_listings_block_history_delete` retention trigger; the ingestor
+  writes price-history snapshots on watched-field changes (existence guards keep
+  it safe regardless). Migrations `011`/`012`/`013`/`014` are ALSO applied to
+  prod (2026-06-15): `011` media/links tables + widened `doc_type` CHECK, `012`
+  institutional + geo columns, `013` `cre_listing_om_facts`, `014`
+  `cre_zip_cbsa_crosswalk` (33,791 rows). The three additive backfills
+  (`cre_backfill_raw_data.py`, `om_classify_existing.py`, `cre_geo_backfill.py`)
+  also ran `--apply`, all COALESCE-keep, board unchanged at 87,328 active. See
+  the 2026-06-15 banner at the top of this file.
 - **Weekly mark-missing, status-activation go-live, and the consumer board-gate
   deploy remain GATED for explicit go-ahead.** Do not pass `--activate-status`,
   enable the `CRE_WEEKLY_MARK_MISSING=1` soft-delete escalation on the weekly

@@ -196,10 +196,12 @@ check for disappearance-only sources in `cre_status.sh` (H3);
 `CRE_STATUS_FLIP_MAX_FRACTION=0.30` added to daily + weekly plist templates
 (L4b). New migration `009_cre_history_retention.sql` adds the history + archive
 tables and the `trg_cre_listings_block_history_delete` retention trigger
-(registered in `000_run_all.sql`). NOTED STALE ASSERTION: one existing test in
-`test_ingest_status_activation.py` asserts the old unconditional revival CASE
-form; update that assertion before merging.
-Still gated for go-ahead: apply `009_cre_history_retention.sql` to prod;
+(registered in `000_run_all.sql`). RESOLVED: the `test_ingest_status_activation.py`
+revival assertion now asserts the M5 guarded-revival CASE (and that the old
+unconditional form is gone) and passes against current `cre_ingest.py`.
+`009_cre_history_retention.sql` is APPLIED to prod (2026-06-15, verified live:
+price-history + archive tables, `prior_*` columns, and the retention trigger all
+present; history rows are being written). Still gated for go-ahead:
 deploy the consumer board-gate branch (must precede live T3.1 activation);
 trigger first live status activation; apply the widened `005` views (live DDL,
 alongside the consumer deploy). Tier-B `cre_enrichment_queue` worker

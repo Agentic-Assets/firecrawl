@@ -20,10 +20,25 @@ python3 -m pytest tests/test_norm_status_canonical_and_guards.py -q   # portable
 ```
 
 Requires `pytest` on the host (not pinned in `package.json`). Full suite:
-**290** pytest pass as of 2026-06-14 (`python3 -m pytest tests/ -q`); the count
+**1384** pytest pass as of 2026-06-15 (`python3 -m pytest tests/ -q`); the count
 includes parametrized and data-driven cases (the shell-syntax guard is
 parametrized over every `*.sh` in the collector, so adding a script raises the
 count), so re-run to confirm rather than counting `def test_`.
+
+**Coverage push (2026-06-15):** a comprehensive unit-test pass lifted production
+coverage across the collector (measure with `pytest --cov=. --cov-report=term-missing
+--cov-config=/dev/null`, coverage tooling in a throwaway venv). Per-module after:
+`cre_validate` 99%, `om_classify_existing` 99%, `cre_geo`/`cre_parse`/`om_url_resolver`
+100%, `cre_gate` 96%, `cre_enrich` 96% (all three `\set`/`-f -`/`-q`/`text=True` psql
+fixes now regression-guarded in `test_cre_enrich_psql.py`), `om_parse` 92%,
+`cre_geo_backfill` 87%, `cre_ingest` 81%, `cre_monitor` 77%, the two backfills
+pure-logic 100%. Remaining gaps are the live-psql `main()` / network I/O boundary
+and `__main__` guards (intentionally not mocked, per the no-network rule). New test
+files: `test_cre_validate.py`, `test_cre_geo_backfill.py`, `test_cre_enrich_psql.py`,
+`test_om_parse_sql.py`, `test_om_classify_existing.py`, `test_cre_gate_decisions.py`,
+`test_cre_monitor_gaps.py`, `test_cre_ingest_builders.py`, `test_cre_ingest_history.py`,
+`test_cre_backfill_raw_data_more.py`, `test_backfill_media_more.py`,
+`test_cre_parse_more.py`, `test_om_url_resolver_more.py`, `test_cre_geo_more.py`.
 
 **TypeScript (collector helpers, adapters):**
 
@@ -53,6 +68,14 @@ Add files as `tests/ts/*.test.ts` or `tests/ts/**/*.test.ts`. See `tests/ts/READ
 | `test_shell_scripts_syntax.py` | `bash -n` syntax guard over every `*.sh` in the collector (cre_status, cre_run_tier, cre_daily_update, cre_setup, install_launchd, ...); skips if bash absent |
 | `test_daily_scripts.py` | Disk-management shell helpers: extracts and runs `prune_keep` (cre_daily_update.sh) and `_keep_newest` (cre_run_tier.sh) in a tmp dir; asserts newest-N retention, no-op under threshold, space-safe `OUT_DIR`, and that the `run_*.json` glob spares `last_run_<tier>.json` markers; skips if bash absent |
 | `test_ingest_mark_missing.py` | Folded-coverage `--mark-missing` guard via `cre_ingest.py --dry-run --keep-artifacts` (no DB): parent soft-deletes hold until every sub-source is present (`cbre`+`cbre-dealflow`), fire for complete coverage and singletons (`svn`), and stay blocked when a sub-source pass errored |
+
+The table above lists the foundational contract tests. The data-lift and
+freshness/history sessions added ~21 more `test_*.py` files (raw-data / media /
+geo backfills, OM parse + enrich, price-history, archive-on-retirement,
+dq-guards, transaction-type, revival stickiness, etc.) and the coverage push
+added 14 more (see the paragraph above); `HANDOFF_DATA_LIFT_2026-06-15.md`
+section 5 has the full list. Run `python3 -m pytest tests/ -q` for the
+authoritative current set rather than trusting this table.
 
 `conftest.py` prepends parent `cre_collector/` to `sys.path` (no package install).
 
@@ -88,8 +111,13 @@ should import those modules directly, not `config.ts` or `collect.ts`.
 | `sources/cushman-wakefield.test.ts` | URL canonicalization, asset dedupe, markdown/numeric parsers, contacts |
 | `sources/avison-young.test.ts` | SharpLaunch CDN/URL, transaction classification, detail extraction |
 | `sources/nai-global.test.ts` | Infabode location, price/size/status, `naiListingFromFeed` |
+| `lib/enrich.test.ts` | batch claim SQL, URL-keyed completion, dead-letter filtering |
+| `lib/geo.test.ts` | `ZipCbsaCrosswalk` (by_zip/by_latlng), `derive_geo` precedence |
+| `lib/harvest.test.ts` | media/link harvesting helpers |
+| `lib/parse.test.ts` | `parseLeaseRate`, `parseMoney`, `classify_doc` golden-vector parity |
+| `sources/savills-commercial.test.ts` | `savillsSaleCardIsCommercial`, `mapSavillsLeaseRow`, `savillsTotalItems` |
 
-Full suite: ~**157** TypeScript unit tests (`npm run test:unit`); re-run to
+Full suite: ~**468** TypeScript unit tests (`npm run test:unit`); re-run to
 confirm the exact count rather than trusting this figure.
 
 **Argv isolation:** source adapters import `lib/config.ts`; trim `process.argv` to

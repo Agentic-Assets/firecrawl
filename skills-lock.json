@@ -1,6 +1,18 @@
 {
   "version": 1,
   "skills": {
+    "pytest-coverage": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "skillPath": "skills/pytest-coverage/SKILL.md",
+      "computedHash": "06481f4bbc6d80a52091ec9ba5856eb1dc5f80cbabb40fd4ad02aaea3085a0dc"
+    },
+    "pytest-patterns": {
+      "source": "manutej/luxor-claude-marketplace",
+      "sourceType": "github",
+      "skillPath": "plugins/luxor-testing-essentials/skills/pytest-patterns/SKILL.md",
+      "computedHash": "730a64a00c96e7956bbc4228423ba38fa7797079b410970577e87b27a5348c85"
+    },
     "ruff": {
       "source": "astral-sh/claude-code-plugins",
       "sourceType": "github",

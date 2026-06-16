@@ -67,7 +67,8 @@
       "Bash(ps -o etime= -p 45208)",
       "Bash(python3 -m py_compile cre_parse.py cre_ingest.py)",
       "Bash(cat)",
-      "Bash(/tmp/pgvalidate_venv/bin/python3 /tmp/validate_runall.py)"
+      "Bash(/tmp/pgvalidate_venv/bin/python3 /tmp/validate_runall.py)",
+      "Bash(cp -r /Users/caymanseagraves/Github/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector _mut)"
     ],
     "deny": [
       "Bash(rm -rf /:*)",

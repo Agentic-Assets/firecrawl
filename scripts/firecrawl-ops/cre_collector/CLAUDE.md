@@ -34,7 +34,7 @@ Runs entirely against the local self-hosted Firecrawl API.
 | `cre_status.sh` | Read-only run-health heartbeat: launchd state, per-tier staleness vs cadence, last-run verdict (from `out/daily/last_run_<tier>.json`), last-ingest counts, `out/` footprint + lock state (hung/stale), stack/env/TCC. Exits nonzero if unhealthy. `--full-health` runs the full healthcheck |
 | `cre_setup.sh` | One-command preflight + bootstrap for a fresh clone (toolchain, deps, env, offline smoke); run first. See `SETUP.md` |
 | `cre_validate.py` | Post-ingest Supabase validation (`npm run validate:supabase`); not in daily script |
-| `backfill_media_from_raw_data.py` | One-time additive lift of media/docs already stranded in `raw_data` into `cre_listing_media`/`cre_listing_links`/`cre_listing_documents`; `--dry-run` default, `--apply` gated (needs `011` applied). See `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` |
+| `backfill_media_from_raw_data.py` | One-time additive lift of media/docs already stranded in `raw_data` into `cre_listing_media`/`cre_listing_links`/`cre_listing_documents`; `--dry-run` default, `--apply` gated on go-ahead; `011` DDL now applied 2026-06-15 (only the media backfill RUN remains gated). See `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` |
 | `run_colliers_main_full.sh` | Resumable colliers-main batch driver (~15,896 URLs) |
 | `launchd/` | macOS tier schedules (portable `*.plist.template` + `install_launchd.sh`) - see `launchd/CLAUDE.md` |
 | `tests/` | pytest contracts - see `tests/CLAUDE.md` |
@@ -181,6 +181,12 @@ Date semantics (ingest scope):
 Supabase access: `credeals.cre_*` tables and `v_cre_*` views are service-role
 only. Read `archive/SUPABASE_SECURITY_NOTE_2026-06-12.md` before changing grants
 or view privileges. Consumer API details: `cre-equire-consumer-api.md`.
+
+Phase-2 data-lift applied to prod 2026-06-15 (all additive, board-unchanged):
+DDL `011`-`014` (media/links tables, institutional + geo columns, OM-facts and
+zip/CBSA crosswalk tables) plus three additive backfills (`cre_backfill_raw_data`,
+`om_classify_existing`, `cre_geo_backfill`); `status` was never touched. Live
+coverage figures: `START_HERE.md`.
 
 ## Monitor mode (hard rules)
 

@@ -383,7 +383,6 @@ def main():
     quiet = args.quiet
     # --dry-run always wins: an explicit dry run never opens a DB connection.
     live = (args.apply or args.live) and not args.dry_run
-    dry_run = not live
 
     for path in args.inputs:
         if not os.path.isfile(path):

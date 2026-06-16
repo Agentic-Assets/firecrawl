@@ -500,6 +500,15 @@ documents into `cre_listing_contacts_archive` and
 (not only departures from `active`), with a terminal-progression exemption.
 Assertion in `tests/test_disappeared_event_on_mark_missing.py`.
 
+> **ERRATUM (2026-06-16):** `009_cre_history_retention.sql` has since been
+> APPLIED to prod and verified live (`cre_listing_price_history`,
+> `cre_listing_contacts_archive`, `cre_listing_documents_archive`, the three
+> `prior_*` columns, and `trg_cre_listings_block_history_delete` are all present;
+> price-history rows are being written). The "NOT YET APPLIED to prod (gated)"
+> notes in H4a / H4b / M2 / L2 below reflect this doc's 2026-06-15 authoring time
+> and are superseded. Current live status of record: `../sql/CLAUDE.md` and
+> `START_HERE.md`.
+
 **H4a-table (cre_listing_price_history)** - SHIPPED in
 `sql/009_cre_history_retention.sql`. Table with 10-column contract
 (`listing_id, observed_at, sale_price_usd, sale_price_per_sf, lease_rate_min,
@@ -596,9 +605,9 @@ queue drain remains out of scope.
 
 The following remain unchanged and require Cayman's go-ahead before actioning:
 
-- Apply `009_cre_history_retention.sql` to prod (all new tables / columns /
-  trigger become live). Must precede any history writes, but the ingestor runs
-  safely before apply via the existence guard.
+- ~~Apply `009_cre_history_retention.sql` to prod~~ **DONE** (applied + verified
+  2026-06-16; all new tables / columns / trigger are live and history writes are
+  active). The ingestor's existence guard kept pre-apply runs safe.
 - Deploy the EQUIRE consumer board-gate branch (must precede T3.1 status
   activation).
 - Trigger the first live T3.1 status activation (`--activate-status` /

@@ -41,6 +41,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
+from typing import Optional  # used in the "Optional[str]" string return annotations
 
 # Phase-2 data-lift: the shared text parsers live in cre_parse.py (the Python
 # mirror of lib/parse.ts), so the ingest, the monitor, and the WS2 backfill all

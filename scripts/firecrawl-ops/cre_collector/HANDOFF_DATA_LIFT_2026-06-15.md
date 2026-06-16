@@ -1,7 +1,12 @@
 # Handoff: Phase-2 data lift (free scalar backfill, OM/PDF parse, new columns, geo + DQ guards) - 2026-06-15
 
 Status: BUILT and verified in code on branch `feat/cre-brokerage-collectors-2026-06-12`.
-Nothing applied to prod, nothing committed. Every live step is gated (Section 8).
+The data-lift DDL (`011`-`014`) + the crosswalk load + the three backfills
+(raw_data scalar, om_classify, geo) were APPLIED to prod 2026-06-15 (board
+unchanged: 87,328 active / 0 non-active, status untouched). See Section 0b for
+the applied set and real counts. The items in Section 8's still-gated trailer
+(OM-parse, media backfill, status activation, `--mark-missing`, consumer
+board-gate deploy, enrichment-cadence cutover) remain gated.
 
 Builds directly on the media-capture build (`HANDOFF_MEDIA_CAPTURE_2026-06-15.md`).
 Source-of-truth gap spec: `RAW_DATA_GAP_CLASSIFICATION_2026-06-15.md`.
@@ -54,6 +59,57 @@ read-only dry-runs against the live DB surfaced (and fixed) two real defects.
 
 Full backfill dry-run scans 87,328 rows (100% of the board) with **zero** decode
 failures. Nothing written; all `--dry-run`.
+
+## 0b. LIVE APPLY (2026-06-15) - DDL 011-014, crosswalk load, three backfills
+
+Code was committed and pushed first, then this live apply was authorized. All
+steps are additive, idempotent, dry-run-confirmed first, and verified read-only
+after. Project `fhqycqubkkrdgzswccwd`, schema `credeals`. No connection string
+was ever printed.
+
+- **DDL applied in order `011` -> `012` -> `013` -> `014`** via psql (non-pooling,
+  `ON_ERROR_STOP`):
+  - `011_cre_listing_media.sql`: NEW `cre_listing_media` + `cre_listing_links`
+    (+ `*_archive` mirrors), and the purely-widening
+    `cre_listing_documents.doc_type` CHECK rebuild (adds `financials`,
+    `rent_roll`). `011` was applied as a PREREQUISITE for `om_classify_existing`,
+    whose 37 `financials` upgrades require the widened CHECK. The new media/links
+    tables are EMPTY (the media-capture backfill is NOT part of this run and
+    stays gated).
+  - `012_cre_listing_institutional_cols.sql`: institutional scalar columns + geo
+    columns (`cbsa_code`, `cbsa_name`, `geo_source`) + `extra_facts` jsonb on
+    `cre_listings`, plus `license` on `cre_listing_contacts`. Guarded range/enum
+    CHECKs.
+  - `013_cre_listing_om_facts.sql`: NEW `cre_listing_om_facts` (+ archive). Stays
+    EMPTY (OM-parse gated).
+  - `014_cre_geo_crosswalk.sql`: NEW `cre_zip_cbsa_crosswalk` reference table.
+- **Crosswalk loaded** via `\copy` from `data/zip_cbsa_crosswalk.csv`:
+  **33,791 rows** (all-distinct zip5, 24,734 with a CBSA, 0 NULL centroids, 0
+  empty-string artifacts).
+- **Backfill 1 - `cre_backfill_raw_data.py --apply`** (all 12 brokerage slugs,
+  additive COALESCE-keep, never touches `status`/`deleted_at`). All 87,328 active
+  rows scanned, 0 decode failures (the M&M 3,124 rows the old text-format reader
+  silently dropped now scan cleanly via the CSV reader fix). Coverage now on
+  active rows: `canonical_url` 0 -> 87,324; `cap_rate` 2,235; `submarket` 12,465;
+  `building_class` 9,138; `property_subtype` 8,330; `tenant_name` 823;
+  `guarantor` 833; `grm` 624; `year_built` 13,031; `extra_facts` non-empty
+  10,600.
+- **Backfill 2 - `om_classify_existing.py --apply`**: 14,087 of 70,414 brochure
+  rows upgraded (upgrade-only, never downgrades): flyer 11,416, floor_plan 1,843,
+  om 791, financials 37. `doc_type` distribution now: brochure 56,327, flyer
+  11,416, floor_plan 1,843, om 791, financials 37.
+- **Backfill 3 - `cre_geo_backfill.py --apply`**: 85,618 of 87,328 rows derived
+  (additive COALESCE-keep). county 85,618, cbsa_code/cbsa_name 83,815, geo_source
+  85,618 (crosswalk_zip 77,499, source 4,368, crosswalk_latlng 3,751; 1,710 no
+  crosswalk hit). Top metros: LA 5,212, SF 3,902, Houston 3,698, NYC 3,225,
+  Chicago 3,094, Dallas 2,546.
+
+**Board integrity (verified read-only after apply):** 87,328 active, 0
+non-active, 92,699 total. `status` was NEVER touched (activation stays OPT-IN
+default-off). Consumer views resolve unchanged (`v_cre_active_for_sale` 33,824,
+`v_cre_active_for_lease` 58,727, `v_cre_listings_full` 87,328). `cre_listing_om_facts`,
+`cre_listing_media`, and `cre_listing_links` stay EMPTY (OM-parse and media
+backfill gated). 738 pytest pass (code unchanged this session).
 
 ## 1. Why
 
@@ -154,7 +210,7 @@ delivers all four follow-up workstreams the audit recommended.
 ## 3. Verification
 
 - `npm run typecheck`: clean (no TS change in the §0 finishing pass).
-- `npm run test:unit`: 468 pass / 0 fail (all 14 adapters + lib).
+- `npm run test:unit`: 468 pass / 0 fail (all 14 source adapters, 15 test files, + lib).
 - `python3 -m pytest tests/`: **738 pass / 0 fail** (was 727; +11 from the new
   `test_backfill_readback.py` covering the §0 read-back + geo fixes). Also includes
   `test_parse_parity.py` (25-case TS<->Python golden parity), `test_backfill_raw_data.py`,
@@ -226,21 +282,31 @@ real candidate counts before any write.
 
 ## 8. Gated live steps (need explicit go-ahead, in order)
 
-1. Apply `sql/012`, `sql/013`, `sql/014` and the `sql/005` widening to project
-   `fhqycqubkkrdgzswccwd` (verify read-only zero-row no-op first).
-2. `python3 cre_backfill_raw_data.py --dry-run` -> review per-source candidate
-   counts -> `--apply`.
-3. `python3 om_classify_existing.py --dry-run` -> review old->new type counts ->
+1. **DONE / APPLIED 2026-06-15** (`011` -> `012` -> `013` -> `014`; `sql/005`
+   widening stays gated, see trailer). Apply `sql/012`, `sql/013`, `sql/014` and
+   the `sql/005` widening to project `fhqycqubkkrdgzswccwd` (verify read-only
+   zero-row no-op first). Applied `011`-`014` only (`011` as the
+   `om_classify_existing` CHECK prerequisite); board unchanged at 87,328 active.
+2. **DONE / APPLIED 2026-06-15** (all 87,328 rows scanned, 0 decode failures;
+   `canonical_url` 0 -> 87,324, `cap_rate` 2,235, etc. per §0b). `python3
+   cre_backfill_raw_data.py --dry-run` -> review per-source candidate counts ->
    `--apply`.
-4. Geo backfill: the full crosswalk is already built/committed (§0). After
-   `sql/012` is applied (step 1), run `python3 cre_geo_backfill.py --dry-run`
-   (its WHERE needs the `cbsa_code` column) -> review (~85,618 rows) -> `--apply`.
-   Optionally also `\copy` the CSV into `cre_zip_cbsa_crosswalk` for consumer SQL
-   joins (commented-out load in `sql/014`).
+3. **DONE / APPLIED 2026-06-15** (14,087 of 70,414 brochure rows upgraded: flyer
+   11,416, floor_plan 1,843, om 791, financials 37). `python3
+   om_classify_existing.py --dry-run` -> review old->new type counts -> `--apply`.
+4. **DONE / APPLIED 2026-06-15** (85,618 of 87,328 rows derived; crosswalk
+   `\copy`'d into `cre_zip_cbsa_crosswalk`, 33,791 rows). Geo backfill: the full
+   crosswalk is already built/committed (§0). After `sql/012` is applied (step 1),
+   run `python3 cre_geo_backfill.py --dry-run` (its WHERE needs the `cbsa_code`
+   column) -> review (~85,618 rows) -> `--apply`. Optionally also `\copy` the CSV
+   into `cre_zip_cbsa_crosswalk` for consumer SQL joins (commented-out load in
+   `sql/014`).
 5. OM-parse pass: confirm the local Firecrawl stack is up, then
    `python3 om_parse.py --dry-run` (CBRE+JLL first) -> review -> `--apply`; then
    wire the enrich cadence per `ENRICHMENT_WORKER_DESIGN_2026-06-15.md`.
 
 Unchanged and still separately gated: status activation, `--mark-missing`
-soft-delete, the consumer board-gate deploy, the enrichment-cadence launchd
-cutover, and the media-capture gated steps (`sql/011` + media backfill).
+soft-delete, the consumer board-gate deploy (and the paired `sql/005` view
+widening), the enrichment-cadence launchd cutover, and the MEDIA BACKFILL run.
+NOTE: the media-capture `sql/011` DDL is now APPLIED (2026-06-15), so the media
+backfill is no longer blocked on DDL, only on go-ahead.

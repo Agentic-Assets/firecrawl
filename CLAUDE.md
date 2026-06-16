@@ -180,16 +180,45 @@ residential contamination removed (101 mis-categorized sale + 1 ghost lease
 soft-deleted; 2 defensible Chicago retail lease rows remain). Savills sale is
 structurally capped (no public US commercial-sale feed).
 
-**Still gated for go-ahead:** deploy the consumer board-gate branch (must
-precede live T3.1 activation), trigger the first live status activation, and
-apply the widened `005` views (live DDL, alongside the consumer deploy). See the
-phase2 board-impact doc's activation runbook. The Tier-B `cre_enrichment_queue`
-worker (`cre_enrich.py`) and the cadence restructure (monitor 2x/day + enrich
-every 4h + additive weekly backstop; daily retired) SHIPPED in code 2026-06-15;
-the live launchd cutover (apply `sql/010`, reload monitor at 2x/day, load enrich,
-unload daily, load the additive weekly) is held for go-ahead per
-`cre_collector/ENRICHMENT_WORKER_DESIGN_2026-06-15.md` Section 9. The
-`CRE_WEEKLY_MARK_MISSING=1` soft-delete escalation stays separately gated.
+**Phase-2 data-lift APPLIED 2026-06-15:** DDL `011` through `014` applied to
+prod in order via psql (non-pooling, `ON_ERROR_STOP`): `011_cre_listing_media`
+(new `cre_listing_media` + `cre_listing_links` plus `*_archive` mirrors, and the
+purely-widening `cre_listing_documents.doc_type` CHECK rebuild adding
+`'financials'`/`'rent_roll'`), `012_cre_listing_institutional_cols`
+(institutional scalar + geo columns `cbsa_code`/`cbsa_name`/`geo_source` +
+`extra_facts` jsonb on `cre_listings`, license on `cre_listing_contacts`),
+`013_cre_listing_om_facts` (new `cre_listing_om_facts` + archive), and
+`014_cre_geo_crosswalk` (new `cre_zip_cbsa_crosswalk`). `011` was included
+because `om_classify_existing`'s financials upgrades need its widened `doc_type`
+CHECK. `cre_zip_cbsa_crosswalk` loaded from `data/zip_cbsa_crosswalk.csv`
+(33,791 rows; 24,734 with a CBSA, 0 NULL centroids). Three additive backfills
+applied (all COALESCE-keep, never touching status/`deleted_at`):
+`cre_backfill_raw_data.py --apply` (all 12 slugs; canonical_url 0 -> 87,324 plus
+institutional cols; 0 decode failures, the prior M&M 3,124-row drop now scans
+cleanly), `om_classify_existing.py --apply` (14,087 of 70,414 brochure rows
+upgraded: flyer 11,416, floor_plan 1,843, om 791, financials 37; upgrade-only),
+and `cre_geo_backfill.py --apply` (85,618 of 87,328 rows derived county/cbsa/
+geo_source). Board UNCHANGED at 87,328 active / 0 non-active (92,699 total);
+status was NEVER touched (activation stays OPT-IN default-off) and consumer views
+resolve unchanged. `cre_listing_om_facts`, `cre_listing_media`, and
+`cre_listing_links` remain EMPTY (OM-parse and media-capture stay gated). 738
+pytest pass (code unchanged this session); no connection string printed.
+
+**Still gated for go-ahead:** the Phase-2 data-lift DDL (`011` through `014`)
+and its three backfills are now applied (see above); these remain GATED: deploy
+the consumer board-gate branch (must precede live T3.1 activation), trigger the
+first live status activation, and apply the widened `005` views (with `006`,
+live DDL, alongside the consumer deploy). See the phase2 board-impact doc's
+activation runbook. The Tier-B `cre_enrichment_queue` worker (`cre_enrich.py`)
+and the cadence restructure (monitor 2x/day + enrich every 4h + additive weekly
+backstop; daily retired) SHIPPED in code 2026-06-15; the live launchd cutover
+(apply `sql/010`, reload monitor at 2x/day, load enrich, unload daily, load the
+additive weekly) is held for go-ahead per
+`cre_collector/ENRICHMENT_WORKER_DESIGN_2026-06-15.md` Section 9. Also gated: the
+OM-parse pass (`om_parse.py --apply`; `cre_listing_om_facts` stays empty until
+then), the media-capture backfill (`backfill_media_from_raw_data.py --apply`;
+`011` DDL is applied so this is no longer DDL-blocked, only on go-ahead), and the
+`CRE_WEEKLY_MARK_MISSING=1` soft-delete escalation, which stays separately gated.
 
 ### Next steps (CRE)
 

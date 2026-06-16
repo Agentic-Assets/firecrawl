@@ -577,10 +577,18 @@ def parse_pdf_to_text(doc_url, *, api_url=None, timeout=180.0):
 
 
 def _psql_query(db_url, sql):
-    """Run one statement-set, return RETURNING/SELECT tuples. Never prints the url."""
+    """Run one statement-set, return RETURNING/SELECT tuples. Never prints the url.
+
+    The SQL is fed on STDIN via `-f -` (not `-c`) so the psql meta-command head
+    the builders emit (`\\set ON_ERROR_STOP on`, pinned exactly like
+    cre_monitor.build_write_sql) is honored; `-c` does not process backslash
+    meta-commands and mis-parses the script. `-tA -F$'\\t'` keeps NULL rendering
+    as an empty field for the tab split below.
+    """
     psql = find_psql()
     proc = subprocess.run(
-        [psql, db_url, "-tA", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-c", sql],
+        [psql, db_url, "-q", "-tA", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-f", "-"],
+        input=sql,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     if proc.returncode != 0:
@@ -635,8 +643,8 @@ def run(args):
     for t in rows:
         t = tuple(t) + ("",) * (3 - len(t))
         external_id, source_url, slug = t[:3]
-        source_key = source_keys[0]  # for re-ingest sourceKey fold; refined below
         cand = {
+            # per-row sourceKey resolved from the listing's own slug (not source_keys[0])
             "sourceKey": _source_key_for_slug(slug, source_keys),
             "externalId": external_id or None,
             "url": source_url or None,
