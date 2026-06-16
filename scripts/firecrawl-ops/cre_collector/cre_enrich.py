@@ -175,8 +175,10 @@ def select_done_and_retry(claimed_rows, enriched_listings):
     native id (``usa1``), but the url is verbatim in both, so the join is exact and
     needs no prefix logic.
 
-    Returns (done_urls, retry_ids, dead_ids):
-      - done_urls: urls present in the artifact (their rows get DELETEd).
+    Returns (done_ids, retry_ids, dead_ids):
+      - done_ids: claimed row ids whose urls are present in the artifact. The
+        URL match decides completion, but deletion is id-keyed so another queued
+        reason for the same listing URL is not removed accidentally.
       - retry_ids: claimed-but-absent rows that stay under MAX_ATTEMPTS after the
         +1 increment (re-claimed next run).
       - dead_ids:  claimed-but-absent rows that reach MAX_ATTEMPTS on the +1
@@ -186,43 +188,45 @@ def select_done_and_retry(claimed_rows, enriched_listings):
     both); they differ only in whether the increment crosses the dead threshold.
     """
     enriched_urls = {row.get("url") for row in enriched_listings if row.get("url")}
-    done_urls = set()
+    done_ids = []
     retry_ids = []
     dead_ids = []
     for r in claimed_rows:
         if r.get("url") in enriched_urls:
-            done_urls.add(r["url"])
+            done_ids.append(r["id"])
         elif int(r.get("attempts", 0)) + 1 >= MAX_ATTEMPTS:
             dead_ids.append(r["id"])
         else:
             retry_ids.append(r["id"])
-    return done_urls, retry_ids, dead_ids
+    return done_ids, retry_ids, dead_ids
 
 
-def build_complete_sql(done_urls):
-    """DELETE the completed rows, URL-keyed, sql_lit-quoted.
+def build_complete_sql(done_ids):
+    """DELETE the completed claimed rows by id, sql_lit-quoted as uuid.
 
     The queue is an ephemeral work queue (cre_listing_events is the durable
     audit). Deleting done rows is what lets a LATER change to the same listing
     re-enqueue: keeping them would let the monitor's
     `ON CONFLICT (brokerage_id, external_id, reason) DO NOTHING` suppress every
-    future change. Each url goes through sql_lit (quote-doubling) under the
-    standard_conforming_strings pin; urls are never f-string'd.
+    future change. Completion is still URL-matched in select_done_and_retry(),
+    but this DELETE must be id-keyed because the queue can hold separate reasons
+    for the same listing URL. Each id goes through sql_lit (quote-doubling) under
+    the standard_conforming_strings pin; ids are never f-string'd.
 
     Empty input -> a no-op transaction (no malformed `IN ()`).
     """
-    urls = sorted(done_urls)
+    ids = sorted(done_ids)
     head = [
         "\\set ON_ERROR_STOP on",
         "BEGIN;",
         "SET LOCAL standard_conforming_strings = on;",
     ]
-    if not urls:
+    if not ids:
         return "\n".join(head + ["COMMIT;"])
-    in_list = "(" + ", ".join(sql_lit(u) for u in urls) + ")"
+    in_list = "(" + ", ".join(sql_lit(i) + "::uuid" for i in ids) + ")"
     return "\n".join(head + [
         "DELETE FROM credeals.cre_enrichment_queue",
-        " WHERE url IN " + in_list + ";",
+        " WHERE id IN " + in_list + ";",
         "COMMIT;",
     ])
 
@@ -489,15 +493,15 @@ def run(args):
 
     # (6) Complete: DELETE done rows; increment attempts ONLY on the
     # claimed-but-absent set (after a successful collect+ingest).
-    done_urls, retry_ids, dead_ids = select_done_and_retry(
+    done_ids, retry_ids, dead_ids = select_done_and_retry(
         claimed_rows, enriched_listings)
-    _psql_exec(db_url, build_complete_sql(done_urls))
+    _psql_exec(db_url, build_complete_sql(done_ids))
     absent = retry_ids + dead_ids
     if absent:
         _psql_exec(db_url, build_retry_increment_sql(
             absent, last_error="claimed but absent from enriched artifact"))
     print(
-        f"enrich complete: {len(done_urls)} done (deleted), "
+        f"enrich complete: {len(done_ids)} done (deleted), "
         f"{len(retry_ids)} retry, {len(dead_ids)} dead-lettered",
         file=sys.stderr,
     )

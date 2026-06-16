@@ -34,7 +34,8 @@
 
 -- Live work queue: every pending row the worker is eligible to claim, in claim
 -- order (priority, enqueued_at) matching cre_enrich.build_claim_sql.
-CREATE OR REPLACE VIEW credeals.v_cre_enrichment_queue_pending AS
+CREATE OR REPLACE VIEW credeals.v_cre_enrichment_queue_pending
+  WITH (security_invoker = true) AS
   SELECT *
     FROM credeals.cre_enrichment_queue
    WHERE done_at IS NULL
@@ -48,7 +49,8 @@ COMMENT ON VIEW credeals.v_cre_enrichment_queue_pending IS
 -- left the claim SQL's `attempts < 5` drain set; a later monitor-detected change
 -- to the same listing re-enqueues a fresh row (ON CONFLICT DO NOTHING dedups
 -- only while the old row exists, and done rows are deleted).
-CREATE OR REPLACE VIEW credeals.v_cre_enrichment_dead AS
+CREATE OR REPLACE VIEW credeals.v_cre_enrichment_dead
+  WITH (security_invoker = true) AS
   SELECT *
     FROM credeals.cre_enrichment_queue
    WHERE done_at IS NULL

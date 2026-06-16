@@ -37,7 +37,8 @@
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 006_cre_contact_urls.sql
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 005_cre_views.sql
 --
--- Option C -- Supabase SQL editor: paste the contents of 001 -> 006 in order.
+-- Option C -- Supabase SQL editor: paste each file individually in the Option B
+-- order above. The editor does not process psql \i includes.
 --
 -- -----------------------------------------------------------------------------
 -- DEPENDENCY ORDER (do not reorder)

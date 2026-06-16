@@ -244,6 +244,36 @@ def load_artifact_groups(paths):
     return groups, run_started_at, dict(per_source_flat), skipped_no_url, errored_source_keys
 
 
+def clean_empty_monitor_source_keys(paths):
+    """Return source keys for a clean zero-listing monitor artifact set.
+
+    Full/enrich artifacts with zero usable rows are still failures. Monitor
+    artifacts can legitimately be empty for sources that are intentionally
+    excluded from cheap enumeration. Only accept the no-op path when every input
+    is monitor-mode, has source metadata, has no emitted listings, and reports no
+    source-level error/truncation.
+    """
+    source_keys = set()
+    for path in paths:
+        with open(path) as f:
+            data = json.load(f)
+        run_meta = data.get("runMeta") or {}
+        if run_meta.get("mode") != "monitor":
+            return None
+        if data.get("listings"):
+            return None
+        sources = data.get("sources") or []
+        if not sources:
+            return None
+        for src in sources:
+            if src.get("error") or src.get("truncated"):
+                return None
+            sk = src.get("sourceKey")
+            if sk:
+                source_keys.add(sk)
+    return sorted(source_keys) if source_keys else None
+
+
 def finalize_group(g):
     """Collapse one group to the derived record the monitor diffs and writes."""
     merged = g["merged_row"]
@@ -968,7 +998,39 @@ def main():
 
     groups, run_started_at, per_source_flat, skipped_no_url, errored_source_keys = load_artifact_groups(args.inputs)
     if not groups:
-        sys.exit("nothing to monitor (0 usable listings)")
+        noop_sources = clean_empty_monitor_source_keys(args.inputs)
+        if noop_sources is None or skipped_no_url or errored_source_keys:
+            sys.exit("nothing to monitor (0 usable listings)")
+        started_at = run_started_at or datetime.now(timezone.utc).isoformat()
+        run_uuid = str(uuid.uuid4())
+        summary = build_summary(
+            [],
+            {sk: 0 for sk in noop_sources},
+            set(),
+            {sk: None for sk in noop_sources},
+            {},
+            skipped_no_url,
+        )
+        print_summary(summary, mode, args.quiet)
+        if args.out:
+            out_doc = {
+                "mode": mode,
+                "run_id": run_uuid,
+                "artifacts": [os.path.basename(p) for p in args.inputs],
+                "started_at": started_at,
+                "baseline_source_keys": [],
+                "summary": summary,
+                "enqueue": {"new": 0, "changed": 0},
+                "disappear_marks": 0,
+                "events": [],
+            }
+            with open(args.out, "w") as f:
+                json.dump(out_doc, f, indent=2, default=str)
+            if not args.quiet:
+                print(f"wrote summary/events JSON: {args.out}", file=sys.stderr)
+        if not args.quiet:
+            print("monitor no-op: clean zero-listing monitor artifact", file=sys.stderr)
+        return
     finalized_by_key = {key: finalize_group(g) for key, g in groups.items()}
     finalized = sorted(
         finalized_by_key.values(), key=lambda g: (g["slug"], g["external_id"])

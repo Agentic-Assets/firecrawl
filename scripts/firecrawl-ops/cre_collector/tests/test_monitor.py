@@ -30,6 +30,7 @@ import json
 import math
 import os
 import re
+import sys
 import tempfile
 
 import cre_gate as gate
@@ -1143,3 +1144,53 @@ class TestRunSourceKeysDisappearGuard:
         assert len(disappeared) == 1
         assert disappeared[0]["listing_id"] == "L-G1"
         assert (BID, "G1") in marks
+
+
+# ---------------------------------------------------------------------------
+# 12. clean empty monitor artifacts are a no-op, not a failure
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyMonitorNoop:
+    def test_clean_empty_monitor_source_keys_accepts_monitor_only_artifact(self, tmp_path):
+        artifact = tmp_path / "monitor_empty.json"
+        artifact.write_text(json.dumps({
+            "runMeta": {"mode": "monitor", "startedAt": "2026-06-16T00:00:00Z"},
+            "sources": [{"sourceKey": "jll", "listingsCollected": 0}],
+            "listings": [],
+        }), encoding="utf-8")
+
+        assert m.clean_empty_monitor_source_keys([str(artifact)]) == ["jll"]
+
+    def test_main_clean_empty_monitor_artifact_writes_zero_summary(self, monkeypatch, tmp_path):
+        artifact = tmp_path / "monitor_empty.json"
+        out = tmp_path / "events.json"
+        artifact.write_text(json.dumps({
+            "runMeta": {"mode": "monitor", "startedAt": "2026-06-16T00:00:00Z"},
+            "sources": [{"sourceKey": "jll", "listingsCollected": 0}],
+            "listings": [],
+        }), encoding="utf-8")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["cre_monitor.py", "--in", str(artifact), "--out", str(out), "--quiet"],
+        )
+
+        assert m.main() is None
+        doc = json.loads(out.read_text(encoding="utf-8"))
+        assert doc["summary"]["totals"] == {
+            "enumerated_flat": 0,
+            "grouped": 0,
+            "skipped_no_url": 0,
+        }
+        assert doc["summary"]["by_source"]["jll"]["grouped"] == 0
+
+    def test_clean_empty_monitor_source_keys_rejects_non_monitor_artifact(self, tmp_path):
+        artifact = tmp_path / "full_empty.json"
+        artifact.write_text(json.dumps({
+            "runMeta": {"mode": "full"},
+            "sources": [{"sourceKey": "jll", "listingsCollected": 0}],
+            "listings": [],
+        }), encoding="utf-8")
+
+        assert m.clean_empty_monitor_source_keys([str(artifact)]) is None

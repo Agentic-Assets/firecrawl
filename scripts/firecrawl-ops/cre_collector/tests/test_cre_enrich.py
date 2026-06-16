@@ -53,7 +53,7 @@ def test_claim_sql_core_shape_no_attempts_increment_at_claim():
     assert "ORDER BY priority, enqueued_at" in sql
     assert "LIMIT 200" in sql
     assert "RETURNING" in sql
-    assert "q.url" in sql  # RETURNING must carry url (completion is URL-keyed)
+    assert "q.url" in sql  # URL match decides completion; DELETE is id-keyed.
     # NO attempts increment at claim time (a stack-down run must not dead-letter
     # the whole batch).
     assert "attempts = attempts + 1" not in sql
@@ -93,7 +93,7 @@ def test_select_done_and_retry_marks_done_by_url_retries_rest():
     ]
     enriched = [{"url": "https://x/a"}, {"url": "https://x/c"}]
     done, retry, dead = select_done_and_retry(claimed, enriched)
-    assert done == {"https://x/a", "https://x/c"}
+    assert done == ["id-1", "id-3"]
     assert retry == ["id-2"]
     assert dead == []
 
@@ -108,19 +108,22 @@ def test_url_match_works_when_external_id_folded_but_artifact_native():
                 "url": "https://colliers/usa1", "attempts": 0}]
     enriched = [{"id": "usa1", "url": "https://colliers/usa1"}]
     done, retry, dead = select_done_and_retry(claimed, enriched)
-    assert done == {"https://colliers/usa1"}
+    assert done == ["id-1"]
     assert retry == [] and dead == []
 
 
 # --- (6) build_complete_sql DELETEs done rows, sql_lit-quoted --------------
 
 
-def test_build_complete_sql_deletes_done_rows_url_keyed_quoted():
-    sql = build_complete_sql({"https://x/a", "https://x/b'c"})
+def test_build_complete_sql_deletes_done_rows_id_keyed_quoted():
+    sql = build_complete_sql([
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+    ])
     assert "DELETE FROM credeals.cre_enrichment_queue" in sql
-    assert "WHERE url IN (" in sql
-    # quote-doubling under standard_conforming_strings (the apostrophe is doubled).
-    assert "'https://x/b''c'" in sql
+    assert "WHERE id IN (" in sql
+    assert "'11111111-1111-1111-1111-111111111111'::uuid" in sql
+    assert "WHERE url IN" not in sql
     # never a done_at = now() update; deletion is what lets re-enqueue happen.
     assert "done_at = now()" not in sql
     assert "SET LOCAL standard_conforming_strings = on" in sql
@@ -140,7 +143,7 @@ def test_attempts_four_absent_row_partitions_into_dead_set():
     claimed = [{"id": "id-dead", "url": "https://x/gone", "attempts": 4}]
     enriched = []  # absent from the artifact
     done, retry, dead = select_done_and_retry(claimed, enriched)
-    assert done == set()
+    assert done == []
     assert retry == []
     assert dead == ["id-dead"]  # 4 + 1 == 5 -> leaves the attempts < 5 drain set
 
@@ -329,7 +332,8 @@ def test_happy_path_deletes_done_and_increments_absent(monkeypatch, tmp_path):
     assert calls["ingest_called"] is True
     exec_sql = "\n".join(calls["exec_sql"])
     assert "DELETE FROM credeals.cre_enrichment_queue" in exec_sql
-    assert "'https://x/a'" in exec_sql            # done row deleted by url
+    assert "'id-done'::uuid" in exec_sql          # done row deleted by claimed id
+    assert "WHERE url IN" not in exec_sql
     assert "attempts = attempts + 1" in exec_sql  # absent row incremented
 
 

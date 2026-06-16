@@ -28,6 +28,7 @@ import pytest
 COLLECTOR = Path(__file__).resolve().parent.parent
 DAILY = COLLECTOR / "cre_daily_update.sh"
 RUN_TIER = COLLECTOR / "launchd" / "cre_run_tier.sh"
+STATUS = COLLECTOR / "cre_status.sh"
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
 
@@ -110,3 +111,27 @@ def test_keep_newest_bounds_monitor_artifacts(tmp_path):
     assert len(kept) == 24, f"expected 24 monitor artifacts kept, got {len(kept)}"
     assert "monitor_2026-06-14_0029.json" in kept
     assert "monitor_2026-06-14_0000.json" not in kept
+
+
+def test_cre_status_reports_daily_while_legacy_tier_is_live():
+    text = STATUS.read_text(encoding="utf-8")
+    assert "for tier in monitor enrich daily weekly" in text
+    assert "last_run_$tier.json" in text
+    assert "ai.agentic.cre-daily.plist" in text
+
+
+def test_cre_status_flags_empty_or_malformed_markers():
+    text = STATUS.read_text(encoding="utf-8")
+    assert "marker_problem" in text
+    assert "empty marker:" in text
+    assert "malformed marker:" in text
+
+
+def test_cre_status_derives_disappearance_only_sources_from_ingest_contract():
+    text = STATUS.read_text(encoding="utf-8")
+    assert "STATUS_SOURCE_PATHS" in text
+    assert "if not paths" in text
+    assert (
+        'DISAPPEAR_ONLY_SOURCES="avison-young cbre jll marcus-millichap '
+        'newmark savills transwestern"'
+    ) in text

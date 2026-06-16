@@ -348,7 +348,7 @@ class TestPsqlExec:
 
     def test_complete_sql_with_meta_command_transported_verbatim(self, monkeypatch):
         """A complete SQL with \\set + BEGIN/COMMIT must arrive unmodified in `input`."""
-        sql = build_complete_sql({"https://example.com/listing/1"})
+        sql = build_complete_sql({"11111111-1111-1111-1111-111111111111"})
         assert "\\set ON_ERROR_STOP on" in sql
         assert "BEGIN;" in sql
         assert "COMMIT;" in sql
@@ -462,7 +462,8 @@ class TestRunComplete:
         assert calls["ingest_called"] is True
         combined = "\n".join(calls["exec_sqls"])
         assert "DELETE FROM credeals.cre_enrichment_queue" in combined
-        assert "'https://x/a'" in combined
+        assert "WHERE id IN ('id-1'::uuid)" in combined
+        assert "WHERE url IN" not in combined
 
     def test_complete_path_no_release_sql_when_successful(
             self, monkeypatch, tmp_path):

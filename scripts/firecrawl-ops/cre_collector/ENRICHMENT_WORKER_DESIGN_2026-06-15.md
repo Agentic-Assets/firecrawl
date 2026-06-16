@@ -189,8 +189,8 @@ the URL). For testability it is split into **pure builders** plus a thin `run()`
 - `build_claim_sql(batch, *, reclaim_interval="1 hour") -> str`
 - `build_collect_argv(claim_path, out_path) -> list[str]`
 - `build_ingest_argv(enriched_path) -> list[str]`  (always `["--in", path]`)
-- `select_done_and_retry(claimed_rows, enriched_listings) -> (done_urls, retry_ids, dead_ids)`  (URL-keyed)
-- `build_complete_sql(done_urls) -> str`  and  `build_release_sql(claimed_ids) -> str`
+- `select_done_and_retry(claimed_rows, enriched_listings) -> (done_ids, retry_ids, dead_ids)`  (URL match, id-keyed completion)
+- `build_complete_sql(done_ids) -> str`  and  `build_release_sql(claimed_ids) -> str`
 
 ### Flow
 1. **Claim** a batch (default 200) in one atomic statement:
@@ -227,12 +227,15 @@ the URL). For testability it is split into **pure builders** plus a thin `run()`
    the verdict marker). Do NOT ingest a partial/empty artifact.
 6. On a successful collect: `python3 cre_ingest.py --in enriched.json` (additive;
    status activation OFF by default, so the `CRE_STATUS_FLIP_MAX_FRACTION`
-   breaker is inert and a small batch cannot trip it). Then **complete** by URL:
+   breaker is inert and a small batch cannot trip it). Then **complete** by
+   claimed queue id, after deciding completion by URL:
    - `select_done_and_retry` splits the claimed rows: `done` = rows whose `url`
-     is in the enriched artifact; `retry` = the rest.
-   - `build_complete_sql(done_urls)` **DELETEs** the done rows (the queue is an
-     ephemeral work queue; `cre_listing_events` is the durable audit). Deleting
-     done rows is what lets a *later* change to the same listing re-enqueue:
+     is in the enriched artifact; `retry` = the rest. It returns the claimed
+     queue ids for done rows so duplicate URL work with a different `reason`
+     cannot be deleted accidentally.
+   - `build_complete_sql(done_ids)` **DELETEs** the done rows by `id` (the queue
+     is an ephemeral work queue; `cre_listing_events` is the durable audit).
+     Deleting done rows is what lets a *later* change to the same listing re-enqueue:
      keeping them would let the monitor's `ON CONFLICT (brokerage_id,
      external_id, reason) DO NOTHING` suppress every future change.
    - For `retry` rows, increment `attempts` (only this claimed-but-absent set,
@@ -319,7 +322,9 @@ All `cre_enrich.py` unit tests are pure-transform (assert on builder strings, th
   3. claim SQL is idempotent across calls; carries the `standard_conforming_strings` + `ON_ERROR_STOP` pins; never contains the DB url.
   4. `select_done_and_retry` marks done only urls present in the artifact, retries the rest.
   5. URL match works when the claimed `external_id` is folded (`main:usa1`) but the artifact carries native `id=usa1` with the same `url` (proves URL, not external-id, matching).
-  6. `build_complete_sql` emits `DELETE ... WHERE url IN (...)` (sql_lit-quoted) for done rows and never a `done_at = now()` update; dead-letter rows are never deleted.
+  6. `build_complete_sql` emits `DELETE ... WHERE id IN (...)` (sql_lit-quoted
+     uuid values) for done rows and never a `done_at = now()` update; dead-letter
+     rows are never deleted.
   7. a claimed-but-absent row at `attempts==4` partitions into the dead set (next claim's `attempts < 5` excludes it).
   8. a whole-run collect failure releases claims (`claimed_at = NULL`) without incrementing attempts, ingest is not invoked.
   9. an empty / missing / invalid `enriched.json` marks nothing done and skips ingest.
@@ -404,12 +409,14 @@ from v1 is auditable; v1 archived at
 - C1: `cre_ingest.py` has no `--no-mark-missing` flag; additive is the default.
   Every worker ingest call is `--in` only.
 - C2/B1: the queue external id is folded/prefixed, the artifact id is native;
-  completion matches by URL and enrichers strip the fold-prefix.
+  completion is decided by URL, deletion is scoped to the claimed queue id, and
+  enrichers strip the fold-prefix.
 - C3: CBRE is enumeration-only; dropped from the Phase-1 bespoke set.
 - C4: the worker deletes done rows so re-changes re-enqueue.
 - B2/B3: attempts are incremented only on claimed-but-absent rows after a
   successful collect; whole-run failures release claims and exit nonzero.
-- B5: claim/complete SQL uses `sql_lit` + GUC pins, never f-string urls.
+- B5: claim/complete SQL uses `sql_lit` + GUC pins, never f-string URL or id
+  interpolation.
 - B8: the dispatcher owns the verdict marker; the worker uses exit codes.
 - Cadence decision (owner, 2026-06-15): weekly runs additive and is loadable as
   the backstop; `--mark-missing` is a separate gated escalation.

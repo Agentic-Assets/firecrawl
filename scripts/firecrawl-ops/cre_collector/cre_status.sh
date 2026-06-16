@@ -5,7 +5,7 @@
 # One command that answers "is the scheduled pipeline alive and healthy?" so an
 # operator (or a coding agent on the Mac mini) does not have to cross-reference
 # `launchctl list`, log tails, and per-run markers by hand. It reports, per
-# tier (monitor / daily / weekly):
+# tier (monitor / enrich / daily / weekly):
 #   - launchd state: loaded? running now? last exit code (flags TCC-126).
 #   - freshness: time since the newest run artifact vs the expected cadence,
 #     so a schedule that has silently stopped firing is surfaced as STALE.
@@ -54,7 +54,9 @@ section() { printf '\n== %s ==\n' "$1"; }
 
 now_epoch="$(date +%s)"
 
-# 1.5x the nominal cadence: monitor 2x/day (12h), enrich every 4h, weekly 7d.
+# 1.5x the nominal cadence: monitor 2x/day (12h), enrich every 4h, daily 1d,
+# weekly 7d. Daily is retired in the new design, but remains reported while the
+# old live tier is still loaded as a rollback path.
 stale_threshold() {
   case "$1" in
     monitor) echo $(( 18 * 3600 )) ;;          # 18h  (1.5x the 12h 2x/day cadence)
@@ -103,11 +105,17 @@ dir_size_kb() { du -sk "$1" 2>/dev/null | awk '{print $1}'; }
 section "launchd schedules"
 # ---------------------------------------------------------------------------
 LCTL="$(launchctl list 2>/dev/null | grep 'ai.agentic.cre' || true)"
-for tier in monitor enrich weekly; do
+tier_loaded() {
+  local label="ai.agentic.cre-$1"
+  printf '%s\n' "$LCTL" | awk -v l="$label" '$3==l {found=1} END {exit found ? 0 : 1}'
+}
+for tier in monitor enrich daily weekly; do
   label="ai.agentic.cre-$tier"
   line="$(printf '%s\n' "$LCTL" | awk -v l="$label" '$3==l {print; exit}')"
   if [ -z "$line" ]; then
-    if [ "$tier" = "weekly" ]; then
+    if [ "$tier" = "daily" ]; then
+      note "$tier: not loaded (retired/cutover target; reported when still live)"
+    elif [ "$tier" = "weekly" ]; then
       note "$tier: not loaded (intentional: weekly is held until reconcile is approved)"
     else
       note "$tier: not loaded"
@@ -130,11 +138,23 @@ done
 # ---------------------------------------------------------------------------
 section "last run per tier"
 # ---------------------------------------------------------------------------
-for tier in monitor enrich weekly; do
+for tier in monitor enrich daily weekly; do
   marker="$OUT_DAILY/last_run_$tier.json"
   verdict=""
+  marker_problem=""
   if [ -f "$marker" ]; then
-    verdict="rc=$(marker_field "$marker" rc) ok=$(marker_field "$marker" ok) end=$(marker_field "$marker" end)"
+    if [ ! -s "$marker" ]; then
+      marker_problem="empty marker: ${marker#"$DIR"/}"
+    else
+      rc="$(marker_field "$marker" rc)"
+      ok_field="$(marker_field "$marker" ok)"
+      end_field="$(marker_field "$marker" end)"
+      if [ -z "$rc" ] || [ -z "$ok_field" ] || [ -z "$end_field" ]; then
+        marker_problem="malformed marker: ${marker#"$DIR"/}"
+      else
+        verdict="rc=${rc} ok=${ok_field} end=${end_field}"
+      fi
+    fi
   fi
   art="$(newest_artifact "$tier")"
   if [ -z "$art" ]; then
@@ -145,8 +165,12 @@ for tier in monitor enrich weekly; do
   age=$(( now_epoch - ${mt:-now_epoch} ))
   thr="$(stale_threshold "$tier")"
   agestr="$(human_age "$age")"
-  if [ "$age" -gt "$thr" ]; then
-    if [ "$tier" = "weekly" ]; then
+  if [ -n "$marker_problem" ]; then
+    bad "$tier: ${marker_problem} (artifact ${agestr} ago)"
+  elif [ "$age" -gt "$thr" ]; then
+    if ! tier_loaded "$tier"; then
+      note "$tier: last artifact ${agestr} ago (tier is not loaded) [${verdict:-no marker}]"
+    elif [ "$tier" = "weekly" ]; then
       note "$tier: last artifact ${agestr} ago (weekly may be intentionally unloaded) [${verdict:-no marker}]"
     else
       warn "$tier: STALE, last artifact ${agestr} ago (expected < $(human_age "$thr")) [${verdict:-no marker}]"
@@ -253,6 +277,8 @@ esac
 env_src="interactive default"
 if [ -z "${CRE_ENV_FILE:-}" ]; then
   for _plist in "$HOME/Library/LaunchAgents/ai.agentic.cre-monitor.plist" \
+                "$HOME/Library/LaunchAgents/ai.agentic.cre-enrich.plist" \
+                "$HOME/Library/LaunchAgents/ai.agentic.cre-weekly.plist" \
                 "$HOME/Library/LaunchAgents/ai.agentic.cre-daily.plist"; do
     [ -f "$_plist" ] || continue
     _cef="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CRE_ENV_FILE' "$_plist" 2>/dev/null || true)"
@@ -288,7 +314,7 @@ esac
 section "recent launchd stderr (newest tail)"
 # ---------------------------------------------------------------------------
 shown=0
-for tier in monitor enrich weekly; do
+for tier in monitor enrich daily weekly; do
   errlog="$OUT_DAILY/cre-$tier.err.log"
   [ -s "$errlog" ] || continue
   shown=1
@@ -304,11 +330,10 @@ done
 # ---------------------------------------------------------------------------
 section "disappearance-only signal staleness"
 # ---------------------------------------------------------------------------
-# CBRE, NAI, Avison, and Marcus-Millichap have no status field in their feeds.
-# The only sold-signal for these sources is their vanishing from a full sweep,
-# which the weekly mark-missing reconciliation detects. If the monitor has not
-# enumerated these sources recently the sold-signal is stale and the board will
-# silently carry rows that may already be sold.
+# Sources with no native status field rely on vanishing from a full sweep for
+# their sold-signal, which the weekly mark-missing reconciliation detects. If
+# the monitor has not enumerated these sources recently the sold-signal is stale
+# and the board will silently carry rows that may already be sold.
 #
 # This check uses the local monitor artifacts under out/monitor/ as the
 # read-only proxy for cre_source_index.last_enumerated_at: the monitor writes
@@ -320,8 +345,18 @@ section "disappearance-only signal staleness"
 # normal weekly sweep does not trip the alarm.
 SIGNAL_STALE_SECS=$(( 8 * 86400 ))
 
-# The four disappearance-only sources (no status field; sold signal = gone from sweep).
-DISAPPEAR_ONLY_SOURCES="cbre nai-global avison-young marcus-millichap"
+# Source of truth is cre_ingest.STATUS_SOURCE_PATHS: an empty per-source path
+# list means no native terminal status signal, so disappearance is the only
+# status signal. Fallback matches the current ingestor contract.
+DISAPPEAR_ONLY_SOURCES="$(python3 - <<'PY' 2>/dev/null
+import cre_ingest
+
+print(" ".join(sorted(
+    key for key, paths in cre_ingest.STATUS_SOURCE_PATHS.items() if not paths
+)))
+PY
+)"
+[ -n "$DISAPPEAR_ONLY_SOURCES" ] || DISAPPEAR_ONLY_SOURCES="avison-young cbre jll marcus-millichap newmark savills transwestern"
 
 newest_mon_art() {
   # Return path of the newest out/monitor/monitor_*.json file (may be empty).

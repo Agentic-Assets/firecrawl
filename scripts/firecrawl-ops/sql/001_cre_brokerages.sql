@@ -72,12 +72,13 @@ INSERT INTO credeals.cre_brokerages (name, slug, base_url, search_url, descripti
  '{"proxy": "stealth", "wait_for_ms": 6000, "timeout_ms": 60000, "pagination_strategy": "coveo_fragment_facets", "listing_url_pattern": "/en/united-states/properties/for-sale/{type}/{state}/{city}/{slug}/{slug}-s", "search_url_pattern": "/en/united-states/properties/invest/search?type={type}#f:TransactionType=[Sale]", "pagination_param": "#first=N", "notes": "Use US URL directly to skip geo-redirect. Trailing -s suffix on detail URLs is consistent. Coveo #first=N offset for paging."}'::jsonb,
  true),
 
--- 4. Colliers -- public site is POST-only for the current collector. Keep seeded for manual probes and future adapter work.
+-- 4. Colliers -- legacy SalesTracker plus public-site production adapters fold
+-- into this brokerage slug.
 ('Colliers', 'colliers',
  'https://www.colliers.com',
  'https://www.colliers.com/en/properties',
- 'Colliers International. Legacy probes found stable usa{7-digit} listing ids in rendered pages, but the current production collector does not include Colliers because the usable inventory path is POST-only and no public GET endpoint has been verified. Seed remains active for targeted discovery and future adapter work.',
- '{"proxy": "stealth", "wait_for_ms": 5000, "timeout_ms": 60000, "pagination_strategy": "post_only_discovery_pending", "listing_url_pattern": "/en/properties/{name-slug}/{address-slug}/usa{7-digit-id}", "external_id_pattern": "usa[0-9]{7}", "search_url_pattern": "/en/properties#f:listingtype=[For%20Sale]&f:recenttransactions=[0]", "pagination_param": "#first=N", "notes": "Not collected by cre_collector as of 2026-06-11. Investigate the POST search request or sales.colliers.com before enabling production collection."}'::jsonb,
+ 'Colliers International. Current production collectors include the SalesTracker investment-sale subset and the public colliers-main adapter; both fold into the colliers brokerage slug.',
+ '{"proxy": "stealth", "wait_for_ms": 5000, "timeout_ms": 60000, "pagination_strategy": "salestracker_plus_public_site", "listing_url_pattern": "/en/properties/{name-slug}/{address-slug}/usa{7-digit-id}", "external_id_pattern": "usa[0-9]{7}", "search_url_pattern": "/en/properties#f:listingtype=[For%20Sale]&f:recenttransactions=[0]", "pagination_param": "#first=N", "notes": "Production adapters: colliers and colliers-main; both map to this brokerage slug."}'::jsonb,
  true),
 
 -- 5. Marcus & Millichap -- works via cre_collector (stealth + 120s timeout + 3x retry). Sale-only platform. Flaky but usable.
