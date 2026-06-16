@@ -132,6 +132,9 @@ Supabase objects live under `credeals`, not `public`:
 - `cre_listing_price_history` (append-only watched-field snapshots, 009; existence-guarded pre-apply)
 - `cre_listing_contacts_archive` (contacts snapshot at retirement, 009; existence-guarded pre-apply)
 - `cre_listing_documents_archive` (documents snapshot at retirement, 009; existence-guarded pre-apply)
+- `cre_listing_media`, `cre_listing_links` (detail media/link capture, 011; + `*_archive`; applied to prod, ingest writes gated)
+- `cre_listing_om_facts` (OM/PDF-parsed underwriting facts, 013; + `*_archive`; applied to prod, OM-parse gated so currently empty)
+- `cre_zip_cbsa_crosswalk` (offline ZIP->county+CBSA reference, 014; loaded 33,791 rows)
 - `v_cre_listings_full`
 - `v_cre_active_for_sale`
 - `v_cre_active_for_lease`
@@ -204,14 +207,18 @@ price-history + archive tables, `prior_*` columns, and the retention trigger all
 present; history rows are being written). Still gated for go-ahead:
 deploy the consumer board-gate branch (must precede live T3.1 activation);
 trigger first live status activation; apply the widened `005` views (live DDL,
-alongside the consumer deploy). Tier-B `cre_enrichment_queue` worker
-remains deferred.
+alongside the consumer deploy). The Tier-B `cre_enrichment_queue` worker
+(`cre_enrich.py` + `lib/enrich.ts` + `sql/010`) and the cadence restructure
+(monitor 2x/day + enrich every 4h + additive weekly) SHIPPED in code 2026-06-15;
+the live launchd cutover (load enrich, reload monitor at 2x/day, retire daily)
+is held for go-ahead. Phase-2 data-lift DDL `011`-`014` is APPLIED to prod
+(additive, board unchanged); see `cre_collector/CLAUDE.md` and `START_HERE.md`.
 
 | Module | Role |
 |---|---|
 | `collect.ts` | CLI entry; orchestrates source runs and `--monitor` |
 | `types.ts` | Shared listing types and `SourceResult` contract |
-| `lib/` | `config`, `scrape`, `util`, `broker`, `html` primitives |
+| `lib/` | `config`, `scrape`, `harvest`, `parse`, `geo`, `enrich`, `broker`, `html`, `util` primitives |
 | `sources/*.ts` | Per-broker adapters (one file per source key) |
 | `cre_ingest.py` | Full artifact upsert into `cre_listings` (+ children) |
 | `cre_monitor.py` | Observe-only diff/events/index (007 tables) |

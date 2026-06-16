@@ -11,6 +11,9 @@
 | `config.ts` | CLI `parseArgs` (strict, import-time); `API_URL`, `flags`, `PAGE_CAP`, `CONCURRENCY`, `OUT_PATH` |
 | `scrape.ts` | Firecrawl singleton; `scrapeRaw` / `scrapeDoc` / `scrapeJson` (3× retry); `parseJsonBody` for HTML-wrapped JSON. `scrapeDoc` requests `markdown`/`links`/`images`/`rawHtml` + an `attributes` selector block (video/iframe/anchor) for the harvester |
 | `harvest.ts` | Pure `harvestDetail(doc, ctx)` -> `{media, links, documents, images}`. Classifies video/tour providers, documents, links, gallery images from a detail scrape; identity-dedups media (provider+id, vimeo hash preserved); feeds `cre_listing_media`/`cre_listing_links`. No argv/network import |
+| `parse.ts` | Shared CRE text parsers (price/sqft/cap-rate/address); Python-mirrored by `cre_parse.py`, verified identical via golden vectors (`tests/ts/lib/parse.test.ts`) |
+| `geo.ts` | Pure ZIP/geo normalizers (`zip5`, `geoKey`); the full ZIP->county+CBSA crosswalk lookup lives in Python `cre_geo.py` (backfill + ingest run there) |
+| `enrich.ts` | Tier-B enrichment helpers: batch-claim SQL, URL-keyed completion, dead-letter filtering for `cre_enrich.py` |
 | `broker.ts` | Run-wide `brokers[]` + `brokerRef()` dedupe (`email\|name\|company`); merged by `collect.ts` |
 | `html.ts` | JSON-LD, sitemap XML, entity decode, `stripHtmlText`, `dedupeStrings` |
 | `util.ts` | `clean`, `num`, `prune`, `pmap`, `moneyToNumber`, `isPerSfPriceText`, `boundedInt` |
