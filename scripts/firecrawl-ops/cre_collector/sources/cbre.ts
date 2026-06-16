@@ -1,9 +1,11 @@
 // sources/cbre.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
+import { harvestDetail } from "../lib/harvest.js";
+import { parseLeaseRate } from "../lib/parse.js";
 import { scrapeJson } from "../lib/scrape.js";
-import { ScrapeOpts, SourceResult, Tx } from "../types.js";
-import { clean, num, pmap } from "../lib/util.js";
+import { DocItem, ScrapedDoc, ScrapeOpts, SourceResult, Tx } from "../types.js";
+import { clean, num, pmap, prune } from "../lib/util.js";
 
 
 // --- CBRE: internal listings JSON API, paginated, behind Cloudflare (stealth) ---
@@ -46,6 +48,90 @@ export function cbreTransactionType(aspects: string[]): string {
   const isSale = aspects.includes("isSale");
   const isLet = aspects.includes("isLetting");
   return isSale && isLet ? "Sale/Lease" : isLet ? "Lease" : "Sale";
+}
+
+// Lift stranded structured fields the CBRE listings-api doc exposes but the
+// adapter previously dropped, onto the listing keys cre_ingest.to_row maps. CBRE
+// is enumeration-only (no detail render), so this reads the JSON doc `d` directly.
+// Cap rate, when present, arrives as a Charges entry of kind 'CapRate'/'Yield' or
+// a Dynamic field; year built / floors / units arrive as Dynamic.* numerics. Only
+// clearly-present values are lifted (prune drops the rest), so a sparse doc never
+// clobbers good data. Never throws.
+export function cbreStrandedStructured(d: any): Record<string, any> {
+  const charges: any[] = Array.isArray(d?.["Common.Charges"]) ? d["Common.Charges"] : [];
+  const capCharge = charges.find(
+    (c: any) => /cap\s*rate|yield/i.test(String(c?.["Common.ChargeKind"] ?? "")) && num(c?.["Common.Amount"])
+  );
+  const capRatePct =
+    num(capCharge?.["Common.Amount"]) ?? num(d?.["Dynamic.CapRate"]) ?? num(Number(d?.["Dynamic.CapRate"]));
+  return prune({
+    capRatePct,
+    yearBuilt: num(d?.["Dynamic.YearBuilt"]) ?? num(Number(d?.["Dynamic.YearBuilt"])),
+    floors: num(d?.["Dynamic.NumberOfFloors"]) ?? num(Number(d?.["Dynamic.NumberOfFloors"])),
+    units: num(d?.["Dynamic.NumberOfUnits"]) ?? num(Number(d?.["Dynamic.NumberOfUnits"])),
+    occupancyRate: num(d?.["Dynamic.OccupancyRate"]) ?? num(Number(d?.["Dynamic.OccupancyRate"])),
+    zoning: clean(d?.["Dynamic.Zoning"]),
+  }) ?? {};
+}
+
+// Classify CBRE brochures by their human BrochureName into typed DocItems
+// (an "Offering Memorandum" / "Financials" brochure promotes to docType
+// om/financials instead of a flat 'brochure'), then run them through harvestDetail
+// so the classification + dedup logic is shared with every other source. CBRE is
+// enumeration-only (no detail-page render), so there is no markdown / gallery /
+// iframe surface and media/links are always empty. Classified docs ride the
+// `documents` channel and `brochures` is left empty, so the same url is never
+// inserted into cre_listing_documents twice (that table has no (listing_id,url)
+// unique key). One code path => monitor and full are byte-identical for CBRE.
+function cbreHarvestDocs(
+  d: any,
+  brochureItems: Array<{ name: string | null; url: string }>
+): DocItem[] {
+  // Pre-classify each brochure by its NAME (the url is an opaque CDN path that
+  // rarely carries a keyword). A name-derived docType is passed as a typed
+  // DocItem; harvestDetail trusts the given docType and dedups by url.
+  const baseUrl = cbreListingUrl(String(d?.["Common.PrimaryKey"] ?? ""), "");
+  const extraDocs: DocItem[] = brochureItems
+    .filter((b) => /^https?:\/\//i.test(b.url))
+    .map((b) => ({ url: b.url, title: b.name, docType: cbreDocTypeFromName(b.name) }));
+  return harvestDetail({} as ScrapedDoc, { baseUrl, extraDocs }).documents;
+}
+
+// Extract the WS1 additive scalar fields from a stored CBRE raw_data blob.
+// The blob is the JSON the adapter emits (leaseRateText, headline/url already
+// present); this function re-derives the NEW camelCase fields from them so tests
+// can assert the parse without a network call. Pure: no side effects, never throws.
+export function cbreNewFieldsFromRawData(raw: any): {
+  canonicalUrl: string | null;
+  highlights: string | null;
+  leaseRateMin: number | null;
+  leaseRateMax: number | null;
+  leaseRateType: string | null;
+} {
+  const url = clean(raw?.url) ?? null;
+  const headline = clean(raw?.headline) ?? null;
+  const lrt = clean(raw?.leaseRateText) ?? null;
+  const lr = parseLeaseRate(lrt);
+  return {
+    canonicalUrl: url,
+    highlights: headline,
+    leaseRateMin: lr.min,
+    leaseRateMax: lr.max,
+    leaseRateType: lr.type,
+  };
+}
+
+// Map a CBRE brochure display name to a DocItem docType. Mirrors the harvester's
+// keyword buckets (most-specific first); defaults to 'brochure' (the prior CBRE
+// behavior) when no documentary keyword is present.
+export function cbreDocTypeFromName(name: string | null): DocItem["docType"] {
+  const hay = (name ?? "").toLowerCase();
+  if (/rent[-_ ]?roll/.test(hay)) return "rent_roll";
+  if (/financ|pro[-_ ]?forma|proforma|\bt-?12\b/.test(hay)) return "financials";
+  if (/floor[-_ ]?plan|site[-_ ]?plan/.test(hay)) return "floor_plan";
+  if (/offering|memorandum|\bom\b|teaser/.test(hay)) return "om";
+  if (/flyer/.test(hay)) return "flyer";
+  return "brochure";
 }
 
 export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
@@ -110,10 +196,31 @@ export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<S
         })
       )
       .filter((x: number | null): x is number => x !== null);
+    const brochureItems = (Array.isArray(d["Common.Brochures"]) ? d["Common.Brochures"] : []).map(
+      (b: any) => ({
+        name: clean(b["Common.BrochureName"]),
+        url: cbreBrochureUrl(clean(b["Common.Uri"])),
+      })
+    );
+    const photoUrls = (Array.isArray(d["Common.Photos"]) ? d["Common.Photos"] : [])
+      .map((p: any) => {
+        const r =
+          (p["Common.ImageResources"] ?? []).find((x: any) => x["Common.Breakpoint"] === "original") ??
+          (p["Common.ImageResources"] ?? [])[0];
+        return r ? cbrePhotoUrl(clean(r["Common.Resource.Uri"])) : null;
+      })
+      .filter((u: string | null): u is string => Boolean(u));
+    const listingUrl = cbreListingUrl(d["Common.PrimaryKey"], slug);
+    const leaseRateText = rent
+      ? `${rent["Common.Amount"]} ${clean(rent["Common.ChargeCurrency"]) ?? "USD"}/${clean(rent["Common.ChargeInterval"]) ?? ""} ${clean(rent["Common.ChargeBasis"]) ?? ""}`.trim()
+      : null;
+    const lr = parseLeaseRate(leaseRateText);
     return {
       id: d["Common.PrimaryKey"],
       name,
       headline: text(d["Common.Strapline"]),
+      // WS1: lift highlights from the CBRE strapline/headline field
+      highlights: text(d["Common.Strapline"]) ?? undefined,
       transactionType: cbreTransactionType(aspects),
       assetType: clean(d["Common.UsageType"]),
       description: text(d["Common.LongDescription"]),
@@ -126,27 +233,23 @@ export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<S
       longitude: typeof coord.lon === "number" ? coord.lon : null,
       salePriceUsd: sale ? sale["Common.Amount"] : null,
       salePriceText: sale || tx === "lease" ? null : "Contact broker for pricing",
-      leaseRateText: rent
-        ? `${rent["Common.Amount"]} ${clean(rent["Common.ChargeCurrency"]) ?? "USD"}/${clean(rent["Common.ChargeInterval"]) ?? ""} ${clean(rent["Common.ChargeBasis"]) ?? ""}`.trim()
-        : null,
+      leaseRateText,
+      // WS1: parse lease rate into typed camelCase fields via parseLeaseRate
+      leaseRateMin: lr.min ?? undefined,
+      leaseRateMax: lr.max ?? undefined,
+      leaseRateType: lr.type ?? undefined,
       buildingSizeSqft: num(d["Dynamic.TotalArea"]),
+      ...cbreStrandedStructured(d),
       brokerIds,
-      brochures: (Array.isArray(d["Common.Brochures"]) ? d["Common.Brochures"] : []).map(
-        (b: any) => ({
-          name: clean(b["Common.BrochureName"]),
-          url: cbreBrochureUrl(clean(b["Common.Uri"])),
-        })
-      ),
-      photos: (Array.isArray(d["Common.Photos"]) ? d["Common.Photos"] : [])
-        .map((p: any) => {
-          const r =
-            (p["Common.ImageResources"] ?? []).find(
-              (x: any) => x["Common.Breakpoint"] === "original"
-            ) ?? (p["Common.ImageResources"] ?? [])[0];
-          return r ? cbrePhotoUrl(clean(r["Common.Resource.Uri"])) : null;
-        })
-        .filter(Boolean),
-      url: cbreListingUrl(d["Common.PrimaryKey"], slug),
+      // Brochures are classified by name into typed DocItems on the `documents`
+      // channel; `brochures` left empty to avoid a double-insert (no unique key
+      // on cre_listing_documents). CBRE has no detail page, so no media/links.
+      brochures: [],
+      documents: cbreHarvestDocs(d, brochureItems),
+      photos: photoUrls,
+      url: listingUrl,
+      // WS1: canonicalUrl from the listing URL (col currently ~0%; raw_data->>'url' ~92%)
+      canonicalUrl: listingUrl,
       lastUpdated: clean(d["Common.LastUpdated"])?.slice(0, 10) ?? null,
       created: clean(d["Common.Created"])?.slice(0, 10) ?? null,
     };

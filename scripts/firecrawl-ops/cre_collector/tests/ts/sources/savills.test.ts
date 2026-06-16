@@ -5,6 +5,7 @@ import {
   parseSavillsUsLocation,
   savillsSqft,
   savillsImageUrls,
+  savillsDocumentUrls,
 } from "../../../sources/savills.js";
 
 test("inferStateFromZip maps ZIP prefixes to states", () => {
@@ -45,4 +46,19 @@ test("savillsImageUrls dedupes gallery image sizes", () => {
   const urls = savillsImageUrls(row);
   assert.equal(urls.length, 3);
   assert.ok(urls.every((u) => u.startsWith("https://")));
+});
+
+test("savillsDocumentUrls classifies the floor-plan PDF distinctly from brochures", () => {
+  const docs = savillsDocumentUrls({
+    FloorplanPDFUrl: "https://cdn.savills.com/floorplan.pdf",
+    BrochureGallery: [
+      { Caption: "Marketing Brochure", ImageUrl: "https://cdn.savills.com/brochure.pdf" },
+    ],
+  });
+  const floorplan = docs.find((d) => d.url.endsWith("floorplan.pdf"));
+  const brochure = docs.find((d) => d.url.endsWith("brochure.pdf"));
+  assert.equal(floorplan?.docType, "floor_plan");
+  assert.equal(brochure?.docType, "brochure");
+  // Non-PDF and missing urls are excluded.
+  assert.equal(savillsDocumentUrls({ FloorplanPDFUrl: null, BrochureGallery: [] }).length, 0);
 });

@@ -1,7 +1,9 @@
 // sources/nai-global.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { CONCURRENCY, PAGE_CAP } from "../lib/config.js";
 import { stripHtmlText, titleFromFilename } from "../lib/html.js";
-import { SourceResult, Tx } from "../types.js";
+import { harvestDetail } from "../lib/harvest.js";
+import { parseAmountIgnoringCurrencyLabel, normBuildingClass } from "../lib/parse.js";
+import { LinkItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { clean, num, pmap } from "../lib/util.js";
 
 
@@ -137,6 +139,23 @@ export function naiSizeText(detail: any): string | null {
   return pieces.length ? pieces.join("; ") : null;
 }
 
+/**
+ * Derive building class from the NAI tags array.
+ * Infabode tags carry explicit "BuildingClassA", "BuildingClassB", "BuildingClassC"
+ * tokens. Returns the first matched class letter via normBuildingClass, or null.
+ */
+export function naiBuildingClassFromTags(tags: any): "A" | "B" | "C" | "D" | null {
+  if (!Array.isArray(tags)) return null;
+  for (const tag of tags) {
+    const s = typeof tag === "string" ? tag.trim() : null;
+    if (!s) continue;
+    // Match "BuildingClassA", "BuildingClassB", "BuildingClassC" (case-insensitive).
+    const m = s.match(/^BuildingClass([A-Da-d])$/i);
+    if (m) return normBuildingClass(m[1]) as "A" | "B" | "C" | "D" | null;
+  }
+  return null;
+}
+
 export function naiListingStatus(detail: any): string | null {
   const value = detail?.listingStatus;
   if (Array.isArray(value)) {
@@ -146,6 +165,41 @@ export function naiListingStatus(detail: any): string | null {
   return clean(value);
 }
 
+// Harvest media/links/documents from the Infabode publicPost detail payload.
+// There is no rendered detail page (the source is a GraphQL JSON API), so a
+// minimal ScrapedDoc is synthesized from detail.content (HTML that may embed a
+// video/tour iframe) and detail.postImages, then the stranded structured fields
+// are promoted via ctx.extra*: urlDocument/documentPreview -> documents,
+// urlOriginal -> external_listing link, source.socialLinks -> social links.
+// Pure (no network); never throws (harvestDetail is guarded). Returns nothing
+// useful when detailError is set or detail is absent.
+export function harvestNai(row: any, detail: any): {
+  media: any[];
+  links: any[];
+  documents: any[];
+  images: string[];
+} {
+  if (!detail || typeof detail !== "object") return { media: [], links: [], documents: [], images: [] };
+  const content = typeof detail.content === "string" ? detail.content : "";
+  const images = naiImageUrls(row, detail);
+  const docUrls = naiDocumentUrls(detail);
+  const extraLinks: (LinkItem | string)[] = [];
+  const original = clean(detail.urlOriginal);
+  if (original) extraLinks.push({ url: original, rel: null, linkType: "external_listing" });
+  for (const s of Array.isArray(detail?.source?.socialLinks) ? detail.source.socialLinks : []) {
+    const u =
+      typeof s === "string" ? clean(s) : clean(s?.url) ?? clean(s?.href) ?? clean(s?.link);
+    if (u) extraLinks.push(u); // re-classified (facebook/linkedin/... -> social)
+  }
+  const synthetic: ScrapedDoc = { rawHtml: content, markdown: "", links: [], images };
+  const r = harvestDetail(synthetic, {
+    extraDocs: docUrls,
+    extraImages: images,
+    extraLinks,
+  });
+  return { media: r.media, links: r.links, documents: r.documents, images: r.images };
+}
+
 export function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: string | null): any {
   const id = Number(row?.id);
   const sourceLocations = Array.isArray(detail?.locations) && detail.locations.length ? detail.locations : row?.locations;
@@ -153,6 +207,13 @@ export function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: s
   const coords = detail?.locations?.[0]?.geometry?.coordinates;
   const priceText = naiPriceText(detail);
   const docs = detailError ? [] : naiDocumentUrls(detail);
+  // Capture-everything harvest runs ONLY on a clean detail touch (a real
+  // publicPost payload with no detailError). In monitor mode detail is null and
+  // in the full path a failed detail carries detailError, so harvest is skipped
+  // and the emitted object stays byte-identical to the prior shape (the spread
+  // below adds nothing). The unified `documents` channel supersedes `brochures`
+  // when harvest fires, so the same urlDocument is not inserted twice.
+  const harvested = !detailError && detail ? harvestNai(row, detail) : null;
   const contacts =
     !detailError && clean(detail?.contactEmail)
       ? [
@@ -164,6 +225,41 @@ export function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: s
           },
         ]
       : [];
+  // Phase-2 scalar lift (detail-gated so monitor/failed-detail output stays byte-identical).
+  // canonicalUrl: sourceWebsiteUrl == publicPost.urlOriginal.
+  // salePrice / leaseRate: publicPost.price keyed by transactionMode using
+  //   parseAmountIgnoringCurrencyLabel (provider sends 'POUND' label on USD values).
+  // highlights: tags[] array passed through as-is.
+  // minDivisibleSf / maxDivisibleSf: publicPost.sizeRangeL / sizeRangeH (non-zero).
+  // buildingClass: tags BuildingClassA/B/C via naiBuildingClassFromTags.
+  // extraFacts: listingOffice and sourceOrganization.name for long-tail capture.
+  // statusBadge: NOT emitted — publicPost.listingStatus is contaminated (lease rows
+  //   carry ['FOR_SALE_ON_MARKET']); skip entirely per the gap doc DQ guard.
+  const tags = Array.isArray(detail?.tags) ? detail.tags : [];
+  const detailScalars = detail
+    ? {
+        canonicalUrl: clean(detail?.urlOriginal),
+        ...(tx === "sale"
+          ? { salePriceUsd: parseAmountIgnoringCurrencyLabel(priceText) }
+          : { leaseRateMin: parseAmountIgnoringCurrencyLabel(priceText) }),
+        highlights: tags.length ? [...tags] : undefined,
+        minDivisibleSf: num(detail?.sizeRangeL) || undefined,
+        maxDivisibleSf: num(detail?.sizeRangeH) || undefined,
+        buildingClass: naiBuildingClassFromTags(tags) ?? undefined,
+        extraFacts: (() => {
+          const facts: Record<string, string> = {};
+          // listing_office: the NAI member organization name (e.g. 'NAI Excel').
+          const office = clean(detail?.source?.name ?? row?.source?.name);
+          if (office) facts["listing_office"] = office;
+          // source_organization_name: only distinct from listing_office when the
+          // sourceOrganization has a different name than the feed source.
+          const sourceOrg = clean((detail?.source ?? row?.source)?.name);
+          if (sourceOrg && sourceOrg !== office) facts["source_organization_name"] = sourceOrg;
+          return Object.keys(facts).length ? facts : undefined;
+        })(),
+      }
+    : {};
+
   return {
     id: Number.isFinite(id) ? `infabode:${id}` : null,
     name: clean(detail?.title ?? row?.title),
@@ -180,12 +276,36 @@ export function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: s
     sizeText: naiSizeText(detail),
     buildingSizeSqft: num(detail?.sizeTotal),
     lotSizeAcres: num(detail?.landSize),
+    // Stranded structured-field lift: the publicPost size range maps to the
+    // available / divisible square-foot columns cre_ingest.to_row carries. Gated
+    // on a present detail so a monitor pass (detail=null) emits no new keys and
+    // stays byte-identical. minDivisibleSf/maxDivisibleSf are set by detailScalars
+    // below (Phase-2); availableSf remains here as the existing mapping.
+    ...(detail
+      ? {
+          availableSf: num(detail?.sizeRangeL) ?? num(detail?.sizeRangeH) ?? num(detail?.sizeTotal),
+        }
+      : {}),
     listingOffice: clean(detail?.source?.name ?? row?.source?.name),
     sourceCompany: clean(detail?.source?.name ?? row?.source?.name),
     brokerIds: [],
     contactsDetailed: contacts,
-    brochures: docs.map((url) => ({ name: titleFromFilename(url), url })),
-    photos: naiImageUrls(row, detail),
+    // When harvest fired (clean detail), documents ride the unified channel and
+    // brochures is dropped to avoid a duplicate insert; otherwise keep the legacy
+    // brochures so monitor/failed-detail output is byte-identical.
+    ...(harvested
+      ? {
+          brochures: undefined,
+          documents: harvested.documents,
+          media: harvested.media,
+          links: harvested.links,
+          markdown:
+            typeof detail?.content === "string" && stripHtmlText(detail.content)
+              ? stripHtmlText(detail.content)
+              : undefined,
+        }
+      : { brochures: docs.map((url) => ({ name: titleFromFilename(url), url })) }),
+    photos: harvested && harvested.images.length ? harvested.images : naiImageUrls(row, detail),
     url: Number.isFinite(id) ? `${NAI_LISTING_URL_BASE}/${id}` : NAI_WIDGET_URL,
     lastUpdated: clean(row?.publishedAt),
     feedRow: row,
@@ -195,8 +315,10 @@ export function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: s
     sourceWebsiteUrl: clean(detail?.urlOriginal),
     sourceSocialLinks: Array.isArray(detail?.source?.socialLinks) ? detail.source.socialLinks : undefined,
     listingStatus: naiListingStatus(detail),
-    tags: Array.isArray(detail?.tags) ? detail.tags : undefined,
+    tags: tags.length ? tags : undefined,
     providerCurrency: clean(detail?.currency),
+    // Phase-2 scalar fields (detail-gated, additive):
+    ...detailScalars,
   };
 }
 

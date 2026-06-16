@@ -19,8 +19,12 @@
 -- names now reads as "on market". Until T3.1 status activation runs, the board
 -- is 100% 'active', so this widening is a no-op (zero row delta).
 --
--- Requires: 001..004. Idempotent: views use CREATE OR REPLACE; the trigger
--- function is CREATE OR REPLACE and triggers are dropped-then-created.
+-- Requires: 001..004, plus 011 (media/links) and 013 (om_facts) for the
+-- v_cre_listings_full LATERALs, and 012 for the institutional / geo columns
+-- surfaced by v_cre_active_for_sale / v_cre_active_for_lease. 000_run_all.sql
+-- runs 005 LAST so all of those exist first. Idempotent: views use CREATE OR
+-- REPLACE; the trigger function is CREATE OR REPLACE and triggers are
+-- dropped-then-created.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -52,7 +56,10 @@ SELECT
     b.slug AS brokerage_slug,
     COALESCE(c.contacts,  '[]'::json) AS contacts,
     COALESCE(d.documents, '[]'::json) AS documents,
-    COALESCE(i.images,    '[]'::json) AS images
+    COALESCE(i.images,    '[]'::json) AS images,
+    COALESCE(md.media,    '[]'::json) AS media,
+    COALESCE(lk.links,    '[]'::json) AS links,
+    COALESCE(of.om_facts, '[]'::json) AS om_facts
 FROM credeals.cre_listings l
 JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
 LEFT JOIN LATERAL (
@@ -81,9 +88,35 @@ LEFT JOIN LATERAL (
     ) ORDER BY ci.is_primary DESC, ci.display_order) AS images
     FROM credeals.cre_listing_images ci WHERE ci.listing_id = l.id
 ) i ON true
+LEFT JOIN LATERAL (
+    SELECT json_agg(json_build_object(
+        'id', cm.id, 'media_type', cm.media_type, 'provider', cm.provider,
+        'url', cm.url, 'embed_url', cm.embed_url, 'title', cm.title
+    ) ORDER BY cm.media_type, cm.created_at) AS media
+    FROM credeals.cre_listing_media cm WHERE cm.listing_id = l.id
+) md ON true
+LEFT JOIN LATERAL (
+    SELECT json_agg(json_build_object(
+        'id', cl.id, 'link_type', cl.link_type, 'url', cl.url, 'rel', cl.rel
+    ) ORDER BY cl.link_type, cl.created_at) AS links
+    FROM credeals.cre_listing_links cl WHERE cl.listing_id = l.id
+) lk ON true
+-- OM/PDF-parsed facts (scalar audit trail + unit_mix + rent_roll), provenance
+-- included, mirroring the media/links LATERALs. Created after 013 so the
+-- cre_listing_om_facts table exists before this view references it.
+LEFT JOIN LATERAL (
+    SELECT json_agg(json_build_object(
+        'id', cof.id, 'fact_group', cof.fact_group, 'fact_key', cof.fact_key,
+        'fact_value_text', cof.fact_value_text, 'fact_value_num', cof.fact_value_num,
+        'unit_count', cof.unit_count, 'source_doc_url', cof.source_doc_url,
+        'parser_version', cof.parser_version, 'confidence', cof.confidence,
+        'parsed_at', cof.parsed_at
+    ) ORDER BY cof.fact_group, cof.fact_key) AS om_facts
+    FROM credeals.cre_listing_om_facts cof WHERE cof.listing_id = l.id
+) of ON true
 WHERE l.deleted_at IS NULL;
 
-COMMENT ON VIEW credeals.v_cre_listings_full IS 'Listing + brokerage name + contacts/documents/images as JSON arrays. Excludes soft-deleted. Primary agent read.';
+COMMENT ON VIEW credeals.v_cre_listings_full IS 'Listing + brokerage name + contacts/documents/images/media/links/om_facts as JSON arrays. Excludes soft-deleted. Primary agent read.';
 COMMENT ON COLUMN credeals.v_cre_listings_full.scraped_at IS 'Pass-through from cre_listings.scraped_at. Collector snapshot time, not broker listing date.';
 COMMENT ON COLUMN credeals.v_cre_listings_full.listing_date IS 'Pass-through from cre_listings.listing_date. Source-provided first-listed/published date only when explicitly exposed; otherwise null or provisional. Do not label as Listed unless provenance proves it.';
 COMMENT ON COLUMN credeals.v_cre_listings_full.updated_date IS 'Pass-through from cre_listings.updated_date. Broker/source last-updated or recency field when exposed; not necessarily first-listed/on-market.';
@@ -104,10 +137,13 @@ SELECT
     l.external_id, l.source_url, l.canonical_url,
     l.title, l.address, l.city, l.state, l.zip, l.county,
     l.market, l.submarket, l.lat, l.lng,
-    l.property_type,
+    l.cbsa_code, l.cbsa_name,
+    l.property_type, l.property_subtype, l.building_class,
     l.size_sf, l.lot_size_sf, l.year_built, l.units,
     l.sale_price_usd, l.sale_price_per_sf, l.cap_rate, l.noi,
     l.gross_revenue, l.occupancy_rate,
+    l.apn, l.tenant_name, l.guarantor, l.lease_years_remaining,
+    l.price_per_unit, l.grm, l.price_per_acre, l.num_rooms, l.revpar,
     l.highlights, l.description,
     pc.name  AS primary_contact_name,
     pc.email AS primary_contact_email,
@@ -127,7 +163,7 @@ WHERE l.deleted_at IS NULL
   AND l.status IN ('active', 'under_contract', 'pending')
   AND l.transaction_type IN ('sale', 'sale_or_lease');
 
-COMMENT ON VIEW credeals.v_cre_active_for_sale IS 'On-market for-sale listings (active/under_contract/pending) with brokerage + primary contact. Mandate-fit screening / OriginationBrief seed.';
+COMMENT ON VIEW credeals.v_cre_active_for_sale IS 'On-market for-sale listings (active/under_contract/pending) with brokerage + primary contact, plus institutional sale fields (subtype, class, APN, tenant/guarantor, lease years remaining, M&M valuation multiples) and derived CBSA. Mandate-fit screening / OriginationBrief seed.';
 COMMENT ON COLUMN credeals.v_cre_active_for_sale.scraped_at IS 'Pass-through from cre_listings.scraped_at. Collector snapshot time, not broker listing date.';
 COMMENT ON COLUMN credeals.v_cre_active_for_sale.listing_date IS 'Pass-through from cre_listings.listing_date. Source-provided first-listed/published date only when explicitly exposed; otherwise null or provisional.';
 COMMENT ON COLUMN credeals.v_cre_active_for_sale.updated_at IS 'Pass-through from cre_listings.updated_at. Database row mutation time, not source listing recency.';
@@ -144,9 +180,12 @@ SELECT
     l.external_id, l.source_url, l.canonical_url,
     l.title, l.address, l.city, l.state, l.zip, l.county,
     l.market, l.submarket, l.lat, l.lng,
-    l.property_type,
+    l.cbsa_code, l.cbsa_name,
+    l.property_type, l.property_subtype, l.building_class,
     l.size_sf, l.available_sf, l.min_divisible_sf, l.max_divisible_sf,
     l.year_built, l.floors,
+    l.clear_height_ft, l.dock_doors, l.drive_in_doors,
+    l.power_service, l.rail_served,
     l.lease_rate_min, l.lease_rate_max, l.lease_rate_type,
     l.term_min_months, l.term_max_months,
     l.occupancy_rate, l.highlights, l.description,
@@ -168,7 +207,7 @@ WHERE l.deleted_at IS NULL
   AND l.status IN ('active', 'under_contract', 'pending')
   AND l.transaction_type IN ('lease', 'sale_or_lease');
 
-COMMENT ON VIEW credeals.v_cre_active_for_lease IS 'On-market for-lease listings (active/under_contract/pending) with brokerage + primary contact, including divisibility and lease terms.';
+COMMENT ON VIEW credeals.v_cre_active_for_lease IS 'On-market for-lease listings (active/under_contract/pending) with brokerage + primary contact, including divisibility, lease terms, industrial specs (clear height, dock/drive-in doors, power, rail), subtype/class, and derived CBSA.';
 COMMENT ON COLUMN credeals.v_cre_active_for_lease.scraped_at IS 'Pass-through from cre_listings.scraped_at. Collector snapshot time, not broker listing date.';
 COMMENT ON COLUMN credeals.v_cre_active_for_lease.listing_date IS 'Pass-through from cre_listings.listing_date. Source-provided first-listed/published date only when explicitly exposed; otherwise null or provisional.';
 COMMENT ON COLUMN credeals.v_cre_active_for_lease.updated_at IS 'Pass-through from cre_listings.updated_at. Database row mutation time, not source listing recency.';

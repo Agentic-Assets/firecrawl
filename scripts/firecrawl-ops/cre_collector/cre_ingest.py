@@ -30,7 +30,9 @@ requires the savills seed row in credeals.cre_brokerages
 """
 
 import argparse
+import csv
 import hashlib
+import io
 import json
 import os
 import re
@@ -39,6 +41,14 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
+
+# Phase-2 data-lift: the shared text parsers live in cre_parse.py (the Python
+# mirror of lib/parse.ts), so the ingest, the monitor, and the WS2 backfill all
+# share ONE implementation proven identical to TS via the golden test vectors.
+# cre_parse is import-safe (stdlib only, no I/O). The existing ingest helpers
+# below (parse_lease_rates, parse_money, parse_size_text, is_sale_psf_text)
+# delegate to it without changing their observable to_row()-level behavior.
+import cre_parse
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -192,85 +202,33 @@ def norm_cap_rate(v):
     return round(frac, 6) if 0 < frac < 0.5 else None
 
 
-_MONEY_RE = re.compile(r"\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)")
-_SALE_PSF_TEXT_RE = re.compile(
-    r"(?:/|\bper\s+)\s*(?:s\.?f\.?|sq\.?\s*ft|square\s*feet)|\bpsf\b",
-    re.I,
-)
-# "$10 - 16", "$1.50 to 2.25": the upper bound often has no $ of its own
-_MONEY_RANGE_RE = re.compile(
-    r"\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:-|–|to)\s*\$?\s*([0-9][0-9,]*(?:\.[0-9]+)?)"
-)
-
-
 def parse_lease_rates(text):
     """Conservative $/SF/year (min, max) from free-text lease rates.
 
-    Only trusts values that are explicitly per square foot; monthly per-SF
-    rates are annualized. Anything else (gross monthly rent, 'Negotiable')
-    stays in raw_data only.
+    Thin shim over cre_parse.parse_lease_rate (the golden-vector source of
+    truth). Drops the basis-type third element so the existing two-tuple call
+    sites (to_row, merge_rows neighbors) are unchanged. cre_parse.parse_lease_rate
+    SUPERSEDES the prior inline logic (contract C.1): it additionally trusts a
+    bare "$N" per-SF field (M&M / Cushman "Rent Per SF") and keeps the first
+    per-SF value of a dual "$19 ($10/SF NNN)" rate.
     """
-    if not text or not isinstance(text, str):
-        return None, None
-    low = text.lower()
-    if not re.search(r"(/|per\s|\s)s\.?f|psf|square\s*f", low):
-        return None, None
-    m = _MONEY_RANGE_RE.search(text)
-    if m:
-        nums = [float(m.group(1).replace(",", "")), float(m.group(2).replace(",", ""))]
-        # Buildout sometimes formats a suite-size range as a money range, e.g.
-        # "$2.50 - 250 SF/month". Treat large upper bounds as unsafe rather
-        # than promoting suite size into an annual PSF lease rate.
-        if max(nums) > 100 and min(nums) < 100:
-            return None, None
-    else:
-        nums = [float(x.replace(",", "")) for x in _MONEY_RE.findall(text)]
-    nums = [n for n in nums if 0 < n <= 500]
-    if not nums:
-        return None, None
-    monthly = bool(re.search(r"/\s*mo|month", low))
-    annual = bool(re.search(r"/\s*yr|year|annual|/\s*a\b", low))
-    if monthly and not annual:
-        nums = [n * 12 for n in nums]
-    elif not annual and min(nums) > 100:
-        return None, None  # per-SF but implausible as annual; don't guess
-    nums = [n for n in nums if 0 < n <= 500]
-    if not nums:
-        return None, None
-    lo, hi = min(nums), max(nums)
-    return round(lo, 2), (round(hi, 2) if hi > lo else None)
+    lo, hi, _type = cre_parse.parse_lease_rate(text)
+    return lo, hi
 
 
 def parse_money(text):
-    if not text or not isinstance(text, str):
-        return None
-    m = _MONEY_RE.search(text)
-    return float(m.group(1).replace(",", "")) if m else None
+    return cre_parse.parse_money(text)
 
 
 def is_sale_psf_text(text):
-    return bool(text and isinstance(text, str) and _SALE_PSF_TEXT_RE.search(text))
-
-
-_SF_RE = re.compile(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:sf\b|sq\.?\s*ft|square\s*feet)", re.I)
-_ACRE_RE = re.compile(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*acres?\b", re.I)
+    return cre_parse.is_per_sf_text(text)
 
 
 def parse_size_text(text):
-    """(size_sf, lot_size_sf) parsed from a free-text size summary."""
-    if not text or not isinstance(text, str):
-        return None, None
-    size_sf = None
-    lot_sf = None
-    m = _SF_RE.search(text)
-    if m:
-        size_sf = float(m.group(1).replace(",", ""))
-        if size_sf > 1_000_000_000:
-            size_sf = None
-    m = _ACRE_RE.search(text)
-    if m:
-        lot_sf = float(m.group(1).replace(",", "")) * SQFT_PER_ACRE
-    return size_sf, lot_sf
+    """(size_sf, lot_size_sf) parsed from a free-text size summary.
+
+    Delegates to cre_parse.parse_size_text (identical to lib/parse.ts)."""
+    return cre_parse.parse_size_text(text)
 
 
 def num_or_none(v, lo=0, hi=None):
@@ -288,6 +246,175 @@ def iso_date_or_none(v):
         return None
     m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", v.strip())
     return m.group(0) if m else None
+
+
+def clean_text(v, limit=None):
+    """Trimmed non-empty string, or None. Optional length cap."""
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    if not s:
+        return None
+    return s[:limit] if limit else s
+
+
+def str_array_or_none(v, limit=200):
+    """List of trimmed non-empty strings (deduped, order-preserving), or None.
+
+    Used for highlights[] / amenities[] lift into cre_listings text[] columns. A
+    non-list, or a list with no usable strings, yields None so COALESCE-keep in
+    the upsert never blanks a prior good array.
+    """
+    if not isinstance(v, list):
+        return None
+    out = []
+    seen = set()
+    for item in v:
+        s = item.strip() if isinstance(item, str) else None
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s[:limit])
+    return out or None
+
+
+def norm_occupancy_rate(v):
+    """Occupancy as a fraction in (0, 1], or None. Accepts 0-100 percent or a
+    fraction; mirrors norm_cap_rate's percent-or-fraction tolerance."""
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or v <= 0:
+        return None
+    frac = float(v) if v <= 1 else v / 100.0
+    return round(frac, 6) if 0 < frac <= 1 else None
+
+
+def norm_lease_rate_type(v):
+    """Map a free-text lease-rate type to one of the four enum tokens allowed by
+    the cre_listings.lease_rate_type CHECK ('nnn','modified_gross','gross',
+    'full_service'), or None for anything unrecognized.
+
+    Clamping unknowns to None (not 'other', which is NOT in this CHECK) keeps the
+    COALESCE-keep upsert from clobbering a prior good value and guarantees the
+    CHECK never trips. Mirrors norm_property_type / the doc_type CASE-map clamp."""
+    if not isinstance(v, str):
+        return None
+    low = v.strip().lower()
+    if not low:
+        return None
+    # Order matters: check the more specific variants before the bare "gross".
+    if "modified gross" in low or "mod gross" in low or "modified_gross" in low:
+        return "modified_gross"
+    if "full service" in low or "full-service" in low or "fsg" in low or "full_service" in low:
+        return "full_service"
+    if "nnn" in low or "triple net" in low or "triple-net" in low:
+        return "nnn"
+    if "gross" in low:
+        return "gross"
+    return None
+
+
+# Phase-2 data-lift institutional-field normalizers (contract Section B). Each
+# clamps to None on anything unparseable so the COALESCE-keep upsert never
+# clobbers a prior good value and the DB CHECKs (sql/012) never trip.
+
+
+def norm_building_class(v):
+    """Map a source class/subtype string to 'A'|'B'|'C'|'D' or None. Delegates to
+    cre_parse.norm_building_class (identical to lib/parse.ts). Never infers a
+    class from a property subtype with no class token."""
+    return cre_parse.norm_building_class(v)
+
+
+def int_or_none(v, lo=0, hi=None):
+    """num_or_none then truncated to int. For dock_doors / drive_in_doors /
+    num_rooms, which are integer columns (sql/012). None passes through."""
+    n = num_or_none(v, lo=lo, hi=hi)
+    return int(n) if n is not None else None
+
+
+def bool_or_none(v):
+    """True/False passthrough; anything else (including a truthy/falsy non-bool)
+    is None so a missing flag never writes a definitive False (rail_served)."""
+    return v if isinstance(v, bool) else None
+
+
+def extra_facts_or_none(v):
+    """A dict of snake_case-keyed long-tail facts, or None (contract A.1 / B).
+
+    Drops null/empty values and non-string keys; coerces keys to stable
+    snake_case strings. Returns None for a non-dict or an all-empty dict so the
+    jsonb `||` merge in the upsert keeps the prior blob on an empty pass
+    (COALESCE/merge-keep, invariant H). Never raises on odd input.
+    """
+    if not isinstance(v, dict):
+        return None
+    out = {}
+    for k, val in v.items():
+        if not isinstance(k, str):
+            continue
+        key = k.strip()
+        if not key:
+            continue
+        if val is None:
+            continue
+        if isinstance(val, str):
+            sval = val.strip()
+            if not sval:
+                continue
+            out[key] = sval
+        elif isinstance(val, bool):
+            out[key] = val
+        elif isinstance(val, (int, float)):
+            out[key] = val
+        elif isinstance(val, (list, dict)):
+            if val:
+                out[key] = val
+        # other types are skipped
+    return out or None
+
+
+_OM_FACT_GROUPS = {"scalar", "unit_mix", "rent_roll"}
+
+
+def om_facts_rows(v):
+    """Stage OM/PDF-parsed facts into cre_listing_om_facts rows (contract A.2 / B).
+
+    The OM-parse tier (WS2) emits `omFacts` as a list of provenance-bearing
+    dicts. Each row MUST carry a non-empty fact_key, a source_doc_url, and a
+    parser_version (the provenance contract; A.2). Rows missing any required
+    provenance field are dropped (never fabricate an audit trail). fact_group
+    clamps to scalar/unit_mix/rent_roll; confidence clamps to (0, 1] or None.
+    Returns a list (possibly empty) so the build_sql staging stays uniform.
+    """
+    if not isinstance(v, list):
+        return []
+    out = []
+    for f in v:
+        if not isinstance(f, dict):
+            continue
+        fact_key = clean_text(f.get("factKey") or f.get("fact_key"), 128)
+        source_doc_url = http_url_or_none(f.get("sourceDocUrl") or f.get("source_doc_url"))
+        parser_version = clean_text(f.get("parserVersion") or f.get("parser_version"), 64)
+        if not fact_key or not source_doc_url or not parser_version:
+            continue  # provenance is required on every OM-derived row
+        group = (f.get("factGroup") or f.get("fact_group") or "scalar")
+        group = group if group in _OM_FACT_GROUPS else "scalar"
+        conf = num_or_none(f.get("confidence"), lo=-0.0001, hi=1)
+        if conf is not None and not (0 <= conf <= 1):
+            conf = None
+        out.append(
+            {
+                "factGroup": group,
+                "factKey": fact_key,
+                "factValueText": clean_text(f.get("factValueText") or f.get("fact_value_text"), 2000),
+                "factValueNum": num_or_none(f.get("factValueNum") or f.get("fact_value_num"),
+                                            lo=-1e15, hi=1e15),
+                "unitCount": int_or_none(f.get("unitCount") or f.get("unit_count"), lo=-1, hi=1e6),
+                "sourceDocUrl": source_doc_url,
+                "parserVersion": parser_version,
+                "confidence": conf,
+            }
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +499,23 @@ STATUS_SOURCE_PATHS = {
     "savills": [],
     "transwestern": [],
 }
+
+# Phase-2 data-lift: a UNIVERSAL leading status path read for EVERY source
+# before its per-source STATUS_SOURCE_PATHS list. Adapters surface a source
+# status badge as `statusBadge`. Monitor enumeration stays byte-identical for a
+# per-source reason, NOT a single blanket gate: newmark emits statusBadge only on
+# the full path (gated behind `!monitor`, like its media/links promotion);
+# buildout's badge is derived from the native `underContract` field that already
+# drove norm_status pre-diff, so the monitor artifact's status value is unchanged;
+# colliers-main monitor emits a sparse {id,url,lastmod} object that never carries
+# the badge; jll / jll-investor / colliers-ST monitor return []. norm_status maps
+# the badge through STATUS_RULES; the value is STILL subject to the OPT-IN,
+# default-OFF activation gate (apply_status_activation_gate), so a badge NEVER
+# auto-activates and is NEVER written directly to cre_listings.status. Kept
+# SEPARATE from STATUS_SOURCE_PATHS (rather than prepended to every list) so the
+# disappearance-only sources keep their literal [] classification (a source with
+# no badge contributes no signal, exactly as before).
+_STATUS_UNIVERSAL_PATHS = ["statusBadge"]
 
 # Boolean status signals: a path that resolves to True maps to this canonical
 # token (then run through STATUS_RULES); False/None contributes no signal
@@ -480,7 +624,10 @@ def norm_status(listing) -> "Optional[str]":
     if not isinstance(listing, dict):
         return None
     source_key = listing.get("sourceKey")
-    paths = STATUS_SOURCE_PATHS.get(source_key, [])
+    # The universal `statusBadge` path is read first for EVERY source (Phase-2
+    # data-lift), then the source's native paths. A disappearance-only source
+    # with no badge yields the same result as before (paths effectively empty).
+    paths = _STATUS_UNIVERSAL_PATHS + STATUS_SOURCE_PATHS.get(source_key, [])
 
     # Both raw_data shapes: flat listing, plus dual {primary, secondary_pass}.
     subs = [listing]
@@ -615,13 +762,37 @@ def to_row(listing, brokers_by_idx, scraped_at):
     sale_price_text = listing.get("salePriceText")
     sale_price = num_or_none(listing.get("salePriceUsd"), lo=100, hi=1e11)
     price_per_sf = num_or_none(listing.get("salePricePerSf"), lo=0, hi=10000)
+    # (DQ guard 1) NAI 'POUND '-labeled price: the value is really USD with a wrong
+    # currency LABEL (RAW_DATA_GAP doc). When salePriceUsd is absent/zero but the
+    # text carries a stripped currency label, recover the numeric as USD. Scoped
+    # to nai-global and only used as a fallback so a clean numeric is never altered.
+    if sale_price is None and source_key == "nai-global" and isinstance(sale_price_text, str):
+        sale_price = num_or_none(
+            cre_parse.parse_amount_ignoring_currency_label(sale_price_text), lo=100, hi=1e11
+        )
+    # (DQ guard 6) Newmark 'Subject to Offer' / non-numeric price: num_or_none
+    # already drops a non-numeric salePriceUsd, and parse_money only matches a real
+    # "$N" token, so a phrase like "Subject to Offer" never promotes to a number.
+    # No extra branch needed; the existing numeric clamps cover it.
     if is_sale_psf_text(sale_price_text):
+        # (DQ guard 2) Lee salePriceUsd per-SF conflation: a per-SF sale text means
+        # the absolute sale price must NOT be read; route it to sale_price_per_sf.
         price_per_sf = price_per_sf or num_or_none(parse_money(sale_price_text), lo=0, hi=10000)
         sale_price = None
     if sale_price and size_sf and size_sf > 100:
         price_per_sf = round(sale_price / size_sf, 2)
 
+    # (DQ guard 3) AY $5000/SF/YR anomaly + the >500 $/SF/yr cap live in
+    # cre_parse.parse_lease_rate, so parse_lease_rates returns (None, None) for them.
     lease_min, lease_max = parse_lease_rates(listing.get("leaseRateText"))
+    # An adapter may pre-parse a cleaner lease rate than leaseRateText; prefer the
+    # explicit leaseRateMin/Max when present (contract B), COALESCE-style.
+    lease_min = lease_min if lease_min is not None else num_or_none(
+        listing.get("leaseRateMin"), lo=0, hi=500
+    )
+    lease_max = lease_max if lease_max is not None else num_or_none(
+        listing.get("leaseRateMax"), lo=0, hi=500
+    )
 
     contacts = []
     source_contacts = listing.get("contactsDetailed") or []
@@ -640,6 +811,9 @@ def to_row(listing, brokers_by_idx, scraped_at):
                 {
                     "name": c.get("name"),
                     "title": c.get("title"),
+                    # Broker real-estate license string as printed (sql/012
+                    # cre_listing_contacts.license). M&M emits it; others may not.
+                    "license": clean_text(c.get("license"), 64),
                     "email": c.get("email"),
                     "phone": c.get("phone"),
                     "company": c.get("company") or listing.get("sourceCompany"),
@@ -660,6 +834,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
                 {
                     "name": b.get("name"),
                     "title": b.get("title"),
+                    "license": clean_text(b.get("license"), 64),
                     "email": b.get("email"),
                     "phone": b.get("phone"),
                     "company": b.get("company") or listing.get("sourceCompany"),
@@ -673,12 +848,68 @@ def to_row(listing, brokers_by_idx, scraped_at):
         if isinstance(d, dict):
             doc_url = http_url_or_none(d.get("url"))
             if doc_url:
-                documents.append({"title": d.get("name"), "url": doc_url, "docType": "brochure"})
+                documents.append(
+                    {"title": d.get("name"), "url": doc_url, "docType": d.get("docType") or "brochure"}
+                )
+    # Harvested DocItems (lib/harvest.ts classified docs) ride the same documents
+    # channel; honor the per-doc docType (default 'brochure'), http-url filtered.
+    # doc_type classification on the forward path is the adapter's job (lib/
+    # harvest.classifyDoc, already shipped); to_row honors the source docType
+    # verbatim. The Python classify_doc mirror (cre_parse) is for the WS2
+    # backfill / doc-reclassification scripts (contract Section D), not re-run here.
+    for d in listing.get("documents") or []:
+        if isinstance(d, dict):
+            doc_url = http_url_or_none(d.get("url"))
+            if doc_url:
+                documents.append(
+                    {"title": d.get("title"), "url": doc_url, "docType": d.get("docType") or "brochure"}
+                )
 
     images = []
     for i, p in enumerate(listing.get("photos") or []):
         if isinstance(p, str) and p.startswith("http"):
             images.append({"url": p, "isPrimary": i == 0, "order": i})
+
+    # Media (video / virtual-tour / matterport / 360) and outbound links harvested
+    # from detail pages (lib/harvest.ts). Bare strings normalize to the default
+    # 'other' type; everything is http-url filtered so non-URL noise never stages.
+    media = []
+    for m in listing.get("media") or []:
+        if isinstance(m, str):
+            mu = http_url_or_none(m)
+            if mu:
+                media.append(
+                    {"mediaType": "other", "provider": None, "url": mu,
+                     "embedUrl": None, "title": None}
+                )
+        elif isinstance(m, dict):
+            mu = http_url_or_none(m.get("url"))
+            if mu:
+                media.append(
+                    {"mediaType": m.get("mediaType") or "other",
+                     "provider": m.get("provider"), "url": mu,
+                     "embedUrl": http_url_or_none(m.get("embedUrl")),
+                     "title": m.get("title")}
+                )
+
+    links = []
+    for ln in listing.get("links") or []:
+        if isinstance(ln, str):
+            lu = http_url_or_none(ln)
+            if lu:
+                links.append({"url": lu, "rel": None, "linkType": "other"})
+        elif isinstance(ln, dict):
+            lu = http_url_or_none(ln.get("url"))
+            if lu:
+                links.append({"url": lu, "rel": ln.get("rel"),
+                              "linkType": ln.get("linkType") or "other"})
+
+    # OM-parsed facts (cre_listing_om_facts rows, sql/013). The OM-parse tier
+    # (WS2) emits `omFacts` as a list of provenance-bearing dicts; to_row stages
+    # them defensively (each row requires source_doc_url + parser_version). The
+    # cre_listings scalar COALESCE-write is the OM tier's job (it sets noi etc.
+    # on the listing object before this); here we only stage the audit-trail rows.
+    om_facts = om_facts_rows(listing.get("omFacts"))
 
     title = listing.get("name") or listing.get("headline") or listing.get("street")
     desc = listing.get("description")
@@ -687,6 +918,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "slug": slug,
         "external_id": external_id,
         "source_url": url,
+        "canonical_url": http_url_or_none(listing.get("canonicalUrl")),
         "transaction_type": transaction_type_of(listing),
         "property_type": norm_property_type(listing.get("assetType")),
         "title": title[:500] if isinstance(title, str) else None,
@@ -706,9 +938,47 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "sale_price_usd": sale_price,
         "sale_price_per_sf": price_per_sf,
         "cap_rate": norm_cap_rate(listing.get("capRatePct")),
+        "noi": num_or_none(listing.get("noi"), lo=0, hi=1e12),
+        "gross_revenue": num_or_none(listing.get("grossRevenue"), lo=0, hi=1e12),
+        "occupancy_rate": norm_occupancy_rate(listing.get("occupancyRate")),
+        "units": num_or_none(listing.get("units"), lo=0, hi=1e6),
+        "floors": num_or_none(listing.get("floors"), lo=0, hi=1e4),
+        "parking_spaces": num_or_none(listing.get("parkingSpaces"), lo=0, hi=1e6),
+        "parking_ratio": num_or_none(listing.get("parkingRatio"), lo=0, hi=1e4),
+        "available_sf": num_or_none(listing.get("availableSf"), lo=0, hi=1e9),
+        "min_divisible_sf": num_or_none(listing.get("minDivisibleSf"), lo=0, hi=1e9),
+        "max_divisible_sf": num_or_none(listing.get("maxDivisibleSf"), lo=0, hi=1e9),
+        "term_min_months": num_or_none(listing.get("termMinMonths"), lo=0, hi=1e4),
+        "term_max_months": num_or_none(listing.get("termMaxMonths"), lo=0, hi=1e4),
         "lease_rate_min": lease_min,
         "lease_rate_max": lease_max,
+        "lease_rate_type": norm_lease_rate_type(listing.get("leaseRateType")),
+        "zoning": clean_text(listing.get("zoning"), 128),
+        "market": clean_text(listing.get("market"), 128),
+        "submarket": clean_text(listing.get("submarket"), 128),
+        # Phase-2 data-lift institutional columns (sql/012). Each clamps to None
+        # so the COALESCE-keep upsert never blanks a fuller prior capture.
+        "building_class": norm_building_class(listing.get("buildingClass")),
+        "property_subtype": clean_text(listing.get("propertySubtype"), 96),
+        "apn": clean_text(listing.get("apn"), 64),
+        "tenant_name": clean_text(listing.get("tenantName"), 256),
+        "guarantor": clean_text(listing.get("guarantor"), 256),
+        "lease_years_remaining": num_or_none(listing.get("leaseYearsRemaining"), lo=0, hi=99),
+        "price_per_unit": num_or_none(listing.get("pricePerUnit"), lo=0, hi=1e9),
+        "grm": num_or_none(listing.get("grm"), lo=0, hi=100),
+        "price_per_acre": num_or_none(listing.get("pricePerAcre"), lo=0, hi=1e9),
+        "num_rooms": int_or_none(listing.get("numRooms"), lo=0, hi=1e5),
+        "revpar": num_or_none(listing.get("revpar"), lo=0, hi=1e5),
+        "clear_height_ft": num_or_none(listing.get("clearHeightFt"), lo=0, hi=200),
+        "dock_doors": int_or_none(listing.get("dockDoors"), lo=-1, hi=1e4),
+        "drive_in_doors": int_or_none(listing.get("driveInDoors"), lo=-1, hi=1e4),
+        "power_service": clean_text(listing.get("powerService"), 128),
+        "rail_served": bool_or_none(listing.get("railServed")),
+        "extra_facts": extra_facts_or_none(listing.get("extraFacts")),
+        "highlights": str_array_or_none(listing.get("highlights")),
+        "amenities": str_array_or_none(listing.get("amenities")),
         "description": desc[:20000] if isinstance(desc, str) else None,
+        "markdown": clean_text(listing.get("markdown")),
         "updated_date": iso_date_or_none(listing.get("lastUpdated")),
         "status": norm_status(listing),
         "source_lastmod": group_source_lastmod([listing]),
@@ -718,6 +988,9 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "contacts": contacts,
         "documents": documents,
         "images": images,
+        "media": media,
+        "links": links,
+        "om_facts": om_facts,
         "_modes": {listing.get("transactionMode")},
     }
 
@@ -732,14 +1005,38 @@ def merge_rows(a, b):
     for k in (
         "property_type", "title", "address", "city", "state", "zip", "lat", "lng",
         "size_sf", "lot_size_sf", "year_built", "sale_price_usd", "sale_price_per_sf",
-        "cap_rate", "lease_rate_min", "lease_rate_max", "description", "updated_date",
-        "source_lastmod", "canonical_key",
+        "cap_rate", "noi", "gross_revenue", "occupancy_rate", "units", "floors",
+        "parking_spaces", "parking_ratio", "available_sf", "min_divisible_sf",
+        "max_divisible_sf", "term_min_months", "term_max_months",
+        "lease_rate_min", "lease_rate_max", "lease_rate_type", "zoning",
+        "market", "submarket", "highlights", "amenities", "description",
+        "updated_date", "source_lastmod", "canonical_key", "canonical_url",
+        # Phase-2 data-lift institutional fields: first non-None wins across the
+        # sale+lease passes (a sparse pass never blanks a fuller capture).
+        "building_class", "property_subtype", "apn", "tenant_name", "guarantor",
+        "lease_years_remaining", "price_per_unit", "grm", "price_per_acre",
+        "num_rooms", "revpar", "clear_height_ft", "dock_doors", "drive_in_doors",
+        "power_service", "rail_served",
     ):
         if a[k] is None and b[k] is not None:
             a[k] = b[k]
-    for k in ("contacts", "documents", "images"):
+    for k in ("contacts", "documents", "images", "media", "links", "om_facts"):
         if not a[k] and b[k]:
             a[k] = b[k]
+    # extra_facts: merge the two long-tail blobs (union; the first pass wins a key
+    # collision) so neither pass's facts are lost. Mirrors the jsonb `||` merge in
+    # the upsert (a missing/empty pass keeps the other's blob).
+    ea, eb = a.get("extra_facts"), b.get("extra_facts")
+    if eb:
+        merged_extra = dict(eb)
+        if ea:
+            merged_extra.update(ea)  # a (primary) overrides b on key collision
+        a["extra_facts"] = merged_extra or None
+    # markdown: prefer the longer non-empty capture across the sale+lease passes
+    # (a detail pass with a fuller page wins over a sparse one); never blanks a
+    # prior good capture.
+    am, bm = a.get("markdown") or "", b.get("markdown") or ""
+    a["markdown"] = (am if len(am) >= len(bm) else bm) or None
     # status: a real DROP signal (sold/leased/off_market) from EITHER pass wins
     # over a transitional/None one; otherwise keep the first non-None signal
     # (mirrors norm_status terminal-wins across the sale+lease passes).
@@ -783,9 +1080,21 @@ STAGE_COLS = [
     "slug", "external_id", "source_url", "transaction_type", "property_type",
     "title", "address", "city", "state", "zip", "lat", "lng", "size_sf",
     "lot_size_sf", "year_built", "sale_price_usd", "sale_price_per_sf",
-    "cap_rate", "lease_rate_min", "lease_rate_max", "description",
+    "cap_rate", "noi", "gross_revenue", "occupancy_rate", "units", "floors",
+    "parking_spaces", "parking_ratio", "available_sf", "min_divisible_sf",
+    "max_divisible_sf", "term_min_months", "term_max_months",
+    "lease_rate_min", "lease_rate_max", "lease_rate_type", "zoning",
+    "market", "submarket", "highlights", "amenities", "description", "markdown",
     "updated_date", "scraped_at", "raw_data", "contacts", "documents", "images",
+    "media", "links",
     "status", "source_lastmod", "canonical_key",
+    # Phase-2 data-lift (sql/012): canonical_url + discrete institutional columns
+    # + extra_facts jsonb. om_facts is staged as a jsonb array (sql/013 child).
+    "canonical_url",
+    "building_class", "property_subtype", "apn", "tenant_name", "guarantor",
+    "lease_years_remaining", "price_per_unit", "grm", "price_per_acre",
+    "num_rooms", "revpar", "clear_height_ft", "dock_doors", "drive_in_doors",
+    "power_service", "rail_served", "extra_facts", "om_facts",
 ]
 
 
@@ -876,10 +1185,23 @@ CREATE TEMP TABLE _stage (
     property_type text, title text, address text, city text, state text,
     zip text, lat double precision, lng double precision, size_sf numeric,
     lot_size_sf numeric, year_built integer, sale_price_usd numeric,
-    sale_price_per_sf numeric, cap_rate numeric, lease_rate_min numeric,
-    lease_rate_max numeric, description text, updated_date timestamptz,
+    sale_price_per_sf numeric, cap_rate numeric, noi numeric,
+    gross_revenue numeric, occupancy_rate numeric, units integer, floors integer,
+    parking_spaces integer, parking_ratio numeric, available_sf numeric,
+    min_divisible_sf numeric, max_divisible_sf numeric, term_min_months integer,
+    term_max_months integer, lease_rate_min numeric, lease_rate_max numeric,
+    lease_rate_type text, zoning text, market text, submarket text,
+    highlights jsonb, amenities jsonb, description text, markdown text,
+    updated_date timestamptz,
     scraped_at timestamptz, raw_data jsonb, contacts jsonb, documents jsonb,
-    images jsonb, status text, source_lastmod timestamptz, canonical_key text
+    images jsonb, media jsonb, links jsonb,
+    status text, source_lastmod timestamptz, canonical_key text,
+    canonical_url text,
+    building_class text, property_subtype text, apn text, tenant_name text,
+    guarantor text, lease_years_remaining numeric, price_per_unit numeric,
+    grm numeric, price_per_acre numeric, num_rooms integer, revpar numeric,
+    clear_height_ft numeric, dock_doors integer, drive_in_doors integer,
+    power_service text, rail_served boolean, extra_facts jsonb, om_facts jsonb
 ) ON COMMIT DROP;""")
     w(f"COPY _stage ({', '.join(STAGE_COLS)}) FROM stdin;")
     for r in rows:
@@ -928,16 +1250,27 @@ CREATE TEMP TABLE _up ON COMMIT DROP AS
 WITH ins AS (
     INSERT INTO credeals.cre_listings AS t (
         brokerage_id, external_id, source_url, status, transaction_type,
-        property_type, title, address, city, state, zip, lat, lng, size_sf,
-        lot_size_sf, year_built, sale_price_usd, sale_price_per_sf, cap_rate,
-        lease_rate_min, lease_rate_max, description, updated_date, scraped_at,
-        raw_data, source_lastmod, canonical_key
+        property_type, title, address, city, state, zip, lat, lng, market, submarket,
+        size_sf, lot_size_sf, available_sf, min_divisible_sf, max_divisible_sf,
+        floors, year_built, units, parking_spaces, parking_ratio,
+        sale_price_usd, sale_price_per_sf, cap_rate, noi, gross_revenue, occupancy_rate,
+        lease_rate_min, lease_rate_max, lease_rate_type, term_min_months, term_max_months,
+        description, highlights, amenities, zoning, markdown,
+        updated_date, scraped_at, raw_data, source_lastmod, canonical_key
     )
     SELECT brokerage_id, external_id, source_url, COALESCE(status, 'active'), transaction_type,
-           property_type, title, address, city, state, zip, lat, lng, size_sf,
-           lot_size_sf, year_built, sale_price_usd, sale_price_per_sf, cap_rate,
-           lease_rate_min, lease_rate_max, description, updated_date, scraped_at,
-           raw_data, source_lastmod, canonical_key
+           property_type, title, address, city, state, zip, lat, lng, market, submarket,
+           size_sf, lot_size_sf, available_sf, min_divisible_sf, max_divisible_sf,
+           floors, year_built, units, parking_spaces, parking_ratio,
+           sale_price_usd, sale_price_per_sf, cap_rate, noi, gross_revenue, occupancy_rate,
+           lease_rate_min, lease_rate_max, lease_rate_type, term_min_months, term_max_months,
+           description,
+           CASE WHEN jsonb_typeof(highlights) = 'array'
+                THEN ARRAY(SELECT jsonb_array_elements_text(highlights)) END,
+           CASE WHEN jsonb_typeof(amenities) = 'array'
+                THEN ARRAY(SELECT jsonb_array_elements_text(amenities)) END,
+           zoning, NULLIF(markdown, ''),
+           updated_date, scraped_at, raw_data, source_lastmod, canonical_key
     FROM _src
     ON CONFLICT (brokerage_id, external_id) WHERE external_id IS NOT NULL
     DO UPDATE SET
@@ -981,19 +1314,42 @@ WITH ins AS (
                               WHEN t.size_sf > 1000000000 THEN EXCLUDED.size_sf
                               ELSE COALESCE(EXCLUDED.size_sf, t.size_sf)
                             END,
+        market            = COALESCE(EXCLUDED.market, t.market),
+        submarket         = COALESCE(EXCLUDED.submarket, t.submarket),
         lot_size_sf       = COALESCE(EXCLUDED.lot_size_sf, t.lot_size_sf),
+        available_sf      = COALESCE(EXCLUDED.available_sf, t.available_sf),
+        min_divisible_sf  = COALESCE(EXCLUDED.min_divisible_sf, t.min_divisible_sf),
+        max_divisible_sf  = COALESCE(EXCLUDED.max_divisible_sf, t.max_divisible_sf),
+        floors            = COALESCE(EXCLUDED.floors, t.floors),
         year_built        = COALESCE(EXCLUDED.year_built, t.year_built),
+        units             = COALESCE(EXCLUDED.units, t.units),
+        parking_spaces    = COALESCE(EXCLUDED.parking_spaces, t.parking_spaces),
+        parking_ratio     = COALESCE(EXCLUDED.parking_ratio, t.parking_ratio),
         -- (L1) COALESCE-keep: a transient parse miss (regex miss, "Call for offer")
         -- keeps the prior good numeric value rather than overwriting with NULL.
         -- A real new numeric value still overwrites because COALESCE picks the first
         -- non-NULL, which is EXCLUDED when present. Mirrors cap_rate, property_type,
-        -- and other neighbors that already use COALESCE-keep.
+        -- and other neighbors that already use COALESCE-keep. The lifted structured
+        -- columns (noi/gross_revenue/occupancy_rate/divisible/term/parking/...) follow
+        -- the same rule so a sparse detail pass never clobbers a fuller prior capture.
         sale_price_usd    = COALESCE(EXCLUDED.sale_price_usd, t.sale_price_usd),
         sale_price_per_sf = COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf),
         cap_rate          = COALESCE(EXCLUDED.cap_rate, t.cap_rate),
+        noi               = COALESCE(EXCLUDED.noi, t.noi),
+        gross_revenue     = COALESCE(EXCLUDED.gross_revenue, t.gross_revenue),
+        occupancy_rate    = COALESCE(EXCLUDED.occupancy_rate, t.occupancy_rate),
         lease_rate_min    = COALESCE(EXCLUDED.lease_rate_min, t.lease_rate_min),
         lease_rate_max    = COALESCE(EXCLUDED.lease_rate_max, t.lease_rate_max),
+        lease_rate_type   = COALESCE(EXCLUDED.lease_rate_type, t.lease_rate_type),
+        term_min_months   = COALESCE(EXCLUDED.term_min_months, t.term_min_months),
+        term_max_months   = COALESCE(EXCLUDED.term_max_months, t.term_max_months),
+        zoning            = COALESCE(EXCLUDED.zoning, t.zoning),
+        highlights        = COALESCE(EXCLUDED.highlights, t.highlights),
+        amenities         = COALESCE(EXCLUDED.amenities, t.amenities),
         description       = COALESCE(EXCLUDED.description, t.description),
+        -- markdown reuses the existing (currently-empty) column; NULLIF guards a
+        -- sparse/empty pass from clobbering a fuller prior capture (COALESCE-keep).
+        markdown          = COALESCE(NULLIF(EXCLUDED.markdown, ''), t.markdown),
         updated_date      = COALESCE(EXCLUDED.updated_date, t.updated_date),
         scraped_at        = EXCLUDED.scraped_at,
         raw_data          = EXCLUDED.raw_data,
@@ -1101,6 +1457,51 @@ WHERE t.brokerage_id = s.brokerage_id
   AND NOT (t.status IN ('sold','leased','off_market')
            AND s.status IN ('under_contract','pending'));
 
+-- Phase-2 data-lift: write the new institutional columns + canonical_url +
+-- extra_facts with COALESCE-keep (a sparse/backfill pass NEVER clobbers a fuller
+-- prior value). These columns ship in sql/012, so the whole UPDATE is guarded on
+-- the presence of a representative new column (the 012 ALTER adds them together):
+-- a pre-012 ingest is a clean no-op, exactly like the to_regclass guards for new
+-- tables. extra_facts merges (jsonb ||) so neither pass's long-tail facts are
+-- lost; a NULL/empty staged blob keeps the prior blob. _src is one row per
+-- (brokerage_id, external_id), so the join is 1:1.
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'credeals' AND table_name = 'cre_listings'
+      AND column_name = 'building_class'
+  ) THEN
+    UPDATE credeals.cre_listings t SET
+        canonical_url         = COALESCE(s.canonical_url, t.canonical_url),
+        building_class        = COALESCE(s.building_class, t.building_class),
+        property_subtype      = COALESCE(s.property_subtype, t.property_subtype),
+        apn                   = COALESCE(s.apn, t.apn),
+        tenant_name           = COALESCE(s.tenant_name, t.tenant_name),
+        guarantor             = COALESCE(s.guarantor, t.guarantor),
+        lease_years_remaining = COALESCE(s.lease_years_remaining, t.lease_years_remaining),
+        price_per_unit        = COALESCE(s.price_per_unit, t.price_per_unit),
+        grm                   = COALESCE(s.grm, t.grm),
+        price_per_acre        = COALESCE(s.price_per_acre, t.price_per_acre),
+        num_rooms             = COALESCE(s.num_rooms, t.num_rooms),
+        revpar                = COALESCE(s.revpar, t.revpar),
+        clear_height_ft       = COALESCE(s.clear_height_ft, t.clear_height_ft),
+        dock_doors            = COALESCE(s.dock_doors, t.dock_doors),
+        drive_in_doors        = COALESCE(s.drive_in_doors, t.drive_in_doors),
+        power_service         = COALESCE(s.power_service, t.power_service),
+        rail_served           = COALESCE(s.rail_served, t.rail_served),
+        -- extra_facts: jsonb merge, keeping prior keys; a NULL/empty staged blob
+        -- (no new facts this pass) leaves the prior blob untouched.
+        extra_facts           = CASE
+                                  WHEN s.extra_facts IS NULL
+                                       OR s.extra_facts = '{}'::jsonb THEN COALESCE(t.extra_facts, '{}'::jsonb)
+                                  ELSE COALESCE(t.extra_facts, '{}'::jsonb) || s.extra_facts
+                                END
+    FROM _src s
+    WHERE t.brokerage_id = s.brokerage_id
+      AND t.external_id = s.external_id;
+  END IF;
+END $$;
+
 -- Children: refresh wholesale only when the latest source row did not hit a
 -- detail-page error. This protects previously good documents/images/contacts
 -- from transient detail-scrape failures while still refreshing normal rows.
@@ -1114,22 +1515,48 @@ DELETE FROM credeals.cre_listing_contacts  WHERE listing_id IN (SELECT id FROM _
 DELETE FROM credeals.cre_listing_documents WHERE listing_id IN (SELECT id FROM _child_refresh);
 DELETE FROM credeals.cre_listing_images    WHERE listing_id IN (SELECT id FROM _child_refresh);
 
-INSERT INTO credeals.cre_listing_contacts (
-    listing_id, name, title, email, phone, brokerage_name,
-    profile_url, avatar_url, vcard_url, is_primary
-)
-SELECT u.id, x->>'name', x->>'title', x->>'email', x->>'phone', x->>'company',
-       x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
-       COALESCE((x->>'isPrimary')::boolean, false)
-FROM _up u
-JOIN _src s USING (brokerage_id, external_id)
-CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
-WHERE u.id IN (SELECT id FROM _child_refresh)
-  AND jsonb_typeof(s.contacts) = 'array';
+-- Contacts refresh. The `license` column ships in sql/012, so the INSERT is
+-- column-existence-guarded: when present, license rides along; when absent
+-- (pre-012), the exact prior column list is used so the ingest is unchanged.
+-- Both branches are otherwise byte-identical to the prior INSERT.
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'credeals' AND table_name = 'cre_listing_contacts'
+      AND column_name = 'license'
+  ) THEN
+    INSERT INTO credeals.cre_listing_contacts (
+        listing_id, name, title, license, email, phone, brokerage_name,
+        profile_url, avatar_url, vcard_url, is_primary
+    )
+    SELECT u.id, x->>'name', x->>'title', x->>'license', x->>'email', x->>'phone', x->>'company',
+           x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
+           COALESCE((x->>'isPrimary')::boolean, false)
+    FROM _up u
+    JOIN _src s USING (brokerage_id, external_id)
+    CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
+    WHERE u.id IN (SELECT id FROM _child_refresh)
+      AND jsonb_typeof(s.contacts) = 'array';
+  ELSE
+    INSERT INTO credeals.cre_listing_contacts (
+        listing_id, name, title, email, phone, brokerage_name,
+        profile_url, avatar_url, vcard_url, is_primary
+    )
+    SELECT u.id, x->>'name', x->>'title', x->>'email', x->>'phone', x->>'company',
+           x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
+           COALESCE((x->>'isPrimary')::boolean, false)
+    FROM _up u
+    JOIN _src s USING (brokerage_id, external_id)
+    CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
+    WHERE u.id IN (SELECT id FROM _child_refresh)
+      AND jsonb_typeof(s.contacts) = 'array';
+  END IF;
+END $$;
 
 INSERT INTO credeals.cre_listing_documents (listing_id, doc_type, title, url)
 SELECT u.id,
-       CASE WHEN x->>'docType' IN ('brochure','om','flyer','floor_plan') THEN x->>'docType' ELSE 'other' END,
+       CASE WHEN x->>'docType' IN ('brochure','om','flyer','floor_plan','financials','rent_roll')
+            THEN x->>'docType' ELSE 'other' END,
        x->>'title', x->>'url'
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
@@ -1145,6 +1572,80 @@ JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.images) x
 WHERE u.id IN (SELECT id FROM _child_refresh)
   AND jsonb_typeof(s.images) = 'array' AND x->>'url' IS NOT NULL;
+
+-- Media + links (sql/011 tables). Existence-guarded so a pre-011 ingest is a
+-- no-op (mirrors the 009 to_regclass guard pattern): the DELETE and re-INSERT
+-- are wrapped together per table, since a DELETE with no table to refill would
+-- be harmful. The _child_refresh set already excludes detailError rows, so the
+-- wholesale-replace fires only on a CLEAN detail touch (mirrors images exactly).
+-- media_type/link_type participate in the unique key because one url can
+-- legitimately appear once per type; ON CONFLICT ... DO NOTHING dedups in-batch.
+DO $$ BEGIN
+  IF to_regclass('credeals.cre_listing_media') IS NOT NULL THEN
+    DELETE FROM credeals.cre_listing_media WHERE listing_id IN (SELECT id FROM _child_refresh);
+    INSERT INTO credeals.cre_listing_media (listing_id, media_type, provider, url, embed_url, title)
+    SELECT u.id, COALESCE(x->>'mediaType','other'), x->>'provider', x->>'url',
+           x->>'embedUrl', x->>'title'
+    FROM _up u
+    JOIN _src s USING (brokerage_id, external_id)
+    CROSS JOIN LATERAL jsonb_array_elements(s.media) x
+    WHERE u.id IN (SELECT id FROM _child_refresh)
+      AND jsonb_typeof(s.media) = 'array' AND x->>'url' IS NOT NULL
+    ON CONFLICT (listing_id, media_type, url) DO NOTHING;
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF to_regclass('credeals.cre_listing_links') IS NOT NULL THEN
+    DELETE FROM credeals.cre_listing_links WHERE listing_id IN (SELECT id FROM _child_refresh);
+    INSERT INTO credeals.cre_listing_links (listing_id, link_type, url, rel)
+    SELECT u.id, COALESCE(x->>'linkType','other'), x->>'url', x->>'rel'
+    FROM _up u
+    JOIN _src s USING (brokerage_id, external_id)
+    CROSS JOIN LATERAL jsonb_array_elements(s.links) x
+    WHERE u.id IN (SELECT id FROM _child_refresh)
+      AND jsonb_typeof(s.links) = 'array' AND x->>'url' IS NOT NULL
+    ON CONFLICT (listing_id, link_type, url) DO NOTHING;
+  END IF;
+END $$;
+
+-- OM-parsed facts (sql/013 cre_listing_om_facts). Existence-guarded so a pre-013
+-- ingest is a no-op. UNLIKE media/links, om_facts is NOT wholesale-deleted on
+-- refresh: it is a provenance-bearing audit trail, and a normal (non-OM) detail
+-- pass carries no om_facts, so a DELETE would wipe a prior OM parse. Insert-only
+-- with ON CONFLICT DO UPDATE on the (listing_id, fact_group, fact_key,
+-- source_doc_url) unique key, so a re-parse of the SAME doc is idempotent
+-- (refreshes value/confidence/parsed_at) and a new doc adds a new row. Rides the
+-- same _child_refresh set, so detailError rows never write (invariant). The OM
+-- tier sets the matching cre_listings scalar via the institutional UPDATE /
+-- COALESCE-keep path; this table is the audit home. parser_version/source_doc_url
+-- are NOT NULL in the table, and om_facts_rows() drops any row missing them.
+DO $$ BEGIN
+  IF to_regclass('credeals.cre_listing_om_facts') IS NOT NULL THEN
+    INSERT INTO credeals.cre_listing_om_facts (
+        listing_id, fact_group, fact_key, fact_value_text, fact_value_num,
+        unit_count, source_doc_url, parsed_at, parser_version, confidence)
+    SELECT u.id, COALESCE(x->>'factGroup','scalar'), x->>'factKey',
+           x->>'factValueText', NULLIF(x->>'factValueNum','')::numeric,
+           NULLIF(x->>'unitCount','')::integer, x->>'sourceDocUrl', now(),
+           x->>'parserVersion', NULLIF(x->>'confidence','')::numeric
+    FROM _up u
+    JOIN _src s USING (brokerage_id, external_id)
+    CROSS JOIN LATERAL jsonb_array_elements(s.om_facts) x
+    WHERE u.id IN (SELECT id FROM _child_refresh)
+      AND jsonb_typeof(s.om_facts) = 'array'
+      AND x->>'factKey' IS NOT NULL
+      AND x->>'sourceDocUrl' IS NOT NULL
+      AND x->>'parserVersion' IS NOT NULL
+    ON CONFLICT (listing_id, fact_group, fact_key, source_doc_url) DO UPDATE SET
+        fact_value_text = EXCLUDED.fact_value_text,
+        fact_value_num  = EXCLUDED.fact_value_num,
+        unit_count      = EXCLUDED.unit_count,
+        parsed_at       = EXCLUDED.parsed_at,
+        parser_version  = EXCLUDED.parser_version,
+        confidence      = EXCLUDED.confidence;
+  END IF;
+END $$;
 """)
 
     # (H4a) Append-only price/status history: one row per listing whose watched
@@ -1234,6 +1735,49 @@ JOIN _retired r ON r.id = c.listing_id;"""
 SELECT d.listing_id, d.doc_type, d.title, d.url
 FROM credeals.cre_listing_documents d
 JOIN _retired r ON r.id = d.listing_id;"""
+        # (011) Snapshot media + links of the retired listings into their archive
+        # mirrors. These tables ship in sql/011, so the INSERTs are ALWAYS
+        # to_regclass-guarded (even in the dry-run path) -- 011 may not be applied
+        # yet, unlike the 009 contacts/documents archives above.
+        _media_archive_insert = """
+-- (011) Archive final media of retired listings. Existence-guarded.
+DO $$ BEGIN
+  IF to_regclass('credeals.cre_listing_media_archive') IS NOT NULL
+     AND to_regclass('credeals.cre_listing_media') IS NOT NULL THEN
+    INSERT INTO credeals.cre_listing_media_archive
+        (source_listing_id, media_type, provider, url, embed_url, title)
+    SELECT m.listing_id, m.media_type, m.provider, m.url, m.embed_url, m.title
+    FROM credeals.cre_listing_media m
+    JOIN _retired r ON r.id = m.listing_id;
+  END IF;
+END $$;
+
+-- (011) Archive final links of retired listings. Existence-guarded.
+DO $$ BEGIN
+  IF to_regclass('credeals.cre_listing_links_archive') IS NOT NULL
+     AND to_regclass('credeals.cre_listing_links') IS NOT NULL THEN
+    INSERT INTO credeals.cre_listing_links_archive
+        (source_listing_id, link_type, url, rel)
+    SELECT lk.listing_id, lk.link_type, lk.url, lk.rel
+    FROM credeals.cre_listing_links lk
+    JOIN _retired r ON r.id = lk.listing_id;
+  END IF;
+END $$;
+
+-- (013) Archive final OM facts of retired listings. Existence-guarded (013 may
+-- not be applied yet), mirroring the 011 media/links archive snapshot.
+DO $$ BEGIN
+  IF to_regclass('credeals.cre_listing_om_facts_archive') IS NOT NULL
+     AND to_regclass('credeals.cre_listing_om_facts') IS NOT NULL THEN
+    INSERT INTO credeals.cre_listing_om_facts_archive
+        (source_listing_id, fact_group, fact_key, fact_value_text, fact_value_num,
+         unit_count, source_doc_url, parsed_at, parser_version, confidence)
+    SELECT f.listing_id, f.fact_group, f.fact_key, f.fact_value_text, f.fact_value_num,
+           f.unit_count, f.source_doc_url, f.parsed_at, f.parser_version, f.confidence
+    FROM credeals.cre_listing_om_facts f
+    JOIN _retired r ON r.id = f.listing_id;
+  END IF;
+END $$;"""
         if history_guard:
             w(f"""
 -- (M2) Archive final contacts of retired listings. Existence-guarded.
@@ -1248,14 +1792,16 @@ DO $$ BEGIN
   IF to_regclass('credeals.cre_listing_documents_archive') IS NOT NULL THEN
     {_documents_insert}
   END IF;
-END $$;""")
+END $$;
+{_media_archive_insert}""")
         else:
             w(f"""
 -- (M2) Archive final contacts of retired listings (unguarded for dry-run).
 {_contacts_insert}
 
 -- (M2) Archive final documents of retired listings (unguarded for dry-run).
-{_documents_insert}""")
+{_documents_insert}
+{_media_archive_insert}""")
 
     w(f"""
 INSERT INTO credeals.cre_scrape_jobs
@@ -1334,6 +1880,105 @@ def find_psql():
     if p:
         return p
     sys.exit("psql not found. brew install libpq, or set PSQL_BIN.")
+
+
+# ---------------------------------------------------------------------------
+# Read-back: stream rows out of Postgres as JSON, robustly.
+#
+# The backfill / classify scripts read existing rows via
+#   COPY (SELECT jsonb_build_object(...) ) TO STDOUT
+# The DEFAULT (text) COPY format doubles every backslash, which corrupts any
+# JSON string carrying an escape (HTML with \" , a Windows path, a regex). The
+# round-trip then fails json.loads and a naive `except: continue` would SILENTLY
+# DROP the row -- e.g. 100% of Marcus & Millichap rows (their raw_data embeds
+# escaped-quote HTML) vanished with no error. CSV COPY format does not
+# backslash-escape, so it round-trips JSON intact; csv.reader unquotes it.
+# A decode failure here ABORTS (never a silent skip) so a malformed row can
+# never disappear unnoticed.
+# ---------------------------------------------------------------------------
+
+
+def _raise_csv_field_limit():
+    """csv.reader rejects a field over 131072 bytes by default; a large raw_data
+    JSON object easily exceeds that. Raise the limit as high as the platform's C
+    long allows (halving down from sys.maxsize on a narrow-long platform)."""
+    limit = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(limit)
+            return
+        except OverflowError:
+            limit = int(limit // 10)
+
+
+def _csv_cells(stdout_text):
+    """Yield each CSV row's first (JSON) cell from COPY-CSV output, stripped and
+    non-empty. Raises the csv field-size limit first so a large raw_data object
+    is not rejected."""
+    _raise_csv_field_limit()
+    for row in csv.reader(io.StringIO(stdout_text)):
+        if not row:
+            continue
+        cell = row[0].strip()
+        if cell:
+            yield cell
+
+
+def parse_copy_csv_json(stdout_text, *, label="read"):
+    """STRICT decoder for `COPY (...) TO STDOUT WITH (FORMAT csv)` output where
+    each CSV row's first field holds one JSON object. Yields decoded objects and
+    RAISES ValueError on the first undecodable row (never silently drops it).
+
+    Pure (no DB): the unit tests feed synthetic CSV (including a backslash-bearing
+    JSON value and an oversized field) to lock the round-trip.
+    """
+    for cell in _csv_cells(stdout_text):
+        try:
+            yield json.loads(cell)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"[{label}] undecodable COPY row (first 120 chars: {cell[:120]!r}): {exc}"
+            ) from exc
+
+
+def iter_copy_json_rows(psql, db_url, inner_select, *, label="read"):
+    """Run `COPY (<inner_select>) TO STDOUT WITH (FORMAT csv)` and yield decoded
+    dicts. `inner_select` must return exactly ONE column per row holding a JSON
+    object (jsonb or its ::text). CSV format (see module note above) round-trips
+    JSON containing backslash escapes intact.
+
+    A row that fails to decode is SKIPPED but COUNTED and reported LOUDLY at the
+    end (never silently): a non-silent skip keeps one pathological row from
+    blocking a large additive backfill while still surfacing any loss for
+    investigation before an --apply. A psql error still aborts.
+    """
+    sql = f"COPY ({inner_select}) TO STDOUT WITH (FORMAT csv)"
+    proc = subprocess.run(
+        [psql, db_url, "-q", "-v", "ON_ERROR_STOP=1", "-c", sql],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+        sys.exit(f"[{label}] psql read exited {proc.returncode}")
+    bad = 0
+    seen = 0
+    for cell in _csv_cells(proc.stdout):
+        seen += 1
+        try:
+            yield json.loads(cell)
+        except json.JSONDecodeError as exc:
+            bad += 1
+            if bad <= 5:
+                sys.stderr.write(
+                    f"[{label}] WARN skipped undecodable row "
+                    f"(first 120 chars: {cell[:120]!r}): {exc}\n"
+                )
+    if bad:
+        sys.stderr.write(
+            f"[{label}] WARNING: {bad}/{seen} row(s) FAILED JSON decode and were "
+            f"SKIPPED (not silently). Investigate before --apply.\n"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -36,7 +36,29 @@ export async function scrapeDoc(url: string, opts: ScrapeOpts = {}): Promise<Scr
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const doc = await firecrawl.scrape(url, {
-        formats: ["rawHtml", "markdown", "links"],
+        // Capture-everything format set: markdown (full page text), links + images
+        // (full gallery, no truncation), rawHtml (regex fallback source), and an
+        // `attributes` block that harvests video/iframe/anchor/source URLs for
+        // harvestDetail(). onlyMainContent:false keeps links/iframes from being
+        // stripped. The local fork returns data.images + data.attributes (verified
+        // against POST /v2/scrape); when a fork omits either format the guards
+        // below degrade it to undefined and harvestDetail() falls back to rawHtml.
+        formats: [
+          "markdown",
+          "links",
+          "images",
+          "rawHtml",
+          {
+            type: "attributes",
+            selectors: [
+              { selector: "div[component=video]", attribute: "url" },
+              { selector: "iframe", attribute: "src" },
+              { selector: "a", attribute: "href" },
+              { selector: "video source", attribute: "src" },
+              { selector: "[data-video-url]", attribute: "data-video-url" },
+            ],
+          },
+        ],
         onlyMainContent: false,
         ...(opts.waitFor ? { waitFor: opts.waitFor } : {}),
         ...(opts.proxy ? { proxy: opts.proxy } : {}),
@@ -47,8 +69,13 @@ export async function scrapeDoc(url: string, opts: ScrapeOpts = {}): Promise<Scr
       const rawHtml = data.rawHtml ?? "";
       const markdown = data.markdown ?? "";
       const links = Array.isArray(data.links) ? data.links : [];
+      // images/attributes degrade to undefined when the fork omits the format,
+      // so scrapeDoc NEVER hard-fails on an unsupported format; harvestDetail()
+      // treats both as possibly-undefined and regex-falls-back over rawHtml.
+      const images = Array.isArray(data.images) ? data.images : undefined;
+      const attributes = Array.isArray(data.attributes) ? data.attributes : undefined;
       if (!rawHtml && !markdown) throw new Error("empty scraped document");
-      return { rawHtml, markdown, links, metadata: data.metadata };
+      return { rawHtml, markdown, links, images, attributes, metadata: data.metadata };
     } catch (err) {
       lastErr = err;
       console.error(`scrape-doc attempt ${attempt} failed for ${url}: ${err}`);

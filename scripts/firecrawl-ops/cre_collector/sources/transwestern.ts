@@ -4,8 +4,10 @@ import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { dedupeStrings, titleFromFilename } from "../lib/html.js";
 import { scrapeDoc, scrapeJson } from "../lib/scrape.js";
+import { harvestDetail } from "../lib/harvest.js";
 import { ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { clean, num, pmap, prune } from "../lib/util.js";
+import { parseLeaseRate, normBuildingClass, acresToSf } from "../lib/parse.js";
 
 
 // --- Transwestern: public properties GET feed plus detail enrichment ---
@@ -195,6 +197,301 @@ export function extractTranswesternPhotos(doc: ScrapedDoc, feedImage: string | n
   );
 }
 
+// Lift structured fields out of the Transwestern property-facts label/value map
+// onto the shared listing vocabulary keys that cre_ingest.to_row maps into the
+// existing cre_listings columns (year_built, units, floors, parking_spaces,
+// zoning). Case-insensitive label match; only emits a key when a clean numeric /
+// text value is present, so a sparse facts block never fabricates a column.
+export function transwesternStructured(facts: Record<string, string>): {
+  yearBuilt?: number;
+  units?: number;
+  floors?: number;
+  parkingSpaces?: number;
+  zoning?: string;
+} {
+  const byLabel = (re: RegExp): string | null => {
+    for (const [label, value] of Object.entries(facts)) {
+      if (re.test(label)) {
+        const v = clean(value);
+        if (v) return v;
+      }
+    }
+    return null;
+  };
+  const intOf = (s: string | null): number | undefined => {
+    if (!s) return undefined;
+    const m = s.replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+    const n = m ? Number(m[0]) : NaN;
+    return Number.isFinite(n) && n !== 0 ? n : undefined;
+  };
+  const out: {
+    yearBuilt?: number;
+    units?: number;
+    floors?: number;
+    parkingSpaces?: number;
+    zoning?: string;
+  } = {};
+  const yb = intOf(byLabel(/year\s*built|built/i));
+  if (yb && yb > 1700 && yb < 2100) out.yearBuilt = yb;
+  const units = intOf(byLabel(/\b(?:no\.?\s*of\s*)?units\b|number\s*of\s*units/i));
+  if (units) out.units = units;
+  const floors = intOf(byLabel(/\bfloors?\b|\bstories\b|\bno\.?\s*of\s*floors\b/i));
+  if (floors) out.floors = floors;
+  const parking = intOf(byLabel(/parking\s*(?:spaces|spots|stalls)?/i));
+  if (parking) out.parkingSpaces = parking;
+  const zoning = byLabel(/\bzoning\b/i);
+  if (zoning) out.zoning = zoning;
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Phase-2 Data-Lift: lift recoverable scalars from transwesternFacts +
+// availability[] into the contract camelCase vocabulary (Section B).
+// Called at detail-scrape time after parseTranswesternFacts / parseTranswesternAvailability.
+// Never duplicates fields already set by transwesternStructured (yearBuilt/units/floors/
+// parkingSpaces/zoning). additive-only: returns undefined on absent fields.
+// ---------------------------------------------------------------------------
+
+// Vocabulary for the lease-rate-type token scan (gap doc: FSG/NNN/MG/IG/'Absolute Net').
+const LEASE_TYPE_VOCAB: Array<{ re: RegExp; token: string }> = [
+  { re: /modified\s+gross|mod\s+gross/i, token: "modified_gross" },
+  { re: /full\s+service|\bfsg\b/i, token: "full_service" },
+  { re: /nnn|triple\s+net/i, token: "nnn" },
+  // "Absolute Net" is a TW-specific alias for NNN.
+  { re: /absolute\s+net/i, token: "nnn" },
+  // "IG" (industrial gross) or bare "Gross".
+  { re: /\bgrosse?\b|\big\b/i, token: "gross" },
+];
+
+// Threshold for the Land Area (ac) unit guard.
+// Values >= this are almost certainly already in SF (e.g. 29,185 SF is not 29,185 acres).
+// A legitimate large acreage above ~10,000 acres would be extremely rare for a commercial listing.
+const LAND_AREA_ACRES_THRESHOLD = 10000;
+
+export interface TranswesternScalars {
+  buildingClass?: string | null;
+  clearHeightFt?: number | null;
+  dockDoors?: number | null;
+  driveInDoors?: number | null;
+  powerService?: string | null;
+  railServed?: boolean | null;
+  apn?: string | null;
+  lotSf?: number | null;
+  minDivisibleSf?: number | null;
+  maxDivisibleSf?: number | null;
+  availableSf?: number | null;
+  leaseRateMin?: number | null;
+  leaseRateMax?: number | null;
+  leaseRateType?: string | null;
+  canonicalUrl?: string | null;
+  extraFacts?: Record<string, string | number> | null;
+}
+
+/**
+ * Lift Phase-2 recoverable scalar fields from transwesternFacts + availability[].
+ *
+ * Contract semantics:
+ * - buildingClass: normBuildingClass(facts['Class']); A/B/C/D or null.
+ * - clearHeightFt: first numeric in facts['Clear Height(max)'] or 'Clear Height(min)'.
+ * - dockDoors: facts['Docks'] integer.
+ * - driveInDoors: facts['Grade Level Doors'] integer.
+ * - powerService: facts['Power'] clean text.
+ * - railServed: facts['Rail'] -> true when 'yes'/truthy non-'no'; false when 'No'; null when absent.
+ * - apn: facts['Parcel'] clean text.
+ * - lotSf: facts['Land Area (ac)'] converted x43560 ONLY when the value looks like acres
+ *   (< LAND_AREA_ACRES_THRESHOLD), else null (DQ guard: 29,185 is plainly SF, not acres).
+ * - minDivisibleSf/maxDivisibleSf: min/max over availability[].size (comma-stripped numeric).
+ * - availableSf: sum of availability[].size where type does NOT contain 'sale'.
+ * - leaseRateMin/Max: min/max over availability[].rate where type NOT sale AND parsed $/SF < 1000.
+ * - leaseRateType: first matching vocabulary token across all availability[].raw[] strings
+ *   (vocabulary-matched, not hardcoded by index).
+ * - canonicalUrl: the listing url field.
+ * - extraFacts: long-tail facts (Year Renovated, Typical Floor Size, Elevators, Yard, Crane).
+ */
+export function liftTranswesternScalars(
+  facts: Record<string, string>,
+  availability: Array<{ raw?: string[]; rate?: string | null; size?: string | null; type?: string | null }>,
+  url: string | null
+): TranswesternScalars {
+  const out: TranswesternScalars = {};
+
+  // --- Helper: look up a fact label (case-insensitive regex match) ---
+  const byLabel = (re: RegExp): string | null => {
+    for (const [label, value] of Object.entries(facts)) {
+      if (re.test(label)) {
+        const v = clean(value);
+        if (v) return v;
+      }
+    }
+    return null;
+  };
+
+  // --- Helper: parse a plain integer from a string (no-zero) ---
+  const intOf = (s: string | null): number | null => {
+    if (!s) return null;
+    const m = s.replace(/,/g, "").match(/^-?\d+(?:\.\d+)?/);
+    if (!m) return null;
+    const n = Number(m[0]);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+  };
+
+  // --- Helper: parse a plain float (for clear height) ---
+  const floatOf = (s: string | null): number | null => {
+    if (!s) return null;
+    const m = s.replace(/,/g, "").match(/([0-9]+(?:\.[0-9]+)?)/);
+    if (!m) return null;
+    const n = Number(m[1]);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+
+  // 1. buildingClass
+  const rawClass = byLabel(/^class$/i);
+  if (rawClass !== null) {
+    out.buildingClass = normBuildingClass(rawClass);
+  }
+
+  // 2. clearHeightFt (prefer max; fall back to min)
+  const rawCHMax = byLabel(/clear\s*height\s*\(max\)/i) ?? byLabel(/clear\s*height\s*\(min\)/i) ?? byLabel(/clear\s*height/i) ?? byLabel(/ceiling\s*height/i);
+  if (rawCHMax !== null) {
+    out.clearHeightFt = floatOf(rawCHMax);
+  }
+
+  // 3. dockDoors
+  const rawDocks = byLabel(/^docks?$/i);
+  if (rawDocks !== null) {
+    out.dockDoors = intOf(rawDocks);
+  }
+
+  // 4. driveInDoors (grade level = drive-in)
+  const rawGrade = byLabel(/grade\s*level\s*doors?/i);
+  if (rawGrade !== null) {
+    out.driveInDoors = intOf(rawGrade);
+  }
+
+  // 5. powerService
+  const rawPower = byLabel(/^power$/i);
+  if (rawPower !== null) {
+    out.powerService = rawPower;
+  }
+
+  // 6. railServed
+  const rawRail = byLabel(/^rail$/i);
+  if (rawRail !== null) {
+    const lower = rawRail.toLowerCase();
+    out.railServed = lower === "no" ? false : lower === "yes" || lower === "true" ? true : null;
+  }
+
+  // 7. apn (Parcel)
+  const rawParcel = byLabel(/^parcel$/i);
+  if (rawParcel !== null) {
+    out.apn = rawParcel;
+  }
+
+  // 8. lotSf: Land Area (ac) with unit guard
+  const rawLandArea = byLabel(/^land\s*area\s*\(ac\)$/i);
+  if (rawLandArea !== null) {
+    // Strip commas to get the numeric value for the threshold check.
+    const numericStr = rawLandArea.replace(/,/g, "");
+    const numericVal = Number(numericStr.match(/([0-9]+(?:\.[0-9]+)?)/)?.[1] ?? "NaN");
+    if (Number.isFinite(numericVal) && numericVal > 0 && numericVal < LAND_AREA_ACRES_THRESHOLD) {
+      // Looks like a real acreage; convert to SF.
+      // acresToSf handles "29.2" and "29.2 ac" equally.
+      out.lotSf = acresToSf(rawLandArea) ?? acresToSf(`${numericStr} ac`);
+    }
+    // If >= threshold (e.g. "29,185"), the value is almost certainly already SF -> suppress.
+  }
+
+  // 9-11. Availability-derived fields: minDivisibleSf, maxDivisibleSf, availableSf, rates, type
+  const sizesAll: number[] = [];
+  const sizesLease: number[] = [];
+  const leaseRates: number[] = [];
+  let leaseRateType: string | null = null;
+
+  for (const avRow of availability) {
+    const rawSize = clean(avRow.size ?? null);
+    const rawType = clean(avRow.type ?? null) ?? "";
+    const isSaleType = /sale/i.test(rawType);
+
+    // Parse size (comma-stripped integer)
+    if (rawSize) {
+      const sf = intOf(rawSize.replace(/\s*sf\b/i, ""));
+      if (sf !== null && sf > 0) {
+        sizesAll.push(sf);
+        if (!isSaleType) sizesLease.push(sf);
+      }
+    }
+
+    // Parse lease rate (only for non-sale rows)
+    if (!isSaleType) {
+      const rawRate = clean(avRow.rate ?? null);
+      if (rawRate) {
+        const parsed = parseLeaseRate(rawRate);
+        if (parsed.min !== null && parsed.min < 1000) {
+          leaseRates.push(parsed.min);
+        }
+        if (parsed.max !== null && parsed.max < 1000) {
+          leaseRates.push(parsed.max);
+        }
+      }
+
+      // Scan all tokens in raw[] for a lease-type vocabulary match (index-agnostic)
+      if (leaseRateType === null && avRow.raw && avRow.raw.length > 0) {
+        for (const cell of avRow.raw) {
+          const cellStr = clean(cell);
+          if (!cellStr) continue;
+          for (const { re, token } of LEASE_TYPE_VOCAB) {
+            if (re.test(cellStr)) {
+              leaseRateType = token;
+              break;
+            }
+          }
+          if (leaseRateType !== null) break;
+        }
+      }
+    }
+  }
+
+  if (sizesAll.length > 0) {
+    out.minDivisibleSf = Math.min(...sizesAll);
+    out.maxDivisibleSf = Math.max(...sizesAll);
+  }
+  if (sizesLease.length > 0) {
+    out.availableSf = sizesLease.reduce((a, b) => a + b, 0);
+  }
+  if (leaseRates.length > 0) {
+    out.leaseRateMin = Math.min(...leaseRates);
+    out.leaseRateMax = Math.max(...leaseRates);
+    // When min == max (single rate), set max to null (no range).
+    if (out.leaseRateMax === out.leaseRateMin) out.leaseRateMax = null;
+  }
+  if (leaseRateType !== null) {
+    out.leaseRateType = leaseRateType;
+  }
+
+  // 12. canonicalUrl
+  const cu = clean(url);
+  if (cu) out.canonicalUrl = cu;
+
+  // 13. extraFacts: long-tail fields with no discrete contract column
+  const EXTRA_KEYS: Array<{ re: RegExp; key: string }> = [
+    { re: /^year\s*renovated$/i, key: "year_renovated" },
+    { re: /^typical\s*floor\s*size$/i, key: "typical_floor_size" },
+    { re: /^elevators?$/i, key: "elevators" },
+    { re: /^yard$/i, key: "yard" },
+    { re: /^crane$/i, key: "crane" },
+  ];
+  const extraFacts: Record<string, string | number> = {};
+  for (const { re, key } of EXTRA_KEYS) {
+    const v = byLabel(re);
+    if (v !== null) extraFacts[key] = v;
+  }
+  if (Object.keys(extraFacts).length > 0) {
+    out.extraFacts = extraFacts;
+  }
+
+  return out;
+}
+
 export function transwesternDescription($: cheerio.CheerioAPI, doc: ScrapedDoc): string | null {
   const candidate =
     clean($(".property-description, .PropertyDescription, #overview").first().text()) ??
@@ -263,6 +560,21 @@ export async function enrichTranswesternListing(row: any, bucket: string, tx: Tx
     const leaseRateText =
       availability.map((a) => clean(a.rate)).find((rate) => rate && /\$|psf|sf|negotiable/i.test(rate)) ??
       null;
+    // Capture-everything harvest: fold the source's own document/photo extractors
+    // into the harvester (as bare strings so it re-classifies + dedups), and let
+    // it lift video/tour media and outbound links from the detail rawHtml/links/
+    // iframes. Brochures fold into the unified `documents` channel (cre_ingest
+    // reads both `brochures` and `documents`); we drop the legacy `brochures` key
+    // so the same PDF is not inserted twice.
+    const nativeDocs = extractTranswesternDocuments(doc);
+    const nativePhotos = extractTranswesternPhotos(doc, feedImage);
+    const harvested = harvestDetail(doc, {
+      baseUrl: detailUrl,
+      extraDocs: nativeDocs.map((d: any) => clean(d?.url)).filter((u): u is string => !!u),
+      extraImages: nativePhotos,
+    });
+    const structured = transwesternStructured(facts);
+    const scalars = liftTranswesternScalars(facts, availability, detailUrl);
     return prune({
       ...base,
       name: clean($("h1").first().text()) ?? base.name,
@@ -272,8 +584,35 @@ export async function enrichTranswesternListing(row: any, bucket: string, tx: Tx
       leaseRateText: tx === "lease" ? leaseRateText : null,
       brokerIds,
       contactsDetailed,
-      brochures: extractTranswesternDocuments(doc),
-      photos: extractTranswesternPhotos(doc, feedImage),
+      brochures: undefined,
+      documents: harvested.documents,
+      photos: harvested.images.length ? harvested.images : nativePhotos,
+      media: harvested.media,
+      links: harvested.links,
+      markdown: doc.markdown,
+      // transwesternStructured fields (yearBuilt/units/floors/parkingSpaces/zoning):
+      yearBuilt: structured.yearBuilt,
+      units: structured.units,
+      floors: structured.floors,
+      parkingSpaces: structured.parkingSpaces,
+      zoning: structured.zoning,
+      // Phase-2 scalar lift (additive, no overlap with structured above):
+      buildingClass: scalars.buildingClass,
+      clearHeightFt: scalars.clearHeightFt,
+      dockDoors: scalars.dockDoors,
+      driveInDoors: scalars.driveInDoors,
+      powerService: scalars.powerService,
+      railServed: scalars.railServed,
+      apn: scalars.apn,
+      lotSf: scalars.lotSf,
+      minDivisibleSf: scalars.minDivisibleSf,
+      maxDivisibleSf: scalars.maxDivisibleSf,
+      availableSf: scalars.availableSf,
+      leaseRateMin: scalars.leaseRateMin,
+      leaseRateMax: scalars.leaseRateMax,
+      leaseRateType: scalars.leaseRateType,
+      canonicalUrl: scalars.canonicalUrl,
+      extraFacts: scalars.extraFacts,
       transwesternFacts: facts,
       availability,
       detailScrape: {

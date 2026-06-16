@@ -4,8 +4,9 @@ process.argv = [process.argv[0]!, process.argv[1]!];
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   jllPropertyTypeLabel,
   normalizedJllListingUrl,
@@ -18,10 +19,31 @@ import {
   jllSurfaceAreaSqft,
   jllDescription,
   jllContacts,
+  jllExtractLicense,
   jllDetailCachePath,
   readJllDetailCache,
   writeJllDetailCache,
+  jllStrandedMedia,
+  jllStrandedDocs,
+  jllStrandedStructured,
 } from "../../../sources/jll.js";
+import { harvestDetail } from "../../../lib/harvest.js";
+
+// ---------------------------------------------------------------------------
+// Phase-2 data-lift tests: fixture-based, pure transform, no network.
+// ---------------------------------------------------------------------------
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const FIXTURE_PATH = join(__dirname, "../../fixtures/raw_data/jll.json");
+
+function loadJllFixture(): any[] {
+  return JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));
+}
+
+function jllDetailRow(): any {
+  return loadJllFixture().find((r: any) => r._source === "jll");
+}
+
 
 test("jllPropertyTypeLabel title-cases hyphenated property types", () => {
   assert.equal(jllPropertyTypeLabel("office"), "Office");
@@ -228,4 +250,189 @@ test("readJllDetailCache rejects mismatched url or malformed payload", () => {
     else process.env.JLL_DETAIL_CACHE_DIR = prev;
     rmSync(cacheDir, { recursive: true, force: true });
   }
+});
+
+test("jllStrandedMedia: videos as bare strings (provider-classified), tours/360 typed virtual_tour", () => {
+  const property = {
+    videos: ["https://vimeo.com/824804225", "https://www.youtube.com/watch?v=abc123XYZ_0"],
+    virtualTours: ["https://my.matterport.com/show/?m=ABC123"],
+    view360URLs: ["https://kuula.co/share/collection/xyz"],
+  };
+  const promoted = jllStrandedMedia(property);
+  // Run through the harvester (the production path) to assert end-to-end typing.
+  const out = harvestDetail({ rawHtml: "", markdown: "", links: [] } as any, { extraMedia: promoted });
+  // Videos are bare strings -> harvester classifies provider + embed.
+  assert.ok(out.media.some((m) => m.provider === "vimeo" && m.mediaType === "video"));
+  assert.ok(out.media.some((m) => m.provider === "youtube" && m.embedUrl?.includes("/embed/")));
+  // virtualTours + view360URLs are promoted as TYPED virtual_tour items; the
+  // harvester trusts that asserted type and does NOT reclassify (so a matterport
+  // url that arrived via virtualTours stays virtual_tour, not matterport).
+  assert.equal(out.media.filter((m) => m.mediaType === "virtual_tour").length, 2);
+  assert.equal(out.media.filter((m) => m.mediaType === "matterport").length, 0);
+});
+
+test("jllStrandedDocs classifies floor plans as floor_plan DocItems", () => {
+  const docs = jllStrandedDocs({ floorPlans: ["https://cdn.jll.com/fp/level-1.pdf"] });
+  assert.equal(docs.length, 1);
+  assert.equal(docs[0].docType, "floor_plan");
+  assert.equal(docs[0].url, "https://cdn.jll.com/fp/level-1.pdf");
+});
+
+test("jllStrandedStructured lifts submarket/year/floors/units/amenities/highlights; empty for sparse", () => {
+  const out = jllStrandedStructured({
+    submarket: "Uptown",
+    yearBuilt: 1998,
+    numberOfFloors: 12,
+    numberOfUnits: 240,
+    capRate: 6.25,
+    amenities: ["Pool", { name: "Gym" }, "Pool"],
+    highlights: ["<b>Trophy asset</b>", "Walkable"],
+  });
+  assert.equal(out.submarket, "Uptown");
+  assert.equal(out.yearBuilt, 1998);
+  assert.equal(out.floors, 12);
+  assert.equal(out.units, 240);
+  assert.equal(out.capRatePct, 6.25);
+  assert.deepEqual(out.amenities, ["Pool", "Gym"]);
+  assert.ok(out.highlights.includes("Trophy asset"));
+  assert.deepEqual(jllStrandedStructured({}), {});
+});
+
+// ---------------------------------------------------------------------------
+// Phase-2: jllExtractLicense
+// ---------------------------------------------------------------------------
+
+test("jllExtractLicense formats location:number from first license entry", () => {
+  assert.equal(
+    jllExtractLicense([{ location: "Indiana", licenseNumber: "RB14042705" }]),
+    "Indiana: RB14042705"
+  );
+  assert.equal(
+    jllExtractLicense([{ type: "Broker", location: "Texas - Dallas", licenseNumber: "234599" }]),
+    "Texas - Dallas: 234599"
+  );
+  assert.equal(jllExtractLicense([]), null);
+  assert.equal(jllExtractLicense(null), null);
+  assert.equal(jllExtractLicense(undefined), null);
+});
+
+test("jllExtractLicense returns bare number when no location present", () => {
+  assert.equal(jllExtractLicense([{ licenseNumber: "RB99999" }]), "RB99999");
+});
+
+// ---------------------------------------------------------------------------
+// Phase-2: jllStrandedStructured with object-array highlights and buildingClass
+// ---------------------------------------------------------------------------
+
+test("jllStrandedStructured extracts highlights from object array (.title)", () => {
+  const out = jllStrandedStructured({
+    highlights: [
+      { title: "224,000 SF total available" },
+      { title: "9 dock doors" },
+      { title: "Sits on 16.53 acres" },
+    ],
+  });
+  assert.ok(Array.isArray(out.highlights));
+  assert.ok(out.highlights.includes("224,000 SF total available"));
+  assert.ok(out.highlights.includes("9 dock doors"));
+  assert.equal(out.highlights.length, 3);
+});
+
+test("jllStrandedStructured normalizes buildingClass via normBuildingClass", () => {
+  assert.equal(jllStrandedStructured({ buildingClass: "Class A" }).buildingClass, "A");
+  assert.equal(jllStrandedStructured({ buildingClass: "B" }).buildingClass, "B");
+  assert.equal(jllStrandedStructured({ buildingClass: "Unclassified" }).buildingClass, undefined);
+  assert.equal(jllStrandedStructured({ buildingClass: "" }).buildingClass, undefined);
+  assert.equal(jllStrandedStructured({}).buildingClass, undefined);
+});
+
+test("jllStrandedStructured emits canonicalUrl from relative pageUrl", () => {
+  const out = jllStrandedStructured({
+    pageUrl: "/listings/1401-e-memorial-dr-not-tracked-indiana",
+  });
+  assert.equal(
+    out.canonicalUrl,
+    "https://property.jll.com/listings/1401-e-memorial-dr-not-tracked-indiana"
+  );
+});
+
+test("jllStrandedStructured passes through absolute pageUrl unchanged", () => {
+  const out = jllStrandedStructured({
+    pageUrl: "https://property.jll.com/listings/some-listing",
+  });
+  assert.equal(out.canonicalUrl, "https://property.jll.com/listings/some-listing");
+});
+
+test("jllStrandedStructured emits extraFacts with location_description when present", () => {
+  const out = jllStrandedStructured({ locationDescription: "Suburbs" });
+  assert.deepEqual(out.extraFacts, { location_description: "Suburbs" });
+  // Absent locationDescription -> no extraFacts key.
+  const sparse = jllStrandedStructured({});
+  assert.equal(sparse.extraFacts, undefined);
+});
+
+test("jllStrandedStructured absent fields stay null/undefined (no fabrication)", () => {
+  const out = jllStrandedStructured({});
+  assert.equal(out.buildingClass, undefined);
+  assert.equal(out.canonicalUrl, undefined);
+  assert.equal(out.extraFacts, undefined);
+  assert.equal(out.highlights, undefined);
+  assert.equal(out.amenities, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Phase-2: fixture-based end-to-end check against real saved raw_data blob
+// ---------------------------------------------------------------------------
+
+test("jll fixture: jllStrandedStructured lifts all Phase-2 fields from real raw_data", () => {
+  const row = jllDetailRow();
+  const detail = row.jllDetail;
+  const out = jllStrandedStructured(detail);
+
+  // submarket
+  assert.equal(out.submarket, "Not Tracked Indiana");
+
+  // buildingClass: "B" -> "B"
+  assert.equal(out.buildingClass, "B");
+
+  // highlights: object array with .title fields
+  assert.ok(Array.isArray(out.highlights), "highlights should be an array");
+  assert.ok(out.highlights.includes("224,000 SF total available"));
+  assert.ok(out.highlights.includes("9 dock doors"));
+
+  // amenities
+  assert.ok(Array.isArray(out.amenities));
+  assert.ok(out.amenities.includes("IP - Industrial Park Zone"));
+  assert.ok(out.amenities.includes("Rail served"));
+
+  // canonicalUrl from relative pageUrl
+  assert.equal(
+    out.canonicalUrl,
+    "https://property.jll.com/listings/1401-e-memorial-dr-not-tracked-indiana"
+  );
+
+  // extraFacts: locationDescription
+  assert.deepEqual(out.extraFacts, { location_description: "Suburbs" });
+});
+
+test("jll fixture: jllContacts emits license string on contacts with licenses", () => {
+  const row = jllDetailRow();
+  // The fixture has contactsDetailed already built; simulate calling jllContacts on
+  // the broker-raw objects that would produce them. We test jllExtractLicense directly
+  // on the licenses array shapes from the fixture.
+  const firstBroker = row.contactsDetailed[0];
+  const license = jllExtractLicense(firstBroker.licenses);
+  assert.equal(license, "Indiana: RB14042705");
+
+  const secondBroker = row.contactsDetailed[1];
+  const license2 = jllExtractLicense(secondBroker.licenses);
+  assert.equal(license2, "Indiana: RB21002049");
+});
+
+test("jll fixture: jllStrandedStructured does not throw on null/undefined/empty", () => {
+  assert.doesNotThrow(() => jllStrandedStructured(null));
+  assert.doesNotThrow(() => jllStrandedStructured(undefined));
+  assert.doesNotThrow(() => jllStrandedStructured({}));
+  assert.deepEqual(jllStrandedStructured(null), {});
+  assert.deepEqual(jllStrandedStructured(undefined), {});
 });

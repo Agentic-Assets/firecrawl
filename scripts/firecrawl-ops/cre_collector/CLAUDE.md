@@ -34,6 +34,7 @@ Runs entirely against the local self-hosted Firecrawl API.
 | `cre_status.sh` | Read-only run-health heartbeat: launchd state, per-tier staleness vs cadence, last-run verdict (from `out/daily/last_run_<tier>.json`), last-ingest counts, `out/` footprint + lock state (hung/stale), stack/env/TCC. Exits nonzero if unhealthy. `--full-health` runs the full healthcheck |
 | `cre_setup.sh` | One-command preflight + bootstrap for a fresh clone (toolchain, deps, env, offline smoke); run first. See `SETUP.md` |
 | `cre_validate.py` | Post-ingest Supabase validation (`npm run validate:supabase`); not in daily script |
+| `backfill_media_from_raw_data.py` | One-time additive lift of media/docs already stranded in `raw_data` into `cre_listing_media`/`cre_listing_links`/`cre_listing_documents`; `--dry-run` default, `--apply` gated (needs `011` applied). See `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` |
 | `run_colliers_main_full.sh` | Resumable colliers-main batch driver (~15,896 URLs) |
 | `launchd/` | macOS tier schedules (portable `*.plist.template` + `install_launchd.sh`) - see `launchd/CLAUDE.md` |
 | `tests/` | pytest contracts - see `tests/CLAUDE.md` |
@@ -44,6 +45,7 @@ Runs entirely against the local self-hosted Firecrawl API.
 | `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` | Monitor hardening, module split, first `--apply` seed |
 | `SECURITY_REVIEW_2026-06-14.md` | Branch security review: verdict, the `standard_conforming_strings` pin fix, deferred base-table REVOKE |
 | `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` | Tier-B enrichment-queue worker + cadence restructure (monitor 2x/day, enrich every 4h, weekly additive full backstop, daily retired). IMPLEMENTED in code 2026-06-15 (`cre_enrich.py`, `collect.ts --enrich-input`/`lib/enrich.ts`, `sql/010`, restructured launchd tiers); live launchd cutover (Section 9) still GATED |
+| `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` | Capture all videos/links/docs/images + full markdown + stranded structured fields. Generic harvester (`lib/harvest.ts`), richer scrape formats, NEW `cre_listing_media`/`cre_listing_links` tables (`sql/011`), Buildout-iframe Tier-B detail for lee/svn, raw_data backfill. BUILT + verified in code; live apply GATED |
 | `workflows/` | Executable Workflow scripts; `cre_enrichment_worker.workflow.js` is the build/test/review/cutover plan for the enrichment design above |
 | `archive/` | Dated buildout history (see `archive/README.md`) |
 | `../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` | Architecture + go-forward plan (§14) |

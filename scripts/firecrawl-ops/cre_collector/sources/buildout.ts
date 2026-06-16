@@ -3,9 +3,11 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
-import { parseJsonBody, scrapeJson } from "../lib/scrape.js";
+import { parseJsonBody, scrapeDoc, scrapeJson } from "../lib/scrape.js";
 import { SourceResult, Tx } from "../types.js";
+import { harvestDetail } from "../lib/harvest.js";
 import { clean, isPerSfPriceText, moneyToNumber, num, pmap } from "../lib/util.js";
+import { isPerSfText, parseLeaseRate, parseSizeText } from "../lib/parse.js";
 
 
 // --- Buildout platform (SVN, Lee & Associates): inventory JSON API, paginated ---
@@ -32,6 +34,27 @@ export type BuildoutInventoryOpts = {
 
 export function buildoutInventoryUrl(pluginKey: string, page: number): string {
   return `https://buildout.com/plugins/${pluginKey}/inventory.json?page=${page}`;
+}
+
+// Parse a Buildout "Available" attribute (e.g. "175 - 2,396 SF" or "4,750 SF")
+// into the available / min-divisible / max-divisible square-foot triple that
+// cre_ingest.to_row lifts into existing cre_listings columns. Returns an empty
+// object when no numeric SF is present. Pure; never throws.
+export function buildoutAvailableSf(text: string | null | undefined): {
+  availableSf?: number;
+  minDivisibleSf?: number;
+  maxDivisibleSf?: number;
+} {
+  const t = clean(text);
+  if (!t || !/sf|sq|square/i.test(t)) return {};
+  const nums = (t.match(/\d[\d,]*(?:\.\d+)?/g) ?? [])
+    .map((n) => Number(n.replace(/,/g, "")))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (!nums.length) return {};
+  if (nums.length === 1) return { availableSf: nums[0], minDivisibleSf: nums[0], maxDivisibleSf: nums[0] };
+  const lo = Math.min(...nums);
+  const hi = Math.max(...nums);
+  return { availableSf: lo, minDivisibleSf: lo, maxDivisibleSf: hi };
 }
 
 export function envBool(name: string): boolean {
@@ -353,6 +376,157 @@ export async function buildoutInventory(
   return result;
 }
 
+// --- Tier-B (enrich-input only) Buildout detail iframe resolver + enricher ---
+//
+// The bulk srcBuildout path reads inventory.json ONLY; the per-property
+// media / virtual-tour / full image gallery / OM documents live inside the
+// Buildout detail IFRAME, which the bulk path never renders. Those are captured
+// forward-only via the monitor -> cre_enrichment_queue -> cre_enrich.py Tier-B
+// worker, which calls collect.ts --enrich-input. This block is invoked ONLY on
+// that enrich path; it does NOT add detail rendering to the daily bulk collect.
+
+// Static per-source Buildout coordinates the EnrichItem does not carry: the
+// plugin key and the brokerage host that compose the iframe content URL. The
+// host is also recoverable from item.url, but pinning it keeps a malformed
+// show_link from yielding a wrong-host iframe URL.
+export const BUILDOUT_ENRICH_CONFIG: Record<string, { pluginKey: string; host: string; company: string }> = {
+  svn: {
+    pluginKey: "b933480474026c41d248b77156c84aef37dcac68",
+    host: "svn.com",
+    company: "SVN",
+  },
+  "lee-associates": {
+    pluginKey: "9a64a93980aeae8db347e72cdfa8ca61017acc9a",
+    host: "www.lee-associates.com",
+    company: "Lee & Associates",
+  },
+};
+
+// Pull the Buildout property slug (the show_link `?propertyId=` value) off a
+// listing url, dropping the dual-mode `-sale` / `-lease` suffix so a sale and a
+// lease url resolve to the same iframe. Returns null when no propertyId is
+// present. Pure; never throws.
+export function buildoutSlugFromUrl(url: string | null): string | null {
+  const u = clean(url);
+  if (!u) return null;
+  try {
+    const parsed = new URL(u);
+    const pid = parsed.searchParams.get("propertyId");
+    if (pid) return pid.replace(/-(?:sale|lease)$/i, "") || null;
+  } catch {
+    const m = u.match(/[?&]propertyId=([^&#]+)/i);
+    if (m) return decodeURIComponent(m[1]).replace(/-(?:sale|lease)$/i, "") || null;
+  }
+  return null;
+}
+
+// Compose the Buildout detail iframe content URL for a source. Returns null when
+// the slug cannot be derived (so the enricher skips the item, leaving its claim
+// queued for the weekly additive backstop). Pure; never throws.
+//   buildout.com/plugins/<key>/<host>/inventory/<slug>?pluginId=0&iframe=true&embedded=true
+export function buildoutDetailIframeUrl(sourceKey: string, listingUrl: string | null): string | null {
+  const cfg = BUILDOUT_ENRICH_CONFIG[sourceKey];
+  if (!cfg) return null;
+  const slug = buildoutSlugFromUrl(listingUrl);
+  if (!slug) return null;
+  return (
+    `https://buildout.com/plugins/${cfg.pluginKey}/${cfg.host}/inventory/` +
+    `${encodeURIComponent(slug)}?pluginId=0&iframe=true&embedded=true`
+  );
+}
+
+// Tier-B detail enricher for a single Buildout (svn / lee-associates) listing.
+// Scrapes the detail iframe URL with the capture-everything format set, runs
+// harvestDetail over the rendered doc, and returns an additive row that echoes
+// the input url (URL-keyed completion) plus the harvested media/links/documents/
+// images and full-page markdown. Returns null on a derivation or scrape failure
+// so the worker leaves the claim queued. NOT used by the bulk collect path.
+export async function enrichBuildoutDetail(sourceKey: string, listingUrl: string): Promise<any | null> {
+  const iframeUrl = buildoutDetailIframeUrl(sourceKey, listingUrl);
+  if (!iframeUrl) {
+    console.error(`  enrich/buildout(${sourceKey}): no iframe url for ${listingUrl}`);
+    return null;
+  }
+  let doc;
+  try {
+    doc = await scrapeDoc(iframeUrl, { waitFor: 1500, timeout: 60000 });
+  } catch (err) {
+    console.error(`  enrich/buildout(${sourceKey}): detail iframe scrape failed for ${listingUrl}: ${err}`);
+    return null;
+  }
+  const harvested = harvestDetail(doc, { baseUrl: iframeUrl });
+  // Echo the ORIGINAL listing url (not the iframe url) so cre_ingest.to_row
+  // recomputes the same Buildout external_id (?propertyId=...) and the worker
+  // marks the claim done by url. The artifact is additive: only the harvested
+  // child arrays + markdown are populated; price/status are left to the inventory
+  // feed (the iframe has no authoritative status field worth flipping).
+  const cfg = BUILDOUT_ENRICH_CONFIG[sourceKey];
+  return {
+    id: buildoutSlugFromUrl(listingUrl),
+    url: listingUrl,
+    sourceCompany: cfg?.company,
+    documents: harvested.documents,
+    media: harvested.media,
+    links: harvested.links,
+    photos: harvested.images,
+    markdown: typeof doc.markdown === "string" && doc.markdown ? doc.markdown : undefined,
+    buildoutDetailIframeUrl: iframeUrl,
+  };
+}
+
+// --- Pure listing builder (exported for unit testing) ---
+//
+// Extracts the Phase-2 camelCase scalar fields from a raw Buildout inventory
+// item (x) plus the transaction type. This is the pure, no-network transform
+// that tests can call directly against fixture blobs. `srcBuildout` calls this
+// internally via the inline expansion; the function below mirrors that logic
+// exactly so the test can reach it without triggering network I/O.
+//
+// The raw_data blobs stored in the DB are already the transformed listing objects
+// (after the adapter runs). For forward-path testing, we test the scalar parsers
+// directly against stored raw_data fields (leaseRateText, sizeText, salePriceText,
+// underContract, url) that the adapter would have consumed from the inventory item.
+export function buildoutScalarFields(raw: {
+  url?: string | null;
+  leaseRateText?: string | null;
+  sizeText?: string | null;
+  salePriceText?: string | null;
+  underContract?: boolean;
+  transactionMode?: string;
+}): {
+  canonicalUrl: string | null;
+  leaseRateMin: number | null;
+  leaseRateMax: number | null;
+  leaseRateType: string | null;
+  lotSf: number | null;
+  statusBadge: string | null;
+  salePricePsfGuard: boolean;
+} {
+  const canonicalUrl = clean(raw.url) ?? null;
+
+  const parsedRate = parseLeaseRate(raw.leaseRateText ?? null);
+  const leaseRateMin = parsedRate.min ?? null;
+  const leaseRateMax = parsedRate.max ?? null;
+  const leaseRateType = parsedRate.type ?? null;
+
+  const { lotSf } = parseSizeText(raw.sizeText ?? null);
+
+  const statusBadge = raw.underContract === true ? "under_contract" : null;
+
+  // DQ guard: is the salePriceText a per-SF value?
+  const salePricePsfGuard = isPerSfText(raw.salePriceText ?? null);
+
+  return {
+    canonicalUrl,
+    leaseRateMin,
+    leaseRateMax,
+    leaseRateType,
+    lotSf: lotSf ?? null,
+    statusBadge,
+    salePricePsfGuard,
+  };
+}
+
 export async function srcBuildout(
   company: string,
   pluginKey: string,
@@ -381,6 +555,10 @@ export async function srcBuildout(
       const leaseRateText = attrs.get("Lease Rate") ?? attrs.get("Rate") ?? null;
       const sizeText =
         attrs.get("Building Size") ?? attrs.get("Lot Size") ?? clean(x.size_summary);
+      // Stranded structured-field lift: the inventory "Available" attribute is a
+      // dropped available / divisible square-foot signal. Only non-null parsed
+      // values are spread in, so a row without an Available attr is unchanged.
+      const availSf = buildoutAvailableSf(attrs.get("Available"));
       const brokerIds = (x.broker_contacts ?? [])
         .map((b: any) =>
           brokerRef({
@@ -392,6 +570,39 @@ export async function srcBuildout(
           })
         )
         .filter((v: number | null): v is number => v !== null);
+
+      // --- Phase-2 scalar lift (additive; emits nullable camelCase fields) ---
+
+      // canonicalUrl: the listing URL is the canonical identifier for Buildout rows.
+      // COALESCE at backfill time (primary -> secondary_pass -> top-level url).
+      const canonicalUrl = clean(x.show_link) ?? null;
+
+      // Lease rate: parse the dense Buildout string ('$35 SF/yr (NNN)',
+      // '$1.59 - 1.70 SF/month', '$2.50 - 250 SF/month' suite-size mis-range).
+      // parseLeaseRate handles annualization, range rejection, and type extraction.
+      const parsedRate = parseLeaseRate(leaseRateText);
+      const leaseRateMin = parsedRate.min ?? null;
+      const leaseRateMax = parsedRate.max ?? null;
+      const leaseRateType = parsedRate.type ?? null;
+
+      // lotSf: route acreage sizeText to lot (not building) SF.
+      // parseSizeText returns { sizeSf, lotSf }; an "Acres" token fills lotSf.
+      const { lotSf } = parseSizeText(sizeText);
+
+      // statusBadge: underContract flag -> feeds the existing OPT-IN activation gate.
+      // Never written directly to status; cre_ingest STATUS_SOURCE_PATHS routes it.
+      const statusBadge = x.under_contract === true ? "under_contract" : null;
+
+      // DQ guard (Lee & Associates): salePriceUsd in the Buildout feed conflates
+      // an absolute price and a per-SF rate ('$6.00/SF' stored as salePriceUsd:6).
+      // Use isPerSfText on salePriceText to detect this and suppress the bad absolute
+      // while routing the per-SF value to salePricePerSf instead.
+      // Note: the adapter already applies isPerSfPriceText (from lib/util.ts) on
+      // priceText from the attrs map; this guard applies isPerSfText (from lib/parse.ts,
+      // the contract-specified helper) on the top-level salePriceText field.
+      const rawSalePriceText = tx === "sale" ? priceText : null;
+      const isSalePsf = isPerSfText(rawSalePriceText);
+
       listings.push({
         id: x.id != null ? String(x.id) : null,
         name: clean(x.display_name) ?? clean(x.name),
@@ -404,11 +615,21 @@ export async function srcBuildout(
         country: "US",
         latitude: num(x.latitude),
         longitude: num(x.longitude),
-        salePriceUsd: tx === "sale" && !isPerSfPriceText(priceText) ? moneyToNumber(priceText) : null,
-        salePricePerSf: tx === "sale" && isPerSfPriceText(priceText) ? moneyToNumber(priceText) : null,
-        salePriceText: tx === "sale" ? priceText : null,
+        // Apply the isPerSfText DQ guard: if salePriceText is a per-SF value,
+        // suppress salePriceUsd (do not emit a false absolute price) and place
+        // the value in salePricePerSf instead.
+        salePriceUsd: tx === "sale" && !isSalePsf && !isPerSfPriceText(priceText) ? moneyToNumber(priceText) : null,
+        salePricePerSf: tx === "sale" && (isSalePsf || isPerSfPriceText(priceText)) ? moneyToNumber(priceText) : null,
+        salePriceText: rawSalePriceText,
         leaseRateText,
+        leaseRateMin: leaseRateMin,
+        leaseRateMax: leaseRateMax,
+        leaseRateType: leaseRateType,
         sizeText,
+        lotSf: lotSf ?? null,
+        canonicalUrl,
+        statusBadge,
+        ...availSf,
         brokerIds,
         brochures: x.pdf_url ? [{ name: "Listing brochure (PDF)", url: x.pdf_url }] : [],
         photos: [x.photo_url, x.large_thumbnail_url].filter(Boolean).slice(0, 1),

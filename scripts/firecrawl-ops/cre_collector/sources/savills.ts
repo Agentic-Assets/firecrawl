@@ -186,16 +186,20 @@ export function savillsImageUrls(row: any): string[] {
   return [...urls];
 }
 
-export function savillsDocumentUrls(row: any): { name: string | null; url: string }[] {
-  const docs: { name: string | null; url: string }[] = [];
-  const add = (name: string | null, url: string | null) => {
+export function savillsDocumentUrls(
+  row: any
+): { name: string | null; url: string; docType?: string }[] {
+  const docs: { name: string | null; url: string; docType?: string }[] = [];
+  const add = (name: string | null, url: string | null, docType?: string) => {
     if (url?.startsWith("http") && /\.pdf(?:$|\?)/i.test(url) && !docs.some((d) => d.url === url)) {
-      docs.push({ name, url });
+      docs.push(docType ? { name, url, docType } : { name, url });
     }
   };
-  add("Floor plan", clean(row.FloorplanPDFUrl));
+  // Per-document docType is now honored by the ingest (default 'brochure'); the
+  // floor-plan PDF is classified distinctly so it lands as doc_type 'floor_plan'.
+  add("Floor plan", clean(row.FloorplanPDFUrl), "floor_plan");
   for (const doc of row.BrochureGallery ?? []) {
-    add(clean(doc?.Caption) ?? "Brochure", clean(doc?.ImageUrl));
+    add(clean(doc?.Caption) ?? "Brochure", clean(doc?.ImageUrl), "brochure");
   }
   return docs;
 }
@@ -286,6 +290,29 @@ export function mapSavillsLeaseRow(row: any, sourceUrl: string): any | null {
   const propertyType = clean(row.PropertyTypes?.[0]?.Caption);
   const detailId = clean(row.ExternalPropertyIDFormatted) ?? clean(row.ExternalPropertyID)?.toLowerCase();
   const url = detailId ? `https://search.savills.com/com/en/property-detail/${detailId}` : sourceUrl;
+
+  // --- Phase-2 scalar lift (additive, nullable) ---
+  // canonicalUrl: use the already-computed absolute URL; fall back to resolving
+  // MetaInformation.CanonicalUrl (a relative path) against the Savills root.
+  const metaCanonical = clean(row.MetaInformation?.CanonicalUrl);
+  const canonicalUrl: string | null =
+    url !== sourceUrl
+      ? url
+      : metaCanonical
+        ? `https://search.savills.com/com/en/${metaCanonical}`
+        : null;
+
+  // highlights: WebFeatureList is an array of plain-text strings.
+  const webFeatures: string[] = Array.isArray(row.WebFeatureList)
+    ? row.WebFeatureList.map((s: any) => clean(s)).filter((s: string | null): s is string => s !== null)
+    : [];
+  const highlights: string | null = webFeatures.length ? webFeatures.join("\n") : null;
+
+  // availableSf: AvailableSize.SqFt, suppress zero (zero means "not stated").
+  const rawSqFt = row.AvailableSize?.SqFt;
+  const availableSf: number | null =
+    typeof rawSqFt === "number" && isFinite(rawSqFt) && rawSqFt > 0 ? rawSqFt : null;
+
   return {
     id: clean(row.ExternalPropertyID) ?? detailId,
     name: clean(row.AddressLine1) ?? clean(row.PropertyPageTitle),
@@ -308,6 +335,10 @@ export function mapSavillsLeaseRow(row: any, sourceUrl: string): any | null {
     photos: savillsImageUrls(row),
     url,
     rawSavillsProperty: row,
+    // Phase-2 scalar fields (nullable; null when source does not provide them).
+    canonicalUrl,
+    highlights,
+    availableSf,
   };
 }
 

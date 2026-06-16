@@ -3,6 +3,9 @@ process.argv = [process.argv[0]!, process.argv[1]!];
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import type { ScrapedDoc } from "../../../types.js";
 import {
   CUSHMAN_API_BASE,
@@ -21,7 +24,13 @@ import {
   extractCushmanContacts,
   extractCushmanAssetUrls,
   baseCushmanListing,
+  baseCushmanExtraFacts,
 } from "../../../sources/cushman-wakefield.js";
+import { parseLeaseRate } from "../../../lib/parse.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const FIXTURE_PATH = join(__dirname, "../../fixtures/raw_data/cushman-wakefield.json");
+const fixtureRows: any[] = JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));
 
 const ASSET_BASE = "https://assets.cushmanwakefield.com";
 const PMEDIA_ID = "listing-abc123";
@@ -209,4 +218,159 @@ test("baseCushmanListing uses sale defaults on the sale pass", () => {
   );
   assert.equal(listing.transactionType, "Sale");
   assert.equal(listing.salePriceText, "Contact broker for pricing");
+});
+
+// ---------------------------------------------------------------------------
+// Phase-2 WS1 scalar lift tests: fixture-driven (tests/fixtures/raw_data/cushman-wakefield.json)
+// ---------------------------------------------------------------------------
+
+test("fixture row 0: canonicalUrl and statusBadge are set from base API fields", () => {
+  const row = fixtureRows[0]!.rawCushmanApi;
+  const listing = baseCushmanListing(row, "lease");
+  // canonicalUrl must be the resolved absolute URL (no sitecore- prefix)
+  assert.ok(listing.canonicalUrl != null, "canonicalUrl should be set");
+  assert.ok(
+    (listing.canonicalUrl as string).startsWith("https://www.cushmanwakefield.com"),
+    "canonicalUrl must use www host"
+  );
+  assert.ok(
+    !(listing.canonicalUrl as string).includes("sitecore-"),
+    "canonicalUrl must not include sitecore- prefix"
+  );
+  // statusBadge equals listingStatus
+  assert.equal(listing.statusBadge, listing.listingStatus, "statusBadge must equal listingStatus");
+  assert.equal(listing.listingStatus, "Available");
+});
+
+test("fixture row 0: extraFacts sublease badge is detected from attribute1 'For Sublease'", () => {
+  const row = fixtureRows[0]!.rawCushmanApi;
+  const listing = baseCushmanListing(row, "lease");
+  assert.ok(listing.extraFacts != null, "extraFacts should be present when sublease headline");
+  assert.equal((listing.extraFacts as Record<string, unknown>)["sublease"], true);
+  // is_investment_property absent in this row
+  assert.equal((listing.extraFacts as Record<string, unknown>)["is_investment_property"], undefined);
+});
+
+test("fixture row 1: is_investment_property is captured in extraFacts", () => {
+  const row = fixtureRows[1]!.rawCushmanApi;
+  // fixture row 1 has is_investment_property: true in rawCushmanApi
+  const listing = baseCushmanListing(row, "lease");
+  assert.ok(listing.extraFacts != null, "extraFacts should be present");
+  assert.equal((listing.extraFacts as Record<string, unknown>)["is_investment_property"], true);
+  // headline is 'For Lease', not sublease
+  assert.equal((listing.extraFacts as Record<string, unknown>)["sublease"], undefined);
+});
+
+test("fixture row 2: extraFacts is absent when neither sublease nor is_investment_property", () => {
+  const row = fixtureRows[2]!.rawCushmanApi;
+  // row 2 has no is_investment_property and headline 'For Lease'
+  const listing = baseCushmanListing(row, "lease");
+  // prune() will have removed it if undefined; check it is null or undefined
+  assert.ok(
+    listing.extraFacts == null,
+    "extraFacts should be absent when no sublease or investment flag"
+  );
+});
+
+test("parseLeaseRate: (Annual) form yields null min (negative signal guard)", () => {
+  // The frozen parser's hasNegativeSignal returns true for '(Annual)' without /SF.
+  // Cushman's canonical form '$30.00 (Annual) USD' is therefore not per-SF trustable.
+  const result = parseLeaseRate("$30.00 (Annual) USD");
+  assert.equal(result.min, null, "Annual form without /SF must yield null min");
+  assert.equal(result.max, null);
+  assert.equal(result.type, null);
+});
+
+test("parseLeaseRate: per-SF form '4.50/SF USD' is parsed to a usable min", () => {
+  // From real Cushman data: '4.50/SF USD' has a /SF signal but no $ prefix.
+  // The parser uses Strategy 4 (single bare number) after detecting hasPerSfSignal.
+  const result = parseLeaseRate("4.50/SF USD");
+  assert.equal(result.min, 4.5, "per-SF bare number must be extracted as min");
+  assert.equal(result.max, null);
+  assert.equal(result.type, null);
+});
+
+test("parseLeaseRate: range per-SF form '16-18/SF USD' yields min=16, max=18", () => {
+  const result = parseLeaseRate("16-18/SF USD");
+  assert.equal(result.min, 16);
+  assert.equal(result.max, 18);
+  assert.equal(result.type, null);
+});
+
+test("parseLeaseRate: 'Contact us for pricing' yields all-null result without throwing", () => {
+  const result = parseLeaseRate("Contact us for pricing");
+  assert.equal(result.min, null);
+  assert.equal(result.max, null);
+  assert.equal(result.type, null);
+});
+
+test("parseLeaseRate: '$24.00/SF/YR, FSG' yields full_service type", () => {
+  const result = parseLeaseRate("$24.00/SF/YR, FSG");
+  assert.equal(result.min, 24);
+  assert.equal(result.type, "full_service");
+});
+
+test("baseCushmanExtraFacts: 'For Sublease' headline produces sublease=true", () => {
+  const ef = baseCushmanExtraFacts({ attribute1: "For Sublease" });
+  assert.deepEqual(ef, { sublease: true });
+});
+
+test("baseCushmanExtraFacts: is_investment_property flag is captured", () => {
+  const ef = baseCushmanExtraFacts({ attribute1: "For Lease", is_investment_property: true });
+  assert.deepEqual(ef, { is_investment_property: true });
+});
+
+test("baseCushmanExtraFacts: both flags together", () => {
+  const ef = baseCushmanExtraFacts({ attribute1: "For Sublease", is_investment_property: true });
+  assert.deepEqual(ef, { sublease: true, is_investment_property: true });
+});
+
+test("baseCushmanExtraFacts: returns undefined when no interesting fields", () => {
+  assert.equal(baseCushmanExtraFacts({ attribute1: "For Lease" }), undefined);
+  assert.equal(baseCushmanExtraFacts({}), undefined);
+  assert.equal(baseCushmanExtraFacts({ attribute1: null }), undefined);
+});
+
+test("baseCushmanListing: canonicalUrl is set when url is relative", () => {
+  const listing = baseCushmanListing(
+    { id: "cw-rel", url: "/en/united-states/properties/lease/test-prop" },
+    "lease"
+  );
+  assert.ok(
+    (listing.canonicalUrl as string)?.startsWith("https://www.cushmanwakefield.com"),
+    "canonicalUrl should be absolute"
+  );
+  assert.equal(listing.canonicalUrl, listing.url, "canonicalUrl and url should match");
+});
+
+test("baseCushmanListing: canonicalUrl is null when no url provided", () => {
+  const listing = baseCushmanListing({ id: "cw-nourl" }, "lease");
+  assert.equal(listing.canonicalUrl, null);
+  assert.equal(listing.url, null);
+});
+
+test("baseCushmanListing: statusBadge is null when listing_status absent", () => {
+  const listing = baseCushmanListing(
+    { id: "cw-nostatus", url: "/en/united-states/properties/lease/test" },
+    "lease"
+  );
+  // prune() removes null/undefined; statusBadge is absent
+  assert.ok(!("statusBadge" in listing) || listing.statusBadge == null);
+});
+
+test("fixture rows: baseCushmanListing never throws on any fixture row", () => {
+  for (const fixtureRow of fixtureRows) {
+    const rawRow = fixtureRow.rawCushmanApi ?? fixtureRow;
+    assert.doesNotThrow(() => baseCushmanListing(rawRow, "lease"));
+  }
+});
+
+test("fixture rows: contactsDetailed title is passed through when present", () => {
+  // Row 0 has a contact with title 'Executive Director'
+  const contacts = fixtureRows[0]!.contactsDetailed as any[];
+  const withTitle = contacts.find((c: any) => c.title);
+  assert.ok(withTitle != null, "At least one contact should have a title");
+  assert.equal(withTitle.title, "Executive Director");
+  // license is absent in Cushman contacts (not published publicly)
+  assert.equal(withTitle.license, undefined);
 });

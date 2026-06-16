@@ -3,8 +3,10 @@ import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, dedupeStrings, firstJsonLd, stripHtmlText, titleFromFilename } from "../lib/html.js";
+import { normBuildingClass, parseLeaseRate } from "../lib/parse.js";
 import { scrapeDoc } from "../lib/scrape.js";
-import { ScrapedDoc, SourceResult, Tx } from "../types.js";
+import { harvestDetail, type HarvestResult } from "../lib/harvest.js";
+import { DocItem, LinkItem, MediaItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, num, pmap, prune } from "../lib/util.js";
 
 
@@ -326,6 +328,52 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
   const externalUrl = clean(row.external_url);
   const sharpLaunchUrl = clean(row.url);
   const rawTypes = Array.isArray(row.type) ? row.type.map(clean).filter(Boolean) : [];
+
+  // --- Phase-2 Data-Lift: scalar fields from rawSharpLaunch (collect-time forward path) ---
+  // canonicalUrl: prefer external_url (the public AY property page) over the
+  // SharpLaunch micro-site URL; both are already in the listing but canonicalUrl
+  // is what the ingest writes to cre_listings.canonical_url.
+  const canonicalUrl = externalUrl ?? sharpLaunchUrl;
+
+  // propertySubtype: use the first SharpLaunch type token (e.g. "office.medical",
+  // "industrial.warehouse_distribution"). These are the richest AY subtype strings
+  // and are consistent with the contract's free-text property_subtype column.
+  const propertySubtype = rawTypes.length > 0 ? (rawTypes[0] ?? null) : null;
+
+  // buildingClass: normBuildingClass applied to AY subtype strings. AY encodes
+  // subtypes as "category.subcategory" (e.g. "office.medical"), not "Class A/B/C";
+  // normBuildingClass returns null for these (documented in golden vector row 23).
+  // Emit the field anyway so future AY feed additions that include a class string
+  // are picked up automatically.
+  let buildingClass: "A" | "B" | "C" | "D" | null = null;
+  for (const t of rawTypes) {
+    const cls = normBuildingClass(t as string);
+    if (cls !== null) { buildingClass = cls; break; }
+  }
+
+  // submarket: SharpLaunch feed exposes it directly on the row.
+  const submarket = clean(row.submarket);
+
+  // yearBuilt: SharpLaunch stores it as "yearbuilt" (lowercase).
+  const yearBuilt = num(row.yearbuilt) ?? num(row.yearBuilt);
+
+  // units: SharpLaunch "units" field (multifamily / mixed-use unit count).
+  const units = num(row.units);
+
+  // capRatePct: already set below from row.cap_rate; no change needed.
+  // salePricePerSf: SharpLaunch "sale_unit_price" is a per-SF price on some sale rows.
+  const salePricePerSf = num(row.sale_unit_price);
+
+  // leaseRateMin / leaseRateMax: derive from the feed's clean numeric availability
+  // rent fields via parseLeaseRate so the AY $5000/SF/YR anomaly guard fires.
+  // Construct the canonical rate text ($/SF/YR) so parseLeaseRate can evaluate it.
+  const rateText = avisonYoungLeaseRateText(row);
+  const parsedRate = parseLeaseRate(rateText);
+  const leaseRateMin = parsedRate.min;
+  const leaseRateMax = parsedRate.max;
+  const leaseRateType = parsedRate.type;
+  // --- End Phase-2 Data-Lift ---
+
   return prune({
     id: row.id != null ? String(row.id) : null,
     name: clean(row.name) ?? clean(row.meta_title),
@@ -343,10 +391,13 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
     salePriceUsd: num(row.sale_price),
     salePriceText: row.sale_price ? `$${Number(row.sale_price).toLocaleString("en-US")}` : null,
     capRatePct: num(row.cap_rate),
-    leaseRateText: avisonYoungLeaseRateText(row),
+    leaseRateText: rateText,
+    leaseRateMin,
+    leaseRateMax,
+    leaseRateType,
     sizeText: avisonYoungSizeText(row),
     buildingSizeSqft: num(row.total_surface_sqft),
-    yearBuilt: num(row.yearbuilt),
+    yearBuilt,
     brokerIds,
     contactsDetailed,
     photos: imageUrl && isAvisonYoungPropertyPhoto(imageUrl) ? [imageUrl] : [],
@@ -359,8 +410,93 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
     saleUnitPrice: num(row.sale_unit_price),
     availableMinSqft: num(row.availabilities_min_surface_sqft),
     availableMaxSqft: num(row.availabilities_max_surface_sqft),
+    // Stranded structured-field lift onto the shared listing vocabulary keys.
+    // cre_ingest.to_row maps into existing cre_listings columns. The SharpLaunch
+    // feed exposes min/max available surface and an occupancy percentage that
+    // were previously dropped; surface them so a feed-only (monitor) row is also
+    // a structured-data gain. occupancyRate is normalized downstream
+    // (norm_occupancy_rate) so a raw 0-100 percentage is accepted.
+    availableSf: num(row.availabilities_min_surface_sqft) ?? num(row.availabilities_max_surface_sqft),
+    minDivisibleSf: num(row.availabilities_min_surface_sqft),
+    maxDivisibleSf: num(row.availabilities_max_surface_sqft),
+    occupancyRate: num(row.occupancy) ?? num(row.occupancy_rate) ?? num(row.percent_leased),
+    // Phase-2 scalar fields (Section B, contract vocab):
+    canonicalUrl,
+    propertySubtype,
+    buildingClass,
+    submarket,
+    units,
+    salePricePerSf,
     rawSharpLaunch: row,
   });
+}
+
+// Pick the longest non-empty page markdown across the scraped detail docs (the
+// richest full-page text). Returns undefined when nothing was captured so prune
+// drops the key and the ingest markdown COALESCE-keep leaves any prior value.
+export function avisonYoungLongestMarkdown(docs: Array<{ doc: ScrapedDoc; url: string }>): string | undefined {
+  let best = "";
+  for (const { doc } of docs) {
+    const md = typeof doc?.markdown === "string" ? doc.markdown : "";
+    if (md.length > best.length) best = md;
+  }
+  return best || undefined;
+}
+
+// Harvest every scraped Avison Young / SharpLaunch detail page and union the
+// results. The SharpLaunch PDF documents and curated property photos are folded
+// in as extra* (documents as bare strings so the harvester re-classifies them;
+// images as urls), plus any RealEstateListing JSON-LD video/embed url promoted
+// as media. Pure (no network); never throws (harvestDetail is guarded).
+export function harvestAvisonYoung(
+  docs: Array<{ doc: ScrapedDoc; url: string }>,
+  documents: any[],
+  photos: string[],
+  listingLd: any | null
+): HarvestResult {
+  const media = new Map<string, MediaItem>();
+  const links = new Map<string, LinkItem>();
+  const docMap = new Map<string, DocItem>();
+  const images = new Map<string, string>();
+  const docUrls = (Array.isArray(documents) ? documents : [])
+    .map((d: any) => clean(d?.url))
+    .filter((u): u is string => !!u);
+  // RealEstateListing JSON-LD may expose a video/virtual-tour url under video,
+  // associatedMedia, or tourBookingPage; promote any string urls as media.
+  const ldMedia: string[] = [];
+  for (const v of [listingLd?.video, listingLd?.tourBookingPage, listingLd?.associatedMedia]) {
+    if (typeof v === "string") ldMedia.push(v);
+    else if (v && typeof v === "object") {
+      const u = clean((v as any).contentUrl) ?? clean((v as any).url) ?? clean((v as any).embedUrl);
+      if (u) ldMedia.push(u);
+    } else if (Array.isArray(v)) {
+      for (const item of v) {
+        const u =
+          typeof item === "string"
+            ? item
+            : clean(item?.contentUrl) ?? clean(item?.url) ?? clean(item?.embedUrl);
+        if (u) ldMedia.push(u);
+      }
+    }
+  }
+  for (const { doc, url } of docs) {
+    const r = harvestDetail(doc, {
+      baseUrl: url,
+      extraDocs: docUrls,
+      extraImages: photos,
+      extraMedia: ldMedia,
+    });
+    for (const m of r.media) if (!media.has(m.url)) media.set(m.url, m);
+    for (const l of r.links) if (!links.has(l.url)) links.set(l.url, l);
+    for (const d of r.documents) if (!docMap.has(d.url)) docMap.set(d.url, d);
+    for (const img of r.images) if (!images.has(img)) images.set(img, img);
+  }
+  return {
+    media: [...media.values()],
+    links: [...links.values()],
+    documents: [...docMap.values()],
+    images: [...images.values()],
+  };
 }
 
 export async function enrichAvisonYoungListing(base: any): Promise<any> {
@@ -385,6 +521,13 @@ export async function enrichAvisonYoungListing(base: any): Promise<any> {
   const documents = extractAvisonYoungDocuments(docs);
   const photos = extractAvisonYoungPhotos(docs, Array.isArray(base.photos) ? base.photos : []);
   const listingLd = extractAvisonYoungJsonLd(docs);
+  // Capture-everything harvest across every scraped detail page (sharpLaunch +
+  // external). Fold the SharpLaunch PDFs and curated property photos in as
+  // extra* so the harvester unifies + classifies + dedups, and add any
+  // RealEstateListing JSON-LD video/tour url as promoted media. media/links are
+  // unioned across the per-doc passes; documents/images are taken from the
+  // harvester (a superset that already contains the SharpLaunch docs/photos).
+  const harvested = harvestAvisonYoung(docs, documents, photos, listingLd);
   const contactsDetailed = enrichAvisonYoungContacts(
     Array.isArray(base.contactsDetailed) ? base.contactsDetailed : [],
     docs
@@ -408,10 +551,14 @@ export async function enrichAvisonYoungListing(base: any): Promise<any> {
     lastUpdated: clean(listingLd?.datePosted)?.slice(0, 10) ?? base.lastUpdated,
     brokerIds: brokerIds.length ? brokerIds : base.brokerIds,
     contactsDetailed,
-    brochures: documents,
-    photos: photos.length ? photos : base.photos,
-    documentCount: documents.length,
-    photoCount: photos.length || base.photos?.length,
+    brochures: undefined,
+    documents: harvested.documents.length ? harvested.documents : documents,
+    photos: harvested.images.length ? harvested.images : photos.length ? photos : base.photos,
+    media: harvested.media,
+    links: harvested.links,
+    markdown: avisonYoungLongestMarkdown(docs),
+    documentCount: (harvested.documents.length || documents.length),
+    photoCount: (harvested.images.length || photos.length) || base.photos?.length,
     detailJsonLd: listingLd,
     detailScrape: {
       urls: docs.map(({ url }) => url),

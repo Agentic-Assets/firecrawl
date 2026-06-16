@@ -336,11 +336,15 @@ def test_happy_path_deletes_done_and_increments_absent(monkeypatch, tmp_path):
 # --- (C3) Phase-1 enricher set is exactly {colliers-main, jll-investor} -----
 
 
-def test_phase1_enricher_set_is_exactly_colliers_main_and_jll_investor():
+def test_enricher_set_is_exactly_colliers_main_jll_investor_svn_lee_associates():
     """The bespoke enricher registry lives in lib/enrich.ts (TS). Assert its
-    ENRICHERS map keys are exactly {colliers-main, jll-investor} and that cbre is
-    excluded (cbre is enumeration-only: the listings-api JSON already returns
-    fully mapped rows, so there is no per-listing detail endpoint to enrich).
+    ENRICHERS map keys are exactly {colliers-main, jll-investor, svn,
+    lee-associates} and that cbre is excluded (cbre is enumeration-only: the
+    listings-api JSON already returns fully mapped rows, so there is no
+    per-listing detail endpoint to enrich). The capture-everything build added
+    the Buildout Tier-B enricher for svn + lee-associates (their detail iframe
+    carries the media / tours / full gallery / OM docs the inventory bulk path
+    cannot see).
 
     Source-text assertion only (no DB, no Node): mirrors the TS unit test
     tests/ts/lib/enrich.test.ts so a regression in either layer is caught here.
@@ -354,9 +358,13 @@ def test_phase1_enricher_set_is_exactly_colliers_main_and_jll_investor():
     )
     assert m, "ENRICHERS registry literal not found in lib/enrich.ts"
     body = m.group(1)
-    # Keys are quoted string literals on the left of a colon.
-    keys = set(re.findall(r'"([a-z0-9-]+)"\s*:', body))
-    assert keys == {"colliers-main", "jll-investor"}
+    # Keys are object-literal property names on the left of a colon: either
+    # quoted string literals ("colliers-main") or bare identifiers (svn). Strip
+    # // line comments first so commentary colons never read as keys.
+    body_no_comments = re.sub(r"//[^\n]*", "", body)
+    keys = set(re.findall(r'(?:"([a-z0-9-]+)"|\b([a-z][a-z0-9_-]*))\s*:', body_no_comments))
+    keys = {q or b for (q, b) in keys}
+    assert keys == {"colliers-main", "jll-investor", "svn", "lee-associates"}
     assert "cbre" not in keys
     # cbre's exclusion is intentional and documented in the same file.
     assert "cbre is intentionally ABSENT" in src

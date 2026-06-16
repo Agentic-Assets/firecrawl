@@ -5,8 +5,10 @@ import { dirname } from "node:path";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, dedupeStrings, extractSitemapUrlEntries } from "../lib/html.js";
+import { harvestDetail } from "../lib/harvest.js";
 import { scrapeDoc, scrapeRaw } from "../lib/scrape.js";
 import { ScrapeOpts, ScrapedDoc, SourceResult, Tx } from "../types.js";
+import { parseLeaseRate } from "../lib/parse.js";
 import { boundedInt, clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
 
 
@@ -351,6 +353,31 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
     (addr.street ? `${addr.street}${addr.city ? ", " + addr.city : ""}` : null) ?? h1 ?? ldName ?? entry.url;
   const description = clean($('meta[name="description"]').attr("content"));
 
+  // Stranded structured fields the markdown exposes but the row dropped: year
+  // built and zoning are lifted onto existing cre_listings columns. Only set
+  // when clearly present (regex anchored to Colliers' labeled spec lines).
+  const yearBuiltText = md.match(/Year Built:\s*((?:18|19|20)\d{2})/i)?.[1];
+  const zoning = clean(md.match(/\*\*Zoning\*\*\s*([A-Za-z0-9 ,/&'.-]+)/i)?.[1] ?? md.match(/Zoning:\s*([^\n|]+)/i)?.[1]);
+
+  // Capture-everything: run the pure harvester over the rendered detail doc to
+  // extract video/tour media, outbound links, and ADDITIONAL classified
+  // documents the brochure regex missed. The existing brochures channel is left
+  // untouched (it already carries titles + the default brochure docType into
+  // ingest), so it is NOT re-passed here to avoid duplicate doc rows. media/
+  // links/documents/markdown attach ADDITIVELY; the curated CDN photo set
+  // (high-precision listingsprod.blob regex) is kept as-is and NOT replaced by
+  // the raw page gallery, which would pull in header/footer logos.
+  const harvested = harvestDetail(doc, { baseUrl: entry.url });
+
+  // Phase-2 scalar fields.
+  // canonicalUrl: the live detail URL (dual-mode COALESCE backfill is separate).
+  const canonicalUrl = entry.url;
+  // statusBadge: the markdown-extracted property status token routes to the
+  // existing OPT-IN activation gate; never written to status directly.
+  const statusBadge = status ?? null;
+  // leaseRateType derived via the shared parser (low yield; ~6.4% carry an explicit token).
+  const lr = parseLeaseRate(leaseRateText);
+
   return prune({
     // Bare usa####### id; cre_ingest folds it into the colliers brokerage with
     // the configured "main:" prefix (mirrors the cbre-dealflow pattern).
@@ -373,10 +400,22 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
     sizeText: clean(md.match(/Building Size:[^\n|]+/i)?.[0]),
     buildingSizeSqft: bsf ? num(Number(bsf.replace(/,/g, ""))) : null,
     lotSizeAcres: land ? num(Number(land.replace(/,/g, ""))) : null,
+    yearBuilt: yearBuiltText ? num(Number(yearBuiltText)) : null,
+    zoning,
+    // Phase-2 camelCase scalar fields (consumed by cre_ingest.py to_row).
+    canonicalUrl,
+    statusBadge,
+    leaseRateType: lr.type ?? null,
+    leaseRateMin: lr.min ?? null,
+    leaseRateMax: lr.max ?? null,
     brokerIds: brokerIds.length ? brokerIds : undefined,
     contactsDetailed: contactsDetailed.length ? contactsDetailed : undefined,
     brochures: docs,
     photos,
+    documents: harvested.documents.length ? harvested.documents : undefined,
+    media: harvested.media.length ? harvested.media : undefined,
+    links: harvested.links.length ? harvested.links : undefined,
+    markdown: md || undefined,
     url: entry.url,
     lastUpdated: entry.lastmod ? entry.lastmod.slice(0, 10) : null,
     colliersMain: {
@@ -386,6 +425,8 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
       docCount: docs.length,
       photoCount: photos.length,
       contactCount: contactsDetailed.length,
+      mediaCount: harvested.media.length,
+      linkCount: harvested.links.length,
     },
   });
 }

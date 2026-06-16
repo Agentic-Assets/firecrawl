@@ -5,9 +5,11 @@ import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { brokerRef, brokers } from "../lib/broker.js";
 import { CONCURRENCY, PAGE_CAP } from "../lib/config.js";
+import { harvestDetail } from "../lib/harvest.js";
 import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
+import { normBuildingClass } from "../lib/parse.js";
 import { scrapeDoc, scrapeRaw } from "../lib/scrape.js";
-import { ScrapedDoc, SourceResult, Tx } from "../types.js";
+import { DocItem, MediaItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
 
 
@@ -259,6 +261,22 @@ export function jllDescription(property: any): string | null {
   return clean([...pieces, ...highlights].join("\n\n"));
 }
 
+/**
+ * Extract a single normalized license string from a JLL broker licenses array.
+ * Each entry has { location, licenseNumber } (detail-page shape).
+ * Returns the first entry formatted as "location: licenseNumber", or null.
+ */
+export function jllExtractLicense(licenses: any): string | null {
+  const arr = Array.isArray(licenses) ? licenses : [];
+  const first = arr[0];
+  if (!first) return null;
+  const location = clean(first?.location ?? first?.state ?? first?.type);
+  const number = clean(first?.licenseNumber ?? first?.number);
+  if (number && location) return `${location}: ${number}`;
+  if (number) return number;
+  return null;
+}
+
 export function jllContacts(brokersRaw: any[]): any[] {
   const contacts = (Array.isArray(brokersRaw) ? brokersRaw : [])
     .map((broker: any) =>
@@ -272,6 +290,7 @@ export function jllContacts(brokersRaw: any[]): any[] {
         profileUrl: jllPublicProfileUrl(broker?.pageUrl),
         avatarUrl: clean(broker?.photo),
         linkedInUrl: clean(broker?.linkedin),
+        license: jllExtractLicense(broker?.brokerLicenses ?? broker?.licenses),
         licenses: broker?.brokerLicenses,
         entityLicenses: broker?.entityLicenses,
       })
@@ -284,6 +303,106 @@ export function jllContacts(brokersRaw: any[]): any[] {
     seen.add(key);
     return true;
   });
+}
+
+// Promote the stranded JLL detail video / virtual-tour / 360 fields for
+// harvestDetail. `videos`, `virtualTours`, and `view360URLs` are each string-url
+// arrays in __NEXT_DATA__ property.* that the adapter previously dropped (only
+// kept as raw counts in jllDetail). Video urls are emitted as BARE STRINGS so the
+// harvester derives provider + embedUrl (vimeo/youtube); tour/360 urls are emitted
+// as TYPED virtual_tour items so they keep that classification even on hosts the
+// harvester does not recognize. harvestDetail dedups by url. Never throws.
+export function jllStrandedMedia(property: any): (MediaItem | string)[] {
+  const out: (MediaItem | string)[] = [];
+  for (const url of jllStringUrls(Array.isArray(property?.videos) ? property.videos : [])) {
+    out.push(url);
+  }
+  for (const value of [property?.virtualTours, property?.view360URLs]) {
+    for (const url of jllStringUrls(Array.isArray(value) ? value : value != null ? [value] : [])) {
+      out.push({ mediaType: "virtual_tour", provider: null, url, embedUrl: null, title: null });
+    }
+  }
+  return out;
+}
+
+// Promote JLL floor-plan urls as classified floor_plan DocItems (they otherwise
+// fold anonymously into the brochures channel). The brochures list already
+// includes floorPlans for backward compatibility; harvest dedups by url so a
+// floor plan is not double-counted, but is now correctly typed.
+export function jllStrandedDocs(property: any): DocItem[] {
+  return jllStringUrls(property?.floorPlans).map((url) => ({
+    url,
+    title: titleFromFilename(url),
+    docType: "floor_plan" as const,
+  }));
+}
+
+// Lift stranded structured fields the JLL detail payload exposes but the adapter
+// previously dropped, onto the existing listing keys cre_ingest.to_row maps
+// (camelCase -> column). Only clearly-present values are lifted; absent fields
+// stay undefined and prune() removes them, so this never clobbers good data.
+//
+// Phase-2 additions (additive only):
+//   buildingClass  <- normBuildingClass(property.buildingClass) e.g. "Class A" -> "A"
+//   highlights     <- property.highlights[].title (objects with .title) or plain strings
+//   amenities      <- property.amenities[] (strings or {name} objects)
+//   canonicalUrl   <- property.pageUrl (absolute) as the canonical detail URL
+//   extraFacts     <- { location_description } from property.locationDescription
+export function jllStrandedStructured(property: any): Record<string, any> {
+  const amenities = Array.isArray(property?.amenities)
+    ? dedupeStrings(
+        property.amenities
+          .map((a: any) =>
+            clean(typeof a === "string" ? a : a?.name ?? a?.title)
+          )
+          .filter(Boolean)
+      )
+    : [];
+
+  // jllDetail.highlights is an array of objects with a .title string, not plain strings.
+  // Fall back to stripHtmlText on plain strings for forward-compat.
+  const highlights = Array.isArray(property?.highlights)
+    ? dedupeStrings(
+        property.highlights
+          .map((h: any) =>
+            typeof h === "string"
+              ? clean(stripHtmlText(h))
+              : clean(h?.title ?? h?.text ?? h?.value)
+          )
+          .filter(Boolean)
+      )
+    : [];
+
+  // canonicalUrl: prefer the normalized absolute page URL over the relative slug.
+  const pageUrl = clean(property?.pageUrl);
+  const canonicalUrl = pageUrl
+    ? pageUrl.startsWith("http")
+      ? pageUrl
+      : `https://property.jll.com${pageUrl.startsWith("/") ? "" : "/"}${pageUrl}`
+    : undefined;
+
+  // buildingClass: normalize "Class A"/"A"/"B"/etc. via the frozen lib helper.
+  const buildingClass = normBuildingClass(clean(property?.buildingClass)) ?? undefined;
+
+  // extraFacts: long-tail facts with no discrete column.
+  const locationDescription = clean(property?.locationDescription);
+  const extraFacts: Record<string, unknown> = {};
+  if (locationDescription) extraFacts.location_description = locationDescription;
+
+  return (
+    prune({
+      submarket: clean(property?.submarket),
+      yearBuilt: num(property?.yearBuilt) ?? num(Number(property?.yearBuilt)),
+      floors: num(property?.numberOfFloors) ?? num(property?.floors),
+      units: num(property?.numberOfUnits) ?? num(property?.units),
+      capRatePct: num(property?.capRate),
+      amenities: amenities.length ? amenities : undefined,
+      highlights: highlights.length ? highlights : undefined,
+      buildingClass,
+      canonicalUrl,
+      extraFacts: Object.keys(extraFacts).length ? extraFacts : undefined,
+    }) ?? {}
+  );
 }
 
 export async function enrichJllListing(base: any): Promise<any> {
@@ -314,10 +433,36 @@ export async function enrichJllListing(base: any): Promise<any> {
         })
       )
       .filter((id: number | null): id is number => id !== null);
-    const brochures = [...jllStringUrls(property.brochures), ...jllStringUrls(property.floorPlans)];
+    // Brochures channel keeps true brochures only; floor plans move to the typed
+    // documents channel (floor_plan) via jllStrandedDocs so they are not
+    // double-inserted (cre_listing_documents has no (listing_id,url) unique key,
+    // so a url present in BOTH brochures and documents would insert twice).
+    const brochures = jllStringUrls(property.brochures);
     const images = jllStringUrls(property.images);
     const detailUrl = clean(property.pageUrl) ?? clean(pageProps?.relativeUrl);
     const url = detailUrl ? normalizedJllListingUrl(detailUrl) : base.url;
+    const brochureDocs = brochures.map((docUrl) => ({ name: titleFromFilename(docUrl), url: docUrl }));
+
+    // Capture-everything harvest: unify the full detail page (markdown / links /
+    // images / video+iframe attributes) with the stranded native fields promoted
+    // via ctx.extra* (videos/virtualTours/view360URLs, floorPlans, native image
+    // gallery). harvestDetail classifies + dedups by url. When the doc came from
+    // the disk cache (no structured `images`), fall back to the native gallery for
+    // the image channel rather than the rawHtml <img> regex (which would pull in
+    // site-chrome icons); the page links/attributes still harvest from rawHtml.
+    const harvestDoc: ScrapedDoc = Array.isArray(doc.images) ? doc : { ...doc, images };
+    const harvested = harvestDetail(harvestDoc, {
+      baseUrl: url,
+      extraMedia: jllStrandedMedia(property),
+      extraDocs: jllStrandedDocs(property),
+      extraImages: images,
+    });
+    // Exclude any harvested doc whose url is already on the brochures channel, so
+    // the same url is never inserted into cre_listing_documents twice.
+    const brochureUrlSet = new Set(brochures.map((u) => u.toLowerCase()));
+    const documents = harvested.documents.filter((d) => !brochureUrlSet.has(d.url.toLowerCase()));
+    const photos = dedupeStrings([...(images.length ? images : base.photos ?? []), ...harvested.images]);
+    const lifted = jllStrandedStructured(property);
 
     return prune({
       ...base,
@@ -337,10 +482,15 @@ export async function enrichJllListing(base: any): Promise<any> {
       leaseRateText: clean(property.rentPrice) ?? base.leaseRateText,
       sizeText: clean(property.surfaceArea) ?? base.sizeText,
       buildingSizeSqft: jllSurfaceAreaSqft(property) ?? base.buildingSizeSqft,
+      ...lifted,
       brokerIds,
       contactsDetailed,
-      brochures: brochures.map((docUrl) => ({ name: titleFromFilename(docUrl), url: docUrl })),
-      photos: images.length ? images : base.photos ?? [],
+      brochures: brochureDocs,
+      documents,
+      media: harvested.media,
+      links: harvested.links,
+      photos,
+      markdown: doc.markdown || base.markdown,
       url,
       lastUpdated: base.lastUpdated,
       jllDetail: {

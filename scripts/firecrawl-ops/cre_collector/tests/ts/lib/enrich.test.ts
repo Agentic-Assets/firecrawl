@@ -20,17 +20,26 @@ import {
 import type { ScrapedDoc } from "../../../types.js";
 
 // ---------------------------------------------------------------------------
-// (C3) Phase-1 enricher registry is exactly {colliers-main, jll-investor}.
+// Enricher registry: colliers-main + jll-investor (Phase 1) plus the Buildout
+// Tier-B sources svn + lee-associates (their detail iframe carries the media /
+// tours / full gallery / OM docs the inventory bulk path cannot see). cbre stays
+// absent (enumeration-only; no detail endpoint to enrich).
 // ---------------------------------------------------------------------------
 
-test("ENRICHERS registry is exactly {colliers-main, jll-investor} and excludes cbre", () => {
-  assert.deepEqual(Object.keys(ENRICHERS).sort(), ["colliers-main", "jll-investor"]);
+test("ENRICHERS registry is {colliers-main, jll-investor, svn, lee-associates} and excludes cbre", () => {
+  assert.deepEqual(
+    Object.keys(ENRICHERS).sort(),
+    ["colliers-main", "jll-investor", "lee-associates", "svn"]
+  );
   assert.equal(ENRICHERS.cbre, undefined); // enumeration-only; no detail endpoint
 });
 
 test("resolveEnricher returns bespoke for registered keys, generic otherwise", () => {
   assert.equal(resolveEnricher("colliers-main").label, "bespoke");
   assert.equal(resolveEnricher("jll-investor").label, "bespoke");
+  // svn / lee-associates resolve to the bespoke Buildout Tier-B enricher.
+  assert.equal(resolveEnricher("svn").label, "bespoke");
+  assert.equal(resolveEnricher("lee-associates").label, "bespoke");
   // cbre and any unregistered key fall through to the generic fallback.
   assert.equal(resolveEnricher("cbre").label, "generic");
   assert.equal(resolveEnricher("transwestern").label, "generic");

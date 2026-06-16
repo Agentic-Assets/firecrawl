@@ -26,6 +26,7 @@ import {
   scrapeColliersMainDetailDoc,
 } from "../sources/colliers-main.js";
 import { enrichJllInvestorListing } from "../sources/jll-investor.js";
+import { enrichBuildoutDetail } from "../sources/buildout.js";
 import type { SourceKey } from "../types.js";
 
 export type EnrichItem = {
@@ -89,6 +90,31 @@ export const jllInvestorEnricher: SourceEnricher = {
       // queued rather than re-ingesting an empty row.
       if (!row || row.detailError) return null;
       return row;
+    });
+    return rows.filter(Boolean);
+  },
+};
+
+// Buildout (svn / lee-associates) Tier-B detail enricher. The bulk srcBuildout
+// path reads inventory.json only; the per-property media / virtual-tour / full
+// image gallery / OM documents live behind the Buildout detail IFRAME, which the
+// bulk path never renders. This enricher resolves that iframe content URL from
+// the listing url (the show_link `?propertyId=` slug), scrapes it with the
+// capture-everything format set, and runs harvestDetail. svn/lee are unfolded
+// singleton sources, so the EnrichItem externalId is already the native id (no
+// fold prefix to strip); completion is URL-keyed via the echoed item.url, and
+// cre_ingest.to_row recomputes the Buildout external_id from that url. A
+// derivation or scrape failure omits the row so the worker leaves the claim
+// queued for the weekly additive backstop.
+export const buildoutEnricher: SourceEnricher = {
+  async enrich(items: EnrichItem[]): Promise<any[]> {
+    const rows = await pmap(items, CONCURRENCY, async (item) => {
+      try {
+        return await enrichBuildoutDetail(item.sourceKey, item.url);
+      } catch (err) {
+        console.error(`  enrich/buildout: detail failed for ${item.url}: ${err}`);
+        return null;
+      }
     });
     return rows.filter(Boolean);
   },
@@ -167,6 +193,10 @@ function nativeIdFor(item: EnrichItem): string {
 export const ENRICHERS: Partial<Record<SourceKey, SourceEnricher>> = {
   "colliers-main": colliersMainEnricher,
   "jll-investor": jllInvestorEnricher,
+  // svn / lee-associates: bulk path is inventory-only; the detail iframe (media,
+  // tours, full gallery, OM docs) is captured Tier-B via the Buildout enricher.
+  svn: buildoutEnricher,
+  "lee-associates": buildoutEnricher,
 };
 
 // Group claim items by sourceKey, dropping items missing a key or url (a row with

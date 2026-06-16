@@ -2,9 +2,10 @@
 import * as cheerio from "cheerio";
 import { brokerRef, brokers } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
-import { decodeHtmlEntities, dedupeStrings, extractSitemapUrlEntries, titleFromFilename } from "../lib/html.js";
+import { harvestDetail } from "../lib/harvest.js";
+import { decodeHtmlEntities, dedupeStrings, extractSitemapUrlEntries, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { scrapeDoc, scrapeRaw } from "../lib/scrape.js";
-import { ScrapedDoc, SourceResult, Tx } from "../types.js";
+import { DocItem, MediaItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, num, pmap, prune } from "../lib/util.js";
 
 
@@ -169,6 +170,22 @@ export function jllInvestorImageUrls(listing: any, fallback: string[] = []): str
   return dedupeStrings(images).filter((url) => /^https?:\/\//i.test(url));
 }
 
+/**
+ * Extract a single normalized license string from a JLL Investor broker licenses array.
+ * Investor shape: [{ number, location, type }].
+ * Returns the first entry formatted as "location: number", or null.
+ */
+export function jllInvestorExtractLicense(licenses: any): string | null {
+  const arr = Array.isArray(licenses) ? licenses : [];
+  const first = arr[0];
+  if (!first) return null;
+  const location = clean(first?.location ?? first?.state ?? first?.type);
+  const number = clean(first?.number ?? first?.licenseNumber);
+  if (number && location) return `${location}: ${number}`;
+  if (number) return number;
+  return null;
+}
+
 export function jllInvestorContacts(listing: any): any[] {
   if (!Array.isArray(listing?.brokers)) return [];
   const contacts = listing.brokers
@@ -181,6 +198,7 @@ export function jllInvestorContacts(listing: any): any[] {
         company: "JLL",
         avatarUrl: clean(broker?.image),
         linkedInUrl: clean(broker?.linkedInURL),
+        license: jllInvestorExtractLicense(broker?.licenses),
         licensedEntity: broker?.licensedEntity,
         licenses: broker?.licenses,
       })
@@ -193,6 +211,121 @@ export function jllInvestorContacts(listing: any): any[] {
     seen.add(key);
     return true;
   });
+}
+
+// Promote the stranded JLL Investor multimedia video / virtual-tour fields for
+// harvestDetail. `multimedia.videos` / `videoUrls` and `multimedia.virtualTours`
+// / `tourUrls` are string-url arrays the adapter previously dropped. Video urls
+// are emitted as BARE STRINGS so the harvester derives provider + embedUrl; tour
+// / 360 urls are emitted as TYPED virtual_tour items so they keep that
+// classification on unrecognized hosts. harvestDetail dedups by url. Never throws.
+export function jllInvestorStrandedMedia(listing: any): (MediaItem | string)[] {
+  const mm = listing?.multimedia ?? {};
+  const out: (MediaItem | string)[] = [];
+  const urlsOf = (value: any): string[] => {
+    const arr = Array.isArray(value) ? value : value != null ? [value] : [];
+    return arr
+      .map((raw: any) => clean(typeof raw === "string" ? raw : raw?.url ?? raw?.src))
+      .filter((u: string | null): u is string => Boolean(u) && /^https?:\/\//i.test(u as string));
+  };
+  for (const url of urlsOf(mm.videos ?? mm.videoUrls ?? listing?.videos)) out.push(url);
+  for (const url of urlsOf(mm.virtualTours ?? mm.tourUrls ?? listing?.virtualTours)) {
+    out.push({ mediaType: "virtual_tour", provider: null, url, embedUrl: null, title: null });
+  }
+  for (const url of urlsOf(mm.view360URLs ?? listing?.view360URLs)) {
+    out.push({ mediaType: "virtual_tour", provider: null, url, embedUrl: null, title: null });
+  }
+  return out;
+}
+
+// Promote gated / CA document urls (documentsCA) as DocItems. The public teaser
+// documents already flow through jllInvestorDocumentUrls -> brochures; the CA
+// set was previously kept only in raw metadata. harvestDetail classifies each by
+// filename/keyword (om/financials/rent_roll/...) and dedups by url.
+export function jllInvestorStrandedDocs(listing: any): DocItem[] {
+  const urls: string[] = [];
+  const visit = (value: any) => {
+    if (!value) return;
+    if (typeof value === "string") {
+      if (/^https?:\/\//i.test(value)) urls.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value === "object") {
+      visit(value.url ?? value.href);
+      for (const nested of Object.values(value)) visit(nested);
+    }
+  };
+  visit(listing?.documentsCA);
+  return dedupeStrings(urls).map((url) => ({ url, title: titleFromFilename(url), docType: "other" as const }));
+}
+
+// Lift stranded structured fields the JLL Investor detail payload exposes onto
+// the existing listing keys cre_ingest.to_row maps. Only clearly-present values
+// are lifted; absent fields stay undefined (prune removes them) so this never
+// clobbers good data.
+//
+// Phase-2 additions (additive only):
+//   highlights  <- jllInvestorDetail.highlights may be an HTML string (strip) or
+//                  an array of objects/strings
+//   statusBadge <- jllInvestorDetail.stageName / isUnderContract / top-level status
+//   canonicalUrl <- base.url (the invest.jll.com detail URL)
+//   extraFacts  <- { deal_type } from jllInvestorDetail.dealType
+export function jllInvestorStrandedStructured(listing: any): Record<string, any> {
+  // highlights: the investor payload stores these as an HTML string (rich text editor output)
+  // OR as an array of objects/strings. Handle both.
+  let highlights: string[] = [];
+  if (typeof listing?.highlights === "string") {
+    // HTML string: strip tags, split on list-item boundaries, clean each line.
+    const stripped = stripHtmlText(listing.highlights) ?? "";
+    highlights = dedupeStrings(
+      stripped
+        .split(/\n|(?<=\.)(?=\s*[A-Z])/)
+        .map((s) => clean(s))
+        .filter(Boolean) as string[]
+    );
+  } else if (Array.isArray(listing?.highlights)) {
+    highlights = dedupeStrings(
+      listing.highlights
+        .map((h: any) =>
+          typeof h === "string"
+            ? clean(h)
+            : clean(h?.text ?? h?.value ?? h?.title)
+        )
+        .filter(Boolean)
+    );
+  }
+
+  // statusBadge: derive from the investor detail shape (stageName / isUnderContract).
+  // Routes to the existing OPT-IN activation gate in cre_ingest; never auto-activates.
+  let statusBadge: string | undefined;
+  if (listing?.isUnderContract) {
+    statusBadge = "Under Contract";
+  } else if (clean(listing?.stageName)) {
+    statusBadge = clean(listing.stageName) ?? undefined;
+  }
+
+  // extraFacts: long-tail facts with no discrete column.
+  const extraFacts: Record<string, unknown> = {};
+  const dealType = clean(listing?.dealType);
+  if (dealType) extraFacts.deal_type = dealType;
+
+  return (
+    prune({
+      units: num(listing?.numberOfUnits) ?? num(Number(listing?.numberOfUnits)),
+      yearBuilt: num(listing?.yearBuilt) ?? num(Number(listing?.yearBuilt)),
+      occupancyRate: num(listing?.occupancyRate) ?? num(Number(listing?.occupancy)),
+      capRatePct: num(listing?.capRate) ?? num(Number(listing?.capRate)),
+      market: clean(listing?.market),
+      submarket: clean(listing?.submarket),
+      highlights: highlights.length ? highlights : undefined,
+      statusBadge,
+      extraFacts: Object.keys(extraFacts).length ? extraFacts : undefined,
+    }) ?? {}
+  );
 }
 
 // Pure transform (no network): given the base row and an already-scraped detail
@@ -221,6 +354,30 @@ export function parseJllInvestorDetail(base: any, doc: ScrapedDoc): any {
     )
     .filter((id: number | null): id is number => id !== null);
   const documentUrls = jllInvestorDocumentUrls(listing);
+  const teaserDocs = documentUrls.map((url) => ({ name: titleFromFilename(url), url }));
+  const photos = jllInvestorImageUrls(listing, base.photos ?? []);
+  // Capture-everything harvest: unify the full detail page (markdown / links /
+  // images / video+iframe attributes) with the stranded native fields promoted
+  // via ctx.extra* (multimedia videos/tours, CA/gated documents, image gallery).
+  // Public teaser documents stay on the existing `brochures` channel; they are
+  // NOT promoted into extraDocs (cre_listing_documents has no (listing_id,url)
+  // unique key, so a url in BOTH channels would double-insert). harvested.documents
+  // is filtered to exclude any url already on the brochures channel. When the doc
+  // carries no structured `images` (e.g. a saved fixture), fall back to the native
+  // gallery for the image channel rather than the rawHtml <img> regex.
+  const harvestDoc: ScrapedDoc = Array.isArray(doc.images) ? doc : { ...doc, images: photos };
+  const harvested = harvestDetail(harvestDoc, {
+    baseUrl: base.url,
+    extraMedia: jllInvestorStrandedMedia(listing),
+    extraDocs: jllInvestorStrandedDocs(listing),
+    extraImages: photos,
+  });
+  const teaserUrlSet = new Set(documentUrls.map((u) => u.toLowerCase()));
+  const documents = harvested.documents.filter((d) => !teaserUrlSet.has(d.url.toLowerCase()));
+  const lifted = jllInvestorStrandedStructured(listing);
+  // canonicalUrl: the invest.jll.com detail page URL is the stable canonical
+  // for investor listings. Use base.url (already normalized by srcJllInvestor).
+  const canonicalUrl = clean(base.url) ?? undefined;
   return prune({
     ...base,
     id: clean(listing.id) ?? base.id,
@@ -240,10 +397,16 @@ export function parseJllInvestorDetail(base: any, doc: ScrapedDoc): any {
     longitude: num(listing.longitude) ?? base.longitude,
     status: jllInvestorStatus(listing),
     sizeText: clean(listing.numberOfUnits ? `${listing.numberOfUnits} units` : null) ?? base.sizeText,
+    ...lifted,
+    canonicalUrl,
     brokerIds,
     contactsDetailed,
-    brochures: documentUrls.map((url) => ({ name: titleFromFilename(url), url })),
-    photos: jllInvestorImageUrls(listing, base.photos ?? []),
+    brochures: teaserDocs,
+    documents,
+    media: harvested.media,
+    links: harvested.links,
+    photos: dedupeStrings([...photos, ...harvested.images]),
+    markdown: doc.markdown || base.markdown,
     lastUpdated:
       clean(listing.dateModified ?? listing.datePublished) ??
       (base.lastmod ? String(base.lastmod).slice(0, 10) : null),

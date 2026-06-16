@@ -45,10 +45,22 @@ Section 4 and out/enrich/IMPL_SPEC.md Section 4):
     out/daily/last_run_enrich.json. The worker communicates only via exit code
     (0 = success or empty-queue no-op; nonzero = collect/ingest failure).
 
+OM-parse step (opt-in, guarded; Phase-2 data-lift WS2):
+  After the additive detail re-ingest, an OPT-IN OM-parse step can drain the
+  just-enriched listings' parseable OM/brochure PDFs through om_parse.py, which
+  re-ingests underwriting scalars (COALESCE-keep) + cre_listing_om_facts
+  provenance rows ADDITIVELY. It is OFF by default (the existing enrich flow is
+  byte-identical without it) and enabled only by --om-parse or CRE_OM_PARSE=1.
+  The OM step shells out to om_parse.py with the SAME additive guarantees as the
+  detail ingest: it can never soft-delete or activate status (om_parse re-ingests
+  with argv strictly ["--in", path]). A failure in the OM step is logged and does
+  NOT fail the enrich run (the detail enrich already succeeded and committed).
+
 Usage:
   python3 cre_enrich.py                      # claim <=200, enrich, ingest, complete
   python3 cre_enrich.py --batch 50
   python3 cre_enrich.py --dry-run            # build claim SQL, print it, do not connect
+  python3 cre_enrich.py --om-parse           # also run the opt-in OM-parse step
 """
 
 import argparse
@@ -271,6 +283,32 @@ def build_retry_increment_sql(retry_ids, last_error=None):
     ])
 
 
+def om_parse_enabled(args):
+    """The OM-parse step is OPT-IN and default-OFF. It runs only when --om-parse
+    is passed OR CRE_OM_PARSE is a truthy env value. Default enrich behavior is
+    byte-identical without it (the existing Tier-B flow is untouched)."""
+    if getattr(args, "om_parse", False):
+        return True
+    return os.environ.get("CRE_OM_PARSE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def build_om_parse_argv(source_keys, *, apply, limit=None):
+    """The OM-parse step invocation: shell out to om_parse.py over the enriched
+    sources. om_parse re-ingests ADDITIVELY (argv strictly ["--in", path]) so it
+    can never soft-delete or activate status. --apply mirrors the enrich run's
+    real-vs-dry posture: a dry enrich run keeps the OM step dry too.
+
+    source_keys is a sorted, de-duplicated list (a stable argv for testability).
+    """
+    argv = [sys.executable, os.path.join(HERE, "om_parse.py"),
+            "--sources", ",".join(sorted(set(source_keys)))]
+    if limit is not None:
+        argv += ["--limit", str(int(limit))]
+    if apply:
+        argv.append("--apply")
+    return argv
+
+
 def claim_rows_to_items(claimed_rows):
     """Shape claimed rows into the claim.json `items` collect.ts --enrich-input reads.
 
@@ -452,6 +490,28 @@ def run(args):
         f"{len(retry_ids)} retry, {len(dead_ids)} dead-lettered",
         file=sys.stderr,
     )
+
+    # (7) OPT-IN OM-parse step (Phase-2 WS2). OFF unless --om-parse / CRE_OM_PARSE.
+    # Additive by construction (om_parse re-ingests with argv ["--in", path], never
+    # --activate-status / --mark-missing). A failure here is logged and does NOT
+    # fail the enrich run: the detail enrich already committed. Runs over the
+    # source keys of the just-completed batch so it parses freshly-captured docs.
+    if om_parse_enabled(args):
+        om_sources = sorted({r.get("source_key") for r in claimed_rows
+                             if r.get("source_key")})
+        if om_sources:
+            om = subprocess.run(
+                build_om_parse_argv(om_sources, apply=True)
+                + (["--env-file", args.env_file] if args.env_file else []),
+                cwd=HERE, stdout=sys.stderr, stderr=sys.stderr,
+            )
+            if om.returncode != 0:
+                print(f"om-parse step failed rc={om.returncode} (enrich run still "
+                      "succeeded; OM facts are additive and retry-safe)",
+                      file=sys.stderr)
+        else:
+            print("om-parse step: no source keys in batch, skipped", file=sys.stderr)
+
     return 0
 
 
@@ -464,6 +524,10 @@ def main():
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
     ap.add_argument("--dry-run", action="store_true",
                     help="build the claim SQL and print it; never connect to a DB")
+    ap.add_argument("--om-parse", action="store_true",
+                    help="after the detail re-ingest, run the OPT-IN OM-parse step "
+                         "(om_parse.py) over the batch's sources; additive, never "
+                         "soft-deletes or activates status (default off)")
     args = ap.parse_args()
     sys.exit(run(args))
 

@@ -9,7 +9,8 @@
 | File | Owns |
 |------|------|
 | `config.ts` | CLI `parseArgs` (strict, import-time); `API_URL`, `flags`, `PAGE_CAP`, `CONCURRENCY`, `OUT_PATH` |
-| `scrape.ts` | Firecrawl singleton; `scrapeRaw` / `scrapeDoc` / `scrapeJson` (3× retry); `parseJsonBody` for HTML-wrapped JSON |
+| `scrape.ts` | Firecrawl singleton; `scrapeRaw` / `scrapeDoc` / `scrapeJson` (3× retry); `parseJsonBody` for HTML-wrapped JSON. `scrapeDoc` requests `markdown`/`links`/`images`/`rawHtml` + an `attributes` selector block (video/iframe/anchor) for the harvester |
+| `harvest.ts` | Pure `harvestDetail(doc, ctx)` -> `{media, links, documents, images}`. Classifies video/tour providers, documents, links, gallery images from a detail scrape; identity-dedups media (provider+id, vimeo hash preserved); feeds `cre_listing_media`/`cre_listing_links`. No argv/network import |
 | `broker.ts` | Run-wide `brokers[]` + `brokerRef()` dedupe (`email\|name\|company`); merged by `collect.ts` |
 | `html.ts` | JSON-LD, sitemap XML, entity decode, `stripHtmlText`, `dedupeStrings` |
 | `util.ts` | `clean`, `num`, `prune`, `pmap`, `moneyToNumber`, `isPerSfPriceText`, `boundedInt` |

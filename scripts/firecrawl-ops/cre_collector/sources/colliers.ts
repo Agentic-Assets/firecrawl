@@ -2,9 +2,11 @@
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY, PAGE_CAP } from "../lib/config.js";
-import { decodeHtmlEntities, dedupeStrings, stripHtmlText } from "../lib/html.js";
+import { harvestDetail } from "../lib/harvest.js";
+import { decodeHtmlEntities, dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { parseJsonBody } from "../lib/scrape.js";
-import { SourceResult, Tx } from "../types.js";
+import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
+import { parseLeaseRate } from "../lib/parse.js";
 import { clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
 
 
@@ -239,10 +241,73 @@ export function colliersDetailImages(detail: any, fallback: string[]): string[] 
   return dedupeStrings(candidates).filter((url) => /\.(?:jpe?g|png|webp|gif)(?:[?#].*)?$/i.test(url));
 }
 
+// Promote the stranded Colliers SalesTracker brochure / agreement urls into
+// classified DocItems. brochureUrl is the public marketing brochure; agreementUrl
+// is the gated CA/dataroom link. Both were previously kept only in raw metadata
+// (colliersSalesTrackerDetail). harvestDetail classifies each by url/keyword and
+// dedups. Never throws.
+export function colliersStrandedDocs(detail: any): DocItem[] {
+  const out: DocItem[] = [];
+  const brochureUrl = colliersUrl(detail?.ProjectHeader?.BrochureUrl);
+  const agreementUrl = colliersUrl(detail?.ProjectHeader?.AgreementButton?.buttonUrl);
+  if (brochureUrl) out.push({ url: brochureUrl, title: titleFromFilename(brochureUrl), docType: "brochure" });
+  // The agreement button fronts the offering memorandum / CA dataroom; classify
+  // as 'om' so it is not mistaken for a plain brochure.
+  if (agreementUrl) out.push({ url: agreementUrl, title: titleFromFilename(agreementUrl), docType: "om" });
+  return out;
+}
+
+// Promote any stranded Colliers video / virtual-tour urls (VideoUrl / TourUrl /
+// Matterport fields under ProjectHeader or SimpleLandingPageValues) for
+// harvestDetail. Emitted as BARE STRINGS so the harvester classifies provider +
+// mediaType (vimeo/youtube -> video, matterport/kuula/360 -> tour) and derives an
+// embedUrl, falling back to media 'other' for unrecognized hosts. Best-effort:
+// the SalesTracker payload only sometimes carries these. Never throws.
+export function colliersStrandedMedia(detail: any): string[] {
+  const candidates = [
+    detail?.ProjectHeader?.VideoUrl,
+    detail?.ProjectHeader?.VirtualTourUrl,
+    detail?.SimpleLandingPageValues?.VideoUrl,
+    detail?.SimpleLandingPageValues?.VirtualTourUrl,
+    detail?.SimpleLandingPageValues?.MatterportUrl,
+  ];
+  const out: string[] = [];
+  for (const raw of candidates) {
+    const url = colliersUrl(raw);
+    if (url) out.push(url);
+  }
+  return out;
+}
+
+// Lift stranded structured fields the Colliers SLP detail exposes (mostly via
+// ProjectFields name/value pairs) onto the existing listing keys to_row maps.
+// Cap rate is returned as a percent display (e.g. "6.5%"); norm_cap_rate in the
+// ingestor converts it. Only clearly-present values are lifted (prune drops the
+// rest). Never throws.
+export function colliersStrandedStructured(detail: any, details: any): Record<string, any> {
+  const capText = colliersProjectField(details, "Cap Rate") ?? colliersProjectField(details, "Caprate");
+  const capMatch = clean(capText)?.match(/([0-9]+(?:\.[0-9]+)?)/);
+  const occText = colliersProjectField(details, "Occupancy");
+  const occMatch = clean(occText)?.match(/([0-9]+(?:\.[0-9]+)?)/);
+  const units = colliersProjectField(details, "Units") ?? colliersProjectField(details, "Number of Units");
+  const unitsMatch = clean(units)?.match(/([0-9][0-9,]*)/);
+  const zoning = colliersProjectField(details, "Zoning");
+  return prune({
+    capRatePct: capMatch ? Number(capMatch[1]) : undefined,
+    occupancyRate: occMatch ? Number(occMatch[1]) : undefined,
+    units: unitsMatch ? Number(unitsMatch[1].replace(/,/g, "")) : undefined,
+    zoning: clean(zoning),
+    submarket: clean(colliersProjectField(details, "Submarket")) ?? clean(detail?.ProjectSummary?.Submarket),
+  }) ?? {};
+}
+
 export async function enrichColliersCard(card: ColliersCard): Promise<any> {
   if (!card.detailPv) {
+    // Even without a detail page, emit canonicalUrl and statusBadge from the card.
     return prune({
       ...card,
+      canonicalUrl: card.url ?? null,
+      statusBadge: card.status ?? null,
       colliersSalesTrackerDetail: {
         skipped: "card did not expose a public SLP detail link",
       },
@@ -270,13 +335,36 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
       stripHtmlText(detail?.SimpleLandingPageValues?.InvestmentHighlights) ??
       clean(detail?.Seo?.MetaDescription);
     const projectId = summary?.AttributeVisibility?.ProjectId ?? summary?.ProjectId ?? card.id;
+    const photos = colliersDetailImages(detail, card.photos);
+    // Capture-everything harvest. Colliers SalesTracker has no scraped HTML detail
+    // (the detail is the SLP Init JSON), so harvest runs over a synthetic empty
+    // doc with the stranded native fields promoted via ctx.extra*: brochure +
+    // agreement urls (classified docs), any video/tour fields, and the gallery
+    // images. harvestDetail classifies + dedups by url.
+    const harvested = harvestDetail({} as ScrapedDoc, {
+      baseUrl: card.url,
+      extraDocs: colliersStrandedDocs(detail),
+      extraMedia: colliersStrandedMedia(detail),
+      extraImages: photos,
+    });
+    const lifted = colliersStrandedStructured(detail, details);
+    // Canonical URL: live url from the detail summary or card.
+    const canonicalUrl = clean(summary?.SiteUrl) ?? clean(summary?.CanonicalUrl) ?? card.url;
+    // Status badge: prefer detail summary.Status, then card status.
+    const resolvedStatus = clean(summary?.Status) ?? colliersProjectField(details, "Status") ?? card.status;
+    // Lease rate (low yield on SalesTracker: investment-sale focus).
+    const leaseRateText: string | null = colliersProjectField(details, "Lease Rate") ?? null;
+    const lr = parseLeaseRate(leaseRateText);
+    // projectType into extraFacts (long-tail; no discrete column).
+    const projectType = clean(details?.ProjectType?.Value);
+    const extraFacts: Record<string, string> | undefined = projectType ? { project_type: projectType } : undefined;
     return prune({
       ...card,
       id: projectId != null ? String(projectId) : card.id,
       name: clean(summary?.ProjectName) ?? card.name,
       description,
       assetType: clean(details?.AssetType?.Value) ?? card.assetType,
-      status: clean(summary?.Status) ?? colliersProjectField(details, "Status") ?? card.status,
+      status: resolvedStatus,
       street: clean(address?.Street),
       city: clean(address?.City) ?? card.city,
       state: clean(address?.State) ?? card.state,
@@ -290,13 +378,25 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
       buildingSizeSqft: colliersSqftToNumber(colliersProjectField(details, "Size")),
       lotSizeAcres: colliersAcresToNumber(colliersProjectField(details, "Parcel")),
       yearBuilt: num(Number(colliersProjectField(details, "Year Built"))),
+      ...lifted,
+      // Phase-2 scalar fields.
+      canonicalUrl: canonicalUrl ?? null,
+      statusBadge: resolvedStatus ?? null,
+      leaseRateType: lr.type ?? null,
+      leaseRateMin: lr.min ?? null,
+      leaseRateMax: lr.max ?? null,
+      extraFacts,
       brokerIds: brokerIds.length ? brokerIds : card.brokerIds,
       contactsDetailed: contactsDetailed.length ? contactsDetailed : card.contactsDetailed,
+      // brochure + agreement now ride the classified `documents` channel.
       brochures: [],
-      photos: colliersDetailImages(detail, card.photos),
+      documents: harvested.documents,
+      media: harvested.media,
+      links: harvested.links,
+      photos: dedupeStrings([...photos, ...harvested.images]),
       colliersSalesTrackerDetail: {
         projectId,
-        projectType: clean(details?.ProjectType?.Value),
+        projectType,
         assetType: clean(details?.AssetType?.Value),
         pageTitle: clean(detail?.Seo?.PageTitle),
         photoCount: Array.isArray(detail?.GalleryImages) ? detail.GalleryImages.length : 0,
@@ -304,7 +404,7 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
         brochureUrl: colliersUrl(detail?.ProjectHeader?.BrochureUrl),
         agreementUrl: colliersUrl(detail?.ProjectHeader?.AgreementButton?.buttonUrl),
         brochureAndAgreementNote:
-          "Stored in raw metadata only; collector does not download or classify gated Colliers SalesTracker documents as public document rows.",
+          "Brochure + agreement urls are now promoted into the classified documents channel (brochure / om); the collector stores the source urls only and does not download or parse them.",
       },
     });
   } catch (err) {

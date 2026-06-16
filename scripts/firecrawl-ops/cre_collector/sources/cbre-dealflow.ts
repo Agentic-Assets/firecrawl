@@ -2,8 +2,9 @@
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY, PAGE_CAP } from "../lib/config.js";
+import { harvestDetail } from "../lib/harvest.js";
 import { dedupeStrings, titleFromFilename } from "../lib/html.js";
-import { SourceResult, Tx } from "../types.js";
+import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { clean, num, pmap, prune } from "../lib/util.js";
 
 
@@ -308,10 +309,79 @@ export function cbreDealflowContacts(data: any): any[] {
   return contacts;
 }
 
+// Build the rawHtml surface harvestDetail scans for embedded video iframes /
+// virtual-tour links. The detail page itself (the raw GET html) plus every
+// section content HTML fragment are concatenated so an iframe inside a section
+// body is seen. Pure: no network. Never throws.
+export function cbreDealflowHarvestHtml(pageHtml: string, data: any): string {
+  const parts: string[] = [typeof pageHtml === "string" ? pageHtml : ""];
+  for (const section of data?.sections ?? []) {
+    for (const content of section?.contents ?? []) {
+      if (typeof content?.content === "string") parts.push(content.content);
+    }
+  }
+  return parts.join("\n");
+}
+
+// Lift stranded structured fields the CBRE Deal Flow detail `data` exposes but the
+// adapter previously dropped, onto the existing listing keys to_row maps. The
+// projectfields block carries optional cap rate / NOI / occupancy / year-built /
+// units. Only clearly-present values are lifted (prune drops the rest). Never
+// throws.
+export function cbreDealflowStrandedStructured(data: any): Record<string, any> {
+  const f = data?.projectfields ?? {};
+  const pct = (v: any): number | null => {
+    const n = num(Number(String(v ?? "").replace(/[%,\s]/g, "")));
+    return n;
+  };
+  return prune({
+    capRatePct: pct(f.caprate ?? f.capRate),
+    noi: num(Number(String(f.noi ?? "").replace(/[$,\s]/g, ""))),
+    occupancyRate: pct(f.occupancy ?? f.occupancyRate),
+    yearBuilt: num(Number(f.yearbuilt ?? f.yearBuilt)),
+    units: num(Number(String(f.units ?? f.numberofunits ?? "").replace(/[,\s]/g, ""))),
+    zoning: clean(f.zoning),
+  }) ?? {};
+}
+
+// Extract the WS1 additive scalar fields from a stored CBRE Deal Flow raw_data blob.
+// The blob is the JSON the adapter emits after enrich; this function re-derives
+// the NEW camelCase fields so tests can assert the parse without a network call.
+// Pure: no side effects, never throws.
+export function cbreDealflowNewFieldsFromRawData(raw: any): {
+  statusBadge: string | null;
+  contactsDetailedWithPhoneAndTitle: Array<{ name: string | null; phone: string | null; title: string | null }>;
+  extraFacts: Record<string, any> | null;
+} {
+  // statusBadge: from cbreDealflowDetail.status (detail path) or card-level status
+  const statusBadge =
+    clean(raw?.cbreDealflowDetail?.status) ??
+    clean(raw?.status) ??
+    null;
+  // contactsDetailed: already in raw_data as emitted by the adapter; extract phone+title
+  const contactsDetailedWithPhoneAndTitle = (Array.isArray(raw?.contactsDetailed) ? raw.contactsDetailed : []).map(
+    (c: any) => ({
+      name: clean(c?.name) ?? null,
+      phone: clean(c?.phone) ?? null,
+      title: clean(c?.title) ?? null,
+    })
+  );
+  // extraFacts: project_type from cbreDealflowDetail.projectType
+  const projectType = clean(raw?.cbreDealflowDetail?.projectType) ?? null;
+  const extraFacts = projectType ? { project_type: projectType } : null;
+  return { statusBadge, contactsDetailedWithPhoneAndTitle, extraFacts };
+}
+
 export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Promise<any> {
   if (card.urlKind === "brochure") {
+    // WS1: statusBadge from card.status on brochure-only cards (no detail fetch)
+    const statusBadge = clean(card.status) ?? undefined;
+    const projectType = clean(card.cbreDealflowCard?.projectType) ?? undefined;
+    const extraFacts = projectType ? { project_type: projectType } : undefined;
     return prune({
       ...card,
+      statusBadge,
+      extraFacts,
       cbreDealflowDetail: {
         pagePvValue: card.listingPv,
         publicBrochureCard: true,
@@ -342,6 +412,37 @@ export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Pr
     const parcelSize = num(Number(fields.parcelsize));
     const parcelType = clean(fields.parcelType);
     const showPrice = fields.showprice === true && num(Number(fields.value));
+    const docItems = cbreDealflowDocumentUrls(data);
+    const photos = cbreDealflowImageUrls(data, card.photos);
+    // Capture-everything harvest: scan the detail page HTML + section content
+    // fragments for embedded video iframes / virtual-tour links via the rawHtml
+    // media regex. `images` is set to the already-filtered structured gallery so
+    // harvest takes the structured-image path (NOT the rawHtml <img> regex, which
+    // would pull in site-chrome logos/nav icons). The PDF document urls stay on
+    // the existing `brochures` channel (so they keep their names) and are NOT
+    // promoted into extraDocs, because cre_listing_documents has no
+    // (listing_id,url) unique key and a url present in BOTH channels would
+    // double-insert. harvested.documents is filtered to exclude any url already on
+    // the brochures channel.
+    const harvested = harvestDetail(
+      { rawHtml: cbreDealflowHarvestHtml(html, data), images: photos } as ScrapedDoc,
+      { baseUrl: card.url, extraImages: photos }
+    );
+    const brochureUrlSet = new Set(
+      docItems.map((d: { url: string }) => d.url.toLowerCase())
+    );
+    const documents: DocItem[] = harvested.documents.filter(
+      (d) => !brochureUrlSet.has(d.url.toLowerCase())
+    );
+    const lifted = cbreDealflowStrandedStructured(data);
+    // WS1: statusBadge from detail data.status (e.g. "Available"); routes
+    // through the existing OPT-IN activation gate in cre_ingest.py; never
+    // written directly to cre_listings.status.
+    const statusBadge = clean(data.status) ?? clean(card.status) ?? undefined;
+    // WS1: extraFacts for cbreDealflowDetail.projectType (long-tail fact with
+    // no discrete column; stored as snake_case key under extra_facts jsonb).
+    const projectTypeVal = clean(data.projectType);
+    const extraFacts = projectTypeVal ? { project_type: projectTypeVal } : undefined;
     return prune({
       ...card,
       id: data.projectid != null ? String(data.projectid) : card.id,
@@ -363,10 +464,17 @@ export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Pr
       sizeText: size && sizeType ? `${size.toLocaleString("en-US")} ${sizeType}` : card.sizeText,
       buildingSizeSqft: sizeType && /sq\s*ft/i.test(sizeType) ? size : null,
       lotSizeAcres: parcelSize && parcelType && /acre|ac\b/i.test(parcelType) ? parcelSize : null,
+      ...lifted,
       brokerIds,
+      // contactsDetailed already includes phone and title from cbreDealflowContacts
       contactsDetailed,
-      brochures: cbreDealflowDocumentUrls(data),
-      photos: cbreDealflowImageUrls(data, card.photos),
+      statusBadge,
+      extraFacts,
+      brochures: docItems,
+      documents,
+      media: harvested.media,
+      links: harvested.links,
+      photos: dedupeStrings([...photos, ...harvested.images]),
       cbreDealflowDetail: {
         projectId: data.projectid ?? null,
         pagePvValue: clean(data.pagePvValue),

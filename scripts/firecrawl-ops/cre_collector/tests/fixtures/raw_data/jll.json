@@ -1,0 +1,190 @@
+[
+  {
+    "_source": "jll",
+    "_note": "Real jllDetail row with buildingClass B, submarket, highlights (object array), amenities, locationDescription, broker licenses. Scrubbed: emails/phones generalized, cloudinary image URLs removed.",
+    "id": "762288",
+    "url": "https://property.jll.com/listings/1401-e-memorial-dr-not-tracked-indiana",
+    "city": "Muncie",
+    "name": "1401 E MEMORIAL DR",
+    "state": "IN",
+    "street": "1401 E Memorial Dr",
+    "country": "US",
+    "latitude": 40.176491,
+    "longitude": -85.370797,
+    "postalCode": "47302",
+    "assetType": "Industrial",
+    "transactionType": "Sale",
+    "transactionMode": "sale",
+    "buildingSizeSqft": 224000,
+    "sourceKey": "jll",
+    "sourceCompany": "JLL",
+    "brokerIds": [106, 445, 50],
+    "description": "For Sale: 224,000 RSF Available Located in Muncie, Indiana.",
+    "brochures": [
+      {
+        "url": "https://res.cloudinary.com/jll-global-sandbox/image/upload/v1/property-877625/1401-e-memorial-brochure.pdf",
+        "name": "1401 e memorial brochure"
+      }
+    ],
+    "jllSearchPages": [2],
+    "jllFilterTotals": { "industrial": 492 },
+    "jllPropertyTypeFilters": ["industrial"],
+    "jllDetail": {
+      "id": "762288",
+      "refId": "762288",
+      "pageUrl": "/listings/1401-e-memorial-dr-not-tracked-indiana",
+      "relativeUrl": "/listings/1401-e-memorial-dr-not-tracked-indiana",
+      "tenureTypes": ["sale"],
+      "propertyTypes": ["industrial"],
+      "labels": ["Sale"],
+      "buildingClass": "B",
+      "submarket": "Not Tracked Indiana",
+      "locationDescription": "Suburbs",
+      "amenities": ["IP - Industrial Park Zone", "Rail served"],
+      "highlights": [
+        { "title": "224,000 SF total available" },
+        { "title": "5,000 SF office" },
+        { "title": "18'-27' clear height" },
+        { "title": "9 dock doors" },
+        { "title": "Sits on 16.53 acres" }
+      ],
+      "imageCount": 1,
+      "brokerCount": 3,
+      "brochureCount": 1,
+      "scrape": {
+        "markdownLength": 9299,
+        "rawHtmlLength": 433182,
+        "linkCount": 43
+      }
+    },
+    "contactsDetailed": [
+      {
+        "name": "Brian Seitz",
+        "email": "brian.seitz@jll.com",
+        "phone": "+1 317 810 7184",
+        "title": "Executive Managing Director",
+        "office": "Indianapolis",
+        "company": "JLL",
+        "profileUrl": "https://www.us.jll.com/en/people/brian-seitz",
+        "licenses": [
+          {
+            "type": "Broker",
+            "location": "Indiana",
+            "licenseNumber": "RB14042705",
+            "address": "8900 Keystone Crossing Suite 1150, Indianapolis, IN",
+            "mainOfficePhone": "+1317-810-7000"
+          }
+        ],
+        "entityLicenses": [
+          {
+            "location": "Indiana",
+            "licenseNumber": "RC50900387",
+            "brokerOfRecords": "Steve Schwegman"
+          }
+        ]
+      },
+      {
+        "name": "Griffin Seitz",
+        "email": "griffin.seitz@jll.com",
+        "phone": "+1 317 810 7175",
+        "title": "Associate",
+        "office": "Indianapolis",
+        "company": "JLL",
+        "profileUrl": "https://www.us.jll.com/en/people/griffin-seitz",
+        "licenses": [
+          {
+            "type": "Broker",
+            "location": "Indiana",
+            "licenseNumber": "RB21002049",
+            "address": "8900 Keystone Crossing Suite 1150, Indianapolis, IN"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "_source": "jll-investor",
+    "_note": "Real jllInvestorDetail row with stageName, highlights (HTML string), dealType, broker licenses (number field). Scrubbed: emails/phones generalized, cloudinary URLs shortened.",
+    "id": "00608000013mLCMAA2",
+    "url": "https://invest.jll.com/us/en/listings/office/12795-w-alameda-pkwy",
+    "city": "Lakewood",
+    "name": "12795 W Alameda Pkwy",
+    "state": "CO",
+    "street": "12795 W Alameda Pkwy, Lakewood, CO, 80228-2838, US",
+    "country": "US",
+    "assetType": "Office",
+    "transactionType": "Sale (investment)",
+    "transactionMode": "sale",
+    "status": "Marketing",
+    "sourceKey": "jll-investor",
+    "sourceCompany": "JLL Investor Center",
+    "brokerIds": [3, 4, 5],
+    "brochures": [
+      {
+        "url": "https://res.cloudinary.com/jll-global-cmg/image/upload/v1/Doc/12795_W_Alameda_ES.pdf",
+        "name": "12795 W Alameda ES"
+      }
+    ],
+    "jllInvestorDetail": {
+      "id": "00608000013mLCMAA2",
+      "alias": "office/12795-w-alameda-pkwy",
+      "dealType": "Property Sale",
+      "stageName": "Marketing",
+      "isUnderContract": false,
+      "highlights": "<ol><li data-list=\"bullet\"><span class=\"ql-ui\"></span>Prime location in Lakewood, CO offering rapid access to key business hubs</li><li data-list=\"bullet\"><span class=\"ql-ui\"></span><strong>166,745 sqft</strong> across four stories, ideal for large tenants or multi-tenant configurations</li><li data-list=\"bullet\"><span class=\"ql-ui\"></span><strong>Largest available block</strong> of space in Denver's West Suburbs</li></ol>",
+      "documentsCA": [
+        {
+          "url": "https://res.cloudinary.com/jll-global-cmg/image/upload/v1/Doc/12795_W_Alameda_Pkwy_Investor_CA.pdf",
+          "type": "investor",
+          "language": "en"
+        }
+      ],
+      "datePublished": "Apr 14, 2026",
+      "dateModified": "2026-04-14T17:28:42.009Z",
+      "rawPriceRange": 2,
+      "scrape": {
+        "markdownLength": 13076,
+        "rawHtmlLength": 293790,
+        "linkCount": 30
+      }
+    },
+    "contactsDetailed": [
+      {
+        "name": "Larry Thiel",
+        "email": "larry.thiel@jll.com",
+        "phone": "(303) 515-8032",
+        "title": "Managing Director, Capital Markets",
+        "company": "JLL",
+        "linkedInUrl": "https://www.linkedin.com/in/larry-thiel-0684181a/",
+        "licenses": [
+          {
+            "type": "Broker",
+            "number": "FA.040030452",
+            "location": "Colorado",
+            "phone": "+1303-260-6500",
+            "address": "1225 17th Street, Suite 1900, Denver, CO"
+          }
+        ],
+        "licensedEntity": {
+          "phone": "+1303-260-6500",
+          "broker": "Jason Schmidt",
+          "license": "EC40032147"
+        }
+      },
+      {
+        "name": "Sean Whitney",
+        "email": "sean.whitney@jll.com",
+        "phone": "(303) 515-8036",
+        "title": "Senior Director, Capital Markets",
+        "company": "JLL",
+        "licenses": [
+          {
+            "type": "Broker",
+            "number": "IA.100092076",
+            "location": "Colorado"
+          }
+        ]
+      }
+    ]
+  }
+]

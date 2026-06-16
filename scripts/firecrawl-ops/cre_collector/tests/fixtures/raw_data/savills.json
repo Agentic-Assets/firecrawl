@@ -1,0 +1,120 @@
+[
+  {
+    "_comment": "1704 N Damen Ave, Chicago IL — real row, scrubbed. AvailableSize.SqFt=5139 (non-zero), WebFeatureList has 4 items, CanonicalUrl is a relative path.",
+    "external_id": "5025923B-1E46-42E5-81C4-6F4316A8B02D",
+    "rawSavillsProperty": {
+      "ID": 1159921,
+      "Price": 0,
+      "Latitude": 41.91255,
+      "Longitude": -87.67782,
+      "AddressLine1": "1704 N Damen Ave",
+      "AddressLine2": "Chicago IL",
+      "IsCommercial": true,
+      "PrimaryAgent": {
+        "ID": 525207,
+        "Office": { "OfficeName": "Savills Chicago" },
+        "AgentName": "Reuben Rischall",
+        "AgentImageUrl": "https://assets.savills.com/agents/rrischall_m_ag.jpg",
+        "AgentPhoneNumber": "(312) 595-2934"
+      },
+      "AvailableSize": {
+        "Ping": 0,
+        "SqFt": 5139,
+        "SqMt": 477.43,
+        "SqYd": 0,
+        "Acres": 0
+      },
+      "PropertyTypes": [{ "Type": "retail", "Caption": "Retail", "TypeTag": "R", "PriorityWeight": 1 }],
+      "SizeFormatted": "477.43 sq m (5,139 sq ft)",
+      "GuidePriceText": "Price on request",
+      "WebFeatureList": [
+        "Located within Bucktown / Wicker Park, a high-demand retail submarket",
+        "5,139 SF across three floors within a modern building with high-end finishes",
+        "Close to Damen Blue Line station and The 606 Trail, supporting accessibility",
+        "Approximately 12,700 vehicles per day along N. Damen Avenue"
+      ],
+      "BrochureGallery": [
+        {
+          "ImageUrl": "https://assets.savills.com/properties/5025923B-1E46-42E5-81C4-6F4316A8B02D/1704NDamenRetailBrochure_Savills-compressed.pdf",
+          "DisplayOrder": 0
+        }
+      ],
+      "FloorplanPDFUrl": "https://assets.savills.com/properties/5025923B-1E46-42E5-81C4-6F4316A8B02D/1704_N_Damen_Floorplans_clean.pdf",
+      "MetaInformation": {
+        "Description": "Property details for 1704 N Damen Ave.",
+        "CanonicalUrl": "property-detail/5025923b-1e46-42e5-81c4-6f4316a8b02d"
+      },
+      "ExternalPropertyID": "5025923B-1E46-42E5-81C4-6F4316A8B02D",
+      "ExternalPropertyIDFormatted": "5025923b-1e46-42e5-81c4-6f4316a8b02d",
+      "LongDescription": [
+        { "Body": "Modern mixed-use retail opportunity in Bucktown / Wicker Park." }
+      ],
+      "ImagesGallery": [
+        {
+          "ImageUrl_L": "https://assets.savills.com/properties/5025923B-1E46-42E5-81C4-6F4316A8B02D/1704NDamenAveImage_l_gal.jpg",
+          "DisplayOrder": 0
+        }
+      ],
+      "PropertyCardImagesGallery": []
+    }
+  },
+  {
+    "_comment": "1710 N Damen Ave, Chicago IL — real row, scrubbed. AvailableSize.SqFt=0 (zero, must be suppressed), WebFeatureList has 4 items.",
+    "external_id": "E4014DBE-336F-4AC8-BA9B-6ED1B48F73FE",
+    "rawSavillsProperty": {
+      "ID": 1159922,
+      "Price": 0,
+      "Latitude": 41.91268,
+      "Longitude": -87.67781,
+      "AddressLine1": "1710 N Damen Ave",
+      "AddressLine2": "Chicago IL",
+      "IsCommercial": true,
+      "PrimaryAgent": {
+        "ID": 525207,
+        "Office": { "OfficeName": "Savills Chicago" },
+        "AgentName": "Reuben Rischall",
+        "AgentImageUrl": "https://assets.savills.com/agents/rrischall_m_ag.jpg",
+        "AgentPhoneNumber": "(312) 595-2934"
+      },
+      "AvailableSize": {
+        "Ping": 0,
+        "SqFt": 0,
+        "SqMt": 0,
+        "SqYd": 0,
+        "Acres": 0
+      },
+      "PropertyTypes": [{ "Type": "retail", "Caption": "Retail", "TypeTag": "R", "PriorityWeight": 1 }],
+      "SizeFormatted": "92.90 sq m (1,000 sq ft)",
+      "GuidePriceText": "Price on request",
+      "WebFeatureList": [
+        "1,000 SF space sized for efficient layouts and strong in-store customer flow",
+        "One block from Damen Blue Line CTA station supporting easy commuter access",
+        "Immediate proximity to The 606 Trail generating consistent pedestrian traffic",
+        "Flexible B3-2 zoning allowing retail, service, wellness, & food & beverage uses"
+      ],
+      "BrochureGallery": [
+        {
+          "ImageUrl": "https://assets.savills.com/properties/E4014DBE-336F-4AC8-BA9B-6ED1B48F73FE/1710NDamen_RetailBrochureSavills-compressed.pdf",
+          "DisplayOrder": 0
+        }
+      ],
+      "FloorplanPDFUrl": "https://assets.savills.com/properties/E4014DBE-336F-4AC8-BA9B-6ED1B48F73FE/1710_N_Damen_Floorplan.pdf",
+      "MetaInformation": {
+        "Description": "Property details for 1710 N Damen Ave.",
+        "CanonicalUrl": "property-detail/e4014dbe-336f-4ac8-ba9b-6ed1b48f73fe"
+      },
+      "ExternalPropertyID": "E4014DBE-336F-4AC8-BA9B-6ED1B48F73FE",
+      "ExternalPropertyIDFormatted": "e4014dbe-336f-4ac8-ba9b-6ed1b48f73fe",
+      "LongDescription": [
+        { "Body": "Boutique street-level retail opportunity on N. Damen Avenue." }
+      ],
+      "ImagesGallery": [
+        {
+          "ImageUrl_L": "https://assets.savills.com/properties/E4014DBE-336F-4AC8-BA9B-6ED1B48F73FE/1710NDamenAveImage1_l_gal.jpg",
+          "DisplayOrder": 0
+        }
+      ],
+      "PropertyCardImagesGallery": []
+    }
+  }
+]

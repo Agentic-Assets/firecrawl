@@ -3,6 +3,8 @@ import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, firstJsonLd, titleFromFilename } from "../lib/html.js";
+import { harvestDetail } from "../lib/harvest.js";
+import { parseLeaseRate } from "../lib/parse.js";
 import { scrapeDoc, scrapeJson } from "../lib/scrape.js";
 import { ScrapeOpts, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, moneyToNumber, pmap, prune } from "../lib/util.js";
@@ -212,12 +214,25 @@ export function cushmanSearchApiUrl(tx: Tx, offset: number): string {
   return `${CUSHMAN_API_BASE}?${params.toString()}`;
 }
 
+export function baseCushmanExtraFacts(row: any): Record<string, unknown> | undefined {
+  const headlineText = clean(row.attribute1);
+  const isSublease = headlineText != null && /sublease/i.test(headlineText);
+  const isInvestment: boolean | null =
+    row.is_investment_property === true ? true : null;
+  const ef: Record<string, unknown> = {};
+  if (isSublease) ef["sublease"] = true;
+  if (isInvestment != null) ef["is_investment_property"] = isInvestment;
+  return Object.keys(ef).length > 0 ? ef : undefined;
+}
+
 export function baseCushmanListing(row: any, tx: Tx): any {
   const url = canonicalCushmanUrl(row.url ?? row.relative_url);
   const street = clean(row.property_street);
   const city = clean(row.property_city);
   const state = clean(row.state_or_province)?.toUpperCase() ?? null;
   const zip = clean(row.property_postal_code);
+  const listingStatus = clean(row.listing_status);
+  const extraFacts = baseCushmanExtraFacts(row);
   return {
     id: clean(row.id) ?? clean(row.url) ?? clean(row.relative_url),
     name: clean(row.nav_title) ?? street,
@@ -235,7 +250,11 @@ export function baseCushmanListing(row: any, tx: Tx): any {
     brokerIds: [],
     photos: clean(row.image_url) ? [canonicalCushmanAssetUrl(row.image_url) ?? clean(row.image_url)] : [],
     url,
-    listingStatus: clean(row.listing_status),
+    // Phase-2 scalar lifts (WS1):
+    canonicalUrl: url,
+    listingStatus,
+    statusBadge: listingStatus,
+    extraFacts,
     rawCushmanApi: row,
   };
 }
@@ -271,6 +290,28 @@ export async function enrichCushmanListing(row: any, tx: Tx): Promise<any> {
       markdownLabel(doc.markdown, "Year Built/Renovated") ??
       markdownLabel(doc.markdown, "Built") ??
       markdownLabel(doc.markdown, "Year Built");
+    // Stranded labeled structured fields lifted onto existing cre_listings cols
+    // (only when clearly labeled on the detail markdown).
+    const occupancyText = markdownLabel(doc.markdown, "Occupancy") ?? markdownLabel(doc.markdown, "Percent Leased");
+    const occupancyPct = occupancyText && /%/.test(occupancyText) ? firstNumberText(occupancyText) : null;
+    const zoning = markdownLabel(doc.markdown, "Zoning");
+    // Capture-everything: harvest video/tour media, outbound links, and any
+    // ADDITIONAL classified documents from the rendered detail page. The asset-
+    // derived documents/photos keep their existing channels (with titles); only
+    // the cushman assets.cushmanwakefield.com PDFs are re-passed so harvest can
+    // classify them (om/financials/etc.) into the documents superset.
+    const harvested = harvestDetail(doc, {
+      extraDocs: documents.map((d) => d.url as string),
+      baseUrl: base.url,
+    });
+    // Phase-2 scalar lifts (WS1): parse lease rate from the scraped label.
+    const parsedRate = tx === "lease" && leaseRateText ? parseLeaseRate(leaseRateText) : null;
+    const leaseRateMin = parsedRate?.min ?? null;
+    const leaseRateMax = parsedRate?.max ?? null;
+    const leaseRateType = parsedRate?.type ?? null;
+
+    // extraFacts inherits from base (sublease + is_investment_property), already computed there.
+
     return prune({
       ...base,
       name: clean(listingLd?.name) ?? base.name,
@@ -278,13 +319,22 @@ export async function enrichCushmanListing(row: any, tx: Tx): Promise<any> {
       salePriceUsd: tx === "sale" ? moneyToNumber(salePriceText) : null,
       salePriceText: tx === "sale" ? salePriceText ?? base.salePriceText : null,
       leaseRateText: tx === "lease" ? leaseRateText : null,
+      leaseRateMin: leaseRateMin ?? undefined,
+      leaseRateMax: leaseRateMax ?? undefined,
+      leaseRateType: leaseRateType ?? undefined,
       sizeText: buildingSizeText ?? lotSizeText,
       buildingSizeSqft: sqftFromText(buildingSizeText),
       lotSizeAcres: acresFromText(lotSizeText),
       yearBuilt: firstNumberText(yearText),
+      occupancyRate: occupancyPct != null ? occupancyPct : null,
+      zoning: clean(zoning),
       brokerIds,
       brochures: documents,
       photos: photos.length ? photos : base.photos,
+      documents: harvested.documents.length ? harvested.documents : undefined,
+      media: harvested.media.length ? harvested.media : undefined,
+      links: harvested.links.length ? harvested.links : undefined,
+      markdown: doc.markdown || undefined,
       lastUpdated: clean(listingLd?.datePosted)?.slice(0, 10) ?? null,
       contactsDetailed: contacts,
       documentCount: documents.length,
@@ -295,6 +345,8 @@ export async function enrichCushmanListing(row: any, tx: Tx): Promise<any> {
         rawHtmlLength: doc.rawHtml.length,
         linkCount: doc.links.length,
         assetCount: assetUrls.length,
+        mediaCount: harvested.media.length,
+        harvestLinkCount: harvested.links.length,
       },
     });
   } catch (err) {
