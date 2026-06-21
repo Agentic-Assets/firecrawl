@@ -497,6 +497,10 @@ STATUS_SOURCE_PATHS = {
     "cbre-dealflow": ["status", "cbreDealflowCard.status", "cbreDealflowDetail.status"],
     "cushman-wakefield": ["listingStatus", "rawCushmanApi.listing_status"],
     "colliers-main": ["status", "colliersMain.propertyStatus"],
+    "matthews": ["statusBadge"],
+    "franklin-street": ["rawBuildout.closed", "rawBuildout.under_contract"],
+    "srs": ["statusBadge"],
+    "hanley": ["statusBadge"],
     # Freshness-only flags, NOT terminal -> explicitly map to no signal.
     "marcus-millichap": [],
     # Disappearance-only tier (no native status field; lifecycle = vanishing).
@@ -506,6 +510,7 @@ STATUS_SOURCE_PATHS = {
     "avison-young": [],
     "savills": [],
     "transwestern": [],
+    "kidder-mathews": [],
 }
 
 # Phase-2 data-lift: a UNIVERSAL leading status path read for EVERY source

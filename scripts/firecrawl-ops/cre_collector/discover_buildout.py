@@ -25,8 +25,6 @@ UA = {
     )
 }
 CTX = ssl.create_default_context()
-CTX.check_hostname = False
-CTX.verify_mode = ssl.CERT_NONE
 
 HERE = Path(__file__).resolve().parent
 TYPES_TS = HERE / "types.ts"
