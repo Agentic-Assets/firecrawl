@@ -25,6 +25,31 @@ const providerList: Record<Provider, any> = {
   openai: createOpenAI({
     apiKey: config.OPENAI_API_KEY,
     baseURL: config.OPENAI_BASE_URL,
+    // Fork: the OpenAI-compat provider drops providerOptions.google, so Gemini "thinking"
+    // can't be disabled the normal AI-SDK way. Inject thinkingBudget:0 into the request body
+    // for gemini models — the Vercel AI Gateway honors providerOptions.google.thinkingConfig.
+    // Reasoning tokens are billed at the (high) output rate and extraction doesn't need them.
+    fetch: (async (input: any, init: any) => {
+      if (init && typeof init.body === "string") {
+        try {
+          const b = JSON.parse(init.body);
+          if (typeof b.model === "string" && b.model.includes("gemini")) {
+            b.providerOptions = {
+              ...(b.providerOptions || {}),
+              google: {
+                ...(b.providerOptions?.google || {}),
+                thinkingConfig: { thinkingBudget: 0 },
+              },
+            };
+            init = { ...init, body: JSON.stringify(b) };
+            console.error("[gemini-no-think] thinkingBudget:0 ->", b.model);
+          }
+        } catch {
+          /* leave body unchanged on parse error */
+        }
+      }
+      return fetch(input, init);
+    }) as any,
   }), //OPENAI_API_KEY
   ollama: createOllama({
     baseURL: config.OLLAMA_BASE_URL,
