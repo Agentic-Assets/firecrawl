@@ -48,7 +48,80 @@ const SOURCE_KEYS = [
   "nai-global",
   "lee-associates",
   "transwestern",
+  "matthews",
+  "franklin-street",
+  "lyon-stahl",
+  "faris-lee",
+  "fortis-net-lease",
+  "unique-properties",
+  "kiser-group",
+  "pinnacle-rea",
+  "cawley-chicago",
+  "bradford-allen",
+  "hudson-peters",
+  "gibson-commercial",
+  "leibsohn",
+  "nai-hiffman",
+  "nai-martens",
+  "bull-realty",
+  "tri-commercial",
+  "berger-commercial",
+  "nai-bergman",
+  "nai-isaac",
+  "trinity-partners",
+  "metro-commercial",
+  "33-realty",
+  "nai-hallmark",
+  "nai-plotkin",
+  "greysteel",
+  "nai-talcor",
+  "nai-dominion",
+  "srs",
+  "hanley",
+  "kidder-mathews",
+  "interra-realty",
+  "daum-commercial",
+  "foundry-commercial",
+  "essex-realty",
+  "pyramid-brokerage",
+  "shop-companies",
+  "velocity-retail",
+  "aquila-commercial",
+  "finial-group",
+  "ackerman",
+  "maury-carter",
 ] as const;
+
+// Buildout-backed firms onboarded via the public plugin inventory API (reuse
+// srcBuildout). Token + display name read from each firm's listings page on
+// 2026-06-20; sale/lease partitioned client-side by the inventory `sale` flag.
+const BUILDOUT_FIRMS: Record<string, { company: string; token: string; page: string }> = {
+  "unique-properties": { company: "Unique Properties", token: "43994fa6c8bc167acf6e799d1ecd08173254b362", page: "https://www.uniqueprop.com/" },
+  "kiser-group": { company: "Kiser Group", token: "f9624a304f0b834544c60c666a56ca16fcf29a1f", page: "https://www.kisergroup.com/" },
+  "pinnacle-rea": { company: "Pinnacle Real Estate Advisors", token: "53aeead9dc03d2337633a409497ff7976f68d56c", page: "https://www.pinnaclerea.com/" },
+  "cawley-chicago": { company: "Cawley Chicago", token: "408316c565e1efe74e56779fffe3baa3fdc1f3cf", page: "https://www.cawleychicago.com/" },
+  "bradford-allen": { company: "Bradford Allen", token: "f2c7e5eec6ebe7de1f4a0b261bd9a04d715ca1e1", page: "https://www.bradfordallen.com/" },
+  "hudson-peters": { company: "Hudson Peters Commercial", token: "fb2068dac489e1dacd436ebe03523aed6df9fe2e", page: "https://www.hudsonpeters.com/" },
+  "gibson-commercial": { company: "Gibson Commercial Real Estate", token: "cf76c48a3374831d301742075017a4b5e88642bc", page: "https://www.gibsoncre.com/" },
+  "leibsohn": { company: "Leibsohn & Co", token: "9be8516e186ae4deb9ee10eafda9478aca7ffe68", page: "https://www.leibsohn.com/" },
+  "nai-hiffman": { company: "NAI Hiffman", token: "783881343a019c17532413fa9b120e61d47c2ae3", page: "https://www.hiffman.com/" },
+  "nai-martens": { company: "NAI Martens", token: "6351fc3e892388a1a2dbf1bdc7f65fd1ac144231", page: "https://www.naimartens.com/" },
+  "bull-realty": { company: "Bull Realty", token: "6e2064ba71e11d85d50740c87a9372ef9c961a46", page: "https://www.bullrealty.com/" },
+  "tri-commercial": { company: "TRI Commercial", token: "4d24ff217c26907aaaa12bb0837e451e568a61e4", page: "https://www.tricommercial.com/" },
+  "berger-commercial": { company: "Berger Commercial Real Estate", token: "b1a0682147c41af0dc0ea1af91664ab8ea766aa9", page: "https://www.bergercommercial.com/" },
+  "nai-bergman": { company: "NAI Bergman", token: "70e208db445d84be6d7c074ee0108373ccf755a8", page: "https://www.naibergman.com/" },
+  "nai-isaac": { company: "NAI Isaac", token: "9ad3babf4f98852f6ed9b0b9db30388bb7e07c5a", page: "https://www.naiisaac.com/" },
+  "trinity-partners": { company: "Trinity Partners", token: "1c2d2e5340b1956e6a900d94c4dd3b41b69c2af9", page: "https://www.trinity-partners.com/" },
+  "metro-commercial": { company: "Metro Commercial", token: "45a0bd5e3569b2b9d10a3bd88f93fda41ba238f6", page: "https://www.metrocommercial.com/" },
+  "33-realty": { company: "33 Realty", token: "5bdefd87a602a896a48f635e07a6724215ed764e", page: "https://33realty.com/" },
+  "nai-hallmark": { company: "NAI Hallmark", token: "f883dbd9ac44b7702c0c0bfd4722925868f23ecb", page: "https://www.naihallmark.com/" },
+  "nai-plotkin": { company: "NAI Plotkin", token: "f3a493d487cf05648f54bc6264231beb9f4cd176", page: "https://www.naiplotkin.com/" },
+  // Found 2026-06-20 via discover_buildout.py. Greysteel was previously assumed
+  // Crexi-locked; its Buildout inventory API works.
+  "greysteel": { company: "Greysteel", token: "a6dbbaba3cc0ba7d1fbc587e9f06c953cebed964", page: "https://www.greysteel.com/" },
+  "nai-talcor": { company: "NAI TALCOR", token: "b9b19d2a3f66dfc3bb532e8c5db7399f4db33349", page: "https://www.naitalcor.com/" },
+  "nai-dominion": { company: "NAI Dominion", token: "6a78703278580ac43114429ef6f4a0d484167434", page: "https://www.naidominion.com/" },
+};
 type SourceKey = (typeof SOURCE_KEYS)[number];
 
 const { values: flags } = parseArgs({
@@ -83,7 +156,9 @@ const TRANSACTIONS: Tx[] = txArg === "both" ? ["sale", "lease"] : [txArg as Tx];
 const rawMax = Number(flags["max-items"] ?? "0");
 const MAX_ITEMS = rawMax <= 0 ? Number.POSITIVE_INFINITY : rawMax;
 const PAGE_CAP = Math.max(1, Number(flags["page-cap"] ?? "60"));
-const CONCURRENCY = Math.max(1, Math.min(6, Number(flags.concurrency ?? "3")));
+// Ceiling is 4: a full render-heavy run at concurrency 5 OOM-crashed the local
+// OrbStack/Firecrawl stack (see TOP30_EXPANSION_PLAN_2026-06-20.md). Default 3.
+const CONCURRENCY = Math.max(1, Math.min(4, Number(flags.concurrency ?? "3")));
 const OUT_PATH = flags.out ?? null;
 
 type Tx = "sale" | "lease";
@@ -102,8 +177,16 @@ function num(v: any): number | null {
 
 function moneyToNumber(t: string | null): number | null {
   if (!t) return null;
-  const m = t.replace(/,/g, "").match(/\$\s*([0-9]+(?:\.[0-9]+)?)/);
-  return m ? Number(m[1]) : null;
+  // Match "$1,250,000", "$1.2M", "$950K", "$1.2 million". The multiplier only
+  // applies when a suffix is present, so plain full-dollar strings are unchanged.
+  const m = t.replace(/,/g, "").match(/\$\s*([0-9]+(?:\.[0-9]+)?)\s*(k|m|b|thousand|million|billion)?/i);
+  if (!m) return null;
+  let n = Number(m[1]);
+  const suf = (m[2] ?? "").toLowerCase();
+  if (suf === "k" || suf === "thousand") n *= 1e3;
+  else if (suf === "m" || suf === "million") n *= 1e6;
+  else if (suf === "b" || suf === "billion") n *= 1e9;
+  return Number.isFinite(n) ? n : null;
 }
 
 function prune(v: any): any {
@@ -245,6 +328,7 @@ function brokerRef(b: {
   email?: string | null;
   phone?: string | null;
   office?: string | null;
+  title?: string | null;
   avatarUrl?: string | null;
   company: string;
 }): number | null {
@@ -255,6 +339,7 @@ function brokerRef(b: {
     const rec = brokers[existing];
     if (!rec.phone && b.phone) rec.phone = b.phone;
     if (!rec.office && b.office) rec.office = b.office;
+    if (!rec.title && b.title) rec.title = b.title;
     if (!rec.avatarUrl && b.avatarUrl) rec.avatarUrl = b.avatarUrl;
     return existing;
   }
@@ -264,11 +349,29 @@ function brokerRef(b: {
     email: b.email ?? null,
     phone: b.phone ?? null,
     office: b.office ?? null,
+    title: b.title ?? null,
     avatarUrl: b.avatarUrl ?? null,
     company: b.company,
   });
   brokerIndex.set(key, idx);
   return idx;
+}
+
+// ---------- shared JSON-LD helpers (used by JSON-LD-driven sources) ----------
+// Node extraction uses jsonLdObjects() (defined above), which recursively walks
+// nested @graph arrays. These add type/meta convenience on top.
+
+function ldType(n: any): string {
+  const t = n?.["@type"];
+  return Array.isArray(t) ? t.join(",") : String(t ?? "");
+}
+
+function metaContent(html: string, prop: string): string | null {
+  const p = prop.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m =
+    html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${p}["'][^>]+content=["']([^"']*)["']`, "i")) ??
+    html.match(new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']${p}["']`, "i"));
+  return m ? clean(m[1]) : null;
 }
 
 // ---------- source adapters ----------
@@ -286,6 +389,10 @@ type SourceResult = {
   totalAvailable: number | null;
   listings: any[];
   note?: string;
+  // True when the run did NOT enumerate the full catalog (detail-fetch failures,
+  // skipped Buildout pages, etc.). Downstream ingest must treat an incomplete
+  // source as mark-missing INELIGIBLE so a flaky run cannot soft-delete live rows.
+  incomplete?: boolean;
 };
 
 // --- CBRE: internal listings JSON API, paginated, behind Cloudflare (stealth) ---
@@ -407,13 +514,13 @@ async function srcCbre(tx: Tx, max: number): Promise<SourceResult> {
 // boolean (false = lease availability). Fetch the full inventory once per
 // brokerage (cached across the sale and lease passes) and partition client-side.
 
-const buildoutCache = new Map<string, { items: any[]; total: number | null }>();
+const buildoutCache = new Map<string, { items: any[]; total: number | null; failedPages: number }>();
 const buildoutFailureCache = new Map<string, Error>();
 
 async function buildoutInventory(
   company: string,
   pluginKey: string
-): Promise<{ items: any[]; total: number | null }> {
+): Promise<{ items: any[]; total: number | null; failedPages: number }> {
   const cached = buildoutCache.get(pluginKey);
   if (cached) return cached;
   const cachedFailure = buildoutFailureCache.get(pluginKey);
@@ -422,6 +529,22 @@ async function buildoutInventory(
     `https://buildout.com/plugins/${pluginKey}/inventory.json?page=0`,
     { timeout: 60000 }
   );
+  // Validate the shape: a rate-limit/interstitial page can parse as some JSON
+  // object that lacks inventory[]/meta. Accepting it would cache an empty feed
+  // and (with --mark-missing) soft-delete live rows. Cache the failure so the
+  // second transaction pass does not retry a known-bad token.
+  if (!Array.isArray(first?.inventory)) {
+    const err = new Error(
+      `${company}: Buildout inventory response had no inventory[] (likely an interstitial/rate-limit page)`
+    );
+    buildoutFailureCache.set(pluginKey, err);
+    throw err;
+  }
+  if (first.meta != null && typeof first.meta.total !== "number") {
+    const err = new Error(`${company}: Buildout inventory meta.total is not numeric`);
+    buildoutFailureCache.set(pluginKey, err);
+    throw err;
+  }
   const total: number | null = first.meta?.total ?? null;
   const limit: number = first.meta?.limit ?? 30;
   const items: any[] = [...(first.inventory ?? [])];
@@ -439,9 +562,15 @@ async function buildoutInventory(
           `https://buildout.com/plugins/${pluginKey}/inventory.json?page=${p}`,
           { timeout: 60000 }
         );
+        // Validate EVERY page like page 0: a parseable interstitial without an
+        // inventory[] would otherwise return [] and count as a success, leaving a
+        // silent gap that mark-missing could act on. Treat it as a failed page.
+        if (!Array.isArray(d.inventory)) {
+          throw new Error(`inventory page ${p} response missing inventory[] (interstitial?)`);
+        }
         done++;
         if (done % 25 === 0) console.error(`  ${company}: inventory page ${done}/${pages}`);
-        return d.inventory ?? [];
+        return d.inventory;
       } catch (err) {
         failedPages++;
         console.error(`  ${company}: inventory page ${p} FAILED after retries: ${err}`);
@@ -463,7 +592,7 @@ async function buildoutInventory(
       throw abortError;
     }
   }
-  const result = { items, total };
+  const result = { items, total, failedPages };
   buildoutCache.set(pluginKey, result);
   console.error(
     `  ${company}: full inventory cached (${items.length} items, total ${total ?? "?"}${failedPages ? `, ${failedPages} pages skipped` : ""})`
@@ -478,7 +607,7 @@ async function srcBuildout(
   tx: Tx,
   max: number
 ): Promise<SourceResult> {
-  const { items, total } = await buildoutInventory(company, pluginKey);
+  const { items, total, failedPages } = await buildoutInventory(company, pluginKey);
   const listings: any[] = [];
   for (const x of items) {
     if (listings.length >= max) break;
@@ -536,6 +665,8 @@ async function srcBuildout(
     method: "Buildout plugin inventory API (JSON, paginated)",
     totalAvailable: total,
     listings,
+    incomplete: failedPages > 0,
+    note: failedPages > 0 ? `${failedPages} inventory page(s) skipped` : undefined,
   };
 }
 
@@ -1674,6 +1805,1084 @@ async function srcCbreDealflow(tx: Tx, max: number): Promise<SourceResult> {
   };
 }
 
+// --- Matthews REIS: public sitemap enumeration + server-rendered detail pages ---
+// Matthews (matthews.com) is a Next.js site whose property DETAIL pages
+// (/properties/{slug}) are fully server-rendered and fetch without a token or JS
+// render. The complete catalog is enumerable from the public sitemap.xml (~8k
+// URLs, ~3.5k /properties/{slug}). Tenure is encoded in the slug: `leasing-...`
+// are lease, the rest are investment-sale listings — partitioned client-side so
+// each transaction pass only fetches its own slice. DOM hooks and the dual
+// (encoded/unencoded) image strategy are ported from the sibling display repo's
+// lib/live/parsers/matthews.ts.
+
+/** cms.matthews.com assets that are not property photos. */
+const MATTHEWS_NON_PHOTO = /headshot|web-use|brand-logo|logo|og-default|placeholder|favicon|sprite/i;
+
+function matthewsImages(html: string): string[] {
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  const add = (raw: string | null) => {
+    if (!raw) return;
+    let url = raw.trim();
+    if (url.startsWith("//")) url = "https:" + url;
+    if (!/^https:\/\/cms\.matthews\.com\/wp-content\/uploads\//i.test(url)) return;
+    if (MATTHEWS_NON_PHOTO.test(url) || seen.has(url)) return;
+    seen.add(url);
+    urls.push(url);
+  };
+  // 1) Next.js image proxy srcsets carry the encoded original as ?url=.
+  const nextRe = /\/_next\/image\?url=([^&"'\\ ]+)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = nextRe.exec(html))) {
+    try {
+      add(decodeURIComponent(m[1]));
+    } catch {
+      /* malformed encoding — skip */
+    }
+  }
+  // 2) Unencoded URLs (live RSC payload / plain <img src>).
+  const directRe =
+    /https?:\/\/cms\.matthews\.com\/wp-content\/uploads\/[^"'\\ )]+?\.(?:jpe?g|png|webp)/gi;
+  while ((m = directRe.exec(html))) add(m[0]);
+  return urls;
+}
+
+function matthewsBrokers($: cheerio.CheerioAPI): {
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  avatarUrl: string | null;
+}[] {
+  const out: { name: string | null; email: string | null; phone: string | null; avatarUrl: string | null }[] = [];
+  $('a[id="agentName"]').each((_, el) => {
+    const name = clean($(el).text());
+    if (!name || out.some((b) => b.name === name)) return;
+    // Walk up to the nearest ancestor holding this broker's tel:/mailto:.
+    let card = $(el);
+    for (let i = 0; i < 6; i++) {
+      const parent = card.parent();
+      if (parent.length === 0) break;
+      card = parent;
+      if (card.find('a[href^="tel:"], a[href^="mailto:"]').length > 0) break;
+    }
+    const mailHref = card.find('a[href^="mailto:"]').first().attr("href") ?? "";
+    const telText = clean(card.find('a[href^="tel:"]').first().text());
+    const telHref = card.find('a[href^="tel:"]').first().attr("href") ?? "";
+    let avatar = card.find('img[src*="cms.matthews.com"]').first().attr("src") ?? null;
+    if (avatar?.startsWith("//")) avatar = "https:" + avatar;
+    out.push({
+      name,
+      email: clean(mailHref.replace(/^mailto:/i, "").split("?")[0]),
+      phone: telText || clean(telHref.replace(/^tel:/i, "")),
+      avatarUrl: avatar?.startsWith("http") ? avatar : null,
+    });
+  });
+  return out;
+}
+
+/** "230 W Main St, Danville, KY, 40422" -> split US address parts. */
+function parseMatthewsAddress(line: string | null): {
+  street: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+} {
+  const out = { street: null as string | null, city: null as string | null, state: null as string | null, postalCode: null as string | null };
+  if (!line) return out;
+  const parts = line.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length && /^\d{5}(-\d{4})?$/.test(parts[parts.length - 1])) out.postalCode = parts.pop()!;
+  if (parts.length && /^[A-Z]{2}$/.test(parts[parts.length - 1])) out.state = parts.pop()!;
+  if (parts.length) out.city = parts.pop()!;
+  if (parts.length) out.street = parts.join(", ");
+  return out;
+}
+
+function parseMatthewsDetail(html: string, url: string, tx: Tx): any | null {
+  const $ = cheerio.load(html);
+  const title = clean($("#propertyTitle").first().text()) || clean($("h1").first().text());
+  const photos = matthewsImages(html);
+  if (!title && photos.length === 0) return null; // not a rendered detail page
+
+  const addr = parseMatthewsAddress(clean($("#propertyAddress").first().text()));
+
+  const priceText = clean($("#propertyPrice").first().text());
+  const realPrice =
+    priceText && !/call|inquire|contact|request|tbd|offer/i.test(priceText) ? priceText : null;
+
+  // Key-info pairs: zip the title/value spans by document order.
+  const labels: string[] = [];
+  const values: string[] = [];
+  $(".key-info-title").each((_, el) => {
+    const t = clean($(el).text());
+    if (t) labels.push(t.replace(/:$/, ""));
+  });
+  $(".key-info-value").each((_, el) => {
+    values.push(clean($(el).text()) ?? "");
+  });
+  const facts: Record<string, string> = {};
+  for (let i = 0; i < Math.min(labels.length, values.length); i++) {
+    if (labels[i] && values[i] && !(labels[i] in facts)) facts[labels[i]] = values[i];
+  }
+  const factGet = (re: RegExp): string | null => {
+    const k = Object.keys(facts).find((key) => re.test(key));
+    return k ? facts[k] : null;
+  };
+  const capText = factGet(/cap\s*rate|^cap\b/i);
+  const capRatePct = capText ? Number((capText.match(/([0-9]+(?:\.[0-9]+)?)/) ?? [])[1]) || null : null;
+  const assetType = factGet(/^type$|property type/i);
+  const leasableText = factGet(/leasable area|building (?:size|sf)|gla|rentable/i);
+  const buildingSizeSqft = leasableText ? Number(leasableText.replace(/[^0-9.]/g, "")) || null : null;
+  const lotText = factGet(/lot size/i);
+  const lotSizeAcres = lotText ? Number((lotText.match(/([0-9.]+)\s*acre/i) ?? [])[1]) || null : null;
+  const yearText = factGet(/year built/i);
+  const yearBuilt = yearText ? Number((yearText.match(/(\d{4})/) ?? [])[1]) || null : null;
+
+  // Highlights -> description (Matthews has no narrative description section).
+  const highlights: string[] = [];
+  $("h3").each((_, el) => {
+    if (!/^highlights$/i.test(clean($(el).text()) ?? "")) return;
+    const prose = $(el).nextAll(".prose").first();
+    const text = prose.length ? prose.text() : "";
+    for (const part of text.split("•")) {
+      const item = clean(part);
+      if (item && !highlights.includes(item)) highlights.push(item);
+    }
+  });
+
+  // Offering Memorandum PDF.
+  const docHref = $("#propertyDocumentLink").first().attr("href") ?? null;
+  const brochures = docHref
+    ? [{ name: "Offering Memorandum", url: docHref.startsWith("http") ? docHref : `https://www.matthews.com${docHref}` }]
+    : [];
+
+  const brokerIds = matthewsBrokers($)
+    .map((b) =>
+      brokerRef({ name: b.name, email: b.email, phone: b.phone, avatarUrl: b.avatarUrl, office: null, company: "Matthews" })
+    )
+    .filter((x): x is number => x !== null);
+
+  const slug = (url.split("/properties/")[1] ?? url).replace(/[/?#].*$/, "");
+
+  return {
+    id: slug,
+    name: title,
+    transactionType: tx === "sale" ? "Sale" : "Lease",
+    assetType,
+    description: highlights.length ? highlights.join(" • ") : null,
+    street: addr.street,
+    city: addr.city,
+    state: addr.state,
+    postalCode: addr.postalCode,
+    country: "US",
+    salePriceUsd: tx === "sale" && realPrice ? moneyToNumber(realPrice) : null,
+    salePriceText: tx === "sale" ? realPrice : null,
+    capRatePct,
+    leaseRateText: tx === "lease" ? realPrice ?? priceText ?? null : null,
+    sizeText: leasableText ? `${leasableText} SF` : null,
+    buildingSizeSqft,
+    lotSizeAcres,
+    yearBuilt,
+    brokerIds,
+    brochures,
+    photos,
+    url,
+    highlights,
+  };
+}
+
+async function srcMatthews(tx: Tx, max: number): Promise<SourceResult> {
+  const sourceUrl = "https://www.matthews.com/listings";
+  const xml = await scrapeRaw("https://www.matthews.com/sitemap.xml", { timeout: 60000 });
+  const detail = Array.from(
+    new Set(xml.match(/https:\/\/www\.matthews\.com\/properties\/[^<\s"')]+/gi) ?? [])
+  );
+  if (!detail.length) {
+    throw new Error(
+      "Matthews: no /properties/ URLs found in sitemap.xml (fetch may have been blocked or transformed)"
+    );
+  }
+  const isLease = (u: string) => /\/properties\/leasing-/i.test(u);
+  const urls = detail.filter((u) => (tx === "lease" ? isLease(u) : !isLease(u)));
+  const take = Number.isFinite(max) ? urls.slice(0, max) : urls;
+
+  let failures = 0;
+  const parsed = await pmap(take, CONCURRENCY, async (u) => {
+    try {
+      const html = await scrapeRaw(u, { timeout: 60000 });
+      return parseMatthewsDetail(html, u, tx);
+    } catch (err) {
+      failures++;
+      console.error(`  matthews/${tx}: ${u} failed: ${err}`);
+      return null;
+    }
+  });
+  const listings = parsed.filter((l): l is any => l !== null);
+  if (!listings.length) {
+    throw new Error("Matthews: sitemap enumerated detail pages but none parsed");
+  }
+  return {
+    company: "Matthews",
+    sourceUrl,
+    method:
+      "Public sitemap.xml enumeration -> server-rendered /properties/{slug} detail pages, DOM-parsed (curl-able, no token)",
+    totalAvailable: urls.length,
+    listings,
+    incomplete: failures > 0,
+    note: failures > 0 ? `${failures} detail page(s) failed to fetch` : undefined,
+  };
+}
+
+// --- Lyon Stahl: own WordPress property sitemap + JSON-LD detail pages ---
+// Lyon Stahl (lyonstahl.com) is an LA multifamily INVESTMENT-SALES specialist.
+// Its own site exposes a clean property sitemap (/properties-sitemapN.xml) and
+// server-rendered detail pages whose JSON-LD @graph carries Product{offers.price},
+// an ApartmentComplex/Place node {address, numberOfRooms, floorSize,
+// additionalProperty}, and Person nodes for brokers. Listed on Crexi too, but the
+// own site is fully enumerable with plain GET (no Crexi API needed). Sale-only.
+
+function parseLyonStahlDetail(html: string, url: string, tx: Tx): any | null {
+  if (tx !== "sale") return null; // investment-sales only; no lease inventory
+  const nodes = jsonLdObjects(html); // recursive @graph walker (handles nested graphs)
+  const product = nodes.find((n) => ldType(n).includes("Product"));
+  const place =
+    nodes.find(
+      (n) => /Apartment|Residence|House|SingleFamily|Place/i.test(ldType(n)) && n.address && typeof n.address === "object"
+    ) ?? nodes.find((n) => n.address && typeof n.address === "object");
+  let offer: any = product?.offers ?? null;
+  if (Array.isArray(offer)) offer = offer[0];
+  const avail = String(offer?.availability ?? "");
+  if (/SoldOut|Discontinued|OutOfStock/i.test(avail)) return null; // drop sold/off-market
+
+  const addr = place && typeof place.address === "object" ? place.address : {};
+  const ogTitle = metaContent(html, "og:title");
+  const ogAddr = ogTitle ? ogTitle.replace(/\s*[-|–]\s*Lyon Stahl.*$/i, "").trim() : "";
+  // og:title fallback for address parts the JSON-LD place node omits.
+  const ogStreet = ogAddr.split(",")[0]?.trim() || null;
+  const ogState = (ogAddr.match(/,\s*([A-Z]{2})\b/) ?? [])[1] ?? null;
+  const ogZip = (ogAddr.match(/\b(\d{5})(?:-\d{4})?\b/) ?? [])[1] ?? null;
+  const street = clean(addr.streetAddress) || ogStreet;
+  const city = clean(addr.addressLocality);
+  const state = clean(addr.addressRegion) || ogState;
+  const postalCode = clean(addr.postalCode) || ogZip;
+  const name = clean(place?.name) || clean(product?.name) || (ogAddr ? clean(ogAddr) : null) || street;
+  if (!name && !street) return null; // not a parseable listing page
+
+  const priceNum =
+    offer?.price != null ? Number(String(offer.price).replace(/[^0-9.]/g, "")) || null : null;
+  const sqft =
+    place?.floorSize?.value != null ? Number(String(place.floorSize.value).replace(/[^0-9.]/g, "")) || null : null;
+  const units =
+    place?.numberOfRooms != null ? Number(String(place.numberOfRooms).replace(/[^0-9.]/g, "")) || null : null;
+
+  // additionalProperty facts (cap rate, year built, GRM, ...)
+  const ap: any[] = [];
+  for (const n of [place, product]) for (const p of n?.additionalProperty ?? []) if (p?.name) ap.push(p);
+  const apGet = (re: RegExp): string | null => {
+    const f = ap.find((p) => re.test(String(p.name)));
+    return f ? String(f.value) : null;
+  };
+  const capText = apGet(/cap\s*rate/i);
+  const capRaw = capText ? Number((capText.match(/([0-9.]+)/) ?? [])[1]) || null : null;
+  const capRatePct = capRaw && capRaw > 0 && capRaw <= 20 ? capRaw : null; // drop implausible / pro-forma outliers
+  const yearText = apGet(/year built/i);
+  const yearBuilt = yearText ? Number((yearText.match(/(\d{4})/) ?? [])[1]) || null : null;
+
+  // photos: Product/Place LD image(s) + og:image, restricted to lyonstahl.com,
+  // excluding headshots/logos/favicons/thumbnails.
+  const photos: string[] = [];
+  const seen = new Set<string>();
+  const addImg = (v: any) => {
+    const s = typeof v === "string" ? v : v?.url;
+    if (typeof s !== "string") return;
+    if (!/^https:\/\/(www\.)?lyonstahl\.com\//i.test(s)) return;
+    if (/headshot|logo|favicon|placeholder|cropped-/i.test(s) || seen.has(s)) return;
+    seen.add(s);
+    photos.push(s);
+  };
+  for (const n of [product, place]) {
+    const im = n?.image;
+    if (Array.isArray(im)) im.forEach(addImg);
+    else if (im) addImg(im);
+  }
+  addImg(metaContent(html, "og:image"));
+
+  // brokers from Person LD nodes (name + jobTitle + headshot; no per-agent email/phone exposed)
+  const brokerIds = nodes
+    .filter((n) => ldType(n).includes("Person"))
+    .map((p) =>
+      brokerRef({
+        name: clean(p.name),
+        title: clean(p.jobTitle),
+        avatarUrl: clean(typeof p.image === "string" ? p.image : p.image?.url),
+        email: null,
+        phone: null,
+        company: "Lyon Stahl",
+      })
+    )
+    .filter((v): v is number => v !== null);
+
+  const slug = (url.split("/properties/")[1] ?? url).replace(/[/?#].*$/, "");
+  return {
+    id: slug || null,
+    name,
+    transactionType: "Sale",
+    assetType: /Apartment|Residence/i.test(ldType(place)) ? "Multifamily" : null,
+    description: metaContent(html, "og:description"),
+    street,
+    city,
+    state,
+    postalCode,
+    country: clean(addr.addressCountry) || "US",
+    salePriceUsd: priceNum,
+    salePriceText: priceNum ? `$${priceNum.toLocaleString("en-US")}` : null,
+    capRatePct,
+    buildingSizeSqft: sqft,
+    yearBuilt,
+    units,
+    brokerIds,
+    photos,
+    url,
+  };
+}
+
+async function srcLyonStahl(tx: Tx, max: number): Promise<SourceResult> {
+  const sourceUrl = "https://www.lyonstahl.com/properties/";
+  if (tx === "lease") {
+    return {
+      company: "Lyon Stahl",
+      sourceUrl,
+      method: "Investment-sales only; no public lease inventory",
+      totalAvailable: 0,
+      listings: [],
+      note: "Lyon Stahl markets multifamily investment sales; no lease feed.",
+    };
+  }
+  const indexXml = await scrapeRaw("https://www.lyonstahl.com/sitemap.xml", { timeout: 60000 });
+  const subSitemaps = Array.from(
+    new Set(indexXml.match(/https?:\/\/[^<\s"']*properties-sitemap[0-9]+\.xml/gi) ?? [])
+  );
+  if (!subSitemaps.length) {
+    throw new Error("Lyon Stahl: no properties-sitemap*.xml found in sitemap index");
+  }
+  const detailSet = new Set<string>();
+  for (const sm of subSitemaps) {
+    const xml = await scrapeRaw(sm, { timeout: 60000 });
+    for (const u of xml.match(/https?:\/\/(?:www\.)?lyonstahl\.com\/properties\/[^<\s"')]+/gi) ?? []) {
+      // keep firm detail URLs (/properties/{slug}/), drop the bare landing page
+      if (/\/properties\/[^/]+\/?$/.test(u) && !/\/properties\/?$/.test(u)) detailSet.add(u);
+    }
+  }
+  const urls = [...detailSet];
+  if (!urls.length) throw new Error("Lyon Stahl: property sub-sitemaps contained no detail URLs");
+  const take = Number.isFinite(max) ? urls.slice(0, max) : urls;
+  let failures = 0;
+  const parsed = await pmap(take, CONCURRENCY, async (u) => {
+    try {
+      return parseLyonStahlDetail(await scrapeRaw(u, { timeout: 60000 }), u, tx);
+    } catch (err) {
+      failures++;
+      console.error(`  lyon-stahl/${tx}: ${u} failed: ${err}`);
+      return null;
+    }
+  });
+  // parsed nulls are intentional sold/off-market skips; only catch-block
+  // failures count toward incompleteness.
+  const listings = parsed.filter((l): l is any => l !== null);
+  if (!listings.length) {
+    throw new Error("Lyon Stahl: sitemap enumerated detail pages but none parsed as active listings");
+  }
+  return {
+    company: "Lyon Stahl",
+    sourceUrl,
+    method:
+      "WordPress sitemap-index enumeration -> own server-rendered detail pages, JSON-LD parsed (active sale only)",
+    totalAvailable: urls.length,
+    listings,
+    incomplete: failures > 0,
+    note: failures > 0 ? `${failures} detail page(s) failed to fetch` : undefined,
+  };
+}
+
+// ---------- generic sitemap + LLM structured-extraction source ----------
+// For firms with an own property sitemap but heterogeneous DOM and NO consistent
+// JSON-LD (Interra, DAUM, Foundry, Essex, Pyramid, ...). Enumerate detail URLs
+// from the sitemap, then use Firecrawl's `json` format (local LLM profile) to
+// extract a fixed CRE schema per page — one approach across every theme.
+// REQUIRES a configured LLM profile (OPENAI_API_KEY + OPENAI_BASE_URL +
+// MODEL_NAME; e.g. set_model_profile.sh budget). Per-page LLM calls are slow and
+// spend credits, so extraction is CACHED per firm across the sale/lease passes.
+
+type SitemapExtractFirm = {
+  company: string;
+  host: string; // bare host for URL filtering + external_id slug
+  sitemapUrl: string;
+  detailPathRe: RegExp; // matches an individual listing URL path
+};
+
+const CRE_EXTRACT_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: ["string", "null"], description: "property/listing title" },
+    streetAddress: { type: ["string", "null"] },
+    city: { type: ["string", "null"] },
+    state: { type: ["string", "null"], description: "2-letter US state code" },
+    postalCode: { type: ["string", "null"] },
+    transactionType: { type: "string", enum: ["sale", "lease", "sale_or_lease", "unknown"] },
+    salePriceUsd: { type: ["number", "null"], description: "numeric USD sale price; null if not for sale or not disclosed" },
+    leaseRateText: { type: ["string", "null"], description: "lease rate exactly as shown, e.g. '$25/SF/yr'; null if not for lease" },
+    capRatePct: { type: ["number", "null"], description: "cap rate as a percent number, e.g. 6.5" },
+    buildingSizeSqft: { type: ["number", "null"], description: "total building size in square feet as a full integer" },
+    propertyType: { type: ["string", "null"], description: "office, retail, industrial, multifamily, land, etc." },
+    description: { type: ["string", "null"] },
+    brokers: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          email: { type: ["string", "null"] },
+          phone: { type: ["string", "null"] },
+        },
+      },
+    },
+  },
+  required: ["name"],
+} as const;
+
+const CRE_EXTRACT_PROMPT =
+  "Extract the single commercial real estate listing on this page. Use null for any field not clearly present; never guess. Set salePriceUsd only when the property is for sale and a numeric asking price is shown. Set leaseRateText only when an actual non-zero lease rate is shown. buildingSizeSqft is the full building square footage as an integer (e.g. 16500, not 16).";
+
+async function scrapeExtract(url: string): Promise<any | null> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const doc: any = await firecrawl.scrape(url, {
+        onlyMainContent: false,
+        formats: [{ type: "json", prompt: CRE_EXTRACT_PROMPT, schema: CRE_EXTRACT_SCHEMA }],
+        timeout: 120000,
+      } as any);
+      const json = doc.json ?? doc.data?.json ?? null;
+      if (json && (clean(json.name) || clean(json.streetAddress))) return json;
+    } catch (err) {
+      console.error(`extract attempt ${attempt} failed for ${url}: ${err}`);
+      await new Promise((r) => setTimeout(r, 2000 * attempt));
+    }
+  }
+  return null;
+}
+
+// Map + sanitize an LLM extraction into the listing vocabulary. Guardrails drop
+// the noise a cheap model produces on ambiguous numerics.
+function sanitizeExtracted(j: any, url: string, firm: SitemapExtractFirm): any | null {
+  const name = clean(j.name) || clean(j.streetAddress);
+  if (!name) return null;
+  const tt = String(j.transactionType ?? "").toLowerCase();
+  // Validate the lease rate up front and require a real currency/rate signal, so a
+  // hallucinated "1 acre"/"2025" string can neither be kept as a rate nor flip the
+  // inferred tenure to lease.
+  let leaseRateText = clean(j.leaseRateText);
+  const looksLikeRate =
+    !!leaseRateText &&
+    /[1-9]/.test(leaseRateText) &&
+    !/^\$?0(\.0+)?(\s|\/|$)/.test(leaseRateText) &&
+    /\$|\bpsf\b|\bnnn\b|\/\s*sf|per\s*(?:sf|s\.?f\.?|square\s*f)|\/\s*(?:mo|month|yr|year|annum|ac\b)/i.test(
+      leaseRateText
+    );
+  if (!looksLikeRate) leaseRateText = null;
+
+  let _tt: "sale" | "lease" | "sale_or_lease";
+  if (tt.includes("sale") && tt.includes("lease")) _tt = "sale_or_lease";
+  else if (tt === "lease") _tt = "lease";
+  else if (tt === "sale") _tt = "sale";
+  // Unknown/blank tenure: infer ONLY from validated evidence; lease requires a real
+  // (sanitized) rate, not a raw model string. Default to sale otherwise.
+  else if (typeof j.salePriceUsd === "number" && j.salePriceUsd >= 1000) _tt = "sale";
+  else if (leaseRateText) _tt = "lease";
+  else _tt = "sale";
+  const isSale = _tt === "sale" || _tt === "sale_or_lease";
+  const salePriceUsd =
+    isSale && typeof j.salePriceUsd === "number" && j.salePriceUsd >= 1000 ? j.salePriceUsd : null;
+  const capRatePct =
+    typeof j.capRatePct === "number" && j.capRatePct > 0 && j.capRatePct <= 20 ? j.capRatePct : null;
+  const buildingSizeSqft =
+    typeof j.buildingSizeSqft === "number" && j.buildingSizeSqft >= 100 ? j.buildingSizeSqft : null;
+  const stRaw = clean(j.state);
+  const state = stRaw ? (/^[A-Za-z]{2}$/.test(stRaw) ? stRaw.toUpperCase() : stRaw) : null;
+  const brokerIds = (Array.isArray(j.brokers) ? j.brokers : [])
+    .map((b: any) =>
+      brokerRef({ name: clean(b?.name), email: clean(b?.email), phone: clean(b?.phone), company: firm.company })
+    )
+    .filter((x: number | null): x is number => x !== null);
+  const slug = (url.split(firm.host)[1] ?? url).replace(/^\/+|\/+$/g, "").replace(/[?#].*$/, "");
+  return {
+    id: slug || null,
+    name,
+    transactionType: _tt === "sale_or_lease" ? "Sale/Lease" : _tt === "lease" ? "Lease" : "Sale",
+    assetType: clean(j.propertyType),
+    description: clean(j.description),
+    street: clean(j.streetAddress),
+    city: clean(j.city),
+    state,
+    postalCode: j.postalCode ? String(j.postalCode).slice(0, 12) : null,
+    country: "US",
+    salePriceUsd,
+    salePriceText: salePriceUsd ? `$${salePriceUsd.toLocaleString("en-US")}` : null,
+    leaseRateText: _tt === "sale" ? null : leaseRateText,
+    capRatePct,
+    buildingSizeSqft,
+    brokerIds,
+    url,
+    _tt,
+  };
+}
+
+async function enumerateSitemap(firm: SitemapExtractFirm): Promise<string[]> {
+  const idxXml = await scrapeRaw(firm.sitemapUrl, { timeout: 60000 });
+  const out = new Set<string>();
+  const collect = (xml: string) => {
+    for (const u of xml.match(/https?:\/\/[^<\s"')]+/gi) ?? []) {
+      try {
+        const url = new URL(u);
+        if (url.hostname.replace(/^www\./, "") !== firm.host.replace(/^www\./, "")) continue;
+        if (firm.detailPathRe.test(url.pathname)) out.add(u.replace(/[)\]]+$/, ""));
+      } catch {
+        /* skip malformed */
+      }
+    }
+  };
+  collect(idxXml);
+  // Follow ALL same-host sub-sitemaps, not just propert/listing-named ones: a firm's
+  // listing URLs can live in a generically-named child sitemap, and skipping it would
+  // silently undercount while still looking "complete". detailPathRe filters what we
+  // keep; property/listing-named children are fetched first so the cap (if ever hit)
+  // drops the least-likely ones.
+  const allSubs = [
+    ...new Set(
+      (idxXml.match(/https?:\/\/[^<\s"')]+\.xml/gi) ?? [])
+        .map((s) => s.replace(/[)\]]+$/, ""))
+        .filter((s) => {
+          if (s === firm.sitemapUrl) return false;
+          try {
+            return new URL(s).hostname.replace(/^www\./, "") === firm.host.replace(/^www\./, "");
+          } catch {
+            return false;
+          }
+        })
+    ),
+  ].sort((a, b) => Number(/propert|listing/i.test(b)) - Number(/propert|listing/i.test(a)));
+  const SUB_CAP = 60;
+  if (allSubs.length > SUB_CAP) {
+    console.error(
+      `  ${firm.company}: ${allSubs.length} sub-sitemaps exceed cap ${SUB_CAP}; tail may be skipped (possible undercount)`
+    );
+  }
+  for (const sm of allSubs.slice(0, SUB_CAP)) {
+    try {
+      collect(await scrapeRaw(sm, { timeout: 60000 }));
+    } catch {
+      /* tolerate a failed sub-sitemap */
+    }
+  }
+  return [...out];
+}
+
+// Cache the extraction per firm so the sale + lease passes share one set of
+// (paid) LLM calls. `max` bounds the number of detail pages extracted.
+const extractCache = new Map<string, { listings: any[]; failed: number; total: number }>();
+
+async function srcSitemapExtract(
+  firm: SitemapExtractFirm,
+  key: string,
+  tx: Tx,
+  max: number
+): Promise<SourceResult> {
+  let cached = extractCache.get(key);
+  if (!cached) {
+    const urls = await enumerateSitemap(firm);
+    if (!urls.length) throw new Error(`${firm.company}: sitemap had no detail URLs matching ${firm.detailPathRe}`);
+    const take = Number.isFinite(max) ? urls.slice(0, max) : urls;
+    let failed = 0;
+    const parsed = await pmap(take, CONCURRENCY, async (u) => {
+      const j = await scrapeExtract(u);
+      if (!j) {
+        failed++;
+        return null;
+      }
+      return sanitizeExtracted(j, u, firm);
+    });
+    cached = { listings: parsed.filter((l): l is any => l !== null), failed, total: urls.length };
+    extractCache.set(key, cached);
+  }
+  const listings = cached.listings
+    .filter((l) => (tx === "sale" ? l._tt !== "lease" : l._tt !== "sale"))
+    .map((l) => {
+      const { _tt, ...rest } = l;
+      return rest;
+    });
+  return {
+    company: firm.company,
+    sourceUrl: firm.sitemapUrl,
+    method: "Own sitemap enumeration + Firecrawl LLM structured extraction (json format) per detail page",
+    totalAvailable: cached.total,
+    listings,
+    incomplete: cached.failed > 0,
+    note: cached.failed > 0 ? `${cached.failed} page(s) failed extraction` : undefined,
+  };
+}
+
+const SITEMAP_EXTRACT_FIRMS: Record<string, SitemapExtractFirm> = {
+  "interra-realty": {
+    company: "Interra Realty",
+    host: "interrarealty.com",
+    sitemapUrl: "https://www.interrarealty.com/sitemap.xml",
+    detailPathRe: /^\/listing\/[^/]+\/?$/i,
+  },
+  "daum-commercial": {
+    company: "DAUM Commercial",
+    host: "daumcommercial.com",
+    sitemapUrl: "https://www.daumcommercial.com/sitemap.xml",
+    detailPathRe: /^\/property\/[^/]+\/?$/i,
+  },
+  "foundry-commercial": {
+    company: "Foundry Commercial",
+    host: "foundrycommercial.com",
+    sitemapUrl: "https://www.foundrycommercial.com/sitemap.xml",
+    detailPathRe: /^\/property\/[^/]+\/?$/i,
+  },
+  "essex-realty": {
+    company: "Essex Realty Group",
+    host: "essexrealtygroup.com",
+    sitemapUrl: "https://www.essexrealtygroup.com/sitemap_index.xml",
+    detailPathRe: /^\/properties\/[^/]+\/?$/i,
+  },
+  "pyramid-brokerage": {
+    company: "Pyramid Brokerage Company",
+    host: "pyramidbrokerage.com",
+    sitemapUrl: "https://www.pyramidbrokerage.com/sitemap.xml",
+    detailPathRe: /^\/listings\/[^/]+\/?$/i,
+  },
+  "shop-companies": {
+    company: "SHOP Companies",
+    host: "shopcompanies.com",
+    sitemapUrl: "https://www.shopcompanies.com/sitemap.xml",
+    detailPathRe: /^\/properties\/[^/]+\/?$/i,
+  },
+  "velocity-retail": {
+    company: "Velocity Retail Group",
+    host: "velocityretail.com",
+    sitemapUrl: "https://www.velocityretail.com/sitemap_index.xml",
+    detailPathRe: /^\/property\/[^/]+\/?$/i,
+  },
+  "aquila-commercial": {
+    company: "AQUILA Commercial",
+    host: "aquilacommercial.com",
+    sitemapUrl: "https://www.aquilacommercial.com/sitemap.xml",
+    detailPathRe: /^\/property\/[^/]+\/?$/i,
+  },
+  "finial-group": {
+    company: "Finial Group",
+    host: "finialgroup.com",
+    sitemapUrl: "https://www.finialgroup.com/sitemap.xml",
+    detailPathRe: /^\/properties\/[^/]+\/?$/i,
+  },
+  "ackerman": {
+    company: "Ackerman & Co",
+    host: "ackermanco.com",
+    sitemapUrl: "https://www.ackermanco.com/sitemap_index.xml",
+    detailPathRe: /^\/properties\/[^/]+\/?$/i,
+  },
+  "maury-carter": {
+    company: "Maury L. Carter & Associates",
+    host: "maurycarter.com",
+    sitemapUrl: "https://www.maurycarter.com/sitemap.xml",
+    detailPathRe: /^\/property\/[^/]+\/?$/i,
+  },
+};
+
+// --- SRS Real Estate Partners: Salesforce-backed Cloud Run search API ---
+// srsre.com is a Cloudflare-protected Next.js app, but its listings come from a
+// PUBLIC Google Cloud Run backend (NOT behind Cloudflare), reverse-engineered
+// 2026-06-20 from the page's JS bundle:
+//   POST https://srsre-next-...run.app/api/property-search
+//   body: { query: { offset: 12*page, pageSize: 12, ...UI_FILTERS }, client_ip: "" }
+//   resp: { total, properties: [ { id, location, square_feet_data, permalink,
+//           apto_data: <full Salesforce SRS_Listings__c record> } ] }
+// The API is open (no auth), so this source calls it directly (global fetch), not
+// through Firecrawl. UI_FILTERS below is the site's default "all options" filter
+// (so the search is unfiltered = the whole catalog, ~2,122). Cached across the
+// sale/lease passes and partitioned by each listing's Availability__c.
+const SRS_API = "https://srsre-next-412955565034.us-central1.run.app/api/property-search";
+const SRS_FILTERS = {
+  availabilityType: ["sale", "lease", "investment-sale"],
+  propertyType: ["retail", "industrial", "office", "land", "multifamily", "hospitality", "healthcare", "special_purpose"],
+  address: null,
+  tenant: "",
+  ownershipType: ["fee-simple-land-building", "ground-lease-land-only", "leasehold-lease-only", "other"],
+  portfolio: [] as string[],
+  tenancyType: ["single-tenant", "multi-tenant", "land"],
+  subType: null,
+  orderDirection: "DESC",
+  orderBy: "date",
+  office: "",
+  broker: "",
+  sizeRange: { required: false },
+  lotSizeRange: { required: false },
+  priceRange: { required: true },
+  capRateRange: { required: true },
+  latLong: null,
+  searchTerms: "",
+};
+const SRS_PAGE_SIZE = 12;
+let srsCache: any[] | null = null;
+
+async function srsPost(page: number): Promise<any> {
+  const body = JSON.stringify({ query: { offset: SRS_PAGE_SIZE * page, pageSize: SRS_PAGE_SIZE, ...SRS_FILTERS }, client_ip: "" });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(SRS_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0", Origin: "https://www.srsre.com" },
+        body,
+      });
+      if (!res.ok) throw new Error(`SRS API HTTP ${res.status}`);
+      const j: any = await res.json();
+      if (j && Array.isArray(j.properties)) return j;
+      throw new Error("SRS API response missing properties[]");
+    } catch (err) {
+      if (attempt === 3) throw err;
+      await new Promise((r) => setTimeout(r, 2000 * attempt));
+    }
+  }
+}
+
+async function srsFetchAll(max: number): Promise<{ items: any[]; total: number; incomplete: boolean }> {
+  if (srsCache) return { items: srsCache, total: srsCache.length, incomplete: false };
+  const first = await srsPost(0);
+  const total: number = first.total ?? 0;
+  const items: any[] = [...(first.properties ?? [])];
+  const allPages = Math.ceil(total / SRS_PAGE_SIZE);
+  // Bound fetches by max (shared across both tenure passes): a small probe pulls a
+  // few pages; max=0 pulls the whole catalog.
+  const wantPages = Number.isFinite(max) ? Math.min(allPages, Math.ceil((max * 4) / SRS_PAGE_SIZE) + 1) : allPages;
+  let failed = 0;
+  const pageNums = Array.from({ length: Math.max(0, wantPages - 1) }, (_, i) => i + 1);
+  const chunks = await pmap(pageNums, CONCURRENCY, async (p) => {
+    try {
+      return (await srsPost(p)).properties ?? [];
+    } catch (err) {
+      failed++;
+      console.error(`  srs: page ${p} failed: ${err}`);
+      return [];
+    }
+  });
+  for (const c of chunks) items.push(...c);
+  const complete = wantPages >= allPages;
+  if (complete) srsCache = items; // only cache a full pull
+  return { items, total, incomplete: failed > 0 };
+}
+
+function srsTenure(x: any): { isSale: boolean; isLease: boolean } {
+  const av = String(x?.apto_data?.Availability__c ?? "").toLowerCase();
+  const pl = (x?.permalink ?? "").toLowerCase();
+  const isLease = av.includes("lease") || /\/lease\//.test(pl);
+  const isSale = av.includes("sale") || /\/sale\//.test(pl) || (!isLease); // default investment-sales
+  return { isSale, isLease };
+}
+
+function mapSrs(x: any, tx: Tx): any {
+  const a = x.apto_data ?? {};
+  const num = (v: any) => (v != null && v !== "" && isFinite(Number(v)) ? Number(v) : null);
+  const { isSale } = srsTenure(x);
+  const salePrice = !a.Hide_Sale_Price__c ? num(a.Sale_Price__c) : null;
+  const imgs: string[] = [];
+  const li = a.listing_images;
+  if (Array.isArray(li)) for (const im of li) {
+    const u = typeof im === "string" ? im : im?.url ?? im?.src;
+    if (typeof u === "string" && u.startsWith("http")) imgs.push(u);
+  }
+  if (!imgs.length && typeof x.thumbnail === "string" && x.thumbnail.startsWith("http")) imgs.push(x.thumbnail);
+  const brokerIds = (Array.isArray(a.related_brokers) ? a.related_brokers : [])
+    .map((b: any) =>
+      brokerRef({
+        name: clean(b?.name ?? b?.Name ?? [b?.FirstName, b?.LastName].filter(Boolean).join(" ")),
+        email: clean(b?.email ?? b?.Email),
+        phone: clean(b?.phone ?? b?.Phone),
+        company: "SRS Real Estate Partners",
+      })
+    )
+    .filter((v: number | null): v is number => v !== null);
+  return {
+    id: clean(a.SRS_Listings_ID__c) ?? clean(x.id) ?? clean(a.Id),
+    name: clean(a.Name) || clean(a.Property_Address__c),
+    transactionType: tx === "sale" ? "Sale" : "Lease",
+    assetType: clean(a.Primary_Property_Type__c),
+    description: clean(a.Description__c),
+    street: clean(a.Property_Address__c) ?? clean(a.Postal_Address__Street__s),
+    city: clean(a.Property_City__c) ?? clean(a["Postal_Address__City__s"]),
+    state: clean(a.Property_State__c) ?? clean(a["Postal_Address__StateCode__s"]),
+    postalCode: a.Property_Zip__c ? String(a.Property_Zip__c).slice(0, 12) : clean(a["Postal_Address__PostalCode__s"]),
+    country: "US",
+    latitude: num(x.location?.lat) ?? num(a.Property_Latitude__c) ?? num(a.Latitude__c),
+    longitude: num(x.location?.lon) ?? num(a.Property_Longitude__c) ?? num(a.Longitude__c),
+    salePriceUsd: isSale ? salePrice : null,
+    salePriceText: isSale && salePrice ? `$${salePrice.toLocaleString("en-US")}` : null,
+    capRatePct: num(a.Cap_Rate__c),
+    buildingSizeSqft: num(a.Total_Property_SF_GLA__c) ?? num(a.square_footage),
+    lotSizeAcres: num(a.Total_Property_Land_Acres__c) ?? num(a.lot_size_acres),
+    yearBuilt: num(a.Year_Built__c),
+    sizeText: clean(x.square_feet_data),
+    brokerIds,
+    photos: imgs.slice(0, 12),
+    url: x.permalink ? `https://www.srsre.com${x.permalink}` : null,
+  };
+}
+
+async function srcSrs(tx: Tx, max: number): Promise<SourceResult> {
+  const { items, total, incomplete } = await srsFetchAll(max);
+  const listings: any[] = [];
+  for (const x of items) {
+    if (listings.length >= max) break;
+    const { isSale, isLease } = srsTenure(x);
+    if (tx === "sale" && !isSale) continue;
+    if (tx === "lease" && !isLease) continue;
+    listings.push(mapSrs(x, tx));
+  }
+  return {
+    company: "SRS Real Estate Partners",
+    sourceUrl: "https://www.srsre.com/properties",
+    method: "Salesforce-backed Cloud Run search API (POST /api/property-search, paginated, direct)",
+    totalAvailable: total,
+    listings,
+    incomplete,
+  };
+}
+
+// --- Hanley Investment Group: embedded rethink_properties JSON on /listings/ ---
+// Retail net-lease investment-sales firm on the Rethink (Salesforce) CRE platform.
+// The /listings/ page is directly fetchable (Cloudflare in monitor-mode, not
+// blocking) and server-embeds the WHOLE catalog in `var rethink_properties = [...]`.
+// No render, no API reverse-engineering — fetch the page, parse the array, partition
+// by deal record type (Seller/Buyer_Rep = sale; Landlord/Tenant_Rep = lease).
+const HANLEY_URL = "https://hanleyinvestmentgroup.com/listings/";
+
+function extractRethinkProperties(html: string): any[] {
+  const i = html.indexOf("rethink_properties");
+  if (i < 0) return [];
+  const start = html.indexOf("[", i);
+  if (start < 0) return [];
+  let depth = 0,
+    end = -1,
+    inStr = false,
+    esc = false;
+  for (let j = start; j < html.length; j++) {
+    const c = html[j];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+    } else if (c === '"') inStr = true;
+    else if (c === "[") depth++;
+    else if (c === "]") {
+      depth--;
+      if (depth === 0) {
+        end = j + 1;
+        break;
+      }
+    }
+  }
+  if (end < 0) return [];
+  try {
+    return JSON.parse(html.slice(start, end));
+  } catch {
+    return [];
+  }
+}
+
+async function fetchHanleyHtml(): Promise<string> {
+  try {
+    const res = await fetch(HANLEY_URL, {
+      headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124 Safari/537.36", Accept: "text/html" },
+    });
+    if (res.ok) {
+      const html = await res.text();
+      if (html.includes("rethink_properties")) return html;
+    }
+  } catch {
+    /* fall back to Firecrawl */
+  }
+  return scrapeRaw(HANLEY_URL, { proxy: "stealth", waitFor: 3000 });
+}
+
+function hanleyIsLease(x: any): boolean {
+  const tags = [String(x.dealRecordType ?? ""), ...(Array.isArray(x.dealPipelineTypes) ? x.dealPipelineTypes : [])].join(",").toLowerCase();
+  return /landlord|tenant|lease/.test(tags);
+}
+
+function mapHanley(x: any, tx: Tx): any {
+  const num = (v: any) => (v != null && v !== "" && isFinite(Number(v)) ? Number(v) : null);
+  const isLease = hanleyIsLease(x);
+  const sf = num(x.propertySquareFootage) ?? num(x.spaceSquareFootage);
+  return {
+    id: clean(x.id),
+    name: clean(x.name) || clean(x.address),
+    transactionType: tx === "sale" ? "Sale" : "Lease",
+    assetType: clean(x.propertyType) ?? clean(x.propertyRecordType),
+    street: clean(x.address),
+    city: clean(x.city),
+    state: clean(x.state),
+    postalCode: x.zipCode ? String(x.zipCode).slice(0, 12) : null,
+    country: "US",
+    latitude: num(x.latitude),
+    longitude: num(x.longitude),
+    salePriceUsd: !isLease ? num(x.salesPrice) : null,
+    salePriceText: !isLease && num(x.salesPrice) ? `$${Number(x.salesPrice).toLocaleString("en-US")}` : null,
+    leaseRateText: isLease ? clean(String(x.leaseRate ?? "")) || null : null,
+    capRatePct: num(x.capRate),
+    buildingSizeSqft: sf,
+    sizeText: sf ? `${sf.toLocaleString("en-US")} SF` : null,
+    brokerIds: [], // array exposes only leadBrokerUserId (an id, no name)
+    photos: typeof x.image === "string" && x.image.startsWith("http") ? [x.image] : [],
+    url: x.id ? `${HANLEY_URL}?id=${x.id}` : HANLEY_URL,
+    status: clean(x.status),
+    numberOfUnits: num(x.numberOfUnits),
+  };
+}
+
+let hanleyCache: any[] | null = null;
+async function srcHanley(tx: Tx, max: number): Promise<SourceResult> {
+  if (!hanleyCache) {
+    const arr = extractRethinkProperties(await fetchHanleyHtml());
+    if (!arr.length) throw new Error("Hanley: rethink_properties array not found / empty");
+    hanleyCache = arr.filter((x) => String(x.visibility ?? "").toLowerCase().startsWith("public"));
+  }
+  const listings: any[] = [];
+  for (const x of hanleyCache) {
+    if (listings.length >= max) break;
+    if (tx === "lease" ? !hanleyIsLease(x) : hanleyIsLease(x)) continue;
+    listings.push(mapHanley(x, tx));
+  }
+  return {
+    company: "Hanley Investment Group",
+    sourceUrl: HANLEY_URL,
+    method: "Direct fetch of /listings/ + embedded rethink_properties JSON (Rethink/Salesforce platform)",
+    totalAvailable: hanleyCache.length,
+    listings,
+  };
+}
+
+// --- Kidder Mathews: open "KM backend" search API ---
+// kidder.com/properties/ is a jQuery app whose listings come from a PUBLIC backend
+// (services.kidder.com), reverse-engineered 2026-06-20 from /properties/assets/js/
+// app.min.js: POST https://services.kidder.com/search/public/listing with
+//   { startIndex, numResults, includeAggregations:false }  (the SearchRequest shape)
+//   -> { totalResultCount, results:[ {listing_key, property_*, list_price,
+//        asking_rent_max, sf_avail, use_type, brokers:[names], lat/lon, photos} ] }
+// Open API (no auth). Direct paginated fetch (not Firecrawl). ~3,108 listings.
+const KIDDER_API = "https://services.kidder.com/search/public/listing";
+const KIDDER_PAGE = 50;
+let kidderCache: any[] | null = null;
+
+async function kidderPost(startIndex: number): Promise<any> {
+  const body = JSON.stringify({ startIndex, numResults: KIDDER_PAGE, includeAggregations: false });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(KIDDER_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json;charset=UTF-8", "User-Agent": "Mozilla/5.0", Origin: "https://www.kidder.com" },
+        body,
+      });
+      if (!res.ok) throw new Error(`Kidder API HTTP ${res.status}`);
+      const j: any = await res.json();
+      if (j && Array.isArray(j.results)) return j;
+      throw new Error("Kidder API response missing results[]");
+    } catch (err) {
+      if (attempt === 3) throw err;
+      await new Promise((r) => setTimeout(r, 2000 * attempt));
+    }
+  }
+}
+
+async function kidderFetchAll(max: number): Promise<{ items: any[]; total: number; incomplete: boolean }> {
+  if (kidderCache) return { items: kidderCache, total: kidderCache.length, incomplete: false };
+  const first = await kidderPost(0);
+  const total: number = first.totalResultCount ?? 0;
+  const items: any[] = [...(first.results ?? [])];
+  const allPages = Math.ceil(total / KIDDER_PAGE);
+  const wantPages = Number.isFinite(max) ? Math.min(allPages, Math.ceil((max * 4) / KIDDER_PAGE) + 1) : allPages;
+  let failed = 0;
+  const pageNums = Array.from({ length: Math.max(0, wantPages - 1) }, (_, i) => i + 1);
+  const chunks = await pmap(pageNums, CONCURRENCY, async (p) => {
+    try {
+      return (await kidderPost(p * KIDDER_PAGE)).results ?? [];
+    } catch (err) {
+      failed++;
+      console.error(`  kidder: page ${p} failed: ${err}`);
+      return [];
+    }
+  });
+  for (const c of chunks) items.push(...c);
+  if (wantPages >= allPages) kidderCache = items;
+  return { items, total, incomplete: failed > 0 };
+}
+
+function kidderTenure(x: any): { isSale: boolean; isLease: boolean } {
+  const isLease = x.asking_rent_max != null || x.sublease_flg === true;
+  const isSale = x.list_price != null || x.retail_investment_nnn_flg === true || !isLease;
+  return { isSale, isLease };
+}
+
+function mapKidder(x: any, tx: Tx): any {
+  const num = (v: any) => (v != null && v !== "" && isFinite(Number(v)) ? Number(v) : null);
+  const { isSale } = kidderTenure(x);
+  const sale = isSale ? num(x.list_price) : null;
+  const rent = num(x.asking_rent_max);
+  const brokerIds = (Array.isArray(x.brokers) ? x.brokers : [])
+    .map((b: any) => brokerRef({ name: clean(typeof b === "string" ? b : b?.name), company: "Kidder Mathews" }))
+    .filter((v: number | null): v is number => v !== null);
+  const photos = [x.listing_photo, x.property_photo].filter((u: any) => typeof u === "string" && u.startsWith("http")).slice(0, 2);
+  const key = x.listing_key ?? x.property_key;
+  return {
+    id: key != null ? String(key) : null,
+    name: clean(x.property_name) || clean(x.building_name) || clean(x.property_address),
+    transactionType: tx === "sale" ? "Sale" : "Lease",
+    assetType: clean(x.use_type),
+    street: clean(x.property_address),
+    city: clean(x.city),
+    state: clean(x.state_code),
+    postalCode: x.zip_postal_code ? String(x.zip_postal_code).slice(0, 12) : null,
+    country: "US",
+    latitude: num(x.latitude),
+    longitude: num(x.longitude),
+    salePriceUsd: sale,
+    salePriceText: sale ? `$${sale.toLocaleString("en-US")}` : null,
+    leaseRateText: !isSale && rent != null ? `$${rent}/SF` : null,
+    buildingSizeSqft: num(x.sf_avail),
+    sizeText: num(x.sf_avail) ? `${num(x.sf_avail)!.toLocaleString("en-US")} SF` : null,
+    brokerIds,
+    photos,
+    url: key != null ? `https://www.kidder.com/listings/${key}` : "https://www.kidder.com/properties/",
+  };
+}
+
+async function srcKidder(tx: Tx, max: number): Promise<SourceResult> {
+  const { items, total, incomplete } = await kidderFetchAll(max);
+  const listings: any[] = [];
+  for (const x of items) {
+    if (listings.length >= max) break;
+    const { isSale, isLease } = kidderTenure(x);
+    if (tx === "sale" && !isSale) continue;
+    if (tx === "lease" && !isLease) continue;
+    listings.push(mapKidder(x, tx));
+  }
+  return {
+    company: "Kidder Mathews",
+    sourceUrl: "https://www.kidder.com/properties/",
+    method: "Open KM backend search API (POST services.kidder.com/search/public/listing, paginated, direct)",
+    totalAvailable: total,
+    listings,
+    incomplete,
+  };
+}
+
 const UNSUPPORTED: Record<string, string> = {
   colliers:
     "Colliers' property search (colliers.com/en/properties) loads results only through Coveo's POST-only search API behind a consent wall, which this collector cannot call. No public GET endpoint or server-rendered listing markup was found.",
@@ -1721,8 +2930,55 @@ async function runSource(key: SourceKey, tx: Tx, max: number): Promise<SourceRes
       );
     case "nai-global":
       return srcNaiGlobal(tx, max);
-    default:
+    case "matthews":
+      return srcMatthews(tx, max);
+    case "franklin-street": {
+      // Client-rendered Buildout (buildout.com/api.js) with SEPARATE for-sale
+      // and for-lease plugin feeds (each internally single-tenure). Pick the
+      // feed by transaction; tokens read from /properties/for-{sale,lease}/ on
+      // 2026-06-20 (sale feed 227, lease feed 195). srcBuildout's sale-boolean
+      // filter still applies as a safety net.
+      const fsToken =
+        tx === "lease"
+          ? "2f82fcd26667c4b0126d0084938ffa265f05fa4a"
+          : "a234450b432b2b2bebc1ace7e6f692e4489bde70";
+      return srcBuildout("Franklin Street", fsToken, "https://www.franklinst.com/properties/", tx, max);
+    }
+    case "lyon-stahl":
+      return srcLyonStahl(tx, max);
+    case "srs":
+      return srcSrs(tx, max);
+    case "hanley":
+      return srcHanley(tx, max);
+    case "kidder-mathews":
+      return srcKidder(tx, max);
+    case "faris-lee":
+      // Retail net-lease investment-sales firm on Buildout. Public plugin
+      // inventory API (token read from /listings on 2026-06-20); all sale.
+      return srcBuildout(
+        "Faris Lee Investments",
+        "de89d4f043da3999d293e1adcfd541bf2530acca",
+        "https://www.farislee.com/listings/",
+        tx,
+        max
+      );
+    case "fortis-net-lease":
+      // Net-lease investment-sales firm on Buildout. Public plugin inventory
+      // API (token read from /net-lease-properties on 2026-06-20); all sale.
+      return srcBuildout(
+        "Fortis Net Lease",
+        "8c286e4a49fdc706359ab9c041e0db1465de1fcf",
+        "https://www.fortisnetlease.com/net-lease-properties/",
+        tx,
+        max
+      );
+    default: {
+      const bf = BUILDOUT_FIRMS[key];
+      if (bf) return srcBuildout(bf.company, bf.token, bf.page, tx, max);
+      const ef = SITEMAP_EXTRACT_FIRMS[key];
+      if (ef) return srcSitemapExtract(ef, key, tx, max);
       throw new Error(`unhandled source ${key}`);
+    }
   }
 }
 
@@ -1752,6 +3008,7 @@ async function main() {
           method: res.method,
           totalAvailableOnSource: res.totalAvailable,
           listingsCollected: res.listings.length,
+          incomplete: res.incomplete ?? false,
           note: res.note ?? null,
         });
         for (const l of res.listings) {

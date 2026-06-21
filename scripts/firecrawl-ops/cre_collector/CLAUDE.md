@@ -14,7 +14,10 @@ self-hosted Firecrawl API.
 
 | File | Purpose |
 |------|---------|
-| `collect.ts` | 14-source collector (TypeScript, Firecrawl JS SDK pinned to local API) |
+| `collect.ts` | Multi-source collector (TypeScript, Firecrawl JS SDK pinned to local API) |
+| `TOP30_EXPANSION_PLAN_2026-06-20.md` | Plan + research for expanding toward the top-30 firms by volume; collector feasibility tiers, per-firm gap matrix, Matthews pilot writeup |
+| `discover_buildout.py` | Reusable Buildout-token fingerprinter: `--domains file.txt` → finds which CRE firms are on Buildout + prints ready-to-paste `BUILDOUT_FIRMS` lines (dedups vs collect.ts). Feed it real directory/CoStar/PublicWWW domain exports |
+| `CODEX_AUDIT_PROMPT_2026-06-20*.md` | Codex audit prompts (v1, v2) for this expansion |
 | `cre_ingest.py` | Collector JSON -> `credeals` schema upsert (stdlib + psql) |
 | `cre_daily_update.sh` | Daily refresh: healthcheck -> collect all -> ingest |
 | `START_HERE.md` | Current status and new-session runbook |
@@ -77,8 +80,16 @@ Supabase ingest before database counts reflect them.
 | `svn` | Buildout inventory API | ~5,500 total | (same feed) | Full inventory cached once, partitioned client-side by `sale` boolean |
 | `lee-associates` | Buildout inventory API | blocked in latest full run | blocked in latest full run | Buildout throttles under sustained paging; latest fresh retry passed pages 93-104 but failed pages 286-297 and aborted at 12/333 failed pages |
 | `nai-global` | Infabode widget cards | 15 | 15 | No per-card links; synthesized `card:` hash ids; first batch only |
-| `colliers` | UNSUPPORTED | – | – | POST-only API; needs request-body support |
-| `transwestern` | UNSUPPORTED | – | – | POST-only API |
+| `matthews` | Public `sitemap.xml` enumeration -> server-rendered detail pages | 2,913 | 651 | Added 2026-06-20. Net-lease specialist. No token/JS render. Tenure from slug (`leasing-*`=lease). Verified via 6+6 probe; full run + ingest pending. See `TOP30_EXPANSION_PLAN_2026-06-20.md` |
+| `franklin-street` | Buildout plugin inventory API (dual sale/lease feeds) | 227 | 195 | Added 2026-06-20. Client-rendered Buildout; reuse `srcBuildout`, plugin token selected per tenure. Verified via 6+6 probe; full run + ingest pending |
+| `lyon-stahl` | Own WordPress property sitemap -> JSON-LD detail pages | 2,236 | n/a | Added 2026-06-20. LA multifamily investment-sales (sale-only). JSON-LD parse (Product/ApartmentComplex/Person). Sold comps filtered. Verified via probe; full run + ingest pending |
+| `faris-lee` | Buildout plugin inventory API | 77 | n/a | Added 2026-06-20. Retail net-lease investment-sales (sale-only). Reuse `srcBuildout` (single token). Verified via probe; full run + ingest pending |
+| `fortis-net-lease` | Buildout plugin inventory API | 86 | n/a | Added 2026-06-20. STNL net lease. `srcBuildout`. Verified; full run + ingest pending |
+| `unique-properties` `kiser-group` `pinnacle-rea` `cawley-chicago` `bradford-allen` `hudson-peters` `gibson-commercial` `leibsohn` | Buildout plugin inventory API (`BUILDOUT_FIRMS` map) | mixed | mixed | Added 2026-06-20. 8 regional firms (Denver/Chicago/Dallas/TX/Phoenix), totals 684/351/179/80/79/39/16/75 ≈ 1,503 listings. All `srcBuildout`. Sampled-verified; full run + ingest pending |
+| `nai-hiffman` `nai-martens` `bull-realty` `tri-commercial` `berger-commercial` | Buildout plugin inventory API (`BUILDOUT_FIRMS` map) | mixed | mixed | Added 2026-06-20 (round 4). NAI members + regional independents (Chicago/Wichita/Atlanta/Bay Area/S.FL); totals 435/160/552/288/109 ≈ 1,544 listings. All `srcBuildout`. Sampled-verified; full run + ingest pending |
+| 11 firms via `SITEMAP_EXTRACT_FIRMS`: `interra-realty` `daum-commercial` (verified) + `foundry-commercial` `essex-realty` `pyramid-brokerage` `shop-companies` `velocity-retail` `aquila-commercial` `finial-group` `ackerman` `maury-carter` (wired, not yet run) | Own sitemap + **Firecrawl LLM `json` extraction** (`srcSitemapExtract`) | ~6,400 source total | mixed | Added 2026-06-20. Generic path for own-sitemap firms with heterogeneous DOM / no JSON-LD. Requires a local LLM profile (`set_model_profile.sh budget`; now configured). Sanitized; extraction cached per firm across tenure passes. Quality firm/content-dependent (reliable name/street/type/brokers; price/zip sparse). **Full runs are slow (~12s/page) + spend LLM credits — held for approval.** |
+| `colliers` | Legacy Python scraper (`cre_scrapers/`), NOT collect.ts | 17,001 live | – | Has working legacy scraper run via `cre_pipeline.py`; `UNSUPPORTED` in collect.ts. Data actively maintained (DB updated 06-19). Candidate to port to a `srcColliers` |
+| `transwestern` | UNSUPPORTED (no producing code anywhere) | 2,021 live | – | POST-only map app. 2,021 rows from a one-off 2026-06-12 job; no scraper in repo. Existing rows safe but static/not refreshable |
 
 Buildout semantics (svn, lee-associates): the inventory feed has **no
 server-side sale/lease filter** (`lease=true` is ignored). Items carry

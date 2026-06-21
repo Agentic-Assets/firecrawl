@@ -69,6 +69,48 @@ SOURCE_TO_BROKERAGE = {
     "svn": ("svn", ""),
     "nai-global": ("nai-global", ""),
     "lee-associates": ("lee-associates", ""),
+    "matthews": ("matthews", ""),
+    "franklin-street": ("franklin-street", ""),
+    "lyon-stahl": ("lyon-stahl", ""),
+    "faris-lee": ("faris-lee", ""),
+    "fortis-net-lease": ("fortis-net-lease", ""),
+    "unique-properties": ("unique-properties", ""),
+    "kiser-group": ("kiser-group", ""),
+    "pinnacle-rea": ("pinnacle-rea", ""),
+    "cawley-chicago": ("cawley-chicago", ""),
+    "bradford-allen": ("bradford-allen", ""),
+    "hudson-peters": ("hudson-peters", ""),
+    "gibson-commercial": ("gibson-commercial", ""),
+    "leibsohn": ("leibsohn", ""),
+    "nai-hiffman": ("nai-hiffman", ""),
+    "nai-martens": ("nai-martens", ""),
+    "bull-realty": ("bull-realty", ""),
+    "tri-commercial": ("tri-commercial", ""),
+    "berger-commercial": ("berger-commercial", ""),
+    "nai-bergman": ("nai-bergman", ""),
+    "nai-isaac": ("nai-isaac", ""),
+    "trinity-partners": ("trinity-partners", ""),
+    "metro-commercial": ("metro-commercial", ""),
+    "33-realty": ("33-realty", ""),
+    "nai-hallmark": ("nai-hallmark", ""),
+    "nai-plotkin": ("nai-plotkin", ""),
+    "greysteel": ("greysteel", ""),
+    "nai-talcor": ("nai-talcor", ""),
+    "nai-dominion": ("nai-dominion", ""),
+    "srs": ("srs", ""),
+    "hanley": ("hanley", ""),
+    "kidder-mathews": ("kidder-mathews", ""),
+    "interra-realty": ("interra-realty", ""),
+    "daum-commercial": ("daum-commercial", ""),
+    "foundry-commercial": ("foundry-commercial", ""),
+    "essex-realty": ("essex-realty", ""),
+    "pyramid-brokerage": ("pyramid-brokerage", ""),
+    "shop-companies": ("shop-companies", ""),
+    "velocity-retail": ("velocity-retail", ""),
+    "aquila-commercial": ("aquila-commercial", ""),
+    "finial-group": ("finial-group", ""),
+    "ackerman": ("ackerman", ""),
+    "maury-carter": ("maury-carter", ""),
 }
 
 # Ordered keyword -> property_type enum. First match wins.
@@ -271,14 +313,18 @@ def to_row(listing, brokers_by_idx, scraped_at):
         return None  # source_url is NOT NULL; un-linked rows aren't actionable
 
     raw_id = listing.get("id")
-    # Buildout sources (svn, lee-associates) list a dual-mode property twice
-    # with distinct inventory ids; the URL propertyId base ("1614726-sale" /
-    # "1614726-lease") is the stable per-property key, so the pair merges.
+    # Buildout sources list a dual-mode property as two inventory items (distinct
+    # inventory ids) whose show_link shares one propertyId base ("1614726-sale" /
+    # "1614726-lease"). That base is the stable per-property key, so the pair
+    # merges to one sale_or_lease row. EVERY Buildout firm's show_link carries
+    # ?propertyId=; non-Buildout sources do not, so keying off the URL pattern
+    # (not a per-source allowlist) covers all current and future Buildout firms
+    # — svn, lee-associates, franklin-street, faris-lee, fortis-net-lease, and
+    # the BUILDOUT_FIRMS regional set.
     buildout_pid = None
-    if source_key in ("svn", "lee-associates"):
-        m = re.search(r"[?&]propertyId=([^&#]+)", url)
-        if m:
-            buildout_pid = re.sub(r"-(sale|lease)$", "", m.group(1))
+    m = re.search(r"[?&]propertyId=([^&#]+)", url)
+    if m:
+        buildout_pid = re.sub(r"-(sale|lease)$", "", m.group(1))
     if buildout_pid:
         external_id = prefix + buildout_pid
     elif raw_id is not None and str(raw_id).strip():
@@ -653,10 +699,13 @@ def main():
     source_entries = []  # all sources[] entries across files
     started_at = None
 
+    run_capped = False  # any input from a --max-items-capped run disables mark-missing
     for path in args.inputs:
         with open(path) as f:
             data = json.load(f)
         run_meta = data.get("runMeta") or {}
+        if run_meta.get("maxItemsPerSource") is not None:
+            run_capped = True  # not a full-catalog enumeration; see mark-missing gate
         started_at = started_at or run_meta.get("startedAt")
         scraped_at = run_meta.get("finishedAt") or datetime.now(timezone.utc).isoformat()
         brokers_by_idx = {i: b for i, b in enumerate(data.get("brokers") or [])}
@@ -688,8 +737,11 @@ def main():
         if not mapping:
             continue
         slug = mapping[0]
-        st = slug_stats.setdefault(slug, {"discovered": 0, "errors": 0, "notes": []})
+        st = slug_stats.setdefault(slug, {"discovered": 0, "errors": 0, "incomplete": False, "notes": []})
         st["discovered"] += e.get("listingsCollected") or 0
+        if e.get("incomplete"):
+            st["incomplete"] = True
+            st["notes"].append(f"{e.get('sourceKey')}/{e.get('transaction')}: incomplete run (not full catalog)")
         if e.get("error"):
             st["errors"] += 1
             st["notes"].append(f"{e.get('sourceKey')}/{e.get('transaction')}: {e['error'][:160]}")
@@ -709,13 +761,29 @@ def main():
     ]
 
     mark_missing_slugs = set()
-    if args.mark_missing:
+    if args.mark_missing and run_capped:
+        # A capped run (--max-items > 0) only sampled each source, so absence of a row
+        # means "not sampled", not "delisted". Soft-deleting here would inactivate live
+        # rows for any slug whose true catalog exceeds the cap. Never mark-missing.
+        print(
+            "mark-missing DISABLED: input came from a capped (--max-items) run, not a "
+            "full-catalog enumeration; refusing to soft-delete live rows.",
+            file=sys.stderr,
+        )
+    elif args.mark_missing:
         for slug, st in slug_stats.items():
-            if st["errors"] == 0 and slug_saved.get(slug, 0) >= args.mark_missing_floor:
+            # A source is mark-missing eligible ONLY if it ran error-free, declared
+            # a COMPLETE run (full catalog enumerated), and cleared the row floor.
+            # A partial/incomplete run must never soft-delete live rows.
+            if (
+                st["errors"] == 0
+                and not st.get("incomplete")
+                and slug_saved.get(slug, 0) >= args.mark_missing_floor
+            ):
                 mark_missing_slugs.add(slug)
         ineligible = set(slug_stats) - mark_missing_slugs
         if ineligible:
-            print(f"mark-missing skipped for (errors or below floor): {sorted(ineligible)}", file=sys.stderr)
+            print(f"mark-missing skipped for (errors, incomplete, or below floor): {sorted(ineligible)}", file=sys.stderr)
 
     sql = build_sql(rows, job_meta, started_at, mark_missing_slugs)
 
