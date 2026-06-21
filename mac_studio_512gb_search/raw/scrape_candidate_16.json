@@ -1,0 +1,28 @@
+{
+  "url": "https://www.ebay.com/itm/298406215591",
+  "status": 200,
+  "data": {
+    "success": true,
+    "data": {
+      "markdown": "SORRY\n\nSomething went wrong on our end\n\n* * *\n\n0.49551702.1781853498.36e28ac1\n\n* * *\n\nPlease go back and try again  \nor go to eBay Homepage.\n\n[Go to homepage](https://www.ebay.com/)\n\nCopyright \u00a9 1995-2026 eBay Inc. All Rights Reserved.",
+      "metadata": {
+        "title": "Error Page | eBay",
+        "robots": "noindex,nofollow",
+        "language": "en",
+        "viewport": "width=device-width,initial-scale=1",
+        "scrapeId": "019edebe-a88f-721d-86b2-93b87f6a00b0",
+        "sourceURL": "https://www.ebay.com/itm/298406215591",
+        "url": "https://www.ebay.com/itm/298406215591",
+        "statusCode": 403,
+        "error": "Forbidden",
+        "contentType": "text/html",
+        "proxyUsed": "basic",
+        "creditsUsed": 1,
+        "concurrencyLimited": false
+      },
+      "links": [
+        "https://www.ebay.com/"
+      ]
+    }
+  }
+}

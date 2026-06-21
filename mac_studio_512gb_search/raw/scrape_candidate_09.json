@@ -1,0 +1,29 @@
+{
+  "url": "https://www.bhphotovideo.com/c/product/1884033-REG/apple_msm4ul23_mac_studio_with_m3.html",
+  "status": 200,
+  "data": {
+    "success": true,
+    "data": {
+      "markdown": "![Icon for www.bhphotovideo.com](https://www.bhphotovideo.com/favicon.ico)\n\nwww.bhphotovideo.com\n====================\n\nPerforming security verification\n--------------------------------\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nVerification successful. Waiting for www.bhphotovideo.com to respond\n--------------------------------------------------------------------\n\nRay ID: `a0e0c20799ba34d5`\n\nPerformance and Security by [Cloudflare](https://www.cloudflare.com/?utm_source=challenge&utm_campaign=m)\n[Privacy](https://www.cloudflare.com/privacypolicy/)",
+      "metadata": {
+        "robots": "noindex,nofollow",
+        "language": "en-US",
+        "viewport": "width=device-width,initial-scale=1",
+        "title": "Just a moment...",
+        "scrapeId": "019edebe-7de0-73f2-af7d-7e945e37c379",
+        "sourceURL": "https://www.bhphotovideo.com/c/product/1884033-REG/apple_msm4ul23_mac_studio_with_m3.html",
+        "url": "https://www.bhphotovideo.com/c/product/1884033-REG/apple_msm4ul23_mac_studio_with_m3.html",
+        "statusCode": 403,
+        "error": "Forbidden",
+        "contentType": "text/html; charset=UTF-8",
+        "proxyUsed": "basic",
+        "creditsUsed": 1,
+        "concurrencyLimited": false
+      },
+      "links": [
+        "https://www.cloudflare.com/?utm_source=challenge&utm_campaign=m",
+        "https://www.cloudflare.com/privacypolicy/"
+      ]
+    }
+  }
+}

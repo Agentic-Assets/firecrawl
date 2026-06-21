@@ -81,6 +81,7 @@ def resolve_fc_dir(value: str | None = None) -> Path:
         os.getenv("FC_DIR"),
         str(Path(__file__).resolve().parents[2]),
         str(Path.cwd()),
+        str(Path.home() / "Github" / "agentic-assets" / "firecrawl"),
         str(Path.home() / "Documents" / "GitHub" / "agentic-assets" / "firecrawl"),
     ]
     for candidate in candidates:

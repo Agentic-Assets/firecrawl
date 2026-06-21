@@ -112,7 +112,7 @@ If the client does not run from the repo root, use the absolute path:
     "firecrawl-local": {
       "command": "bash",
       "args": [
-        "/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/firecrawl_mcp.sh"
+        "/Users/caymanseagraves/Github/agentic-assets/firecrawl/scripts/firecrawl-ops/firecrawl_mcp.sh"
       ]
     }
   }

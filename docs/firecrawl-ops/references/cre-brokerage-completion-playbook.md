@@ -24,7 +24,7 @@ A brokerage is complete only when all of these are true:
 1. Start with the source folder:
 
 ```bash
-cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl
+cd /Users/caymanseagraves/Github/agentic-assets/firecrawl
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 cd scripts/firecrawl-ops/cre_collector
 npm run typecheck

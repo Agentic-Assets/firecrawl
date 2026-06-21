@@ -185,7 +185,7 @@ enriching the already discovered public detail URLs.
 Commands:
 
 ```bash
-cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl
+cd /Users/caymanseagraves/Github/agentic-assets/firecrawl
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 
 cd scripts/firecrawl-ops/cre_collector

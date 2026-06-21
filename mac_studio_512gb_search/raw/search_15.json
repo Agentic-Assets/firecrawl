@@ -1,0 +1,10 @@
+{
+  "query": "site:cdw.com Mac Studio 512GB 4TB",
+  "status": 200,
+  "data": {
+    "success": true,
+    "data": {},
+    "creditsUsed": 0,
+    "id": "019edebc-24fe-776d-baa0-3a2904aba7c2"
+  }
+}

@@ -112,7 +112,7 @@ Scope: Marcus & Millichap only. No live ingest was run. No `--mark-missing` was 
 Commands:
 
 ```bash
-cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+cd /Users/caymanseagraves/Github/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
 npx tsx collect.ts --source=marcus-millichap --transaction=both --max-items=8 --out=/tmp/marcus_before_probe.json
 npm run typecheck
 npx tsx collect.ts --source=marcus-millichap --transaction=both --max-items=12 --out=/tmp/marcus_after_probe.json
@@ -174,7 +174,7 @@ Raw public endpoint proof:
 Commands:
 
 ```bash
-cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl
+cd /Users/caymanseagraves/Github/agentic-assets/firecrawl
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 cd scripts/firecrawl-ops/cre_collector
 npm run typecheck
@@ -216,7 +216,7 @@ Collector hardening:
 Commands:
 
 ```bash
-cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+cd /Users/caymanseagraves/Github/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
 npm run typecheck
 npx tsx collect.ts --source=marcus-millichap --transaction=both --max-items=0 --concurrency=6 --out=out/marcus_full_2026-06-12_130035.json
 python3 cre_ingest.py --in out/marcus_full_2026-06-12_130035.json --dry-run --keep-artifacts /tmp/marcus_full_2026-06-12_130035_ingest_check

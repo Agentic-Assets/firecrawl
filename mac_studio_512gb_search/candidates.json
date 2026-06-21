@@ -1,0 +1,128 @@
+[
+  {
+    "seller_site": "eBay, seller TPS LLC",
+    "product_title": "Apple Mac Studio M3 Ultra 32-Core CPU 80-Core GPU 512GB 4TB SSD SEALED",
+    "url": "https://www.ebay.com/itm/206292504305",
+    "status": "new",
+    "chip_cpu_gpu": "M3 Ultra, 32-core CPU, 80-core GPU",
+    "unified_memory": "512GB unified memory / RAM per title and item specifics",
+    "ssd_size": "4TB per title and item specifics Hard Drive Capacity. Note: item specifics also show SSD Capacity 512 GB, so verify with seller before payment.",
+    "price": "US $26,999.99",
+    "shipping_availability": "Free UPS Ground. Browser observed delivery estimate Jun 24 to Jun 27 to ZIP 37190-style test location and ships today timer.",
+    "store_pickup_availability": "Free local pickup over 60 mi from observed ZIP, located in Portland, Oregon.",
+    "condition_warranty_returns": "Condition New. 30 day returns, seller pays return shipping. eBay Top Rated Plus signal observed.",
+    "seller_reliability_notes": "TPS LLC, 100% positive, joined Jan 2005, about 36K items sold, detailed seller ratings 5.0 across description, shipping cost, speed, communication.",
+    "evidence_snippet": "Title and checkout block show Mac Studio M3 Ultra 32-Core CPU 80-Core GPU 512GB 4TB SSD SEALED, US $26,999.99, Buy It Now, Add to cart, Last one. Item specifics show RAM Size 512 GB and Hard Drive Capacity 4 TB.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "confidence": "medium-high",
+    "proof_files": [
+      "raw/browser_verification.json",
+      "screenshots/ebay-4tb-206292504305.png"
+    ]
+  },
+  {
+    "seller_site": "eBay, seller TPS LLC",
+    "product_title": "Apple Mac Studio M3 Ultra 32-Core CPU 80-Core GPU 512GB 8TB SSD SEALED",
+    "url": "https://www.ebay.com/itm/206353020184",
+    "status": "new",
+    "chip_cpu_gpu": "M3 Ultra, 32-core CPU, 80-core GPU",
+    "unified_memory": "512GB unified memory / RAM per title and item specifics",
+    "ssd_size": "8TB per title and item specifics Hard Drive Capacity. Note: item specifics also show SSD Capacity 512 GB, so verify with seller before payment.",
+    "price": "US $28,999.99",
+    "shipping_availability": "Free UPS Ground. Browser observed delivery estimate Jun 24 to Jun 27 to ZIP 37190-style test location and ships today timer.",
+    "store_pickup_availability": "Free local pickup over 60 mi from observed ZIP, located in Portland, Oregon.",
+    "condition_warranty_returns": "Condition New. 30 day returns, seller pays return shipping. eBay Top Rated Plus signal observed.",
+    "seller_reliability_notes": "TPS LLC, 100% positive, joined Jan 2005, about 36K items sold, detailed seller ratings 5.0 across description, shipping cost, speed, communication.",
+    "evidence_snippet": "Title and checkout block show Mac Studio M3 Ultra 32-Core CPU 80-Core GPU 512GB 8TB SSD SEALED, US $28,999.99, Buy It Now, Add to cart. Item specifics show RAM Size 512 GB and Hard Drive Capacity 8 TB.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "confidence": "medium-high",
+    "proof_files": [
+      "raw/browser_verification.json",
+      "screenshots/ebay-8tb-206353020184.png"
+    ]
+  },
+  {
+    "seller_site": "eBay, seller janxs",
+    "product_title": "Apple Mac Studio M3 Ultra 512GB Unified Memory 16TB SSD 32-Core CPU/80-Core GPU",
+    "url": "https://www.ebay.com/itm/298406215591",
+    "status": "new, classified ad",
+    "chip_cpu_gpu": "M3 Ultra, 32-core CPU, 80-core GPU per title",
+    "unified_memory": "512GB unified memory per title. Item specifics show RAM Size 512 GB.",
+    "ssd_size": "16TB per title. Note: item specifics show SSD Capacity 512 GB and Hard Drive Capacity 512 GB, so seller confirmation is mandatory.",
+    "price": "US $8,700.00",
+    "shipping_availability": "Free UPS Ground Saver. Browser observed delivery estimate Jun 23 to Jun 26 to observed ZIP.",
+    "store_pickup_availability": "No pickup observed. Located in Englewood Cliffs, New Jersey.",
+    "condition_warranty_returns": "Condition New. Classified ad, contact seller for more information. Coverage says read item description or contact seller.",
+    "seller_reliability_notes": "janxs, 100% positive, 3,268 feedback shown on listing, joined Dec 2001 in seller section.",
+    "evidence_snippet": "Listing shows Mac Studio M3 Ultra 512GB Unified Memory 16TB SSD 32-Core CPU/80-Core GPU, seller janxs 100% positive, US $8,700.00. It is a classified ad, not a direct Buy It Now checkout.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "confidence": "medium",
+    "proof_files": [
+      "raw/browser_verification.json",
+      "screenshots/ebay-16tb-298406215591.png"
+    ]
+  },
+  {
+    "seller_site": "HSSL Technologies",
+    "product_title": "Apple Mac Studio with M3 Ultra - 512GB Unified RAM | 4TB SSD - MSM4UL23",
+    "url": "https://hssl.us/apple-mac-studio-with-m3-ultra-512gb-unified-ram-4tb-ssd-apple-m3-ultra-32-core-cpu-msm4ul23/",
+    "status": "new, quote required",
+    "chip_cpu_gpu": "M3 Ultra, 32-core CPU, 80-core GPU",
+    "unified_memory": "512 GB installed RAM, RAM Type Unified Memory",
+    "ssd_size": "4 TB total installed storage",
+    "price": "No public price observed. Request a Quote.",
+    "shipping_availability": "Availability 1-3+ Weeks - ETA. Vendor direct ship lead time text observed.",
+    "store_pickup_availability": "No pickup observed.",
+    "condition_warranty_returns": "Condition New. Manufacturer Standard Warranty. Returns page states DOA or defective products are replacement only and returns may have processing charges.",
+    "seller_reliability_notes": "Business site with Irvine, CA address, phone, BuySafe/Purchase Protection claims. Not confirmed as an Apple authorized reseller in this pass.",
+    "evidence_snippet": "Page shows 512GB Unified RAM | 4TB SSD, Condition New, Request A Quote, Availability 1-3+ Weeks - ETA, Manufacturer Part Number MSM4UL23, Installed RAM 512 GB, Total Installed Storage 4 TB.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "confidence": "medium",
+    "proof_files": [
+      "raw/browser_verification.json",
+      "screenshots/hssl-4tb.png"
+    ]
+  },
+  {
+    "seller_site": "HSSL Technologies",
+    "product_title": "Apple Mac Studio with M3 Ultra - 512GB Unified RAM | 8TB SSD - MSM4UL24",
+    "url": "https://hssl.us/apple-mac-studio-with-m3-ultra-512gb-unified-ram-8tb-ssd-apple-m3-ultra-32-core-cpu-msm4ul24/",
+    "status": "new, quote required",
+    "chip_cpu_gpu": "M3 Ultra, 32-core CPU, 80-core GPU",
+    "unified_memory": "512 GB installed RAM, RAM Type Unified Memory",
+    "ssd_size": "8 TB total installed storage",
+    "price": "No public price observed. Request a Quote.",
+    "shipping_availability": "Availability 1-3+ Weeks - ETA. Vendor direct ship lead time text observed.",
+    "store_pickup_availability": "No pickup observed.",
+    "condition_warranty_returns": "Condition New. Manufacturer Standard Warranty. Returns page states DOA or defective products are replacement only and returns may have processing charges.",
+    "seller_reliability_notes": "Business site with Irvine, CA address, phone, BuySafe/Purchase Protection claims. Not confirmed as an Apple authorized reseller in this pass.",
+    "evidence_snippet": "Page shows 512GB Unified RAM | 8TB SSD, Condition New, Request A Quote, Availability 1-3+ Weeks - ETA, Manufacturer Part Number MSM4UL24, Installed RAM 512 GB, Total Installed Storage 8 TB.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "confidence": "medium",
+    "proof_files": [
+      "raw/browser_verification.json",
+      "screenshots/hssl-8tb.png"
+    ]
+  },
+  {
+    "seller_site": "HSSL Technologies",
+    "product_title": "Apple Mac Studio with M3 Ultra - 512GB Unified RAM | 16TB SSD - MSM4UL25",
+    "url": "https://hssl.us/apple-mac-studio-with-m3-ultra-512gb-unified-ram-16tb-ssd-apple-m3-ultra-32-core-cpu-msm4ul25/",
+    "status": "new, quote required",
+    "chip_cpu_gpu": "M3 Ultra, 32-core CPU, 80-core GPU",
+    "unified_memory": "512 GB installed RAM, RAM Type Unified Memory",
+    "ssd_size": "16 TB total installed storage",
+    "price": "No public price observed. Request a Quote.",
+    "shipping_availability": "Availability 1-3+ Weeks - ETA. Vendor direct ship lead time text observed.",
+    "store_pickup_availability": "No pickup observed.",
+    "condition_warranty_returns": "Condition New. Manufacturer Standard Warranty. Returns page states DOA or defective products are replacement only and returns may have processing charges.",
+    "seller_reliability_notes": "Business site with Irvine, CA address, phone, BuySafe/Purchase Protection claims. Not confirmed as an Apple authorized reseller in this pass.",
+    "evidence_snippet": "Page shows 512GB Unified RAM | 16TB SSD, Condition New, Request A Quote, Availability 1-3+ Weeks - ETA, Manufacturer Part Number MSM4UL25, Installed RAM 512 GB, Total Installed Storage 16 TB.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "confidence": "medium",
+    "proof_files": [
+      "raw/browser_verification.json",
+      "screenshots/hssl-16tb.png"
+    ]
+  }
+]

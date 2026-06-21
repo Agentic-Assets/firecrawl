@@ -129,7 +129,7 @@ which is the safer choice for a deal intelligence board that treats
 
 ## Commands Run
 
-From `/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl`:
+From `/Users/caymanseagraves/Github/agentic-assets/firecrawl`:
 
 ```bash
 sed -n '1,320p' CLAUDE.md
