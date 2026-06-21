@@ -1990,9 +1990,51 @@ function parseMatthewsDetail(html: string, url: string, tx: Tx): any | null {
   };
 }
 
+// Matthews rate-limits Firecrawl rendering (it cut us off after ~58 sustained renders),
+// but its /properties/{slug} detail pages are fully server-rendered, so plain HTTP fetches
+// carry the same DOM parseMatthewsDetail needs. We throttle globally and back off on
+// 429/403 to stay under the rate limit — and avoid Firecrawl renders entirely (no crash
+// risk). The global gate serializes requests regardless of CONCURRENCY.
+let matthewsNextSlot = 0;
+let matthewsInterval = 1800; // ms between requests; grows on throttle
+const matthewsSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+async function matthewsGate(): Promise<void> {
+  const now = Date.now();
+  const slot = Math.max(now, matthewsNextSlot);
+  matthewsNextSlot = slot + matthewsInterval;
+  const wait = slot - now;
+  if (wait > 0) await matthewsSleep(wait);
+}
+async function matthewsFetch(url: string): Promise<string> {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    await matthewsGate();
+    let status = 0;
+    try {
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+      });
+      status = res.status;
+      if (res.ok) return res.text();
+    } catch {
+      /* network blip -> retry */
+    }
+    if (status === 0 || status === 429 || status === 403 || status === 503) {
+      matthewsInterval = Math.min(matthewsInterval + 700, 7000); // slow everyone down
+      await matthewsSleep(20000 + attempt * 15000 + Math.random() * 5000);
+      continue;
+    }
+    throw new Error(`Matthews HTTP ${status}`);
+  }
+  throw new Error("Matthews: throttled after retries");
+}
+
 async function srcMatthews(tx: Tx, max: number): Promise<SourceResult> {
   const sourceUrl = "https://www.matthews.com/listings";
-  const xml = await scrapeRaw("https://www.matthews.com/sitemap.xml", { timeout: 60000 });
+  const xml = await matthewsFetch("https://www.matthews.com/sitemap.xml");
   const detail = Array.from(
     new Set(xml.match(/https:\/\/www\.matthews\.com\/properties\/[^<\s"')]+/gi) ?? [])
   );
@@ -2008,7 +2050,7 @@ async function srcMatthews(tx: Tx, max: number): Promise<SourceResult> {
   let failures = 0;
   const parsed = await pmap(take, CONCURRENCY, async (u) => {
     try {
-      const html = await scrapeRaw(u, { timeout: 60000 });
+      const html = await matthewsFetch(u);
       return parseMatthewsDetail(html, u, tx);
     } catch (err) {
       failures++;
