@@ -166,7 +166,11 @@ for tier in monitor enrich daily weekly; do
   thr="$(stale_threshold "$tier")"
   agestr="$(human_age "$age")"
   if [ -n "$marker_problem" ]; then
-    bad "$tier: ${marker_problem} (artifact ${agestr} ago)"
+    if [ "$tier" = "daily" ] && ! tier_loaded "$tier"; then
+      note "$tier: retired/unloaded; ignoring stale ${marker_problem} (artifact ${agestr} ago)"
+    else
+      bad "$tier: ${marker_problem} (artifact ${agestr} ago)"
+    fi
   elif [ "$age" -gt "$thr" ]; then
     if ! tier_loaded "$tier"; then
       note "$tier: last artifact ${agestr} ago (tier is not loaded) [${verdict:-no marker}]"
@@ -195,7 +199,9 @@ else
   if grep -q 'cre_listings after ingest' "$DLOG" 2>/dev/null; then
     grep -A 12 'cre_listings after ingest' "$DLOG" 2>/dev/null | sed 's/^/        /'
   fi
-  if grep -q 'daily update complete' "$DLOG" 2>/dev/null; then
+  if ! tier_loaded daily; then
+    note "daily retired/unloaded; skipping legacy daily log sentinel check"
+  elif grep -q 'daily update complete' "$DLOG" 2>/dev/null; then
     ok "success sentinel present (daily update complete)"
   else
     warn "no 'daily update complete' sentinel in newest daily log (run may have aborted, or is mid-run)"

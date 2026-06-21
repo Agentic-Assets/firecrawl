@@ -1,0 +1,28 @@
+{
+  "url": "https://www.ebay.com/sch/i.html?_nkw=mac+studio&_sop=12",
+  "status": 200,
+  "data": {
+    "success": true,
+    "data": {
+      "markdown": "SORRY\n\nSomething went wrong on our end\n\n* * *\n\n0.4f551702.1781853508.ac0eaa41\n\n* * *\n\nPlease go back and try again  \nor go to eBay Homepage.\n\n[Go to homepage](https://www.ebay.com/)\n\nCopyright \u00a9 1995-2026 eBay Inc. All Rights Reserved.",
+      "metadata": {
+        "language": "en",
+        "title": "Error Page | eBay",
+        "viewport": "width=device-width,initial-scale=1",
+        "robots": "noindex,nofollow",
+        "scrapeId": "019edebe-ce72-703f-bf17-a17b1ace666b",
+        "sourceURL": "https://www.ebay.com/sch/i.html?_nkw=mac+studio&_sop=12",
+        "url": "https://www.ebay.com/sch/i.html?_nkw=mac+studio&_sop=12",
+        "statusCode": 403,
+        "error": "Forbidden",
+        "contentType": "text/html",
+        "proxyUsed": "basic",
+        "creditsUsed": 1,
+        "concurrencyLimited": false
+      },
+      "links": [
+        "https://www.ebay.com/"
+      ]
+    }
+  }
+}

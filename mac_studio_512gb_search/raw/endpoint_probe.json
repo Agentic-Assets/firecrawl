@@ -1,0 +1,182 @@
+[
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:3002",
+    "method": "GET",
+    "path": "/health",
+    "status": 404,
+    "elapsed_ms": 17,
+    "error_preview": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /health</pre>\n</body>\n</html>\n"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:3002",
+    "method": "GET",
+    "path": "/",
+    "status": 200,
+    "elapsed_ms": 1,
+    "body_preview": "{\"message\":\"Firecrawl API\",\"documentation_url\":\"https://docs.firecrawl.dev\"}"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:3002",
+    "method": "POST",
+    "path": "/v1/scrape",
+    "status": 200,
+    "elapsed_ms": 124,
+    "body_preview": "{\"success\":true,\"data\":{\"markdown\":\"Example Domain\\n==============\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\n[Learn more](https://iana.org/domains/example)\",\"metadata\":{\"title\":\"Example Domain\",\"language\":\"en\",\"viewport\":\"width=device-width, initial-scale=1\",\"favicon\":\"data:,\",\"scrapeId\":\"019edeb9-9510-77ff-b7de-eee84bba5b43\",\"sourceURL\":\"https://example.com\",\"url\":\"https://example.com\",\"statusCode\":200,\"contentType\":\"text/html\",\"proxyUsed\":\"basic\",\"creditsUsed\":1,\"concurrencyLimited\":false}}}"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:3002",
+    "method": "POST",
+    "path": "/v1/search",
+    "status": 200,
+    "elapsed_ms": 1918,
+    "body_preview": "{\"success\":true,\"data\":[{\"url\":\"https://www.apple.com/shop/buy-mac/mac-studio\",\"title\":\"Buy Mac Studio - Apple\",\"description\":\"Get a new Mac Studio desktop with M4 Max or M3 Ultra from only $166.58 per month. Select a model or customize your own. Buy now at apple.com.\"}],\"id\":\"019edeb9-958c-73e8-aef6-d8f5bc90dea6\"}"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:3002",
+    "method": "POST",
+    "path": "/v1/crawl",
+    "status": 200,
+    "elapsed_ms": 107,
+    "body_preview": "{\"success\":true,\"id\":\"019edeb9-9d0e-767b-b947-b093658eec4d\",\"url\":\"http://localhost:3002/v1/crawl/019edeb9-9d0e-767b-b947-b093658eec4d\"}"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:3000",
+    "method": "GET",
+    "path": "/health",
+    "status": null,
+    "elapsed_ms": 1,
+    "error": "URLError(ConnectionRefusedError(61, 'Connection refused'))"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:3000",
+    "method": "GET",
+    "path": "/",
+    "status": null,
+    "elapsed_ms": 1,
+    "error": "URLError(ConnectionRefusedError(61, 'Connection refused'))"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:3000",
+    "method": "POST",
+    "path": "/v1/scrape",
+    "status": null,
+    "elapsed_ms": 0,
+    "error": "URLError(ConnectionRefusedError(61, 'Connection refused'))"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:3000",
+    "method": "POST",
+    "path": "/v1/search",
+    "status": null,
+    "elapsed_ms": 0,
+    "error": "URLError(ConnectionRefusedError(61, 'Connection refused'))"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:3000",
+    "method": "POST",
+    "path": "/v1/crawl",
+    "status": null,
+    "elapsed_ms": 0,
+    "error": "URLError(ConnectionRefusedError(61, 'Connection refused'))"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:8080",
+    "method": "GET",
+    "path": "/health",
+    "status": null,
+    "elapsed_ms": 0,
+    "error": "URLError(ConnectionRefusedError(61, 'Connection refused'))"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:8080",
+    "method": "GET",
+    "path": "/",
+    "status": null,
+    "elapsed_ms": 0,
+    "error": "URLError(ConnectionRefusedError(61, 'Connection refused'))"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:8080",
+    "method": "POST",
+    "path": "/v1/scrape",
+    "status": null,
+    "elapsed_ms": 0,
+    "error": "URLError(ConnectionRefusedError(61, 'Connection refused'))"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:8080",
+    "method": "POST",
+    "path": "/v1/search",
+    "status": null,
+    "elapsed_ms": 0,
+    "error": "URLError(ConnectionRefusedError(61, 'Connection refused'))"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://localhost:8080",
+    "method": "POST",
+    "path": "/v1/crawl",
+    "status": null,
+    "elapsed_ms": 0,
+    "error": "URLError(ConnectionRefusedError(61, 'Connection refused'))"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://127.0.0.1:3002",
+    "method": "GET",
+    "path": "/health",
+    "status": 404,
+    "elapsed_ms": 2,
+    "error_preview": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /health</pre>\n</body>\n</html>\n"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://127.0.0.1:3002",
+    "method": "GET",
+    "path": "/",
+    "status": 200,
+    "elapsed_ms": 1,
+    "body_preview": "{\"message\":\"Firecrawl API\",\"documentation_url\":\"https://docs.firecrawl.dev\"}"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://127.0.0.1:3002",
+    "method": "POST",
+    "path": "/v1/scrape",
+    "status": 200,
+    "elapsed_ms": 146,
+    "body_preview": "{\"success\":true,\"data\":{\"markdown\":\"Example Domain\\n==============\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\n[Learn more](https://iana.org/domains/example)\",\"metadata\":{\"viewport\":\"width=device-width, initial-scale=1\",\"title\":\"Example Domain\",\"language\":\"en\",\"favicon\":\"data:,\",\"scrapeId\":\"019edeb9-9d7c-718e-8afa-c28833dd6e13\",\"sourceURL\":\"https://example.com\",\"url\":\"https://example.com\",\"statusCode\":200,\"contentType\":\"text/html\",\"proxyUsed\":\"basic\",\"creditsUsed\":1,\"concurrencyLimited\":false}}}"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://127.0.0.1:3002",
+    "method": "POST",
+    "path": "/v1/search",
+    "status": 200,
+    "elapsed_ms": 1811,
+    "body_preview": "{\"success\":true,\"data\":[{\"url\":\"https://www.apple.com/shop/buy-mac/mac-studio\",\"title\":\"Buy Mac Studio - Apple\",\"description\":\"Get a new Mac Studio desktop with M4 Max or M3 Ultra from only $166.58 per month. Select a model or customize your own. Buy now at apple.com.\"}],\"id\":\"019edeb9-9e0e-70de-849a-2aacf7c09fe7\"}"
+  },
+  {
+    "timestamp": "2026-06-19T02:12:44-0500",
+    "base_url": "http://127.0.0.1:3002",
+    "method": "POST",
+    "path": "/v1/crawl",
+    "status": 200,
+    "elapsed_ms": 42,
+    "body_preview": "{\"success\":true,\"id\":\"019edeb9-a524-74ff-a9ab-abb01ca8f1f6\",\"url\":\"http://127.0.0.1:3002/v1/crawl/019edeb9-a524-74ff-a9ab-abb01ca8f1f6\"}"
+  }
+]

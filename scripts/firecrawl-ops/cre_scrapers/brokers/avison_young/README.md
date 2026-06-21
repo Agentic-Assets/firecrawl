@@ -108,7 +108,7 @@ live-ingested additively.
 Commands:
 
 ```bash
-cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+cd /Users/caymanseagraves/Github/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
 npx tsx collect.ts --source=avison-young --transaction=both --max-items=0 --concurrency=4 --out=out/avison_full_2026-06-12_043342.json
 python3 cre_ingest.py --in out/avison_full_2026-06-12_043342.json --dry-run --keep-artifacts /tmp/avison_full_2026-06-12_043342_ingest_check
 python3 cre_ingest.py --in out/avison_full_2026-06-12_043342.json --keep-artifacts /tmp/avison_full_2026-06-12_043342_live_ingest
@@ -140,7 +140,7 @@ the section below for current coverage.
 Commands:
 
 ```bash
-cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+cd /Users/caymanseagraves/Github/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
 AVISON_YOUNG_DETAIL_LIMIT=2200 AVISON_YOUNG_DETAIL_CONCURRENCY=4 \
   npx tsx collect.ts --source=avison-young --transaction=both \
   --max-items=0 --concurrency=4 \
@@ -184,7 +184,7 @@ accessible detail-page fields.
 Commands:
 
 ```bash
-cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+cd /Users/caymanseagraves/Github/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
 npx tsx collect.ts --source=avison-young --transaction=both --max-items=2 --concurrency=2 --out=/tmp/avison_young_detail_probe_after_ingest_filter_2026-06-12.json
 python3 cre_ingest.py --in /tmp/avison_young_detail_probe_after_ingest_filter_2026-06-12.json --dry-run --keep-artifacts /tmp/avison_young_detail_probe_after_ingest_filter_ingest
 npm run typecheck

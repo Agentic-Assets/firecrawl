@@ -1,7 +1,7 @@
 # Cursor PDF OCR Handoff Todo
 
 Date: 2026-05-24  
-Audience: coding agent working in `/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl`  
+Audience: coding agent working in `/Users/caymanseagraves/Github/agentic-assets/firecrawl`  
 Upstream consumer: Cursor PDF extraction skill in `/Users/caymanseagraves/Documents/GitHub/agentic-assets/agentic-assets-orbis/.agents/skills/cursor-pdf-extraction`
 
 ## Goal

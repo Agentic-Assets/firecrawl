@@ -236,7 +236,7 @@ is historical. The refined reload below is the current Newmark production proof.
 Commands:
 
 ```bash
-cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+cd /Users/caymanseagraves/Github/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
 npx tsx collect.ts --source=newmark --transaction=both --max-items=0 --out=/tmp/newmark_no_state_full_probe.json
 python3 cre_ingest.py --in out/newmark_full_2026-06-12_no_state_recovery.json --dry-run --keep-artifacts /tmp/newmark_full_2026-06-12_no_state_recovery_ingest_check
 python3 cre_ingest.py --in out/newmark_full_2026-06-12_no_state_recovery.json --keep-artifacts /tmp/newmark_full_2026-06-12_no_state_recovery_live_ingest
@@ -271,7 +271,7 @@ and validated.
 Commands:
 
 ```bash
-cd /Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
+cd /Users/caymanseagraves/Github/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector
 npm run typecheck
 npx tsx collect.ts --source=newmark --transaction=both --max-items=20 --concurrency=3 --out=/tmp/newmark_refinement_probe_2026-06-12.json
 python3 cre_ingest.py --in /tmp/newmark_refinement_probe_2026-06-12.json --dry-run --keep-artifacts /tmp/newmark_refinement_probe_2026-06-12_ingest_check

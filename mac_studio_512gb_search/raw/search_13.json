@@ -1,0 +1,10 @@
+{
+  "query": "site:microcenter.com Mac Studio 512GB 4TB",
+  "status": 200,
+  "data": {
+    "success": true,
+    "data": {},
+    "creditsUsed": 0,
+    "id": "019edebc-01bd-767c-99ee-daf0cf6408a9"
+  }
+}

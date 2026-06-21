@@ -21,7 +21,7 @@ Expected Docker context is `orbstack`. If not, open OrbStack and run `docker con
 
 ## Start / restart
 ```bash
-cd ~/Documents/GitHub/agentic-assets/firecrawl
+cd ~/Github/agentic-assets/firecrawl
 docker compose up -d
 # after model profile or API env changes
 docker compose up -d --force-recreate api
@@ -36,7 +36,7 @@ scripts/firecrawl-ops/firecrawl_healthcheck.sh
 
 ## Logs
 ```bash
-cd ~/Documents/GitHub/agentic-assets/firecrawl
+cd ~/Github/agentic-assets/firecrawl
 docker compose ps
 docker compose logs api --tail 200
 docker compose logs playwright-service --tail 200
@@ -56,7 +56,7 @@ scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile budget --firecr
 From another repo, use the installed skill copy:
 ```bash
 ~/.agents/skills/firecrawl-local-api/scripts/firecrawl_cli.sh parse ./report.pdf --json --pretty
-FC_DIR=/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl ~/.agents/skills/firecrawl-ops/scripts/firecrawl_healthcheck.sh
+FC_DIR=/Users/caymanseagraves/Github/agentic-assets/firecrawl ~/.agents/skills/firecrawl-ops/scripts/firecrawl_healthcheck.sh
 ```
 
 The CLI wrapper keeps the caller's current directory, so relative upload paths are safe.

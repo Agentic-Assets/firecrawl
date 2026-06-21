@@ -47,11 +47,16 @@ resolve_fc_dir() {
     return
   fi
 
-  local common="$HOME/Documents/GitHub/agentic-assets/firecrawl"
-  if [[ -f "$common/docker-compose.yaml" && -d "$common/scripts/firecrawl-ops" ]]; then
-    printf '%s\n' "$common"
-    return
-  fi
+  local candidate
+  for candidate in \
+    "$HOME/Github/agentic-assets/firecrawl" \
+    "$HOME/Documents/GitHub/agentic-assets/firecrawl"
+  do
+    if [[ -f "$candidate/docker-compose.yaml" && -d "$candidate/scripts/firecrawl-ops" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
 
   echo "Could not find the Firecrawl repo. Set FC_DIR=/path/to/firecrawl and rerun." >&2
   exit 1

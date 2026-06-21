@@ -1,0 +1,210 @@
+{
+  "timestamp": "2026-06-19T02:17:58-0500",
+  "results": [
+    {
+      "url": "https://www.apple.com/shop/buy-mac/mac-studio",
+      "status": 200,
+      "raw_file": "scrape_candidate_01.json",
+      "success": true,
+      "title": "Buy Mac Studio - Apple"
+    },
+    {
+      "url": "https://www.apple.com/mac-studio/specs/",
+      "status": 200,
+      "raw_file": "scrape_candidate_02.json",
+      "success": true,
+      "title": "Mac Studio - Technical Specifications - Apple"
+    },
+    {
+      "url": "https://www.apple.com/shop/refurbished/mac/mac-studio",
+      "status": 200,
+      "raw_file": "scrape_candidate_03.json",
+      "success": true,
+      "title": "Refurbished Mac Deals - Apple"
+    },
+    {
+      "url": "https://www.apple.com/shop/product/fu973ll/a/Refurbished-Mac-Studio-Apple-M3-Ultra-chip-with-28%E2%80%91Core-CPU-and-60%E2%80%91Core-GPU",
+      "status": 200,
+      "raw_file": "scrape_candidate_04.json",
+      "success": true,
+      "title": "Refurbished Mac Studio Apple M3 Ultra chip with 28\u2011Core CPU and 60\u2011Core GPU - Apple"
+    },
+    {
+      "url": "https://www.apple.com/shop/buy-mac/mac-studio/m3-ultra-chip-32-core-cpu-80-core-gpu-512gb-memory-4tb-storage",
+      "status": 200,
+      "raw_file": "scrape_candidate_05.json",
+      "success": true,
+      "title": "Buy Mac Studio - Apple"
+    },
+    {
+      "url": "https://www.apple.com/shop/buy-mac/mac-studio/m3-ultra-chip-32-core-cpu-80-core-gpu-512gb-memory-8tb-storage",
+      "status": 200,
+      "raw_file": "scrape_candidate_06.json",
+      "success": true,
+      "title": "Buy Mac Studio - Apple"
+    },
+    {
+      "url": "https://www.apple.com/shop/buy-mac/mac-studio/m3-ultra-chip-32-core-cpu-80-core-gpu-512gb-memory-16tb-storage",
+      "status": 200,
+      "raw_file": "scrape_candidate_07.json",
+      "success": true,
+      "title": "Buy Mac Studio - Apple"
+    },
+    {
+      "url": "https://www.apple.com/shop/buy-mac/mac-studio/m3-ultra-chip-32-core-cpu-80-core-gpu-256gb-memory-4tb-storage",
+      "status": 200,
+      "raw_file": "scrape_candidate_08.json",
+      "success": true,
+      "title": "Buy Mac Studio - Apple"
+    },
+    {
+      "url": "https://www.bhphotovideo.com/c/product/1884033-REG/apple_msm4ul23_mac_studio_with_m3.html",
+      "status": 200,
+      "raw_file": "scrape_candidate_09.json",
+      "success": true,
+      "title": "Just a moment..."
+    },
+    {
+      "url": "https://www.bhphotovideo.com/c/product/1884034-REG/apple_msm4ul24_mac_studio_with_m3.html",
+      "status": 200,
+      "raw_file": "scrape_candidate_10.json",
+      "success": true,
+      "title": "Just a moment..."
+    },
+    {
+      "url": "https://www.bhphotovideo.com/c/product/1884035-REG/apple_msm4ul25_mac_studio_with_m3.html",
+      "status": 200,
+      "raw_file": "scrape_candidate_11.json",
+      "success": true,
+      "title": "Just a moment..."
+    },
+    {
+      "url": "https://www.bhphotovideo.com/c/product/1911714-REG/apple_mac_studio_kit_with.html",
+      "status": 200,
+      "raw_file": "scrape_candidate_12.json",
+      "success": true,
+      "title": "Just a moment..."
+    },
+    {
+      "url": "https://www.cdw.com/product/apple-mac-studio-m3-ultra-512-gb-ram-8-tb-ssd/8288107",
+      "status": 200,
+      "raw_file": "scrape_candidate_13.json",
+      "success": true,
+      "title": "Apple Mac Studio - M3 Ultra - 32-core CPU - 80-core GPU - 512 GB RAM - 8 TB SSD - Z1CE-2002387019 - Towers - CDW.com"
+    },
+    {
+      "url": "https://hssl.us/apple-mac-studio-with-m3-ultra-512gb-unified-ram-4tb-ssd-apple-m3-ultra-32-core-cpu-msm4ul23/",
+      "status": 200,
+      "raw_file": "scrape_candidate_14.json",
+      "success": true,
+      "title": "Apple Mac Studio with M3 Ultra - 512GB Unified RAM | 4TB SSD - Apple M3 Ultra 32-Core CPU - MSM4UL23"
+    },
+    {
+      "url": "https://www.ldlc.com/en/product/PB00718462.html",
+      "status": 200,
+      "raw_file": "scrape_candidate_15.json",
+      "success": true,
+      "title": "Apple Mac Studio M3 Ultra 512GB/4TB (MU973FN/A-CPU32-GPU80-512GB-4TB) - Mac computer - LDLC | Holy Moley"
+    },
+    {
+      "url": "https://www.ebay.com/itm/298406215591",
+      "status": 200,
+      "raw_file": "scrape_candidate_16.json",
+      "success": true,
+      "title": "Error Page | eBay"
+    },
+    {
+      "url": "https://www.macofalltrades.com/mac-studio/",
+      "status": 200,
+      "raw_file": "scrape_candidate_17.json",
+      "success": true,
+      "title": "Refurbished Apple Mac Studio | Cheap M-Series Max & Ultra | Mac of All Trades"
+    },
+    {
+      "url": "https://www.bestbuy.com/site/mac/mac-studio-m4-max-and-m3-ultra/pcmcat1741219730537.c?id=pcmcat1741219730537",
+      "status": 200,
+      "raw_file": "scrape_candidate_18.json",
+      "success": true,
+      "title": "Mac Studio (M4 Max) and Mac Studio (M3 Ultra) \u2013 Best Buy"
+    },
+    {
+      "url": "https://www.apple.com/shop/buy-mac/mac-studio/m3-ultra-chip-32-core-cpu-80-core-gpu-96gb-memory-4tb-storage",
+      "status": 200,
+      "raw_file": "scrape_candidate_19.json",
+      "success": true,
+      "title": "Buy Mac Studio, M3 Ultra Chip, 32-core CPU, 80-core GPU, 96GB memory, 4TB storage - Apple"
+    },
+    {
+      "url": "https://www.apple.com/shop/buy-mac/mac-studio/m3-ultra-chip-28-core-cpu-60-core-gpu-96gb-memory-1tb-storage",
+      "status": 200,
+      "raw_file": "scrape_candidate_20.json",
+      "success": true,
+      "title": "Buy Mac Studio, M3 Ultra Chip, 28-core CPU, 60-core GPU, 96GB memory, 1TB storage - Apple"
+    },
+    {
+      "url": "https://www.apple.com/shop/buy-mac/mac-studio/m3-ultra-chip-32-core-cpu-80-core-gpu-96gb-memory-16tb-storage",
+      "status": 200,
+      "raw_file": "scrape_candidate_21.json",
+      "success": true,
+      "title": "Buy Mac Studio, M3 Ultra Chip, 32-core CPU, 80-core GPU, 96GB memory, 16TB storage - Apple"
+    },
+    {
+      "url": "https://www.ebay.com/sch/i.html?_nkw=mac+studio&_sop=12",
+      "status": 200,
+      "raw_file": "scrape_candidate_22.json",
+      "success": true,
+      "title": "Error Page | eBay"
+    },
+    {
+      "url": "https://www.apple.com/shop/product/fu973ll/a/Refurbished-Mac-Studio-Apple-M3-Ultra-chip-with-28\u2011Core-CPU-and-60\u2011Core-GPU",
+      "status": 200,
+      "raw_file": "scrape_candidate_23.json",
+      "success": true,
+      "title": "Refurbished Mac Studio Apple M3 Ultra chip with 28\u2011Core CPU and 60\u2011Core GPU - Apple"
+    },
+    {
+      "url": "https://www.ebay.com/shop/apple-mac-studio?_nkw=apple+mac+studio",
+      "status": 200,
+      "raw_file": "scrape_candidate_24.json",
+      "success": true,
+      "title": "apple mac studio | eBay"
+    }
+  ],
+  "map_results": [
+    {
+      "url": "https://www.apple.com/shop/buy-mac/mac-studio",
+      "status": 200,
+      "data": {
+        "success": true,
+        "links": [
+          {
+            "url": "https://www.apple.com/shop/buy-mac/mac-studio"
+          }
+        ],
+        "warning": "Only 1 result(s) found. For broader coverage, try mapping the base domain: apple.com"
+      }
+    },
+    {
+      "url": "https://www.apple.com/shop/refurbished/mac/mac-studio",
+      "status": 200,
+      "data": {
+        "success": true,
+        "links": [
+          {
+            "url": "https://www.apple.com/shop/refurbished/mac/mac-studio"
+          }
+        ],
+        "warning": "Only 1 result(s) found. For broader coverage, try mapping the base domain: apple.com"
+      }
+    },
+    {
+      "url": "https://www.macofalltrades.com/mac-studio/",
+      "status": 200,
+      "data": {
+        "success": true,
+        "links": [],
+        "warning": "Only 0 result(s) found. For broader coverage, try mapping the base domain: macofalltrades.com"
+      }
+    }
+  ]
+}

@@ -125,6 +125,13 @@ def test_cre_status_flags_empty_or_malformed_markers():
     assert "marker_problem" in text
     assert "empty marker:" in text
     assert "malformed marker:" in text
+    assert "retired/unloaded; ignoring stale ${marker_problem}" in text
+
+
+def test_cre_status_skips_legacy_daily_log_sentinel_when_daily_is_retired():
+    text = STATUS.read_text(encoding="utf-8")
+    assert "daily retired/unloaded; skipping legacy daily log sentinel check" in text
+    assert "tier_loaded daily" in text
 
 
 def test_cre_status_derives_disappearance_only_sources_from_ingest_contract():

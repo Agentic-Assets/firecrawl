@@ -14,7 +14,7 @@ Use this skill to call the local Firecrawl API directly or through the Firecrawl
 - Core stack verified on 2026-05-23 after upstream sync and OrbStack rebuild; local Docling OCR guardrails added on 2026-05-24.
 - Cloud credits are not charged when hitting this local API. `creditsUsed` is local accounting metadata. Third-party costs can still occur for AI providers, proxies, or hosted search integrations.
 - Root `.env` may be absent. Non-AI scrape/map/search/parse can still work; AI formats need `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `MODEL_NAME`.
-- The repo usually lives at `/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl`. If an agent is working from another codebase, direct HTTP calls still work, and installed helper scripts are available under `~/.agents/skills/firecrawl-local-api/scripts/`.
+- The repo usually lives at `~/Github/agentic-assets/firecrawl` (legacy fallback: `~/Documents/GitHub/agentic-assets/firecrawl`). If an agent is working from another codebase, direct HTTP calls still work, and installed helper scripts are available under `~/.agents/skills/firecrawl-local-api/scripts/`.
 - Prefer upstream-maintained interfaces first: direct API, official SDKs, or `firecrawl_cli.sh`. Use `firecrawl_request.py` only for local agent ergonomics such as advanced PDF parser options and saving split artifacts.
 
 ## What Works Locally

@@ -67,7 +67,7 @@ From another repo, use the installed copy:
 
 ```bash
 ~/.agents/skills/firecrawl-ops/scripts/firecrawl_cli.sh parse ./report.pdf --json --pretty
-FC_DIR=/Users/caymanseagraves/Documents/GitHub/agentic-assets/firecrawl ~/.agents/skills/firecrawl-ops/scripts/firecrawl_healthcheck.sh
+FC_DIR=/Users/caymanseagraves/Github/agentic-assets/firecrawl ~/.agents/skills/firecrawl-ops/scripts/firecrawl_healthcheck.sh
 ```
 
 Equivalent raw form:
