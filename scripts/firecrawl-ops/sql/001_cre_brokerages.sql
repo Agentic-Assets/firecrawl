@@ -159,6 +159,30 @@ INSERT INTO credeals.cre_brokerages (name, slug, base_url, search_url, descripti
  'https://www.franklinst.com/properties/',
  'Franklin Street. Public property inventory is powered by two Buildout plugin feeds, one for sale and one for lease. The collector uses direct Buildout JSON with complete-page requirements and per-tenure cache slugs.',
  '{"proxy": "auto", "wait_for_ms": 0, "timeout_ms": 60000, "pagination_strategy": "buildout_dual_plugin_inventory_api", "search_url_pattern": "/properties/", "listing_url_pattern": "/properties/?propertyId={id}", "notes": "Collected by cre_collector source key franklin-street. Sale token and lease token are selected per transaction pass."}'::jsonb,
+ true),
+
+-- 15. SRS Real Estate Partners -- direct public Cloud Run search API.
+('SRS Real Estate Partners', 'srs',
+ 'https://www.srsre.com',
+ 'https://www.srsre.com/properties',
+ 'SRS Real Estate Partners. Cloudflare-protected site, but listing data is exposed by a public Salesforce-backed Cloud Run search API used by the site bundle.',
+ '{"proxy": "auto", "wait_for_ms": 0, "timeout_ms": 60000, "pagination_strategy": "salesforce_cloudrun_api", "api": "https://srsre-next-412955565034.us-central1.run.app/api/property-search", "method": "POST", "page_size": 12, "notes": "Collected by source key srs via direct paginated API calls."}'::jsonb,
+ true),
+
+-- 16. Hanley Investment Group -- embedded Rethink JSON.
+('Hanley Investment Group', 'hanley',
+ 'https://hanleyinvestmentgroup.com',
+ 'https://hanleyinvestmentgroup.com/listings/',
+ 'Hanley Investment Group. Retail net-lease investment-sales specialist on the Rethink Salesforce CRE platform. The listings page embeds the public catalog in a rethink_properties JavaScript array.',
+ '{"proxy": "stealth", "wait_for_ms": 3000, "timeout_ms": 60000, "pagination_strategy": "embedded_json_var", "source_url": "https://hanleyinvestmentgroup.com/listings/", "var": "rethink_properties", "notes": "Collected by source key hanley via direct fetch with Firecrawl raw fallback."}'::jsonb,
+ true),
+
+-- 17. Kidder Mathews -- direct public backend API.
+('Kidder Mathews', 'kidder-mathews',
+ 'https://www.kidder.com',
+ 'https://www.kidder.com/properties/',
+ 'Kidder Mathews. The property search application loads listing data from a public Kidder backend search API at services.kidder.com.',
+ '{"proxy": "auto", "wait_for_ms": 0, "timeout_ms": 60000, "pagination_strategy": "kidder_backend_api", "api": "https://services.kidder.com/search/public/listing", "method": "POST", "page_size": 50, "notes": "Collected by source key kidder-mathews via direct paginated API calls."}'::jsonb,
  true)
 
 ON CONFLICT (slug) DO UPDATE SET

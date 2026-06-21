@@ -11,13 +11,16 @@ import { srcColliersMain } from "./sources/colliers-main.js";
 import { API_URL, OUT_PATH, PAGE_CAP, flags } from "./lib/config.js";
 import { srcCushman } from "./sources/cushman-wakefield.js";
 import { srcFranklinStreet } from "./sources/franklin-street.js";
+import { srcHanley } from "./sources/hanley.js";
 import { srcJll } from "./sources/jll.js";
 import { srcJllInvestor } from "./sources/jll-investor.js";
+import { srcKidderMathews } from "./sources/kidder-mathews.js";
 import { srcMarcusMillichap } from "./sources/marcus-millichap.js";
 import { srcMatthews } from "./sources/matthews.js";
 import { srcNaiGlobal } from "./sources/nai-global.js";
 import { srcNewmark } from "./sources/newmark.js";
 import { srcSavills } from "./sources/savills.js";
+import { srcSrs } from "./sources/srs.js";
 import { srcTranswestern } from "./sources/transwestern.js";
 import { SOURCE_KEYS, SourceKey, SourceResult, Tx } from "./types.js";
 import { prune } from "./lib/util.js";
@@ -128,6 +131,12 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
       return srcMatthews(tx, max, monitor);
     case "franklin-street":
       return srcFranklinStreet(tx, max, monitor);
+    case "srs":
+      return srcSrs(tx, max, monitor);
+    case "hanley":
+      return srcHanley(tx, max, monitor);
+    case "kidder-mathews":
+      return srcKidderMathews(tx, max, monitor);
     default:
       throw new Error(`unhandled source ${key}`);
   }
@@ -256,6 +265,9 @@ const ENRICH_COMPANY: Partial<Record<SourceKey, string>> = {
   transwestern: "Transwestern",
   matthews: "Matthews",
   "franklin-street": "Franklin Street",
+  srs: "SRS Real Estate Partners",
+  hanley: "Hanley Investment Group",
+  "kidder-mathews": "Kidder Mathews",
 };
 
 // Targeted-detail (enrich) mode: read a worker claim batch, group by sourceKey,

@@ -89,6 +89,9 @@ SOURCE_TO_BROKERAGE = {
     "transwestern": ("transwestern", ""),
     "matthews": ("matthews", ""),
     "franklin-street": ("franklin-street", ""),
+    "srs": ("srs", ""),
+    "hanley": ("hanley", ""),
+    "kidder-mathews": ("kidder-mathews", ""),
 }
 
 BUILDOUT_SOURCE_KEYS = {"svn", "lee-associates", "franklin-street"}
