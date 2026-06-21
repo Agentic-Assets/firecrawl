@@ -25,6 +25,7 @@ export const SOURCE_KEYS = [
   "lee-associates",
   "transwestern",
   "matthews",
+  "franklin-street",
 ] as const;
 export type SourceKey = (typeof SOURCE_KEYS)[number];
 

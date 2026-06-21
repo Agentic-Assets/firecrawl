@@ -151,6 +151,14 @@ INSERT INTO credeals.cre_brokerages (name, slug, base_url, search_url, descripti
  'https://www.matthews.com/listings',
  'Matthews Real Estate Investment Services. Public sitemap.xml exposes /properties/{slug} detail URLs. Detail pages are server-rendered and can be collected with throttled plain fetch; lease listings are identified by leasing-* slugs.',
  '{"proxy": "auto", "wait_for_ms": 0, "timeout_ms": 60000, "pagination_strategy": "sitemap_plain_fetch", "search_url_pattern": "/sitemap.xml", "listing_url_pattern": "/properties/{slug}", "notes": "Collected by cre_collector source key matthews. Use throttled direct HTTP fetch, not Firecrawl renders, to avoid provider rate limits."}'::jsonb,
+ true),
+
+-- 14. Franklin Street -- Buildout-backed dual-token property inventory, added from stace-june20 recovery.
+('Franklin Street', 'franklin-street',
+ 'https://www.franklinst.com',
+ 'https://www.franklinst.com/properties/',
+ 'Franklin Street. Public property inventory is powered by two Buildout plugin feeds, one for sale and one for lease. The collector uses direct Buildout JSON with complete-page requirements and per-tenure cache slugs.',
+ '{"proxy": "auto", "wait_for_ms": 0, "timeout_ms": 60000, "pagination_strategy": "buildout_dual_plugin_inventory_api", "search_url_pattern": "/properties/", "listing_url_pattern": "/properties/?propertyId={id}", "notes": "Collected by cre_collector source key franklin-street. Sale token and lease token are selected per transaction pass."}'::jsonb,
  true)
 
 ON CONFLICT (slug) DO UPDATE SET

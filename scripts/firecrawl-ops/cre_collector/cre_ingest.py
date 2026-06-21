@@ -88,7 +88,10 @@ SOURCE_TO_BROKERAGE = {
     "lee-associates": ("lee-associates", ""),
     "transwestern": ("transwestern", ""),
     "matthews": ("matthews", ""),
+    "franklin-street": ("franklin-street", ""),
 }
+
+BUILDOUT_SOURCE_KEYS = {"svn", "lee-associates", "franklin-street"}
 
 SOURCE_KEYS_BY_SLUG = {}
 for _source_key, (_slug, _prefix) in SOURCE_TO_BROKERAGE.items():
@@ -738,11 +741,11 @@ def to_row(listing, brokers_by_idx, scraped_at):
         return None  # source_url is NOT NULL; un-linked rows aren't actionable
 
     raw_id = listing.get("id")
-    # Buildout sources (svn, lee-associates) list a dual-mode property twice
+    # Buildout sources list a dual-mode property twice
     # with distinct inventory ids; the URL propertyId base ("1614726-sale" /
     # "1614726-lease") is the stable per-property key, so the pair merges.
     buildout_pid = None
-    if source_key in ("svn", "lee-associates"):
+    if source_key in BUILDOUT_SOURCE_KEYS:
         m = re.search(r"[?&]propertyId=([^&#]+)", url)
         if m:
             buildout_pid = re.sub(r"-(sale|lease)$", "", m.group(1))

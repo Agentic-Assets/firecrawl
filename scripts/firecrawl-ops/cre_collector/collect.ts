@@ -10,6 +10,7 @@ import { srcColliers } from "./sources/colliers.js";
 import { srcColliersMain } from "./sources/colliers-main.js";
 import { API_URL, OUT_PATH, PAGE_CAP, flags } from "./lib/config.js";
 import { srcCushman } from "./sources/cushman-wakefield.js";
+import { srcFranklinStreet } from "./sources/franklin-street.js";
 import { srcJll } from "./sources/jll.js";
 import { srcJllInvestor } from "./sources/jll-investor.js";
 import { srcMarcusMillichap } from "./sources/marcus-millichap.js";
@@ -125,6 +126,8 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
       return srcTranswestern(tx, max, monitor);
     case "matthews":
       return srcMatthews(tx, max, monitor);
+    case "franklin-street":
+      return srcFranklinStreet(tx, max, monitor);
     default:
       throw new Error(`unhandled source ${key}`);
   }
@@ -252,6 +255,7 @@ const ENRICH_COMPANY: Partial<Record<SourceKey, string>> = {
   "lee-associates": "Lee & Associates",
   transwestern: "Transwestern",
   matthews: "Matthews",
+  "franklin-street": "Franklin Street",
 };
 
 // Targeted-detail (enrich) mode: read a worker claim batch, group by sourceKey,
