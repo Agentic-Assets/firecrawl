@@ -147,6 +147,31 @@ advisor INFO notices for "RLS enabled no policy" on these tables are accepted
 private-schema notices, not public access gaps. EQUIRE should query these
 objects from server-side code or a deliberately designed API layer.
 
+## cre_ingest_rest.py (REST landing path — no postgres password)
+
+Use when `cre_ingest.py`'s psql path can't connect. The EQUIRE app authenticates to
+Supabase over **REST with `SUPABASE_SERVICE_ROLE_KEY`**, not direct postgres, and the
+stored postgres passwords are stale everywhere (local + Vercel prod), so psql/`COPY`
+fails. `cre_ingest_rest.py` reuses `cre_ingest.py --dry-run` to produce the exact
+normalized `_stage`, then replays it over the REST API into `credeals`.
+
+```bash
+python3 cre_ingest_rest.py --in out/run.json            # dry summary
+python3 cre_ingest_rest.py --in out/run.json --go       # write
+python3 cre_ingest_rest.py --in out/run.json --go --only-slug=hanley   # validate one firm
+```
+
+Reads `SUPABASE_SERVICE_ROLE_KEY` + `SUPABASE_URL` from `--env-file` or the standard
+EQUIRE env files (CRE_EQUIRE / dynamically-display / firecrawl_aa `.env.local`, or
+`vercel env pull --environment=production --cwd CRE_EQUIRE` -> `/tmp/equire_live.env`).
+
+Semantics differ from `cre_ingest.py` in one forced way: PostgREST can't upsert against
+the PARTIAL unique index `(brokerage_id, external_id) WHERE external_id IS NOT NULL`, so
+per in-scope brokerage it **clean-slate DELETEs then plain INSERTs** (children cascade).
+That equals a full reconcile for those firms — SAFE for new or full-inventory runs only.
+It refuses to wipe a brokerage that already has listings unless `--replace` is passed.
+Used 2026-06-20 to land batch 1 (10,062 listings across 29 new firms).
+
 ## Daily updates
 
 `cre_daily_update.sh` = healthcheck -> full collect (sale+lease, unlimited)
