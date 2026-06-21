@@ -87,6 +87,7 @@ SOURCE_TO_BROKERAGE = {
     "nai-global": ("nai-global", ""),
     "lee-associates": ("lee-associates", ""),
     "transwestern": ("transwestern", ""),
+    "matthews": ("matthews", ""),
 }
 
 SOURCE_KEYS_BY_SLUG = {}

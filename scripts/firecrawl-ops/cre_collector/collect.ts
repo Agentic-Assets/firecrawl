@@ -13,6 +13,7 @@ import { srcCushman } from "./sources/cushman-wakefield.js";
 import { srcJll } from "./sources/jll.js";
 import { srcJllInvestor } from "./sources/jll-investor.js";
 import { srcMarcusMillichap } from "./sources/marcus-millichap.js";
+import { srcMatthews } from "./sources/matthews.js";
 import { srcNaiGlobal } from "./sources/nai-global.js";
 import { srcNewmark } from "./sources/newmark.js";
 import { srcSavills } from "./sources/savills.js";
@@ -122,6 +123,8 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
       return srcNaiGlobal(tx, max, monitor);
     case "transwestern":
       return srcTranswestern(tx, max, monitor);
+    case "matthews":
+      return srcMatthews(tx, max, monitor);
     default:
       throw new Error(`unhandled source ${key}`);
   }
@@ -248,6 +251,7 @@ const ENRICH_COMPANY: Partial<Record<SourceKey, string>> = {
   "nai-global": "NAI Global",
   "lee-associates": "Lee & Associates",
   transwestern: "Transwestern",
+  matthews: "Matthews",
 };
 
 // Targeted-detail (enrich) mode: read a worker claim batch, group by sourceKey,

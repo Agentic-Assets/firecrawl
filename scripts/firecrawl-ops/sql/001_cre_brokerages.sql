@@ -143,6 +143,14 @@ INSERT INTO credeals.cre_brokerages (name, slug, base_url, search_url, descripti
  'https://transwestern.com/properties',
  'Transwestern. Public property search exposes a repeatable GET feed at /properties?call=ajax with DealsType buckets for Sale, Lease, Sublease, and Sale or Lease. Detail pages expose broker profile links, vCards, flyer/PDF URLs, gallery image URLs, property facts, and availability tables.',
  '{"proxy": "auto", "wait_for_ms": 1500, "timeout_ms": 60000, "pagination_strategy": "public_ajax_get_deal_buckets", "search_url_pattern": "/properties?call=ajax&DealsType={Sale|Lease|Sublease|Sale%20or%20Lease}", "listing_url_pattern": "/property/{PageUrl}", "notes": "Collected by cre_collector source key transwestern. Use GET, not the browser POST body. Skip feed rows whose PageUrl is empty or ''-''."}'::jsonb,
+ true),
+
+-- 13. Matthews -- public sitemap plus server-rendered detail pages, added from stace-june20 recovery.
+('Matthews', 'matthews',
+ 'https://www.matthews.com',
+ 'https://www.matthews.com/listings',
+ 'Matthews Real Estate Investment Services. Public sitemap.xml exposes /properties/{slug} detail URLs. Detail pages are server-rendered and can be collected with throttled plain fetch; lease listings are identified by leasing-* slugs.',
+ '{"proxy": "auto", "wait_for_ms": 0, "timeout_ms": 60000, "pagination_strategy": "sitemap_plain_fetch", "search_url_pattern": "/sitemap.xml", "listing_url_pattern": "/properties/{slug}", "notes": "Collected by cre_collector source key matthews. Use throttled direct HTTP fetch, not Firecrawl renders, to avoid provider rate limits."}'::jsonb,
  true)
 
 ON CONFLICT (slug) DO UPDATE SET
