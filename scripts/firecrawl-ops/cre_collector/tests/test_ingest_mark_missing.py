@@ -54,7 +54,7 @@ _LISTING_COUNT = 3
 # ---------------------------------------------------------------------------
 
 
-def _source_entry(source_key, count=_LISTING_COUNT, error=None):
+def _source_entry(source_key, count=_LISTING_COUNT, error=None, truncated=False):
     """Build one element for the artifact sources[] array."""
     entry = {
         "sourceKey": source_key,
@@ -63,6 +63,8 @@ def _source_entry(source_key, count=_LISTING_COUNT, error=None):
     }
     if error:
         entry["error"] = error
+    if truncated:
+        entry["truncated"] = True
     return entry
 
 
@@ -384,4 +386,50 @@ class TestMarkMissingHeldWhenSubsourceHasError:
             "mark-missing UPDATE for 'cbre' was emitted even though "
             "cbre-dealflow reported an error. Error guard did not hold.\n"
             f"Relevant SQL:\n{sql[:3000]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Case 5: truncated source pass also blocks mark-missing
+# ---------------------------------------------------------------------------
+
+
+class TestMarkMissingHeldWhenSourceIsTruncated:
+    """
+    A source can collect rows and still know it only saw partial coverage. That
+    must block mark-missing, including for singleton brokerages, because missing
+    rows are ambiguous on a truncated run.
+    """
+
+    def test_mark_missing_held_when_singleton_source_truncated(self, tmp_path):
+        listings = []
+        for i in range(_LISTING_COUNT):
+            listings.append({
+                "sourceKey": "svn",
+                "url": f"https://www.svn.com/property?propertyId=svn-truncated-{i:04d}-sale",
+                "id": f"svn-truncated-{i:04d}",
+                "transactionMode": "sale",
+            })
+        payload = {
+            "runMeta": {
+                "startedAt": _STARTED_AT,
+                "finishedAt": _FINISHED_AT,
+            },
+            "brokers": [],
+            "sources": [_source_entry("svn", truncated=True)],
+            "listings": listings,
+        }
+        art = _write_artifact(payload, tmp_path)
+        rc, stderr, sql = _run_dry(art, tmp_path)
+
+        assert rc == 0, f"ingestor exited {rc}. stderr:\n{stderr}"
+        assert sql is not None
+
+        assert not _mark_missing_present_for_slug(sql, "svn"), (
+            "mark-missing UPDATE for singleton 'svn' was emitted even though "
+            "the source reported truncated=true.\n"
+            f"Relevant SQL:\n{sql[:3000]}"
+        )
+        assert "mark-missing skipped" in stderr and "svn" in stderr, (
+            f"Expected skipped brokerage note in stderr. Got:\n{stderr}"
         )

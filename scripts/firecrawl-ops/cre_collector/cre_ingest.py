@@ -2084,6 +2084,11 @@ def main():
         if e.get("error"):
             st["errors"] += 1
             st["notes"].append(f"{e.get('sourceKey')}/{e.get('transaction')}: {e['error'][:160]}")
+        if e.get("truncated"):
+            st["errors"] += 1
+            st["notes"].append(
+                f"{e.get('sourceKey')}/{e.get('transaction')}: source pass truncated"
+            )
     slug_saved = {}
     for r in rows:
         slug_saved[r["slug"]] = slug_saved.get(r["slug"], 0) + 1
