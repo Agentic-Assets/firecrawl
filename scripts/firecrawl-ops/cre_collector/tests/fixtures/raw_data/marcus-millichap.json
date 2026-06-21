@@ -1,0 +1,108 @@
+[
+  {
+    "_comment": "Net-lease medical: Tenant Name, Guarantor, Lease Type, Rent Per Square Feet, Years Remaining On Lease, Cap Rate, Rentable SF, Price/Gross SF, License in contacts",
+    "external_id": "163445",
+    "url": "https://www.marcusmillichap.com/properties/163445/jencare-senior-medical-care",
+    "capRatePct": 8.6,
+    "marcusSpecifications": {
+      "Cap Rate": "8.60%",
+      "Gross SF": "10,815",
+      "Guarantor": "Subsidiary of a Corporation",
+      "Lease Type": "Triple Net (NNN)",
+      "Rentable SF": "10,815",
+      "Tenant Name": "JenCare Senior Medical Center",
+      "Price/Gross SF": "$272.07",
+      "Rent Per Square Feet": "$23.40",
+      "Years Remaining On Lease": "1.3"
+    },
+    "contactsDetailed": [
+      {
+        "name": "Daniel Chumbley",
+        "email": "daniel.chumbley@marcusmillichap.com",
+        "phone": "(630) 570-2217",
+        "title": "Associate Director Investments",
+        "office": "Chicago Oak Brook",
+        "company": "Marcus & Millichap",
+        "license": "License(s): IL: 475.188007",
+        "avatarUrl": "https://mmimageservice.azurewebsites.net/api/image/agent/23984/l",
+        "profileUrl": "https://www.marcusmillichap.com/advisors/daniel-chumbley-1"
+      },
+      {
+        "name": "Sean R. Sharko",
+        "email": "sean.sharko@marcusmillichap.com",
+        "phone": "(630) 570-2238",
+        "title": "Senior Managing Director Investments",
+        "office": "Chicago Oak Brook",
+        "company": "Marcus & Millichap",
+        "license": "License(s): IL: 471.010712",
+        "avatarUrl": "https://mmimageservice.azurewebsites.net/api/image/agent/1445/l",
+        "profileUrl": "https://www.marcusmillichap.com/advisors/sean-r-sharko"
+      }
+    ]
+  },
+  {
+    "_comment": "Multifamily: GRM, Occupancy, Price/Unit, Number of Units, Cap Rate, Price/Gross SF; multi-license contact",
+    "external_id": "177871",
+    "url": "https://www.marcusmillichap.com/properties/177871/rivendell-apartments",
+    "capRatePct": 6.28,
+    "marcusSpecifications": {
+      "GRM": "6.06",
+      "Cap Rate": "6.28%",
+      "Gross SF": "17,400",
+      "Occupancy": "87.5%",
+      "Price/Unit": "$56,964",
+      "Price/Gross SF": "$91.67",
+      "Number of Units": "28"
+    },
+    "contactsDetailed": [
+      {
+        "name": "Yianni Mouflouzelis",
+        "email": "yianni.mouflouzelis@marcusmillichap.com",
+        "phone": "(312) 624-7074",
+        "title": "Associate Director Investments",
+        "office": "Chicago Downtown",
+        "company": "Marcus & Millichap",
+        "license": "License(s): IL: 475.205207, MI: 6501455825, IA: S73371000",
+        "avatarUrl": "https://mmimageservice.azurewebsites.net/api/image/agent/27391/l",
+        "profileUrl": "https://www.marcusmillichap.com/advisors/yianni-mouflouzelis"
+      }
+    ]
+  },
+  {
+    "_comment": "Lot/land: Lot Size in acres, Cap Rate, Rentable SF, Price/Gross SF; contact without license field (tests null license)",
+    "external_id": "128758",
+    "url": "https://www.marcusmillichap.com/properties/128758/royal-madison-center",
+    "capRatePct": 7.8,
+    "marcusSpecifications": {
+      "Cap Rate": "7.80%",
+      "Gross SF": "38,000",
+      "Lot Size": "3.83 acres",
+      "Year Built": "1979",
+      "Rentable SF": "38,000",
+      "Price/Gross SF": "$144.74"
+    },
+    "contactsDetailed": [
+      {
+        "name": "Darin Gross",
+        "email": "darin.gross@marcusmillichap.com",
+        "phone": "(248) 415-2634",
+        "title": "Senior Director Investments",
+        "office": "Detroit",
+        "company": "Marcus & Millichap",
+        "license": "License(s): MI: 6501384871",
+        "avatarUrl": "https://mmimageservice.azurewebsites.net/api/image/agent/18152/l",
+        "profileUrl": "https://www.marcusmillichap.com/advisors/darin-gross"
+      },
+      {
+        "name": "Luke D. Lamoreaux",
+        "email": "luke.lamoreaux@marcusmillichap.com",
+        "phone": "(216) 264-2072",
+        "title": "Associate Director, Capital Markets",
+        "office": "Detroit, MI",
+        "company": "Marcus & Millichap",
+        "avatarUrl": "https://mmimageservice.azurewebsites.net/api/image/agent/25214/l",
+        "profileUrl": "https://www.marcusmillichap.com/advisors/luke-d-lamoreaux"
+      }
+    ]
+  }
+]

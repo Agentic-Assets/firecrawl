@@ -1,0 +1,711 @@
+{
+  "generated_at": "2026-06-15",
+  "project_id": "fhqycqubkkrdgzswccwd",
+  "schema": "credeals",
+  "table": "cre_listings",
+  "scope": "active rows only (deleted_at IS NULL)",
+  "population_rules": {
+    "text": "NOT NULL and trim <> ''",
+    "numeric_integer": "NOT NULL and > 0 where noted",
+    "text_array": "NOT NULL and cardinality > 0",
+    "jsonb_raw_data": "NOT NULL and <> '{}'",
+    "timestamps": "NOT NULL"
+  },
+  "row_counts": {
+    "total_rows": 92699,
+    "active_rows": 87328,
+    "soft_deleted_rows": 5371,
+    "status_active": 87328,
+    "status_inactive": 0,
+    "status_other": 0
+  },
+  "column_stats": [
+    {
+      "column_name": "country",
+      "data_type": "text",
+      "populated_rows": 87328,
+      "active_rows": 87328,
+      "pct_populated": 100.0,
+      "missing_rows": 0
+    },
+    {
+      "column_name": "external_id",
+      "data_type": "text",
+      "populated_rows": 87328,
+      "active_rows": 87328,
+      "pct_populated": 100.0,
+      "missing_rows": 0
+    },
+    {
+      "column_name": "raw_data",
+      "data_type": "jsonb",
+      "populated_rows": 87328,
+      "active_rows": 87328,
+      "pct_populated": 100.0,
+      "missing_rows": 0
+    },
+    {
+      "column_name": "scraped_at",
+      "data_type": "timestamptz",
+      "populated_rows": 87328,
+      "active_rows": 87328,
+      "pct_populated": 100.0,
+      "missing_rows": 0
+    },
+    {
+      "column_name": "source_url",
+      "data_type": "text",
+      "populated_rows": 87328,
+      "active_rows": 87328,
+      "pct_populated": 100.0,
+      "missing_rows": 0
+    },
+    {
+      "column_name": "status",
+      "data_type": "text",
+      "populated_rows": 87328,
+      "active_rows": 87328,
+      "pct_populated": 100.0,
+      "missing_rows": 0
+    },
+    {
+      "column_name": "title",
+      "data_type": "text",
+      "populated_rows": 87326,
+      "active_rows": 87328,
+      "pct_populated": 100.0,
+      "missing_rows": 2
+    },
+    {
+      "column_name": "transaction_type",
+      "data_type": "text",
+      "populated_rows": 87328,
+      "active_rows": 87328,
+      "pct_populated": 100.0,
+      "missing_rows": 0
+    },
+    {
+      "column_name": "city",
+      "data_type": "text",
+      "populated_rows": 87202,
+      "active_rows": 87328,
+      "pct_populated": 99.86,
+      "missing_rows": 126
+    },
+    {
+      "column_name": "property_type",
+      "data_type": "text",
+      "populated_rows": 86944,
+      "active_rows": 87328,
+      "pct_populated": 99.56,
+      "missing_rows": 384
+    },
+    {
+      "column_name": "lat",
+      "data_type": "double precision",
+      "populated_rows": 85632,
+      "active_rows": 87328,
+      "pct_populated": 98.06,
+      "missing_rows": 1696
+    },
+    {
+      "column_name": "lng",
+      "data_type": "double precision",
+      "populated_rows": 85632,
+      "active_rows": 87328,
+      "pct_populated": 98.06,
+      "missing_rows": 1696
+    },
+    {
+      "column_name": "state",
+      "data_type": "text",
+      "populated_rows": 85454,
+      "active_rows": 87328,
+      "pct_populated": 97.85,
+      "missing_rows": 1874
+    },
+    {
+      "column_name": "address",
+      "data_type": "text",
+      "populated_rows": 83154,
+      "active_rows": 87328,
+      "pct_populated": 95.22,
+      "missing_rows": 4174
+    },
+    {
+      "column_name": "zip",
+      "data_type": "text",
+      "populated_rows": 82553,
+      "active_rows": 87328,
+      "pct_populated": 94.53,
+      "missing_rows": 4775
+    },
+    {
+      "column_name": "canonical_key",
+      "data_type": "text",
+      "populated_rows": 66378,
+      "active_rows": 87328,
+      "pct_populated": 76.01,
+      "missing_rows": 20950
+    },
+    {
+      "column_name": "size_sf",
+      "data_type": "numeric",
+      "populated_rows": 60290,
+      "active_rows": 87328,
+      "pct_populated": 69.04,
+      "missing_rows": 27038
+    },
+    {
+      "column_name": "updated_date",
+      "data_type": "timestamptz",
+      "populated_rows": 53423,
+      "active_rows": 87328,
+      "pct_populated": 61.18,
+      "missing_rows": 33905
+    },
+    {
+      "column_name": "description",
+      "data_type": "text",
+      "populated_rows": 49910,
+      "active_rows": 87328,
+      "pct_populated": 57.15,
+      "missing_rows": 37418
+    },
+    {
+      "column_name": "source_lastmod",
+      "data_type": "timestamptz",
+      "populated_rows": 41632,
+      "active_rows": 87328,
+      "pct_populated": 47.67,
+      "missing_rows": 45696
+    },
+    {
+      "column_name": "sale_price_usd",
+      "data_type": "numeric",
+      "populated_rows": 15584,
+      "active_rows": 87328,
+      "pct_populated": 17.85,
+      "missing_rows": 71744
+    },
+    {
+      "column_name": "lot_size_sf",
+      "data_type": "numeric",
+      "populated_rows": 12530,
+      "active_rows": 87328,
+      "pct_populated": 14.35,
+      "missing_rows": 74798
+    },
+    {
+      "column_name": "year_built",
+      "data_type": "integer",
+      "populated_rows": 11567,
+      "active_rows": 87328,
+      "pct_populated": 13.25,
+      "missing_rows": 75761
+    },
+    {
+      "column_name": "sale_price_per_sf",
+      "data_type": "numeric",
+      "populated_rows": 9328,
+      "active_rows": 87328,
+      "pct_populated": 10.68,
+      "missing_rows": 78000
+    },
+    {
+      "column_name": "lease_rate_min",
+      "data_type": "numeric",
+      "populated_rows": 9016,
+      "active_rows": 87328,
+      "pct_populated": 10.32,
+      "missing_rows": 78312
+    },
+    {
+      "column_name": "listing_date",
+      "data_type": "timestamptz",
+      "populated_rows": 5876,
+      "active_rows": 87328,
+      "pct_populated": 6.73,
+      "missing_rows": 81452
+    },
+    {
+      "column_name": "highlights",
+      "data_type": "text[]",
+      "populated_rows": 2899,
+      "active_rows": 87328,
+      "pct_populated": 3.32,
+      "missing_rows": 84429
+    },
+    {
+      "column_name": "cap_rate",
+      "data_type": "numeric",
+      "populated_rows": 2163,
+      "active_rows": 87328,
+      "pct_populated": 2.48,
+      "missing_rows": 85165
+    },
+    {
+      "column_name": "min_divisible_sf",
+      "data_type": "numeric",
+      "populated_rows": 1761,
+      "active_rows": 87328,
+      "pct_populated": 2.02,
+      "missing_rows": 85567
+    },
+    {
+      "column_name": "lease_rate_max",
+      "data_type": "numeric",
+      "populated_rows": 798,
+      "active_rows": 87328,
+      "pct_populated": 0.91,
+      "missing_rows": 86530
+    },
+    {
+      "column_name": "address2",
+      "data_type": "text",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "amenities",
+      "data_type": "text[]",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "available_sf",
+      "data_type": "numeric",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "canonical_url",
+      "data_type": "text",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "county",
+      "data_type": "text",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "floors",
+      "data_type": "integer",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "gross_revenue",
+      "data_type": "numeric",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "last_seen_at",
+      "data_type": "timestamptz",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "lease_rate_type",
+      "data_type": "text",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "markdown",
+      "data_type": "text",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "market",
+      "data_type": "text",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "max_divisible_sf",
+      "data_type": "numeric",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "noi",
+      "data_type": "numeric",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "occupancy_rate",
+      "data_type": "numeric",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "parking_ratio",
+      "data_type": "numeric",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "parking_spaces",
+      "data_type": "integer",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "submarket",
+      "data_type": "text",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "term_max_months",
+      "data_type": "integer",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "term_min_months",
+      "data_type": "integer",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "units",
+      "data_type": "integer",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    },
+    {
+      "column_name": "zoning",
+      "data_type": "text",
+      "populated_rows": 0,
+      "active_rows": 87328,
+      "pct_populated": 0.0,
+      "missing_rows": 87328
+    }
+  ],
+  "brokerage_stats": [
+    {
+      "brokerage_slug": "avison-young",
+      "brokerage_name": "Avison Young",
+      "active_listings": 2201,
+      "avg_core_completeness_pct": 77.89,
+      "pct_address": 100.0,
+      "pct_geo": 100.0,
+      "pct_size_sf": 96.23,
+      "pct_description": 99.77,
+      "pct_sale_price": 19.49,
+      "pct_lease_rate": 22.81,
+      "pct_cap_rate": 1.09,
+      "pct_updated_date": 99.95,
+      "pct_with_contacts": 97.82,
+      "pct_with_documents": 84.55,
+      "pct_with_images": 99.59
+    },
+    {
+      "brokerage_slug": "cushman-wakefield",
+      "brokerage_name": "Cushman & Wakefield",
+      "active_listings": 11318,
+      "avg_core_completeness_pct": 76.37,
+      "pct_address": 99.85,
+      "pct_geo": 99.89,
+      "pct_size_sf": 92.34,
+      "pct_description": 53.22,
+      "pct_sale_price": 9.95,
+      "pct_lease_rate": 0.0,
+      "pct_cap_rate": 0.0,
+      "pct_updated_date": 95.6,
+      "pct_with_contacts": 93.64,
+      "pct_with_documents": 61.51,
+      "pct_with_images": 88.86
+    },
+    {
+      "brokerage_slug": "marcus-millichap",
+      "brokerage_name": "Marcus & Millichap",
+      "active_listings": 3124,
+      "avg_core_completeness_pct": 73.95,
+      "pct_address": 96.77,
+      "pct_geo": 100.0,
+      "pct_size_sf": 0.0,
+      "pct_description": 100.0,
+      "pct_sale_price": 87.84,
+      "pct_lease_rate": 0.0,
+      "pct_cap_rate": 68.47,
+      "pct_updated_date": 0.0,
+      "pct_with_contacts": 97.34,
+      "pct_with_documents": 0.0,
+      "pct_with_images": 100.0
+    },
+    {
+      "brokerage_slug": "cbre",
+      "brokerage_name": "CBRE",
+      "active_listings": 20864,
+      "avg_core_completeness_pct": 71.08,
+      "pct_address": 97.3,
+      "pct_geo": 98.05,
+      "pct_size_sf": 74.86,
+      "pct_description": 63.32,
+      "pct_sale_price": 11.44,
+      "pct_lease_rate": 0.0,
+      "pct_cap_rate": 0.0,
+      "pct_updated_date": 91.2,
+      "pct_with_contacts": 99.82,
+      "pct_with_documents": 81.13,
+      "pct_with_images": 99.7
+    },
+    {
+      "brokerage_slug": "colliers",
+      "brokerage_name": "Colliers",
+      "active_listings": 17001,
+      "avg_core_completeness_pct": 70.35,
+      "pct_address": 81.75,
+      "pct_geo": 99.26,
+      "pct_size_sf": 27.73,
+      "pct_description": 96.55,
+      "pct_sale_price": 24.15,
+      "pct_lease_rate": 20.65,
+      "pct_cap_rate": 0.0,
+      "pct_updated_date": 93.11,
+      "pct_with_contacts": 98.07,
+      "pct_with_documents": 41.51,
+      "pct_with_images": 100.0
+    },
+    {
+      "brokerage_slug": "newmark",
+      "brokerage_name": "Newmark",
+      "active_listings": 4371,
+      "avg_core_completeness_pct": 67.79,
+      "pct_address": 100.0,
+      "pct_geo": 100.0,
+      "pct_size_sf": 85.5,
+      "pct_description": 0.0,
+      "pct_sale_price": 0.0,
+      "pct_lease_rate": 0.0,
+      "pct_cap_rate": 0.0,
+      "pct_updated_date": 100.0,
+      "pct_with_contacts": 90.62,
+      "pct_with_documents": 0.0,
+      "pct_with_images": 98.44
+    },
+    {
+      "brokerage_slug": "svn",
+      "brokerage_name": "SVN",
+      "active_listings": 5287,
+      "avg_core_completeness_pct": 65.82,
+      "pct_address": 100.0,
+      "pct_geo": 99.24,
+      "pct_size_sf": 76.15,
+      "pct_description": 0.0,
+      "pct_sale_price": 47.47,
+      "pct_lease_rate": 30.98,
+      "pct_cap_rate": 0.0,
+      "pct_updated_date": 0.0,
+      "pct_with_contacts": 100.0,
+      "pct_with_documents": 73.75,
+      "pct_with_images": 99.02
+    },
+    {
+      "brokerage_slug": "jll",
+      "brokerage_name": "JLL",
+      "active_listings": 11675,
+      "avg_core_completeness_pct": 65.38,
+      "pct_address": 98.73,
+      "pct_geo": 90.71,
+      "pct_size_sf": 83.45,
+      "pct_description": 74.49,
+      "pct_sale_price": 0.0,
+      "pct_lease_rate": 0.0,
+      "pct_cap_rate": 0.0,
+      "pct_updated_date": 8.0,
+      "pct_with_contacts": 98.54,
+      "pct_with_documents": 76.33,
+      "pct_with_images": 91.75
+    },
+    {
+      "brokerage_slug": "lee-associates",
+      "brokerage_name": "Lee & Associates",
+      "active_listings": 9223,
+      "avg_core_completeness_pct": 65.14,
+      "pct_address": 99.99,
+      "pct_geo": 99.71,
+      "pct_size_sf": 85.55,
+      "pct_description": 0.0,
+      "pct_sale_price": 24.42,
+      "pct_lease_rate": 36.5,
+      "pct_cap_rate": 0.0,
+      "pct_updated_date": 0.0,
+      "pct_with_contacts": 100.0,
+      "pct_with_documents": 83.28,
+      "pct_with_images": 98.25
+    },
+    {
+      "brokerage_slug": "savills",
+      "brokerage_name": "Savills",
+      "active_listings": 2,
+      "avg_core_completeness_pct": 62.5,
+      "pct_address": 100.0,
+      "pct_geo": 100.0,
+      "pct_size_sf": 100.0,
+      "pct_description": 100.0,
+      "pct_sale_price": 0.0,
+      "pct_lease_rate": 0.0,
+      "pct_cap_rate": 0.0,
+      "pct_updated_date": 0.0,
+      "pct_with_contacts": 100.0,
+      "pct_with_documents": 100.0,
+      "pct_with_images": 100.0
+    },
+    {
+      "brokerage_slug": "nai-global",
+      "brokerage_name": "NAI Global",
+      "active_listings": 241,
+      "avg_core_completeness_pct": 61.49,
+      "pct_address": 0.0,
+      "pct_geo": 100.0,
+      "pct_size_sf": 83.82,
+      "pct_description": 100.0,
+      "pct_sale_price": 0.0,
+      "pct_lease_rate": 0.0,
+      "pct_cap_rate": 0.0,
+      "pct_updated_date": 100.0,
+      "pct_with_contacts": 0.0,
+      "pct_with_documents": 0.41,
+      "pct_with_images": 95.85
+    },
+    {
+      "brokerage_slug": "transwestern",
+      "brokerage_name": "Transwestern",
+      "active_listings": 2021,
+      "avg_core_completeness_pct": 61.29,
+      "pct_address": 100.0,
+      "pct_geo": 100.0,
+      "pct_size_sf": 88.42,
+      "pct_description": 0.0,
+      "pct_sale_price": 1.58,
+      "pct_lease_rate": 0.0,
+      "pct_cap_rate": 0.0,
+      "pct_updated_date": 0.0,
+      "pct_with_contacts": 93.32,
+      "pct_with_documents": 71.4,
+      "pct_with_images": 85.6
+    }
+  ],
+  "transaction_stats": [
+    {
+      "transaction_type": "lease",
+      "listings": 53504,
+      "pct_sale_price": 0.01,
+      "pct_lease_rate": 15.12,
+      "pct_size_sf": 74.38,
+      "pct_cap_rate": 0.0
+    },
+    {
+      "transaction_type": "sale",
+      "listings": 28601,
+      "pct_sale_price": 48.89,
+      "pct_lease_rate": 0.0,
+      "pct_size_sf": 57.0,
+      "pct_cap_rate": 7.56
+    },
+    {
+      "transaction_type": "sale_or_lease",
+      "listings": 5223,
+      "pct_sale_price": 30.58,
+      "pct_lease_rate": 17.75,
+      "pct_size_sf": 80.3,
+      "pct_cap_rate": 0.0
+    }
+  ],
+  "child_table_stats": [
+    {
+      "child_table": "contacts",
+      "listings_with_rows": 85155,
+      "active_listings": 87328,
+      "pct_listings_covered": 97.51,
+      "total_child_rows": 160192,
+      "avg_rows_per_listing_with_data": 1.88
+    },
+    {
+      "child_table": "documents",
+      "listings_with_rows": 54746,
+      "active_listings": 87328,
+      "pct_listings_covered": 62.69,
+      "total_child_rows": 70391,
+      "avg_rows_per_listing_with_data": 1.29
+    },
+    {
+      "child_table": "images",
+      "listings_with_rows": 84450,
+      "active_listings": 87328,
+      "pct_listings_covered": 96.7,
+      "total_child_rows": 487847,
+      "avg_rows_per_listing_with_data": 5.78
+    }
+  ],
+  "core_field_score": {
+    "fields": [
+      "external_id",
+      "title",
+      "address",
+      "city",
+      "state",
+      "zip",
+      "property_type",
+      "lat+lng",
+      "size_sf",
+      "description",
+      "updated_date",
+      "sale_price_usd",
+      "lease_rate_min",
+      "cap_rate",
+      "year_built",
+      "raw_data"
+    ],
+    "field_count": 16
+  }
+}

@@ -1,0 +1,146 @@
+[
+  {
+    "fn": "parseLeaseRate",
+    "input": "$23.40",
+    "expected": { "min": 23.40, "max": null, "type": null },
+    "note": "M&M Rent Per SF – bare $N.NN with no other tokens: trusted as-is (no negative signal)"
+  },
+  {
+    "fn": "parseLeaseRate",
+    "input": "$30.60 (Annual) USD",
+    "expected": { "min": null, "max": null, "type": null },
+    "note": "Cushman – '(Annual)' is not a recognized /SF token, so not trusted as per-SF"
+  },
+  {
+    "fn": "parseLeaseRate",
+    "input": "$35 - 45 SF/yr (NNN)",
+    "expected": { "min": 35, "max": 45, "type": "nnn" },
+    "note": "SVN range with explicit SF/yr and NNN type"
+  },
+  {
+    "fn": "parseLeaseRate",
+    "input": "$19 SF/yr ($10.00/SF NNN)",
+    "expected": { "min": 19, "max": null, "type": "nnn" },
+    "note": "Lee dual-value: first value taken, NNN type from trailing token"
+  },
+  {
+    "fn": "parseLeaseRate",
+    "input": "$1.59 - 1.70 SF/month",
+    "expected": { "min": 19.08, "max": 20.40, "type": null },
+    "note": "Lee monthly range: 1.59*12=19.08, 1.70*12=20.40"
+  },
+  {
+    "fn": "parseLeaseRate",
+    "input": "3.59 USD/SF/MO",
+    "expected": { "min": 43.08, "max": null, "type": null },
+    "note": "CBRE monthly without $: 3.59*12=43.08"
+  },
+  {
+    "fn": "parseLeaseRate",
+    "input": "$5000/SF/YR",
+    "expected": { "min": null, "max": null, "type": null },
+    "note": "AY anomaly: value > 500 $/SF/yr cap -> rejected"
+  },
+  {
+    "fn": "parseLeaseRate",
+    "input": "$24.00/SF/YR, FSG",
+    "expected": { "min": 24, "max": null, "type": "full_service" },
+    "note": "Cushman FSG: full_service type"
+  },
+  {
+    "fn": "parseLeaseRate",
+    "input": "$18.50 SF/yr Modified Gross",
+    "expected": { "min": 18.50, "max": null, "type": "modified_gross" },
+    "note": "Colliers Modified Gross"
+  },
+  {
+    "fn": "parseLeaseRate",
+    "input": "$2.50 - 250 SF/month",
+    "expected": { "min": null, "max": null, "type": null },
+    "note": "Buildout suite-size mis-range: max 250*12=3000 > 100 and min 2.50*12=30 < 100 -> rejected"
+  },
+  {
+    "fn": "parseLeaseRate",
+    "input": "Negotiable",
+    "expected": { "min": null, "max": null, "type": null },
+    "note": "Non-numeric text -> null"
+  },
+  {
+    "fn": "parseLeaseRate",
+    "input": "$22 - $26 PSF Gross",
+    "expected": { "min": 22, "max": 26, "type": "gross" },
+    "note": "AY range gross: PSF token, Gross type"
+  },
+  {
+    "fn": "parseLeaseRate",
+    "input": "$0.95/SF/MO IG",
+    "expected": { "min": 11.40, "max": null, "type": "gross" },
+    "note": "Industrial gross monthly: 0.95*12=11.40; IG -> gross"
+  },
+  {
+    "fn": "acresToSf",
+    "input": "3.83 acres",
+    "expected": 166834.8,
+    "note": "3.83 * 43560 = 166834.8"
+  },
+  {
+    "fn": "acresToSf",
+    "input": "0.5 ac",
+    "expected": 21780,
+    "note": "0.5 * 43560"
+  },
+  {
+    "fn": "parseSizeText",
+    "input": "12,500 SF on 2.0 Acres",
+    "expected": { "sizeSf": 12500, "lotSf": 87120 },
+    "note": "SF + Acres routing: 2.0 * 43560 = 87120"
+  },
+  {
+    "fn": "parseAmountIgnoringCurrencyLabel",
+    "input": "POUND 8,585,673.00",
+    "expected": 8585673.00,
+    "note": "NAI POUND prefix stripped, value treated as USD"
+  },
+  {
+    "fn": "parseAmountIgnoringCurrencyLabel",
+    "input": "$8,585,673",
+    "expected": 8585673,
+    "note": "Standard USD dollar sign treated normally"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$272.07",
+    "expected": 272.07,
+    "note": "M&M Price/Gross SF"
+  },
+  {
+    "fn": "parsePercentToFraction",
+    "input": "87.5%",
+    "expected": 0.875,
+    "note": "M&M Occupancy percent string"
+  },
+  {
+    "fn": "parsePercentToFraction",
+    "input": "0.875",
+    "expected": 0.875,
+    "note": "Already a fraction (no % sign) -> passthrough"
+  },
+  {
+    "fn": "normBuildingClass",
+    "input": "Class A",
+    "expected": "A",
+    "note": "JLL buildingClass field"
+  },
+  {
+    "fn": "normBuildingClass",
+    "input": "office.medical",
+    "expected": null,
+    "note": "Subtype string with no class letter -> null"
+  },
+  {
+    "fn": "isPerSfText",
+    "input": "$6.00/SF",
+    "expected": true,
+    "note": "Lee salePriceUsd conflation: per-SF text"
+  }
+]

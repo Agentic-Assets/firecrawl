@@ -1,0 +1,138 @@
+[
+  {
+    "_comment": "CBRE main feed: lease row with leaseRateText (monthly/SF form), headline, url. No sale price.",
+    "external_id": "US-SMPL-196821",
+    "sourceKey": "cbre",
+    "raw_data": {
+      "id": "US-SMPL-196821",
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-196821/5-medical-plaza-drive-5-medical-plaza-drive-suite-200-roseville-ca-95661",
+      "city": "Roseville",
+      "name": "5 Medical Plaza Drive",
+      "state": "CA",
+      "street": "5 Medical Plaza Drive, Suite 200",
+      "country": "US",
+      "headline": "±2,259 SF Sublease Available | Medical Space",
+      "latitude": 38.7664323,
+      "assetType": "Healthcare",
+      "brokerIds": [1803, 1804],
+      "longitude": -121.2467686,
+      "sourceKey": "cbre",
+      "postalCode": "95661",
+      "description": "- Class B, Two Stories - Built in 2008",
+      "lastUpdated": "2026-03-23",
+      "leaseRateText": "3.59 USD/SF/MO",
+      "sourceCompany": "CBRE",
+      "transactionMode": "lease",
+      "transactionType": "Lease",
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-196821/c8b77bfc/96878c2e-763d-4603-85a8-33562595a69b.jpg"
+      ],
+      "brochures": [
+        {
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-196821/bb5d8a81/a0e87623-ee6a-4cf5-82b8-f507553ffd8e.pdf",
+          "name": "Medical Plaza Dr, 5 Final.pdf"
+        }
+      ]
+    }
+  },
+  {
+    "_comment": "CBRE main feed: lease row with a different leaseRateText form (bare USD/), headline, buildingSizeSqft present.",
+    "external_id": "US-SMPL-198939",
+    "sourceKey": "cbre",
+    "raw_data": {
+      "id": "US-SMPL-198939",
+      "url": "https://www.cbre.com/properties/properties-for-lease/commercial-space/details/US-SMPL-198939/partially-racked-freezer-facility-hastings-nebraska-1450-south-burlington-avenue-hastings-ne-68901",
+      "city": "Hastings",
+      "name": "Partially-Racked Freezer Facility | Hastings, Nebraska",
+      "state": "NE",
+      "street": "1450 South Burlington Avenue",
+      "country": "US",
+      "headline": "±50,271 SF INDUSTRIAL BUILDING | FOR LEASE",
+      "latitude": 40.5649514,
+      "assetType": "Industrial",
+      "brokerIds": [1075, 1067],
+      "longitude": -98.3929753,
+      "sourceKey": "cbre",
+      "postalCode": "68901",
+      "description": "Property Type: Cold Storage Warehouse Building SF Total: 50,271 SF Year Built: 1994 Clear Height: 14' to 22' Temperature Range: TBD",
+      "lastUpdated": "2026-03-11",
+      "leaseRateText": "4.5 USD/SF/MO",
+      "sourceCompany": "CBRE",
+      "transactionMode": "lease",
+      "transactionType": "Lease",
+      "buildingSizeSqft": 50271,
+      "photos": [
+        "https://www.cbre.com/resources/fileassets/US-SMPL-198939/a3dac177/6c6fff5a-dc46-4e75-81be-21ca226e18c7.jpg"
+      ],
+      "brochures": [
+        {
+          "url": "https://www.cbre.com/resources/fileassets/US-SMPL-198939/94cc38f8/81fe62fd-b210-4705-baa9-2baae3e4d2fa.pdf",
+          "name": "1450 S Burlington Ave Hastings 030926.pdf"
+        }
+      ]
+    }
+  },
+  {
+    "_comment": "CBRE dealflow: sale row with status='Available', contactsDetailed with phone+title, cbreDealflowDetail.projectType='Value Add'.",
+    "external_id": "dealflow:150532",
+    "sourceKey": "cbre-dealflow",
+    "raw_data": {
+      "id": "150532",
+      "url": "https://www.cbredealflow.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlCAULLRZUwGngh47DCAyGZK9RIwgKfuMuO5yCxu8BE05",
+      "city": "Reno",
+      "name": "Capitol Hill Apartments",
+      "state": "NV",
+      "status": "Available",
+      "street": "468 Capitol Hill Avenue",
+      "country": "United States",
+      "urlKind": "detail",
+      "latitude": 39.51016630000001,
+      "sizeText": "4,208 sq ft",
+      "assetType": "Multifamily - Garden Apartments",
+      "brokerIds": [825, 826, 827],
+      "listingPv": "Z-I9J549zUFsSziezRAUlCAULLRZUwGngh47DCAyGZK9RIwgKfuMuO5yCxu8BE05",
+      "longitude": -119.8011809,
+      "sourceKey": "cbre-dealflow",
+      "postalCode": "89502",
+      "description": "The Capitol Apartments consists of 4 total units, on a large lot with potential to build additional units.",
+      "sourceCompany": "CBRE Deal Flow",
+      "transactionMode": "sale",
+      "transactionType": "Investment Sale",
+      "buildingSizeSqft": 4208,
+      "cbreDealflowCard": {
+        "status": "Available",
+        "urlKind": "detail",
+        "listingPv": "Z-I9J549zUFsSziezRAUlCAULLRZUwGngh47DCAyGZK9RIwgKfuMuO5yCxu8BE05",
+        "detailsText": "Capitol Hill Apartments Reno, NV Investment Sale | 4,208 sq ft",
+        "projectType": "Investment Sale",
+        "contactsText": "Ben Galles 775 750 6429"
+      },
+      "contactsDetailed": [
+        {
+          "name": "Ben Galles",
+          "phone": "775 750 6429",
+          "title": "Senior Vice President",
+          "company": "CBRE",
+          "cbreContactId": 1203736
+        },
+        {
+          "name": "Katie Galles",
+          "phone": "+1 775 772 6181",
+          "title": "Senior Associate",
+          "company": "CBRE",
+          "cbreContactId": 1203737
+        }
+      ],
+      "cbreDealflowDetail": {
+        "status": "Available",
+        "projectId": 150532,
+        "photoCount": 15,
+        "gatedLabels": { "agreement": "CONFIDENTIALITY AGREEMENT" },
+        "pagePvValue": "Z-I9J549zUFsSziezRAUlCAULLRZUwGngh47DCAyGZK9RIwgKfuMuO5yCxu8BE05",
+        "projectType": "Value Add",
+        "sectionCount": 10
+      },
+      "photos": []
+    }
+  }
+]

@@ -1,0 +1,128 @@
+[
+  {
+    "_comment": "Sale listing: POUND currency label on USD price, BuildingClassB tag, sourceOrganization.name",
+    "feedRow": {
+      "id": 1601603,
+      "title": "209 North Pacific Avenue",
+      "source": { "id": 84557, "name": "NAI Capital Commercial", "logoS3": "https://storage.googleapis.com/infabode2_pro/uploads/org/logos/84557/logo_100x100.png" },
+      "summary": "NAI Capital is pleased to present the opportunity to acquire a vacant, lender-owned medical office property.",
+      "locations": [{ "id": 1804402, "path": "San Pedro, CA, United States" }],
+      "postImages": [{ "id": 112642, "url": "https://storage.googleapis.com/infabode2_pro/uploads/post/images/1601603/112642.jpg" }],
+      "contentType": { "id": 4, "name": "Sale Listings" },
+      "publishedAt": "2026-06-04T16:32:48Z"
+    },
+    "publicPost": {
+      "id": 1601603,
+      "tags": ["BuildingClassB"],
+      "price": 1595000,
+      "title": "209 North Pacific Avenue",
+      "source": {
+        "id": 84557,
+        "name": "NAI Capital Commercial",
+        "logoS3": "https://storage.googleapis.com/infabode2_pro/uploads/org/logos/84557/logo_100x100.png",
+        "socialLinks": ["http://www2.naicapital.com/", "https://www.linkedin.com/company-beta/28768/", "https://twitter.com/NAICapital"]
+      },
+      "content": "<p>NAI Capital is pleased to present a vacant medical office property.</p>",
+      "summary": "NAI Capital is pleased to present the opportunity to acquire a vacant, lender-owned medical office property.",
+      "currency": "POUND",
+      "locations": [{ "id": 1804402, "name": "San Pedro", "path": "San Pedro, CA, United States", "geometry": { "type": "Point", "coordinates": [-118.2883111, 33.7444471] } }],
+      "sizeTotal": 4642,
+      "postImages": [{ "id": 112642, "url": "https://storage.googleapis.com/infabode2_pro/uploads/post/images/1601603/112642.jpg", "index": 0 }],
+      "contentType": { "id": 4, "name": "Sale Listings" },
+      "urlOriginal": "https://www.naiglobal.com/listings/?propertyId=209-north-pacific-avenue-los-angeles-sale",
+      "listingStatus": ["FOR_SALE_ON_MARKET"]
+    },
+    "transactionMode": "sale",
+    "sourceWebsiteUrl": "https://www.naiglobal.com/listings/?propertyId=209-north-pacific-avenue-los-angeles-sale",
+    "sourceOrganization": {
+      "id": 84557,
+      "name": "NAI Capital Commercial",
+      "logoS3": "https://storage.googleapis.com/infabode2_pro/uploads/org/logos/84557/logo_100x100.png",
+      "socialLinks": ["http://www2.naicapital.com/", "https://www.linkedin.com/company-beta/28768/", "https://twitter.com/NAICapital"]
+    }
+  },
+  {
+    "_comment": "Lease listing: POUND currency label on per-SF lease price, BuildingClassB + Parking tags",
+    "feedRow": {
+      "id": 1600383,
+      "title": "1486 S 1100 E",
+      "source": { "id": 99511, "name": "NAI Excel", "logoS3": "https://storage.googleapis.com/infabode2_pro/uploads/org/logos/99511/logo_300x300.png" },
+      "summary": "The property offers an excellent environment for a variety of professional users.",
+      "locations": [{ "id": 1803313, "path": "Salt Lake City, UT, United States" }],
+      "postImages": [{ "id": 112486, "url": "https://storage.googleapis.com/infabode2_pro/uploads/post/images/1600383/112486.jpg" }],
+      "contentType": { "id": 10, "name": "Lease Listings" },
+      "publishedAt": "2026-06-03T15:22:43Z"
+    },
+    "publicPost": {
+      "id": 1600383,
+      "tags": ["BuildingClassB", "Parking"],
+      "price": 27,
+      "title": "1486 S 1100 E",
+      "source": {
+        "id": 99511,
+        "name": "NAI Excel",
+        "logoS3": "https://storage.googleapis.com/infabode2_pro/uploads/org/logos/99511/logo_100x100.png",
+        "socialLinks": ["https://excelcres.com/", "https://www.linkedin.com/company/naiexcel/", "https://twitter.com/naiexcel"]
+      },
+      "content": "<p>The property offers an excellent environment for a variety of professional users with covered parking.</p>",
+      "summary": "The property offers an excellent environment for a variety of professional users.",
+      "currency": "POUND",
+      "locations": [{ "id": 1803313, "name": "Salt Lake City", "path": "Salt Lake City, UT, United States", "geometry": { "type": "Point", "coordinates": [-111.8599937, 40.7373489] } }],
+      "sizeTotal": 12705,
+      "sizeRangeL": 1500,
+      "sizeRangeH": 12705,
+      "postImages": [{ "id": 112486, "url": "https://storage.googleapis.com/infabode2_pro/uploads/post/images/1600383/112486.jpg", "index": 0 }],
+      "contentType": { "id": 10, "name": "Lease Listings" },
+      "urlOriginal": "https://www.naiglobal.com/listings/?propertyId=1486-s-1100-e-salt-lake-city-lease",
+      "listingStatus": ["FOR_SALE_ON_MARKET"]
+    },
+    "transactionMode": "lease",
+    "sourceWebsiteUrl": "https://www.naiglobal.com/listings/?propertyId=1486-s-1100-e-salt-lake-city-lease",
+    "sourceOrganization": {
+      "id": 99511,
+      "name": "NAI Excel",
+      "logoS3": "https://storage.googleapis.com/infabode2_pro/uploads/org/logos/99511/logo_100x100.png",
+      "socialLinks": ["https://excelcres.com/", "https://www.linkedin.com/company/naiexcel/", "https://twitter.com/naiexcel"]
+    }
+  },
+  {
+    "_comment": "Sale listing: RetailAsset tag (no building class), no sizeRange, verifies null buildingClass",
+    "feedRow": {
+      "id": 1602322,
+      "title": "5390 North Beckman Lane",
+      "source": { "id": 99511, "name": "NAI Excel" },
+      "summary": "Newly constructed, 100% leased retail asset",
+      "locations": [{ "id": 1805063, "path": "Eagle Mountain, UT, United States" }],
+      "postImages": [],
+      "contentType": { "id": 4, "name": "Sale Listings" },
+      "publishedAt": "2026-06-05T09:41:29Z"
+    },
+    "publicPost": {
+      "id": 1602322,
+      "tags": ["RetailAsset"],
+      "price": 6230416,
+      "title": "5390 North Beckman Lane",
+      "source": {
+        "id": 99511,
+        "name": "NAI Excel",
+        "socialLinks": ["https://excelcres.com/"]
+      },
+      "content": "<p>Newly constructed, 100% leased retail asset.</p>",
+      "summary": "Newly constructed, 100% leased retail asset",
+      "currency": "POUND",
+      "locations": [{ "id": 1805063, "name": "Eagle Mountain", "path": "Eagle Mountain, UT, United States", "geometry": { "type": "Point", "coordinates": [-112.0314105, 40.3252098] } }],
+      "sizeTotal": 9000,
+      "postImages": [],
+      "contentType": { "id": 4, "name": "Sale Listings" },
+      "urlOriginal": "https://www.naiglobal.com/listings/?propertyId=5390-north-beckman-lane-eagle-mountain-sale-1650022",
+      "listingStatus": ["FOR_SALE_ON_MARKET"]
+    },
+    "transactionMode": "sale",
+    "sourceWebsiteUrl": "https://www.naiglobal.com/listings/?propertyId=5390-north-beckman-lane-eagle-mountain-sale-1650022",
+    "sourceOrganization": {
+      "id": 99511,
+      "name": "NAI Excel",
+      "socialLinks": ["https://excelcres.com/"]
+    }
+  }
+]

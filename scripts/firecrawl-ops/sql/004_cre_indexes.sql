@@ -59,3 +59,11 @@ CREATE INDEX IF NOT EXISTS cre_listings_fts_idx
         coalesce(address, '') || ' ' ||
         coalesce(city, '') || ' ' ||
         coalesce(description, '')));
+
+-- --- Change-tracking indexes (design doc section 7). Idempotent additions. ---
+CREATE INDEX IF NOT EXISTS cre_listings_canonical_key_idx
+    ON credeals.cre_listings (brokerage_id, canonical_key)
+    WHERE canonical_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS cre_listings_last_seen_idx
+    ON credeals.cre_listings (last_seen_at DESC);

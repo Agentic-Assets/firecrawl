@@ -1,0 +1,149 @@
+[
+  {
+    "_comment": "Colliers SalesTracker (colliers source key) - investment sale with license, status, projectType",
+    "sourceKey": "colliers",
+    "external_id": "150540",
+    "raw_data": {
+      "id": "150540",
+      "url": "https://my.rcm1.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlEJHHgD9hC94PSk9WD4tM2YJxn7XBZYQKzi48KAC99hW",
+      "city": "Los Angeles",
+      "name": "Land - 8304 S. Broadway",
+      "state": "CA",
+      "status": "Available",
+      "street": "8304 S Broadway",
+      "country": "US",
+      "detailPv": "Z-I9J549zUFsSziezRAUlEJHHgD9hC94PSk9WD4tM2YJxn7XBZYQKzi48KAC99hW",
+      "latitude": 33.9639219,
+      "sizeText": "15,865 sq ft",
+      "assetType": "Land - Multifamily",
+      "brokerIds": [604],
+      "detailUrl": "https://my.rcm1.com/handler/landing.aspx?pv=Z-I9J549zUFsSziezRAUlEJHHgD9hC94PSk9WD4tM2YJxn7XBZYQKzi48KAC99hW",
+      "longitude": -118.2780486,
+      "sourceKey": "colliers",
+      "postalCode": "90003-2830",
+      "description": "4-story type V-A construction, 30-unit 100% affordable project",
+      "lotSizeAcres": 0.14,
+      "salePriceUsd": 1140000,
+      "salePriceText": "$1,140,000",
+      "sourceCompany": "Colliers",
+      "transactionMode": "sale",
+      "transactionType": "Investment Sale",
+      "buildingSizeSqft": 15865,
+      "contactsDetailed": [
+        {
+          "name": "Reza Ghobadi",
+          "phone": "+1 818 325 4142",
+          "title": "Executive Vice President",
+          "company": "Colliers",
+          "license": "Lic. #01780045",
+          "colliersProjectContactId": 1203809
+        }
+      ],
+      "colliersSalesTrackerCard": {
+        "detailPv": "Z-I9J549zUFsSziezRAUlEJHHgD9hC94PSk9WD4tM2YJxn7XBZYQKzi48KAC99hW",
+        "cardIndex": 1,
+        "projectId": 150540,
+        "hasDetailUrl": true
+      },
+      "colliersSalesTrackerDetail": {
+        "assetType": "Land - Multifamily",
+        "pageTitle": "Land - 8304 S. Broadway, Los Angeles, CA | Colliers",
+        "projectId": 150540,
+        "photoCount": 5,
+        "brochureUrl": "https://my.rcm1.com/buyer/brochure?pv=Ov8EUU3y1qp40H_ZDOzr7svxOg1dXFkAeH7145dpO4E",
+        "projectType": "Investment Sale",
+        "agreementUrl": "https://my.rcm1.com/buyer/agreement?pv=Ov8EUU3y1qp40H_ZDOzr7svxOg1dXFkAeH7145dpO4E",
+        "contactCount": 1
+      }
+    }
+  },
+  {
+    "_comment": "Colliers-main (colliers-main source key) - lease with leaseRateText, colliersMain.propertyStatus, contacts",
+    "sourceKey": "colliers-main",
+    "external_id": "main:usa1159083",
+    "raw_data": {
+      "id": "usa1159083",
+      "url": "https://www.colliers.com/en/properties/239-great-neck-road/usa-239-great-neck-rd-great-neck-ny-11021-usa/usa1159083",
+      "city": "Great Neck",
+      "name": "239 Great Neck Rd, Great Neck",
+      "state": "NY",
+      "street": "239 Great Neck Rd",
+      "country": "US",
+      "headline": "239 Great Neck Road",
+      "latitude": 40.7820423,
+      "sizeText": "Building Size: 15,476 SF",
+      "assetType": "Office",
+      "brokerIds": [806, 696, 697, 924],
+      "longitude": -73.7322759,
+      "sourceKey": "colliers-main",
+      "postalCode": "11021",
+      "description": "Picturesque office building perfectly situated in the heart of Great Neck",
+      "lastUpdated": "2025-10-24",
+      "colliersMain": {
+        "docCount": 2,
+        "jsonLdName": "Office For Sale and Lease — 239 Great Neck Rd, Great Neck, NY 11021, USA | United States | Colliers",
+        "photoCount": 34,
+        "contactCount": 4,
+        "propertyStatus": "Available"
+      },
+      "leaseRateText": "$18.50 SF/yr Modified Gross",
+      "salePriceUsd": 110538,
+      "salePriceText": "$110,538",
+      "sourceCompany": "Colliers",
+      "transactionMode": "lease",
+      "transactionType": "Sale/Lease",
+      "buildingSizeSqft": 15476,
+      "contactsDetailed": [
+        {
+          "name": "Gus Nuzzolese",
+          "phone": "+1 516 284 3456",
+          "title": "Executive Vice President",
+          "office": "Long Island",
+          "company": "Colliers",
+          "avatarUrl": "https://colliersapps.blob.core.windows.net/people/4ba21239-f806-4fa3-896c-6e7713b7fdbd-220-220.png",
+          "profileUrl": "https://www.colliers.com/en/experts/gus-nuzzolese"
+        }
+      ]
+    }
+  },
+  {
+    "_comment": "Colliers-main NNN lease rate example",
+    "sourceKey": "colliers-main",
+    "external_id": "main:usa1159094",
+    "raw_data": {
+      "id": "usa1159094",
+      "url": "https://www.colliers.com/en/properties/industrial-warehouse/usa-4321-industrial-blvd-phoenix-az-85007-usa/usa1159094",
+      "city": "Phoenix",
+      "name": "4321 Industrial Blvd, Phoenix",
+      "state": "AZ",
+      "street": "4321 Industrial Blvd",
+      "country": "US",
+      "latitude": 33.4484,
+      "longitude": -112.074,
+      "sourceKey": "colliers-main",
+      "postalCode": "85007",
+      "lastUpdated": "2026-01-15",
+      "colliersMain": {
+        "docCount": 0,
+        "jsonLdName": "Industrial For Lease — 4321 Industrial Blvd, Phoenix, AZ 85007, USA | United States | Colliers",
+        "photoCount": 5,
+        "contactCount": 2,
+        "propertyStatus": "Available"
+      },
+      "leaseRateText": "$2.95 / SF USD",
+      "sourceCompany": "Colliers",
+      "transactionMode": "lease",
+      "transactionType": "Lease",
+      "buildingSizeSqft": 45000,
+      "contactsDetailed": [
+        {
+          "name": "Jane Smith",
+          "phone": "+1 602 555 1234",
+          "title": "Senior Vice President",
+          "office": "Phoenix",
+          "company": "Colliers"
+        }
+      ]
+    }
+  }
+]

@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ai.agentic.cre-monitor.plist (TEMPLATE)
+  CRE monitor tier - cheap enumeration diff twice daily (06:10 and 18:10).
+  Runs cre_run_tier.sh monitor (collect.ts --monitor then cre_monitor.py).
+  CRE_MONITOR_APPLY=1 enables observe-only change-event recording (007 tables
+  only; never cre_listings.status/deleted_at).
+
+  This is a TEMPLATE. Do not load it directly. Render a machine-specific copy
+  with launchd/install_launchd.sh, which fills in this machine's collector path,
+  PATH, and optional CRE_ENV_FILE. See launchd/README.md for gated install.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.agentic.cre-monitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__COLLECTOR_DIR__/launchd/cre_run_tier.sh</string>
+        <string>monitor</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__COLLECTOR_DIR__</string>
+
+    <!--
+      Twice daily at 06:10 and 18:10.  The enrich tier (every 4h, offset to :30)
+      now carries the intra-day detail-refresh role the old every-3h cadence
+      filled; the monitor only needs to re-enumerate and re-enqueue twice a day.
+      06:10 / 18:10 are offset 20 min before the enrich :30 fires so the shared
+      mkdir lock rarely contends.
+    -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>6</integer>
+            <key>Minute</key>
+            <integer>10</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>18</integer>
+            <key>Minute</key>
+            <integer>10</integer>
+        </dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__COLLECTOR_DIR__/out/daily/cre-monitor.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__COLLECTOR_DIR__/out/daily/cre-monitor.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__BIN_PATH__</string>
+        <!-- Observe-only change-event recording. cre_monitor.py --apply writes
+             ONLY the 007 tables (events / source_index / enrichment_queue) and
+             neutral source_lastmod / canonical_key; never status or deleted_at. -->
+        <key>CRE_MONITOR_APPLY</key>
+        <string>1</string>__ENV_EXTRA__
+    </dict>
+</dict>
+</plist>

@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ai.agentic.cre-enrich.plist (TEMPLATE)
+  CRE enrichment-queue worker tier - drains cre_enrichment_queue every 4 hours
+  at minute 30 (00:30, 04:30, 08:30, 12:30, 16:30, 20:30).
+  Runs cre_run_tier.sh enrich, which invokes cre_enrich.py to claim a batch of
+  monitor-flagged new/changed listings, scrape only those detail pages
+  (collect.ts --enrich-input), and re-ingest ADDITIVELY (cre_ingest.py --in).
+
+  Additive by construction: the worker never passes --mark-missing nor
+  --activate-status, so it cannot soft-delete or flip board state. That is why
+  this tier carries no status-flip circuit breaker and no CRE_MONITOR_APPLY var.
+
+  Offset 30 min from the top of the hour so it never collides with the monitor
+  tier (06:10 / 18:10). The shared portable mkdir lock in cre_run_tier.sh is the
+  backstop if two tiers ever overlap: the holder wins and the competitor exits 0.
+
+  This is a TEMPLATE. Do not load it directly. Render a machine-specific copy
+  with launchd/install_launchd.sh, which fills in this machine's collector path,
+  PATH, and optional CRE_ENV_FILE. See launchd/README.md for gated install.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.agentic.cre-enrich</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__COLLECTOR_DIR__/launchd/cre_run_tier.sh</string>
+        <string>enrich</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__COLLECTOR_DIR__</string>
+
+    <!--
+      Every 4 hours at minute 30.  launchd has no native "every N hours" repeat,
+      so we enumerate the six start times explicitly.
+    -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>0</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>4</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>8</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>12</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>16</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__COLLECTOR_DIR__/out/daily/cre-enrich.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__COLLECTOR_DIR__/out/daily/cre-enrich.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__BIN_PATH__</string>__ENV_EXTRA__
+    </dict>
+</dict>
+</plist>

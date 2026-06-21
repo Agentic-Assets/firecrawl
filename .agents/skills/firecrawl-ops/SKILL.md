@@ -263,7 +263,8 @@ The skill folder exposes these via symlinks to `docs/firecrawl-ops/references/` 
 - `scripts/bulk_triage_runner.py`: budget-first triage with escalation batches
 - `scripts/platform_access_probe.py`, `scripts/cre_access_matrix.py`: access probes
 - `scripts/google_flights_scrape.py`, `scripts/parse_flight_deals.py`: Atlas flight-deal scraper + parser
-- `references/cre-listing-system-design.md`: CRE listing ingestion system design, current collector architecture, source matrix, Supabase schema, agent query API
+- `references/cre-intelligence-system-design.md`: CRE listing ingestion system design, current collector architecture, source matrix, Supabase schema, agent query API (formerly `cre-listing-system-design.md`, now `archive/cre-listing-system-design-2026-06-12.md`)
+- `references/cre-monitor-subsystem.md`: observe-only 007 change-tracking layer (monitor run model and gotchas)
 - `scripts/cre_collector/`: production multi-source CRE collector, psql ingestor, daily runner, start-here status, handoff log, lessons
 - `scripts/cre_pipeline.py`: legacy Python scraper CLI (run-all, run <broker>, status, export, apply-schema)
 - `scripts/cre_scrapers/`: legacy Python package for source probes and detail-page enrichment

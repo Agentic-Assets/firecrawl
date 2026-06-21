@@ -30,8 +30,18 @@ COMMENT ON COLUMN credeals.cre_brokerages.slug         IS 'Stable lowercase iden
 COMMENT ON COLUMN credeals.cre_brokerages.scrape_config IS 'jsonb: {proxy, wait_for_ms, timeout_ms, pagination_strategy, notes}. Verified against live site behavior.';
 COMMENT ON COLUMN credeals.cre_brokerages.active       IS 'False disables the broker from scheduled scrape runs (e.g. access-gated or consistently failing sites).';
 
+-- RLS posture (defense in depth): collector-owned base table. RLS is ENABLED
+-- with NO public row policy. The service-role / direct-postgres connection the
+-- collector and ingestor use bypasses RLS, so this never blocks ingest; it only
+-- ensures no rows leak if the table is ever reached via the Data API. Do NOT add
+-- anon/authenticated policies (see cre_collector/archive/SUPABASE_SECURITY_NOTE_2026-06-12.md;
+-- the 007 monitor tables already follow this pattern). ENABLE is a safe no-op if
+-- already enabled, so 000_run_all.sql stays idempotent.
+ALTER TABLE credeals.cre_brokerages ENABLE ROW LEVEL SECURITY;
+
 -- -----------------------------------------------------------------------------
--- Seed data: 10 national CRE brokerages.
+-- Seed data: 12 national CRE brokerage slugs (15 collector source keys fold in;
+-- cbre-dealflow -> cbre, jll-investor -> jll, colliers-main -> colliers).
 -- proxy / wait_for_ms values come from live Firecrawl testing (2026-06-11).
 -- CBRE is the reference implementation (proxy=stealth, wait_for=6000).
 -- -----------------------------------------------------------------------------
@@ -62,12 +72,13 @@ INSERT INTO credeals.cre_brokerages (name, slug, base_url, search_url, descripti
  '{"proxy": "stealth", "wait_for_ms": 6000, "timeout_ms": 60000, "pagination_strategy": "coveo_fragment_facets", "listing_url_pattern": "/en/united-states/properties/for-sale/{type}/{state}/{city}/{slug}/{slug}-s", "search_url_pattern": "/en/united-states/properties/invest/search?type={type}#f:TransactionType=[Sale]", "pagination_param": "#first=N", "notes": "Use US URL directly to skip geo-redirect. Trailing -s suffix on detail URLs is consistent. Coveo #first=N offset for paging."}'::jsonb,
  true),
 
--- 4. Colliers -- public site is POST-only for the current collector. Keep seeded for manual probes and future adapter work.
+-- 4. Colliers -- legacy SalesTracker plus public-site production adapters fold
+-- into this brokerage slug.
 ('Colliers', 'colliers',
  'https://www.colliers.com',
  'https://www.colliers.com/en/properties',
- 'Colliers International. Legacy probes found stable usa{7-digit} listing ids in rendered pages, but the current production collector does not include Colliers because the usable inventory path is POST-only and no public GET endpoint has been verified. Seed remains active for targeted discovery and future adapter work.',
- '{"proxy": "stealth", "wait_for_ms": 5000, "timeout_ms": 60000, "pagination_strategy": "post_only_discovery_pending", "listing_url_pattern": "/en/properties/{name-slug}/{address-slug}/usa{7-digit-id}", "external_id_pattern": "usa[0-9]{7}", "search_url_pattern": "/en/properties#f:listingtype=[For%20Sale]&f:recenttransactions=[0]", "pagination_param": "#first=N", "notes": "Not collected by cre_collector as of 2026-06-11. Investigate the POST search request or sales.colliers.com before enabling production collection."}'::jsonb,
+ 'Colliers International. Current production collectors include the SalesTracker investment-sale subset and the public colliers-main adapter; both fold into the colliers brokerage slug.',
+ '{"proxy": "stealth", "wait_for_ms": 5000, "timeout_ms": 60000, "pagination_strategy": "salestracker_plus_public_site", "listing_url_pattern": "/en/properties/{name-slug}/{address-slug}/usa{7-digit-id}", "external_id_pattern": "usa[0-9]{7}", "search_url_pattern": "/en/properties#f:listingtype=[For%20Sale]&f:recenttransactions=[0]", "pagination_param": "#first=N", "notes": "Production adapters: colliers and colliers-main; both map to this brokerage slug."}'::jsonb,
  true),
 
 -- 5. Marcus & Millichap -- works via cre_collector (stealth + 120s timeout + 3x retry). Sale-only platform. Flaky but usable.
@@ -124,6 +135,14 @@ INSERT INTO credeals.cre_brokerages (name, slug, base_url, search_url, descripti
  'https://search.savills.com/us/en/list/property-for-sale/united-states-of-america',
  'Savills North America. Server-rendered paginated search at search.savills.com (/page/N). Sale base: property-for-sale/united-states-of-america; lease base: property-to-rent/united-states-of-america. Collected by cre_collector/collect.ts (source key savills); smaller US inventory (~100 sale listings).',
  '{"proxy": "auto", "wait_for_ms": 5000, "timeout_ms": 60000, "pagination_strategy": "path_page_n", "search_url_pattern": "https://search.savills.com/us/en/list/property-{for-sale|to-rent}/united-states-of-america/page/{n}", "notes": "Added for cre_collector multi-source run. HTML cards server-rendered; no Cloudflare observed."}'::jsonb,
+ true),
+
+-- 12. Transwestern -- public GET feed plus detail pages, added 2026-06-12.
+('Transwestern', 'transwestern',
+ 'https://transwestern.com',
+ 'https://transwestern.com/properties',
+ 'Transwestern. Public property search exposes a repeatable GET feed at /properties?call=ajax with DealsType buckets for Sale, Lease, Sublease, and Sale or Lease. Detail pages expose broker profile links, vCards, flyer/PDF URLs, gallery image URLs, property facts, and availability tables.',
+ '{"proxy": "auto", "wait_for_ms": 1500, "timeout_ms": 60000, "pagination_strategy": "public_ajax_get_deal_buckets", "search_url_pattern": "/properties?call=ajax&DealsType={Sale|Lease|Sublease|Sale%20or%20Lease}", "listing_url_pattern": "/property/{PageUrl}", "notes": "Collected by cre_collector source key transwestern. Use GET, not the browser POST body. Skip feed rows whose PageUrl is empty or ''-''."}'::jsonb,
  true)
 
 ON CONFLICT (slug) DO UPDATE SET
