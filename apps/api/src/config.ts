@@ -50,6 +50,20 @@ const configSchema = z.object({
   // Express
   EXPRESS_TRUST_PROXY: z.coerce.number().optional(),
 
+  // Keyless free tier (scrape/search/interact without an API key, per-IP/day).
+  // Non-negative integers; 0 means "enabled but no budget", unset means "off".
+  KEYLESS_CREDITS_PER_DAY: z.coerce.number().int().nonnegative().optional(),
+  KEYLESS_REQUESTS_PER_DAY: z.coerce.number().int().nonnegative().optional(),
+  // Shared secret that lets a trusted proxy (e.g. the hosted MCP server)
+  // forward the real client IP for keyless rate-limiting via the
+  // `x-firecrawl-keyless-ip` header. Untrusted callers can't override their IP.
+  KEYLESS_PROXY_SECRET: z.string().optional(),
+  // Optional Spur Context API token (https://docs.spur.us/context-api). When
+  // set, keyless requests have their client IP checked against Spur and are
+  // refused if the IP fronts anonymizing/rotating infrastructure (VPN/proxy/
+  // TOR). Unset disables the check entirely (keyless behaves as before).
+  SPUR_API_KEY: z.string().optional(),
+
   // API Keys & Authentication
   BULL_AUTH_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
@@ -71,6 +85,9 @@ const configSchema = z.object({
     .int()
     .nonnegative()
     .default(100),
+  FEEDBACK_MAX_AGE_SEC: z.coerce.number().int().positive().default(120),
+  FEEDBACK_DAILY_CAP_CREDITS: z.coerce.number().int().nonnegative().default(50),
+  FEEDBACK_REFUND_ENABLED: z.stringbool().default(true),
 
   // OAuth token introspection
   OAUTH_INTROSPECT_URL: z.string().optional(),
@@ -127,8 +144,11 @@ const configSchema = z.object({
   CLICKHOUSE_ANALYTICS_URL: z.string().optional(),
   CLICKHOUSE_ANALYTICS_DATABASE: z.string().optional(),
 
-  // Search highlights (beta): semantic highlight model endpoint
+  // Search highlights (beta): query-highlights model service. URL is the base
+  // (e.g. https://firecrawl--query-highlights.modal.run); TOKEN is the bearer
+  // token sent on every request.
   HIGHLIGHT_MODEL_URL: z.string().optional(),
+  HIGHLIGHT_MODEL_TOKEN: z.string().optional(),
 
   // Fire Engine
   FIRE_ENGINE_BETA_URL: z.string().optional(),
@@ -306,6 +326,12 @@ const configSchema = z.object({
 
   // Audio (avgrab)
   AVGRAB_SERVICE_URL: z.string().optional(),
+
+  // Product extraction (product-search Rust service)
+  PRODUCT_EXTRACTION_SERVICE_URL: z.string().optional(),
+
+  // Menu extraction (menu-search Rust service)
+  MENU_EXTRACTION_SERVICE_URL: z.string().optional(),
 
   // PII Redaction (fire-privacy)
   FIRE_PRIVACY_URL: z.string().optional(),

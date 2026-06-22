@@ -38,6 +38,8 @@ Useful scripts:
 - `pnpm format`
 - `pnpm knip`
 
+Never bypass `knip` failures (e.g. with `git commit --no-verify`). If the pre-commit `knip` check fails, fix the reported unused exports/files, even if they predate your change, before committing.
+
 ## Self-hosted ops layer
 
 This fork adds local operations assets. Keep them fork-only and out of upstream product/API/SDK code unless explicitly needed.

@@ -45,6 +45,13 @@ import { sanitizeUrlForTrace } from "../../lib/scrape-interact/langsmith";
 import { getScrapeZDR } from "../../lib/zdr-helpers";
 import { RequestWithAuth, ScrapeOptions } from "./types";
 import { billTeam } from "../../services/billing/credit_billing";
+import {
+  KEYLESS_CREDITS_MESSAGE,
+  adjustKeylessCredits,
+  keylessTeamUuid,
+  logKeylessCreditUsage,
+  reserveKeylessCredits,
+} from "../../lib/keyless";
 import { enqueueBrowserSessionActivity } from "../../lib/browser-session-activity";
 import { logRequest } from "../../services/logging/log_job";
 import { integrationSchema } from "../../utils/integration";
@@ -55,6 +62,7 @@ import {
   calculateBrowserSessionCredits,
 } from "../../lib/browser-billing";
 import { autumnService } from "../../services/autumn/autumn.service";
+import { applyAgentAuthDiscoveryHeader } from "../../lib/agent-auth-discovery";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -91,6 +99,7 @@ type BrowserExecuteRequest = z.infer<typeof browserExecuteRequestSchema>;
 
 interface BrowserExecuteResponse {
   success: boolean;
+  cdpUrl?: string;
   liveViewUrl?: string;
   interactiveLiveViewUrl?: string;
   output?: string;
@@ -141,7 +150,12 @@ export async function scrapeInteractController(
   if (!scrape) {
     return res.status(404).json({ success: false, error: "Job not found." });
   }
-  if (scrape.team_id !== req.auth.team_id) {
+  // Keyless scrapes are persisted under a deterministic per-IP UUID (the
+  // `scrapes.team_id` column is a UUID, so the raw `preview_keyless_<ip>` string
+  // can't be stored). Compare against that derived UUID for keyless requests.
+  const expectedScrapeTeam =
+    keylessTeamUuid(req.auth.team_id) ?? req.auth.team_id;
+  if (scrape.team_id !== expectedScrapeTeam) {
     return res.status(403).json({ success: false, error: "Forbidden." });
   }
 
@@ -194,6 +208,12 @@ export async function scrapeInteractController(
       (scrape.options as ScrapeOptions).profile,
     );
     if ("error" in created) {
+      if (
+        created.status === 429 &&
+        created.body.error === KEYLESS_CREDITS_MESSAGE
+      ) {
+        applyAgentAuthDiscoveryHeader(res);
+      }
       return res.status(created.status).json(created.body);
     }
     session = created.session;
@@ -342,6 +362,7 @@ export async function scrapeInteractController(
 
   return res.status(200).json({
     success: !hasError,
+    cdpUrl: session.cdp_url,
     liveViewUrl: session.cdp_path,
     interactiveLiveViewUrl: session.cdp_interactive_path,
     ...(agentOutput ? { output: agentOutput } : {}),
@@ -457,6 +478,15 @@ export async function scrapeStopInteractiveBrowserController(
     });
   });
 
+  const reservedCredits = calculateBrowserSessionCredits(
+    session.ttl_total * 1000,
+    BROWSER_CREDITS_PER_HOUR,
+  );
+  adjustKeylessCredits(req.auth.team_id, creditsBilled - reservedCredits).catch(
+    () => {},
+  );
+  logKeylessCreditUsage(req.auth.team_id, creditsBilled).catch(() => {});
+
   logger.info("Browser session destroyed", {
     sessionDurationMs: durationMs,
     creditsBilled,
@@ -515,6 +545,22 @@ async function createSessionForScrape(
 
   // Credit check (uses base rate — actual billing may be higher if prompts are used)
   const estimatedCredits = calculateBrowserSessionCredits(ttl * 1000);
+  const reservation = await reserveKeylessCredits(
+    req.auth.team_id,
+    estimatedCredits,
+  );
+  if (!reservation.ok) {
+    return {
+      status: 429,
+      body: {
+        success: false,
+        error: KEYLESS_CREDITS_MESSAGE,
+      },
+      error: true,
+    };
+  }
+  const keylessReserved = estimatedCredits;
+
   const autumnResult = await autumnService.checkCredits({
     teamId: req.auth.team_id,
     value: estimatedCredits,
@@ -522,6 +568,7 @@ async function createSessionForScrape(
   });
 
   if (autumnResult !== null && !autumnResult.allowed) {
+    adjustKeylessCredits(req.auth.team_id, -keylessReserved).catch(() => {});
     return {
       status: 402,
       body: {
@@ -536,6 +583,7 @@ async function createSessionForScrape(
   const concurrencyLimit = req.acuc?.concurrency ?? 2;
   const activeCount = await getCombinedTeamActiveCount(req.auth.team_id);
   if (activeCount >= concurrencyLimit) {
+    adjustKeylessCredits(req.auth.team_id, -keylessReserved).catch(() => {});
     return {
       status: 429,
       body: {
@@ -577,6 +625,9 @@ async function createSessionForScrape(
       break;
     } catch (err) {
       if (err instanceof BrowserServiceError && err.status === 409) {
+        adjustKeylessCredits(req.auth.team_id, -keylessReserved).catch(
+          () => {},
+        );
         return {
           status: 409,
           body: {
@@ -600,6 +651,7 @@ async function createSessionForScrape(
   }
 
   if (!svcResponse) {
+    adjustKeylessCredits(req.auth.team_id, -keylessReserved).catch(() => {});
     logger.error("Failed to create browser session after all retries", {
       error: lastCreateError,
     });
@@ -685,6 +737,7 @@ async function createSessionForScrape(
       );
     }
   } catch (err) {
+    adjustKeylessCredits(req.auth.team_id, -keylessReserved).catch(() => {});
     logger.error("Failed to initialize scrape browser session context", {
       error: err,
     });
@@ -743,6 +796,7 @@ async function createSessionForScrape(
 
     return { session };
   } catch (err) {
+    adjustKeylessCredits(req.auth.team_id, -keylessReserved).catch(() => {});
     logger.error("Failed to persist browser session, cleaning up", {
       error: err,
     });
