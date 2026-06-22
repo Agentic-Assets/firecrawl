@@ -78,6 +78,7 @@ import {
   AutumnService,
   BoundedMap,
   BoundedSet,
+  featureIdForBillingEndpoint,
   isAutumnRequestTrackEnabled,
   orgBucket,
 } from "../autumn.service";
@@ -279,21 +280,21 @@ describe("ensureTrackingContext warm-cache short-circuit", () => {
 // ---------------------------------------------------------------------------
 
 describe("lockCredits", () => {
-  it("returns null when autumnClient is null", async () => {
+  it("returns skipped when autumnClient is null", async () => {
     autumnClientRef = null;
     const svc = makeService();
     const result = await svc.lockCredits({ teamId: "team-1", value: 10 });
-    expect(result).toBeNull();
+    expect(result).toEqual({ status: "skipped" });
     expect(mockCheck).not.toHaveBeenCalled();
   });
 
-  it("returns null for preview teams", async () => {
+  it("returns skipped for preview teams", async () => {
     const svc = makeService();
     const result = await svc.lockCredits({
       teamId: "preview_abc",
       value: 10,
     });
-    expect(result).toBeNull();
+    expect(result).toEqual({ status: "skipped" });
     expect(mockCheck).not.toHaveBeenCalled();
   });
 
@@ -307,7 +308,7 @@ describe("lockCredits", () => {
       properties: { source: "billTeam", endpoint: "extract" },
     });
 
-    expect(result).toBe("lock-123");
+    expect(result).toEqual({ status: "locked", lockId: "lock-123" });
     expect(mockCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         customerId: "org-1",
@@ -323,7 +324,7 @@ describe("lockCredits", () => {
     );
   });
 
-  it("returns null when Autumn denies the lock", async () => {
+  it("returns denied when Autumn denies the lock", async () => {
     mockCheck.mockResolvedValue({
       allowed: false,
       customerId: "org-1",
@@ -335,7 +336,18 @@ describe("lockCredits", () => {
       value: 10,
       lockId: "lock-123",
     });
-    expect(result).toBeNull();
+    expect(result).toEqual({ status: "denied" });
+  });
+
+  it("returns skipped when the billing API throws (fallback)", async () => {
+    mockCheck.mockRejectedValue(new Error("autumn down"));
+    const svc = makeService();
+    const result = await svc.lockCredits({
+      teamId: "team-1",
+      value: 10,
+      lockId: "lock-123",
+    });
+    expect(result).toEqual({ status: "skipped" });
   });
 });
 
@@ -390,6 +402,18 @@ describe("checkCredits", () => {
     const result = await svc.checkCredits({ teamId: "team-1", value: 10 });
     expect(result).toEqual({ allowed: false, remaining: 0 });
   });
+
+  it("checks against SEARCH_CREDITS when featureId is provided", async () => {
+    const svc = makeService();
+    await svc.checkCredits({
+      teamId: "team-1",
+      value: 5,
+      featureId: "SEARCH_CREDITS",
+    });
+    expect(mockCheck).toHaveBeenCalledWith(
+      expect.objectContaining({ featureId: "SEARCH_CREDITS" }),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -439,6 +463,22 @@ describe("trackCredits", () => {
     const svc = makeService();
 
     expect(await svc.trackCredits({ teamId: "team-1", value: 42 })).toBe(false);
+  });
+
+  it("tracks against SEARCH_CREDITS when featureId is provided", async () => {
+    const svc = makeService();
+
+    const result = await svc.trackCredits({
+      teamId: "team-1",
+      value: 7,
+      properties: { source: "test", endpoint: "search" },
+      featureId: "SEARCH_CREDITS",
+    });
+
+    expect(result).toBe(true);
+    const usageCall = mockTrack.mock.calls.find((c: any[]) => c[0].value === 7);
+    expect(usageCall).toBeDefined();
+    expect((usageCall as any[])[0].featureId).toBe("SEARCH_CREDITS");
   });
 });
 
@@ -490,6 +530,23 @@ describe("refundCredits", () => {
     expect(refundCall).toBeDefined();
     expect((refundCall as any[])[0].properties?.source).toBe("autumn_refund");
     expect((refundCall as any[])[0].properties?.endpoint).toBe("extract");
+    expect((refundCall as any[])[0].featureId).toBe("CREDITS");
+  });
+
+  it("refunds against SEARCH_CREDITS when featureId is provided", async () => {
+    const svc = makeService();
+    await svc.refundCredits({
+      teamId: "team-1",
+      value: 1,
+      properties: { endpoint: "search" },
+      featureId: "SEARCH_CREDITS",
+    });
+
+    const refundCall = mockTrack.mock.calls.find(
+      (c: any[]) => c[0].value === -1,
+    );
+    expect(refundCall).toBeDefined();
+    expect((refundCall as any[])[0].featureId).toBe("SEARCH_CREDITS");
   });
 
   it("is a no-op when autumnClient is null", async () => {
@@ -503,6 +560,26 @@ describe("refundCredits", () => {
     const svc = makeService();
     await svc.refundCredits({ teamId: "preview_abc", value: 30 });
     expect(mockTrack).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// featureIdForBillingEndpoint
+// ---------------------------------------------------------------------------
+
+describe("featureIdForBillingEndpoint", () => {
+  it("maps the search endpoint to SEARCH_CREDITS", () => {
+    expect(featureIdForBillingEndpoint("search")).toBe("SEARCH_CREDITS");
+  });
+
+  it("maps non-search endpoints to CREDITS", () => {
+    for (const endpoint of ["scrape", "crawl", "extract", "agent", "map"]) {
+      expect(featureIdForBillingEndpoint(endpoint)).toBe("CREDITS");
+    }
+  });
+
+  it("maps an undefined endpoint to CREDITS", () => {
+    expect(featureIdForBillingEndpoint(undefined)).toBe("CREDITS");
   });
 });
 

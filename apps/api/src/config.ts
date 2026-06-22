@@ -9,6 +9,12 @@ const delimitedList = (separator = ",") => {
   });
 };
 
+const emptyStringAsUndefined = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess(value => (value === "" ? undefined : value), schema.optional());
+
+const emptyStringAsDefault = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess(value => (value === "" ? undefined : value), schema);
+
 // Ethereum address schema: validates 0x followed by 40 hex characters
 const ethereumAddress = z
   .string()
@@ -84,12 +90,31 @@ const configSchema = z.object({
   DATABASE_URL: z.string().optional(),
   DATABASE_REPLICA_URL: z.string().optional(),
   INDEX_DATABASE_URL: z.string().optional(),
+  INDEX_CACHE_REDIS_URL: z.string().optional(),
+  // Negative (miss) caching TTL for index URL->id lookups, in ms. 0 disables
+  // it; the cache then only shields lookups that find data. A positive value
+  // (e.g. 600000 = 10min) also short-circuits repeat lookups for URLs with no
+  // index entry. Kept short so any missed cache-clear self-heals quickly.
+  INDEX_CACHE_NEGATIVE_TTL_MS: z.coerce.number().default(0),
   REDIS_URL: z.string().optional(),
   REDIS_EVICT_URL: z.string().optional(),
   REDIS_RATE_LIMIT_URL: z.string().optional(),
   NUQ_DATABASE_URL: z.string().optional(),
   NUQ_DATABASE_URL_LISTEN: z.string().optional(),
   NUQ_RABBITMQ_URL: z.string().optional(),
+  FDB_CLUSTER_FILE: emptyStringAsUndefined(z.string()),
+  NUQ_BACKEND: emptyStringAsUndefined(z.enum(["pg", "fdb"])),
+  NUQ_FDB_READY_SHARDS: emptyStringAsDefault(
+    z.coerce.number().int().positive().default(2048),
+  ),
+  // 1 = strict (priority, FIFO) promotion order per team; raise for teams with
+  // extreme finish rates at the cost of approximate cross-shard ordering
+  NUQ_FDB_TEAM_PENDING_SHARDS: emptyStringAsDefault(
+    z.coerce.number().int().positive().default(1),
+  ),
+  NUQ_FDB_TIME_BUCKETS: emptyStringAsDefault(
+    z.coerce.number().int().positive().default(16),
+  ),
 
   // Google Cloud Storage
   GCS_BUCKET_NAME: z.string().optional(),
@@ -101,6 +126,9 @@ const configSchema = z.object({
   // ClickHouse (Search Analytics)
   CLICKHOUSE_ANALYTICS_URL: z.string().optional(),
   CLICKHOUSE_ANALYTICS_DATABASE: z.string().optional(),
+
+  // Search highlights (beta): semantic highlight model endpoint
+  HIGHLIGHT_MODEL_URL: z.string().optional(),
 
   // Fire Engine
   FIRE_ENGINE_BETA_URL: z.string().optional(),

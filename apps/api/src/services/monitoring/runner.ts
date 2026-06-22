@@ -4,7 +4,12 @@ import { logger as _logger } from "../../lib/logger";
 import { logRequest } from "../logging/log_job";
 import { getMonitorDiffArtifact } from "../../lib/gcs-monitoring";
 import { processJobInternal } from "../worker/scrape-worker";
-import { NuQJob, crawlGroup, scrapeQueue } from "../worker/nuq";
+import {
+  NuQJob,
+  crawlGroup,
+  scrapeQueue,
+  resolveNewGroupBackend,
+} from "../worker/nuq-router";
 import { ScrapeJobData } from "../../types";
 import { getJobFromGCS } from "../../lib/gcs-jobs";
 import { includesFormat } from "../../lib/format-utils";
@@ -29,6 +34,7 @@ import {
 import { createWebhookSender, WebhookEvent } from "../webhook";
 import { sendMonitoringEmailSummary } from "../notification/monitoring_email";
 import {
+  calculateMonitorCheckActualCredits,
   getMonitorCheck,
   getMonitorForUpdate,
   getMonitorPage,
@@ -65,11 +71,14 @@ export { isMonitorCheckStale, MONITOR_CHECK_STALE_TIMEOUT_MS };
 
 const MONITOR_NOTIFY_CLAIM_TTL_SECONDS = 7 * 24 * 60 * 60;
 const MONITOR_CHECK_PAGE_SCAN_LIMIT = 100_000;
+const MONITOR_CHECK_NO_CREDITS_ERROR =
+  "Monitor check skipped: insufficient credits.";
 const TERMINAL_CHECK_STATUSES = new Set([
   "completed",
   "partial",
   "failed",
   "skipped_overlap",
+  "skipped_no_credits",
 ]);
 
 async function claimMonitorNotification(checkId: string): Promise<boolean> {
@@ -212,9 +221,11 @@ function getDocumentStatusCode(doc: any): number | null {
     : null;
 }
 
-function estimateActualCredits(doc: any, options: any): number {
-  if (typeof doc?.metadata?.creditsUsed === "number") {
-    return doc.metadata.creditsUsed;
+export function estimateActualCredits(doc: any, options?: any): number {
+  // Prefer the credits the scrape path actually recorded when present.
+  const creditsUsed = doc?.metadata?.creditsUsed;
+  if (typeof creditsUsed === "number" && Number.isFinite(creditsUsed)) {
+    return creditsUsed;
   }
   const formats = Array.isArray(options?.formats) ? options.formats : [];
   // Only charge the JSON-extraction premium when extraction actually produced a
@@ -254,6 +265,12 @@ async function runSingleScrape(params: {
     api_key_id: null,
   });
 
+  const internalOptions = {
+    teamId: params.monitor.team_id,
+    saveScrapeResultToGCS: !!config.GCS_FIRE_ENGINE_BUCKET_NAME,
+    bypassBilling: true,
+    zeroDataRetention: false,
+  };
   const job: NuQJob<ScrapeJobData> = {
     id: scrapeId,
     status: "active",
@@ -264,12 +281,7 @@ async function runSingleScrape(params: {
       url: params.url,
       team_id: params.monitor.team_id,
       scrapeOptions,
-      internalOptions: {
-        teamId: params.monitor.team_id,
-        saveScrapeResultToGCS: !!config.GCS_FIRE_ENGINE_BUCKET_NAME,
-        bypassBilling: true,
-        zeroDataRetention: false,
-      },
+      internalOptions,
       skipNuq: true,
       origin: "monitor",
       integration: null,
@@ -284,7 +296,7 @@ async function runSingleScrape(params: {
   return {
     scrapeId,
     doc,
-    credits: estimateActualCredits(doc, scrapeOptions),
+    credits: estimateActualCredits(doc, params.target.scrapeOptions),
   };
 }
 
@@ -296,6 +308,7 @@ async function diffAndPersistPage(params: {
   scrapeId: string;
   doc: any;
   source: "explicit" | "discovered";
+  creditsUsed?: number;
 }): Promise<PageResult> {
   const previous = await getMonitorPage({
     monitorId: params.monitor.id,
@@ -339,6 +352,11 @@ async function diffAndPersistPage(params: {
     metadata: {
       title: params.doc?.metadata?.title ?? null,
       statusCode: getDocumentStatusCode(params.doc),
+      contentType: params.doc?.metadata?.contentType ?? null,
+      numPages: params.doc?.metadata?.numPages ?? null,
+      proxyUsed: params.doc?.metadata?.proxyUsed ?? null,
+      postprocessorsUsed: params.doc?.metadata?.postprocessorsUsed ?? null,
+      creditsUsed: params.creditsUsed ?? null,
     },
   });
 
@@ -359,6 +377,11 @@ async function diffAndPersistPage(params: {
     ...(error ? { error } : {}),
     metadata: {
       title: params.doc?.metadata?.title ?? null,
+      contentType: params.doc?.metadata?.contentType ?? null,
+      numPages: params.doc?.metadata?.numPages ?? null,
+      proxyUsed: params.doc?.metadata?.proxyUsed ?? null,
+      postprocessorsUsed: params.doc?.metadata?.postprocessorsUsed ?? null,
+      creditsUsed: params.creditsUsed ?? null,
     },
     judgment,
     emailStatus: status,
@@ -395,6 +418,7 @@ async function runScrapeTarget(params: {
           scrapeId: result.scrapeId,
           doc: result.doc,
           source: "explicit",
+          creditsUsed: result.credits,
         }),
       );
     } catch (error) {
@@ -486,7 +510,12 @@ async function runCrawlTarget(params: {
     // Crawls tolerate robots fetch failures in the public controller too.
   }
 
-  await crawlGroup.addGroup(crawlId, sc.team_id, 24 * 60 * 60 * 1000);
+  sc.queueBackend = await resolveNewGroupBackend(sc.team_id);
+  await crawlGroup.addGroup(crawlId, sc.team_id, 24 * 60 * 60 * 1000, {
+    backend: sc.queueBackend,
+    maxConcurrency: sc.maxConcurrency,
+    delaySeconds: sc.crawlerOptions?.delay,
+  });
   await saveCrawl(crawlId, sc);
   await markCrawlActive(crawlId);
 
@@ -541,7 +570,8 @@ async function runCrawlTarget(params: {
     if (!doc) continue;
     const url = getDocumentUrl(doc, (job.data as any)?.url ?? body.url);
     seen.add(hashMonitorUrl(url).toString("hex"));
-    credits += estimateActualCredits(doc, body.scrapeOptions);
+    const pageCredits = estimateActualCredits(doc, body.scrapeOptions);
+    credits += pageCredits;
     pages.push(
       await diffAndPersistPage({
         monitor: params.monitor,
@@ -551,6 +581,7 @@ async function runCrawlTarget(params: {
         scrapeId: job.id,
         doc,
         source: "discovered",
+        creditsUsed: pageCredits,
       }),
     );
   }
@@ -870,7 +901,12 @@ async function enqueueMonitorCrawlTarget(params: {
     // Non-fatal, same as the public crawl controller.
   }
 
-  await crawlGroup.addGroup(crawlId, sc.team_id, 24 * 60 * 60 * 1000);
+  sc.queueBackend = await resolveNewGroupBackend(sc.team_id);
+  await crawlGroup.addGroup(crawlId, sc.team_id, 24 * 60 * 60 * 1000, {
+    backend: sc.queueBackend,
+    maxConcurrency: sc.maxConcurrency,
+    delaySeconds: sc.crawlerOptions?.delay,
+  });
   await saveCrawl(crawlId, sc);
   await markCrawlActive(crawlId);
 
@@ -943,7 +979,7 @@ export async function processMonitorCheckJob(
 
   let lockId: string | null = null;
   try {
-    lockId = await autumnService.lockCredits({
+    const lock = await autumnService.lockCredits({
       teamId: monitor.team_id,
       value: check.estimated_credits ?? 1,
       lockId: `monitor_${check.id}`,
@@ -954,6 +990,27 @@ export async function processMonitorCheckJob(
         jobId: check.id,
       },
     });
+
+    if (lock.status === "denied") {
+      check = await updateMonitorCheck(check.id, {
+        status: "skipped_no_credits",
+        finished_at: new Date().toISOString(),
+        actual_credits: 0,
+        billing_status: "not_applicable",
+        error: MONITOR_CHECK_NO_CREDITS_ERROR,
+      });
+
+      await updateMonitorScheduleAfterRun({ monitor, check });
+
+      logger.info("Skipped monitor check: insufficient credits", {
+        monitorId: monitor.id,
+        checkId: check.id,
+        teamId: monitor.team_id,
+      });
+      return;
+    }
+
+    lockId = lock.status === "locked" ? lock.lockId : null;
 
     check = await updateMonitorCheck(check.id, {
       autumn_lock_id: lockId,
@@ -1338,7 +1395,10 @@ export async function reconcileRunningMonitorChecks(
         countMonitorCheckPages({ checkId: check.id, status: "error" }),
       ]);
       const totalPages = same + changed + newCount + removed + errorCount;
-      const actualCredits = totalPages;
+      const actualCredits = await calculateMonitorCheckActualCredits({
+        checkId: check.id,
+        targets: monitor.targets,
+      });
 
       let finalized = await updateMonitorCheck(check.id, {
         status: errorCount > 0 ? "partial" : "completed",

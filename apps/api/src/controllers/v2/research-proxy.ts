@@ -1,8 +1,8 @@
-import { NextFunction, Request, Response } from "express";
+import { NextFunction, Response } from "express";
 import { Agent, fetch } from "undici";
 import { config } from "../../config";
 import { logger } from "../../lib/logger";
-import { RequestWithMaybeACUC } from "../v1/types";
+import { RequestWithAuth, RequestWithMaybeACUC } from "../v1/types";
 
 const TIMEOUT_MS = 120_000;
 
@@ -27,7 +27,7 @@ export function researchFlagMiddleware(
 }
 
 export async function researchProxyController(
-  req: Request,
+  req: RequestWithAuth<any, any, any>,
   res: Response,
 ): Promise<void> {
   const base = config.RESEARCH_PROXY_URL;
@@ -36,8 +36,8 @@ export async function researchProxyController(
     return;
   }
 
-  const subPath = req.path.replace(/^\/research/, "") || "/";
-  const url = new URL(base.replace(/\/+$/, "") + subPath);
+  const fullPath = req.baseUrl + req.path || "/";
+  const url = new URL(base.replace(/\/+$/, "") + fullPath);
   for (const [k, v] of Object.entries(req.query)) {
     if (Array.isArray(v)) {
       v.forEach(vv => url.searchParams.append(k, String(vv)));
@@ -51,6 +51,7 @@ export async function researchProxyController(
     const v = req.headers[h];
     if (typeof v === "string") headers[h] = v;
   }
+  headers["firecrawl-team-id"] = req.auth.team_id;
 
   const init: Parameters<typeof fetch>[1] = {
     method: req.method,

@@ -500,21 +500,16 @@ function coerceFieldsToFormats(meta: Meta, document: Document): Document {
   const hasVideo = hasFormatOfType(meta.options.formats, "video");
   if (!hasVideo && document.video !== undefined) {
     delete document.video;
-  } else if (hasVideo && document.video === undefined) {
+  }
+  if (!hasVideo && document.videos !== undefined) {
+    delete document.videos;
+  } else if (
+    hasVideo &&
+    document.video === undefined &&
+    document.videos === undefined
+  ) {
     meta.logger.warn(
       "Request had format: video, but there was no video field in the result.",
-    );
-  }
-
-  // Redaction itself is controlled by redactPII. Keep internal redaction
-  // details only when explicitly requested.
-  const hasPii = hasFormatOfType(meta.options.formats, "pii");
-  const wantPii = !!(hasPii && meta.options.redactPII);
-  if (!wantPii && document.pii !== undefined) {
-    delete document.pii;
-  } else if (wantPii && document.pii === undefined) {
-    meta.logger.warn(
-      "Redaction details were requested, but there was no pii field in the result.",
     );
   }
 
