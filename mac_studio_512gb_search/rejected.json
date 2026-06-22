@@ -1,0 +1,100 @@
+[
+  {
+    "seller_site": "Apple new configurator",
+    "title": "Mac Studio M3 Ultra 32-core CPU 80-core GPU current buy path",
+    "url": "https://www.apple.com/shop/buy-mac/mac-studio/m3-ultra-chip-32-core-cpu-80-core-gpu-96gb-memory-16tb-storage",
+    "observed": "Memory step shows 96GB Included only for the 32-core CPU, 80-core GPU path. Storage can be 4TB, 8TB, or 16TB, but memory is not 512GB.",
+    "reason": "Reject: fails 512GB unified memory requirement. Constructed 512gb-memory URLs resolved to generic or current 96GB page state.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "proof_files": [
+      "raw/scrape_candidate_05.json",
+      "raw/scrape_candidate_21.json",
+      "screenshots/apple-current-96gb-16tb.png"
+    ]
+  },
+  {
+    "seller_site": "Apple Certified Refurbished",
+    "title": "Refurbished Mac Studio Apple M3 Ultra chip with 28-Core CPU and 60-Core GPU",
+    "url": "https://www.apple.com/shop/product/fu973ll/a/Refurbished-Mac-Studio-Apple-M3-Ultra-chip-with-28-Core-CPU-and-60-Core-GPU",
+    "observed": "Product page shows Memory256GB96GB and Storage1TB2TB4TB8TB16TB, Add to Bag.",
+    "reason": "Reject: available refurbished unit does not show 512GB memory.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "proof_files": [
+      "raw/scrape_candidate_04.json",
+      "raw/scrape_candidate_23.json"
+    ]
+  },
+  {
+    "seller_site": "CDW",
+    "title": "Apple Mac Studio - M3 Ultra - 32-core CPU - 80-core GPU - 512 GB RAM - 8 TB SSD",
+    "url": "https://www.cdw.com/product/apple-mac-studio-m3-ultra-512-gb-ram-8-tb-ssd/8288107",
+    "observed": "Exact specs present, but page says this item was discontinued on May 15, 2026. Add to Cart snippets on page are for related products, not this item.",
+    "reason": "Reject: exact spec but not purchasable from CDW.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "proof_files": [
+      "raw/scrape_candidate_13.json",
+      "raw/browser_verification.json",
+      "screenshots/cdw-8288107.png"
+    ]
+  },
+  {
+    "seller_site": "LDLC",
+    "title": "Apple Mac Studio M3 Ultra 512GB/4TB",
+    "url": "https://www.ldlc.com/en/product/PB00718462.html",
+    "observed": "Exact specs and last price 12 999.95 EUR, but page says Last price and shows equivalent product suggestions.",
+    "reason": "Reject: exact spec but unavailable, no active purchase path observed.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "proof_files": [
+      "raw/scrape_candidate_15.json"
+    ]
+  },
+  {
+    "seller_site": "B&H Photo Video",
+    "title": "Apple Mac Studio with M3 Ultra Z1CD001Q3/Q5/Q7",
+    "url": "https://www.bhphotovideo.com/c/product/1884033-REG/apple_msm4ul23_mac_studio_with_m3.html",
+    "observed": "Local Firecrawl search snippets identify exact 4TB, 8TB, and 16TB SKUs, but both Firecrawl and Browser saw only a security verification page.",
+    "reason": "Unclear/reject for current purchase decision: no live price, stock, or checkout evidence could be verified.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "proof_files": [
+      "raw/search_04.json",
+      "raw/search_05.json",
+      "raw/browser_verification.json",
+      "screenshots/bh-4tb.png",
+      "screenshots/bh-8tb.png",
+      "screenshots/bh-16tb.png"
+    ]
+  },
+  {
+    "seller_site": "Best Buy",
+    "title": "Mac Studio M4 Max and M3 Ultra category page",
+    "url": "https://www.bestbuy.com/site/mac/mac-studio-m4-max-and-m3-ultra/pcmcat1741219730537.c?id=pcmcat1741219730537",
+    "observed": "Category/marketing page mentions up to 512GB unified memory, but no exact 512GB plus 4TB or larger purchasable SKU was found.",
+    "reason": "Reject: not a verified exact listing.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "proof_files": [
+      "raw/scrape_candidate_18.json"
+    ]
+  },
+  {
+    "seller_site": "Mac of All Trades",
+    "title": "Refurbished Apple Mac Studio category",
+    "url": "https://www.macofalltrades.com/mac-studio/",
+    "observed": "Category page contains Mac Studio inventory but no 512GB unified memory exact match in scraped evidence.",
+    "reason": "Reject: no exact match found.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "proof_files": [
+      "raw/scrape_candidate_17.json"
+    ]
+  },
+  {
+    "seller_site": "Apple Certified Refurbished category",
+    "title": "Refurbished Mac Deals - Mac Studio",
+    "url": "https://www.apple.com/shop/refurbished/mac/mac-studio",
+    "observed": "Category filters include capacities but visible product scrape did not expose any 512GB Mac Studio listing.",
+    "reason": "Reject: no exact refurb listing found.",
+    "timestamp_checked": "2026-06-19T02:23:24-0500",
+    "proof_files": [
+      "raw/scrape_candidate_03.json"
+    ]
+  }
+]

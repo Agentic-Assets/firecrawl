@@ -1,0 +1,207 @@
+[
+  {
+    "_comment": "Industrial sale with Class B, clear height, docks, grade doors, power, rail, yard, APN-like facts. Availability has a sale row - should not contribute to availableSf or lease rates.",
+    "external_id": "1025-w-national-avenue",
+    "transaction_type": "sale",
+    "raw_data": {
+      "id": "1025-w-national-avenue",
+      "url": "https://transwestern.com/property/1025-w-national-avenue",
+      "city": "Addison",
+      "name": "1025 W. National Avenue",
+      "state": "IL",
+      "street": "1025 W National Ave",
+      "country": "US",
+      "latitude": 41.92521,
+      "longitude": -88.0146435,
+      "postalCode": "60101",
+      "assetType": "Industrial",
+      "buildingSizeSqft": 25000,
+      "sizeText": "25,000 SF",
+      "transactionType": "Sale",
+      "transactionMode": "sale",
+      "transwesternBucket": "Sale",
+      "transwesternFacts": {
+        "Rail": "No",
+        "Yard": "No",
+        "Class": "B",
+        "Docks": "1",
+        "Power": "1200a",
+        "Stories": "1",
+        "Year Built": "1984",
+        "Listing Size": "25,000",
+        "Property Type": "Industrial",
+        "Clear Height(max)": "16",
+        "Clear Height(min)": "16",
+        "Grade Level Doors": "1",
+        "Typical Floor Size": "24,990",
+        "Ceiling Height Range": "16"
+      },
+      "availability": [
+        {
+          "raw": ["1025", "24,990", "$3,500,000.00", "Sale", "24,990"],
+          "rate": "$3,500,000.00",
+          "size": "24,990",
+          "type": "Sale",
+          "suite": "1025"
+        }
+      ]
+    }
+  },
+  {
+    "_comment": "Lease listing with Class C, multiple availability rows with NNN lease rate type, real dollar rates, and extraFacts candidates (Year Renovated, Typical Floor Size, Elevators).",
+    "external_id": "455-kehoe-boulevard",
+    "transaction_type": "lease",
+    "raw_data": {
+      "id": "455-kehoe-boulevard",
+      "url": "https://transwestern.com/property/455-kehoe-boulevard",
+      "city": "Carol Stream",
+      "name": "455 Kehoe Boulevard",
+      "state": "IL",
+      "street": "455 Kehoe Blvd",
+      "country": "US",
+      "latitude": 41.9102716,
+      "longitude": -88.1081274,
+      "postalCode": "60188",
+      "buildingSizeSqft": 35563,
+      "sizeText": "35,563 SF",
+      "transactionType": "Lease",
+      "transactionMode": "lease",
+      "transwesternBucket": "Lease",
+      "leaseRateText": "$11.75",
+      "transwesternFacts": {
+        "Class": "C",
+        "Stories": "1",
+        "Elevators": "0",
+        "Year Built": "1979",
+        "Listing Size": "4,228",
+        "Property Type": "Flex",
+        "Year Renovated": "1998",
+        "Typical Floor Size": "34,567"
+      },
+      "availability": [
+        {
+          "raw": ["103", "3,036", "$11.75", "Direct-New", "3,036", "Absolute Net"],
+          "rate": "$11.75",
+          "size": "3,036",
+          "type": "Direct-New",
+          "suite": "103"
+        },
+        {
+          "raw": ["115", "3,122", "$11.75", "Direct-New", "3,122", "Absolute Net"],
+          "rate": "$11.75",
+          "size": "3,122",
+          "type": "Direct-New",
+          "suite": "115"
+        }
+      ]
+    }
+  },
+  {
+    "_comment": "Office sale with Class B, Year Renovated, Elevators, Typical Floor Size -> extraFacts. No availability lease rows, so availableSf should be null.",
+    "external_id": "reserve-1",
+    "transaction_type": "sale",
+    "raw_data": {
+      "id": "reserve-1",
+      "url": "https://transwestern.com/property/reserve-1",
+      "city": "Austin",
+      "name": "Reserve 1",
+      "state": "TX",
+      "street": "500 Capital Of Texas Hwy N",
+      "country": "US",
+      "latitude": 30.3086735,
+      "longitude": -97.8271783,
+      "postalCode": "78746",
+      "buildingSizeSqft": 10748,
+      "sizeText": "10,748 SF",
+      "transactionType": "Sale",
+      "transactionMode": "sale",
+      "transwesternBucket": "Sale",
+      "transwesternFacts": {
+        "Class": "B",
+        "Stories": "2",
+        "Elevators": "1",
+        "Year Built": "1983",
+        "Listing Size": "10,748",
+        "Property Type": "Office",
+        "Year Renovated": "2021",
+        "Typical Floor Size": "5,374"
+      },
+      "availability": [
+        {
+          "raw": ["Full Building", "Download: 500 N Capital of Texas Flyer", "10,748", "Sale", "10,748"],
+          "rate": "10,748",
+          "size": "Download: 500 N Capital of Texas Flyer",
+          "type": "Sale",
+          "suite": "Full Building"
+        }
+      ]
+    }
+  },
+  {
+    "_comment": "Land listing with Land Area (ac) as a clearly-acres value (29.2 ac -> sf). Has Parcel/APN field. No Class or industrial fields.",
+    "external_id": "seq-us-67-fm-2280",
+    "transaction_type": "sale",
+    "raw_data": {
+      "id": "seq-us-67-fm-2280",
+      "url": "https://transwestern.com/property/seq-us-67-fm-2280",
+      "city": "Dallas",
+      "name": "SEQ US-67 & FM 2280",
+      "state": "TX",
+      "street": "US-67 & FM 2280",
+      "country": "US",
+      "latitude": 32.5,
+      "longitude": -96.8,
+      "postalCode": "75126",
+      "transactionType": "Sale",
+      "transactionMode": "sale",
+      "transwesternBucket": "Sale",
+      "transwesternFacts": {
+        "Parcel": "1",
+        "Property Type": "Land",
+        "Land Area (ac)": "29.2"
+      },
+      "availability": [
+        {
+          "raw": ["29.2 AC", "29", "Sale", "29", "29.2 Acres"],
+          "rate": "Sale",
+          "size": "29",
+          "type": "29",
+          "suite": "29.2 AC"
+        }
+      ]
+    }
+  },
+  {
+    "_comment": "Land listing with Land Area (ac) as an ambiguous large integer (29,185 looks like SF, not acres). The unit guard should suppress lot conversion.",
+    "external_id": "2390-n-druid-hills-rd-ne",
+    "transaction_type": "sale",
+    "raw_data": {
+      "id": "2390-n-druid-hills-rd-ne",
+      "url": "https://transwestern.com/property/2390-n-druid-hills-rd-ne",
+      "city": "Atlanta",
+      "name": "2390 N Druid Hills Rd NE",
+      "state": "GA",
+      "street": "2390 N Druid Hills Rd NE",
+      "country": "US",
+      "latitude": 33.8274109,
+      "longitude": -84.326913,
+      "postalCode": "30329",
+      "transactionType": "Sale",
+      "transactionMode": "sale",
+      "transwesternBucket": "Sale",
+      "transwesternFacts": {
+        "Property Type": "Land",
+        "Land Area (ac)": "29,185"
+      },
+      "availability": [
+        {
+          "raw": ["Manor Druid Hills Pad", "1", "Sale", "1"],
+          "rate": "Sale",
+          "size": "1",
+          "type": "1",
+          "suite": "Manor Druid Hills Pad"
+        }
+      ]
+    }
+  }
+]

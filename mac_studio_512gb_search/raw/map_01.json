@@ -1,0 +1,13 @@
+{
+  "url": "https://www.apple.com/shop/buy-mac/mac-studio",
+  "status": 200,
+  "data": {
+    "success": true,
+    "links": [
+      {
+        "url": "https://www.apple.com/shop/buy-mac/mac-studio"
+      }
+    ],
+    "warning": "Only 1 result(s) found. For broader coverage, try mapping the base domain: apple.com"
+  }
+}

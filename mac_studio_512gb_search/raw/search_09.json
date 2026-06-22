@@ -1,0 +1,10 @@
+{
+  "query": "site:apple.com/shop/product Refurbished Mac Studio Apple M3 Ultra chip 512GB",
+  "status": 200,
+  "data": {
+    "success": true,
+    "data": {},
+    "creditsUsed": 0,
+    "id": "019edebb-bb6a-72e8-b815-e73781593366"
+  }
+}

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ai.agentic.cre-weekly.plist (TEMPLATE)
+  CRE weekly completeness-backstop tier - runs Sunday at 03:00 local time.
+  Runs cre_run_tier.sh weekly, which invokes cre_daily_update.sh --mark-missing.
+
+  CRITICAL: This is the ONLY tier permitted to pass --mark-missing and
+  therefore the ONLY tier that can soft-delete (disappear) rows.  It must
+  only be loaded after the runner is proven on at least one Tier-1 source
+  AND after cre_gate.py is live and gating mark-missing eligibility.
+
+  This is a TEMPLATE. Do not load it directly. Render a machine-specific copy
+  with launchd/install_launchd.sh, which fills in this machine's collector path,
+  PATH, and optional CRE_ENV_FILE. See launchd/README.md for gated install.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.agentic.cre-weekly</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__COLLECTOR_DIR__/launchd/cre_run_tier.sh</string>
+        <string>weekly</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__COLLECTOR_DIR__</string>
+
+    <!-- Sunday (Weekday 0) at 03:00 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__COLLECTOR_DIR__/out/daily/cre-weekly.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__COLLECTOR_DIR__/out/daily/cre-weekly.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__BIN_PATH__</string>
+        <!-- Status-flip circuit breaker: 0.30 is a conservative ceiling. This
+             is inert until status activation is turned on (default-off in
+             cre_ingest.py). Once active, it prevents a bad run from flipping
+             more than 30% of a brokerage's rows to non-active in one shot. -->
+        <key>CRE_STATUS_FLIP_MAX_FRACTION</key>
+        <string>0.30</string>__ENV_EXTRA__
+    </dict>
+</dict>
+</plist>

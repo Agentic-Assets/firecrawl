@@ -1,0 +1,10 @@
+{
+  "query": "site:ebay.com Mac Studio 512GB unified memory 4TB SSD",
+  "status": 200,
+  "data": {
+    "success": true,
+    "data": {},
+    "creditsUsed": 0,
+    "id": "019edebd-4241-766e-a093-b34da4efeed0"
+  }
+}

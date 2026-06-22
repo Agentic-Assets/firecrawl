@@ -1,0 +1,10 @@
+{
+  "query": "site:backmarket.com Mac Studio 512GB 4TB",
+  "status": 200,
+  "data": {
+    "success": true,
+    "data": {},
+    "creditsUsed": 0,
+    "id": "019edebd-76d9-70e9-8cab-e8640c5b2c04"
+  }
+}

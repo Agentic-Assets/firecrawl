@@ -1,0 +1,29 @@
+User-agent: BUbiNG
+Disallow: /
+
+User-agent: * 
+Disallow: /contact/
+Disallow: /forms/
+Disallow: /_inc/
+Disallow: /_inc/ctrlFormProcessor.ashx
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: AMAZONAWS
+Disallow: /
+
+User-agent: SemrushBot
+Disallow: /
+
+User-agent: SemrushBot-SA
+Disallow: /
+
+# Sitemap files
+Sitemap: https://www.savills.us/sitemap.xml
+
+User-agent: rogerbot 
+Crawl-delay: 20 
+
+User-agent: SeekportBot 
+Crawl-delay: 25
