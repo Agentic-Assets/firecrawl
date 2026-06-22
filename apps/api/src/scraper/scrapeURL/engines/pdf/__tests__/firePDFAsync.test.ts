@@ -12,7 +12,15 @@ import {
   scrapePDFWithFirePDFAsync,
 } from "../fire-pdf/async";
 import { config } from "../../../../../config";
-const pdfCacheMock = jest.requireMock("../../../../../lib/gcs-pdf-cache");
+import {
+  getPdfResultFromCache,
+  savePdfResultToCache,
+} from "../../../../../lib/gcs-pdf-cache";
+
+const pdfCacheMock = {
+  getPdfResultFromCache: vi.mocked(getPdfResultFromCache),
+  savePdfResultToCache: vi.mocked(savePdfResultToCache),
+};
 
 // ── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -220,7 +228,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
       undefined,
       undefined,
       "ocr",
-      { fetchImpl, fallbackImpl: jest.fn(), sleepImpl: noopSleep },
+      { fetchImpl, fallbackImpl: vi.fn(), sleepImpl: noopSleep },
     );
 
     expect(result.markdown).toBe("fresh ocr");
@@ -256,7 +264,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
       undefined,
       undefined,
       undefined,
-      { fetchImpl, fallbackImpl: jest.fn(), sleepImpl: noopSleep },
+      { fetchImpl, fallbackImpl: vi.fn(), sleepImpl: noopSleep },
     );
 
     expect(pdfCacheMock.getPdfResultFromCache).not.toHaveBeenCalled();
