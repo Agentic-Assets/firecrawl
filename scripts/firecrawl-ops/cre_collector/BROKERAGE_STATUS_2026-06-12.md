@@ -15,33 +15,43 @@ source-specific notes in `cre_scrapers/brokers/*/README.md`.
 
 | Brokerage / site | Current status | Latest verified listing count | What we have | Main remaining work |
 |---|---|---:|---|---|
-| CBRE | Complete public feed | 20,684 total, 5,879 sale + 14,805 lease | Full internal JSON API pagination, agents, charges, brochures, photos, coordinates, size fields | Optional detail-page audit only if we discover fields missing from the API |
-| SVN | Complete public feed | 5,521 total, 2,988 sale + 2,533 lease | Full Buildout inventory feed cached once and partitioned by `sale` boolean | Monitor Buildout interstitials and keep abort threshold |
-| Cushman & Wakefield | Complete in code, pending full run and Supabase ingest | 11,318 live total, 2,743 sale + 8,575 lease | Public search API pagination plus detail enrichment for facts, document URLs, image URLs, contacts, profile URLs, VCard URLs, JSON-LD | Run full Cushman collection and live ingest after reviewing runtime cost |
-| JLL | Needs deep audit | 4,678 total, 333 sale + 4,345 lease | Search-page pagination and listing URLs | Add/verify detail-page enrichment for documents, image galleries, broker contact links, and richer facts |
-| Newmark | Needs deep audit | 4,368 collected, 1,121 sale + 3,247 lease of 3,250 reported lease | Algolia credentials scraped from page, state and property-type splits for the 1,000-hit cap | Close the 3-row lease gap if still present and audit detail fields, brokers, documents, and images |
-| Avison Young | Needs verification, likely partial | 22 total, 11 sale + 11 lease in latest run | Rendered SPA sidebar rows | Confirm whether 11/11 is a true source total or only the first sidebar batch; find API or scroll pagination |
-| Savills | Partial | 100 sale rows of 105 source cards, 0 US lease | Server-rendered sale pages, foreign fallback cards filtered | Resolve 5 filtered or missing sale cards and confirm lease inventory source |
-| JLL Investor Center | Partial | 50 sale rows | Rendered public grid | Determine whether more pages exist and enrich details where public |
-| CBRE Deal Flow | Partial | 21 sale rows | Public first grid, sale-oriented | Deal rooms and full financial detail require registration; find public pagination if any |
-| Marcus & Millichap | Partial | 12 sale rows | Rendered first grid under stealth | Find public pagination/API and detail enrichment; lease is not publicly listed |
-| NAI Global | Partial | 30 rows, 15 sale + 15 lease | First Infabode widget batch, synthesized `card:` ids | Find stable per-card links and widget pagination or API |
-| Lee & Associates | Blocked | 0 uploaded in latest full run | Buildout feed path known | Sustained full run failed around pages 286-297; needs throttling-safe or resumable paging |
-| Colliers | Blocked | 0 | POST-only Coveo path identified | Needs repeatable public GET, request-body support, safe action path, or authorized integration |
-| Transwestern | Blocked | 0 | POST-only map app path identified | Needs repeatable public GET, request-body support, safe action path, or authorized integration |
+| CBRE | Complete public feed | 19,028 active rows, 4,222 sale + 13,145 lease + 1,661 sale_or_lease | Full internal JSON API pagination, agents, charges, brochures, photos, coordinates, size fields | Optional detail-page audit only if we discover fields missing from the API |
+| CBRE Deal Flow | Complete public endpoint for exposed cards, with gated-detail limits | 1,836 active rows, 1,809 sale + 27 lease | Public RCM ListingEngine endpoint, sale and lease filters, pagination, public card/detail enrichment, URL-only docs/images, contacts | RCM reports 2,042 sale total but public card pagination exposed 1,809 sale cards; 21 stale URL-hash duplicate rows soft-deleted; gated agreement/deal-room docs stay in raw metadata only |
+| SVN | Complete public Buildout feed, live-ingested and validated | 5,287 active rows, 2,660 sale + 2,192 lease + 435 sale_or_lease | Public Buildout inventory feed with durable page cache/window fill, sale/lease partitioning, broker refs, document URLs, image URLs, and source-scoped reconciliation | One active SVN row is missing state; optional future detail-page enrichment only if a safe public path is proven |
+| Cushman & Wakefield | Complete public feed, live-ingested and validated | 11,318 active rows, 2,743 sale + 8,575 lease | Public search API pagination plus detail-page enrichment for facts, document URLs, image URLs, contacts, profile URLs, VCard URLs, JSON-LD | Optional future field audit only if missing fields are discovered |
+| JLL | Complete main public property feed, live-ingested and validated | 10,741 active main JLL rows, 1,247 sale + 8,733 lease + 761 sale_or_lease | Rendered public search pagination across property type filters plus detail-page `__NEXT_DATA__` enrichment for documents, image galleries, broker contacts/profile URLs, richer facts, and source-scoped stale same-URL cleanup | 135 latest-batch duplicate source URL groups remain as sale/lease same-page variants; JLL Investor is now complete as a separate folded source (934 active sale rows) |
+| Newmark | Complete public Algolia feed with contact enrichment, live-ingested and validated | 4,371 active rows, 1,121 sale + 3,250 lease | Public Algolia listing feed, state/property-type split, no-state DC recovery, raw hit preservation, broker provenance, public People exact-name contacts/profile URLs, image URLs | Listing documents, full galleries, second/third broker joins, and VCards remain unproven |
+| Avison Young | Complete public feed, detail-enriched, live-ingested and validated | 2,201 active rows, 636 sale + 1,432 lease + 133 sale_or_lease | Public SharpLaunch active website/team_member feed, client-side transaction partition, contact joins, public PDF URLs, full SharpLaunch image galleries, profile URLs where public, and non-property photo filtering | VCards absent from the public path; broker profile URLs remain sparse |
+| Savills | Structurally capped: sale has no public US commercial-sale feed; lease has 2 defensible Chicago retail rows live-ingested | 2 active lease rows | Server-rendered commercial lease `__NEXT_DATA__` for two Chicago retail listings with PDF/image/contact URLs; 101 mis-categorized residential sale rows + 1 non-US ghost lease soft-deleted 2026-06-14 | Sale is not completable via public path; no further action unless a public US commercial sale endpoint is found |
+| JLL Investor Center | Complete public sitemap detail feed, live-ingested and validated | 934 active U.S. sale rows from 1,857 sitemap detail URLs scanned | Public XML sitemap discovery, public detail-page `__NEXT_DATA__`, U.S. filtering, URL-only docs/images/contacts | All rows lack coordinates (Investor path exposes none); lease not applicable; 50 stale early-probe rows soft-deleted after user approval |
+| Marcus & Millichap | Complete public sale feed, live-ingested and validated; public lease blocked | 3,124 active sale rows | Public `mapproperties` ActivityIds, `mappropertydetail` tiles, direct public detail HTML, image URLs, visible contacts/profile URLs, and gated deal-room URLs retained only in raw metadata | Public lease remains unproven; auctions need a product decision before inclusion |
+| NAI Global | Complete public active feed, status-filtered | 241 active rows, 183 sale + 58 lease | Public Infabode feed plus `publicPost` detail enrichment, stable `infabode:<id>` IDs, source/original URLs, image URLs, one document URL, and raw status proof | Do not ingest historical/`UNKNOWN` Infabode rows as active inventory; optional future archive table only |
+| Lee & Associates | Complete public Buildout feed, live-ingested and validated | 9,223 active rows, 2,611 sale + 5,691 lease + 921 sale_or_lease | Public Buildout inventory feed with durable page cache/window fill, broker refs, document URLs, image URLs, and source-scoped reconciliation | Optional future detail-page enrichment only if a safe public path is proven |
+| Colliers (SalesTracker) | Complete public RCM investment-sale subset, live-ingested | 1,172 unique active Supabase rows | Public SalesTracker RCM GET list/map endpoints plus anonymous SLP detail enrichment | Retained alongside the new main-site source; SalesTracker filtered total reports 1,653 but public card pagination exposed 1,300 unique cards |
+| Colliers main (`colliers-main`) | Complete public feed, full run ingested additively 2026-06-14 | 15,829 active rows (5,750 sale + 8,897 lease + 1,182 sale_or_lease); 0 soft-deleted; 0 duplicate external_ids; colliers brokerage total 17,001 active | Public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`) through local Firecrawl plus per-listing detail-render `RealEstateListing` JSON-LD + markdown parse; folded into `colliers` with `main:` prefix; no Coveo POST/auth/gated path | Optional future detail-accuracy or pagination audit only |
+| Transwestern | Complete public feed, live-ingested and validated | 2,021 active rows, 389 sale + 1,502 lease + 130 sale_or_lease | Public properties GET feed plus detail-page enrichment for property docs, images, contacts, profile URLs, and VCards; footer descriptions suppressed | Optional future accuracy work: availability parser hardening and detail-cache speedup |
 
 ## Completed Or Closest To Complete
 
-CBRE and SVN are complete for their public feeds in the latest full artifact.
-Cushman & Wakefield is complete in code and targeted verification, but not yet
-reflected in Supabase because the full upgraded run has not been ingested.
+Per-source completion state is in the Summary table above (the "Current status"
+column); it is not re-narrated here.
 
 ## Not Complete Yet
 
-JLL, Newmark, and Avison Young need the Cushman-style deep audit: prove detail
-page enrichment, document URLs, image URLs, contact URLs, and source totals.
-Savills, JLL Investor Center, CBRE Deal Flow, Marcus & Millichap, and NAI Global
-are explicitly partial. Lee, Colliers, and Transwestern are blocked.
+Savills sale is structurally capped: no public US commercial-sale feed exists.
+101 mis-categorized residential sale rows and 1 non-US ghost lease row were
+soft-deleted 2026-06-14. Two defensible Chicago retail lease rows remain
+live-ingested. No further action unless a public US commercial sale endpoint is found.
+
+Colliers main (`colliers-main`) full run is COMPLETE as of 2026-06-14: 15,829
+active rows ingested additively with status activation OFF; 0 soft-deleted, 0
+duplicate external_ids. The colliers brokerage total is now 17,001 active.
+
+NAI Global is complete only for the active public Infabode inventory whose
+`publicPost.listingStatus` contains `FOR_SALE_ON_MARKET`. The same public feed
+also exposes historical or ambiguous rows back to 2021 with `UNKNOWN`, `SOLD`,
+`UNDER_OFFER`, or null statuses; those are deliberately excluded from the active
+`credeals` surface.
 
 ## Cushman Proof Snapshot
 
@@ -64,10 +74,10 @@ Result:
 
 ## Next Broker Order
 
-1. JLL, because it already collects all reported rows and likely only needs detail enrichment.
-2. Newmark, because the Algolia feed is strong but the 3-row lease gap and contact/document completeness need proof.
-3. Avison Young, because the current 11/11 per transaction might be complete or might be a rendered-sidebar illusion.
-4. Savills, because it has a small sale gap and lease ambiguity.
-5. NAI Global, Marcus & Millichap, JLL Investor, and CBRE Deal Flow, because each has known first-batch or gated limitations.
-6. Lee, after adding a resumable or much slower Buildout paging mode.
-7. Colliers and Transwestern only after a safe non-POST-blocked path exists.
+1. ~~JLL main detail enrichment~~ (complete: full detail enrichment live-ingested and validated).
+2. ~~Avison Young full detail enrichment~~ (complete: full detail-enriched run live-ingested additively and validated; VCards absent from the public path).
+3. ~~Savills~~ (structurally capped: sale has no public US commercial-sale feed; 2 defensible Chicago retail lease rows live; residential contamination removed 2026-06-14).
+4. ~~JLL Investor full run and ingest proof~~ (complete: 1,857 sitemap detail URLs scanned, 934 active U.S. sale rows live-ingested and reconciled, 2026-06-12 22:47 UTC).
+5. ~~Main Colliers Coveo sale/lease coverage only after a safe non-POST-blocked path exists.~~ (COMPLETE 2026-06-14: full 15,829-row run ingested additively via public XML sitemap + detail-render path; colliers total 17,001 active.)
+6. Marcus auctions only after EQUIRE decides whether public auction inventory
+   belongs in the listing surface.

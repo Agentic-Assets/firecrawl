@@ -12,6 +12,13 @@ Firecrawl is a web scraper API. The directory you have access to is a monorepo:
 
 For local self-hosted setup, see `LOCAL_DEVELOPMENT_GUIDE.md`, `SELF_HOST.md`, and the `firecrawl-ops` skill.
 
+## Root hygiene
+
+Keep the root reserved for durable entrypoints, configs, and top-level context.
+Put logs, browser captures, and one-off run outputs under task-specific folders
+or `tasks/tmp/`; durable reference docs under `docs/`; and workflow/example
+artifacts beside the relevant script or example.
+
 ## Env files (which is which)
 
 - **`./.env`** — **primary.** This is the file `docker compose up -d` reads at the repo root and is what every local Firecrawl run depends on. Gitignored. Never commit it.
@@ -32,7 +39,7 @@ When making changes to the API:
      - Requires fire-engine: `!process.env.TEST_SUITE_SELF_HOSTED`
      - Requires AI: `!process.env.TEST_SUITE_SELF_HOSTED || process.env.OPENAI_API_KEY || process.env.OLLAMA_BASE_URL`
 2. Write code to achieve your win conditions.
-3. Run tests via `pnpm harness jest <pattern>` from `apps/api`.
+3. Run tests via `pnpm harness vitest run <pattern>` from `apps/api` (or `pnpm harness pnpm test:snips` for the full snips suite).
    - `pnpm harness` boots the API + workers for the test run. Don't `pnpm start` manually.
    - The full suite is slow — run only the relevant tests locally and let CI cover the rest.
 4. Push to a branch, open a PR, let CI verify.

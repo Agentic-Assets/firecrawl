@@ -815,6 +815,17 @@ async function installDependencies() {
   logger.success("Dependencies installed");
 }
 
+/** Harness subcommands that hit the local API must wait for the port first. */
+function commandNeedsApiReady(command: string[]): boolean {
+  if (!command.length || command[0].startsWith("--")) return false;
+  if (command[0] === "vitest") return true;
+  if (command[0] === "pnpm") {
+    const script = command[1] ?? "";
+    return script.startsWith("test") || script === "vitest";
+  }
+  return false;
+}
+
 async function startServices(command?: string[]): Promise<Services> {
   // Setup NUQ PostgreSQL container if needed
   const nuqPostgres = await setupNuqPostgres();
@@ -920,13 +931,8 @@ async function startServices(command?: string[]): Promise<Services> {
       )
     : undefined;
 
-  // tests hammer the API instantly, so we need to ensure it's running before launching tests
-  if (
-    command &&
-    Array.isArray(command) &&
-    command[0] === "pnpm" &&
-    command[1].startsWith("test:snips")
-  ) {
+  // Snips and other API-backed test runners hammer the API instantly.
+  if (command && Array.isArray(command) && commandNeedsApiReady(command)) {
     logger.info(`Waiting for API on localhost:${PORT}`);
     await waitForPort(Number(PORT), "localhost");
   }

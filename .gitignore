@@ -66,12 +66,15 @@ target/
 
 # local files
 _local/
+.playwright-mcp/
 
 
 apps/api/src/lib/scrape-interact/*.md
 
 # fork-local: ad-hoc progress notes and scrape outputs (may contain tokens / third-party content)
 PROGRESS_SUMMARY.md
+tasks/tmp/
+.pnpm-store/
 test-runs/
 /examples/northmarq
 /scripts/firecrawl-ops/cre_collector/node_modules

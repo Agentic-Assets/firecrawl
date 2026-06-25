@@ -82,9 +82,9 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listings (
     raw_data        jsonb       DEFAULT '{}'::jsonb,  -- full structured-extraction JSON + any unmapped fields
 
     -- --- Timestamps --------------------------------------------------------
-    scraped_at      timestamptz DEFAULT now(),  -- when this row's content was last scraped
-    listing_date    timestamptz,                -- when the broker first listed it (if exposed)
-    updated_date    timestamptz,                -- broker's own last-updated (if exposed)
+    scraped_at      timestamptz DEFAULT now(),  -- our collector snapshot time, not broker listing date
+    listing_date    timestamptz,                -- true first-listed/date-published only when source-proven
+    updated_date    timestamptz,                -- broker/source recency, not necessarily first-listed
     created_at      timestamptz DEFAULT now(),
     updated_at      timestamptz DEFAULT now(),
     deleted_at      timestamptz                 -- soft delete; non-null = de-listed / pruned
@@ -102,7 +102,17 @@ COMMENT ON COLUMN credeals.cre_listings.cap_rate        IS 'Going-in cap rate as
 COMMENT ON COLUMN credeals.cre_listings.occupancy_rate  IS 'Occupancy as a fraction in [0,1]. Mandate filter: core (high) vs value-add (low).';
 COMMENT ON COLUMN credeals.cre_listings.markdown        IS 'Full scraped markdown. Primary-source grounding for any EQUIRE claim derived from this listing.';
 COMMENT ON COLUMN credeals.cre_listings.raw_data        IS 'jsonb: full Firecrawl structured-extraction output plus any broker-specific fields not mapped to columns.';
-COMMENT ON COLUMN credeals.cre_listings.deleted_at      IS 'Soft-delete marker. Non-null means the listing was de-listed upstream or pruned; views exclude these.';
+COMMENT ON COLUMN credeals.cre_listings.scraped_at      IS 'Timestamp when our collector last scraped or refreshed the listing snapshot. This is our collection time, not a broker listing date.';
+COMMENT ON COLUMN credeals.cre_listings.listing_date    IS 'Source-provided original listing or published date only when the upstream brokerage explicitly exposes one. Do not infer this from scrape time, updated_at, or generic lastUpdated fields. Treat as source-proven only when raw_data/source provenance identifies a first-listed/datePublished/datePosted/on-market field.';
+COMMENT ON COLUMN credeals.cre_listings.updated_date    IS 'Source-provided listing recency or last-modified date from the upstream brokerage when exposed. Current collectors commonly map broker lastUpdated/dateModified/updateDate/publishedAt/on_market_at-style fields here. This is not necessarily the first-listed/on-market date.';
+COMMENT ON COLUMN credeals.cre_listings.created_at      IS 'Database row creation timestamp. This is when our index first created the row, not a broker listing date.';
+COMMENT ON COLUMN credeals.cre_listings.updated_at      IS 'Database row mutation timestamp maintained by trigger/upsert logic. This is not source listing recency and not a first-listed date.';
+COMMENT ON COLUMN credeals.cre_listings.deleted_at      IS 'Soft-delete marker. Non-null means the listing was de-listed upstream or pruned; active listing views exclude these rows.';
+
+-- RLS: collector-owned base table. Enabled, no public policy; service-role /
+-- direct-postgres bypasses it (see 001 header note + SUPABASE_SECURITY_NOTE_2026-06-12.md).
+-- Idempotent: ENABLE is a no-op when already enabled.
+ALTER TABLE credeals.cre_listings ENABLE ROW LEVEL SECURITY;
 
 -- -----------------------------------------------------------------------------
 -- cre_listing_contacts -- listing brokers / agents.
@@ -116,12 +126,16 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listing_contacts (
     email           text,
     phone           text,
     brokerage_name  text,                       -- broker's firm as printed on the listing
+    profile_url     text,
+    avatar_url      text,
+    vcard_url       text,
     is_primary      boolean     DEFAULT false,
     created_at      timestamptz DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS cre_listing_contacts_listing_idx ON credeals.cre_listing_contacts (listing_id);
 COMMENT ON TABLE credeals.cre_listing_contacts IS 'Listing brokers/agents. Populates EQUIRE deal_parties (broker) and outreach workflows.';
+ALTER TABLE credeals.cre_listing_contacts ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).
 
 -- -----------------------------------------------------------------------------
 -- cre_listing_documents -- brochures, OMs, flyers, floor plans.
@@ -140,6 +154,7 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listing_documents (
 
 CREATE INDEX IF NOT EXISTS cre_listing_documents_listing_idx ON credeals.cre_listing_documents (listing_id);
 COMMENT ON TABLE credeals.cre_listing_documents IS 'Brochure / OM / flyer / floor-plan URLs for a listing. Download+parse on demand via Firecrawl /v2/parse (stealth).';
+ALTER TABLE credeals.cre_listing_documents ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).
 
 -- -----------------------------------------------------------------------------
 -- cre_listing_images -- property photos.
@@ -155,3 +170,64 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listing_images (
 
 CREATE INDEX IF NOT EXISTS cre_listing_images_listing_idx ON credeals.cre_listing_images (listing_id);
 COMMENT ON TABLE credeals.cre_listing_images IS 'Property photo URLs for a listing, ordered by display_order; is_primary marks the hero image.';
+ALTER TABLE credeals.cre_listing_images ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).
+
+-- =============================================================================
+-- Change-tracking additions (design doc section 7). ADDITIVE and idempotent;
+-- re-running is safe. The status CHECK only ADDS allowed values
+-- (under_contract, pending, off_market), so no existing row can violate it.
+-- The new columns are nullable with no default (metadata-only ADD COLUMN).
+-- =============================================================================
+-- Status CHECK. Ingestor-writable values: active, inactive (mark-missing),
+-- under_contract, pending, sold, leased, off_market. 'expired' / 'withdrawn'
+-- are reserved for manual/enrichment use (no ingestor path writes them today).
+-- Rebuild ONLY when the live definition is missing or pre-dates the Phase-2
+-- widening, so a re-run on a populated table does not take ACCESS EXCLUSIVE +
+-- a full validating scan every time (advisor review 2026-06-13, finding 13).
+DO $$
+DECLARE cdef text;
+BEGIN
+    SELECT pg_get_constraintdef(oid) INTO cdef
+    FROM pg_constraint
+    WHERE conrelid = 'credeals.cre_listings'::regclass
+      AND conname  = 'cre_listings_status_check';
+
+    IF cdef IS NULL
+       OR cdef NOT LIKE '%under_contract%'
+       OR cdef NOT LIKE '%pending%'
+       OR cdef NOT LIKE '%off_market%' THEN
+        ALTER TABLE credeals.cre_listings DROP CONSTRAINT IF EXISTS cre_listings_status_check;
+        ALTER TABLE credeals.cre_listings ADD CONSTRAINT cre_listings_status_check
+            CHECK (status IN ('active', 'inactive', 'under_contract', 'pending',
+                              'sold', 'leased', 'off_market', 'expired', 'withdrawn'));
+    END IF;
+END $$;
+
+-- Fraction-range guards for cap_rate / occupancy_rate ([0,1] contract; cap_rate
+-- mirrors norm_cap_rate()'s accepted band of (0, 0.5)). Defends against a future
+-- writer storing 6.5 instead of 0.065. Idempotent: added only if absent. Live
+-- data already complies (cap_rate max ~0.42), so a first apply validates cleanly
+-- (advisor review 2026-06-13, finding 12).
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conrelid='credeals.cre_listings'::regclass
+                     AND conname='cre_listings_cap_rate_range_check') THEN
+        ALTER TABLE credeals.cre_listings ADD CONSTRAINT cre_listings_cap_rate_range_check
+            CHECK (cap_rate IS NULL OR (cap_rate > 0 AND cap_rate < 0.5));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conrelid='credeals.cre_listings'::regclass
+                     AND conname='cre_listings_occupancy_rate_range_check') THEN
+        ALTER TABLE credeals.cre_listings ADD CONSTRAINT cre_listings_occupancy_rate_range_check
+            CHECK (occupancy_rate IS NULL OR (occupancy_rate >= 0 AND occupancy_rate <= 1));
+    END IF;
+END $$;
+
+ALTER TABLE credeals.cre_listings ADD COLUMN IF NOT EXISTS last_seen_at   timestamptz;
+ALTER TABLE credeals.cre_listings ADD COLUMN IF NOT EXISTS source_lastmod timestamptz;
+ALTER TABLE credeals.cre_listings ADD COLUMN IF NOT EXISTS canonical_key  text;
+
+COMMENT ON COLUMN credeals.cre_listings.last_seen_at   IS 'Reserved nullable per-listing enumeration timestamp. If written, it means the listing was last re-observed in a source enumeration and is distinct from scraped_at (last detail scrape). Current observe-only monitor state lives in cre_source_index (last_enumerated_at, soft_deleted) to avoid churning updated_at every run.';
+COMMENT ON COLUMN credeals.cre_listings.source_lastmod IS 'Full-precision upstream last-modified (e.g. sitemap <lastmod>), used to prioritize re-scrapes. Not day-truncated. Not necessarily the first-listed date.';
+COMMENT ON COLUMN credeals.cre_listings.canonical_key  IS 'lower(address)+state(+rounded geo) key for advisory re-listing detection within a brokerage. Geoless sources downgrade to address+state-only (weaker advisory).';

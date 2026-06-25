@@ -11,6 +11,9 @@ Bulk domain availability checker that uses Playwright with stealth to scrape Ins
 | `check-domains-playwright.py` | **Active** | Playwright + stealth browser. Works. |
 | `check-domains-optimized.py` | **Deprecated** | Firecrawl-based. Blocked by Vercel security checkpoint as of 2026-01-30. |
 
+Historical domain candidate lists live in `ideas/`; they are not active
+Firecrawl docs.
+
 ## Quick Start
 
 ```bash
@@ -26,6 +29,9 @@ python check-domains-playwright.py -i my-list.txt
 
 # Force re-check (skip dedup)
 python check-domains-playwright.py -i my-list.txt --no-skip
+
+# Accepted for CLI compatibility, but currently ignored by check_domains_batch
+python check-domains-playwright.py -i my-list.txt -w 3
 ```
 
 ## How It Works
@@ -35,9 +41,9 @@ python check-domains-playwright.py -i my-list.txt --no-skip
 3. Launches headless Chromium with `playwright-stealth` to bypass bot detection
 4. For each domain, navigates to `https://instantdomainsearch.com/?q={domain}`
 5. Parses page text for status indicators after the domain name line:
-   - `"Continue"` → **available**
-   - `"Lookup"` / `"Make offer"` / `"WHOIS"` → **taken**
-   - `"$..."` (price) → **taken** (premium listing)
+   - `"Continue"` -> **available**
+   - `"Lookup"` / `"Make offer"` / `"WHOIS"` -> **taken**
+   - `"$..."` (price) -> **taken** (premium listing)
 6. Saves results to `out/runs/{timestamp}/` and appends to `out/results.json`
 
 ## Architecture
@@ -51,7 +57,9 @@ check-domains-playwright.py
 └── main()                    # CLI, orchestration, output
 ```
 
-**Sequential processing** (not threaded): Playwright's sync API uses greenlets internally and cannot be used across Python threads. One browser → one context → one page → reused for all domains.
+**Sequential processing** (not threaded): Playwright's sync API uses greenlets
+internally and cannot be used across Python threads. One browser, one context,
+and one page are reused for all domains.
 
 ## Critical Code Patterns
 
@@ -105,7 +113,10 @@ out/
 ## Known Issues
 
 - **3-second sleep per domain**: Required for dynamic content rendering. Faster checks miss results.
-- **Sequential only**: ~5 seconds per domain (3s render + delay). 100 domains ≈ 8 minutes.
+- **Sequential only**: ~5 seconds per domain (3s render + delay). 100 domains is about 8 minutes.
+- **`-w` / `DOMAIN_CHECK_CONCURRENCY` is API-compatible only**: the active
+  `check_domains_batch()` signature accepts a worker count but ignores it.
+  Do not assume parallel domain checks are happening.
 - **InstantDomainSearch markup may change**: If results suddenly show all "unknown," the page structure likely changed. Inspect page text manually to update parsing logic.
 - **Not authoritative**: Use WHOIS/RDAP for final purchase verification.
 

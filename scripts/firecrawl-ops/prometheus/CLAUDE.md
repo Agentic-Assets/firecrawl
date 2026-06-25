@@ -1,6 +1,6 @@
-# CLAUDE.md — prometheus/
+# CLAUDE.md - prometheus/
 
-Reference implementation from Firecrawl's Prometheus product — a cloud-based
+Reference implementation from Firecrawl's Prometheus product, a cloud-based
 CRE data collector originally written for CBRE's US commercial for-sale inventory.
 
 ## Files
@@ -8,8 +8,10 @@ CRE data collector originally written for CBRE's US commercial for-sale inventor
 | File | Description |
 |------|-------------|
 | `script.ts` | Original TypeScript collector using the cloud Firecrawl SDK |
-| `data.json` | Pre-collected dataset: 5,877 CBRE US for-sale listings (11MB, collected 2026-06-11) |
+| `data.json` | Pre-collected dataset: 5,879 CBRE US for-sale listings (11MB, 2026-06-11 snapshot; live API totals differ) |
 | `README.md` | Original Prometheus README |
+| `multi_source/` | Multi-source reference implementation (README.md, 14-row sample data.json, script.ts); the cre_collector was adapted from this |
+| `archive/` | prometheus-script-multi-source-2026-06-11.zip (archived multi-source run) |
 
 **These files are reference material. Do not modify them.**
 
@@ -29,7 +31,7 @@ Response shape:
 
 This API is still behind Cloudflare (403 on direct curl). You must route it
 through local Firecrawl with stealth proxy and `formats: ["rawHtml"]`.
-The rawHtml contains the raw JSON body — parse it directly, no HTML stripping needed.
+The rawHtml contains the raw JSON body. Parse it directly, no HTML stripping needed.
 
 Verified working locally:
 ```bash
@@ -48,10 +50,10 @@ html = d['data']['rawHtml']
 parsed = json.loads(html[html.find('{'):html.rfind('}')+1])
 print('DocumentCount:', parsed['DocumentCount'])
 "
-# -> DocumentCount: 5877
+# -> DocumentCount: 5879
 ```
 
-Note `waitFor: 4000` — the API endpoint renders much faster than the SPA detail pages.
+Note `waitFor: 4000`: the API endpoint renders much faster than the SPA detail pages.
 
 ## Local production adaptation
 
@@ -72,7 +74,7 @@ asset_base = data['assetBaseUrl']   # https://www.cbre.com/resources/fileassets/
 # photo full URL = asset_base + listing['id'] + '/' + photo_path
 ```
 
-## Field mapping: prometheus → cre_listings
+## Field mapping: prometheus -> cre_listings
 
 | prometheus field | cre_listings column | Notes |
 |-----------------|---------------------|-------|
@@ -88,8 +90,8 @@ asset_base = data['assetBaseUrl']   # https://www.cbre.com/resources/fileassets/
 | `minAreaSqft` | `min_divisible_sf` | |
 | `yearBuilt` | `year_built` | |
 | `salePriceUsd` | `sale_price_usd` | null if `priceOnApplication=true` |
-| `assetType` | `property_type` | map: "Retail"→retail, "Land"→land, etc. |
-| `alsoForLease` | `transaction_type` | true→sale_or_lease, false→sale |
+| `assetType` | `property_type` | map: "Retail" -> retail, "Land" -> land, etc. |
+| `alsoForLease` | `transaction_type` | true -> sale_or_lease, false -> sale |
 | `description` | `description` | |
 | `highlights` | `highlights` (text[]) | |
 | full record | `raw_data` (jsonb) | store the entire prometheus listing |
@@ -97,13 +99,18 @@ asset_base = data['assetBaseUrl']   # https://www.cbre.com/resources/fileassets/
 | `brochures[*]` | `cre_listing_documents` | `assetBaseUrl + id + '/' + path` |
 | `photos[*]` | `cre_listing_images` | same asset URL construction |
 
-## Similar APIs to investigate for other brokers
+## Broker API discovery log
 
-The Prometheus discovery confirms CBRE has an undocumented internal JSON API.
-Other large Next.js/React SPA brokerages may have similar patterns:
+Other large Next.js/React SPA brokerages may have similar internal API patterns.
+Finding them eliminates Cloudflare bypass overhead and yields structured data
+directly, which is far preferable to parsing markdown from rendered pages.
+
+Resolved (implemented in `../cre_collector/collect.ts`):
+- Cushman & Wakefield: public `/api/properties/search` pagination with detail enrichment. Complete.
+- Transwestern: public GET feed with detail pages. Complete.
+
+Open:
 - JLL: current collector uses public search pages. A structured API would reduce scrape time.
-- Colliers: latest collector research found only POST-only Coveo/API paths behind consent behavior.
-- Cushman & Wakefield: current collector is limited to first rendered Coveo cards; `/coveo/rest` POST is blocked by Azure App Gateway.
 
-Finding these APIs eliminates Cloudflare bypass overhead and yields structured data
-directly — far preferable to parsing markdown from rendered pages.
+Colliers: two folded sources (`colliers` SalesTracker + `colliers-main` sitemap).
+See `../cre_collector/CLAUDE.md` for mechanics and current run status.

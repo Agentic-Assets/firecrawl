@@ -6,31 +6,79 @@ database (EQUIRE feed). It supersedes the per-broker Python scrapers in
 `../cre_scrapers/` for bulk collection (those remain useful for detail-page
 enrichment).
 
-Adapted from the Prometheus cloud collector preserved at
-`../prometheus/multi_source/script.ts`. Runs entirely against the local
-self-hosted Firecrawl API.
+Adapted from the Prometheus cloud collector reference in `../prometheus/`.
+Runs entirely against the local self-hosted Firecrawl API.
+
+## Read order
+
+1. `START_HERE.md` - live counts, next steps, session bootstrap, Known Limits
+2. `BROKERAGE_STATUS_2026-06-12.md` - per-broker completion status and upgrade order
+3. This file - orchestration, ingest contract, monitor safety rails
+4. Module docs (each has its own `CLAUDE.md`): `sources/`, `lib/`, `launchd/`, `tests/`
+5. `../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` when touching
+   `--monitor`, 007 change-tracking tables, `cre_monitor.py`, or `cre_gate.py`
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `collect.ts` | 14-source collector (TypeScript, Firecrawl JS SDK pinned to local API) |
-| `cre_ingest.py` | Collector JSON -> `credeals` schema upsert (stdlib + psql) |
-| `cre_daily_update.sh` | Daily refresh: healthcheck -> collect all -> ingest |
+| File / dir | Purpose |
+|------------|---------|
+| `collect.ts` | Orchestrator: 15 sources, CLI, broker merge, artifact write |
+| `types.ts` | Shared listing vocabulary + `SourceResult` (`truncated?`, etc.) |
+| `sources/` | Per-broker adapters - see `sources/CLAUDE.md` |
+| `lib/` | Shared scrape/config/util - see `lib/CLAUDE.md` |
+| `cre_ingest.py` | Collector JSON → `credeals` upsert (stdlib + psql) |
+| `cre_monitor.py` | Observe-only diff/event runner (007 tables); never writes `status`/`deleted_at`; enqueues new/changed into `cre_enrichment_queue` |
+| `cre_gate.py` | Per-source coverage gate (`cre_source_baseline`); emits `mark_missing_safe` rollup |
+| `cre_enrich.py` | Tier-B queue worker: claims a batch from `cre_enrichment_queue`, runs `collect.ts --enrich-input` (targeted detail), re-ingests additively (`cre_ingest.py --in`), deletes done rows. Additive by construction (never `--mark-missing`/`--activate-status`); URL-matched, id-keyed completion; pure builders + thin `run()` |
+| `cre_daily_update.sh` | healthcheck → full collect → ingest → prune `out/daily/` artifacts |
+| `cre_status.sh` | Read-only run-health heartbeat: launchd state, per-tier staleness vs cadence, last-run verdict (from `out/daily/last_run_<tier>.json`), last-ingest counts, `out/` footprint + lock state (hung/stale), stack/env/TCC. Exits nonzero if unhealthy. `--full-health` runs the full healthcheck |
+| `cre_setup.sh` | One-command preflight + bootstrap for a fresh clone (toolchain, deps, env, offline smoke); run first. See `SETUP.md` |
+| `cre_validate.py` | Post-ingest Supabase validation (`npm run validate:supabase`); not in daily script |
+| `backfill_media_from_raw_data.py` | One-time additive lift of media/docs already stranded in `raw_data` into `cre_listing_media`/`cre_listing_links`/`cre_listing_documents`; `--dry-run` default, `--apply` gated on go-ahead; `011` DDL now applied 2026-06-15 (only the media backfill RUN remains gated). See `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` |
+| `cre_parse.py` | Python mirror of `lib/parse.ts`: shared CRE text parsers (price/sqft/cap-rate/address). Imported by `cre_ingest.py` and the raw_data backfill; verifiably identical to the TS side via a shared golden test-vector table |
+| `cre_geo.py` | Offline ZIP->county+CBSA crosswalk resolver (`data/zip_cbsa_crosswalk.csv`). `ZipCbsaCrosswalk` + `derive_geo()`; used by `cre_geo_backfill.py` and optionally `cre_ingest.py`. Pure, stdlib-only, no network |
+| `cre_backfill_raw_data.py` | One-time additive/idempotent Class-1 scalar backfill from `raw_data` into `cre_listings` (canonical_url + institutional cols). `--dry-run` default, `--apply` gated; APPLIED 2026-06-15 (canonical_url 0->87,324, 0 decode failures). Never touches `status`/`deleted_at` |
+| `cre_geo_backfill.py` | Additive/idempotent geo derivation (county/cbsa/geo_source) for existing rows via `cre_geo`. `--dry-run` default, `--apply` gated; APPLIED 2026-06-15 (85,618 of 87,328 rows) |
+| `om_classify_existing.py` | One-time additive re-classification of `doc_type='brochure'` rows into flyer/floor_plan/om/financials. `--dry-run` default; APPLIED 2026-06-15 (14,087 of 70,414 upgraded). Upgrade-only, never downgrades |
+| `om_url_resolver.py` | Resolves viewer-wrapped / non-`.pdf` brochure URLs (Buildout iframe, DocumentCloud, etc.) to the real `.pdf` document URL for the OM-parse tier |
+| `om_parse.py` | OM/PDF underwriting-fact parse tier (writes `cre_listing_om_facts`). Conservative, provenance-first. `--dry-run` default, `--apply` GATED (table stays empty until then); anti-bot limits local OM-PDF fetch |
+| `run_colliers_main_full.sh` | Resumable colliers-main batch driver (~15,896 URLs) |
+| `launchd/` | macOS tier schedules (portable `*.plist.template` + `install_launchd.sh`) - see `launchd/CLAUDE.md` |
+| `tests/` | pytest contracts - see `tests/CLAUDE.md` |
+| `SETUP.md` | Fresh-clone setup runbook (Mac mini production + dev): `cre_setup.sh`, env, launchd generator |
 | `START_HERE.md` | Current status and new-session runbook |
-| `HANDOFF_LOG_2026-06-11.md` | Detailed evidence log from buildout and verification |
-| `LESSONS_2026-06-11.md` | Operational lessons and future verification pattern |
-| `VALIDATION_2026-06-12.md` | Supabase reconciliation, quality checks, and current gaps |
-| `BROKERAGE_STATUS_2026-06-12.md` | Per-broker coverage status, counts, and next upgrade order |
-| `../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md` | Reusable process for upgrading one brokerage to full public-feed coverage |
+| `BROKERAGE_STATUS_2026-06-12.md` | Per-broker coverage counts (live) |
+| `HANDOFF_COLLIERS_MAIN_2026-06-13.md` | colliers-main full detail run handoff |
+| `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` | Monitor hardening, module split, first `--apply` seed |
+| `SECURITY_REVIEW_2026-06-14.md` | Branch security review: verdict, the `standard_conforming_strings` pin fix, deferred base-table REVOKE |
+| `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` | Tier-B enrichment-queue worker + cadence restructure (monitor 2x/day, enrich every 4h, weekly additive full backstop, daily retired). IMPLEMENTED in code 2026-06-15 (`cre_enrich.py`, `collect.ts --enrich-input`/`lib/enrich.ts`, `sql/010`, restructured launchd tiers); live launchd cutover (Section 9) still GATED |
+| `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` | Capture all videos/links/docs/images + full markdown + stranded structured fields. Generic harvester (`lib/harvest.ts`), richer scrape formats, NEW `cre_listing_media`/`cre_listing_links` tables (`sql/011`), Buildout-iframe Tier-B detail for lee/svn, raw_data backfill. BUILT + verified in code; live apply GATED |
+| `PHASE2_DATA_LIFT_CONTRACT_2026-06-15.md` | Phase-2 data-lift implementation contract: the spec the `011`-`014` DDL, the backfills, and the `cre_parse`/`cre_geo`/`om_*` modules implement |
+| `HANDOFF_DATA_LIFT_2026-06-15.md` | Phase-2 data-lift handoff: what shipped (DDL, three additive backfills, OM-parse tier), the prod apply log, and test counts |
+| `RAW_DATA_GAP_CLASSIFICATION_2026-06-15.md` | Which structured fields/media/docs are stranded in `raw_data`, plus the document-corpus audit that scopes the backfills |
+| `CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md` | Per-column fill-rate report for `cre_listings` (drives backfill targeting); raw outputs in `reports/` |
+| `FRESHNESS_HISTORY_REVIEW_2026-06-15.md` | Freshness/accuracy/historic-retention review (the H/M/L findings behind `009` and the ingest-written price history) |
+| `TODO.md` | Collector working TODO list |
+| `data/` | Geo crosswalk reference (`zip_cbsa_crosswalk.csv` consumed by `cre_geo.py`) + `build_zip_cbsa_crosswalk.py` builder and `README.md` |
+| `reports/` | Coverage report outputs (column/brokerage/transaction CSVs + summary JSON; see `CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md`) |
+| `workflows/` | Executable Workflow scripts; `cre_enrichment_worker.workflow.js` is the build/test/review/cutover plan for the enrichment design above |
+| `archive/` | Dated buildout history (see `archive/README.md`) |
+| `../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` | Architecture + go-forward plan (§14) |
+| `../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` | Monitor run model and operational gotchas |
+| `../../../docs/firecrawl-ops/references/cre-equire-consumer-api.md` | How EQUIRE reads the data |
+| `../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md` | Brokerage upgrade process |
+| `../../../docs/firecrawl-ops/references/cre-cloud-hosting-options-2026-06-14.md` | Where to run the pipeline (cloud vs Mac mini): platform comparison, anti-bot IP risk, recommendation (decision aid, not actioned) |
 | `out/` | Run artifacts (gitignored) |
 
 ## Quick start
 
 ```bash
 cd scripts/firecrawl-ops/cre_collector
-npm install                      # once
+bash cre_setup.sh                # fresh clone: preflight + bootstrap (deps, checks, smoke). See SETUP.md
+npm install                      # once (cre_setup.sh does this for you)
 npm run typecheck                # TypeScript validation
+npm test                         # typecheck + unit tests (lib/, sources/ helpers)
+npm run test:unit                # TypeScript unit tests only
 
 # Small probe of one source, both transactions
 npx tsx collect.ts --source=svn --transaction=both --max-items=6 --out=/tmp/probe.json
@@ -43,113 +91,171 @@ npx tsx collect.ts --source=all --transaction=both --max-items=0 \
 python3 cre_ingest.py --in out/run.json                  # additive upsert
 python3 cre_ingest.py --in out/run.json --mark-missing   # full-run reconcile
 
-# The safe daily cycle while Lee remains blocked
+# Safe daily cycle while any source is partial or blocked
 bash cre_daily_update.sh --no-mark-missing
 ```
 
 ## collect.ts
 
-Flags: `--source=all|csv` `--transaction=sale|lease|both` `--max-items` (0 =
-unlimited) `--page-cap` (rendered-page sources, default 60; use 400 for full
-runs) `--concurrency` (1-6, default 3) `--out=path`.
+Flags: `--source=all|csv` `--transaction=sale|lease|both` (default `both`)
+`--max-items` (0 = unlimited) `--page-cap` (default 60; use 400 for full runs)
+`--concurrency` (1–6, default 3) `--out=path` `--monitor` (enumeration-only pass).
 
-Env: `FIRECRAWL_API_URL` (default `http://localhost:3002`),
-`FIRECRAWL_API_KEY` (any non-empty value for self-hosted).
+Env: `FIRECRAWL_API_URL` (default `http://localhost:3002`);
+`FIRECRAWL_API_KEY` (optional; defaults to `local-self-hosted` when unset).
 
-### Source status
+**15 source keys** (sale/lease support, methods, monitor matrix, Buildout rules,
+`external_id` gotchas, per-source env vars): `sources/CLAUDE.md`. Live row counts:
+`START_HERE.md` (Latest Source Matrix) and `BROKERAGE_STATUS_2026-06-12.md`.
 
-Latest full ingested run started 2026-06-12 04:04:23 UTC. Cushman & Wakefield
-was upgraded after that run on 2026-06-12 local time; the new source totals
-below are from live targeted probes and still need a full collection plus
-Supabase ingest before database counts reflect them.
+**`--page-cap`** bounds pagination on `jll`, `cbre-dealflow`, `colliers`
+(SalesTracker), `nai-global` (`PAGE_CAP × page size`), and Savills sale pages.
+It does not cap API-paginated or sitemap-driven sources (`cushman-wakefield`,
+`transwestern`, `marcus-millichap`, `colliers-main`, Buildout).
 
-| Source key | Method | Sale | Lease | Notes |
-|------------|--------|------|-------|-------|
-| `cbre` | Internal JSON API, stealth proxy | 5,879 | 14,805 | Cloudflare; waitFor 4000 |
-| `cbre-dealflow` | Rendered grid, stealth | 21 | n/a | Sale-only platform; ids prefixed `dealflow:` |
-| `jll` | Search pages, waitFor 8000 | 333 | 4,345 | tenure=sale / tenure=rent |
-| `jll-investor` | Rendered grid | 50 | n/a | Sale-only; ids prefixed `investor:` |
-| `cushman-wakefield` | Public `/api/properties/search` JSON plus detail enrichment | 2,743 live total | 8,575 live total | Full API pagination verified; detail pages enrich docs, photos, visible contacts, JSON-LD, and VCard/profile URLs. Use `CUSHMAN_QUERY='1800 Central'` for targeted probes |
-| `newmark` | Algolia API (creds scraped from page) | 1,121 | 3,247 of 3,250 | Per-state facet split plus California property-type split beats the 1k cap |
-| `marcus-millichap` | Rendered grid, stealth | 12 | n/a | Flaky: timeouts absorbed by 3x retry |
-| `avison-young` | SPA sidebar, waitFor 14000 | ~11 | ~11 | KNOWN LIMIT: only first sidebar batch renders (no scroll actions locally) |
-| `savills` | Server-rendered pages /page/N | ~100 of 105 source cards | 0 | US lease inventory empty; foreign fallback cards filtered; US parser accepts state names, ZIP-only rows, and city/state/ZIP variants |
-| `svn` | Buildout inventory API | ~5,500 total | (same feed) | Full inventory cached once, partitioned client-side by `sale` boolean |
-| `lee-associates` | Buildout inventory API | blocked in latest full run | blocked in latest full run | Buildout throttles under sustained paging; latest fresh retry passed pages 93-104 but failed pages 286-297 and aborted at 12/333 failed pages |
-| `nai-global` | Infabode widget cards | 15 | 15 | No per-card links; synthesized `card:` hash ids; first batch only |
-| `colliers` | UNSUPPORTED | – | – | POST-only API; needs request-body support |
-| `transwestern` | UNSUPPORTED | – | – | POST-only API |
-
-Buildout semantics (svn, lee-associates): the inventory feed has **no
-server-side sale/lease filter** (`lease=true` is ignored). Items carry
-`sale: boolean` (false = lease availability), `also_for_sale_or_lease`,
-`sublease`, `closed`. The collector fetches the full inventory once per
-brokerage (cached across both transaction passes), skips `closed`, and
-partitions client-side. Dual-mode properties appear twice (`-sale`/`-lease`
-propertyId suffixes); the ingestor merges them.
-
-Rate limiting: Buildout occasionally returns HTML interstitials under
-sustained paging. `scrapeJson` retries with backoff; the inventory fetch
-tolerates isolated page failures but aborts the source if more than ~3% of
-pages fail, then caches that failure for the second transaction pass. This
-prevents a gappy run from soft-deleting live rows downstream. Lee can serve
-individual failed pages later, but a 333-page run still fails without a
-throttling-safe or resumable strategy.
+**Scrape primitives** (`scrapeJson`, `brokerRef`, `pmap`, `prune`): `lib/CLAUDE.md`.
 
 ## cre_ingest.py
 
 Maps collector JSON to `credeals.cre_listings` (+ contacts/documents/images
-children, + `cre_scrape_jobs` row per brokerage). Stdlib only; talks to
-Postgres via psql (Homebrew libpq at `/opt/homebrew/opt/libpq/bin/psql`).
-Document and image child rows store external URLs only. The collector does not
-download or upload PDF/image binaries into Supabase storage.
+children, + `cre_scrape_jobs` row per brokerage). Stdlib only; talks to Postgres
+via psql (`PSQL_BIN`, else `/opt/homebrew/opt/libpq/bin/psql`,
+`/usr/local/opt/libpq/bin/psql`, then `PATH`). Document and image child rows
+store external URLs only.
 
-Credentials: reads `POSTGRES_URL_NON_POOLING` (preferred) or `POSTGRES_URL`
-at runtime from `dynamically-display-cre-listing-data/.env.local` (fallback
-`CRE_EQUIRE/.env.local`), or `--env-file`. Values are never printed or
-persisted into artifacts. Never commit them.
+Credentials: reads `POSTGRES_URL_NON_POOLING` (preferred) or `POSTGRES_URL`.
+Discovery order: `--env-file` flag, then `CRE_ENV_FILE` env var, then the
+`~/Documents/GitHub/agentic-assets/dynamically-display-cre-listing-data/.env.local`
+default (fallback `~/Documents/GitHub/agentic-assets/CRE_EQUIRE/.env.local`).
+Set `CRE_ENV_FILE` on any machine where the EQUIRE repo is not at the default
+`~/Documents` path. `cre_monitor.py` and `cre_gate.py` import the same loader.
+Live runs print only the env file path, never the URL.
 
 Key behavior:
 - Dedup key `(brokerage_id, external_id)`; sub-sources fold into the parent
-  brokerage with prefixed ids (`dealflow:`, `investor:`). Missing ids get
-  `url:<sha1-16>` synthesized from the listing URL.
-- A listing collected in both sale and lease passes merges to
-  `transaction_type='sale_or_lease'`.
-- `cap_rate` stored as fraction [0,1]. Lease rates parsed only when
-  explicitly $/SF (monthly per-SF annualized); everything else stays in
-  `raw_data` (full original payload, always kept).
-- Upsert refreshes content fields, resurrects soft-deleted rows
-  (`deleted_at=NULL`), and wholesale-replaces child rows for touched
-  listings.
-- `--mark-missing`: soft-deletes rows a full run no longer sees. Guarded per
-  brokerage: only applies when every source pass for that brokerage ran
-  error-free AND staged >= `--mark-missing-floor` (default 100) rows. Never
-  use on partial/subset runs.
-- `--dry-run --keep-artifacts DIR` writes the generated SQL without
-  connecting.
+  brokerage with prefixed ids (`dealflow:`, `investor:`, `main:`). Missing ids get
+  `url:<sha1-16>` from the listing URL; Buildout (`svn`, `lee-associates`)
+  prefers URL `propertyId` with `-sale`/`-lease` stripped first.
+- Sale + lease passes merge to `transaction_type='sale_or_lease'`.
+- `cap_rate` stored as a decimal fraction (e.g. `0.065`); `norm_cap_rate` drops
+  non-numeric, `<= 0`, percent inputs `>= 30`, and `>= 0.5`. Upsert uses
+  `COALESCE` so a null new cap rate keeps the existing DB value. Price columns
+  (`sale_price_usd`, `sale_price_per_sf`, `lease_rate_min`, `lease_rate_max`)
+  also COALESCE-keep: a transient parse miss does not blank a previously-good
+  numeric price.
+- Upsert sets `status='active'`, resurrects soft-deleted rows (`deleted_at=NULL`),
+  but only resets status to `'active'` when the prior status was `'inactive'` (a
+  mark-missing soft-delete); a real terminal (`sold`/`leased`/`off_market`) that
+  flickered back into a feed keeps its prior status label. Wholesale-replaces
+  contacts/documents/images **unless**
+  `jsonb_path_exists(raw_data, '$.**.detailError')` (preserves children on
+  transient detail failures).
+- **Status activation is OPT-IN and default-OFF.** Source-derived statuses are
+  suppressed unless `--activate-status` is passed on the CLI or
+  `CRE_ACTIVATE_STATUS=1` is set in the environment. New helpers:
+  `_status_activation_enabled()` and `apply_status_activation_gate()`. When off,
+  the upsert inserts `COALESCE->'active'` and the activation UPDATE is a no-op.
+  Do NOT assume status activation fires on the next daily/manual full ingest;
+  it requires the explicit flag plus consumer-side gate deploy first.
+- **Ingest-written value history (2026-06-15, existence-guarded pre-apply):**
+  `build_sql()` now captures a `_prior_vals` temp table of watched fields BEFORE
+  the upsert, then writes one row to `cre_listing_price_history` per listing
+  where a watched field (`sale_price_usd`, `sale_price_per_sf`, `lease_rate_min`,
+  `lease_rate_max`, `status`, `cap_rate`) IS DISTINCT FROM its prior value.
+  First-ever inserts produce no history row (history starts at the first CHANGE).
+  The INSERT is existence-guarded via `to_regclass`; it is a no-op until
+  `009_cre_history_retention.sql` is applied to prod. Dry-run emits the plain
+  unguarded INSERT so tests can assert the shape.
+- **Contacts + documents archived at retirement (2026-06-15, existence-guarded):**
+  When `--mark-missing` fires, the soft-delete block first captures retired rows
+  in a `_retired` temp table (with `prior_status`), then runs the UPDATE, then
+  INSERTs one `cre_listing_events` row per retired listing with
+  `event_type='disappeared'` / `source_value='mark_missing'`, and then (guarded)
+  snapshots the retired listings' final contacts and documents into
+  `cre_listing_contacts_archive` and `cre_listing_documents_archive`. Images are
+  excluded (high volume, low historical value). These tables have no FK to
+  `cre_listings` so they survive a future hard delete of the source row.
+- **`--mark-missing`: soft-deletes unseen rows (`status='inactive'`,
+  `deleted_at=now()`).** Per brokerage, only when every source pass for that
+  brokerage ran error-free, staged `>= --mark-missing-floor` (default 100), and
+  **folded coverage is count-aware and complete**: every folded key (e.g. `cbre` +
+  `cbre-dealflow`, `jll` + `jll-investor`, `colliers` + `colliers-main`) must
+  appear in the artifact AND have a nonzero `listingsCollected` count
+  (`discovered_by_source_key` dict built from `source_entries`). Singletons still
+  short-circuit on `len(known_keys) == 1`.
+  Never use on partial/subset runs.
+- `--dry-run --keep-artifacts DIR` writes SQL without connecting.
 
-Supabase access model: the collector-owned `credeals.cre_*` base tables and
-`v_cre_*` views are service-role only. `anon` and `authenticated` have schema
-USAGE in the broader EQUIRE project but no table or view SELECT on this listing
-surface. RLS is enabled with no public row policies by design, so Supabase
-advisor INFO notices for "RLS enabled no policy" on these tables are accepted
-private-schema notices, not public access gaps. EQUIRE should query these
-objects from server-side code or a deliberately designed API layer.
+Date semantics (ingest scope):
+- `listing_date`: not populated by bulk collector; leave null unless a source
+  proves a true first-listed/on-market field.
+- `updated_date` ← `listing.lastUpdated` (YYYY-MM-DD prefix only).
+- `scraped_at` ← artifact `finishedAt`.
+- `created_at`, `updated_at`, `deleted_at`: database lifecycle fields.
+
+Supabase access: `credeals.cre_*` tables and `v_cre_*` views are service-role
+only. Read `archive/SUPABASE_SECURITY_NOTE_2026-06-12.md` before changing grants
+or view privileges. Consumer API details: `cre-equire-consumer-api.md`.
+
+Phase-2 data-lift applied to prod 2026-06-15 (all additive, board-unchanged):
+DDL `011`-`014` (media/links tables, institutional + geo columns, OM-facts and
+zip/CBSA crosswalk tables) plus three additive backfills (`cre_backfill_raw_data`,
+`om_classify_existing`, `cre_geo_backfill`); `status` was never touched. Live
+coverage figures: `START_HERE.md`.
+
+## Monitor mode (hard rules)
+
+`collect.ts --monitor` writes the same artifact shape with `runMeta.mode="monitor"`.
+**Never feed a monitor artifact to `cre_ingest.py` (especially not with
+`--mark-missing`).** Monitor artifacts go to `cre_monitor.py` only;
+`cre_gate.py` reads baselines for weekly `mark_missing_safe`.
+
+- Enumeration `external_id` must match full-collect / ingest keys (enforced by
+  `tests/test_enum_key_invariant.py`).
+- **`cre_monitor.py`** refuses disappearance events for sources whose enumeration
+  pass reported `error` or `truncated` (not overridable by `--force-disappear`).
+- Per-source monitor behavior (excluded sources, supersets, detail skips):
+  `sources/CLAUDE.md` + `cre-monitor-subsystem.md`.
+- Scheduled monitor tier uses default `--page-cap=60` unless overridden; see
+  `launchd/CLAUDE.md`. Monitor (`ai.agentic.cre-monitor`, every 3h at :15,
+  `CRE_MONITOR_APPLY=1`) and daily (`ai.agentic.cre-daily`, 06:30 daily,
+  `--no-mark-missing`, status activation OFF) launchd tiers are LOADED and now
+  EXECUTE on schedule: the repo was relocated out of `~/Documents` to
+  `/Users/caymanseagraves/Github/agentic-assets/firecrawl`, so the prior macOS
+  TCC / Full Disk Access exit-126 block is resolved. The monitor tier has a
+  confirmed clean scheduled run (`out/daily/last_run_monitor.json` rc:0,
+  2026-06-15); a later monitor fire correctly skips when the daily tier holds
+  the run lock, and the daily tier executes the additive collect on schedule.
+  See `START_HERE.md` Known Limits. Weekly reconcile tier (`ai.agentic.cre-weekly`)
+  is intentionally NOT loaded (held for explicit go-ahead). `cre_gate.py` is now wired into
+  `cre_daily_update.sh` as observe-only step [3/4] (`--in RUN --apply --strict
+  --out gate.json`); if the strict gate detects any partial/regressed source,
+  the script auto-downgrades to `--no-mark-missing`.
 
 ## Daily updates
 
-`cre_daily_update.sh` = healthcheck -> full collect (sale+lease, unlimited)
--> ingest -> prune old artifacts (keeps 14 runs). Logs in `out/daily/`.
-The script default includes `--mark-missing`; while Lee & Associates remains
-blocked, run `bash cre_daily_update.sh --no-mark-missing` so the ingest stays
-additive. Latest measured full collection was about 27 minutes at concurrency
-3; additive ingest finished in under a minute.
+`cre_daily_update.sh` = healthcheck → full collect (sale+lease, unlimited,
+`CRE_PAGE_CAP` default 400) → observe-only gate [3/4] → ingest → prune (EXIT
+trap; keeps 14 `run_*.json`, 29 `run_*.log`, 14 `gate_*.json` under
+`out/daily/`). Script default includes `--mark-missing`; use
+`bash cre_daily_update.sh --no-mark-missing` while Savills sale stays
+structurally capped (colliers-main is now complete). See `START_HERE.md` Known
+Limits and Operational Recovery.
+
+Tiered schedules (monitor / daily additive / weekly reconcile):
+`launchd/CLAUDE.md`. Monitor and daily tiers are loaded and now run on schedule
+from the repo's relocated `~/Github` location (the prior TCC exit-126 block is
+resolved; see Monitor mode section and `START_HERE.md`
+Known Limits). Weekly reconcile tier is intentionally NOT loaded; do not
+`launchctl load` it until explicit go-ahead. Step [3/4] of the daily script now
+runs `cre_gate.py` observe-only; see Monitor mode section above.
 
 ## Adding a source
 
-1. Write `srcNewSource(tx, max)` in `collect.ts` returning `SourceResult`;
-   register it in `SOURCE_KEYS` + `runSource`.
-2. Map its key in `cre_ingest.py` `SOURCE_TO_BROKERAGE` (new slug -> add a
-   seed row in `../sql/001_cre_brokerages.sql` and apply it).
+1. Implement `srcNewSource(tx, max, monitor)` in `sources/<name>.ts` returning
+   `SourceResult`; register in `collect.ts` (`SOURCE_KEYS` + `runSource`).
+2. Map its key in `cre_ingest.py` `SOURCE_TO_BROKERAGE` (add seed row in
+   `../sql/001_cre_brokerages.sql` and apply).
 3. Probe: `npx tsx collect.ts --source=<key> --transaction=both --max-items=6`,
-   then `cre_ingest.py --dry-run` and check the staged TSV row.
+   then `cre_ingest.py --dry-run`. Adapter contract, monitor support, env vars:
+   `sources/CLAUDE.md`.

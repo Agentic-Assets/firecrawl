@@ -6,7 +6,10 @@
   "type": "module",
   "scripts": {
     "collect": "tsx collect.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:unit": "node --import tsx --test tests/ts/*.test.ts tests/ts/**/*.test.ts",
+    "test": "npm run typecheck && npm run test:unit",
+    "validate:supabase": "python3 cre_validate.py"
   },
   "dependencies": {
     "@mendable/firecrawl-js": "^4.3.5",

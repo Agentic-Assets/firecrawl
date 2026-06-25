@@ -1,329 +1,321 @@
 # CLAUDE.md - scripts/firecrawl-ops/
 
-Self-hosted Firecrawl operations layer for this fork. Two distinct systems live
-here: (1) the **CRE listing intelligence pipeline** that feeds EQUIRE's
-ListingHunterAgent, and (2) **local Firecrawl ops tooling** for running,
-configuring, and debugging the self-hosted stack.
+Agent routing for this folder. This file stays compact; use `README.md` for
+the longer human guide and runbook.
 
-Parent context: root `CLAUDE.md` and `.agents/skills/firecrawl-ops/` skill.
+Parent context: repo `AGENTS.md`, root `CLAUDE.md`, and
+`.agents/skills/firecrawl-ops/SKILL.md`.
 
----
+## Scope
 
-## Directory map
+Two systems live here:
 
-```
+1. CRE listing intelligence for EQUIRE. The production path is
+   `cre_collector/`, not the older `cre_scrapers/` package.
+2. Local Firecrawl ops tooling for the self-hosted stack at
+   `http://localhost:3002`.
+
+Do not commit secrets, local artifacts, `out/`, `node_modules/`,
+`__pycache__/`, generated SQL, API keys, service-role keys, or database URLs.
+
+## Start Here
+
+For CRE listing work, read in order (fresh machine? `cre_collector/SETUP.md`
+first and run `bash cre_collector/cre_setup.sh`):
+
+1. `cre_collector/START_HERE.md`
+2. `cre_collector/CLAUDE.md`
+3. `cre_collector/BROKERAGE_STATUS_2026-06-12.md`
+4. `../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` (architecture + go-forward plan)
+5. `../../docs/firecrawl-ops/references/cre-equire-consumer-api.md` (how EQUIRE reads the data)
+6. `../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md`
+7. `../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` (monitor run model + gotchas)
+8. `../../docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md` (Phase-2 status activation board impact)
+9. `cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` (monitor hardening, modular refactor, first `--apply` seed)
+10. `../../docs/firecrawl-ops/references/cre-cloud-hosting-options-2026-06-14.md` (where to run the pipeline: cloud vs Mac mini, platform comparison, anti-bot IP risk; decision aid, not actioned)
+
+For local Firecrawl stack work, read:
+
+1. `../../.agents/skills/firecrawl-ops/SKILL.md`
+2. `../../LOCAL_DEVELOPMENT_GUIDE.md`
+3. `../../docs/firecrawl-ops/references/ops-playbook.md`
+4. `../../docs/firecrawl-ops/references/tools-capabilities.md`
+5. `../../docs/firecrawl-ops/references/model-routing.md`
+
+## Directory Map
+
+```text
 scripts/firecrawl-ops/
-  CLAUDE.md                    ← this file
-  cre_pipeline.py              Legacy Python scraper CLI entry point (run / status / export)
-  cbre_scrape.py               Standalone CBRE page scraper (original single-broker tool)
-  cre_access_matrix.py         Live access probe across all broker sites
+  CLAUDE.md                    Agent routing, compact
+  README.md                    Human guide, fuller runbook
 
-  cre_scrapers/                Legacy Python scraper package (source probes / enrichment)
-    CLAUDE.md                  Scraper-specific guide
-    config.py                  BrokerConfig dataclass + BROKERS dict for legacy probes
-    normalizer.py              ListingData dataclass + field normalizers
-    base.py                    Abstract BaseScraper
-    pipeline.py                CREScrapingPipeline (orchestrates all scrapers)
-    cbre.py / jll.py / ...     Per-broker scrapers (10 total)
-
-  sql/                         Supabase schema migrations
-    CLAUDE.md                  SQL-specific guide
-    000_run_all.sql            Master psql runner (includes CREATE SCHEMA)
-    001_cre_brokerages.sql     Registry table + 10-broker seed
-    002_cre_listings.sql       cre_listings + contacts/documents/images child tables
-    003_cre_scrape_tracking.sql cre_scrape_jobs + cre_scrape_log
-    004_cre_indexes.sql        Performance indexes (geo, FTS, GIN, price, cap rate)
-    005_cre_views.sql          Agent-facing views, search_cre_listings(), updated_at triggers
-
-  cre_collector/               PRODUCTION multi-source collector + Supabase ingestor
-    CLAUDE.md                  Collector guide (source matrix, ingest semantics, daily runs)
-    START_HERE.md              Current status and new-session runbook
-    LESSONS_2026-06-11.md      Lessons from the verified buildout
-    collect.ts                 14-source collector (local Firecrawl, sale + lease, full pagination)
-    cre_ingest.py              Collector JSON -> credeals schema upserts (stdlib + psql)
-    cre_daily_update.sh        Daily refresh: healthcheck -> collect -> ingest --mark-missing
-    HANDOFF_LOG_2026-06-11.md  Detailed run, ingest, and Supabase evidence log
-
-  prometheus/                  Reference Prometheus collector + pre-collected dataset
-    CLAUDE.md                  Prometheus-specific guide (key: CBRE internal API)
-    script.ts                  Original TypeScript collector (cloud Firecrawl SDK)
-    data.json                  Pre-collected CBRE dataset (5,877 listings, 11MB, 2026-06-11)
-    README.md                  Original Prometheus README
-    multi_source/              Original 14-source Prometheus script (unmodified reference)
-    archive/                   Original zip artifacts as delivered
-
-  firecrawl_healthcheck.sh     Stack smoke test
-  firecrawl_cli.sh             Upstream Firecrawl CLI pinned to http://localhost:3002
-  firecrawl_request.py         Dependency-free HTTP helper (stdlib only)
-  firecrawl_mcp.sh             MCP wrapper pinned to local API
-  set_model_profile.sh         Writes OPENAI_BASE_URL + MODEL_NAME to root .env
-  sync_upstream_main.sh        Safe upstream firecrawl/main merge helper
-  sync_agent_skills.sh         Copies skills to ~/.agents/skills and symlinks
-  install_git_hooks.sh         Installs repo git hooks
-
-  local_firepdf_ocr.sh         Start/stop/health/smoke/doctor for local Docling OCR
-  local_firepdf_ocr_service.py Fire-PDF-compatible adapter (Firecrawl -> Docling)
-  local-firepdf-adapter.Dockerfile  Dockerfile for the adapter service
-  pdf_ocr_benchmark.py         PDF parser matrix benchmark (modes x profiles)
-  pdf_ocr_profiles.json        Named Docling OCR profile configs
-
-  bulk_triage_runner.py        Budget-first triage with escalation batches
-  crawl_swarm.py               Batch discovery / crawl workflows
-  firecrawl_swarm_pipeline.py  Multi-broker swarm pipeline
-  platform_access_probe.py     Access probe for web platforms
-  artificialanalysis_snapshot.py  Refresh model benchmark snapshot
-  google_flights_scrape.py     Atlas flight-deal scraper
-  parse_flight_deals.py        Flight deal parser
+  cre_collector/               Production CRE collector, Supabase ingestor, and
+                               observe-only monitor/change-tracking layer
+                               (cre_monitor.py, cre_gate.py, collect.ts --monitor)
+                               collect.ts (CLI entry), types.ts, lib/, sources/
+  cre_scrapers/                Legacy Python probes and detail enrichment
+  sql/                         Idempotent credeals schema migrations
+  prometheus/                  Original Prometheus CBRE reference dataset
   tests/                       Unit tests for local OCR service
+
+  firecrawl_healthcheck.sh     Local stack smoke test
+  firecrawl_cli.sh             Firecrawl CLI pinned to local API
+  firecrawl_request.py         Stdlib HTTP helper for saved artifacts and parse options
+  firecrawl_mcp.sh             MCP wrapper pinned to local API
+  set_model_profile.sh         Writes model profile values into root .env
+  sync_agent_skills.sh         Copies repo skills into user-level skill folders
+  sync_upstream_main.sh        Safe upstream merge helper on a branch
+  install_git_hooks.sh         Installs advisory git hooks
+
+  local_firepdf_ocr.sh         Docling OCR adapter lifecycle and smoke tests
+  local_firepdf_ocr_service.py Fire PDF compatible /ocr adapter
+  local-firepdf-adapter.Dockerfile
+  pdf_ocr_benchmark.py         PDF mode/profile benchmark runner
+  pdf_ocr_profiles.json        Named OCR profile configs
+
+  cre_pipeline.py              Legacy CRE scraper CLI
+  cbre_scrape.py               Original standalone CBRE scraper
+  cre_access_matrix.py         Platform access probe
+  bulk_triage_runner.py        Budget-first triage workflow
+  crawl_swarm.py               Batch crawl helper
+  firecrawl_swarm_pipeline.py  Multi-source scrape pipeline example
+  platform_access_probe.py     Web platform probe
+  artificialanalysis_snapshot.py
+  google_flights_scrape.py
+  parse_flight_deals.py
 ```
 
----
+## CRE Production Path
 
-## Part 1: CRE Listing Intelligence Pipeline
+Use `cre_collector/` for current listing data. It collects public sale and
+lease inventory, writes JSON artifacts, then ingests into the EQUIRE Supabase
+project `fhqycqubkkrdgzswccwd`, schema `credeals`.
 
-Scrapes commercial listing data from major national CRE brokerages, normalizes
-it into a canonical schema, and upserts to the EQUIRE Supabase project
-(`fhqycqubkkrdgzswccwd`). The data feeds EQUIRE's `ListingHunterAgent`,
-`MarketStrategistAgent`, and deal origination flows.
-
-### Database: `credeals` schema
-
-All tables live in the `credeals` schema of `fhqycqubkkrdgzswccwd`
-(same schema as the main EQUIRE application). Never use `public` for these.
-
-| Table | Purpose |
-|-------|---------|
-| `credeals.cre_brokerages` | Registry of brokerages + per-site Firecrawl config |
-| `credeals.cre_listings` | Canonical listing rows (one per property) |
-| `credeals.cre_listing_contacts` | Broker/agent contacts per listing |
-| `credeals.cre_listing_documents` | OM/brochure/flyer URLs per listing |
-| `credeals.cre_listing_images` | Photo URLs per listing |
-| `credeals.cre_scrape_jobs` | One row per scrape run (per broker) |
-| `credeals.cre_scrape_log` | One row per URL attempt within a job |
-
-Agent-facing objects (do not rename or drop without coordinating with CRE_EQUIRE repo):
-- `credeals.v_cre_listings_full` - listing + all child data as JSON arrays
-- `credeals.v_cre_active_for_sale` - active for-sale listings with primary contact
-- `credeals.v_cre_active_for_lease` - active for-lease listings with primary contact
-- `credeals.v_cre_market_summary` - per-(city, state, type) aggregates
-- `credeals.search_cre_listings(query, city, state, type, transaction)` - FTS + filters
-
-### Running migrations
-
-Migrations are already applied to `fhqycqubkkrdgzswccwd`. To re-apply or apply
-to a new project (run from `scripts/firecrawl-ops/sql/`):
+Core commands:
 
 ```bash
-# Option A: psql (idempotent - safe to re-run)
-export DATABASE_URL='postgresql://postgres:<pwd>@db.fhqycqubkkrdgzswccwd.supabase.co:5432/postgres'
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 000_run_all.sql
-
-# Option B: Supabase MCP - apply_migration per file in order (001 → 005)
-# project_id = "fhqycqubkkrdgzswccwd"
-
-# Option C: Supabase SQL editor - paste each file in order
+cd scripts/firecrawl-ops/cre_collector
+npm run typecheck
+npx tsx collect.ts --source=svn --transaction=both --max-items=6 --out=/tmp/probe.json
+python3 cre_ingest.py --in /tmp/probe.json --dry-run
+bash cre_daily_update.sh --no-mark-missing
 ```
 
-`000_run_all.sql` includes `CREATE SCHEMA IF NOT EXISTS credeals;` so it is
-safe on a fresh project. Each migration is idempotent (`IF NOT EXISTS` / `CREATE
-OR REPLACE` / `ON CONFLICT DO UPDATE`).
+Use `--mark-missing` only after a clean all-source full run and explicit
+go-ahead. While Savills sale is structurally capped, keep daily ingest
+additive with `--no-mark-missing`.
 
-See `sql/CLAUDE.md` for schema conventions and the full constraint reference.
+Change tracking (007 tables) runs through a separate observe-only path:
+`collect.ts --monitor` produces a cheap enumeration artifact consumed by
+`cre_monitor.py` and `cre_gate.py`, never by `cre_ingest.py`. NEVER feed a
+`--monitor` artifact to `cre_ingest.py` (it is sparse and the upsert would erase
+enriched prices, `raw_data`, and child rows). See
+`../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` for the full run
+model and gotchas.
 
-### Broker status
+Latest all-source baseline: 2026-06-12. See `cre_collector/START_HERE.md`
+for live counts and post-run source-specific changes before quoting coverage.
 
-Bulk collection now runs through `cre_collector/collect.ts` (see its
-CLAUDE.md for the verified per-source matrix with sale/lease totals). The
-2026-06-11 verification flipped two former blockers: Newmark works via its
-public Algolia search API (creds embedded in the page), and Marcus &
-Millichap works under stealth with retries.
+Supabase objects live under `credeals`, not `public`:
 
-| Broker | Slug | Status | Collection method (cre_collector) |
-|--------|------|--------|-----------------------------------|
-| CBRE | `cbre` | Active | Internal JSON API, stealth (sale 5.9k + lease 14.8k); also `cbre-dealflow` sub-source |
-| JLL | `jll` | Active | Search pages (sale 333 + lease 4.3k); also `jll-investor` sub-source |
-| Cushman & Wakefield | `cushman-wakefield` | Active (limited) | First rendered Coveo cards only; POST API blocked |
-| Colliers | `colliers` | Unsupported in collector | POST-only API; Python scraper path still available |
-| Marcus & Millichap | `marcus-millichap` | Active (flaky) | Stealth + 120s timeout + retries; sale-only |
-| Avison Young | `avison-young` | Active (limited) | SPA sidebar; only first ~11 cards render locally |
-| NAI Global | `nai-global` | Active (limited) | Infabode widget; synthesized `card:` ids, first batch only |
-| Newmark | `newmark` | Active | Algolia API, per-state facets plus property-type sub-splits (latest sale 1.1k + lease 3.2k) |
-| SVN | `svn` | Active | Buildout inventory API (~5.5k items) |
-| Lee & Associates | `lee-associates` | Active but blocked in latest run | Buildout inventory API; latest run aborted at 12/333 failed pages due HTML interstitials |
-| Savills | `savills` | Active | Server-rendered pages; sale 100 of 105 source cards, US lease empty |
+- `cre_brokerages`
+- `cre_listings`
+- `cre_listing_contacts`
+- `cre_listing_documents`
+- `cre_listing_images`
+- `cre_scrape_jobs`
+- `cre_scrape_log`
+- `cre_listing_events` (change ledger, 007)
+- `cre_source_index` (enumeration snapshot + prior price columns, 007+009)
+- `cre_enrichment_queue` (detail-render work queue, 007)
+- `cre_source_baseline` (coverage health baseline, 007)
+- `cre_listing_price_history` (append-only watched-field snapshots, 009; existence-guarded pre-apply)
+- `cre_listing_contacts_archive` (contacts snapshot at retirement, 009; existence-guarded pre-apply)
+- `cre_listing_documents_archive` (documents snapshot at retirement, 009; existence-guarded pre-apply)
+- `cre_listing_media`, `cre_listing_links` (detail media/link capture, 011; + `*_archive`; applied to prod, ingest writes gated)
+- `cre_listing_om_facts` (OM/PDF-parsed underwriting facts, 013; + `*_archive`; applied to prod, OM-parse gated so currently empty)
+- `cre_zip_cbsa_crosswalk` (offline ZIP->county+CBSA reference, 014; loaded 33,791 rows)
+- `v_cre_listings_full`
+- `v_cre_active_for_sale`
+- `v_cre_active_for_lease`
+- `v_cre_market_summary`
+- `v_cre_recent_changes` (7-day change ledger feed, 007+005)
+- `search_cre_listings(query, p_city, p_state, p_type, p_transaction)`
 
-### Source of truth alignment
+Document and image tables store source URLs only. Do not download public PDFs
+or images into Supabase storage for the bulk collector.
 
-Production collector source mapping lives in `cre_collector/cre_ingest.py`
-`SOURCE_TO_BROKERAGE` and **must** match `001_cre_brokerages.sql` seed slugs.
-The legacy `cre_scrapers/config.py` mapping matters only when using the older
-Python scraper package.
+## Monitor rollout (2026-06-13/14)
 
-`cap_rate` and `occupancy_rate` are stored as fractions `[0, 1]`:
-6.5% = `0.065`. This matches the EQUIRE valuation layer.
+Track 1 shipped: monitor hardening, `collect.ts` modular split, coverage gate
+triple-gating, four detail-id monitor exclusions. First gated `cre_monitor.py
+--apply` seed completed on `avison-young` (baseline + index only; observe-only).
+Track 2 shipped 2026-06-13: observe-only seed scaled to all 11 monitor-enabled
+sources (`cre_source_baseline`=11, `cre_source_index`=73,693, 0 events, board
+unchanged); `jll`/`jll-investor` monitor short-circuit; Phase-2 status
+activation wired + hardened in `cre_ingest.py` (COALESCE + terminal guard +
+default-off `CRE_STATUS_FLIP_MAX_FRACTION` breaker); EQUIRE board-gate widening
+(Option B) committed on `dynamically-display-cre-listing-data`; the agent-facing
+`005` views widened to the on-market set (`active`/`under_contract`/`pending`)
+on the collector branch (apply gated, verified a zero-row no-op today).
+Gate-0 prod status CHECK verified.
+Track 2 additionally shipped 2026-06-14: colliers-main full run COMPLETE and
+ingested additively (status activation OFF); colliers brokerage total now 17,001
+active (15,829 from main: 5,750 sale + 8,897 lease + 1,182 sale_or_lease, 0
+soft-deleted, 0 duplicate external_ids); live board total now 87,328 active.
+Status activation is now OPT-IN default-off in `cre_ingest.py` (requires
+`--activate-status` flag or `CRE_ACTIVATE_STATUS=1`; new helpers
+`_status_activation_enabled()` and `apply_status_activation_gate()`).
+`cre_gate.py` wired into `cre_daily_update.sh` as observe-only step [3/4]
+(`--in RUN --apply --strict --out gate.json`), with auto-downgrade to
+`--no-mark-missing` if the strict gate detects any partial/regressed source.
+Monitor and daily launchd tiers loaded and EXECUTING on schedule:
+`ai.agentic.cre-monitor` (every 3h at :15, `CRE_MONITOR_APPLY=1`; records 007
+change events, never touches `status`/`deleted_at`) and `ai.agentic.cre-daily`
+(06:30 daily, runs `cre_daily_update.sh --no-mark-missing`, status activation
+OFF) now run from `/Users/caymanseagraves/Github/agentic-assets/firecrawl`
+(relocated out of `~/Documents`, so the prior macOS TCC / Full Disk Access
+exit-126 block no longer applies). The monitor tier has a confirmed clean run
+(`out/daily/last_run_monitor.json` rc:0, 2026-06-15); the daily tier executes on
+schedule (additive). Weekly reconcile tier
+(`ai.agentic.cre-weekly`) intentionally NOT loaded (held for explicit
+go-ahead). Live DB hardening applied (cap_rate/occupancy_rate CHECKs,
+4 FK ON DELETE SET NULL, 2 NULLS NOT DISTINCT unique indexes,
+`v_cre_listings_full` security_invoker reasserted; no board change).
+Data-quality cleanups applied: 50 board-invisible JLL rows corrected to
+`status='inactive'`; transwestern scrape_config notes restored; Savills
+residential contamination removed (101 mis-categorized sale rows + 1 ghost
+lease soft-deleted), leaving 2 defensible Chicago retail lease rows. Savills
+sale is structurally capped with no public US commercial-sale feed.
+Track 3 shipped 2026-06-15 (freshness/history remediation): count-aware folded
+coverage guard in `main()` (M1 data-loss fix); price COALESCE-keep on all 4
+price columns (L1); revival terminal-stickiness guard (M5); `disappeared` event
+emitted in the same transaction as mark-missing (M3); ingest-written
+`cre_listing_price_history` (H4a, existence-guarded); contacts + documents
+archive at retirement (M2, existence-guarded); flip-breaker metric widened (L4a);
+monitor `old_value` populated from `prior_sale_price`/`prior_lease_rate` (H4b);
+Savills `IsCommercial` sale guard and lease pagination (L5/L3); signal-staleness
+check for disappearance-only sources in `cre_status.sh` (H3);
+`CRE_STATUS_FLIP_MAX_FRACTION=0.30` added to daily + weekly plist templates
+(L4b). New migration `009_cre_history_retention.sql` adds the history + archive
+tables and the `trg_cre_listings_block_history_delete` retention trigger
+(registered in `000_run_all.sql`). RESOLVED: the `test_ingest_status_activation.py`
+revival assertion now asserts the M5 guarded-revival CASE (and that the old
+unconditional form is gone) and passes against current `cre_ingest.py`.
+`009_cre_history_retention.sql` is APPLIED to prod (2026-06-15, verified live:
+price-history + archive tables, `prior_*` columns, and the retention trigger all
+present; history rows are being written). Still gated for go-ahead:
+deploy the consumer board-gate branch (must precede live T3.1 activation);
+trigger first live status activation; apply the widened `005` views (live DDL,
+alongside the consumer deploy). The Tier-B `cre_enrichment_queue` worker
+(`cre_enrich.py` + `lib/enrich.ts` + `sql/010`) and the cadence restructure
+(monitor 2x/day + enrich every 4h + additive weekly) SHIPPED in code 2026-06-15;
+the live launchd cutover (load enrich, reload monitor at 2x/day, retire daily)
+is held for go-ahead. Phase-2 data-lift DDL `011`-`014` is APPLIED to prod
+(additive, board unchanged); see `cre_collector/CLAUDE.md` and `START_HERE.md`.
 
-### Legacy Python pipeline CLI
+| Module | Role |
+|---|---|
+| `collect.ts` | CLI entry; orchestrates source runs and `--monitor` |
+| `types.ts` | Shared listing types and `SourceResult` contract |
+| `lib/` | `config`, `scrape`, `harvest`, `parse`, `geo`, `enrich`, `broker`, `html`, `util` primitives |
+| `sources/*.ts` | Per-broker adapters (one file per source key) |
+| `cre_ingest.py` | Full artifact upsert into `cre_listings` (+ children) |
+| `cre_monitor.py` | Observe-only diff/events/index (007 tables) |
+| `cre_gate.py` | Per-source coverage baseline and `mark_missing_safe` rollup |
 
-The daily production path is `cre_collector/`. The commands below are for the
-legacy Python scraper package and source-specific experiments.
+## Broker Status Rules
+
+Current per-source status and counts live in `cre_collector/START_HERE.md` and
+`cre_collector/BROKERAGE_STATUS_2026-06-12.md` (the canonical homes). Do not
+restate counts here, and do not treat the legacy `cre_scrapers/config.py`
+active flags as production coverage.
+
+Durable cautions:
+
+- Colliers has two folded sources under the `colliers` brokerage: `colliers`
+  (SalesTracker investment-sale subset) and `colliers-main` (full public site
+  via XML sitemap, `main:` ids). The main-site full run is COMPLETE as of
+  2026-06-14 (15,829 active rows ingested additively; colliers total 17,001).
+- Keep daily ingest additive (`cre_daily_update.sh --no-mark-missing`) while
+  Savills sale remains structurally capped (no public US commercial-sale feed).
+  Use `--mark-missing` only after a clean all-source run and explicit go-ahead.
+
+## Local Firecrawl Ops
+
+Run from repo root unless a command says otherwise.
 
 ```bash
-# From scripts/firecrawl-ops/
-
-# Run all active brokers (max 100 listings each), output to ./output/
-python3 cre_pipeline.py run-all --max=100 --out=./output
-
-# Run specific brokers only
-python3 cre_pipeline.py run-all --broker=cbre --broker=colliers --max=50
-
-# Run a single broker
-python3 cre_pipeline.py run colliers --max=25
-
-# Check checkpoint status across all brokers
-python3 cre_pipeline.py status
-
-# Export all scraped listings to JSONL (local files or Supabase)
-python3 cre_pipeline.py export --out=./cre_listings.jsonl
-
-# Apply schema for the legacy REST loader
-python3 cre_pipeline.py apply-schema
-python3 cre_pipeline.py apply-schema --dry-run
+bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
+docker compose ps
 ```
 
-### CBRE internal API (faster than page scraping)
+This Mac uses OrbStack. Expected local API:
 
-CBRE exposes an undocumented internal listings JSON API:
-
-```
-GET https://www.cbre.com/listings-api/propertylistings/query
-    ?site=us-comm&Common.Aspects=isSale&PageSize=200&Page=1
+```text
+http://localhost:3002
 ```
 
-Response: `{ "DocumentCount": 5877, "Documents": [[...listing objects...]] }`
-
-Still behind Cloudflare - must route through local Firecrawl with
-`proxy: "stealth"` and `formats: ["rawHtml"]`. Use `waitFor: 4000` (faster
-than the SPA detail pages which need 6000+).
-
-Pre-collected dataset: `prometheus/data.json` (5,877 listings, 2026-06-11).
-Reference TypeScript implementation: `prometheus/script.ts`.
-Production collector implementation: `cre_collector/collect.ts`.
-
-Other large brokerages (JLL, Colliers, Cushman) likely have similar internal
-APIs - check browser DevTools network tab before building a page scraper.
-
-### Environment variables
+Use the wrapper for local calls:
 
 ```bash
-FIRECRAWL_API_URL=http://localhost:3002    # default; override for remote
-FIRECRAWL_API_KEY=                         # empty OK for self-hosted
-SUPABASE_URL=https://fhqycqubkkrdgzswccwd.supabase.co
-POSTGRES_URL_NON_POOLING=postgresql://postgres:<pwd>@db.fhqycqubkkrdgzswccwd.supabase.co:5432/postgres
-POSTGRES_URL=postgresql://postgres:<pwd>@db.fhqycqubkkrdgzswccwd.supabase.co:5432/postgres
-
-# Legacy cre_pipeline.py REST upsert path only:
-SUPABASE_SERVICE_KEY=<service-role-key>   # never commit
+scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty
+scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
+scripts/firecrawl-ops/firecrawl_cli.sh search "Dallas office for sale" --limit 5 --json
 ```
 
----
-
-## Part 2: Local Firecrawl Ops Tooling
-
-Wrappers and helpers for the self-hosted Firecrawl Docker stack
-(OrbStack on this Mac, `http://localhost:3002`).
-
-### Health and status
+Use `firecrawl_request.py` when the CLI lacks a needed option, especially
+advanced `/v2/parse` PDF options or split saved artifacts.
 
 ```bash
-bash firecrawl_healthcheck.sh          # smoke test: API, queue, models
-docker compose ps                      # container status
-```
-
-### CLI wrapper
-
-```bash
-# Scrape a page
-bash firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty
-
-# Parse a local PDF
-bash firecrawl_cli.sh parse ./report.pdf --json --pretty
-
-# Search
-bash firecrawl_cli.sh search "Dallas office for sale" --limit 5 --json
-
-# With model profile and health check
-bash firecrawl_cli.sh --firecrawl-model-profile budget --firecrawl-healthcheck \
-  scrape https://example.com --format summary --json
-```
-
-### Direct HTTP helper
-
-Use `firecrawl_request.py` (stdlib only, no pip required) for advanced options
-the CLI doesn't expose, or when you need saved split artifacts:
-
-```bash
-python3 firecrawl_request.py scrape https://example.com \
-  --formats markdown,links --pretty --out ./out/example.json
-
-python3 firecrawl_request.py parse ./report.pdf \
+scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html --pdf-mode ocr --max-pages 25 --out-dir ./out/report
 ```
 
-### Model profiles
+## Model Profiles
+
+Switch model routing with:
 
 ```bash
-bash set_model_profile.sh budget       # OpenRouter deepseek/deepseek-v4-flash (cheap)
-bash set_model_profile.sh escalated    # OpenRouter deepseek/deepseek-v4-pro (smarter)
-bash set_model_profile.sh openai-direct  # OpenAI gpt-5.4-mini
-# After switching, recreate the API container:
+scripts/firecrawl-ops/set_model_profile.sh budget
+scripts/firecrawl-ops/set_model_profile.sh escalated
+scripts/firecrawl-ops/set_model_profile.sh gateway
+scripts/firecrawl-ops/set_model_profile.sh gateway-codex
+scripts/firecrawl-ops/set_model_profile.sh openai-direct
 docker compose up -d --force-recreate api
 ```
 
-### Cloudflare bypass
+The script writes local `.env` values. Add provider keys manually and never
+commit them.
 
-For sites behind Cloudflare Managed Challenge (CBRE, others):
-- `proxy: "stealth"` in the scrape request - routes through playwright-extra stealth
-- `waitFor: 6000` for SPA detail pages; `waitFor: 4000` for JSON API endpoints
-- Requires the `stealthProxy: true` fix in `apps/api/src/scraper/scrapeURL/engines/index.ts`
-  (already applied in this fork)
+## PDF OCR
 
-Reference: `docs/firecrawl-ops/references/playwright-stealth-cloudflare.md`
-
-### Local PDF OCR (Docling)
+Use the local Docling adapter for scanned, image-only, slide-style, or
+layout-heavy PDFs:
 
 ```bash
-bash local_firepdf_ocr.sh start --profile research-page-aware
-bash local_firepdf_ocr.sh health
-bash local_firepdf_ocr.sh smoke ./report.pdf     # end-to-end readiness check
-bash local_firepdf_ocr.sh stop
-
-# Benchmark modes and profiles on a PDF
-python3 pdf_ocr_benchmark.py ./report.pdf --modes fast,auto,ocr \
-  --profiles default,research-page-aware,tables-accurate --out-dir /tmp/bench
+scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
+scripts/firecrawl-ops/local_firepdf_ocr.sh health
+scripts/firecrawl-ops/local_firepdf_ocr.sh doctor --smoke-pdf ./report.pdf
+scripts/firecrawl-ops/local_firepdf_ocr.sh stop
 ```
 
-Mode guidance: `fast` for born-digital text PDFs; `ocr` for scanned/image-only.
-Named profiles: `pdf_ocr_profiles.json`. See `.agents/skills/firecrawl-ops/` for
-full reference.
+Use `fast` for born-digital text PDFs first, `ocr` for scanned or image-only
+files, and `pdf_ocr_benchmark.py` when quality matters.
 
-### Upstream sync
+## Sync And Branch Safety
+
+Never push to `main`. For upstream Firecrawl sync:
 
 ```bash
-bash sync_upstream_main.sh    # merges firecrawl/main onto a branch (never main)
-bash sync_agent_skills.sh     # copies skills to ~/.agents/skills
+scripts/firecrawl-ops/sync_upstream_main.sh
 ```
 
----
+After editing repo skills or their source docs:
 
-## Key references
+```bash
+scripts/firecrawl-ops/sync_agent_skills.sh
+```
 
-| File | Purpose |
-|------|---------|
-| `docs/firecrawl-ops/references/cre-listing-system-design.md` | Full architecture doc: data model, broker matrix, agent SQL examples, scale notes |
-| `docs/firecrawl-ops/references/cbre-scraping.md` | CBRE-specific scraping guide (stealth settings, URL structure, API path) |
-| `docs/firecrawl-ops/references/playwright-stealth-cloudflare.md` | How the Cloudflare bypass works end to end |
-| `docs/firecrawl-ops/references/model-routing.md` | Model profiles and escalation rules |
-| `docs/firecrawl-ops/references/ops-playbook.md` | Health checks, logs, restart procedures |
-| `cre_scrapers/CLAUDE.md` | Scraper package internals, adding brokers, known issues |
-| `sql/CLAUDE.md` | Schema conventions, migration instructions, agent-facing object list |
-| `prometheus/CLAUDE.md` | CBRE internal API discovery, field mapping, Python adaptation guide |
+Keep fork-owned ops assets in `.agents/`, `docs/firecrawl-ops/`,
+`scripts/firecrawl-ops/`, `LOCAL_DEVELOPMENT_GUIDE.md`, and `AGENTS.md`.

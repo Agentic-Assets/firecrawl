@@ -8,8 +8,23 @@
 -- search_cre_listings() rather than touching base tables, so the contract
 -- is stable even as the schema evolves.
 --
--- Requires: 001..004. Idempotent: views use CREATE OR REPLACE; the trigger
--- function is CREATE OR REPLACE and triggers are dropped-then-created.
+-- On-market predicate: the display/search surfaces filter
+-- status IN ('active','under_contract','pending'), not status='active' alone.
+-- With the Phase-2 COALESCE activation in cre_ingest.py, status is never NULL
+-- (no-signal rows stay 'active'), and under-contract / pending are high-value
+-- deal signals EQUIRE agents should see. This matches the EQUIRE board gate
+-- (Option B). Terminal rows (sold / leased / off_market) and soft-deleted rows
+-- (deleted_at IS NOT NULL) stay excluded. The views keep their historical names
+-- (v_cre_active_for_*) to preserve the EQUIRE read contract; "active" in those
+-- names now reads as "on market". Until T3.1 status activation runs, the board
+-- is 100% 'active', so this widening is a no-op (zero row delta).
+--
+-- Requires: 001..004, plus 011 (media/links) and 013 (om_facts) for the
+-- v_cre_listings_full LATERALs, and 012 for the institutional / geo columns
+-- surfaced by v_cre_active_for_sale / v_cre_active_for_lease. 000_run_all.sql
+-- runs 005 LAST so all of those exist first. Idempotent: views use CREATE OR
+-- REPLACE; the trigger function is CREATE OR REPLACE and triggers are
+-- dropped-then-created.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -41,14 +56,21 @@ SELECT
     b.slug AS brokerage_slug,
     COALESCE(c.contacts,  '[]'::json) AS contacts,
     COALESCE(d.documents, '[]'::json) AS documents,
-    COALESCE(i.images,    '[]'::json) AS images
+    COALESCE(i.images,    '[]'::json) AS images,
+    COALESCE(md.media,    '[]'::json) AS media,
+    COALESCE(lk.links,    '[]'::json) AS links,
+    COALESCE(of.om_facts, '[]'::json) AS om_facts
 FROM credeals.cre_listings l
 JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
 LEFT JOIN LATERAL (
     SELECT json_agg(json_build_object(
         'id', cc.id, 'name', cc.name, 'title', cc.title,
         'email', cc.email, 'phone', cc.phone,
-        'brokerage_name', cc.brokerage_name, 'is_primary', cc.is_primary
+        'brokerage_name', cc.brokerage_name,
+        'profile_url', cc.profile_url,
+        'avatar_url', cc.avatar_url,
+        'vcard_url', cc.vcard_url,
+        'is_primary', cc.is_primary
     ) ORDER BY cc.is_primary DESC, cc.name) AS contacts
     FROM credeals.cre_listing_contacts cc WHERE cc.listing_id = l.id
 ) c ON true
@@ -66,13 +88,47 @@ LEFT JOIN LATERAL (
     ) ORDER BY ci.is_primary DESC, ci.display_order) AS images
     FROM credeals.cre_listing_images ci WHERE ci.listing_id = l.id
 ) i ON true
+LEFT JOIN LATERAL (
+    SELECT json_agg(json_build_object(
+        'id', cm.id, 'media_type', cm.media_type, 'provider', cm.provider,
+        'url', cm.url, 'embed_url', cm.embed_url, 'title', cm.title
+    ) ORDER BY cm.media_type, cm.created_at) AS media
+    FROM credeals.cre_listing_media cm WHERE cm.listing_id = l.id
+) md ON true
+LEFT JOIN LATERAL (
+    SELECT json_agg(json_build_object(
+        'id', cl.id, 'link_type', cl.link_type, 'url', cl.url, 'rel', cl.rel
+    ) ORDER BY cl.link_type, cl.created_at) AS links
+    FROM credeals.cre_listing_links cl WHERE cl.listing_id = l.id
+) lk ON true
+-- OM/PDF-parsed facts (scalar audit trail + unit_mix + rent_roll), provenance
+-- included, mirroring the media/links LATERALs. Created after 013 so the
+-- cre_listing_om_facts table exists before this view references it.
+LEFT JOIN LATERAL (
+    SELECT json_agg(json_build_object(
+        'id', cof.id, 'fact_group', cof.fact_group, 'fact_key', cof.fact_key,
+        'fact_value_text', cof.fact_value_text, 'fact_value_num', cof.fact_value_num,
+        'unit_count', cof.unit_count, 'source_doc_url', cof.source_doc_url,
+        'parser_version', cof.parser_version, 'confidence', cof.confidence,
+        'parsed_at', cof.parsed_at
+    ) ORDER BY cof.fact_group, cof.fact_key) AS om_facts
+    FROM credeals.cre_listing_om_facts cof WHERE cof.listing_id = l.id
+) of ON true
 WHERE l.deleted_at IS NULL;
 
-COMMENT ON VIEW credeals.v_cre_listings_full IS 'Listing + brokerage name + contacts/documents/images as JSON arrays. Excludes soft-deleted. Primary agent read.';
+COMMENT ON VIEW credeals.v_cre_listings_full IS 'Listing + brokerage name + contacts/documents/images/media/links/om_facts as JSON arrays. Excludes soft-deleted. Primary agent read.';
+COMMENT ON COLUMN credeals.v_cre_listings_full.scraped_at IS 'Pass-through from cre_listings.scraped_at. Collector snapshot time, not broker listing date.';
+COMMENT ON COLUMN credeals.v_cre_listings_full.listing_date IS 'Pass-through from cre_listings.listing_date. Source-provided first-listed/published date only when explicitly exposed; otherwise null or provisional. Do not label as Listed unless provenance proves it.';
+COMMENT ON COLUMN credeals.v_cre_listings_full.updated_date IS 'Pass-through from cre_listings.updated_date. Broker/source last-updated or recency field when exposed; not necessarily first-listed/on-market.';
+COMMENT ON COLUMN credeals.v_cre_listings_full.created_at IS 'Pass-through from cre_listings.created_at. Database row creation time, not source listing recency.';
+COMMENT ON COLUMN credeals.v_cre_listings_full.updated_at IS 'Pass-through from cre_listings.updated_at. Database row mutation time, not source listing recency.';
+COMMENT ON COLUMN credeals.v_cre_listings_full.deleted_at IS 'Pass-through from cre_listings.deleted_at. Soft-delete marker; non-null means excluded from active listing surfaces.';
+ALTER VIEW credeals.v_cre_listings_full SET (security_invoker = true);
 
 -- ===========================================================================
 -- VIEW: v_cre_active_for_sale
--- Active sale listings with brokerage name and the primary contact inlined.
+-- On-market sale listings (active / under_contract / pending) with brokerage
+-- name and the primary contact inlined.
 -- Drives mandate-fit screening and OriginationBrief seeding.
 -- ===========================================================================
 CREATE OR REPLACE VIEW credeals.v_cre_active_for_sale AS
@@ -81,10 +137,13 @@ SELECT
     l.external_id, l.source_url, l.canonical_url,
     l.title, l.address, l.city, l.state, l.zip, l.county,
     l.market, l.submarket, l.lat, l.lng,
-    l.property_type,
+    l.cbsa_code, l.cbsa_name,
+    l.property_type, l.property_subtype, l.building_class,
     l.size_sf, l.lot_size_sf, l.year_built, l.units,
     l.sale_price_usd, l.sale_price_per_sf, l.cap_rate, l.noi,
     l.gross_revenue, l.occupancy_rate,
+    l.apn, l.tenant_name, l.guarantor, l.lease_years_remaining,
+    l.price_per_unit, l.grm, l.price_per_acre, l.num_rooms, l.revpar,
     l.highlights, l.description,
     pc.name  AS primary_contact_name,
     pc.email AS primary_contact_email,
@@ -101,14 +160,19 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) pc ON true
 WHERE l.deleted_at IS NULL
-  AND l.status = 'active'
+  AND l.status IN ('active', 'under_contract', 'pending')
   AND l.transaction_type IN ('sale', 'sale_or_lease');
 
-COMMENT ON VIEW credeals.v_cre_active_for_sale IS 'Active for-sale listings with brokerage + primary contact. Mandate-fit screening / OriginationBrief seed.';
+COMMENT ON VIEW credeals.v_cre_active_for_sale IS 'On-market for-sale listings (active/under_contract/pending) with brokerage + primary contact, plus institutional sale fields (subtype, class, APN, tenant/guarantor, lease years remaining, M&M valuation multiples) and derived CBSA. Mandate-fit screening / OriginationBrief seed.';
+COMMENT ON COLUMN credeals.v_cre_active_for_sale.scraped_at IS 'Pass-through from cre_listings.scraped_at. Collector snapshot time, not broker listing date.';
+COMMENT ON COLUMN credeals.v_cre_active_for_sale.listing_date IS 'Pass-through from cre_listings.listing_date. Source-provided first-listed/published date only when explicitly exposed; otherwise null or provisional.';
+COMMENT ON COLUMN credeals.v_cre_active_for_sale.updated_at IS 'Pass-through from cre_listings.updated_at. Database row mutation time, not source listing recency.';
+ALTER VIEW credeals.v_cre_active_for_sale SET (security_invoker = true);
 
 -- ===========================================================================
 -- VIEW: v_cre_active_for_lease
--- Active lease listings with brokerage name and primary contact.
+-- On-market lease listings (active / under_contract / pending) with brokerage
+-- name and primary contact.
 -- ===========================================================================
 CREATE OR REPLACE VIEW credeals.v_cre_active_for_lease AS
 SELECT
@@ -116,9 +180,12 @@ SELECT
     l.external_id, l.source_url, l.canonical_url,
     l.title, l.address, l.city, l.state, l.zip, l.county,
     l.market, l.submarket, l.lat, l.lng,
-    l.property_type,
+    l.cbsa_code, l.cbsa_name,
+    l.property_type, l.property_subtype, l.building_class,
     l.size_sf, l.available_sf, l.min_divisible_sf, l.max_divisible_sf,
     l.year_built, l.floors,
+    l.clear_height_ft, l.dock_doors, l.drive_in_doors,
+    l.power_service, l.rail_served,
     l.lease_rate_min, l.lease_rate_max, l.lease_rate_type,
     l.term_min_months, l.term_max_months,
     l.occupancy_rate, l.highlights, l.description,
@@ -137,10 +204,14 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) pc ON true
 WHERE l.deleted_at IS NULL
-  AND l.status = 'active'
+  AND l.status IN ('active', 'under_contract', 'pending')
   AND l.transaction_type IN ('lease', 'sale_or_lease');
 
-COMMENT ON VIEW credeals.v_cre_active_for_lease IS 'Active for-lease listings with brokerage + primary contact, including divisibility and lease terms.';
+COMMENT ON VIEW credeals.v_cre_active_for_lease IS 'On-market for-lease listings (active/under_contract/pending) with brokerage + primary contact, including divisibility, lease terms, industrial specs (clear height, dock/drive-in doors, power, rail), subtype/class, and derived CBSA.';
+COMMENT ON COLUMN credeals.v_cre_active_for_lease.scraped_at IS 'Pass-through from cre_listings.scraped_at. Collector snapshot time, not broker listing date.';
+COMMENT ON COLUMN credeals.v_cre_active_for_lease.listing_date IS 'Pass-through from cre_listings.listing_date. Source-provided first-listed/published date only when explicitly exposed; otherwise null or provisional.';
+COMMENT ON COLUMN credeals.v_cre_active_for_lease.updated_at IS 'Pass-through from cre_listings.updated_at. Database row mutation time, not source listing recency.';
+ALTER VIEW credeals.v_cre_active_for_lease SET (security_invoker = true);
 
 -- ===========================================================================
 -- VIEW: v_cre_market_summary
@@ -165,16 +236,17 @@ SELECT
     max(l.scraped_at)                                                     AS last_scraped_at
 FROM credeals.cre_listings l
 WHERE l.deleted_at IS NULL
-  AND l.status = 'active'
+  AND l.status IN ('active', 'under_contract', 'pending')
   AND l.city IS NOT NULL
   AND l.state IS NOT NULL
 GROUP BY l.city, l.state, l.property_type;
 
-COMMENT ON VIEW credeals.v_cre_market_summary IS 'Per-(city,state,property_type) aggregates: counts, avg price/PSF/size, median cap rate, avg occupancy. MarketStrategistAgent input.';
+COMMENT ON VIEW credeals.v_cre_market_summary IS 'Per-(city,state,property_type) aggregates over on-market listings (active/under_contract/pending): counts, avg price/PSF/size, median cap rate, avg occupancy. MarketStrategistAgent input.';
+ALTER VIEW credeals.v_cre_market_summary SET (security_invoker = true);
 
 -- ===========================================================================
 -- FUNCTION: search_cre_listings(...)
--- Full-text search over active listings with optional structured filters.
+-- Full-text search over on-market listings with optional structured filters.
 -- ts_rank-ordered. The canonical entry point for ListingHunterAgent and the
 -- deal-assistant sourcing tools. Empty/NULL query -> filter-only browse.
 -- ===========================================================================
@@ -227,7 +299,7 @@ AS $$
     FROM credeals.cre_listings l
     JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
     WHERE l.deleted_at IS NULL
-      AND l.status = 'active'
+      AND l.status IN ('active', 'under_contract', 'pending')
       AND (query IS NULL OR btrim(query) = '' OR
            to_tsvector('english',
                coalesce(l.title, '') || ' ' || coalesce(l.address, '') || ' ' ||
@@ -243,7 +315,30 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION credeals.search_cre_listings(text, text, text, text, text)
-    IS 'FTS + optional filters (city/state/type/transaction) over active listings, ts_rank-ordered, capped at 200. Canonical agent search entry point.';
+    IS 'FTS + optional filters (city/state/type/transaction) over on-market listings (active/under_contract/pending), ts_rank-ordered, capped at 200. Canonical agent search entry point.';
+
+REVOKE EXECUTE ON FUNCTION credeals.search_cre_listings(text, text, text, text, text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION credeals.update_cre_listing_timestamp() FROM PUBLIC;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE EXECUTE ON FUNCTION credeals.search_cre_listings(text, text, text, text, text) FROM anon;
+        REVOKE EXECUTE ON FUNCTION credeals.update_cre_listing_timestamp() FROM anon;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        REVOKE EXECUTE ON FUNCTION credeals.search_cre_listings(text, text, text, text, text) FROM authenticated;
+        REVOKE EXECUTE ON FUNCTION credeals.update_cre_listing_timestamp() FROM authenticated;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        GRANT EXECUTE ON FUNCTION credeals.search_cre_listings(text, text, text, text, text) TO service_role;
+        -- update_cre_listing_timestamp() is a trigger function: it fires in the
+        -- table owner's context and the trigger engine does not check per-role
+        -- EXECUTE, so no service_role GRANT is needed. The REVOKEs above stay as
+        -- defense in depth (advisor review 2026-06-13, finding 21).
+    END IF;
+END
+$$;
 
 -- ===========================================================================
 -- Triggers: keep updated_at fresh on mutation.
@@ -259,3 +354,60 @@ CREATE TRIGGER trg_cre_brokerages_updated_at
     BEFORE UPDATE ON credeals.cre_brokerages
     FOR EACH ROW
     EXECUTE FUNCTION credeals.update_cre_listing_timestamp();
+
+-- ===========================================================================
+-- VIEW: v_cre_recent_changes
+-- Recent (7-day) entries from the append-only change ledger (007), with the
+-- listing title/url and brokerage slug inlined. Operator + prospecting-ops
+-- freshness read. ADDITIVE: does NOT change the four existing display views.
+-- Requires cre_listing_events (007), which is created before 005 runs.
+-- ===========================================================================
+CREATE OR REPLACE VIEW credeals.v_cre_recent_changes AS
+SELECT
+    e.id, e.listing_id, e.brokerage_id, e.scrape_job_id,
+    e.event_type, e.field, e.old_value, e.new_value, e.source_value,
+    e.detected_at,
+    l.title, l.source_url,
+    b.slug AS brokerage_slug
+FROM credeals.cre_listing_events e
+JOIN      credeals.cre_listings  l ON l.id = e.listing_id
+LEFT JOIN credeals.cre_brokerages b ON b.id = e.brokerage_id
+WHERE e.detected_at > now() - interval '7 days'
+ORDER BY e.detected_at DESC;
+
+COMMENT ON VIEW credeals.v_cre_recent_changes IS 'Last 7 days of cre_listing_events with listing title/url + brokerage slug. Operator/prospecting-ops freshness read. Additive; existing display views unchanged.';
+ALTER VIEW credeals.v_cre_recent_changes SET (security_invoker = true);
+
+-- ===========================================================================
+-- Declarative service-role-only posture for the display views. These views
+-- carry no PUBLIC/anon/authenticated grant by default, but stating the REVOKE
+-- explicitly keeps the surface safe even if a future migration runs a broad
+-- GRANT SELECT ON ALL TABLES IN SCHEMA credeals. service_role is unaffected
+-- (it is not a member of PUBLIC/anon/authenticated) (advisor review 2026-06-13, finding 22).
+-- ===========================================================================
+REVOKE SELECT ON
+    credeals.v_cre_listings_full,
+    credeals.v_cre_active_for_sale,
+    credeals.v_cre_active_for_lease,
+    credeals.v_cre_market_summary,
+    credeals.v_cre_recent_changes
+FROM PUBLIC;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE SELECT ON
+            credeals.v_cre_listings_full, credeals.v_cre_active_for_sale,
+            credeals.v_cre_active_for_lease, credeals.v_cre_market_summary,
+            credeals.v_cre_recent_changes
+        FROM anon;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        REVOKE SELECT ON
+            credeals.v_cre_listings_full, credeals.v_cre_active_for_sale,
+            credeals.v_cre_active_for_lease, credeals.v_cre_market_summary,
+            credeals.v_cre_recent_changes
+        FROM authenticated;
+    END IF;
+END
+$$;

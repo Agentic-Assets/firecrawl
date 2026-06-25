@@ -1,77 +1,78 @@
-# CLAUDE.md  -  sql/
+# sql/ Module
 
-SQL migrations for the EQUIRE CRE listing intelligence schema.
-Target: Supabase project `fhqycqubkkrdgzswccwd` (supabase-agentic-assets-v2), `credeals` schema.
+## Most Critical Rule
 
-## File order
+**Idempotent `credeals` DDL only on Supabase `fhqycqubkkrdgzswccwd`.**
+Apply via `000_run_all.sql` in dependency order:
+`001`→`002`→`003`→`004`→`007`→`008`→`009`→`010`→`011`→`012`→`013`→`014`→`006`→`005`.
+**`001_cre_brokerages.sql` seed slugs must match
+`../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE`.** Never commit or
+print `DATABASE_URL`.
 
-Run these in order. Each file is idempotent (`CREATE TABLE IF NOT EXISTS`, etc.).
+Advisor triage: `advisor-reports/` (plan
+`2026-06-13-cre-execution-readiness.md`; live apply log
+`2026-06-13-cre-remediation-apply-log.md`; best-practices review + fresh-DB
+smoke test `2026-06-13-cre-best-practices-review.md`).
 
-| File | What it creates |
-|------|----------------|
-| `000_run_all.sql` | Master runner  -  executes 001–005 in order |
-| `001_cre_brokerages.sql` | `cre_brokerages` table + 10-broker seed rows |
-| `002_cre_listings.sql` | `cre_listings`, `cre_listing_contacts`, `cre_listing_documents`, `cre_listing_images` |
-| `003_cre_scrape_tracking.sql` | `cre_scrape_jobs`, `cre_scrape_log` |
-| `004_cre_indexes.sql` | Performance indexes (geo, FTS, jsonb GIN, price, cap_rate) |
-| `005_cre_views.sql` | `v_cre_listings_full`, `v_cre_active_for_sale`, `v_cre_active_for_lease`, `v_cre_market_summary`, `search_cre_listings()` function, `updated_at` trigger |
+Migration status as of the live Supabase object check on 2026-06-16:
 
-## Running migrations
+- `009_cre_history_retention.sql`: APPLIED. Price-history table, child-archive
+  tables, `prior_*` columns on `cre_source_index`, and
+  `trg_cre_listings_block_history_delete` are present.
+- `010_cre_enrichment_ops.sql`: APPLIED. Additive enrichment-queue health views
+  `v_cre_enrichment_queue_pending` and `v_cre_enrichment_dead` are present with
+  `security_invoker=true`.
+- `011_cre_listing_media.sql`: APPLIED. `cre_listing_media` and
+  `cre_listing_links` are present, archive mirrors exist, and
+  `cre_listing_documents.doc_type` accepts the widened values.
+- `012`/`013`/`014` Phase-2 data-lift: APPLIED. Institutional scalar columns,
+  `cre_listing_om_facts`, and `cre_zip_cbsa_crosswalk` are present; the crosswalk
+  is loaded with 33,791 rows.
+- `006`/`005` final refresh: APPLIED. Contact URL/license fields and refreshed
+  views/search functions are present. Consumer deploy timing is still a product
+  cutover concern, not a database-object gap.
+
+## Folder-Specific Commands
 
 ```bash
-# Option A: psql direct
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 000_run_all.sql
-
-# Option B: Supabase MCP (apply_migration per file)
-# Use ToolSearch to load mcp__claude_ai_Supabase__apply_migration
-# project_id = "fhqycqubkkrdgzswccwd"
-
-# Option C: Supabase dashboard SQL editor  -  paste each file in order
 ```
 
-`DATABASE_URL` format: `postgresql://postgres:<pwd>@db.fhqycqubkkrdgzswccwd.supabase.co:5432/postgres`
-The password lives only in `~/.pgpass` or a secrets vault. Never commit it.
+Set `DATABASE_URL` from `~/.pgpass` or a local secrets source. Alternatives: Supabase SQL editor (paste in order) or MCP `apply_migration` per file (`project_id = fhqycqubkkrdgzswccwd`).
 
-## Schema conventions
+## Naming Patterns
 
-- All PKs are `uuid DEFAULT gen_random_uuid()`.
-- All timestamps are `timestamptz DEFAULT now()`.
-- Money fields are `numeric` (USD). No currency column unless non-USD.
-- `cap_rate` and `occupancy_rate` are fractions in `[0,1]`  -  6.5% is stored as `0.065`.
-  This matches the EQUIRE valuation layer.
-- Soft delete via `deleted_at timestamptz` on `cre_listings`. Views exclude soft-deleted rows.
-- `cre_` prefix is safe  -  only `cre_business_plan_runs` predated this schema.
+- Files: `NNN_cre_<domain>.sql` (`000` master runner).
+- Objects: `cre_*` tables/views in `credeals` schema.
+- Dedup key: `(brokerage_id, external_id)` unique where `external_id IS NOT NULL`.
+- `cap_rate` / `occupancy_rate` are fractions in `[0,1]` (6.5% → `0.065`).
+- Soft delete: `cre_listings.deleted_at`; views exclude deleted rows.
+- Date semantics: `listing_date` is source-proven first-listed/published only,
+  `updated_date` is broker/source recency, `scraped_at` is collector snapshot
+  time, `updated_at` is DB/index mutation time, and `created_at` / `deleted_at`
+  are database lifecycle markers. `last_seen_at` is reserved nullable
+  per-listing enumeration state; current observe-only monitor state lives in
+  `cre_source_index` to avoid churning `updated_at`. UI copy should say "Source
+  updated", "Snapshot collected", or "Latest indexed" according to the column
+  provenance, never generic "updated".
 
-## Key constraints
+## Module Boundaries
 
-- `cre_listings(brokerage_id, external_id)`  -  unique where `external_id IS NOT NULL`.
-  This is the dedup key for upserts. Listings without an external_id (scraped from
-  pages with no parseable ID) can coexist but won't dedup.
-- All child FKs (`cre_listing_contacts`, `cre_listing_documents`, `cre_listing_images`,
-  `cre_scrape_log.listing_id`) are `ON DELETE CASCADE`.
+Owns DDL, brokerage seeds, indexes (`004`, `008` FK covers on 007), views, and 007 monitor tables. Does **not** own runtime ingest SQL (`cre_ingest.py`) or observe-only monitor writes (`cre_monitor.py`, `cre_gate.py`). Child FKs (`cre_listing_contacts`, `cre_listing_documents`, `cre_listing_images`, `cre_scrape_log`) are `ON DELETE CASCADE`.
 
-## Collector alignment
+## Integration Points
 
-The production bulk loader is `../cre_collector/cre_ingest.py`. Its
-`SOURCE_TO_BROKERAGE` mapping must match the slug values inserted in
-`001_cre_brokerages.sql`. Sub-sources fold into parent brokerages:
-`cbre-dealflow` -> `cbre`, and `jll-investor` -> `jll`.
+| Consumer | Contract |
+|----------|----------|
+| `../cre_collector/cre_ingest.py` | Seeds + listing columns; sub-sources fold in ingest (`dealflow:`, `investor:`, `main:`) |
+| `../cre_collector/cre_monitor.py`, `cre_gate.py` | 007: `cre_listing_events`, `cre_source_index`, `cre_enrichment_queue`, `cre_source_baseline`; 009: `prior_sale_price`/`prior_lease_rate`/`prior_status` columns on `cre_source_index` (monitor reads AND writes these unconditionally, so the monitor tier REQUIRES 009 applied before it runs; the ingest/daily path is existence-guarded and stays safe pre-apply) |
+| `../cre_collector/cre_ingest.py` (history writes) | 009: `cre_listing_price_history` (existence-guarded INSERT); `cre_listing_contacts_archive`, `cre_listing_documents_archive` (existence-guarded, mark-missing only) |
+| `../cre_collector/cre_enrich.py`, `cre_status.sh` | 010: `v_cre_enrichment_queue_pending`, `v_cre_enrichment_dead` (read-only health views over the 007 `cre_enrichment_queue`); `attempts >= 5` dead-letter threshold matches `cre_enrich.py` claim SQL |
+| EQUIRE (`CRE_EQUIRE`) | Do not rename/drop `v_cre_listings_full`, `v_cre_active_for_sale`, `v_cre_active_for_lease`, `v_cre_market_summary`, `search_cre_listings()` without coordinating |
+| Access | `cre_*` / `v_cre_*` service-role only; display views `security_invoker=true`; read `../cre_collector/archive/SUPABASE_SECURITY_NOTE_2026-06-12.md` before grant changes |
 
-The legacy Python scraper package in `../cre_scrapers/` still has its own
-`config.py` and `ListingData` model. Keep those aligned when using that package,
-but do not treat it as the daily production path.
+## References
 
-The collector-owned `cre_*` tables and `v_cre_*` views are service-role only.
-`anon` and `authenticated` do not have table or view `SELECT`. RLS is enabled
-with no public row policies by design.
-
-## Agent-facing objects (do not drop these)
-
-EQUIRE agents read these  -  do not rename or drop without coordinating with the
-EQUIRE codebase (`CRE_EQUIRE` repo):
-
-- `v_cre_listings_full`
-- `v_cre_active_for_sale`
-- `v_cre_active_for_lease`
-- `v_cre_market_summary`
-- `search_cre_listings(query, p_city, p_state, p_type, p_transaction)`
+- `../../../docs/firecrawl-ops/references/cre-equire-consumer-api.md`
+- `../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md`
+- `../cre_collector/CLAUDE.md` (ingest, monitor, daily ops)

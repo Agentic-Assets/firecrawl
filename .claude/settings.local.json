@@ -54,7 +54,21 @@
       "Read(//Users/caymanseagraves/Downloads/**)",
       "Bash(mkdir -p /tmp/prometheus-script-new)",
       "Bash(unzip -o \"prometheus-script \\(1\\).zip\" -d /tmp/prometheus-script-new)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(bash -c ' *)",
+      "Bash(ps -o pid,etime,command -p 94015)",
+      "Bash(mv -f cre_daily_update.sh.new cre_daily_update.sh)",
+      "Bash(bash -n cre_daily_update.sh)",
+      "Bash(cat out/daily/cre-daily.out.log)",
+      "Bash(tail -n 20 out/daily/cre-daily.err.log)",
+      "Bash(cat out/daily/last_run_daily.json)",
+      "Bash(tail -n 25 out/daily/run_2026-06-15_0853.log)",
+      "Bash(exit 0)",
+      "Bash(ps -o etime= -p 45208)",
+      "Bash(python3 -m py_compile cre_parse.py cre_ingest.py)",
+      "Bash(cat)",
+      "Bash(/tmp/pgvalidate_venv/bin/python3 /tmp/validate_runall.py)",
+      "Bash(cp -r /Users/caymanseagraves/Github/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector _mut)"
     ],
     "deny": [
       "Bash(rm -rf /:*)",

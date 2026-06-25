@@ -1,4 +1,10 @@
-# EQUIRE CRE Listing Intelligence System
+# EQUIRE CRE Listing Intelligence System (ARCHIVED 2026-06-13)
+
+> SUPERSEDED. The canonical architecture is now
+> `../cre-intelligence-system-design.md` and the EQUIRE consumer/SQL/env/
+> quick-start content was extracted into `../cre-equire-consumer-api.md`. This
+> file is retained only for historical reference; its broker coverage table and
+> "Colliers blocked" status are out of date. Do not cite it for current status.
 
 > Production design for the commercial-real-estate listing pipeline that feeds
 > EQUIRE's sourcing and deal-intelligence agents. Verified Firecrawl behavior as
@@ -109,22 +115,22 @@ Run metadata: started `2026-06-12T04:04:23.566Z`, finished
 3,878 unique brokers. Additive ingest staged 33,488 unique upsert rows with
 0 missing URLs.
 
-| Source | Latest raw count | Status | Notes |
+| Source | Active live count | Status | Notes |
 |---|---:|---|---|
-| CBRE | 20,684 | Active | Internal JSON API through local Firecrawl stealth, sale and lease. |
-| CBRE Deal Flow | 21 | Active, limited | Public sale-oriented grid only; full deal room detail requires registration. |
-| JLL | 4,678 | Active | Public search pages, sale and lease. |
-| JLL Investor | 50 | Active, limited | Sale-oriented investor grid. |
-| Cushman & Wakefield | 24 | Active, limited | First rendered Coveo cards only. `/coveo/rest` POST is blocked by Azure App Gateway. |
-| Newmark | 4,368 | Active | Public Algolia API. State and property-type sub-splits avoid most 1,000-hit caps. Latest lease collected 3,247 of 3,250 source total. |
-| Marcus & Millichap | 12 | Active, limited | Rendered first-page grid under stealth with retries. Sale-oriented. |
-| Avison Young | 22 | Active, limited | SharpLaunch sidebar first rendered batch. |
-| Savills | 100 | Active, limited | Server-rendered US sale pages, 100 of 105 source cards. US lease inventory is empty after filtering foreign fallback cards. |
-| SVN | 5,521 | Active | Buildout inventory API, cached once and partitioned sale/lease client-side. |
-| NAI Global | 30 | Active, limited | Infabode first rendered batch, synthesized `card:` ids, no stable per-card links. |
-| Lee & Associates | 0 in latest run | Blocked by Buildout rate limiting | Aborted at 12/333 failed inventory pages after retries. Do not reconcile Lee until a clean source run exists. |
-| Colliers | 0 | Unsupported | Current usable path appears POST-only behind consent/API behavior. |
-| Transwestern | 0 | Unsupported | Map-driven app with POST-only data path. |
+| CBRE | 19,028 | Active | Internal JSON API through local Firecrawl stealth, sale and lease. |
+| CBRE Deal Flow | 1,836 | Active | 1,809 sale + 27 lease; full source-specific run live-ingested; gated deal rooms stay metadata-only. |
+| JLL | 10,741 | Active | Public search pages, sale and lease. |
+| JLL Investor | 934 | Active, complete | Sale-only; 1,857 sitemap detail URLs scanned 2026-06-12; no coordinates from Investor detail path. |
+| Cushman & Wakefield | 11,318 | Active | Public /api/properties/search JSON with full pagination and detail enrichment; 2,743 sale / 8,575 lease. |
+| Newmark | 4,371 | Active | Public Algolia API. State and property-type sub-splits avoid most 1,000-hit caps. Latest lease collected 3,247 of 3,250 source total. |
+| Marcus & Millichap | 3,124 | Active | Public map ActivityId feed plus detail HTML; sale only; public lease unsupported. |
+| Avison Young | 2,201 | Active | Full SharpLaunch feed with detail-page enrichment live-ingested 2026-06-13 00:35 UTC; 636 sale / 1,432 lease / 133 sale_or_lease; 2,571 document URLs, 31,570 image URLs, 4,128 contacts; VCards absent from the public path by design. |
+| Savills | 104 | Active, limited | 101 sale + 3 lease; server-rendered US pages; partial coverage. |
+| SVN | 5,287 | Active | Buildout inventory API, sale and lease; 2,660 sale / 2,192 lease / 435 sale_or_lease. |
+| NAI Global | 241 | Active | 183 sale / 58 lease; public Infabode GraphQL feed and publicPost details; stable infabode ids and detail URLs. |
+| Lee & Associates | 9,223 | Active | 2,611 sale / 5,691 lease / 921 sale_or_lease; complete public Buildout feed via durable page-cache assembly; source-scoped mark-missing applied. |
+| Colliers | 1,172 | Active, limited | Public SalesTracker RCM GET path only (sale); main Coveo sale/lease search blocked. |
+| Transwestern | 2,021 | Active | 389 sale / 1,502 lease / 130 sale_or_lease; public GET feed plus detail pages; full run live-ingested 2026-06-12. |
 
 Known limits are accepted and documented. Do not fake coverage for sources that
 only expose POST-only, authenticated, or scroll/action-dependent paths.
@@ -346,10 +352,7 @@ less work.
 artifact. Additive live ingest through `psql` took under a minute after SQL was
 generated.
 
-**Operational cadence.** Use `cre_daily_update.sh --no-mark-missing` while Lee
-is blocked by Buildout interstitials. Use default `cre_daily_update.sh` only
-after a clean all-source run has no Lee/source errors and the per-broker
-mark-missing guards are acceptable for that day.
+**Operational cadence.** Use `cre_daily_update.sh --no-mark-missing` while Colliers main Coveo sale/lease search remains blocked and Savills coverage remains partial. Lee & Associates is complete with source-scoped mark-missing applied. Use default `cre_daily_update.sh` only after a clean all-source run has no blocking source errors and the per-broker mark-missing guards are acceptable for that day.
 
 **Document enrichment (on demand).** Do not bulk-download brochures. When a
 candidate is promoted, fetch its `cre_listing_documents` URLs through Firecrawl
