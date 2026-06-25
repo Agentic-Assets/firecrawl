@@ -7,6 +7,7 @@ import { crawlStatusController } from "../controllers/v1/crawl-status";
 import { mapController } from "../controllers/v1/map";
 import { RequestWithAuth } from "../controllers/v1/types";
 import { RateLimiterMode } from "../types";
+import { SEARCH_CREDITS_FEATURE_ID } from "../services/autumn/autumn.service";
 import expressWs from "express-ws";
 import { crawlStatusWSController } from "../controllers/v1/crawl-status-ws";
 import { crawlCancelController } from "../controllers/v1/crawl-cancel";
@@ -123,7 +124,7 @@ v1Router.use(requestTimingMiddleware("v1"));
 
 v1Router.post(
   "/scrape",
-  authMiddleware(RateLimiterMode.Scrape),
+  authMiddleware(RateLimiterMode.Scrape, { allowKeyless: true }),
   countryCheck,
   checkCreditsMiddleware(1),
   blocklistMiddleware,
@@ -152,9 +153,9 @@ v1Router.post(
 
 v1Router.post(
   "/search",
-  authMiddleware(RateLimiterMode.Search),
+  authMiddleware(RateLimiterMode.Search, { allowKeyless: true }),
   countryCheck,
-  checkCreditsMiddleware(),
+  checkCreditsMiddleware(undefined, SEARCH_CREDITS_FEATURE_ID),
   wrap(searchController),
 );
 

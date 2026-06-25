@@ -39,7 +39,7 @@ When making changes to the API:
      - Requires fire-engine: `!process.env.TEST_SUITE_SELF_HOSTED`
      - Requires AI: `!process.env.TEST_SUITE_SELF_HOSTED || process.env.OPENAI_API_KEY || process.env.OLLAMA_BASE_URL`
 2. Write code to achieve your win conditions.
-3. Run tests via `pnpm harness jest <pattern>` from `apps/api`.
+3. Run tests via `pnpm harness vitest run <pattern>` from `apps/api` (or `pnpm harness pnpm test:snips` for the full snips suite).
    - `pnpm harness` boots the API + workers for the test run. Don't `pnpm start` manually.
    - The full suite is slow — run only the relevant tests locally and let CI cover the rest.
 4. Push to a branch, open a PR, let CI verify.
