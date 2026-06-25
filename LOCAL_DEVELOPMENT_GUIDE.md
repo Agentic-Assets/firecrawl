@@ -305,3 +305,17 @@ scripts/firecrawl-ops/sync_upstream_main.sh
 ```
 
 Prefer upstream for product/API/SDK/security files. Prefer this fork for local ops, skills, model-routing docs, and self-hosted workflow docs.
+
+### Post-sync API testing (Vitest)
+
+Upstream migrated `apps/api` from Jest to Vitest. Run snips through the harness:
+
+```bash
+cd apps/api
+pnpm harness vitest run src/__tests__/snips/v2/scrape.test.ts
+pnpm harness pnpm test:snips
+```
+
+### Optional FoundationDB queue backend
+
+Upstream added an experimental NuQ backend (`NUQ_BACKEND=fdb` plus the `foundationdb` compose service). The self-hosted default remains Postgres (`nuq-postgres`); leave `NUQ_BACKEND` unset unless you are explicitly testing FDB. Docker builds install the FDB client library; bare-metal `pnpm install` in `apps/api` only needs it when building the `foundationdb` native module.

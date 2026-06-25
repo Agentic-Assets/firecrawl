@@ -36,7 +36,7 @@ When changing API behavior:
    - Gate fire-engine-only tests with `!process.env.TEST_SUITE_SELF_HOSTED`.
    - Gate AI tests with `!process.env.TEST_SUITE_SELF_HOSTED || process.env.OPENAI_API_KEY || process.env.OLLAMA_BASE_URL`.
 2. Implement the smallest code change that satisfies the test.
-3. Run targeted tests from `apps/api` with `pnpm harness jest <pattern>`.
+3. Run targeted tests from `apps/api` with `pnpm harness vitest run <pattern>` (or `pnpm harness pnpm test:snips` for the full snips suite).
 4. Push a branch and let CI cover the broader suite.
 
 Useful scripts:

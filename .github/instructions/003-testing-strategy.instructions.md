@@ -19,13 +19,13 @@ The core test suite consists of "snips" located in `apps/api/src/__tests__/snips
 ## Using the Test Harness
 
 NEVER try to run tests by starting the API manually with `pnpm start`.
-- Use `pnpm harness jest <path_to_test>` to run tests.
+- Use `pnpm harness vitest run <path_to_test>` to run tests (or `pnpm harness pnpm test:snips` for the full snips suite).
 - The harness sets up the necessary environment (API server, workers, Redis, etc.).
 
 ## Critical Constants
 
 - **scrapeTimeout**: Always import and use `scrapeTimeout` from `./lib` (in the test directory) for all scraping operations in tests.
-- Example: `}, 10000 + scrapeTimeout);` for Jest timeouts.
+- Example: `}, 10000 + scrapeTimeout);` for test timeouts (Vitest `testTimeout` in `vitest.config.ts` defaults to 120s for snips).
 
 ## Gating Tests
 
