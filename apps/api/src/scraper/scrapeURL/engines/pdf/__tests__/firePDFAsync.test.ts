@@ -1,10 +1,10 @@
 // Stub the GCS cache so unit tests never reach real cloud storage. The async
 // client calls these on the happy path; without the stub the first cache lookup
 // blows up trying to download from GCS using the credentials in .env.
-jest.mock("../../../../../lib/gcs-pdf-cache", () => ({
+vi.mock("../../../../../lib/gcs-pdf-cache", () => ({
   createPdfCacheKey: (s: string) => `sha-${s.length}`,
-  getPdfResultFromCache: jest.fn(async () => null),
-  savePdfResultToCache: jest.fn(async () => null),
+  getPdfResultFromCache: vi.fn(async () => null),
+  savePdfResultToCache: vi.fn(async () => null),
 }));
 
 import {
@@ -12,7 +12,15 @@ import {
   scrapePDFWithFirePDFAsync,
 } from "../fire-pdf/async";
 import { config } from "../../../../../config";
-const pdfCacheMock = jest.requireMock("../../../../../lib/gcs-pdf-cache");
+import {
+  getPdfResultFromCache,
+  savePdfResultToCache,
+} from "../../../../../lib/gcs-pdf-cache";
+
+const pdfCacheMock = {
+  getPdfResultFromCache: vi.mocked(getPdfResultFromCache),
+  savePdfResultToCache: vi.mocked(savePdfResultToCache),
+};
 
 // ── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -49,11 +57,11 @@ function jsonResp({ status, body }: FakeResponse) {
 
 function makeMeta(overrides: Record<string, unknown> = {}) {
   const noopLogger: any = {
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
-    debug: jest.fn(),
-    child: jest.fn(function child() {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    child: vi.fn(function child() {
       return noopLogger;
     }),
   };
@@ -65,9 +73,9 @@ function makeMeta(overrides: Record<string, unknown> = {}) {
     logger: noopLogger,
     mock: null,
     abort: {
-      throwIfAborted: jest.fn(),
-      asSignal: jest.fn(() => new AbortController().signal),
-      scrapeTimeout: jest.fn(() => 60_000),
+      throwIfAborted: vi.fn(),
+      asSignal: vi.fn(() => new AbortController().signal),
+      scrapeTimeout: vi.fn(() => 60_000),
     },
     internalOptions: {
       zeroDataRetention: false,
@@ -171,7 +179,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
         },
       },
     ]);
-    const fallback = jest.fn();
+    const fallback = vi.fn();
 
     const result = await scrapePDFWithFirePDFAsync(
       makeMeta(),
@@ -220,7 +228,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
       undefined,
       undefined,
       "ocr",
-      { fetchImpl, fallbackImpl: jest.fn(), sleepImpl: noopSleep },
+      { fetchImpl, fallbackImpl: vi.fn(), sleepImpl: noopSleep },
     );
 
     expect(result.markdown).toBe("fresh ocr");
@@ -256,7 +264,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
       undefined,
       undefined,
       undefined,
-      { fetchImpl, fallbackImpl: jest.fn(), sleepImpl: noopSleep },
+      { fetchImpl, fallbackImpl: vi.fn(), sleepImpl: noopSleep },
     );
 
     expect(pdfCacheMock.getPdfResultFromCache).not.toHaveBeenCalled();
@@ -282,7 +290,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
         },
       },
     ]);
-    const fallback = jest.fn();
+    const fallback = vi.fn();
 
     const result = await scrapePDFWithFirePDFAsync(
       makeMeta(),
@@ -314,7 +322,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
           response: { status, body: { error: "x" } },
         },
       ]);
-      const fallback = jest.fn();
+      const fallback = vi.fn();
 
       const err = await scrapePDFWithFirePDFAsync(
         makeMeta(),
@@ -335,7 +343,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
     const fetchImpl: any = async () => {
       throw new Error("connect ECONNREFUSED");
     };
-    const fallback = jest.fn();
+    const fallback = vi.fn();
 
     const err = await scrapePDFWithFirePDFAsync(
       makeMeta(),
@@ -362,7 +370,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
         },
       },
     ]);
-    const fallback = jest.fn();
+    const fallback = vi.fn();
 
     await expect(
       scrapePDFWithFirePDFAsync(
@@ -399,7 +407,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
         },
       },
     ]);
-    const fallback = jest.fn();
+    const fallback = vi.fn();
 
     const err = await scrapePDFWithFirePDFAsync(
       makeMeta(),
@@ -432,7 +440,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
         },
       },
     ]);
-    const fallback = jest.fn();
+    const fallback = vi.fn();
 
     const err = await scrapePDFWithFirePDFAsync(
       makeMeta(),
@@ -473,15 +481,15 @@ describe("scrapePDFWithFirePDFAsync", () => {
         response: { status: 202, body: { scrape_id: "x", status: "running" } },
       },
     ]);
-    const fallback = jest.fn();
+    const fallback = vi.fn();
 
     // 5s scrape budget → deadline 5s, polling deadline = submit + 5s + 30s = 35s.
     // Each sleep advances time by 60s, blowing past the polling deadline.
     const meta = makeMeta({
       abort: {
-        throwIfAborted: jest.fn(),
-        asSignal: jest.fn(() => new AbortController().signal),
-        scrapeTimeout: jest.fn(() => 5_000),
+        throwIfAborted: vi.fn(),
+        asSignal: vi.fn(() => new AbortController().signal),
+        scrapeTimeout: vi.fn(() => 5_000),
       },
     });
 
@@ -525,7 +533,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
         response: { status: 503, body: { error: "gcs_unreachable" } },
       },
     ]);
-    const fallback = jest.fn();
+    const fallback = vi.fn();
 
     const err = await scrapePDFWithFirePDFAsync(
       makeMeta(),
@@ -573,7 +581,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
         },
       },
     ]);
-    const fallback = jest.fn();
+    const fallback = vi.fn();
 
     const result = await scrapePDFWithFirePDFAsync(
       makeMeta(),
@@ -617,7 +625,7 @@ describe("scrapePDFWithFirePDFAsync", () => {
       undefined,
       undefined,
       undefined,
-      { fetchImpl, fallbackImpl: jest.fn(), sleepImpl: noopSleep },
+      { fetchImpl, fallbackImpl: vi.fn(), sleepImpl: noopSleep },
     );
 
     const deadlineMs = new Date(submittedBody.deadline_at).getTime();

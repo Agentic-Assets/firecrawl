@@ -24,10 +24,14 @@ import { validate as isUuid } from "uuid";
 
 import { config } from "../config";
 import { getAgentFreeRequestsLeft } from "../db/rpc";
-import { autumnService } from "../services/autumn/autumn.service";
+import {
+  autumnService,
+  CREDITS_FEATURE_ID,
+} from "../services/autumn/autumn.service";
 
 export function checkCreditsMiddleware(
   _minimum?: number,
+  featureId: string = CREDITS_FEATURE_ID,
 ): (req: RequestWithAuth, res: Response, next: NextFunction) => void {
   return (req, res, next) => {
     let minimum = _minimum;
@@ -122,6 +126,7 @@ export function checkCreditsMiddleware(
           source: "checkCreditsMiddleware",
           path: req.path,
         },
+        featureId,
       });
 
       // Autumn is the source of truth for credits. If it's unavailable
@@ -191,6 +196,7 @@ export function checkCreditsMiddleware(
 
 export function authMiddleware(
   rateLimiterMode: RateLimiterMode,
+  options: { allowKeyless?: boolean } = {},
 ): (req: RequestWithMaybeAuth, res: Response, next: NextFunction) => void {
   return (req, res, next) => {
     (async () => {
@@ -206,11 +212,18 @@ export function authMiddleware(
       //   currentRateLimiterMode = RateLimiterMode.ScrapeAgentPreview;
       // }
 
-      const auth = await authenticateUser(req, res, currentRateLimiterMode);
+      const auth = await authenticateUser(
+        req,
+        res,
+        currentRateLimiterMode,
+        options,
+      );
 
       if (!auth.success) {
         if (!res.headersSent) {
-          if (auth.status === 401) applyAgentAuthDiscoveryHeader(res);
+          if (auth.status === 401 || auth.agentAuthDiscovery) {
+            applyAgentAuthDiscoveryHeader(res);
+          }
           return res
             .status(auth.status)
             .json({ success: false, error: auth.error });
