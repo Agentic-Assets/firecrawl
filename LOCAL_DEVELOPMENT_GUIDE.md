@@ -318,4 +318,4 @@ pnpm harness pnpm test:snips
 
 ### Optional FoundationDB queue backend
 
-Upstream added an experimental NuQ backend (`NUQ_BACKEND=fdb` plus the `foundationdb` compose service). The self-hosted default remains Postgres (`nuq-postgres`); leave `NUQ_BACKEND` unset unless you are explicitly testing FDB. Docker builds install the FDB client library; bare-metal `pnpm install` in `apps/api` only needs it when building the `foundationdb` native module.
+Upstream added an experimental NuQ backend (`NUQ_BACKEND=fdb` plus the `foundationdb` compose service). The self-hosted default remains Postgres (`nuq-postgres`); leave `NUQ_BACKEND` unset unless you are explicitly testing FDB. When using FDB, start `foundationdb` and `foundationdb-init` before the API and confirm the shared `fdb.cluster` file is present. Docker builds install the FDB client library; bare-metal `pnpm install` in `apps/api` only needs it when building the `foundationdb` native module.

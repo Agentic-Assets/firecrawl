@@ -96,18 +96,25 @@ def main() -> int:
         # burning vX.Y.(Z+1).
         base_tags = [tag for tag in semver_tags if tag.commit != current_sha]
 
-    base = base_tags[-1].version if base_tags else None
-    version = bump_version(base, args.bump)
-    tag_name = f"v{version[0]}.{version[1]}.{version[2]}"
-
-    existing_target = next((tag for tag in semver_tags if tag.name == tag_name), None)
-    if existing_target and existing_target.commit != current_sha:
-        print(
-            f"Resolved tag {tag_name} already exists on {existing_target.commit}, "
-            f"not {current_sha}",
-            file=sys.stderr,
-        )
-        return 1
+    tags_on_commit = [tag for tag in semver_tags if tag.commit == current_sha]
+    if tags_on_commit and not args.include_current_commit_tags:
+        # Retry: reuse the highest SemVer tag already on this SHA.
+        chosen = tags_on_commit[-1]
+        version = chosen.version
+        tag_name = chosen.name
+        existing_target = chosen
+    else:
+        base = base_tags[-1].version if base_tags else None
+        version = bump_version(base, args.bump)
+        tag_name = f"v{version[0]}.{version[1]}.{version[2]}"
+        existing_target = next((tag for tag in semver_tags if tag.name == tag_name), None)
+        if existing_target and existing_target.commit != current_sha:
+            print(
+                f"Resolved tag {tag_name} already exists on {existing_target.commit}, "
+                f"not {current_sha}",
+                file=sys.stderr,
+            )
+            return 1
 
     repo_owner = os.environ.get("GITHUB_REPOSITORY_OWNER", "firecrawl").lower()
     image = f"ghcr.io/{repo_owner}/{args.image_name}"

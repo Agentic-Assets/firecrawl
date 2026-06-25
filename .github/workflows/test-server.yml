@@ -233,7 +233,7 @@ jobs:
           PORT: 3003
 
       - name: Run Docker Postgres
-        if: matrix.nuq == 'postgres'
+        if: matrix.nuq == 'postgres' || matrix.nuq == 'fdb'
         run: |
           docker build -t firecrawl/nuq-postgres:latest ./apps/nuq-postgres
           docker run -d -p 5432:5432 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres --name postgres firecrawl/nuq-postgres:latest
