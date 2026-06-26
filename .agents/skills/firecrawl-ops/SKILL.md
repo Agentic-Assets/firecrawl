@@ -16,6 +16,16 @@ bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 docker compose ps
 ```
 
+For durable evidence during reviews or handoffs:
+
+```bash
+scripts/firecrawl-ops/firecrawl_healthcheck.sh --evidence-dir tasks/tmp/firecrawl-healthcheck
+scripts/firecrawl-ops/local_api_smoke_matrix.py
+scripts/firecrawl-ops/local_capability_matrix.py
+scripts/firecrawl-ops/pdf_parse_canary.py
+scripts/firecrawl-ops/check_pnpm_docker_config.py
+```
+
 This Mac uses OrbStack, not Docker Desktop. If Docker commands fail, open OrbStack and confirm `docker context show` is `orbstack`. The expected local API is `http://localhost:3002`.
 
 For a fresh clone on another Mac, start with `LOCAL_DEVELOPMENT_GUIDE.md` or `references/partner-orbstack-onboarding.md`. The short path is: install/start OrbStack, confirm `docker context show`, run `scripts/firecrawl-ops/set_model_profile.sh budget`, optionally run `install_git_hooks.sh` and `sync_agent_skills.sh`, then `docker compose build`, `docker compose up -d`, and `firecrawl_healthcheck.sh`.
@@ -247,7 +257,12 @@ The skill folder exposes these via symlinks to `docs/firecrawl-ops/references/` 
 - `references/cre-access-matrix.md`: source accessibility matrix
 - `references/google-flights-scraping.md`: Google Flights scrape pattern
 - `references/supabase-schema-firecrawl-swarm.sql`: optional swarm telemetry schema
-- `scripts/firecrawl_healthcheck.sh`: local stack smoke test
+- `references/local-capability-matrix.md`: generated v2 route capability matrix from routes, docs, and latest smoke evidence
+- `scripts/firecrawl_healthcheck.sh`: local stack smoke test; `--evidence-dir` writes JSON/Markdown proof
+- `scripts/local_api_smoke_matrix.py`: core local API route smoke matrix with JSON/Markdown artifacts
+- `scripts/local_capability_matrix.py`: regenerate the local v2 capability matrix
+- `scripts/pdf_parse_canary.py`: fast/auto PDF parse canaries, with opt-in OCR mode
+- `scripts/check_pnpm_docker_config.py`: CI-safe pnpm/Docker native dependency guard
 - `scripts/firecrawl_cli.sh`: Firecrawl CLI wrapper pinned to the local API URL
 - `scripts/firecrawl_request.py`: dependency-free direct HTTP helper with output/save controls and advanced parse options
 - `scripts/local_firepdf_ocr.sh`: start/stop/health/env/settings/doctor/smoke/benchmark helper for local Docling OCR

@@ -79,6 +79,24 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 
 Do not duplicate official SDK behavior in production code. Use JS/Python/Go/Ruby/Rust/PHP/etc. SDKs there. Use the helper when an agent needs a shell-stable way to call the local API from another codebase.
 
+## Local verification tools
+
+Use these when changing the local ops layer or proving the stack is ready:
+
+```bash
+scripts/firecrawl-ops/firecrawl_healthcheck.sh --evidence-dir tasks/tmp/firecrawl-healthcheck
+scripts/firecrawl-ops/local_api_smoke_matrix.py
+scripts/firecrawl-ops/local_capability_matrix.py
+scripts/firecrawl-ops/pdf_parse_canary.py
+scripts/firecrawl-ops/check_pnpm_docker_config.py
+```
+
+- `firecrawl_healthcheck.sh --evidence-dir` writes JSON and Markdown evidence with Docker status, API root response, scrape smoke output, image id, and pass/fail state.
+- `local_api_smoke_matrix.py` probes the core local routes and writes JSON/Markdown under `tasks/tmp/local-api-smoke/`.
+- `local_capability_matrix.py` compares `apps/api/src/routes/v2.ts`, this reference doc, and the latest smoke matrix to regenerate `local-capability-matrix.md`.
+- `pdf_parse_canary.py` runs repeatable PDF parse canaries. Defaults to `fast,auto`; pass `--include-ocr` only when local OCR is configured.
+- `check_pnpm_docker_config.py` is a CI-safe static guard for pnpm workspace config and Docker native dependency assumptions.
+
 ## Local Docling OCR adapter
 
 For scanned/image-only PDFs or harder table/layout PDFs, use the local Fire PDF-compatible adapter:
@@ -124,7 +142,7 @@ The benchmark now saves `fields/pages.jsonl`, `qa.json`, and `qa.md` per case wh
 
 ## Upstream-only (not verified self-hosted)
 
-- `POST /v2/monitor` and related monitor endpoints — page-change monitoring with optional LLM judgment; requires cloud billing and judge configuration. Not part of the local ops stack yet.
+- `POST /v2/monitor` and related monitor endpoints: page-change monitoring with optional LLM judgment; requires cloud billing and judge configuration. Not part of the local ops stack yet.
 
 ## Practical selection guide
 
@@ -147,3 +165,4 @@ Typical services:
 Health check baseline:
 - API reachable at `http://localhost:3002/`
 - smoke scrape returns `success: true`
+- Optional evidence mode writes to `tasks/tmp/firecrawl-healthcheck/`

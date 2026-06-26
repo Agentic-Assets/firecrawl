@@ -1,0 +1,65 @@
+# Local Firecrawl Capability Matrix
+
+Generated: `2026-06-26 12:39:56 CDT`
+Route source: `apps/api/src/routes/v2.ts`
+Reference source: `docs/firecrawl-ops/references/tools-capabilities.md`
+Smoke source: `tasks/tmp/local-api-smoke/20260626-123942-local-api-smoke.json`
+
+| Method | Route | Local status | In ops docs | Notes |
+|---|---|---|---:|---|
+| `POST` | `/v2/agent` | `needs optional service` | `yes` | Skipped by default because it may enqueue an agent job when configured. |
+| `DELETE` | `/v2/agent/:jobId` | `needs optional service` | `no` | requires EXTRACT_V3_BETA_URL |
+| `GET` | `/v2/agent/:jobId` | `needs optional service` | `no` | requires EXTRACT_V3_BETA_URL |
+| `POST` | `/v2/batch/scrape` | `works locally` | `no` | job_id=019f0503-d55c-74a1-9888-f02bc8297a98 |
+| `DELETE` | `/v2/batch/scrape/:jobId` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
+| `GET` | `/v2/batch/scrape/:jobId` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
+| `GET` | `/v2/batch/scrape/:jobId/errors` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
+| `GET` | `/v2/browser` | `needs optional service` | `yes` | Skipped by default because browser routes depend on optional browser-service state. |
+| `POST` | `/v2/browser` | `needs optional service` | `yes` | Skipped by default because it may create a browser session when configured. |
+| `DELETE` | `/v2/browser/:sessionId` | `needs optional service` | `yes` | requires browser-service configuration |
+| `POST` | `/v2/browser/:sessionId/execute` | `needs optional service` | `yes` | requires browser-service configuration |
+| `POST` | `/v2/browser/webhook/destroyed` | `needs optional service` | `no` | requires browser-service configuration |
+| `GET` | `/v2/concurrency-check` | `not tested` | `no` | diagnostic route registered but not in local smoke matrix |
+| `POST` | `/v2/crawl` | `works locally` | `yes` | job_id=019f0503-dd59-76e2-8074-0538f27a6dcd |
+| `DELETE` | `/v2/crawl/:jobId` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
+| `GET` | `/v2/crawl/:jobId` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
+| `WS` | `/v2/crawl/:jobId` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
+| `GET` | `/v2/crawl/:jobId/errors` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
+| `GET` | `/v2/crawl/active` | `works locally` | `yes` | active=0 |
+| `GET` | `/v2/crawl/ongoing` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
+| `POST` | `/v2/crawl/params-preview` | `needs model env` | `yes` | LLM-backed crawl option generation |
+| `POST` | `/v2/extract` | `needs model env` | `yes` | deprecated v2 extract path requires schema and model provider env |
+| `GET` | `/v2/extract/:jobId` | `needs model env` | `no` | deprecated v2 extract path requires schema and model provider env |
+| `POST` | `/v2/feedback` | `not tested` | `no` | feedback route registered but not in local smoke matrix |
+| `GET` | `/v2/interact` | `needs optional service` | `yes` | requires browser-service configuration |
+| `POST` | `/v2/interact` | `needs optional service` | `yes` | requires browser-service configuration |
+| `DELETE` | `/v2/interact/:sessionId` | `needs optional service` | `no` | requires browser-service configuration |
+| `POST` | `/v2/interact/:sessionId/execute` | `needs optional service` | `no` | requires browser-service configuration |
+| `GET` | `/v2/keyless/eligibility` | `not tested` | `no` | diagnostic route registered but not in local smoke matrix |
+| `POST` | `/v2/map` | `works locally` | `yes` | links=0 |
+| `GET` | `/v2/monitor` | `hosted or configured only` | `yes` | monitor backend is not part of the default local ops stack |
+| `POST` | `/v2/monitor` | `hosted or configured only` | `yes` | monitor backend is not part of the default local ops stack |
+| `DELETE` | `/v2/monitor/:monitorId` | `hosted or configured only` | `no` | monitor backend is not part of the default local ops stack |
+| `GET` | `/v2/monitor/:monitorId` | `hosted or configured only` | `no` | monitor backend is not part of the default local ops stack |
+| `PATCH` | `/v2/monitor/:monitorId` | `hosted or configured only` | `no` | monitor backend is not part of the default local ops stack |
+| `GET` | `/v2/monitor/:monitorId/checks` | `hosted or configured only` | `no` | monitor backend is not part of the default local ops stack |
+| `GET` | `/v2/monitor/:monitorId/checks/:checkId` | `hosted or configured only` | `no` | monitor backend is not part of the default local ops stack |
+| `POST` | `/v2/monitor/:monitorId/run` | `hosted or configured only` | `no` | monitor backend is not part of the default local ops stack |
+| `POST` | `/v2/monitor/email/confirm` | `hosted or configured only` | `no` | monitor backend is not part of the default local ops stack |
+| `POST` | `/v2/monitor/email/unsubscribe` | `hosted or configured only` | `no` | monitor backend is not part of the default local ops stack |
+| `POST` | `/v2/parse` | `works locally` | `yes` | markdown_len=514 |
+| `POST` | `/v2/scrape` | `works locally` | `yes` | markdown_len=180 |
+| `GET` | `/v2/scrape/:jobId` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
+| `DELETE` | `/v2/scrape/:jobId/interact` | `needs optional service` | `no` | requires browser-service or interactive scrape support |
+| `POST` | `/v2/scrape/:jobId/interact` | `needs optional service` | `no` | requires browser-service or interactive scrape support |
+| `POST` | `/v2/search` | `works locally` | `yes` | results=2 |
+| `POST` | `/v2/search/:jobId/feedback` | `not tested` | `no` | feedback route registered but not in local smoke matrix |
+| `POST` | `/v2/support/ask` | `needs optional service` | `no` | Skipped by default because it may call an external support service when configured. |
+| `POST` | `/v2/support/docs-search` | `needs optional service` | `no` | requires SUPPORT_AGENT_URL |
+| `GET` | `/v2/team/activity` | `not tested` | `no` | diagnostic route registered but not in local smoke matrix |
+| `GET` | `/v2/team/credit-usage` | `not tested` | `no` | accounting route registered but not in local smoke matrix |
+| `GET` | `/v2/team/credit-usage/historical` | `not tested` | `no` | accounting route registered but not in local smoke matrix |
+| `GET` | `/v2/team/queue-status` | `works locally` | `yes` | jobsInQueue=0 |
+| `GET` | `/v2/team/token-usage` | `not tested` | `no` | accounting route registered but not in local smoke matrix |
+| `GET` | `/v2/team/token-usage/historical` | `not tested` | `no` | accounting route registered but not in local smoke matrix |
+| `POST` | `/v2/x402/search` | `hosted or configured only` | `no` | requires x402 payment configuration |
