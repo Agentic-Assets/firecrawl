@@ -16,6 +16,7 @@ Use this skill to call the local Firecrawl API directly or through the Firecrawl
 - Root `.env` may be absent. Non-AI scrape/map/search/parse can still work; AI formats need `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `MODEL_NAME`.
 - The repo usually lives at `~/Github/agentic-assets/firecrawl` (legacy fallback: `~/Documents/GitHub/agentic-assets/firecrawl`). If an agent is working from another codebase, direct HTTP calls still work, and installed helper scripts are available under `~/.agents/skills/firecrawl-local-api/scripts/`.
 - Prefer upstream-maintained interfaces first: direct API, official SDKs, or `firecrawl_cli.sh`. Use `firecrawl_request.py` only for local agent ergonomics such as advanced PDF parser options and saving split artifacts.
+- For route verification, use `scripts/firecrawl-ops/local_api_smoke_matrix.py`; for parser canaries, use `scripts/firecrawl-ops/pdf_parse_canary.py`; for the generated route status table, read `docs/firecrawl-ops/references/local-capability-matrix.md`.
 
 ## What Works Locally
 
@@ -35,6 +36,15 @@ Use this skill to call the local Firecrawl API directly or through the Firecrawl
 | `POST /v1/llmstxt` + `GET /v1/llmstxt/:id` | works | Generate llms.txt style output. |
 
 Prefer v2 endpoints for new work unless the user specifically asks for v1.
+
+For a repeatable local route audit:
+
+```bash
+scripts/firecrawl-ops/local_api_smoke_matrix.py
+scripts/firecrawl-ops/local_capability_matrix.py
+```
+
+The smoke matrix writes JSON and Markdown under `tasks/tmp/local-api-smoke/`; the capability script regenerates `docs/firecrawl-ops/references/local-capability-matrix.md`.
 
 ## Not Configured Locally
 
