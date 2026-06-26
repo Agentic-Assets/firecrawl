@@ -259,7 +259,7 @@ The skill folder exposes these via symlinks to `docs/firecrawl-ops/references/` 
 - `scripts/set_model_profile.sh`: model profile switcher
 - `scripts/sync_upstream_main.sh`: safe upstream merge helper for this fork
 - `scripts/artificialanalysis_snapshot.py`: refresh model benchmark data
-- `scripts/crawl_swarm.py`, `scripts/firecrawl_swarm_pipeline.py`: batch discovery/scrape workflows
+- `scripts/crawl_swarm.py`, `scripts/firecrawl_swarm_pipeline.py`: batch discovery/scrape workflows; `crawl_swarm.py` normalizes v2 `/map` links and expands same-domain hub links by default, while `firecrawl_swarm_pipeline.py` retries weak markdown pages with broader scrape options and only switches model profiles when `--restart-between-stages` is set
 - `scripts/bulk_triage_runner.py`: budget-first triage with escalation batches
 - `scripts/platform_access_probe.py`, `scripts/cre_access_matrix.py`: access probes
 - `scripts/google_flights_scrape.py`, `scripts/parse_flight_deals.py`: Atlas flight-deal scraper + parser

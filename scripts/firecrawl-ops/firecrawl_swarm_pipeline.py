@@ -31,8 +31,8 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-import requests
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 BLOCK_PATTERNS = [
     r"access denied",
@@ -55,6 +55,7 @@ def resolve_firecrawl_dir(value: str | None = None) -> Path:
         value,
         os.getenv("FC_DIR"),
         str(Path.cwd()),
+        str(Path.home() / "Github" / "agentic-assets" / "firecrawl"),
         str(Path.home() / "Documents" / "GitHub" / "agentic-assets" / "firecrawl"),
     ]
     for candidate in candidates:
@@ -77,6 +78,8 @@ class ItemResult:
     quality: str
     confidence: float
     markdown_len: int
+    raw_html_len: int
+    link_count: int
     error: str | None
     provenance: dict[str, Any]
 
@@ -138,20 +141,46 @@ def run_profile_switch(profile: str, firecrawl_dir: Path) -> None:
     subprocess.run(["docker", "compose", "up", "-d"], cwd=str(firecrawl_dir), check=True)
 
 
-def scrape(api: str, url: str, timeout: int = 180) -> tuple[bool, str, str | None]:
+def post_json(url: str, payload: Any, timeout: int = 180, headers: dict[str, str] | None = None) -> Any:
+    body = json.dumps(payload).encode()
+    req = Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", **(headers or {})},
+        method="POST",
+    )
+    with urlopen(req, timeout=timeout) as response:
+        text = response.read().decode()
+        return json.loads(text) if text else {}
+
+
+def scrape(
+    api: str,
+    url: str,
+    timeout: int = 180,
+    formats: list[str] | None = None,
+    only_main_content: bool | None = None,
+    wait_for: int | None = None,
+) -> tuple[bool, str, int, int, str | None]:
     try:
-        r = requests.post(
-            f"{api}/scrape",
-            json={"url": url, "formats": ["markdown"]},
-            timeout=timeout,
-        )
-        j = r.json()
-        md = (j.get("data") or {}).get("markdown", "")
+        payload: dict[str, Any] = {"url": url, "formats": formats or ["markdown"]}
+        if only_main_content is not None:
+            payload["onlyMainContent"] = only_main_content
+        if wait_for is not None:
+            payload["waitFor"] = wait_for
+        j = post_json(f"{api}/scrape", payload, timeout=timeout)
+        data = j.get("data") or {}
+        md = data.get("markdown", "")
+        raw_html_len = len(data.get("rawHtml") or "")
+        links = data.get("links") or []
         ok = bool(j.get("success"))
         err = None if ok else str(j.get("error") or "scrape_failed")
-        return ok, md, err
-    except Exception as e:
-        return False, "", str(e)
+        return ok, md, raw_html_len, len(links), err
+    except HTTPError as e:
+        body = e.read().decode(errors="replace")
+        return False, "", 0, 0, f"HTTP {e.code}: {body}"
+    except (URLError, TimeoutError, json.JSONDecodeError, ValueError) as e:
+        return False, "", 0, 0, str(e)
 
 
 def supabase_post(url: str, key: str, table: str, payload: list[dict]) -> None:
@@ -161,10 +190,11 @@ def supabase_post(url: str, key: str, table: str, payload: list[dict]) -> None:
         "Content-Type": "application/json",
         "Prefer": "return=minimal",
     }
-    r = requests.post(
-        f"{url.rstrip('/')}/rest/v1/{table}", headers=headers, data=json.dumps(payload), timeout=30
-    )
-    r.raise_for_status()
+    try:
+        post_json(f"{url.rstrip('/')}/rest/v1/{table}", payload, timeout=30, headers=headers)
+    except HTTPError as e:
+        body = e.read().decode(errors="replace")
+        raise RuntimeError(f"HTTP {e.code}: {body}") from e
 
 
 def maybe_write_supabase(run_id: str, report: dict[str, Any]) -> tuple[bool, str | None]:
@@ -219,10 +249,11 @@ def main() -> None:
     ap.add_argument("--input", required=True)
     ap.add_argument("--out", default="swarm_pipeline_report.json")
     ap.add_argument("--min-len", type=int, default=1200)
+    ap.add_argument("--wide-retry-wait-ms", type=int, default=1500)
     ap.add_argument("--restart-between-stages", action="store_true")
     ap.add_argument("--firecrawl-dir", default=None)
     args = ap.parse_args()
-    firecrawl_dir = resolve_firecrawl_dir(args.firecrawl_dir)
+    firecrawl_dir = resolve_firecrawl_dir(args.firecrawl_dir) if args.restart_between_stages else None
 
     urls = load_urls(Path(args.input))
     run_id = str(uuid.uuid4())
@@ -230,14 +261,31 @@ def main() -> None:
 
     all_items: list[ItemResult] = []
 
-    def stage_run(stage_name: str, profile: str, target_urls: list[str]) -> list[ItemResult]:
+    def stage_run(
+        stage_name: str,
+        profile: str,
+        target_urls: list[str],
+        formats: list[str] | None = None,
+        only_main_content: bool | None = None,
+        wait_for: int | None = None,
+    ) -> list[ItemResult]:
+        effective_profile = profile
         if args.restart_between_stages:
+            assert firecrawl_dir is not None
             run_profile_switch(profile, firecrawl_dir)
             time.sleep(2)
+        elif profile != "budget":
+            effective_profile = "budget"
 
         out: list[ItemResult] = []
         for u in target_urls:
-            ok, md, err = scrape(args.api, u)
+            ok, md, raw_html_len, link_count, err = scrape(
+                args.api,
+                u,
+                formats=formats,
+                only_main_content=only_main_content,
+                wait_for=wait_for,
+            )
             access = classify_access(md)
             q = quality(md, args.min_len)
             conf = confidence_score(md, args.min_len)
@@ -245,17 +293,24 @@ def main() -> None:
                 ItemResult(
                     url=u,
                     stage=stage_name,
-                    model_profile=profile,
-                    model_name=MODEL_BY_PROFILE[profile],
+                    model_profile=effective_profile,
+                    model_name=MODEL_BY_PROFILE[effective_profile],
                     success=ok,
                     access_status=access,
                     quality=q if ok else "error",
                     confidence=conf if ok else 0.0,
                     markdown_len=len(md),
+                    raw_html_len=raw_html_len,
+                    link_count=link_count,
                     error=err,
                     provenance={
                         "timestamp": now_iso(),
                         "endpoint": "/scrape",
+                        "requested_model_profile": profile,
+                        "model_switch_performed": args.restart_between_stages,
+                        "formats": formats or ["markdown"],
+                        "onlyMainContent": only_main_content,
+                        "waitFor": wait_for,
                     },
                 )
             )
@@ -267,10 +322,19 @@ def main() -> None:
 
     escalated_batch = sorted({x.url for x in s1 if x.quality in {"low_content", "error", "blocked"}})
 
-    # Stage 2: DeepSeek Pro escalation
+    # Stage 2: retry weak pages with a broader scrape payload. The model only
+    # changes when --restart-between-stages is set because plain markdown scrape
+    # does not invoke the LLM.
     s2: list[ItemResult] = []
     if escalated_batch:
-        s2 = stage_run("escalate_deepseek_pro", "escalated", escalated_batch)
+        s2 = stage_run(
+            "retry_wide_content",
+            "escalated",
+            escalated_batch,
+            formats=["markdown", "rawHtml", "links"],
+            only_main_content=False,
+            wait_for=args.wide_retry_wait_ms,
+        )
         all_items.extend(s2)
 
     final_by_url: dict[str, ItemResult] = {}
@@ -286,7 +350,8 @@ def main() -> None:
         "final_blocked": sum(1 for x in final_items if x.quality == "blocked"),
         "final_error": sum(1 for x in final_items if x.quality == "error"),
         "avg_confidence": round(sum(x.confidence for x in final_items) / max(len(final_items), 1), 4),
-        "deepseek_pro_escalations": len(escalated_batch),
+        "wide_retries": len(escalated_batch),
+        "deepseek_pro_escalations": len(escalated_batch) if args.restart_between_stages else 0,
     }
 
     report = {
@@ -295,7 +360,9 @@ def main() -> None:
         "config": {
             "api": args.api,
             "min_len": args.min_len,
+            "wide_retry_wait_ms": args.wide_retry_wait_ms,
             "restart_between_stages": args.restart_between_stages,
+            "firecrawl_dir": str(firecrawl_dir) if firecrawl_dir else None,
             "profiles": MODEL_BY_PROFILE,
         },
         "summary": summary,

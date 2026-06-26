@@ -69,5 +69,11 @@ GitHub CLI/MCP tools remain best for first-party GitHub operations and doc-nativ
 
 ## Recommended prebuilt utilities
 - `bulk_triage_runner.py` -> tiered escalation at scale
-- `crawl_swarm.py` -> parallel discovery + scrape batches
+- `crawl_swarm.py` -> parallel discovery + scrape batches. It accepts v2 `/map`
+  link objects and expands same-domain links from scraped hub pages by default,
+  preferring profile/faculty style URLs inside the cap. This helps with listing
+  pages where `/map` only returns the index page.
+- `firecrawl_swarm_pipeline.py` -> URL-list scrape QA with low-content retries.
+  Model escalation only occurs when `--restart-between-stages` is set; otherwise
+  weak pages are retried with broader scrape options.
 - `platform_access_probe.py` -> quickly test accessible vs blocked sources

@@ -184,6 +184,24 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 
 Use official Firecrawl SDKs in application code. The helper is for local agent runs from any codebase on this computer.
 
+Swarm helpers are stdlib-only and can run from a clean system Python:
+
+```bash
+python3 scripts/firecrawl-ops/crawl_swarm.py \
+  --seeds /path/to/seeds.txt --limit 25 --scrape-per-seed 10 --out /tmp/swarm-crawl.json
+
+python3 scripts/firecrawl-ops/firecrawl_swarm_pipeline.py \
+  --input /path/to/urls.txt --out /tmp/swarm-pipeline.json
+```
+
+`crawl_swarm.py` normalizes v2 `/map` link objects and, by default, does a capped
+same-domain expansion pass from scraped page links, preferring profile/faculty
+style URLs inside the cap. Use `--prefer-link-regex` to tune that preference or
+`--no-expand-links` when you want only the direct `/map` results. `firecrawl_swarm_pipeline.py`
+retries weak pages with broader scrape options; it only switches model profiles
+when `--restart-between-stages` is set, because plain markdown scrape does not
+invoke the LLM.
+
 For local crawls, avoid `--wait` if it hangs; submit and poll:
 
 ```bash
