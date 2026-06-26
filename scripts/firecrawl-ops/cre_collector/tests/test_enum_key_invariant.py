@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from cre_ingest import SOURCE_TO_BROKERAGE, to_row
+from cre_ingest import BUILDOUT_SOURCE_KEYS, SOURCE_TO_BROKERAGE, to_row
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -50,7 +50,7 @@ def monitor_enum_key(source_key: str, record: dict) -> str:
     enumeration id for a given source + raw record.
 
     Rules mirror to_row() exactly (this is the contract being tested):
-      1. svn / lee-associates: extract propertyId from URL, strip -sale/-lease.
+      1. Buildout source keys: extract propertyId from URL, strip -sale/-lease.
       2. Otherwise: use record["id"] if present and non-empty.
       3. Fallback: "url:" + sha1(url)[:16].
 
@@ -58,7 +58,7 @@ def monitor_enum_key(source_key: str, record: dict) -> str:
     """
     url = record.get("url", "")
 
-    if source_key in ("svn", "lee-associates"):
+    if source_key in BUILDOUT_SOURCE_KEYS:
         m = re.search(r"[?&]propertyId=([^&#]+)", url)
         if m:
             return re.sub(r"-(sale|lease)$", "", m.group(1))
@@ -169,6 +169,16 @@ class TestBuildout:
         row_lease = _row({**_base("svn", url_lease)})
         assert row_sale["external_id"] == row_lease["external_id"], (
             "sale and lease passes for the same buildout property must share external_id"
+        )
+
+    @pytest.mark.parametrize("suffix", ["sale", "lease"])
+    def test_franklin_street_strips_suffix(self, suffix):
+        url = f"https://www.franklinst.com/properties/?propertyId=777-{suffix}"
+        listing = {**_base("franklin-street", url)}
+        _assert_invariant("franklin-street", listing)
+        row = _row(listing)
+        assert row["external_id"] == "777", (
+            f"franklin-street -{suffix} did not strip to '777'; got {row['external_id']!r}"
         )
 
 

@@ -87,7 +87,14 @@ SOURCE_TO_BROKERAGE = {
     "nai-global": ("nai-global", ""),
     "lee-associates": ("lee-associates", ""),
     "transwestern": ("transwestern", ""),
+    "matthews": ("matthews", ""),
+    "franklin-street": ("franklin-street", ""),
+    "srs": ("srs", ""),
+    "hanley": ("hanley", ""),
+    "kidder-mathews": ("kidder-mathews", ""),
 }
+
+BUILDOUT_SOURCE_KEYS = {"svn", "lee-associates", "franklin-street"}
 
 SOURCE_KEYS_BY_SLUG = {}
 for _source_key, (_slug, _prefix) in SOURCE_TO_BROKERAGE.items():
@@ -490,6 +497,10 @@ STATUS_SOURCE_PATHS = {
     "cbre-dealflow": ["status", "cbreDealflowCard.status", "cbreDealflowDetail.status"],
     "cushman-wakefield": ["listingStatus", "rawCushmanApi.listing_status"],
     "colliers-main": ["status", "colliersMain.propertyStatus"],
+    "matthews": ["statusBadge"],
+    "franklin-street": ["rawBuildout.closed", "rawBuildout.under_contract"],
+    "srs": ["statusBadge"],
+    "hanley": ["statusBadge"],
     # Freshness-only flags, NOT terminal -> explicitly map to no signal.
     "marcus-millichap": [],
     # Disappearance-only tier (no native status field; lifecycle = vanishing).
@@ -499,6 +510,7 @@ STATUS_SOURCE_PATHS = {
     "avison-young": [],
     "savills": [],
     "transwestern": [],
+    "kidder-mathews": [],
 }
 
 # Phase-2 data-lift: a UNIVERSAL leading status path read for EVERY source
@@ -737,11 +749,11 @@ def to_row(listing, brokers_by_idx, scraped_at):
         return None  # source_url is NOT NULL; un-linked rows aren't actionable
 
     raw_id = listing.get("id")
-    # Buildout sources (svn, lee-associates) list a dual-mode property twice
+    # Buildout sources list a dual-mode property twice
     # with distinct inventory ids; the URL propertyId base ("1614726-sale" /
     # "1614726-lease") is the stable per-property key, so the pair merges.
     buildout_pid = None
-    if source_key in ("svn", "lee-associates"):
+    if source_key in BUILDOUT_SOURCE_KEYS:
         m = re.search(r"[?&]propertyId=([^&#]+)", url)
         if m:
             buildout_pid = re.sub(r"-(sale|lease)$", "", m.group(1))
@@ -2077,6 +2089,11 @@ def main():
         if e.get("error"):
             st["errors"] += 1
             st["notes"].append(f"{e.get('sourceKey')}/{e.get('transaction')}: {e['error'][:160]}")
+        if e.get("truncated"):
+            st["errors"] += 1
+            st["notes"].append(
+                f"{e.get('sourceKey')}/{e.get('transaction')}: source pass truncated"
+            )
     slug_saved = {}
     for r in rows:
         slug_saved[r["slug"]] = slug_saved.get(r["slug"], 0) + 1

@@ -386,6 +386,15 @@ def test_to_row_buildout_no_pid_uses_raw_id():
     assert r["external_id"] == "99"
 
 
+def test_to_row_franklin_street_buildout_propertyid_strips_suffix():
+    r = _row({
+        "sourceKey": "franklin-street",
+        "url": "https://www.franklinst.com/properties/?propertyId=777-sale",
+        "id": "raw-777",
+    })
+    assert r["external_id"] == "777"
+
+
 @pytest.mark.parametrize(
     "source_key,prefix",
     [("cbre-dealflow", "dealflow:"), ("jll-investor", "investor:"),
