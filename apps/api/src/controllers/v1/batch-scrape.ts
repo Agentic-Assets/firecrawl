@@ -167,6 +167,13 @@ export async function batchScrapeController(
         webhook: req.body.webhook,
       };
 
+  if (req.body.appendToId && (!sc || sc.team_id !== req.auth.team_id)) {
+    return res.status(404).json({
+      success: false,
+      error: "Job not found",
+    });
+  }
+
   if (!req.body.appendToId) {
     sc.queueBackend = await resolveNewGroupBackend(sc.team_id);
     await crawlGroup.addGroup(
@@ -255,7 +262,7 @@ export async function batchScrapeController(
   return res.status(200).json({
     success: true,
     id,
-    url: `${protocol}://${req.get("host")}/v1/batch/scrape/${id}`,
+    url: `${protocol}://${req.host}/v1/batch/scrape/${id}`,
     invalidURLs,
   });
 }

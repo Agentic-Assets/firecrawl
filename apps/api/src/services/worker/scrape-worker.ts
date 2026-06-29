@@ -91,6 +91,7 @@ import {
   recordMonitorScrapeFailure,
   recordMonitorScrapeSuccess,
 } from "../monitoring/results";
+import type { DataLayerScrapeMetadata } from "../../lib/data-layer";
 
 configDotenv();
 
@@ -110,6 +111,7 @@ async function billScrapeJob(
   flags: TeamFlags,
   error?: Error | null,
   unsupportedFeatures?: Set<FeatureFlag>,
+  dataLayer?: DataLayerScrapeMetadata,
 ) {
   let creditsToBeBilled: number | null = null;
   const billing = resolveBillingMetadata({
@@ -137,6 +139,7 @@ async function billScrapeJob(
       flags,
       error,
       unsupportedFeatures,
+      dataLayer,
     );
 
     // Charge the keyless free tier's per-IP daily credit budget unless this
@@ -154,7 +157,6 @@ async function billScrapeJob(
           teamId: job.data.team_id,
           value: creditsToBeBilled,
           properties: autumnProperties,
-          requestScoped: true,
           featureId,
         });
         const billingJobId = uuidv7();
@@ -556,6 +558,7 @@ async function processJob(job: NuQJob<ScrapeJobSingleUrls>) {
         (await getACUCTeam(job.data.team_id))?.flags ?? null,
         undefined,
         pipeline.unsupportedFeatures,
+        pipeline.dataLayer,
       );
 
       doc.metadata.creditsUsed = credits_billed ?? undefined;
@@ -646,6 +649,7 @@ async function processJob(job: NuQJob<ScrapeJobSingleUrls>) {
         (await getACUCTeam(job.data.team_id))?.flags ?? null,
         undefined,
         pipeline.unsupportedFeatures,
+        pipeline.dataLayer,
       );
 
       doc.metadata.creditsUsed = credits_billed ?? undefined;

@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { v7 as uuidv7 } from "uuid";
-import { and, asc, count, desc, eq, isNull, ne } from "drizzle-orm";
+import { and, asc, count, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import { db, dbRr } from "../../db/connection";
 import * as schema from "../../db/schema";
 import { monitoringClaimDueMonitors } from "../../db/rpc";
@@ -10,6 +10,10 @@ import {
   estimateRunsPerMonth,
   validateMonitorCron,
 } from "./cron";
+import {
+  searchCreditsForResultCount,
+  judgeCreditsForJudgedCount,
+} from "./search/billing";
 import type {
   CreateMonitorRequest,
   MonitorCheckPageInsert,
@@ -104,8 +108,7 @@ function estimateBaseCreditsPerPage(
     credits += SCRAPE_OPTION_CREDIT_BONUS;
   }
 
-  // Deterministic JSON generates a reusable extractor and costs more than plain
-  // JSON; both override the base scrape credit (mirrors estimateActualCredits).
+  // Deterministic JSON costs more than plain JSON; both override the base scrape credit.
   if (usesDeterministicJson) {
     credits = DETERMINISTIC_JSON_SCRAPE_CREDITS_PER_PAGE;
   } else if (usesJsonCredits) {
@@ -138,10 +141,38 @@ function estimateBaseCreditsPerPage(
   return credits;
 }
 
-function estimateTargetBaseCredits(target: MonitorTarget): number {
+function estimateSearchJudgedResults(
+  target: Extract<MonitorTarget, { type: "search" }>,
+): number {
+  return Math.max(1, target.maxResults);
+}
+
+function estimateSearchTargetCredits(
+  target: Extract<MonitorTarget, { type: "search" }>,
+  judgeEnabled: boolean,
+): number {
+  const rawResults =
+    Math.max(1, target.maxResults) * Math.max(1, target.queries.length);
+  const searchCallCredits = searchCreditsForResultCount(rawResults, false);
+  if (target.depth === "raw" || !judgeEnabled) {
+    return searchCallCredits;
+  }
+  return (
+    searchCallCredits +
+    judgeCreditsForJudgedCount(estimateSearchJudgedResults(target))
+  );
+}
+
+function estimateTargetBaseCredits(
+  target: MonitorTarget,
+  judgeEnabled: boolean = false,
+): number {
   const creditsPerPage = estimateBaseCreditsPerPage(target.scrapeOptions);
   if (target.type === "scrape") {
     return target.urls.length * creditsPerPage;
+  }
+  if (target.type === "search") {
+    return estimateSearchTargetCredits(target, judgeEnabled);
   }
 
   const limit =
@@ -154,6 +185,9 @@ function estimateTargetBaseCredits(target: MonitorTarget): number {
 function estimateTargetPageCount(target: MonitorTarget): number {
   if (target.type === "scrape") {
     return target.urls.length;
+  }
+  if (target.type === "search") {
+    return target.maxResults;
   }
 
   const limit =
@@ -168,13 +202,16 @@ export function estimateMonitorCreditsPerRun(
   judgeEnabled: boolean = false,
 ): number {
   const baseCredits = targets.reduce(
-    (sum, target) => sum + estimateTargetBaseCredits(target),
+    (sum, target) => sum + estimateTargetBaseCredits(target, judgeEnabled),
     0,
   );
+  // Per-page judge allowance is scrape/crawl only; search judging is folded in above.
   const judgeCredits = judgeEnabled
     ? targets.reduce(
         (sum, target) =>
-          sum + estimateTargetPageCount(target) * JUDGE_CREDITS_PER_PAGE,
+          target.type === "search"
+            ? sum
+            : sum + estimateTargetPageCount(target) * JUDGE_CREDITS_PER_PAGE,
         0,
       )
     : 0;
@@ -215,9 +252,8 @@ export function calculateMonitorCheckActualCreditsFromPages(
       baseCreditsByTarget.get(page.target_id ?? "") ??
       BASE_SCRAPE_CREDITS_PER_PAGE;
 
-    // Monitor-specific fallback only: new rows should prefer metadata.creditsUsed
-    // when the scrape path provides it. If it is missing, use retained monitor
-    // metadata to avoid obvious undercounts for PDFs and special postprocessors.
+    // Fallback when metadata.creditsUsed is missing: use retained metadata to avoid
+    // undercounting PDFs and special postprocessors.
     if (
       target &&
       shouldParsePDF(target.scrapeOptions?.parsers as any) &&
@@ -254,12 +290,21 @@ export function calculateMonitorCheckActualCreditsFromPages(
       return 0;
     }
 
-    // A persisted judgment means the judge ran for this page. Charge for that
-    // invocation whether the verdict was meaningful or not.
+    // Search is billed at the check level (see flatSearchTargetCredits).
+    const target = targetsById.get(page.target_id ?? "");
+    if (target?.type === "search") {
+      return 0;
+    }
     return JUDGE_CREDITS_PER_PAGE;
   }
 
   return pages.reduce((total, page) => {
+    // Search pages carry no per-page credit; billed at check level.
+    const target = targetsById.get(page.target_id ?? "");
+    if (target?.type === "search") {
+      return total;
+    }
+
     const metadata = page.metadata as MonitorCreditMetadata | null;
     const recordedCredits = metadata?.creditsUsed;
     let baseCredits = fallbackBaseCreditsForPage(page);
@@ -273,6 +318,28 @@ export function calculateMonitorCheckActualCreditsFromPages(
 
     const judgeCredits = judgeCreditsForPage(page);
     return total + baseCredits + judgeCredits;
+  }, 0);
+}
+
+export function flatSearchTargetCredits(targetResults: unknown): number {
+  if (!Array.isArray(targetResults)) return 0;
+  return targetResults.reduce((total: number, run: unknown) => {
+    if (!run || typeof run !== "object") return total;
+    const r = run as {
+      type?: unknown;
+      searchCredits?: unknown;
+      judgeCredits?: unknown;
+    };
+    if (r.type !== "search") return total;
+    const searchCredits =
+      typeof r.searchCredits === "number" && Number.isFinite(r.searchCredits)
+        ? r.searchCredits
+        : 0;
+    const judgeCredits =
+      typeof r.judgeCredits === "number" && Number.isFinite(r.judgeCredits)
+        ? r.judgeCredits
+        : 0;
+    return total + searchCredits + judgeCredits;
   }, 0);
 }
 
@@ -320,8 +387,7 @@ export async function createMonitor(params: {
   const estimatedCreditsPerMonth =
     estimatedCreditsPerRun * estimateRunsPerMonth(params.intervalMs);
 
-  // Omit goal/judge_enabled keys when undefined so a pre-migration DB
-  // doesn't reject the insert. Migration lives in a separate repo.
+  // Omit goal/judge_enabled when undefined so a pre-migration DB doesn't reject the insert.
   const insert: typeof schema.monitors.$inferInsert = {
     id: uuidv7(),
     team_id: params.teamId,
@@ -432,8 +498,14 @@ export async function updateMonitor(params: {
   if (params.input.status !== undefined) patch.status = params.input.status;
   if (params.input.webhook !== undefined)
     patch.webhook = params.input.webhook ?? null;
-  if (params.input.notification !== undefined) {
-    patch.notification = params.input.notification ?? null;
+  // Only write when the caller sent config; treat empty {} (legacy default) as
+  // "leave unchanged" rather than clobbering stored email settings.
+  if (
+    params.input.notification !== undefined &&
+    params.input.notification !== null &&
+    Object.keys(params.input.notification).length > 0
+  ) {
+    patch.notification = params.input.notification;
   }
   if (params.input.retentionDays !== undefined) {
     patch.retention_days = params.input.retentionDays;
@@ -453,10 +525,8 @@ export async function updateMonitor(params: {
     patch.next_run_at = params.nextRunAt?.toISOString() ?? null;
   }
 
-  // Re-estimate whenever any cost input changed. Merge the patch with the
-  // current monitor row so a goal/judge-only update still recalculates
-  // against the existing targets + schedule, and a targets-only update
-  // preserves an already-enabled judge.
+  // Re-estimate whenever any cost input changed, merging the patch with the current
+  // row so partial updates recalculate against existing targets/schedule/judge.
   const costInputsChanged =
     params.input.targets !== undefined ||
     params.input.judgeEnabled !== undefined ||
@@ -770,6 +840,34 @@ export async function updateMonitorCheck(
   return data as MonitorCheckRow;
 }
 
+// Atomic variant of updateMonitorCheck that only writes while the check is still
+// running. A late finalize write that lost the race to the catch path (which marks
+// the check failed) becomes a no-op instead of stamping results/searchCompleted onto
+// an already-terminal check. Returns the row if it applied, else null.
+export async function updateMonitorCheckIfRunning(
+  checkId: string,
+  patch: Partial<MonitorCheckRow>,
+): Promise<MonitorCheckRow | null> {
+  const [data] = await run(
+    () =>
+      db
+        .update(schema.monitor_checks)
+        .set({
+          ...patch,
+          updated_at: new Date().toISOString(),
+        })
+        .where(
+          and(
+            eq(schema.monitor_checks.id, checkId),
+            eq(schema.monitor_checks.status, "running"),
+          ),
+        )
+        .returning(),
+    "Failed to update monitor check",
+  );
+  return (data as MonitorCheckRow) ?? null;
+}
+
 export async function insertMonitorCheckPages(
   pages: MonitorCheckPageInsert[],
 ): Promise<void> {
@@ -785,6 +883,31 @@ export async function insertMonitorCheckPages(
         })),
       ),
     "Failed to insert monitor check pages",
+  );
+}
+
+// Makes an inline write idempotent: a redelivered check clears its prior rows
+// before re-inserting, so crash-and-redeliver can't duplicate pages. Pass `url`
+// to scope the clear to a single page so the per-URL scrape path replaces only
+// its own row without clobbering sibling pages of the same target. Partition-safe
+// (no unique constraint needed).
+export async function deleteMonitorCheckPages(params: {
+  checkId: string;
+  targetId: string;
+  url?: string;
+}): Promise<void> {
+  const conditions = [
+    eq(schema.monitor_check_pages.check_id, params.checkId),
+    eq(schema.monitor_check_pages.target_id, params.targetId),
+  ];
+  if (params.url !== undefined) {
+    conditions.push(
+      eq(schema.monitor_check_pages.url_hash, hashMonitorUrl(params.url)),
+    );
+  }
+  await run(
+    () => db.delete(schema.monitor_check_pages).where(and(...conditions)),
+    "Failed to delete monitor check pages",
   );
 }
 
@@ -847,8 +970,9 @@ export async function countMonitorCheckPages(params: {
 export async function calculateMonitorCheckActualCredits(params: {
   checkId: string;
   targets: MonitorTarget[];
+  targetResults?: unknown;
 }): Promise<number> {
-  let total = 0;
+  let total = flatSearchTargetCredits(params.targetResults);
   let offset = 0;
 
   while (true) {
@@ -911,6 +1035,9 @@ export async function upsertMonitorPage(params: {
   scrapeId: string | null;
   status: "same" | "new" | "changed" | "removed" | "error";
   metadata?: unknown;
+  // When the caller's finalize times out it aborts this signal; we then skip the
+  // write so an orphaned baseline can't poison the next run's dedup state.
+  abortSignal?: AbortSignal;
 }): Promise<void> {
   const now = new Date().toISOString();
 
@@ -919,6 +1046,8 @@ export async function upsertMonitorPage(params: {
     targetId: params.targetId,
     url: params.url,
   });
+
+  if (params.abortSignal?.aborted) return;
 
   if (!existing) {
     await run(
@@ -972,6 +1101,108 @@ export async function upsertMonitorPage(params: {
         .set(patch)
         .where(eq(schema.monitor_pages.id, existing.id)),
     "Failed to update monitor page",
+  );
+}
+
+type BulkUpsertMonitorPageRow = {
+  url: string;
+  urlHash?: Buffer;
+  status: "same" | "new" | "changed" | "removed" | "error";
+  metadata?: unknown;
+  source: "explicit" | "discovered";
+  scrapeId: string | null;
+};
+
+// Bulk equivalent of upsertMonitorPage: collapses an N-page upsert from ~2N
+// sequential round-trips (replica read + primary write per page) into ONE atomic
+// INSERT ... ON CONFLICT DO UPDATE keyed by the (monitor_id, target_id, url_hash)
+// unique index. Per-row field rules mirror upsertMonitorPage exactly, expressed in
+// the conflict set via `excluded` + CASE so no read is needed and Drizzle handles
+// the enum/jsonb column types (no hand-written casts that can drift from the schema).
+export async function bulkUpsertMonitorPages(params: {
+  monitorId: string;
+  teamId: string;
+  targetId: string;
+  checkId: string;
+  rows: BulkUpsertMonitorPageRow[];
+  // When finalize times out the caller aborts this signal; we then skip the whole
+  // write so an aborted finalize leaves monitor_pages untouched (no partial baseline).
+  abortSignal?: AbortSignal;
+}): Promise<void> {
+  if (params.abortSignal?.aborted) return;
+
+  // Dedup by url_hash (last wins) so a repeated URL can't double-insert, and sort
+  // by url_hash for a deterministic row-lock order.
+  const byHash = new Map<
+    string,
+    BulkUpsertMonitorPageRow & { urlHash: Buffer }
+  >();
+  for (const row of params.rows) {
+    const urlHash = row.urlHash ?? hashMonitorUrl(row.url);
+    byHash.set(urlHash.toString("hex"), { ...row, urlHash });
+  }
+  if (byHash.size === 0) return;
+  const rows = [...byHash.values()].sort((a, b) =>
+    a.urlHash.toString("hex") < b.urlHash.toString("hex") ? -1 : 1,
+  );
+
+  const now = new Date().toISOString();
+
+  // Build every row as if newly inserted; ON CONFLICT applies the existing-row
+  // rules via `excluded` + CASE so the whole upsert is ONE atomic statement — no
+  // separate read, no separate update — and Drizzle maps the enum/jsonb types from
+  // the schema, so there are no hand-written casts that can drift from the columns.
+  const values = rows.map(row => {
+    const isRemoved = row.status === "removed";
+    const isChangedOrNew = row.status === "changed" || row.status === "new";
+    return {
+      monitor_id: params.monitorId,
+      team_id: params.teamId,
+      target_id: params.targetId,
+      url: row.url,
+      url_hash: row.urlHash,
+      source: row.source,
+      first_seen_check_id: params.checkId,
+      last_seen_check_id: isRemoved ? null : params.checkId,
+      last_changed_check_id: isChangedOrNew ? params.checkId : null,
+      last_scrape_id: row.scrapeId,
+      last_status: row.status,
+      is_removed: isRemoved,
+      removed_at: isRemoved ? now : null,
+      metadata: row.metadata ?? null,
+      created_at: now,
+      updated_at: now,
+    };
+  });
+
+  if (params.abortSignal?.aborted) return;
+
+  await run(
+    () =>
+      db
+        .insert(schema.monitor_pages)
+        .values(values)
+        .onConflictDoUpdate({
+          target: [
+            schema.monitor_pages.monitor_id,
+            schema.monitor_pages.target_id,
+            schema.monitor_pages.url_hash,
+          ],
+          set: {
+            last_status: sql`excluded.last_status`,
+            is_removed: sql`excluded.is_removed`,
+            removed_at: sql`excluded.removed_at`,
+            // Preserve prior metadata when the new row carries none.
+            metadata: sql`coalesce(excluded.metadata, ${schema.monitor_pages.metadata})`,
+            // last_seen / last_scrape advance only when not removed; else preserved.
+            last_seen_check_id: sql`case when excluded.is_removed then ${schema.monitor_pages.last_seen_check_id} else excluded.last_seen_check_id end`,
+            last_scrape_id: sql`case when excluded.is_removed then ${schema.monitor_pages.last_scrape_id} else excluded.last_scrape_id end`,
+            // last_changed advances only on new/changed; first_seen is never touched.
+            last_changed_check_id: sql`case when excluded.last_status in ('new','changed') then excluded.last_changed_check_id else ${schema.monitor_pages.last_changed_check_id} end`,
+            updated_at: sql`excluded.updated_at`,
+          },
+        }),
+    "Failed to bulk upsert monitor pages",
   );
 }
 
