@@ -7,13 +7,18 @@ import expressWs from "express-ws";
 import { searchController } from "../controllers/v2/search";
 import { feedbackController } from "../controllers/v2/feedback/controller";
 import { searchFeedbackController } from "../controllers/v2/search-feedback";
-import { x402SearchController } from "../controllers/v2/x402-search";
 import { scrapeController } from "../controllers/v2/scrape";
 import { keylessEligibilityController } from "../controllers/v2/keyless-eligibility";
 import {
   parseController,
   parseMultipartPayloadMiddleware,
 } from "../controllers/v2/parse";
+import {
+  parseLocalUploadController,
+  parseLocalUploadStorageGuard,
+  parseUploadRefPayloadMiddleware,
+  parseUploadUrlController,
+} from "../controllers/v2/parse-upload";
 import { batchScrapeController } from "../controllers/v2/batch-scrape";
 import { crawlController } from "../controllers/v2/crawl";
 import { crawlParamsPreviewController } from "../controllers/v2/crawl-params-preview";
@@ -43,12 +48,6 @@ import {
 import { queueStatusController } from "../controllers/v2/queue-status";
 import { creditUsageHistoricalController } from "../controllers/v2/credit-usage-historical";
 import { tokenUsageHistoricalController } from "../controllers/v2/token-usage-historical";
-import {
-  paymentMiddleware,
-  getX402ResourceServer,
-  createX402RouteConfig,
-  isX402Enabled,
-} from "../lib/x402";
 import { deprecationMiddleware } from "../lib/deprecations";
 import { agentController } from "../controllers/v2/agent";
 import { agentStatusController } from "../controllers/v2/agent-status";
@@ -80,9 +79,8 @@ import {
   updateMonitorController,
 } from "../controllers/v2/monitor";
 
-expressWs(express());
-
 export const v2Router = express.Router();
+expressWs(express()).applyTo(v2Router);
 
 const parseUpload = multer({
   storage: multer.memoryStorage(),
@@ -115,123 +113,31 @@ const parseUploadMiddleware: express.RequestHandler = (req, res, next) => {
   });
 };
 
+const parsePayloadMiddleware: express.RequestHandler = (req, res, next) => {
+  const contentType = req.headers["content-type"] || "";
+  if (
+    typeof contentType === "string" &&
+    contentType.includes("multipart/form-data")
+  ) {
+    return parseUploadMiddleware(req, res, err => {
+      if (err) return next(err);
+      return parseMultipartPayloadMiddleware(req, res, next);
+    });
+  }
+
+  if (req.body && typeof req.body === "object" && "uploadRef" in req.body) {
+    return parseUploadRefPayloadMiddleware(req as any, res, next);
+  }
+
+  return res.status(400).json({
+    success: false,
+    code: "BAD_REQUEST",
+    error:
+      "Missing file upload. Send multipart/form-data with a 'file' field, or JSON with an 'uploadRef'.",
+  });
+};
 // Add timing middleware to all v2 routes
 v2Router.use(requestTimingMiddleware("v2"));
-
-// Configure payment middleware to enable micropayment-protected endpoints
-// This middleware handles payment verification and processing for premium API features
-// x402 payments protocol - https://github.com/coinbase/x402
-// v2Router.use(
-//   paymentMiddleware(
-//     (config.X402_PAY_TO_ADDRESS as `0x${string}`) ||
-//       "0x0000000000000000000000000000000000000000",
-//     {
-//       "POST /x402/search": {
-//         price: config.X402_ENDPOINT_PRICE_USD as string,
-//         network: config.X402_NETWORK as
-//           | "base-sepolia"
-//           | "base"
-//           | "avalanche-fuji"
-//           | "avalanche"
-//           | "iotex",
-//         config: {
-//           discoverable: true,
-//           description:
-//             "The search endpoint combines web search (SERP) with Firecrawl's scraping capabilities to return full page content for any query. Requires micropayment via X402 protocol",
-//           mimeType: "application/json",
-//           maxTimeoutSeconds: 120,
-//           inputSchema: {
-//             body: {
-//               query: {
-//                 type: "string",
-//                 description: "Search query to find relevant web pages",
-//                 required: true,
-//               },
-//               sources: {
-//                 type: "array",
-//                 description: "Sources to search (web, news, images)",
-//                 required: false,
-//               },
-//               limit: {
-//                 type: "number",
-//                 description: "Maximum number of results to return (max 10)",
-//                 required: false,
-//               },
-//               scrapeOptions: {
-//                 type: "object",
-//                 description: "Options for scraping the found pages",
-//                 required: false,
-//               },
-//               asyncScraping: {
-//                 type: "boolean",
-//                 description: "Whether to return job IDs for async scraping",
-//                 required: false,
-//               },
-//             },
-//           },
-//           outputSchema: {
-//             type: "object",
-//             properties: {
-//               success: { type: "boolean" },
-//               data: {
-//                 type: "object",
-//                 properties: {
-//                   web: {
-//                     type: "array",
-//                     items: {
-//                       type: "object",
-//                       properties: {
-//                         url: { type: "string" },
-//                         title: { type: "string" },
-//                         description: { type: "string" },
-//                         markdown: { type: "string" },
-//                       },
-//                     },
-//                   },
-//                   news: {
-//                     type: "array",
-//                     items: {
-//                       type: "object",
-//                       properties: {
-//                         url: { type: "string" },
-//                         title: { type: "string" },
-//                         snippet: { type: "string" },
-//                         markdown: { type: "string" },
-//                       },
-//                     },
-//                   },
-//                   images: {
-//                     type: "array",
-//                     items: {
-//                       type: "object",
-//                       properties: {
-//                         url: { type: "string" },
-//                         title: { type: "string" },
-//                         markdown: { type: "string" },
-//                       },
-//                     },
-//                   },
-//                 },
-//               },
-//               scrapeIds: {
-//                 type: "object",
-//                 description:
-//                   "Job IDs for async scraping (if asyncScraping is true)",
-//                 properties: {
-//                   web: { type: "array", items: { type: "string" } },
-//                   news: { type: "array", items: { type: "string" } },
-//                   images: { type: "array", items: { type: "string" } },
-//                 },
-//               },
-//               creditsUsed: { type: "number" },
-//             },
-//           },
-//         },
-//       },
-//     },
-//     facilitator,
-//   ),
-// );
 
 // Internal: trusted-proxy (hosted MCP) keyless eligibility probe. Secret-gated
 // inside the controller; no auth middleware.
@@ -260,12 +166,25 @@ v2Router.post(
 );
 
 v2Router.post(
+  "/parse/upload-url",
+  authMiddleware(RateLimiterMode.Scrape, { allowKeyless: true }),
+  countryCheck,
+  wrap(parseUploadUrlController),
+);
+
+v2Router.put(
+  "/parse/upload/:uploadId",
+  parseLocalUploadStorageGuard,
+  express.raw({ type: "*/*", limit: "50mb" }),
+  wrap(parseLocalUploadController),
+);
+
+v2Router.post(
   "/parse",
   authMiddleware(RateLimiterMode.Scrape, { allowKeyless: true }),
   countryCheck,
-  parseUploadMiddleware,
-  parseMultipartPayloadMiddleware,
   checkCreditsMiddleware(1),
+  parsePayloadMiddleware,
   wrap(parseController),
 );
 
@@ -362,7 +281,11 @@ v2Router.delete(
 v2Router.ws(
   "/crawl/:jobId",
   ((ws: any, req: express.Request, next: (err?: unknown) => void) => {
-    if (!isValidJobId(req.params.jobId)) {
+    const jobId = Array.isArray(req.params.jobId)
+      ? undefined
+      : req.params.jobId;
+
+    if (!isValidJobId(jobId)) {
       ws.close(1008, "Invalid job ID");
       return;
     }
@@ -600,25 +523,5 @@ if (config.RESEARCH_PROXY_URL) {
     "/research",
     authMiddleware(RateLimiterMode.Research),
     createResearchRouter({ legacy: true }),
-  );
-}
-
-// Only register x402 routes if X402_PAY_TO_ADDRESS is configured
-if (isX402Enabled()) {
-  v2Router.post(
-    "/x402/search",
-    authMiddleware(RateLimiterMode.Search),
-    countryCheck,
-    blocklistMiddleware,
-    paymentMiddleware(
-      createX402RouteConfig(
-        "POST /x402/search",
-        "The search endpoint combines web search (SERP) with Firecrawl's scraping capabilities to return full page content for any query. Requires micropayment via X402 protocol",
-        {},
-        {},
-      ),
-      getX402ResourceServer(),
-    ),
-    wrap(x402SearchController),
   );
 }

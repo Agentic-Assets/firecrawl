@@ -5,6 +5,7 @@ import { withSpan, setSpanAttributes } from "../../lib/otel-tracer";
 import { captureExceptionWithZdrCheck } from "../../services/sentry";
 
 import {
+  applyScrapeOptionsDefaults,
   type Document,
   getPDFMaxPages,
   scrapeOptions,
@@ -89,12 +90,14 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import type { DataLayerScrapeMetadata } from "../../lib/data-layer";
 
 export type ScrapeUrlResponse =
   | {
       success: true;
       document: Document;
       unsupportedFeatures?: Set<FeatureFlag>;
+      dataLayer?: DataLayerScrapeMetadata;
     }
   | {
       success: false;
@@ -419,21 +422,13 @@ async function buildMetaObject(
     }
   }
 
-  const normalizedOptions = {
-    ...options,
-    skipTlsVerification:
-      options.skipTlsVerification ??
-      ((options.headers && Object.keys(options.headers).length > 0) ||
-      (options.actions && options.actions.length > 0)
-        ? false
-        : true),
-  };
+  const effectiveOptions = applyScrapeOptionsDefaults(options);
 
   return {
     id,
     url,
     rewrittenUrl: rewriteUrl(url),
-    options: normalizedOptions,
+    options: effectiveOptions,
     internalOptions,
     logger,
     abortHandle,
@@ -450,7 +445,7 @@ async function buildMetaObject(
           }
         : undefined,
     ),
-    featureFlags: buildFeatureFlags(url, normalizedOptions, internalOptions),
+    featureFlags: buildFeatureFlags(url, effectiveOptions, internalOptions),
     mock:
       options.useMock !== undefined
         ? await loadMock(options.useMock, _logger)
@@ -562,6 +557,8 @@ async function scrapeURLLoopIter(
         },
       );
       checkMarkdown = engineResult.html?.trim() ?? "";
+    } else if (engineResult.markdown?.trim()) {
+      checkMarkdown = engineResult.markdown.trim();
     } else {
       const requestId = meta.id || meta.internalOptions.crawlId;
       const zeroDataRetention = meta.internalOptions.zeroDataRetention;
@@ -991,6 +988,7 @@ async function scrapeURLLoop(meta: Meta): Promise<ScrapeUrlResponse> {
     let document: Document = {
       markdown: engineResult.markdown,
       rawHtml: engineResult.html,
+      json: engineResult.json,
       screenshot: engineResult.screenshot,
       actions: engineResult.actions,
       branding: engineResult.branding,
@@ -1054,6 +1052,7 @@ async function scrapeURLLoop(meta: Meta): Promise<ScrapeUrlResponse> {
       success: true,
       document,
       unsupportedFeatures: result.unsupportedFeatures,
+      dataLayer: engineResult.dataLayer,
     };
   });
 }
