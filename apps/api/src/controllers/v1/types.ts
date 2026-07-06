@@ -1073,6 +1073,7 @@ export type Document = {
     scrapeId?: string;
     error?: string;
     numPages?: number;
+    totalPages?: number;
     contentType?: string;
     timezone?: string;
     proxyUsed: "basic" | "stealth";
@@ -1310,6 +1311,8 @@ export type TeamFlags = {
   checkRobotsOnScrape?: boolean;
   crawlTtlHours?: number;
   ipWhitelist?: boolean;
+  // gates the per-team API key IP allowlist (ip_restriction_config table)
+  ipRestriction?: boolean;
   skipCountryCheck?: boolean;
   browserBeta?: boolean;
   bypassCreditChecks?: boolean;

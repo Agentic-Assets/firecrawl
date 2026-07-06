@@ -16,6 +16,7 @@ import {
   keylessTeamId,
 } from "../lib/keyless";
 import { isKeylessIpSuspicious } from "../lib/spur";
+import { checkIpRestriction } from "../lib/ip-restriction";
 import { deleteKey, getValue, setValue } from "../services/redis";
 import { redlock } from "../services/redlock";
 import { eq } from "drizzle-orm";
@@ -281,7 +282,7 @@ export async function getACUC(
     while (retries < maxRetries) {
       const database = Math.random() > 2 / 3 ? dbRr : db;
       try {
-        data = await authCreditUsageChunk(database, api_key, isExtract);
+        data = await authCreditUsageChunk(database, api_key);
         break;
       } catch (error) {
         logger.warn(
@@ -401,7 +402,7 @@ export async function getACUCTeam(
     while (retries < maxRetries) {
       const database = Math.random() > 2 / 3 ? dbRr : db;
       try {
-        data = await authCreditUsageChunkFromTeam(database, team_id, isExtract);
+        data = await authCreditUsageChunkFromTeam(database, team_id);
         break;
       } catch (error) {
         logger.warn(
@@ -799,6 +800,21 @@ async function supaAuthenticateUser(
       mode ?? RateLimiterMode.Crawl,
       chunk.rate_limits,
     );
+  }
+
+  if (chunk?.flags?.ipRestriction) {
+    const ipCheck = await checkIpRestriction(
+      req.ip ?? req.socket?.remoteAddress,
+      chunk.team_id,
+      chunk.flags,
+    );
+    if (!ipCheck.allowed) {
+      return {
+        success: false,
+        error: ipCheck.error,
+        status: ipCheck.status,
+      };
+    }
   }
 
   const team_endpoint_token = token === config.PREVIEW_TOKEN ? iptoken : teamId;
