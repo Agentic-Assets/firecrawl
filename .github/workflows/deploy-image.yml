@@ -1,13 +1,6 @@
 name: Deploy Images to GHCR
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - apps/api/**
-      - .github/workflows/deploy-image.yml
-      - .github/scripts/resolve_api_image_version.py
   workflow_dispatch:
     inputs:
       bump:
@@ -19,8 +12,10 @@ on:
           - patch
           - minor
 
+# Fork detach: contents: write removed so this workflow cannot auto-tag releases.
+# packages: write retained for optional GHCR DR image push.
 permissions:
-  contents: write
+  contents: read
   packages: write
 
 concurrency:
@@ -142,27 +137,14 @@ jobs:
           username: ${{github.actor}}
           password: ${{secrets.GITHUB_TOKEN}}
 
-      - name: Create Git tag
+      # Fork detach: git tag push removed (required contents: write). Version still
+      # resolved for GHCR manifest tags; create release tags manually if needed.
+      - name: Skip git release tag (fork detach)
         env:
           RELEASE_TAG: ${{ needs.version.outputs.tag }}
         run: |
-          git fetch --force --tags origin
-
-          if git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null; then
-            tag_commit="$(git rev-list -n 1 "${RELEASE_TAG}")"
-            if [ "${tag_commit}" != "${GITHUB_SHA}" ]; then
-              echo "::error::${RELEASE_TAG} already points at ${tag_commit}, not ${GITHUB_SHA}"
-              exit 1
-            fi
-
-            echo "${RELEASE_TAG} already exists on this commit; reusing it."
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${RELEASE_TAG}" "${GITHUB_SHA}" -m "Release API image ${RELEASE_TAG}"
-          git push origin "${RELEASE_TAG}"
+          echo "Skipping git tag ${RELEASE_TAG}; fork CI has contents: read only."
+          echo "Create the tag manually if a git release tag is required."
 
       - name: 'Create and Push Multi-Arch Manifest'
         timeout-minutes: 10
