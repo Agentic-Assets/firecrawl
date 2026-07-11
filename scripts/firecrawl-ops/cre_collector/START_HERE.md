@@ -4,6 +4,12 @@
 > extraction writer. `om_parse.py --apply` fails closed with exit `78`, and
 > `cre_enrich.py` has no OM-parse invocation. The dated snapshots below are
 > historical records, not authorization to reactivate that writer.
+>
+> **Current operational handoff:** Before any merge, Mac mini recovery,
+> scheduler change, or bounded canary, read
+> `../../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md`.
+> It is the current ordered runbook. The historical run counts and scheduler
+> states below must not be used as current live evidence.
 
 **2026-06-15 (Phase-2 data-lift LIVE).** DDL `011` -> `012` -> `013` -> `014`
 applied to prod (project `fhqycqubkkrdgzswccwd`, schema `credeals`) in order via

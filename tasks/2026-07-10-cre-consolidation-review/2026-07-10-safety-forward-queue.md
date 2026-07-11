@@ -3,6 +3,10 @@
 Candidate work surfaced during the safety pass. This is a prioritized menu,
 not a delivery commitment.
 
+For the current live execution order, approvals, pass evidence, and stop
+conditions, use `2026-07-11-firecrawl-operator-runbook.md`. This forward queue
+is only for deferred follow-up after those gates are satisfied.
+
 ## Correctness
 
 - **Restore the ZIP/CBSA mini test fixture** (confidence: verified gap).
@@ -18,8 +22,10 @@ not a delivery commitment.
 ## Hardening
 
 - **Deploy and configure the tier alert path** (confidence: implemented but
-  unconfigured). Set a reviewed `CRE_ALERT_WEBHOOK_URL`, force one safe failure,
-  and verify exactly one alert while preserving the original tier exit code.
+  unconfigured). After approval, provision an owner-only webhook file and pass
+  its path through `install_launchd.sh --alert-webhook-file`. Force one safe
+  failure and verify exactly one alert while preserving the original tier exit
+  code. Do not place the URL in an environment plist or Git-tracked file.
 
 - **Add an ephemeral Postgres schema-contract test** (confidence: verified gap).
   Validate the GetCREdata PostgREST conflict target and consumer view
@@ -32,8 +38,9 @@ not a delivery commitment.
 ## Operations
 
 - **Run one approved additive tier after runtime recovery** (confidence:
-  runtime healthy, write path unverified today). Confirm a fresh `ok:true`
-  marker after the restored Firecrawl API processes a bounded production batch.
+  current Mac mini runtime is unavailable and the write path is unverified).
+  Follow the operator runbook's bounded five-row canary criteria and confirm a
+  fresh `ok:true` marker after the restored Firecrawl API processes the batch.
 
 - **Choose and implement GetCREdata scheduling** (confidence: verified gap).
   Its default-branch workflow is manual only and the aa-hub lane is disabled.

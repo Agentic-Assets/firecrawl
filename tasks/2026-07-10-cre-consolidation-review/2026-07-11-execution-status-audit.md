@@ -7,6 +7,11 @@ cross-repository evidence refresh.
 **Status:** The implementation-preparation phase is complete. The production
 execution phase is not authorized or proven.
 
+**Operator starting point:** Read
+`2026-07-11-firecrawl-operator-runbook.md` before requesting a merge, runtime
+recovery, deployment, or canary. It turns the gates below into the required
+order, pass evidence, stop conditions, and rollback response.
+
 ## Verified implementation preparation
 
 ### Firecrawl writer repair

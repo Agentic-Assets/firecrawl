@@ -110,6 +110,9 @@ soft-delete writes, and a fresh `ok:true` marker.
 
 ## Left to the operator
 
+Start with `2026-07-11-firecrawl-operator-runbook.md`. It is the concise,
+ordered handoff for the following actions.
+
 1. Review draft PR #22, including its local evidence and live-runtime gates.
 2. Provide the literal merge approval required by the repository policy before
    merging into `main`.
