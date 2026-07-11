@@ -19,6 +19,18 @@ Put logs, browser captures, and one-off run outputs under task-specific folders
 or `tasks/tmp/`; durable reference docs under `docs/`; and workflow/example
 artifacts beside the relevant script or example.
 
+## Linear tracking
+
+- **Team:** `AGENTIC` (`da8832b3-3dde-416f-be01-98c76a5806c7`)
+- **Project:** Firecrawl Ops & Automation (`8e2110d7-5a75-4b67-bae1-2c6e8500552d`, slug `f13a738a83bf`)
+- **Repository label:** `Agentic-Assets/firecrawl`
+
+For non-trivial Firecrawl work, first search the project for an existing issue.
+Create or update the relevant `AGENTIC` issue, apply the repository label, and
+add an evidence comment with branch, commit, verification, production gates,
+and rollback status. Do not self-assign, mark an issue Done, or alter routing
+labels; the hub workflow owns those transitions.
+
 ## Env files (which is which)
 
 - **`./.env`** — **primary.** This is the file `docker compose up -d` reads at the repo root and is what every local Firecrawl run depends on. Gitignored. Never commit it.
