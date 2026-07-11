@@ -8,12 +8,13 @@ Parent context: repo `AGENTS.md`, root `CLAUDE.md`, and
 
 ## Scope
 
-Two systems live here:
+Two systems live here. **Agents: default to `cre_collector/` for any listing work.**
 
-1. CRE listing intelligence for EQUIRE. The production path is
-   `cre_collector/`, not the older `cre_scrapers/` package.
-2. Local Firecrawl ops tooling for the self-hosted stack at
-   `http://localhost:3002`.
+| System | Path | Status |
+|--------|------|--------|
+| CRE listing intelligence (EQUIRE board) | `cre_collector/` | **ACTIVE** — collect, ingest, monitor, launchd |
+| Legacy Python probes + archives | `cre_scrapers/`, `cre_scrapers/brokers/` | **STALE** — manual experiments and README notes only |
+| Local Firecrawl ops | `firecrawl_*.sh`, `set_model_profile.sh`, etc. | **ACTIVE** — stack health and API |
 
 Do not commit secrets, local artifacts, `out/`, `node_modules/`,
 `__pycache__/`, generated SQL, API keys, service-role keys, or database URLs.
@@ -32,7 +33,9 @@ first and run `bash cre_collector/cre_setup.sh`):
 7. `../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` (monitor run model + gotchas)
 8. `../../docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md` (Phase-2 status activation board impact)
 9. `cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` (monitor hardening, modular refactor, first `--apply` seed)
-10. `../../docs/firecrawl-ops/references/cre-cloud-hosting-options-2026-06-14.md` (where to run the pipeline: cloud vs Mac mini, platform comparison, anti-bot IP risk; decision aid, not actioned)
+10. `cre_collector/ENRICHMENT_WORKER_DESIGN_2026-06-15.md` (Tier-B worker + launchd cadence; when touching enrich or tiers)
+11. `cre_collector/launchd/CLAUDE.md` (tier schedules, install, gates; when touching launchd)
+12. `../../docs/firecrawl-ops/references/cre-cloud-hosting-options-2026-06-14.md` (where to run the pipeline: cloud vs Mac mini, platform comparison, anti-bot IP risk; decision aid, not actioned)
 
 For local Firecrawl stack work, read:
 
@@ -49,14 +52,14 @@ scripts/firecrawl-ops/
   CLAUDE.md                    Agent routing, compact
   README.md                    Human guide, fuller runbook
 
-  cre_collector/               Production CRE collector, Supabase ingestor, and
-                               observe-only monitor/change-tracking layer
-                               (cre_monitor.py, cre_gate.py, collect.ts --monitor)
-                               collect.ts (CLI entry), types.ts, lib/, sources/
+  cre_collector/               Production CRE collector, Supabase ingestor, monitor,
+                               gate, and Tier-B enrich worker
+                               (cre_monitor.py, cre_gate.py, cre_enrich.py, collect.ts)
+                               Full file table: `cre_collector/CLAUDE.md`
   cre_scrapers/                Legacy Python probes and detail enrichment
   sql/                         Idempotent credeals schema migrations
   prometheus/                  Original Prometheus CBRE reference dataset
-  tests/                       Unit tests for local OCR service
+  tests/                       Local ops wrapper tests + OCR service tests
 
   firecrawl_healthcheck.sh     Local stack smoke test
   firecrawl_cli.sh             Firecrawl CLI pinned to local API
@@ -99,6 +102,7 @@ npm run typecheck
 npx tsx collect.ts --source=svn --transaction=both --max-items=6 --out=/tmp/probe.json
 python3 cre_ingest.py --in /tmp/probe.json --dry-run
 bash cre_daily_update.sh --no-mark-missing
+bash cre_status.sh               # run-health heartbeat
 ```
 
 Use `--mark-missing` only after a clean all-source full run and explicit
@@ -113,8 +117,8 @@ enriched prices, `raw_data`, and child rows). See
 `../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` for the full run
 model and gotchas.
 
-Latest all-source baseline: 2026-06-12. See `cre_collector/START_HERE.md`
-for live counts and post-run source-specific changes before quoting coverage.
+Historical all-source artifact baseline: 2026-06-12. Live per-source matrix and
+board totals: `cre_collector/START_HERE.md` only (2026-07-05 snapshot there).
 
 Supabase objects live under `credeals`, not `public`:
 
@@ -129,12 +133,13 @@ Supabase objects live under `credeals`, not `public`:
 - `cre_source_index` (enumeration snapshot + prior price columns, 007+009)
 - `cre_enrichment_queue` (detail-render work queue, 007)
 - `cre_source_baseline` (coverage health baseline, 007)
-- `cre_listing_price_history` (append-only watched-field snapshots, 009; existence-guarded pre-apply)
-- `cre_listing_contacts_archive` (contacts snapshot at retirement, 009; existence-guarded pre-apply)
-- `cre_listing_documents_archive` (documents snapshot at retirement, 009; existence-guarded pre-apply)
+- `cre_listing_price_history` (append-only watched-field snapshots, 009; APPLIED)
+- `cre_listing_contacts_archive` (contacts snapshot at retirement, 009; APPLIED)
+- `cre_listing_documents_archive` (documents snapshot at retirement, 009; APPLIED)
 - `cre_listing_media`, `cre_listing_links` (detail media/link capture, 011; + `*_archive`; applied to prod, ingest writes gated)
 - `cre_listing_om_facts` (OM/PDF-parsed underwriting facts, 013; + `*_archive`; applied to prod, OM-parse gated so currently empty)
 - `cre_zip_cbsa_crosswalk` (offline ZIP->county+CBSA reference, 014; loaded 33,791 rows)
+- `v_cre_enrichment_queue_pending`, `v_cre_enrichment_dead` (enrichment health, 010)
 - `v_cre_listings_full`
 - `v_cre_active_for_sale`
 - `v_cre_active_for_lease`
@@ -145,84 +150,57 @@ Supabase objects live under `credeals`, not `public`:
 Document and image tables store source URLs only. Do not download public PDFs
 or images into Supabase storage for the bulk collector.
 
-## Monitor rollout (2026-06-13/14)
+## Monitor, enrichment, and automation
 
-Track 1 shipped: monitor hardening, `collect.ts` modular split, coverage gate
-triple-gating, four detail-id monitor exclusions. First gated `cre_monitor.py
---apply` seed completed on `avison-young` (baseline + index only; observe-only).
-Track 2 shipped 2026-06-13: observe-only seed scaled to all 11 monitor-enabled
-sources (`cre_source_baseline`=11, `cre_source_index`=73,693, 0 events, board
-unchanged); `jll`/`jll-investor` monitor short-circuit; Phase-2 status
-activation wired + hardened in `cre_ingest.py` (COALESCE + terminal guard +
-default-off `CRE_STATUS_FLIP_MAX_FRACTION` breaker); EQUIRE board-gate widening
-(Option B) committed on `dynamically-display-cre-listing-data`; the agent-facing
-`005` views widened to the on-market set (`active`/`under_contract`/`pending`)
-on the collector branch (apply gated, verified a zero-row no-op today).
-Gate-0 prod status CHECK verified.
-Track 2 additionally shipped 2026-06-14: colliers-main full run COMPLETE and
-ingested additively (status activation OFF); colliers brokerage total now 17,001
-active (15,829 from main: 5,750 sale + 8,897 lease + 1,182 sale_or_lease, 0
-soft-deleted, 0 duplicate external_ids); live board total now 87,328 active.
-Status activation is now OPT-IN default-off in `cre_ingest.py` (requires
-`--activate-status` flag or `CRE_ACTIVATE_STATUS=1`; new helpers
-`_status_activation_enabled()` and `apply_status_activation_gate()`).
-`cre_gate.py` wired into `cre_daily_update.sh` as observe-only step [3/4]
-(`--in RUN --apply --strict --out gate.json`), with auto-downgrade to
-`--no-mark-missing` if the strict gate detects any partial/regressed source.
-Monitor and daily launchd tiers loaded and EXECUTING on schedule:
-`ai.agentic.cre-monitor` (every 3h at :15, `CRE_MONITOR_APPLY=1`; records 007
-change events, never touches `status`/`deleted_at`) and `ai.agentic.cre-daily`
-(06:30 daily, runs `cre_daily_update.sh --no-mark-missing`, status activation
-OFF) now run from `/Users/caymanseagraves/Github/agentic-assets/firecrawl`
-(relocated out of `~/Documents`, so the prior macOS TCC / Full Disk Access
-exit-126 block no longer applies). The monitor tier has a confirmed clean run
-(`out/daily/last_run_monitor.json` rc:0, 2026-06-15); the daily tier executes on
-schedule (additive). Weekly reconcile tier
-(`ai.agentic.cre-weekly`) intentionally NOT loaded (held for explicit
-go-ahead). Live DB hardening applied (cap_rate/occupancy_rate CHECKs,
-4 FK ON DELETE SET NULL, 2 NULLS NOT DISTINCT unique indexes,
-`v_cre_listings_full` security_invoker reasserted; no board change).
-Data-quality cleanups applied: 50 board-invisible JLL rows corrected to
-`status='inactive'`; transwestern scrape_config notes restored; Savills
-residential contamination removed (101 mis-categorized sale rows + 1 ghost
-lease soft-deleted), leaving 2 defensible Chicago retail lease rows. Savills
-sale is structurally capped with no public US commercial-sale feed.
-Track 3 shipped 2026-06-15 (freshness/history remediation): count-aware folded
-coverage guard in `main()` (M1 data-loss fix); price COALESCE-keep on all 4
-price columns (L1); revival terminal-stickiness guard (M5); `disappeared` event
-emitted in the same transaction as mark-missing (M3); ingest-written
-`cre_listing_price_history` (H4a, existence-guarded); contacts + documents
-archive at retirement (M2, existence-guarded); flip-breaker metric widened (L4a);
-monitor `old_value` populated from `prior_sale_price`/`prior_lease_rate` (H4b);
-Savills `IsCommercial` sale guard and lease pagination (L5/L3); signal-staleness
-check for disappearance-only sources in `cre_status.sh` (H3);
-`CRE_STATUS_FLIP_MAX_FRACTION=0.30` added to daily + weekly plist templates
-(L4b). New migration `009_cre_history_retention.sql` adds the history + archive
-tables and the `trg_cre_listings_block_history_delete` retention trigger
-(registered in `000_run_all.sql`). RESOLVED: the `test_ingest_status_activation.py`
-revival assertion now asserts the M5 guarded-revival CASE (and that the old
-unconditional form is gone) and passes against current `cre_ingest.py`.
-`009_cre_history_retention.sql` is APPLIED to prod (2026-06-15, verified live:
-price-history + archive tables, `prior_*` columns, and the retention trigger all
-present; history rows are being written). Still gated for go-ahead:
-deploy the consumer board-gate branch (must precede live T3.1 activation);
-trigger first live status activation; apply the widened `005` views (live DDL,
-alongside the consumer deploy). The Tier-B `cre_enrichment_queue` worker
-(`cre_enrich.py` + `lib/enrich.ts` + `sql/010`) and the cadence restructure
-(monitor 2x/day + enrich every 4h + additive weekly) SHIPPED in code 2026-06-15;
-the live launchd cutover (load enrich, reload monitor at 2x/day, retire daily)
-is held for go-ahead. Phase-2 data-lift DDL `011`-`014` is APPLIED to prod
-(additive, board unchanged); see `cre_collector/CLAUDE.md` and `START_HERE.md`.
+The collector registers **20 source keys** in `types.ts` / `collect.ts`. Live
+counts, per-source status, and run-health belong in
+`cre_collector/START_HERE.md` only. Run `bash cre_status.sh` before quoting
+schedules or last-run verdicts.
+
+**Shipped architecture:**
+- Observe-only monitor (007): `collect.ts --monitor` → `cre_monitor.py` only;
+  never ingest monitor artifacts. Four sources return `[]` on monitor because
+  `external_id` is detail-derived (`jll`, `jll-investor`, `cbre-dealflow`,
+  `colliers` SalesTracker).
+- Coverage gate: `cre_gate.py` wired into `cre_daily_update.sh` step [3/4]
+  (`--strict` auto-downgrades to `--no-mark-missing` on partial sources).
+- Tier-B enrichment: `cre_enrich.py` + `collect.ts --enrich-input` + `sql/010`
+  health views. Additive by construction (never `--mark-missing` /
+  `--activate-status`).
+- Status activation is OPT-IN default-off in `cre_ingest.py` (`--activate-status`
+  or `CRE_ACTIVATE_STATUS=1` required).
+- Migrations `009` through `014` are APPLIED to prod. Phase-2 backfills
+  (`cre_backfill_raw_data`, `om_classify_existing`, `cre_geo_backfill`) ran
+  additively; `status` was never touched.
+
+**Launchd (live ops on this Mac, 2026-07-05):** cutover APPLIED (partial:
+`daily` not unloaded, kept as rollback). All four tiers loaded: `monitor`
+(2x/day 06:10/18:10), `enrich` (every 4h), `daily` (06:30, additive),
+`weekly` (Sun 03:00, additive by default; `CRE_WEEKLY_MARK_MISSING=1`
+escalation still gated). Repo path:
+`/Users/caymanseagraves/Github/agentic-assets/firecrawl`. Production env:
+`CRE_ENV_FILE=~/.config/cre/equire.env`. **Do not quote run-health from memory;**
+read `START_HERE.md` or `cre_status.sh` output (tier health changes; as of
+2026-07-05 banner, monitor OK, enrich/daily/weekly last runs failed).
+
+**Still gated for explicit go-ahead:** OM-parse (`om_parse.py`), live status
+activation, consumer board-gate deploy + widened `005`/`006` views, media
+backfill (`backfill_media_from_raw_data.py`), and weekly mark-missing escalation
+(`CRE_WEEKLY_MARK_MISSING=1`).
 
 | Module | Role |
 |---|---|
-| `collect.ts` | CLI entry; orchestrates source runs and `--monitor` |
+| `collect.ts` | CLI entry; orchestrates source runs, `--monitor`, `--enrich-input` |
 | `types.ts` | Shared listing types and `SourceResult` contract |
-| `lib/` | `config`, `scrape`, `harvest`, `parse`, `geo`, `enrich`, `broker`, `html`, `util` primitives |
+| `lib/` | `config`, `scrape`, `harvest`, `parse`, `geo`, `enrich`, `broker`, `html`, `util` |
 | `sources/*.ts` | Per-broker adapters (one file per source key) |
 | `cre_ingest.py` | Full artifact upsert into `cre_listings` (+ children) |
 | `cre_monitor.py` | Observe-only diff/events/index (007 tables) |
 | `cre_gate.py` | Per-source coverage baseline and `mark_missing_safe` rollup |
+| `cre_enrich.py` | Tier-B queue worker: targeted detail collect + additive re-ingest |
+| `cre_daily_update.sh` | Healthcheck → full collect → gate → ingest → prune |
+| `cre_status.sh` | Read-only run-health heartbeat (schedules, staleness, locks) |
+| `launchd/` | macOS tier schedules (`install_launchd.sh`, `cre_run_tier.sh`) |
 
 ## Broker Status Rules
 
@@ -235,8 +213,7 @@ Durable cautions:
 
 - Colliers has two folded sources under the `colliers` brokerage: `colliers`
   (SalesTracker investment-sale subset) and `colliers-main` (full public site
-  via XML sitemap, `main:` ids). The main-site full run is COMPLETE as of
-  2026-06-14 (15,829 active rows ingested additively; colliers total 17,001).
+  via XML sitemap, `main:` ids). Main-site full run COMPLETE 2026-06-14.
 - Keep daily ingest additive (`cre_daily_update.sh --no-mark-missing`) while
   Savills sale remains structurally capped (no public US commercial-sale feed).
   Use `--mark-missing` only after a clean all-source run and explicit go-ahead.
