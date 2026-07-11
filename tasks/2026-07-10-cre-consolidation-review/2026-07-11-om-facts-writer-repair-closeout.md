@@ -1,7 +1,7 @@
 # OM-facts writer repair closeout (2026-07-11)
 
-**Branch:** `fix/cre-consolidation-safety`  
-**Base:** `origin/main` at `c74ece496`  
+**Branch:** `fix/cre-consolidation-safety`
+**Base:** `origin/main` at `c74ece496`
 **Implementation commits:** `477331e70` (`fix: align OM facts upsert contract`)
 through `2dc47f078` (`fix: retire Firecrawl OM writer`)
 **State:** pushed to `origin/fix/cre-consolidation-safety`; draft

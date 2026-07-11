@@ -1,8 +1,8 @@
 # CRE consolidation safety closeout (2026-07-10)
 
-**Branch:** `fix/cre-consolidation-safety`  
-**Base:** `origin/main` at `c74ece496`  
-**Implementation commit:** `33ad9a4ea`  
+**Branch:** `fix/cre-consolidation-safety`
+**Base:** `origin/main` at `c74ece496`
+**Implementation commit:** `33ad9a4ea`
 **State:** local hardening committed. No PR opened. Production DDL, launchd
 changes, and production collection writes remain unperformed.
 
