@@ -154,6 +154,15 @@ def test_daily_validation_is_advisory_and_status_visible():
     assert "latest validation (read-only advisory)" in status
 
 
+def test_status_compares_installed_plists_without_loading_or_writing():
+    installer = (COLLECTOR / "launchd" / "install_launchd.sh").read_text(encoding="utf-8")
+    status = STATUS.read_text(encoding="utf-8")
+    assert 'if [ "$MODE" != "print" ]; then' in installer
+    assert "installed launchd template drift" in status
+    assert "diff -q" in status
+    assert "do not load automatically" in status
+
+
 def test_cre_status_derives_disappearance_only_sources_from_ingest_contract():
     text = STATUS.read_text(encoding="utf-8")
     assert "STATUS_SOURCE_PATHS" in text

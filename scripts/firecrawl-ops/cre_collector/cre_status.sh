@@ -334,6 +334,21 @@ case "$ENVP" in
   *)       warn "env discovery error: $ENVP" ;;
 esac
 
+section "installed launchd template drift"
+INSTALLER="$DIR/launchd/install_launchd.sh"
+for tier in monitor enrich weekly daily; do
+  plist="$HOME/Library/LaunchAgents/ai.agentic.cre-$tier.plist"
+  [ -f "$plist" ] || { note "$tier: no installed plist to compare"; continue; }
+  expected="$(CRE_ENV_FILE="${CRE_ENV_FILE:-}" bash "$INSTALLER" --print "$tier" 2>/dev/null || true)"
+  if [ -z "$expected" ]; then
+    warn "$tier: could not render checked-in plist template"
+  elif diff -q <(printf '%s\n' "$expected") "$plist" >/dev/null 2>&1; then
+    ok "$tier: installed plist matches checked-in template"
+  else
+    warn "$tier: installed plist differs from checked-in template (rerender with install_launchd.sh; do not load automatically)"
+  fi
+done
+
 # ---------------------------------------------------------------------------
 section "recent launchd stderr (newest tail)"
 # ---------------------------------------------------------------------------

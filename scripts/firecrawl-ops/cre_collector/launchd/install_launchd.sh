@@ -107,7 +107,9 @@ fi
 # ---------------------------------------------------------------------------
 # Ensure the log directory exists (launchd opens StandardOut/ErrorPath at load).
 # ---------------------------------------------------------------------------
-mkdir -p "${COLLECTOR_DIR}/out/daily"
+if [ "$MODE" != "print" ]; then
+  mkdir -p "${COLLECTOR_DIR}/out/daily"
+fi
 
 # ---------------------------------------------------------------------------
 # TCC advisory: a launchd user-agent cannot read ~/Documents without a manual
