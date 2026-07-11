@@ -5,12 +5,15 @@
 # and does not require Docker. The runner starts an unexposed disposable
 # container, applies source migration 013, executes the generated production
 # upsert three times, asserts same-version updates plus cross-version coexistence,
-# then removes the container even when a command fails.
+# then recreates the legacy four-column index, applies migration 015 twice, and
+# proves the exact five-column idempotent upgrade. The container is removed even
+# when a command fails.
 
 set -euo pipefail
 
 COLLECTOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MIGRATION="$COLLECTOR_DIR/../sql/013_cre_listing_om_facts.sql"
+ALIGN_MIGRATION="$COLLECTOR_DIR/../sql/015_align_om_facts_conflict_key.sql"
 PG_IMAGE="${PG_IMAGE:-postgres:17-alpine}"
 CONTAINER="firecrawl-om-facts-contract-$$"
 
@@ -30,6 +33,10 @@ fi
 
 if [[ ! -f "$MIGRATION" ]]; then
   echo "Missing source migration: $MIGRATION" >&2
+  exit 78
+fi
+if [[ ! -f "$ALIGN_MIGRATION" ]]; then
+  echo "Missing alignment migration: $ALIGN_MIGRATION" >&2
   exit 78
 fi
 
@@ -143,3 +150,40 @@ END $$;
 SELECT 'OM facts PostgreSQL contract passed' AS result;
 """)
 PY
+
+docker exec --interactive "$CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d contract <<'SQL'
+TRUNCATE credeals.cre_listing_om_facts;
+DROP INDEX credeals.cre_listing_om_facts_uq;
+CREATE UNIQUE INDEX cre_listing_om_facts_uq
+  ON credeals.cre_listing_om_facts
+  (listing_id, fact_group, fact_key, source_doc_url) NULLS NOT DISTINCT;
+SQL
+
+docker exec --interactive "$CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d contract \
+  < "$ALIGN_MIGRATION"
+docker exec --interactive "$CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d contract \
+  < "$ALIGN_MIGRATION"
+
+docker exec --interactive "$CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d contract <<'SQL'
+DO $$
+DECLARE
+  index_definition text;
+BEGIN
+  SELECT pg_get_indexdef(i.indexrelid)
+    INTO index_definition
+    FROM pg_index i
+    JOIN pg_class idx ON idx.oid = i.indexrelid
+    JOIN pg_class tbl ON tbl.oid = i.indrelid
+    JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+   WHERE ns.nspname = 'credeals'
+     AND tbl.relname = 'cre_listing_om_facts'
+     AND idx.relname = 'cre_listing_om_facts_uq'
+     AND i.indisunique
+     AND i.indnullsnotdistinct;
+  IF index_definition IS NULL OR index_definition NOT LIKE
+      '%(listing_id, fact_group, fact_key, source_doc_url, parser_version) NULLS NOT DISTINCT%' THEN
+    RAISE EXCEPTION 'migration 015 did not produce the canonical index: %', index_definition;
+  END IF;
+END $$;
+SELECT 'OM facts legacy alignment contract passed' AS result;
+SQL

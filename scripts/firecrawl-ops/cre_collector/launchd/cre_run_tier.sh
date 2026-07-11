@@ -138,12 +138,40 @@ previous_failure_count() {
     esac
 }
 
+read_alert_webhook_url() {
+    # Scheduled jobs receive only the path to the secret. The URL itself stays
+    # outside git and out of the rendered plist. Direct CRE_ALERT_WEBHOOK_URL is
+    # retained for supervised/manual runs.
+    local direct="${CRE_ALERT_WEBHOOK_URL:-}" secret_file="${CRE_ALERT_WEBHOOK_FILE:-}"
+    local mode="" value=""
+    if [ -n "${direct}" ]; then
+        printf '%s' "${direct}"
+        return 0
+    fi
+    [ -n "${secret_file}" ] || return 0
+    if [ ! -f "${secret_file}" ] || [ ! -r "${secret_file}" ] || [ ! -O "${secret_file}" ]; then
+        echo "[cre_run_tier] ALERT not configured: CRE_ALERT_WEBHOOK_FILE must be an owned, readable regular file" >&2
+        return 0
+    fi
+    mode="$(stat -f '%Lp' "${secret_file}" 2>/dev/null || stat -c '%a' "${secret_file}" 2>/dev/null || true)"
+    case "${mode}" in
+        400|600) ;;
+        *)
+            echo "[cre_run_tier] ALERT not configured: CRE_ALERT_WEBHOOK_FILE permissions must be 400 or 600" >&2
+            return 0
+            ;;
+    esac
+    value="$(<"${secret_file}")"
+    printf '%s' "${value}"
+}
+
 notify_failure() {
     # Optional and best-effort. A missing webhook must never mask the real tier
     # exit code or turn a local outage into an alerting outage.
-    local rc="$1" failures="$2" url="${CRE_ALERT_WEBHOOK_URL:-}"
+    local rc="$1" failures="$2" url=""
+    url="$(read_alert_webhook_url)"
     [ -n "${url}" ] || {
-        echo "[cre_run_tier] ALERT not sent: CRE_ALERT_WEBHOOK_URL is unset (tier=${TIER} rc=${rc} consecutive_failures=${failures})" >&2
+        echo "[cre_run_tier] ALERT not sent: no valid webhook is configured (tier=${TIER} rc=${rc} consecutive_failures=${failures})" >&2
         return 0
     }
     if ! command -v curl >/dev/null 2>&1; then
@@ -151,7 +179,7 @@ notify_failure() {
         return 0
     fi
     if [[ "${url}" == *$'\n'* || "${url}" == *$'\r'* ]]; then
-        echo "[cre_run_tier] ALERT not sent: CRE_ALERT_WEBHOOK_URL contains a newline (tier=${TIER})" >&2
+        echo "[cre_run_tier] ALERT not sent: webhook contains a newline (tier=${TIER})" >&2
         return 0
     fi
     # TIER is a fixed enum and the values are numeric, so this JSON cannot carry

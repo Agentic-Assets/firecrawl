@@ -50,9 +50,12 @@ four-column conflict target and failed every OM-facts ingest.
   tests/test_cre_ingest_builders.py tests/test_om_parse.py -q`
   passed, 146 tests.
 - Full collector Python suite:
-  `python3 -m pytest tests/ -q` passed, 1,386 tests; 17 skipped.
+  `python3 -m pytest tests/ -q` passed, 1,388 tests; 17 skipped.
 - Collector TypeScript validation:
   `npm test` passed, including `tsc --noEmit` and 479 unit tests.
+- Collector dependency audit:
+  `npm audit --audit-level=high` passed with zero vulnerabilities after locking
+  patched transitive `form-data` 4.0.6 and `undici` 7.28.0 releases.
 - `git diff --check` and `python3 -m py_compile cre_enrich.py om_parse.py`
   passed.
 - Direct CLI checks confirmed `cre_enrich.py --om-parse` exits `2` and
@@ -63,7 +66,10 @@ four-column conflict target and failed every OM-facts ingest.
   `bash tests/run_om_facts_postgres_contract.sh` passed. It applied
   `013_cre_listing_om_facts.sql`, executed the generated OM upsert three times,
   and asserted two parser-version rows, an updated `om-contract/1` row, and a
-  coexisting `om-contract/2` row. The container was unexposed and removed.
+  coexisting `om-contract/2` row. It then seeded the former four-column unique
+  index, applied migration `015` twice, and asserted the exact canonical
+  five-column `NULLS NOT DISTINCT` index. The container was unexposed and
+  removed.
 
 ## Decisions made
 

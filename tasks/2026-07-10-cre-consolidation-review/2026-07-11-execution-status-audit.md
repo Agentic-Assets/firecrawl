@@ -1,7 +1,8 @@
 # CRE consolidation execution-status audit (2026-07-11)
 
 **Plan:** `OPTIMAL_EXECUTION_PLAN_2026-07-11.md`
-**Firecrawl branch:** `fix/cre-consolidation-safety` at `466cf5614`
+**Firecrawl branch:** `fix/cre-consolidation-safety`, reviewed from `f0e4d2cf3`
+plus the review follow-up recorded below.
 **Scope:** Read-only audit plus locally verified, pushed preparation branches.
 **Status:** The implementation-preparation phase is complete. The production
 execution phase is not authorized or proven.
@@ -17,11 +18,30 @@ execution phase is not authorized or proven.
 - The failure-webhook URL is passed to curl through stdin configuration rather
   than process arguments. Its regression test also rejects newline injection.
 - Latest clean-worktree verification at this branch head:
-  - `python3 -m pytest tests/ -q`: 1,386 passed, 17 skipped.
+  - `python3 -m pytest tests/ -q`: 1,388 passed, 17 skipped.
   - `bash tests/run_om_facts_postgres_contract.sh`: passed against isolated
-    PostgreSQL with the real five-column conflict target.
+    PostgreSQL with the real five-column conflict target, then upgraded a
+    seeded legacy four-column index through migration `015` twice.
   - `npm ci && npm test`: typecheck passed and 479 unit tests passed.
+  - `npm audit --audit-level=high`: zero vulnerabilities after updating the
+    locked transitive `form-data` and `undici` patch releases.
   - `git diff --check origin/main...HEAD`: passed.
+
+### Review-and-ship follow-up
+
+- Draft PR #22 is open against `main`, is mergeable with a clean merge state,
+  and has no GitHub-hosted checks configured. Local verification remains the
+  release evidence for this fork-owned ops change.
+- The complete branch diff was reviewed again for correctness, regressions,
+  security, test coverage, and plan intent. No unresolved critical or warning
+  code defect was confirmed in the Firecrawl change set.
+- A fresh dependency audit found two pre-existing high-severity transitive
+  advisories. The lockfile now resolves `form-data` 4.0.6 and `undici` 7.28.0;
+  the audit and the full TypeScript suite pass after the update.
+- This code-review verdict does not change the production verdict. The branch
+  is review-ready, but the overall plan is not live or complete until the
+  deployment, owner-acknowledgement, canary, observation-window, and activation
+  gates below are proven.
 
 ### Cross-repository preparation
 
@@ -57,7 +77,7 @@ The Mac mini is not in a state that permits a canary:
   hub environment file, allowlist entry, or GetCREdata run record.
 - The Mac mini GetCREdata checkout is an older branch with no reviewed
   hardening code, virtual environment, configuration environment, cache, or
-  logs. Free disk is approximately 18 GiB (1 percent of the data volume).
+  logs. Free disk is approximately 17 GiB (1 percent of the data volume).
 
 ## Unmet plan gates
 

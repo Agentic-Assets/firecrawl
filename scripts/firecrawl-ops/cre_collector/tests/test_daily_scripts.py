@@ -17,6 +17,7 @@ delete the last_run_<tier>.json verdict markers that cre_status.sh reads.
 Pure-local: tmp_path only, no network, no database. Skips if bash is absent.
 """
 
+import html
 import os
 import re
 import shutil
@@ -28,6 +29,7 @@ import pytest
 COLLECTOR = Path(__file__).resolve().parent.parent
 DAILY = COLLECTOR / "cre_daily_update.sh"
 RUN_TIER = COLLECTOR / "launchd" / "cre_run_tier.sh"
+INSTALLER = COLLECTOR / "launchd" / "install_launchd.sh"
 STATUS = COLLECTOR / "cre_status.sh"
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
@@ -142,7 +144,9 @@ def test_tier_markers_track_consecutive_failures_and_alerts_are_optional():
 
 def test_failure_webhook_keeps_credential_out_of_curl_argv(tmp_path):
     """The real notifier passes its URL through stdin config, not process argv."""
-    notify = _extract_function("notify_failure", RUN_TIER.read_text(encoding="utf-8"))
+    runner = RUN_TIER.read_text(encoding="utf-8")
+    read_url = _extract_function("read_alert_webhook_url", runner)
+    notify = _extract_function("notify_failure", runner)
     capture_args = tmp_path / "curl-argv.bin"
     capture_stdin = tmp_path / "curl-stdin.txt"
     fake_curl = tmp_path / "curl"
@@ -154,15 +158,22 @@ def test_failure_webhook_keeps_credential_out_of_curl_argv(tmp_path):
     )
     fake_curl.chmod(0o755)
     secret_url = "https://webhook.example.test/hooks/bearer-secret"
-    script = f"set -euo pipefail\nTIER=enrich\n{notify}\nnotify_failure 17 4\nwait\n"
+    secret_file = tmp_path / "webhook.url"
+    secret_file.write_text(secret_url + "\n", encoding="utf-8")
+    secret_file.chmod(0o600)
+    script = (
+        f"set -euo pipefail\nTIER=enrich\n{read_url}\n{notify}\n"
+        "notify_failure 17 4\nwait\n"
+    )
     env = {
         **os.environ,
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
-        "CRE_ALERT_WEBHOOK_URL": secret_url,
+        "CRE_ALERT_WEBHOOK_FILE": str(secret_file),
+        "CRE_ALERT_WEBHOOK_URL": "",
         "CAPTURE_ARGS": str(capture_args),
         "CAPTURE_STDIN": str(capture_stdin),
     }
-    subprocess.run(["bash", "-c", script], check=True, env=env)
+    subprocess.run(["/bin/bash", "-c", script], check=True, env=env)
 
     argv = capture_args.read_bytes()
     assert secret_url.encode() not in argv
@@ -171,20 +182,74 @@ def test_failure_webhook_keeps_credential_out_of_curl_argv(tmp_path):
 
 
 def test_failure_webhook_rejects_newline_config_injection(tmp_path):
-    notify = _extract_function("notify_failure", RUN_TIER.read_text(encoding="utf-8"))
+    runner = RUN_TIER.read_text(encoding="utf-8")
+    read_url = _extract_function("read_alert_webhook_url", runner)
+    notify = _extract_function("notify_failure", runner)
     fake_curl = tmp_path / "curl"
     fake_curl.write_text("#!/usr/bin/env bash\nexit 99\n", encoding="utf-8")
     fake_curl.chmod(0o755)
-    script = f"set -euo pipefail\nTIER=enrich\n{notify}\nnotify_failure 17 4\nwait\n"
+    script = (
+        f"set -euo pipefail\nTIER=enrich\n{read_url}\n{notify}\n"
+        "notify_failure 17 4\nwait\n"
+    )
     env = {
         **os.environ,
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
         "CRE_ALERT_WEBHOOK_URL": "https://webhook.example.test/ok\nheader = injected",
     }
     result = subprocess.run(
-        ["bash", "-c", script], check=True, env=env, text=True, capture_output=True
+        ["/bin/bash", "-c", script], check=True, env=env, text=True, capture_output=True
     )
     assert "contains a newline" in result.stderr
+
+
+def test_alert_webhook_file_requires_private_permissions(tmp_path):
+    runner = RUN_TIER.read_text(encoding="utf-8")
+    read_url = _extract_function("read_alert_webhook_url", runner)
+    secret_file = tmp_path / "webhook.url"
+    secret_file.write_text("https://webhook.example.test/private\n", encoding="utf-8")
+    secret_file.chmod(0o644)
+    script = f"set -euo pipefail\n{read_url}\nread_alert_webhook_url\n"
+    result = subprocess.run(
+        ["/bin/bash", "-c", script],
+        check=True,
+        env={**os.environ, "CRE_ALERT_WEBHOOK_FILE": str(secret_file)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.stdout == ""
+    assert "permissions must be 400 or 600" in result.stderr
+
+
+def test_rendered_plist_injects_alert_secret_path_not_value(tmp_path):
+    secret_url = "https://webhook.example.test/hooks/secret-value"
+    secret_file = tmp_path / "webhook&<>\"'alert.url"
+    secret_file.write_text(secret_url + "\n", encoding="utf-8")
+    secret_file.chmod(0o600)
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            str(INSTALLER),
+            "--print",
+            "--alert-webhook-file",
+            str(secret_file),
+            "enrich",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert "<key>CRE_ALERT_WEBHOOK_FILE</key>" in result.stdout
+    assert f"<string>{html.escape(str(secret_file), quote=True)}</string>" in result.stdout
+    assert secret_url not in result.stdout
+    if shutil.which("plutil"):
+        subprocess.run(
+            ["plutil", "-lint", "-"],
+            input=result.stdout,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
 
 
 def test_cre_status_skips_legacy_daily_log_sentinel_when_daily_is_retired():

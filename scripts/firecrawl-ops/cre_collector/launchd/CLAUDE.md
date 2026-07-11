@@ -6,7 +6,13 @@
 
 Tier set (cadence restructure SHIPPED in code 2026-06-15; live cutover gated): **monitor** (2x/day), **enrich** (every 4h, drains `cre_enrichment_queue`), **weekly** (additive full backstop). The heavy **daily** tier is RETIRED (monitor + enrich replace its freshness role); its case + template are kept for rollback only. Design + cutover runbook: `../ENRICHMENT_WORKER_DESIGN_2026-06-15.md` Section 9.
 
-Current LIVE state (2026-06-15): the OLD tiers are still loaded on this Mac (`ai.agentic.cre-monitor` every 3h + `ai.agentic.cre-daily` 06:30), both EXECUTING on schedule. The repo was relocated out of `~/Documents` to `~/Github/agentic-assets/firecrawl`, so the prior macOS TCC / Full Disk Access exit-126 block no longer applies. The monitor tier has a confirmed clean run (`../out/daily/last_run_monitor.json` rc:0, 2026-06-15); a monitor fire correctly skips when the daily tier holds the run lock. The new enrich/restructured-monitor/weekly cadence is installable but NOT yet loaded; running the Section 9 cutover is held for explicit go-ahead.
+Historical state captured on 2026-06-15: the old monitor and daily tiers were
+loaded on that Mac, and the checkout was outside `~/Documents`. This is not
+current scheduler evidence. The 2026-07-11 read-only audit at
+`../../../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-execution-status-audit.md`
+records the actual Mac mini state and recovery gates. Re-run `cre_status.sh`
+before any scheduler decision. The new enrich/restructured-monitor/weekly
+cutover remains held for explicit approval.
 
 ## Folder-Specific Commands
 
@@ -28,7 +34,7 @@ Install/unload: `README.md`. `install_launchd.sh` renders `*.plist.template` per
 
 ## Module Boundaries
 
-Owns macOS schedules, lock serialization (portable atomic `mkdir` lock with PID-based stale recovery; no `flock` dependency, since stock macOS ships none), tier dispatch, and a per-run verdict marker (`out/daily/last_run_<tier>.json`). Delegates collect/ingest to `cre_daily_update.sh` (weekly) and to `cre_enrich.py` (enrich). Monitor tier: `collect.ts --monitor` (enumeration artifact) then `cre_monitor.py` (observe-only diff; `CRE_MONITOR_APPLY=1` for `--apply`), with both children redirected to a per-run, pruned `out/monitor/monitor_<stamp>.log` (not the append-only launchd redirect). Enrich tier: `cre_enrich.py --batch ${CRE_ENRICH_BATCH:-200}`, additive by construction (`cre_ingest.py --in` only; never `--mark-missing`/`--activate-status`). Plists are rendered per-machine from `*.plist.template` by `install_launchd.sh` (tokens for collector path, PATH, optional `CRE_ENV_FILE`); `cre_run_tier.sh` self-locates, so no committed file hardcodes a clone path.
+Owns macOS schedules, lock serialization (portable atomic `mkdir` lock with PID-based stale recovery; no `flock` dependency, since stock macOS ships none), tier dispatch, and a per-run verdict marker (`out/daily/last_run_<tier>.json`). Delegates collect/ingest to `cre_daily_update.sh` (weekly) and to `cre_enrich.py` (enrich). Monitor tier: `collect.ts --monitor` (enumeration artifact) then `cre_monitor.py` (observe-only diff; `CRE_MONITOR_APPLY=1` for `--apply`), with both children redirected to a per-run, pruned `out/monitor/monitor_<stamp>.log` (not the append-only launchd redirect). Enrich tier: `cre_enrich.py --batch ${CRE_ENRICH_BATCH:-200}`, additive by construction (`cre_ingest.py --in` only; never `--mark-missing`/`--activate-status`). Plists are rendered per-machine from `*.plist.template` by `install_launchd.sh` (tokens for collector path, PATH, optional `CRE_ENV_FILE`, and optional owner-only alert secret-file path); `cre_run_tier.sh` self-locates, so no committed file hardcodes a clone path.
 
 **Disk self-bounds on every run.** `finish()` (EXIT trap, pass or fail) prunes runtime artifacts: keep newest 24 `monitor_*.json` + 24 `monitor_*.log` under `out/monitor/`, and cap each `cre-*.{out,err}.log` at 10MB (`_keep_newest` / `_cap_log`, both space-safe, BSD/GNU `stat` fallback). The lock owner records `<pid> <start-epoch>` so `cre_status.sh` can flag a hung lock (held beyond any real run) or a stale lock (dead PID). No cron cleanup needed.
 
