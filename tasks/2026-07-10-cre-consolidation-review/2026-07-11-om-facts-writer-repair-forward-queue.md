@@ -34,3 +34,12 @@ commitment. Re-verify each item before acting.
   moved to five columns. A generated report can compare the migration, emitted
   SQL, external writer configuration, and live index definition before a
   scheduled ingest resumes.
+
+## Process
+
+- **Replace the remote runtime discovery gap with a pre-canary checklist**
+  (confidence: verified operational gap, high priority).
+  The Mac mini has a different checkout, stopped Docker runtime, TCC-risk path,
+  and undiscoverable database environment. Turn those four observations into a
+  single read-only preflight that must pass before a deployment or canary is
+  proposed.

@@ -3,9 +3,11 @@
 **Branch:** `fix/cre-consolidation-safety`  
 **Base:** `origin/main` at `c74ece496`  
 **Implementation commits:** `477331e70` (`fix: align OM facts upsert contract`)
-plus the pending retirement and contract-runner commit
-**State:** pushed to `origin/fix/cre-consolidation-safety`. No PR, production
-DDL, launchd change, collector run, or production database write was performed.
+through `2dc47f078` (`fix: retire Firecrawl OM writer`)
+**State:** pushed to `origin/fix/cre-consolidation-safety`; draft
+[PR #22](https://github.com/Agentic-Assets/firecrawl/pull/22) targets `main`.
+No production DDL, launchd change, collector run, or production database write
+was performed.
 
 ## Goal
 
@@ -51,8 +53,10 @@ four-column conflict target and failed every OM-facts ingest.
   `python3 -m pytest tests/ -q` passed, 1,384 tests; 17 skipped.
 - Collector TypeScript validation:
   `npm test` passed, including `tsc --noEmit` and 479 unit tests.
-- `git diff --check` and `python3 -m py_compile
-  scripts/firecrawl-ops/cre_collector/cre_ingest.py` passed.
+- `git diff --check` and `python3 -m py_compile cre_enrich.py om_parse.py`
+  passed.
+- Direct CLI checks confirmed `cre_enrich.py --om-parse` exits `2` and
+  `om_parse.py --apply` exits `78`.
 - Source drift scan found no remaining executable or source-contract
   four-column OM-facts target.
 - Durable local PostgreSQL 17 proof:
@@ -87,6 +91,15 @@ actual Mac mini checkout runs this commit may an explicitly approved bounded
 five-row enrich canary resume. The canary must retain the normal additive-only
 behavior and verify zero released claims, zero constraint errors, no status or
 soft-delete writes, and a fresh `ok:true` marker.
+
+## Left to the operator
+
+1. Review draft PR #22, including its local evidence and live-runtime gates.
+2. Provide the literal merge approval required by the repository policy before
+   merging into `main`.
+3. After merge, restore the actual Mac mini runtime and credentials, deploy the
+   merged commit to a non-TCC checkout, and separately authorize the five-row
+   canary. The draft PR does not authorize any of these production actions.
 
 ## Live Mac mini preflight (2026-07-11)
 
