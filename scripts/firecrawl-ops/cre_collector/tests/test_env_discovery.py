@@ -60,7 +60,7 @@ def test_cre_env_file_beats_defaults(tmp_path, monkeypatch):
     assert path == override
 
 
-def test_falls_back_to_defaults_when_no_flag_or_env(tmp_path, monkeypatch):
+def test_falls_back_to_defaults_when_no_flag_or_env(tmp_path, monkeypatch, capsys):
     default = _write_env(tmp_path / "default.env", "postgres://default/db")
     monkeypatch.delenv("CRE_ENV_FILE", raising=False)
     monkeypatch.setattr(cre_ingest, "ENV_FILE_CANDIDATES", [default])
@@ -69,6 +69,7 @@ def test_falls_back_to_defaults_when_no_flag_or_env(tmp_path, monkeypatch):
 
     assert url == "postgres://default/db"
     assert path == default
+    assert "WARNING: using legacy CRE env-file fallback" in capsys.readouterr().err
 
 
 def test_missing_everywhere_exits(tmp_path, monkeypatch):

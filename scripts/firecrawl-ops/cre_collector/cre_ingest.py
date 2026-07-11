@@ -1853,6 +1853,7 @@ def sql_lit(s):
 
 
 def load_db_url(env_file):
+    using_legacy_fallback = False
     if env_file:
         # Expand ~ for parity with the CRE_ENV_FILE / defaults branches below,
         # so a --env-file value that was not shell-expanded still resolves.
@@ -1864,6 +1865,8 @@ def load_db_url(env_file):
         env_override = os.environ.get("CRE_ENV_FILE")
         if env_override:
             candidates.append(os.path.expanduser(env_override))
+        else:
+            using_legacy_fallback = True
         candidates.extend(os.path.expanduser(p) for p in ENV_FILE_CANDIDATES)
     for path in candidates:
         if not path or not os.path.isfile(path):
@@ -1878,6 +1881,13 @@ def load_db_url(env_file):
                 env[k.strip()] = v.strip().strip('"').strip("'")
         url = env.get("POSTGRES_URL_NON_POOLING") or env.get("POSTGRES_URL")
         if url:
+            if using_legacy_fallback:
+                print(
+                    "WARNING: using legacy CRE env-file fallback. Set CRE_ENV_FILE "
+                    "or pass --env-file before a real ingest; the selected path is "
+                    f"{path} (database URL omitted).",
+                    file=sys.stderr,
+                )
             return url, path
     sys.exit(
         "No POSTGRES_URL_NON_POOLING/POSTGRES_URL found. Set CRE_ENV_FILE or pass "
