@@ -216,6 +216,16 @@ else
   fi
 fi
 
+section "latest validation (read-only advisory)"
+VJSON="$(ls -t "$OUT_DAILY"/validate_*.json 2>/dev/null | head -1)"
+if [ -z "$VJSON" ]; then
+  note "no validation artifact yet"
+elif grep -q '"ok":false' "$VJSON"; then
+  warn "latest validation failed: ${VJSON#"$DIR"/}"
+else
+  ok "latest validation completed: ${VJSON#"$DIR"/}"
+fi
+
 # ---------------------------------------------------------------------------
 section "runtime artifacts & lock"
 # ---------------------------------------------------------------------------

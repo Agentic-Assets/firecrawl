@@ -145,6 +145,15 @@ def test_cre_status_skips_legacy_daily_log_sentinel_when_daily_is_retired():
     assert "tier_loaded daily" in text
 
 
+def test_daily_validation_is_advisory_and_status_visible():
+    daily = DAILY.read_text(encoding="utf-8")
+    status = STATUS.read_text(encoding="utf-8")
+    assert "cre_validate.py --format json --out" in daily
+    assert "validation failed" in daily
+    assert "validate_*.json" in daily
+    assert "latest validation (read-only advisory)" in status
+
+
 def test_cre_status_derives_disappearance_only_sources_from_ingest_contract():
     text = STATUS.read_text(encoding="utf-8")
     assert "STATUS_SOURCE_PATHS" in text
