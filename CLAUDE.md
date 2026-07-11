@@ -30,6 +30,14 @@ update the relevant issue and comment with branch, commit, verification,
 production gates, and rollback status. Do not self-assign, mark an issue Done,
 or alter routing labels.
 
+## Shared CRE data ownership
+
+The proposed cross-repository contract is
+`$AA_CONTEXT_ROOT/products/equire/cre-data-object-ownership.yaml` (tracked by
+AGENTIC-1233). Until its owners acknowledge it, treat the live schema as
+unchanged. The collector must preserve the five-column OM-facts identity; it
+does not own OM extraction writes, market-data objects, or EQUIRE product views.
+
 ## Env files
 
 - `./.env`  -  primary local Docker compose env. Gitignored. Never commit it.
