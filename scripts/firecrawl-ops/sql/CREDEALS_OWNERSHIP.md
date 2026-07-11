@@ -27,7 +27,7 @@ changes a shared object.
 | `cre_listings` and listing child tables | Listing collector, `scripts/firecrawl-ops/sql/001-014` | Listing collector | GetCREdata documents pipeline, EQUIRE | Additive, reviewed collector migration only. |
 | `cre_listing_om_facts` | Listing collector, `013` and `015` | GetCREdata `documents/` is the current observed writer; collector parser is disabled | Listing collector, EQUIRE | Preserve the five-column key. Formal cross-repository approval remains required. |
 | `cre_zip_cbsa_crosswalk` | Listing collector, `014` | Listing collector refresh process | GetCREdata CMBS pipeline, EQUIRE | Treat the database table as the canonical shared crosswalk pending refresh-policy approval. |
-| `cre_market_index` | Listing collector SQL view | None | GetCREdata CMBS pipeline, EQUIRE | Do not alter without consumer compatibility review. |
+| `cre_market_index` | GetCREdata, `sql/cre_cmbs_schema.sql` | GetCREdata reviewed migration/export path | EQUIRE and market tooling | Listing collector is read-only. Do not alter without consumer compatibility review. |
 | `cbsa_market_data` and market-derived tables | GetCREdata, its reviewed migration/export path | GetCREdata | EQUIRE and future listing-market view | Listing collector must not alter or overwrite. |
 | `cmbs_properties`, `cmbs_loans`, `cre_cap_rate_survey`, `reit_operating_facts`, `reit_transaction_caps`, `reit_filings_processed`, `cbre_filings_processed` | GetCREdata, its reviewed migration/export path | GetCREdata | EQUIRE and market tooling | Listing collector is read-only. |
 

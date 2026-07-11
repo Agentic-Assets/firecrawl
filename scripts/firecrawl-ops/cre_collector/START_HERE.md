@@ -23,8 +23,9 @@ cbsa_code/cbsa_name 83,815, geo_source 85,618; crosswalk_zip 77,499, source
 default-off). Consumer views resolve unchanged (`v_cre_active_for_sale` 33,824,
 `v_cre_active_for_lease` 58,727, `v_cre_listings_full` 87,328).
 `cre_listing_om_facts`, `cre_listing_media`, and `cre_listing_links` stay EMPTY.
-738 pytest pass (code unchanged this session). STILL GATED for separate
-go-ahead: OM-parse (`om_parse.py`), live status activation, the consumer
+738 pytest pass (code unchanged this session). Firecrawl's OM writer
+(`om_parse.py --apply`) is retired, with GetCREdata as the sole production OM
+extraction writer. STILL GATED for separate go-ahead: live status activation, the consumer
 board-gate deploy + widened `005`/`006` views, the media backfill
 (`backfill_media_from_raw_data.py`; no longer DDL-blocked now that `011` is
 applied), `sql/010` + the enrichment-cadence cutover, and the weekly

@@ -40,8 +40,8 @@ Runs entirely against the local self-hosted Firecrawl API.
 | `cre_backfill_raw_data.py` | One-time additive/idempotent Class-1 scalar backfill from `raw_data` into `cre_listings` (canonical_url + institutional cols). `--dry-run` default, `--apply` gated; APPLIED 2026-06-15 (canonical_url 0->87,324, 0 decode failures). Never touches `status`/`deleted_at` |
 | `cre_geo_backfill.py` | Additive/idempotent geo derivation (county/cbsa/geo_source) for existing rows via `cre_geo`. `--dry-run` default, `--apply` gated; APPLIED 2026-06-15 (85,618 of 87,328 rows) |
 | `om_classify_existing.py` | One-time additive re-classification of `doc_type='brochure'` rows into flyer/floor_plan/om/financials. `--dry-run` default; APPLIED 2026-06-15 (14,087 of 70,414 upgraded). Upgrade-only, never downgrades |
-| `om_url_resolver.py` | Resolves viewer-wrapped / non-`.pdf` brochure URLs (Buildout iframe, DocumentCloud, etc.) to the real `.pdf` document URL for the OM-parse tier |
-| `om_parse.py` | OM/PDF underwriting-fact parse tier (writes `cre_listing_om_facts`). Conservative, provenance-first. `--dry-run` default, `--apply` GATED (table stays empty until then); anti-bot limits local OM-PDF fetch |
+| `om_url_resolver.py` | Resolves viewer-wrapped / non-`.pdf` brochure URLs (Buildout iframe, DocumentCloud, etc.) to the real `.pdf` document URL for parser regression coverage |
+| `om_parse.py` | Retired Firecrawl OM writer. Pure extractors and dry-run artifacts remain for regression coverage; `--apply` fails closed. GetCREdata is the sole production OM extraction writer. |
 | `run_colliers_main_full.sh` | Resumable colliers-main batch driver (~15,896 URLs) |
 | `launchd/` | macOS tier schedules (portable `*.plist.template` + `install_launchd.sh`) - see `launchd/CLAUDE.md` |
 | `tests/` | pytest contracts - see `tests/CLAUDE.md` |

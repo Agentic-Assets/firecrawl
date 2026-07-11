@@ -32,11 +32,14 @@ or alter routing labels.
 
 ## Shared CRE data ownership
 
-The proposed cross-repository contract is
-`$AA_CONTEXT_ROOT/products/equire/cre-data-object-ownership.yaml` (tracked by
-AGENTIC-1233). Until its owners acknowledge it, treat the live schema as
-unchanged. The collector must preserve the five-column OM-facts identity; it
-does not own OM extraction writes, market-data objects, or EQUIRE product views.
+The proposed cross-repository contract is tracked by
+[AGENTIC-1233](https://linear.app/agenticassets/issue/AGENTIC-1233) and is
+reviewable on its Context Engineering branch at
+`https://github.com/Agentic-Assets/Agentic-Assets-Context-Engineering/blob/docs/cre-data-object-ownership/products/equire/cre-data-object-ownership.yaml`.
+Do not resolve it through `$AA_CONTEXT_ROOT` until that issue's branch is merged.
+Until then, treat the live schema as unchanged. The collector must preserve the
+five-column OM-facts identity; it does not own OM extraction writes, market-data
+objects, or EQUIRE product views.
 
 ## Env files
 
@@ -236,8 +239,9 @@ backstop; daily retired) SHIPPED in code 2026-06-15; the live launchd cutover
 (apply `sql/010`, reload monitor at 2x/day, load enrich, unload daily, load the
 additive weekly) is held for go-ahead per
 `cre_collector/ENRICHMENT_WORKER_DESIGN_2026-06-15.md` Section 9. Also gated: the
-OM-parse pass (`om_parse.py --apply`; `cre_listing_om_facts` stays empty until
-then), the media-capture backfill (`backfill_media_from_raw_data.py --apply`;
+OM extraction writes are now owned by GetCREdata and Firecrawl's
+`om_parse.py --apply` fails closed, the media-capture backfill
+(`backfill_media_from_raw_data.py --apply`;
 `011` DDL is applied so this is no longer DDL-blocked, only on go-ahead), and the
 `CRE_WEEKLY_MARK_MISSING=1` soft-delete escalation, which stays separately gated.
 

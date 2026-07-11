@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""om_parse.py: OM/PDF underwriting-fact parse tier (Phase-2 data-lift WS2).
+"""om_parse.py: retired Firecrawl OM/PDF writer support (Phase-2 data-lift WS2).
 
-The highest-stakes write path in the data-lift: financial scalars parsed from an
+The former highest-stakes write path in the data-lift: financial scalars parsed from an
 Offering Memorandum / brochure PDF can reach board-facing cre_listings columns
 (noi, cap_rate, occupancy_rate, units, year_built). So this module is
 conservative and PROVENANCE-FIRST:
@@ -25,9 +25,9 @@ conservative and PROVENANCE-FIRST:
     argv strictly ["--in", path] (never --activate-status / --mark-missing).
     cre_ingest COALESCE-keeps every scalar (an OM parse never clobbers a fuller
     prior capture) and routes omFacts to cre_listing_om_facts.
-  - --dry-run is the DEFAULT; --apply is gated. This is a deprecated fallback
-    while GetCREdata is the production OM-facts writer. Do not use --apply
-    until the shared ownership contract explicitly reauthorizes this path.
+  - GetCREdata is the sole production OM extraction writer. Firecrawl keeps the
+    pure extractors and dry-run artifact path for regression coverage, but
+    `--apply` fails closed before it can select, parse, or write to a database.
     Nothing is applied to prod and no connection string is ever printed.
 
 Structure: PURE extractors / builders (asserted by tests with no DB, no network)
@@ -39,7 +39,7 @@ escaping are byte-identical to the production ingest path.
 Usage:
   python3 om_parse.py                       # dry-run: select + parse + extract,
                                             # write the artifact, do NOT ingest
-  python3 om_parse.py --apply               # additionally re-ingest additively
+  python3 om_parse.py --apply               # rejected: writer retired
   python3 om_parse.py --sources cbre,jll    # restrict to source keys (default cbre,jll)
   python3 om_parse.py --limit 50            # cap candidate listings this run
 """
@@ -622,7 +622,18 @@ def _slugs_for_sources(source_keys):
     return sorted(slugs)
 
 
+RETIRED_WRITER_EXIT_CODE = 78
+
+
 def run(args):
+    if getattr(args, "apply", False):
+        print(
+            "om_parse.py --apply is retired: GetCREdata is the sole production "
+            "OM extraction writer.",
+            file=sys.stderr,
+        )
+        return RETIRED_WRITER_EXIT_CODE
+
     source_keys = [s.strip() for s in (args.sources or "").split(",") if s.strip()]
     if not source_keys:
         source_keys = ["cbre", "jll"]
@@ -750,14 +761,12 @@ def main():
                     help="local Firecrawl API base (default %(default)s)")
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
     ap.add_argument("--apply", action="store_true",
-                    help="re-ingest the artifact additively (default: dry-run, no ingest)")
+                    help="rejected: Firecrawl OM writes are retired")
     ap.add_argument("--dry-run", action="store_true", default=True,
                     help="default; select+parse+extract+write artifact, do NOT ingest")
     ap.add_argument("--show-sql", action="store_true",
                     help="with --dry-run, print the candidate SQL and exit without connecting")
     args = ap.parse_args()
-    if args.apply:
-        args.dry_run = False
     sys.exit(run(args))
 
 

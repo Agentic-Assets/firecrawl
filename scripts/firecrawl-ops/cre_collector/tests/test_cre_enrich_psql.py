@@ -372,11 +372,10 @@ DB_URL_SENTINEL = "postgres://user:secret@db.example.com:5432/postgres"
 
 
 class _Args:
-    def __init__(self, env_file=None, batch=200, dry_run=False, om_parse=False):
+    def __init__(self, env_file=None, batch=200, dry_run=False):
         self.env_file = env_file
         self.batch = batch
         self.dry_run = dry_run
-        self.om_parse = om_parse
 
 
 def _wire_run(monkeypatch, tmp_path, *, claimed_rows, collect_rc=0,
@@ -437,8 +436,6 @@ def _wire_run(monkeypatch, tmp_path, *, claimed_rows, collect_rc=0,
             calls["ingest_called"] = True
             calls["ingest_argv"] = list(argv)
             return _Proc(ingest_rc)
-        if any(str(a).endswith("om_parse.py") for a in argv):
-            return _Proc(0)
         return _Proc(0)
 
     monkeypatch.setattr(cre_enrich.subprocess, "run", _fake_subprocess_run)
@@ -528,132 +525,6 @@ class TestRunBranchBatchValidation:
                             lambda ef: (DB_URL_SENTINEL, "/fake/.env.local"))
         with pytest.raises(SystemExit):
             run(_Args(batch=0))
-
-
-class TestRunOmParse:
-    """run() OPT-IN OM-parse step branches."""
-
-    def test_om_parse_step_runs_when_enabled(self, monkeypatch, tmp_path):
-        """When --om-parse is set, om_parse.py subprocess must be called."""
-        rows = [{"id": "id-1", "url": "https://x/a", "source_key": "colliers-main",
-                 "external_id": "main:a", "reason": "new", "attempts": 0}]
-        om_calls = []
-
-        monkeypatch.setattr(cre_enrich, "OUT_ENRICH_DIR", str(tmp_path))
-        monkeypatch.setattr(cre_enrich, "load_db_url",
-                            lambda ef: (DB_URL_SENTINEL, "/fake/.env.local"))
-
-        def _fake_query(db_url, sql):
-            return [("id-1", "colliers-main", "main:a",
-                     "https://x/a", "new", "0")]
-
-        def _fake_exec(db_url, sql):
-            pass
-
-        monkeypatch.setattr(cre_enrich, "_psql_query", _fake_query)
-        monkeypatch.setattr(cre_enrich, "_psql_exec", _fake_exec)
-
-        class _Proc:
-            def __init__(self, rc):
-                self.returncode = rc
-
-        def _fake_subprocess_run(argv, **kwargs):
-            if "collect.ts" in argv:
-                out_path = argv[argv.index("--out") + 1]
-                with open(out_path, "w") as f:
-                    json.dump({"listings": [{"url": "https://x/a"}]}, f)
-                return _Proc(0)
-            if any(str(a).endswith("cre_ingest.py") for a in argv):
-                return _Proc(0)
-            if any(str(a).endswith("om_parse.py") for a in argv):
-                om_calls.append(list(argv))
-                return _Proc(0)
-            return _Proc(0)
-
-        monkeypatch.setattr(cre_enrich.subprocess, "run", _fake_subprocess_run)
-        rc = run(_Args(om_parse=True))
-        assert rc == 0
-        assert len(om_calls) == 1, "om_parse.py must be called once when --om-parse"
-        om_argv = om_calls[0]
-        assert "--apply" in om_argv
-
-    def test_om_parse_failure_does_not_fail_run(self, monkeypatch, tmp_path):
-        """An OM-parse step failure must not flip the overall exit code."""
-        monkeypatch.setattr(cre_enrich, "OUT_ENRICH_DIR", str(tmp_path))
-        monkeypatch.setattr(cre_enrich, "load_db_url",
-                            lambda ef: (DB_URL_SENTINEL, "/fake/.env.local"))
-
-        def _fake_query(db_url, sql):
-            return [("id-1", "colliers-main", "main:a",
-                     "https://x/a", "new", "0")]
-
-        def _fake_exec(db_url, sql):
-            pass
-
-        monkeypatch.setattr(cre_enrich, "_psql_query", _fake_query)
-        monkeypatch.setattr(cre_enrich, "_psql_exec", _fake_exec)
-
-        class _Proc:
-            def __init__(self, rc):
-                self.returncode = rc
-
-        def _fake_subprocess_run(argv, **kwargs):
-            if "collect.ts" in argv:
-                out_path = argv[argv.index("--out") + 1]
-                with open(out_path, "w") as f:
-                    json.dump({"listings": [{"url": "https://x/a"}]}, f)
-                return _Proc(0)
-            if any(str(a).endswith("cre_ingest.py") for a in argv):
-                return _Proc(0)
-            if any(str(a).endswith("om_parse.py") for a in argv):
-                return _Proc(99)  # OM step fails
-            return _Proc(0)
-
-        monkeypatch.setattr(cre_enrich.subprocess, "run", _fake_subprocess_run)
-        rc = run(_Args(om_parse=True))
-        assert rc == 0, "OM-parse failure must not fail the enrich run"
-
-    def test_om_parse_skipped_when_no_source_keys(self, monkeypatch, tmp_path, capsys):
-        """When all claimed rows have no source_key, om_parse step is skipped."""
-        monkeypatch.setattr(cre_enrich, "OUT_ENRICH_DIR", str(tmp_path))
-        monkeypatch.setattr(cre_enrich, "load_db_url",
-                            lambda ef: (DB_URL_SENTINEL, "/fake/.env.local"))
-
-        def _fake_query(db_url, sql):
-            # No source_key field in the row
-            return [("id-1", "", "", "https://x/a", "new", "0")]
-
-        def _fake_exec(db_url, sql):
-            pass
-
-        monkeypatch.setattr(cre_enrich, "_psql_query", _fake_query)
-        monkeypatch.setattr(cre_enrich, "_psql_exec", _fake_exec)
-
-        om_called = []
-
-        class _Proc:
-            def __init__(self, rc):
-                self.returncode = rc
-
-        def _fake_subprocess_run(argv, **kwargs):
-            if "collect.ts" in argv:
-                out_path = argv[argv.index("--out") + 1]
-                with open(out_path, "w") as f:
-                    json.dump({"listings": [{"url": "https://x/a"}]}, f)
-                return _Proc(0)
-            if any(str(a).endswith("cre_ingest.py") for a in argv):
-                return _Proc(0)
-            if any(str(a).endswith("om_parse.py") for a in argv):
-                om_called.append(argv)
-                return _Proc(0)
-            return _Proc(0)
-
-        monkeypatch.setattr(cre_enrich.subprocess, "run", _fake_subprocess_run)
-        rc = run(_Args(om_parse=True))
-        assert rc == 0
-        assert om_called == [], "om_parse.py must not be called when source_key is empty"
-        captured = capsys.readouterr()
-        assert "skipped" in captured.err
 
 
 class TestRunEnvFile:

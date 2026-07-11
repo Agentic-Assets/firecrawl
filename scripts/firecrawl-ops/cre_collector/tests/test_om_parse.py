@@ -381,41 +381,15 @@ def test_run_dry_run_writes_artifact_does_not_ingest(monkeypatch, tmp_path, caps
     assert artifact["listings"][0]["omFacts"]
 
 
-def test_run_apply_ingests_with_in_path_only(monkeypatch, tmp_path):
-    md, url = _load_md("jll_om.json")
-    monkeypatch.setattr(om_parse, "OUT_OM_DIR", str(tmp_path))
-    monkeypatch.setattr(om_parse, "load_db_url",
-                        lambda env_file: (DB_URL_SENTINEL, "/fake/.env.local"))
+def test_run_apply_fails_before_any_database_or_ingest_work(monkeypatch, capsys):
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("retired --apply must not reach the database")
 
-    captured_argv = {}
-
-    def _fake_query(db_url, sql):
-        if "cre_listing_documents d ON" in sql:
-            return [("jll", "riverside-1", url, "om")]
-        return [("riverside-1", "https://jll.example/p/riverside", "jll")]
-
-    monkeypatch.setattr(om_parse, "_psql_query", _fake_query)
-    monkeypatch.setattr(om_parse, "parse_pdf_to_text",
-                        lambda doc_url, api_url=None: md)
-
-    def _fake_run(argv, **kw):
-        if any(str(a).endswith("cre_ingest.py") for a in argv):
-            captured_argv["ingest"] = list(argv)
-
-        class _P:
-            returncode = 0
-        return _P()
-
-    monkeypatch.setattr(om_parse.subprocess, "run", _fake_run)
-
+    monkeypatch.setattr(om_parse, "load_db_url", _boom)
+    monkeypatch.setattr(om_parse, "_psql_query", _boom)
     rc = om_parse.run(_Args(apply=True, dry_run=False))
-    assert rc == 0
-    ingest_argv = captured_argv.get("ingest")
-    assert ingest_argv is not None
-    joined = " ".join(str(a) for a in ingest_argv)
-    assert "--in" in joined
-    for banned in ("--activate-status", "--mark-missing", "--no-mark-missing"):
-        assert banned not in joined
+    assert rc == om_parse.RETIRED_WRITER_EXIT_CODE
+    assert "sole production OM extraction writer" in capsys.readouterr().err
 
 
 def test_run_zero_candidates_is_noop(monkeypatch, capsys):

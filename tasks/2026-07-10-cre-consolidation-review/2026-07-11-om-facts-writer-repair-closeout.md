@@ -2,7 +2,8 @@
 
 **Branch:** `fix/cre-consolidation-safety`  
 **Base:** `origin/main` at `c74ece496`  
-**Implementation commit:** `477331e70` (`fix: align OM facts upsert contract`)  
+**Implementation commits:** `477331e70` (`fix: align OM facts upsert contract`)
+plus the pending retirement and contract-runner commit
 **State:** pushed to `origin/fix/cre-consolidation-safety`. No PR, production
 DDL, launchd change, collector run, or production database write was performed.
 
@@ -24,6 +25,21 @@ four-column conflict target and failed every OM-facts ingest.
 - `PHASE2_DATA_LIFT_CONTRACT_2026-06-15.md` and
   `HANDOFF_DATA_LIFT_2026-06-15.md` now describe the canonical five-column key,
   removing the stale four-column contract from collector documentation.
+- `cre_enrich.py` no longer exposes `--om-parse`, reads `CRE_OM_PARSE`, or
+  invokes `om_parse.py`. A legacy launchd environment cannot reactivate a
+  second OM writer.
+- `om_parse.py --apply` now exits `78` before any database, parse, or ingest
+  work. GetCREdata is the sole production OM extraction writer; the pure
+  extractors and dry-run artifact path remain available for regression coverage.
+- `tests/run_om_facts_postgres_contract.sh` is a reproducible, opt-in
+  PostgreSQL 17 contract runner. It applies source migration `013`, executes
+  the generated production upsert three times, proves a same-version update and
+  a cross-version coexistence, and removes its unexposed container on exit.
+- `CREDEALS_OWNERSHIP.md` now assigns `cre_market_index` to GetCREdata and its
+  reviewed migration/export path. Firecrawl is read-only for that object.
+- Root agent guidance now links the proposed ownership manifest's review branch
+  and explicitly prohibits resolving it from `$AA_CONTEXT_ROOT` before
+  AGENTIC-1233 merges it into Context Engineering.
 
 ## Verification
 
@@ -32,27 +48,37 @@ four-column conflict target and failed every OM-facts ingest.
   tests/test_cre_ingest_builders.py tests/test_om_parse.py -q`
   passed, 146 tests.
 - Full collector Python suite:
-  `python3 -m pytest tests/ -q` passed, 1,394 tests; 17 skipped.
+  `python3 -m pytest tests/ -q` passed, 1,384 tests; 17 skipped.
 - Collector TypeScript validation:
   `npm test` passed, including `tsc --noEmit` and 479 unit tests.
 - `git diff --check` and `python3 -m py_compile
   scripts/firecrawl-ops/cre_collector/cre_ingest.py` passed.
 - Source drift scan found no remaining executable or source-contract
   four-column OM-facts target.
-- Disposable local PostgreSQL 17 proof: applied `013_cre_listing_om_facts.sql`,
-  executed the generated OM upsert three times, and observed two rows:
-  `om-parse/1=1:0.9, om-parse/2=3:0.8`. This proves parser releases coexist and
-  a same-release reparse updates in place. The container was unexposed and
-  removed after the check.
+- Durable local PostgreSQL 17 proof:
+  `bash tests/run_om_facts_postgres_contract.sh` passed. It applied
+  `013_cre_listing_om_facts.sql`, executed the generated OM upsert three times,
+  and asserted two parser-version rows, an updated `om-contract/1` row, and a
+  coexisting `om-contract/2` row. The container was unexposed and removed.
 
 ## Decisions made
 
 - `015_align_om_facts_conflict_key.sql` remains a guarded legacy migration. It
   is not part of this repair because the observed production index is already
   five-column.
-- The standard collector suite remains pure-transform and no-network. The real
-  PostgreSQL behavior proof was run manually in an isolated disposable
-  container, not against Supabase or the running Firecrawl queue database.
+- The standard collector suite remains pure-transform and no-network. The
+  PostgreSQL behavior proof is opt-in, isolated, and never targets Supabase or
+  the running Firecrawl queue database.
+
+## Adversarial review follow-through
+
+The dedicated skeptic pass confirmed four defects. All are corrected on this
+branch: the executable Firecrawl OM writer is fail-closed, `cre_market_index`
+ownership names GetCREdata, the root ownership pointer no longer claims an
+unmerged local Context file, and the generated upsert has a durable PostgreSQL
+17 contract command. The review also refuted three non-defects: the repaired
+five-column target matches the source migration, the Firecrawl Linear IDs are
+correct, and the failure-marker/webhook changes do not activate a scheduler.
 
 ## Remaining rollout gate
 

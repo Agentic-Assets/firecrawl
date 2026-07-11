@@ -5,12 +5,6 @@ commitment. Re-verify each item before acting.
 
 ## Hardening
 
-- **Make the disposable PostgreSQL proof opt-in and repeatable** (confidence:
-  verified gap, high priority).
-  Package the successful `013` plus generated-upsert scenario as a local
-  contract command that starts an isolated container, never points at Supabase,
-  and cleans itself up. Keep the default collector unit suite pure and fast.
-
 - **Gate cross-repository OM writers against the same manifest** (confidence:
   verified gap, high priority).
   The collector and GetCREdata should both assert their conflict targets against

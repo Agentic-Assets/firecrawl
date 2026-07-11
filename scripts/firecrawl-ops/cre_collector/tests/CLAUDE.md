@@ -17,6 +17,7 @@ cd scripts/firecrawl-ops/cre_collector
 python3 -m pytest tests/ -q
 python3 -m pytest tests/test_enum_key_invariant.py -q
 python3 -m pytest tests/test_norm_status_canonical_and_guards.py -q   # portable CI signal (no out/)
+bash tests/run_om_facts_postgres_contract.sh  # opt-in disposable PostgreSQL 17 contract
 ```
 
 Requires `pytest` on the host (not pinned in `package.json`). Full suite:
@@ -24,6 +25,11 @@ Requires `pytest` on the host (not pinned in `package.json`). Full suite:
 includes parametrized and data-driven cases (the shell-syntax guard is
 parametrized over every `*.sh` in the collector, so adding a script raises the
 count), so re-run to confirm rather than counting `def test_`.
+
+The PostgreSQL contract runner is intentionally outside pytest: it applies the
+source OM-facts migration and executes the generated production upsert in an
+unexposed disposable PostgreSQL 17 container. It requires Docker and always
+removes its container; it must never target Supabase or a collector database.
 
 **Coverage push (2026-06-15):** a comprehensive unit-test pass lifted production
 coverage across the collector (measure with `pytest --cov=. --cov-report=term-missing
