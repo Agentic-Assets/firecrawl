@@ -50,7 +50,7 @@ four-column conflict target and failed every OM-facts ingest.
   tests/test_cre_ingest_builders.py tests/test_om_parse.py -q`
   passed, 146 tests.
 - Full collector Python suite:
-  `python3 -m pytest tests/ -q` passed, 1,384 tests; 17 skipped.
+  `python3 -m pytest tests/ -q` passed, 1,386 tests; 17 skipped.
 - Collector TypeScript validation:
   `npm test` passed, including `tsc --noEmit` and 479 unit tests.
 - `git diff --check` and `python3 -m py_compile cre_enrich.py om_parse.py`
@@ -83,6 +83,16 @@ unmerged local Context file, and the generated upsert has a durable PostgreSQL
 17 contract command. The review also refuted three non-defects: the repaired
 five-column target matches the source migration, the Firecrawl Linear IDs are
 correct, and the failure-marker/webhook changes do not activate a scheduler.
+
+## Follow-up review corrections
+
+A second adversarial review corrected three additional P2 findings: the dated
+collector handoff and start-here records now label their old empty-table and OM
+writer statements as historical, migration `013` no longer claims unrecorded
+external-writer approval, and the optional failure webhook passes its credential
+to curl through stdin configuration rather than process arguments. A focused
+regression test proves the credential stays out of curl argv and rejects newline
+config injection.
 
 ## Remaining rollout gate
 

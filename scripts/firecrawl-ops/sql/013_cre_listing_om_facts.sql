@@ -75,7 +75,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS cre_listing_om_facts_uq
 ALTER TABLE credeals.cre_listing_om_facts ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).
 
 COMMENT ON TABLE credeals.cre_listing_om_facts IS
-    'OM/PDF-parsed facts (scalar underwriting + unit_mix + rent_roll) with parse provenance. The listing collector owns schema migration; GetCREdata documents pipeline is an approved external writer under CREDEALS_OWNERSHIP.md. Scalars also COALESCE-write the matching cre_listings column; this table is the audit trail and the home for non-scalar line items. Service-role only (RLS on, no public policy).';
+    'OM/PDF-parsed facts (scalar underwriting + unit_mix + rent_roll) with parse provenance. The listing collector owns schema migration; GetCREdata documents pipeline is an observed external writer under the proposed CREDEALS_OWNERSHIP.md contract, and formal cross-repository approval remains required. Scalars also COALESCE-write the matching cre_listings column; this table is the audit trail and the home for non-scalar line items. Service-role only (RLS on, no public policy).';
 COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_group     IS 'Row class: ''scalar'' (mirrors a cre_listings column write), ''unit_mix'' (one row per unit type), or ''rent_roll'' (one row per tenant line).';
 COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_key       IS 'Stable snake_case fact name, e.g. ''noi'',''cap_rate'',''unit_type'',''tenant''. For scalar rows this matches the cre_listings column name.';
 COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_value_text IS 'Free-text value of the fact when not numeric (e.g. tenant name, unit_type label).';

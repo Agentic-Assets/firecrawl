@@ -150,12 +150,22 @@ notify_failure() {
         echo "[cre_run_tier] ALERT not sent: curl is unavailable (tier=${TIER})" >&2
         return 0
     fi
+    if [[ "${url}" == *$'\n'* || "${url}" == *$'\r'* ]]; then
+        echo "[cre_run_tier] ALERT not sent: CRE_ALERT_WEBHOOK_URL contains a newline (tier=${TIER})" >&2
+        return 0
+    fi
     # TIER is a fixed enum and the values are numeric, so this JSON cannot carry
-    # unescaped caller input. Run in the background with a short timeout.
-    curl --silent --show-error --fail --max-time 10 \
+    # unescaped caller input. Pass the credential through curl's stdin config,
+    # not argv, so it cannot appear in process listings. Escape the only config
+    # delimiters that a valid URL can contain. Run in the background with a short
+    # timeout.
+    local config_url="${url//\\/\\\\}"
+    config_url="${config_url//\"/\\\"}"
+    printf 'url = "%s"\n' "${config_url}" | curl --config - \
+        --silent --show-error --fail --max-time 10 \
         -H 'Content-Type: application/json' \
         -d "{\"text\":\"CRE collector tier ${TIER} failed (rc=${rc}, consecutive failures=${failures}). See cre_status.sh and the tier stderr log.\"}" \
-        "${url}" >/dev/null 2>&1 &
+        >/dev/null 2>&1 &
 }
 
 write_marker() {

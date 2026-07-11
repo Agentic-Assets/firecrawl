@@ -134,9 +134,57 @@ def test_tier_markers_track_consecutive_failures_and_alerts_are_optional():
     assert '"consecutive_failures":${failures}' in runner
     assert "previous_failure_count()" in runner
     assert "CRE_ALERT_WEBHOOK_URL" in runner
+    assert "curl --config -" in runner
     assert "--max-time 10" in runner
     assert "consecutive_failures" in status
     assert "alert/escalation threshold reached" in status
+
+
+def test_failure_webhook_keeps_credential_out_of_curl_argv(tmp_path):
+    """The real notifier passes its URL through stdin config, not process argv."""
+    notify = _extract_function("notify_failure", RUN_TIER.read_text(encoding="utf-8"))
+    capture_args = tmp_path / "curl-argv.bin"
+    capture_stdin = tmp_path / "curl-stdin.txt"
+    fake_curl = tmp_path / "curl"
+    fake_curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\0' \"$@\" >\"${CAPTURE_ARGS:?}\"\n"
+        "cat >\"${CAPTURE_STDIN:?}\"\n",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+    secret_url = "https://webhook.example.test/hooks/bearer-secret"
+    script = f"set -euo pipefail\nTIER=enrich\n{notify}\nnotify_failure 17 4\nwait\n"
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "CRE_ALERT_WEBHOOK_URL": secret_url,
+        "CAPTURE_ARGS": str(capture_args),
+        "CAPTURE_STDIN": str(capture_stdin),
+    }
+    subprocess.run(["bash", "-c", script], check=True, env=env)
+
+    argv = capture_args.read_bytes()
+    assert secret_url.encode() not in argv
+    assert b"--config\x00-\x00" in argv
+    assert capture_stdin.read_text(encoding="utf-8") == f'url = "{secret_url}"\n'
+
+
+def test_failure_webhook_rejects_newline_config_injection(tmp_path):
+    notify = _extract_function("notify_failure", RUN_TIER.read_text(encoding="utf-8"))
+    fake_curl = tmp_path / "curl"
+    fake_curl.write_text("#!/usr/bin/env bash\nexit 99\n", encoding="utf-8")
+    fake_curl.chmod(0o755)
+    script = f"set -euo pipefail\nTIER=enrich\n{notify}\nnotify_failure 17 4\nwait\n"
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "CRE_ALERT_WEBHOOK_URL": "https://webhook.example.test/ok\nheader = injected",
+    }
+    result = subprocess.run(
+        ["bash", "-c", script], check=True, env=env, text=True, capture_output=True
+    )
+    assert "contains a newline" in result.stderr
 
 
 def test_cre_status_skips_legacy_daily_log_sentinel_when_daily_is_retired():

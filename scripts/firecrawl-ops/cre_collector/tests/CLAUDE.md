@@ -21,7 +21,7 @@ bash tests/run_om_facts_postgres_contract.sh  # opt-in disposable PostgreSQL 17 
 ```
 
 Requires `pytest` on the host (not pinned in `package.json`). Full suite:
-**1384** pytest pass as of 2026-06-15 (`python3 -m pytest tests/ -q`); the count
+**1386** pytest pass as of 2026-07-11 (`python3 -m pytest tests/ -q`); the count
 includes parametrized and data-driven cases (the shell-syntax guard is
 parametrized over every `*.sh` in the collector, so adding a script raises the
 count), so re-run to confirm rather than counting `def test_`.
