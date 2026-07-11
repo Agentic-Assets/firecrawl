@@ -36,7 +36,8 @@
 
 -- ---------------------------------------------------------------------------
 -- cre_listing_om_facts -- OM/PDF-parsed facts with parse provenance. One row per
--- (listing, fact_group, fact_key, source_doc_url). fact_group 'scalar' rows
+-- (listing, fact_group, fact_key, source_doc_url, parser_version). fact_group
+-- 'scalar' rows
 -- mirror a value also COALESCE-written onto cre_listings (the column is the
 -- consumer read; this row is the audit trail). 'unit_mix' / 'rent_roll' rows are
 -- the non-scalar line items that have no cre_listings column. Every row carries
@@ -65,14 +66,16 @@ CREATE INDEX IF NOT EXISTS cre_listing_om_facts_listing_idx
 -- NULLS NOT DISTINCT so the dedup holds even if a (defensive) NULL leaked into a
 -- key column; a plain UNIQUE would treat NULLs as all-distinct and let duplicate
 -- fact rows accumulate (mirrors the 011 media/links unique-index convention).
--- The key makes a re-parse of the same doc idempotent.
+-- The parser version is part of the key so parser generations can coexist and
+-- be audited without overwriting one another. Migration 015 aligns existing
+-- installations created with the former four-column key.
 CREATE UNIQUE INDEX IF NOT EXISTS cre_listing_om_facts_uq
-    ON credeals.cre_listing_om_facts (listing_id, fact_group, fact_key, source_doc_url) NULLS NOT DISTINCT;
+    ON credeals.cre_listing_om_facts (listing_id, fact_group, fact_key, source_doc_url, parser_version) NULLS NOT DISTINCT;
 
 ALTER TABLE credeals.cre_listing_om_facts ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).
 
 COMMENT ON TABLE credeals.cre_listing_om_facts IS
-    'OM/PDF-parsed facts (scalar underwriting + unit_mix + rent_roll) with parse provenance. Scalars also COALESCE-write the matching cre_listings column; this table is the audit trail and the home for non-scalar line items. Service-role only (RLS on, no public policy).';
+    'OM/PDF-parsed facts (scalar underwriting + unit_mix + rent_roll) with parse provenance. The listing collector owns schema migration; GetCREdata documents pipeline is an approved external writer under CREDEALS_OWNERSHIP.md. Scalars also COALESCE-write the matching cre_listings column; this table is the audit trail and the home for non-scalar line items. Service-role only (RLS on, no public policy).';
 COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_group     IS 'Row class: ''scalar'' (mirrors a cre_listings column write), ''unit_mix'' (one row per unit type), or ''rent_roll'' (one row per tenant line).';
 COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_key       IS 'Stable snake_case fact name, e.g. ''noi'',''cap_rate'',''unit_type'',''tenant''. For scalar rows this matches the cre_listings column name.';
 COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_value_text IS 'Free-text value of the fact when not numeric (e.g. tenant name, unit_type label).';

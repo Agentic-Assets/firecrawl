@@ -149,10 +149,15 @@ for tier in monitor enrich daily weekly; do
       rc="$(marker_field "$marker" rc)"
       ok_field="$(marker_field "$marker" ok)"
       end_field="$(marker_field "$marker" end)"
+      failure_count="$(marker_field "$marker" consecutive_failures)"
       if [ -z "$rc" ] || [ -z "$ok_field" ] || [ -z "$end_field" ]; then
         marker_problem="malformed marker: ${marker#"$DIR"/}"
       else
         verdict="rc=${rc} ok=${ok_field} end=${end_field}"
+        case "${failure_count}" in
+          ''|*[!0-9]*) ;;
+          *) verdict="${verdict} consecutive_failures=${failure_count}" ;;
+        esac
       fi
     fi
   fi
@@ -181,6 +186,9 @@ for tier in monitor enrich daily weekly; do
     fi
   elif printf '%s' "$verdict" | grep -q 'ok=false'; then
     bad "$tier: last run FAILED [${verdict}] (artifact ${agestr} ago)"
+    if [ "${failure_count:-0}" -ge 2 ] 2>/dev/null; then
+      warn "$tier: ${failure_count} consecutive failures, alert/escalation threshold reached"
+    fi
   else
     ok "$tier: last artifact ${agestr} ago [${verdict:-no marker}]"
   fi

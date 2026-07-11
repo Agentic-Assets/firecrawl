@@ -25,8 +25,10 @@ conservative and PROVENANCE-FIRST:
     argv strictly ["--in", path] (never --activate-status / --mark-missing).
     cre_ingest COALESCE-keeps every scalar (an OM parse never clobbers a fuller
     prior capture) and routes omFacts to cre_listing_om_facts.
-  - --dry-run is the DEFAULT; --apply is gated. Nothing is applied to prod and
-    no connection string is ever printed.
+  - --dry-run is the DEFAULT; --apply is gated. This is a deprecated fallback
+    while GetCREdata is the production OM-facts writer. Do not use --apply
+    until the shared ownership contract explicitly reauthorizes this path.
+    Nothing is applied to prod and no connection string is ever printed.
 
 Structure: PURE extractors / builders (asserted by tests with no DB, no network)
 plus a thin run() that wires select -> parse -> extract -> re-ingest. Reuses

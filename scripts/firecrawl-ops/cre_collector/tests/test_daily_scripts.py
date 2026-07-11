@@ -128,6 +128,17 @@ def test_cre_status_flags_empty_or_malformed_markers():
     assert "retired/unloaded; ignoring stale ${marker_problem}" in text
 
 
+def test_tier_markers_track_consecutive_failures_and_alerts_are_optional():
+    runner = RUN_TIER.read_text(encoding="utf-8")
+    status = STATUS.read_text(encoding="utf-8")
+    assert '"consecutive_failures":${failures}' in runner
+    assert "previous_failure_count()" in runner
+    assert "CRE_ALERT_WEBHOOK_URL" in runner
+    assert "--max-time 10" in runner
+    assert "consecutive_failures" in status
+    assert "alert/escalation threshold reached" in status
+
+
 def test_cre_status_skips_legacy_daily_log_sentinel_when_daily_is_retired():
     text = STATUS.read_text(encoding="utf-8")
     assert "daily retired/unloaded; skipping legacy daily log sentinel check" in text
