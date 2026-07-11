@@ -14,6 +14,11 @@ The pipeline has two halves:
   stdlib only): upserts into Supabase `credeals` by shelling out to `psql`.
   Needs `psql` and a `POSTGRES_URL`.
 
+> **Current operational gate, 2026-07-11:** This is a setup reference, not
+> authorization to change the Mac mini. Its runtime has no active CRE scheduler.
+> Before any stack recovery, scheduler load, database write, or canary, follow
+> `START_HERE.md` and the operator runbook's explicit gates.
+
 ---
 
 ## TL;DR (fresh clone)
@@ -122,6 +127,11 @@ Tiers and their gates (full detail in `launchd/README.md`):
 
 ### macOS Full Disk Access (TCC)
 
+> **Current operational gate, 2026-07-11:** This setup guide describes a
+> future approved recovery. The Mac mini has no active CRE scheduler. Do not
+> install, load, kickstart, or alter a launchd job until the operator runbook's
+> explicit runtime-recovery and scheduler gates are approved.
+
 A launchd user-agent cannot read files under `~/Documents` without a manual
 Full Disk Access grant, so a clone there makes every scheduled run exit 126.
 Two ways to avoid this:
@@ -130,8 +140,7 @@ Two ways to avoid this:
   No system grant needed; `cre_setup.sh` confirms you are clear.
 - **Alternative:** keep it under `~/Documents` and grant Full Disk Access to
   `/bin/bash` (System Settings > Privacy & Security > Full Disk Access, use
-  Cmd+Shift+G to type `/bin/bash`), then
-  `launchctl kickstart -k gui/$(id -u)/ai.agentic.cre-daily`.
+  Cmd+Shift+G to type `/bin/bash`). This does not authorize scheduler loading.
 
 ---
 
@@ -144,14 +153,10 @@ Two ways to avoid this:
 5. Install schedules (gated, no load): `bash launchd/install_launchd.sh all`.
    If `CRE_ENV_FILE` is non-default, add `--env-file /path/.env.local` so it is
    baked into the jobs.
-6. Load the safe tiers when ready: `bash launchd/install_launchd.sh --load monitor daily`.
-   Keep **weekly** unloaded until the gate is proven (see `launchd/README.md`).
-7. Verify: `bash cre_status.sh` (read-only heartbeat: which tiers are loaded,
-   last exit, staleness, last-run verdict, stack/env/TCC). Low-level alternative:
-   `launchctl list | grep ai.agentic.cre` (a `0` in column 2 means the last run
-   succeeded; `126` is the TCC block).
-8. Prove one real run: `launchctl kickstart -k gui/$(id -u)/ai.agentic.cre-daily`,
-   then check `out/daily/cre-daily.out.log` and re-run `bash cre_status.sh`.
+6. Stop here until the runbook's runtime-recovery and scheduler approval gates
+   are explicitly approved. Do not load a tier.
+7. Verify only with `bash cre_status.sh` and the other read-only runbook
+   preflights. Do not use `launchctl kickstart` as a proof step.
 
 ---
 
@@ -179,8 +184,8 @@ Mac mini.
 | `Firecrawl stack not healthy` | stack down | `docker compose up -d` from repo root |
 | smoke collect fails for one source | site layout drift | `CRE_SMOKE_SOURCE=<other> bash cre_setup.sh` |
 | `docker context` not `orbstack` | wrong Docker backend | open OrbStack, `docker context use orbstack` |
-| a scheduled run was missed or failed | launchd does not backfill a skipped fire | `launchctl kickstart -k gui/$(id -u)/ai.agentic.cre-daily`, then re-check `bash cre_status.sh` |
-| `cre_status.sh` flags a hung or stale lock | crashed/stuck prior run left `out/daily/.cre.lock` | confirm no live run (`launchctl list \| grep ai.agentic.cre`), then `rm -rf out/daily/.cre.lock`. See `START_HERE.md` Operational Recovery |
+| a scheduled run was missed or failed | scheduler has not been approved or recovered | record the read-only preflight and follow the operator runbook |
+| `cre_status.sh` flags a hung or stale lock | crashed/stuck prior run left `out/daily/.cre.lock` | after named approval and no-live-process confirmation, quarantine it with a timestamped move. See `START_HERE.md` Operational Recovery |
 
 ---
 

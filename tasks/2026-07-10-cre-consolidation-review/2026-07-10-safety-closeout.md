@@ -57,7 +57,8 @@ the local Firecrawl runtime, and make future tier failures observable.
 
 1. Approve or revise the ownership contract with GetCREdata's owner.
 2. Approve a maintenance plan if any legacy database needs migration `015`.
-3. Choose the GetCREdata scheduler lane, aa-hub or GitHub Actions, and provide
-   the required credentials and execution owner.
+3. Complete the aa-hub-only GetCREdata scheduler readiness path, then provide
+   the required credentials and execution owner under explicit activation
+   approval.
 4. Authorize any launchd cutover, production tier run, new `cre-listings`
    repository, or production view/DDL work.

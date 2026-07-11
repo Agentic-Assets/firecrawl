@@ -1,27 +1,59 @@
 # CLAUDE.md - cre_scrapers
 
-Legacy Python scraper package for the EQUIRE CRE listing intelligence pipeline.
-This package is useful for broker-specific experiments and detail-page
-enrichment. It is no longer the production daily bulk path.
+> **STALE for production.** This entire package is legacy. It does **not** feed the
+> EQUIRE board on a schedule. For any listing collect/ingest/monitor work, use
+> **`../cre_collector/`** instead (see table below).
 
-**Production path:** broker adapters live in `../cre_collector/sources/*.ts`,
-orchestrated by `../cre_collector/collect.ts`, ingested via
-`../cre_collector/cre_ingest.py`, and refreshed by
-`../cre_collector/cre_daily_update.sh`. Monitor/change tracking uses
-`collect.ts --monitor` → `cre_monitor.py` / `cre_gate.py` (never ingest).
+Legacy Python scraper package for broker experiments, manual probes, and archived
+research notes. **Not** the production daily bulk path.
+
+## Agent routing: ACTIVE vs STALE (read first)
+
+**If the task is daily inventory, ingest, monitor, enrichment, or live board
+counts: work in `../cre_collector/`, not here.**
+
+| Status | Path (from `scripts/firecrawl-ops/`) | Agent use |
+|--------|--------------------------------------|-----------|
+| **ACTIVE** | `cre_collector/collect.ts` | Supported production collect CLI (20 source keys), not currently scheduled |
+| **ACTIVE** | `cre_collector/sources/*.ts` | Per-broker adapters for the supported collector |
+| **ACTIVE** | `cre_collector/cre_ingest.py` | Supabase `credeals` upsert |
+| **ACTIVE** | `cre_collector/cre_daily_update.sh` | Full-refresh implementation, not currently scheduled |
+| **ACTIVE** | `cre_collector/cre_monitor.py`, `cre_gate.py`, `cre_enrich.py` | Change tracking / gate / enrich |
+| **STALE** | `cre_scrapers/brokers/*/scraper.py` | Manual one-off runs only; **never scheduled** |
+| **STALE** | `cre_scrapers/config.py`, `pipeline.py`, `cre_pipeline.py` | Legacy config/orchestrator; **not** production status |
+| **REFERENCE OK** | `cre_scrapers/brokers/*/README.md`, `archive/` | Endpoint/pagination notes; read-only context for collector work |
+
+**Hard rules for agents:**
+- Do **not** change `brokers/*/scraper.py` expecting the live board to update.
+- Do **not** treat `config.py` `active=True/False` as production coverage (use
+  `../cre_collector/START_HERE.md`).
+- Do **not** route monitor artifacts or daily JSON through `cre_ingest.py` from here.
+
+**Production path (the only supported daily pipeline):** broker adapters live in
+`../cre_collector/sources/*.ts`, orchestrated by `../cre_collector/collect.ts`,
+ingested via `../cre_collector/cre_ingest.py`, refreshed by
+`../cre_collector/cre_daily_update.sh`. Monitor uses `collect.ts --monitor`
+→ `cre_monitor.py` / `cre_gate.py` (never ingest).
 
 Reference docs (read parent `../CLAUDE.md` Start Here for routing):
 
 - `../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md`
 - `../../../docs/firecrawl-ops/references/cre-equire-consumer-api.md`
 
-## Two scraper paths (do not confuse them)
+## Two scraper paths (legacy package only — both STALE for production)
+
+Both paths below live inside this **stale** package. Production adapters are in
+`../cre_collector/sources/*.ts` only.
 
 1. **`base.py` broker scrapers** (preferred for broker-specific logic): each
    `brokers/<slug>/scraper.py` extends `BaseScraper` and is exposed through a
    top-level shim (`cre_scrapers/jll.py`, etc.). Run with
    `JLLScraper().run(...)` or `get_scraper("jll")` from `__init__.py`.
-   Implements `discover_listings()` and `parse_listing()`.
+   `get_scraper()` registers 9 config slugs (10 registry keys; `cushman` aliases
+   `cushman-wakefield`): `avison-young`, `cbre`, `colliers`, `cushman`,
+   `cushman-wakefield`, `jll`, `marcus-millichap`, `nai-global`, `newmark`, `svn`
+   (not `lee-associates`). Implements `discover_listings()`
+   and `parse_listing()`.
 
 2. **`pipeline.py` orchestrator** (used by `../cre_pipeline.py`): class
    `CREScrapingPipeline` checkpoints runs and optionally REST-upserts to
@@ -40,28 +72,28 @@ cre_scrapers/
   normalizer.py      ListingData dataclass + field helpers + listing_to_supabase_dict()
   base.py            Abstract BaseScraper: scrape_url(), batch_scrape(), run(),
                      discover_listings(), parse_listing()
-  __init__.py        Exports BaseScraper, ListingData, BROKERS, BrokerConfig,
-                     normalize_price, normalize_sqft, get_scraper()
+  __init__.py        __all__: BaseScraper, ListingData, BROKERS, BrokerConfig,
+                     normalize_price, normalize_sqft; also defines get_scraper()
+                     (not in __all__; 9 config slugs, 10 keys incl. cushman alias)
+  brokers/__init__.py  Package marker (broker code lives in brokers/<slug>/)
   pipeline.py        CREScrapingPipeline + optional Supabase REST upsert
   cbre.py, jll.py, cushman.py, colliers.py, marcus_millichap.py,
   avison_young.py, svn.py, nai_global.py, newmark.py
                      Compatibility shims re-exporting brokers/*/scraper.py
-  brokers/
-    cbre/            scraper.py + README (implemented)
-    jll/             scraper.py + README (implemented)
-    cushman/         scraper.py + README (implemented)
-    colliers/        scraper.py + README (implemented)
-    marcus_millichap/ scraper.py + README (implemented)
-    avison_young/    scraper.py + README (implemented)
-    svn/             scraper.py + README (implemented)
-    nai_global/      scraper.py + README (implemented)
-    newmark/         scraper.py + README (implemented)
-    lee_associates/  README + archive only (no scraper.py; production is
-                     ../cre_collector `lee-associates` Buildout path)
-    savills/         README + probe artifacts only (no scraper.py; not in
-                     config.py; production is ../cre_collector `savills`)
-    transwestern/    README + archive only (no scraper.py; not in config.py;
-                     production is ../cre_collector `transwestern`)
+  brokers/           (implemented dirs: scraper.py + README + __init__.py; some + archive/)
+    cbre/            implemented
+    jll/             implemented + archive/
+    cushman/         implemented
+    colliers/        implemented + archive/
+    marcus_millichap/ implemented
+    avison_young/    implemented + archive/
+    svn/             implemented + archive/
+    nai_global/      implemented + INFABODE_LISTING_STATUS_POLICY_2026-06-12.md
+    newmark/         implemented + archive/
+    lee_associates/  README + archive only (no scraper.py; prod: cre_collector Buildout)
+    savills/         README + SAVILLS_US_SALE_PUBLIC_PATH_RECHECK_2026-06-12.md
+                     + archive/artifacts (no scraper.py; not in config.py; prod: savills)
+    transwestern/    README + archive only (no scraper.py; not in config.py; prod: transwestern)
 ```
 
 Entry point CLI: `../cre_pipeline.py` (orchestrator path above; also supports
@@ -72,8 +104,11 @@ Entry point CLI: `../cre_pipeline.py` (orchestrator path above; also supports
 **config.py is the single source of truth for this legacy package only** (10
 slugs). Production collector source mapping lives in
 `../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE` and must stay aligned
-with `../sql/001_cre_brokerages.sql` (15 collector sources, including folded
-sub-sources like `cbre-dealflow` and `colliers-main`).
+with `../cre_collector/collect.ts` `SOURCE_KEYS` and
+`../sql/001_cre_brokerages.sql` (20 collector source keys folding into 17
+brokerage slugs; folded sub-sources: `cbre-dealflow`, `jll-investor`,
+`colliers-main`; regional Buildout keys: `matthews`, `franklin-street`, `srs`,
+`hanley`, `kidder-mathews`).
 
 **Never change `proxy` from `stealth` to `basic` for a broker** without
 verifying the site is not behind Cloudflare. Stealth is safe on unprotected
@@ -157,8 +192,9 @@ any large Next.js/React SPA brokerage; a similar API pattern may exist.
 7. Test: `python3 -c "from cre_scrapers.<module> import <Class>; <Class>().run(max_listings=3)"`
 
 For production daily inventory, also add a source adapter in
-`../cre_collector/sources/`, register it in `../cre_collector/collect.ts`, and
-map it in `../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE`.
+`../cre_collector/sources/`, register it in `../cre_collector/collect.ts`
+(`SOURCE_KEYS` + `runSource`), and map it in
+`../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE`.
 
 ## Known issues / gotchas
 
@@ -169,8 +205,9 @@ map it in `../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE`.
   8s. For large batches (>200 URLs) set a longer poll timeout or submit in
   chunks of 50-100.
 - **`lee-associates` is in `config.py` and `cre_pipeline.py` broker lists but
-  has no Python scraper implementation.** Production coverage is complete via
-  the collector Buildout path.
+  has no `brokers/lee_associates/scraper.py` and is not registered in
+  `get_scraper()`.** Production coverage is complete via the collector Buildout
+  path (`../cre_collector/sources/buildout.ts`).
 - **The 007 change-tracking tables (`cre_listing_events`, `cre_source_index`,
   `cre_enrichment_queue`, `cre_source_baseline`) are collector-owned and
   observe-only**, maintained by `../cre_collector/cre_monitor.py` /

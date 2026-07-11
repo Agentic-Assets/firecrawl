@@ -552,6 +552,40 @@ def test_to_row_links_string_and_dict_forms():
     assert r["links"][1]["rel"] == "canonical"
 
 
+def test_to_row_discards_legacy_om_facts_payload():
+    r = _row({
+        "sourceKey": "cbre",
+        "url": "https://cbre.com/om",
+        "id": "1",
+        "omFacts": [{
+            "factKey": "noi",
+            "factValueNum": 1000000,
+            "sourceDocUrl": "https://cbre.com/om.pdf",
+            "parserVersion": "legacy/1",
+        }],
+    })
+    assert r["om_facts"] == []
+
+    sql = ci.build_sql([r], [], _SCRAPED_AT, set())
+    copy_start = sql.index("COPY _stage")
+    copy_data_start = sql.index("\n", copy_start) + 1
+    copy_data_end = sql.index("\n\\.\n", copy_data_start)
+    fields = sql[copy_data_start:copy_data_end].split("\t")
+    assert "legacy/1" in sql  # retained only inside raw_data provenance
+    assert fields[ci.STAGE_COLS.index("om_facts")] == "[]"
+
+
+def test_build_sql_discards_direct_legacy_om_facts_rows():
+    row = _row({"sourceKey": "cbre", "url": "https://cbre.com/om", "id": "1"})
+    row["om_facts"] = [{
+        "factKey": "noi",
+        "sourceDocUrl": "https://cbre.com/om.pdf",
+        "parserVersion": "legacy/1",
+    }]
+    sql = ci.build_sql([row], [], _SCRAPED_AT, set())
+    assert "legacy/1" not in sql
+
+
 # ===========================================================================
 # merge_rows: COALESCE-keep, sale_or_lease, child fill, drop-wins, dual raw
 # (line 998-1052)

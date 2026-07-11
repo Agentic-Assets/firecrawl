@@ -231,10 +231,9 @@ def test_build_enriched_listing_carries_scalars_and_full_omfacts():
     assert any(f["factGroup"] == "rent_roll" for f in listing["omFacts"])
 
 
-def test_enriched_listing_omfacts_round_trip_through_cre_ingest_om_facts_rows():
-    # The enriched omFacts must survive cre_ingest.om_facts_rows() unchanged in
-    # the required provenance fields (the staging contract). Every emitted row
-    # has factKey + sourceDocUrl + parserVersion, so none is dropped.
+def test_legacy_omfacts_serializer_preserves_provenance_for_regression_only():
+    # This validates the retired serializer's pure provenance shape. It does not
+    # imply a production writer path: to_row() and build_sql() discard omFacts.
     import cre_ingest
     md, url = _load_md("cbre_om.json")
     facts = extract_om_facts(md, url)

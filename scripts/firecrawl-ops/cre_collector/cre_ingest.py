@@ -384,14 +384,12 @@ _OM_FACT_GROUPS = {"scalar", "unit_mix", "rent_roll"}
 
 
 def om_facts_rows(v):
-    """Stage OM/PDF-parsed facts into cre_listing_om_facts rows (contract A.2 / B).
+    """Legacy OM-facts serializer retained only for regression contracts.
 
-    The OM-parse tier (WS2) emits `omFacts` as a list of provenance-bearing
-    dicts. Each row MUST carry a non-empty fact_key, a source_doc_url, and a
-    parser_version (the provenance contract; A.2). Rows missing any required
-    provenance field are dropped (never fabricate an audit trail). fact_group
-    clamps to scalar/unit_mix/rent_roll; confidence clamps to (0, 1] or None.
-    Returns a list (possibly empty) so the build_sql staging stays uniform.
+    GetCREdata is the sole production OM writer. Firecrawl ingestion discards
+    this payload in both to_row() and build_sql(). This pure helper remains so
+    migration and parser-regression tests can validate the historical
+    provenance shape without restoring a writer path.
     """
     if not isinstance(v, list):
         return []
@@ -917,12 +915,10 @@ def to_row(listing, brokers_by_idx, scraped_at):
                 links.append({"url": lu, "rel": ln.get("rel"),
                               "linkType": ln.get("linkType") or "other"})
 
-    # OM-parsed facts (cre_listing_om_facts rows, sql/013). The OM-parse tier
-    # (WS2) emits `omFacts` as a list of provenance-bearing dicts; to_row stages
-    # them defensively (each row requires source_doc_url + parser_version). The
-    # cre_listings scalar COALESCE-write is the OM tier's job (it sets noi etc.
-    # on the listing object before this); here we only stage the audit-trail rows.
-    om_facts = om_facts_rows(listing.get("omFacts"))
+    # GetCREdata is the sole production OM writer. Ignore an `omFacts` payload
+    # in every Firecrawl collector artifact so a legacy or manually supplied
+    # artifact cannot write cre_listing_om_facts through this ingestor.
+    om_facts = []
 
     title = listing.get("name") or listing.get("headline") or listing.get("street")
     desc = listing.get("description")
@@ -1176,6 +1172,10 @@ def apply_status_activation_gate(rows, activate_status):
 
 
 def build_sql(rows, job_meta, started_at, mark_missing_slugs, history_guard=True):
+    # Defense in depth for direct callers of this builder. Normal ingestion
+    # reaches here through to_row(), which already drops `omFacts`, but this
+    # prevents a manually constructed row from restoring the retired writer.
+    rows = [{**row, "om_facts": []} for row in rows]
     lines = []
     w = lines.append
     w("\\set ON_ERROR_STOP on")
@@ -1633,7 +1633,8 @@ END $$;
 -- set, so detailError rows never write (invariant). The OM tier sets the matching
 -- cre_listings scalar via the institutional UPDATE / COALESCE-keep path; this
 -- table is the audit home. parser_version/source_doc_url are NOT NULL in the
--- table, and om_facts_rows() drops any row missing them.
+-- table. Firecrawl ingestion stages an empty om_facts array by policy; this
+-- retained upsert shape protects migration compatibility and archive handling.
 DO $$ BEGIN
   IF to_regclass('credeals.cre_listing_om_facts') IS NOT NULL THEN
     INSERT INTO credeals.cre_listing_om_facts (

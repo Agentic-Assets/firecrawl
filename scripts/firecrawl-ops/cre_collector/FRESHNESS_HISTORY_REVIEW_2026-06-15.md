@@ -1,5 +1,9 @@
 # CRE Collector: Freshness, Accuracy, and Historic-Retention Review
 
+> **Historical review.** Do not execute its launchd or runtime commands as a
+> current procedure. The 2026-07-11 operator runbook and execution-status audit
+> supersede its scheduler state and recovery instructions.
+
 > **UPDATE 2026-06-15 (post-relocation):** Finding H1 (TCC exit 126) is RESOLVED.
 > The collector repo was relocated out of `~/Documents` to
 > `~/Github/agentic-assets/firecrawl`, so the launchd tiers no longer exit 126.

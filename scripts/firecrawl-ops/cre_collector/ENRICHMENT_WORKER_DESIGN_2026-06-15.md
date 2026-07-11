@@ -15,11 +15,10 @@
 > `ai.agentic.cre-enrich.plist.template`; monitor template at 06:10/18:10;
 > `install_launchd.sh` TIERS = monitor/enrich/weekly), and `cre_status.sh`
 > (monitor/enrich/weekly loop, 18h monitor + 6h enrich staleness, `out/enrich`
-> artifact scan). The ONE divergence from steady state is operational, not in
-> code: the live Mac still has the OLD tiers loaded (`ai.agentic.cre-monitor`
-> every 3h + `ai.agentic.cre-daily` 06:30). The Section 9 cutover (apply `010`,
-> reload monitor at 2x/day, load enrich, unload daily, load the additive weekly
-> backstop) has NOT been run and remains gated for owner go-ahead.
+> artifact scan). This design is historical implementation context. The
+> 2026-07-11 audit found no active CRE scheduler on the Mac mini, so its live
+> cutover commands are not current operating instructions. Follow the operator
+> runbook and obtain explicit runtime-recovery and scheduler approval first.
 
 ## 1. Why
 
@@ -350,7 +349,11 @@ All `cre_enrich.py` unit tests are pure-transform (assert on builder strings, th
 Current green baseline before any change: 344 pytest, 169 TS unit, `py_compile`
 clean (2026-06-15).
 
-## 9. Cutover runbook (GATED - requires owner go-ahead)
+## 9. Historical cutover design (superseded by the operator runbook)
+
+**Do not execute the commands in this section.** They record the original
+design only. Current recovery, scheduler, database-write, and canary actions
+are governed by the 2026-07-11 operator runbook and require explicit approval.
 
 Non-destructive prep (safe, done by the workflow on a plain run):
 1. Land code + tests + docs on the feature branch; CI green.

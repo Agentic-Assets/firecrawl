@@ -11,6 +11,25 @@
 > It is the current ordered runbook. The historical run counts and scheduler
 > states below must not be used as current live evidence.
 
+> **Supported production path:** When collection and ingest are enabled, they
+> run here (`collect.ts`, `sources/*.ts`, `cre_ingest.py`, and
+> `cre_daily_update.sh`). `../cre_scrapers/brokers/` is legacy reference code,
+> not a source of board updates.
+
+## Agent rule: verify counts before you quote or edit them
+
+Board totals, source counts, test counts, and scheduler state are point-in-time
+evidence. Before quoting them in docs, commits, or handoffs, run the relevant
+read-only preflight and test commands, then label any refreshed snapshot with
+its date. Never treat a historical launchd statement as live proof.
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+bash cre_status.sh                    # read-only scheduler and marker preflight
+python3 -m pytest tests/ -q           # obtain the current pytest count
+npm run test:unit                     # obtain the current TypeScript count
+```
+
 **2026-06-15 (Phase-2 data-lift LIVE).** DDL `011` -> `012` -> `013` -> `014`
 applied to prod (project `fhqycqubkkrdgzswccwd`, schema `credeals`) in order via
 psql (non-pooling, `ON_ERROR_STOP`): `011` added `cre_listing_media` +
@@ -55,20 +74,13 @@ CHECKs, 4 audit FKs `ON DELETE SET NULL`, 2 unique indexes `NULLS NOT DISTINCT`,
 `../sql/advisor-reports/2026-06-13-cre-live-hardening.sql`). Data-quality
 cleanups: 50 board-invisible JLL rows -> `inactive`, transwestern notes restored,
 Savills residential contamination removed (101 sale + 1 ghost lease soft-deleted;
-2 defensible Chicago retail lease rows remain). Automation LOADED and EXECUTING
-on schedule: launchd `ai.agentic.cre-monitor` (every 3h, `CRE_MONITOR_APPLY=1`
-change-event recording) and `ai.agentic.cre-daily` (06:30, `--no-mark-missing`,
-status OFF) are loaded, and `cre_gate.py` is wired into `cre_daily_update.sh`
-with a `--strict` mark-missing fail-safe. The repo was relocated out of
-`~/Documents` to `~/Github/agentic-assets/firecrawl`, so the prior macOS Full
-Disk Access exit-126 block no longer applies. The monitor tier has a confirmed
-clean scheduled run (`out/daily/last_run_monitor.json` rc:0, 2026-06-15); the
-daily tier executes the additive collect on schedule. Weekly `--mark-missing`
-tier intentionally NOT loaded (reconcile held). 290 pytest pass. Run-health at a
-glance: `bash cre_status.sh` (read-only heartbeat; flags stale schedules,
-last-run failures, and stack/env state).
+2 defensible Chicago retail lease rows remain). Automation at 2026-06-14: only
+`ai.agentic.cre-monitor` (every 3h) and `ai.agentic.cre-daily` (06:30) were
+loaded; `cre_gate.py` was wired into `cre_daily_update.sh`. Superseded by the
+2026-07-05 documentation snapshot. That snapshot is not current scheduler
+evidence; use `bash cre_status.sh` and the 2026-07-11 operator runbook.
 
-Last updated: 2026-06-13. Change-tracking / monitor layer (migration 007 +
+Historical snapshot last updated: 2026-07-05. Change-tracking / monitor layer (migration 007 +
 `cre_monitor.py` + `cre_gate.py` + `collect.ts --monitor`) built, hardened, and
 adversarially reviewed. 2026-06-13 session: `collect.ts` split into cohesive
 modules (`types.ts`, `lib/`, `sources/<broker>.ts`; `collect.ts` stays the CLI
@@ -86,7 +98,11 @@ This directory is the production daily path for public commercial real estate li
 
 ## Current State
 
-Latest full artifact:
+**Live board and per-source counts:** see the 2026-07-05 banner and Latest Source
+Matrix below (107,783 active as of that snapshot). The subsection below is a
+historical artifact record from 2026-06-11 through 2026-06-14.
+
+Latest full artifact (historical):
 
 ```bash
 out/full_latest_2026-06-11_230423.json
@@ -114,7 +130,7 @@ Result:
   2026-06-12 figure is the colliers-main bounded 943-row batch).
 - 2026-06-14: the colliers-main full run was ingested additively (colliers
   brokerage 2,115 -> 17,001 active) and the Savills residential cleanup removed
-  102 rows, so the live board is **87,328 active** (0 non-active, 0 NULL status).
+  102 rows, so the live board reached **87,328 active** (superseded; see banner).
 
 ## Next Steps
 
@@ -128,8 +144,8 @@ are open:
    (`out/cache/colliers-main/`, 15,888 rows) and was ingested additively
    (`--no-mark-missing`, status activation OFF): 15,829 active rows (5,750 sale
    + 8,897 lease + 1,182 sale_or_lease), 0 soft-deleted, 0 duplicate
-   external_ids. Colliers brokerage total is now 17,001 active and the live
-   board is 87,328 active. Main-site coverage is complete. See
+   external_ids. Colliers brokerage total is now 17,001 active (board 87,328 at
+   2026-06-14; superseded). Main-site coverage is complete. See
    `HANDOFF_COLLIERS_MAIN_2026-06-13.md`.
 2. **Change-tracking / monitor layer (007, observe-only) - hardened, first
    seed live.** Per section 14.4, complete and adversarially reviewed:
@@ -150,7 +166,8 @@ are open:
      `cre_listings.status`/`deleted_at`). Disappearance is triple-gated: the 0.7
      coverage fraction, `run_source_keys` membership, and a refusal for any
      source whose pass errored OR truncated this run (the last is not overridable
-     by `--force-disappear`). `python3 -m pytest tests/`: 290 passing.
+     by `--force-disappear`). Re-run `python3 -m pytest tests/ -q` for the
+     current count (1402 pass as of 2026-07-05).
    - `collect.ts` is now modular (`types.ts`, `lib/`, `sources/<broker>.ts`);
      `collect.ts` stays the unchanged CLI entry. `npm run typecheck` clean.
    - Full operational rules and gotchas:
@@ -170,9 +187,9 @@ are open:
 
    Phase-2 status activation is now WIRED and hardened in `cre_ingest.py`
    (Choice (a) COALESCE + terminal-stickiness guard + default-off status-flip
-   circuit breaker `CRE_STATUS_FLIP_MAX_FRACTION`; 254 pytest pass at that
-   2026-06-13 session, 290 now). It activates
-   on the next daily/manual full ingest, NOT from the monitor path. The matching
+   circuit breaker `CRE_STATUS_FLIP_MAX_FRACTION`). It activates **only** when
+   `--activate-status` or `CRE_ACTIVATE_STATUS=1` is set on a daily/manual full
+   ingest, NOT from the monitor path and NOT on routine scheduled ingests. The matching
    EQUIRE board-gate widening (Option B) is committed on
    `dynamically-display-cre-listing-data` branch `feat/multi-source-live-listings`
    (not deployed). Gate-0 (prod status CHECK) verified to already allow
@@ -183,10 +200,9 @@ are open:
    triggering the first live T3.1 activation, and applying the widened
    agent-facing `005` views (now `status IN ('active','under_contract','pending')`
    on this branch; live DDL apply gated, verified read-only as a zero-row no-op).
-   NOTE: the tiered launchd schedules (section 9) and the `cre_gate.py` wiring
-   into `cre_daily_update.sh` SHIPPED 2026-06-14 (loaded and executing on
-   schedule after the repo relocation out of `~/Documents`) and are no longer
-   gated.
+   NOTE: tiered schedules and `cre_gate.py` wiring shipped in code. A 2026-07-05
+   document snapshot claimed an enrichment cadence cutover, but the 2026-07-11
+   audit found no active CRE scheduler. See the top handoff banner.
 
 The EQUIRE-facing view-gate / status activation (sections 12.4, Phase-2) stays
 pending CRE_EQUIRE coordination and is NOT part of the additive build. Board
@@ -195,23 +211,33 @@ impact is quantified in
 
 ## Latest Source Matrix
 
-| Source | Raw count | Status |
+Historical Supabase snapshot from `credeals` (2026-07-05). **Re-query before
+quoting;** see **Agent rule: verify counts** at the top of this file. Board total
+**107,783 active** includes ~11,144 rows under additional seeded brokerages
+beyond this 20-source collector matrix (regional NAI franchises and similar).
+
+| Source | Active rows (sale / lease / sale_or_lease) | Status |
 |---|---:|---|
-| CBRE | 19,028 active rows, 4,222 sale + 13,145 lease + 1,661 sale_or_lease | Active via internal JSON API through local Firecrawl stealth |
-| CBRE Deal Flow | 1,836 active rows, 1,809 sale + 27 lease | Active via public RCM ListingEngine endpoint; 21 stale URL-hash duplicate rows soft-deleted |
-| JLL | 10,741 active rows, 1,247 sale + 8,733 lease + 761 sale_or_lease | Complete main public property feed with detail enrichment, live-ingested; 4,406 stale same-URL rows soft-deleted |
-| JLL Investor | 1,857 sitemap detail URLs scanned; 934 U.S. sale rows retained and live (latest batch) | Complete; full sitemap detail run live-ingested 2026-06-12 22:47 UTC; source-scoped cleanup removed 50 stale early-probe rows |
-| Cushman & Wakefield | 11,318 active rows, 2,743 sale + 8,575 lease | Complete public API feed with detail enrichment, live-ingested with source-scoped mark-missing cleanup |
-| Newmark | 4,371 active rows, 1,121 sale + 3,250 lease | Complete public Algolia feed with no-state DC recovery, public People contacts/profile URLs, raw hit preservation, and source-scoped cleanup |
-| Marcus & Millichap | 3,124 active sale rows | Complete public sale feed via public map ActivityIds, `mappropertydetail` tiles, and detail HTML; live-ingested with source-scoped mark-missing cleanup; lease unsupported |
-| Avison Young | 2,201 active rows, 636 sale + 1,432 lease + 133 sale_or_lease | Complete public SharpLaunch feed with detail-page enrichment, live-ingested additively; 2,571 document URL rows, 31,570 image URL rows, 4,128 contacts, no photo leaks, VCards absent |
-| Savills | 2 active lease rows | Sale is STRUCTURALLY CAPPED (no public U.S. commercial-sale feed; the 101 "sale" rows were mis-categorized residential and were soft-deleted 2026-06-14 with 1 non-U.S. ghost lease). 2 defensible Chicago retail lease rows remain with PDF/image/contact URLs |
-| SVN | 5,287 active rows, 2,660 sale + 2,192 lease + 435 sale_or_lease | Complete public Buildout feed, assembled from durable page cache and live-ingested with source-scoped mark-missing cleanup |
-| NAI Global | 241 active rows, 183 sale + 58 lease live-ingested with mark-missing cleanup | Complete public active feed via Infabode GraphQL and `publicPost`, filtered to `FOR_SALE_ON_MARKET`; historical/unknown rows excluded |
-| Lee & Associates | 9,223 active rows, 2,611 sale + 5,691 lease + 921 sale_or_lease | Complete public Buildout feed, assembled from durable page cache and live-ingested with source-scoped mark-missing cleanup |
-| Colliers (SalesTracker) | 1,300 SalesTracker cards collected, 1,172 unique rows live-ingested | Investment-sale subset via public RCM GET endpoints; retained alongside the new main-site source |
-| Colliers main (`colliers-main`) | 15,829 active rows, 5,750 sale + 8,897 lease + 1,182 sale_or_lease | COMPLETE 2026-06-14: full ~15,883-URL sitemap detail run converged (0 errors) and ingested additively (status OFF), 0 soft-deleted, 0 dup external_ids. Main `www.colliers.com` via public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`) plus detail-render JSON-LD parse, folded into `colliers` with `main:` prefix. Durable cache `out/cache/colliers-main/` (15,888 rows). See `HANDOFF_COLLIERS_MAIN_2026-06-13.md` |
-| Transwestern | 2,021 active rows, 389 sale + 1,502 lease + 130 sale_or_lease | Complete public GET feed, detail-enriched and live-ingested with source-scoped mark-missing cleanup |
+| CBRE | 19,028 (4,222 / 13,144 / 1,662) | Internal JSON API through local Firecrawl stealth |
+| CBRE Deal Flow | 1,836 (1,809 sale + 27 lease) | Public RCM ListingEngine; folded into `cbre` with `dealflow:` prefix |
+| JLL | 10,741 (1,247 / 8,733 / 761) | Main public property feed with detail enrichment |
+| JLL Investor | 934 sale | Folded into `jll` with `investor:` prefix; full sitemap detail run |
+| Cushman & Wakefield | 11,318 (2,743 / 8,575) | Public API feed with detail enrichment |
+| Newmark | 4,374 (1,123 / 3,249 / 2) | Public Algolia feed with People contacts |
+| Marcus & Millichap | 3,124 sale | Public map ActivityIds + detail HTML; lease unsupported |
+| Avison Young | 2,201 (636 / 1,432 / 133) | SharpLaunch feed with detail enrichment |
+| Savills | 2 lease | Sale STRUCTURALLY CAPPED; 2 Chicago retail lease rows |
+| SVN | 5,287 (2,660 / 2,189 / 438) | Public Buildout feed with durable page cache |
+| NAI Global | 241 (183 / 58) | Infabode GraphQL; `FOR_SALE_ON_MARKET` filter only |
+| Lee & Associates | 9,223 (2,611 / 5,691 / 921) | Public Buildout feed with durable page cache |
+| Colliers (SalesTracker) | 1,172 sale | RCM investment-sale subset; folded into `colliers` |
+| Colliers main (`colliers-main`) | 15,829 (5,750 / 8,897 / 1,182) | XML sitemap + JSON-LD detail; `main:` prefix |
+| Transwestern | 2,021 (389 / 1,502 / 130) | Public GET feed with detail enrichment |
+| Matthews | 3,563 (2,912 / 651) | Public sitemap + direct fetch (added 2026-06+) |
+| Franklin Street | 413 (218 / 186 / 9) | Buildout inventory (`franklin-street`); sale/lease tokens |
+| SRS | 2,122 (1,111 / 844 / 167) | SRS backend search API, paginated POST |
+| Hanley | 102 sale | Embedded `rethink_properties` JSON on `/listings/` |
+| Kidder Mathews | 3,108 (823 / 2,258 / 27) | Kidder backend search API, paginated POST |
 
 ## Start A New Session
 
@@ -266,7 +292,11 @@ Use default `bash cre_daily_update.sh` only after a clean all-source run has no 
 
 Target project: `fhqycqubkkrdgzswccwd`, schema `credeals`.
 
-The ingestor reads `POSTGRES_URL_NON_POOLING` or `POSTGRES_URL` from the EQUIRE `.env.local` file and shells out to `psql`. It prints only the env file path, never the credential value.
+The ingestor reads `POSTGRES_URL_NON_POOLING` or `POSTGRES_URL` from the env
+file discovered by `load_db_url()` (`--env-file`, then `CRE_ENV_FILE`, then
+`~/Documents/...` defaults). On this Mac, launchd sets
+`CRE_ENV_FILE=~/.config/cre/equire.env`. It shells out to `psql` and prints only
+the env file path, never the credential value.
 
 The collector-owned `cre_*` base tables and `v_cre_*` views are service-role only. `anon` and `authenticated` do not have table or view `SELECT`. RLS is enabled with no public row policies by design. The display views use `security_invoker=true`, and `search_cre_listings(...)` plus `update_cre_listing_timestamp()` are executable by `service_role`, not by public browser roles.
 
@@ -278,25 +308,14 @@ images into Supabase storage for the bulk collector.
 
 ## Known Limits To Respect
 
-- **launchd automation RUNS on schedule (TCC resolved 2026-06-15).** The repo
-  was relocated out of `~/Documents` to `~/Github/agentic-assets/firecrawl`, so
-  a launchd user-agent no longer needs macOS Full Disk Access and scheduled
-  fires no longer exit 126. `ai.agentic.cre-monitor` has a confirmed clean run
-  (`out/daily/last_run_monitor.json` rc:0, 2026-06-15) and `ai.agentic.cre-daily`
-  runs the additive `--no-mark-missing` collect on schedule. On a fresh machine,
-  keep the clone OUTSIDE `~/Documents` so TCC never applies; `cre_setup.sh` flags
-  whether you are clear. Full fresh-machine setup: `SETUP.md`.
-- **Enrichment worker + cadence restructure SHIPPED in code 2026-06-15; live
-  launchd cutover GATED.** `cre_enrich.py` (Tier-B queue worker), `collect.ts
-  --enrich-input` (`lib/enrich.ts`: colliers-main + jll-investor enrichers, JSON-LD
-  generic fallback), `sql/010_cre_enrichment_ops.sql` (two health views, wired into
-  `000_run_all.sql` after `009`), the restructured launchd tiers (monitor 2x/day at
-  06:10/18:10, new enrich every 4h, weekly additive backstop, daily retired), and
-  `cre_status.sh`'s enrich tier are all in the tree. The LIVE Mac still has the OLD
-  tiers loaded (`ai.agentic.cre-monitor` every 3h + `ai.agentic.cre-daily` 06:30).
-  Running the cutover (apply `010`, reload monitor at 2x/day, load enrich, unload
-  daily, load the additive weekly backstop) is held for go-ahead. Runbook:
-  `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` Section 9.
+- **Scheduler audit (2026-07-11).** No CRE launchd tier, marker, or collector
+  artifact exists on the Mac mini. The 2026-07-05 document snapshot claiming
+  loaded tiers and failures is historical only. Fresh-machine setup remains in
+  `SETUP.md`, but runtime recovery is gated by the operator runbook.
+- **Enrichment implementation.** `cre_enrich.py`, `collect.ts --enrich-input`,
+  `sql/010` health views, and plist templates are implemented in code. They are
+  not currently loaded on the Mac mini. See the operator runbook, not the
+  historical Section 9 design, for recovery authority.
 - Do not use `--mark-missing` after a run with Lee or other source errors.
 - Cushman & Wakefield is now current in Supabase from `out/cushman_full_2026-06-12_022841.json`: 11,318 active rows, 18,343 document URL rows, 24,278 image URL rows, 21,110 contact rows, 21,110 profile URLs, and 20,301 VCard URLs. Source-scoped `--mark-missing` soft-deleted 24 old probe rows.
 - CBRE Deal Flow has been ingested from the public RCM endpoint. Do not use its reported 2,042 sale total as collected count; the public card pagination exposed 1,809 sale cards in the full run. A narrow cleanup soft-deleted 21 stale `dealflow:url:<sha1>` rows that duplicated newer enriched Deal Flow IDs.
@@ -354,41 +373,31 @@ images into Supabase storage for the bulk collector.
   CRE_EQUIRE deploy. See the phase2 board-impact doc's activation runbook. The
   weekly tier itself is now ADDITIVE by default (`--no-mark-missing`), so loading
   it as the backstop is safe; only the soft-delete escalation is held.
-- **Enrichment cutover (Section 9) is GATED.** The enrichment worker + cadence
-  restructure shipped in code; the live launchd cutover (apply `sql/010`, reload
-  monitor at 2x/day, load enrich, unload daily, load the additive weekly backstop)
-  is held for go-ahead. Until then the old monitor-3h + daily-06:30 tiers stay
-  loaded. Runbook: `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` Section 9.
+- **Enrichment scheduler status.** The 2026-07-05 failures are historical
+  observations, not a currently running tier. Use the read-only preflight and
+  operator runbook before any recovery. Weekly mark-missing escalation
+  (`CRE_WEEKLY_MARK_MISSING=1`) remains gated.
 - Do not treat legacy `cre_scrapers` active flags as production collector status.
 - Do not stage `node_modules/`, `out/`, `__pycache__/`, or generated SQL artifacts.
 
 ## Operational Recovery
 
-Routine recovery for the scheduled tiers. All paths are under
-`scripts/firecrawl-ops/cre_collector/`. Start with `bash cre_status.sh`, which
-names the specific fault (stale schedule, last-run failure, hung/stale lock,
-oversized `out/` footprint).
+**Dormant until explicit runtime-recovery and scheduler approval.** The Mac
+mini currently has no CRE scheduler installed. Start with `bash cre_status.sh`
+as a read-only preflight, then follow the operator runbook. Do not use the
+historical launchd recovery commands below to create or restart a job.
 
-- **Re-kick a missed or failed scheduled run.** launchd does not backfill a
-  skipped fire; force one immediately:
-  ```bash
-  launchctl kickstart -k gui/$(id -u)/ai.agentic.cre-daily     # or cre-monitor
-  ```
-  Then watch `out/daily/cre-daily.out.log` / `out/daily/cre-daily.err.log` and
-  re-run `bash cre_status.sh`. A manual catch-up run from the terminal that
-  takes the same lock is `bash launchd/cre_run_tier.sh daily`.
+- **Missed or failed scheduled run.** Do not re-kick a tier or run a manual
+  catch-up while the scheduler is disabled. Record the read-only preflight and
+  obtain the runbook's named approval before any runtime action.
 - **Clear a wedged lock.** The tiers serialize on the portable `mkdir` lock dir
   `out/daily/.cre.lock` (plus a transient `out/daily/.cre.lock.reclaim` during
   stale reclaim). `cre_run_tier.sh` auto-reclaims a lock whose recorded PID is
   dead, so a wedged lock means the owner is still alive or `cre_status.sh`
-  flagged it "possible hung run". Confirm no live run first
-  (`launchctl list | grep ai.agentic.cre` shows a non-zero PID in column 1, or
-  `ps aux | grep cre_`), then:
-  ```bash
-  rm -rf out/daily/.cre.lock out/daily/.cre.lock.reclaim
-  ```
-  Never remove the lock while a real run is active; it exists to keep the daily
-  additive pass and the weekly `--mark-missing` pass from overlapping.
+  flagged it "possible hung run". After confirming no live process and receiving
+  runtime-recovery approval, quarantine the lock under a timestamped name rather
+  than deleting it. Never modify a lock while a real run is active; it exists to
+  keep additive and mark-missing work from overlapping.
 - **Reclaim disk.** Both runners self-prune on exit (daily keeps 14
   `run_*.json` / 29 `run_*.log` / 14 `gate_*.json` under `out/daily/`; the tier
   dispatcher keeps 24 `monitor_*.json` + 24 `monitor_*.log` under `out/monitor/`
