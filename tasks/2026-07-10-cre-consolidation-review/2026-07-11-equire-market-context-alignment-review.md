@@ -33,6 +33,34 @@ MCP call site currently invokes `get_listing_with_market_context` or
 That separation is useful because the remaining producer and governance gaps
 can be closed before product exposure.
 
+### Concurrent local edits observed after the branch baseline
+
+After the baseline review and first Firecrawl report commit completed, the
+EQUIRE checkout acquired uncommitted changes from another active agent. This
+review did not modify, stage, commit, or push those files. They are not part of
+EQUIRE commit `1c1f72cce` or its remote branch yet.
+
+The local edits appear to address several review items:
+
+- relabel the release runbook's pre-apply instructions as historical and state
+  that all three migrations are applied;
+- correct the compensating-migration dependency order and use the pg_cron job
+  identifier for unscheduling;
+- describe one-hour freshness as conditional on successful jobs rather than an
+  unconditional bound;
+- add current-state cache acceptance queries and service-role-RPC-only guidance;
+- state in module guidance that no application or MCP consumer is wired yet.
+
+The local edits do not address the fresh-schema CBSA collision, GetCREdata's
+unmerged parser-version fix, the unresolved property-type crosswalk, automatic
+producer and cache freshness monitoring, or the missing executable PostgreSQL
+integration harness. The edited forward queue now says to wire an application
+and MCP consumer because DDL evidence is complete, but it still does not require
+AGENTIC-1229, AGENTIC-1230, and AGENTIC-1233 before consumer reliance.
+
+Treat these edits as promising but non-durable until their owning agent verifies,
+commits, and pushes them on the EQUIRE feature branch.
+
 ## What aligns correctly
 
 ### Ownership boundaries
@@ -123,6 +151,10 @@ AGENTIC-1230, and AGENTIC-1233 as gates for producer recovery, data quality,
 and product reliance. They are no longer retroactive gates for DDL that the
 EQUIRE branch says is already applied.
 
+An uncommitted EQUIRE documentation patch now corrects the EQUIRE side of this
+state description. It still needs verification, commit, and push, followed by
+the Firecrawl and Linear reconciliation above.
+
 ### 3. P1: the current EQUIRE consumer-forward language can bypass producer gates
 
 EQUIRE's original release runbook requires the property-type crosswalk and
@@ -135,6 +167,11 @@ permission to proceed because the views and caches are recorded as live.
 surface until Firecrawl's listing canary, GetCREdata's supervised export and
 aa-hub observation window, and AGENTIC-1233's crosswalk adoption are all
 recorded. Keep the existing RPCs dark and fail-open until then.
+
+The concurrent EQUIRE forward-queue edit correctly states that DDL evidence is
+complete and no consumer exists, but it now presents consumer wiring as the next
+step without naming these producer and crosswalk gates. Add them before that
+edit is committed.
 
 ### 4. P1: GetCREdata's parser-version repair is not in the active producer
 
@@ -187,6 +224,9 @@ are stale, or GetCREdata's last successful export exceeds its approved
 cadence. At the consumer boundary, return stale or unavailable context when the
 age policy fails.
 
+The concurrent EQUIRE documentation patch corrects the unconditional wording,
+but it does not add the automatic monitor or consumer age enforcement.
+
 ### 7. P1: the documented compensating migration has the wrong dependency order
 
 The rollback template drops `v_cre_cbsa_market_summary` before dropping
@@ -199,6 +239,10 @@ first, then `cre_cbsa_market_summary_cache`, then the two product views, then
 `cre_market_index_cache` and the supporting index. Unschedule both jobs and
 verify object absence, preserved producer objects, job absence, and migration
 ledger continuity. Exercise the complete rollback in disposable PostgreSQL.
+
+The concurrent EQUIRE patch now uses this dependency order and unschedules by
+job identifier. The fix remains uncommitted and has not been executed against a
+disposable database.
 
 ### 8. P2: tests prove SQL text, not database behavior
 
@@ -224,6 +268,11 @@ denies direct view access.
 **Recommendation:** Remove the generic direct-grant recipe or mark it
 historical and unauthorized. Any public or authenticated product read should
 go through a reviewed least-privilege EQUIRE RPC after producer-owner review.
+
+The concurrent EQUIRE patch narrows the recipe to producer-owned objects and
+explicitly excludes the new views and caches. It should also require producer
+owner approval before granting browser roles direct access to
+`cre_market_index`.
 
 ### 10. Boundary: no product consumer is implemented yet
 
@@ -259,7 +308,8 @@ unavailable, display metric scope and timestamps, and add product-level tests.
 ## Verification performed in this review
 
 - Confirmed all reviewed local checkouts were clean and matched the named
-  branch refs.
+  branch refs at the baseline. The EQUIRE checkout later acquired preserved,
+  uncommitted edits from another active agent, as documented above.
 - Confirmed EQUIRE's feature branch contains current `origin/main` and is 12
   commits ahead.
 - Ran EQUIRE's focused migration contract: `17 passed`.
