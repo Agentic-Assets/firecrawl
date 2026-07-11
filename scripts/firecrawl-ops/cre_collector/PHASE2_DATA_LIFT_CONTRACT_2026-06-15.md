@@ -75,11 +75,13 @@ DECISION:
   upsert path so an OM parse never clobbers a fuller prior capture, and a board
   consumer already reads them. No schema change for these.
 - **Unit-mix / rent-roll line items and parse PROVENANCE get a NEW table
-  `cre_listing_om_facts`** (migration `013`). One row per (listing, fact group)
-  with the parse provenance columns (`source_doc_url`, `parsed_at`,
-  `parser_version`, `confidence`) so every OM-derived datum is auditable and a
-  re-parse is idempotent. Unit-mix/rent-roll are arrays-of-objects with no fixed
-  arity; a child table is the correct shape, not jsonb on the parent.
+  `cre_listing_om_facts`** (migration `013`). One row per (listing, fact group,
+  fact key, source document, parser version), with the parse provenance columns
+  (`source_doc_url`, `parsed_at`, `parser_version`, `confidence`) so every
+  OM-derived datum is auditable. A re-parse by the same parser release is
+  idempotent, while a later parser release retains its own audit row. Unit-mix/
+  rent-roll are arrays-of-objects with no fixed arity; a child table is the
+  correct shape, not jsonb on the parent.
 
 Provenance contract: when the OM-parse tier writes a scalar onto `cre_listings`
 (e.g. `noi`), it ALSO writes a `cre_listing_om_facts` row recording WHICH doc and
@@ -192,7 +194,7 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listing_om_facts (
 CREATE INDEX IF NOT EXISTS cre_listing_om_facts_listing_idx
     ON credeals.cre_listing_om_facts (listing_id);
 CREATE UNIQUE INDEX IF NOT EXISTS cre_listing_om_facts_uq
-    ON credeals.cre_listing_om_facts (listing_id, fact_group, fact_key, source_doc_url) NULLS NOT DISTINCT;
+    ON credeals.cre_listing_om_facts (listing_id, fact_group, fact_key, source_doc_url, parser_version) NULLS NOT DISTINCT;
 ALTER TABLE credeals.cre_listing_om_facts ENABLE ROW LEVEL SECURITY;
 COMMENT ON TABLE credeals.cre_listing_om_facts IS
     'OM/PDF-parsed facts (scalar underwriting + unit_mix + rent_roll) with parse provenance. Scalars also COALESCE-write the matching cre_listings column; this table is the audit trail and the home for non-scalar line items. Service-role only (RLS on, no public policy).';

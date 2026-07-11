@@ -192,7 +192,9 @@ delivers all four follow-up workstreams the audit recommended.
 ### Schema (also new)
 - `sql/013_cre_listing_om_facts.sql`: `cre_listing_om_facts` (+ archive mirror)
   with parse provenance; unique `(listing_id, fact_group, fact_key,
-  source_doc_url) NULLS NOT DISTINCT`, RLS on, FK ON DELETE CASCADE.
+  source_doc_url, parser_version) NULLS NOT DISTINCT`, RLS on, FK ON DELETE
+  CASCADE. The parser version remains part of the canonical identity so parser
+  releases coexist as separate auditable captures.
 - `sql/005_cre_views.sql` widened: `v_cre_listings_full` gains the om_facts
   LATERAL + institutional/geo columns; sale/lease views gain the new columns.
   No predicate change.

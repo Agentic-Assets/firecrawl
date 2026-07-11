@@ -1627,12 +1627,13 @@ END $$;
 -- refresh: it is a provenance-bearing audit trail, and a normal (non-OM) detail
 -- pass carries no om_facts, so a DELETE would wipe a prior OM parse. Insert-only
 -- with ON CONFLICT DO UPDATE on the (listing_id, fact_group, fact_key,
--- source_doc_url) unique key, so a re-parse of the SAME doc is idempotent
--- (refreshes value/confidence/parsed_at) and a new doc adds a new row. Rides the
--- same _child_refresh set, so detailError rows never write (invariant). The OM
--- tier sets the matching cre_listings scalar via the institutional UPDATE /
--- COALESCE-keep path; this table is the audit home. parser_version/source_doc_url
--- are NOT NULL in the table, and om_facts_rows() drops any row missing them.
+-- source_doc_url, parser_version) unique key, so a re-parse of the SAME parser
+-- release and doc is idempotent (refreshes value/confidence/parsed_at), while a
+-- new parser release or doc adds an auditable row. Rides the same _child_refresh
+-- set, so detailError rows never write (invariant). The OM tier sets the matching
+-- cre_listings scalar via the institutional UPDATE / COALESCE-keep path; this
+-- table is the audit home. parser_version/source_doc_url are NOT NULL in the
+-- table, and om_facts_rows() drops any row missing them.
 DO $$ BEGIN
   IF to_regclass('credeals.cre_listing_om_facts') IS NOT NULL THEN
     INSERT INTO credeals.cre_listing_om_facts (
@@ -1650,7 +1651,7 @@ DO $$ BEGIN
       AND x->>'factKey' IS NOT NULL
       AND x->>'sourceDocUrl' IS NOT NULL
       AND x->>'parserVersion' IS NOT NULL
-    ON CONFLICT (listing_id, fact_group, fact_key, source_doc_url) DO UPDATE SET
+    ON CONFLICT (listing_id, fact_group, fact_key, source_doc_url, parser_version) DO UPDATE SET
         fact_value_text = EXCLUDED.fact_value_text,
         fact_value_num  = EXCLUDED.fact_value_num,
         unit_count      = EXCLUDED.unit_count,
