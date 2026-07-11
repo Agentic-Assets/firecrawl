@@ -1,8 +1,8 @@
 # CRE consolidation execution-status audit (2026-07-11)
 
 **Plan:** `OPTIMAL_EXECUTION_PLAN_2026-07-11.md`
-**Firecrawl branch:** `fix/cre-consolidation-safety`, reviewed from `f0e4d2cf3`
-plus the review follow-up recorded below.
+**Firecrawl branch:** `fix/cre-consolidation-safety` at `8510e9207` plus this
+cross-repository evidence refresh.
 **Scope:** Read-only audit plus locally verified, pushed preparation branches.
 **Status:** The implementation-preparation phase is complete. The production
 execution phase is not authorized or proven.
@@ -45,19 +45,25 @@ execution phase is not authorized or proven.
 
 ### Cross-repository preparation
 
-- GetCREdata unattended hardening is pushed at `a2d55df`; current verification
-  collected 62 tests, with 58 passed and 4 environment-gated skips.
+- GetCREdata unattended hardening is pushed at `c133d7a`; its release gate now
+  stops unattended execution before rankings, file writers, or Supabase export
+  on any critical validation failure. Current verification collected 63 tests,
+  with 59 passed and 4 environment-gated skips.
 - GetCREdata parser-version view preparation is pushed at `2ac4dd2`; current
   verification collected 55 tests, with 51 passed and 4 environment-gated
   skips.
 - aa-hub's disabled GetCREdata scheduler preparation is pushed at `c638d8a`.
   Its local renderer dry-run and activation-document consistency checks pass;
   it remains disabled and unallowlisted.
-- The Context Engineering ownership contract is version 2 at `a08d80f`.
-  `ruby scripts/check_cre_data_object_ownership.rb` verifies that the observed
-  property-type drift and adoption gates remain explicit.
-- EQUIRE's proposed listing-market integration is pushed at `56b03de19`, with
-  focused migration-contract tests and typecheck passing. It remains unapplied.
+- The Context Engineering ownership contract is version 2 at `3c5d63a`.
+  `ruby scripts/check_cre_data_object_ownership.rb` verifies all 16
+  source-controlled GetCREdata market objects while keeping the observed
+  property-type drift and adoption gates explicit.
+- EQUIRE's proposed listing-market integration is pushed at `583b1911a`. Its
+  migration now sets transaction-local lock and statement timeouts before DDL,
+  and its runbook requires a forward-only compensating migration for ledger-safe
+  rollback. Seven focused contract tests and typecheck pass. It remains
+  unapplied.
 
 ## Current live-environment evidence
 
