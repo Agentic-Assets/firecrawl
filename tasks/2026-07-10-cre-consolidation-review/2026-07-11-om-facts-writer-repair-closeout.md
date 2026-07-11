@@ -3,7 +3,6 @@
 **Branch:** `fix/cre-consolidation-safety`  
 **Base:** `origin/main` at `c74ece496`  
 **Implementation commit:** `477331e70` (`fix: align OM facts upsert contract`)  
-**Documentation commit:** `111ff37c2` (`docs: record OM facts writer repair`)
 **State:** pushed to `origin/fix/cre-consolidation-safety`. No PR, production
 DDL, launchd change, collector run, or production database write was performed.
 
