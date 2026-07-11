@@ -1,9 +1,16 @@
 # CRE Collector Start Here
 
-> **ACTIVE production path.** All scheduled listing collection and ingest runs here
-> (`collect.ts`, `sources/*.ts`, `cre_ingest.py`, `cre_daily_update.sh`). The legacy
-> Python tree `../cre_scrapers/brokers/` is **stale for production** (manual probes
-> and README/archive notes only). Do not edit `scraper.py` there expecting board changes.
+> **ACTIVE production path.** When scheduled collection and ingest are enabled,
+> they run here (`collect.ts`, `sources/*.ts`, `cre_ingest.py`,
+> `cre_daily_update.sh`). The legacy Python tree `../cre_scrapers/brokers/` is
+> **stale for production** (manual probes and README/archive notes only). Do not
+> edit `scraper.py` there expecting board changes.
+
+> **Current operational state, audited 2026-07-11:** This is the supported
+> collector implementation, but the Mac mini has no installed CRE launchd jobs,
+> markers, or collector artifacts. Do not treat the 2026-07-05 launchd and
+> run-health entries below as current. Before any recovery, scheduler load,
+> database write, or canary, use the [operator runbook](https://github.com/Agentic-Assets/firecrawl/blob/fix/cre-consolidation-safety/tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md).
 
 ## Agent rule: verify counts before you quote or edit them
 

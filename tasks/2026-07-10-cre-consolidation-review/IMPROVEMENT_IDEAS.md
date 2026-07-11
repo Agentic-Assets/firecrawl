@@ -1,5 +1,11 @@
 # CRE Data Platform: Improvement Ideas (2026-07-10)
 
+> **Historical idea inventory.** Retain this as source material, not current
+> operating instruction. GitHub Actions scheduling is not an option; aa-hub
+> activation, object-level schema ownership, and the gated
+> [operator runbook](https://github.com/Agentic-Assets/firecrawl/blob/fix/cre-consolidation-safety/tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md)
+> supersede conflicting ideas.
+
 All ideas from the 3-lens workflow pass (reliability/ops on Sonnet, data-quality/coverage on Sonnet, strategic/architecture on Opus), deduplicated and re-ranked by Fable. Every idea is grounded in cited code or docs; items marked (docs-claim) depend on facts not yet verified against the live system. Impact/effort tags: H/M/L.
 
 ## Priority shortlist (do these first)

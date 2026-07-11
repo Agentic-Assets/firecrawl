@@ -19,11 +19,11 @@ python3 -m pytest tests/test_enum_key_invariant.py -q
 python3 -m pytest tests/test_norm_status_canonical_and_guards.py -q   # portable CI signal (no out/)
 ```
 
-Requires `pytest` on the host (not pinned in `package.json`). Full suite:
-**1402** pytest pass as of 2026-07-05 (`python3 -m pytest tests/ -q`); the count
-includes parametrized and data-driven cases (the shell-syntax guard is
-parametrized over every `*.sh` in the collector, so adding a script raises the
-count), so re-run to confirm rather than counting `def test_`.
+Requires `pytest` on the host (not pinned in `package.json`). The historical
+2026-07-05 count was **1402** pytest cases. The count includes parametrized and
+data-driven cases (the shell-syntax guard is parametrized over every `*.sh` in
+the collector, so adding a script raises the count), so always re-run rather
+than quoting a frozen number or counting `def test_`.
 
 **Coverage push (2026-06-15):** a comprehensive unit-test pass lifted production
 coverage across the collector (measure with `pytest --cov=. --cov-report=term-missing

@@ -1,5 +1,10 @@
 # CRE Data Platform: Optimal Execution Plan (2026-07-11)
 
+> **Superseded planning snapshot.** Use it for rationale, not live state. The
+> later Mac mini audit found no active CRE scheduler or healthy local runtime;
+> the [operator runbook](https://github.com/Agentic-Assets/firecrawl/blob/fix/cre-consolidation-safety/tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md)
+> defines the current gated sequence.
+
 **Status:** Planning-only synthesis. No production DDL, database write, launchd
 change, aa-hub activation, repository creation, deletion, PR, or merge is
 authorized by this document.

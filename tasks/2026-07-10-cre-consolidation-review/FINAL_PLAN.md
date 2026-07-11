@@ -1,5 +1,10 @@
 # CRE Data Platform: Final Plan (2026-07-10)
 
+> **Historical planning artifact.** This review informed the later safety work,
+> but its scheduler alternatives and one-migration-home proposal are superseded.
+> Current policy is aa-hub only for GetCREdata scheduling, object-level schema
+> ownership, and the gated [operator runbook](https://github.com/Agentic-Assets/firecrawl/blob/fix/cre-consolidation-safety/tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md).
+
 **Author:** Fable 5 synthesis over a 13-agent review (5 Opus/Sonnet surveys, 33-claim Opus fact-check, Opus consolidation analysis, 3 idea lenses).
 **Companion files:** `report-1-firecrawl-cre-listing-system.md`, `report-2-getcredata-market-pipeline.md`, `report-3-consolidation-analysis.md`, `IMPROVEMENT_IDEAS.md`.
 

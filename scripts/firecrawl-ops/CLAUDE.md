@@ -6,6 +6,12 @@ the longer human guide and runbook.
 Parent context: repo `AGENTS.md`, root `CLAUDE.md`, and
 `.agents/skills/firecrawl-ops/SKILL.md`.
 
+> **Current runtime source, 2026-07-11:** The Mac mini audit found no active
+> CRE launchd labels, plists, cron entries, markers, or collector artifacts.
+> Treat dated run-health and schedule claims below as historical evidence, not
+> current state. Before a runtime recovery, scheduler load, database write, or
+> canary, follow the [operator runbook](https://github.com/Agentic-Assets/firecrawl/blob/fix/cre-consolidation-safety/tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md).
+
 ## Scope
 
 Two systems live here. **Agents: default to `cre_collector/` for any listing work.**
@@ -137,7 +143,8 @@ Supabase objects live under `credeals`, not `public`:
 - `cre_listing_contacts_archive` (contacts snapshot at retirement, 009; APPLIED)
 - `cre_listing_documents_archive` (documents snapshot at retirement, 009; APPLIED)
 - `cre_listing_media`, `cre_listing_links` (detail media/link capture, 011; + `*_archive`; applied to prod, ingest writes gated)
-- `cre_listing_om_facts` (OM/PDF-parsed underwriting facts, 013; + `*_archive`; applied to prod, OM-parse gated so currently empty)
+- `cre_listing_om_facts` (shared OM/PDF underwriting facts, 013; production
+  writer is GetCREdata; local `om_parse.py --apply` is fail-closed)
 - `cre_zip_cbsa_crosswalk` (offline ZIP->county+CBSA reference, 014; loaded 33,791 rows)
 - `v_cre_enrichment_queue_pending`, `v_cre_enrichment_dead` (enrichment health, 010)
 - `v_cre_listings_full`
@@ -173,15 +180,11 @@ schedules or last-run verdicts.
   (`cre_backfill_raw_data`, `om_classify_existing`, `cre_geo_backfill`) ran
   additively; `status` was never touched.
 
-**Launchd (live ops on this Mac, 2026-07-05):** cutover APPLIED (partial:
-`daily` not unloaded, kept as rollback). All four tiers loaded: `monitor`
-(2x/day 06:10/18:10), `enrich` (every 4h), `daily` (06:30, additive),
-`weekly` (Sun 03:00, additive by default; `CRE_WEEKLY_MARK_MISSING=1`
-escalation still gated). Repo path:
-`/Users/caymanseagraves/Github/agentic-assets/firecrawl`. Production env:
-`CRE_ENV_FILE=~/.config/cre/equire.env`. **Do not quote run-health from memory;**
-read `START_HERE.md` or `cre_status.sh` output (tier health changes; as of
-2026-07-05 banner, monitor OK, enrich/daily/weekly last runs failed).
+**Current runtime, audited 2026-07-11:** no CRE scheduler is installed or
+running on the Mac mini. The 2026-07-05 launchd cutover text is historical and
+does not authorize a reload. Use the operator runbook for ordered recovery;
+aa-hub is the only approved GetCREdata scheduling lane, and remains disabled
+until its explicit readiness gates pass.
 
 **Still gated for explicit go-ahead:** OM-parse (`om_parse.py`), live status
 activation, consumer board-gate deploy + widened `005`/`006` views, media

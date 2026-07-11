@@ -1,8 +1,14 @@
 # CLAUDE.md - cre_collector/
 
-> **ACTIVE production path.** This is the only directory that runs on schedule and
-> feeds the EQUIRE listing board. Do **not** implement daily collection in
-> `../cre_scrapers/` (legacy Python probes/archives only).
+> **ACTIVE production path.** This is the only supported collector and ingest
+> implementation. It is not currently scheduled on the Mac mini. Do **not**
+> implement daily collection in `../cre_scrapers/` (legacy Python
+> probes/archives only).
+
+> **Current runtime source, 2026-07-11:** The Mac mini audit found no CRE
+> launchd jobs, markers, or collector artifacts. Treat dated counts and
+> scheduler claims below as historical. The [operator runbook](https://github.com/Agentic-Assets/firecrawl/blob/fix/cre-consolidation-safety/tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md)
+> is the current ordered recovery and canary procedure.
 
 Multi-source CRE listing collector + Supabase ingestor. This is the
 **production path** for building and refreshing the `credeals` listing
@@ -64,7 +70,7 @@ inventory numbers. Update the dated banner when you refresh docs.
 | `cre_geo_backfill.py` | Additive/idempotent geo derivation (county/cbsa/geo_source) for existing rows via `cre_geo`. `--dry-run` default, `--apply` gated; APPLIED 2026-06-15 (85,618 of 87,328 rows) |
 | `om_classify_existing.py` | One-time additive re-classification of `doc_type='brochure'` rows into flyer/floor_plan/om/financials. `--dry-run` default; APPLIED 2026-06-15 (14,087 of 70,414 upgraded). Upgrade-only, never downgrades |
 | `om_url_resolver.py` | Resolves viewer-wrapped / non-`.pdf` brochure URLs (Buildout iframe, DocumentCloud, etc.) to the real `.pdf` document URL for the OM-parse tier |
-| `om_parse.py` | OM/PDF underwriting-fact parse tier (writes `cre_listing_om_facts`). Conservative, provenance-first. `--dry-run` default, `--apply` GATED (table stays empty until then); anti-bot limits local OM-PDF fetch |
+| `om_parse.py` | Retired fallback OM/PDF parser. `--apply` fails closed; GetCREdata is the sole production OM writer. |
 | `run_colliers_main_full.sh` | Resumable colliers-main batch driver (~15,896 URLs) |
 | `launchd/` | macOS tier schedules (portable `*.plist.template` + `install_launchd.sh`) - see `launchd/CLAUDE.md` |
 | `tests/` | pytest contracts - see `tests/CLAUDE.md` |
@@ -74,7 +80,7 @@ inventory numbers. Update the dated banner when you refresh docs.
 | `HANDOFF_COLLIERS_MAIN_2026-06-13.md` | colliers-main full detail run handoff |
 | `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` | Monitor hardening, module split, first `--apply` seed |
 | `SECURITY_REVIEW_2026-06-14.md` | Branch security review: verdict, the `standard_conforming_strings` pin fix, deferred base-table REVOKE |
-| `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` | Tier-B enrichment-queue worker + cadence restructure (monitor 2x/day, enrich every 4h, weekly additive full backstop, daily retained for rollback). IMPLEMENTED in code 2026-06-15; live launchd cutover APPLIED on this Mac 2026-07-05 (see `START_HERE.md` for current run-health) |
+| `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` | Tier-B enrichment-queue worker + cadence restructure (monitor 2x/day, enrich every 4h, weekly additive full backstop, daily retained for rollback). Implemented in code; live scheduler recovery remains gated. |
 | `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` | Capture all videos/links/docs/images + full markdown + stranded structured fields. Generic harvester (`lib/harvest.ts`), richer scrape formats, NEW `cre_listing_media`/`cre_listing_links` tables (`sql/011`), Buildout-iframe Tier-B detail for lee/svn, raw_data backfill. BUILT + verified in code; live apply GATED |
 | `PHASE2_DATA_LIFT_CONTRACT_2026-06-15.md` | Phase-2 data-lift implementation contract: the spec the `011`-`014` DDL, the backfills, and the `cre_parse`/`cre_geo`/`om_*` modules implement |
 | `HANDOFF_DATA_LIFT_2026-06-15.md` | Phase-2 data-lift handoff: what shipped (DDL, three additive backfills, OM-parse tier), the prod apply log, and test counts |
@@ -244,10 +250,9 @@ coverage figures: `START_HERE.md`.
 - Per-source monitor behavior (excluded sources, supersets, detail skips):
   `sources/CLAUDE.md` + `cre-monitor-subsystem.md`.
 - Scheduled monitor tier uses default `--page-cap=60` unless overridden; see
-  `launchd/CLAUDE.md`. **Current launchd state (2026-07-05):** all four tiers
-  loaded (`monitor` 2x/day 06:10/18:10, `enrich` every 4h, `daily` 06:30,
-  `weekly` Sun 03:00). `monitor` last run OK; `enrich`, `daily`, and `weekly`
-  last runs failed (rc:1). Run `bash cre_status.sh` for live health. `cre_gate.py`
+  `launchd/CLAUDE.md`. **Current audit (2026-07-11):** no CRE scheduler is
+  installed on the Mac mini. Run `bash cre_status.sh` only as a read-only
+  preflight, then follow the operator runbook before a recovery attempt. `cre_gate.py`
   is wired into `cre_daily_update.sh` as observe-only step [3/4]
   (`--in RUN --apply --strict --out gate.json`); if the strict gate detects any
   partial/regressed source, the script auto-downgrades to `--no-mark-missing`.
@@ -262,9 +267,8 @@ trap; keeps 14 `run_*.json`, 29 `run_*.log`, 14 `gate_*.json` under
 structurally capped (colliers-main is now complete). See `START_HERE.md` Known
 Limits and Operational Recovery.
 
-Tiered schedules: `launchd/CLAUDE.md`. All four tiers are loaded on this Mac
-(2026-07-05); see Monitor mode section and `START_HERE.md` for current
-run-health. Step [3/4] runs `cre_gate.py` observe-only.
+Tiered schedules: `launchd/CLAUDE.md`. They are implemented in code but not
+currently loaded on the Mac mini. Step [3/4] runs `cre_gate.py` observe-only.
 
 ## Adding a source
 

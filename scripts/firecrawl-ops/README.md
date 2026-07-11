@@ -7,6 +7,12 @@ upstream Firecrawl package. Treat it as Agentic Assets local infrastructure.
 Use `CLAUDE.md` for compact agent routing. Use this README when you need a
 more detailed operator guide.
 
+> **Current runtime source, 2026-07-11:** The Mac mini has no active CRE
+> launchd job or healthy local Firecrawl runtime. Historical schedule and
+> count claims in this guide are not a deployment record. Use the
+> [operator runbook](https://github.com/Agentic-Assets/firecrawl/blob/fix/cre-consolidation-safety/tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md)
+> before any runtime, scheduler, database-write, or canary action.
+
 ## What Lives Here
 
 There are two main workstreams:

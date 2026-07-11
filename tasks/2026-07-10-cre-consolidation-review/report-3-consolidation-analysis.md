@@ -7,6 +7,11 @@ report-id: report-3-consolidation-analysis
 
 # CRE Systems Consolidation Decision
 
+> **Historical review evidence.** The architectural separation conclusion remains
+> useful, but current ownership is object-level rather than one universal
+> migration home. Use the governed ownership contract and current operator
+> runbook for decisions.
+
 ## Executive summary
 
 **Direct answer: no, the two CRE systems do not need to live in one repo, and a full merge is the wrong move.**
