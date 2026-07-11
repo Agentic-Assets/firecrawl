@@ -61,3 +61,19 @@ actual Mac mini checkout runs this commit may an explicitly approved bounded
 five-row enrich canary resume. The canary must retain the normal additive-only
 behavior and verify zero released claims, zero constraint errors, no status or
 soft-delete writes, and a fresh `ok:true` marker.
+
+## Live Mac mini preflight (2026-07-11)
+
+Read-only access through the configured `mini` SSH alias found a different,
+clean checkout at `/Users/cayman-mac-mini/Documents/GitHub/firecrawl` on
+`cursor/gha-detach-fork-ci-53bb` (`3b2f803ea`). It does not contain this branch
+and still emits the old four-column OM-facts conflict target. No
+`ai.agentic.cre-*` launchd label, CRE run marker, collector artifact, or
+collector log is present, so no job is currently available to pause or canary.
+
+The local Firecrawl API is unavailable because the configured Colima Docker
+daemon is stopped. The checkout is under `~/Documents`, which the collector
+reports as a launchd TCC risk, and the read-only status command cannot discover
+a POSTGRES_URL environment file. Restore the runtime and deploy the merged
+branch to a verified non-TCC checkout before treating a five-row canary as
+available.
