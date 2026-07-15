@@ -8,9 +8,23 @@
 -- REVIEW BOUNDARY: this file is staged for review only. Do not apply it to a
 -- production database without the schema-owner approval recorded in
 -- CREDEALS_OWNERSHIP.md and a maintenance-window decision for index rebuilds.
+-- It refuses to run unless psql receives
+-- -v CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT=1.
 -- =============================================================================
 
 \set ON_ERROR_STOP on
+
+\if :{?CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT}
+\else
+  \set CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT 0
+\endif
+
+\if :CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT
+  \echo 'Approved legacy OM-facts key alignment requested'
+\else
+  \echo 'REFUSED: migration 015 requires -v CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT=1'
+  \quit 3
+\endif
 
 SELECT CASE WHEN EXISTS (
     SELECT 1

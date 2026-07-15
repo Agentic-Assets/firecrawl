@@ -10,21 +10,18 @@
 -- ADDITIVE ONLY and idempotent (CREATE TABLE / INDEX IF NOT EXISTS). Nothing
 -- here alters, drops, or renames an existing TABLE, COLUMN, or DATA.
 --
--- Why a child table and not jsonb on cre_listings: OM scalar underwriting fields
--- (noi, cap_rate, occupancy_rate, units, year_built, gross_revenue, size_sf,
--- lease_rate_*, sale_price_*) REUSE the EXISTING cre_listings columns through the
--- SAME COALESCE-keep upsert path (an OM parse never clobbers a fuller prior
--- capture, and a board consumer already reads them). cre_listing_om_facts is the
--- AUDIT TRAIL for those scalars (a provenance row per scalar: which doc, which
--- parse, confidence) AND the home for unit_mix / rent_roll line items, which are
--- arrays-of-objects with no fixed arity (a child table is the correct shape, not
--- jsonb on the parent). A re-parse is idempotent on the unique key.
+-- Why a child table and not jsonb on cre_listings: the shared OM writer records
+-- a provenance row per extracted scalar (document, parser, confidence) and uses
+-- this table for unit_mix / rent_roll line items, which have no fixed arity. The
+-- collector does not promote or write OM values; GetCREdata is the sole
+-- production OM writer under the ownership contract. A re-parse is idempotent
+-- on the unique key.
 --
 -- Registered in 000_run_all.sql AFTER 012 and BEFORE 014/006/005 (so the table
 -- exists before 005, the view migration, exposes it via v_cre_listings_full).
--- The cre_ingest.py INSERTs into this table and its archive are to_regclass-
--- guarded exactly like the 009/011 media/links/history archives, so a pre-apply
--- daily / enrich run is a no-op for om_facts.
+-- The collector keeps compatibility-only, to_regclass-guarded SQL for archive
+-- handling, but it stages an empty om_facts array by policy. A pre-apply daily /
+-- enrich run is therefore a no-op for OM facts.
 --
 -- Requires: 001_cre_brokerages.sql, 002_cre_listings.sql (cre_listings).
 -- 003..012 run before this in 000_run_all.sql.
@@ -37,10 +34,8 @@
 -- ---------------------------------------------------------------------------
 -- cre_listing_om_facts -- OM/PDF-parsed facts with parse provenance. One row per
 -- (listing, fact_group, fact_key, source_doc_url, parser_version). fact_group
--- 'scalar' rows
--- mirror a value also COALESCE-written onto cre_listings (the column is the
--- consumer read; this row is the audit trail). 'unit_mix' / 'rent_roll' rows are
--- the non-scalar line items that have no cre_listings column. Every row carries
+-- 'scalar' rows are writer-defined facts. 'unit_mix' / 'rent_roll' rows are
+-- non-scalar line items that have no cre_listings column. Every row carries
 -- provenance (source_doc_url, parsed_at, parser_version, confidence) so every
 -- OM-derived datum is traceable to a parsed page.
 -- ---------------------------------------------------------------------------
@@ -75,8 +70,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS cre_listing_om_facts_uq
 ALTER TABLE credeals.cre_listing_om_facts ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).
 
 COMMENT ON TABLE credeals.cre_listing_om_facts IS
-    'OM/PDF-parsed facts (scalar underwriting + unit_mix + rent_roll) with parse provenance. The listing collector owns schema migration; GetCREdata documents pipeline is an observed external writer under the proposed CREDEALS_OWNERSHIP.md contract, and formal cross-repository approval remains required. Scalars also COALESCE-write the matching cre_listings column; this table is the audit trail and the home for non-scalar line items. Service-role only (RLS on, no public policy).';
-COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_group     IS 'Row class: ''scalar'' (mirrors a cre_listings column write), ''unit_mix'' (one row per unit type), or ''rent_roll'' (one row per tenant line).';
+    'OM/PDF-parsed facts (scalar underwriting + unit_mix + rent_roll) with parse provenance. The listing collector owns schema migration; GetCREdata documents pipeline is the sole production writer under the proposed CREDEALS_OWNERSHIP.md contract, and formal cross-repository approval remains required. The collector does not write or promote OM values. Service-role only (RLS on, no public policy).';
+COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_group     IS 'Row class: ''scalar'' (a writer-defined scalar fact), ''unit_mix'' (one row per unit type), or ''rent_roll'' (one row per tenant line).';
 COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_key       IS 'Stable snake_case fact name, e.g. ''noi'',''cap_rate'',''unit_type'',''tenant''. For scalar rows this matches the cre_listings column name.';
 COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_value_text IS 'Free-text value of the fact when not numeric (e.g. tenant name, unit_type label).';
 COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_value_num IS 'Numeric value of the fact when numeric (e.g. parsed noi, cap_rate, monthly_rent).';
@@ -84,7 +79,7 @@ COMMENT ON COLUMN credeals.cre_listing_om_facts.unit_count     IS 'For a unit_mi
 COMMENT ON COLUMN credeals.cre_listing_om_facts.source_doc_url IS 'URL of the parsed document this fact was extracted from. Required: every OM-derived row is traceable to a doc.';
 COMMENT ON COLUMN credeals.cre_listing_om_facts.parsed_at      IS 'When the parse that produced this row ran.';
 COMMENT ON COLUMN credeals.cre_listing_om_facts.parser_version IS 'Parser version tag (e.g. ''om-parse/1'') so a re-parse with a newer parser is attributable.';
-COMMENT ON COLUMN credeals.cre_listing_om_facts.confidence     IS 'Heuristic parse confidence in [0,1]. A low-confidence scalar writes ONLY this row, not the cre_listings column (floor enforced in om_parse.py).';
+COMMENT ON COLUMN credeals.cre_listing_om_facts.confidence     IS 'Heuristic parse confidence in [0,1], interpreted by the approved external writer.';
 
 -- ---------------------------------------------------------------------------
 -- cre_listing_om_facts_archive -- bounded, durable history slice. The

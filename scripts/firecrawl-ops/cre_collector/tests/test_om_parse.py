@@ -7,12 +7,12 @@ SAVED /v2/parse-shaped fixtures (tests/fixtures/parse/cbre_om.json,
 jll_om.json) through the PURE extractor; never hit a live DB / Firecrawl. The
 network boundary (parse_pdf_to_text) is monkeypatched where run() is exercised.
 
-This is the highest-stakes write path (financial scalars can reach board-facing
-columns), so the tests pin: NOI / cap_rate / occupancy / units / year_built
-extraction; unit_mix / rent_roll row shaping; that EVERY emitted scalar carries
-provenance (source_doc_url, parser_version, confidence in [0,1]); the confidence
-floor (< 0.6 writes only cre_listing_om_facts, never the cre_listings column);
-and that a non-underwriting PDF yields ZERO scalars (no fabrication).
+This is retained diagnostic extraction code, so the tests pin: NOI / cap_rate /
+occupancy / units / year_built extraction; unit_mix / rent_roll row shaping;
+that EVERY emitted scalar carries provenance (source_doc_url, parser_version,
+confidence in [0,1]); and that a non-underwriting PDF yields ZERO scalars (no
+fabrication). Separate regression cases prove its artifacts cannot reach the
+Firecrawl ingestion path.
 """
 
 import json
@@ -27,7 +27,6 @@ from om_parse import (
     build_candidate_sql,
     build_docs_sql,
     build_enriched_listing,
-    build_ingest_argv,
     extract_om_facts,
     listing_scalars_from_facts,
 )
@@ -246,14 +245,24 @@ def test_legacy_omfacts_serializer_preserves_provenance_for_regression_only():
         assert s["factGroup"] in ("scalar", "unit_mix", "rent_roll")
 
 
-# --- ingest argv is the safety guard (additive only) -----------------------
+# --- retired artifact boundary ------------------------------------------------
 
 
-def test_om_parse_ingest_argv_is_exactly_in_path():
-    argv = build_ingest_argv("/tmp/om.json")
-    assert argv == ["--in", "/tmp/om.json"]
-    for banned in ("--activate-status", "--mark-missing", "--no-mark-missing"):
-        assert banned not in argv
+def test_retired_enriched_listing_is_rejected_before_staging_scalars():
+    import cre_ingest
+
+    md, url = _load_md("cbre_om.json")
+    listing = build_enriched_listing(
+        {
+            "sourceKey": "cbre",
+            "externalId": "maple-court-1",
+            "url": "https://cbre.example/p/maple-court",
+        },
+        extract_om_facts(md, url),
+    )
+
+    assert listing["noi"] == 1485000.0  # The retired artifact still has diagnostics.
+    assert cre_ingest.to_row(listing, {}, "2026-07-15T00:00:00+00:00") is None
 
 
 # --- candidate selection SQL shape + safety --------------------------------
@@ -372,12 +381,14 @@ def test_run_dry_run_writes_artifact_does_not_ingest(monkeypatch, tmp_path, caps
     assert DB_URL_SENTINEL not in captured.out
     assert DB_URL_SENTINEL not in captured.err
     assert "credentials:" in captured.err
-    # the artifact was written.
+    # The artifact is explicitly quarantined from cre_ingest.
     written = list(tmp_path.glob("om_*.json"))
     assert len(written) == 1
     artifact = json.loads(written[0].read_text())
+    assert artifact["artifactKind"] == om_parse.RETIRED_OM_PARSE_ARTIFACT_KIND
     assert artifact["listings"][0]["noi"] == 1485000.0
     assert artifact["listings"][0]["omFacts"]
+    assert "cannot be ingested" in captured.err
 
 
 def test_run_apply_fails_before_any_database_or_ingest_work(monkeypatch, capsys):

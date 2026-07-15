@@ -382,6 +382,13 @@ def extra_facts_or_none(v):
 
 _OM_FACT_GROUPS = {"scalar", "unit_mix", "rent_roll"}
 
+# The retired Firecrawl OM parser writes review-only artifacts.  They must never
+# be treated as collector input: GetCREdata is the sole production OM writer.
+# Keep this marker at the envelope level so the CLI can reject the whole file,
+# and retain the row-shape guard below for pre-marker artifacts that may already
+# exist on an operator machine.
+RETIRED_OM_PARSE_ARTIFACT_KIND = "retired_om_parse_dry_run"
+
 
 def om_facts_rows(v):
     """Legacy OM-facts serializer retained only for regression contracts.
@@ -421,6 +428,23 @@ def om_facts_rows(v):
             }
         )
     return out
+
+
+def is_retired_om_parse_listing(listing):
+    """Return true for the legacy OM-parser artifact row shape.
+
+    Normal collector listings carry a native ``id``.  The retired parser emits
+    ``externalId`` and an ``omFacts`` payload instead.  Rejecting that exact
+    shape prevents both its OM-promoted parent scalars and the URL-hash fallback
+    identity from reaching the staging table.  Enrichment queue items may carry
+    ``externalId`` before TypeScript turns them into normal listings, but they
+    never carry ``omFacts`` and therefore remain unaffected.
+    """
+    return (
+        isinstance(listing, dict)
+        and "externalId" in listing
+        and "omFacts" in listing
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -736,6 +760,8 @@ def group_source_lastmod(flat_listings):
 
 def to_row(listing, brokers_by_idx, scraped_at):
     """Map one collector listing to a staging row dict, or None to skip."""
+    if is_retired_om_parse_listing(listing):
+        return None
     source_key = listing.get("sourceKey")
     mapping = SOURCE_TO_BROKERAGE.get(source_key)
     if not mapping:
@@ -2039,6 +2065,11 @@ def main():
     for path in args.inputs:
         with open(path) as f:
             data = json.load(f)
+        if data.get("artifactKind") == RETIRED_OM_PARSE_ARTIFACT_KIND:
+            sys.exit(
+                "refusing retired om_parse dry-run artifact: GetCREdata is the "
+                "sole production OM extraction writer"
+            )
         run_meta = data.get("runMeta") or {}
         started_at = started_at or run_meta.get("startedAt")
         scraped_at = run_meta.get("finishedAt") or datetime.now(timezone.utc).isoformat()

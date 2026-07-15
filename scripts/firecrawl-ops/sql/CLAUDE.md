@@ -5,6 +5,9 @@
 **Idempotent `credeals` DDL only on Supabase `fhqycqubkkrdgzswccwd`.**
 Apply via `000_run_all.sql` in dependency order:
 `001`→`002`→`003`→`004`→`007`→`008`→`009`→`010`→`011`→`012`→`013`→`014`→`006`→`005`.
+Migration `015` is excluded from the generic runner. It is a legacy-only
+index rebuild and requires both schema-owner approval and the explicit psql
+variable `CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT=1`.
 **`001_cre_brokerages.sql` seed slugs must match
 `../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE`.** Never commit or
 print `DATABASE_URL`.
@@ -36,6 +39,11 @@ Migration status as of the live Supabase object check on 2026-06-16:
 
 ```bash
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 000_run_all.sql
+
+# Legacy OM-facts index alignment only after recorded approval.
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -v CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT=1 \
+  -f 015_align_om_facts_conflict_key.sql
 ```
 
 Set `DATABASE_URL` from `~/.pgpass` or a local secrets source. Alternatives: Supabase SQL editor (paste in order) or MCP `apply_migration` per file (`project_id = fhqycqubkkrdgzswccwd`).
