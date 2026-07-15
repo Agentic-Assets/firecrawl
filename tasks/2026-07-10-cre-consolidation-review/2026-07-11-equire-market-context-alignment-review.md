@@ -1,6 +1,6 @@
 # CRE listing pipeline alignment with EQUIRE market context
 
-**Review date:** 2026-07-11
+**Baseline review date:** 2026-07-11
 
 **Bottom line:** The systems are structurally aligned in most important ways,
 but they are not yet aligned enough to enable an EQUIRE application or MCP
@@ -12,14 +12,60 @@ an unresolved property-type crosswalk, an unapplied GetCREdata parser-version
 fix, unbounded cache staleness after failures, a broken rollback order, and no
 executable cross-repository PostgreSQL test.
 
+## Current-state refresh (2026-07-15)
+
+This section takes precedence over the historical branch snapshot below. The
+contract direction remains sound, but the repository state changed materially
+after 2026-07-11.
+
+| Surface | Current remote evidence | Current conclusion |
+| --- | --- | --- |
+| Firecrawl | `fix/cre-consolidation-safety` is `5208335a`; `origin/main` is `c74ece4` | The eight Firecrawl safety findings remain open. No runtime code changed after the original review commit. |
+| EQUIRE | `feat/cre-listing-market-context` was merged as [PR #418](https://github.com/Agentic-Assets/CRE_EQUIRE/pull/418); EQUIRE `main` is `a65389e` | The database read surface and performance caches are repository-recorded as applied. The new CBSA RPCs are still not called by an application or MCP runtime. The existing city/state market strip is a separate, fail-soft consumer and is not adoption of the new RPCs. |
+| GetCREdata | `main` is `aa39939` and contains both the parser-version and unattended-hardening branches | The corrected parser-selection code is merged, but its revised `cre_market_index` definition is still repository-recorded as unapplied shared-schema DDL. EQUIRE caches therefore cannot yet prove they read the corrected producer definition. |
+| Context Engineering | `docs/cre-data-object-ownership` is `417ae07`, 25 commits behind `main` (`6d760a1`) | The ownership manifest is proposed, unmerged, and not merge-ready. Its EQUIRE state and object inventory require correction before it can become canonical guidance. |
+
+No new production query was run for this refresh. Statements that a migration,
+cache, or cron job is applied remain **repository-recorded production evidence**,
+not a fresh live-database assertion.
+
+### Reconciled cross-repository conclusions
+
+1. **EQUIRE DDL is no longer a future gate.** The EQUIRE migration, cache, and
+   ACL evidence is recorded on `main`. Do not re-run or re-authorize it as if it
+   were pending. Consumer adoption, source quality, and monitoring are still
+   open work.
+2. **The Firecrawl/EQUIRE view-shape conflict remains a live release hazard.**
+   Firecrawl's generic runner applies `012` before recreating `005`, and `005`
+   exposes `l.*` from `cre_listings`. That shape includes CBSA columns. EQUIRE's
+   applied migration deliberately joins the base table because its recorded
+   production `v_cre_listings_full` does not expose CBSA columns. Do not run the
+   Firecrawl generic runner or recreate that view against the shared schema
+   until an explicit compatibility migration and disposable-PostgreSQL proof
+   show that dependent EQUIRE views remain valid.
+3. **GetCREdata's parser fix is merged but not deployed to the shared producer
+   view.** Review the intended DDL, capture before/after rows and pooled
+   metrics, apply only with owner approval, then refresh and revalidate the
+   EQUIRE caches.
+4. **The property-type crosswalk remains the adoption gate.** AGENTIC-1233
+   still needs an owner-approved, versioned mapping before any new consumer
+   treats exact property-type matches as governed equivalence.
+5. **There is no approved unattended scheduler path in these artifacts.**
+   GitHub Actions stays manual-only. aa-hub is historical source and runbooks,
+   not an execution control plane. A future scheduler needs a separate Cayman
+   approval under the current coordinator policy.
+
 ## Reviewed state
+
+The remainder of this section is the July 11 baseline record. Where it differs
+from the July 15 refresh, the refresh is authoritative.
 
 | Repository | Reviewed ref | State used in this review |
 | --- | --- | --- |
-| Firecrawl listing collector | `fix/cre-consolidation-safety` at `a7f4a0b8fa8b818e0c07218c94b341a08d15f7ad` | Clean, matches its remote branch |
-| EQUIRE | `feat/cre-listing-market-context` at `1c1f72cce23c169ded215fe56f070061bca1b7c5` | Clean, matches `origin/feat/cre-listing-market-context`, fully contains current `origin/main` |
-| GetCREdata unattended hardening | `fix/getcredata-unattended-hardening` at `f1e98e24361444aa822c1c55cd64c46d1d9f2d87` | Clean local review clone |
-| GetCREdata market-index parser fix | `origin/fix/cre-market-index-parser-version` at `2ac4dd2` | Pushed, but not merged into `origin/main` and not recorded as applied |
+| Firecrawl listing collector | `fix/cre-consolidation-safety` at `a7f4a0b8fa8b818e0c07218c94b341a08d15f7ad` | Historical baseline. See the current-state refresh for the current branch head. |
+| EQUIRE | `feat/cre-listing-market-context` at `1c1f72cce23c169ded215fe56f070061bca1b7c5` | Historical baseline. The branch was subsequently merged into EQUIRE `main` as PR #418. |
+| GetCREdata unattended hardening | `fix/getcredata-unattended-hardening` at `f1e98e24361444aa822c1c55cd64c46d1d9f2d87` | Historical baseline. The branch is now contained in GetCREdata `main`. |
+| GetCREdata market-index parser fix | `origin/fix/cre-market-index-parser-version` at `2ac4dd2` | Historical baseline. The branch is now contained in GetCREdata `main`; shared-schema apply proof remains separate. |
 
 The EQUIRE branch records that migrations `20260711120000`,
 `20260711160000`, and `20260711170000` were applied to production and that two
@@ -33,7 +79,7 @@ MCP call site currently invokes `get_listing_with_market_context` or
 That separation is useful because the remaining producer and governance gaps
 can be closed before product exposure.
 
-### Concurrent local edits observed after the branch baseline
+### Historical concurrent edits observed after the branch baseline
 
 After the baseline review and first Firecrawl report commit completed, the
 EQUIRE checkout acquired uncommitted changes from another active agent. This
@@ -58,8 +104,9 @@ integration harness. The edited forward queue now says to wire an application
 and MCP consumer because DDL evidence is complete, but it still does not require
 AGENTIC-1229, AGENTIC-1230, and AGENTIC-1233 before consumer reliance.
 
-Treat these edits as promising but non-durable until their owning agent verifies,
-commits, and pushes them on the EQUIRE feature branch.
+This was an accurate July 11 handoff boundary. The EQUIRE feature was later
+merged to `main`; use the July 15 refresh rather than this historical local
+worktree state when deciding the next action.
 
 ## What aligns correctly
 
@@ -137,23 +184,21 @@ CBSA source based on the producer view version. Add a disposable PostgreSQL
 test that applies the current Firecrawl migration sequence first and then all
 three EQUIRE migrations.
 
-### 2. P1: the repositories disagree about whether the EQUIRE DDL is still future work
+### 2. P1 historical finding: the EQUIRE DDL state required reconciliation
 
-The EQUIRE branch records all three migrations as applied through an explicit
-operator exception. Firecrawl's `2026-07-11-execution-status-audit.md` still
-says the EQUIRE migration is unapplied, and its operator runbook still treats
-AGENTIC-1232 as a future DDL request after producer canaries and crosswalk
-approval.
+At the baseline, the EQUIRE branch recorded all three migrations as applied
+through an explicit operator exception while Firecrawl documentation still
+described the migration as future work. EQUIRE has since merged the feature
+into `main` and retains the applied-state evidence there.
 
-**Recommendation:** Reconcile the Firecrawl audit, operator runbook, and
-AGENTIC-1232 with the EQUIRE-recorded ledger state. Preserve AGENTIC-1229,
-AGENTIC-1230, and AGENTIC-1233 as gates for producer recovery, data quality,
-and product reliance. They are no longer retroactive gates for DDL that the
-EQUIRE branch says is already applied.
+**Current recommendation:** Reconcile the Firecrawl audit, operator runbook,
+and AGENTIC-1232 with EQUIRE `main`'s repository-recorded ledger state. Preserve
+AGENTIC-1229, AGENTIC-1230, and AGENTIC-1233 as gates for producer recovery,
+data quality, and product reliance. They are not retroactive gates for DDL
+already recorded as applied.
 
-An uncommitted EQUIRE documentation patch now corrects the EQUIRE side of this
-state description. It still needs verification, commit, and push, followed by
-the Firecrawl and Linear reconciliation above.
+The EQUIRE-side documentation was subsequently merged. Firecrawl and Linear
+reconciliation remain required.
 
 ### 3. P1: the current EQUIRE consumer-forward language can bypass producer gates
 
@@ -173,18 +218,17 @@ complete and no consumer exists, but it now presents consumer wiring as the next
 step without naming these producer and crosswalk gates. Add them before that
 edit is committed.
 
-### 4. P1: GetCREdata's parser-version repair is not in the active producer
+### 4. P1: GetCREdata's parser-version repair is merged but not applied to the shared producer view
 
-The GetCREdata `cre_market_index` definition on its parser-fix branch correctly
-selects one latest `parser_version` per listing before pivoting OM facts. The
-default branch can aggregate facts across parser revisions with independent
-`max()` expressions, allowing cap rate, NOI, occupancy, size, and asking price
-from different parser runs to form one synthetic observation.
+GetCREdata `main` now contains the parser-version repair, which selects one
+latest `parser_version` per listing before pivoting OM facts. The shared
+`cre_market_index` producer view is still repository-recorded as using the
+older definition until separately approved DDL applies the revision.
 
 EQUIRE caches the current producer view. Hourly refresh does not correct a
 producer definition that combines revisions.
 
-**Recommendation:** Review and merge the GetCREdata parser-version branch, then
+**Recommendation:** Review the now-merged GetCREdata implementation, then
 apply the revised producer view only through explicit shared-schema DDL
 approval. Compare counts and pooled metrics before and after. Decide separately
 whether one parser revision may aggregate multiple source documents or must

@@ -1,15 +1,41 @@
 # Eight actionable findings from the CRE consolidation safety review
 
-**Status:** Confirmed review findings, open as of 2026-07-11.
+**Status:** Confirmed review findings, reconfirmed open as of 2026-07-15.
 
 **Reviewed branch:** `fix/cre-consolidation-safety` at
-`a7f4a0b8fa8b818e0c07218c94b341a08d15f7ad`, compared with `origin/main` at
+`5208335a15d8fdae6a569c141b53942d23d38779`, compared with `origin/main` at
 `c74ece4964e9ec2082516ef2ca6b6d856fd5f399`.
 
 This file records the eight findings that survived independent finder and
 skeptic review. It is a repair checklist, not proof that the defects have been
 fixed. Production deployment, scheduler activation, database changes, and
 consumer rollout remain separately gated.
+
+## Current-state refresh (2026-07-15)
+
+The original eight findings remain open on the current branch head. There are
+no runtime-code changes after `a7f4a0b8`; the later commits add these review
+records only. Focused regression evidence confirms the most serious gap:
+`om_parse.build_enriched_listing()` emits an `externalId` plus high-confidence
+scalars, while `cre_ingest.to_row()` reads only `id` and falls back to a URL
+hash. It discards `omFacts` but still stages NOI, cap rate, occupancy, units,
+and year built.
+
+The surrounding cross-repository state has changed since the baseline review:
+
+| Surface | Current evidence | Meaning for this checklist |
+| --- | --- | --- |
+| EQUIRE market context | PR [#418](https://github.com/Agentic-Assets/CRE_EQUIRE/pull/418) merged `feat/cre-listing-market-context` into EQUIRE `main`; repository records say its three DDL migrations and two caches were applied | Do not describe EQUIRE DDL as future work. The remaining gates are producer correctness, crosswalk adoption, cache health, and consumer adoption. |
+| GetCREdata | Parser-version and unattended-hardening branches are now contained in GetCREdata `main` | The producer-code repair is no longer an unmerged-branch task, but applying its revised `cre_market_index` definition to shared `credeals` still requires explicit DDL approval and proof. |
+| Context Engineering ownership branch | `docs/cre-data-object-ownership` remains unmerged and is behind current `main` | It is proposed guidance, not canonical policy or live authorization. It must be rebased and corrected before adoption. |
+
+**Scheduler-policy correction.** GitHub Actions must remain manual-only. The
+current company policy also treats aa-hub as historical source and runbooks,
+not an execution control plane. Therefore no unattended scheduler should be
+enabled until Cayman approves a named, current-policy-compatible execution
+surface and owner, with rendered configuration, observation evidence, and
+rollback. References below that call aa-hub the approved future scheduler are
+historical and must not be used as activation authority.
 
 ## Priority summary
 
@@ -22,7 +48,7 @@ consumer rollout remain separately gated.
 | 5 | P2 | Alert-enabled plists always appear drifted | False unhealthy status and operator noise |
 | 6 | P2 | Gate 1 requires the PR to remain draft | The documented merge path is impossible and stale |
 | 7 | P2 | Gate 3 claims `cre_status.sh` verifies the checkout SHA | The wrong deployed commit can satisfy the listed evidence |
-| 8 | P2 | A forward-queue item leaves GitHub Actions scheduling open | The aa-hub-only decision can regress |
+| 8 | P2 | Scheduler language conflicts with current company policy | An unapproved GitHub Actions or aa-hub scheduler can be activated |
 
 ## 1. Retire the OM scalar writer, not only the OM-facts child rows
 
@@ -223,7 +249,7 @@ mutating the checkout.
 Test one matching SHA, one wrong SHA, and one dirty checkout. Only the exact,
 clean checkout should pass the deployment gate.
 
-## 8. Make the GetCREdata scheduler decision aa-hub only
+## 8. Replace superseded scheduler language with one approved execution path
 
 **Where**
 
@@ -232,22 +258,26 @@ clean checkout should pass the deployment gate.
 
 **What happens**
 
-The optimal plan explicitly chooses aa-hub and excludes GitHub Actions. The
-forward queue says the manual GitHub workflow and the disabled aa-hub lane both
-exist, then says to decide ownership before enabling either. That leaves GitHub
-Actions scheduling open as a future option and weakens the recorded decision.
+The historical optimal plan explicitly chose aa-hub and excluded GitHub
+Actions. The forward queue says the manual GitHub workflow and the disabled
+aa-hub lane both exist, then says to decide ownership before enabling either.
+That leaves GitHub Actions scheduling open and also conflicts with the current
+company policy: aa-hub is historical source and runbooks, not an execution
+control plane.
 
 **Recommendation**
 
-State that the GitHub workflow remains manual-only and must not become a
-scheduler. Name the approved future path as the gated aa-hub manifest on the
-Mac mini after supervised proof.
+State that the GitHub workflow remains manual-only and that neither a GitHub
+workflow nor aa-hub authorizes unattended execution. Before any scheduler load,
+record Cayman's approval of a named, current-policy-compatible execution
+surface, the responsible owner, credential boundary, rendered configuration,
+observation window, and rollback.
 
 **Required proof**
 
-The repo docs, aa-hub manifest, and Linear issue should agree on one scheduler
-owner and one activation path. No scheduled GitHub Actions workflow should be
-present.
+The repo docs and Linear issue should identify one approved scheduler owner and
+one activation path. No scheduled GitHub Actions workflow should be present,
+and no aa-hub manifest should be treated as authorization to run the producer.
 
 ## Recommended repair order
 
@@ -256,6 +286,6 @@ present.
 3. Correct scheduler authorization and merge/deployment evidence in the
    runbook.
 4. Repair launchd alert delivery and plist drift verification.
-5. Reconcile the aa-hub-only scheduler language.
+5. Reconcile scheduler language with the current execution-control policy.
 6. Run the focused Python, TypeScript, shell, and PostgreSQL contract suites.
 7. Repeat adversarial review before requesting merge approval.
