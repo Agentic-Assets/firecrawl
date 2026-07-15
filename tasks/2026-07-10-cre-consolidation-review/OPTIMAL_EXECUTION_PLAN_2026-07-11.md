@@ -6,7 +6,7 @@
 > defines the current gated sequence.
 
 **Status:** Planning-only synthesis. No production DDL, database write, launchd
-change, aa-hub activation, repository creation, deletion, PR, or merge is
+change, scheduler activation, repository creation, deletion, PR, or merge is
 authorized by this document.
 
 **Relationship to prior work:** This file refines `FINAL_PLAN.md` using fresh
@@ -30,10 +30,13 @@ Keep the repositories separate. Consolidate contracts, object ownership,
 scheduling, and observability. Do not merge the listing collector into
 GetCREdata.
 
-GitHub Actions is ruled out as scheduler and CI authority. GetCREdata belongs
-on aa-hub. The live listing collector stays on the Mac mini because it depends
-on the local Firecrawl endpoint and the current network posture. GitHub-hosted
-runners cannot use the Mac's `localhost:3002` Docker stack.
+GitHub Actions is ruled out as a scheduler and remains manual-only. The live
+listing collector stays on the Mac mini because it depends on the local
+Firecrawl endpoint and the current network posture. GitHub-hosted runners
+cannot use the Mac's `localhost:3002` Docker stack. aa-hub is historical source
+and runbooks, not an execution control plane. Any unattended GetCREdata or
+collector schedule requires Cayman's later approval of one named,
+policy-compatible coordinator and owner.
 
 ## 2. Superseded evidence snapshot
 
@@ -212,7 +215,8 @@ base table and archive lifecycle because OM rows are children of listings.
 **Purpose:** Make a successful process exit mean the production market data is
 complete enough to trust.
 
-Complete these changes on a GetCREdata feature branch before aa-hub activation:
+Complete these changes on a GetCREdata feature branch before any unattended
+coordinator activation:
 
 1. Add a self-locating scheduled wrapper that uses a process lock, the repo
    virtual environment, persistent cache, structured run summary, and explicit
@@ -247,27 +251,29 @@ Complete these changes on a GetCREdata feature branch before aa-hub activation:
    grants, expected row population, and explained metric deltas.
 5. Roll back by restoring the captured definitions in a transaction.
 
-### Wave 4: Activate GetCREdata on aa-hub
+### Wave 4: Activate GetCREdata on an approved coordinator
 
 **Purpose:** Restore automated market-data freshness without GitHub Actions.
 
 1. On the actual Mac mini, verify the intended checkout path, branch, Python
    runtime, free disk, cache path, and access to required endpoints.
-2. Run from a clean, current GetCREdata checkout and pinned virtual environment.
-3. Keep the routine schedule on `python run.py`, never `--force` or `--excel`.
-4. Use a dedicated `getcredata` env profile and keep secrets out of git.
-5. Schedule after the 21:30 listing enrichment window, provisionally 22:15
+2. Record Cayman's approval of the named coordinator, responsible owner,
+   credential boundary, exact rendered job, observation window, and rollback.
+3. Run from a clean, current GetCREdata checkout and pinned virtual environment.
+4. Keep the routine schedule on `python run.py`, never `--force` or `--excel`.
+5. Use a dedicated `getcredata` env profile and keep secrets out of git.
+6. Schedule after the 21:30 listing enrichment window, provisionally 22:15
    America/Chicago. This provides roughly three hours before the 01:30 enrich
    window and should finish before morning product use.
-6. Set the first controlled-run timeout to 10,800 seconds, not 3,600. The
+7. Set the first controlled-run timeout to 10,800 seconds, not 3,600. The
    one-hour historical timeout already failed. After two measured warm-cache
    runs, reduce the timeout to observed p95 plus a documented margin.
-7. If a warm-cache run still exceeds 90 minutes, split high-latency sources by
+8. If a warm-cache run still exceeds 90 minutes, split high-latency sources by
    source cadence rather than increasing one monolithic timeout indefinitely.
    HMDA and full BPS refreshes are the first candidates.
-8. Before scheduling, confirm PITR or restorable snapshots for the tables the
+9. Before scheduling, confirm PITR or restorable snapshots for the tables the
    pipeline mutates.
-9. Run one supervised production proof without `--force`:
+10. Run one supervised production proof without `--force`:
 
    - Process exits 0.
    - No required fetch or export batch fails.
@@ -277,10 +283,12 @@ Complete these changes on a GetCREdata feature branch before aa-hub activation:
    - Before/after samples and aggregate deltas are explainable.
    - Runtime and per-step durations are saved.
 
-10. Update the aa-hub manifest, allowlist, and company automation registry.
-11. Require `bin/ci-local`, `bin/aa-doctor`, and
-    `bin/render-launchd.sh --dry-run` to pass.
-12. Require founder review before `render-launchd.sh --apply`.
+11. Update the company automation registry for the approved coordinator. Do
+    not create a scheduled GitHub Actions workflow or treat aa-hub as runtime
+    authorization.
+12. Require `bin/ci-local`, `bin/aa-doctor`, and
+   `bin/render-launchd.sh --dry-run` to pass.
+13. Require founder review before `render-launchd.sh --apply`.
 13. Confirm the first run in `runs.jsonl`, `ops.job_runs`, expected cadence,
     alarms, and alert delivery.
 14. Observe seven consecutive days before declaring the lane healthy.
@@ -300,15 +308,17 @@ freshness useful to EQUIRE.
 1. Configure and test the already-implemented collector failure webhook as an
    immediate same-host signal. Force one safe preflight failure and require one
    alert with the original exit code preserved.
-2. Add an aa-hub read-only CRE health job that checks tier markers, queue age,
+2. Add a read-only CRE health job on the explicitly approved coordinator that
+   checks tier markers, queue age,
    last successful ingest, validation output, and local Firecrawl health.
 3. Use Supabase `ops.evaluate_alarms` and `ops.page_alarms` as the off-host
-   dead-man. aa-hub cannot detect its own powered-off host.
+   dead-man. A coordinator cannot detect its own powered-off host.
 4. Alarm when monitor/source-index freshness exceeds the source-specific SLO,
    when GetCREdata exceeds its expected cadence, or when queue age and dead rows
    breach thresholds.
-5. Generate a dated status artifact from markers, database probes, and aa-hub
-   run records. Replace hand-maintained CLAUDE status banners with pointers.
+5. Generate a dated status artifact from markers, database probes, and approved
+   coordinator run records. Replace hand-maintained CLAUDE status banners with
+   pointers.
 6. Expose listing freshness through a view joining `cre_listings` to
    `cre_source_index.last_enumerated_at`. Do not update
    `cre_listings.last_seen_at` on every monitor pass, because that would churn
@@ -350,7 +360,8 @@ using normalized address, ZIP, and size tolerance. Do not auto-merge records.
 Preconditions:
 
 - Listing repair completed, including one successful weekly cycle.
-- GetCREdata completed its seven-day aa-hub canary.
+- GetCREdata completed its seven-day canary on the explicitly approved
+  coordinator.
 - The three-owner manifest is adopted.
 - No unresolved production data-integrity incident remains.
 
@@ -377,14 +388,16 @@ Dark verification must not double-run production work:
 
 Cutover:
 
-1. Author aa-hub manifests for monitor, enrich, and weekly. Do not recreate the
-   retired daily tier.
+1. Author jobs for the explicitly approved coordinator for monitor, enrich,
+   and weekly. Do not recreate the retired daily tier.
 2. Render and review all paths, environment profiles, schedules, timeouts, and
    shared-lock location.
-3. Pause the legacy launchd jobs, apply the aa-hub manifests atomically, and
+3. Pause the legacy launchd jobs, apply the approved coordinator jobs
+   atomically, and
    verify one run of each lane. Parallel live twins are prohibited because the
    jobs share sources and write surfaces.
-4. On failure, unload the aa-hub jobs and reload the preserved legacy plists.
+4. On failure, unload the approved coordinator jobs and reload the preserved
+   legacy plists.
 5. After seven green days, remove the legacy loaded jobs while retaining the
    rollback artifacts for 30 days.
 
@@ -416,7 +429,7 @@ Only after the extraction rollback window:
 - Credential and installed-plist drift warnings.
 - Advisory validation and geo state guard.
 - Source-registry parity.
-- GetCREdata hardening and aa-hub scheduling.
+- GetCREdata hardening and approved coordinator scheduling.
 - Retired daily-tier removal.
 
 ### Execute after stabilization
@@ -467,7 +480,7 @@ behavior. Improve observability before adding another queue redesign.
 | Day 1 | Writer repair locally green and reviewable | PR authorization if a PR is desired |
 | Days 1-7 | Bounded enrich, scheduled enrich/monitor, and weekly canary | Production canary approval |
 | Days 2-5 | GetCREdata unattended-run hardening | GetCREdata code approval only |
-| Days 5-12 | Supervised GetCREdata proof and seven-day aa-hub canary | Production run and aa-hub activation approval |
+| Days 5-12 | Supervised GetCREdata proof and seven-day coordinator canary | Production run and named coordinator activation approval |
 | Days 5-10 | Three-owner manifest and contract tests | Cross-repo owner acknowledgement |
 | After both canaries | CRE_EQUIRE product views and RPC | Production DDL approval |
 | After both canaries | Create and extract `cre-listings` | New-repository approval |
@@ -480,7 +493,8 @@ The consolidation program is complete only when all of the following are true:
 
 1. Monitor, enrich, and weekly have current green evidence; daily is unloaded.
 2. Every OM writer and constraint uses the five-column contract.
-3. GetCREdata runs through aa-hub for seven days with correct exports,
+3. GetCREdata runs through the explicitly approved coordinator for seven days
+   with correct exports,
    validation, cadence, and off-host alarms.
 4. Each shared object has one named migration owner and contract tests protect
    cross-repo consumers.
@@ -493,7 +507,7 @@ The consolidation program is complete only when all of the following are true:
 
 ## 8. Immediate next action when execution resumes
 
-Do not start with repo extraction or aa-hub activation. Start by pausing the
-known failing enrich loop, then patch `cre_ingest.py` to the five-column
-conflict target, verify locally, and run the five-item additive canary after
-explicit production approval.
+Do not start with repo extraction or scheduler activation. Start by completing
+and merging the reviewed repository repairs, then recover the runtime only
+after explicit approval. The bounded five-item additive canary and any
+unattended coordinator activation remain separate later approvals.

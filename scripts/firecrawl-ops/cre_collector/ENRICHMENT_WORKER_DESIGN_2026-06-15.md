@@ -58,7 +58,7 @@ drop from ~60k to the few hundred that actually changed.
 |------|------------------|--------|--------------|---------|
 | **monitor** | 2x/day (06:10, 18:10) | `collect --monitor` then `cre_monitor.py --apply`: enumerate all, detect new/changed/disappeared, enqueue new/changed | No | Yes |
 | **enrich** (NEW) | every 4h (00:30, 04:30, 08:30, 12:30, 16:30, 20:30) | `cre_enrich.py`: claim a batch from `cre_enrichment_queue`, run `collect --enrich-input` (targeted detail), `cre_ingest.py --in` (additive), then delete done / retry the rest | No | Yes |
-| **weekly** | Sun 03:00 | `collect` (full) then `cre_gate.py --strict` then `cre_ingest.py --in` (**additive by default**); the detail + dead-letter backstop | No by default; `--mark-missing` only under the `CRE_WEEKLY_MARK_MISSING=1` escalation (Section 2.1) | Yes (additive is safe to load) |
+| **weekly** | Sun 03:00 | `collect` (full) then `cre_gate.py --strict` then `cre_ingest.py --in` (**additive by default**); the detail + dead-letter backstop | No by default; `--mark-missing` only under the `CRE_WEEKLY_MARK_MISSING=1` escalation (Section 2.1) | Technically additive; loading still requires the current operator-runbook scheduler gate |
 | ~~daily~~ | retired | unloaded; case kept for rollback | n/a | No |
 
 Enrich is offset 30 min from the top of the hour so it never collides with the
@@ -355,24 +355,15 @@ clean (2026-06-15).
 design only. Current recovery, scheduler, database-write, and canary actions
 are governed by the 2026-07-11 operator runbook and require explicit approval.
 
-Non-destructive prep (safe, done by the workflow on a plain run):
-1. Land code + tests + docs on the feature branch; CI green.
-2. Render + install plists (does NOT load): `bash launchd/install_launchd.sh
-   monitor enrich weekly`.
+The historical workflow is implementation provenance only. It refuses every
+database or scheduler cutover request, including `{cutover:true}`, and emits no
+live activation commands. Do not use this design as an operational checklist.
 
-Live cutover (operator runs; the workflow only prints these unless invoked with
-`{cutover:true}`, and even then it does not load weekly or enable mark-missing):
-3. Apply SQL: `psql "$DATABASE_URL" -f sql/010_cre_enrichment_ops.sql` (additive
-   views only).
-4. Reload monitor at the new 2x/day cadence: `launchctl unload` then `load -w`
-   the monitor plist.
-5. Load enrich: `bash launchd/install_launchd.sh --load enrich`.
-6. Retire daily: `launchctl unload ~/Library/LaunchAgents/ai.agentic.cre-daily.plist`.
-7. Load the **additive** weekly backstop (operator decision; it is safe because
-   `CRE_WEEKLY_MARK_MISSING` is unset, so it runs `--no-mark-missing`):
-   `bash launchd/install_launchd.sh --load weekly`.
-8. Verify: `bash cre_status.sh` shows monitor (2x/day), enrich (4h), weekly
-   (additive), daily gone; queue health probe non-erroring.
+The only current execution order is
+`tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md`.
+It separates runtime recovery, bounded canary, scheduler approval, observation,
+and rollback. No database write or scheduler mutation is authorized by this
+historical document.
 
 **Still held regardless of cutover** (unchanged from prior gating):
 - the `CRE_WEEKLY_MARK_MISSING=1` soft-delete escalation,

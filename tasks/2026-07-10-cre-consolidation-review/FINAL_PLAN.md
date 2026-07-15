@@ -2,8 +2,10 @@
 
 > **Historical planning artifact.** This review informed the later safety work,
 > but its scheduler alternatives and one-migration-home proposal are superseded.
-> Current policy is aa-hub only for GetCREdata scheduling, object-level schema
-> ownership, and the gated [operator runbook](2026-07-11-firecrawl-operator-runbook.md).
+> Current policy keeps GitHub Actions manual-only and treats aa-hub as
+> historical source and runbooks, not an execution control plane. Use
+> object-level schema ownership and the gated
+> [operator runbook](2026-07-11-firecrawl-operator-runbook.md).
 
 **Author:** Fable 5 synthesis over a 13-agent review (5 Opus/Sonnet surveys, 33-claim Opus fact-check, Opus consolidation analysis, 3 idea lenses).
 **Companion files:** `report-1-firecrawl-cre-listing-system.md`, `report-2-getcredata-market-pipeline.md`, `report-3-consolidation-analysis.md`, `IMPROVEMENT_IDEAS.md`.
@@ -40,7 +42,10 @@ Caveat carried through from the fact-check: the 398k row count and the launchd t
 
 ## 3. The plan
 
-Every step respects the hard rules: feature branches only, no pushes to main, no PR creation without authorization, no DDL applied and no launchd/aa-hub changes without your explicit go-ahead. Each phase is independently shippable and reversible.
+Every step respects the hard rules: feature branches only, no pushes to main,
+no PR creation without authorization, no DDL applied, and no scheduler change
+without your explicit go-ahead. Each phase is independently shippable and
+reversible.
 
 ### Phase 0: Truth and contract (this week, no code moves, lowest risk)
 
@@ -53,9 +58,11 @@ Every step respects the hard rules: feature branches only, no pushes to main, no
 ### Phase 1: Stabilize what is live (before moving anything)
 
 1. **Root-cause the launchd tier failures.** Docs (2026-07-05) report monitor OK but enrich/daily/weekly last-failed rc:1. Read the actual tier logs and markers on the Mac mini, fix, and verify with a clean scheduled cycle. Do not extract a broken pipeline.
-2. **Finish the aa-hub GetCREdata lane.** GitHub Actions is not an approved
-   scheduler. The aa-hub job remains disabled until the reviewed runtime,
-   environment, snapshot, validation-only, and supervised-export gates pass.
+2. **Finish the GetCREdata scheduler approval lane.** GitHub Actions remains
+   manual-only and aa-hub is not a runtime control plane. Keep unattended work
+   disabled until the reviewed runtime, environment, snapshot,
+   validation-only, supervised-export, named-coordinator, owner, and rollback
+   gates pass.
 3. **Minimal alerting**: failure webhook in `cre_run_tier.sh` finish hook, plus a consecutive-failure counter, so silent multi-week tier failures cannot recur.
 
 ### Phase 2: Extract the listing system (gated on your approval to create the repo)
@@ -82,7 +89,10 @@ The remaining 30+ ideas are ranked in `IMPROVEMENT_IDEAS.md`.
 1. Approve the Phase 0 read-only DB verification (SELECT-only psql session against prod).
 2. Confirm the recommended end state (Option 3: extract to `cre-listings` + shared contract) or pick another; the repo name if extraction proceeds.
 3. Which conflict key is canonical for `om_facts` (recommend 5-column) so the staged migration can be finalized for your review.
-4. GetCREdata scheduling lane: complete the gated aa-hub activation path.
+4. GetCREdata scheduling lane: keep GitHub Actions manual-only and obtain
+   Cayman's approval for one named, policy-compatible coordinator, owner,
+   credential boundary, observation window, and rollback. aa-hub is not an
+   execution control plane.
 5. Whether Phase 4 item 1 (the listing-to-market join view) should be drafted now; it is independent of everything else.
 
 ## 5. Evidence quality

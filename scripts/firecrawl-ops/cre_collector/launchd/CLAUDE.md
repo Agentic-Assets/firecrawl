@@ -2,7 +2,7 @@
 
 ## Most Critical Rule
 
-**Do not `launchctl load` any plist until that tier's gate in `README.md` is satisfied.** Weekly is the only tier that may pass `--mark-missing` (soft-delete rows), and only under the explicit `CRE_WEEKLY_MARK_MISSING=1` escalation; by default it runs additive (`--no-mark-missing`), which makes it safe to load as the detail + dead-letter backstop. The `--mark-missing` escalation stays held until `cre_gate.py` is proven on at least one Tier-1 source with prefix-aware scope (it already wires into `cre_daily_update.sh` as observe-only step [3/4]).
+**Do not `launchctl load` any plist until gate 5 in the 2026-07-11 operator runbook records Cayman's explicit approval of the named coordinator, owner, exact labels, credentials, observation window, and rollback.** Weekly is the only tier that may pass `--mark-missing` (soft-delete rows), and only under the separate `CRE_WEEKLY_MARK_MISSING=1` escalation; by default it runs additive (`--no-mark-missing`). The `--mark-missing` escalation stays held until `cre_gate.py` is proven on at least one Tier-1 source with prefix-aware scope (it already wires into `cre_daily_update.sh` as observe-only step [3/4]). GitHub Actions remains manual-only, and aa-hub is not an execution control plane.
 
 Tier set (cadence restructure SHIPPED in code 2026-06-15; live cutover gated): **monitor** (2x/day), **enrich** (every 4h, drains `cre_enrichment_queue`), **weekly** (additive full backstop). The heavy **daily** tier is RETIRED (monitor + enrich replace its freshness role); its case + template are kept for rollback only. Design + cutover runbook: `../ENRICHMENT_WORKER_DESIGN_2026-06-15.md` Section 9.
 
@@ -18,9 +18,10 @@ cutover remains held for explicit approval.
 
 ```bash
 bash launchd/install_launchd.sh all                      # render + install monitor/enrich/weekly (NO load)
-bash launchd/install_launchd.sh --load monitor enrich     # install + load (when gate met)
+bash launchd/install_launchd.sh --load monitor enrich     # only after recorded gate-5 approval
 bash launchd/cre_run_tier.sh {monitor|enrich|weekly|daily} # manual; same portable lock as plists (daily = retired rollback case)
 bash cre_status.sh                                        # read-only run-health heartbeat (preferred)
+bash cre_status.sh --expected-sha <merged-sha>             # exact clean deployment identity
 launchctl list | grep ai.agentic.cre                      # PID col 1 = running; col 2 = last exit (ephemeral)
 ```
 

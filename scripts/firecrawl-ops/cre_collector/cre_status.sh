@@ -22,6 +22,7 @@
 # Usage:
 #   bash cre_status.sh                 # offline status (default)
 #   bash cre_status.sh --full-health   # also run the full firecrawl healthcheck
+#   bash cre_status.sh --expected-sha <commit>  # require exact clean checkout
 #
 # Deliberately `set -uo pipefail` (no -e): every check runs and the script
 # aggregates a single PASS/PROBLEM verdict at the end.
@@ -37,12 +38,19 @@ FC_DIR="${FC_DIR:-$DIR/../../..}"
 API_URL="${API_URL:-http://localhost:3002}"
 
 FULL_HEALTH=0
-for a in "$@"; do
-  case "$a" in
+EXPECTED_SHA="${CRE_EXPECTED_SHA:-}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --full-health) FULL_HEALTH=1 ;;
+    --expected-sha)
+      shift
+      [ "$#" -gt 0 ] || { echo "--expected-sha requires a commit" >&2; exit 2; }
+      EXPECTED_SHA="$1"
+      ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
-    *) echo "unknown argument: $a (try --full-health)" >&2; exit 2 ;;
+    *) echo "unknown argument: $1 (try --full-health or --expected-sha SHA)" >&2; exit 2 ;;
   esac
+  shift
 done
 
 PROBLEMS=0
@@ -294,6 +302,38 @@ case "$DIR" in
   *)
     ok "clone outside ~/Documents (no TCC blocker for launchd)" ;;
 esac
+
+check_checkout_identity() {
+if git -C "$FC_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  actual_sha="$(git -C "$FC_DIR" rev-parse HEAD 2>/dev/null || true)"
+  branch_name="$(git -C "$FC_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || printf 'detached')"
+  dirty_state="$(git -C "$FC_DIR" status --porcelain --untracked-files=normal 2>/dev/null || true)"
+  note "branch: $branch_name"
+  note "HEAD: $actual_sha"
+  if [ -n "$dirty_state" ]; then
+    bad "checkout has uncommitted or untracked changes"
+  else
+    ok "checkout is clean"
+  fi
+  if [ -n "$EXPECTED_SHA" ]; then
+    resolved_expected="$(git -C "$FC_DIR" rev-parse --verify "${EXPECTED_SHA}^{commit}" 2>/dev/null || true)"
+    if [ -z "$resolved_expected" ]; then
+      bad "expected SHA does not resolve in this checkout: $EXPECTED_SHA"
+    elif [ "$actual_sha" = "$resolved_expected" ]; then
+      ok "checkout HEAD matches expected SHA $resolved_expected"
+    else
+      bad "checkout HEAD $actual_sha does not match expected SHA $resolved_expected"
+    fi
+  else
+    note "no expected SHA supplied; deployment identity is informational only"
+  fi
+else
+  bad "Firecrawl checkout is not a readable Git work tree: $FC_DIR"
+fi
+}
+
+section "checkout identity"
+check_checkout_identity
 # Mirror what the scheduled tiers actually use. An interactive shell has no
 # CRE_ENV_FILE, so load_db_url() would fall back to the ~/Documents default and
 # misreport the source. Pull CRE_ENV_FILE from the installed plist (read-only)
@@ -339,7 +379,13 @@ INSTALLER="$DIR/launchd/install_launchd.sh"
 for tier in monitor enrich weekly daily; do
   plist="$HOME/Library/LaunchAgents/ai.agentic.cre-$tier.plist"
   [ -f "$plist" ] || { note "$tier: no installed plist to compare"; continue; }
-  expected="$(CRE_ENV_FILE="${CRE_ENV_FILE:-}" bash "$INSTALLER" --print "$tier" 2>/dev/null || true)"
+  tier_env_file="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CRE_ENV_FILE' "$plist" 2>/dev/null || true)"
+  tier_alert_file="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CRE_ALERT_WEBHOOK_FILE' "$plist" 2>/dev/null || true)"
+  render_args=(--print)
+  [ -n "$tier_env_file" ] && render_args+=(--env-file "$tier_env_file")
+  [ -n "$tier_alert_file" ] && render_args+=(--alert-webhook-file "$tier_alert_file")
+  render_args+=("$tier")
+  expected="$(bash "$INSTALLER" "${render_args[@]}" 2>/dev/null || true)"
   if [ -z "$expected" ]; then
     warn "$tier: could not render checked-in plist template"
   elif diff -q <(printf '%s\n' "$expected") "$plist" >/dev/null 2>&1; then

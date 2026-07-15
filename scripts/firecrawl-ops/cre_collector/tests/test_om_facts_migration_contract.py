@@ -36,7 +36,8 @@ def test_legacy_alignment_refuses_without_explicit_psql_approval():
 
     assert "CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT" in migration
     assert "\\if :CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT" in migration
-    assert "\\quit 3" in migration
+    assert "RAISE EXCEPTION" in migration
+    assert "migration 015 requires CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT=1" in migration
     assert "REFUSED: migration 015 requires" in migration
 
 

@@ -1,8 +1,9 @@
 # CRE Data Platform: Improvement Ideas (2026-07-10)
 
 > **Historical idea inventory.** Retain this as source material, not current
-> operating instruction. GitHub Actions scheduling is not an option; aa-hub
-> activation, object-level schema ownership, and the gated
+> operating instruction. GitHub Actions remains manual-only; aa-hub is not an
+> execution control plane. Named-coordinator approval, object-level schema
+> ownership, and the gated
 > [operator runbook](2026-07-11-firecrawl-operator-runbook.md)
 > supersede conflicting ideas.
 
@@ -27,11 +28,21 @@ All ideas from the 3-lens workflow pass (reliability/ops on Sonnet, data-quality
 
 1. **Root-cause and fix the live enrich/daily/weekly rc:1 failures** (H/L, docs-claim). START_HERE.md (2026-07-05) reports monitor OK, the other three tiers last-failed, with only partial diagnosis. Read `out/daily/cre-enrich.err.log`, `cre-daily.err.log`, `cre-weekly.err.log` and the `last_run_<tier>.json` markers; fix before any other reliability work.
 
-2. **Add push-based alerting on tier failure** (H/L). Failure detection is entirely pull-based today: `cre_run_tier.sh` writes verdict markers but notifies no one (grep confirms alerting is only a TODO). Add a non-blocking webhook (Slack or mail draft) inside `finish()` when `ok:false`, and optionally mirror verdicts to a durable `credeals.cre_run_health` table so freshness is cloud-observable.
+2. **Provision the implemented push alert on tier failure** (H/L). The branch
+   now supports an owner-only webhook file and synchronous bounded delivery
+   inside `finish()` while preserving the original tier exit code. Production
+   provisioning and one controlled failure remain approval-gated. A durable
+   off-host health record remains optional follow-up.
 
-3. **Track consecutive failures, not just the last verdict** (M/L). A one-off blip and a three-week outage currently look identical. Add a rolling failure counter to the marker JSON; escalate the `cre_status.sh` WARN at 2-3 consecutive fails. Natural hook for idea 2.
+3. **Track consecutive failures, not just the last verdict** (M/L, implemented
+   on the safety branch). Marker JSON carries the rolling count and
+   `cre_status.sh` escalates repeated failures.
 
-4. **Off-host dead-man's-switch heartbeat** (H/M). `cre_status.sh` runs on the same Mac mini it monitors; a power loss or logout alerts no one. After the aa-hub readiness gates pass, an aa-hub job can query the newest `cre_source_index`/`cre_scrape_log` timestamp through read-only views and alert if it stops advancing for about 24 hours.
+4. **Off-host dead-man's-switch heartbeat** (H/M). `cre_status.sh` runs on the
+   same Mac mini it monitors, so a power loss or logout alerts no one. After a
+   coordinator is explicitly approved, pair its read-only health check with
+   the existing Supabase alarm surface so the monitored host is not its own
+   dead-man.
 
 5. **Decommission the still-loaded retired daily tier** (M/L). `cre_run_tier.sh` documents daily as RETIRED, yet CLAUDE.md says the plist is still loaded at 06:30. It burns a full collect against every broker daily (anti-bot exposure) and can hold the shared lock against monitor/enrich. Unload it, keep the plist as rollback.
 
@@ -42,16 +53,20 @@ All ideas from the 3-lens workflow pass (reliability/ops on Sonnet, data-quality
    output captured in the closeout and Linear handoff. Do not add a GitHub
    Actions workflow.
 
-8. **Finish GetCREdata's aa-hub scheduling lane** (H/M). The aa-hub manifest
-   remains disabled until the reviewed environment, snapshot proof,
-   validation-only path, and supervised export pass. GitHub Actions is not an
-   alternative.
+8. **Finish GetCREdata's scheduler approval lane** (H/M). Keep GitHub Actions
+   manual-only and treat aa-hub as historical source and runbooks. Before any
+   unattended run, require a reviewed environment, snapshot proof,
+   validation-only path, supervised export, and Cayman's approval of one named,
+   policy-compatible coordinator with an owner and rollback.
 
 9. **Harden credential-file resolution** (M/L). `load_db_url` silently falls through to hardcoded `~/Documents/GitHub/...` .env.local candidates when `CRE_ENV_FILE` is unset, so a misrendered plist can run against a stale credential file instead of failing. Make the fallback loud on every real ingest, add a pytest asserting rendered plists carry `CRE_ENV_FILE`, document one source of truth plus rotation cadence.
 
 10. **Backup/restore runbook for `credeals`** (H/M). No scheduled backup script or restore runbook exists anywhere in the ops tree; archive tables protect against routine soft-deletes, not a bad migration or credential compromise. Verify Supabase PITR settings, write the restore procedure, and run one test restore into a branch project.
 
-11. **Fix the stale launchd/CLAUDE.md drift landmine** (M/L). The module doc agents are told to read before touching launchd still describes the pre-cutover 2026-06-15 state, contradicting the parent doc. Replace the stale banner with a pointer to `cre_status.sh` output and the parent's dated banner.
+11. **Fix the stale launchd/CLAUDE.md drift landmine** (M/L, implemented on
+    the safety branch). The module guidance now points to `cre_status.sh` and
+    the dated execution audit instead of treating the 2026-06-15 snapshot as
+    current scheduler evidence.
 
 12. **Detect drift between installed plists and templates** (L/L). Nothing verifies the loaded plist matches a fresh render of the checked-in template. Teach `cre_status.sh` to re-render in memory and WARN on mismatch.
 

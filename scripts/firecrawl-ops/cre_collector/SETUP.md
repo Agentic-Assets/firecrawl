@@ -106,8 +106,8 @@ Schedules are macOS launchd jobs. The committed source of truth is the three
 produced by the generator:
 
 ```bash
-bash launchd/install_launchd.sh <monitor|daily|weekly|all>   # render + install, NO load
-bash launchd/install_launchd.sh --load monitor daily         # also launchctl load -w (when gated OK)
+bash launchd/install_launchd.sh <monitor|enrich|weekly|daily|all> # render + install, NO load
+bash launchd/install_launchd.sh --load monitor enrich weekly # only after recorded scheduler approval; daily is retired
 bash launchd/install_launchd.sh --env-file /path/.env.local all   # bake CRE_ENV_FILE into the plists
 bash launchd/install_launchd.sh --print daily                # preview rendered plist, install nothing
 bash launchd/install_launchd.sh --uninstall all              # unload + remove installed copies
@@ -121,9 +121,10 @@ Tiers and their gates (full detail in `launchd/README.md`):
 
 | Tier | Schedule | Action | Gate to load |
 |------|----------|--------|--------------|
-| monitor | every 3h at :15 | cheap enumeration diff, observe-only (007 tables) | safe once stack + DB verified |
-| daily | 06:30 daily | full collect + additive ingest (`--no-mark-missing`) | safe once stack is stable |
-| weekly | Sun 03:00 | full collect + `--mark-missing` (ONLY tier that soft-deletes) | load ONLY after `cre_gate.py` proven on a Tier-1 source |
+| monitor | 06:10 and 18:10 | cheap enumeration diff, observe-only by default | Technical checks plus operator-runbook gate 5 Cayman scheduler approval |
+| enrich | every 4h at :30 | targeted additive queue drain | Technical checks plus operator-runbook gate 5 Cayman scheduler approval |
+| weekly | Sun 03:00 | additive full backstop; soft-delete only under a separate escalation | Technical checks plus operator-runbook gate 5 Cayman scheduler approval |
+| daily | retired | rollback case only; never part of the active load set | Do not load |
 
 ### macOS Full Disk Access (TCC)
 

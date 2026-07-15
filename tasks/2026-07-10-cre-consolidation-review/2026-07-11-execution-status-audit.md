@@ -98,9 +98,9 @@ The Mac mini is not in a state that permits a canary:
 | Wave 1 deployed writer repair and canary | Unmet | Reviewed merge, verified Mac mini checkout/runtime, explicit five-row canary approval, then the required scheduled observation window. |
 | Wave 2 ownership adoption | Unmet | AGENTIC-1233 owner acknowledgement and adopted versioned property-type crosswalk. |
 | Wave 3 GetCREdata production proof | Unmet | Reviewed deployment, dedicated environment, PITR or snapshot proof, validation-only and supervised routine export evidence. |
-| Wave 4 aa-hub activation | Unmet | Provisioned runtime, disk remediation, explicit activation approval, rendered job, first-run evidence, and seven-day proof. |
+| Wave 4 approved coordinator activation | Unmet | Named policy-compatible coordinator and owner, provisioned runtime, disk remediation, explicit activation approval, rendered job, first-run evidence, and seven-day proof. GitHub Actions remains manual-only and aa-hub is not an execution control plane. |
 | Wave 5 observability | Unmet | Restored collector runtime, approved alert proof, enabled report-only health lane, and off-host alarm evidence. |
-| Wave 6 EQUIRE product integration | Unmet | Adopted crosswalk, both canaries, named DDL approval, live-ledger proof, and product-path smoke evidence. |
+| Wave 6 EQUIRE product integration | Partially complete | EQUIRE records the market-context DDL and caches as applied. Remaining evidence is the adopted crosswalk, correct producer metrics, consumer adoption, cache health, and product-path smoke proof. |
 | Waves 7 and 8 extraction and cleanup | Deferred | Explicit repository approval, both stable canaries, 30-day rollback window, and restore proof. |
 
 ## Required authority to resume live waves
@@ -110,8 +110,9 @@ The Mac mini is not in a state that permits a canary:
    TCC authorization, deployment, and the bounded production canary.
 3. Cross-repository owner acknowledgement of the versioned property-type
    crosswalk in AGENTIC-1233.
-4. Separate approval for aa-hub activation and EQUIRE production DDL after
-   their documented preconditions are proven.
+4. Separate approval for one named policy-compatible coordinator after its
+   documented preconditions are proven. EQUIRE's existing market-context DDL
+   is recorded as applied; any new production DDL remains separately gated.
 
 This audit does not authorize a production change, scheduler activation,
 database write, repository creation, deletion, PR merge, or EQUIRE DDL.

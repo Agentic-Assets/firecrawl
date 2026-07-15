@@ -11,8 +11,8 @@ Tier set (cadence restructure SHIPPED in code 2026-06-15):
 - **enrich** (every 4h, 00:30 / 04:30 / 08:30 / 12:30 / 16:30 / 20:30): drains
   that queue, scrapes ONLY the flagged listings' detail, re-ingests additively.
 - **weekly** (Sun 03:00): full collect + ingest backstop; additive by default
-  (`--no-mark-missing`), so safe to load. It also refreshes detail and recovers
-  dead-lettered queue rows.
+  (`--no-mark-missing`). It also refreshes detail and recovers dead-lettered
+  queue rows. Additive semantics reduce data risk but do not authorize loading.
 - **daily**: RETIRED. monitor (2x/day) + enrich (every 4h) replace its freshness
   role at a fraction of the cost. The template + dispatcher case are kept for
   rollback only.
@@ -93,9 +93,10 @@ invalid / empty) releases the claims without ingesting and exits nonzero; a
 crashed run's claims are reclaimed after 1h. Dead-lettered rows (attempts >= 5)
 surface in `v_cre_enrichment_dead` and ride the weekly additive backstop.
 
-Gate: safe to load once `cre_enrich.py` is unit-tested and `010` is applied
-(the queue-health views). The shared lock guarantees it cannot overlap monitor
-or weekly.
+Technical prerequisites: `cre_enrich.py` is unit-tested and `010` is applied
+(the queue-health views). The shared lock prevents overlap with monitor or
+weekly. Loading still requires the separate scheduler-activation gate in the
+operator runbook.
 
 ---
 
@@ -109,8 +110,8 @@ collect-plus-ingest completeness + detail-refresh + dead-letter-recovery backsto
 
 ADDITIVE BY DEFAULT: with `CRE_WEEKLY_MARK_MISSING` unset, the dispatcher passes
 `--no-mark-missing`, so the weekly tier upserts and refreshes but never
-soft-deletes. That makes it **safe to load** as the backstop, and the Section 9
-cutover loads it for exactly that reason.
+soft-deletes. That makes its data behavior additive, but it does not authorize
+loading. The separate scheduler-activation gate still applies.
 
 `--mark-missing` is a SEPARATE, GATED escalation: it fires only when
 `CRE_WEEKLY_MARK_MISSING=1` is set in this tier's environment. weekly is still
@@ -206,12 +207,12 @@ chmod 600 /absolute/private/path/cre-alert-webhook.url
 bash install_launchd.sh \
   --alert-webhook-file /absolute/private/path/cre-alert-webhook.url all
 
-# Load the freshness tiers when their gate is met (monitor after stack+DB
-# verified, enrich once cre_enrich.py is tested and 010 is applied):
+# ONLY after operator-runbook gate 5 records Cayman's approval of the exact
+# coordinator, owner, job labels, credentials, observation, and rollback:
 bash install_launchd.sh --load monitor enrich
 
-# weekly: additive by default, so safe to load as the backstop. The
-# CRE_WEEKLY_MARK_MISSING=1 soft-delete escalation stays a separate gated step.
+# weekly is additive by default, but its scheduler load is covered by the same
+# explicit gate. CRE_WEEKLY_MARK_MISSING=1 remains a separate escalation.
 bash install_launchd.sh --load weekly
 
 # Preview a rendered plist without installing:
@@ -231,7 +232,12 @@ state) and exits nonzero if anything is unhealthy:
 ```bash
 bash ../cre_status.sh                # offline heartbeat
 bash ../cre_status.sh --full-health  # also runs the full firecrawl healthcheck
+bash ../cre_status.sh --expected-sha <merged-sha>  # deployment identity gate
 ```
+
+The optional failure webhook is delivered synchronously with a ten-second
+timeout so launchd cannot terminate it with the job process group. Delivery is
+best-effort and never replaces the tier's original exit code.
 
 Low-level check of a single loaded job:
 

@@ -208,9 +208,10 @@ DDL was applied ahead of those gates. The forward queue now says to wire an app
 or MCP consumer after the views are live and verified, which can be read as
 permission to proceed because the views and caches are recorded as live.
 
-**Recommendation:** Make the consumer gate explicit. Do not wire the app or MCP
-surface until Firecrawl's listing canary, GetCREdata's supervised export and
-aa-hub observation window, and AGENTIC-1233's crosswalk adoption are all
+**Recommendation:** Make the consumer gate explicit. The repository can safely
+land fail-soft adapters and tests, but do not enable product reliance until
+Firecrawl's listing canary, GetCREdata's supervised export and approved
+coordinator observation window, and AGENTIC-1233's crosswalk adoption are all
 recorded. Keep the existing RPCs dark and fail-open until then.
 
 The concurrent EQUIRE forward-queue edit correctly states that DDL evidence is
@@ -338,11 +339,11 @@ unavailable, display metric scope and timestamps, and add product-level tests.
 2. Reconcile the recorded EQUIRE apply state in Firecrawl docs and Linear.
 3. Correct and test the EQUIRE compensating migration and fresh-schema CBSA
    compatibility.
-4. Merge and separately approve application of GetCREdata's parser-version
-   repair.
+4. Review the merged GetCREdata parser-version repair and separately approve
+   application of its revised producer DDL.
 5. Adopt the versioned property-type crosswalk through AGENTIC-1233.
-6. Prove the Firecrawl listing canary and GetCREdata supervised export plus
-   aa-hub observation window.
+6. Prove the Firecrawl listing canary and GetCREdata supervised export plus the
+   observation window on the explicitly approved coordinator.
 7. Install cross-repository freshness monitoring for producer state, cache
    jobs, cache timestamps, and market `as_of` values.
 8. Add the disposable PostgreSQL integration harness.

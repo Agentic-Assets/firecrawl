@@ -185,15 +185,16 @@ notify_failure() {
     # TIER is a fixed enum and the values are numeric, so this JSON cannot carry
     # unescaped caller input. Pass the credential through curl's stdin config,
     # not argv, so it cannot appear in process listings. Escape the only config
-    # delimiters that a valid URL can contain. Run in the background with a short
-    # timeout.
+    # delimiters that a valid URL can contain. Run synchronously with a bounded
+    # timeout so launchd cannot tear down the job before delivery completes.
     local config_url="${url//\\/\\\\}"
     config_url="${config_url//\"/\\\"}"
     printf 'url = "%s"\n' "${config_url}" | curl --config - \
         --silent --show-error --fail --max-time 10 \
         -H 'Content-Type: application/json' \
         -d "{\"text\":\"CRE collector tier ${TIER} failed (rc=${rc}, consecutive failures=${failures}). See cre_status.sh and the tier stderr log.\"}" \
-        >/dev/null 2>&1 &
+        >/dev/null 2>&1 || \
+        echo "[cre_run_tier] ALERT delivery failed (tier=${TIER}); preserving tier rc=${rc}" >&2
 }
 
 write_marker() {

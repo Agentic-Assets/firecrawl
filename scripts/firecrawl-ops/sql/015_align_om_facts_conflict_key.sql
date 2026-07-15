@@ -23,7 +23,12 @@
   \echo 'Approved legacy OM-facts key alignment requested'
 \else
   \echo 'REFUSED: migration 015 requires -v CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT=1'
-  \quit 3
+  DO $$
+  BEGIN
+    RAISE EXCEPTION
+      'migration 015 requires CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT=1';
+  END
+  $$;
 \endif
 
 SELECT CASE WHEN EXISTS (

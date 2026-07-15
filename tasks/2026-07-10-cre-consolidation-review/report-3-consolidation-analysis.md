@@ -9,7 +9,10 @@ report-id: report-3-consolidation-analysis
 
 > **Historical review evidence.** The architectural separation conclusion remains
 > useful, but current ownership is object-level rather than one universal
-> migration home. Use the governed ownership contract and current operator
+> migration home. Its earlier aa-hub direction is also superseded: GitHub
+> Actions remains manual-only, aa-hub is not an execution control plane, and
+> unattended work requires an explicitly approved named coordinator. Use the
+> governed ownership contract and current operator
 > runbook for decisions.
 
 ## Executive summary
@@ -72,7 +75,10 @@ The practical consequence: if System A ever runs its gated `om_parse.py --apply`
 ## Decision drivers
 
 1. **Data is already consolidated.** Both repos write `fhqycqubkkrdgzswccwd`, schema `credeals`. Repo separation is not data separation, and the schema contract matters more than repo count.
-2. **Deployment surfaces differ materially.** System A is host-locked to the Mac mini plus a local Firecrawl Docker stack at `localhost:3002`; System B is pure Python and runnable anywhere, headed for an aa-hub lane.
+2. **Deployment surfaces differ materially.** System A is host-locked to the
+   Mac mini plus a local Firecrawl Docker stack at `localhost:3002`; System B is
+   pure Python and runnable anywhere. The historical aa-hub direction is
+   superseded by the current named-coordinator approval requirement.
 3. **System A's only hard coupling to the fork is convenience tooling.** The health-check and setup scripts resolve `FC_DIR` and call the fork's `firecrawl_healthcheck.sh` plus `docker compose up` (`cre_setup.sh:28,95-101`; `cre_status.sh:36,258-268`). The scrape and ingest logic itself only reads `FIRECRAWL_API_URL`/`FIRECRAWL_API_KEY` (`config.ts:4`, `scrape.ts:8`), so it is already portable to any endpoint. Extraction is mostly tooling and docs, not a rewrite.
 4. **Fork-sync pollution is real and recurring.** Upstream syncs land every one to two weeks with large diffs (the most recent, `fdae874e4`, touched 176 files, +11,398/-4,780), governed by a hand-maintained protected-path allowlist (`sync_upstream_main.sh:41-47`). The fork also carries roughly 300,000 lines of tracked reference data (`prometheus/data.json`, 300,165 lines). Fork ops code is about 14% of tracked files (343 of 2,479).
 5. **Real cross-repo overlap is small and surgical.** One shared table (`cre_listing_om_facts`) and a duplicated ZIP-to-CBSA crosswalk. CBRE paths are disjoint. This is a contract problem, not a merge justification.
@@ -143,7 +149,10 @@ Option 3 gives you separation where the systems differ (language, runtime, SLA, 
 
 ## Phased migration sketch
 
-Every phase is independently shippable and rollback-safe. Nothing is pushed to `main`, no DB DDL is applied, and no `launchd` or aa-hub cutover happens without explicit founder approval. Feature branches only, per the hard rules.
+Every phase is independently shippable and rollback-safe. Nothing is pushed to
+`main`, no DB DDL is applied, and no scheduler cutover happens without the
+current named-coordinator and founder approvals. Feature branches only, per the
+hard rules.
 
 **Phase 0: Contract first, no repo moves (lowest risk).**
 Designate a single owner of the `credeals` schema and migrations (System A's `sql/` is the source of truth). Assign System B as the documented owner of CMBS, REIT, cap-rate, and `om_facts` population; assign System A as owner of `cre_listings`, the crosswalk, and DDL. Reconcile the `om_facts` unique index against B's 5-column conflict key (the live seam) and correct System A's stale docs about that table's state. This is a documentation and contract pass. The one index-alignment migration is drafted and staged for founder approval, not applied. **Precondition to acting on the index:** one read-only query to confirm the live row count and the actual unique-index definition on `cre_listing_om_facts`.
@@ -157,8 +166,11 @@ Create the `cre-listings` repo on a branch via `git filter` to preserve `scripts
 **Phase 3: Fork cleanup.**
 Drop the legacy `cre_scrapers/`, `cre_pipeline.py`, and the `prometheus` data bloat from the live path (all confirmed stale, not scheduled, and not referenced by tests). Trim the protected-path allowlist. Leave a deprecation pointer to the new repo.
 
-**Phase 4: Unrelated, already gated.**
-Activate GetCREdata's aa-hub lane separately (its stub is disabled and currently points at a different host path, so it needs its `cwd`/host assumption corrected before reactivation). This is not part of the extraction and should not block it.
+**Phase 4: Unrelated, separately gated.**
+Keep GetCREdata unattended execution disabled until Cayman approves one named,
+policy-compatible coordinator, owner, credential boundary, observation window,
+and rollback. The historical aa-hub stub is not an activation path. This is not
+part of the extraction and should not block it.
 
 ---
 
@@ -174,7 +186,13 @@ Activate GetCREdata's aa-hub lane separately (its stub is disabled and currently
 
 - **Do not fragment the Supabase project.** It is already a single project (`fhqycqubkkrdgzswccwd`, schema `credeals`) shared by both systems. This is the one place consolidation already exists de facto. Preserve it; assign clear per-table ownership through the contract instead of splitting the database.
 
-- **Do not force one runtime story onto both.** A is host-locked to the Mac mini with a local stealth Firecrawl instance for anti-bot scraping; B runs pure Python and is headed for an aa-hub lane. Keep them separate. There is a real opportunity to route B's cloud-Firecrawl PDF fallback (`documents/pilot_extract.py:65`) through A's local stealth instance for the same anti-bot PDF problem, but that is a contract and integration opportunity, handled through a shared interface, not a reason to merge repos.
+- **Do not force one runtime story onto both.** A is host-locked to the Mac mini
+  with a local stealth Firecrawl instance for anti-bot scraping; B runs pure
+  Python and awaits approval of a named policy-compatible coordinator. Keep
+  them separate. There is a real opportunity to route B's cloud-Firecrawl PDF
+  fallback (`documents/pilot_extract.py:65`) through A's local stealth instance
+  for the same anti-bot PDF problem, but that is a contract and integration
+  opportunity, handled through a shared interface, not a reason to merge repos.
 
 ---
 

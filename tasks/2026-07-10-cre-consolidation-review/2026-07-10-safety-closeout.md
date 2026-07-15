@@ -57,8 +57,37 @@ the local Firecrawl runtime, and make future tier failures observable.
 
 1. Approve or revise the ownership contract with GetCREdata's owner.
 2. Approve a maintenance plan if any legacy database needs migration `015`.
-3. Complete the aa-hub-only GetCREdata scheduler readiness path, then provide
+3. Complete the named, policy-compatible GetCREdata coordinator readiness path,
+   keeping GitHub Actions manual-only and aa-hub non-operational, then provide
    the required credentials and execution owner under explicit activation
    approval.
 4. Authorize any launchd cutover, production tier run, new `cre-listings`
    repository, or production view/DDL work.
+
+## 2026-07-15 eight-finding repair addendum
+
+The branch now closes all eight repository-level findings recorded in
+`2026-07-11-eight-actionable-review-findings.md`. The repair rejects retired OM
+artifacts before staging, makes legacy migration `015` explicitly opt-in,
+hardens webhook and plist-status behavior, verifies exact deployment SHAs, and
+reconciles all active scheduler guidance with current company policy. The
+historical workflow can no longer perform a live cutover.
+
+Verification completed locally:
+
+- Python collector suite: 1,416 passed.
+- TypeScript collector suite: typecheck plus 479 tests passed.
+- Disposable PostgreSQL contract: fresh schema, default refusal without
+  mutation, approved alignment, and idempotent second execution all passed.
+- Relevant shell syntax checks and `git diff --check` passed.
+- Independent adversarial review confirmed the four documentation and dormant
+  workflow defects, which were repaired and sent through final re-review. The
+  re-review caught one remaining stale cutover claim in the historical design;
+  that claim and the collector index description were corrected before push.
+
+No production write, DDL, launchd load, GitHub scheduler activation, or merge
+was performed. Linear evidence could not be posted from this task because the
+local Linear CLI has no `agenticassets` credential and no callable Linear MCP
+tool was available. The branch, commit, test proof, production gates, and
+rollback status must be copied to AGENTIC-1229 after Linear authentication is
+restored.

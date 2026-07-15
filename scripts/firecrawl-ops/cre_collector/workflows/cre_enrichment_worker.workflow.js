@@ -1,14 +1,14 @@
 export const meta = {
   name: 'cre-enrichment-worker',
-  description: 'Build the Tier-B enrichment-queue worker + cadence restructure (monitor 2x/day, full re-scrape weekly + additive, retire daily), test, adversarially review, document. Live launchd cutover only with args.cutover=true; never enables soft-delete (--mark-missing / CRE_WEEKLY_MARK_MISSING).',
-  whenToUse: 'Run after the design in ENRICHMENT_WORKER_DESIGN_2026-06-15.md is approved. Plain run does all code+test+review+docs and renders plists but does NOT touch the live scheduler. Pass {cutover:true} to also apply the additive SQL and load the safe tiers (monitor, enrich, additive weekly).',
+  description: 'Historical build workflow for the already-implemented Tier-B enrichment worker. It is retained for implementation provenance only and cannot perform a live cutover.',
+  whenToUse: 'Do not invoke for runtime recovery, DDL, or scheduler work. Use the current operator runbook and obtain each named approval there.',
   phases: [
     { title: 'Spec', detail: 'opus: re-derive authoritative contracts, write IMPL_SPEC.md' },
     { title: 'Build', detail: 'parallel disjoint groups: collect.ts targeted detail + enrichers; cre_enrich.py + SQL 010; launchd cadence' },
     { title: 'Test', detail: 'write + run pytest, TS node:test unit, syntax checks, tiny e2e dry run' },
     { title: 'Review', detail: 'opus adversarial: soft-delete invariant, URL-match, attempts accounting, dead-letter, partial-ingest safety; bounded fix loop' },
-    { title: 'Docs', detail: 'update CLAUDE.mds / START_HERE / design status; emit cutover runbook' },
-    { title: 'Cutover', detail: 'GATED on args.cutover: apply SQL 010, reload monitor 2x/day, load enrich, unload daily, load ADDITIVE weekly; NEVER enable mark-missing' },
+    { title: 'Docs', detail: 'update historical implementation docs and point to the current operator runbook; emit no live commands' },
+    { title: 'Cutover', detail: 'RETIRED: this workflow refuses all production DDL and scheduler mutation requests' },
   ],
 }
 
@@ -52,11 +52,11 @@ AUTHORITATIVE CONTRACTS (verified against code 2026-06-15; do not regress full/m
   never f-string a url; never print the DB url. cre_run_tier.sh (not the worker) writes the verdict marker; worker uses exit codes.
 - SOFT-DELETE INVARIANT (must hold): --mark-missing is produced ONLY by the weekly tier and ONLY when CRE_WEEKLY_MARK_MISSING=1
   (default additive), triple-gated by dispatcher + cre_gate.py --strict downgrade + cre_ingest.py per-brokerage eligibility. The
-  enrich worker is additive by construction. The weekly tier is additive by default and safe to load; loading it does NOT enable
-  soft-delete.
+  enrich worker is additive by construction. The weekly tier is additive by default, but loading any tier still requires the
+  current operator-runbook scheduler approval. Additive behavior is not authorization.
 - Standing rules: no em dashes; never the words genuinely/honestly/straightforward; never print or commit
   POSTGRES_URL/DATABASE_URL; do NOT commit or push (the owner opens PRs manually); do NOT apply prod DDL
-  or load any launchd tier outside the gated Cutover phase; NEVER enable mark-missing (do not set CRE_WEEKLY_MARK_MISSING,
+  or load any launchd tier; NEVER enable mark-missing (do not set CRE_WEEKLY_MARK_MISSING,
   do not pass --mark-missing).
 `
 
@@ -175,24 +175,17 @@ if (review.verdict === 'needs-fix' && review.blocking.length) {
 phase('Docs')
 const docs = await agent(
   `Update documentation to match the shipped enrichment worker + cadence restructure. Working dir ${ROOT}.
-Update: ENRICHMENT_WORKER_DESIGN_2026-06-15.md status line to IMPLEMENTED (note any divergence); launchd/CLAUDE.md + launchd/README.md tier table (monitor 2x/day, new enrich 4h, weekly full ADDITIVE backstop + CRE_WEEKLY_MARK_MISSING escalation, daily retired); cre_collector/CLAUDE.md (the enrichment design row + the Files row for cre_enrich.py); START_HERE.md run model + status matrix; sql/CLAUDE.md (note 010 is now written/wired); the parent firecrawl/CLAUDE.md CRE section key-components list to mention cre_enrich.py and the enrich tier. Keep edits factual and lean; no em dashes; never the words genuinely/honestly/straightforward. Honor the never-delete-without-backup rule for any file you replace wholesale. Do NOT commit or push. Then produce the exact operator cutover runbook (the launchctl + psql commands from Design Section 9, including loading the ADDITIVE weekly backstop) as the return value, clearly marking the held items (CRE_WEEKLY_MARK_MISSING soft-delete escalation, status activation, consumer board-gate) as still gated.`,
+Update only historical implementation documentation if it has drifted. Do not emit DDL, launchctl, scheduler-load, or cutover commands. Point operators to tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md, which owns current approvals and execution order. Keep edits factual and lean; no em dashes; never the words genuinely/honestly/straightforward. Honor the never-delete-without-backup rule for any file you replace wholesale. Do NOT commit or push.`,
   { label: 'docs:sync-and-runbook' }
 )
 
 // ---------------------------------------------------------------------------
 phase('Cutover')
-const cutover = (args && args.cutover === true)
-let cutoverResult
-if (!cutover) {
-  cutoverResult = 'SKIPPED (no args.cutover). Plists were rendered/validated but NOT installed or loaded; SQL 010 NOT applied. Live cutover steps are in the runbook above; re-run this workflow with {cutover:true} to apply the SAFE additive tiers, or run the runbook manually. Soft-delete (CRE_WEEKLY_MARK_MISSING / --mark-missing) is never enabled by this workflow.'
-  log(cutoverResult)
-} else {
-  cutoverResult = await agent(
-    `Perform ONLY the SAFE, additive live cutover per ${DESIGN} Section 9 steps 3-8. Working dir ${ROOT}.
-ALLOWED: apply sql/010_cre_enrichment_ops.sql to prod (additive views only) via psql or Supabase MCP (project fhqycqubkkrdgzswccwd); render+install the monitor/enrich/weekly plists with 'bash launchd/install_launchd.sh monitor enrich weekly' (install only); reload the monitor plist at the new 2x/day cadence (launchctl unload then load -w); load enrich with 'bash launchd/install_launchd.sh --load enrich'; unload the daily plist (launchctl unload ~/Library/LaunchAgents/ai.agentic.cre-daily.plist); load the ADDITIVE weekly backstop with 'bash launchd/install_launchd.sh --load weekly' (safe because CRE_WEEKLY_MARK_MISSING is unset, so it runs --no-mark-missing). FORBIDDEN: do NOT set CRE_WEEKLY_MARK_MISSING; do NOT pass --mark-missing anywhere; do NOT enable status activation; do NOT commit or push. After cutover run 'bash cre_status.sh' and confirm monitor=2x/day, enrich=4h present, weekly=additive loaded, daily gone, queue health probe non-erroring. Return exactly what you applied and the heartbeat verdict.`,
-    { label: 'cutover:safe-tiers', model: 'opus' }
-  )
-}
+const cutoverRequested = Boolean(args && args.cutover === true)
+const cutoverResult = cutoverRequested
+  ? 'REFUSED: this historical workflow cannot apply DDL or mutate schedulers. Use the current operator runbook and record the required Cayman approvals.'
+  : 'SKIPPED: this historical workflow never applies DDL or mutates schedulers.'
+log(cutoverResult)
 
 return {
   spec: typeof spec === 'string' ? spec.slice(0, 600) : spec,
@@ -203,6 +196,6 @@ return {
   reminders: [
     'No commit/push performed - owner opens the PR manually.',
     'Held for explicit go-ahead: CRE_WEEKLY_MARK_MISSING soft-delete escalation, first live status activation, consumer board-gate deploy.',
-    cutover ? 'Safe additive-tier cutover attempted (see cutover field); mark-missing never enabled.' : 'Live scheduler untouched - runbook printed for manual cutover.',
+    'Live database and scheduler are always untouched by this historical workflow.',
   ],
 }

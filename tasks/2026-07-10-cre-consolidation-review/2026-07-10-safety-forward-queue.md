@@ -9,10 +9,9 @@ is only for deferred follow-up after those gates are satisfied.
 
 ## Correctness
 
-- **Restore the ZIP/CBSA mini test fixture** (confidence: verified gap).
-  The clean branch runs 1,356 Python tests successfully but 30 geo tests fail
-  because their expected fixture is absent. Restore or generate the 20-row
-  fixture, then require the full suite before schema work.
+- **ZIP/CBSA mini test fixture restored** (resolved 2026-07-15).
+  The full Python collector suite now passes 1,416 tests. Keep the fixture and
+  geo coverage required before future schema work.
 
 - **Make `cre_market_index` choose one parser release** (confidence: verified
   cross-repository source gap). GetCREdata currently aggregates OM facts across
@@ -27,9 +26,11 @@ is only for deferred follow-up after those gates are satisfied.
   failure and verify exactly one alert while preserving the original tier exit
   code. Do not place the URL in an environment plist or Git-tracked file.
 
-- **Add an ephemeral Postgres schema-contract test** (confidence: verified gap).
-  Validate the GetCREdata PostgREST conflict target and consumer view
-  dependencies against the collector migrations before either writer changes.
+- **Ephemeral Firecrawl PostgreSQL contract test added** (partially resolved
+  2026-07-15). The test now proves fresh five-column identity, default refusal,
+  approved legacy alignment, and idempotency. Cross-repository producer and
+  consumer dependency checks remain part of the GetCREdata and EQUIRE branch
+  verification.
 
 - **Add a generated status artifact** (confidence: verified documentation
   drift). Derive status from run markers, `cre_status.sh`, and a read-only DB
@@ -43,8 +44,10 @@ is only for deferred follow-up after those gates are satisfied.
   fresh `ok:true` marker after the restored Firecrawl API processes the batch.
 
 - **Choose and implement GetCREdata scheduling** (confidence: verified gap).
-  Its default-branch workflow is manual only and the aa-hub lane is disabled.
-  Decide the operating owner and credential boundary before enabling either.
+  Keep GitHub Actions manual-only. aa-hub is historical source and runbooks,
+  not an execution control plane. Cayman must approve one named,
+  policy-compatible coordinator, owner, credential boundary, rendered
+  configuration, observation window, and rollback before unattended execution.
 
 ## Architecture
 

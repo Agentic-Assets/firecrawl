@@ -1,25 +1,41 @@
 # Eight actionable findings from the CRE consolidation safety review
 
-**Status:** Confirmed review findings, reconfirmed open as of 2026-07-15.
+**Status:** All eight repository-level repairs are implemented and locally
+verified as of 2026-07-15. Production deployment, scheduler activation,
+database changes, and live launchd observation remain separate Cayman-approved
+operator gates and were not performed by this repair branch.
 
 **Reviewed branch:** `fix/cre-consolidation-safety` at
 `5208335a15d8fdae6a569c141b53942d23d38779`, compared with `origin/main` at
 `c74ece4964e9ec2082516ef2ca6b6d856fd5f399`.
 
 This file records the eight findings that survived independent finder and
-skeptic review. It is a repair checklist, not proof that the defects have been
-fixed. Production deployment, scheduler activation, database changes, and
-consumer rollout remain separately gated.
+skeptic review, plus their repair proof. Production deployment, scheduler
+activation, database changes, and consumer rollout remain separately gated.
 
 ## Current-state refresh (2026-07-15)
 
-The original eight findings remain open on the current branch head. There are
-no runtime-code changes after `a7f4a0b8`; the later commits add these review
-records only. Focused regression evidence confirms the most serious gap:
-`om_parse.build_enriched_listing()` emits an `externalId` plus high-confidence
-scalars, while `cre_ingest.to_row()` reads only `id` and falls back to a URL
-hash. It discards `omFacts` but still stages NOI, cap rate, occupancy, units,
-and year built.
+The original review reproduced all eight findings before repair. The current
+branch rejects marked and legacy retired OM artifacts before staging, separates
+legacy index alignment from the generic migration runner, and closes the six
+operator and documentation gaps described below.
+
+## Resolution evidence (2026-07-15)
+
+| # | Resolution | Verification |
+| --- | --- | --- |
+| 1 | `cre_ingest.py` rejects both the marked diagnostic envelope and the legacy `externalId` plus `omFacts` artifact before identity or scalar staging. Ordinary brokerage scalars remain supported. | Full Python collector suite: 1,416 passed. Focused artifact tests cover rejection, no fallback identity, and normal brokerage ingestion. |
+| 2 | `000_run_all.sql` no longer invokes `015`; the legacy alignment script defaults to a PostgreSQL exception unless the explicit psql opt-in is set. | Disposable PostgreSQL proved fresh `013`, refusal without mutation, approved alignment, and idempotent second execution. |
+| 3 | The operator runbook has a separate Cayman approval gate naming the coordinator, owner, exact job labels, configuration, observation window, and rollback. | Documentation review and final adversarial re-review. |
+| 4 | Failure webhook delivery is synchronous and bounded while the original tier exit code is retained. | Behavioral shell-wrapper test plus shell syntax checks. A live launchd failure remains an activation-gated production proof. |
+| 5 | Status reconstructs each tier with its own installed environment-file and alert-file paths. | Behavioral drift tests cover alert-free, alert-enabled, real mismatch, and distinct per-tier paths. |
+| 6 | Gate 1 now requires an open, clean, mergeable, locally verified PR and keeps literal merge approval separate. | Documentation review and final adversarial re-review. |
+| 7 | `cre_status.sh --expected-sha` reports branch, HEAD, dirty state, and exact-match status without changing the checkout. | Behavioral tests cover matching, wrong, and dirty Git checkouts. |
+| 8 | GitHub Actions is manual-only, aa-hub is non-operational, and the historical workflow refuses live cutover. | Static regression guard plus documentation and final adversarial re-review. |
+
+Additional verification: TypeScript typecheck and 479 unit tests passed;
+`git diff --check` and relevant `bash -n` checks passed. No production write,
+DDL, scheduler load, or live launchd cutover was attempted.
 
 The surrounding cross-repository state has changed since the baseline review:
 
