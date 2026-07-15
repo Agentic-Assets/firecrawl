@@ -34,6 +34,10 @@
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 012_cre_listing_institutional_cols.sql
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 013_cre_listing_om_facts.sql
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 014_cre_geo_crosswalk.sql
+--     # Legacy-only, separately approved maintenance operation:
+--     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+--       -v CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT=1 \
+--       -f 015_align_om_facts_conflict_key.sql
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 006_cre_contact_urls.sql
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 005_cre_views.sql
 --
@@ -55,6 +59,7 @@
 --                                       on cre_listings; license on cre_listing_contacts
 --   013 cre_listing_om_facts    OM/PDF-parsed facts table (+ archive mirror), provenance
 --   014 cre_geo_crosswalk       ZIP->county+CBSA reference table (\copy load gated)
+--   015 align_om_facts_conflict_key  legacy-only, separately approved index alignment
 --   006 cre_contact_urls        contact profile/avatar/VCard URL fields
 --   005 cre_views               views (incl v_cre_recent_changes), search fn, triggers
 --

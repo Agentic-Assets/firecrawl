@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""om_parse.py: OM/PDF underwriting-fact parse tier (Phase-2 data-lift WS2).
+"""om_parse.py: retired Firecrawl OM/PDF writer support (Phase-2 data-lift WS2).
 
-The highest-stakes write path in the data-lift: financial scalars parsed from an
+The former highest-stakes write path in the data-lift: financial scalars parsed from an
 Offering Memorandum / brochure PDF can reach board-facing cre_listings columns
 (noi, cap_rate, occupancy_rate, units, year_built). So this module is
 conservative and PROVENANCE-FIRST:
@@ -17,19 +17,19 @@ conservative and PROVENANCE-FIRST:
     items. EVERY emitted scalar carries provenance (source_doc_url,
     parser_version, confidence in [0,1]). A non-underwriting PDF yields ZERO
     scalars (never fabricate).
-  - CONFIDENCE FLOOR: a scalar with confidence < CONFIDENCE_FLOOR (0.6) is
-    written ONLY to cre_listing_om_facts (the audit trail), NEVER to the
-    cre_listings column. A high-confidence scalar writes BOTH the cre_listings
-    scalar key AND an om_facts provenance row.
-  - RE-INGEST is ADDITIVE: an artifact is built and handed to cre_ingest.py with
-    argv strictly ["--in", path] (never --activate-status / --mark-missing).
-    cre_ingest COALESCE-keeps every scalar (an OM parse never clobbers a fuller
-    prior capture) and routes omFacts to cre_listing_om_facts.
-  - --dry-run is the DEFAULT; --apply is gated. Nothing is applied to prod and
-    no connection string is ever printed.
+  - CONFIDENCE FLOOR: extraction still classifies values by confidence for
+    regression coverage, but Firecrawl does not write either parent scalars or
+    OM-fact rows.
+  - DRY-RUN ARTIFACTS are explicitly marked as retired diagnostics. The
+    collector ingestor rejects both marked artifacts and the older
+    externalId-plus-omFacts row shape.
+  - GetCREdata is the sole production OM extraction writer. Firecrawl keeps the
+    pure extractors and dry-run artifact path for regression coverage, but
+    `--apply` fails closed before it can select, parse, or write to a database.
+    Nothing is applied to prod and no connection string is ever printed.
 
 Structure: PURE extractors / builders (asserted by tests with no DB, no network)
-plus a thin run() that wires select -> parse -> extract -> re-ingest. Reuses
+plus a thin run() that wires select -> parse -> extract -> diagnostic artifact. Reuses
 cre_parse.py for ALL numeric parsing (never reinvents a regex) and reuses
 cre_ingest.load_db_url / find_psql / sql_lit so credential loading and SQL
 escaping are byte-identical to the production ingest path.
@@ -37,7 +37,7 @@ escaping are byte-identical to the production ingest path.
 Usage:
   python3 om_parse.py                       # dry-run: select + parse + extract,
                                             # write the artifact, do NOT ingest
-  python3 om_parse.py --apply               # additionally re-ingest additively
+  python3 om_parse.py --apply               # rejected: writer retired
   python3 om_parse.py --sources cbre,jll    # restrict to source keys (default cbre,jll)
   python3 om_parse.py --limit 50            # cap candidate listings this run
 """
@@ -56,6 +56,7 @@ from datetime import datetime, timezone
 # discovery (never re-implement credential loading or quote-doubling).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cre_ingest import (  # noqa: E402
+    RETIRED_OM_PARSE_ARTIFACT_KIND,
     find_psql,
     load_db_url,
     sql_lit,
@@ -495,16 +496,6 @@ def build_docs_sql(external_ids, brokerage_slugs):
     ])
 
 
-def build_ingest_argv(artifact_path):
-    """THE safety guard: re-ingest is ALWAYS exactly ["--in", path].
-
-    Never --activate-status / --mark-missing. cre_ingest's additive upsert
-    COALESCE-keeps scalars and routes omFacts to cre_listing_om_facts; status
-    badges (none emitted by this tier) would route to the OPT-IN gate regardless.
-    """
-    return ["--in", artifact_path]
-
-
 # ---------------------------------------------------------------------------
 # Firecrawl /v2/parse client (the only network boundary; mocked in tests)
 # ---------------------------------------------------------------------------
@@ -620,7 +611,18 @@ def _slugs_for_sources(source_keys):
     return sorted(slugs)
 
 
+RETIRED_WRITER_EXIT_CODE = 78
+
+
 def run(args):
+    if getattr(args, "apply", False):
+        print(
+            "om_parse.py --apply is retired: GetCREdata is the sole production "
+            "OM extraction writer.",
+            file=sys.stderr,
+        )
+        return RETIRED_WRITER_EXIT_CODE
+
     source_keys = [s.strip() for s in (args.sources or "").split(",") if s.strip()]
     if not source_keys:
         source_keys = ["cbre", "jll"]
@@ -686,30 +688,22 @@ def run(args):
     if not enriched:
         return 0
 
-    # (4) Write the artifact (collector artifact shape: {listings: [...]}).
+    # (4) Write a review-only artifact.  This envelope is intentionally not a
+    # collector input: cre_ingest rejects it before staging any listing.
     os.makedirs(OUT_OM_DIR, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     artifact_path = os.path.join(OUT_OM_DIR, f"om_{stamp}.json")
     with open(artifact_path, "w") as f:
-        json.dump({"listings": enriched}, f, indent=2)
+        json.dump(
+            {
+                "artifactKind": RETIRED_OM_PARSE_ARTIFACT_KIND,
+                "listings": enriched,
+            },
+            f,
+            indent=2,
+        )
     print(f"artifact: {artifact_path}", file=sys.stderr)
-
-    # (5) Re-ingest, ADDITIVE, ONLY on --apply. argv strictly ["--in", path].
-    if not args.apply:
-        print("dry-run (default): artifact written, NOT ingested. Pass --apply to ingest.",
-              file=sys.stderr)
-        return 0
-
-    ingest = subprocess.run(
-        [sys.executable, os.path.join(HERE, "cre_ingest.py"),
-         *build_ingest_argv(artifact_path)]
-        + (["--env-file", args.env_file] if args.env_file else []),
-        cwd=HERE, stdout=sys.stderr, stderr=sys.stderr,
-    )
-    if ingest.returncode != 0:
-        print(f"ingest failed rc={ingest.returncode}", file=sys.stderr)
-        return 1
-    print("OM-parse ingest complete (additive)", file=sys.stderr)
+    print("dry-run: retired diagnostic artifact written; it cannot be ingested.", file=sys.stderr)
     return 0
 
 
@@ -748,14 +742,12 @@ def main():
                     help="local Firecrawl API base (default %(default)s)")
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
     ap.add_argument("--apply", action="store_true",
-                    help="re-ingest the artifact additively (default: dry-run, no ingest)")
+                    help="rejected: Firecrawl OM writes are retired")
     ap.add_argument("--dry-run", action="store_true", default=True,
                     help="default; select+parse+extract+write artifact, do NOT ingest")
     ap.add_argument("--show-sql", action="store_true",
                     help="with --dry-run, print the candidate SQL and exit without connecting")
     args = ap.parse_args()
-    if args.apply:
-        args.dry_run = False
     sys.exit(run(args))
 
 

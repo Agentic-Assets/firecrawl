@@ -21,12 +21,17 @@ revival/activation CASEs), never as a blind column write.
 """
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 import cre_ingest as ci
 
 _SCRAPED_AT = datetime(2026, 6, 15, 0, 0, 0, tzinfo=timezone.utc).isoformat()
+
+_OM_FACTS_CONFLICT_TARGET = (
+    "ON CONFLICT (listing_id, fact_group, fact_key, source_doc_url, parser_version)"
+)
 
 
 # ===========================================================================
@@ -126,6 +131,36 @@ def test_no_mark_missing_block_when_slugs_empty():
     sql = ci.build_sql([], [], _SCRAPED_AT, set(), history_guard=True)
     assert "CREATE TEMP TABLE _retired" not in sql
     assert "INSERT INTO credeals.cre_listing_contacts_archive" not in sql
+
+
+# ===========================================================================
+# OM-facts writer contract. Production has a five-column, NULLS NOT DISTINCT
+# unique index. Generated ingest SQL must use that exact target so re-parses of
+# one parser release update in place, while a later parser release can coexist.
+# ===========================================================================
+
+
+def _om_facts_sql():
+    sql = ci.build_sql([], [], _SCRAPED_AT, set(), history_guard=True)
+    start = sql.index("INSERT INTO credeals.cre_listing_om_facts")
+    return sql[start:sql.index("END $$;", start)]
+
+
+def test_om_facts_generated_upsert_uses_canonical_five_column_target():
+    om_sql = _om_facts_sql()
+    assert f"{_OM_FACTS_CONFLICT_TARGET} DO UPDATE SET" in om_sql
+    assert "ON CONFLICT (listing_id, fact_group, fact_key, source_doc_url) DO UPDATE" not in om_sql
+    assert "parser_version  = EXCLUDED.parser_version" in om_sql
+
+
+def test_om_facts_source_migration_declares_the_writer_conflict_target():
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / "sql"
+        / "013_cre_listing_om_facts.sql"
+    ).read_text()
+    index_columns = _OM_FACTS_CONFLICT_TARGET.removeprefix("ON CONFLICT ")
+    assert f"ON credeals.cre_listing_om_facts {index_columns} NULLS NOT DISTINCT" in migration
 
 
 # ===========================================================================

@@ -1,5 +1,10 @@
 # Handoff: Phase-2 data lift (free scalar backfill, OM/PDF parse, new columns, geo + DQ guards) - 2026-06-15
 
+> **Historical handoff, superseded for OM writes on 2026-07-11.** Do not follow
+> this document's `om_parse.py --apply` or enrich-wiring instructions. That
+> Firecrawl writer is retired and fails closed; GetCREdata is the sole production
+> OM extraction writer. This file remains a record of the 2026-06-15 work.
+
 Status: BUILT and verified in code on branch `feat/cre-brokerage-collectors-2026-06-12`.
 The data-lift DDL (`011`-`014`) + the crosswalk load + the three backfills
 (raw_data scalar, om_classify, geo) were APPLIED to prod 2026-06-15 (board
@@ -107,9 +112,10 @@ was ever printed.
 **Board integrity (verified read-only after apply):** 87,328 active, 0
 non-active, 92,699 total. `status` was NEVER touched (activation stays OPT-IN
 default-off). Consumer views resolve unchanged (`v_cre_active_for_sale` 33,824,
-`v_cre_active_for_lease` 58,727, `v_cre_listings_full` 87,328). `cre_listing_om_facts`,
-`cre_listing_media`, and `cre_listing_links` stay EMPTY (OM-parse and media
-backfill gated). 738 pytest pass (code unchanged this session).
+`v_cre_active_for_lease` 58,727, `v_cre_listings_full` 87,328). At that dated
+checkpoint, `cre_listing_om_facts`, `cre_listing_media`, and
+`cre_listing_links` were empty. Do not treat that as a current count or an OM
+writer instruction. 738 pytest pass (code unchanged this session).
 
 ## 1. Why
 
@@ -140,23 +146,25 @@ delivers all four follow-up workstreams the audit recommended.
   `tests/fixtures/raw_data/<source>.json` and unit tests.
 
 ### WS2 - OM/PDF parse tier
-- `om_parse.py` (NEW): selects listings whose documents carry a parseable OM/
+- `om_parse.py` (historical): selected listings whose documents carry a parseable OM/
   brochure PDF and which lack underwriting fields; calls the LOCAL self-hosted
   Firecrawl `/v2/parse` (Docling, zero cloud cost); a PURE `extract_om_facts`
   pulls noi / cap_rate / occupancy / units / year_built + unit_mix / rent_roll.
   Every scalar carries provenance (source_doc_url, parser_version, confidence).
   CONFIDENCE FLOOR: a scalar with confidence < 0.6 is written ONLY to
   `cre_listing_om_facts`, never to the board-facing `cre_listings` column;
-  re-ingest is additive and never activates status or soft-deletes. `--dry-run`
-  default, `--apply` gated, CBRE+JLL first.
+  re-ingest was additive and never activated status or soft-deleted. The pure
+  extractors and dry-run path remain for regression coverage, while `--apply`
+  is retired and fails closed.
 - `om_url_resolver.py` (NEW): resolves viewer-wrapped / non-`.pdf` brochure URLs
   (Cushman / Colliers / Lee / SVN) to the real PDF; unresolvable -> None.
 - `om_classify_existing.py` (NEW): one-time UPGRADE-ONLY re-classification of the
   70,414 existing `doc_type='brochure'` rows to a more-specific type
   (om / financials / rent_roll / floor_plan / flyer), never downgrading, never
   touching already-non-brochure rows. `--dry-run` default, `--apply` gated.
-- `cre_enrich.py`: the OM-parse step wired into the Tier-B enrich flow additively
-  (dry-run never reaches the OM step; ingest argv stays `['--in', path]`).
+- `cre_enrich.py` historically had an OM-parse step in the Tier-B enrich flow.
+  It has been removed so a legacy flag or environment cannot create a second
+  production writer.
 
 ### WS3 - New high-value columns
 - `sql/012_cre_listing_institutional_cols.sql`: building_class (A/B/C/D CHECK),
@@ -192,7 +200,9 @@ delivers all four follow-up workstreams the audit recommended.
 ### Schema (also new)
 - `sql/013_cre_listing_om_facts.sql`: `cre_listing_om_facts` (+ archive mirror)
   with parse provenance; unique `(listing_id, fact_group, fact_key,
-  source_doc_url) NULLS NOT DISTINCT`, RLS on, FK ON DELETE CASCADE.
+  source_doc_url, parser_version) NULLS NOT DISTINCT`, RLS on, FK ON DELETE
+  CASCADE. The parser version remains part of the canonical identity so parser
+  releases coexist as separate auditable captures.
 - `sql/005_cre_views.sql` widened: `v_cre_listings_full` gains the om_facts
   LATERAL + institutional/geo columns; sale/lease views gain the new columns.
   No predicate change.
@@ -301,9 +311,9 @@ real candidate counts before any write.
    column) -> review (~85,618 rows) -> `--apply`. Optionally also `\copy` the CSV
    into `cre_zip_cbsa_crosswalk` for consumer SQL joins (commented-out load in
    `sql/014`).
-5. OM-parse pass: confirm the local Firecrawl stack is up, then
-   `python3 om_parse.py --dry-run` (CBRE+JLL first) -> review -> `--apply`; then
-   wire the enrich cadence per `ENRICHMENT_WORKER_DESIGN_2026-06-15.md`.
+5. **Superseded for production.** Do not run `om_parse.py --apply` or wire it
+   into enrich. GetCREdata owns production OM extraction; its governed writer
+   path requires the cross-repository ownership and production gates.
 
 Unchanged and still separately gated: status activation, `--mark-missing`
 soft-delete, the consumer board-gate deploy (and the paired `sql/005` view

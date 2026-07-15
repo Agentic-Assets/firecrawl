@@ -1,5 +1,12 @@
 # Phase-2 Data-Lift Implementation Contract (2026-06-15)
 
+> **Historical implementation contract.** This document is not the current
+> source of truth for OM writes. Its WS2 activation and enrich-wiring steps are
+> superseded: GetCREdata is the sole production OM writer, and local
+> `om_parse.py --apply` exits `78`. Keep the pure parsing material only for
+> regression coverage. Follow `START_HERE.md` and the operator runbook for
+> current operational instructions.
+
 Lead engineer (Opus) contract for the multi-phase CRE data-lift build. This is
 the EXACT spec ~15 downstream agents follow VERBATIM so they can work on DISJOINT
 files without conflict. It is the single source of truth for the four
@@ -75,11 +82,13 @@ DECISION:
   upsert path so an OM parse never clobbers a fuller prior capture, and a board
   consumer already reads them. No schema change for these.
 - **Unit-mix / rent-roll line items and parse PROVENANCE get a NEW table
-  `cre_listing_om_facts`** (migration `013`). One row per (listing, fact group)
-  with the parse provenance columns (`source_doc_url`, `parsed_at`,
-  `parser_version`, `confidence`) so every OM-derived datum is auditable and a
-  re-parse is idempotent. Unit-mix/rent-roll are arrays-of-objects with no fixed
-  arity; a child table is the correct shape, not jsonb on the parent.
+  `cre_listing_om_facts`** (migration `013`). One row per (listing, fact group,
+  fact key, source document, parser version), with the parse provenance columns
+  (`source_doc_url`, `parsed_at`, `parser_version`, `confidence`) so every
+  OM-derived datum is auditable. A re-parse by the same parser release is
+  idempotent, while a later parser release retains its own audit row. Unit-mix/
+  rent-roll are arrays-of-objects with no fixed arity; a child table is the
+  correct shape, not jsonb on the parent.
 
 Provenance contract: when the OM-parse tier writes a scalar onto `cre_listings`
 (e.g. `noi`), it ALSO writes a `cre_listing_om_facts` row recording WHICH doc and
@@ -192,7 +201,7 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listing_om_facts (
 CREATE INDEX IF NOT EXISTS cre_listing_om_facts_listing_idx
     ON credeals.cre_listing_om_facts (listing_id);
 CREATE UNIQUE INDEX IF NOT EXISTS cre_listing_om_facts_uq
-    ON credeals.cre_listing_om_facts (listing_id, fact_group, fact_key, source_doc_url) NULLS NOT DISTINCT;
+    ON credeals.cre_listing_om_facts (listing_id, fact_group, fact_key, source_doc_url, parser_version) NULLS NOT DISTINCT;
 ALTER TABLE credeals.cre_listing_om_facts ENABLE ROW LEVEL SECURITY;
 COMMENT ON TABLE credeals.cre_listing_om_facts IS
     'OM/PDF-parsed facts (scalar underwriting + unit_mix + rent_roll) with parse provenance. Scalars also COALESCE-write the matching cre_listings column; this table is the audit trail and the home for non-scalar line items. Service-role only (RLS on, no public policy).';
@@ -556,14 +565,12 @@ Each Workflow-2 agent owns exactly the files listed; no two share a file.
 | agent-doc-classify | `om_classify_existing.py`, `tests/test_doc_classify.py` |
 | agent-geo | `cre_geo_backfill.py`, `data/build_zip_cbsa_crosswalk.py`, `data/zip_cbsa_crosswalk.csv`, `data/README.md`, `tests/test_geo_derive.py` |
 | agent-dq-guards | `tests/test_dq_guards.py` (asserts the 6 guards against `cre_parse.py`/`cre_geo.py`; ADD-only test file, touches no FOUNDATION file) |
-| agent-enrich-wire | `tests/test_om_enrich_wiring.py` (asserts `cre_enrich.py`/`lib/enrich.ts` OM-parse step contract; `cre_enrich.py` and `lib/enrich.ts` OM wiring are FOUNDATION Workflow-1 edits, so this agent owns ONLY the new test) |
+| agent-enrich-wire | `tests/test_om_enrich_wiring.py` (asserts that `cre_enrich.py` and `lib/enrich.ts` have no OM-parse invocation; this is a retired-writer regression guard) |
 
 Notes:
-- The OM-parse worker WIRING into `cre_enrich.py` + `lib/enrich.ts` (add an
-  `omParseEnricher` step that, after detail re-ingest, drains parseable docs
-  through `om_parse.py` and writes `cre_listing_om_facts` + COALESCE scalars) is a
-  FOUNDATION edit (Workflow 1) because it touches frozen files; agent-enrich-wire
-  only authors the test. This keeps every frozen file single-owned by Workflow 1.
+- The former OM-parse worker wiring is retired. `cre_enrich.py` and
+  `lib/enrich.ts` must not invoke `om_parse.py`, and the regression test guards
+  that absence so a legacy environment cannot recreate a second writer.
 - `collect.ts` is FOUNDATION (Workflow 1) for any new source-key registration; no
   source agent edits it (none of these are new sources, only field additions, so
   `collect.ts` likely needs no change beyond passing new fields through, which it
@@ -635,10 +642,8 @@ Re-run counts to confirm (the suite is parametrized).
   (3) AY `$5000/SF/YR` cap, (4) dual-mode primary/secondary_pass COALESCE,
   (5) Transwestern Land Area (ac) SF-vs-acres validation, (6) Newmark sale_price
   'Subject to Offer' rejection.
-- `tests/test_om_enrich_wiring.py`: (agent-enrich-wire) asserts the OM-parse step
-  in `cre_enrich.py` is additive-only (ingest argv stays `["--in", path]`, never
-  `--activate-status`/`--mark-missing`), writes `cre_listing_om_facts`
-  provenance, and is idempotent on re-run.
+- `tests/test_om_enrich_wiring.py`: (agent-enrich-wire) asserts that
+  `cre_enrich.py` and `lib/enrich.ts` expose no OM-parse path or invocation.
 
 **Fixtures needed:**
 

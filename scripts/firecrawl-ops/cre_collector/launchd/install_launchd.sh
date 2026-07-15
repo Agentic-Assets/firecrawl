@@ -4,8 +4,9 @@
 #
 # The committed *.plist.template files are path-agnostic (tokens __COLLECTOR_DIR__,
 # __BIN_PATH__, __ENV_EXTRA__). This script self-locates the collector dir,
-# resolves node/python3 onto PATH, optionally injects CRE_ENV_FILE, renders each
-# template, validates it with plutil, and installs it to ~/Library/LaunchAgents.
+# resolves node/python3 onto PATH, optionally injects non-secret paths for the
+# database environment and alert webhook, renders each template, validates it
+# with plutil, and installs it to ~/Library/LaunchAgents.
 #
 # It NEVER loads a job unless you pass --load (loading is gated per tier; see
 # README.md). Rendering + installing is always safe.
@@ -15,6 +16,7 @@
 #   bash install_launchd.sh --load <monitor|enrich|weekly|daily|all>   # also launchctl load -w
 #   bash install_launchd.sh --print <monitor|enrich|weekly|daily>      # print rendered plist, install nothing
 #   bash install_launchd.sh --env-file /path/.env.local all            # inject CRE_ENV_FILE into the plists
+#   bash install_launchd.sh --alert-webhook-file /path/webhook.url all # inject secret-file path only
 #   bash install_launchd.sh --uninstall <monitor|enrich|weekly|daily|all>
 #
 # Tiers: monitor (2x/day), enrich (every 4h), weekly (additive backstop). The
@@ -33,6 +35,7 @@ LA_DIR="${HOME}/Library/LaunchAgents"
 
 MODE="install"   # install | load | print | uninstall
 CRE_ENV_FILE_ARG="${CRE_ENV_FILE:-}"
+CRE_ALERT_WEBHOOK_FILE_ARG="${CRE_ALERT_WEBHOOK_FILE:-}"
 TIERS=()
 
 # ---------------------------------------------------------------------------
@@ -47,6 +50,10 @@ while [ $# -gt 0 ]; do
       shift
       [ $# -gt 0 ] || { echo "error: --env-file requires a path argument" >&2; exit 2; }
       CRE_ENV_FILE_ARG="$1" ;;
+    --alert-webhook-file)
+      shift
+      [ $# -gt 0 ] || { echo "error: --alert-webhook-file requires a path argument" >&2; exit 2; }
+      CRE_ALERT_WEBHOOK_FILE_ARG="$1" ;;
     monitor|enrich|weekly|daily) TIERS+=("$1") ;;
     all)         TIERS=(monitor enrich weekly) ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -55,7 +62,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "${#TIERS[@]}" -eq 0 ]; then
-  echo "usage: install_launchd.sh [--load|--print|--uninstall] [--env-file PATH] <monitor|enrich|weekly|daily|all>" >&2
+  echo "usage: install_launchd.sh [--load|--print|--uninstall] [--env-file PATH] [--alert-webhook-file PATH] <monitor|enrich|weekly|daily|all>" >&2
   exit 2
 fi
 
@@ -97,17 +104,46 @@ for d in /opt/homebrew/bin /opt/homebrew/sbin /usr/local/bin /usr/bin /bin; do
 done
 
 # ---------------------------------------------------------------------------
-# Compute __ENV_EXTRA__ (optional CRE_ENV_FILE injection).
+# Compute __ENV_EXTRA__ (optional non-secret path injection).
 # ---------------------------------------------------------------------------
 env_extra=""
+xml_escape() {
+  # Python stdlib avoids Bash-version-dependent '&' replacement semantics.
+  # Only a non-secret path is passed here; the webhook URL is never read by the
+  # installer or emitted into the plist.
+  python3 -c 'import html, sys; print(html.escape(sys.argv[1], quote=True), end="")' "$1"
+}
+append_env_path() {
+  local key="$1" value
+  value="$(xml_escape "$2")"
+  env_extra+=$'\n        <key>'"${key}"$'</key>\n        <string>'"${value}"$'</string>'
+}
 if [ -n "$CRE_ENV_FILE_ARG" ]; then
-  env_extra=$'\n        <key>CRE_ENV_FILE</key>\n        <string>'"${CRE_ENV_FILE_ARG}"$'</string>'
+  append_env_path CRE_ENV_FILE "$CRE_ENV_FILE_ARG"
+fi
+if [ -n "$CRE_ALERT_WEBHOOK_FILE_ARG" ]; then
+  case "$CRE_ALERT_WEBHOOK_FILE_ARG" in
+    /*) ;;
+    *) echo "error: --alert-webhook-file must be an absolute path" >&2; exit 2 ;;
+  esac
+  if [ ! -f "$CRE_ALERT_WEBHOOK_FILE_ARG" ] || [ ! -r "$CRE_ALERT_WEBHOOK_FILE_ARG" ] || [ ! -O "$CRE_ALERT_WEBHOOK_FILE_ARG" ]; then
+    echo "error: alert webhook file must be an owned, readable regular file" >&2
+    exit 2
+  fi
+  alert_mode="$(stat -f '%Lp' "$CRE_ALERT_WEBHOOK_FILE_ARG" 2>/dev/null || stat -c '%a' "$CRE_ALERT_WEBHOOK_FILE_ARG" 2>/dev/null || true)"
+  case "$alert_mode" in
+    400|600) ;;
+    *) echo "error: alert webhook file permissions must be 400 or 600" >&2; exit 2 ;;
+  esac
+  append_env_path CRE_ALERT_WEBHOOK_FILE "$CRE_ALERT_WEBHOOK_FILE_ARG"
 fi
 
 # ---------------------------------------------------------------------------
 # Ensure the log directory exists (launchd opens StandardOut/ErrorPath at load).
 # ---------------------------------------------------------------------------
-mkdir -p "${COLLECTOR_DIR}/out/daily"
+if [ "$MODE" != "print" ]; then
+  mkdir -p "${COLLECTOR_DIR}/out/daily"
+fi
 
 # ---------------------------------------------------------------------------
 # TCC advisory: a launchd user-agent cannot read ~/Documents without a manual
@@ -122,15 +158,28 @@ case "$COLLECTOR_DIR" in
     ;;
 esac
 
+replace_all_literal() {
+  # Bash 5 can treat '&' in parameter-substitution replacements as the matched
+  # text. Split and reassemble instead so XML entities and path characters stay
+  # literal on both the Mac's Bash 3.2 and newer review hosts.
+  local value="$1" needle="$2" replacement="$3" output="" prefix
+  while [[ "$value" == *"$needle"* ]]; do
+    prefix="${value%%"$needle"*}"
+    output+="${prefix}${replacement}"
+    value="${value#*"$needle"}"
+  done
+  printf '%s' "${output}${value}"
+}
+
 render() {
   # $1 = tier ; prints rendered plist to stdout
   local tier="$1" tmpl content
   tmpl="${LAUNCHD_DIR}/$(label_for "$tier").plist.template"
   [ -f "$tmpl" ] || { echo "missing template: $tmpl" >&2; return 1; }
   content="$(cat "$tmpl")"
-  content="${content//__COLLECTOR_DIR__/$COLLECTOR_DIR}"
-  content="${content//__BIN_PATH__/$bin_path}"
-  content="${content//__ENV_EXTRA__/$env_extra}"
+  content="$(replace_all_literal "$content" __COLLECTOR_DIR__ "$COLLECTOR_DIR")"
+  content="$(replace_all_literal "$content" __BIN_PATH__ "$bin_path")"
+  content="$(replace_all_literal "$content" __ENV_EXTRA__ "$env_extra")"
   printf '%s\n' "$content"
 }
 

@@ -126,16 +126,93 @@ acquire_lock() {
     return 0
 }
 
+previous_failure_count() {
+    # Markers are deliberately tiny JSON files, so keep this dependency-free.
+    # A missing or malformed prior marker is treated as no prior failure.
+    local prior=""
+    [ -f "${MARKER}" ] || { printf '0\n'; return 0; }
+    prior="$(grep -o '"consecutive_failures":[0-9][0-9]*' "${MARKER}" 2>/dev/null | head -1 | cut -d: -f2 || true)"
+    case "${prior}" in
+        ''|*[!0-9]*) printf '0\n' ;;
+        *) printf '%s\n' "${prior}" ;;
+    esac
+}
+
+read_alert_webhook_url() {
+    # Scheduled jobs receive only the path to the secret. The URL itself stays
+    # outside git and out of the rendered plist. Direct CRE_ALERT_WEBHOOK_URL is
+    # retained for supervised/manual runs.
+    local direct="${CRE_ALERT_WEBHOOK_URL:-}" secret_file="${CRE_ALERT_WEBHOOK_FILE:-}"
+    local mode="" value=""
+    if [ -n "${direct}" ]; then
+        printf '%s' "${direct}"
+        return 0
+    fi
+    [ -n "${secret_file}" ] || return 0
+    if [ ! -f "${secret_file}" ] || [ ! -r "${secret_file}" ] || [ ! -O "${secret_file}" ]; then
+        echo "[cre_run_tier] ALERT not configured: CRE_ALERT_WEBHOOK_FILE must be an owned, readable regular file" >&2
+        return 0
+    fi
+    mode="$(stat -f '%Lp' "${secret_file}" 2>/dev/null || stat -c '%a' "${secret_file}" 2>/dev/null || true)"
+    case "${mode}" in
+        400|600) ;;
+        *)
+            echo "[cre_run_tier] ALERT not configured: CRE_ALERT_WEBHOOK_FILE permissions must be 400 or 600" >&2
+            return 0
+            ;;
+    esac
+    value="$(<"${secret_file}")"
+    printf '%s' "${value}"
+}
+
+notify_failure() {
+    # Optional and best-effort. A missing webhook must never mask the real tier
+    # exit code or turn a local outage into an alerting outage.
+    local rc="$1" failures="$2" url=""
+    url="$(read_alert_webhook_url)"
+    [ -n "${url}" ] || {
+        echo "[cre_run_tier] ALERT not sent: no valid webhook is configured (tier=${TIER} rc=${rc} consecutive_failures=${failures})" >&2
+        return 0
+    }
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "[cre_run_tier] ALERT not sent: curl is unavailable (tier=${TIER})" >&2
+        return 0
+    fi
+    if [[ "${url}" == *$'\n'* || "${url}" == *$'\r'* ]]; then
+        echo "[cre_run_tier] ALERT not sent: webhook contains a newline (tier=${TIER})" >&2
+        return 0
+    fi
+    # TIER is a fixed enum and the values are numeric, so this JSON cannot carry
+    # unescaped caller input. Pass the credential through curl's stdin config,
+    # not argv, so it cannot appear in process listings. Escape the only config
+    # delimiters that a valid URL can contain. Run synchronously with a bounded
+    # timeout so launchd cannot tear down the job before delivery completes.
+    local config_url="${url//\\/\\\\}"
+    config_url="${config_url//\"/\\\"}"
+    printf 'url = "%s"\n' "${config_url}" | curl --config - \
+        --silent --show-error --fail --max-time 10 \
+        -H 'Content-Type: application/json' \
+        -d "{\"text\":\"CRE collector tier ${TIER} failed (rc=${rc}, consecutive failures=${failures}). See cre_status.sh and the tier stderr log.\"}" \
+        >/dev/null 2>&1 || \
+        echo "[cre_run_tier] ALERT delivery failed (tier=${TIER}); preserving tier rc=${rc}" >&2
+}
+
 write_marker() {
     # Persist a tiny machine-readable verdict so cre_status.sh (and a coding
     # agent on the Mac mini) can tell success from failure without scraping
     # log tails. Best-effort: never let marker IO fail the run.
-    local rc="$1" okflag="false"
+    local rc="$1" okflag="false" failures=0 prior=0 tmp="${MARKER}.tmp.$$"
     [ "${rc}" = "0" ] && okflag="true"
-    { cat >"${MARKER}" <<EOF
-{"tier":"${TIER}","start":"${RUN_START}","end":"$(ts)","rc":${rc},"ok":${okflag}}
+    prior="$(previous_failure_count)"
+    if [ "${rc}" != "0" ]; then
+        failures=$(( prior + 1 ))
+    fi
+    { cat >"${tmp}" <<EOF
+{"tier":"${TIER}","start":"${RUN_START}","end":"$(ts)","rc":${rc},"ok":${okflag},"consecutive_failures":${failures}}
 EOF
-    } 2>/dev/null || true
+      mv -f "${tmp}" "${MARKER}"
+    } 2>/dev/null || rm -f "${tmp}" 2>/dev/null || true
+    printf '%s\n' "${failures}"
 }
 
 # --- disk maintenance (runs in finish() on every real run) -----------------
@@ -191,7 +268,11 @@ prune_runtime_artifacts() {
 finish() {
     local rc=$?
     if [ "${LOCK_HELD}" = "1" ]; then
-        write_marker "${rc}"
+        local failures
+        failures="$(write_marker "${rc}")"
+        if [ "${rc}" != "0" ]; then
+            notify_failure "${rc}" "${failures:-1}"
+        fi
         prune_runtime_artifacts            # bound disk on every real run, pass or fail
         rm -rf "${LOCKDIR}" 2>/dev/null || true
         rm -rf "${LOCKDIR}.reclaim" 2>/dev/null || true

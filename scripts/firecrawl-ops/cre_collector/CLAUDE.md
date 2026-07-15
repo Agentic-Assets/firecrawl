@@ -1,13 +1,42 @@
 # CLAUDE.md - cre_collector/
 
+> **ACTIVE production path.** This is the only supported collector and ingest
+> implementation. It is not currently scheduled on the Mac mini. Do **not**
+> implement daily collection in `../cre_scrapers/` (legacy Python
+> probes/archives only).
+
+> **Current runtime source, 2026-07-11:** The Mac mini audit found no CRE
+> launchd jobs, markers, or collector artifacts. Treat dated counts and
+> scheduler claims below as historical. The [operator runbook](../../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md)
+> is the current ordered recovery and canary procedure.
+
 Multi-source CRE listing collector + Supabase ingestor. This is the
 **production path** for building and refreshing the `credeals` listing
 database (EQUIRE feed). It supersedes the per-broker Python scrapers in
-`../cre_scrapers/` for bulk collection (those remain useful for detail-page
-enrichment).
+`../cre_scrapers/` for bulk collection (`../cre_scrapers/brokers/*/scraper.py`
+is **stale** for production; README/archive there is reference-only).
+
+## Agent routing: where to edit
+
+| Task | Edit here (ACTIVE) | Do NOT use (STALE) |
+|------|-------------------|-------------------|
+| New/changed broker collect logic | `sources/<broker>.ts`, `collect.ts` | `../cre_scrapers/brokers/*/scraper.py` |
+| Ingest / board upsert | `cre_ingest.py` | `../cre_pipeline.py`, `../cre_scrapers/pipeline.py` |
+| Daily / scheduled refresh | `cre_daily_update.sh`, `launchd/` | `../cre_scrapers/config.py` |
+| Live counts / source status | `START_HERE.md` | `../cre_scrapers/config.py` `active` flags |
+| Broker endpoint research notes | read `../cre_scrapers/brokers/*/README.md` | do not treat as runtime code |
 
 Adapted from the Prometheus cloud collector reference in `../prometheus/`.
 Runs entirely against the local self-hosted Firecrawl API.
+
+## Live counts and run-health (agents)
+
+`START_HERE.md` holds the canonical **Latest Source Matrix** and operational
+snapshot. Those figures (board totals, per-source rows, pytest counts, launchd
+last-run rc, index sizes) **stale quickly**. Before quoting or editing them,
+follow the **Agent rule: verify counts** section at the top of `START_HERE.md`:
+run `cre_status.sh`, re-run the test suites, and query Supabase when you need
+inventory numbers. Update the dated banner when you refresh docs.
 
 ## Read order
 
@@ -22,7 +51,7 @@ Runs entirely against the local self-hosted Firecrawl API.
 
 | File / dir | Purpose |
 |------------|---------|
-| `collect.ts` | Orchestrator: 15 sources, CLI, broker merge, artifact write |
+| `collect.ts` | Orchestrator: 20 sources, CLI, broker merge, artifact write |
 | `types.ts` | Shared listing vocabulary + `SourceResult` (`truncated?`, etc.) |
 | `sources/` | Per-broker adapters - see `sources/CLAUDE.md` |
 | `lib/` | Shared scrape/config/util - see `lib/CLAUDE.md` |
@@ -30,8 +59,8 @@ Runs entirely against the local self-hosted Firecrawl API.
 | `cre_monitor.py` | Observe-only diff/event runner (007 tables); never writes `status`/`deleted_at`; enqueues new/changed into `cre_enrichment_queue` |
 | `cre_gate.py` | Per-source coverage gate (`cre_source_baseline`); emits `mark_missing_safe` rollup |
 | `cre_enrich.py` | Tier-B queue worker: claims a batch from `cre_enrichment_queue`, runs `collect.ts --enrich-input` (targeted detail), re-ingests additively (`cre_ingest.py --in`), deletes done rows. Additive by construction (never `--mark-missing`/`--activate-status`); URL-matched, id-keyed completion; pure builders + thin `run()` |
-| `cre_daily_update.sh` | healthcheck → full collect → ingest → prune `out/daily/` artifacts |
-| `cre_status.sh` | Read-only run-health heartbeat: launchd state, per-tier staleness vs cadence, last-run verdict (from `out/daily/last_run_<tier>.json`), last-ingest counts, `out/` footprint + lock state (hung/stale), stack/env/TCC. Exits nonzero if unhealthy. `--full-health` runs the full healthcheck |
+| `cre_daily_update.sh` | healthcheck → full collect → gate [3/4] → ingest → prune `out/daily/` artifacts |
+| `cre_status.sh` | Read-only run-health heartbeat: launchd state, per-tier staleness vs cadence, last-run verdict (from `out/daily/last_run_<tier>.json`), last-ingest counts, checkout branch/HEAD/dirty state, per-tier rendered-plist drift, `out/` footprint + lock state (hung/stale), stack/env/TCC. Exits nonzero if unhealthy. `--full-health` runs the full healthcheck; `--expected-sha <commit>` enforces the clean deployment identity gate |
 | `cre_setup.sh` | One-command preflight + bootstrap for a fresh clone (toolchain, deps, env, offline smoke); run first. See `SETUP.md` |
 | `cre_validate.py` | Post-ingest Supabase validation (`npm run validate:supabase`); not in daily script |
 | `backfill_media_from_raw_data.py` | One-time additive lift of media/docs already stranded in `raw_data` into `cre_listing_media`/`cre_listing_links`/`cre_listing_documents`; `--dry-run` default, `--apply` gated on go-ahead; `011` DDL now applied 2026-06-15 (only the media backfill RUN remains gated). See `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` |
@@ -40,8 +69,8 @@ Runs entirely against the local self-hosted Firecrawl API.
 | `cre_backfill_raw_data.py` | One-time additive/idempotent Class-1 scalar backfill from `raw_data` into `cre_listings` (canonical_url + institutional cols). `--dry-run` default, `--apply` gated; APPLIED 2026-06-15 (canonical_url 0->87,324, 0 decode failures). Never touches `status`/`deleted_at` |
 | `cre_geo_backfill.py` | Additive/idempotent geo derivation (county/cbsa/geo_source) for existing rows via `cre_geo`. `--dry-run` default, `--apply` gated; APPLIED 2026-06-15 (85,618 of 87,328 rows) |
 | `om_classify_existing.py` | One-time additive re-classification of `doc_type='brochure'` rows into flyer/floor_plan/om/financials. `--dry-run` default; APPLIED 2026-06-15 (14,087 of 70,414 upgraded). Upgrade-only, never downgrades |
-| `om_url_resolver.py` | Resolves viewer-wrapped / non-`.pdf` brochure URLs (Buildout iframe, DocumentCloud, etc.) to the real `.pdf` document URL for the OM-parse tier |
-| `om_parse.py` | OM/PDF underwriting-fact parse tier (writes `cre_listing_om_facts`). Conservative, provenance-first. `--dry-run` default, `--apply` GATED (table stays empty until then); anti-bot limits local OM-PDF fetch |
+| `om_url_resolver.py` | Resolves viewer-wrapped / non-`.pdf` brochure URLs (Buildout iframe, DocumentCloud, etc.) to the real `.pdf` document URL for parser regression coverage |
+| `om_parse.py` | Retired Firecrawl OM writer. Pure extractors and dry-run artifacts remain for regression coverage; `--apply` exits `78`. GetCREdata is the sole production OM extraction writer. |
 | `run_colliers_main_full.sh` | Resumable colliers-main batch driver (~15,896 URLs) |
 | `launchd/` | macOS tier schedules (portable `*.plist.template` + `install_launchd.sh`) - see `launchd/CLAUDE.md` |
 | `tests/` | pytest contracts - see `tests/CLAUDE.md` |
@@ -51,7 +80,7 @@ Runs entirely against the local self-hosted Firecrawl API.
 | `HANDOFF_COLLIERS_MAIN_2026-06-13.md` | colliers-main full detail run handoff |
 | `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` | Monitor hardening, module split, first `--apply` seed |
 | `SECURITY_REVIEW_2026-06-14.md` | Branch security review: verdict, the `standard_conforming_strings` pin fix, deferred base-table REVOKE |
-| `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` | Tier-B enrichment-queue worker + cadence restructure (monitor 2x/day, enrich every 4h, weekly additive full backstop, daily retired). IMPLEMENTED in code 2026-06-15 (`cre_enrich.py`, `collect.ts --enrich-input`/`lib/enrich.ts`, `sql/010`, restructured launchd tiers); live launchd cutover (Section 9) still GATED |
+| `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` | Tier-B enrichment-queue worker + cadence restructure (monitor 2x/day, enrich every 4h, weekly additive full backstop, daily retained for rollback). Implemented in code; live scheduler recovery remains gated. |
 | `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` | Capture all videos/links/docs/images + full markdown + stranded structured fields. Generic harvester (`lib/harvest.ts`), richer scrape formats, NEW `cre_listing_media`/`cre_listing_links` tables (`sql/011`), Buildout-iframe Tier-B detail for lee/svn, raw_data backfill. BUILT + verified in code; live apply GATED |
 | `PHASE2_DATA_LIFT_CONTRACT_2026-06-15.md` | Phase-2 data-lift implementation contract: the spec the `011`-`014` DDL, the backfills, and the `cre_parse`/`cre_geo`/`om_*` modules implement |
 | `HANDOFF_DATA_LIFT_2026-06-15.md` | Phase-2 data-lift handoff: what shipped (DDL, three additive backfills, OM-parse tier), the prod apply log, and test counts |
@@ -61,7 +90,7 @@ Runs entirely against the local self-hosted Firecrawl API.
 | `TODO.md` | Collector working TODO list |
 | `data/` | Geo crosswalk reference (`zip_cbsa_crosswalk.csv` consumed by `cre_geo.py`) + `build_zip_cbsa_crosswalk.py` builder and `README.md` |
 | `reports/` | Coverage report outputs (column/brokerage/transaction CSVs + summary JSON; see `CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md`) |
-| `workflows/` | Executable Workflow scripts; `cre_enrichment_worker.workflow.js` is the build/test/review/cutover plan for the enrichment design above |
+| `workflows/` | Historical Workflow scripts; `cre_enrichment_worker.workflow.js` preserves build/test/review provenance and refuses database or scheduler cutover |
 | `archive/` | Dated buildout history (see `archive/README.md`) |
 | `../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` | Architecture + go-forward plan (§14) |
 | `../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` | Monitor run model and operational gotchas |
@@ -77,8 +106,9 @@ cd scripts/firecrawl-ops/cre_collector
 bash cre_setup.sh                # fresh clone: preflight + bootstrap (deps, checks, smoke). See SETUP.md
 npm install                      # once (cre_setup.sh does this for you)
 npm run typecheck                # TypeScript validation
-npm test                         # typecheck + unit tests (lib/, sources/ helpers)
+npm test                         # TypeScript typecheck + unit tests
 npm run test:unit                # TypeScript unit tests only
+python3 -m pytest tests/ -q      # Python collector tests
 
 # Small probe of one source, both transactions
 npx tsx collect.ts --source=svn --transaction=both --max-items=6 --out=/tmp/probe.json
@@ -99,14 +129,17 @@ bash cre_daily_update.sh --no-mark-missing
 
 Flags: `--source=all|csv` `--transaction=sale|lease|both` (default `both`)
 `--max-items` (0 = unlimited) `--page-cap` (default 60; use 400 for full runs)
-`--concurrency` (1–6, default 3) `--out=path` `--monitor` (enumeration-only pass).
+`--concurrency` (1–6, default 3) `--out=path` `--monitor` (enumeration-only pass)
+`--enrich-input` (targeted detail enrichment from `cre_enrich.py` queue batch).
 
 Env: `FIRECRAWL_API_URL` (default `http://localhost:3002`);
 `FIRECRAWL_API_KEY` (optional; defaults to `local-self-hosted` when unset).
 
-**15 source keys** (sale/lease support, methods, monitor matrix, Buildout rules,
+**20 source keys** (sale/lease support, methods, monitor matrix, Buildout rules,
 `external_id` gotchas, per-source env vars): `sources/CLAUDE.md`. Live row counts:
-`START_HERE.md` (Latest Source Matrix) and `BROKERAGE_STATUS_2026-06-12.md`.
+`START_HERE.md` (Latest Source Matrix; **verify before quoting**, see agent rule
+at top of that file) and `BROKERAGE_STATUS_2026-06-12.md` (may lag; prefer a
+fresh `psql` check when accuracy matters).
 
 **`--page-cap`** bounds pagination on `jll`, `cbre-dealflow`, `colliers`
 (SalesTracker), `nai-global` (`PAGE_CAP × page size`), and Savills sale pages.
@@ -128,14 +161,16 @@ Discovery order: `--env-file` flag, then `CRE_ENV_FILE` env var, then the
 `~/Documents/GitHub/agentic-assets/dynamically-display-cre-listing-data/.env.local`
 default (fallback `~/Documents/GitHub/agentic-assets/CRE_EQUIRE/.env.local`).
 Set `CRE_ENV_FILE` on any machine where the EQUIRE repo is not at the default
-`~/Documents` path. `cre_monitor.py` and `cre_gate.py` import the same loader.
+`~/Documents` path (production Mac mini uses `~/.config/cre/equire.env` via
+launchd). `cre_monitor.py` and `cre_gate.py` import the same loader.
 Live runs print only the env file path, never the URL.
 
 Key behavior:
 - Dedup key `(brokerage_id, external_id)`; sub-sources fold into the parent
   brokerage with prefixed ids (`dealflow:`, `investor:`, `main:`). Missing ids get
   `url:<sha1-16>` from the listing URL; Buildout (`svn`, `lee-associates`)
-  prefers URL `propertyId` with `-sale`/`-lease` stripped first.
+  prefers URL `propertyId` with `-sale`/`-lease` stripped first. Buildout sources:
+  `svn`, `lee-associates`, `franklin-street`.
 - Sale + lease passes merge to `transaction_type='sale_or_lease'`.
 - `cap_rate` stored as a decimal fraction (e.g. `0.065`); `norm_cap_rate` drops
   non-numeric, `<= 0`, percent inputs `>= 30`, and `>= 0.5`. Upsert uses
@@ -157,16 +192,15 @@ Key behavior:
   the upsert inserts `COALESCE->'active'` and the activation UPDATE is a no-op.
   Do NOT assume status activation fires on the next daily/manual full ingest;
   it requires the explicit flag plus consumer-side gate deploy first.
-- **Ingest-written value history (2026-06-15, existence-guarded pre-apply):**
+- **Ingest-written value history (2026-06-15, applied to prod):**
   `build_sql()` now captures a `_prior_vals` temp table of watched fields BEFORE
   the upsert, then writes one row to `cre_listing_price_history` per listing
   where a watched field (`sale_price_usd`, `sale_price_per_sf`, `lease_rate_min`,
   `lease_rate_max`, `status`, `cap_rate`) IS DISTINCT FROM its prior value.
   First-ever inserts produce no history row (history starts at the first CHANGE).
-  The INSERT is existence-guarded via `to_regclass`; it is a no-op until
-  `009_cre_history_retention.sql` is applied to prod. Dry-run emits the plain
-  unguarded INSERT so tests can assert the shape.
-- **Contacts + documents archived at retirement (2026-06-15, existence-guarded):**
+  The INSERT is existence-guarded via `to_regclass` (no-op if `009` is absent).
+  Dry-run emits the plain unguarded INSERT so tests can assert the shape.
+- **Contacts + documents archived at retirement (2026-06-15, applied to prod):**
   When `--mark-missing` fires, the soft-delete block first captures retired rows
   in a `_retired` temp table (with `prior_status`), then runs the UPDATE, then
   INSERTs one `cre_listing_events` row per retired listing with
@@ -217,20 +251,12 @@ coverage figures: `START_HERE.md`.
 - Per-source monitor behavior (excluded sources, supersets, detail skips):
   `sources/CLAUDE.md` + `cre-monitor-subsystem.md`.
 - Scheduled monitor tier uses default `--page-cap=60` unless overridden; see
-  `launchd/CLAUDE.md`. Monitor (`ai.agentic.cre-monitor`, every 3h at :15,
-  `CRE_MONITOR_APPLY=1`) and daily (`ai.agentic.cre-daily`, 06:30 daily,
-  `--no-mark-missing`, status activation OFF) launchd tiers are LOADED and now
-  EXECUTE on schedule: the repo was relocated out of `~/Documents` to
-  `/Users/caymanseagraves/Github/agentic-assets/firecrawl`, so the prior macOS
-  TCC / Full Disk Access exit-126 block is resolved. The monitor tier has a
-  confirmed clean scheduled run (`out/daily/last_run_monitor.json` rc:0,
-  2026-06-15); a later monitor fire correctly skips when the daily tier holds
-  the run lock, and the daily tier executes the additive collect on schedule.
-  See `START_HERE.md` Known Limits. Weekly reconcile tier (`ai.agentic.cre-weekly`)
-  is intentionally NOT loaded (held for explicit go-ahead). `cre_gate.py` is now wired into
-  `cre_daily_update.sh` as observe-only step [3/4] (`--in RUN --apply --strict
-  --out gate.json`); if the strict gate detects any partial/regressed source,
-  the script auto-downgrades to `--no-mark-missing`.
+  `launchd/CLAUDE.md`. **Current audit (2026-07-11):** no CRE scheduler is
+  installed on the Mac mini. Run `bash cre_status.sh` only as a read-only
+  preflight, then follow the operator runbook before a recovery attempt. `cre_gate.py`
+  is wired into `cre_daily_update.sh` as observe-only step [3/4]
+  (`--in RUN --apply --strict --out gate.json`); if the strict gate detects any
+  partial/regressed source, the script auto-downgrades to `--no-mark-missing`.
 
 ## Daily updates
 
@@ -242,13 +268,8 @@ trap; keeps 14 `run_*.json`, 29 `run_*.log`, 14 `gate_*.json` under
 structurally capped (colliers-main is now complete). See `START_HERE.md` Known
 Limits and Operational Recovery.
 
-Tiered schedules (monitor / daily additive / weekly reconcile):
-`launchd/CLAUDE.md`. Monitor and daily tiers are loaded and now run on schedule
-from the repo's relocated `~/Github` location (the prior TCC exit-126 block is
-resolved; see Monitor mode section and `START_HERE.md`
-Known Limits). Weekly reconcile tier is intentionally NOT loaded; do not
-`launchctl load` it until explicit go-ahead. Step [3/4] of the daily script now
-runs `cre_gate.py` observe-only; see Monitor mode section above.
+Tiered schedules: `launchd/CLAUDE.md`. They are implemented in code but not
+currently loaded on the Mac mini. Step [3/4] runs `cre_gate.py` observe-only.
 
 ## Adding a source
 

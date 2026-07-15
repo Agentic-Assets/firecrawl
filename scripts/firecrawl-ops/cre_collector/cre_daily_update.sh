@@ -76,6 +76,7 @@ prune_artifacts() {
   prune_keep 'run_*.json'  14
   prune_keep 'run_*.log'   29
   prune_keep 'gate_*.json' 14
+  prune_keep 'validate_*.json' 14
 }
 # Prune on EVERY exit (success or failure) so disk does not grow fastest exactly
 # when the pipeline is broken (e.g. a multi-day DB outage). The current run's
@@ -123,6 +124,16 @@ echo "[4/4] ingest -> credeals" | tee -a "$LOG"
 # updates listing data without flipping board state; activate deliberately with
 # CRE_ACTIVATE_STATUS=1 only after the EQUIRE consumer board-gate is deployed.
 python3 cre_ingest.py --in "$RUN_JSON" $MARK_MISSING >>"$LOG" 2>&1
+
+STEP="validate"
+echo "[5/5] validation (read-only; advisory)" | tee -a "$LOG"
+VALIDATE_JSON="$OUT_DIR/validate_$STAMP.json"
+VALIDATE_RC=0
+python3 cre_validate.py --format json --out "$VALIDATE_JSON" >>"$LOG" 2>&1 || VALIDATE_RC=$?
+if [ "$VALIDATE_RC" -ne 0 ]; then
+  printf '{"ok":false,"error":"cre_validate exited %s"}\n' "$VALIDATE_RC" >"$VALIDATE_JSON"
+  echo "  validation failed (rc=$VALIDATE_RC); ingest remains successful and status will surface the verdict" | tee -a "$LOG"
+fi
 
 STEP="done"
 echo "daily update complete: $RUN_JSON" | tee -a "$LOG"

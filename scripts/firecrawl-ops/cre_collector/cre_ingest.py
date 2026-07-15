@@ -382,16 +382,21 @@ def extra_facts_or_none(v):
 
 _OM_FACT_GROUPS = {"scalar", "unit_mix", "rent_roll"}
 
+# The retired Firecrawl OM parser writes review-only artifacts.  They must never
+# be treated as collector input: GetCREdata is the sole production OM writer.
+# Keep this marker at the envelope level so the CLI can reject the whole file,
+# and retain the row-shape guard below for pre-marker artifacts that may already
+# exist on an operator machine.
+RETIRED_OM_PARSE_ARTIFACT_KIND = "retired_om_parse_dry_run"
+
 
 def om_facts_rows(v):
-    """Stage OM/PDF-parsed facts into cre_listing_om_facts rows (contract A.2 / B).
+    """Legacy OM-facts serializer retained only for regression contracts.
 
-    The OM-parse tier (WS2) emits `omFacts` as a list of provenance-bearing
-    dicts. Each row MUST carry a non-empty fact_key, a source_doc_url, and a
-    parser_version (the provenance contract; A.2). Rows missing any required
-    provenance field are dropped (never fabricate an audit trail). fact_group
-    clamps to scalar/unit_mix/rent_roll; confidence clamps to (0, 1] or None.
-    Returns a list (possibly empty) so the build_sql staging stays uniform.
+    GetCREdata is the sole production OM writer. Firecrawl ingestion discards
+    this payload in both to_row() and build_sql(). This pure helper remains so
+    migration and parser-regression tests can validate the historical
+    provenance shape without restoring a writer path.
     """
     if not isinstance(v, list):
         return []
@@ -423,6 +428,23 @@ def om_facts_rows(v):
             }
         )
     return out
+
+
+def is_retired_om_parse_listing(listing):
+    """Return true for the legacy OM-parser artifact row shape.
+
+    Normal collector listings carry a native ``id``.  The retired parser emits
+    ``externalId`` and an ``omFacts`` payload instead.  Rejecting that exact
+    shape prevents both its OM-promoted parent scalars and the URL-hash fallback
+    identity from reaching the staging table.  Enrichment queue items may carry
+    ``externalId`` before TypeScript turns them into normal listings, but they
+    never carry ``omFacts`` and therefore remain unaffected.
+    """
+    return (
+        isinstance(listing, dict)
+        and "externalId" in listing
+        and "omFacts" in listing
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +760,8 @@ def group_source_lastmod(flat_listings):
 
 def to_row(listing, brokers_by_idx, scraped_at):
     """Map one collector listing to a staging row dict, or None to skip."""
+    if is_retired_om_parse_listing(listing):
+        return None
     source_key = listing.get("sourceKey")
     mapping = SOURCE_TO_BROKERAGE.get(source_key)
     if not mapping:
@@ -917,12 +941,10 @@ def to_row(listing, brokers_by_idx, scraped_at):
                 links.append({"url": lu, "rel": ln.get("rel"),
                               "linkType": ln.get("linkType") or "other"})
 
-    # OM-parsed facts (cre_listing_om_facts rows, sql/013). The OM-parse tier
-    # (WS2) emits `omFacts` as a list of provenance-bearing dicts; to_row stages
-    # them defensively (each row requires source_doc_url + parser_version). The
-    # cre_listings scalar COALESCE-write is the OM tier's job (it sets noi etc.
-    # on the listing object before this); here we only stage the audit-trail rows.
-    om_facts = om_facts_rows(listing.get("omFacts"))
+    # GetCREdata is the sole production OM writer. Ignore an `omFacts` payload
+    # in every Firecrawl collector artifact so a legacy or manually supplied
+    # artifact cannot write cre_listing_om_facts through this ingestor.
+    om_facts = []
 
     title = listing.get("name") or listing.get("headline") or listing.get("street")
     desc = listing.get("description")
@@ -1176,6 +1198,10 @@ def apply_status_activation_gate(rows, activate_status):
 
 
 def build_sql(rows, job_meta, started_at, mark_missing_slugs, history_guard=True):
+    # Defense in depth for direct callers of this builder. Normal ingestion
+    # reaches here through to_row(), which already drops `omFacts`, but this
+    # prevents a manually constructed row from restoring the retired writer.
+    rows = [{**row, "om_facts": []} for row in rows]
     lines = []
     w = lines.append
     w("\\set ON_ERROR_STOP on")
@@ -1627,12 +1653,14 @@ END $$;
 -- refresh: it is a provenance-bearing audit trail, and a normal (non-OM) detail
 -- pass carries no om_facts, so a DELETE would wipe a prior OM parse. Insert-only
 -- with ON CONFLICT DO UPDATE on the (listing_id, fact_group, fact_key,
--- source_doc_url) unique key, so a re-parse of the SAME doc is idempotent
--- (refreshes value/confidence/parsed_at) and a new doc adds a new row. Rides the
--- same _child_refresh set, so detailError rows never write (invariant). The OM
--- tier sets the matching cre_listings scalar via the institutional UPDATE /
--- COALESCE-keep path; this table is the audit home. parser_version/source_doc_url
--- are NOT NULL in the table, and om_facts_rows() drops any row missing them.
+-- source_doc_url, parser_version) unique key, so a re-parse of the SAME parser
+-- release and doc is idempotent (refreshes value/confidence/parsed_at), while a
+-- new parser release or doc adds an auditable row. Rides the same _child_refresh
+-- set, so detailError rows never write (invariant). The OM tier sets the matching
+-- cre_listings scalar via the institutional UPDATE / COALESCE-keep path; this
+-- table is the audit home. parser_version/source_doc_url are NOT NULL in the
+-- table. Firecrawl ingestion stages an empty om_facts array by policy; this
+-- retained upsert shape protects migration compatibility and archive handling.
 DO $$ BEGIN
   IF to_regclass('credeals.cre_listing_om_facts') IS NOT NULL THEN
     INSERT INTO credeals.cre_listing_om_facts (
@@ -1650,7 +1678,7 @@ DO $$ BEGIN
       AND x->>'factKey' IS NOT NULL
       AND x->>'sourceDocUrl' IS NOT NULL
       AND x->>'parserVersion' IS NOT NULL
-    ON CONFLICT (listing_id, fact_group, fact_key, source_doc_url) DO UPDATE SET
+    ON CONFLICT (listing_id, fact_group, fact_key, source_doc_url, parser_version) DO UPDATE SET
         fact_value_text = EXCLUDED.fact_value_text,
         fact_value_num  = EXCLUDED.fact_value_num,
         unit_count      = EXCLUDED.unit_count,
@@ -1853,6 +1881,7 @@ def sql_lit(s):
 
 
 def load_db_url(env_file):
+    using_legacy_fallback = False
     if env_file:
         # Expand ~ for parity with the CRE_ENV_FILE / defaults branches below,
         # so a --env-file value that was not shell-expanded still resolves.
@@ -1864,6 +1893,8 @@ def load_db_url(env_file):
         env_override = os.environ.get("CRE_ENV_FILE")
         if env_override:
             candidates.append(os.path.expanduser(env_override))
+        else:
+            using_legacy_fallback = True
         candidates.extend(os.path.expanduser(p) for p in ENV_FILE_CANDIDATES)
     for path in candidates:
         if not path or not os.path.isfile(path):
@@ -1878,6 +1909,13 @@ def load_db_url(env_file):
                 env[k.strip()] = v.strip().strip('"').strip("'")
         url = env.get("POSTGRES_URL_NON_POOLING") or env.get("POSTGRES_URL")
         if url:
+            if using_legacy_fallback:
+                print(
+                    "WARNING: using legacy CRE env-file fallback. Set CRE_ENV_FILE "
+                    "or pass --env-file before a real ingest; the selected path is "
+                    f"{path} (database URL omitted).",
+                    file=sys.stderr,
+                )
             return url, path
     sys.exit(
         "No POSTGRES_URL_NON_POOLING/POSTGRES_URL found. Set CRE_ENV_FILE or pass "
@@ -2027,6 +2065,11 @@ def main():
     for path in args.inputs:
         with open(path) as f:
             data = json.load(f)
+        if data.get("artifactKind") == RETIRED_OM_PARSE_ARTIFACT_KIND:
+            sys.exit(
+                "refusing retired om_parse dry-run artifact: GetCREdata is the "
+                "sole production OM extraction writer"
+            )
         run_meta = data.get("runMeta") or {}
         started_at = started_at or run_meta.get("startedAt")
         scraped_at = run_meta.get("finishedAt") or datetime.now(timezone.utc).isoformat()

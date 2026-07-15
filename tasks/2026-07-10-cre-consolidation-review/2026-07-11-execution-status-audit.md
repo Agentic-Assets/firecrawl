@@ -1,0 +1,118 @@
+# CRE consolidation execution-status audit (2026-07-11)
+
+**Plan:** `OPTIMAL_EXECUTION_PLAN_2026-07-11.md`
+**Firecrawl branch:** `fix/cre-consolidation-safety` at `8510e9207` plus this
+cross-repository evidence refresh.
+**Scope:** Read-only audit plus locally verified, pushed preparation branches.
+**Status:** The implementation-preparation phase is complete. The production
+execution phase is not authorized or proven.
+
+**Operator starting point:** Read
+`2026-07-11-firecrawl-operator-runbook.md` before requesting a merge, runtime
+recovery, deployment, or canary. It turns the gates below into the required
+order, pass evidence, stop conditions, and rollback response.
+
+## Verified implementation preparation
+
+### Firecrawl writer repair
+
+- The OM-facts generated upsert uses the production five-column identity:
+  `(listing_id, fact_group, fact_key, source_doc_url, parser_version)`.
+- `cre_enrich.py` no longer exposes the retired `--om-parse` path, and
+  `om_parse.py --apply` exits `78` before database or ingestion work.
+- The failure-webhook URL is passed to curl through stdin configuration rather
+  than process arguments. Its regression test also rejects newline injection.
+- Latest clean-worktree verification at this branch head:
+  - `python3 -m pytest tests/ -q`: 1,388 passed, 17 skipped.
+  - `bash tests/run_om_facts_postgres_contract.sh`: passed against isolated
+    PostgreSQL with the real five-column conflict target, then upgraded a
+    seeded legacy four-column index through migration `015` twice.
+  - `npm ci && npm test`: typecheck passed and 479 unit tests passed.
+  - `npm audit --audit-level=high`: zero vulnerabilities after updating the
+    locked transitive `form-data` and `undici` patch releases.
+  - `git diff --check origin/main...HEAD`: passed.
+
+### Review-and-ship follow-up
+
+- Draft PR #22 is open against `main`, is mergeable with a clean merge state,
+  and has no GitHub-hosted checks configured. Local verification remains the
+  release evidence for this fork-owned ops change.
+- The complete branch diff was reviewed again for correctness, regressions,
+  security, test coverage, and plan intent. No unresolved critical or warning
+  code defect was confirmed in the Firecrawl change set.
+- A fresh dependency audit found two pre-existing high-severity transitive
+  advisories. The lockfile now resolves `form-data` 4.0.6 and `undici` 7.28.0;
+  the audit and the full TypeScript suite pass after the update.
+- This code-review verdict does not change the production verdict. The branch
+  is review-ready, but the overall plan is not live or complete until the
+  deployment, owner-acknowledgement, canary, observation-window, and activation
+  gates below are proven.
+
+### Cross-repository preparation
+
+- GetCREdata unattended hardening is pushed at `c133d7a`; its release gate now
+  stops unattended execution before rankings, file writers, or Supabase export
+  on any critical validation failure. Current verification collected 63 tests,
+  with 59 passed and 4 environment-gated skips.
+- GetCREdata parser-version view preparation is pushed at `2ac4dd2`; current
+  verification collected 55 tests, with 51 passed and 4 environment-gated
+  skips.
+- aa-hub's disabled GetCREdata scheduler preparation is pushed at `c638d8a`.
+  Its local renderer dry-run and activation-document consistency checks pass;
+  it remains disabled and unallowlisted.
+- The Context Engineering ownership contract is version 2 at `3c5d63a`.
+  `ruby scripts/check_cre_data_object_ownership.rb` verifies all 16
+  source-controlled GetCREdata market objects while keeping the observed
+  property-type drift and adoption gates explicit.
+- EQUIRE's proposed listing-market integration is pushed at `583b1911a`. Its
+  migration now sets transaction-local lock and statement timeouts before DDL,
+  and its runbook requires a forward-only compensating migration for ledger-safe
+  rollback. Seven focused contract tests and typecheck pass. It remains
+  unapplied.
+
+## Current live-environment evidence
+
+The Mac mini is not in a state that permits a canary:
+
+- Its Firecrawl checkout is at `~/Documents/GitHub/firecrawl` on
+  `cursor/gha-detach-fork-ci-53bb` (`3b2f803ea`), not the safety branch. It
+  still contains the legacy OM parser path.
+- Colima is stopped, Docker is unavailable, and `http://localhost:3002` is
+  unreachable.
+- No CRE monitor, enrich, weekly, or daily launchd labels, plists, cron entries,
+  status markers, logs, or shared lock exist. There is no current monitor-green
+  proof and no loaded job to pause.
+- The `~/Documents` checkout remains a launchd TCC-risk location.
+- aa-hub is still on its old disabled GetCREdata stub: `default` environment,
+  exit `78`, 3,600-second timeout, and 01:00 schedule. There is no dedicated
+  hub environment file, allowlist entry, or GetCREdata run record.
+- The Mac mini GetCREdata checkout is an older branch with no reviewed
+  hardening code, virtual environment, configuration environment, cache, or
+  logs. Free disk is approximately 17 GiB (1 percent of the data volume).
+
+## Unmet plan gates
+
+| Plan requirement | State | Required evidence before completion |
+| --- | --- | --- |
+| Wave 0 monitor-only containment | Unmet | Fresh monitor `ok:true` marker after runtime recovery. |
+| Wave 1 deployed writer repair and canary | Unmet | Reviewed merge, verified Mac mini checkout/runtime, explicit five-row canary approval, then the required scheduled observation window. |
+| Wave 2 ownership adoption | Unmet | AGENTIC-1233 owner acknowledgement and adopted versioned property-type crosswalk. |
+| Wave 3 GetCREdata production proof | Unmet | Reviewed deployment, dedicated environment, PITR or snapshot proof, validation-only and supervised routine export evidence. |
+| Wave 4 approved coordinator activation | Unmet | Named policy-compatible coordinator and owner, provisioned runtime, disk remediation, explicit activation approval, rendered job, first-run evidence, and seven-day proof. GitHub Actions remains manual-only and aa-hub is not an execution control plane. |
+| Wave 5 observability | Unmet | Restored collector runtime, approved alert proof, enabled report-only health lane, and off-host alarm evidence. |
+| Wave 6 EQUIRE product integration | Partially complete | EQUIRE records the market-context DDL and caches as applied. Remaining evidence is the adopted crosswalk, correct producer metrics, consumer adoption, cache health, and product-path smoke proof. |
+| Waves 7 and 8 extraction and cleanup | Deferred | Explicit repository approval, both stable canaries, 30-day rollback window, and restore proof. |
+
+## Required authority to resume live waves
+
+1. The literal phrase `Cayman approved this merge` for Firecrawl PR #22.
+2. Explicit approval for Mac mini runtime recovery, checkout relocation or
+   TCC authorization, deployment, and the bounded production canary.
+3. Cross-repository owner acknowledgement of the versioned property-type
+   crosswalk in AGENTIC-1233.
+4. Separate approval for one named policy-compatible coordinator after its
+   documented preconditions are proven. EQUIRE's existing market-context DDL
+   is recorded as applied; any new production DDL remains separately gated.
+
+This audit does not authorize a production change, scheduler activation,
+database write, repository creation, deletion, PR merge, or EQUIRE DDL.

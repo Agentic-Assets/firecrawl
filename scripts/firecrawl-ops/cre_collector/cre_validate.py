@@ -334,6 +334,7 @@ def main():
     db_url, env_path = load_db_url(args.env_file)
     psql = find_psql()
     report = {
+        "ok": True,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "env_file": env_path,
         "queries": {},

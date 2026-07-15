@@ -17,10 +17,12 @@ delete the last_run_<tier>.json verdict markers that cre_status.sh reads.
 Pure-local: tmp_path only, no network, no database. Skips if bash is absent.
 """
 
+import html
 import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -28,7 +30,9 @@ import pytest
 COLLECTOR = Path(__file__).resolve().parent.parent
 DAILY = COLLECTOR / "cre_daily_update.sh"
 RUN_TIER = COLLECTOR / "launchd" / "cre_run_tier.sh"
+INSTALLER = COLLECTOR / "launchd" / "install_launchd.sh"
 STATUS = COLLECTOR / "cre_status.sh"
+ENRICHMENT_WORKFLOW = COLLECTOR / "workflows" / "cre_enrichment_worker.workflow.js"
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
 
@@ -128,10 +132,254 @@ def test_cre_status_flags_empty_or_malformed_markers():
     assert "retired/unloaded; ignoring stale ${marker_problem}" in text
 
 
+def test_tier_markers_track_consecutive_failures_and_alerts_are_optional():
+    runner = RUN_TIER.read_text(encoding="utf-8")
+    status = STATUS.read_text(encoding="utf-8")
+    assert '"consecutive_failures":${failures}' in runner
+    assert "previous_failure_count()" in runner
+    assert "CRE_ALERT_WEBHOOK_URL" in runner
+    assert "curl --config -" in runner
+    assert "--max-time 10" in runner
+    assert "consecutive_failures" in status
+    assert "alert/escalation threshold reached" in status
+
+
+def test_failure_webhook_keeps_credential_out_of_curl_argv(tmp_path):
+    """The real notifier passes its URL through stdin config, not process argv."""
+    runner = RUN_TIER.read_text(encoding="utf-8")
+    read_url = _extract_function("read_alert_webhook_url", runner)
+    notify = _extract_function("notify_failure", runner)
+    capture_args = tmp_path / "curl-argv.bin"
+    capture_stdin = tmp_path / "curl-stdin.txt"
+    fake_curl = tmp_path / "curl"
+    fake_curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\0' \"$@\" >\"${CAPTURE_ARGS:?}\"\n"
+        "cat >\"${CAPTURE_STDIN:?}\"\n",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+    secret_url = "https://webhook.example.test/hooks/bearer-secret"
+    secret_file = tmp_path / "webhook.url"
+    secret_file.write_text(secret_url + "\n", encoding="utf-8")
+    secret_file.chmod(0o600)
+    script = (
+        f"set -euo pipefail\nTIER=enrich\n{read_url}\n{notify}\n"
+        "notify_failure 17 4\nwait\n"
+    )
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "CRE_ALERT_WEBHOOK_FILE": str(secret_file),
+        "CRE_ALERT_WEBHOOK_URL": "",
+        "CAPTURE_ARGS": str(capture_args),
+        "CAPTURE_STDIN": str(capture_stdin),
+    }
+    subprocess.run(["/bin/bash", "-c", script], check=True, env=env)
+
+    argv = capture_args.read_bytes()
+    assert secret_url.encode() not in argv
+    assert b"--config\x00-\x00" in argv
+    assert capture_stdin.read_text(encoding="utf-8") == f'url = "{secret_url}"\n'
+
+
+def test_failure_webhook_waits_for_delivery_and_preserves_failure_path(tmp_path):
+    """The notifier must finish before launchd can tear down the process group."""
+    runner = RUN_TIER.read_text(encoding="utf-8")
+    read_url = _extract_function("read_alert_webhook_url", runner)
+    notify = _extract_function("notify_failure", runner)
+    fake_curl = tmp_path / "curl"
+    fake_curl.write_text("#!/usr/bin/env bash\nsleep 0.2\nexit 7\n", encoding="utf-8")
+    fake_curl.chmod(0o755)
+    script = f"set -euo pipefail\nTIER=enrich\n{read_url}\n{notify}\nnotify_failure 17 4\nprintf done\n"
+    started = time.monotonic()
+    result = subprocess.run(
+        ["/bin/bash", "-c", script],
+        check=True,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "CRE_ALERT_WEBHOOK_URL": "https://webhook.example.test/fail",
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert time.monotonic() - started >= 0.18
+    assert result.stdout == "done"
+    assert "preserving tier rc=17" in result.stderr
+
+
+def test_failure_webhook_rejects_newline_config_injection(tmp_path):
+    runner = RUN_TIER.read_text(encoding="utf-8")
+    read_url = _extract_function("read_alert_webhook_url", runner)
+    notify = _extract_function("notify_failure", runner)
+    fake_curl = tmp_path / "curl"
+    fake_curl.write_text("#!/usr/bin/env bash\nexit 99\n", encoding="utf-8")
+    fake_curl.chmod(0o755)
+    script = (
+        f"set -euo pipefail\nTIER=enrich\n{read_url}\n{notify}\n"
+        "notify_failure 17 4\nwait\n"
+    )
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "CRE_ALERT_WEBHOOK_URL": "https://webhook.example.test/ok\nheader = injected",
+    }
+    result = subprocess.run(
+        ["/bin/bash", "-c", script], check=True, env=env, text=True, capture_output=True
+    )
+    assert "contains a newline" in result.stderr
+
+
+def test_alert_webhook_file_requires_private_permissions(tmp_path):
+    runner = RUN_TIER.read_text(encoding="utf-8")
+    read_url = _extract_function("read_alert_webhook_url", runner)
+    secret_file = tmp_path / "webhook.url"
+    secret_file.write_text("https://webhook.example.test/private\n", encoding="utf-8")
+    secret_file.chmod(0o644)
+    script = f"set -euo pipefail\n{read_url}\nread_alert_webhook_url\n"
+    result = subprocess.run(
+        ["/bin/bash", "-c", script],
+        check=True,
+        env={**os.environ, "CRE_ALERT_WEBHOOK_FILE": str(secret_file)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.stdout == ""
+    assert "permissions must be 400 or 600" in result.stderr
+
+
+def test_rendered_plist_injects_alert_secret_path_not_value(tmp_path):
+    secret_url = "https://webhook.example.test/hooks/secret-value"
+    secret_file = tmp_path / "webhook&<>\"'alert.url"
+    secret_file.write_text(secret_url + "\n", encoding="utf-8")
+    secret_file.chmod(0o600)
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            str(INSTALLER),
+            "--print",
+            "--alert-webhook-file",
+            str(secret_file),
+            "enrich",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert "<key>CRE_ALERT_WEBHOOK_FILE</key>" in result.stdout
+    assert f"<string>{html.escape(str(secret_file), quote=True)}</string>" in result.stdout
+    assert secret_url not in result.stdout
+    if shutil.which("plutil"):
+        subprocess.run(
+            ["plutil", "-lint", "-"],
+            input=result.stdout,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+
+
 def test_cre_status_skips_legacy_daily_log_sentinel_when_daily_is_retired():
     text = STATUS.read_text(encoding="utf-8")
     assert "daily retired/unloaded; skipping legacy daily log sentinel check" in text
     assert "tier_loaded daily" in text
+
+
+def test_daily_validation_is_advisory_and_status_visible():
+    daily = DAILY.read_text(encoding="utf-8")
+    status = STATUS.read_text(encoding="utf-8")
+    assert "cre_validate.py --format json --out" in daily
+    assert "validation failed" in daily
+    assert "validate_*.json" in daily
+    assert "latest validation (read-only advisory)" in status
+
+
+def test_status_compares_installed_plists_without_loading_or_writing():
+    installer = (COLLECTOR / "launchd" / "install_launchd.sh").read_text(encoding="utf-8")
+    status = STATUS.read_text(encoding="utf-8")
+    assert 'if [ "$MODE" != "print" ]; then' in installer
+    assert "installed launchd template drift" in status
+    assert "diff -q" in status
+    assert "do not load automatically" in status
+    assert "CRE_ALERT_WEBHOOK_FILE" in status
+    assert "tier_alert_file" in status
+
+
+def test_status_requires_clean_exact_checkout_for_deployment_gate():
+    status = STATUS.read_text(encoding="utf-8")
+    assert "--expected-sha" in status
+    assert "status --porcelain --untracked-files=normal" in status
+    assert "checkout has uncommitted or untracked changes" in status
+    assert "does not match expected SHA" in status
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
+def test_status_checkout_identity_accepts_only_matching_clean_head(tmp_path):
+    status = STATUS.read_text(encoding="utf-8")
+    check_identity = _extract_function("check_checkout_identity", status)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "CRE Test"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "cre-test@example.invalid"],
+        check=True,
+    )
+    (repo / "tracked.txt").write_text("clean\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True)
+    first_head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "--allow-empty", "-qm", "second fixture"],
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+
+    def run(expected):
+        script = (
+            "set -uo pipefail\nPROBLEMS=0\n"
+            "note() { printf 'NOTE %s\\n' \"$1\"; }\n"
+            "ok() { printf 'OK %s\\n' \"$1\"; }\n"
+            "bad() { printf 'BAD %s\\n' \"$1\"; PROBLEMS=$((PROBLEMS+1)); }\n"
+            f"FC_DIR={str(repo)!r}\nEXPECTED_SHA={expected!r}\n{check_identity}\n"
+            "check_checkout_identity\nprintf 'PROBLEMS=%s\\n' \"$PROBLEMS\"\n"
+        )
+        return subprocess.run(
+            ["/bin/bash", "-c", script], check=True, text=True, capture_output=True
+        ).stdout
+
+    clean = run(head)
+    assert "checkout is clean" in clean
+    assert "matches expected SHA" in clean
+    assert "PROBLEMS=0" in clean
+
+    wrong = run(first_head)
+    assert "does not match expected SHA" in wrong
+    assert "PROBLEMS=1" in wrong
+
+    (repo / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+    dirty = run(head)
+    assert "checkout has uncommitted or untracked changes" in dirty
+    assert "PROBLEMS=1" in dirty
+
+
+def test_historical_enrichment_workflow_cannot_cut_over_production():
+    workflow = ENRICHMENT_WORKFLOW.read_text(encoding="utf-8")
+    assert "REFUSED: this historical workflow cannot apply DDL or mutate schedulers" in workflow
+    assert "Live database and scheduler are always untouched" in workflow
+    assert "Perform ONLY the SAFE, additive live cutover" not in workflow
+    assert "ALLOWED: apply sql/010_cre_enrichment_ops.sql" not in workflow
 
 
 def test_cre_status_derives_disappearance_only_sources_from_ingest_contract():

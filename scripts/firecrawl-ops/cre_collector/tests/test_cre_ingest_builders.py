@@ -21,6 +21,8 @@ contract, never a copy of production logic.
 """
 
 import hashlib
+import json
+import sys
 from datetime import datetime, timezone
 
 import pytest
@@ -550,6 +552,76 @@ def test_to_row_links_string_and_dict_forms():
                         {"url": "not-a-url"}]})  # filtered
     assert [ln["linkType"] for ln in r["links"]] == ["other", "website"]
     assert r["links"][1]["rel"] == "canonical"
+
+
+def test_to_row_discards_legacy_om_facts_payload():
+    r = _row({
+        "sourceKey": "cbre",
+        "url": "https://cbre.com/om",
+        "id": "1",
+        "omFacts": [{
+            "factKey": "noi",
+            "factValueNum": 1000000,
+            "sourceDocUrl": "https://cbre.com/om.pdf",
+            "parserVersion": "legacy/1",
+        }],
+    })
+    assert r["om_facts"] == []
+
+    sql = ci.build_sql([r], [], _SCRAPED_AT, set())
+    copy_start = sql.index("COPY _stage")
+    copy_data_start = sql.index("\n", copy_start) + 1
+    copy_data_end = sql.index("\n\\.\n", copy_data_start)
+    fields = sql[copy_data_start:copy_data_end].split("\t")
+    assert "legacy/1" in sql  # retained only inside raw_data provenance
+    assert fields[ci.STAGE_COLS.index("om_facts")] == "[]"
+
+
+def test_normal_brokerage_scalars_are_not_rejected_with_retired_artifacts():
+    row = _row({
+        "sourceKey": "cbre",
+        "url": "https://cbre.com/normal-listing",
+        "id": "normal-1",
+        "noi": 975000,
+        "capRatePct": 6.25,
+        "units": 42,
+        "yearBuilt": 2004,
+    })
+
+    assert row["external_id"] == "normal-1"
+    assert row["noi"] == 975000.0
+    assert row["cap_rate"] == 0.0625
+    assert row["units"] == 42.0
+    assert row["year_built"] == 2004
+
+
+def test_cli_refuses_marked_retired_om_parse_artifact(tmp_path, monkeypatch):
+    artifact = tmp_path / "retired-om.json"
+    artifact.write_text(json.dumps({
+        "artifactKind": ci.RETIRED_OM_PARSE_ARTIFACT_KIND,
+        "listings": [{
+            "sourceKey": "cbre",
+            "externalId": "legacy-id",
+            "url": "https://cbre.com/legacy",
+            "noi": 1000000,
+            "omFacts": [],
+        }],
+    }))
+    monkeypatch.setattr(sys, "argv", ["cre_ingest.py", "--in", str(artifact)])
+
+    with pytest.raises(SystemExit, match="sole production OM extraction writer"):
+        ci.main()
+
+
+def test_build_sql_discards_direct_legacy_om_facts_rows():
+    row = _row({"sourceKey": "cbre", "url": "https://cbre.com/om", "id": "1"})
+    row["om_facts"] = [{
+        "factKey": "noi",
+        "sourceDocUrl": "https://cbre.com/om.pdf",
+        "parserVersion": "legacy/1",
+    }]
+    sql = ci.build_sql([row], [], _SCRAPED_AT, set())
+    assert "legacy/1" not in sql
 
 
 # ===========================================================================

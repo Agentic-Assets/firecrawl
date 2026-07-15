@@ -11,8 +11,8 @@ Tier set (cadence restructure SHIPPED in code 2026-06-15):
 - **enrich** (every 4h, 00:30 / 04:30 / 08:30 / 12:30 / 16:30 / 20:30): drains
   that queue, scrapes ONLY the flagged listings' detail, re-ingests additively.
 - **weekly** (Sun 03:00): full collect + ingest backstop; additive by default
-  (`--no-mark-missing`), so safe to load. It also refreshes detail and recovers
-  dead-lettered queue rows.
+  (`--no-mark-missing`). It also refreshes detail and recovers dead-lettered
+  queue rows. Additive semantics reduce data risk but do not authorize loading.
 - **daily**: RETIRED. monitor (2x/day) + enrich (every 4h) replace its freshness
   role at a fraction of the cost. The template + dispatcher case are kept for
   rollback only.
@@ -21,7 +21,7 @@ Full design + the gated cutover runbook:
 `../ENRICHMENT_WORKER_DESIGN_2026-06-15.md` (Section 2 tier model, Section 9
 cutover).
 
-> Current LIVE state (2026-06-15): the OLD tiers are still loaded on this Mac
+> Historical state captured on 2026-06-15: the OLD tiers were loaded on that Mac
 > (`ai.agentic.cre-monitor` every 3h + `ai.agentic.cre-daily` 06:30), both
 > EXECUTING on schedule. The repo was relocated out of `~/Documents` to
 > `~/Github/agentic-assets/firecrawl`, so the launchd user-agent no longer needs
@@ -31,6 +31,12 @@ cutover).
 > additive weekly backstop are installable but NOT yet loaded; running the
 > Section 9 cutover is held for explicit go-ahead. On a fresh machine, keep the
 > clone outside `~/Documents` so TCC never applies (`../SETUP.md`).
+>
+> Do not use this historical snapshot as current scheduler evidence. The
+> 2026-07-11 read-only audit in
+> `../../../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-execution-status-audit.md`
+> records the actual Mac mini state and required recovery gates. Re-run
+> `../cre_status.sh` before any scheduler decision.
 >
 > Setup is portable: render + install plists per-machine with
 > `install_launchd.sh` (see below). The bare `ai.agentic.cre-*.plist` on this
@@ -58,11 +64,10 @@ Gate: `cre_monitor.py` and `cre_gate.py` both exist and are unit-tested.
 `cre_run_tier.sh monitor` runs `collect.ts --monitor` (cheap enumeration) then
 `cre_monitor.py --in <artifact>` in observe-only mode. Passing `--apply`
 requires setting `CRE_MONITOR_APPLY=1` in the environment.
-**Status (2026-06-15): the monitor plist is LOADED with `CRE_MONITOR_APPLY=1`
-and runs successfully on schedule (last run rc:0, 2026-06-15) at the OLD every-3h
-cadence. The monitor is observe-only by design (007 tables + neutral columns;
-never `status`/`deleted_at`), so the `--apply` cadence is safe. Reloading it at
-the new 2x/day cadence is part of the gated Section 9 cutover.**
+**Historical status (2026-06-15): the monitor plist was loaded with
+`CRE_MONITOR_APPLY=1` and had a successful run at the old every-3h cadence.
+This is not current scheduler evidence. Re-run `../cre_status.sh` and consult
+the dated execution-status audit before loading or changing any tier.**
 
 ---
 
@@ -88,9 +93,10 @@ invalid / empty) releases the claims without ingesting and exits nonzero; a
 crashed run's claims are reclaimed after 1h. Dead-lettered rows (attempts >= 5)
 surface in `v_cre_enrichment_dead` and ride the weekly additive backstop.
 
-Gate: safe to load once `cre_enrich.py` is unit-tested and `010` is applied
-(the queue-health views). The shared lock guarantees it cannot overlap monitor
-or weekly.
+Technical prerequisites: `cre_enrich.py` is unit-tested and `010` is applied
+(the queue-health views). The shared lock prevents overlap with monitor or
+weekly. Loading still requires the separate scheduler-activation gate in the
+operator runbook.
 
 ---
 
@@ -104,8 +110,8 @@ collect-plus-ingest completeness + detail-refresh + dead-letter-recovery backsto
 
 ADDITIVE BY DEFAULT: with `CRE_WEEKLY_MARK_MISSING` unset, the dispatcher passes
 `--no-mark-missing`, so the weekly tier upserts and refreshes but never
-soft-deletes. That makes it **safe to load** as the backstop, and the Section 9
-cutover loads it for exactly that reason.
+soft-deletes. That makes its data behavior additive, but it does not authorize
+loading. The separate scheduler-activation gate still applies.
 
 `--mark-missing` is a SEPARATE, GATED escalation: it fires only when
 `CRE_WEEKLY_MARK_MISSING=1` is set in this tier's environment. weekly is still
@@ -192,12 +198,21 @@ bash install_launchd.sh all
 # If the EQUIRE .env.local is not at a default ~/Documents path, bake it in:
 bash install_launchd.sh --env-file /path/to/EQUIRE/.env.local all
 
-# Load the freshness tiers when their gate is met (monitor after stack+DB
-# verified, enrich once cre_enrich.py is tested and 010 is applied):
+# Optional failure alert: keep the URL in an owner-only file outside git, then
+# render only its path into the plist. The file must be absolute, owned by the
+# current user, readable, and mode 400 or 600.
+umask 077
+printf '%s\n' 'https://example.invalid/replace-at-provisioning' > /absolute/private/path/cre-alert-webhook.url
+chmod 600 /absolute/private/path/cre-alert-webhook.url
+bash install_launchd.sh \
+  --alert-webhook-file /absolute/private/path/cre-alert-webhook.url all
+
+# ONLY after operator-runbook gate 5 records Cayman's approval of the exact
+# coordinator, owner, job labels, credentials, observation, and rollback:
 bash install_launchd.sh --load monitor enrich
 
-# weekly: additive by default, so safe to load as the backstop. The
-# CRE_WEEKLY_MARK_MISSING=1 soft-delete escalation stays a separate gated step.
+# weekly is additive by default, but its scheduler load is covered by the same
+# explicit gate. CRE_WEEKLY_MARK_MISSING=1 remains a separate escalation.
 bash install_launchd.sh --load weekly
 
 # Preview a rendered plist without installing:
@@ -217,7 +232,12 @@ state) and exits nonzero if anything is unhealthy:
 ```bash
 bash ../cre_status.sh                # offline heartbeat
 bash ../cre_status.sh --full-health  # also runs the full firecrawl healthcheck
+bash ../cre_status.sh --expected-sha <merged-sha>  # deployment identity gate
 ```
+
+The optional failure webhook is delivered synchronously with a ten-second
+timeout so launchd cannot terminate it with the job process group. Delivery is
+best-effort and never replaces the tier's original exit code.
 
 Low-level check of a single loaded job:
 

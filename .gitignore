@@ -4,6 +4,7 @@
 .env
 .firecrawl/
 *.csv
+!scripts/firecrawl-ops/cre_collector/tests/fixtures/geo/mini_crosswalk.csv
 dump.rdb
 /mongo-data
 apps/js-sdk/node_modules/

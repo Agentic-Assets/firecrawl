@@ -12,7 +12,8 @@
 
   This is a TEMPLATE. Do not load it directly. Render a machine-specific copy
   with launchd/install_launchd.sh, which fills in this machine's collector path,
-  PATH, and optional CRE_ENV_FILE. See launchd/README.md for gated install.
+  PATH, optional CRE_ENV_FILE, and an optional alert secret-file path. See
+  launchd/README.md for gated install.
 -->
 <plist version="1.0">
 <dict>

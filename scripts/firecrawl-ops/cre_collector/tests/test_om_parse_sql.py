@@ -748,44 +748,22 @@ class TestRunInternals:
         # "0 candidates" message confirms the source resolution ran
         assert "0 candidates" in capsys.readouterr().err
 
-    def test_run_apply_ingest_failure_returns_1(self, monkeypatch, tmp_path, capsys):
-        """If cre_ingest.py exits non-zero on --apply, run() returns 1."""
+    def test_run_apply_is_retired_before_any_database_or_ingest_work(self, monkeypatch, capsys):
+        """The retired writer fails before any database or subprocess boundary."""
 
-        monkeypatch.setattr(om_parse, "OUT_OM_DIR", str(tmp_path))
-        monkeypatch.setattr(om_parse, "load_db_url",
-                            lambda env_file: (DB_URL_SENTINEL, "/fake/.env.local"))
+        def _boom(*_args, **_kwargs):
+            raise AssertionError("retired --apply must not continue")
 
-        # Candidate + doc so we get an enriched listing
-        cbre_url = "https://cbre.example/p/maple-court"
-        md = (
-            "Net Operating Income $1,485,000\n"
-            "Cap Rate 6.06%\nOccupancy 94.5%\n"
-            "Number of Units 168\nYear Built 1998"
-        )
-
-        def _fake_query(db_url, sql):
-            if "cre_listing_documents d ON" in sql:
-                return [("cbre", "maple-1", cbre_url, "om")]
-            return [("maple-1", "https://cbre.example/p/maple-court", "cbre")]
-
-        monkeypatch.setattr(om_parse, "_psql_query", _fake_query)
-        monkeypatch.setattr(om_parse, "parse_pdf_to_text",
-                            lambda doc_url, api_url=None: md)
-
-        def _failing_run(argv, **kw):
-            class _P:
-                returncode = 1
-            return _P()
-
-        monkeypatch.setattr(om_parse.subprocess, "run", _failing_run)
-
+        monkeypatch.setattr(om_parse, "load_db_url", _boom)
+        monkeypatch.setattr(om_parse, "_psql_query", _boom)
+        monkeypatch.setattr(om_parse.subprocess, "run", _boom)
         rc = om_parse.run(_Args(apply=True, dry_run=False))
-        assert rc == 1
-        assert "ingest failed" in capsys.readouterr().err
+        assert rc == om_parse.RETIRED_WRITER_EXIT_CODE
+        assert "sole production OM extraction writer" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
-# main() entrypoint: --show-sql / defaults / --apply toggle
+# main() entrypoint: --show-sql and defaults
 # ---------------------------------------------------------------------------
 
 
@@ -804,23 +782,6 @@ class TestMainEntrypoint:
         assert exc_info.value.code == 0
         out = capsys.readouterr().out
         assert "FROM credeals.cre_listings" in out
-
-    def test_main_apply_sets_dry_run_false(self, monkeypatch, capsys):
-        """--apply must override the default dry_run=True."""
-        called_with = {}
-
-        def _fake_run(args):
-            called_with["dry_run"] = args.dry_run
-            called_with["apply"] = args.apply
-            return 0
-
-        monkeypatch.setattr(om_parse, "run", _fake_run)
-        monkeypatch.setattr(sys, "argv", ["om_parse.py", "--apply"])
-        with pytest.raises(SystemExit) as exc_info:
-            om_parse.main()
-        assert exc_info.value.code == 0
-        assert called_with["apply"] is True
-        assert called_with["dry_run"] is False
 
     def test_main_default_sources_limit(self, monkeypatch):
         """main() default: sources='cbre,jll', limit=100."""

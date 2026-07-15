@@ -214,6 +214,20 @@ def test_latlng_only_row(cw):
     assert g["cbsa_code"] == "16980"
 
 
+def test_latlng_rejects_cross_state_nearest_centroid(cw):
+    row = {"state": "NJ", "latitude": 32.790, "longitude": -96.800}
+    g = _unpack(derive_geo(row, cw))
+    assert g["geo_source"] is None
+
+
+def test_latlng_accepts_matching_state_nearest_centroid(cw):
+    row = {"state": "TX", "latitude": 32.790, "longitude": -96.800}
+    g = _unpack(derive_geo(row, cw))
+    assert g["geo_source"] == "crosswalk_latlng"
+    assert "Dallas County" in g["county"]
+    assert g["cbsa_code"] == "19100"
+
+
 def test_latlng_submarket_never_fabricated(cw):
     """lat/lng crosswalk never sets submarket."""
     row = {"latitude": 34.050, "longitude": -118.255}

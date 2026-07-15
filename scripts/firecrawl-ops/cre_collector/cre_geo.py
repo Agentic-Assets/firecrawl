@@ -109,6 +109,7 @@ class ZipCbsaCrosswalk:
                         continue
                     rec = {
                         "county": _county_label(row),
+                        "state": (row.get("state") or "").strip().upper() or None,
                         "cbsa_code": (row.get("cbsa_code") or "").strip() or None,
                         "cbsa_name": (row.get("cbsa_name") or "").strip() or None,
                     }
@@ -216,6 +217,17 @@ def derive_geo(listing_or_row, crosswalk):
 
     src_county = _get("county")
     src_submarket = _get("submarket")
+    listing_state = _get("state")
+    if isinstance(listing_state, str):
+        listing_state = listing_state.upper()
+
+    def _latlng_record(lat, lng):
+        rec = crosswalk.by_latlng(lat, lng) if crosswalk is not None else None
+        # A nearest ZIP centroid can cross a dense metro boundary. If the broker
+        # supplied a state, fail closed rather than assigning another state's CBSA.
+        if rec and listing_state and rec.get("state") and rec["state"] != listing_state:
+            return None
+        return rec
 
     # ---- 1. Source-verbatim ----
     if src_county:
@@ -229,7 +241,7 @@ def derive_geo(listing_or_row, crosswalk):
             if cw_rec is None:
                 lat = _get("latitude")
                 lng = _get("longitude")
-                cw_rec = crosswalk.by_latlng(lat, lng) if (lat and lng) else None
+                cw_rec = _latlng_record(lat, lng) if (lat and lng) else None
             if cw_rec:
                 cbsa_code = cw_rec.get("cbsa_code")
                 cbsa_name = cw_rec.get("cbsa_name")
@@ -255,7 +267,7 @@ def derive_geo(listing_or_row, crosswalk):
     lat = _get("latitude")
     lng = _get("longitude")
     if (lat is not None) and (lng is not None) and crosswalk is not None:
-        rec = crosswalk.by_latlng(lat, lng)
+        rec = _latlng_record(lat, lng)
         if rec:
             cbsa_name = rec.get("cbsa_name")
             return (

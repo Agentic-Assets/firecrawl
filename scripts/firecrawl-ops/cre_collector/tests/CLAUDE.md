@@ -17,13 +17,20 @@ cd scripts/firecrawl-ops/cre_collector
 python3 -m pytest tests/ -q
 python3 -m pytest tests/test_enum_key_invariant.py -q
 python3 -m pytest tests/test_norm_status_canonical_and_guards.py -q   # portable CI signal (no out/)
+bash tests/run_om_facts_postgres_contract.sh  # opt-in disposable PostgreSQL 17 contract
 ```
 
-Requires `pytest` on the host (not pinned in `package.json`). Full suite:
-**1384** pytest pass as of 2026-06-15 (`python3 -m pytest tests/ -q`); the count
-includes parametrized and data-driven cases (the shell-syntax guard is
-parametrized over every `*.sh` in the collector, so adding a script raises the
-count), so re-run to confirm rather than counting `def test_`.
+Requires `pytest` on the host (not pinned in `package.json`). The suite includes
+parametrized and data-driven cases (the shell-syntax guard is parametrized over
+every `*.sh` in the collector), so always re-run it and report the exact output
+rather than quoting a frozen total or counting `def test_`.
+
+The PostgreSQL contract runner is intentionally outside pytest: it applies the
+source OM-facts migration and executes the generated production upsert in an
+unexposed disposable PostgreSQL 17 container. It proves fresh-schema
+five-column-key creation, refusal of legacy alignment without its psql approval
+variable, and approved legacy idempotence. It requires Docker and always removes
+its container; it must never target Supabase or a collector database.
 
 **Coverage push (2026-06-15):** a comprehensive unit-test pass lifted production
 coverage across the collector (measure with `pytest --cov=. --cov-report=term-missing
@@ -68,6 +75,7 @@ Add files as `tests/ts/*.test.ts` or `tests/ts/**/*.test.ts`. See `tests/ts/READ
 | `test_shell_scripts_syntax.py` | `bash -n` syntax guard over every `*.sh` in the collector (cre_status, cre_run_tier, cre_daily_update, cre_setup, install_launchd, ...); skips if bash absent |
 | `test_daily_scripts.py` | Disk-management shell helpers: extracts and runs `prune_keep` (cre_daily_update.sh) and `_keep_newest` (cre_run_tier.sh) in a tmp dir; asserts newest-N retention, no-op under threshold, space-safe `OUT_DIR`, and that the `run_*.json` glob spares `last_run_<tier>.json` markers; skips if bash absent |
 | `test_ingest_mark_missing.py` | Folded-coverage `--mark-missing` guard via `cre_ingest.py --dry-run --keep-artifacts` (no DB): parent soft-deletes hold until every sub-source is present (`cbre`+`cbre-dealflow`), fire for complete coverage and singletons (`svn`), and stay blocked when a sub-source pass errored |
+| `test_om_facts_migration_contract.py` | Static fresh-runner, default-refusal, and disposable-Postgres contract wiring for legacy migration `015` |
 
 The table above lists the foundational contract tests. The data-lift and
 freshness/history sessions added ~21 more `test_*.py` files (raw-data / media /
@@ -117,7 +125,7 @@ should import those modules directly, not `config.ts` or `collect.ts`.
 | `lib/parse.test.ts` | `parseLeaseRate`, `parseMoney`, `classify_doc` golden-vector parity |
 | `sources/savills-commercial.test.ts` | `savillsSaleCardIsCommercial`, `mapSavillsLeaseRow`, `savillsTotalItems` |
 
-Full suite: ~**468** TypeScript unit tests (`npm run test:unit`); re-run to
+Full suite: ~**479** TypeScript unit tests (`npm run test:unit`); re-run to
 confirm the exact count rather than trusting this figure.
 
 **Argv isolation:** source adapters import `lib/config.ts`; trim `process.argv` to

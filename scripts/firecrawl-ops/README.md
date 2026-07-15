@@ -7,6 +7,12 @@ upstream Firecrawl package. Treat it as Agentic Assets local infrastructure.
 Use `CLAUDE.md` for compact agent routing. Use this README when you need a
 more detailed operator guide.
 
+> **Current runtime source, 2026-07-11:** The Mac mini has no active CRE
+> launchd job or healthy local Firecrawl runtime. Historical schedule and
+> count claims in this guide are not a deployment record. Use the
+> [operator runbook](../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md)
+> before any runtime, scheduler, database-write, or canary action.
+
 ## What Lives Here
 
 There are two main workstreams:
@@ -45,23 +51,25 @@ and that the active Docker context is `orbstack`.
 |---|---|
 | `CLAUDE.md` | Compact routing for agents |
 | `README.md` | This operator guide |
-| `cre_collector/` | Production CRE listing collector and Supabase ingestor |
+| `cre_collector/` | Production collector, ingestor, monitor/gate, and enrichment worker |
 | `cre_scrapers/` | Legacy Python probes and detail enrichment package |
 | `sql/` | Idempotent `credeals` schema migrations |
 | `prometheus/` | Original Prometheus CBRE reference implementation and dataset |
 | `tests/` | Local OCR service tests |
 | `firecrawl_healthcheck.sh` | Local stack smoke test |
 | `firecrawl_cli.sh` | Wrapper around upstream Firecrawl CLI pinned to local API |
-| `firecrawl_request.py` | Stdlib HTTP helper for direct API calls, saved fields, and parse options |
 | `firecrawl_mcp.sh` | MCP wrapper pinned to local API |
+| `firecrawl_request.py` | Stdlib HTTP helper for direct API calls, saved fields, and parse options |
 | `set_model_profile.sh` | Writes local model routing values into root `.env` |
 | `sync_agent_skills.sh` | Copies repo skills into user-level skill folders |
 | `sync_upstream_main.sh` | Creates an upstream-sync branch and merges `firecrawl/firecrawl:main` |
 | `install_git_hooks.sh` | Installs advisory local git hooks |
 | `local_firepdf_ocr.sh` | Starts, stops, checks, and smokes the local Docling OCR adapter |
 | `local_firepdf_ocr_service.py` | Fire PDF compatible `/ocr` adapter |
+| `local-firepdf-adapter.Dockerfile` | Container build for the OCR adapter |
 | `pdf_ocr_benchmark.py` | Runs repeatable PDF parser and OCR comparisons |
 | `pdf_ocr_profiles.json` | Named local OCR profile settings |
+| `cre_pipeline.py`, `cre_access_matrix.py`, … | Legacy reference scripts (see `CLAUDE.md` directory map) |
 
 ## CRE Listing Collector
 
@@ -71,15 +79,21 @@ Current production path:
 cd scripts/firecrawl-ops/cre_collector
 ```
 
+Fresh machine? Run `bash cre_setup.sh` first (see `SETUP.md`).
+
 Read these before making claims or changing behavior:
 
-1. `START_HERE.md` (live counts, status matrix, next steps)
-2. `CLAUDE.md`
-3. `archive/VALIDATION_2026-06-12.md`
-4. `BROKERAGE_STATUS_2026-06-12.md`
-5. `../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md`
-6. `../../docs/firecrawl-ops/references/cre-monitor-subsystem.md`
-7. `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` (when touching monitor or scaling the seed)
+1. `START_HERE.md` (live counts, status matrix, launchd run-health, next steps)
+2. `CLAUDE.md` (collector orchestration and ingest contract)
+3. `BROKERAGE_STATUS_2026-06-12.md`
+4. `../../docs/firecrawl-ops/references/cre-intelligence-system-design.md`
+5. `../../docs/firecrawl-ops/references/cre-equire-consumer-api.md`
+6. `../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md`
+7. `../../docs/firecrawl-ops/references/cre-monitor-subsystem.md`
+8. `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` (when touching monitor layer or 007 tables)
+9. `ENRICHMENT_WORKER_DESIGN_2026-06-15.md` (when touching `cre_enrich.py`, enrich launchd, or `sql/010`)
+
+Historical validation and handoff detail lives in `archive/` (see `archive/README.md`).
 
 Common commands:
 
@@ -94,12 +108,14 @@ npx tsx collect.ts --source=all --transaction=both --max-items=0 \
 
 python3 cre_ingest.py --in out/full-run.json
 bash cre_daily_update.sh --no-mark-missing
+bash cre_status.sh               # run-health heartbeat (schedules, last runs, staleness)
 ```
 
 Use `--mark-missing` only when every relevant source pass completed cleanly
-and staged enough rows for the per-broker guardrails. While `colliers-main` is
-mid-run or Savills sale stays partial, keep the ingest additive
-(`--no-mark-missing`).
+and staged enough rows for the per-broker guardrails. While Savills sale stays
+structurally capped (no public US commercial-sale feed), keep the ingest additive
+(`--no-mark-missing`). The collector registers **20 source keys** in
+`collect.ts` / `types.ts`; live per-source status is in `START_HERE.md`.
 
 Live row counts, baseline artifacts, and per-source status belong in
 `cre_collector/START_HERE.md`. Do not quote coverage from memory or from
@@ -131,9 +147,18 @@ Core objects:
 | `cre_scrape_jobs` | One row per scrape run |
 | `cre_scrape_log` | One row per attempted source URL |
 | `cre_listing_events` | Append-only change ledger (007) |
-| `cre_source_index` | Per-source enumeration snapshot (007) |
-| `cre_enrichment_queue` | Tier-B detail-render work queue (007; worker deferred) |
+| `cre_source_index` | Per-source enumeration snapshot + prior price columns (007+009) |
+| `cre_enrichment_queue` | Tier-B detail-render work queue (007; drained by `cre_enrich.py`) |
 | `cre_source_baseline` | Per-source coverage health baseline (007) |
+| `v_cre_enrichment_queue_pending` | Enrichment queue health view (010) |
+| `v_cre_enrichment_dead` | Dead-letter enrichment rows (010) |
+| `cre_listing_price_history` | Append-only watched-field snapshots (009) |
+| `cre_listing_contacts_archive` | Contacts snapshot at retirement (009) |
+| `cre_listing_documents_archive` | Documents snapshot at retirement (009) |
+| `cre_listing_media` | Detail media URLs (011) |
+| `cre_listing_links` | Detail link URLs (011) |
+| `cre_listing_om_facts` | Shared OM/PDF underwriting facts (013; GetCREdata is the sole production writer, and local `om_parse.py --apply` fails closed) |
+| `cre_zip_cbsa_crosswalk` | Offline ZIP to county/CBSA reference (014) |
 | `v_cre_listings_full` | Listing plus child data as JSON arrays |
 | `v_cre_active_for_sale` | Active for-sale listings |
 | `v_cre_active_for_lease` | Active for-lease listings |
@@ -145,30 +170,42 @@ The collector stores source URLs for documents and images. It does not
 download source PDFs or image binaries into Supabase storage.
 
 The ingestor reads `POSTGRES_URL_NON_POOLING` or `POSTGRES_URL` from EQUIRE
-environment files and shells out to `psql`. It must never print or persist
-credential values.
+environment files (`--env-file`, then `CRE_ENV_FILE`, then `~/Documents/...`
+defaults) and shells out to `psql`. It must never print or persist credential
+values. On this Mac, launchd sets `CRE_ENV_FILE=~/.config/cre/equire.env`.
 
 Change tracking (007) runs through a separate observe-only path:
-`collect.ts --monitor` feeds `cre_monitor.py` and `cre_gate.py`, never
-`cre_ingest.py`. See `../../docs/firecrawl-ops/references/cre-monitor-subsystem.md`.
+`collect.ts --monitor` feeds `cre_monitor.py` and `cre_gate.py`, **never**
+`cre_ingest.py` (sparse monitor rows would wipe enriched prices, `raw_data`,
+and child tables). Status activation in `cre_ingest.py` is OPT-IN default-off
+(`--activate-status` / `CRE_ACTIVATE_STATUS=1`). See
+`../../docs/firecrawl-ops/references/cre-monitor-subsystem.md`.
 
-### Monitor rollout (2026-06-13)
+### Monitor, enrichment, and automation
 
-Track 1 shipped: monitor hardening, `collect.ts` modular split (`types.ts`,
-`lib/`, `sources/`), coverage gate triple-gating, four detail-id monitor
-exclusions. First gated `cre_monitor.py --apply` seed on `avison-young`
-(baseline + index only). Track 2 still gated: scale seed, launchd, gate wiring,
-Phase-2 status activation. See `cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md`.
+The observe-only monitor layer (007 tables) is shipped: `collect.ts --monitor`
+feeds `cre_monitor.py` only (never `cre_ingest.py`). `cre_gate.py` is wired
+into `cre_daily_update.sh` as observe-only step [3/4] with a strict
+`--no-mark-missing` fail-safe. The Tier-B worker `cre_enrich.py` drains
+`cre_enrichment_queue` via `collect.ts --enrich-input` and additive re-ingest.
+
+**Live ops status** (schedules, last-run verdicts, gated cutovers) belongs in
+`cre_collector/START_HERE.md`. Run `bash cre_status.sh` before quoting
+run-health. Migrations `009` through `014` are applied to prod; local OM
+parsing is retired and fails closed. Live status activation, consumer board-gate
+deploy, media backfill, and weekly mark-missing escalation
+(`CRE_WEEKLY_MARK_MISSING=1`) stay gated for explicit go-ahead.
 
 | Module | Role |
 |---|---|
-| `collect.ts` | CLI entry; orchestrates source runs and `--monitor` |
+| `collect.ts` | CLI entry; orchestrates source runs, `--monitor`, and `--enrich-input` |
 | `types.ts` | Shared listing types and `SourceResult` contract |
-| `lib/` | `config`, `scrape`, `util`, `broker`, `html` primitives |
+| `lib/` | `config`, `scrape`, `harvest`, `parse`, `geo`, `enrich`, `broker`, `html`, `util` |
 | `sources/*.ts` | Per-broker adapters (one file per source key) |
 | `cre_ingest.py` | Full artifact upsert into `cre_listings` (+ children) |
 | `cre_monitor.py` | Observe-only diff/events/index (007 tables) |
 | `cre_gate.py` | Per-source coverage baseline and `mark_missing_safe` rollup |
+| `cre_enrich.py` | Tier-B queue worker: targeted detail collect + additive re-ingest |
 
 ## Source Coverage Notes
 
@@ -194,14 +231,17 @@ High-signal cautions (no counts here; see `START_HERE.md`):
 - SVN and Lee use Buildout inventory feeds; sustained paging can trigger HTML
   interstitials. Lee is complete via durable page cache.
 - Colliers has two folded sources: SalesTracker investment-sale (`colliers`,
-  public RCM GET) and the full main site (`colliers-main`), unblocked 2026-06-13
+  public RCM GET) and the full main site (`colliers-main`, COMPLETE 2026-06-14)
   via the public XML sitemap through local Firecrawl plus detail-render JSON-LD
-  parse. The full main-site detail run is still in progress.
+  parse (`main:` ids).
 - Transwestern is complete for its public GET feed after full run, live ingest,
   source-scoped reconciliation, and Supabase validation.
 - JLL Investor Center is complete for the public sitemap detail path. No
   coordinates are available from the Investor detail path (known limitation).
-- Savills sale inventory stays partial (global/residential rows, not CRE-defensible).
+- Savills sale is structurally capped: no public US commercial-sale feed exists.
+  Lease coverage is minimal (2 defensible Chicago retail rows after cleanup).
+- Five sources were added 2026-06+: `matthews`, `franklin-street`, `srs`,
+  `hanley`, `kidder-mathews`. Monitor baseline seed has not yet expanded for them.
 
 ## Local CLI Wrapper
 
