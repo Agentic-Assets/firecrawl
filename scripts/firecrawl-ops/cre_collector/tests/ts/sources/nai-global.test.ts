@@ -16,12 +16,48 @@ import {
   naiListingFromFeed,
   harvestNai,
   naiBuildingClassFromTags,
+  naiGraphqlPost,
+  naiFeedPageCacheKey,
+  naiSourceIdBatches,
   NAI_LISTING_URL_BASE,
 } from "../../../sources/nai-global.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(__dirname, "../../fixtures/raw_data/nai-global.json");
 const fixtures: any[] = JSON.parse(readFileSync(FIXTURE_PATH, "utf-8"));
+
+test("naiGraphqlPost deadline covers a stalled response body", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let aborted = false;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    init?.signal?.addEventListener("abort", () => {
+      aborted = true;
+    });
+    return {
+      ok: true,
+      status: 200,
+      // `fetch()` has resolved with headers, but reading the response body
+      // never finishes. This is the failure mode that previously stranded the
+      // source after its request timeout had already been cleared.
+      text: () => new Promise<string>(() => {}),
+    } as Response;
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  await assert.rejects(
+    () => naiGraphqlPost("https://infabode.example/public_api", {}, "https://ab.infabode.com/nai", 20),
+    /timed out after 20ms/
+  );
+  assert.equal(aborted, true);
+});
+
+test("NAI source batches cover each office once and namespace the page cache", () => {
+  assert.deepEqual(naiSourceIdBatches([10, 11, 10, 12, 13], 2), [[10, 11], [12, 13]]);
+  assert.equal(naiFeedPageCacheKey(18, [10, 11]), "10,11:18");
+  assert.notEqual(naiFeedPageCacheKey(18, [10, 11]), naiFeedPageCacheKey(18, [12, 13]));
+});
 
 test("naiLocation parses Infabode location path", () => {
   assert.deepEqual(naiLocation([{ path: "Dallas, TX, United States" }]), {

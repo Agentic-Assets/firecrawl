@@ -2,9 +2,9 @@
 
 ## Outcome
 
-The supported collector completed a controlled additive refresh for 18 of 20
-supported source adapters. No listing status, soft-delete field, OM-facts row,
-or EQUIRE market-data object was changed by this run.
+The supported collector completed a controlled refresh for all 20 supported
+source adapters. No listing status, soft-delete field, OM-facts row, or EQUIRE
+market-data object was changed by this run.
 
 | Measure | Result |
 | --- | ---: |
@@ -13,8 +13,8 @@ or EQUIRE market-data object was changed by this run.
 | Net active change | +6,522 (6.05%) |
 | Active records created during run | 6,491 (5.68% of current active inventory) |
 | Listings fully re-observed through additive ingest | 75,622 (66.15% of current active inventory) |
-| Current records enumerated by the monitor | 97,217 |
-| Monitor events | 5,555 (5.71% of monitored records) |
+| Current records enumerated by source watchers | 110,998 |
+| Confirmed monitor events | 5,555 (5.71% of the 97,217 records with a comparable prior snapshot) |
 
 ## What changed
 
@@ -43,21 +43,30 @@ additive upserts.
   Colliers, Cushman & Wakefield, Newmark, Avison Young, Kidder Mathews, Marcus
   & Millichap, SRS, Hanley, SVN, Franklin Street, and Lee & Associates.
 - Current-enumeration monitor: Colliers Main, Matthews, and Transwestern.
+- Savills now uses its server-rendered public list state directly, with a
+  validated Firecrawl fallback. It enumerated two live U.S. commercial lease
+  records; its coverage guard suppressed any false disappearance inference from
+  the older 103-record snapshot.
+- NAI Global now uses bounded body reads, 100-row API pages, and a two-batch
+  fan-out. Its complete public-feed monitor observed 13,779 records (10,419
+  sale and 3,360 lease) without truncation.
 - Fresh Buildout inventory fetches used `BUILDOUT_REFRESH_PAGE_CACHE=1`; this
   bypasses stale durable page-cache reads only when explicitly requested.
 
-## Deferred sources and exact next steps
+## Bounded follow-up work
 
-1. Retry NAI Global and Savills after their public endpoints are responsive.
-   Their bounded attempts produced no complete artifact and therefore made no
-   database or monitor write. Do not label either source refreshed until it
-   produces a complete artifact.
-2. Drain the 3,442 targeted enrichment rows in safe batches after the branch is
-   reviewed and merged. The queue is intentionally retained when a page lacks
+1. NAI’s 12,517 previously unmatched public-feed records were deliberately not
+   added as thin, monitor-only database listings. They need a bounded
+   detail/status enrichment path before additive ingestion. This is a data
+   quality follow-up, not a failed source refresh.
+2. Drain the remaining 2,672 targeted enrichment rows after the branch is
+   reviewed and merged. Marcus & Millichap’s 766 rows were safely drained using
+   the new exact `--source` claim filter. The remaining queue is intentionally
+   retained when a page lacks
    a safe enrichment payload; it must not be completed with URL-only data.
-3. Re-run `cre_validate.py` after each deferred source recovery and after the
-   queue materially drains. The final validation for this run returned `ok:
-   true`; known database collation and source-URL duplicate findings remain
+3. Re-run `cre_validate.py` after the NAI detail follow-up and after the queue
+   materially drains. The final validation for this run returned `ok: true`;
+   known database collation and source-URL duplicate findings remain
    separate cleanup work.
 4. Do not restore recurring launchd work yet. After a clean merged deployment
    and the documented Gate 5 approval, enable monitor, enrich, and weekly only.
@@ -66,9 +75,8 @@ additive upserts.
 ## Verification
 
 - Collector `npm run typecheck` passed.
-- Focused TypeScript tests for enrichment, Buildout, Cushman, JLL Investor,
-  NAI, Savills, and scrape deadlines passed.
-- Python enrichment/queue tests passed: 64 tests.
+- Full collector TypeScript unit suite passed: 491 tests.
+- Python enrichment/queue tests passed: 69 tests.
 - Final `cre_validate.py` returned `ok: true`, with no orphan child rows, bad
   child URLs, or duplicate external-id groups.
 

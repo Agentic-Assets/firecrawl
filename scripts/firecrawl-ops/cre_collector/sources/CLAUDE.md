@@ -20,8 +20,8 @@
 
 | Transport | Sources |
 |-----------|---------|
-| Firecrawl `scrapeJson` / `scrapeDoc` / `scrapeRaw` | cbre, colliers-main, jll, jll-investor, cushman, transwestern, avison-young (detail), newmark (cred bootstrap), savills, buildout (fallback) |
-| Direct `fetch` (no Firecrawl) | cbre-dealflow, colliers (RCM), newmark (Algolia), marcus-millichap, nai-global, buildout (preferred path for svn/lee) |
+| Firecrawl `scrapeJson` / `scrapeDoc` / `scrapeRaw` | cbre, colliers-main, jll, jll-investor, cushman, transwestern, avison-young (detail), newmark (cred bootstrap), buildout (fallback), savills (validated fallback only) |
+| Direct `fetch` (no Firecrawl) | cbre-dealflow, colliers (RCM), newmark (Algolia), marcus-millichap, nai-global, buildout (preferred path for svn/lee), savills (server-rendered public list pages) |
 
 Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for interstitials), `lib/broker.ts`, `lib/html.ts`, `lib/util.ts` (`pmap`, `prune`).
 
@@ -42,7 +42,7 @@ Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for in
 | avison-young | SharpLaunch `row.id` | **Full runs skip detail** unless `AVISON_YOUNG_DETAIL_LIMIT` set |
 | nai-global | `infabode:{id}` (prefixed in adapter) | `--page-cap` bounds feed scan; monitor superset (no price/status) |
 | svn / lee | `propertyId` base from URL | Strip `-(sale|lease)`; dual rows merge to `sale_or_lease` |
-| savills | sale: URL slug; lease: `ExternalPropertyID` | Separate sale/lease paths; lease is single-page only |
+| savills | `ExternalPropertyID` | Direct server-rendered `__NEXT_DATA__`; provider `NextUrl` only, so an invalid or incomplete page fails closed |
 
 ## Monitor Mode Matrix
 
@@ -68,7 +68,7 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `jll-investor.ts` | US sitemap + detail; sale only |
 | `colliers-main.ts` | XML sitemap + JSON-LD; JSONL cache `out/cache/colliers-main/detail-cache.jsonl`; CF challenge retries |
 | `buildout.ts` | Shared inventory; svn/lee wired in `collect.ts` |
-| `savills.ts` | Sale: paginated cards; lease: `__NEXT_DATA__` single page |
+| `savills.ts` | Sale and lease: structured `__NEXT_DATA__`; provider `NextUrl` pagination; direct fetch with validated Firecrawl fallback |
 
 ## Buildout (`buildout.ts`) - Shared Adapter
 
@@ -86,10 +86,12 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `CUSHMAN_QUERY` | cushman | Targeted API probe |
 | `COLLIERS_MAIN_*` | colliers-main | Detail concurrency, wait, challenge retries, `MAX_FETCHES_PER_RUN` |
 | `JLL_DETAIL_*` / `JLL_INVESTOR_*` | jll, jll-investor | Detail concurrency, wait, cache dir, sitemap scan limit |
-| `SAVILLS_LIST_TIMEOUT_MS` | savills | Per-list-page timeout for the enumeration-only source (default 30s; bounded 10–90s) |
+| `SAVILLS_DIRECT_LIST_TIMEOUT_MS` | savills | Direct public list-page timeout (default 25s; bounded 5–60s; two attempts) |
+| `SAVILLS_LIST_TIMEOUT_MS` | savills | Firecrawl fallback list-page timeout (default 30s; bounded 10–90s) |
+| `NAI_GRAPHQL_TIMEOUT_MS` / `NAI_SOURCE_BATCH_SIZE` / `NAI_PAGE_SIZE` / `NAI_ENUMERATION_CONCURRENCY` | nai-global | Bound each public GraphQL body read (default 30s), split source-office filters (default 40), request up to 100 rows per page, and enumerate unlimited batches at a bounded fan-out of two. A timeout or page cap fails closed for monitor coverage. |
 | `AVISON_YOUNG_DETAIL_LIMIT` | avison-young | **Required** for detail on unlimited full runs |
 | `AVISON_YOUNG_DETAIL_CONCURRENCY` | avison-young | Detail parallelism |
-| `--page-cap` | jll, colliers*, nai, savills (sale) | Caps rendered pages / feed offsets |
+| `--page-cap` | jll, colliers*, nai | Caps rendered pages / feed offsets |
 | `--concurrency` | all Firecrawl-heavy | `pmap` limit (1–6) |
 
 ## Detail Failures & Status

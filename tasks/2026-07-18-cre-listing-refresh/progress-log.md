@@ -63,7 +63,7 @@
   database collation-version warning and source-URL duplicate findings for
   review; neither was introduced by this additive refresh.
 
-## Remaining controlled work
+## Recovery, final validation, and bounded follow-up
 
 - The 18 completed supported sources produced 97,217 grouped monitor records
   and 5,555 append-only events: 1,871 new (1.92%), 1,635 price/status changes
@@ -74,18 +74,28 @@
   additive ingest (66.15% of active inventory); 6,491 active records created
   during this run (5.68%); and a net active increase of 6,522 from the 107,801
   baseline (+6.05%).
-- NAI Global and Savills remain deferred. Each was attempted after timeout
-  hardening but failed to produce a complete live monitor artifact within its
-  bounded recovery envelope. Both attempts were stopped before ingest or
-  monitor writes, so they contribute no ambiguous freshness claim.
-- 3,442 monitor-driven targeted-enrichment rows remain queued (principally Lee,
-  SVN, and Marcus). One 200-row additive enrichment batch completed; rows that
-  lacked safe enrichment output remain queued/retryable rather than being
+- Savills recovered through direct server-rendered `__NEXT_DATA__` enumeration,
+  with a validated Firecrawl fallback and real provider `NextUrl` pagination.
+  The live U.S. result was two commercial lease records; the coverage gate
+  correctly suppressed disappearance inference from its older 103-record
+  snapshot.
+- NAI Global recovered through bounded body reads, 100-row GraphQL pages,
+  40-office batches, and a bounded fan-out of two. Its complete monitor
+  artifact contained 13,779 records: 10,419 sale and 3,360 lease, with no
+  source error or truncation. The source index is now fresh at that count.
+  The monitor classified 12,517 as `enumerated_unmatched`, not new database
+  records, because the monitor payload intentionally omits the detail/status
+  fields needed to make an additive listing write safe.
+- The remaining targeted-enrichment queue is 2,672 rows (principally Lee, SVN,
+  CBRE, Cushman, and Newmark). All 766 Marcus rows were drained through the
+  new exact `cre_enrich.py --source marcus-millichap` claim filter. Rows that
+  lack safe enrichment output remain queued/retryable rather than being
   replaced with thin data. Do not reload recurring launchd jobs in this run:
   drain/review the queue after the code is merged and follow the documented
   Gate 5 approval path for monitor, enrich, and weekly only (never the retired
   daily job).
-- Run a final read-only validation, record the final queue state, and publish a
-  concise evidence comment to AGENTIC-1229. Do not reload recurring launchd
-  jobs in this run: scheduler restoration remains gated on a clean merged
-  deployment and the documented Gate 5 approval path.
+- Final read-only validation returned `ok: true`; the known database collation
+  warning remains outside this refresh. Publish the concise evidence comment
+  to AGENTIC-1229. Do not reload recurring launchd jobs in this run: scheduler
+  restoration remains gated on a clean merged deployment and the documented
+  Gate 5 approval path.

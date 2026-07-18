@@ -372,10 +372,11 @@ DB_URL_SENTINEL = "postgres://user:secret@db.example.com:5432/postgres"
 
 
 class _Args:
-    def __init__(self, env_file=None, batch=200, dry_run=False):
+    def __init__(self, env_file=None, batch=200, dry_run=False, source=None):
         self.env_file = env_file
         self.batch = batch
         self.dry_run = dry_run
+        self.source = source
 
 
 def _wire_run(monkeypatch, tmp_path, *, claimed_rows, collect_rc=0,
@@ -559,7 +560,7 @@ class TestRunEnvFile:
 
 
 class TestMain:
-    """main() argparse contract: --batch, --dry-run, --env-file wire into run()."""
+    """main() argparse contract wires batch, source, dry-run, and env-file into run()."""
 
     def _run_main(self, monkeypatch, argv_extra=None):
         """Patch sys.argv and run main(), capturing the args object seen by run()."""
@@ -570,6 +571,7 @@ class TestMain:
                 "batch": args.batch,
                 "dry_run": args.dry_run,
                 "env_file": args.env_file,
+                "source": args.source,
             })
             return 0
 
@@ -588,6 +590,14 @@ class TestMain:
     def test_batch_flag_parsed(self, monkeypatch):
         seen = self._run_main(monkeypatch, ["--batch", "50"])
         assert seen["batch"] == 50
+
+    def test_source_flag_parsed(self, monkeypatch):
+        seen = self._run_main(monkeypatch, ["--source", "marcus-millichap"])
+        assert seen["source"] == "marcus-millichap"
+
+    def test_source_default_none(self, monkeypatch):
+        seen = self._run_main(monkeypatch)
+        assert seen["source"] is None
 
     def test_dry_run_flag_parsed(self, monkeypatch):
         seen = self._run_main(monkeypatch, ["--dry-run"])

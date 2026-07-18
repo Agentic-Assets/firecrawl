@@ -82,6 +82,24 @@ def test_claim_sql_pins_idempotent_and_never_contains_db_url():
     assert build_claim_sql("75") == build_claim_sql(75)
 
 
+def test_claim_sql_source_filter_is_exact_and_does_not_widen_default_drain():
+    default_sql = build_claim_sql(200)
+    targeted_sql = build_claim_sql(200, source="marcus-millichap")
+    assert "AND source_key = 'marcus-millichap'" in targeted_sql
+    assert "AND source_key = 'marcus-millichap'" not in default_sql
+    # The filter belongs in the locked claim CTE, before any row can be marked
+    # claimed or later have attempts incremented.
+    assert targeted_sql.index("AND source_key = 'marcus-millichap'") < \
+        targeted_sql.index("FOR UPDATE SKIP LOCKED")
+
+
+def test_claim_sql_source_filter_quotes_and_rejects_blank_values():
+    sql = build_claim_sql(1, source="broker'key")
+    assert "AND source_key = 'broker''key'" in sql
+    with pytest.raises(ValueError, match="non-empty queue source_key"):
+        build_claim_sql(1, source="  ")
+
+
 # --- (4) select_done_and_retry partitions by URL ---------------------------
 
 
@@ -296,6 +314,16 @@ def test_dry_run_builds_claim_sql_and_does_not_connect(monkeypatch, capsys):
     assert "RETURNING" in out
 
 
+def test_dry_run_source_filter_builds_only_the_targeted_claim(monkeypatch, capsys):
+    def _boom(*a, **k):
+        raise AssertionError("dry-run must not connect")
+
+    monkeypatch.setattr(cre_enrich, "load_db_url", _boom)
+    rc = cre_enrich.run(_Args(dry_run=True, source="srs"))
+    assert rc == 0
+    assert "AND source_key = 'srs'" in capsys.readouterr().out
+
+
 # --- retry-increment SQL shape (covers the +1 path) ------------------------
 
 
@@ -392,10 +420,11 @@ def test_enricher_set_includes_all_current_detail_source_paths():
 
 
 class _Args:
-    def __init__(self, env_file=None, batch=200, dry_run=False):
+    def __init__(self, env_file=None, batch=200, dry_run=False, source=None):
         self.env_file = env_file
         self.batch = batch
         self.dry_run = dry_run
+        self.source = source
 
 
 def _wire_run(monkeypatch, tmp_path, *, claimed, collect_rc=0,

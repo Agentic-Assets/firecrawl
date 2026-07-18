@@ -7,6 +7,8 @@ import {
   savillsImageUrls,
   savillsDocumentUrls,
   savillsListTimeoutMs,
+  savillsDirectListTimeoutMs,
+  savillsListHtmlIsUsable,
 } from "../../../sources/savills.js";
 
 test("savillsListTimeoutMs is bounded with a short recovery default", () => {
@@ -14,6 +16,34 @@ test("savillsListTimeoutMs is bounded with a short recovery default", () => {
   assert.equal(savillsListTimeoutMs("5000"), 10000);
   assert.equal(savillsListTimeoutMs("120000"), 90000);
   assert.equal(savillsListTimeoutMs("invalid"), 30000);
+});
+
+test("savillsDirectListTimeoutMs keeps the direct enumeration transport bounded", () => {
+  assert.equal(savillsDirectListTimeoutMs(undefined), 25000);
+  assert.equal(savillsDirectListTimeoutMs("1000"), 5000);
+  assert.equal(savillsDirectListTimeoutMs("120000"), 60000);
+  assert.equal(savillsDirectListTimeoutMs("invalid"), 25000);
+});
+
+test("savillsListHtmlIsUsable accepts only a rendered Savills list state", () => {
+  const valid = [
+    '<script id="__NEXT_DATA__" type="application/json">',
+    JSON.stringify({
+      props: {
+        initialReduxState: {
+          listPage: { totalItems: 3 },
+          properties: { a: { ExternalPropertyID: "a" } },
+        },
+      },
+    }),
+    "</script>",
+  ].join("");
+  assert.equal(savillsListHtmlIsUsable(valid), true);
+  assert.equal(savillsListHtmlIsUsable("<html>challenge page</html>"), false);
+  assert.equal(
+    savillsListHtmlIsUsable('<script id="__NEXT_DATA__" type="application/json">{"props":{}}</script>'),
+    false
+  );
 });
 
 test("inferStateFromZip maps ZIP prefixes to states", () => {

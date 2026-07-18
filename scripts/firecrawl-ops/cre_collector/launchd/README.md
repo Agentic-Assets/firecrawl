@@ -86,6 +86,12 @@ completed so a later change to the same listing can re-enqueue. This closes the
 loop the monitor's enqueue path always fed and replaces the nightly full
 re-render of every listing.
 
+For a manual recovery of one backed-up broker, an operator may run
+`python3 cre_enrich.py --source SOURCE_KEY --batch N`. `SOURCE_KEY` is an exact
+queue `source_key` filter, applied inside the locked claim query: the invocation
+cannot claim, retry, or increment attempts for another source. It is an ad hoc
+operator command only; the scheduled enrich tier remains unfiltered.
+
 Additive by construction: the worker ALWAYS ingests with `--in` only and NEVER
 passes `--mark-missing` or `--activate-status`, so it cannot soft-delete or flip
 board state. A whole-run failure (collect rc != 0, or `enriched.json` missing /
