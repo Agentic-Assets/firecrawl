@@ -36,7 +36,7 @@ async function kidderPost(startIndex: number): Promise<any> {
   }
 }
 
-async function kidderFetchAll(max: number): Promise<{ items: any[]; total: number; truncated: boolean }> {
+export async function kidderFetchAll(max: number): Promise<{ items: any[]; total: number; truncated: boolean }> {
   if (kidderCache) return { items: kidderCache, total: kidderCache.length, truncated: false };
   const first = await kidderPost(0);
   const total: number = first.totalResultCount ?? 0;

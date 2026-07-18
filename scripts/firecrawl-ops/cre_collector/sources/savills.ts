@@ -1,13 +1,34 @@
 // sources/savills.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
-import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
-import { PAGE_CAP } from "../lib/config.js";
 import { scrapeRaw } from "../lib/scrape.js";
 import { SourceResult, Tx } from "../types.js";
 import { clean, moneyToNumber, num } from "../lib/util.js";
 
 
 // --- Savills: server-rendered list pages ---
+
+/**
+ * List pages are enumeration-only. Keep a failed render from serially holding
+ * a whole source run at the general 90-second scrape timeout; callers may
+ * raise this bounded recovery value when the public site is slow.
+ */
+export function savillsListTimeoutMs(raw = process.env.SAVILLS_LIST_TIMEOUT_MS): number {
+  const value = Number(raw ?? 30000);
+  return Number.isFinite(value) ? Math.min(90000, Math.max(10000, Math.floor(value))) : 30000;
+}
+
+/**
+ * Savills renders the list payload on the server, so it is both faster and
+ * more reliable to enumerate it directly than to send it through a browser
+ * renderer. Keep a separate, short bound for that public HTTP request. The
+ * Firecrawl path remains a fallback for a future response-shape change.
+ */
+export function savillsDirectListTimeoutMs(raw = process.env.SAVILLS_DIRECT_LIST_TIMEOUT_MS): number {
+  const value = Number(raw ?? 25000);
+  return Number.isFinite(value) ? Math.min(60000, Math.max(5000, Math.floor(value))) : 25000;
+}
+
+const SAVILLS_LIST_USER_AGENT = "Mozilla/5.0 (compatible; AgenticAssetsCRE/1.0)";
 
 export const US_STATE_NAME_TO_ABBR: Record<string, string> = {
   alabama: "AL",
@@ -162,12 +183,119 @@ export function savillsNextDataProperties(html: string): any[] {
   return props && typeof props === "object" ? Object.values(props) : [];
 }
 
+/**
+ * Reject challenge pages, redirect shells, and other successful-but-wrong
+ * responses before allowing a list pass to emit a sparse source result. A
+ * rejected page makes the source fail, which lets the monitor coverage gate
+ * suppress disappearance events rather than treating a partial enumeration as
+ * an empty current inventory.
+ */
+export function savillsListHtmlIsUsable(html: string): boolean {
+  const state = parseSavillsNextData(html)?.props?.initialReduxState;
+  return !!state?.listPage && !!state?.properties && typeof state.properties === "object";
+}
+
+async function savillsDirectListHtmlOnce(
+  url: string,
+  timeoutMs: number,
+  fetchImpl: typeof fetch = fetch
+): Promise<string> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`Savills direct list request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  const request = fetchImpl(url, {
+    headers: {
+      accept: "text/html,application/xhtml+xml",
+      "user-agent": SAVILLS_LIST_USER_AGENT,
+    },
+    signal: controller.signal,
+  }).then(async (response) => {
+    if (!response.ok) throw new Error(`Savills direct list HTTP ${response.status}`);
+    const html = await response.text();
+    if (!savillsListHtmlIsUsable(html)) {
+      throw new Error("Savills direct list response did not contain the expected __NEXT_DATA__ list state");
+    }
+    return html;
+  });
+  try {
+    return await Promise.race([request, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Read a complete server-rendered Savills list page without invoking the local
+ * browser service. Two bounded attempts cover transient CDN failures. The
+ * legacy Firecrawl read is retained only as a validated fallback so an invalid
+ * page cannot become a false "no listings" monitor observation.
+ */
+export async function savillsListHtml(url: string): Promise<string> {
+  const directTimeout = savillsDirectListTimeoutMs();
+  let directError: unknown = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await savillsDirectListHtmlOnce(url, directTimeout);
+    } catch (err) {
+      directError = err;
+      console.error(`Savills direct list attempt ${attempt} failed for ${url}: ${err}`);
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+    }
+  }
+
+  try {
+    const html = await scrapeRaw(url, { waitFor: 6000, timeout: savillsListTimeoutMs() });
+    if (!savillsListHtmlIsUsable(html)) {
+      throw new Error("Savills Firecrawl fallback response did not contain the expected __NEXT_DATA__ list state");
+    }
+    return html;
+  } catch (fallbackError) {
+    throw new Error(
+      `Savills list page failed via direct fetch (${String(directError)}) and Firecrawl fallback (${String(fallbackError)})`
+    );
+  }
+}
+
 export function savillsTotalItems(html: string, fallback: number): number | null {
   const data = parseSavillsNextData(html);
-  const total = data?.props?.initialReduxState?.listPage?.totalItems;
+  const listPage = data?.props?.initialReduxState?.listPage;
+  const currentPage = listPage?.currentPage;
+  const pageMap = listPage?.pageMap;
+  const currentMapPage =
+    pageMap?.[String(currentPage)] ??
+    (pageMap && typeof pageMap === "object" ? Object.values(pageMap)[0] : null);
+  // Savills' top-level totalItems is its page count in current responses. The
+  // item count lives on the selected page's paging block.
+  const total = currentMapPage?.paging?.totalItems ?? listPage?.totalItems;
   if (typeof total === "number" && total > 0) return Math.max(total, fallback);
   const headingTotal = Number((html.match(/([0-9][0-9,]*)\s+Properties for (?:let|sale|rent)/i) ?? [])[1]?.replace(/,/g, ""));
   return Number.isFinite(headingTotal) && headingTotal > 0 ? Math.max(headingTotal, fallback) : fallback || null;
+}
+
+export function savillsPageInfo(html: string, fallbackRows: number): {
+  currentPage: number | null;
+  totalPages: number | null;
+  totalItems: number | null;
+  nextUrl: string | null;
+} {
+  const listPage = parseSavillsNextData(html)?.props?.initialReduxState?.listPage;
+  const pageMap = listPage?.pageMap;
+  const currentPage = Number(listPage?.currentPage);
+  const mapPage =
+    pageMap?.[String(currentPage)] ??
+    (pageMap && typeof pageMap === "object" ? Object.values(pageMap)[0] : null);
+  const totalPages = Number(mapPage?.paging?.total);
+  return {
+    currentPage: Number.isInteger(currentPage) && currentPage > 0 ? currentPage : null,
+    totalPages: Number.isInteger(totalPages) && totalPages > 0 ? totalPages : null,
+    totalItems: savillsTotalItems(html, fallbackRows),
+    nextUrl: clean(mapPage?.metaData?.NextUrl),
+  };
 }
 
 export function savillsSqft(text: string | null): number | null {
@@ -277,10 +405,10 @@ export function savillsSaleCardIsCommercial(card: {
   return false;
 }
 
-// Maps a single Savills __NEXT_DATA__ property row to a lease listing object,
-// or returns null when the row has no parseable US location. Extracted so the
-// mapping logic is unit-testable without a network fetch.
-export function mapSavillsLeaseRow(row: any, sourceUrl: string): any | null {
+// Maps a single Savills __NEXT_DATA__ property row to a U.S. listing object,
+// or returns null when the row has no parseable U.S. location. The server-
+// rendered list payload contains the same fields for sale and lease.
+export function mapSavillsRow(row: any, transactionType: Tx, sourceUrl: string): any | null {
   const location = parseSavillsUsLocation(clean(row.AddressLine2));
   if (!location) return null;
   const contactsDetailed = [savillsContact(row.PrimaryAgent), savillsContact(row.SecondaryAgent)].filter(Boolean);
@@ -312,11 +440,19 @@ export function mapSavillsLeaseRow(row: any, sourceUrl: string): any | null {
   const rawSqFt = row.AvailableSize?.SqFt;
   const availableSf: number | null =
     typeof rawSqFt === "number" && isFinite(rawSqFt) && rawSqFt > 0 ? rawSqFt : null;
+  const guidePrice = clean(row.GuidePriceText);
+  const displayPrice = clean(row.DisplayPriceText);
+  // Sale cards commonly use GuidePriceText="Asking price" and carry the
+  // actual amount in DisplayPriceText. Lease cards have historically exposed
+  // their rate in GuidePriceText, so retain that preference there.
+  const priceText = transactionType === "sale"
+    ? displayPrice ?? guidePrice
+    : guidePrice ?? displayPrice;
 
   return {
     id: clean(row.ExternalPropertyID) ?? detailId,
     name: clean(row.AddressLine1) ?? clean(row.PropertyPageTitle),
-    transactionType: "Lease",
+    transactionType: transactionType === "sale" ? "Sale" : "Lease",
     assetType: propertyType,
     street: clean(row.AddressLine1),
     city: location.city,
@@ -325,7 +461,9 @@ export function mapSavillsLeaseRow(row: any, sourceUrl: string): any | null {
     country: "US",
     latitude: num(row.Latitude),
     longitude: num(row.Longitude),
-    leaseRateText: clean(row.GuidePriceText) ?? clean(row.DisplayPriceText),
+    salePriceUsd: transactionType === "sale" && /(?:US\$|\$)/.test(priceText ?? "") ? moneyToNumber(priceText) : null,
+    salePriceText: transactionType === "sale" ? priceText : null,
+    leaseRateText: transactionType === "lease" ? priceText : null,
     sizeText: clean(row.SizeFormatted) ?? clean(row.FooterSizeFormatted),
     buildingSizeSqft: savillsSqft(clean(row.SizeFormatted) ?? clean(row.FooterSizeFormatted)),
     description: clean((row.LongDescription ?? []).map((part: any) => [part.Head, part.Body].filter(Boolean).join("\n")).join("\n\n")),
@@ -342,208 +480,96 @@ export function mapSavillsLeaseRow(row: any, sourceUrl: string): any | null {
   };
 }
 
-export async function srcSavillsCommercialLease(max: number): Promise<SourceResult> {
-  const sourceUrl = "https://search.savills.com/com/en/list/commercial/property-to-let/united-states-of-america";
-  const html = await scrapeRaw(sourceUrl, { waitFor: 6000 });
-  const firstPageRows = savillsNextDataProperties(html).filter((row) => row?.IsCommercial === true);
-  const total = savillsTotalItems(html, firstPageRows.length);
+// Kept as a focused public helper for existing lease-mapping tests and callers.
+export function mapSavillsLeaseRow(row: any, sourceUrl: string): any | null {
+  return mapSavillsRow(row, "lease", sourceUrl);
+}
+
+async function collectSavillsTransaction(tx: Tx, max: number): Promise<SourceResult> {
+  const sourceUrl = tx === "lease"
+    ? "https://search.savills.com/com/en/list/commercial/property-to-let/united-states-of-america"
+    : "https://search.savills.com/com/en/list/commercial/property-for-sale/united-states-of-america";
   const listings: any[] = [];
   let nonUsFiltered = 0;
-  let emptyStreak = 0;
+  const seenRawIds = new Set<string>();
+  const seenListingIds = new Set<string>();
+  const visitedUrls = new Set<string>();
+  let total: number | null = null;
+  let url: string | null = sourceUrl;
+  let eligibleCount = 0;
 
-  // Process first-page rows.
-  for (const row of firstPageRows) {
-    if (listings.length >= max) break;
-    const mapped = mapSavillsLeaseRow(row, sourceUrl);
-    if (!mapped) {
-      nonUsFiltered++;
-      continue;
+  // Use Savills' actual NextUrl from __NEXT_DATA__. The old synthetic /page/N
+  // form now redirects to page one, which silently repeats cards. If Savills
+  // reports further pages without an actual next URL, fail closed instead of
+  // creating a partial monitor observation.
+  while (url) {
+    if (visitedUrls.has(url)) throw new Error(`Savills ${tx} pagination looped back to ${url}`);
+    visitedUrls.add(url);
+    const html = await savillsListHtml(url);
+    const rows = savillsNextDataProperties(html).filter((row) => row?.IsCommercial === true);
+    const pageInfo = savillsPageInfo(html, rows.length);
+    total = total === null ? pageInfo.totalItems : Math.max(total, pageInfo.totalItems ?? 0);
+    if ((pageInfo.totalItems ?? 0) > 0 && rows.length === 0) {
+      throw new Error(`Savills ${tx} page ${pageInfo.currentPage ?? "?"} reported results but exposed no commercial rows`);
     }
-    listings.push(mapped);
-  }
-
-  // Paginate additional pages while there are more items to collect.
-  // Mirrors the sale-path pagination shape: /page/N with an empty-streak break.
-  // The IsCommercial filter is preserved on every page.
-  const seenIds = new Set<string>(listings.map((l) => l.id ?? l.url));
-  for (
-    let page = 2;
-    listings.length < max &&
-    (total === null || listings.length < total) &&
-    page <= Math.max(PAGE_CAP, 10);
-    page++
-  ) {
-    const pageUrl = `${sourceUrl}/page/${page}`;
-    const pageHtml = await scrapeRaw(pageUrl, { waitFor: 6000 });
-    const pageRows = savillsNextDataProperties(pageHtml).filter((row) => row?.IsCommercial === true);
-    if (!pageRows.length) {
-      if (++emptyStreak >= 3) break;
-      continue;
-    }
-    emptyStreak = 0;
-    let pageAdded = 0;
-    for (const row of pageRows) {
-      if (listings.length >= max) break;
-      const mapped = mapSavillsLeaseRow(row, sourceUrl);
+    for (const row of rows) {
+      const rawId = clean(row.ExternalPropertyID) ?? clean(row.ExternalPropertyIDFormatted);
+      if (!rawId || seenRawIds.has(rawId)) continue;
+      seenRawIds.add(rawId);
+      const mapped = mapSavillsRow(row, tx, sourceUrl);
       if (!mapped) {
         nonUsFiltered++;
         continue;
       }
-      const uid = mapped.id ?? mapped.url;
-      if (seenIds.has(uid)) continue;
-      seenIds.add(uid);
-      listings.push(mapped);
-      pageAdded++;
+      const listingId = mapped.id ?? mapped.url;
+      if (seenListingIds.has(listingId)) continue;
+      seenListingIds.add(listingId);
+      eligibleCount++;
+      if (listings.length < max) listings.push(mapped);
     }
-    if (!pageAdded) {
-      if (++emptyStreak >= 3) break;
+    const next = pageInfo.nextUrl;
+    if (!next) {
+      if (
+        pageInfo.currentPage !== null &&
+        pageInfo.totalPages !== null &&
+        pageInfo.currentPage < pageInfo.totalPages
+      ) {
+        throw new Error(
+          `Savills ${tx} reports ${pageInfo.totalPages} pages but page ${pageInfo.currentPage} exposes no NextUrl`
+        );
+      }
+      break;
     }
-    console.error(`  savills/lease: page ${page}, ${listings.length} collected (total ${total ?? "?"})`);
+    const nextUrl = new URL(next, "https://search.savills.com").toString();
+    if (nextUrl === url) throw new Error(`Savills ${tx} page ${pageInfo.currentPage ?? "?"} returned a self-referential NextUrl`);
+    url = nextUrl;
+    console.error(`  savills/${tx}: ${listings.length} U.S. commercial rows collected (source total ${total ?? "?"})`);
   }
-
-  // Set truncated when the collected set is smaller than the reported total,
-  // so cre_monitor.py gates disappearance events correctly.
-  const effectiveTotal = total ?? 0;
-  const truncated = effectiveTotal > 0 && listings.length < Math.min(max, effectiveTotal)
-    ? true
-    : undefined;
+  const truncated =
+    Number.isFinite(max) && eligibleCount > max
+      ? true
+      : undefined;
 
   return {
     company: "Savills",
     sourceUrl,
-    method: "Server-rendered commercial lease page parsed from public __NEXT_DATA__ property objects, paginated via /page/N",
+    method: "Direct server-rendered Savills __NEXT_DATA__ enumeration using provider NextUrl pagination (validated Firecrawl fallback)",
     totalAvailable: total,
     listings,
     truncated,
     note: nonUsFiltered
-      ? `${nonUsFiltered} non-US or non-US-office commercial lease row(s) filtered out`
-      : "Commercial sale route was checked separately; the only public commercial sale object observed was Toronto, Canada.",
+      ? `${nonUsFiltered} non-U.S. commercial ${tx} row(s) filtered out after complete provider enumeration`
+      : undefined,
   };
+}
+
+export async function srcSavillsCommercialLease(max: number): Promise<SourceResult> {
+  return collectSavillsTransaction("lease", max);
 }
 
 export async function srcSavills(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
   // Enumeration-only source: both the sale list pages and the lease __NEXT_DATA__
   // parse extract every field from the list page (no per-listing detail render),
   // so monitor output == full output.
-  if (tx === "lease") return srcSavillsCommercialLease(max);
-
-  const base = "https://search.savills.com/com/en/list/property-for-sale/united-states-of-america";
-  const listings: any[] = [];
-  let total: number | null = null;
-  let nonUsFiltered = 0;
-  // Tracks cards filtered out by the commercial guard. The generic
-  // /property-for-sale/ surface is residential luxury homes; these cards are
-  // dropped to prevent residential contamination.
-  let nonCommercialFiltered = 0;
-  let emptyStreak = 0;
-  for (let page = 1; listings.length < max && page <= Math.max(PAGE_CAP, 10); page++) {
-    const before = listings.length;
-    const url = page === 1 ? base : `${base}/page/${page}`;
-    const html = await scrapeRaw(url, { waitFor: 6000 });
-    const $ = cheerio.load(html);
-    total =
-      total ??
-      (Number(
-        (html.match(/([0-9][0-9,]*)\s+Properties for (?:sale|rent)/i) ?? [])[1]?.replace(/,/g, "")
-      ) || null);
-    const seenHere = new Set<string>();
-    $('a[href*="/property-detail/"]').each((_, el) => {
-      if (listings.length >= max) return;
-      const href = $(el).attr("href")!;
-      const abs = href.startsWith("http") ? href : `https://search.savills.com${href}`;
-      if (seenHere.has(abs) || listings.some((l) => l.url === abs)) return;
-      seenHere.add(abs);
-      let card = $(el);
-      if (!card.find("[class*='sv-details__address1']").length) {
-        const parent = card
-          .parents()
-          .filter((__, p) => $(p).find("[class*='sv-details__address1']").length > 0)
-          .first();
-        if (parent.length) card = parent;
-      }
-      const name = clean(card.find("[class*='sv-details__address1']").first().text());
-      const address2 = clean(card.find("[class*='sv-details__address2']").first().text());
-      const priceBlock = clean(card.find(".sv-property-price").first().text());
-      const priceText =
-        (priceBlock?.match(/(?:US\$|\$|€|£)\s?[0-9][0-9,.]*(?:\s?million)?/i) ?? [])[0] ??
-        priceBlock ??
-        null;
-      const sizeText =
-        (clean(card.text())?.match(/\(([0-9][0-9,.]*\s*sq ?ft)\)/i) ?? [])[1] ??
-        (clean(card.text())?.match(/([0-9][0-9,.]*\s*(?:sq ?ft|acres?|m²))/i) ?? [])[1] ??
-        null;
-      const brokerIds = [
-        brokerRef({
-          name: clean(card.find("[class*='sv-details__contacts-name']").first().text()),
-          phone: clean(card.find("[class*='sv-details__contacts-phone']").first().text()),
-          company: "Savills",
-        }),
-      ].filter((x): x is number => x !== null);
-      const location = parseSavillsUsLocation(address2);
-      // When the US filter has no inventory (lease), Savills renders foreign
-      // fallback cards (e.g. Cyprus, EUR-priced). US-only feed: drop them.
-      if (!location) {
-        nonUsFiltered++;
-        return;
-      }
-      // L5: commercial-surface guard. The generic /property-for-sale/ surface is
-      // residential luxury homes. Drop any card that does not pass the commercial
-      // filter to prevent re-ingestion of residential listings.
-      const propertyTypeText = clean(card.find("[class*='sv-details__type']").first().text())
-        ?? clean(card.find("[class*='property-type']").first().text());
-      const isCommercial = savillsSaleCardIsCommercial({
-        propertyType: propertyTypeText,
-        href: abs,
-        cardText: clean(card.text()),
-      });
-      if (!isCommercial) {
-        nonCommercialFiltered++;
-        return;
-      }
-      const img = card.find("img").attr("src") ?? card.find("img").attr("data-src") ?? null;
-      listings.push({
-        id: abs.split("/property-detail/")[1] ?? null,
-        name,
-        transactionType: "Sale",
-        city: location.city,
-        state: location.state,
-        postalCode: location.postalCode,
-        country: "US",
-        salePriceUsd: /\$/.test(priceText ?? "") ? moneyToNumber(priceText) : null,
-        salePriceText: priceText,
-        sizeText,
-        brokerIds,
-        photos: img && !img.startsWith("data:") ? [img] : [],
-        url: abs,
-      });
-    });
-    if (!seenHere.size) break;
-    // Savills shuffles sort order between requests, so a page can be all
-    // duplicates without meaning the end of the result set. Stop only after
-    // several consecutive pages contribute nothing new.
-    if (listings.length === before) {
-      if (++emptyStreak >= 3) break;
-    } else {
-      emptyStreak = 0;
-    }
-    console.error(`  savills/sale: page ${page}, ${listings.length} collected (total ${total ?? "?"})`);
-  }
-  // Allow an all-residential-filtered result: the generic sale surface yields
-  // ~0 US commercial rows (verified), so filtering all cards as non-commercial
-  // is the expected capped outcome, not an error. Only throw when no links at
-  // all were found AND nothing was filtered by any guard.
-  if (!listings.length && !nonUsFiltered && !nonCommercialFiltered) {
-    throw new Error("no property-detail links found on Savills list page");
-  }
-  const noteParts: string[] = [];
-  if (nonUsFiltered) noteParts.push(`${nonUsFiltered} non-US fallback card(s) filtered out`);
-  if (nonCommercialFiltered) noteParts.push(`${nonCommercialFiltered} non-commercial card(s) filtered out by IsCommercial guard`);
-  return {
-    company: "Savills",
-    sourceUrl: base,
-    method: "Server-rendered list pages parsed (cards), paginated via /page/N",
-    totalAvailable: total,
-    listings,
-    note: noteParts.length ? noteParts.join("; ") : undefined,
-  };
+  return collectSavillsTransaction(tx, max);
 }

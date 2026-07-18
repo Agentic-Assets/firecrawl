@@ -23,6 +23,12 @@ export const CUSHMAN_DETAIL_CONCURRENCY = boundedInt(
   1,
   CONCURRENCY
 );
+// The public search API carries the canonical external id and the primary
+// inventory fields. `base` is an explicit recovery mode for a time-bounded
+// additive refresh: it avoids rendering every detail page while preserving
+// existing detail fields through the ingest merge. Normal collection remains
+// `full` so it continues to harvest optional page-only facts.
+export const CUSHMAN_DETAIL_MODE = process.env.CUSHMAN_DETAIL_MODE === "base" ? "base" : "full";
 
 export function canonicalCushmanUrl(url: string | null): string | null {
   if (!url) return null;
@@ -392,9 +398,11 @@ export async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise
   const truncated = collectedRows.length < want;
   const rows = collectedRows.slice(0, want);
   let done = 0;
-  // Monitor mode: skip the per-listing detail scrape and map rows with the cheap
-  // base mapping (listingStatus is free here; real price is detail-only).
-  const listings = monitor
+  // Monitor mode and explicit API-base recovery both skip per-listing rendering.
+  // The base API mapping preserves the canonical identity and core inventory
+  // fields; additive ingestion retains previously captured detail-only values.
+  const useBaseRows = monitor || CUSHMAN_DETAIL_MODE === "base";
+  const listings = useBaseRows
     ? rows.map((row) => baseCushmanListing(row, tx))
     : await pmap(rows, CUSHMAN_DETAIL_CONCURRENCY, async (row) => {
         const enriched = await enrichCushmanListing(row, tx);
@@ -407,7 +415,9 @@ export async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise
   return {
     company: "Cushman & Wakefield",
     sourceUrl,
-    method: "Cushman public /api/properties/search JSON pagination plus detail-page raw HTML enrichment",
+    method: useBaseRows
+      ? "Cushman public /api/properties/search JSON pagination (API-base recovery mode)"
+      : "Cushman public /api/properties/search JSON pagination plus detail-page raw HTML enrichment",
     totalAvailable: total,
     listings,
     truncated,

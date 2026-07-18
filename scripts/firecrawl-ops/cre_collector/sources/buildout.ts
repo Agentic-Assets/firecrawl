@@ -61,6 +61,39 @@ export function envBool(name: string): boolean {
   return ["1", "true", "yes", "on"].includes((process.env[name] ?? "").toLowerCase());
 }
 
+/**
+ * Opt in to a live Buildout inventory pass when a normal source run would
+ * otherwise reuse its durable page cache.  The cache is still written with
+ * successfully fetched pages so the recovery path has the newest good copy.
+ *
+ * This deliberately does not bypass the in-process inventory cache: sale and
+ * lease collection share the one live inventory read made by this invocation.
+ */
+export function buildoutRefreshPageCache(): boolean {
+  return envBool("BUILDOUT_REFRESH_PAGE_CACHE");
+}
+
+export function buildoutPageCachePolicy(opts: BuildoutInventoryOpts): {
+  read: boolean;
+  write: boolean;
+} {
+  const cacheOnly = envBool("BUILDOUT_CACHE_ONLY");
+  const assembleFromCache = envBool("BUILDOUT_ASSEMBLE_FROM_CACHE");
+  const refresh = buildoutRefreshPageCache();
+  if (refresh && (cacheOnly || assembleFromCache)) {
+    throw new Error(
+      "BUILDOUT_REFRESH_PAGE_CACHE=1 cannot be combined with BUILDOUT_CACHE_ONLY=1 or BUILDOUT_ASSEMBLE_FROM_CACHE=1"
+    );
+  }
+  const enabled =
+    refresh ||
+    opts.usePageCache ||
+    envBool("BUILDOUT_USE_PAGE_CACHE") ||
+    cacheOnly ||
+    assembleFromCache;
+  return { read: enabled && !refresh, write: enabled };
+}
+
 export function envInt(name: string): number | null {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === "") return null;
@@ -193,8 +226,8 @@ export async function fetchBuildoutInventoryPage(
   opts: BuildoutInventoryOpts
 ): Promise<any> {
   const url = buildoutInventoryUrl(pluginKey, page);
-  const useCache = opts.usePageCache || envBool("BUILDOUT_USE_PAGE_CACHE") || envBool("BUILDOUT_CACHE_ONLY") || envBool("BUILDOUT_ASSEMBLE_FROM_CACHE");
-  if (useCache) {
+  const cachePolicy = buildoutPageCachePolicy(opts);
+  if (cachePolicy.read) {
     const cached = readBuildoutPageCache(company, pluginKey, page, opts);
     if (cached) return cached;
     if (envBool("BUILDOUT_ASSEMBLE_FROM_CACHE")) {
@@ -216,7 +249,7 @@ export async function fetchBuildoutInventoryPage(
     jsonAttempts: opts.jsonAttempts,
     jsonBackoffMs: opts.jsonBackoffMs,
   });
-  if (useCache) writeBuildoutPageCache(company, pluginKey, page, opts, data);
+  if (cachePolicy.write) writeBuildoutPageCache(company, pluginKey, page, opts, data);
   return data;
 }
 
@@ -316,7 +349,7 @@ export async function buildoutInventory(
             });
           }
           inventoryByPage.set(p, d.inventory ?? []);
-          if (opts.usePageCache || envBool("BUILDOUT_USE_PAGE_CACHE") || envBool("BUILDOUT_CACHE_ONLY")) {
+          if (buildoutPageCachePolicy(opts).write) {
             writeBuildoutPageCache(company, pluginKey, p, opts, d);
           }
           failedPages.delete(p);

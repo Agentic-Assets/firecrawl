@@ -1,20 +1,45 @@
 // sources/nai-global.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
-import { CONCURRENCY, PAGE_CAP } from "../lib/config.js";
+import { PAGE_CAP } from "../lib/config.js";
 import { stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { parseAmountIgnoringCurrencyLabel, normBuildingClass } from "../lib/parse.js";
 import { LinkItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
-import { clean, num, pmap } from "../lib/util.js";
+import { boundedInt, clean, num, pmap } from "../lib/util.js";
 
 
 // --- NAI Global: Infabode public GraphQL feed ---
 
 export const NAI_WIDGET_URL = "https://ab.infabode.com/nai-global/listings3";
-export const NAI_PUBLIC_API_URL = "https://infabode.com/public_api";
 export const NAI_PUBLIC_POST_URL = "https://infabode.com/graphql";
 export const NAI_LISTING_URL_BASE = "https://infabode.com/services/listings";
-export const NAI_PAGE_SIZE = 18;
-export const NAI_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
+// Infabode accepts 100 rows per public GraphQL page. Its widget uses 18, but
+// retaining that UI-sized page makes a complete 117-office monitor take dozens
+// of slow round trips. A bounded 100-row page preserves offset pagination
+// while making the source practical to refresh.
+export const NAI_PAGE_SIZE = boundedInt(process.env.NAI_PAGE_SIZE, 100, 18, 100);
+// Infabode occasionally accepts a request then stalls while streaming the body.
+// This must bound both headers and body consumption: timing out only `fetch()`
+// leaves `res.text()` unbounded and can strand the entire enumeration pass.
+export const NAI_GRAPHQL_TIMEOUT_MS = boundedInt(
+  process.env.NAI_GRAPHQL_TIMEOUT_MS,
+  30000,
+  5000,
+  60000
+);
+// The public API becomes unreliable when every member-office id is placed in
+// one large filter. Enumerating the documented offices in modest, disjoint
+// batches returns the same public feed without making a partial source result
+// look complete. Each batch is paginated to its own short page.
+export const NAI_SOURCE_BATCH_SIZE = boundedInt(process.env.NAI_SOURCE_BATCH_SIZE, 40, 1, 40);
+// Each batch is independently paginated. A small bounded fan-out makes the
+// full public-feed pass finish in practical time without turning a source
+// timeout into an unbounded concurrency storm.
+export const NAI_ENUMERATION_CONCURRENCY = boundedInt(
+  process.env.NAI_ENUMERATION_CONCURRENCY,
+  2,
+  1,
+  3
+);
 export const NAI_CONTENT_TYPE_BY_TX: Record<Tx, number> = { sale: 4, lease: 10 };
 export const NAI_SOURCE_IDS = [
   99487, 99571, 99491, 99492, 84593, 99494, 99495, 84587, 99573, 161338, 84617, 268182,
@@ -30,14 +55,48 @@ export const NAI_SOURCE_IDS = [
 ];
 
 export const NAI_FEED_QUERY =
-  "query GET_LISTINGS_POSTS($filter: PostFilter, $offset: Int, $limit: Int) { posts(filter: $filter, offset: $offset, limit: $limit) { id title summary publishedAt locations { id path } contentType { id name } source { id name logoS3(format: LOGO_300X300) bannerS3 } postImages { id url } } }";
-export const NAI_DETAIL_QUERY =
-  "query publicPost($id: Int!) { publicPost(id: $id) { id title summary content tags currency listingStatus price landSize sizeTotal sizeRangeH sizeRangeL urlOriginal contactEmail urlDocument documentPreview contentType { id name } postImages { id url index } locations { id name geometry path } source { id socialLinks name bannerS3 logoS3(format: LOGO_100X100) } } }";
+  "query GET_LISTINGS_PUBLIC_POSTS($filter: PostFilter, $offset: Int, $limit: Int) { publicPosts(filter: $filter, offset: $offset, limit: $limit) { id title summary content tags currency listingStatus price landSize sizeTotal sizeRangeH sizeRangeL url urlOriginal contactEmail urlDocument documentPreview updatedAt publishedAt contentType { id name } postImages { id url index } locations { id name geometry path } source { id socialLinks name bannerS3 logoS3(format: LOGO_100X100) } } }";
 
-export const naiFeedPageCache = new Map<number, any[]>();
+export const naiFeedPageCache = new Map<string, any[]>();
 
-export async function naiGraphqlPost(url: string, body: any, referer: string): Promise<any> {
-  const res = await fetch(url, {
+export function naiSourceIdBatches(sourceIds = NAI_SOURCE_IDS, batchSize = NAI_SOURCE_BATCH_SIZE): number[][] {
+  const unique = [...new Set(sourceIds.filter((id) => Number.isInteger(id) && id > 0))];
+  const boundedBatchSize = Math.max(1, Math.trunc(batchSize));
+  const batches: number[][] = [];
+  for (let index = 0; index < unique.length; index += boundedBatchSize) {
+    batches.push(unique.slice(index, index + boundedBatchSize));
+  }
+  return batches;
+}
+
+export function naiFeedPageCacheKey(offset: number, sourceIds: number[] = NAI_SOURCE_IDS): string {
+  return `${sourceIds.join(",")}:${offset}`;
+}
+
+/**
+ * Infabode can repeat its final full page at later offsets instead of returning
+ * a short page. The ordered post-id signature lets enumeration stop at that
+ * verified replay instead of needlessly consuming the configured page cap.
+ */
+export function naiPageSignature(rows: any[]): string | null {
+  const ids = rows
+    .map((row) => {
+      const id = row?.id;
+      return typeof id === "string" || typeof id === "number" ? clean(String(id)) : null;
+    })
+    .filter((id): id is string => !!id);
+  return ids.length === rows.length && ids.length > 0 ? ids.join(",") : null;
+}
+
+export async function naiGraphqlPost(
+  url: string,
+  body: any,
+  referer: string,
+  timeoutMs = NAI_GRAPHQL_TIMEOUT_MS
+): Promise<any> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const request = fetch(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -46,9 +105,27 @@ export async function naiGraphqlPost(url: string, body: any, referer: string): P
       "user-agent": "Mozilla/5.0 CRE collector",
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30000),
+    signal: controller.signal,
   });
-  const text = await res.text();
+  // Keep the deadline live through both fetch and response-body consumption.
+  // `fetch()` can settle as soon as response headers arrive; clearing a timer
+  // there would leave a stalled `res.text()` unbounded.
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`Infabode GraphQL request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  let res: Response;
+  let text: string;
+  try {
+    ({ res, text } = await Promise.race([
+      request.then(async (response) => ({ res: response, text: await response.text() })),
+      deadline,
+    ]));
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
   let parsed: any = null;
   try {
     parsed = JSON.parse(text);
@@ -62,20 +139,21 @@ export async function naiGraphqlPost(url: string, body: any, referer: string): P
   return parsed.data;
 }
 
-export async function fetchNaiFeedPage(offset: number): Promise<any[]> {
-  const cached = naiFeedPageCache.get(offset);
+export async function fetchNaiFeedPage(offset: number, sourceIds: number[] = NAI_SOURCE_IDS): Promise<any[]> {
+  const cacheKey = naiFeedPageCacheKey(offset, sourceIds);
+  const cached = naiFeedPageCache.get(cacheKey);
   if (cached) return cached;
   const data = await naiGraphqlPost(
-    NAI_PUBLIC_API_URL,
+    NAI_PUBLIC_POST_URL,
     {
+      operationName: "GET_LISTINGS_PUBLIC_POSTS",
       query: NAI_FEED_QUERY,
       variables: {
         offset,
         limit: NAI_PAGE_SIZE,
         filter: {
-          content_types_ids: [NAI_CONTENT_TYPE_BY_TX.sale, NAI_CONTENT_TYPE_BY_TX.lease],
-          indSectorsIds: [],
-          sourcesIds: NAI_SOURCE_IDS,
+          contentTypesIds: [NAI_CONTENT_TYPE_BY_TX.sale, NAI_CONTENT_TYPE_BY_TX.lease],
+          sourcesIds: sourceIds,
           locationsIds: [],
           title: "",
         },
@@ -83,18 +161,9 @@ export async function fetchNaiFeedPage(offset: number): Promise<any[]> {
     },
     NAI_WIDGET_URL
   );
-  const rows = Array.isArray(data?.posts) ? data.posts : [];
-  naiFeedPageCache.set(offset, rows);
+  const rows = Array.isArray(data?.publicPosts) ? data.publicPosts : [];
+  naiFeedPageCache.set(cacheKey, rows);
   return rows;
-}
-
-export async function fetchNaiPublicPost(id: number): Promise<any> {
-  const data = await naiGraphqlPost(
-    NAI_PUBLIC_POST_URL,
-    { query: NAI_DETAIL_QUERY, variables: { id } },
-    `${NAI_LISTING_URL_BASE}/${id}`
-  );
-  return data?.publicPost ?? null;
 }
 
 export function naiLocation(partsSource: any[]): { city: string | null; state: string | null; country: string | null } {
@@ -165,6 +234,17 @@ export function naiListingStatus(detail: any): string | null {
   return clean(value);
 }
 
+/**
+ * The publicPosts feed includes historical posts. Keep one eligibility rule for
+ * both full ingestion and monitoring so the two paths compare like-for-like.
+ */
+export function naiIsSourceEligible(row: any, tx: Tx): boolean {
+  return (
+    Number(row?.contentType?.id) === NAI_CONTENT_TYPE_BY_TX[tx] &&
+    naiListingStatus(row) === "FOR_SALE_ON_MARKET"
+  );
+}
+
 // Harvest media/links/documents from the Infabode publicPost detail payload.
 // There is no rendered detail page (the source is a GraphQL JSON API), so a
 // minimal ScrapedDoc is synthesized from detail.content (HTML that may embed a
@@ -200,19 +280,25 @@ export function harvestNai(row: any, detail: any): {
   return { media: r.media, links: r.links, documents: r.documents, images: r.images };
 }
 
-export function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: string | null): any {
+export function naiListingFromFeed(
+  row: any,
+  tx: Tx,
+  detail: any,
+  detailError: string | null,
+  useFeedScalars = false
+): any {
+  // The publicPosts feed carries the public listing detail fields, including
+  // price, size, contacts, documents, and the provider status label.
+  const scalarSource = detail ?? (useFeedScalars ? row : null);
   const id = Number(row?.id);
   const sourceLocations = Array.isArray(detail?.locations) && detail.locations.length ? detail.locations : row?.locations;
   const loc = naiLocation(Array.isArray(sourceLocations) ? sourceLocations : []);
   const coords = detail?.locations?.[0]?.geometry?.coordinates;
-  const priceText = naiPriceText(detail);
+  const priceText = naiPriceText(scalarSource);
   const docs = detailError ? [] : naiDocumentUrls(detail);
-  // Capture-everything harvest runs ONLY on a clean detail touch (a real
-  // publicPost payload with no detailError). In monitor mode detail is null and
-  // in the full path a failed detail carries detailError, so harvest is skipped
-  // and the emitted object stays byte-identical to the prior shape (the spread
-  // below adds nothing). The unified `documents` channel supersedes `brochures`
-  // when harvest fires, so the same urlDocument is not inserted twice.
+  // Capture-everything harvest runs only on a clean publicPosts row. The
+  // unified `documents` channel supersedes `brochures` when harvest fires, so
+  // the same urlDocument is not inserted twice.
   const harvested = !detailError && detail ? harvestNai(row, detail) : null;
   const contacts =
     !detailError && clean(detail?.contactEmail)
@@ -225,7 +311,7 @@ export function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: s
           },
         ]
       : [];
-  // Phase-2 scalar lift (detail-gated so monitor/failed-detail output stays byte-identical).
+  // Scalar lift from the publicPosts payload.
   // canonicalUrl: sourceWebsiteUrl == publicPost.urlOriginal.
   // salePrice / leaseRate: publicPost.price keyed by transactionMode using
   //   parseAmountIgnoringCurrencyLabel (provider sends 'POUND' label on USD values).
@@ -236,15 +322,15 @@ export function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: s
   // statusBadge: NOT emitted — publicPost.listingStatus is contaminated (lease rows
   //   carry ['FOR_SALE_ON_MARKET']); skip entirely per the gap doc DQ guard.
   const tags = Array.isArray(detail?.tags) ? detail.tags : [];
-  const detailScalars = detail
+  const detailScalars = scalarSource
     ? {
-        canonicalUrl: clean(detail?.urlOriginal),
+        canonicalUrl: clean(scalarSource?.urlOriginal ?? scalarSource?.url),
         ...(tx === "sale"
           ? { salePriceUsd: parseAmountIgnoringCurrencyLabel(priceText) }
           : { leaseRateMin: parseAmountIgnoringCurrencyLabel(priceText) }),
         highlights: tags.length ? [...tags] : undefined,
-        minDivisibleSf: num(detail?.sizeRangeL) || undefined,
-        maxDivisibleSf: num(detail?.sizeRangeH) || undefined,
+        minDivisibleSf: num(scalarSource?.sizeRangeL) || undefined,
+        maxDivisibleSf: num(scalarSource?.sizeRangeH) || undefined,
         buildingClass: naiBuildingClassFromTags(tags) ?? undefined,
         extraFacts: (() => {
           const facts: Record<string, string> = {};
@@ -273,17 +359,16 @@ export function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: s
     longitude: Array.isArray(coords) ? num(coords[0]) : null,
     salePriceText: tx === "sale" ? priceText : null,
     leaseRateText: tx === "lease" ? priceText : null,
-    sizeText: naiSizeText(detail),
-    buildingSizeSqft: num(detail?.sizeTotal),
-    lotSizeAcres: num(detail?.landSize),
-    // Stranded structured-field lift: the publicPost size range maps to the
-    // available / divisible square-foot columns cre_ingest.to_row carries. Gated
-    // on a present detail so a monitor pass (detail=null) emits no new keys and
-    // stays byte-identical. minDivisibleSf/maxDivisibleSf are set by detailScalars
-    // below (Phase-2); availableSf remains here as the existing mapping.
-    ...(detail
+    sizeText: naiSizeText(scalarSource),
+    buildingSizeSqft: num(scalarSource?.sizeTotal),
+    lotSizeAcres: num(scalarSource?.landSize),
+    // The publicPost size range maps to the available/divisible square-foot
+    // columns cre_ingest.to_row carries. minDivisibleSf/maxDivisibleSf are set
+    // by detailScalars above; availableSf remains the existing mapping.
+    ...(scalarSource
       ? {
-          availableSf: num(detail?.sizeRangeL) ?? num(detail?.sizeRangeH) ?? num(detail?.sizeTotal),
+          availableSf:
+            num(scalarSource?.sizeRangeL) ?? num(scalarSource?.sizeRangeH) ?? num(scalarSource?.sizeTotal),
         }
       : {}),
     listingOffice: clean(detail?.source?.name ?? row?.source?.name),
@@ -307,12 +392,12 @@ export function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: s
       : { brochures: docs.map((url) => ({ name: titleFromFilename(url), url })) }),
     photos: harvested && harvested.images.length ? harvested.images : naiImageUrls(row, detail),
     url: Number.isFinite(id) ? `${NAI_LISTING_URL_BASE}/${id}` : NAI_WIDGET_URL,
-    lastUpdated: clean(row?.publishedAt),
+    lastUpdated: clean(row?.updatedAt ?? row?.publishedAt),
     feedRow: row,
     publicPost: detail ?? undefined,
     detailError: detailError ?? undefined,
     sourceOrganization: detail?.source ?? row?.source,
-    sourceWebsiteUrl: clean(detail?.urlOriginal),
+    sourceWebsiteUrl: clean(detail?.urlOriginal ?? detail?.url),
     sourceSocialLinks: Array.isArray(detail?.source?.socialLinks) ? detail.source.socialLinks : undefined,
     listingStatus: naiListingStatus(detail),
     tags: tags.length ? tags : undefined,
@@ -323,73 +408,112 @@ export function naiListingFromFeed(row: any, tx: Tx, detail: any, detailError: s
 }
 
 export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
-  const targetContentType = NAI_CONTENT_TYPE_BY_TX[tx];
-  const rows: any[] = [];
-  let stoppedOnShortPage = false;
-  for (let offset = 0; offset < PAGE_CAP * NAI_PAGE_SIZE && rows.length < max; offset += NAI_PAGE_SIZE) {
-    const page = await fetchNaiFeedPage(offset);
-    const matching = page.filter((row: any) => Number(row?.contentType?.id) === targetContentType);
-    rows.push(...matching.slice(0, Math.max(0, max - rows.length)));
-    console.error(
-      `  nai-global/${tx}: API offset ${offset}, ${page.length} feed rows, ${rows.length} ${tx} collected`
-    );
-    if (page.length < NAI_PAGE_SIZE) {
-      stoppedOnShortPage = true;
-      break;
+  const sourceBatches = naiSourceIdBatches();
+  const collectBatch = async (sourceIds: number[], batchIndex: number) => {
+    const batchRows: any[] = [];
+    const seenPageSignatures = new Set<string>();
+    let enumeratedFeedRows = 0;
+    let stoppedOnShortPage = false;
+    for (let offset = 0; offset < PAGE_CAP * NAI_PAGE_SIZE; offset += NAI_PAGE_SIZE) {
+      const page = await fetchNaiFeedPage(offset, sourceIds);
+      const signature = naiPageSignature(page);
+      if (signature && seenPageSignatures.has(signature)) {
+        console.error(
+          `  nai-global/${tx}: office batch ${batchIndex + 1}/${sourceBatches.length}, API offset ${offset}, ` +
+            "repeated page; treating the prior page as the end of the public feed"
+        );
+        stoppedOnShortPage = true;
+        break;
+      }
+      if (signature) seenPageSignatures.add(signature);
+      enumeratedFeedRows += page.length;
+      // The public feed contains historical and inactive posts. Use the same
+      // conservative eligibility rule on full and monitor paths so their
+      // inventories cannot diverge and manufacture false monitor changes.
+      const matching = page.filter((row: any) => naiIsSourceEligible(row, tx));
+      batchRows.push(...matching);
+      console.error(
+        `  nai-global/${tx}: office batch ${batchIndex + 1}/${sourceBatches.length}, API offset ${offset}, ` +
+          `${page.length} feed rows, ${batchRows.length} ${tx} collected`
+      );
+      if (page.length < NAI_PAGE_SIZE) {
+        stoppedOnShortPage = true;
+        break;
+      }
     }
+    return { rows: batchRows, enumeratedFeedRows, complete: stoppedOnShortPage };
+  };
+
+  // An unlimited run can enumerate disjoint source batches in a small bounded
+  // fan-out. Capped runs stay sequential so a probe stops after enough
+  // source-eligible rows have been found.
+  const batchResults: Array<{ rows: any[]; enumeratedFeedRows: number; complete: boolean }> = [];
+  if (Number.isFinite(max)) {
+    for (const [batchIndex, sourceIds] of sourceBatches.entries()) {
+      const result = await collectBatch(sourceIds, batchIndex);
+      batchResults.push(result);
+      if (batchResults.reduce((count, batch) => count + batch.rows.length, 0) >= max) break;
+    }
+  } else {
+    batchResults.push(
+      ...(await pmap(sourceBatches, NAI_ENUMERATION_CONCURRENCY, (sourceIds, batchIndex) =>
+        collectBatch(sourceIds, batchIndex)
+      ))
+    );
   }
+
+  const rows: any[] = [];
+  const seenPostIds = new Set<string>();
+  for (const batch of batchResults) {
+    for (const row of batch.rows) {
+      const numericId = Number(row?.id);
+      const id = Number.isFinite(numericId) ? String(numericId) : clean(row?.id);
+      if (id && seenPostIds.has(id)) continue;
+      if (id) seenPostIds.add(id);
+      rows.push(row);
+      if (rows.length >= max) break;
+    }
+    if (rows.length >= max) break;
+  }
+  const incompleteSourceBatches = batchResults.filter((batch) => !batch.complete).length;
+  const enumeratedFeedRows = batchResults.reduce((count, batch) => count + batch.enumeratedFeedRows, 0);
   if (!rows.length) throw new Error(`no ${tx} listing rows found in NAI Global Infabode feed`);
-  // The loop ends for exactly one of three reasons: a short page (real feed
-  // end, the normal termination), rows.length >= max (intentional --max-items),
-  // or offset reaching the PAGE_CAP ceiling. Only the last is truncation: the
-  // last fetched page was full (no short-page break) yet more feed remained, so
-  // this pass KNOWINGLY left rows unread. Not flagged on natural exhaustion or
-  // an intentional max cap, so it is true only on a real PAGE_CAP clip.
-  const truncated = !stoppedOnShortPage && rows.length < max;
+  // A batch is complete only after its short page. Any page-cap hit makes the
+  // source artifact explicitly truncated instead of allowing a monitor to
+  // infer disappearances from an incomplete office subset. An intentional
+  // --max-items cap remains non-truncating as in the prior implementation.
+  const truncated = incompleteSourceBatches > 0 && rows.length < max;
   if (monitor) {
-    // Monitor mode: emit feed rows only (detail=null) and skip both the per-row
-    // publicPost detail GraphQL fetch and the detail-dependent
-    // FOR_SALE_ON_MARKET active filter. id (infabode:<id>) matches the full-path
-    // external id; status and price are detail-only and thus absent here.
-    const listings = rows.map((row) => naiListingFromFeed(row, tx, null, null));
+    // Monitor uses the same source-eligible inventory as the full path. It
+    // neither activates a terminal status nor deactivates a listing; those
+    // decisions remain outside the collector/monitor contract.
+    const listings = rows.map((row) => naiListingFromFeed(row, tx, row, null));
     return {
       company: "NAI Global",
       sourceUrl: NAI_WIDGET_URL,
-      method: "Infabode public GraphQL feed enumeration only (monitor mode; publicPost detail enrichment and FOR_SALE_ON_MARKET filter skipped)",
-      totalAvailable: stoppedOnShortPage ? listings.length : null,
+      method: "Infabode publicPosts GraphQL source-eligible enumeration with bulk public detail fields",
+      totalAvailable: truncated ? null : listings.length,
       listings,
       truncated,
-      note: "Monitor mode: feed fields only (id, name, location, lastUpdated/publishedAt, photos, url). listingStatus and price are detail-only, so the FOR_SALE_ON_MARKET filter is deferred and off-market rows may be emitted (resolved downstream on render).",
+      note: "Monitor uses the same source-native public detail fields and FOR_SALE_ON_MARKET eligibility as full ingestion, without status activation or listing deactivation.",
     };
   }
-  let detailFailures = 0;
-  const listings = await pmap(rows, NAI_DETAIL_CONCURRENCY, async (row) => {
-    const id = Number(row?.id);
-    if (!Number.isFinite(id)) {
-      detailFailures++;
-      return naiListingFromFeed(row, tx, null, "missing numeric Infabode post id");
-    }
-    try {
-      const detail = await fetchNaiPublicPost(id);
-      return naiListingFromFeed(row, tx, detail, null);
-    } catch (err) {
-      detailFailures++;
-      return naiListingFromFeed(row, tx, null, String(err));
-    }
-  });
-  const activeListings = listings.filter((listing) => listing.listingStatus === "FOR_SALE_ON_MARKET");
-  const skippedInactiveOrUnknown = listings.length - activeListings.length;
+  // publicPosts already carries the public detail fields needed for the normal
+  // listing shape. A complete source refresh is now bounded by feed pages, not
+  // by a potentially hours-long request-per-listing fanout.
+  const listings = rows.map((row) => naiListingFromFeed(row, tx, row, null));
+  const activeListings = listings.slice(0, max);
   return {
     company: "NAI Global",
     sourceUrl: NAI_WIDGET_URL,
-    method: "Infabode public GraphQL feed plus publicPost detail enrichment, offset paginated, filtered to FOR_SALE_ON_MARKET",
-    totalAvailable: stoppedOnShortPage ? activeListings.length : null,
+    method: "Infabode bulk publicPosts GraphQL detail feed, offset paginated, filtered to FOR_SALE_ON_MARKET",
+      totalAvailable: truncated ? null : activeListings.length,
     listings: activeListings,
     truncated,
     note:
       `${NAI_SOURCE_IDS.length} documented NAI source organization ids; stable Infabode IDs and detail URLs captured. ` +
       `Documents and contacts remain URL-only when public fields exist. ` +
-      `Scanned ${rows.length} public feed rows for ${tx}; retained ${activeListings.length} on-market rows, ` +
-      `skipped ${skippedInactiveOrUnknown} inactive/unknown-status rows, detail failures skipped: ${detailFailures}.`,
+      `Scanned ${enumeratedFeedRows} bulk public-detail rows across ${sourceBatches.length} office batches for ${tx}; ` +
+      `retained ${activeListings.length} source-eligible on-market rows.`,
   };
 }

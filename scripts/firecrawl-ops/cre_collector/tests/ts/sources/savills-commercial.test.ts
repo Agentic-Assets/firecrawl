@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
   savillsSaleCardIsCommercial,
+  mapSavillsRow,
   mapSavillsLeaseRow,
+  savillsPageInfo,
   savillsTotalItems,
 } from "../../../sources/savills.js";
 
@@ -215,6 +217,39 @@ test("savillsTotalItems returns fallback when no signal is found", () => {
   const html = `<p>No listings</p>`;
   const result = savillsTotalItems(html, 5);
   assert.equal(result, 5);
+});
+
+test("savillsPageInfo reads provider pagination rather than top-level page count", () => {
+  const html = `
+    <script id="__NEXT_DATA__" type="application/json">
+      {"props":{"initialReduxState":{"listPage":{"totalItems":2,"currentPage":1,"pageMap":{"1":{"paging":{"current":1,"total":2,"totalItems":36},"metaData":{"NextUrl":"/com/en/list?cursor=next"}}}},"properties":{}}}}
+    </script>
+  `;
+  assert.deepEqual(savillsPageInfo(html, 0), {
+    currentPage: 1,
+    totalPages: 2,
+    totalItems: 36,
+    nextUrl: "/com/en/list?cursor=next",
+  });
+});
+
+test("mapSavillsRow maps a U.S. sale row with display price", () => {
+  const row = {
+    ExternalPropertyID: "sale-us-1",
+    ExternalPropertyIDFormatted: "sale-us-1",
+    AddressLine1: "100 Main Street",
+    AddressLine2: "Dallas, TX 75201",
+    PropertyTypes: [{ Caption: "Office" }],
+    GuidePriceText: "Asking price",
+    DisplayPriceText: "US$ 1,250,000",
+    SizeFormatted: "25,000 sq ft",
+  };
+  const listing = mapSavillsRow(row, "sale", "https://search.savills.com/source");
+  assert.ok(listing !== null);
+  assert.equal(listing.transactionType, "Sale");
+  assert.equal(listing.salePriceText, "US$ 1,250,000");
+  assert.equal(listing.salePriceUsd, 1250000);
+  assert.equal(listing.leaseRateText, null);
 });
 
 // ---------------------------------------------------------------------------

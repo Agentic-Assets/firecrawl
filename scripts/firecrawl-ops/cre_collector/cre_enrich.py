@@ -13,7 +13,8 @@ status activation), and finally deletes the rows it completed so a LATER change
 to the same listing can re-enqueue.
 
 Conventions mirror cre_monitor.py / cre_ingest.py exactly:
-  - argparse with --batch (default 200), --env-file, --dry-run.
+  - argparse with --batch (default 200), optional exact --source queue filter,
+    --env-file, --dry-run.
   - env-file discovery reuses cre_ingest.load_db_url precedence
     (--env-file > CRE_ENV_FILE > ~/Documents defaults). The DB url is NEVER
     printed (only the env-file path is) and never persisted to an artifact.
@@ -54,7 +55,14 @@ OM extraction retirement:
 Usage:
   python3 cre_enrich.py                      # claim <=200, enrich, ingest, complete
   python3 cre_enrich.py --batch 50
+  python3 cre_enrich.py --source marcus-millichap --batch 200
   python3 cre_enrich.py --dry-run            # build claim SQL, print it, do not connect
+
+`--source` is an exact queue `source_key` filter for a manual, targeted drain.
+It limits the CLAIM itself, so rows from other sources are never claimed, retried,
+or attempt-incremented by that invocation. It is intentionally not forwarded to
+collect.ts: the claimed input rows are the source-of-truth for targeted detail
+enrichment.
 """
 
 import argparse
@@ -98,7 +106,22 @@ def _lit_or_null(v):
     return "NULL" if v is None else sql_lit(v)
 
 
-def build_claim_sql(batch, *, reclaim_interval=RECLAIM_INTERVAL):
+def _normalize_source_filter(source):
+    """Return a non-blank exact source key, or None when no filter is requested.
+
+    Queue source keys are stable machine identifiers (for example,
+    ``marcus-millichap``), not display names. Whitespace-only input is rejected
+    rather than silently widening a manual drain to every source.
+    """
+    if source is None:
+        return None
+    source = str(source).strip()
+    if not source:
+        raise ValueError("--source must be a non-empty queue source_key")
+    return source
+
+
+def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL):
     """Atomically claim up to `batch` pending rows and return their fields.
 
     Mirrors cre_monitor.build_write_sql GUC pins (ON_ERROR_STOP +
@@ -116,6 +139,12 @@ def build_claim_sql(batch, *, reclaim_interval=RECLAIM_INTERVAL):
     claimed-but-absent rows after a successful collect (build_retry_increment_sql).
     """
     batch = int(batch)
+    source = _normalize_source_filter(source)
+    where_source = []
+    if source is not None:
+        # This predicate lives inside the locked claim CTE. Consequently a
+        # --source run cannot touch unrelated rows, including their attempts.
+        where_source.append("    AND source_key = " + sql_lit(source))
     return "\n".join([
         "\\set ON_ERROR_STOP on",
         "BEGIN;",
@@ -125,6 +154,7 @@ def build_claim_sql(batch, *, reclaim_interval=RECLAIM_INTERVAL):
         "  WHERE done_at IS NULL AND attempts < {}".format(MAX_ATTEMPTS),
         "    AND (claimed_at IS NULL OR claimed_at < now() - interval "
         + sql_lit(reclaim_interval) + ")",
+        *where_source,
         "  ORDER BY priority, enqueued_at",
         "  LIMIT {}".format(batch),
         "  FOR UPDATE SKIP LOCKED",
@@ -392,7 +422,11 @@ def run(args):
     if batch < 1:
         sys.exit("--batch must be a positive integer")
 
-    claim_sql = build_claim_sql(batch)
+    try:
+        source = _normalize_source_filter(getattr(args, "source", None))
+    except ValueError as exc:
+        sys.exit(str(exc))
+    claim_sql = build_claim_sql(batch, source=source)
 
     if args.dry_run:
         # Never connect; print the claim SQL so the shape is auditable. No url.
@@ -483,6 +517,11 @@ def main():
     )
     ap.add_argument("--batch", type=int, default=200,
                     help="max rows to claim and enrich per run (default 200)")
+    ap.add_argument(
+        "--source", default=None, metavar="SOURCE_KEY",
+        help=("exact queue source_key to drain; isolates claims and retries to "
+              "that source (manual use only)"),
+    )
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
     ap.add_argument("--dry-run", action="store_true",
                     help="build the claim SQL and print it; never connect to a DB")

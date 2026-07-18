@@ -59,7 +59,7 @@ async function srsPost(page: number): Promise<any> {
   }
 }
 
-async function srsFetchAll(max: number): Promise<{ items: any[]; total: number; truncated: boolean }> {
+export async function srsFetchAll(max: number): Promise<{ items: any[]; total: number; truncated: boolean }> {
   if (srsCache) return { items: srsCache, total: srsCache.length, truncated: false };
   const first = await srsPost(0);
   const total: number = first.total ?? 0;
