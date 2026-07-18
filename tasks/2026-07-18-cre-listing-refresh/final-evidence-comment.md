@@ -1,7 +1,7 @@
 ## 2026-07-18 final recovery evidence
 
 - Branch: `fix/cre-enrich-source-paths`
-- Commit: `442e9ee59d46322e9a97e088a5af1525796f29f9`
+- Commit: `d45e179c9115453650a479aadfc184dbf724bb7b`
 - Draft PR: https://github.com/Agentic-Assets/firecrawl/pull/23
 - Checks: `npm run typecheck`; `npm run test:unit` (493 passing); `python3 -m
   pytest -q tests/test_cre_enrich.py tests/test_cre_enrich_psql.py

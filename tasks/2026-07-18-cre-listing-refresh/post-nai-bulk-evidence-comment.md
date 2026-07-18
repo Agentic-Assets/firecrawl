@@ -1,6 +1,7 @@
 ## 2026-07-18 NAI bulk-detail recovery and final refresh readback
 
 Branch: `fix/cre-enrich-source-paths`  
+Commit: `d45e179c9115453650a479aadfc184dbf724bb7b`  
 Draft PR: https://github.com/Agentic-Assets/firecrawl/pull/23
 
 - NAI now reads the public Infabode `publicPosts` bulk-detail feed. The full
