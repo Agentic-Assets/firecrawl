@@ -6,7 +6,15 @@ import {
   savillsSqft,
   savillsImageUrls,
   savillsDocumentUrls,
+  savillsListTimeoutMs,
 } from "../../../sources/savills.js";
+
+test("savillsListTimeoutMs is bounded with a short recovery default", () => {
+  assert.equal(savillsListTimeoutMs(undefined), 30000);
+  assert.equal(savillsListTimeoutMs("5000"), 10000);
+  assert.equal(savillsListTimeoutMs("120000"), 90000);
+  assert.equal(savillsListTimeoutMs("invalid"), 30000);
+});
 
 test("inferStateFromZip maps ZIP prefixes to states", () => {
   assert.equal(inferStateFromZip("75201"), "TX");

@@ -77,6 +77,7 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 - Lee assembly: all pages 0–332 present before `BUILDOUT_ASSEMBLE_FROM_CACHE=1`. Partial windows without cache-only → hard error.
 - `buildoutFailureCache`: sale pass failure blocks lease pass retry in same process.
 - Env: `BUILDOUT_CACHE_DIR`, `BUILDOUT_PAGE_START`/`END`, `BUILDOUT_CACHE_ONLY`, `BUILDOUT_ASSEMBLE_FROM_CACHE`, `BUILDOUT_PAGE_JITTER_MS`.
+- Manual freshness run: `BUILDOUT_REFRESH_PAGE_CACHE=1` bypasses durable page-cache reads, fetches the current inventory once per source invocation, and overwrites each successfully fetched cache page. It keeps the in-process sale/lease share. It fails fast if combined with cache-only or cache-assembly recovery modes.
 
 ## Key Env Vars (by source)
 
@@ -85,6 +86,7 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `CUSHMAN_QUERY` | cushman | Targeted API probe |
 | `COLLIERS_MAIN_*` | colliers-main | Detail concurrency, wait, challenge retries, `MAX_FETCHES_PER_RUN` |
 | `JLL_DETAIL_*` / `JLL_INVESTOR_*` | jll, jll-investor | Detail concurrency, wait, cache dir, sitemap scan limit |
+| `SAVILLS_LIST_TIMEOUT_MS` | savills | Per-list-page timeout for the enumeration-only source (default 30s; bounded 10–90s) |
 | `AVISON_YOUNG_DETAIL_LIMIT` | avison-young | **Required** for detail on unlimited full runs |
 | `AVISON_YOUNG_DETAIL_CONCURRENCY` | avison-young | Detail parallelism |
 | `--page-cap` | jll, colliers*, nai, savills (sale) | Caps rendered pages / feed offsets |

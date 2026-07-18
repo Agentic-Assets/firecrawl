@@ -29,6 +29,16 @@ export const JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS = boundedInt(
   1000,
   60000
 );
+// A single unresponsive public page must not hold the all-source collector for
+// multiple retry windows. The worker records a detailError and retains the
+// sitemap row, so a bounded timeout favors a complete, additive inventory run
+// over indefinitely waiting for optional detail enrichment.
+export const JLL_INVESTOR_DETAIL_TIMEOUT_MS = boundedInt(
+  process.env.JLL_INVESTOR_DETAIL_TIMEOUT_MS,
+  45000,
+  10000,
+  120000
+);
 export const JLL_INVESTOR_SITEMAP_SCAN_LIMIT = boundedInt(
   process.env.JLL_INVESTOR_SITEMAP_SCAN_LIMIT,
   0,
@@ -434,11 +444,17 @@ export function parseJllInvestorDetail(base: any, doc: ScrapedDoc): any {
 export async function enrichJllInvestorListing(base: any): Promise<any> {
   if (!base.url) return base;
   try {
-    let doc = await scrapeDoc(base.url, { waitFor: JLL_INVESTOR_DETAIL_WAIT_MS, timeout: 120000 });
+    let doc = await scrapeDoc(base.url, {
+      waitFor: JLL_INVESTOR_DETAIL_WAIT_MS,
+      timeout: JLL_INVESTOR_DETAIL_TIMEOUT_MS,
+    });
     let next = jllInvestorNextData(doc.rawHtml);
     let listing = next?.props?.pageProps?.initialState?.pdp?.listing;
     if (!listing && JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS > JLL_INVESTOR_DETAIL_WAIT_MS) {
-      doc = await scrapeDoc(base.url, { waitFor: JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS, timeout: 120000 });
+      doc = await scrapeDoc(base.url, {
+        waitFor: JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS,
+        timeout: JLL_INVESTOR_DETAIL_TIMEOUT_MS,
+      });
     }
     return parseJllInvestorDetail(base, doc);
   } catch (err) {

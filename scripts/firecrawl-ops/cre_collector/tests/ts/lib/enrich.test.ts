@@ -20,16 +20,23 @@ import {
 import type { ScrapedDoc } from "../../../types.js";
 
 // ---------------------------------------------------------------------------
-// Enricher registry: colliers-main + jll-investor (Phase 1) plus the Buildout
-// Tier-B sources svn + lee-associates (their detail iframe carries the media /
-// tours / full gallery / OM docs the inventory bulk path cannot see). cbre stays
-// absent (enumeration-only; no detail endpoint to enrich).
+// Enricher registry: the sources with a proven targeted source path use that
+// path. cbre stays absent because its enumeration response is already canonical.
 // ---------------------------------------------------------------------------
 
-test("ENRICHERS registry is {colliers-main, jll-investor, svn, lee-associates} and excludes cbre", () => {
+test("ENRICHERS registry uses targeted source paths and excludes cbre", () => {
   assert.deepEqual(
     Object.keys(ENRICHERS).sort(),
-    ["colliers-main", "jll-investor", "lee-associates", "svn"]
+    [
+      "avison-young",
+      "colliers-main",
+      "jll-investor",
+      "kidder-mathews",
+      "lee-associates",
+      "marcus-millichap",
+      "srs",
+      "svn",
+    ]
   );
   assert.equal(ENRICHERS.cbre, undefined); // enumeration-only; no detail endpoint
 });
@@ -40,6 +47,10 @@ test("resolveEnricher returns bespoke for registered keys, generic otherwise", (
   // svn / lee-associates resolve to the bespoke Buildout Tier-B enricher.
   assert.equal(resolveEnricher("svn").label, "bespoke");
   assert.equal(resolveEnricher("lee-associates").label, "bespoke");
+  assert.equal(resolveEnricher("marcus-millichap").label, "bespoke");
+  assert.equal(resolveEnricher("avison-young").label, "bespoke");
+  assert.equal(resolveEnricher("srs").label, "bespoke");
+  assert.equal(resolveEnricher("kidder-mathews").label, "bespoke");
   // cbre and any unregistered key fall through to the generic fallback.
   assert.equal(resolveEnricher("cbre").label, "generic");
   assert.equal(resolveEnricher("transwestern").label, "generic");
@@ -187,7 +198,7 @@ test("parseGenericJsonLd strips a fold prefix to recover the native id", () => {
   assert.equal(row.genericEnrich, undefined);
 });
 
-test("parseGenericJsonLd echoes the url even with no JSON-LD (thin row, weekly backstop refreshes)", () => {
+test("parseGenericJsonLd preserves the url for diagnostics without asserting it is safe to complete", () => {
   const item: EnrichItem = {
     sourceKey: "newmark",
     externalId: "slug-1",

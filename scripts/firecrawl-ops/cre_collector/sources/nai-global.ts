@@ -37,7 +37,9 @@ export const NAI_DETAIL_QUERY =
 export const naiFeedPageCache = new Map<number, any[]>();
 
 export async function naiGraphqlPost(url: string, body: any, referer: string): Promise<any> {
-  const res = await fetch(url, {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const request = fetch(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -46,8 +48,23 @@ export async function naiGraphqlPost(url: string, body: any, referer: string): P
       "user-agent": "Mozilla/5.0 CRE collector",
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30000),
+    signal: controller.signal,
   });
+  // AbortSignal.timeout is normally sufficient, but a stalled socket can leave
+  // a collector invocation awaiting a fetch promise indefinitely. The race is
+  // an independent completion bound for the enumeration path.
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error("Infabode GraphQL request timed out after 30000ms"));
+    }, 30000);
+  });
+  let res: Response;
+  try {
+    res = await Promise.race([request, deadline]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
   const text = await res.text();
   let parsed: any = null;
   try {

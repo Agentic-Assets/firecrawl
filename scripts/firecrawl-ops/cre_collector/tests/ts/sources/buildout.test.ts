@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
   buildoutInventoryUrl,
+  buildoutRefreshPageCache,
+  buildoutPageCachePolicy,
   envBool,
   envInt,
   buildoutCacheSlug,
@@ -31,7 +33,15 @@ function loadFixtures(): FixtureRow[] {
   return JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as FixtureRow[];
 }
 
-const ENV_KEYS = ["BUILDOUT_PAGE_START", "BUILDOUT_PAGE_END", "BUILDOUT_CACHE_DIR"] as const;
+const ENV_KEYS = [
+  "BUILDOUT_PAGE_START",
+  "BUILDOUT_PAGE_END",
+  "BUILDOUT_CACHE_DIR",
+  "BUILDOUT_REFRESH_PAGE_CACHE",
+  "BUILDOUT_USE_PAGE_CACHE",
+  "BUILDOUT_CACHE_ONLY",
+  "BUILDOUT_ASSEMBLE_FROM_CACHE",
+] as const;
 
 function clearEnv(keys: readonly string[]): void {
   for (const key of keys) delete process.env[key];
@@ -75,6 +85,33 @@ test("buildoutPageCachePath uses cache dir and padded page", () => {
   const path = buildoutPageCachePath("SVN", "plugin-key", 3, {});
   assert.equal(path, "/tmp/buildout-cache-test/svn/page-0003.json");
   delete process.env.BUILDOUT_CACHE_DIR;
+});
+
+test("BUILDOUT_REFRESH_PAGE_CACHE forces a live read and refreshes the durable cache", () => {
+  clearEnv(ENV_KEYS);
+  process.env.BUILDOUT_REFRESH_PAGE_CACHE = "1";
+  assert.equal(buildoutRefreshPageCache(), true);
+  assert.deepEqual(buildoutPageCachePolicy({ usePageCache: true }), { read: false, write: true });
+  clearEnv(ENV_KEYS);
+});
+
+test("Buildout page cache policy preserves cache reuse by default", () => {
+  clearEnv(ENV_KEYS);
+  assert.equal(buildoutRefreshPageCache(), false);
+  assert.deepEqual(buildoutPageCachePolicy({ usePageCache: true }), { read: true, write: true });
+  assert.deepEqual(buildoutPageCachePolicy({}), { read: false, write: false });
+  clearEnv(ENV_KEYS);
+});
+
+test("Buildout fresh refresh rejects cache-only recovery modes", () => {
+  clearEnv(ENV_KEYS);
+  process.env.BUILDOUT_REFRESH_PAGE_CACHE = "true";
+  process.env.BUILDOUT_CACHE_ONLY = "1";
+  assert.throws(() => buildoutPageCachePolicy({}), /cannot be combined/);
+  delete process.env.BUILDOUT_CACHE_ONLY;
+  process.env.BUILDOUT_ASSEMBLE_FROM_CACHE = "1";
+  assert.throws(() => buildoutPageCachePolicy({}), /cannot be combined/);
+  clearEnv(ENV_KEYS);
 });
 
 test("buildoutPageWindow returns null when env unset", () => {

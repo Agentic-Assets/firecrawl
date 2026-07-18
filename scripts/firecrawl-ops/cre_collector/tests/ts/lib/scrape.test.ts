@@ -3,7 +3,20 @@ process.argv = [process.argv[0]!, process.argv[1]!];
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseJsonBody, repairUnescapedJsonStringQuotes } from "../../../lib/scrape.js";
+import { parseJsonBody, repairUnescapedJsonStringQuotes, withRequestDeadline } from "../../../lib/scrape.js";
+
+describe("withRequestDeadline", () => {
+  it("returns a settled request result", async () => {
+    assert.equal(await withRequestDeadline(Promise.resolve("ok"), 25), "ok");
+  });
+
+  it("rejects a request that does not settle within its client deadline", async () => {
+    await assert.rejects(
+      () => withRequestDeadline(new Promise<never>(() => undefined), 5),
+      /timed out after 5ms/
+    );
+  });
+});
 
 describe("parseJsonBody", () => {
   it("parses plain JSON object", () => {

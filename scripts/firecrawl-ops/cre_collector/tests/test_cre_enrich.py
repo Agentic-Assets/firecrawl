@@ -337,18 +337,20 @@ def test_happy_path_deletes_done_and_increments_absent(monkeypatch, tmp_path):
     assert "attempts = attempts + 1" in exec_sql  # absent row incremented
 
 
-# --- (C3) Phase-1 enricher set is exactly {colliers-main, jll-investor} -----
+# --- (C3) Bespoke enricher registry ----------------------------------------
 
 
-def test_enricher_set_is_exactly_colliers_main_jll_investor_svn_lee_associates():
+def test_enricher_set_includes_all_current_detail_source_paths():
     """The bespoke enricher registry lives in lib/enrich.ts (TS). Assert its
-    ENRICHERS map keys are exactly {colliers-main, jll-investor, svn,
-    lee-associates} and that cbre is excluded (cbre is enumeration-only: the
+    ENRICHERS map keys cover the current detail-source paths and that cbre is
+    excluded (cbre is enumeration-only: the
     listings-api JSON already returns fully mapped rows, so there is no
     per-listing detail endpoint to enrich). The capture-everything build added
     the Buildout Tier-B enricher for svn + lee-associates (their detail iframe
     carries the media / tours / full gallery / OM docs the inventory bulk path
-    cannot see).
+    cannot see). Marcus & Millichap, Avison Young, SRS, and Kidder Mathews use
+    direct source paths rather than the generic JSON-LD fallback, which must
+    never complete a claim without a source-backed payload.
 
     Source-text assertion only (no DB, no Node): mirrors the TS unit test
     tests/ts/lib/enrich.test.ts so a regression in either layer is caught here.
@@ -368,10 +370,20 @@ def test_enricher_set_is_exactly_colliers_main_jll_investor_svn_lee_associates()
     body_no_comments = re.sub(r"//[^\n]*", "", body)
     keys = set(re.findall(r'(?:"([a-z0-9-]+)"|\b([a-z][a-z0-9_-]*))\s*:', body_no_comments))
     keys = {q or b for (q, b) in keys}
-    assert keys == {"colliers-main", "jll-investor", "svn", "lee-associates"}
+    assert keys == {
+        "colliers-main",
+        "jll-investor",
+        "svn",
+        "lee-associates",
+        "marcus-millichap",
+        "avison-young",
+        "srs",
+        "kidder-mathews",
+    }
     assert "cbre" not in keys
     # cbre's exclusion is intentional and documented in the same file.
     assert "cbre is intentionally ABSENT" in src
+    assert "return row?.genericEnrich?.hadJsonLd ? row : null;" in src
 
 
 # ---------------------------------------------------------------------------

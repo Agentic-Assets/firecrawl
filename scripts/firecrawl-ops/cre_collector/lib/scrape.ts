@@ -9,16 +9,37 @@ export const firecrawl = new Firecrawl({
   apiUrl: API_URL,
 });
 
+/**
+ * The API's scrape `timeout` is a server-side budget, not a guarantee that the
+ * client promise settles. Keep source workers from being stranded behind a
+ * stalled local API connection after that budget has elapsed.
+ */
+export async function withRequestDeadline<T>(request: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Firecrawl scrape request timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    );
+  });
+  try {
+    return await Promise.race([request, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function scrapeRaw(url: string, opts: ScrapeOpts = {}): Promise<string> {
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const doc = await firecrawl.scrape(url, {
+      const timeout = opts.timeout ?? 90000;
+      const doc = await withRequestDeadline(firecrawl.scrape(url, {
         formats: ["rawHtml"],
         ...(opts.waitFor ? { waitFor: opts.waitFor } : {}),
         ...(opts.proxy ? { proxy: opts.proxy } : {}),
-        timeout: opts.timeout ?? 90000,
-      } as any);
+        timeout,
+      } as any), timeout);
       const body = (doc as any).rawHtml ?? "";
       if (!body) throw new Error("empty response body");
       return body;
@@ -35,7 +56,8 @@ export async function scrapeDoc(url: string, opts: ScrapeOpts = {}): Promise<Scr
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const doc = await firecrawl.scrape(url, {
+      const timeout = opts.timeout ?? 90000;
+      const doc = await withRequestDeadline(firecrawl.scrape(url, {
         // Capture-everything format set: markdown (full page text), links + images
         // (full gallery, no truncation), rawHtml (regex fallback source), and an
         // `attributes` block that harvests video/iframe/anchor/source URLs for
@@ -62,8 +84,8 @@ export async function scrapeDoc(url: string, opts: ScrapeOpts = {}): Promise<Scr
         onlyMainContent: false,
         ...(opts.waitFor ? { waitFor: opts.waitFor } : {}),
         ...(opts.proxy ? { proxy: opts.proxy } : {}),
-        timeout: opts.timeout ?? 90000,
-      } as any);
+        timeout,
+      } as any), timeout);
       const anyDoc = doc as any;
       const data = anyDoc.data ?? anyDoc;
       const rawHtml = data.rawHtml ?? "";

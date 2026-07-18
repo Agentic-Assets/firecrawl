@@ -27,6 +27,10 @@ import {
 } from "../sources/colliers-main.js";
 import { enrichJllInvestorListing } from "../sources/jll-investor.js";
 import { enrichBuildoutDetail } from "../sources/buildout.js";
+import { getAvisonYoungFeed, avisonYoungBaseListing } from "../sources/avison-young.js";
+import { enrichMarcusListing } from "../sources/marcus-millichap.js";
+import { mapSrsListing, srsFetchAll, srsTenure } from "../sources/srs.js";
+import { kidderFetchAll, kidderTenure, mapKidderListing } from "../sources/kidder-mathews.js";
 import type { SourceKey } from "../types.js";
 
 export type EnrichItem = {
@@ -120,17 +124,85 @@ export const buildoutEnricher: SourceEnricher = {
   },
 };
 
+// The following adapters deliberately replay their established source APIs
+// rather than using the generic Firecrawl/JSON-LD fallback. The queue is fed by
+// monitor records for these sources, whose public detail pages do not guarantee
+// JSON-LD. A thin url-only fallback row would update scraped_at and clear the
+// queue without refreshing canonical source facts.
+export const marcusEnricher: SourceEnricher = {
+  async enrich(items: EnrichItem[]): Promise<any[]> {
+    const rows = await pmap(items, CONCURRENCY, async (item) => {
+      const row = await enrichMarcusListing({
+        id: nativeIdFor(item),
+        url: item.url,
+        transactionType: "Sale",
+        photos: [],
+        brokerIds: [],
+      });
+      if (!row || row.detailError) return null;
+      return { ...row, url: item.url };
+    });
+    return rows.filter(Boolean);
+  },
+};
+
+export const avisonYoungEnricher: SourceEnricher = {
+  async enrich(items: EnrichItem[]): Promise<any[]> {
+    const { websiteRows, teamMembers } = await getAvisonYoungFeed();
+    const byId = new Map(websiteRows.map((row) => [String(row?.id ?? ""), row]));
+    return items.flatMap((item) => {
+      const sourceRow = byId.get(nativeIdFor(item));
+      if (!sourceRow) return [];
+      const row = avisonYoungBaseListing(sourceRow, teamMembers);
+      return row ? [{ ...row, url: item.url }] : [];
+    });
+  },
+};
+
+function rowForClaim(
+  items: EnrichItem[],
+  sourceRows: any[],
+  map: (row: any, tx: "sale" | "lease") => any,
+  tenure: (row: any) => { isSale: boolean; isLease: boolean }
+): any[] {
+  const byId = new Map<string, any>();
+  for (const sourceRow of sourceRows) {
+    const tx = tenure(sourceRow).isSale ? "sale" : "lease";
+    const mapped = map(sourceRow, tx);
+    if (mapped?.id != null) byId.set(String(mapped.id), mapped);
+  }
+  return items.flatMap((item) => {
+    const row = byId.get(nativeIdFor(item));
+    return row ? [{ ...row, url: item.url }] : [];
+  });
+}
+
+export const srsEnricher: SourceEnricher = {
+  async enrich(items: EnrichItem[]): Promise<any[]> {
+    const { items: sourceRows } = await srsFetchAll(Number.POSITIVE_INFINITY);
+    return rowForClaim(items, sourceRows, mapSrsListing, srsTenure);
+  },
+};
+
+export const kidderMathewsEnricher: SourceEnricher = {
+  async enrich(items: EnrichItem[]): Promise<any[]> {
+    const { items: sourceRows } = await kidderFetchAll(Number.POSITIVE_INFINITY);
+    return rowForClaim(items, sourceRows, mapKidderListing, kidderTenure);
+  },
+};
+
 // Best-effort generic fallback for any source without a bespoke enricher: scrape
 // the URL and lift price/status/description/geo from a RealEstateListing (or any)
-// JSON-LD block where the page exposes one. Always echoes the input url. Sources
-// with no useful JSON-LD yield a thin row (url + whatever was found); the worker
-// still marks the claim done by url, and the weekly full scrape is the backstop.
+// JSON-LD block where the page exposes one. A page with no useful JSON-LD yields
+// no row: emitting a thin url-only row would falsely complete the queue item and
+// overwrite raw source payload with an unverified fallback.
 export const genericEnricher: SourceEnricher = {
   async enrich(items: EnrichItem[]): Promise<any[]> {
     const rows = await pmap(items, CONCURRENCY, async (item) => {
       try {
         const doc = await scrapeDoc(item.url);
-        return parseGenericJsonLd(item, doc.rawHtml ?? "");
+        const row = parseGenericJsonLd(item, doc.rawHtml ?? "");
+        return row?.genericEnrich?.hadJsonLd ? row : null;
       } catch (err) {
         console.error(`  enrich/generic: scrape failed for ${item.url}: ${err}`);
         return null;
@@ -197,6 +269,10 @@ export const ENRICHERS: Partial<Record<SourceKey, SourceEnricher>> = {
   // tours, full gallery, OM docs) is captured Tier-B via the Buildout enricher.
   svn: buildoutEnricher,
   "lee-associates": buildoutEnricher,
+  "marcus-millichap": marcusEnricher,
+  "avison-young": avisonYoungEnricher,
+  srs: srsEnricher,
+  "kidder-mathews": kidderMathewsEnricher,
 };
 
 // Group claim items by sourceKey, dropping items missing a key or url (a row with

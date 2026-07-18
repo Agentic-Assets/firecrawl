@@ -9,6 +9,16 @@ import { clean, moneyToNumber, num } from "../lib/util.js";
 
 // --- Savills: server-rendered list pages ---
 
+/**
+ * List pages are enumeration-only. Keep a failed render from serially holding
+ * a whole source run at the general 90-second scrape timeout; callers may
+ * raise this bounded recovery value when the public site is slow.
+ */
+export function savillsListTimeoutMs(raw = process.env.SAVILLS_LIST_TIMEOUT_MS): number {
+  const value = Number(raw ?? 30000);
+  return Number.isFinite(value) ? Math.min(90000, Math.max(10000, Math.floor(value))) : 30000;
+}
+
 export const US_STATE_NAME_TO_ABBR: Record<string, string> = {
   alabama: "AL",
   alaska: "AK",
@@ -344,7 +354,7 @@ export function mapSavillsLeaseRow(row: any, sourceUrl: string): any | null {
 
 export async function srcSavillsCommercialLease(max: number): Promise<SourceResult> {
   const sourceUrl = "https://search.savills.com/com/en/list/commercial/property-to-let/united-states-of-america";
-  const html = await scrapeRaw(sourceUrl, { waitFor: 6000 });
+  const html = await scrapeRaw(sourceUrl, { waitFor: 6000, timeout: savillsListTimeoutMs() });
   const firstPageRows = savillsNextDataProperties(html).filter((row) => row?.IsCommercial === true);
   const total = savillsTotalItems(html, firstPageRows.length);
   const listings: any[] = [];
@@ -374,7 +384,7 @@ export async function srcSavillsCommercialLease(max: number): Promise<SourceResu
     page++
   ) {
     const pageUrl = `${sourceUrl}/page/${page}`;
-    const pageHtml = await scrapeRaw(pageUrl, { waitFor: 6000 });
+    const pageHtml = await scrapeRaw(pageUrl, { waitFor: 6000, timeout: savillsListTimeoutMs() });
     const pageRows = savillsNextDataProperties(pageHtml).filter((row) => row?.IsCommercial === true);
     if (!pageRows.length) {
       if (++emptyStreak >= 3) break;
@@ -439,7 +449,7 @@ export async function srcSavills(tx: Tx, max: number, _monitor: boolean): Promis
   for (let page = 1; listings.length < max && page <= Math.max(PAGE_CAP, 10); page++) {
     const before = listings.length;
     const url = page === 1 ? base : `${base}/page/${page}`;
-    const html = await scrapeRaw(url, { waitFor: 6000 });
+    const html = await scrapeRaw(url, { waitFor: 6000, timeout: savillsListTimeoutMs() });
     const $ = cheerio.load(html);
     total =
       total ??

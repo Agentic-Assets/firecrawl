@@ -1,0 +1,6 @@
+# Runtime collection artifacts can contain large raw payloads and generated SQL.
+# The Markdown plan, progress log, and summary are the durable repository record.
+*.json
+*.jsonl
+*.log
+ingest-sql*/
