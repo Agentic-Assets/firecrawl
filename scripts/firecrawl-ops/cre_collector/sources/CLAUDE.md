@@ -40,7 +40,7 @@ Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for in
 | newmark | Algolia `slug` | Algolia 1000-hit cap per query; state+type sub-split |
 | marcus-millichap | `DealId` from map tile | **Lease skipped**; list API caps ~100; map ActivityIds required |
 | avison-young | SharpLaunch `row.id` | **Full runs skip detail** unless `AVISON_YOUNG_DETAIL_LIMIT` set |
-| nai-global | `infabode:{id}` (prefixed in adapter) | `--page-cap` bounds feed scan; monitor superset (no price/status) |
+| nai-global | `infabode:{id}` (prefixed in adapter) | Bulk public `publicPosts` detail fields; full and monitor share the conservative `FOR_SALE_ON_MARKET` source-eligibility rule. Do not activate provider status. |
 | svn / lee | `propertyId` base from URL | Strip `-(sale|lease)`; dual rows merge to `sale_or_lease` |
 | savills | `ExternalPropertyID` | Direct server-rendered `__NEXT_DATA__`; provider `NextUrl` only, so an invalid or incomplete page fails closed |
 
@@ -49,7 +49,8 @@ Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for in
 | Behavior | Sources |
 |----------|---------|
 | Monitor ≈ full (same rows) | cbre, buildout (svn/lee), savills |
-| Monitor = enum, skips detail | cushman, marcus, nai, colliers-main, newmark (skips People lookup), avison-young, transwestern |
+| Monitor = enum, skips detail | cushman, marcus, colliers-main, newmark (skips People lookup), avison-young, transwestern |
+| Monitor ≈ full (bulk public detail fields) | nai-global |
 | Monitor returns `[]` | jll, jll-investor, cbre-dealflow, colliers (ST) - id only on detail page |
 
 Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-sweep cadence.
@@ -62,7 +63,7 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `cbre-dealflow.ts`, `colliers.ts` | RCM GET + SLP detail; direct `fetch`; detail concurrency `min(CONCURRENCY, 2)` |
 | `cushman-wakefield.ts`, `transwestern.ts`, `avison-young.ts` | Public API/feed + per-URL detail enrich |
 | `newmark.ts` | Algolia via `fetch`; People lookup on full path only |
-| `nai-global.ts` | Infabode GraphQL + `publicPost`; `FOR_SALE_ON_MARKET` filter on full path |
+| `nai-global.ts` | Infabode GraphQL `publicPosts` bulk detail feed; identical conservative eligibility on full and monitor paths |
 | `marcus-millichap.ts` | Map ActivityId tiles + detail HTML; JSONL detail cache |
 | `jll.ts` | Search pages + `__NEXT_DATA__`; disk detail cache `out/cache/jll-detail/` |
 | `jll-investor.ts` | US sitemap + detail; sale only |
@@ -88,7 +89,7 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `JLL_DETAIL_*` / `JLL_INVESTOR_*` | jll, jll-investor | Detail concurrency, wait, cache dir, sitemap scan limit |
 | `SAVILLS_DIRECT_LIST_TIMEOUT_MS` | savills | Direct public list-page timeout (default 25s; bounded 5–60s; two attempts) |
 | `SAVILLS_LIST_TIMEOUT_MS` | savills | Firecrawl fallback list-page timeout (default 30s; bounded 10–90s) |
-| `NAI_GRAPHQL_TIMEOUT_MS` / `NAI_SOURCE_BATCH_SIZE` / `NAI_PAGE_SIZE` / `NAI_ENUMERATION_CONCURRENCY` | nai-global | Bound each public GraphQL body read (default 30s), split source-office filters (default 40), request up to 100 rows per page, and enumerate unlimited batches at a bounded fan-out of two. A timeout or page cap fails closed for monitor coverage. |
+| `NAI_GRAPHQL_TIMEOUT_MS` / `NAI_SOURCE_BATCH_SIZE` / `NAI_PAGE_SIZE` / `NAI_ENUMERATION_CONCURRENCY` | nai-global | Bound each `publicPosts` GraphQL body read (default 30s), split source-office filters (default 40), request up to 100 bulk-detail rows per page, and enumerate unlimited batches at a bounded fan-out of two. A timeout or page cap fails closed for monitor coverage. |
 | `AVISON_YOUNG_DETAIL_LIMIT` | avison-young | **Required** for detail on unlimited full runs |
 | `AVISON_YOUNG_DETAIL_CONCURRENCY` | avison-young | Detail parallelism |
 | `--page-cap` | jll, colliers*, nai | Caps rendered pages / feed offsets |
@@ -97,7 +98,7 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 ## Detail Failures & Status
 
 - Most detail-enrich sources return rows with `detailError` string; ingest skips child-row refresh when `detailError` in `raw_data`.
-- Native terminal status: cbre-dealflow, colliers-main, nai (full), cushman (`listingStatus`). **Disappearance-only** (no status field): jll, jll-investor, newmark, marcus, savills, transwestern (monitor).
+- Native terminal status: cbre-dealflow, colliers-main, cushman (`listingStatus`). NAI's provider status is used only for conservative source eligibility and is never activated. **Disappearance-only** (no status field): jll, jll-investor, newmark, marcus, savills, transwestern (monitor).
 
 ## Probe One Source
 

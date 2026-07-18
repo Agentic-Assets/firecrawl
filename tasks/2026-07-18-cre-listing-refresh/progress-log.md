@@ -70,22 +70,23 @@
   (1.68%), 2,018 disappeared (2.08%), and 31 reappeared (0.03%). The combined
   observed-change rate is 5.71%. Disappearances are review signals only; this
   run never changed listing status or `deleted_at`.
-- Final readback: 114,323 active listings; 75,622 refreshed through a full
-  additive ingest (66.15% of active inventory); 6,491 active records created
-  during this run (5.68%); and a net active increase of 6,522 from the 107,801
-  baseline (+6.05%).
+- Final readback after the NAI detail-path recovery: 114,487 active listings;
+  75,992 refreshed through a full additive ingest (66.38% of active inventory);
+  6,655 active records created during this run (5.81%); and a net active
+  increase of 6,686 from the 107,801 baseline (+6.20%).
 - Savills recovered through direct server-rendered `__NEXT_DATA__` enumeration,
   with a validated Firecrawl fallback and real provider `NextUrl` pagination.
   The live U.S. result was two commercial lease records; the coverage gate
   correctly suppressed disappearance inference from its older 103-record
   snapshot.
-- NAI Global recovered through bounded body reads, 100-row GraphQL pages,
-  40-office batches, and a bounded fan-out of two. Its complete monitor
-  artifact contained 13,779 records: 10,419 sale and 3,360 lease, with no
-  source error or truncation. The source index is now fresh at that count.
-  The monitor classified 12,517 as `enumerated_unmatched`, not new database
-  records, because the monitor payload intentionally omits the detail/status
-  fields needed to make an additive listing write safe.
+- NAI Global recovered through bounded body reads, 100-row bulk `publicPosts`
+  GraphQL pages, 40-office batches, and a bounded fan-out of two. The source
+  evaluated 13,750 public-detail rows, retained 368 source-eligible active
+  listings (283 sale, 85 lease), and additively ingested them. Full and monitor
+  now share that conservative `FOR_SALE_ON_MARKET` eligibility rule. The old
+  13,779-row broad monitor index and its 231 derived queue rows were removed;
+  the 231 false price-change events from that one transitional monitor job were
+  removed too. The current 368-row inventory was rebaselined with zero events.
 - The remaining targeted-enrichment queue is 2,672 rows (principally Lee, SVN,
   CBRE, Cushman, and Newmark). All 766 Marcus rows were drained through the
   new exact `cre_enrich.py --source marcus-millichap` claim filter. Rows that

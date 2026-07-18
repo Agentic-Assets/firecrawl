@@ -13,11 +13,13 @@ import {
   naiPriceText,
   naiSizeText,
   naiListingStatus,
+  naiIsSourceEligible,
   naiListingFromFeed,
   harvestNai,
   naiBuildingClassFromTags,
   naiGraphqlPost,
   naiFeedPageCacheKey,
+  naiPageSignature,
   naiSourceIdBatches,
   NAI_LISTING_URL_BASE,
 } from "../../../sources/nai-global.js";
@@ -57,6 +59,12 @@ test("NAI source batches cover each office once and namespace the page cache", (
   assert.deepEqual(naiSourceIdBatches([10, 11, 10, 12, 13], 2), [[10, 11], [12, 13]]);
   assert.equal(naiFeedPageCacheKey(18, [10, 11]), "10,11:18");
   assert.notEqual(naiFeedPageCacheKey(18, [10, 11]), naiFeedPageCacheKey(18, [12, 13]));
+});
+
+test("NAI page signatures detect an exact repeated provider page", () => {
+  assert.equal(naiPageSignature([{ id: 10 }, { id: "11" }]), "10,11");
+  assert.equal(naiPageSignature([{ id: 10 }, { title: "missing id" }]), null);
+  assert.equal(naiPageSignature([]), null);
 });
 
 test("naiLocation parses Infabode location path", () => {
@@ -124,6 +132,27 @@ test("naiListingStatus normalizes scalar and array values", () => {
   );
   assert.equal(naiListingStatus({ listingStatus: [] }), null);
   assert.equal(naiListingStatus({}), null);
+});
+
+test("NAI full and monitor paths share the conservative source-eligibility rule", () => {
+  assert.equal(
+    naiIsSourceEligible({ contentType: { id: 4 }, listingStatus: "FOR_SALE_ON_MARKET" }, "sale"),
+    true
+  );
+  // NAI's lease rows can use the same provider label; transaction type remains
+  // the authoritative discriminator, matching the established full-path rule.
+  assert.equal(
+    naiIsSourceEligible({ contentType: { id: 10 }, listingStatus: "FOR_SALE_ON_MARKET" }, "lease"),
+    true
+  );
+  assert.equal(
+    naiIsSourceEligible({ contentType: { id: 4 }, listingStatus: "OFF_MARKET" }, "sale"),
+    false
+  );
+  assert.equal(
+    naiIsSourceEligible({ contentType: { id: 10 }, listingStatus: "FOR_SALE_ON_MARKET" }, "sale"),
+    false
+  );
 });
 
 test("naiListingFromFeed maps sale row with detail enrichment", () => {
@@ -210,6 +239,34 @@ test("naiListingFromFeed omits children on detailError", () => {
   assert.equal(listing.media, undefined);
   assert.equal(listing.links, undefined);
   assert.deepEqual(listing.contactsDetailed, []);
+});
+
+test("naiListingFromFeed safely promotes current public-feed price and size scalars", () => {
+  const row = {
+    id: 1634055,
+    title: "64 Front Street",
+    summary: "Current public listing",
+    publishedAt: "2026-07-16T13:59:35Z",
+    currency: "DOLLAR",
+    price: 649000,
+    sizeTotal: 3040,
+    landSize: 0.185,
+    url: "https://infabode.com/post/1634055",
+    contentType: { id: 4, name: "Sale Listings" },
+    source: { name: "NAI Beverly-Hanks" },
+    locations: [{ path: "Dillsboro, NC, United States" }],
+    postImages: [{ url: "https://cdn.example.com/feed.jpg" }],
+  };
+
+  const listing = naiListingFromFeed(row, "sale", null, null, true);
+  assert.equal(listing.salePriceText, "DOLLAR 649000");
+  assert.equal(listing.salePriceUsd, 649000);
+  assert.equal(listing.buildingSizeSqft, 3040);
+  assert.equal(listing.lotSizeAcres, 0.185);
+  assert.equal(listing.canonicalUrl, "https://infabode.com/post/1634055");
+  assert.equal(listing.listingStatus, null, "feed mode must not invent a detail-only status");
+  assert.equal(listing.contactsDetailed.length, 0);
+  assert.equal(listing.documents, undefined);
 });
 
 test("harvestNai extracts an iframe video from detail.content and classifies docs/links", () => {
