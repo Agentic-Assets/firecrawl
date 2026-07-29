@@ -172,6 +172,11 @@ Key behavior:
   prefers URL `propertyId` with `-sale`/`-lease` stripped first. Buildout sources:
   `svn`, `lee-associates`, `franklin-street`.
 - Sale + lease passes merge to `transaction_type='sale_or_lease'`.
+- Provider cards without a canonical listing URL are not written to
+  `cre_listings`. Complete CBRE Deal Flow and Colliers SalesTracker snapshots
+  persist them as explicitly provisional `cre_source_index` rows under
+  source-specific namespaces and watermarks. Colliers canonical ProjectIds are
+  one-to-one and never merge, including identical duplicates.
 - `cap_rate` stored as a decimal fraction (e.g. `0.065`); `norm_cap_rate` drops
   non-numeric, `<= 0`, percent inputs `>= 30`, and `>= 0.5`. Upsert uses
   `COALESCE` so a null new cap rate keeps the existing DB value. Price columns

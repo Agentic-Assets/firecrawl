@@ -61,6 +61,19 @@ The manifest records `ingesting` before launching a live write. If execution
 stops in that window, resume performs an exact database readback and never
 automatically replays an ambiguous ingest.
 
+**Colliers SalesTracker identity safety (2026-07-29).** The list endpoint emits
+one HTML card per project, while the map endpoint emits one row per map pin.
+Never pair raw map rows to cards by array index. The adapter first groups map
+rows by `ProjectId` in first-seen order, then requires
+`map groups == HTML cards == numProjects` on every page, unique ProjectIds
+across the run, and exact agreement between each linked card's grouped
+ProjectId and SLP detail ProjectId. A multi-pin project keeps all pins in raw
+metadata and gets no arbitrary scalar coordinate. Cards without a public SLP
+link remain current inventory evidence in `cre_source_index` under the
+`salestracker:card:` namespace; they never become fake canonical
+`cre_listings` rows. Any detail request failure marks the pass truncated, and
+any repeated canonical ProjectId aborts artifact validation and direct ingest.
+
 “All” means the 20 source keys in the current TypeScript collector registry.
 Older active rows whose brokerage is outside that registry are reported by
 `cre_refresh_report.py`, but this runner cannot make those legacy rows

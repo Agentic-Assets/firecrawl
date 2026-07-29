@@ -286,6 +286,80 @@ def test_inventory_only_card_is_counted_without_canonical_staging(tmp_path):
     assert stats["rejected_by_ingest"] == 0
 
 
+def test_invalid_inventory_only_identity_is_rejected_before_gate(tmp_path):
+    payload = artifact(
+        source="colliers",
+        listings=[
+            listing(
+                "colliers",
+                1,
+                "sale",
+                id="wrong-prefix",
+                inventoryOnly={
+                    "reason": "card_not_linked",
+                    "indexUrl": "https://sales.colliers.com/",
+                },
+            )
+        ],
+    )
+    path = write_artifact(tmp_path, payload)
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="invalid inventoryOnly identity",
+    ):
+        refresh.validate_source_artifact(path, "colliers", ATTEMPT)
+
+
+def test_colliers_duplicate_canonical_project_id_is_rejected(tmp_path):
+    payload = artifact(
+        source="colliers",
+        listings=[
+            listing("colliers", 1, "sale", id="123", name="Property A"),
+            listing(
+                "colliers",
+                2,
+                "sale",
+                id="123",
+                name="Unrelated Property B",
+                url="https://example.test/colliers/unrelated",
+            ),
+        ],
+    )
+    path = write_artifact(tmp_path, payload)
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="duplicate canonical ProjectId",
+    ):
+        refresh.validate_source_artifact(path, "colliers", ATTEMPT)
+
+
+def test_colliers_duplicate_inventory_identity_is_rejected(tmp_path):
+    inventory = {
+        "url": None,
+        "id": "salestracker:card:123",
+        "preserveChildCollections": True,
+        "provisionalIdentity": {"historyContinuity": "not_guaranteed"},
+        "inventoryOnly": {
+            "reason": "card_not_linked",
+            "indexUrl": "https://sales.colliers.com/",
+        },
+        "detailUnavailable": {"reason": "card_not_linked"},
+    }
+    payload = artifact(
+        source="colliers",
+        listings=[
+            listing("colliers", 1, "sale", **inventory),
+            listing("colliers", 2, "sale", **inventory),
+        ],
+    )
+    path = write_artifact(tmp_path, payload)
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="duplicate provisional inventory identity",
+    ):
+        refresh.validate_source_artifact(path, "colliers", ATTEMPT)
+
+
 def test_empty_dealflow_full_snapshot_is_admitted_for_gated_watermark(tmp_path):
     payload = artifact(source="cbre-dealflow", listings=[])
     path = write_artifact(tmp_path, payload)
@@ -1204,6 +1278,53 @@ def test_validation_readback_requires_exact_inventory_only_count(tmp_path):
     readback = manifest["sources"]["cbre-dealflow"]["readback"]
     assert readback["inventory_only"]["ok"] is False
     assert "active inventory-only 2 != expected 1" == readback["reason"]
+
+
+def test_colliers_all_inventory_only_snapshot_needs_no_canonical_row(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("colliers",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["colliers"]["artifact"] = {
+        "finished_at": "2026-07-29T12:01:00+00:00",
+        "staged_unique": 0,
+        "inventory_only": 2,
+    }
+    validation = {
+        "queries": {
+            "source_counts": [
+                {
+                    "source_key": "colliers",
+                    "latest_inventory_observed_at": "2026-07-28 12:01:00Z",
+                    "latest_inventory_batch_active": "100",
+                    "latest_scraped_at": "2026-07-28 12:01:00Z",
+                    "latest_batch_active": "100",
+                    "detail_unavailable": "0",
+                }
+            ],
+            "inventory_only_index": [
+                {
+                    "source_key": "colliers",
+                    "active": "2",
+                    "soft_deleted": "0",
+                    "latest_batch_active": "2",
+                    "latest_enumerated_at": "2026-07-29 12:01:00Z",
+                    "scope_watermark_at": "2026-07-29 12:01:00Z",
+                }
+            ],
+        }
+    }
+    result = refresh.verify_validation_readback(run_dir, manifest, validation)
+    assert result == {"ok": True, "failed_sources": []}
+    readback = manifest["sources"]["colliers"]["readback"]
+    assert readback["ok"] is True
+    assert readback["latest_inventory_batch_active"] == 0
+    assert readback["inventory_only"]["active"] == 2
 
 
 def test_validation_quality_rejects_new_defects_and_child_collapse():

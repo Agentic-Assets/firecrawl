@@ -14,7 +14,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cre_ingest import find_psql, load_db_url
+from cre_ingest import (
+    INVENTORY_ONLY_SOURCE_DEFINITIONS,
+    find_psql,
+    load_db_url,
+)
 
 
 SOURCE_KEY_SQL = """
@@ -26,6 +30,23 @@ CASE
   ELSE b.slug
 END
 """
+
+
+def _sql_literal(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+INVENTORY_ONLY_DEFINITIONS_SQL = ",\n".join(
+    "    ({source_key}, {slug}, {external_id_like}, {watermark_external_id})".format(
+        source_key=_sql_literal(source_key),
+        slug=_sql_literal(definition["slug"]),
+        external_id_like=_sql_literal(definition["external_id_like"]),
+        watermark_external_id=_sql_literal(
+            definition["watermark_external_id"]
+        ),
+    )
+    for source_key, definition in INVENTORY_ONLY_SOURCE_DEFINITIONS.items()
+)
 
 
 QUERIES = {
@@ -98,48 +119,75 @@ LEFT JOIN soft_deleted ON soft_deleted.source_key = a.source_key
 GROUP BY a.source_key, latest.latest_scraped_at, latest.latest_inventory_observed_at
 ORDER BY a.source_key;
 """,
-    "inventory_only_index": """
-WITH scoped AS (
+    "inventory_only_index": f"""
+WITH definitions (
+  source_key, brokerage_slug, external_id_like, watermark_external_id
+) AS (
+  VALUES
+{INVENTORY_ONLY_DEFINITIONS_SQL}
+),
+scoped AS (
   SELECT
+    definitions.source_key,
     si.soft_deleted,
     si.last_enumerated_at
-  FROM credeals.cre_source_index si
-  JOIN credeals.cre_brokerages b ON b.id = si.brokerage_id
-  WHERE b.slug = 'cbre'
-    AND si.source_key = 'cbre-dealflow'
-    AND si.external_id LIKE 'dealflow:card:%'
+  FROM definitions
+  JOIN credeals.cre_brokerages b
+    ON b.slug = definitions.brokerage_slug
+  JOIN credeals.cre_source_index si
+    ON si.brokerage_id = b.id
+   AND si.source_key = definitions.source_key
+   AND si.external_id LIKE definitions.external_id_like
 ),
 watermark AS (
-  SELECT max(si.last_enumerated_at) AS scope_watermark_at
-  FROM credeals.cre_source_index si
-  JOIN credeals.cre_brokerages b ON b.id = si.brokerage_id
-  WHERE b.slug = 'cbre'
-    AND si.source_key = 'cbre-dealflow'
-    AND si.external_id = 'dealflow:scope:inventory-only-watermark'
+  SELECT
+    definitions.source_key,
+    max(si.last_enumerated_at) AS scope_watermark_at
+  FROM definitions
+  JOIN credeals.cre_brokerages b
+    ON b.slug = definitions.brokerage_slug
+  LEFT JOIN credeals.cre_source_index si
+    ON si.brokerage_id = b.id
+   AND si.source_key = definitions.source_key
+   AND si.external_id = definitions.watermark_external_id
+  GROUP BY definitions.source_key
 ),
 latest AS (
-  SELECT max(last_enumerated_at) AS latest_enumerated_at
+  SELECT source_key, max(last_enumerated_at) AS latest_enumerated_at
   FROM scoped
+  GROUP BY source_key
+),
+summary AS (
+  SELECT
+    scoped.source_key,
+    count(*) FILTER (WHERE NOT scoped.soft_deleted) AS active,
+    count(*) FILTER (WHERE scoped.soft_deleted) AS soft_deleted,
+    count(*) FILTER (
+      WHERE NOT scoped.soft_deleted
+        AND scoped.last_enumerated_at = latest.latest_enumerated_at
+    ) AS latest_batch_active,
+    max(latest.latest_enumerated_at) AS latest_enumerated_at
+  FROM scoped
+  JOIN latest ON latest.source_key = scoped.source_key
+  GROUP BY scoped.source_key
 )
 SELECT
-  'cbre-dealflow' AS source_key,
-  count(*) FILTER (WHERE NOT scoped.soft_deleted)::text AS active,
-  count(*) FILTER (WHERE scoped.soft_deleted)::text AS soft_deleted,
-  count(*) FILTER (
-    WHERE NOT scoped.soft_deleted
-      AND scoped.last_enumerated_at = latest.latest_enumerated_at
-  )::text AS latest_batch_active,
+  definitions.source_key,
+  coalesce(summary.active, 0)::text AS active,
+  coalesce(summary.soft_deleted, 0)::text AS soft_deleted,
+  coalesce(summary.latest_batch_active, 0)::text AS latest_batch_active,
   to_char(
-    max(latest.latest_enumerated_at) AT TIME ZONE 'UTC',
+    summary.latest_enumerated_at AT TIME ZONE 'UTC',
     'YYYY-MM-DD HH24:MI:SS"Z"'
   ) AS latest_enumerated_at,
   to_char(
-    max(watermark.scope_watermark_at) AT TIME ZONE 'UTC',
+    watermark.scope_watermark_at AT TIME ZONE 'UTC',
     'YYYY-MM-DD HH24:MI:SS"Z"'
   ) AS scope_watermark_at
-FROM scoped
-CROSS JOIN latest
-CROSS JOIN watermark;
+FROM definitions
+LEFT JOIN summary ON summary.source_key = definitions.source_key
+LEFT JOIN watermark ON watermark.source_key = definitions.source_key
+ORDER BY definitions.source_key;
 """,
     "quality_by_source": f"""
 WITH active AS (

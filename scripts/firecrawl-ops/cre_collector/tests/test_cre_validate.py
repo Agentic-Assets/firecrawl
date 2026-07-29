@@ -231,14 +231,20 @@ def test_source_counts_separates_inventory_and_detail_observation():
     assert "detail_unavailable" in sql
 
 
-def test_inventory_only_index_reports_current_and_retired_cards():
+def test_inventory_only_index_reports_each_declarative_source_namespace():
     sql = QUERIES["inventory_only_index"]
     assert "credeals.cre_source_index" in sql
     assert "dealflow:card:%" in sql
-    assert "NOT scoped.soft_deleted" in sql
+    assert "salestracker:card:%" in sql
+    assert "definitions.external_id_like" in sql
+    assert "definitions.watermark_external_id" in sql
+    assert "cbre-dealflow" in sql
+    assert "colliers" in sql
+    assert "coalesce(summary.active, 0)" in sql
     assert "latest_batch_active" in sql
     assert "latest_enumerated_at" in sql
     assert "dealflow:scope:inventory-only-watermark" in sql
+    assert "salestracker:scope:inventory-only-watermark" in sql
     assert "scope_watermark_at" in sql
 
 

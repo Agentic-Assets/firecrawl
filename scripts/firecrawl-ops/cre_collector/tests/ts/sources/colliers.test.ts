@@ -19,7 +19,13 @@ import {
   colliersSqftToNumber,
   colliersAcresToNumber,
   colliersContactsFromCard,
+  groupColliersMapLocations,
+  colliersMapScalarCoordinates,
   parseColliersCards,
+  colliersNumProjects,
+  colliersAssertPageCount,
+  colliersAssertDetailProjectId,
+  colliersInventoryOnlyCard,
   colliersDetailContacts,
   colliersDetailImages,
   colliersStrandedDocs,
@@ -151,7 +157,7 @@ test("colliersContactsFromCard extracts broker rows from card HTML", () => {
   assert.equal(contacts[0].company, "Colliers");
 });
 
-test("parseColliersCards parses minimal list HTML with map coordinates", () => {
+test("parseColliersCards uses the ordered grouped map ProjectId", () => {
   const html = `
     <ul>
       <li class="item">
@@ -172,12 +178,19 @@ test("parseColliersCards parses minimal list HTML with map coordinates", () => {
       </li>
     </ul>
   `;
-  const mapLocations = [{ ProjectId: 98765, Latitude: 32.78, Longitude: -96.8 }];
-  const cards = parseColliersCards(html, mapLocations, 1);
+  const mapGroups = groupColliersMapLocations([
+    { ProjectId: 98765, Latitude: 32.78, Longitude: -96.8 },
+  ]);
+  const cards = parseColliersCards(html, mapGroups, 1);
   assert.equal(cards.length, 1);
   const card = cards[0];
-  assert.equal(card.id, "98765");
+  assert.equal(card.id, "salestracker:card:98765");
+  assert.equal(card.mapProjectId, "98765");
   assert.equal(card.detailPv, "card-pv-123");
+  assert.equal(
+    card.url,
+    "https://my.rcm1.com/slp/landing.aspx?pv=card-pv-123"
+  );
   assert.equal(card.name, "Downtown Office Tower");
   assert.equal(card.city, "Dallas");
   assert.equal(card.state, "TX");
@@ -186,6 +199,90 @@ test("parseColliersCards parses minimal list HTML with map coordinates", () => {
   assert.equal(card.longitude, -96.8);
   assert.equal(card.brokerIds.length, 1);
   assert.match(card.photos[0]!, /thumb\.jpg$/);
+  assert.equal(
+    card.colliersSalesTrackerCard.identitySource,
+    "ordered-map-project-group"
+  );
+});
+
+test("Colliers map rows group by first ProjectId occurrence without shifting cards", () => {
+  const groups = groupColliersMapLocations([
+    { ProjectId: "A", Latitude: 1, Longitude: 2 },
+    { ProjectId: "A", Latitude: 3, Longitude: 4 },
+    { ProjectId: "B", Latitude: 5, Longitude: 6 },
+    { ProjectId: "C", Latitude: 7, Longitude: 8 },
+  ]);
+  assert.deepEqual(
+    groups.map((group) => group.projectId),
+    ["A", "B", "C"]
+  );
+  assert.equal(groups[0]!.pins.length, 2);
+  assert.deepEqual(colliersMapScalarCoordinates(groups[0]!), {
+    latitude: null,
+    longitude: null,
+  });
+  assert.deepEqual(colliersMapScalarCoordinates(groups[1]!), {
+    latitude: 5,
+    longitude: 6,
+  });
+  assert.throws(
+    () => groupColliersMapLocations([{ Latitude: 1, Longitude: 2 }]),
+    /missing ProjectId/
+  );
+});
+
+test("Colliers pagination counters fail closed on malformed or mismatched pages", () => {
+  assert.equal(colliersNumProjects("5", 1), 5);
+  assert.equal(colliersAssertPageCount(5, 5, 1), 5);
+  assert.throws(() => colliersNumProjects("", 1), /invalid numProjects/);
+  assert.throws(
+    () => colliersAssertPageCount(4, 5, 1),
+    /numProjects\/card parity failed/
+  );
+});
+
+test("Colliers detail identity must match its grouped map ProjectId", () => {
+  assert.equal(colliersAssertDetailProjectId("123", 123), "123");
+  assert.throws(
+    () => colliersAssertDetailProjectId("123", "456"),
+    /grouped map\/detail ProjectId mismatch/
+  );
+  assert.throws(
+    () => colliersAssertDetailProjectId("123", null),
+    /omitted ProjectId/
+  );
+});
+
+test("Colliers cards without canonical detail stay inventory-only", () => {
+  const card = {
+    id: "salestracker:card:0123456789abcdef01234567",
+    mapProjectId: "0123456789abcdef01234567",
+    url: null,
+    detailUrl: null,
+    detailPv: null,
+    name: "Unlinked property",
+    transactionType: "Investment Sale",
+    assetType: "Retail",
+    status: "Active",
+    city: "Tulsa",
+    state: "OK",
+    country: "US",
+    salePriceUsd: null,
+    salePriceText: null,
+    sizeText: null,
+    latitude: null,
+    longitude: null,
+    brokerIds: [],
+    contactsDetailed: [],
+    photos: [],
+    colliersSalesTrackerCard: {},
+  };
+  const listing = colliersInventoryOnlyCard(card, "card_not_linked");
+  assert.equal(listing.inventoryOnly.indexUrl, "https://sales.colliers.com/");
+  assert.equal(listing.detailUnavailable.reason, "card_not_linked");
+  assert.equal(listing.preserveChildCollections, true);
+  assert.equal(listing.provisionalIdentity.historyContinuity, "not_guaranteed");
+  assert.equal(listing.canonicalUrl, undefined);
 });
 
 test("colliersDetailContacts maps project contacts and respects ShowEmail", () => {

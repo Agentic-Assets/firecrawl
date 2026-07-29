@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from cre_ingest import (
+    INVENTORY_ONLY_SOURCE_DEFINITIONS,
     SOURCE_TO_BROKERAGE,
     merge_rows,
     to_inventory_only_row,
@@ -380,10 +381,27 @@ def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, int]:
         if listing.get("provisionalIdentity"):
             provisional_identities += 1
         inventory_row = to_inventory_only_row(listing, scraped_at)
-        if inventory_row is not None:
-            inventory_only.add(
-                (inventory_row["slug"], inventory_row["external_id"])
+        if (
+            listing.get("inventoryOnly") is not None
+            and inventory_row is None
+        ):
+            raise ArtifactValidationError(
+                f"listings[{index}] has an invalid inventoryOnly identity"
             )
+        if inventory_row is not None:
+            inventory_key = (
+                inventory_row["slug"],
+                inventory_row["external_id"],
+            )
+            if (
+                listing.get("sourceKey") == "colliers"
+                and inventory_key in inventory_only
+            ):
+                raise ArtifactValidationError(
+                    "Colliers artifact contains duplicate provisional "
+                    f"inventory identity {inventory_key[1]!r}"
+                )
+            inventory_only.add(inventory_key)
             continue
         try:
             row = to_row(listing, brokers_by_idx, scraped_at)
@@ -393,6 +411,11 @@ def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, int]:
             rejected += 1
             continue
         key = (row["slug"], row["external_id"])
+        if listing.get("sourceKey") == "colliers" and key in merged:
+            raise ArtifactValidationError(
+                "Colliers artifact contains duplicate canonical ProjectId "
+                f"{key[1]!r}"
+            )
         merged[key] = merge_rows(merged[key], row) if key in merged else row
     return {
         "flat_listings": len(listings),
@@ -467,7 +490,10 @@ def validate_source_artifact(
     listings = data.get("listings")
     if not isinstance(listings, list):
         raise ArtifactValidationError("full source artifact listings must be an array")
-    if not listings and expected_source != "cbre-dealflow":
+    if (
+        not listings
+        and expected_source not in INVENTORY_ONLY_SOURCE_DEFINITIONS
+    ):
         raise ArtifactValidationError("full source artifact must contain listings")
     if data.get("totalListings") != len(listings):
         raise ArtifactValidationError("totalListings does not match listings length")
@@ -491,9 +517,21 @@ def validate_source_artifact(
             f"{stats['detail_errors']} listing(s) contain detailError"
         )
     if (
+        expected_source == "colliers"
+        and stats["flat_listings"]
+        != stats["staged_unique"] + stats["inventory_only"]
+    ):
+        raise ArtifactValidationError(
+            "Colliers artifact does not preserve a one-to-one provider-card "
+            "identity across canonical and inventory-only rows"
+        )
+    if (
         stats["staged_unique"] <= 0
         and stats["inventory_only"] <= 0
-        and not (expected_source == "cbre-dealflow" and not listings)
+        and not (
+            expected_source in INVENTORY_ONLY_SOURCE_DEFINITIONS
+            and not listings
+        )
     ):
         raise ArtifactValidationError("artifact has no usable unique rows")
     return {
@@ -1120,29 +1158,47 @@ def verify_validation_readback(
     for source in manifest["config"]["sources"]:
         checkpoint = manifest["sources"][source]
         artifact = checkpoint.get("artifact") or {}
+        try:
+            expected = _timestamp_second(artifact["finished_at"])
+            staged = int(artifact["staged_unique"])
+        except (KeyError, TypeError, ValueError, ArtifactValidationError):
+            checkpoint["readback"] = {
+                "ok": False,
+                "reason": "malformed artifact readback expectation",
+            }
+            failures.append(source)
+            continue
         row = by_source.get(source)
-        if row is None:
+        inventory_only_canonical_na = (
+            staged == 0
+            and source in INVENTORY_ONLY_SOURCE_DEFINITIONS
+        )
+        if row is None and not inventory_only_canonical_na:
             checkpoint["readback"] = {"ok": False, "reason": "source missing from validation"}
             failures.append(source)
             continue
-        try:
-            latest = _timestamp_second(row["latest_inventory_observed_at"])
-            expected = _timestamp_second(artifact["finished_at"])
-            latest_count = int(row["latest_inventory_batch_active"])
-            staged = int(artifact["staged_unique"])
-        except (KeyError, TypeError, ValueError, ArtifactValidationError):
-            checkpoint["readback"] = {"ok": False, "reason": "malformed validation row"}
-            failures.append(source)
-            continue
-        ok = latest >= expected and latest_count == staged
-        reason = None
-        if latest < expected:
-            reason = (
-                f"latest inventory observation {latest.isoformat()} "
-                f"predates artifact {expected.isoformat()}"
-            )
-        elif latest_count != staged:
-            reason = f"latest batch {latest_count} != staged unique {staged}"
+        if inventory_only_canonical_na:
+            latest = None
+            latest_count = 0
+            ok = True
+            reason = None
+        else:
+            try:
+                latest = _timestamp_second(row["latest_inventory_observed_at"])
+                latest_count = int(row["latest_inventory_batch_active"])
+            except (KeyError, TypeError, ValueError, ArtifactValidationError):
+                checkpoint["readback"] = {"ok": False, "reason": "malformed validation row"}
+                failures.append(source)
+                continue
+            ok = latest >= expected and latest_count == staged
+            reason = None
+            if latest < expected:
+                reason = (
+                    f"latest inventory observation {latest.isoformat()} "
+                    f"predates artifact {expected.isoformat()}"
+                )
+            elif latest_count != staged:
+                reason = f"latest batch {latest_count} != staged unique {staged}"
         expected_inventory_only = int(artifact.get("inventory_only") or 0)
         inventory_readback = inventory_by_source.get(source)
         inventory_ok = True
@@ -1150,7 +1206,10 @@ def verify_validation_readback(
         inventory_details: dict[str, Any] = {
             "expected_active": expected_inventory_only,
         }
-        if expected_inventory_only or source == "cbre-dealflow":
+        if (
+            expected_inventory_only
+            or source in INVENTORY_ONLY_SOURCE_DEFINITIONS
+        ):
             if inventory_readback is None:
                 inventory_ok = False
                 inventory_reason = "inventory-only source-index row is missing"
@@ -1229,11 +1288,19 @@ def verify_validation_readback(
             reason = inventory_reason
         checkpoint["readback"] = {
             "ok": ok,
-            "latest_inventory_observed_at": row["latest_inventory_observed_at"],
+            "latest_inventory_observed_at": (
+                row["latest_inventory_observed_at"] if row is not None else None
+            ),
             "latest_inventory_batch_active": latest_count,
-            "latest_detail_scraped_at": row.get("latest_scraped_at"),
-            "latest_detail_batch_active": row.get("latest_batch_active"),
-            "detail_unavailable": row.get("detail_unavailable"),
+            "latest_detail_scraped_at": (
+                row.get("latest_scraped_at") if row is not None else None
+            ),
+            "latest_detail_batch_active": (
+                row.get("latest_batch_active") if row is not None else None
+            ),
+            "detail_unavailable": (
+                row.get("detail_unavailable") if row is not None else None
+            ),
             "expected_staged_unique": staged,
             "inventory_only": inventory_details,
             "reason": reason,

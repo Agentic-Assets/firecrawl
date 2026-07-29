@@ -668,6 +668,11 @@ def test_inventory_only_reconciliation_requires_strict_full_enumeration():
             "slug": "cbre",
             "source_key": "cbre-dealflow",
             "external_id_like": "dealflow:card:%",
+            "watermark_external_id": (
+                "dealflow:scope:inventory-only-watermark"
+            ),
+            "watermark_url": "https://www.cbredealflow.com/",
+            "watermark_fingerprint": "inventory-only-scope-watermark-v1",
             "observed_at": _SCRAPED_AT,
         }
     ]
@@ -730,6 +735,86 @@ def test_empty_inventory_only_scope_is_still_reconcilable():
     scopes = ci.inventory_only_full_scopes(payload)
     assert len(scopes) == 1
     assert scopes[0]["external_id_like"] == "dealflow:card:%"
+
+
+def test_colliers_inventory_only_card_uses_salestracker_namespace():
+    listing = {
+        "sourceKey": "colliers",
+        "transactionMode": "sale",
+        "id": "salestracker:card:abc123",
+        "name": "Unlinked Colliers Sale",
+        "city": "Tulsa",
+        "state": "OK",
+        "provisionalIdentity": {"historyContinuity": "not_guaranteed"},
+        "inventoryOnly": {
+            "reason": "no_public_slp_detail_link",
+            "indexUrl": "https://sales.colliers.com/",
+        },
+    }
+
+    assert _row(listing) is None
+    inventory = ci.to_inventory_only_row(listing, _SCRAPED_AT)
+    assert inventory is not None
+    assert inventory["slug"] == "colliers"
+    assert inventory["external_id"] == "salestracker:card:abc123"
+    assert inventory["source_key"] == "colliers"
+    assert inventory["url"] == "https://sales.colliers.com/"
+
+
+def test_colliers_full_snapshot_authorizes_its_own_inventory_scope():
+    payload = {
+        "runMeta": {
+            "mode": "full",
+            "transactions": ["sale", "lease"],
+            "maxItemsPerSource": None,
+            "startedAt": _SCRAPED_AT,
+            "finishedAt": _SCRAPED_AT,
+        },
+        "sources": [
+            {
+                "sourceKey": "colliers",
+                "transaction": "sale",
+                "supported": True,
+                "listingsCollected": 1,
+                "truncated": False,
+            },
+            {
+                "sourceKey": "colliers",
+                "transaction": "lease",
+                "supported": True,
+                "listingsCollected": 0,
+                "truncated": False,
+            },
+        ],
+        "listings": [
+            {
+                "sourceKey": "colliers",
+                "transactionMode": "sale",
+                "id": "salestracker:card:abc123",
+                "inventoryOnly": {
+                    "reason": "no_public_slp_detail_link",
+                    "indexUrl": "https://sales.colliers.com/",
+                },
+            }
+        ],
+        "totalListings": 1,
+    }
+
+    assert ci.inventory_only_full_scopes(payload) == [
+        {
+            "slug": "colliers",
+            "source_key": "colliers",
+            "external_id_like": "salestracker:card:%",
+            "watermark_external_id": (
+                "salestracker:scope:inventory-only-watermark"
+            ),
+            "watermark_url": "https://sales.colliers.com/",
+            "watermark_fingerprint": (
+                "inventory-only-scope-watermark-v1:colliers-salestracker"
+            ),
+            "observed_at": _SCRAPED_AT,
+        }
+    ]
 
 
 def test_cli_rejects_duplicate_complete_inventory_scopes(
@@ -860,6 +945,9 @@ def test_inventory_only_sql_covers_appearance_disappearance_and_reappearance():
         "slug": "cbre",
         "source_key": "cbre-dealflow",
         "external_id_like": "dealflow:card:%",
+        "watermark_external_id": "dealflow:scope:inventory-only-watermark",
+        "watermark_url": "https://www.cbredealflow.com/",
+        "watermark_fingerprint": "inventory-only-scope-watermark-v1",
         "observed_at": _SCRAPED_AT,
     }
     sql = ci.build_sql(
@@ -880,9 +968,202 @@ def test_inventory_only_sql_covers_appearance_disappearance_and_reappearance():
     assert "prior.last_enumerated_at > scope.observed_at" in sql
     assert "EXCLUDED.last_enumerated_at >= si.last_enumerated_at" in sql
     assert "si.last_enumerated_at <= scope.observed_at" in sql
+    assert "prior.external_id = scope.watermark_external_id" in sql
+    assert "scope.watermark_external_id" in sql
+    assert "scope.watermark_url" in sql
+    assert "scope.watermark_fingerprint" in sql
     assert "dealflow:scope:inventory-only-watermark" in sql
     assert "inventory-only-scope-watermark-v1" in sql
     assert "to_regclass('credeals.cre_source_index')" not in sql
+
+
+def test_inventory_only_stale_replay_watermarks_are_source_specific():
+    scopes = [
+        {
+            **definition,
+            "source_key": source_key,
+            "observed_at": _SCRAPED_AT,
+        }
+        for source_key, definition in ci.INVENTORY_ONLY_SOURCE_DEFINITIONS.items()
+    ]
+    sql = ci.build_sql(
+        [],
+        [],
+        _SCRAPED_AT,
+        set(),
+        inventory_only_scopes=scopes,
+    )
+
+    assert "dealflow:scope:inventory-only-watermark" in sql
+    assert "salestracker:scope:inventory-only-watermark" in sql
+    assert "https://www.cbredealflow.com/" in sql
+    assert "https://sales.colliers.com/" in sql
+    assert (
+        "inventory-only-scope-watermark-v1:colliers-salestracker" in sql
+    )
+    assert "prior.source_key = scope.source_key" in sql
+    assert "prior.external_id = scope.watermark_external_id" in sql
+
+
+def test_cli_refuses_conflicting_colliers_canonical_identity(
+    tmp_path, monkeypatch
+):
+    artifact = tmp_path / "colliers-conflict.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "runMeta": {
+                    "mode": "full",
+                    "startedAt": _SCRAPED_AT,
+                    "finishedAt": _SCRAPED_AT,
+                },
+                "sources": [],
+                "brokers": [],
+                "listings": [
+                    {
+                        "sourceKey": "colliers",
+                        "id": "12345",
+                        "url": (
+                            "https://my.rcm1.com/handler/modern.aspx?pv=linked"
+                        ),
+                        "canonicalUrl": (
+                            "https://my.rcm1.com/handler/modern.aspx?pv=linked"
+                        ),
+                        "name": "Linked Property",
+                        "transactionMode": "sale",
+                    },
+                    {
+                        "sourceKey": "colliers",
+                        "id": "12345",
+                        "url": "https://sales.colliers.com/#project-12345",
+                        "canonicalUrl": (
+                            "https://sales.colliers.com/#project-12345"
+                        ),
+                        "name": "Different Unlinked Property",
+                        "transactionMode": "sale",
+                    },
+                ],
+                "totalListings": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cre_ingest.py", "--in", str(artifact), "--dry-run"],
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="refusing duplicate canonical identity.*Colliers",
+    ):
+        ci.main()
+
+
+def test_cli_refuses_duplicate_colliers_provisional_identity(
+    tmp_path, monkeypatch
+):
+    artifact = tmp_path / "colliers-provisional-duplicate.json"
+    provisional = {
+        "sourceKey": "colliers",
+        "id": "salestracker:card:12345",
+        "url": None,
+        "transactionMode": "sale",
+        "inventoryOnly": {
+            "reason": "card_not_linked",
+            "indexUrl": "https://sales.colliers.com/",
+        },
+    }
+    artifact.write_text(
+        json.dumps(
+            {
+                "runMeta": {
+                    "mode": "full",
+                    "transactions": ["sale", "lease"],
+                    "maxItemsPerSource": None,
+                    "startedAt": _SCRAPED_AT,
+                    "finishedAt": _SCRAPED_AT,
+                },
+                "sources": [
+                    {
+                        "sourceKey": "colliers",
+                        "transaction": "sale",
+                        "supported": True,
+                        "listingsCollected": 2,
+                        "truncated": False,
+                    },
+                    {
+                        "sourceKey": "colliers",
+                        "transaction": "lease",
+                        "supported": True,
+                        "listingsCollected": 0,
+                        "truncated": False,
+                    },
+                ],
+                "brokers": [],
+                "listings": [provisional, dict(provisional)],
+                "totalListings": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cre_ingest.py", "--in", str(artifact), "--dry-run"],
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="duplicate Colliers provisional inventory identity",
+    ):
+        ci.main()
+
+
+def test_non_colliers_dual_mode_identity_still_merges():
+    sale = _row(
+        {
+            "sourceKey": "cbre",
+            "id": "dual-1",
+            "url": "https://www.cbre.com/properties/dual-1",
+            "transactionMode": "sale",
+        }
+    )
+    lease = _row(
+        {
+            "sourceKey": "cbre",
+            "id": "dual-1",
+            "url": "https://www.cbre.com/properties/dual-1?mode=lease",
+            "transactionMode": "lease",
+        }
+    )
+
+    ci.validate_duplicate_identity_before_merge(sale, lease)
+    assert ci.merge_rows(sale, lease)["transaction_type"] == "sale_or_lease"
+
+
+def test_colliers_identity_guard_rejects_even_identical_duplicate_project_id():
+    first = _row(
+        {
+            "sourceKey": "colliers",
+            "id": "12345",
+            "url": "https://my.rcm1.com/handler/modern.aspx?pv=linked",
+            "name": "Same Property",
+            "transactionMode": "sale",
+        }
+    )
+    duplicate = _row(
+        {
+            "sourceKey": "colliers",
+            "id": "12345",
+            "url": "https://my.rcm1.com/handler/modern.aspx?pv=linked",
+            "name": "Same Property",
+            "transactionMode": "sale",
+        }
+    )
+    with pytest.raises(ValueError, match="duplicate Colliers canonical ProjectId"):
+        ci.validate_duplicate_identity_before_merge(first, duplicate)
 
 
 def test_cli_refuses_marked_retired_om_parse_artifact(tmp_path, monkeypatch):

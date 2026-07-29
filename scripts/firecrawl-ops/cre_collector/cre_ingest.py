@@ -94,6 +94,29 @@ SOURCE_TO_BROKERAGE = {
     "kidder-mathews": ("kidder-mathews", ""),
 }
 
+# Provider cards that cannot yet prove a canonical listing identity are kept in
+# cre_source_index under an explicitly provisional namespace.  Reconciliation
+# is source-specific: each namespace has its own full-scope watermark so a
+# newer empty snapshot for one provider cannot block or authorize another.
+INVENTORY_ONLY_SOURCE_DEFINITIONS = {
+    "cbre-dealflow": {
+        "slug": "cbre",
+        "external_id_like": "dealflow:card:%",
+        "watermark_external_id": "dealflow:scope:inventory-only-watermark",
+        "watermark_url": "https://www.cbredealflow.com/",
+        "watermark_fingerprint": "inventory-only-scope-watermark-v1",
+    },
+    "colliers": {
+        "slug": "colliers",
+        "external_id_like": "salestracker:card:%",
+        "watermark_external_id": "salestracker:scope:inventory-only-watermark",
+        "watermark_url": "https://sales.colliers.com/",
+        "watermark_fingerprint": (
+            "inventory-only-scope-watermark-v1:colliers-salestracker"
+        ),
+    },
+}
+
 BUILDOUT_SOURCE_KEYS = {"svn", "lee-associates", "franklin-street"}
 
 SOURCE_KEYS_BY_SLUG = {}
@@ -462,18 +485,24 @@ def to_inventory_only_row(listing, observed_at):
     if not isinstance(marker, dict):
         return None
     source_key = listing.get("sourceKey")
+    definition = INVENTORY_ONLY_SOURCE_DEFINITIONS.get(source_key)
     mapping = SOURCE_TO_BROKERAGE.get(source_key)
     raw_id = listing.get("id")
     index_url = marker.get("indexUrl")
     if (
-        not mapping
+        not definition
+        or not mapping
         or raw_id is None
         or not str(raw_id).strip()
         or not isinstance(index_url, str)
-        or not index_url.startswith("http")
+        or index_url != definition["watermark_url"]
     ):
         return None
     slug, prefix = mapping
+    external_id = prefix + str(raw_id).strip()
+    expected_prefix = definition["external_id_like"].removesuffix("%")
+    if slug != definition["slug"] or not external_id.startswith(expected_prefix):
+        return None
     evidence = {
         "title": listing.get("name") or listing.get("title"),
         "city": listing.get("city"),
@@ -488,7 +517,7 @@ def to_inventory_only_row(listing, observed_at):
     ).hexdigest()
     return {
         "slug": slug,
-        "external_id": prefix + str(raw_id).strip(),
+        "external_id": external_id,
         "source_key": source_key,
         "url": index_url,
         "fingerprint": fingerprint,
@@ -543,13 +572,7 @@ def inventory_only_full_scopes(data):
         return []
 
     scopes = []
-    definitions = {
-        "cbre-dealflow": {
-            "slug": "cbre",
-            "external_id_like": "dealflow:card:%",
-        }
-    }
-    for source_key, definition in definitions.items():
+    for source_key, definition in INVENTORY_ONLY_SOURCE_DEFINITIONS.items():
         matching = [
             entry
             for entry in entries
@@ -1243,6 +1266,48 @@ def merge_rows(a, b):
     return a
 
 
+def validate_duplicate_identity_before_merge(a, b):
+    """Fail closed whenever a Colliers canonical ProjectId repeats.
+
+    Colliers SalesTracker is sale-only and the collector proves a one-to-one
+    card-to-ProjectId mapping. Any repeated canonical ID therefore violates the
+    source contract, even when the duplicate payload happens to look identical.
+    Other providers retain the existing sale/lease merge behavior because their
+    adapters intentionally normalize dual-mode rows to one external ID.
+    """
+    def contains_colliers_source(payload):
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("sourceKey") == "colliers":
+            return True
+        return any(
+            contains_colliers_source(payload.get(key))
+            for key in ("primary", "secondary_pass")
+        )
+
+    if (
+        not contains_colliers_source(a.get("raw_data"))
+        or not contains_colliers_source(b.get("raw_data"))
+    ):
+        return
+
+    conflicts = []
+    for field in ("source_url", "canonical_url", "title"):
+        value_a = a.get(field)
+        value_b = b.get(field)
+        if value_a and value_b and value_a != value_b:
+            conflicts.append(field)
+    detail = (
+        f": incompatible {', '.join(conflicts)}"
+        if conflicts
+        else ""
+    )
+    raise ValueError(
+        "duplicate Colliers canonical ProjectId "
+        f"{a.get('external_id')!r}{detail}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # COPY encoding + SQL generation
 # ---------------------------------------------------------------------------
@@ -1302,6 +1367,9 @@ INVENTORY_ONLY_SCOPE_COLS = [
     "slug",
     "source_key",
     "external_id_like",
+    "watermark_external_id",
+    "watermark_url",
+    "watermark_fingerprint",
     "observed_at",
 ]
 
@@ -1441,6 +1509,8 @@ CREATE TEMP TABLE _inventory_only (
     w("""
 CREATE TEMP TABLE _inventory_only_scope (
     slug text, source_key text, external_id_like text,
+    watermark_external_id text, watermark_url text,
+    watermark_fingerprint text,
     observed_at timestamptz
 ) ON COMMIT DROP;""")
     w(
@@ -1499,7 +1569,7 @@ BEGIN
       AND prior.source_key = scope.source_key
       AND (
         prior.external_id LIKE scope.external_id_like
-        OR prior.external_id = 'dealflow:scope:inventory-only-watermark'
+        OR prior.external_id = scope.watermark_external_id
       )
       AND prior.last_enumerated_at > scope.observed_at
   )
@@ -1559,10 +1629,10 @@ INSERT INTO credeals.cre_source_index AS si (
   soft_deleted, observed_status, first_seen, last_seen, last_enumerated_at
 )
 SELECT b.id,
-       'dealflow:scope:inventory-only-watermark',
+       scope.watermark_external_id,
        scope.source_key,
-       'https://www.cbredealflow.com/',
-       'inventory-only-scope-watermark-v1',
+       scope.watermark_url,
+       scope.watermark_fingerprint,
        true,
        NULL,
        scope.observed_at,
@@ -2827,9 +2897,19 @@ def main():
         for listing in data.get("listings") or []:
             inventory_row = to_inventory_only_row(listing, scraped_at)
             if inventory_row is not None:
-                inventory_only_merged[
-                    (inventory_row["slug"], inventory_row["external_id"])
-                ] = inventory_row
+                inventory_key = (
+                    inventory_row["slug"],
+                    inventory_row["external_id"],
+                )
+                if (
+                    listing.get("sourceKey") == "colliers"
+                    and inventory_key in inventory_only_merged
+                ):
+                    sys.exit(
+                        "refusing duplicate Colliers provisional inventory "
+                        f"identity {inventory_key[1]!r}"
+                    )
+                inventory_only_merged[inventory_key] = inventory_row
                 continue
             row = to_row(listing, brokers_by_idx, scraped_at)
             if row is None:
@@ -2837,6 +2917,10 @@ def main():
                 continue
             key = (row["slug"], row["external_id"])
             if key in merged:
+                try:
+                    validate_duplicate_identity_before_merge(merged[key], row)
+                except ValueError as exc:
+                    sys.exit(f"refusing duplicate canonical identity: {exc}")
                 merged[key] = merge_rows(merged[key], row)
             else:
                 merged[key] = row
