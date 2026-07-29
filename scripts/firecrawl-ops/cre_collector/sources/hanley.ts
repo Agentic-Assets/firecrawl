@@ -1,3 +1,4 @@
+import * as cheerio from "cheerio";
 import {
   generationMatches,
   refreshGenerationId,
@@ -30,9 +31,41 @@ function numeric(value: any): number | null {
 }
 
 function hanleyChallenge(html: string): boolean {
-  return /verify you are human|attention required|cf-chl-|cloudflare ray id|captcha|access denied/i.test(
+  // Legitimate Hanley pages load Google reCAPTCHA scripts, so bare "captcha"
+  // text is not challenge evidence. Keep only provider/error-shell markers
+  // that cannot appear as ordinary third-party page assets.
+  return /verify you are human|attention required|cf-chl-|cloudflare ray id|access denied/i.test(
     html
   );
+}
+
+function renderedHanleyInventory(html: string): {
+  containerCount: number;
+  cardCount: number;
+  ids: string[];
+  invalidCardCount: number;
+} {
+  const $ = cheerio.load(html);
+  const containers = $("#rethink-properties-container");
+  const cards = containers.children();
+  const ids: string[] = [];
+  let invalidCardCount = 0;
+  cards.each((_, element) => {
+    const card = $(element);
+    const id = clean(card.attr("data-id"));
+    const isResult = clean(card.attr("data-result"))?.toLowerCase() === "true";
+    if (!id || !isResult) {
+      invalidCardCount++;
+      return;
+    }
+    ids.push(id);
+  });
+  return {
+    containerCount: containers.length,
+    cardCount: cards.length,
+    ids,
+    invalidCardCount,
+  };
 }
 
 function embeddedArrayAt(html: string, marker: number): any[] | null {
@@ -124,6 +157,32 @@ export function parseHanleyInventory(
       publicRows.push(row);
     }
   }
+  if (strict) {
+    const rendered = renderedHanleyInventory(html);
+    const renderedIds = rendered.ids;
+    const renderedSet = new Set(renderedIds);
+    const publicIds = publicRows.map((row) => clean(String(row.id))).filter(Boolean) as string[];
+    const publicSet = new Set(publicIds);
+    if (rendered.containerCount !== 1 || rendered.cardCount === 0) {
+      throw new Error("Hanley strict inventory is missing rendered listing cards");
+    }
+    if (rendered.invalidCardCount > 0 || renderedIds.length !== rendered.cardCount) {
+      throw new Error(
+        `Hanley strict inventory contains ${rendered.invalidCardCount} rendered card(s) without a valid provider identity/result marker`
+      );
+    }
+    if (renderedSet.size !== renderedIds.length) {
+      throw new Error("Hanley strict inventory contains duplicate rendered provider identities");
+    }
+    if (
+      renderedSet.size !== publicSet.size ||
+      publicIds.some((id) => !renderedSet.has(id))
+    ) {
+      throw new Error(
+        `Hanley strict inventory embedded/rendered identity parity failed (${publicSet.size} != ${renderedSet.size})`
+      );
+    }
+  }
   return { rows, publicRows };
 }
 
@@ -134,11 +193,13 @@ export function extractRethinkProperties(html: string): any[] {
 export function hanleyFallbackOptions(strict = requireFreshDetails()): {
   proxy: "stealth";
   waitFor: number;
+  timeout: number;
   maxAge?: number;
 } {
   return {
     proxy: "stealth",
     waitFor: 3000,
+    timeout: 120000,
     ...(strict ? { maxAge: 0 } : {}),
   };
 }

@@ -47,11 +47,20 @@ test("strict Hanley parsing proves one structurally valid embedded public invent
     `<script>var rethink_properties = [` +
     `{"id":"1","name":"Public","visibility":"Public"},` +
     `{"id":"2","name":"Private","visibility":"Private"}` +
-    `];</script>`;
+    `];</script>` +
+    `<div id="rethink-properties-container"><article data-id="1" data-result="true"></article></div>`;
   const parsed = parseHanleyInventory(html, true);
   assert.deepEqual(parsed.rows.map((row) => row.id), ["1", "2"]);
   assert.deepEqual(parsed.publicRows.map((row) => row.id), ["1"]);
 
+  assert.doesNotThrow(() =>
+    parseHanleyInventory(
+      `<script src="https://www.google.com/recaptcha/api.js"></script>` +
+        `<script>var rethink_properties = [{"id":"1","visibility":"Public"}];</script>` +
+        `<div id="rethink-properties-container"><article data-id="1" data-result="true"></article></div>`,
+      true
+    )
+  );
   assert.throws(
     () => parseHanleyInventory("<html>verify you are human</html>", true),
     /challenge/
@@ -82,12 +91,43 @@ test("strict Hanley parsing proves one structurally valid embedded public invent
     () => parseHanleyInventory(`<script>var rethink_properties = [{"id":`, true),
     /complete JSON array/
   );
+  assert.throws(
+    () =>
+      parseHanleyInventory(
+        `<script>var rethink_properties = [{"id":"1","visibility":"Public"}];</script>` +
+          `<div id="rethink-properties-container"><article data-id="2"></article></div>`,
+        true
+      ),
+    /valid provider identity\/result marker/
+  );
+  assert.throws(
+    () =>
+      parseHanleyInventory(
+        `<script>var rethink_properties = [{"id":"1","visibility":"Public"}];</script>` +
+          `<div id="rethink-properties-container">` +
+          `<article data-id="1" data-result="true"></article>` +
+          `<article data-result="true"></article>` +
+          `</div>`,
+        true
+      ),
+    /valid provider identity\/result marker/
+  );
+  assert.throws(
+    () =>
+      parseHanleyInventory(
+        `<script>var rethink_properties = [{"id":"1","visibility":"Public"}];</script>` +
+          `<div id="rethink-properties-container"><article data-id="2" data-result="true"></article></div>`,
+        true
+      ),
+    /identity parity/
+  );
 });
 
 test("strict Hanley Firecrawl fallback explicitly bypasses cached responses", () => {
   assert.deepEqual(hanleyFallbackOptions(true), {
     proxy: "stealth",
     waitFor: 3000,
+    timeout: 120000,
     maxAge: 0,
   });
   assert.equal(hanleyFallbackOptions(false).maxAge, undefined);
