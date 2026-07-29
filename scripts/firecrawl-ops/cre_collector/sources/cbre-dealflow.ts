@@ -15,6 +15,11 @@ export const CBRE_DEALFLOW_BASE = "https://www.cbredealflow.com";
 export const CBRE_DEALFLOW_SOURCE_URL = `${CBRE_DEALFLOW_BASE}/`;
 export const CBRE_DEALFLOW_FALLBACK_ENGINE_KEY = "oi5qxFqUeAwpuWTlIxfX2WDpoZa3NjIo51F63rmSsEI";
 export const CBRE_DEALFLOW_PAGE_SIZE = 200;
+// The provider renders each 200-card Investment Sale page server-side. A live
+// 2026-07-29 response took 74 seconds while still returning a complete 200-card
+// page, so the former 30-second deadline rejected healthy inventory. Keep this
+// bounded independently from the 30-second per-listing detail deadline.
+export const CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS = 120000;
 export const CBRE_DEALFLOW_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
 export const CBRE_DEALFLOW_PROJECT_TYPE_BY_TX: Record<Tx, string> = {
   sale: "Investment Sale",
@@ -80,7 +85,7 @@ export async function cbreDealflowPostJson(path: string, body: URLSearchParams):
       "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
     },
     body,
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS),
   });
   const text = await res.text();
   let parsed: any = null;

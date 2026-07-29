@@ -9,6 +9,7 @@ import {
   cbreDealflowUrl,
   extractCbreDealflowEngineKey,
   CBRE_DEALFLOW_FALLBACK_ENGINE_KEY,
+  CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS,
   cbreDealflowHarvestHtml,
   cbreDealflowStrandedStructured,
   cbreDealflowNewFieldsFromRawData,
@@ -81,6 +82,14 @@ test("extractCbreDealflowEngineKey falls back to pv token or default", () => {
   const html = `<a href="/x?pv=${"A".repeat(32)}">link</a>`;
   assert.equal(extractCbreDealflowEngineKey(html), "A".repeat(32));
   assert.equal(extractCbreDealflowEngineKey("<html></html>"), CBRE_DEALFLOW_FALLBACK_ENGINE_KEY);
+});
+
+test("CBRE Deal Flow inventory timeout admits slow complete provider pages", () => {
+  assert.equal(CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS, 120000);
+  assert.ok(
+    CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS >= 75000,
+    "inventory deadline must exceed the observed 74-second complete-page latency"
+  );
 });
 
 test("CBRE Deal Flow recognizes a current card with no configured public landing detail", () => {
