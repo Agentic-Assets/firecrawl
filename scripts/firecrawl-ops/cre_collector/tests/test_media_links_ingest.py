@@ -489,6 +489,33 @@ def test_base_row_preserves_child_collections(tmp_path):
     assert sql is not None
     assert "preserveChildCollections" in sql
     assert "$.**.preserveChildCollections ? (@ == true || @ == \"true\")" in sql
+    assert "OR NOT EXISTS" in sql
+    assert "FROM _prior_vals p" in sql
+    assert "THEN NULL\n                                     ELSE t.scraped_at" in sql
+    assert "'latestInventoryObservation', COALESCE(" in sql
+    assert "EXCLUDED.raw_data->'latestInventoryObservation'" in sql
+    assert "'inventoryObservedAt', COALESCE(" in sql
+    assert "to_jsonb(EXCLUDED.scraped_at)" in sql
+    assert "CREATE TEMP TABLE _child_additive" in sql
+    assert "u.id IN (SELECT id FROM _child_additive)" in sql
+    assert "UPDATE credeals.cre_listing_contacts c\nSET is_primary = false" in sql
+    assert "WITH ranked_primary_contacts AS" in sql
+    assert "ranked.ordinal > 1" in sql
+    assert "UPDATE credeals.cre_listing_images i\nSET is_primary = false" in sql
+    assert "INSERT INTO credeals.cre_listing_documents" in sql
+
+
+def test_dealflow_reconciles_provider_pv_and_fails_on_ambiguous_live_identity():
+    sql = _sql()
+    assert "CREATE TEMP TABLE _dealflow_pv_identity" in sql
+    assert "substring(t.source_url from '[?&]pv=([^&#]+)')" in sql
+    assert "active_count > 1" in sql
+    assert "e.active_count = 0 AND e.total_count > 1" in sql
+    assert "e.active_count = 0 AND e.total_count = 1" in sql
+    assert "consolidate duplicates before ingest" in sql
+    assert 'sourceKey ? (@ == "cbre-dealflow")' in sql
+    assert "JOIN _stage s" in sql
+    assert "substring(s.source_url from '[?&]pv=([^&#]+)') = e.provider_pv" in sql
 
 
 def test_media_links_archive_emitted_guarded_on_mark_missing(tmp_path):

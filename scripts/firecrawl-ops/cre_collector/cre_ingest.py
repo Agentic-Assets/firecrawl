@@ -451,6 +451,156 @@ def is_retired_om_parse_listing(listing):
 # Listing transformation
 # ---------------------------------------------------------------------------
 
+def to_inventory_only_row(listing, observed_at):
+    """Map a current provider card that lacks a canonical listing URL.
+
+    These rows belong in ``cre_source_index`` as enumeration evidence, not in
+    ``cre_listings``. Their external IDs are explicitly provisional and never
+    support automatic history continuity.
+    """
+    marker = listing.get("inventoryOnly")
+    if not isinstance(marker, dict):
+        return None
+    source_key = listing.get("sourceKey")
+    mapping = SOURCE_TO_BROKERAGE.get(source_key)
+    raw_id = listing.get("id")
+    index_url = marker.get("indexUrl")
+    if (
+        not mapping
+        or raw_id is None
+        or not str(raw_id).strip()
+        or not isinstance(index_url, str)
+        or not index_url.startswith("http")
+    ):
+        return None
+    slug, prefix = mapping
+    evidence = {
+        "title": listing.get("name") or listing.get("title"),
+        "city": listing.get("city"),
+        "state": listing.get("state"),
+        "assetType": listing.get("assetType"),
+        "sizeText": listing.get("sizeText"),
+        "status": listing.get("status") or listing.get("statusBadge"),
+        "provisionalIdentity": listing.get("provisionalIdentity"),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+    return {
+        "slug": slug,
+        "external_id": prefix + str(raw_id).strip(),
+        "source_key": source_key,
+        "url": index_url,
+        "fingerprint": fingerprint,
+        "observed_status": clean_text(
+            listing.get("status") or listing.get("statusBadge"), 128
+        ),
+        "observed_at": observed_at,
+    }
+
+
+def inventory_only_full_scopes(data):
+    """Return strictly complete inventory-only namespaces safe to reconcile.
+
+    A namespace is included only when the artifact proves an unlimited,
+    error-free sale+lease full enumeration.  This makes absence meaningful:
+    provisional rows missing from that exact run may be retired from
+    ``cre_source_index`` without making any claim about canonical listings.
+    """
+    run_meta = data.get("runMeta")
+    if not isinstance(run_meta, dict):
+        return []
+    started_raw = run_meta.get("startedAt")
+    finished_raw = run_meta.get("finishedAt")
+    try:
+        started = datetime.fromisoformat(
+            str(started_raw).replace("Z", "+00:00")
+        )
+        finished = datetime.fromisoformat(
+            str(finished_raw).replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError):
+        return []
+    if (
+        started.tzinfo is None
+        or finished.tzinfo is None
+        or finished < started
+    ):
+        return []
+    if (
+        run_meta.get("mode") != "full"
+        or run_meta.get("transactions") != ["sale", "lease"]
+        or run_meta.get("maxItemsPerSource") is not None
+    ):
+        return []
+    entries = data.get("sources")
+    listings = data.get("listings")
+    if (
+        not isinstance(entries, list)
+        or not isinstance(listings, list)
+        or data.get("totalListings") != len(listings)
+    ):
+        return []
+
+    scopes = []
+    definitions = {
+        "cbre-dealflow": {
+            "slug": "cbre",
+            "external_id_like": "dealflow:card:%",
+        }
+    }
+    for source_key, definition in definitions.items():
+        matching = [
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("sourceKey") == source_key
+        ]
+        source_listings = [
+            listing
+            for listing in listings
+            if isinstance(listing, dict)
+            and listing.get("sourceKey") == source_key
+        ]
+        transactions = {entry.get("transaction") for entry in matching}
+        if (
+            len(matching) != 2
+            or transactions != {"sale", "lease"}
+            or any(entry.get("supported") is not True for entry in matching)
+            or any(entry.get("error") for entry in matching)
+            or any(entry.get("truncated") is not False for entry in matching)
+            or any(
+                not isinstance(entry.get("listingsCollected"), int)
+                or entry["listingsCollected"] < 0
+                for entry in matching
+            )
+            or any(
+                listing.get("transactionMode") not in {"sale", "lease"}
+                for listing in source_listings
+            )
+            or any(
+                sum(
+                    listing.get("transactionMode") == entry["transaction"]
+                    for listing in source_listings
+                )
+                != entry["listingsCollected"]
+                for entry in matching
+            )
+            or any(
+                listing.get("inventoryOnly") is not None
+                and to_inventory_only_row(listing, finished.isoformat()) is None
+                for listing in source_listings
+            )
+        ):
+            continue
+        scopes.append(
+            {
+                **definition,
+                "source_key": source_key,
+                "observed_at": finished.isoformat(),
+            }
+        )
+    return scopes
+
 
 def transaction_type_of(listing):
     tt = (listing.get("transactionType") or "").lower()
@@ -761,6 +911,12 @@ def group_source_lastmod(flat_listings):
 def to_row(listing, brokers_by_idx, scraped_at):
     """Map one collector listing to a staging row dict, or None to skip."""
     if is_retired_om_parse_listing(listing):
+        return None
+    # Inventory-only cards intentionally have no canonical listing identity or
+    # URL. Keep this guard ahead of URL/id derivation so a future adapter change
+    # cannot accidentally promote the shared provider index URL into
+    # cre_listings. main() routes the row to cre_source_index instead.
+    if listing.get("inventoryOnly") is not None:
         return None
     source_key = listing.get("sourceKey")
     mapping = SOURCE_TO_BROKERAGE.get(source_key)
@@ -1132,6 +1288,23 @@ STAGE_COLS = [
     "power_service", "rail_served", "extra_facts", "om_facts",
 ]
 
+INVENTORY_ONLY_COLS = [
+    "slug",
+    "external_id",
+    "source_key",
+    "url",
+    "fingerprint",
+    "observed_status",
+    "observed_at",
+]
+
+INVENTORY_ONLY_SCOPE_COLS = [
+    "slug",
+    "source_key",
+    "external_id_like",
+    "observed_at",
+]
+
 
 def _flip_circuit_breaker():
     """Optional Phase-2 status-flip guard (board-impact doc 2026-06-13, finding 4).
@@ -1197,7 +1370,15 @@ def apply_status_activation_gate(rows, activate_status):
     return suppressed
 
 
-def build_sql(rows, job_meta, started_at, mark_missing_slugs, history_guard=True):
+def build_sql(
+    rows,
+    job_meta,
+    started_at,
+    mark_missing_slugs,
+    history_guard=True,
+    inventory_only_rows=(),
+    inventory_only_scopes=(),
+):
     # Defense in depth for direct callers of this builder. Normal ingestion
     # reaches here through to_row(), which already drops `omFacts`, but this
     # prevents a manually constructed row from restoring the retired writer.
@@ -1248,6 +1429,29 @@ CREATE TEMP TABLE _stage (
     w("\\.")
 
     w("""
+CREATE TEMP TABLE _inventory_only (
+    slug text, external_id text, source_key text, url text,
+    fingerprint text, observed_status text, observed_at timestamptz
+) ON COMMIT DROP;""")
+    w(f"COPY _inventory_only ({', '.join(INVENTORY_ONLY_COLS)}) FROM stdin;")
+    for r in inventory_only_rows:
+        w("\t".join(copy_field(r[c]) for c in INVENTORY_ONLY_COLS))
+    w("\\.")
+
+    w("""
+CREATE TEMP TABLE _inventory_only_scope (
+    slug text, source_key text, external_id_like text,
+    observed_at timestamptz
+) ON COMMIT DROP;""")
+    w(
+        f"COPY _inventory_only_scope "
+        f"({', '.join(INVENTORY_ONLY_SCOPE_COLS)}) FROM stdin;"
+    )
+    for r in inventory_only_scopes:
+        w("\t".join(copy_field(r[c]) for c in INVENTORY_ONLY_SCOPE_COLS))
+    w("\\.")
+
+    w("""
 CREATE TEMP TABLE _jobmeta (
     slug text, discovered integer, saved integer, errors integer, notes text
 ) ON COMMIT DROP;""")
@@ -1262,12 +1466,173 @@ DO $$
 DECLARE missing text;
 BEGIN
     SELECT string_agg(DISTINCT s.slug, ', ') INTO missing
-    FROM _stage s LEFT JOIN credeals.cre_brokerages b ON b.slug = s.slug
+    FROM (
+      SELECT slug FROM _stage
+      UNION ALL
+      SELECT slug FROM _inventory_only
+      UNION ALL
+      SELECT slug FROM _inventory_only_scope
+    ) s
+    LEFT JOIN credeals.cre_brokerages b ON b.slug = s.slug
     WHERE b.id IS NULL;
     IF missing IS NOT NULL THEN
         RAISE EXCEPTION 'unseeded brokerage slug(s): % (run sql/001_cre_brokerages.sql)', missing;
     END IF;
 END $$;
+
+-- Provider cards without a stable listing URL are enumeration evidence only.
+-- Keep them out of canonical cre_listings (no fake URL or stable-history
+-- claim), but persist their provisional identity in cre_source_index so the
+-- current inventory is not silently discarded.
+-- This table is a required production migration. Fail the transaction loudly
+-- if it is absent rather than silently dropping enumeration evidence.
+DO $$
+DECLARE stale_source text;
+BEGIN
+  SELECT scope.source_key INTO stale_source
+  FROM _inventory_only_scope scope
+  JOIN credeals.cre_brokerages b ON b.slug = scope.slug
+  WHERE EXISTS (
+    SELECT 1
+    FROM credeals.cre_source_index prior
+    WHERE prior.brokerage_id = b.id
+      AND prior.source_key = scope.source_key
+      AND (
+        prior.external_id LIKE scope.external_id_like
+        OR prior.external_id = 'dealflow:scope:inventory-only-watermark'
+      )
+      AND prior.last_enumerated_at > scope.observed_at
+  )
+  LIMIT 1;
+  IF stale_source IS NOT NULL THEN
+    RAISE EXCEPTION
+      'refusing stale inventory-only replay for source %', stale_source;
+  END IF;
+END $$;
+
+INSERT INTO credeals.cre_source_index AS si (
+  brokerage_id, external_id, source_key, url, fingerprint,
+  soft_deleted, observed_status, first_seen, last_seen, last_enumerated_at
+)
+SELECT b.id, i.external_id, i.source_key, i.url, i.fingerprint,
+       false, i.observed_status, i.observed_at, i.observed_at, i.observed_at
+FROM _inventory_only i
+JOIN credeals.cre_brokerages b ON b.slug = i.slug
+ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
+  source_key = EXCLUDED.source_key,
+  url = EXCLUDED.url,
+  fingerprint = EXCLUDED.fingerprint,
+  soft_deleted = false,
+  observed_status = EXCLUDED.observed_status,
+  last_seen = EXCLUDED.last_seen,
+  last_enumerated_at = EXCLUDED.last_enumerated_at
+WHERE EXCLUDED.last_enumerated_at >= si.last_enumerated_at;
+
+-- A strict full source enumeration makes absence meaningful for the
+-- provisional namespace. Retire vanished cards in the monitor index only;
+-- never infer a canonical listing disappearance from these mutable card IDs.
+UPDATE credeals.cre_source_index si
+SET soft_deleted = true,
+    last_enumerated_at = scope.observed_at
+FROM _inventory_only_scope scope
+JOIN credeals.cre_brokerages b ON b.slug = scope.slug
+WHERE si.brokerage_id = b.id
+  AND si.source_key = scope.source_key
+  AND si.external_id LIKE scope.external_id_like
+  AND si.soft_deleted = false
+  AND si.last_enumerated_at <= scope.observed_at
+  AND NOT EXISTS (
+    SELECT 1
+    FROM _inventory_only current
+    WHERE current.slug = scope.slug
+      AND current.source_key = scope.source_key
+      AND current.external_id = si.external_id
+  );
+
+-- Persist a namespace-level high-water mark even when a valid full run
+-- contains zero provisional cards. Without this sentinel, replaying an older
+-- nonempty artifact after a newer empty snapshot could resurrect stale cards.
+-- The sentinel is always soft-deleted and uses a non-card external-id prefix,
+-- so current inventory queries and monitor disappearance logic exclude it.
+INSERT INTO credeals.cre_source_index AS si (
+  brokerage_id, external_id, source_key, url, fingerprint,
+  soft_deleted, observed_status, first_seen, last_seen, last_enumerated_at
+)
+SELECT b.id,
+       'dealflow:scope:inventory-only-watermark',
+       scope.source_key,
+       'https://www.cbredealflow.com/',
+       'inventory-only-scope-watermark-v1',
+       true,
+       NULL,
+       scope.observed_at,
+       scope.observed_at,
+       scope.observed_at
+FROM _inventory_only_scope scope
+JOIN credeals.cre_brokerages b ON b.slug = scope.slug
+ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
+  source_key = EXCLUDED.source_key,
+  url = EXCLUDED.url,
+  fingerprint = EXCLUDED.fingerprint,
+  soft_deleted = true,
+  observed_status = NULL,
+  last_seen = EXCLUDED.last_seen,
+  last_enumerated_at = EXCLUDED.last_enumerated_at
+WHERE EXCLUDED.last_enumerated_at >= si.last_enumerated_at;
+
+-- CBRE Deal Flow may expose the same provider `pv` token under agreement,
+-- brochure, legacy landing, and modern landing paths. Reconcile by the
+-- provider token rather than the full URL. Prefer one active identity; when no
+-- active row exists, one unique historical identity is reused and resurrected.
+-- Ambiguous relevant identities fail the transaction and must be explicitly
+-- consolidated, never guessed.
+CREATE TEMP TABLE _dealflow_pv_identity ON COMMIT DROP AS
+SELECT b.slug,
+       substring(t.source_url from '[?&]pv=([^&#]+)') AS provider_pv,
+       COALESCE(
+         min(t.external_id) FILTER (WHERE t.deleted_at IS NULL),
+         min(t.external_id)
+       ) AS external_id,
+       count(*) FILTER (WHERE t.deleted_at IS NULL) AS active_count,
+       count(*) AS total_count
+  FROM credeals.cre_listings t
+  JOIN credeals.cre_brokerages b ON b.id = t.brokerage_id
+  WHERE b.slug = 'cbre'
+    AND t.external_id LIKE 'dealflow:%'
+    AND t.source_url IS NOT NULL
+    AND substring(t.source_url from '[?&]pv=([^&#]+)') IS NOT NULL
+  GROUP BY b.slug, substring(t.source_url from '[?&]pv=([^&#]+)');
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM _dealflow_pv_identity e
+    JOIN _stage s
+      ON s.slug = e.slug
+     AND substring(s.source_url from '[?&]pv=([^&#]+)') = e.provider_pv
+    WHERE (
+        e.active_count > 1
+        OR (e.active_count = 0 AND e.total_count > 1)
+      )
+      AND jsonb_path_exists(s.raw_data, '$.**.sourceKey ? (@ == "cbre-dealflow")')
+  ) THEN
+    RAISE EXCEPTION
+      'ambiguous active CBRE Deal Flow provider pv identity; consolidate duplicates before ingest';
+  END IF;
+END $$;
+
+UPDATE _stage s
+SET external_id = e.external_id
+FROM _dealflow_pv_identity e
+WHERE s.slug = e.slug
+  AND substring(s.source_url from '[?&]pv=([^&#]+)') = e.provider_pv
+  AND (
+    e.active_count = 1
+    OR (e.active_count = 0 AND e.total_count = 1)
+  )
+  AND jsonb_path_exists(s.raw_data, '$.**.sourceKey ? (@ == "cbre-dealflow")')
+  AND s.external_id IS DISTINCT FROM e.external_id;
 
 CREATE TEMP TABLE _src ON COMMIT DROP AS
 SELECT b.id AS brokerage_id, s.*
@@ -1309,7 +1674,30 @@ WITH ins AS (
            CASE WHEN jsonb_typeof(amenities) = 'array'
                 THEN ARRAY(SELECT jsonb_array_elements_text(amenities)) END,
            zoning, NULLIF(markdown, ''),
-           updated_date, scraped_at, raw_data, source_lastmod, canonical_key
+           updated_date,
+           CASE
+             WHEN jsonb_path_exists(raw_data, '$.**.detailError')
+               OR jsonb_path_exists(
+                 raw_data,
+                 '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+               )
+             THEN NULL
+             ELSE scraped_at
+           END,
+           CASE
+             WHEN jsonb_path_exists(raw_data, '$.**.detailError')
+               OR jsonb_path_exists(
+                 raw_data,
+                 '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+               )
+             THEN jsonb_build_object(
+                    'sourceKey', raw_data->'sourceKey',
+                    'latestInventoryObservation', raw_data,
+                    'inventoryObservedAt', to_jsonb(scraped_at)
+                  )
+             ELSE raw_data
+           END,
+           source_lastmod, canonical_key
     FROM _src
     ON CONFLICT (brokerage_id, external_id) WHERE external_id IS NOT NULL
     DO UPDATE SET
@@ -1390,8 +1778,84 @@ WITH ins AS (
         -- sparse/empty pass from clobbering a fuller prior capture (COALESCE-keep).
         markdown          = COALESCE(NULLIF(EXCLUDED.markdown, ''), t.markdown),
         updated_date      = COALESCE(EXCLUDED.updated_date, t.updated_date),
-        scraped_at        = EXCLUDED.scraped_at,
-        raw_data          = EXCLUDED.raw_data,
+        -- `scraped_at` is detail-observation time. A detailError or explicit
+        -- preserveChildCollections row proves current inventory/card
+        -- observation, but not current detail. Keep the last-good detail time
+        -- and payload, and record the current inventory observation separately
+        -- inside raw_data. A later successful detail pass replaces this wrapper
+        -- normally.
+        scraped_at        = CASE
+                              WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
+                                OR jsonb_path_exists(
+                                  EXCLUDED.raw_data,
+                                  '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                                )
+                              THEN CASE
+                                     WHEN jsonb_path_exists(t.raw_data, '$.detailError')
+                                       OR jsonb_path_exists(t.raw_data, '$.detailUnavailable')
+                                       OR jsonb_path_exists(
+                                         t.raw_data,
+                                         '$.preserveChildCollections ? (@ == true || @ == "true")'
+                                       )
+                                       OR jsonb_path_exists(t.raw_data, '$.primary.detailError')
+                                       OR jsonb_path_exists(t.raw_data, '$.secondary_pass.detailError')
+                                       OR jsonb_path_exists(
+                                         t.raw_data,
+                                         '$.primary.preserveChildCollections ? (@ == true || @ == "true")'
+                                       )
+                                       OR jsonb_path_exists(
+                                         t.raw_data,
+                                         '$.secondary_pass.preserveChildCollections ? (@ == true || @ == "true")'
+                                       )
+                                     THEN NULL
+                                     ELSE t.scraped_at
+                                   END
+                              ELSE EXCLUDED.scraped_at
+                            END,
+        raw_data          = CASE
+                              WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
+                                OR jsonb_path_exists(
+                                  EXCLUDED.raw_data,
+                                  '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                                )
+                              THEN (
+                                     CASE
+                                       WHEN jsonb_path_exists(t.raw_data, '$.detailError')
+                                         OR jsonb_path_exists(t.raw_data, '$.detailUnavailable')
+                                         OR jsonb_path_exists(
+                                           t.raw_data,
+                                           '$.preserveChildCollections ? (@ == true || @ == "true")'
+                                         )
+                                         OR jsonb_path_exists(t.raw_data, '$.primary.detailError')
+                                         OR jsonb_path_exists(t.raw_data, '$.secondary_pass.detailError')
+                                         OR jsonb_path_exists(
+                                           t.raw_data,
+                                           '$.primary.preserveChildCollections ? (@ == true || @ == "true")'
+                                         )
+                                         OR jsonb_path_exists(
+                                           t.raw_data,
+                                           '$.secondary_pass.preserveChildCollections ? (@ == true || @ == "true")'
+                                         )
+                                       THEN '{}'::jsonb
+                                       ELSE COALESCE(t.raw_data, '{}'::jsonb)
+                                     END
+                                   )
+                                   || jsonb_build_object(
+                                        'sourceKey', COALESCE(
+                                          t.raw_data->'sourceKey',
+                                          EXCLUDED.raw_data->'sourceKey'
+                                        ),
+                                        'latestInventoryObservation', COALESCE(
+                                          EXCLUDED.raw_data->'latestInventoryObservation',
+                                          EXCLUDED.raw_data
+                                        ),
+                                        'inventoryObservedAt', COALESCE(
+                                          EXCLUDED.raw_data->'inventoryObservedAt',
+                                          to_jsonb(EXCLUDED.scraped_at)
+                                        )
+                                      )
+                              ELSE EXCLUDED.raw_data
+                            END,
         source_lastmod    = COALESCE(EXCLUDED.source_lastmod, t.source_lastmod),
         canonical_key     = COALESCE(EXCLUDED.canonical_key, t.canonical_key),
         deleted_at        = NULL,
@@ -1549,10 +2013,35 @@ SELECT DISTINCT u.id
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')
-  AND NOT jsonb_path_exists(
-    s.raw_data,
-    '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+  AND (
+    NOT jsonb_path_exists(
+      s.raw_data,
+      '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+    )
+    OR NOT EXISTS (
+      SELECT 1
+      FROM _prior_vals p
+      WHERE p.brokerage_id = s.brokerage_id
+        AND p.external_id = s.external_id
+    )
   );
+
+-- Existing sparse/detail-unavailable rows retain their last-good child
+-- collections, but current public-card contacts/images/documents must still be
+-- visible. Add those current card children idempotently below without deleting
+-- older detail-derived rows whose continued availability cannot be rechecked.
+CREATE TEMP TABLE _child_additive ON COMMIT DROP AS
+SELECT DISTINCT u.id
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+JOIN _prior_vals p
+  ON p.brokerage_id = s.brokerage_id
+ AND p.external_id = s.external_id
+WHERE jsonb_path_exists(s.raw_data, '$.**.detailError')
+   OR jsonb_path_exists(
+        s.raw_data,
+        '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+      );
 
 DELETE FROM credeals.cre_listing_contacts  WHERE listing_id IN (SELECT id FROM _child_refresh);
 DELETE FROM credeals.cre_listing_documents WHERE listing_id IN (SELECT id FROM _child_refresh);
@@ -1615,6 +2104,230 @@ JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.images) x
 WHERE u.id IN (SELECT id FROM _child_refresh)
   AND jsonb_typeof(s.images) = 'array' AND x->>'url' IS NOT NULL;
+
+-- Sparse existing rows: upsert the contacts and images that were observed on
+-- the current public card, without deleting last-good detail children.
+UPDATE credeals.cre_listing_contacts c
+SET is_primary = false
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
+WHERE u.id IN (SELECT id FROM _child_additive)
+  AND c.listing_id = u.id
+  AND jsonb_typeof(s.contacts) = 'array'
+  AND COALESCE((x->>'isPrimary')::boolean, false);
+
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'credeals' AND table_name = 'cre_listing_contacts'
+      AND column_name = 'license'
+  ) THEN
+    WITH incoming AS (
+      SELECT u.id AS listing_id, x
+      FROM _up u
+      JOIN _src s USING (brokerage_id, external_id)
+      CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
+      WHERE u.id IN (SELECT id FROM _child_additive)
+        AND jsonb_typeof(s.contacts) = 'array'
+    )
+    UPDATE credeals.cre_listing_contacts c SET
+      name = COALESCE(i.x->>'name', c.name),
+      title = COALESCE(i.x->>'title', c.title),
+      license = COALESCE(i.x->>'license', c.license),
+      email = COALESCE(i.x->>'email', c.email),
+      phone = COALESCE(i.x->>'phone', c.phone),
+      brokerage_name = COALESCE(i.x->>'company', c.brokerage_name),
+      profile_url = COALESCE(i.x->>'profileUrl', c.profile_url),
+      avatar_url = COALESCE(i.x->>'avatarUrl', c.avatar_url),
+      vcard_url = COALESCE(i.x->>'vcardUrl', c.vcard_url),
+      is_primary = COALESCE((i.x->>'isPrimary')::boolean, c.is_primary)
+    FROM incoming i
+    WHERE c.listing_id = i.listing_id
+      AND (
+        (NULLIF(lower(i.x->>'email'), '') IS NOT NULL
+         AND lower(c.email) = lower(i.x->>'email'))
+        OR
+        (NULLIF(lower(i.x->>'name'), '') IS NOT NULL
+         AND lower(c.name) = lower(i.x->>'name')
+         AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', ''))
+      );
+
+    INSERT INTO credeals.cre_listing_contacts (
+      listing_id, name, title, license, email, phone, brokerage_name,
+      profile_url, avatar_url, vcard_url, is_primary
+    )
+    SELECT u.id, x->>'name', x->>'title', x->>'license', x->>'email', x->>'phone',
+           x->>'company', x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
+           COALESCE((x->>'isPrimary')::boolean, false)
+    FROM _up u
+    JOIN _src s USING (brokerage_id, external_id)
+    CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
+    WHERE u.id IN (SELECT id FROM _child_additive)
+      AND jsonb_typeof(s.contacts) = 'array'
+      AND NOT EXISTS (
+        SELECT 1 FROM credeals.cre_listing_contacts c
+        WHERE c.listing_id = u.id
+          AND (
+            (NULLIF(lower(x->>'email'), '') IS NOT NULL
+             AND lower(c.email) = lower(x->>'email'))
+            OR
+            (NULLIF(lower(x->>'name'), '') IS NOT NULL
+             AND lower(c.name) = lower(x->>'name')
+             AND COALESCE(c.phone, '') = COALESCE(x->>'phone', ''))
+          )
+      );
+  ELSE
+    WITH incoming AS (
+      SELECT u.id AS listing_id, x
+      FROM _up u
+      JOIN _src s USING (brokerage_id, external_id)
+      CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
+      WHERE u.id IN (SELECT id FROM _child_additive)
+        AND jsonb_typeof(s.contacts) = 'array'
+    )
+    UPDATE credeals.cre_listing_contacts c SET
+      name = COALESCE(i.x->>'name', c.name),
+      title = COALESCE(i.x->>'title', c.title),
+      email = COALESCE(i.x->>'email', c.email),
+      phone = COALESCE(i.x->>'phone', c.phone),
+      brokerage_name = COALESCE(i.x->>'company', c.brokerage_name),
+      profile_url = COALESCE(i.x->>'profileUrl', c.profile_url),
+      avatar_url = COALESCE(i.x->>'avatarUrl', c.avatar_url),
+      vcard_url = COALESCE(i.x->>'vcardUrl', c.vcard_url),
+      is_primary = COALESCE((i.x->>'isPrimary')::boolean, c.is_primary)
+    FROM incoming i
+    WHERE c.listing_id = i.listing_id
+      AND (
+        (NULLIF(lower(i.x->>'email'), '') IS NOT NULL
+         AND lower(c.email) = lower(i.x->>'email'))
+        OR
+        (NULLIF(lower(i.x->>'name'), '') IS NOT NULL
+         AND lower(c.name) = lower(i.x->>'name')
+         AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', ''))
+      );
+
+    INSERT INTO credeals.cre_listing_contacts (
+      listing_id, name, title, email, phone, brokerage_name,
+      profile_url, avatar_url, vcard_url, is_primary
+    )
+    SELECT u.id, x->>'name', x->>'title', x->>'email', x->>'phone',
+           x->>'company', x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
+           COALESCE((x->>'isPrimary')::boolean, false)
+    FROM _up u
+    JOIN _src s USING (brokerage_id, external_id)
+    CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
+    WHERE u.id IN (SELECT id FROM _child_additive)
+      AND jsonb_typeof(s.contacts) = 'array'
+      AND NOT EXISTS (
+        SELECT 1 FROM credeals.cre_listing_contacts c
+        WHERE c.listing_id = u.id
+          AND (
+            (NULLIF(lower(x->>'email'), '') IS NOT NULL
+             AND lower(c.email) = lower(x->>'email'))
+            OR
+            (NULLIF(lower(x->>'name'), '') IS NOT NULL
+             AND lower(c.name) = lower(x->>'name')
+             AND COALESCE(c.phone, '') = COALESCE(x->>'phone', ''))
+          )
+      );
+  END IF;
+END $$;
+
+-- `is_primary` is singular. Legacy duplicate match keys can cause an additive
+-- UPDATE to touch more than one existing contact; deterministically retain one
+-- primary on every listing touched by this ingest.
+WITH ranked_primary_contacts AS (
+  SELECT
+    c.id,
+    row_number() OVER (PARTITION BY c.listing_id ORDER BY c.id) AS ordinal
+  FROM credeals.cre_listing_contacts c
+  JOIN _up u ON u.id = c.listing_id
+  WHERE c.is_primary
+)
+UPDATE credeals.cre_listing_contacts c
+SET is_primary = false
+FROM ranked_primary_contacts ranked
+WHERE c.id = ranked.id
+  AND ranked.ordinal > 1;
+
+UPDATE credeals.cre_listing_images i
+SET is_primary = false
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+CROSS JOIN LATERAL jsonb_array_elements(s.images) x
+WHERE u.id IN (SELECT id FROM _child_additive)
+  AND i.listing_id = u.id
+  AND jsonb_typeof(s.images) = 'array'
+  AND COALESCE((x->>'isPrimary')::boolean, false);
+
+WITH incoming AS (
+  SELECT u.id AS listing_id, x
+  FROM _up u
+  JOIN _src s USING (brokerage_id, external_id)
+  CROSS JOIN LATERAL jsonb_array_elements(s.images) x
+  WHERE u.id IN (SELECT id FROM _child_additive)
+    AND jsonb_typeof(s.images) = 'array'
+    AND x->>'url' IS NOT NULL
+)
+UPDATE credeals.cre_listing_images i SET
+  is_primary = COALESCE((incoming.x->>'isPrimary')::boolean, i.is_primary),
+  display_order = COALESCE((incoming.x->>'order')::integer, i.display_order)
+FROM incoming
+WHERE i.listing_id = incoming.listing_id
+  AND i.url = incoming.x->>'url';
+
+INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order)
+SELECT u.id, x->>'url', COALESCE((x->>'isPrimary')::boolean, false),
+       COALESCE((x->>'order')::integer, 0)
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+CROSS JOIN LATERAL jsonb_array_elements(s.images) x
+WHERE u.id IN (SELECT id FROM _child_additive)
+  AND jsonb_typeof(s.images) = 'array'
+  AND x->>'url' IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM credeals.cre_listing_images i
+    WHERE i.listing_id = u.id AND i.url = x->>'url'
+  );
+
+WITH incoming AS (
+  SELECT u.id AS listing_id, x
+  FROM _up u
+  JOIN _src s USING (brokerage_id, external_id)
+  CROSS JOIN LATERAL jsonb_array_elements(s.documents) x
+  WHERE u.id IN (SELECT id FROM _child_additive)
+    AND jsonb_typeof(s.documents) = 'array'
+    AND x->>'url' IS NOT NULL
+)
+UPDATE credeals.cre_listing_documents d SET
+  doc_type = CASE
+               WHEN incoming.x->>'docType' IN (
+                 'brochure','om','flyer','floor_plan','financials','rent_roll'
+               ) THEN incoming.x->>'docType'
+               ELSE d.doc_type
+             END,
+  title = COALESCE(incoming.x->>'title', d.title),
+  scraped_at = now()
+FROM incoming
+WHERE d.listing_id = incoming.listing_id
+  AND d.url = incoming.x->>'url';
+
+INSERT INTO credeals.cre_listing_documents (listing_id, doc_type, title, url)
+SELECT u.id,
+       CASE WHEN x->>'docType' IN ('brochure','om','flyer','floor_plan','financials','rent_roll')
+            THEN x->>'docType' ELSE 'other' END,
+       x->>'title', x->>'url'
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+CROSS JOIN LATERAL jsonb_array_elements(s.documents) x
+WHERE u.id IN (SELECT id FROM _child_additive)
+  AND jsonb_typeof(s.documents) = 'array'
+  AND x->>'url' IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM credeals.cre_listing_documents d
+    WHERE d.listing_id = u.id AND d.url = x->>'url'
+  );
 
 -- Media + links (sql/011 tables). Existence-guarded so a pre-011 ingest is a
 -- no-op (mirrors the 009 to_regclass guard pattern): the DELETE and re-INSERT
@@ -2061,6 +2774,8 @@ def main():
     args = ap.parse_args()
 
     merged = {}          # (slug, external_id) -> row
+    inventory_only_merged = {}  # (slug, external_id) -> source-index row
+    inventory_only_scopes_merged = {}  # source_key -> proven full scope
     skipped_no_url = 0
     per_source_counts = {}
     source_entries = []  # all sources[] entries across files
@@ -2085,7 +2800,37 @@ def main():
         scraped_at = run_meta.get("finishedAt") or datetime.now(timezone.utc).isoformat()
         brokers_by_idx = {i: b for i, b in enumerate(data.get("brokers") or [])}
         source_entries.extend(data.get("sources") or [])
+        artifact_scopes = inventory_only_full_scopes(data)
+        artifact_scope_sources = {scope["source_key"] for scope in artifact_scopes}
+        artifact_inventory_sources = {
+            listing.get("sourceKey")
+            for listing in (data.get("listings") or [])
+            if isinstance(listing, dict) and listing.get("inventoryOnly") is not None
+        }
+        artifact_unscoped_inventory = (
+            artifact_inventory_sources - artifact_scope_sources
+        )
+        if artifact_unscoped_inventory:
+            sys.exit(
+                "refusing inventory-only rows without a strict complete full "
+                "scope in the same artifact: "
+                f"{sorted(artifact_unscoped_inventory)}"
+            )
+        for scope in artifact_scopes:
+            if scope["source_key"] in inventory_only_scopes_merged:
+                sys.exit(
+                    "refusing duplicate complete inventory-only scopes for "
+                    f"{scope['source_key']!r}; provide exactly one current "
+                    "full snapshot for that source"
+                )
+            inventory_only_scopes_merged[scope["source_key"]] = scope
         for listing in data.get("listings") or []:
+            inventory_row = to_inventory_only_row(listing, scraped_at)
+            if inventory_row is not None:
+                inventory_only_merged[
+                    (inventory_row["slug"], inventory_row["external_id"])
+                ] = inventory_row
+                continue
             row = to_row(listing, brokers_by_idx, scraped_at)
             if row is None:
                 skipped_no_url += 1
@@ -2099,8 +2844,18 @@ def main():
             per_source_counts[sk] = per_source_counts.get(sk, 0) + 1
 
     rows = list(merged.values())
-    if not rows:
-        sys.exit("nothing to ingest (0 usable listings)")
+    inventory_only_rows = list(inventory_only_merged.values())
+    inventory_only_scopes = list(inventory_only_scopes_merged.values())
+    unscoped_inventory_sources = {
+        row["source_key"] for row in inventory_only_rows
+    } - set(inventory_only_scopes_merged)
+    if unscoped_inventory_sources:
+        sys.exit(
+            "refusing inventory-only ingest without a strict complete full "
+            f"enumeration scope: {sorted(unscoped_inventory_sources)}"
+        )
+    if not rows and not inventory_only_rows and not inventory_only_scopes:
+        sys.exit("nothing to ingest (0 usable listings or inventory-only rows)")
     for r in rows:
         r.pop("_modes", None)
     started_at = started_at or datetime.now(timezone.utc).isoformat()
@@ -2192,13 +2947,29 @@ def main():
             "notes": "; ".join(st["notes"]) or None,
         }
         for slug, st in sorted(slug_stats.items())
-        if slug_saved.get(slug, 0) > 0 or st["discovered"] > 0 or st["errors"] > 0
+        if (
+            slug_saved.get(slug, 0) > 0
+            or st["discovered"] > 0
+            or st["errors"] > 0
+            or slug in {scope["slug"] for scope in inventory_only_scopes}
+        )
     ]
 
-    sql = build_sql(rows, job_meta, started_at, mark_missing_slugs,
-                    history_guard=not args.dry_run)
+    sql = build_sql(
+        rows,
+        job_meta,
+        started_at,
+        mark_missing_slugs,
+        history_guard=not args.dry_run,
+        inventory_only_rows=inventory_only_rows,
+        inventory_only_scopes=inventory_only_scopes,
+    )
 
-    print(f"staged listings: {len(rows)} (skipped, no URL: {skipped_no_url})", file=sys.stderr)
+    print(
+        f"staged listings: {len(rows)}; inventory-only index rows: "
+        f"{len(inventory_only_rows)} (skipped, unusable: {skipped_no_url})",
+        file=sys.stderr,
+    )
     for sk in sorted(per_source_counts):
         print(f"  {sk}: {per_source_counts[sk]}", file=sys.stderr)
     if mark_missing_slugs:

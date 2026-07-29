@@ -27,7 +27,11 @@ def listing(source="svn", index=1, tx="sale", **extra):
 
 
 def artifact(source="svn", listings=None, **run_meta):
-    rows = listings or [listing(source, 1, "sale"), listing(source, 2, "lease")]
+    rows = (
+        listings
+        if listings is not None
+        else [listing(source, 1, "sale"), listing(source, 2, "lease")]
+    )
     sale = sum(row["transactionMode"] == "sale" for row in rows)
     lease = sum(row["transactionMode"] == "lease" for row in rows)
     return {
@@ -234,6 +238,69 @@ def test_listing_detail_error_is_rejected(tmp_path):
     payload = artifact(listings=[listing(detailError="timeout")])
     path = write_artifact(tmp_path, payload)
     with pytest.raises(refresh.ArtifactValidationError, match="detailError"):
+        refresh.validate_source_artifact(path, "svn", ATTEMPT)
+
+
+def test_explicit_detail_unavailable_is_counted_when_children_are_preserved(tmp_path):
+    payload = artifact(
+        listings=[
+            listing(
+                detailUnavailable={"reason": "landing_not_setup"},
+                preserveChildCollections=True,
+                provisionalIdentity={"historyContinuity": "not_guaranteed"},
+            )
+        ]
+    )
+    path = write_artifact(tmp_path, payload)
+    stats = refresh.validate_source_artifact(path, "svn", ATTEMPT)
+    assert stats["detail_unavailable"] == 1
+    assert stats["provisional_identities"] == 1
+    assert stats["detail_errors"] == 0
+
+
+def test_inventory_only_card_is_counted_without_canonical_staging(tmp_path):
+    payload = artifact(
+        source="cbre-dealflow",
+        listings=[
+            listing("cbre-dealflow", 1, "sale"),
+            listing(
+                "cbre-dealflow",
+                2,
+                "lease",
+                url=None,
+                id="card:abc123",
+                preserveChildCollections=True,
+                provisionalIdentity={"historyContinuity": "not_guaranteed"},
+                inventoryOnly={
+                    "reason": "no_provider_id_or_listing_url",
+                    "indexUrl": "https://www.cbredealflow.com/",
+                },
+                detailUnavailable={"reason": "card_not_linked"},
+            ),
+        ],
+    )
+    path = write_artifact(tmp_path, payload)
+    stats = refresh.validate_source_artifact(path, "cbre-dealflow", ATTEMPT)
+    assert stats["staged_unique"] == 1
+    assert stats["inventory_only"] == 1
+    assert stats["rejected_by_ingest"] == 0
+
+
+def test_empty_dealflow_full_snapshot_is_admitted_for_gated_watermark(tmp_path):
+    payload = artifact(source="cbre-dealflow", listings=[])
+    path = write_artifact(tmp_path, payload)
+    stats = refresh.validate_source_artifact(path, "cbre-dealflow", ATTEMPT)
+    assert stats["flat_listings"] == 0
+    assert stats["staged_unique"] == 0
+    assert stats["inventory_only"] == 0
+
+
+def test_detail_unavailable_without_child_preservation_is_rejected(tmp_path):
+    payload = artifact(
+        listings=[listing(detailUnavailable={"reason": "landing_not_setup"})]
+    )
+    path = write_artifact(tmp_path, payload)
+    with pytest.raises(refresh.ArtifactValidationError, match="child preservation"):
         refresh.validate_source_artifact(path, "svn", ATTEMPT)
 
 
@@ -543,15 +610,74 @@ def test_validation_readback_requires_exact_staged_count(tmp_path):
             "source_counts": [
                 {
                     "source_key": "svn",
-                    "latest_scraped_at": "2026-07-29 12:01:00Z",
+                    "latest_inventory_observed_at": "2026-07-29 12:01:00Z",
+                    "latest_inventory_batch_active": "1",
+                    "latest_scraped_at": "2026-07-28 12:01:00Z",
                     "latest_batch_active": "1",
+                    "detail_unavailable": "1",
                 }
-            ]
+            ],
+            "inventory_only_index": [
+                {
+                    "source_key": "cbre-dealflow",
+                    "active": "0",
+                    "soft_deleted": "0",
+                    "latest_batch_active": "0",
+                    "latest_enumerated_at": "",
+                    "scope_watermark_at": "",
+                }
+            ],
         }
     }
     result = refresh.verify_validation_readback(run_dir, manifest, validation)
     assert result == {"ok": False, "failed_sources": ["svn"]}
     assert manifest["sources"]["svn"]["readback"]["ok"] is False
+
+
+def test_validation_readback_requires_exact_inventory_only_count(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("cbre-dealflow",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["cbre-dealflow"]["artifact"] = {
+        "finished_at": "2026-07-29T12:01:00+00:00",
+        "staged_unique": 2,
+        "inventory_only": 1,
+    }
+    validation = {
+        "queries": {
+            "source_counts": [
+                {
+                    "source_key": "cbre-dealflow",
+                    "latest_inventory_observed_at": "2026-07-29 12:01:00Z",
+                    "latest_inventory_batch_active": "2",
+                    "latest_scraped_at": "2026-07-29 12:01:00Z",
+                    "latest_batch_active": "2",
+                    "detail_unavailable": "1",
+                }
+            ],
+            "inventory_only_index": [
+                {
+                    "source_key": "cbre-dealflow",
+                    "active": "2",
+                    "soft_deleted": "0",
+                    "latest_batch_active": "2",
+                    "latest_enumerated_at": "2026-07-29 12:01:00Z",
+                    "scope_watermark_at": "2026-07-29 12:01:00Z",
+                }
+            ],
+        }
+    }
+    result = refresh.verify_validation_readback(run_dir, manifest, validation)
+    assert result == {"ok": False, "failed_sources": ["cbre-dealflow"]}
+    readback = manifest["sources"]["cbre-dealflow"]["readback"]
+    assert readback["inventory_only"]["ok"] is False
+    assert "active inventory-only 2 != expected 1" == readback["reason"]
 
 
 def test_validation_quality_rejects_new_defects_and_child_collapse():

@@ -49,6 +49,11 @@ WITH base AS (
     b.slug AS brokerage_slug,
     l.transaction_type,
     l.scraped_at,
+    COALESCE(
+      NULLIF(l.raw_data->>'inventoryObservedAt', '')::timestamptz,
+      l.scraped_at
+    ) AS inventory_observed_at,
+    jsonb_path_exists(l.raw_data, '$.**.detailUnavailable') AS detail_unavailable,
     l.deleted_at
   FROM credeals.cre_listings l
   JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
@@ -57,7 +62,9 @@ active AS (
   SELECT * FROM base WHERE deleted_at IS NULL
 ),
 latest AS (
-  SELECT source_key, max(scraped_at) AS latest_scraped_at
+  SELECT source_key,
+         max(scraped_at) AS latest_scraped_at,
+         max(inventory_observed_at) AS latest_inventory_observed_at
   FROM active
   GROUP BY source_key
 ),
@@ -76,12 +83,63 @@ SELECT
   count(*) FILTER (WHERE a.transaction_type = 'sale_or_lease')::text AS sale_or_lease,
   count(*) FILTER (WHERE a.scraped_at = latest.latest_scraped_at)::text AS latest_batch_active,
   to_char(latest.latest_scraped_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS"Z"') AS latest_scraped_at,
+  count(*) FILTER (
+    WHERE a.inventory_observed_at = latest.latest_inventory_observed_at
+  )::text AS latest_inventory_batch_active,
+  to_char(
+    latest.latest_inventory_observed_at AT TIME ZONE 'UTC',
+    'YYYY-MM-DD HH24:MI:SS"Z"'
+  ) AS latest_inventory_observed_at,
+  count(*) FILTER (WHERE a.detail_unavailable)::text AS detail_unavailable,
   coalesce(max(soft_deleted.soft_deleted), 0)::text AS soft_deleted
 FROM active a
 JOIN latest ON latest.source_key = a.source_key
 LEFT JOIN soft_deleted ON soft_deleted.source_key = a.source_key
-GROUP BY a.source_key, latest.latest_scraped_at
+GROUP BY a.source_key, latest.latest_scraped_at, latest.latest_inventory_observed_at
 ORDER BY a.source_key;
+""",
+    "inventory_only_index": """
+WITH scoped AS (
+  SELECT
+    si.soft_deleted,
+    si.last_enumerated_at
+  FROM credeals.cre_source_index si
+  JOIN credeals.cre_brokerages b ON b.id = si.brokerage_id
+  WHERE b.slug = 'cbre'
+    AND si.source_key = 'cbre-dealflow'
+    AND si.external_id LIKE 'dealflow:card:%'
+),
+watermark AS (
+  SELECT max(si.last_enumerated_at) AS scope_watermark_at
+  FROM credeals.cre_source_index si
+  JOIN credeals.cre_brokerages b ON b.id = si.brokerage_id
+  WHERE b.slug = 'cbre'
+    AND si.source_key = 'cbre-dealflow'
+    AND si.external_id = 'dealflow:scope:inventory-only-watermark'
+),
+latest AS (
+  SELECT max(last_enumerated_at) AS latest_enumerated_at
+  FROM scoped
+)
+SELECT
+  'cbre-dealflow' AS source_key,
+  count(*) FILTER (WHERE NOT scoped.soft_deleted)::text AS active,
+  count(*) FILTER (WHERE scoped.soft_deleted)::text AS soft_deleted,
+  count(*) FILTER (
+    WHERE NOT scoped.soft_deleted
+      AND scoped.last_enumerated_at = latest.latest_enumerated_at
+  )::text AS latest_batch_active,
+  to_char(
+    max(latest.latest_enumerated_at) AT TIME ZONE 'UTC',
+    'YYYY-MM-DD HH24:MI:SS"Z"'
+  ) AS latest_enumerated_at,
+  to_char(
+    max(watermark.scope_watermark_at) AT TIME ZONE 'UTC',
+    'YYYY-MM-DD HH24:MI:SS"Z"'
+  ) AS scope_watermark_at
+FROM scoped
+CROSS JOIN latest
+CROSS JOIN watermark;
 """,
     "quality_by_source": f"""
 WITH active AS (
@@ -217,6 +275,24 @@ JOIN credeals.cre_listings l ON l.id = c.listing_id
 WHERE l.deleted_at IS NULL AND c.vcard_url IS NOT NULL AND c.vcard_url !~* '^https?://'
 ORDER BY check_name;
 """,
+    "primary_child_conflicts": """
+SELECT child_type, count(*)::text AS listings
+FROM (
+  SELECT 'contacts' AS child_type, listing_id
+  FROM credeals.cre_listing_contacts
+  WHERE is_primary
+  GROUP BY listing_id
+  HAVING count(*) > 1
+  UNION ALL
+  SELECT 'images' AS child_type, listing_id
+  FROM credeals.cre_listing_images
+  WHERE is_primary
+  GROUP BY listing_id
+  HAVING count(*) > 1
+) conflicts
+GROUP BY child_type
+ORDER BY child_type;
+""",
     "orphans": """
 SELECT 'contacts' AS child_type, count(*)::text AS orphan_rows
 FROM credeals.cre_listing_contacts c
@@ -341,10 +417,12 @@ def render_markdown(report):
     labels = {
         "totals": "Totals",
         "source_counts": "Source Counts",
+        "inventory_only_index": "Inventory-Only Source Index",
         "quality_by_source": "Quality By Source",
         "duplicates": "Duplicate Checks",
         "child_counts": "Child Counts",
         "bad_child_urls": "Bad Child URLs",
+        "primary_child_conflicts": "Primary Child Conflicts",
         "orphans": "Child Orphans",
         "search_smoke": "Search Smoke",
     }

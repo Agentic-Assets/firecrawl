@@ -100,6 +100,21 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 ## Detail Failures & Status
 
 - Most detail-enrich sources return rows with `detailError` string; ingest skips child-row refresh when `detailError` in `raw_data`.
+- A provider-confirmed absence of public detail is not a scrape error. Such rows
+  use structured `detailUnavailable` plus `preserveChildCollections=true`;
+  fresh card fields still upsert, while `scraped_at` and the top-level raw
+  payload remain the last successful detail observation. The current sparse
+  payload and time are stored as `latestInventoryObservation` and
+  `inventoryObservedAt`. Existing detail children remain; current card contacts
+  and images are applied additively, and new listings insert card children.
+- CBRE Deal Flow includes public cards whose only link is a gated agreement or
+  public brochure, plus cards with no link at all. All remain inventory and use
+  `gated_agreement`, `public_brochure_only`, or `card_not_linked`
+  detail-unavailable reasons. Unlinked
+  cards receive a deterministic provisional `card:` identity from their
+  visible card fields and point to the public Deal Flow index. Because those
+  fields are not a provider key, a later unlinked-to-linked transition is never
+  auto-merged; reconcile it only with explicit evidence.
 - Deliberately incomplete API/base rows carry `preserveChildCollections=true`;
   ingestion also excludes them from wholesale child replacement.
 - A live ingest accepts only `runMeta.mode="full"` or `"enrich"`. Monitor

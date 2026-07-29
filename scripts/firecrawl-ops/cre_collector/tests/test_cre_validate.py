@@ -223,6 +223,32 @@ def test_render_markdown_contains_generated_at():
     assert "2026-06-15T00:00:00+00:00" in md
 
 
+def test_source_counts_separates_inventory_and_detail_observation():
+    sql = QUERIES["source_counts"]
+    assert "inventoryObservedAt" in sql
+    assert "latest_inventory_observed_at" in sql
+    assert "latest_inventory_batch_active" in sql
+    assert "detail_unavailable" in sql
+
+
+def test_inventory_only_index_reports_current_and_retired_cards():
+    sql = QUERIES["inventory_only_index"]
+    assert "credeals.cre_source_index" in sql
+    assert "dealflow:card:%" in sql
+    assert "NOT scoped.soft_deleted" in sql
+    assert "latest_batch_active" in sql
+    assert "latest_enumerated_at" in sql
+    assert "dealflow:scope:inventory-only-watermark" in sql
+    assert "scope_watermark_at" in sql
+
+
+def test_primary_child_conflicts_checks_contacts_and_images():
+    sql = QUERIES["primary_child_conflicts"]
+    assert "cre_listing_contacts" in sql
+    assert "cre_listing_images" in sql
+    assert "HAVING count(*) > 1" in sql
+
+
 def test_render_markdown_credentials_not_in_output():
     """The env_file path appears but the URL value must not."""
     report = _minimal_report()
@@ -250,10 +276,12 @@ def test_render_markdown_all_query_labels_present():
     labels = {
         "totals": "Totals",
         "source_counts": "Source Counts",
+        "inventory_only_index": "Inventory-Only Source Index",
         "quality_by_source": "Quality By Source",
         "duplicates": "Duplicate Checks",
         "child_counts": "Child Counts",
         "bad_child_urls": "Bad Child URLs",
+        "primary_child_conflicts": "Primary Child Conflicts",
         "orphans": "Child Orphans",
         "search_smoke": "Search Smoke",
     }

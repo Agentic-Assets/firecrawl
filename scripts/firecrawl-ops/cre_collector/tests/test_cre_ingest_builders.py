@@ -595,6 +595,296 @@ def test_normal_brokerage_scalars_are_not_rejected_with_retired_artifacts():
     assert row["year_built"] == 2004
 
 
+def test_inventory_only_card_never_becomes_canonical_listing():
+    listing = {
+        "sourceKey": "cbre-dealflow",
+        "id": "card:abc123",
+        # Even if a future adapter supplies the shared index URL, the explicit
+        # marker must win and keep the card out of cre_listings.
+        "url": "https://www.cbredealflow.com/",
+        "name": "Unlinked Deal",
+        "city": "Tulsa",
+        "state": "OK",
+        "assetType": "Industrial",
+        "provisionalIdentity": {"historyContinuity": "not_guaranteed"},
+        "inventoryOnly": {
+            "reason": "no_provider_id_or_listing_url",
+            "indexUrl": "https://www.cbredealflow.com/",
+        },
+    }
+    assert _row(listing) is None
+    inventory = ci.to_inventory_only_row(listing, _SCRAPED_AT)
+    assert inventory is not None
+    assert inventory["slug"] == "cbre"
+    assert inventory["external_id"] == "dealflow:card:abc123"
+    assert inventory["source_key"] == "cbre-dealflow"
+
+
+def test_inventory_only_reconciliation_requires_strict_full_enumeration():
+    payload = {
+        "runMeta": {
+            "mode": "full",
+            "transactions": ["sale", "lease"],
+            "maxItemsPerSource": None,
+            "startedAt": _SCRAPED_AT,
+            "finishedAt": _SCRAPED_AT,
+        },
+        "sources": [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transaction": "sale",
+                "supported": True,
+                "listingsCollected": 10,
+                "truncated": False,
+            },
+            {
+                "sourceKey": "cbre-dealflow",
+                "transaction": "lease",
+                "supported": True,
+                "listingsCollected": 2,
+                "truncated": False,
+            },
+        ],
+        "listings": [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transactionMode": "sale",
+                "id": f"sale-{index}",
+            }
+            for index in range(10)
+        ]
+        + [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transactionMode": "lease",
+                "id": f"lease-{index}",
+            }
+            for index in range(2)
+        ],
+        "totalListings": 12,
+    }
+    assert ci.inventory_only_full_scopes(payload) == [
+        {
+            "slug": "cbre",
+            "source_key": "cbre-dealflow",
+            "external_id_like": "dealflow:card:%",
+            "observed_at": _SCRAPED_AT,
+        }
+    ]
+
+    # Existing all-source full artifacts remain compatible: only the Deal Flow
+    # subset authorizes this namespace.
+    payload["sources"].append(
+        {
+            "sourceKey": "svn",
+            "transaction": "sale",
+            "supported": True,
+            "listingsCollected": 1,
+            "truncated": False,
+        }
+    )
+    payload["listings"].append(
+        {"sourceKey": "svn", "transactionMode": "sale", "id": "svn-1"}
+    )
+    payload["totalListings"] = 13
+    assert ci.inventory_only_full_scopes(payload)[0]["source_key"] == "cbre-dealflow"
+
+    payload["sources"][0]["truncated"] = True
+    assert ci.inventory_only_full_scopes(payload) == []
+
+    payload["sources"][0]["truncated"] = False
+    payload["sources"][0]["listingsCollected"] = 9
+    assert ci.inventory_only_full_scopes(payload) == []
+
+    payload["sources"][0]["listingsCollected"] = 10
+    payload["runMeta"]["startedAt"] = "2026-06-16T00:00:00+00:00"
+    assert ci.inventory_only_full_scopes(payload) == []
+
+    payload["runMeta"]["startedAt"] = _SCRAPED_AT
+    payload["listings"][0]["inventoryOnly"] = {"reason": "malformed"}
+    assert ci.inventory_only_full_scopes(payload) == []
+
+
+def test_empty_inventory_only_scope_is_still_reconcilable():
+    payload = {
+        "runMeta": {
+            "mode": "full",
+            "transactions": ["sale", "lease"],
+            "maxItemsPerSource": None,
+            "startedAt": _SCRAPED_AT,
+            "finishedAt": _SCRAPED_AT,
+        },
+        "sources": [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transaction": tx,
+                "supported": True,
+                "listingsCollected": 0,
+                "truncated": False,
+            }
+            for tx in ("sale", "lease")
+        ],
+        "listings": [],
+        "totalListings": 0,
+    }
+    scopes = ci.inventory_only_full_scopes(payload)
+    assert len(scopes) == 1
+    assert scopes[0]["external_id_like"] == "dealflow:card:%"
+
+
+def test_cli_rejects_duplicate_complete_inventory_scopes(
+    tmp_path, monkeypatch
+):
+    payload = {
+        "runMeta": {
+            "mode": "full",
+            "transactions": ["sale", "lease"],
+            "maxItemsPerSource": None,
+            "startedAt": _SCRAPED_AT,
+            "finishedAt": _SCRAPED_AT,
+        },
+        "sources": [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transaction": tx,
+                "supported": True,
+                "listingsCollected": 0,
+                "truncated": False,
+            }
+            for tx in ("sale", "lease")
+        ],
+        "listings": [],
+        "brokers": [],
+        "totalListings": 0,
+    }
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    first.write_text(json.dumps(payload), encoding="utf-8")
+    second.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cre_ingest.py",
+            "--in",
+            str(first),
+            "--in",
+            str(second),
+            "--dry-run",
+        ],
+    )
+    with pytest.raises(SystemExit, match="duplicate complete inventory-only scopes"):
+        ci.main()
+
+
+def test_cli_does_not_let_complete_scope_authorize_partial_input(
+    tmp_path, monkeypatch
+):
+    complete = {
+        "runMeta": {
+            "mode": "full",
+            "transactions": ["sale", "lease"],
+            "maxItemsPerSource": None,
+            "startedAt": _SCRAPED_AT,
+            "finishedAt": _SCRAPED_AT,
+        },
+        "sources": [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transaction": tx,
+                "supported": True,
+                "listingsCollected": 0,
+                "truncated": False,
+            }
+            for tx in ("sale", "lease")
+        ],
+        "listings": [],
+        "brokers": [],
+        "totalListings": 0,
+    }
+    partial = {
+        "runMeta": {
+            "mode": "enrich",
+            "startedAt": _SCRAPED_AT,
+            "finishedAt": _SCRAPED_AT,
+        },
+        "sources": [],
+        "listings": [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transactionMode": "sale",
+                "id": "card:partial",
+                "inventoryOnly": {
+                    "reason": "no_provider_id_or_listing_url",
+                    "indexUrl": "https://www.cbredealflow.com/",
+                },
+            }
+        ],
+        "brokers": [],
+        "totalListings": 1,
+    }
+    complete_path = tmp_path / "complete.json"
+    partial_path = tmp_path / "partial.json"
+    complete_path.write_text(json.dumps(complete), encoding="utf-8")
+    partial_path.write_text(json.dumps(partial), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cre_ingest.py",
+            "--in",
+            str(complete_path),
+            "--in",
+            str(partial_path),
+            "--dry-run",
+        ],
+    )
+    with pytest.raises(
+        SystemExit,
+        match="strict complete full scope in the same artifact",
+    ):
+        ci.main()
+
+
+def test_inventory_only_sql_covers_appearance_disappearance_and_reappearance():
+    row = {
+        "slug": "cbre",
+        "external_id": "dealflow:card:abc123",
+        "source_key": "cbre-dealflow",
+        "url": "https://www.cbredealflow.com/",
+        "fingerprint": "abc",
+        "observed_status": "Available",
+        "observed_at": _SCRAPED_AT,
+    }
+    scope = {
+        "slug": "cbre",
+        "source_key": "cbre-dealflow",
+        "external_id_like": "dealflow:card:%",
+        "observed_at": _SCRAPED_AT,
+    }
+    sql = ci.build_sql(
+        [],
+        [],
+        _SCRAPED_AT,
+        set(),
+        inventory_only_rows=[row],
+        inventory_only_scopes=[scope],
+    )
+    assert "INSERT INTO credeals.cre_source_index AS si" in sql
+    assert "soft_deleted = false" in sql
+    assert "UPDATE credeals.cre_source_index si" in sql
+    assert "SET soft_deleted = true" in sql
+    assert "FROM _inventory_only_scope scope" in sql
+    assert "current.external_id = si.external_id" in sql
+    assert "refusing stale inventory-only replay" in sql
+    assert "prior.last_enumerated_at > scope.observed_at" in sql
+    assert "EXCLUDED.last_enumerated_at >= si.last_enumerated_at" in sql
+    assert "si.last_enumerated_at <= scope.observed_at" in sql
+    assert "dealflow:scope:inventory-only-watermark" in sql
+    assert "inventory-only-scope-watermark-v1" in sql
+    assert "to_regclass('credeals.cre_source_index')" not in sql
+
+
 def test_cli_refuses_marked_retired_om_parse_artifact(tmp_path, monkeypatch):
     artifact = tmp_path / "retired-om.json"
     artifact.write_text(json.dumps({
