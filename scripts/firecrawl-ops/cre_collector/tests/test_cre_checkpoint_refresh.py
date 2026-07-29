@@ -591,6 +591,532 @@ def test_ingest_failure_remains_retryable(tmp_path, monkeypatch):
     assert manifest["sources"]["svn"]["ingest"]["additive"] is True
 
 
+def test_ingest_persists_in_progress_state_before_subprocess(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+
+    def fake_run(*_args, **_kwargs):
+        checkpoint = manifest["sources"]["svn"]
+        assert checkpoint["state"] == "ingesting"
+        assert checkpoint["ingest"]["rc"] is None
+        assert checkpoint["ingest"]["finished_at"] is None
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    refresh.ingest_source(
+        run_dir, manifest, "svn", run_dir / "sources" / "svn.json", None
+    )
+    assert manifest["sources"]["svn"]["state"] == "ingested"
+    assert manifest["sources"]["svn"]["ingest"]["rc"] == 0
+
+
+@pytest.mark.parametrize(
+    "verdict,expected_state",
+    [("first_seen", "baseline_seed_required"), ("hold", "gate_blocked")],
+)
+def test_advance_source_blocks_non_ok_gate_before_dry_run_or_ingest(
+    tmp_path, monkeypatch, verdict, expected_state
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    artifact_path = run_dir / "sources" / "svn.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(json.dumps(artifact()), encoding="utf-8")
+    manifest["sources"]["svn"]["artifact"] = {"path": "sources/svn.json"}
+
+    monkeypatch.setattr(
+        refresh,
+        "_checkpoint_artifact_valid",
+        lambda *_args: (artifact_path, {"staged_unique": 2}),
+    )
+
+    def gate(*_args):
+        manifest["sources"]["svn"]["gate"] = {"verdict": verdict}
+        manifest["sources"]["svn"]["state"] = "gated"
+
+    monkeypatch.setattr(refresh, "gate_source", gate)
+    monkeypatch.setattr(
+        refresh,
+        "dry_run_source",
+        lambda *_args: pytest.fail("dry run ran for a non-ok source gate"),
+    )
+    monkeypatch.setattr(
+        refresh,
+        "ingest_source",
+        lambda *_args: pytest.fail("live ingest ran for a non-ok source gate"),
+    )
+
+    assert not refresh.advance_source(
+        run_dir,
+        manifest,
+        "svn",
+        page_cap=400,
+        concurrency=3,
+        attempts_this_run=1,
+        env_file=None,
+    )
+    assert manifest["sources"]["svn"]["state"] == expected_state
+
+
+def test_advance_source_prepares_without_live_ingest(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    artifact_path = run_dir / "sources" / "svn.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(json.dumps(artifact()), encoding="utf-8")
+    manifest["sources"]["svn"]["artifact"] = {"path": "sources/svn.json"}
+
+    monkeypatch.setattr(
+        refresh,
+        "_checkpoint_artifact_valid",
+        lambda *_args: (artifact_path, {"staged_unique": 2}),
+    )
+
+    def gate(*_args):
+        manifest["sources"]["svn"]["gate"] = {"verdict": "ok"}
+        manifest["sources"]["svn"]["state"] = "gated"
+
+    def dry_run(*_args):
+        manifest["sources"]["svn"]["state"] = "dry_run_passed"
+        return True
+
+    monkeypatch.setattr(refresh, "gate_source", gate)
+    monkeypatch.setattr(refresh, "dry_run_source", dry_run)
+    monkeypatch.setattr(
+        refresh,
+        "ingest_source",
+        lambda *_args: pytest.fail("live ingest ran before aggregate admission"),
+    )
+
+    assert refresh.advance_source(
+        run_dir,
+        manifest,
+        "svn",
+        page_cap=400,
+        concurrency=3,
+        attempts_this_run=1,
+        env_file=None,
+    )
+    assert manifest["sources"]["svn"]["state"] == "dry_run_passed"
+
+
+def test_prepare_sources_stops_before_later_source_after_gate_block(
+    tmp_path, monkeypatch
+):
+    manifest = refresh.new_manifest(
+        tmp_path / "run",
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn", "cbre"),
+        page_cap=400,
+        concurrency=3,
+    )
+    calls = []
+
+    def advance(_run_dir, _manifest, source, **_kwargs):
+        calls.append(source)
+        return False
+
+    monkeypatch.setattr(refresh, "advance_source", advance)
+    failures = refresh.prepare_sources(
+        tmp_path / "run",
+        manifest,
+        ("svn", "cbre"),
+        page_cap=400,
+        concurrency=3,
+        attempts_this_run=1,
+        env_file=None,
+    )
+    assert failures == ["svn"]
+    assert calls == ["svn"]
+
+
+def test_two_resumes_preserve_ingest_then_refresh_first_seen_without_reingest(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    artifact_path = run_dir / "sources" / "svn.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(json.dumps(artifact()), encoding="utf-8")
+    manifest["sources"]["svn"].update(
+        {
+            "artifact": {"path": "sources/svn.json"},
+            "gate": {"verdict": "first_seen"},
+            "state": "ingested",
+        }
+    )
+    monkeypatch.setattr(
+        refresh,
+        "_checkpoint_artifact_valid",
+        lambda *_args: (artifact_path, {"staged_unique": 2}),
+    )
+
+    verdicts = iter(["first_seen", "ok"])
+
+    def gate(*_args):
+        manifest["sources"]["svn"]["gate"] = {"verdict": next(verdicts)}
+        manifest["sources"]["svn"]["state"] = "gated"
+
+    monkeypatch.setattr(refresh, "gate_source", gate)
+    monkeypatch.setattr(
+        refresh,
+        "dry_run_source",
+        lambda *_args: pytest.fail("completed ingest should not dry-run again"),
+    )
+    monkeypatch.setattr(
+        refresh,
+        "ingest_source",
+        lambda *_args: pytest.fail("completed ingest should not run again"),
+    )
+
+    assert not refresh.advance_source(
+        run_dir,
+        manifest,
+        "svn",
+        page_cap=400,
+        concurrency=3,
+        attempts_this_run=1,
+        env_file=None,
+    )
+    assert manifest["sources"]["svn"]["state"] == "ingested"
+    assert manifest["sources"]["svn"]["admission_state"] == "baseline_seed_required"
+
+    assert refresh.advance_source(
+        run_dir,
+        manifest,
+        "svn",
+        page_cap=400,
+        concurrency=3,
+        attempts_this_run=1,
+        env_file=None,
+    )
+    assert manifest["sources"]["svn"]["state"] == "ingested"
+    assert "admission_state" not in manifest["sources"]["svn"]
+    assert manifest["sources"]["svn"]["gate"]["verdict"] == "ok"
+
+
+def test_ingest_admitted_sources_requires_prepared_state(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    with pytest.raises(refresh.GlobalStageError, match="not prepared"):
+        refresh.ingest_admitted_sources(run_dir, manifest, None)
+
+
+def test_ingest_admitted_sources_ingests_prepared_artifact(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    artifact_path = run_dir / "sources" / "svn.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(json.dumps(artifact()), encoding="utf-8")
+    manifest["sources"]["svn"].update(
+        {
+            "artifact": {"path": "sources/svn.json"},
+            "state": "dry_run_passed",
+        }
+    )
+    monkeypatch.setattr(
+        refresh,
+        "_checkpoint_artifact_valid",
+        lambda *_args: (artifact_path, {"staged_unique": 2}),
+    )
+    calls = []
+    monkeypatch.setattr(
+        refresh,
+        "ingest_source",
+        lambda *_args: calls.append("svn"),
+    )
+    refresh.ingest_admitted_sources(run_dir, manifest, None)
+    assert calls == ["svn"]
+
+
+def test_advance_source_recovers_ingesting_state_before_preparation(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    artifact_path = run_dir / "sources" / "svn.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(json.dumps(artifact()), encoding="utf-8")
+    manifest["sources"]["svn"].update(
+        {
+            "artifact": {"path": "sources/svn.json"},
+            "gate": {"verdict": "ok"},
+            "ingest": {"rc": None},
+            "state": "ingesting",
+        }
+    )
+    monkeypatch.setattr(
+        refresh,
+        "_checkpoint_artifact_valid",
+        lambda *_args: (artifact_path, {"staged_unique": 2}),
+    )
+
+    calls = []
+
+    def recover(_run_dir, _manifest, source, _env_file):
+        calls.append("recovery")
+        manifest["sources"][source]["state"] = "ingested"
+
+    monkeypatch.setattr(refresh, "recover_interrupted_ingest", recover)
+    monkeypatch.setattr(
+        refresh,
+        "dry_run_source",
+        lambda *_args: pytest.fail("recovered ingest should not dry-run again"),
+    )
+    monkeypatch.setattr(
+        refresh,
+        "ingest_source",
+        lambda *_args: pytest.fail("recovered ingest should not replay"),
+    )
+    failures = refresh.prepare_sources(
+        run_dir,
+        manifest,
+        ("svn",),
+        page_cap=400,
+        concurrency=3,
+        attempts_this_run=1,
+        env_file=None,
+    )
+    assert failures == []
+    monkeypatch.setattr(
+        refresh,
+        "run_aggregate_gate",
+        lambda *_args: calls.append("aggregate"),
+    )
+    refresh.run_aggregate_gate(run_dir, manifest, None)
+    refresh.ingest_admitted_sources(run_dir, manifest, None)
+    assert calls == ["recovery", "aggregate"]
+
+
+def test_advance_source_never_auto_retries_ambiguous_ingest_recovery(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["svn"]["state"] = "ingest_recovery_required"
+    with pytest.raises(refresh.GlobalStageError, match="reviewed ingest recovery"):
+        refresh.advance_source(
+            run_dir,
+            manifest,
+            "svn",
+            page_cap=400,
+            concurrency=3,
+            attempts_this_run=1,
+            env_file=None,
+        )
+
+
+def test_ingesting_with_invalid_artifact_never_recollects_or_replays(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["svn"].update(
+        {
+            "artifact": {"path": "sources/missing.json"},
+            "ingest": {"rc": None},
+            "state": "ingesting",
+        }
+    )
+    monkeypatch.setattr(refresh, "_checkpoint_artifact_valid", lambda *_args: None)
+    monkeypatch.setattr(
+        refresh,
+        "collect_source",
+        lambda *_args, **_kwargs: pytest.fail("ambiguous ingest recollected"),
+    )
+    monkeypatch.setattr(
+        refresh,
+        "gate_source",
+        lambda *_args: pytest.fail("ambiguous ingest re-gated"),
+    )
+    monkeypatch.setattr(
+        refresh,
+        "dry_run_source",
+        lambda *_args: pytest.fail("ambiguous ingest dry-ran"),
+    )
+    monkeypatch.setattr(
+        refresh,
+        "ingest_source",
+        lambda *_args: pytest.fail("ambiguous ingest replayed"),
+    )
+    with pytest.raises(refresh.GlobalStageError, match="invalid or missing artifact"):
+        refresh.advance_source(
+            run_dir,
+            manifest,
+            "svn",
+            page_cap=400,
+            concurrency=3,
+            attempts_this_run=1,
+            env_file=None,
+        )
+    checkpoint = manifest["sources"]["svn"]
+    assert checkpoint["state"] == "ingest_recovery_required"
+    assert checkpoint["ingest_recovery"]["reason"] == "invalid_or_missing_artifact"
+
+
+def test_recover_interrupted_ingest_accepts_only_exact_readback(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["svn"].update(
+        {
+            "artifact": {
+                "finished_at": "2026-07-29T12:01:00+00:00",
+                "staged_unique": 2,
+                "inventory_only": 0,
+            },
+            "ingest": {"rc": None},
+            "state": "ingesting",
+        }
+    )
+    validation = {
+        "queries": {
+            "source_counts": [
+                {
+                    "source_key": "svn",
+                    "latest_inventory_observed_at": "2026-07-29 12:01:00Z",
+                    "latest_inventory_batch_active": "2",
+                    "latest_scraped_at": "2026-07-29 12:01:00Z",
+                    "latest_batch_active": "2",
+                    "detail_unavailable": "0",
+                }
+            ],
+            "inventory_only_index": [],
+        }
+    }
+
+    def fake_run(argv, _log, **_kwargs):
+        output = Path(argv[argv.index("--out") + 1])
+        refresh.atomic_write_json(output, validation)
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    refresh.recover_interrupted_ingest(run_dir, manifest, "svn", None)
+    checkpoint = manifest["sources"]["svn"]
+    assert checkpoint["state"] == "ingested"
+    assert checkpoint["ingest"]["recovered_from_exact_readback"] is True
+    assert checkpoint["ingest_recovery"]["readback_ok"] is True
+
+
+def test_recover_interrupted_ingest_never_replays_on_mismatch(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["svn"].update(
+        {
+            "artifact": {
+                "finished_at": "2026-07-29T12:01:00+00:00",
+                "staged_unique": 2,
+                "inventory_only": 0,
+            },
+            "ingest": {"rc": None},
+            "state": "ingesting",
+        }
+    )
+    validation = {
+        "queries": {
+            "source_counts": [
+                {
+                    "source_key": "svn",
+                    "latest_inventory_observed_at": "2026-07-29 12:01:00Z",
+                    "latest_inventory_batch_active": "1",
+                }
+            ],
+            "inventory_only_index": [],
+        }
+    }
+
+    def fake_run(argv, _log, **_kwargs):
+        output = Path(argv[argv.index("--out") + 1])
+        refresh.atomic_write_json(output, validation)
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    with pytest.raises(refresh.GlobalStageError, match="manual recovery"):
+        refresh.recover_interrupted_ingest(run_dir, manifest, "svn", None)
+    assert manifest["sources"]["svn"]["state"] == "ingest_recovery_required"
+
+
 def test_validation_readback_requires_exact_staged_count(tmp_path):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(

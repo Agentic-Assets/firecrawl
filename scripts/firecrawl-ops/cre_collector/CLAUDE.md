@@ -275,7 +275,10 @@ Step [3/4] runs `cre_gate.py` observe-only.
 For an operator-requested full freshness sweep, prefer
 `cre_checkpoint_refresh.py` over the monolithic daily runner. It checkpoints
 each source, uses strict cache generations, validates artifact provenance, and
-ingests additively only after gate and dry-run checks. Use
+stops at the first non-`ok` source gate. All configured artifacts must pass
+their source gates and the aggregate gate before any live ingest begins.
+`first_seen` requires an explicit reviewed baseline seed and readback before
+resuming the same immutable run. Use
 `cre_refresh_report.py --since <run-start>` for the database readback; neither
 that report nor `cre_validate.py` turns a fresh `scraped_at` into proof that an
 old detail cache was refreshed.

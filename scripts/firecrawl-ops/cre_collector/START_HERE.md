@@ -33,9 +33,11 @@ npm run test:unit                     # obtain the current TypeScript count
 ## Strict listing refresh
 
 Use `cre_checkpoint_refresh.py` for an operator-requested full refresh. It
-collects, admits, gates, dry-runs, and additively ingests one source at a time,
-then retains a resumable manifest. The monolithic `cre_daily_update.sh` remains
-the scheduled backstop, not the proof path for a source-fresh detail sweep.
+collects, validates, gates, and dry-runs each source into a resumable manifest.
+It stops on the first non-`ok` source gate, runs one aggregate gate over the
+complete prepared artifact set, and only then begins additive live ingest. The
+monolithic `cre_daily_update.sh` remains the scheduled backstop, not the proof
+path for a source-fresh detail sweep.
 
 ```bash
 python3 cre_checkpoint_refresh.py \
@@ -50,8 +52,14 @@ python3 cre_checkpoint_refresh.py \
 The strict runner never passes `--monitor`, `--mark-missing`,
 `--activate-status`, or `--update-baseline`. It uses run-scoped cache
 generations for JLL, Colliers Main, Buildout, and Marcus; forces full Cushman
-detail mode; and enables Avison Young detail collection. Coverage holds prevent
-reconciliation but do not make an additive upsert unsafe.
+detail mode; and enables Avison Young detail collection. A `first_seen` verdict
+stops at `baseline_seed_required`; a `hold` stops at `gate_blocked`. Neither
+state reaches dry-run or live ingest. Seed a first baseline only after reviewing
+the complete exact artifact with `cre_gate.py --apply --update-baseline`, read
+it back without `--update-baseline`, and then resume the same immutable run.
+The manifest records `ingesting` before launching a live write. If execution
+stops in that window, resume performs an exact database readback and never
+automatically replays an ambiguous ingest.
 
 “All” means the 20 source keys in the current TypeScript collector registry.
 Older active rows whose brokerage is outside that registry are reported by

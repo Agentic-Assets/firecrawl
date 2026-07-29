@@ -838,16 +838,20 @@ def ingest_source(
     log_path = run_dir / "logs" / f"{source}-ingest.log"
     started = utc_now()
     argv = build_ingest_argv(artifact, env_file)
-    rc = run_command(argv, log_path, env=safe_process_env())
     checkpoint["ingest"] = {
         "started_at": started,
-        "finished_at": utc_now(),
-        "rc": rc,
+        "finished_at": None,
+        "rc": None,
         "log": _relative_to_run(log_path, run_dir),
         "additive": True,
         "status_activation": False,
         "mark_missing": False,
     }
+    checkpoint["state"] = "ingesting"
+    save_manifest(run_dir, manifest)
+    rc = run_command(argv, log_path, env=safe_process_env())
+    checkpoint["ingest"]["finished_at"] = utc_now()
+    checkpoint["ingest"]["rc"] = rc
     if rc != 0:
         checkpoint["state"] = "ingest_failed"
         save_manifest(run_dir, manifest)
@@ -868,7 +872,42 @@ def advance_source(
 ) -> bool:
     checkpoint = manifest["sources"][source]
     existing = _checkpoint_artifact_valid(run_dir, checkpoint, source)
+    if checkpoint.get("state") == "ingest_recovery_required":
+        raise GlobalStageError(
+            f"source {source} requires reviewed ingest recovery before resume"
+        )
+    if checkpoint.get("state") == "ingesting" and not existing:
+        checkpoint["state"] = "ingest_recovery_required"
+        checkpoint["ingest_recovery"] = {
+            "readback_ok": False,
+            "reason": "invalid_or_missing_artifact",
+        }
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError(
+            f"source {source} has an ambiguous interrupted ingest with an "
+            "invalid or missing artifact"
+        )
+    if checkpoint.get("state") == "ingesting":
+        recover_interrupted_ingest(run_dir, manifest, source, env_file)
     if checkpoint.get("state") == "ingested" and existing:
+        prior_verdict = (checkpoint.get("gate") or {}).get("verdict")
+        if prior_verdict == "ok":
+            return True
+        artifact, _stats = existing
+        gate_source(run_dir, manifest, source, artifact, env_file)
+        verdict = (checkpoint.get("gate") or {}).get("verdict")
+        if verdict != "ok":
+            checkpoint["state"] = "ingested"
+            checkpoint["admission_state"] = (
+                "baseline_seed_required"
+                if verdict == "first_seen"
+                else "gate_blocked"
+            )
+            save_manifest(run_dir, manifest)
+            return False
+        checkpoint["state"] = "ingested"
+        checkpoint.pop("admission_state", None)
+        save_manifest(run_dir, manifest)
         return True
     collected = existing or collect_source(
         run_dir,
@@ -882,10 +921,41 @@ def advance_source(
         return False
     artifact, _stats = collected
     gate_source(run_dir, manifest, source, artifact, env_file)
+    verdict = (checkpoint.get("gate") or {}).get("verdict")
+    if verdict != "ok":
+        checkpoint["state"] = (
+            "baseline_seed_required" if verdict == "first_seen" else "gate_blocked"
+        )
+        save_manifest(run_dir, manifest)
+        return False
     if not dry_run_source(run_dir, manifest, source, artifact):
         return False
-    ingest_source(run_dir, manifest, source, artifact, env_file)
     return True
+
+
+def prepare_sources(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    sources: Sequence[str],
+    *,
+    page_cap: int,
+    concurrency: int,
+    attempts_this_run: int,
+    env_file: str | None,
+) -> list[str]:
+    """Prepare sources in order and stop at the first failed admission."""
+    for source in sources:
+        if not advance_source(
+            run_dir,
+            manifest,
+            source,
+            page_cap=page_cap,
+            concurrency=concurrency,
+            attempts_this_run=attempts_this_run,
+            env_file=env_file,
+        ):
+            return [source]
+    return []
 
 
 def run_aggregate_gate(
@@ -936,6 +1006,86 @@ def run_aggregate_gate(
             "aggregate coverage gate is not established for source(s): "
             + ", ".join(non_ok_sources)
         )
+
+
+def ingest_admitted_sources(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    env_file: str | None,
+) -> None:
+    """Ingest only after every configured source clears the aggregate gate."""
+    for source in manifest["config"]["sources"]:
+        checkpoint = manifest["sources"][source]
+        existing = _checkpoint_artifact_valid(run_dir, checkpoint, source)
+        if checkpoint.get("state") == "ingested" and existing:
+            continue
+        if checkpoint.get("state") == "ingesting" and existing:
+            recover_interrupted_ingest(
+                run_dir,
+                manifest,
+                source,
+                env_file,
+            )
+            continue
+        if checkpoint.get("state") != "dry_run_passed" or not existing:
+            raise GlobalStageError(
+                f"source {source} is not prepared for admitted ingest"
+            )
+        artifact, _stats = existing
+        ingest_source(run_dir, manifest, source, artifact, env_file)
+
+
+def recover_interrupted_ingest(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    source: str,
+    env_file: str | None,
+) -> None:
+    """Resolve an interrupted live-ingest window without replaying writes."""
+    checkpoint = manifest["sources"][source]
+    output = run_dir / "recovery" / f"{source}-validation.json"
+    log = run_dir / "logs" / f"{source}-ingest-recovery.log"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    rc = run_command(
+        build_validate_argv(output, env_file),
+        log,
+        env=safe_process_env(),
+    )
+    recovery = {
+        "validation_path": _relative_to_run(output, run_dir),
+        "log": _relative_to_run(log, run_dir),
+        "rc": rc,
+        "readback_ok": False,
+    }
+    checkpoint["ingest_recovery"] = recovery
+    if rc != 0:
+        checkpoint["state"] = "ingest_recovery_required"
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError(
+            f"interrupted ingest readback failed for {source} (rc={rc})"
+        )
+    validation = _load_json(output)
+    probe_manifest = {
+        "config": {"sources": [source]},
+        "sources": {
+            source: {
+                "artifact": checkpoint.get("artifact"),
+            }
+        },
+    }
+    readback = verify_validation_readback(run_dir, probe_manifest, validation)
+    checkpoint["readback"] = probe_manifest["sources"][source].get("readback")
+    recovery["readback_ok"] = readback["ok"]
+    if not readback["ok"]:
+        checkpoint["state"] = "ingest_recovery_required"
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError(
+            f"interrupted ingest outcome is not exact for {source}; "
+            "manual recovery is required before replay"
+        )
+    checkpoint["state"] = "ingested"
+    checkpoint["ingest"]["recovered_from_exact_readback"] = True
+    save_manifest(run_dir, manifest)
 
 
 def _timestamp_second(value: str) -> datetime:
@@ -1397,24 +1547,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             record_scope_from_validation(manifest, pre_result)
             save_manifest(run_dir, manifest)
 
-            source_failures: list[str] = []
-            for source in sources:
-                ok = advance_source(
-                    run_dir,
-                    manifest,
-                    source,
-                    page_cap=args.page_cap,
-                    concurrency=args.concurrency,
-                    attempts_this_run=args.attempts_per_source,
-                    env_file=args.env_file,
-                )
-                if not ok:
-                    source_failures.append(source)
+            source_failures = prepare_sources(
+                run_dir,
+                manifest,
+                sources,
+                page_cap=args.page_cap,
+                concurrency=args.concurrency,
+                attempts_this_run=args.attempts_per_source,
+                env_file=args.env_file,
+            )
             if source_failures:
                 raise RefreshError(
                     "source checkpoints remain incomplete: " + ", ".join(source_failures)
                 )
             run_aggregate_gate(run_dir, manifest, args.env_file)
+            ingest_admitted_sources(run_dir, manifest, args.env_file)
             run_final_validation(run_dir, manifest, args.env_file)
             manifest["status"] = "supported_scope_complete"
             manifest["finished_at"] = utc_now()
