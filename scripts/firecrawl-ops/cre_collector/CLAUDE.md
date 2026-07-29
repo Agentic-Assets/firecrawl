@@ -251,9 +251,9 @@ coverage figures: `START_HERE.md`.
 - Per-source monitor behavior (excluded sources, supersets, detail skips):
   `sources/CLAUDE.md` + `cre-monitor-subsystem.md`.
 - Scheduled monitor tier uses default `--page-cap=60` unless overridden; see
-  `launchd/CLAUDE.md`. **Current audit (2026-07-11):** no CRE scheduler is
-  installed on the Mac mini. Run `bash cre_status.sh` only as a read-only
-  preflight, then follow the operator runbook before a recovery attempt. `cre_gate.py`
+  `launchd/CLAUDE.md`. Scheduler state is host-local and can change without a
+  repository commit. Run `bash cre_status.sh` as the read-only preflight, then
+  follow the operator runbook before a recovery attempt. `cre_gate.py`
   is wired into `cre_daily_update.sh` as observe-only step [3/4]
   (`--in RUN --apply --strict --out gate.json`); if the strict gate detects any
   partial/regressed source, the script auto-downgrades to `--no-mark-missing`.
@@ -268,8 +268,17 @@ trap; keeps 14 `run_*.json`, 29 `run_*.log`, 14 `gate_*.json` under
 structurally capped (colliers-main is now complete). See `START_HERE.md` Known
 Limits and Operational Recovery.
 
-Tiered schedules: `launchd/CLAUDE.md`. They are implemented in code but not
-currently loaded on the Mac mini. Step [3/4] runs `cre_gate.py` observe-only.
+Tiered schedules: `launchd/CLAUDE.md`. Never infer whether they are loaded from
+this file; use `bash cre_status.sh` and `launchctl list` on the target host.
+Step [3/4] runs `cre_gate.py` observe-only.
+
+For an operator-requested full freshness sweep, prefer
+`cre_checkpoint_refresh.py` over the monolithic daily runner. It checkpoints
+each source, uses strict cache generations, validates artifact provenance, and
+ingests additively only after gate and dry-run checks. Use
+`cre_refresh_report.py --since <run-start>` for the database readback; neither
+that report nor `cre_validate.py` turns a fresh `scraped_at` into proof that an
+old detail cache was refreshed.
 
 ## Adding a source
 

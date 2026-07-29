@@ -166,6 +166,14 @@ child_rows AS (
   SELECT a.source_key, 'images', count(i.id)
   FROM active a LEFT JOIN credeals.cre_listing_images i ON i.listing_id = a.id
   GROUP BY a.source_key
+  UNION ALL
+  SELECT a.source_key, 'media', count(m.id)
+  FROM active a LEFT JOIN credeals.cre_listing_media m ON m.listing_id = a.id
+  GROUP BY a.source_key
+  UNION ALL
+  SELECT a.source_key, 'links', count(k.id)
+  FROM active a LEFT JOIN credeals.cre_listing_links k ON k.listing_id = a.id
+  GROUP BY a.source_key
 )
 SELECT source_key, child_type, count::text
 FROM child_rows
@@ -181,6 +189,17 @@ SELECT 'image_bad_url', count(*)::text
 FROM credeals.cre_listing_images i
 JOIN credeals.cre_listings l ON l.id = i.listing_id
 WHERE l.deleted_at IS NULL AND i.url !~* '^https?://'
+UNION ALL
+SELECT 'media_bad_url', count(*)::text
+FROM credeals.cre_listing_media m
+JOIN credeals.cre_listings l ON l.id = m.listing_id
+WHERE l.deleted_at IS NULL
+  AND (m.url !~* '^https?://' OR (m.embed_url IS NOT NULL AND m.embed_url !~* '^https?://'))
+UNION ALL
+SELECT 'link_bad_url', count(*)::text
+FROM credeals.cre_listing_links k
+JOIN credeals.cre_listings l ON l.id = k.listing_id
+WHERE l.deleted_at IS NULL AND k.url !~* '^https?://'
 UNION ALL
 SELECT 'contact_bad_profile_url', count(*)::text
 FROM credeals.cre_listing_contacts c
@@ -212,6 +231,16 @@ UNION ALL
 SELECT 'images', count(*)::text
 FROM credeals.cre_listing_images i
 LEFT JOIN credeals.cre_listings l ON l.id = i.listing_id
+WHERE l.id IS NULL
+UNION ALL
+SELECT 'media', count(*)::text
+FROM credeals.cre_listing_media m
+LEFT JOIN credeals.cre_listings l ON l.id = m.listing_id
+WHERE l.id IS NULL
+UNION ALL
+SELECT 'links', count(*)::text
+FROM credeals.cre_listing_links k
+LEFT JOIN credeals.cre_listings l ON l.id = k.listing_id
 WHERE l.id IS NULL
 ORDER BY child_type;
 """,

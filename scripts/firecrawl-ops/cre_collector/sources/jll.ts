@@ -174,6 +174,14 @@ export function jllDetailCachePath(url: string): string {
   return `${jllDetailCacheDir()}/${key}.json`;
 }
 
+export function jllCachedAtMeetsBoundary(cachedAt: unknown, boundary = process.env.JLL_DETAIL_CACHE_MIN_CACHED_AT): boolean {
+  if (!boundary) return true;
+  if (typeof cachedAt !== "string") return false;
+  const cachedMs = Date.parse(cachedAt);
+  const boundaryMs = Date.parse(boundary);
+  return Number.isFinite(cachedMs) && Number.isFinite(boundaryMs) && cachedMs >= boundaryMs;
+}
+
 export function readJllDetailCache(url: string): ScrapedDoc | null {
   const path = jllDetailCachePath(url);
   if (!existsSync(path)) return null;
@@ -181,10 +189,13 @@ export function readJllDetailCache(url: string): ScrapedDoc | null {
     const cached = JSON.parse(readFileSync(path, "utf8"));
     if (cached.url !== normalizedJllListingUrl(url)) return null;
     if (typeof cached.rawHtml !== "string") return null;
+    if (!jllCachedAtMeetsBoundary(cached.cachedAt)) return null;
     return {
       rawHtml: cached.rawHtml,
       markdown: typeof cached.markdown === "string" ? cached.markdown : "",
       links: Array.isArray(cached.links) ? cached.links.filter((link: any) => typeof link === "string") : [],
+      images: Array.isArray(cached.images) ? cached.images.filter((image: any) => typeof image === "string") : undefined,
+      attributes: Array.isArray(cached.attributes) ? cached.attributes : undefined,
       metadata: cached.metadata,
     };
   } catch {
@@ -205,6 +216,8 @@ export function writeJllDetailCache(url: string, doc: ScrapedDoc): void {
         rawHtml: doc.rawHtml,
         markdown: doc.markdown,
         links: doc.links,
+        images: doc.images,
+        attributes: doc.attributes,
         metadata: doc.metadata,
       },
       null,

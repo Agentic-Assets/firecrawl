@@ -1541,14 +1541,18 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- Children: refresh wholesale only when the latest source row did not hit a
--- detail-page error. This protects previously good documents/images/contacts
--- from transient detail-scrape failures while still refreshing normal rows.
+-- Children: refresh wholesale only when the latest source row completed a
+-- detail pass. This protects previously good documents/images/contacts from
+-- transient errors and from deliberate API-only/base refresh modes.
 CREATE TEMP TABLE _child_refresh ON COMMIT DROP AS
 SELECT DISTINCT u.id
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
-WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError');
+WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')
+  AND NOT jsonb_path_exists(
+    s.raw_data,
+    '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+  );
 
 DELETE FROM credeals.cre_listing_contacts  WHERE listing_id IN (SELECT id FROM _child_refresh);
 DELETE FROM credeals.cre_listing_documents WHERE listing_id IN (SELECT id FROM _child_refresh);
@@ -2071,6 +2075,12 @@ def main():
                 "sole production OM extraction writer"
             )
         run_meta = data.get("runMeta") or {}
+        mode = run_meta.get("mode")
+        if not args.dry_run and mode not in {"full", "enrich"}:
+            sys.exit(
+                f"refusing live ingest for artifact mode {mode!r}: "
+                "expected runMeta.mode to be 'full' or 'enrich'"
+            )
         started_at = started_at or run_meta.get("startedAt")
         scraped_at = run_meta.get("finishedAt") or datetime.now(timezone.utc).isoformat()
         brokers_by_idx = {i: b for i, b in enumerate(data.get("brokers") or [])}

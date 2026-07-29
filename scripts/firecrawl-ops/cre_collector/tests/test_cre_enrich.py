@@ -26,6 +26,7 @@ from cre_enrich import (
     build_release_sql,
     build_retry_increment_sql,
     select_done_and_retry,
+    validate_enriched_artifact,
 )
 
 DB_URL_SENTINEL = "postgres://user:secret@db.example.com:5432/postgres"
@@ -218,6 +219,40 @@ def test_empty_listings_enriched_artifact_skips_ingest(monkeypatch, tmp_path):
     rc = cre_enrich.run(_Args(env_file=None))
     assert rc == 1
     assert calls["ingest_called"] is False
+
+
+def test_validate_enriched_artifact_rejects_wrong_mode_url_source_and_duplicate():
+    claimed = [{"id": "q1", "url": "https://example.test/a", "source_key": "svn"}]
+    invalid = [
+        {"runMeta": {"mode": "full"}, "listings": [{"url": "https://example.test/a", "sourceKey": "svn"}]},
+        {"runMeta": {"mode": "enrich"}, "listings": [{"url": "https://example.test/b", "sourceKey": "svn"}]},
+        {"runMeta": {"mode": "enrich"}, "listings": [{"url": "https://example.test/a", "sourceKey": "lee-associates"}]},
+        {
+            "runMeta": {"mode": "enrich"},
+            "listings": [
+                {"url": "https://example.test/a", "sourceKey": "svn"},
+                {"url": "https://example.test/a", "sourceKey": "svn"},
+            ],
+        },
+    ]
+    for artifact in invalid:
+        with pytest.raises(ValueError):
+            validate_enriched_artifact(claimed, artifact)
+
+
+def test_provenance_failure_releases_claims_and_skips_ingest(monkeypatch, tmp_path):
+    calls = _wire_run(
+        monkeypatch,
+        tmp_path,
+        claimed=[("id-1", "svn", "a", "https://x/a", "new", "0")],
+        write_enriched={
+            "runMeta": {"mode": "enrich"},
+            "listings": [{"url": "https://x/not-claimed", "sourceKey": "svn"}],
+        },
+    )
+    assert cre_enrich.run(_Args(env_file=None)) == 1
+    assert calls["ingest_called"] is False
+    assert any("claimed_at = NULL" in sql for sql in calls["exec_sql"])
 
 
 # --- (10) ingest argv is the safety guard ----------------------------------
@@ -471,9 +506,21 @@ def _wire_run(monkeypatch, tmp_path, *, claimed, collect_rc=0,
             out_path = argv[argv.index("--out") + 1]
             calls["collect_out_path"] = out_path
             if write_enriched == "__unset__":
-                payload = {"listings": [{"url": u} for u in claimed_urls]}
+                payload = {
+                    "runMeta": {"mode": "enrich"},
+                    "listings": [
+                        {"url": t[3], "sourceKey": t[1]}
+                        for t in claimed
+                    ],
+                }
             else:
                 payload = write_enriched
+                if isinstance(payload, dict):
+                    payload.setdefault("runMeta", {"mode": "enrich"})
+                    source_by_url = {t[3]: t[1] for t in claimed}
+                    for listing in payload.get("listings") or []:
+                        if isinstance(listing, dict) and "sourceKey" not in listing:
+                            listing["sourceKey"] = source_by_url.get(listing.get("url"))
             if payload is not None:
                 with open(out_path, "w") as f:
                     json.dump(payload, f)

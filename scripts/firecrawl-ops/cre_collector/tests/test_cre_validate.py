@@ -29,6 +29,15 @@ from cre_validate import (
 )
 
 
+def test_child_quality_queries_cover_media_and_links():
+    assert "'media'" in QUERIES["child_counts"]
+    assert "'links'" in QUERIES["child_counts"]
+    assert "media_bad_url" in QUERIES["bad_child_urls"]
+    assert "link_bad_url" in QUERIES["bad_child_urls"]
+    assert "SELECT 'media'" in QUERIES["orphans"]
+    assert "SELECT 'links'" in QUERIES["orphans"]
+
+
 # ---------------------------------------------------------------------------
 # parse_tsv
 # ---------------------------------------------------------------------------

@@ -395,21 +395,39 @@ def _parse_claimed(rows):
     return claimed
 
 
-def _load_enriched_listings(enriched_path):
-    """Read the enriched artifact and return its listings list, or None if the
-    artifact is missing / invalid JSON / has zero listings. None signals a
-    whole-run failure (release claims, do not ingest)."""
+def _load_enriched_artifact(enriched_path):
+    """Read an enriched artifact, or return None when it is unavailable."""
     if not enriched_path or not os.path.isfile(enriched_path):
         return None
     try:
         with open(enriched_path) as f:
-            data = json.load(f)
+            return json.load(f)
     except (ValueError, OSError):
         return None
-    listings = data.get("listings")
+
+
+def validate_enriched_artifact(claimed_rows, artifact):
+    """Fail closed unless every emitted row belongs to its claimed source."""
+    if not isinstance(artifact, dict) or (artifact.get("runMeta") or {}).get("mode") != "enrich":
+        raise ValueError("enriched artifact must declare runMeta.mode == 'enrich'")
+    listings = artifact.get("listings")
     if not isinstance(listings, list) or len(listings) == 0:
-        return None
-    return listings
+        raise ValueError("enriched artifact must contain a nonempty listings array")
+    claimed_by_url = {row.get("url"): row for row in claimed_rows if row.get("url")}
+    safe = []
+    seen_urls = set()
+    for listing in listings:
+        url = listing.get("url") if isinstance(listing, dict) else None
+        claimed = claimed_by_url.get(url)
+        if claimed is None:
+            raise ValueError(f"enriched artifact URL was not claimed: {url!r}")
+        if listing.get("sourceKey") != claimed.get("source_key"):
+            raise ValueError(f"enriched artifact source key mismatch: {url!r}")
+        if url in seen_urls:
+            raise ValueError(f"enriched artifact contains duplicate URL: {url!r}")
+        seen_urls.add(url)
+        safe.append(listing)
+    return safe
 
 
 # ---------------------------------------------------------------------------
@@ -463,13 +481,19 @@ def run(args):
     # (4) GATE on collect success before ingesting. A whole-run failure releases
     # the claims (attempts untouched) so the batch retries free next run.
     enriched_listings = None
+    artifact_error = None
     if collect.returncode == 0:
-        enriched_listings = _load_enriched_listings(enriched_path)
+        artifact = _load_enriched_artifact(enriched_path)
+        if artifact is not None:
+            try:
+                enriched_listings = validate_enriched_artifact(claimed_rows, artifact)
+            except ValueError as exc:
+                artifact_error = str(exc)
     if collect.returncode != 0 or enriched_listings is None:
         err = (
             f"collect rc={collect.returncode}"
             if collect.returncode != 0
-            else "enriched artifact missing/invalid/empty"
+            else artifact_error or "enriched artifact missing/invalid/empty"
         )
         _psql_exec(db_url, build_release_sql(claimed_ids, last_error=err))
         print(f"enrich run failed: {err}; released {len(claimed_ids)} claim(s)",

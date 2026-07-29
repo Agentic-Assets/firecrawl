@@ -12,7 +12,8 @@
   reported total (or hit a hard cap). `cre_monitor.py` treats `truncated` like
   `error` for disappearance gating. Adapters that set it: `newmark` (Algolia
   ~1000-hit cap unsplit), `cbre` and `cushman-wakefield` (collected <
-  `min(max, reported total)`), `nai-global` (`--page-cap` clip with a full last page).
+  `min(max, reported total)`), `nai-global` (`--page-cap` clip with a full last
+  page), and `colliers-main` (deferred or errored detail renders).
 - **`monitor=true`**: cheap enumeration only. Skip detail unless the feed is already complete.
 - Folded sub-sources get ingest prefixes (`dealflow:`, `investor:`, `main:`), not adapter prefixes. `colliers-main` emits bare `usa#####`; ingest adds `main:`.
 
@@ -65,9 +66,9 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `newmark.ts` | Algolia via `fetch`; People lookup on full path only |
 | `nai-global.ts` | Infabode GraphQL `publicPosts` bulk detail feed; identical conservative eligibility on full and monitor paths |
 | `marcus-millichap.ts` | Map ActivityId tiles + detail HTML; JSONL detail cache |
-| `jll.ts` | Search pages + `__NEXT_DATA__`; disk detail cache `out/cache/jll-detail/` |
+| `jll.ts` | Search pages + `__NEXT_DATA__`; disk detail cache `out/cache/jll-detail/`; strict runs set `JLL_DETAIL_CACHE_MIN_CACHED_AT` |
 | `jll-investor.ts` | US sitemap + detail; sale only |
-| `colliers-main.ts` | XML sitemap + JSON-LD; JSONL cache `out/cache/colliers-main/detail-cache.jsonl`; CF challenge retries |
+| `colliers-main.ts` | XML sitemap + JSON-LD; resumable JSONL cache; live sitemap `lastmod` controls reuse; CF challenge retries |
 | `buildout.ts` | Shared inventory; svn/lee wired in `collect.ts` |
 | `savills.ts` | Sale and lease: structured `__NEXT_DATA__`; provider `NextUrl` pagination; direct fetch with validated Firecrawl fallback |
 
@@ -85,8 +86,9 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | Var | Source | Effect |
 |-----|--------|--------|
 | `CUSHMAN_QUERY` | cushman | Targeted API probe |
-| `COLLIERS_MAIN_*` | colliers-main | Detail concurrency, wait, challenge retries, `MAX_FETCHES_PER_RUN` |
-| `JLL_DETAIL_*` / `JLL_INVESTOR_*` | jll, jll-investor | Detail concurrency, wait, cache dir, sitemap scan limit |
+| `CUSHMAN_DETAIL_MODE` | cushman | `full` renders detail pages; `base` refreshes API inventory and explicitly preserves existing child collections |
+| `COLLIERS_MAIN_*` | colliers-main | Detail concurrency, wait, challenge retries, `MAX_FETCHES_PER_RUN`, and run-scoped `DETAIL_CACHE_PATH` |
+| `JLL_DETAIL_*` / `JLL_INVESTOR_*` | jll, jll-investor | Detail concurrency, wait, cache dir, minimum cache timestamp, sitemap scan limit |
 | `SAVILLS_DIRECT_LIST_TIMEOUT_MS` | savills | Direct public list-page timeout (default 25s; bounded 5–60s; two attempts) |
 | `SAVILLS_LIST_TIMEOUT_MS` | savills | Firecrawl fallback list-page timeout (default 30s; bounded 10–90s) |
 | `NAI_GRAPHQL_TIMEOUT_MS` / `NAI_SOURCE_BATCH_SIZE` / `NAI_PAGE_SIZE` / `NAI_ENUMERATION_CONCURRENCY` | nai-global | Bound each `publicPosts` GraphQL body read (default 30s), split source-office filters (default 40), request up to 100 bulk-detail rows per page, and enumerate unlimited batches at a bounded fan-out of two. A timeout or page cap fails closed for monitor coverage. |
@@ -98,6 +100,11 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 ## Detail Failures & Status
 
 - Most detail-enrich sources return rows with `detailError` string; ingest skips child-row refresh when `detailError` in `raw_data`.
+- Deliberately incomplete API/base rows carry `preserveChildCollections=true`;
+  ingestion also excludes them from wholesale child replacement.
+- A live ingest accepts only `runMeta.mode="full"` or `"enrich"`. Monitor
+  artifacts can still be inspected with `--dry-run`, but cannot reach the
+  database.
 - Native terminal status: cbre-dealflow, colliers-main, cushman (`listingStatus`). NAI's provider status is used only for conservative source eligibility and is never activated. **Disappearance-only** (no status field): jll, jll-investor, newmark, marcus, savills, transwestern (monitor).
 
 ## Probe One Source

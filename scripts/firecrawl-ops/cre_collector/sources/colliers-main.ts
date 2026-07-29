@@ -44,6 +44,11 @@ export type ColliersMainEntry = { url: string; lastmod: string | null; id: strin
 
 export let colliersMainSitemapCache: ColliersMainEntry[] | null = null;
 export let colliersMainEnrichedMemo: any[] | null = null;
+export let colliersMainEnrichedStats = { errors: 0, deferred: 0 };
+
+export function colliersMainDetailPassTruncated(stats: { errors: number; deferred: number }): boolean {
+  return stats.errors > 0 || stats.deferred > 0;
+}
 
 export function colliersMainIsChallenge(doc: ScrapedDoc): boolean {
   const status = doc.metadata?.statusCode;
@@ -432,8 +437,9 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
 }
 
 export function colliersMainDetailCachePath(): string {
-  // Durable, OUT_PATH-independent so a long run can resume across attempts.
-  return "out/cache/colliers-main/detail-cache.jsonl";
+  // A run-specific override lets a freshness sweep start from an empty cache
+  // while remaining resumable across bounded worker processes.
+  return process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH ?? "out/cache/colliers-main/detail-cache.jsonl";
 }
 
 export function readColliersMainCache(path: string): Map<string, any> {
@@ -457,6 +463,14 @@ export function appendColliersMainCache(path: string, listing: any): void {
   if (listing?.detailError) return;
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, `${JSON.stringify(listing)}\n`);
+}
+
+export function colliersMainCachedListingIsCurrent(entry: ColliersMainEntry, listing: any): boolean {
+  const sourceLastmod = entry.lastmod ? entry.lastmod.slice(0, 10) : null;
+  const cachedLastmod = clean(listing?.lastUpdated)?.slice(0, 10) ?? null;
+  // When the source publishes lastmod, it is the admission boundary for cache
+  // reuse. A changed or missing cached marker forces a fresh detail render.
+  return sourceLastmod ? cachedLastmod === sourceLastmod : true;
 }
 
 // Enrich the full sitemap once (memoized across the sale and lease passes and
@@ -486,6 +500,9 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
   let deferred = 0;
   const listings = await pmap(selected, COLLIERS_MAIN_DETAIL_CONCURRENCY, async (entry) => {
     let listing = cached.get(entry.id);
+    if (listing && !colliersMainCachedListingIsCurrent(entry, listing)) {
+      listing = undefined;
+    }
     if (listing) {
       fromCache++;
     } else if (fetchBudget <= 0) {
@@ -520,6 +537,7 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
     return listing;
   });
   const result = listings.filter(Boolean);
+  colliersMainEnrichedStats = { errors, deferred };
   if (deferred > 0) {
     console.error(
       `  colliers-main: ${deferred} URL(s) deferred under fetch cap ${fetchCap}; re-run to continue (${result.length} ready, ${fetched} newly fetched this run)`
@@ -578,6 +596,7 @@ export async function srcColliersMain(tx: Tx, max: number, monitor: boolean): Pr
       "Public colliers.com XML sitemap discovery (/sitemap -> en ?type=properties) plus per-listing detail render through local Firecrawl; RealEstateListing JSON-LD + markdown parse",
     totalAvailable: colliersMainSitemapCache ? colliersMainSitemapCache.length : null,
     listings,
+    truncated: colliersMainDetailPassTruncated(colliersMainEnrichedStats),
     note:
       `Main colliers.com folded into the colliers brokerage as colliers-main with main: id prefix; SalesTracker rows untouched. ` +
       `${ok.length} live detail-enriched listing(s) of ${all.length} sitemap URL(s) scanned, ${notFound} expired/not-found and ${noData} no-structured-data (tombstoned), ${errored} detail error(s). ` +

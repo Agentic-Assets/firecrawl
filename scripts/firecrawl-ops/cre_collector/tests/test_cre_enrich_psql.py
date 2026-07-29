@@ -425,9 +425,24 @@ def _wire_run(monkeypatch, tmp_path, *, claimed_rows, collect_rc=0,
             calls["collect_called"] = True
             out_path = argv[argv.index("--out") + 1]
             if write_enriched == "__unset__":
-                payload = {"listings": [{"url": u} for u in claimed_urls]}
+                payload = {
+                    "runMeta": {"mode": "enrich"},
+                    "listings": [
+                        {"url": r.get("url", "https://x/1"), "sourceKey": r.get("source_key", "colliers-main")}
+                        for r in claimed_rows
+                    ],
+                }
             else:
                 payload = write_enriched
+                if isinstance(payload, dict):
+                    payload.setdefault("runMeta", {"mode": "enrich"})
+                    source_by_url = {
+                        r.get("url", "https://x/1"): r.get("source_key", "colliers-main")
+                        for r in claimed_rows
+                    }
+                    for listing in payload.get("listings") or []:
+                        if isinstance(listing, dict) and "sourceKey" not in listing:
+                            listing["sourceKey"] = source_by_url.get(listing.get("url"))
             if payload is not None:
                 import json as _json
                 with open(out_path, "w") as f:
@@ -643,7 +658,13 @@ class TestMain:
             if "collect.ts" in argv:
                 out_path = argv[argv.index("--out") + 1]
                 with open(out_path, "w") as f:
-                    json.dump({"listings": [{"url": "https://x/a"}]}, f)
+                    json.dump(
+                        {
+                            "runMeta": {"mode": "enrich"},
+                            "listings": [{"url": "https://x/a", "sourceKey": "colliers-main"}],
+                        },
+                        f,
+                    )
                 return _Proc(0)
             if any(str(a).endswith("cre_ingest.py") for a in argv):
                 return _Proc(0)

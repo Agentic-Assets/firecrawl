@@ -23,6 +23,7 @@ import {
   jllDetailCachePath,
   readJllDetailCache,
   writeJllDetailCache,
+  jllCachedAtMeetsBoundary,
   jllStrandedMedia,
   jllStrandedDocs,
   jllStrandedStructured,
@@ -213,6 +214,8 @@ test("jll detail cache round-trips through temp dir", () => {
       rawHtml: "<html>detail</html>",
       markdown: "# Detail",
       links: ["https://example.com/brochure.pdf"],
+      images: ["https://example.com/gallery.jpg"],
+      attributes: [{ selector: "iframe", attribute: "src", values: ["https://example.com/tour"] }],
       metadata: { title: "Cache Test" },
     };
     writeJllDetailCache(url, doc);
@@ -222,6 +225,8 @@ test("jll detail cache round-trips through temp dir", () => {
     assert.equal(cached?.rawHtml, doc.rawHtml);
     assert.equal(cached?.markdown, doc.markdown);
     assert.deepEqual(cached?.links, doc.links);
+    assert.deepEqual(cached?.images, doc.images);
+    assert.deepEqual(cached?.attributes, doc.attributes);
 
     const onDisk = JSON.parse(readFileSync(path, "utf8"));
     assert.equal(onDisk.url, normalizedJllListingUrl(url));
@@ -231,6 +236,20 @@ test("jll detail cache round-trips through temp dir", () => {
     else process.env.JLL_DETAIL_CACHE_DIR = prev;
     rmSync(cacheDir, { recursive: true, force: true });
   }
+});
+
+test("JLL cache admission honors a run freshness boundary", () => {
+  assert.equal(jllCachedAtMeetsBoundary("2026-07-29T12:00:00Z", undefined), true);
+  assert.equal(
+    jllCachedAtMeetsBoundary("2026-07-29T12:00:00Z", "2026-07-29T11:59:59Z"),
+    true
+  );
+  assert.equal(
+    jllCachedAtMeetsBoundary("2026-07-29T12:00:00Z", "2026-07-29T12:00:01Z"),
+    false
+  );
+  assert.equal(jllCachedAtMeetsBoundary(undefined, "2026-07-29T12:00:00Z"), false);
+  assert.equal(jllCachedAtMeetsBoundary("not-a-date", "2026-07-29T12:00:00Z"), false);
 });
 
 test("readJllDetailCache rejects mismatched url or malformed payload", () => {

@@ -382,8 +382,24 @@ def test_build_sql_media_links_excludes_detail_error_via_child_refresh():
     # clean detail touch (mirrors the images block).
     sql = _sql()
     assert "WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')" in sql
+    assert "$.**.preserveChildCollections ? (@ == true || @ == \"true\")" in sql
     # the media/links INSERTs reference the same _child_refresh gate
     assert sql.count("u.id IN (SELECT id FROM _child_refresh)") >= 5  # contacts, docs, images, media, links
+
+
+def test_dual_pass_preserve_flag_remains_recursively_guarded():
+    sale = _row(_svn(preserveChildCollections=True))
+    lease = _row(
+        _svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+            preserveChildCollections=True,
+        )
+    )
+    merged = merge_rows(sale, lease)
+    assert merged["raw_data"]["primary"]["preserveChildCollections"] is True
+    assert merged["raw_data"]["secondary_pass"]["preserveChildCollections"] is True
+    assert "$.**.preserveChildCollections" in _sql()
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +474,21 @@ def test_detail_error_row_present_but_child_refresh_self_excludes(tmp_path):
     # ...and the _child_refresh gate excludes any detailError-bearing row, so the
     # guarded media/links delete+reinsert never touches it.
     assert "WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')" in sql
+
+
+def test_base_row_preserves_child_collections(tmp_path):
+    payload = {
+        "runMeta": {"mode": "full", "startedAt": _SCRAPED_AT, "finishedAt": _SCRAPED_AT},
+        "brokers": [],
+        "sources": [{"sourceKey": "svn", "transaction": "sale", "listingsCollected": 1}],
+        "listings": [_svn(preserveChildCollections=True)],
+    }
+    art = _write_artifact(payload, tmp_path)
+    rc, stderr, sql = _run_dry(art, tmp_path)
+    assert rc == 0, f"ingestor exited {rc}. stderr:\n{stderr}"
+    assert sql is not None
+    assert "preserveChildCollections" in sql
+    assert "$.**.preserveChildCollections ? (@ == true || @ == \"true\")" in sql
 
 
 def test_media_links_archive_emitted_guarded_on_mark_missing(tmp_path):

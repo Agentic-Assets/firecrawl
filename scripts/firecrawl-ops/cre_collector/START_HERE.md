@@ -30,6 +30,53 @@ python3 -m pytest tests/ -q           # obtain the current pytest count
 npm run test:unit                     # obtain the current TypeScript count
 ```
 
+## Strict listing refresh
+
+Use `cre_checkpoint_refresh.py` for an operator-requested full refresh. It
+collects, admits, gates, dry-runs, and additively ingests one source at a time,
+then retains a resumable manifest. The monolithic `cre_daily_update.sh` remains
+the scheduled backstop, not the proof path for a source-fresh detail sweep.
+
+```bash
+python3 cre_checkpoint_refresh.py \
+  --env-file "$HOME/.config/cre/equire.env"
+
+# Resume the exact run after interruption:
+python3 cre_checkpoint_refresh.py \
+  --resume out/checkpoint-refresh/<run-id> \
+  --env-file "$HOME/.config/cre/equire.env"
+```
+
+The strict runner never passes `--monitor`, `--mark-missing`,
+`--activate-status`, or `--update-baseline`. It uses run-scoped cache
+generations for JLL, Colliers Main, Buildout, and Marcus; forces full Cushman
+detail mode; and enables Avison Young detail collection. Coverage holds prevent
+reconciliation but do not make an additive upsert unsafe.
+
+“All” means the 20 source keys in the current TypeScript collector registry.
+Older active rows whose brokerage is outside that registry are reported by
+`cre_refresh_report.py`, but this runner cannot make those legacy rows
+source-fresh. Add or restore a supported adapter before claiming full-database
+source coverage.
+
+Accordingly, a successful manifest is labeled
+`supported_scope_complete`, not full-database complete.
+
+After the run, create a date-bounded database readback from the exact run start:
+
+```bash
+python3 cre_refresh_report.py \
+  --since <run-start-utc> \
+  --env-file "$HOME/.config/cre/equire.env" \
+  --format markdown \
+  --out /tmp/cre-refresh-report.md
+```
+
+`scraped_at` proves that a row was re-observed and ingested. A strict
+detail-freshness claim additionally requires the run manifest, per-source cache
+generation, zero source errors/truncation, and explicit handling of any
+listing-level `detailError`.
+
 **2026-06-15 (Phase-2 data-lift LIVE).** DDL `011` -> `012` -> `013` -> `014`
 applied to prod (project `fhqycqubkkrdgzswccwd`, schema `credeals`) in order via
 psql (non-pooling, `ON_ERROR_STOP`): `011` added `cre_listing_media` +

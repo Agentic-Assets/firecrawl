@@ -1,0 +1,1304 @@
+#!/usr/bin/env python3
+"""Resumable, source-checkpointed full CRE listing refresh.
+
+Each source is collected into its own artifact, validated fail-closed, checked
+against the live read-only coverage gate, dry-run through the ingestor, and then
+ingested additively.  A manifest is atomically updated after every durable
+transition so an interrupted run can resume without recollecting or reingesting
+already completed sources.
+
+This runner never passes --monitor, --mark-missing, --activate-status, or
+--update-baseline.  It shares the normal CRE tier lock and does not manage
+launchd.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Sequence
+
+from cre_ingest import SOURCE_TO_BROKERAGE, merge_rows, to_row
+
+
+COLLECTOR_DIR = Path(__file__).resolve().parent
+REPO_ROOT = COLLECTOR_DIR.parents[2]
+DEFAULT_OUT_ROOT = COLLECTOR_DIR / "out" / "checkpoint-refresh"
+SCHEMA_VERSION = 1
+SOURCE_KEYS = tuple(SOURCE_TO_BROKERAGE)
+TRANSACTIONS = ("sale", "lease")
+FORBIDDEN_INGEST_FLAGS = {
+    "--mark-missing",
+    "--activate-status",
+    "--no-mark-missing",
+    "--update-baseline",
+}
+
+
+class RefreshError(RuntimeError):
+    """Base runner error."""
+
+
+class ArtifactValidationError(RefreshError):
+    """Collector artifact violated the full-source contract."""
+
+
+class LockHeldError(RefreshError):
+    """Another CRE tier owns the shared lock."""
+
+
+class GlobalStageError(RefreshError):
+    """A shared infrastructure or live-write stage failed."""
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def parse_iso8601(value: Any, *, field: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ArtifactValidationError(f"{field} must be a nonempty ISO-8601 timestamp")
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ArtifactValidationError(f"{field} is not valid ISO-8601") from exc
+    if parsed.tzinfo is None:
+        raise ArtifactValidationError(f"{field} must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw_tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(raw_tmp)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        try:
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw_tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(raw_tmp)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _lock_owner(lock_dir: Path) -> int | None:
+    try:
+        first = (lock_dir / "pid").read_text(encoding="utf-8").split()[0]
+        return int(first)
+    except (FileNotFoundError, IndexError, ValueError, OSError):
+        return None
+
+
+def canonical_shared_lock_dir(repo_root: Path = REPO_ROOT) -> Path:
+    """Resolve the primary checkout's CRE lock, including from a worktree."""
+    common_git_dir = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    primary_checkout = Path(common_git_dir).resolve().parent
+    return (
+        primary_checkout
+        / "scripts"
+        / "firecrawl-ops"
+        / "cre_collector"
+        / "out"
+        / "daily"
+        / ".cre.lock"
+    )
+
+
+@dataclass
+class SharedLock:
+    path: Path
+    held: bool = False
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.path.mkdir()
+        except FileExistsError:
+            owner = _lock_owner(self.path)
+            if owner is None or _pid_alive(owner):
+                detail = "owner is starting" if owner is None else f"live owner pid {owner}"
+                raise LockHeldError(f"CRE lock is held ({detail}): {self.path}")
+            reclaim = Path(f"{self.path}.reclaim")
+            try:
+                reclaim.mkdir()
+            except FileExistsError as exc:
+                raise LockHeldError(f"CRE lock reclamation is already in progress: {self.path}") from exc
+            try:
+                current = _lock_owner(self.path)
+                if current is not None and _pid_alive(current):
+                    raise LockHeldError(f"CRE lock became live during reclaim (pid {current})")
+                shutil.rmtree(self.path, ignore_errors=True)
+                self.path.mkdir()
+            finally:
+                shutil.rmtree(reclaim, ignore_errors=True)
+        (self.path / "pid").write_text(
+            f"{os.getpid()} {int(datetime.now(timezone.utc).timestamp())}\n",
+            encoding="utf-8",
+        )
+        self.held = True
+
+    def release(self) -> None:
+        if self.held and _lock_owner(self.path) == os.getpid():
+            shutil.rmtree(self.path, ignore_errors=True)
+        self.held = False
+
+    def __enter__(self) -> "SharedLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self.release()
+
+
+def build_collect_argv(
+    source: str,
+    output: Path,
+    *,
+    page_cap: int = 400,
+    concurrency: int = 3,
+) -> list[str]:
+    if source not in SOURCE_KEYS:
+        raise ValueError(f"unknown source: {source}")
+    return [
+        "npx",
+        "tsx",
+        "collect.ts",
+        f"--source={source}",
+        "--transaction=both",
+        "--max-items=0",
+        f"--page-cap={page_cap}",
+        f"--concurrency={concurrency}",
+        f"--out={output}",
+    ]
+
+
+def build_gate_argv(artifact: Path, output: Path, env_file: str | None) -> list[str]:
+    argv = [
+        sys.executable,
+        "cre_gate.py",
+        "--in",
+        str(artifact),
+        "--apply",
+        "--strict",
+        "--out",
+        str(output),
+    ]
+    if env_file:
+        argv.extend(["--env-file", env_file])
+    return argv
+
+
+def build_ingest_dry_run_argv(artifact: Path, sql_dir: Path) -> list[str]:
+    return [
+        sys.executable,
+        "cre_ingest.py",
+        "--in",
+        str(artifact),
+        "--dry-run",
+        "--keep-artifacts",
+        str(sql_dir),
+    ]
+
+
+def build_ingest_argv(artifact: Path, env_file: str | None) -> list[str]:
+    argv = [sys.executable, "cre_ingest.py", "--in", str(artifact)]
+    if env_file:
+        argv.extend(["--env-file", env_file])
+    if FORBIDDEN_INGEST_FLAGS.intersection(argv):
+        raise AssertionError("additive ingest argv contains a forbidden flag")
+    return argv
+
+
+def build_validate_argv(output: Path, env_file: str | None) -> list[str]:
+    argv = [
+        sys.executable,
+        "cre_validate.py",
+        "--format",
+        "json",
+        "--out",
+        str(output),
+    ]
+    if env_file:
+        argv.extend(["--env-file", env_file])
+    return argv
+
+
+def safe_process_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    env = dict(os.environ if base is None else base)
+    env.pop("CRE_ACTIVATE_STATUS", None)
+    return env
+
+
+def fresh_source_env(
+    source: str,
+    run_dir: Path,
+    base: Mapping[str, str] | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Return subprocess env plus a nonsecret manifest summary of overrides."""
+    env = safe_process_env(base)
+    overrides: dict[str, str] = {}
+
+    def set_value(name: str, value: str) -> None:
+        env[name] = value
+        overrides[name] = value
+
+    def clear(name: str) -> None:
+        env.pop(name, None)
+        overrides[name] = "<unset>"
+
+    if source in {"svn", "lee-associates", "franklin-street"}:
+        clear("BUILDOUT_CACHE_ONLY")
+        clear("BUILDOUT_ASSEMBLE_FROM_CACHE")
+        clear("BUILDOUT_USE_PAGE_CACHE")
+        clear("BUILDOUT_REFRESH_PAGE_CACHE")
+        set_value("BUILDOUT_CACHE_DIR", str(run_dir / "cache" / "buildout"))
+    if source == "jll":
+        set_value("JLL_DETAIL_CACHE_DIR", str(run_dir / "cache" / "jll-detail"))
+    if source == "jll-investor":
+        set_value("JLL_INVESTOR_SITEMAP_SCAN_LIMIT", "0")
+    if source == "avison-young":
+        set_value("AVISON_YOUNG_DETAIL_LIMIT", "1000000")
+    if source == "cushman-wakefield":
+        clear("CUSHMAN_QUERY")
+        set_value("CUSHMAN_DETAIL_MODE", "full")
+    if source == "colliers-main":
+        set_value(
+            "COLLIERS_MAIN_DETAIL_CACHE_PATH",
+            str(run_dir / "cache" / "colliers-main" / "detail-cache.jsonl"),
+        )
+        set_value("COLLIERS_MAIN_MAX_FETCHES_PER_RUN", "2500")
+        set_value("NODE_OPTIONS", "--max-old-space-size=6144")
+    return env, overrides
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ArtifactValidationError(f"invalid JSON artifact: {path}") from exc
+    if not isinstance(value, dict):
+        raise ArtifactValidationError("artifact must be a JSON object")
+    return value
+
+
+def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, int]:
+    run_meta = data.get("runMeta")
+    if not isinstance(run_meta, dict):
+        raise ArtifactValidationError("runMeta must be an object")
+    scraped_at = run_meta.get("finishedAt")
+    brokers = data.get("brokers")
+    if not isinstance(brokers, list):
+        raise ArtifactValidationError("brokers must be an array")
+    brokers_by_idx = {index: broker for index, broker in enumerate(brokers)}
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    rejected = 0
+    detail_errors = 0
+    listings = data.get("listings")
+    if not isinstance(listings, list):
+        raise ArtifactValidationError("listings must be an array")
+    for index, listing in enumerate(listings):
+        if not isinstance(listing, dict):
+            raise ArtifactValidationError(f"listings[{index}] must be an object")
+        if listing.get("detailError"):
+            detail_errors += 1
+        try:
+            row = to_row(listing, brokers_by_idx, scraped_at)
+        except Exception as exc:
+            raise ArtifactValidationError(f"listings[{index}] failed to_row: {exc}") from exc
+        if row is None:
+            rejected += 1
+            continue
+        key = (row["slug"], row["external_id"])
+        merged[key] = merge_rows(merged[key], row) if key in merged else row
+    return {
+        "flat_listings": len(listings),
+        "staged_unique": len(merged),
+        "rejected_by_ingest": rejected,
+        "detail_errors": detail_errors,
+    }
+
+
+def validate_source_artifact(
+    path: Path,
+    expected_source: str,
+    attempt_started_at: str | datetime,
+) -> dict[str, Any]:
+    if expected_source not in SOURCE_KEYS:
+        raise ArtifactValidationError(f"unknown expected source: {expected_source}")
+    data = _load_json(path)
+    run_meta = data.get("runMeta")
+    if not isinstance(run_meta, dict):
+        raise ArtifactValidationError("runMeta must be an object")
+    if run_meta.get("mode") != "full":
+        raise ArtifactValidationError("runMeta.mode must be 'full'")
+    if run_meta.get("transactions") != list(TRANSACTIONS):
+        raise ArtifactValidationError("runMeta.transactions must be ['sale', 'lease']")
+    if run_meta.get("maxItemsPerSource") is not None:
+        raise ArtifactValidationError("full refresh requires unlimited maxItemsPerSource")
+
+    started = parse_iso8601(run_meta.get("startedAt"), field="runMeta.startedAt")
+    finished = parse_iso8601(run_meta.get("finishedAt"), field="runMeta.finishedAt")
+    attempt = (
+        attempt_started_at.astimezone(timezone.utc)
+        if isinstance(attempt_started_at, datetime)
+        else parse_iso8601(attempt_started_at, field="attempt_started_at")
+    )
+    if finished < started:
+        raise ArtifactValidationError("runMeta.finishedAt precedes startedAt")
+    if started.timestamp() + 5 < attempt.timestamp():
+        raise ArtifactValidationError("artifact predates the current collection attempt")
+
+    entries = data.get("sources")
+    if not isinstance(entries, list) or len(entries) != 2:
+        raise ArtifactValidationError("single-source full artifact must contain two source entries")
+    seen_transactions: set[str] = set()
+    entry_total = 0
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ArtifactValidationError(f"sources[{index}] must be an object")
+        if entry.get("sourceKey") != expected_source:
+            raise ArtifactValidationError(f"sources[{index}] has the wrong sourceKey")
+        tx = entry.get("transaction")
+        if tx not in TRANSACTIONS or tx in seen_transactions:
+            raise ArtifactValidationError("source entries must contain sale and lease exactly once")
+        seen_transactions.add(tx)
+        if entry.get("supported") is not True:
+            raise ArtifactValidationError(f"{expected_source}/{tx} is not supported")
+        if entry.get("error"):
+            raise ArtifactValidationError(f"{expected_source}/{tx} reported an error")
+        if entry.get("truncated") is not False:
+            raise ArtifactValidationError(
+                f"{expected_source}/{tx} must explicitly report truncated=false"
+            )
+        count = entry.get("listingsCollected")
+        if not isinstance(count, int) or count < 0:
+            raise ArtifactValidationError(f"{expected_source}/{tx} has an invalid listing count")
+        entry_total += count
+    if seen_transactions != set(TRANSACTIONS):
+        raise ArtifactValidationError("source entries are missing sale or lease")
+
+    listings = data.get("listings")
+    if not isinstance(listings, list) or not listings:
+        raise ArtifactValidationError("full source artifact must contain listings")
+    if data.get("totalListings") != len(listings):
+        raise ArtifactValidationError("totalListings does not match listings length")
+    if entry_total != len(listings):
+        raise ArtifactValidationError("source entry counts do not match listings length")
+    for index, listing in enumerate(listings):
+        if not isinstance(listing, dict):
+            raise ArtifactValidationError(f"listings[{index}] must be an object")
+        if listing.get("sourceKey") != expected_source:
+            raise ArtifactValidationError(f"listings[{index}] has the wrong sourceKey")
+        if listing.get("transactionMode") not in TRANSACTIONS:
+            raise ArtifactValidationError(f"listings[{index}] has an invalid transactionMode")
+
+    stats = compute_staged_stats(data)
+    if stats["rejected_by_ingest"]:
+        raise ArtifactValidationError(
+            f"{stats['rejected_by_ingest']} listing(s) would be rejected by ingest"
+        )
+    if stats["detail_errors"]:
+        raise ArtifactValidationError(
+            f"{stats['detail_errors']} listing(s) contain detailError"
+        )
+    if stats["staged_unique"] <= 0:
+        raise ArtifactValidationError("artifact has no usable unique rows")
+    return {
+        **stats,
+        "started_at": started.isoformat(),
+        "finished_at": finished.isoformat(),
+        "sha256": sha256_file(path),
+        "bytes": path.stat().st_size,
+    }
+
+
+def run_command(
+    argv: Sequence[str],
+    log_path: Path,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> int:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write(f"[{utc_now()}] command: {' '.join(argv)}\n")
+        log.flush()
+        proc = subprocess.run(
+            list(argv),
+            cwd=COLLECTOR_DIR,
+            env=dict(env) if env is not None else None,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        log.write(f"[{utc_now()}] rc={proc.returncode}\n")
+    return proc.returncode
+
+
+def git_identity() -> tuple[str, bool]:
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dirty = bool(
+        subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    return sha, dirty
+
+
+def new_manifest(
+    run_dir: Path,
+    *,
+    git_sha: str,
+    git_dirty: bool,
+    sources: Sequence[str],
+    page_cap: int,
+    concurrency: int,
+) -> dict[str, Any]:
+    now = utc_now()
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_dir.name,
+        "status": "running",
+        "started_at": now,
+        "updated_at": now,
+        "finished_at": None,
+        "collector_git_sha": git_sha,
+        "collector_git_dirty": git_dirty,
+        "scope": {
+            "kind": "collector_registry",
+            "source_keys": list(sources),
+            "unsupported_active_rows_before": None,
+        },
+        "config": {
+            "sources": list(sources),
+            "transactions": list(TRANSACTIONS),
+            "max_items": 0,
+            "page_cap": page_cap,
+            "concurrency": concurrency,
+            "additive": True,
+            "status_activation": False,
+            "mark_missing": False,
+        },
+        "preflight": {},
+        "sources": {
+            source: {
+                "state": "pending",
+                "attempts": [],
+                "artifact": None,
+                "gate": None,
+                "dry_run": None,
+                "ingest": None,
+                "readback": None,
+            }
+            for source in sources
+        },
+        "aggregate_gate": None,
+        "validation": None,
+        "error": None,
+    }
+
+
+def load_resume_manifest(
+    manifest_path: Path,
+    *,
+    git_sha: str,
+    sources: Sequence[str],
+    page_cap: int,
+    concurrency: int,
+) -> dict[str, Any]:
+    value = _load_json(manifest_path)
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise RefreshError("unsupported checkpoint manifest schema")
+    if value.get("collector_git_sha") != git_sha:
+        raise RefreshError("cannot resume with a different collector Git SHA")
+    expected = {
+        "sources": list(sources),
+        "transactions": list(TRANSACTIONS),
+        "max_items": 0,
+        "page_cap": page_cap,
+        "concurrency": concurrency,
+        "additive": True,
+        "status_activation": False,
+        "mark_missing": False,
+    }
+    if value.get("config") != expected:
+        raise RefreshError("resume configuration differs from the manifest")
+    if not isinstance(value.get("sources"), dict):
+        raise RefreshError("manifest sources checkpoint map is missing")
+    return value
+
+
+def save_manifest(run_dir: Path, manifest: dict[str, Any]) -> None:
+    manifest["updated_at"] = utc_now()
+    atomic_write_json(run_dir / "manifest.json", manifest)
+
+
+def _relative_to_run(path: Path, run_dir: Path) -> str:
+    return str(path.relative_to(run_dir))
+
+
+def _archive_rejected(tmp_artifact: Path, run_dir: Path, source: str, attempt_number: int) -> str | None:
+    if not tmp_artifact.exists():
+        return None
+    rejected = run_dir / "rejected" / f"{source}-attempt-{attempt_number}.json"
+    rejected.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(tmp_artifact, rejected)
+    return _relative_to_run(rejected, run_dir)
+
+
+def _checkpoint_artifact_valid(
+    run_dir: Path,
+    checkpoint: Mapping[str, Any],
+    source: str,
+) -> tuple[Path, dict[str, Any]] | None:
+    artifact_info = checkpoint.get("artifact")
+    if not isinstance(artifact_info, dict):
+        return None
+    rel = artifact_info.get("path")
+    expected_hash = artifact_info.get("sha256")
+    if not isinstance(rel, str) or not isinstance(expected_hash, str):
+        return None
+    path = run_dir / rel
+    if not path.is_file() or sha256_file(path) != expected_hash:
+        return None
+    attempt_started = artifact_info.get("attempt_started_at") or artifact_info.get("started_at")
+    try:
+        stats = validate_source_artifact(path, source, attempt_started)
+    except ArtifactValidationError:
+        return None
+    return path, stats
+
+
+def collect_source(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    source: str,
+    *,
+    page_cap: int,
+    concurrency: int,
+    attempts_this_run: int,
+) -> tuple[Path, dict[str, Any]] | None:
+    checkpoint = manifest["sources"][source]
+    existing = _checkpoint_artifact_valid(run_dir, checkpoint, source)
+    if existing:
+        return existing
+
+    canonical = run_dir / "sources" / f"{source}.json"
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    tmp_artifact = canonical.with_suffix(".json.tmp")
+    for _ in range(attempts_this_run):
+        attempt_number = len(checkpoint["attempts"]) + 1
+        attempt_started = utc_now()
+        attempt_log = run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
+        tmp_artifact.unlink(missing_ok=True)
+        env, overrides = fresh_source_env(source, run_dir)
+        attempt = {
+            "number": attempt_number,
+            "started_at": attempt_started,
+            "finished_at": None,
+            "rc": None,
+            "log": _relative_to_run(attempt_log, run_dir),
+            "freshness_overrides": {
+                key: ("<run-local-path>" if str(run_dir) in value else value)
+                for key, value in overrides.items()
+            },
+            "rejected_artifact": None,
+            "error": None,
+        }
+        checkpoint["attempts"].append(attempt)
+        checkpoint["state"] = "collecting"
+        save_manifest(run_dir, manifest)
+        rc = run_command(
+            build_collect_argv(
+                source,
+                tmp_artifact,
+                page_cap=page_cap,
+                concurrency=concurrency,
+            ),
+            attempt_log,
+            env=env,
+        )
+        attempt["rc"] = rc
+        attempt["finished_at"] = utc_now()
+        if rc != 0:
+            attempt["error"] = f"collector exited {rc}"
+            attempt["rejected_artifact"] = _archive_rejected(
+                tmp_artifact, run_dir, source, attempt_number
+            )
+            checkpoint["state"] = "collect_failed"
+            save_manifest(run_dir, manifest)
+            continue
+        try:
+            stats = validate_source_artifact(tmp_artifact, source, attempt_started)
+        except ArtifactValidationError as exc:
+            attempt["error"] = str(exc)
+            attempt["rejected_artifact"] = _archive_rejected(
+                tmp_artifact, run_dir, source, attempt_number
+            )
+            checkpoint["state"] = "artifact_rejected"
+            save_manifest(run_dir, manifest)
+            continue
+        os.replace(tmp_artifact, canonical)
+        stats["sha256"] = sha256_file(canonical)
+        stats["bytes"] = canonical.stat().st_size
+        checkpoint["artifact"] = {
+            **stats,
+            "path": _relative_to_run(canonical, run_dir),
+            "attempt_started_at": attempt_started,
+        }
+        checkpoint["state"] = "validated"
+        save_manifest(run_dir, manifest)
+        return canonical, stats
+    return None
+
+
+def gate_source(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    source: str,
+    artifact: Path,
+    env_file: str | None,
+) -> None:
+    checkpoint = manifest["sources"][source]
+    gate_path = run_dir / "gates" / f"{source}.json"
+    log_path = run_dir / "logs" / f"{source}-gate.log"
+    gate_path.parent.mkdir(parents=True, exist_ok=True)
+    rc = run_command(
+        build_gate_argv(artifact, gate_path, env_file),
+        log_path,
+        env=safe_process_env(),
+    )
+    if rc not in (0, 2):
+        checkpoint["state"] = "gate_failed"
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError(f"coverage gate infrastructure failed for {source} (rc={rc})")
+    try:
+        result = _load_json(gate_path)
+        per_source = result["per_source"][source]
+    except (ArtifactValidationError, KeyError, TypeError) as exc:
+        checkpoint["state"] = "gate_failed"
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError(f"coverage gate output is invalid for {source}") from exc
+    checkpoint["gate"] = {
+        "path": _relative_to_run(gate_path, run_dir),
+        "log": _relative_to_run(log_path, run_dir),
+        "rc": rc,
+        "verdict": per_source.get("verdict"),
+        "reason": per_source.get("reason"),
+        "mark_missing_safe": per_source.get("mark_missing_safe") is True,
+    }
+    checkpoint["state"] = "gated"
+    save_manifest(run_dir, manifest)
+
+
+def dry_run_source(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    source: str,
+    artifact: Path,
+) -> bool:
+    checkpoint = manifest["sources"][source]
+    sql_dir = run_dir / "dry-run" / source
+    log_path = run_dir / "logs" / f"{source}-ingest-dry-run.log"
+    shutil.rmtree(sql_dir, ignore_errors=True)
+    rc = run_command(
+        build_ingest_dry_run_argv(artifact, sql_dir),
+        log_path,
+        env=safe_process_env(),
+    )
+    sql_path = sql_dir / "ingest.sql"
+    sql_info = None
+    if sql_path.is_file():
+        sql_info = {"sha256": sha256_file(sql_path), "bytes": sql_path.stat().st_size}
+        sql_path.unlink()
+    checkpoint["dry_run"] = {
+        "rc": rc,
+        "log": _relative_to_run(log_path, run_dir),
+        "sql": sql_info,
+    }
+    if rc != 0:
+        checkpoint["state"] = "dry_run_failed"
+        save_manifest(run_dir, manifest)
+        return False
+    checkpoint["state"] = "dry_run_passed"
+    save_manifest(run_dir, manifest)
+    return True
+
+
+def ingest_source(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    source: str,
+    artifact: Path,
+    env_file: str | None,
+) -> None:
+    checkpoint = manifest["sources"][source]
+    log_path = run_dir / "logs" / f"{source}-ingest.log"
+    started = utc_now()
+    argv = build_ingest_argv(artifact, env_file)
+    rc = run_command(argv, log_path, env=safe_process_env())
+    checkpoint["ingest"] = {
+        "started_at": started,
+        "finished_at": utc_now(),
+        "rc": rc,
+        "log": _relative_to_run(log_path, run_dir),
+        "additive": True,
+        "status_activation": False,
+        "mark_missing": False,
+    }
+    if rc != 0:
+        checkpoint["state"] = "ingest_failed"
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError(f"additive ingest failed for {source} (rc={rc})")
+    checkpoint["state"] = "ingested"
+    save_manifest(run_dir, manifest)
+
+
+def advance_source(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    source: str,
+    *,
+    page_cap: int,
+    concurrency: int,
+    attempts_this_run: int,
+    env_file: str | None,
+) -> bool:
+    checkpoint = manifest["sources"][source]
+    existing = _checkpoint_artifact_valid(run_dir, checkpoint, source)
+    if checkpoint.get("state") == "ingested" and existing:
+        return True
+    collected = existing or collect_source(
+        run_dir,
+        manifest,
+        source,
+        page_cap=page_cap,
+        concurrency=concurrency,
+        attempts_this_run=attempts_this_run,
+    )
+    if not collected:
+        return False
+    artifact, _stats = collected
+    gate_source(run_dir, manifest, source, artifact, env_file)
+    if not dry_run_source(run_dir, manifest, source, artifact):
+        return False
+    ingest_source(run_dir, manifest, source, artifact, env_file)
+    return True
+
+
+def run_aggregate_gate(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    env_file: str | None,
+) -> None:
+    artifacts = [
+        run_dir / manifest["sources"][source]["artifact"]["path"]
+        for source in manifest["config"]["sources"]
+    ]
+    output = run_dir / "aggregate-gate.json"
+    log = run_dir / "logs" / "aggregate-gate.log"
+    argv = [sys.executable, "cre_gate.py"]
+    for artifact in artifacts:
+        argv.extend(["--in", str(artifact)])
+    argv.extend(["--apply", "--strict", "--out", str(output)])
+    if env_file:
+        argv.extend(["--env-file", env_file])
+    rc = run_command(argv, log, env=safe_process_env())
+    if rc not in (0, 2):
+        raise GlobalStageError(f"aggregate coverage gate failed (rc={rc})")
+    result = _load_json(output)
+    per_source = result.get("per_source") or {}
+    configured_sources = set(manifest["config"]["sources"])
+    observed_sources = set(per_source) if isinstance(per_source, dict) else set()
+    non_ok_sources = sorted(
+        configured_sources - observed_sources
+        | {
+        source
+        for source, info in per_source.items()
+        if not isinstance(info, dict) or info.get("verdict") != "ok"
+        }
+    )
+    manifest["aggregate_gate"] = {
+        "path": _relative_to_run(output, run_dir),
+        "log": _relative_to_run(log, run_dir),
+        "rc": rc,
+        "hold_sources": (result.get("summary") or {}).get("hold_sources") or [],
+        "non_ok_sources": non_ok_sources,
+        "mark_missing_safe_brokerages": (
+            (result.get("summary") or {}).get("mark_missing_safe_brokerages") or []
+        ),
+    }
+    save_manifest(run_dir, manifest)
+    if non_ok_sources:
+        raise RefreshError(
+            "aggregate coverage gate is not established for source(s): "
+            + ", ".join(non_ok_sources)
+        )
+
+
+def _timestamp_second(value: str) -> datetime:
+    return parse_iso8601(value, field="timestamp").replace(microsecond=0)
+
+
+def verify_validation_readback(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    validation: Mapping[str, Any],
+) -> dict[str, Any]:
+    queries = validation.get("queries")
+    rows = queries.get("source_counts") if isinstance(queries, dict) else None
+    if not isinstance(rows, list):
+        raise GlobalStageError("validation source_counts readback is missing")
+    by_source = {
+        row.get("source_key"): row
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("source_key"), str)
+    }
+    failures: list[str] = []
+    for source in manifest["config"]["sources"]:
+        checkpoint = manifest["sources"][source]
+        artifact = checkpoint.get("artifact") or {}
+        row = by_source.get(source)
+        if row is None:
+            checkpoint["readback"] = {"ok": False, "reason": "source missing from validation"}
+            failures.append(source)
+            continue
+        try:
+            latest = _timestamp_second(row["latest_scraped_at"])
+            expected = _timestamp_second(artifact["finished_at"])
+            latest_count = int(row["latest_batch_active"])
+            staged = int(artifact["staged_unique"])
+        except (KeyError, TypeError, ValueError, ArtifactValidationError):
+            checkpoint["readback"] = {"ok": False, "reason": "malformed validation row"}
+            failures.append(source)
+            continue
+        ok = latest >= expected and latest_count == staged
+        reason = None
+        if latest < expected:
+            reason = f"latest scrape {latest.isoformat()} predates artifact {expected.isoformat()}"
+        elif latest_count != staged:
+            reason = f"latest batch {latest_count} != staged unique {staged}"
+        checkpoint["readback"] = {
+            "ok": ok,
+            "latest_scraped_at": row["latest_scraped_at"],
+            "latest_batch_active": latest_count,
+            "expected_staged_unique": staged,
+            "reason": reason,
+        }
+        if not ok:
+            failures.append(source)
+    save_manifest(run_dir, manifest)
+    return {"ok": not failures, "failed_sources": failures}
+
+
+def run_final_validation(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    env_file: str | None,
+) -> None:
+    output = run_dir / "validation.json"
+    log = run_dir / "logs" / "validation.log"
+    rc = run_command(
+        build_validate_argv(output, env_file),
+        log,
+        env=safe_process_env(),
+    )
+    if rc != 0:
+        raise GlobalStageError(f"final validation failed (rc={rc})")
+    result = _load_json(output)
+    before_rel = (manifest.get("preflight") or {}).get("validation_path")
+    if not isinstance(before_rel, str):
+        raise GlobalStageError("pre-refresh validation snapshot is missing")
+    before = _load_json(run_dir / before_rel)
+    quality = compare_validation_quality(before, result)
+    readback = verify_validation_readback(run_dir, manifest, result)
+    manifest["validation"] = {
+        "path": _relative_to_run(output, run_dir),
+        "log": _relative_to_run(log, run_dir),
+        "rc": rc,
+        "query_execution_ok": result.get("ok") is True,
+        "quality_no_regression": quality["ok"],
+        "quality_failures": quality["failures"],
+        "readback_ok": readback["ok"],
+        "failed_readback_sources": readback["failed_sources"],
+    }
+    save_manifest(run_dir, manifest)
+    if result.get("ok") is not True or not quality["ok"] or not readback["ok"]:
+        raise GlobalStageError("final validation or per-source freshness readback failed")
+
+
+def _int_value(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _rows_by(rows: Any, keys: Sequence[str]) -> dict[tuple[str, ...], Mapping[str, Any]]:
+    if not isinstance(rows, list):
+        return {}
+    return {
+        tuple(str(row.get(key) or "") for key in keys): row
+        for row in rows
+        if isinstance(row, dict)
+    }
+
+
+def compare_validation_quality(
+    before: Mapping[str, Any], after: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Reject newly introduced hard defects or severe child-data loss."""
+    before_queries = before.get("queries") if isinstance(before.get("queries"), dict) else {}
+    after_queries = after.get("queries") if isinstance(after.get("queries"), dict) else {}
+    failures: list[str] = []
+
+    count_specs = (
+        ("duplicates", ("check_name", "source_key"), ("groups", "rows")),
+        ("bad_child_urls", ("check_name",), ("count",)),
+        ("orphans", ("child_type",), ("orphan_rows",)),
+        (
+            "quality_by_source",
+            ("source_key",),
+            (
+                "bad_source_url",
+                "invalid_state",
+                "impossible_lat",
+                "impossible_lng",
+                "sale_psf_flags",
+                "lease_rate_flags",
+                "cap_rate_flags",
+            ),
+        ),
+    )
+    for query, keys, fields in count_specs:
+        old = _rows_by(before_queries.get(query), keys)
+        new = _rows_by(after_queries.get(query), keys)
+        for identity, row in new.items():
+            prior = old.get(identity, {})
+            for field in fields:
+                old_value = _int_value(prior.get(field))
+                new_value = _int_value(row.get(field))
+                if new_value > old_value:
+                    failures.append(
+                        f"{query}/{identity}/{field} increased {old_value}->{new_value}"
+                    )
+
+    old_children = _rows_by(
+        before_queries.get("child_counts"), ("source_key", "child_type")
+    )
+    new_children = _rows_by(
+        after_queries.get("child_counts"), ("source_key", "child_type")
+    )
+    for identity, prior in old_children.items():
+        old_count = _int_value(prior.get("count"))
+        new_count = _int_value(new_children.get(identity, {}).get("count"))
+        if old_count >= 10 and new_count < int(old_count * 0.7):
+            failures.append(
+                f"child_counts/{identity} fell more than 30%: {old_count}->{new_count}"
+            )
+
+    for row in after_queries.get("search_smoke") or []:
+        if isinstance(row, dict) and _int_value(row.get("rows")) <= 0:
+            failures.append(f"search_smoke/{row.get('smoke')} returned zero rows")
+    return {"ok": not failures, "failures": failures}
+
+
+def record_scope_from_validation(
+    manifest: dict[str, Any], validation: Mapping[str, Any]
+) -> None:
+    rows = ((validation.get("queries") or {}).get("source_counts") or [])
+    supported = set(manifest["config"]["sources"])
+    unsupported = sum(
+        _int_value(row.get("active"))
+        for row in rows
+        if isinstance(row, dict) and row.get("source_key") not in supported
+    )
+    manifest["scope"]["unsupported_active_rows_before"] = unsupported
+
+
+def render_report(manifest: Mapping[str, Any]) -> str:
+    lines = [
+        "# CRE checkpoint refresh report",
+        "",
+        f"- Run: `{manifest.get('run_id')}`",
+        f"- Status: `{manifest.get('status')}`",
+        f"- Started: `{manifest.get('started_at')}`",
+        f"- Finished: `{manifest.get('finished_at') or ''}`",
+        f"- Collector SHA: `{manifest.get('collector_git_sha')}`",
+        "- Write mode: additive only; status activation and mark-missing disabled.",
+        "",
+        "| Source | State | Flat | Staged | Gate | Readback |",
+        "| --- | --- | ---: | ---: | --- | --- |",
+    ]
+    sources = manifest.get("sources") or {}
+    for source in (manifest.get("config") or {}).get("sources") or []:
+        checkpoint = sources.get(source) or {}
+        artifact = checkpoint.get("artifact") or {}
+        gate = checkpoint.get("gate") or {}
+        readback = checkpoint.get("readback") or {}
+        lines.append(
+            f"| {source} | {checkpoint.get('state', '')} | "
+            f"{artifact.get('flat_listings', '')} | {artifact.get('staged_unique', '')} | "
+            f"{gate.get('verdict', '')} | "
+            f"{'ok' if readback.get('ok') is True else (readback.get('reason') or '')} |"
+        )
+    aggregate = manifest.get("aggregate_gate") or {}
+    validation = manifest.get("validation") or {}
+    lines.extend(
+        [
+            "",
+            "## Final gates",
+            "",
+            f"- Coverage holds: `{aggregate.get('hold_sources', [])}`",
+            f"- Validation query execution: `{validation.get('query_execution_ok')}`",
+            f"- Validation quality regression check: `{validation.get('quality_no_regression')}`",
+            f"- Per-source ingest readback: `{validation.get('readback_ok')}`",
+            f"- Unsupported active rows outside this run: "
+            f"`{(manifest.get('scope') or {}).get('unsupported_active_rows_before')}`",
+            "",
+        ]
+    )
+    if manifest.get("error"):
+        lines.extend(["## Error", "", str(manifest["error"]), ""])
+    return "\n".join(lines)
+
+
+def parse_sources(raw: str) -> tuple[str, ...]:
+    if raw.strip().lower() == "all":
+        return SOURCE_KEYS
+    values = tuple(part.strip().lower() for part in raw.split(",") if part.strip())
+    unknown = [source for source in values if source not in SOURCE_KEYS]
+    if not values or unknown or len(values) != len(set(values)):
+        raise ValueError(f"invalid source selection; unknown/duplicate values: {unknown or values}")
+    return values
+
+
+def _run_id() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--resume", default=None, help="existing run directory or manifest.json")
+    parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
+    parser.add_argument("--env-file", default=None)
+    parser.add_argument("--sources", default="all")
+    parser.add_argument("--page-cap", type=int, default=400)
+    parser.add_argument("--concurrency", type=int, default=3)
+    parser.add_argument("--attempts-per-source", type=int, default=3)
+    parser.add_argument(
+        "--lock-dir",
+        default=None,
+        help="shared CRE lock path; defaults to the primary checkout lock even from a worktree",
+    )
+    parser.add_argument("--allow-dirty", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.page_cap < 1 or not 1 <= args.concurrency <= 6:
+        parser.error("page-cap must be positive and concurrency must be between 1 and 6")
+    if args.attempts_per_source < 1:
+        parser.error("attempts-per-source must be positive")
+    try:
+        sources = parse_sources(args.sources)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    git_sha, git_dirty = git_identity()
+    if git_dirty and not args.allow_dirty:
+        raise RefreshError("refusing operational refresh from a dirty checkout")
+    if args.resume:
+        supplied = Path(args.resume).expanduser().resolve()
+        manifest_path = supplied if supplied.name == "manifest.json" else supplied / "manifest.json"
+        run_dir = manifest_path.parent
+        manifest = load_resume_manifest(
+            manifest_path,
+            git_sha=git_sha,
+            sources=sources,
+            page_cap=args.page_cap,
+            concurrency=args.concurrency,
+        )
+        manifest["status"] = "running"
+        manifest["error"] = None
+    else:
+        run_dir = Path(args.out_root).expanduser().resolve() / _run_id()
+        if run_dir.exists():
+            raise RefreshError(f"run directory already exists: {run_dir}")
+        run_dir.mkdir(parents=True)
+        manifest = new_manifest(
+            run_dir,
+            git_sha=git_sha,
+            git_dirty=git_dirty,
+            sources=sources,
+            page_cap=args.page_cap,
+            concurrency=args.concurrency,
+        )
+    save_manifest(run_dir, manifest)
+
+    lock_dir = (
+        Path(args.lock_dir).expanduser().resolve()
+        if args.lock_dir
+        else canonical_shared_lock_dir()
+    )
+    lock = SharedLock(lock_dir)
+    try:
+        with lock:
+            health_log = run_dir / "logs" / "healthcheck.log"
+            health_rc = run_command(
+                ["bash", str(REPO_ROOT / "scripts/firecrawl-ops/firecrawl_healthcheck.sh")],
+                health_log,
+                env=safe_process_env(),
+            )
+            manifest["preflight"].update(
+                {
+                    "healthcheck_rc": health_rc,
+                    "healthcheck_log": _relative_to_run(health_log, run_dir),
+                    "shared_lock": str(lock_dir),
+                }
+            )
+            save_manifest(run_dir, manifest)
+            if health_rc != 0:
+                raise GlobalStageError(f"Firecrawl healthcheck failed (rc={health_rc})")
+
+            pre_validation = run_dir / "pre-validation.json"
+            pre_validation_log = run_dir / "logs" / "pre-validation.log"
+            recorded_pre_hash = manifest["preflight"].get("validation_sha256")
+            if recorded_pre_hash:
+                if (
+                    not pre_validation.is_file()
+                    or sha256_file(pre_validation) != recorded_pre_hash
+                ):
+                    raise GlobalStageError("pre-refresh validation snapshot changed")
+                pre_result = _load_json(pre_validation)
+            else:
+                pre_rc = run_command(
+                    build_validate_argv(pre_validation, args.env_file),
+                    pre_validation_log,
+                    env=safe_process_env(),
+                )
+                if pre_rc != 0:
+                    raise GlobalStageError(f"pre-refresh validation failed (rc={pre_rc})")
+                pre_result = _load_json(pre_validation)
+                manifest["preflight"].update(
+                    {
+                        "validation_rc": pre_rc,
+                        "validation_path": _relative_to_run(pre_validation, run_dir),
+                        "validation_log": _relative_to_run(pre_validation_log, run_dir),
+                        "validation_sha256": sha256_file(pre_validation),
+                    }
+                )
+            record_scope_from_validation(manifest, pre_result)
+            save_manifest(run_dir, manifest)
+
+            source_failures: list[str] = []
+            for source in sources:
+                ok = advance_source(
+                    run_dir,
+                    manifest,
+                    source,
+                    page_cap=args.page_cap,
+                    concurrency=args.concurrency,
+                    attempts_this_run=args.attempts_per_source,
+                    env_file=args.env_file,
+                )
+                if not ok:
+                    source_failures.append(source)
+            if source_failures:
+                raise RefreshError(
+                    "source checkpoints remain incomplete: " + ", ".join(source_failures)
+                )
+            run_aggregate_gate(run_dir, manifest, args.env_file)
+            run_final_validation(run_dir, manifest, args.env_file)
+            manifest["status"] = "supported_scope_complete"
+            manifest["finished_at"] = utc_now()
+            manifest["error"] = None
+            save_manifest(run_dir, manifest)
+            atomic_write_text(run_dir / "report.md", render_report(manifest))
+            print(run_dir)
+            return 0
+    except KeyboardInterrupt:
+        manifest["status"] = "interrupted"
+        manifest["error"] = "operator interruption"
+        save_manifest(run_dir, manifest)
+        atomic_write_text(run_dir / "report.md", render_report(manifest))
+        return 130
+    except Exception as exc:
+        manifest["status"] = "failed"
+        manifest["error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+        save_manifest(run_dir, manifest)
+        atomic_write_text(run_dir / "report.md", render_report(manifest))
+        raise
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -28,7 +28,9 @@ export const CUSHMAN_DETAIL_CONCURRENCY = boundedInt(
 // additive refresh: it avoids rendering every detail page while preserving
 // existing detail fields through the ingest merge. Normal collection remains
 // `full` so it continues to harvest optional page-only facts.
-export const CUSHMAN_DETAIL_MODE = process.env.CUSHMAN_DETAIL_MODE === "base" ? "base" : "full";
+export function cushmanUseBaseRows(monitor: boolean): boolean {
+  return monitor || process.env.CUSHMAN_DETAIL_MODE === "base";
+}
 
 export function canonicalCushmanUrl(url: string | null): string | null {
   if (!url) return null;
@@ -265,6 +267,16 @@ export function baseCushmanListing(row: any, tx: Tx): any {
   };
 }
 
+export function cushmanBaseRefreshListing(row: any, tx: Tx): any {
+  return {
+    ...baseCushmanListing(row, tx),
+    // The API-only path is intentionally incomplete. Tell ingestion to
+    // preserve previously harvested contacts/documents/images/media/links
+    // instead of treating omitted arrays as authoritative empty arrays.
+    preserveChildCollections: true,
+  };
+}
+
 export async function enrichCushmanListing(row: any, tx: Tx): Promise<any> {
   const base = baseCushmanListing(row, tx);
   if (!base.url) return base;
@@ -401,9 +413,9 @@ export async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise
   // Monitor mode and explicit API-base recovery both skip per-listing rendering.
   // The base API mapping preserves the canonical identity and core inventory
   // fields; additive ingestion retains previously captured detail-only values.
-  const useBaseRows = monitor || CUSHMAN_DETAIL_MODE === "base";
+  const useBaseRows = cushmanUseBaseRows(monitor);
   const listings = useBaseRows
-    ? rows.map((row) => baseCushmanListing(row, tx))
+    ? rows.map((row) => cushmanBaseRefreshListing(row, tx))
     : await pmap(rows, CUSHMAN_DETAIL_CONCURRENCY, async (row) => {
         const enriched = await enrichCushmanListing(row, tx);
         done++;

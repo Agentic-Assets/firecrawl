@@ -17,6 +17,8 @@ import {
   colliersMainDetailCachePath,
   readColliersMainCache,
   appendColliersMainCache,
+  colliersMainCachedListingIsCurrent,
+  colliersMainDetailPassTruncated,
   parseColliersMainDetail,
   type ColliersMainEntry,
 } from "../../../sources/colliers-main.js";
@@ -186,7 +188,41 @@ test("colliersMainJsonLd extracts RealEstateListing JSON-LD from HTML", () => {
 });
 
 test("colliersMainDetailCachePath returns durable cache location", () => {
-  assert.equal(colliersMainDetailCachePath(), "out/cache/colliers-main/detail-cache.jsonl");
+  const previous = process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH;
+  try {
+    delete process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH;
+    assert.equal(colliersMainDetailCachePath(), "out/cache/colliers-main/detail-cache.jsonl");
+    process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH = "out/cache/colliers-main/fresh-2026-07-29.jsonl";
+    assert.equal(
+      colliersMainDetailCachePath(),
+      "out/cache/colliers-main/fresh-2026-07-29.jsonl"
+    );
+  } finally {
+    if (previous === undefined) delete process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH;
+    else process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH = previous;
+  }
+});
+
+test("Colliers cache reuse follows live sitemap lastmod", () => {
+  const cached = { lastUpdated: "2026-07-28", name: "Listing" };
+  assert.equal(
+    colliersMainCachedListingIsCurrent(entry("usa1", "https://example.test/1", "2026-07-28"), cached),
+    true
+  );
+  assert.equal(
+    colliersMainCachedListingIsCurrent(entry("usa1", "https://example.test/1", "2026-07-29"), cached),
+    false
+  );
+  assert.equal(
+    colliersMainCachedListingIsCurrent(entry("usa1", "https://example.test/1", null), cached),
+    true
+  );
+});
+
+test("Colliers detail pass is truncated while work is deferred or errored", () => {
+  assert.equal(colliersMainDetailPassTruncated({ errors: 0, deferred: 0 }), false);
+  assert.equal(colliersMainDetailPassTruncated({ errors: 1, deferred: 0 }), true);
+  assert.equal(colliersMainDetailPassTruncated({ errors: 0, deferred: 1 }), true);
 });
 
 test("readColliersMainCache and appendColliersMainCache round-trip JSONL rows", () => {

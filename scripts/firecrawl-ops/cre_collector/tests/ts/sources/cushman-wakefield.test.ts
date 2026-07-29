@@ -25,6 +25,8 @@ import {
   extractCushmanAssetUrls,
   baseCushmanListing,
   baseCushmanExtraFacts,
+  cushmanUseBaseRows,
+  cushmanBaseRefreshListing,
 } from "../../../sources/cushman-wakefield.js";
 import { parseLeaseRate } from "../../../lib/parse.js";
 
@@ -205,6 +207,28 @@ test("baseCushmanListing maps API rows into the shared listing shape", () => {
   assert.equal(listing.photos.length, 1);
   assert.match(listing.photos[0], /card\.webp/);
   assert.equal(listing.salePriceText, null);
+});
+
+test("API-base mode selection is explicit and monitor-safe", () => {
+  const previousMode = process.env.CUSHMAN_DETAIL_MODE;
+  try {
+    delete process.env.CUSHMAN_DETAIL_MODE;
+    assert.equal(cushmanUseBaseRows(false), false);
+    assert.equal(cushmanUseBaseRows(true), true);
+    process.env.CUSHMAN_DETAIL_MODE = "base";
+    assert.equal(cushmanUseBaseRows(false), true);
+  } finally {
+    if (previousMode === undefined) delete process.env.CUSHMAN_DETAIL_MODE;
+    else process.env.CUSHMAN_DETAIL_MODE = previousMode;
+  }
+});
+
+test("API-base refresh rows preserve previously harvested child collections", () => {
+  const listing = cushmanBaseRefreshListing(
+    { id: "cw-base-1", url: "/en/properties/cw-base-1" },
+    "sale"
+  );
+  assert.equal(listing.preserveChildCollections, true);
 });
 
 test("baseCushmanListing uses sale defaults on the sale pass", () => {
