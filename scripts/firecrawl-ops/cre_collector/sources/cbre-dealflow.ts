@@ -305,15 +305,55 @@ export function parseCbreDealflowDetailData(html: string): any | null {
   }
 }
 
-export function cbreDealflowDetailUnavailableReason(html: string): string | null {
-  const text = cbreDealflowTextFromHtml(html)?.toLowerCase() ?? "";
+function cbreDealflowComparableName(value: string | null | undefined): string {
+  return (clean(value)?.toLowerCase() ?? "").replace(/[^a-z0-9]+/g, "");
+}
+
+export function cbreDealflowDetailUnavailableReason(
+  html: string,
+  expectedName?: string | null
+): string | null {
+  const $ = cheerio.load(html);
+  const body = $("body").clone();
+  body.find("script, style").remove();
+  const text = clean(body.text())?.toLowerCase() ?? "";
   if (
     text.includes("landing page executive summary has been enabled") &&
     text.includes("landing page has not been setup")
   ) {
     return "landing_not_setup";
   }
+  const title = clean($("title").first().text())?.toLowerCase() ?? "";
+  const propertyTitle = clean(title.split("|")[0]);
+  const pagePropertyName = clean($("#ProjectName").first().text());
+  const comparableExpectedName = cbreDealflowComparableName(expectedName);
+  if (
+    propertyTitle &&
+    propertyTitle.length >= 4 &&
+    comparableExpectedName &&
+    cbreDealflowComparableName(pagePropertyName) === comparableExpectedName &&
+    /\|\s*cbre\s*\|\s*powered by lightbox\b/i.test(title) &&
+    $("#ProjectNameAndAddress").length === 1 &&
+    $("#Content").length === 1 &&
+    $(".TabContent").length >= 1 &&
+    text.length >= 80
+  ) {
+    return "public_html_only";
+  }
   return null;
+}
+
+export function cbreDealflowAssertHtmlOnlyMix(listings: any[]): number {
+  const count = listings.filter(
+    (listing) => listing?.detailUnavailable?.reason === "public_html_only"
+  ).length;
+  const limit = Math.max(5, Math.ceil(listings.length * 0.01));
+  if (count > limit) {
+    throw new Error(
+      `CBRE Deal Flow public_html_only anomaly: ${count}/${listings.length} exceeds ${limit}`
+    );
+  }
+  return count;
 }
 
 export function cbreDealflowUnavailableCard(
@@ -343,7 +383,8 @@ export function cbreDealflowUnavailableCard(
     detailUnavailable: {
       reason,
       publicCardObserved: true,
-      publicPageObserved: reason === "landing_not_setup",
+      publicPageObserved:
+        reason === "landing_not_setup" || reason === "public_html_only",
     },
   });
 }
@@ -502,7 +543,7 @@ export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Pr
     const html = await cbreDealflowGetText(card.url);
     const data = parseCbreDealflowDetailData(html);
     if (!data) {
-      const unavailableReason = cbreDealflowDetailUnavailableReason(html);
+      const unavailableReason = cbreDealflowDetailUnavailableReason(html, card.name);
       if (unavailableReason) {
         return cbreDealflowUnavailableCard(card, unavailableReason);
       }
@@ -729,6 +770,7 @@ export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Pr
     return listing;
   });
   const detailUnavailable = listings.filter((listing) => listing?.detailUnavailable).length;
+  const publicHtmlOnly = cbreDealflowAssertHtmlOnlyMix(listings);
   const provisionalIdentities = listings.filter((listing) => listing?.provisionalIdentity).length;
   return {
     company: "CBRE Deal Flow",
@@ -738,7 +780,7 @@ export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Pr
     totalAvailable: total,
     listings,
     truncated,
-    note: `Public filter totalAvail was ${totalAvail ?? "unknown"} across all project types; ${projectType} filtered total was ${total ?? "unknown"}. Scanned ${providerRowsScanned} provider card(s), retained ${selected.length}, omitted ${parseOmissions} unparseable card(s), and detected ${duplicateIdentities} duplicate identity/identities. ${detailUnavailable} current card(s) had no public detail payload; ${provisionalIdentities} unlinked card identity/identities have no guaranteed history continuity. Fresh card fields are retained without deleting previously harvested detail data. Filter facets sampled: ${Object.entries(filterSummary)
+    note: `Public filter totalAvail was ${totalAvail ?? "unknown"} across all project types; ${projectType} filtered total was ${total ?? "unknown"}. Scanned ${providerRowsScanned} provider card(s), retained ${selected.length}, omitted ${parseOmissions} unparseable card(s), and detected ${duplicateIdentities} duplicate identity/identities. ${detailUnavailable} current card(s) had no public detail payload (${publicHtmlOnly} public HTML-only page(s)); ${provisionalIdentities} unlinked card identity/identities have no guaranteed history continuity. Fresh card fields are retained without deleting previously harvested detail data. Filter facets sampled: ${Object.entries(filterSummary)
       .map(([k, v]) => `${k}=${Array.isArray(v) ? v.length : "?"}`)
       .join(", ")}. Gated agreement, brochure, executive-summary, and deal-room links are retained only in raw metadata labels, not document rows.`,
   };

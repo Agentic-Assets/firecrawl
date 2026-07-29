@@ -19,6 +19,7 @@ import {
   enrichCbreDealflowCard,
   cbreDealflowNumProjects,
   cbreDealflowAssertPageCount,
+  cbreDealflowAssertHtmlOnlyMix,
 } from "../../../sources/cbre-dealflow.js";
 import { harvestDetail } from "../../../lib/harvest.js";
 
@@ -90,7 +91,77 @@ test("CBRE Deal Flow recognizes a current card with no configured public landing
     </div>
   `;
   assert.equal(cbreDealflowDetailUnavailableReason(html), "landing_not_setup");
+  assert.equal(
+    cbreDealflowDetailUnavailableReason(`
+      <html>
+        <head><title>State of Florida Surplus Lands | CBRE | Powered by LightBox</title></head>
+        <body>
+          <div id="ProjectNameAndAddress">
+            <div id="ProjectName">State of Florida Surplus Lands</div>
+          </div>
+          <div id="Content">
+            <div class="TabContent">
+              <p>This public property landing page is available without an embedded data object.</p>
+              <p>Contact the listed brokerage team for current offering information.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `, "State of Florida Surplus Lands"),
+    "public_html_only"
+  );
+  assert.equal(
+    cbreDealflowDetailUnavailableReason(`
+      <html>
+        <head><title>Maintenance | CBRE | Powered by LightBox</title></head>
+        <body>
+          <script>${"provider shell ".repeat(20)}</script>
+          <p>Temporarily unavailable. Please try again later.</p>
+        </body>
+      </html>
+    `, "Maintenance"),
+    null
+  );
+  assert.equal(
+    cbreDealflowDetailUnavailableReason(`
+      <html>
+        <head><title>Different Property | CBRE | Powered by LightBox</title></head>
+        <body>
+          <div id="ProjectNameAndAddress">
+            <div id="ProjectName">Different Property</div>
+          </div>
+          <div id="Content">
+            <div class="TabContent">
+              <p>This is a substantive public property page with enough visible body text to pass the length floor.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `, "Expected Property"),
+    null
+  );
   assert.equal(cbreDealflowDetailUnavailableReason("<html>unexpected empty page</html>"), null);
+});
+
+test("CBRE Deal Flow HTML-only classification fails closed on a layout-wide anomaly", () => {
+  const listing = (reason: string | null) => ({
+    detailUnavailable: reason ? { reason } : undefined,
+  });
+  assert.equal(
+    cbreDealflowAssertHtmlOnlyMix([
+      ...Array.from({ length: 5 }, () => listing("public_html_only")),
+      ...Array.from({ length: 95 }, () => listing(null)),
+    ]),
+    5
+  );
+  assert.throws(
+    () =>
+      cbreDealflowAssertHtmlOnlyMix([
+        ...Array.from({ length: 6 }, () => listing("public_html_only")),
+        ...Array.from({ length: 94 }, () => listing(null)),
+      ]),
+    /public_html_only anomaly/
+  );
 });
 
 test("CBRE Deal Flow unavailable detail preserves prior children and keeps fresh card fields", () => {
@@ -123,6 +194,16 @@ test("CBRE Deal Flow unavailable detail preserves prior children and keeps fresh
   assert.equal(row.statusBadge, "Available");
   assert.deepEqual(row.extraFacts, { project_type: "Investment Sale" });
   assert.equal(row.name, "Current public card");
+
+  const htmlOnly = cbreDealflowUnavailableCard(
+    {
+      ...row,
+      urlKind: "detail",
+      cbreDealflowCard: { projectType: "Investment Sale" },
+    },
+    "public_html_only"
+  );
+  assert.equal(htmlOnly.detailUnavailable.publicPageObserved, true);
 });
 
 test("CBRE Deal Flow retains agreement-gated and unlinked provider cards", () => {

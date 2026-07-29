@@ -115,6 +115,11 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
   visible card fields and point to the public Deal Flow index. Because those
   fields are not a provider key, a later unlinked-to-linked transition is never
   auto-merged; reconcile it only with explicit evidence.
+- A small number of CBRE/LightBox landing pages are valid public HTML but omit
+  the normal embedded data object. They use `public_html_only`, prove that the
+  public page was observed, and preserve last-good detail. The collector fails
+  closed if this state exceeds the larger of five listings or 1% of a source
+  pass, which guards against silently accepting a provider-wide layout change.
 - Deliberately incomplete API/base rows carry `preserveChildCollections=true`;
   ingestion also excludes them from wholesale child replacement.
 - A live ingest accepts only `runMeta.mode="full"` or `"enrich"`. Monitor
