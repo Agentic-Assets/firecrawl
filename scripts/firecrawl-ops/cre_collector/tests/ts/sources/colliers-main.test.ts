@@ -19,10 +19,14 @@ import {
   appendColliersMainCache,
   colliersMainCachedListingIsCurrent,
   colliersMainDetailPassTruncated,
+  colliersMainResultTruncated,
   parseColliersMainDetail,
   type ColliersMainEntry,
+  fetchColliersMainEntries,
+  scrapeColliersMainDetailDoc,
 } from "../../../sources/colliers-main.js";
 import type { ScrapedDoc } from "../../../types.js";
+import { firecrawl } from "../../../lib/scrape.js";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -187,6 +191,51 @@ test("colliersMainJsonLd extracts RealEstateListing JSON-LD from HTML", () => {
   assert.equal(colliersMainJsonLd("<html><body>no json-ld</body></html>"), null);
 });
 
+test("strict Colliers retries unknown HTTP 200 pages without property JSON-LD", () => {
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const e = entry("usa12345", "https://www.colliers.com/en/properties/usa12345");
+    assert.throws(
+      () =>
+        parseColliersMainDetail(
+          e,
+          doc({
+            rawHtml: "<html><h1>Consent required</h1></html>",
+            markdown: "Consent required",
+            metadata: { statusCode: 200, title: "Consent required" },
+          })
+        ),
+      /lacks validated RealEstateListing JSON-LD/
+    );
+    assert.deepEqual(
+      parseColliersMainDetail(
+        e,
+        doc({
+          rawHtml: "<html>gone</html>",
+          markdown: "Gone",
+          metadata: { statusCode: 410, title: "Gone" },
+        })
+      ).skip,
+      "not_found"
+    );
+    assert.equal(
+      parseColliersMainDetail(
+        e,
+        syntheticDoc(SALE_LD, "stale property body", {
+          statusCode: 404,
+          title: "Not Found",
+        })
+      ).skip,
+      "not_found",
+      "explicit HTTP tombstones must win over a stale JSON-LD body"
+    );
+  } finally {
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
 test("colliersMainDetailCachePath returns durable cache location", () => {
   const previous = process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH;
   try {
@@ -219,10 +268,110 @@ test("Colliers cache reuse follows live sitemap lastmod", () => {
   );
 });
 
+test("Colliers cache reuse also requires the active refresh generation", () => {
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  try {
+    process.env.CRE_REFRESH_GENERATION = "generation-current";
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const sitemapEntry = entry(
+      "usa1",
+      "https://example.test/1",
+      "2026-07-29"
+    );
+    assert.equal(
+      colliersMainCachedListingIsCurrent(sitemapEntry, {
+        lastUpdated: "2026-07-29",
+        freshnessProvenance: { generationId: "generation-current" },
+      }),
+      true
+    );
+    assert.equal(
+      colliersMainCachedListingIsCurrent(sitemapEntry, {
+        lastUpdated: "2026-07-29",
+        freshnessProvenance: { generationId: "generation-old" },
+      }),
+      false
+    );
+    assert.equal(
+      colliersMainCachedListingIsCurrent(sitemapEntry, {
+        lastUpdated: "2026-07-29",
+        skip: "no_structured_data",
+        freshnessProvenance: { generationId: "generation-current" },
+      }),
+      false
+    );
+    assert.equal(
+      colliersMainCachedListingIsCurrent(sitemapEntry, {
+        lastUpdated: "2026-07-29",
+        skip: "not_found",
+        freshnessProvenance: { generationId: "generation-current" },
+      }),
+      true
+    );
+  } finally {
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("strict Colliers sitemap and detail Firecrawl calls bypass cached responses", async () => {
+  const oldScrape = firecrawl.scrape;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const calls: any[] = [];
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    calls.push(options);
+    if (url.includes("type=properties")) {
+      return {
+        rawHtml:
+          "<urlset><url><loc>https://www.colliers.com/en/properties/usa12345</loc><lastmod>2026-07-29</lastmod></url></urlset>",
+      };
+    }
+    if (url.endsWith("/sitemap")) {
+      return {
+        rawHtml:
+          "<sitemapindex><sitemap><loc>https://www.colliers.com/en/sitemap?type=properties</loc></sitemap></sitemapindex>",
+      };
+    }
+    return {
+      rawHtml:
+        '<script type="application/ld+json">{"@type":"RealEstateListing","name":"Strict Property For Sale"}</script>',
+      markdown: "Strict Property For Sale",
+      links: [],
+      metadata: { statusCode: 200, title: "Strict Property For Sale" },
+    };
+  };
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const entries = await fetchColliersMainEntries();
+    assert.equal(entries.length, 1);
+    await scrapeColliersMainDetailDoc(entries[0]!.url);
+    assert.equal(calls.length, 3);
+    assert.ok(calls.every((options) => options.maxAge === 0));
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
 test("Colliers detail pass is truncated while work is deferred or errored", () => {
   assert.equal(colliersMainDetailPassTruncated({ errors: 0, deferred: 0 }), false);
   assert.equal(colliersMainDetailPassTruncated({ errors: 1, deferred: 0 }), true);
   assert.equal(colliersMainDetailPassTruncated({ errors: 0, deferred: 1 }), true);
+});
+
+test("Colliers finite caps report truncation against sitemap inventory", () => {
+  const complete = { errors: 0, deferred: 0 };
+  assert.equal(colliersMainResultTruncated(complete, 1, 2), true);
+  assert.equal(colliersMainResultTruncated(complete, 2, 2), false);
+  assert.equal(
+    colliersMainResultTruncated(complete, Number.POSITIVE_INFINITY, 2),
+    false
+  );
+  assert.equal(colliersMainResultTruncated({ errors: 1, deferred: 0 }, 2, 2), true);
 });
 
 test("readColliersMainCache and appendColliersMainCache round-trip JSONL rows", () => {

@@ -13,6 +13,7 @@ import {
   sharpLaunchCdnUrl,
   avisonYoungAbsoluteUrl,
   avisonYoungDetailLimit,
+  avisonYoungTruncated,
   isAvisonYoungPropertyPhoto,
   avisonYoungNameSlug,
   isAvisonYoungUsCompatible,
@@ -22,6 +23,12 @@ import {
   avisonYoungSizeText,
   avisonYoungLeaseRateText,
   avisonYoungContact,
+  avisonYoungEntityItems,
+  avisonYoungTeamFeedState,
+  decodeAvisonYoungCloudflareEmail,
+  avisonYoungMailtoEmail,
+  extractAvisonYoungDetailContacts,
+  mergeAvisonYoungContacts,
   extractAvisonYoungUrls,
   extractAvisonYoungDocuments,
   extractAvisonYoungPhotos,
@@ -31,7 +38,13 @@ import {
   harvestAvisonYoung,
   avisonYoungLongestMarkdown,
   avisonYoungBaseListing,
+  avisonYoungSelectedProviderIds,
+  assertAvisonYoungOutputIdentity,
+  assertAvisonYoungDetailDoc,
+  assertAvisonYoungStrictFeed,
+  enrichAvisonYoungListing,
 } from "../../../sources/avison-young.js";
+import { firecrawl } from "../../../lib/scrape.js";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -83,6 +96,15 @@ test("avisonYoungDetailLimit honors env override and finite max", () => {
   process.env[DETAIL_LIMIT_ENV] = "99";
   assert.equal(avisonYoungDetailLimit(50, 12), 12);
   clearDetailLimitEnv();
+});
+
+test("Avison finite caps report truncation while unlimited runs do not", () => {
+  assert.equal(avisonYoungTruncated(10, 10, 12), true);
+  assert.equal(avisonYoungTruncated(12, 12, 12), false);
+  assert.equal(
+    avisonYoungTruncated(Number.POSITIVE_INFINITY, 12, 20),
+    false
+  );
 });
 
 test("isAvisonYoungPropertyPhoto accepts listing photos and rejects avatars/logos", () => {
@@ -159,6 +181,130 @@ test("avisonYoungContact maps SharpLaunch team members", () => {
     avatarUrl: `${AVISON_YOUNG_CDN_BASE}/media/77`,
   });
   assert.equal(avisonYoungContact(null), null);
+});
+
+test("avisonYoungEntityItems permits an empty supplemental team feed but not an empty inventory", () => {
+  assert.deepEqual(avisonYoungEntityItems({ items: [] }, "team_member"), []);
+  assert.throws(
+    () => avisonYoungEntityItems({ items: [] }, "website"),
+    /website API returned no items/
+  );
+  assert.deepEqual(avisonYoungEntityItems({ items: [{ id: 1 }] }, "website"), [{ id: 1 }]);
+  assert.deepEqual(avisonYoungTeamFeedState([]), {
+    rows: [],
+    complete: false,
+    reason: "team_member API returned no items",
+  });
+  assert.match(avisonYoungTeamFeedState([], new Error("HTTP 503")).reason ?? "", /HTTP 503/);
+});
+
+test("Avison selected inventory requires unique nonempty provider IDs", () => {
+  assert.deepEqual(
+    avisonYoungSelectedProviderIds([{ id: 17 }, { id: " 18 " }]),
+    ["17", "18"]
+  );
+  assert.throws(
+    () => avisonYoungSelectedProviderIds([{ id: 17 }, { id: "17" }]),
+    /duplicate provider id 17/
+  );
+  assert.throws(
+    () => avisonYoungSelectedProviderIds([{ id: " " }]),
+    /missing a provider id/
+  );
+  assert.throws(
+    () => avisonYoungSelectedProviderIds([{}]),
+    /missing a provider id/
+  );
+});
+
+test("Avison output identities reconcile exactly to selected provider IDs", () => {
+  assert.doesNotThrow(() =>
+    assertAvisonYoungOutputIdentity(
+      ["17", "18"],
+      [{ id: "17" }, { id: "18" }]
+    )
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungOutputIdentity(
+        ["17", "18"],
+        [{ id: "17" }, { id: "19" }]
+      ),
+    /identity reconciliation failed/
+  );
+  assert.throws(
+    () => assertAvisonYoungOutputIdentity(["17"], [{ id: "17" }, { id: "17" }]),
+    /identity reconciliation failed/
+  );
+  assert.throws(
+    () => assertAvisonYoungOutputIdentity(["17"], [{ id: null }]),
+    /output listing is missing a provider id/
+  );
+});
+
+test("detail contacts recover broker data when the supplemental team feed is empty", () => {
+  const encodedEmail = "c5abaca6adaaa9a4b6ebb5a0a9b0b6acaa85a4b3acb6aaabbcaab0aba2eba6aaa8";
+  assert.equal(decodeAvisonYoungCloudflareEmail(encodedEmail), "nicholas.pelusio@avisonyoung.com");
+  assert.equal(decodeAvisonYoungCloudflareEmail("not-hex"), null);
+  assert.equal(
+    avisonYoungMailtoEmail("mailto:frank.simpson%40avisonyoung.com?bcc=webleads%40avisonyoung.com"),
+    "frank.simpson@avisonyoung.com"
+  );
+  assert.equal(avisonYoungMailtoEmail("mailto:first@example.com,second@example.com"), null);
+
+  const contacts = extractAvisonYoungDetailContacts([
+    {
+      url: `${AVISON_YOUNG_HOST}/properties/mesa`,
+      doc: doc(`
+        <script type="application/ld+json">
+          {"@context":"https://schema.org","@type":"RealEstateListing",
+           "agent":[{"@type":"RealEstateAgent","name":"Nicholas Pelusio",
+                     "image":"https://example.com/nicholas.jpg"}]}
+        </script>
+        <div class="team-member">
+          <img src="https://example.com/nicholas.jpg">
+          <h4 class="team-member__name">Nicholas Pelusio</h4>
+          <div class="team-member__job">Principal</div>
+          <div class="team-member__company">Avison Young</div>
+          <div class="team-member__phone"><a href="tel:+16025550101">Call</a></div>
+          <div class="team-member__email">
+            <span class="__cf_email__" data-cfemail="${encodedEmail}">protected</span>
+          </div>
+        </div>
+      `),
+    },
+  ]);
+  assert.deepEqual(contacts, [
+    {
+      name: "Nicholas Pelusio",
+      title: "Principal",
+      company: "Avison Young",
+      phone: "+16025550101",
+      email: "nicholas.pelusio@avisonyoung.com",
+      avatarUrl: "https://example.com/nicholas.jpg",
+    },
+  ]);
+  assert.equal(
+    mergeAvisonYoungContacts(
+      [{ name: "Nicholas Pelusio", company: "Avison Young" }],
+      contacts
+    ).length,
+    1
+  );
+  assert.equal(
+    mergeAvisonYoungContacts(
+      [{ name: "Alex Smith", email: "alex.one@example.com", phone: "212-555-0101" }],
+      [{ name: "Alex Smith", email: "alex.two@example.com", phone: "305-555-0202" }]
+    ).length,
+    2
+  );
+  assert.equal(
+    mergeAvisonYoungContacts(
+      [{ name: "Alex Smith", email: "alex@example.com", phone: "212-555-0100" }],
+      [{ name: "Jordan Lee", email: "jordan@example.com", phone: "212-555-0100" }]
+    ).length,
+    2
+  );
 });
 
 test("extractAvisonYoungUrls dedupes absolute links from HTML and doc.links", () => {
@@ -457,4 +603,223 @@ test("avisonYoungBaseListing never throws on a sparse or null-field rawSharpLaun
   assert.equal(listing.salePricePerSf, undefined);
   assert.equal(listing.buildingClass, undefined);
   assert.equal(listing.propertySubtype, undefined);
+});
+
+test("strict Avison full mode ignores ambient detail limits and rejects degraded team feeds", () => {
+  clearDetailLimitEnv();
+  assert.equal(
+    avisonYoungDetailLimit(Number.POSITIVE_INFINITY, 12, true),
+    12
+  );
+  process.env[DETAIL_LIMIT_ENV] = "3";
+  assert.equal(avisonYoungDetailLimit(50, 12, true), 12);
+  assert.equal(avisonYoungDetailLimit(50, 12, false), 3);
+  clearDetailLimitEnv();
+
+  assert.throws(
+    () =>
+      assertAvisonYoungStrictFeed(
+        false,
+        "team_member API returned no items",
+        true
+      ),
+    /team feed is incomplete/
+  );
+  assert.doesNotThrow(() =>
+    assertAvisonYoungStrictFeed(false, "degraded", false)
+  );
+});
+
+test("strict Avison source requires an explicit refresh generation", async (t) => {
+  const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  delete process.env.CRE_REFRESH_GENERATION;
+  t.after(() => {
+    if (originalStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalStrict;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+  const { srcAvisonYoung } = await import(
+    "../../../sources/avison-young.js"
+  );
+  await assert.rejects(
+    () => srcAvisonYoung("sale", 1, false),
+    /requires CRE_REFRESH_GENERATION/
+  );
+});
+
+test("Avison detail admission rejects challenge and wrong-property shells", () => {
+  const base = {
+    id: "17808",
+    name: "602 N Capitol Ave",
+    street: "602 N Capitol Ave",
+    externalUrl:
+      "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease",
+  };
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        doc("<html><title>Just a moment...</title><div>captcha</div></html>"),
+        base.externalUrl,
+        base
+      ),
+    /challenge or error shell/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc("<html><h1>Unrelated Chicago Property</h1><main>Property details</main></html>"),
+          metadata: {
+            sourceURL:
+              "https://www.avisonyoung.us/properties/unrelated-chicago-property",
+          },
+        },
+        base.externalUrl,
+        base
+      ),
+    /identity does not match/
+  );
+});
+
+test("strict Avison detail scrape is uncached, complete, and generation-bound", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const calls: any[] = [];
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    calls.push({ url, options });
+    return {
+      rawHtml: `
+        <html><main class="property-detail"><h1>602 N Capitol Ave</h1>
+        <script type="application/ld+json">
+          {"@type":"RealEstateListing","name":"602 N Capitol Ave",
+           "url":"${url}","description":"Current property detail"}
+        </script></main></html>`,
+      markdown: "# 602 N Capitol Ave\nProperty details",
+      links: [],
+      metadata: { sourceURL: url, statusCode: 200 },
+    };
+  };
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "avison-strict-test";
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+    if (originalStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalStrict;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+
+  const listing = await enrichAvisonYoungListing(
+    {
+      id: "17808",
+      name: "602 N Capitol Ave",
+      street: "602 N Capitol Ave",
+      contactsDetailed: [{ name: "Ada Broker" }],
+      externalUrl:
+        "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease",
+      inventoryObservedAt: "2026-07-29T12:00:00.000Z",
+    },
+    true
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.maxAge, 0);
+  assert.match(listing.detailObservedAt, /^20\d\d-/);
+  assert.equal(listing.freshnessProvenance.generationId, "avison-strict-test");
+  assert.equal(listing.freshnessProvenance.detailScope, "detail_page");
+  assert.equal(listing.preserveChildCollections, undefined);
+  assert.equal(listing.detailError, undefined);
+});
+
+test("degraded non-strict detail refresh preserves prior child collections", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  const originalFreshDetails =
+    process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const calls: any[] = [];
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    calls.push({ url, options });
+    return {
+      rawHtml: `
+        <html><main class="property-detail"><h1>602 N Capitol Ave</h1>
+        <script type="application/ld+json">
+          {"@type":"RealEstateListing","name":"602 N Capitol Ave","url":"${url}"}
+        </script></main></html>`,
+      markdown: "# 602 N Capitol Ave\nProperty details",
+      links: [],
+      metadata: { sourceURL: url, statusCode: 200 },
+    };
+  };
+  process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "avison-property-detail-test";
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+    if (originalFreshDetails === undefined) {
+      delete process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+    } else {
+      process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS =
+        originalFreshDetails;
+    }
+    if (originalGeneration === undefined) {
+      delete process.env.CRE_REFRESH_GENERATION;
+    } else {
+      process.env.CRE_REFRESH_GENERATION = originalGeneration;
+    }
+  });
+
+  const listing = await enrichAvisonYoungListing(
+    {
+      id: "17808",
+      name: "602 N Capitol Ave",
+      street: "602 N Capitol Ave",
+      externalUrl:
+        "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease",
+      preserveChildCollections: true,
+    },
+    false
+  );
+
+  assert.equal(listing.id, "17808");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.maxAge, 0);
+  assert.equal(listing.preserveChildCollections, true);
+  assert.equal(listing.detailObservedWithChildPreservation, true);
+  assert.match(listing.detailObservedAt, /^20\d\d-/);
+  assert.equal(listing.freshnessProvenance.detailScope, "detail_page");
+  assert.equal(listing.freshnessProvenance.cacheDisposition, "live");
+  assert.equal(
+    listing.freshnessProvenance.generationId,
+    "avison-property-detail-test"
+  );
+  assert.equal(listing.detailError, undefined);
+});
+
+test("strict Avison fails on detail admission errors while non-strict preserves the row", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  (firecrawl as any).scrape = async () => {
+    return {
+      rawHtml: "<html><h1>Service unavailable</h1></html>",
+      markdown: "Service unavailable",
+      links: [],
+      metadata: { statusCode: 503 },
+    };
+  };
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+  });
+  const base = {
+    id: "17808",
+    name: "602 N Capitol Ave",
+    externalUrl:
+      "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease",
+  };
+  await assert.rejects(
+    () => enrichAvisonYoungListing(base, true),
+    /detail fetch failed/
+  );
+  const fallback = await enrichAvisonYoungListing(base, false);
+  assert.match(fallback.detailError, /HTTP 503/);
 });

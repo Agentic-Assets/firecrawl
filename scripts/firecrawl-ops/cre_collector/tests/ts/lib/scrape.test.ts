@@ -3,7 +3,32 @@ process.argv = [process.argv[0]!, process.argv[1]!];
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseJsonBody, repairUnescapedJsonStringQuotes, withRequestDeadline } from "../../../lib/scrape.js";
+import {
+  firecrawl,
+  parseJsonBody,
+  repairUnescapedJsonStringQuotes,
+  scrapeRaw,
+  withRequestDeadline,
+} from "../../../lib/scrape.js";
+
+describe("scrape freshness options", () => {
+  it("forwards explicit maxAge zero and preserves the default when omitted", async () => {
+    const original = firecrawl.scrape;
+    const seen: any[] = [];
+    (firecrawl as any).scrape = async (_url: string, options: any) => {
+      seen.push(options);
+      return { rawHtml: "<html>ok</html>" };
+    };
+    try {
+      await scrapeRaw("https://example.com/fresh", { maxAge: 0 });
+      await scrapeRaw("https://example.com/default");
+    } finally {
+      (firecrawl as any).scrape = original;
+    }
+    assert.equal(seen[0]?.maxAge, 0);
+    assert.equal("maxAge" in seen[1], false);
+  });
+});
 
 describe("withRequestDeadline", () => {
   it("returns a settled request result", async () => {

@@ -388,6 +388,431 @@ def test_to_row_buildout_no_pid_uses_raw_id():
     assert r["external_id"] == "99"
 
 
+def test_to_row_uses_explicit_detail_observation_not_artifact_finish():
+    r = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/1",
+            "id": "1",
+            "detailObservedAt": "2026-06-14T21:30:00Z",
+        }
+    )
+    assert r["scraped_at"] == "2026-06-14T21:30:00+00:00"
+
+
+def test_to_row_uses_inventory_observation_for_authoritative_feed():
+    r = _row(
+        {
+            "sourceKey": "svn",
+            "url": "https://svn.com/x?propertyId=1-sale",
+            "id": "1",
+            "inventoryObservedAt": "2026-06-14T22:00:00Z",
+            "freshnessProvenance": {
+                "detailScope": "authoritative_inventory_feed"
+            },
+        }
+    )
+    assert r["scraped_at"] == "2026-06-14T22:00:00+00:00"
+
+
+def test_to_row_uses_source_revision_validation_time_for_scraped_at():
+    r = _row(
+        {
+            "sourceKey": "colliers-main",
+            "url": "https://www.colliers.com/en/properties/x/usa12345",
+            "id": "usa12345",
+            "detailObservedAt": "2026-07-28T10:00:00Z",
+            "freshnessProvenance": {
+                "detailScope": "detail_page",
+                "cacheDisposition": "source_revision_cache",
+                "validatedAt": "2026-07-29T12:00:30Z",
+            },
+        }
+    )
+    assert r["scraped_at"] == "2026-07-29T12:00:30+00:00"
+
+
+def test_strict_artifact_freshness_rejects_completion_time_only():
+    payload = {
+        "runMeta": {
+            "freshness": {
+                "generationId": "generation-1",
+                "generationStartedAt": "2026-07-29T12:00:00Z",
+                "requireFreshDetails": True,
+            }
+        },
+        "listings": [
+            {
+                "sourceKey": "jll",
+                "inventoryObservedAt": "2026-07-29T12:00:01Z",
+                "freshnessProvenance": {
+                    "generationId": "generation-1",
+                    "detailScope": "detail_page",
+                    "cacheDisposition": "live",
+                },
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="stale detail"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
+def _strict_freshness_payload(
+    source="jll",
+    *,
+    detail_scope="detail_page",
+    preserve_children=False,
+):
+    observed = "2026-07-29T12:00:01Z"
+    listing = {
+        "sourceKey": source,
+        "inventoryObservedAt": observed,
+        "freshnessProvenance": {
+            "generationId": "generation-1",
+            "detailScope": detail_scope,
+            "cacheDisposition": "live",
+        },
+    }
+    if detail_scope == "detail_page":
+        listing["detailObservedAt"] = observed
+    if preserve_children:
+        listing["preserveChildCollections"] = True
+    return {
+        "runMeta": {
+            "freshness": {
+                "generationId": "generation-1",
+                "generationStartedAt": "2026-07-29T12:00:00Z",
+                "requireFreshDetails": True,
+            }
+        },
+        "sources": [{"sourceKey": source}],
+        "listings": [listing],
+    }
+
+
+@pytest.mark.parametrize(
+    "field_path",
+    [
+        ("runMeta", "freshness", "generationStartedAt"),
+        ("listings", 0, "inventoryObservedAt"),
+        ("listings", 0, "detailObservedAt"),
+    ],
+)
+def test_strict_artifact_freshness_rejects_naive_timestamps(field_path):
+    payload = _strict_freshness_payload()
+    target = payload
+    for part in field_path[:-1]:
+        target = target[part]
+    target[field_path[-1]] = "2026-07-29T12:00:01"
+
+    with pytest.raises(ValueError, match="timezone"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
+def test_strict_source_revision_cache_rejects_naive_validation_timestamp():
+    payload = _strict_freshness_payload()
+    listing = payload["listings"][0]
+    listing.pop("detailObservedAt")
+    listing["freshnessProvenance"].update(
+        {
+            "cacheDisposition": "source_revision_cache",
+            "validatedAt": "2026-07-29T12:00:01",
+        }
+    )
+
+    with pytest.raises(ValueError, match="timezone"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
+@pytest.mark.parametrize(
+    "field_path",
+    [
+        ("runMeta", "freshness", "generationStartedAt"),
+        ("listings", 0, "inventoryObservedAt"),
+        ("listings", 0, "detailObservedAt"),
+    ],
+)
+def test_strict_artifact_rejects_future_timestamps_beyond_clock_skew(field_path):
+    payload = _strict_freshness_payload()
+    target = payload
+    for part in field_path[:-1]:
+        target = target[part]
+    target[field_path[-1]] = "2026-07-29T12:05:01Z"
+
+    with pytest.raises(ValueError, match="clock-skew"):
+        ci.validate_strict_artifact_freshness(
+            payload,
+            now=datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_nonstrict_direct_artifact_rejects_future_listing_observation():
+    payload = {
+        "runMeta": {"freshness": {"requireFreshDetails": False}},
+        "listings": [
+            {
+                "sourceKey": "jll",
+                "inventoryObservedAt": "2026-07-29T12:05:01Z",
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="clock-skew"):
+        ci.validate_strict_artifact_freshness(
+            payload,
+            now=datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+        )
+
+
+@pytest.mark.parametrize("source", ["srs", "hanley", "kidder-mathews"])
+def test_strict_child_preserving_authoritative_feed_is_accepted(source):
+    ci.validate_strict_artifact_freshness(
+        _strict_freshness_payload(
+            source,
+            detail_scope="authoritative_inventory_feed",
+            preserve_children=True,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["svn", "lee-associates", "franklin-street", "cbre"],
+)
+def test_strict_nonpreserving_authoritative_feed_rejects_child_preservation(source):
+    payload = _strict_freshness_payload(
+        source,
+        detail_scope="authoritative_inventory_feed",
+        preserve_children=True,
+    )
+    with pytest.raises(ValueError, match="must not preserve child collections"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
+@pytest.mark.parametrize("source", ["srs", "hanley", "kidder-mathews"])
+def test_strict_child_preserving_feed_requires_preservation_marker(source):
+    payload = _strict_freshness_payload(
+        source,
+        detail_scope="authoritative_inventory_feed",
+    )
+    with pytest.raises(ValueError, match="must preserve child collections"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
+def test_strict_detail_source_rejects_child_preservation():
+    payload = _strict_freshness_payload("jll", preserve_children=True)
+    with pytest.raises(ValueError, match="must not preserve child collections"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
+@pytest.mark.parametrize("freshness", [None, {"requireFreshDetails": False}])
+def test_direct_ingest_allows_unmarked_strict_source_without_explicit_flag(freshness):
+    payload = {
+        "runMeta": {"freshness": freshness} if freshness is not None else {},
+        "sources": [{"sourceKey": "jll"}],
+        "listings": [],
+    }
+    ci.validate_strict_artifact_freshness(payload)
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["cbre", "srs", "hanley", "kidder-mathews"],
+)
+def test_checkpoint_strict_sources_are_allowed_without_explicit_cli_contract(source):
+    payload = {
+        "runMeta": {},
+        "sources": [{"sourceKey": source}],
+        "listings": [],
+    }
+    ci.validate_strict_artifact_freshness(payload)
+
+
+def test_avison_is_not_a_strict_contact_freshness_source():
+    assert "avison-young" not in ci.STRICT_FRESHNESS_SOURCE_KEYS
+
+
+def test_preservation_wrapper_retains_source_key_from_merged_payload():
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    assert "raw_data#>'{primary,sourceKey}'" in sql
+    assert "raw_data#>'{secondary_pass,sourceKey}'" in sql
+    assert "EXCLUDED.raw_data#>'{primary,sourceKey}'" in sql
+    assert "EXCLUDED.raw_data#>'{secondary_pass,sourceKey}'" in sql
+
+
+def test_fresh_detail_with_child_preservation_updates_listing_without_child_deletion():
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    assert "$.**.detailObservedWithChildPreservation" in sql
+    assert "NOT jsonb_path_exists" in sql
+    assert "_child_additive" in sql
+    assert (
+        "$.**.preserveChildCollections ? (@ == true || @ == \"true\")"
+        in sql
+    )
+
+
+def test_explicit_strict_ingest_flag_rejects_unmarked_nonstrict_artifact():
+    payload = {
+        "runMeta": {},
+        "sources": [{"sourceKey": "cbre"}],
+        "listings": [],
+    }
+    with pytest.raises(ValueError, match="explicitly required"):
+        ci.validate_strict_artifact_freshness(
+            payload,
+            require_strict_freshness=True,
+        )
+
+
+def test_cli_explicit_strict_flag_rejects_unmarked_input_before_database_access(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = tmp_path / "jll-without-freshness.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "runMeta": {"mode": "full"},
+                "sources": [{"sourceKey": "jll"}],
+                "listings": [],
+                "brokers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cre_ingest.py",
+            "--in",
+            str(artifact),
+            "--dry-run",
+            "--require-strict-freshness",
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="explicitly required"):
+        ci.main()
+
+
+@pytest.mark.parametrize("mode", ["full", "enrich"])
+def test_cli_live_direct_ingest_supports_unmarked_strict_source_modes(
+    tmp_path,
+    monkeypatch,
+    mode,
+):
+    artifact = tmp_path / f"jll-{mode}.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "runMeta": {
+                    "mode": mode,
+                    "startedAt": _SCRAPED_AT,
+                    "finishedAt": _SCRAPED_AT,
+                },
+                "sources": [
+                    {
+                        "sourceKey": "jll",
+                        "listingsCollected": 1,
+                    }
+                ],
+                "listings": [
+                    {
+                        "sourceKey": "jll",
+                        "id": f"{mode}-1",
+                        "url": f"https://example.com/jll/{mode}-1",
+                        "name": f"JLL {mode} listing",
+                    }
+                ],
+                "brokers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    class Proc:
+        returncode = 0
+
+    monkeypatch.setattr(
+        ci,
+        "load_db_url",
+        lambda _env_file: ("postgres://SENTINEL", "/fake/.env"),
+    )
+    monkeypatch.setattr(ci, "find_psql", lambda: "psql")
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return Proc()
+
+    monkeypatch.setattr(ci.subprocess, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["cre_ingest.py", "--in", str(artifact)])
+
+    ci.main()
+
+    assert len(calls) == 1
+    assert calls[0][0][0] == "psql"
+
+
+def test_cli_rejects_target_drift_before_psql_discovery(tmp_path, monkeypatch):
+    artifact = tmp_path / "jll-full.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "runMeta": {
+                    "mode": "full",
+                    "startedAt": _SCRAPED_AT,
+                    "finishedAt": _SCRAPED_AT,
+                },
+                "sources": [
+                    {
+                        "sourceKey": "jll",
+                        "listingsCollected": 1,
+                    }
+                ],
+                "listings": [
+                    {
+                        "sourceKey": "jll",
+                        "id": "full-1",
+                        "url": "https://example.com/jll/full-1",
+                        "name": "JLL full listing",
+                    }
+                ],
+                "brokers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        ci,
+        "load_db_url",
+        lambda _env_file: (
+            "postgresql://user:secret@db.example.test/cre",
+            "/fake/.env",
+        ),
+    )
+    monkeypatch.setattr(
+        ci,
+        "find_psql",
+        lambda: pytest.fail("target drift must fail before psql discovery"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cre_ingest.py",
+            "--in",
+            str(artifact),
+            "--expected-db-target-sha256",
+            "0" * 64,
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="does not match"):
+        ci.main()
+
+
 def test_to_row_franklin_street_buildout_propertyid_strips_suffix():
     r = _row({
         "sourceKey": "franklin-street",

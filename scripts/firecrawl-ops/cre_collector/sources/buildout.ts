@@ -8,6 +8,11 @@ import { SourceResult, Tx } from "../types.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { clean, isPerSfPriceText, moneyToNumber, num, pmap } from "../lib/util.js";
 import { isPerSfText, parseLeaseRate, parseSizeText } from "../lib/parse.js";
+import {
+  generationMatches,
+  refreshGenerationId,
+  requireFreshDetails,
+} from "../lib/freshness.js";
 
 
 // --- Buildout platform (SVN, Lee & Associates): inventory JSON API, paginated ---
@@ -15,7 +20,14 @@ import { isPerSfText, parseLeaseRate, parseSizeText } from "../lib/parse.js";
 // boolean (false = lease availability). Fetch the full inventory once per
 // brokerage (cached across the sale and lease passes) and partition client-side.
 
-export const buildoutCache = new Map<string, { items: any[]; total: number | null }>();
+type BuildoutInventoryResult = {
+  items: any[];
+  total: number | null;
+  strictValidated?: boolean;
+  generationId?: string | null;
+};
+
+export const buildoutCache = new Map<string, BuildoutInventoryResult>();
 export const buildoutFailureCache = new Map<string, Error>();
 
 export type BuildoutInventoryOpts = {
@@ -34,6 +46,84 @@ export type BuildoutInventoryOpts = {
 
 export function buildoutInventoryUrl(pluginKey: string, page: number): string {
   return `https://buildout.com/plugins/${pluginKey}/inventory.json?page=${page}`;
+}
+
+type BuildoutInventoryPageExpectation = {
+  total: number;
+  limit: number;
+};
+
+export function assertBuildoutInventoryPage(
+  data: any,
+  page: number,
+  expected: BuildoutInventoryPageExpectation | null = null,
+  strict = requireFreshDetails()
+): BuildoutInventoryPageExpectation {
+  if (!strict) {
+    return {
+      total: Number.isInteger(data?.meta?.total) && data.meta.total >= 0 ? data.meta.total : 0,
+      limit: Number.isInteger(data?.meta?.limit) && data.meta.limit > 0 ? data.meta.limit : 30,
+    };
+  }
+  if (!Array.isArray(data?.inventory)) {
+    throw new Error(`Buildout page ${page} response lacks an inventory array`);
+  }
+  const total = data?.meta?.total;
+  if (!Number.isInteger(total) || total < 0) {
+    throw new Error(`Buildout page ${page} response lacks a valid integer meta.total`);
+  }
+  const limit = data?.meta?.limit;
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new Error(`Buildout page ${page} response lacks a valid positive integer meta.limit`);
+  }
+  if (expected && (total !== expected.total || limit !== expected.limit)) {
+    throw new Error(
+      `Buildout page ${page} metadata changed from total=${expected.total}, limit=${expected.limit} ` +
+        `to total=${total}, limit=${limit}`
+    );
+  }
+  const pages = Math.max(1, Math.ceil(total / limit));
+  if (!Number.isInteger(page) || page < 0 || page >= pages) {
+    throw new Error(`Buildout page ${page} falls outside the declared ${pages}-page inventory`);
+  }
+  const expectedRows = page < pages - 1 ? limit : total - page * limit;
+  if (data.inventory.length !== expectedRows) {
+    throw new Error(
+      `Buildout page ${page} expected ${expectedRows} inventory rows from total=${total}, ` +
+        `limit=${limit}, received ${data.inventory.length}`
+    );
+  }
+  return { total, limit };
+}
+
+export function assertBuildoutInventoryReconciled(
+  items: any[],
+  total: number | null,
+  strict = requireFreshDetails()
+): void {
+  if (!strict) return;
+  if (!Number.isInteger(total) || (total as number) < 0) {
+    throw new Error("Buildout strict inventory reconciliation requires a valid provider total");
+  }
+  const identities = new Set<string>();
+  for (const item of items) {
+    const id =
+      typeof item?.id === "string" || typeof item?.id === "number"
+        ? clean(String(item.id))
+        : null;
+    if (!id) {
+      throw new Error("Buildout inventory row is missing a stable id");
+    }
+    if (identities.has(id)) {
+      throw new Error(`Buildout duplicate inventory identity ${id}`);
+    }
+    identities.add(id);
+  }
+  if (identities.size !== total) {
+    throw new Error(
+      `Buildout reconciled ${identities.size} unique inventory rows against provider total ${total}`
+    );
+  }
 }
 
 // Parse a Buildout "Available" attribute (e.g. "175 - 2,396 SF" or "4,750 SF")
@@ -121,6 +211,30 @@ export function buildoutPageCachePath(company: string, pluginKey: string, page: 
   return `${buildoutCacheDir()}/${buildoutCacheSlug(company, pluginKey, opts)}/page-${String(page).padStart(4, "0")}.json`;
 }
 
+type BuildoutPageObservation = {
+  observedAt: string;
+  generationId: string | null;
+  cacheDisposition: "live" | "generation_cache";
+};
+
+function annotateBuildoutPage(data: any, observation: BuildoutPageObservation): any {
+  if (!data || typeof data !== "object") return data;
+  Object.defineProperty(data, "__creFreshness", {
+    value: observation,
+    enumerable: false,
+    configurable: true,
+  });
+  return data;
+}
+
+function buildoutInventoryRows(data: any): any[] {
+  const observation = data?.__creFreshness as BuildoutPageObservation | undefined;
+  return (Array.isArray(data?.inventory) ? data.inventory : []).map((item: any) => ({
+    ...item,
+    __creFreshness: observation,
+  }));
+}
+
 export function readBuildoutPageCache(
   company: string,
   pluginKey: string,
@@ -132,9 +246,17 @@ export function readBuildoutPageCache(
   try {
     const cached = JSON.parse(readFileSync(path, "utf8"));
     if (cached.pluginKey !== pluginKey || cached.page !== page) return null;
+    if (!generationMatches(cached.generationId)) return null;
     const data = cached.data;
     if (!data || !Array.isArray(data.inventory)) return null;
-    return data;
+    if (typeof cached.cachedAt !== "string" || !Number.isFinite(Date.parse(cached.cachedAt))) {
+      return null;
+    }
+    return annotateBuildoutPage(data, {
+      observedAt: cached.cachedAt,
+      generationId: cached.generationId ?? null,
+      cacheDisposition: "generation_cache",
+    });
   } catch {
     return null;
   }
@@ -151,13 +273,16 @@ export function writeBuildoutPageCache(
   const path = buildoutPageCachePath(company, pluginKey, page, opts);
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  const observation = data.__creFreshness as BuildoutPageObservation | undefined;
+  const cachedAt = observation?.observedAt ?? new Date().toISOString();
   writeFileSync(
     tmp,
     JSON.stringify(
       {
         pluginKey,
         page,
-        cachedAt: new Date().toISOString(),
+        cachedAt,
+        generationId: observation?.generationId ?? refreshGenerationId(),
         data,
       },
       null,
@@ -223,7 +348,8 @@ export async function fetchBuildoutInventoryPage(
   company: string,
   pluginKey: string,
   page: number,
-  opts: BuildoutInventoryOpts
+  opts: BuildoutInventoryOpts,
+  expected: BuildoutInventoryPageExpectation | null = null
 ): Promise<any> {
   const url = buildoutInventoryUrl(pluginKey, page);
   const cachePolicy = buildoutPageCachePolicy(opts);
@@ -248,6 +374,15 @@ export async function fetchBuildoutInventoryPage(
     timeout: 60000,
     jsonAttempts: opts.jsonAttempts,
     jsonBackoffMs: opts.jsonBackoffMs,
+    ...(requireFreshDetails() ? { maxAge: 0 } : {}),
+  });
+  // Reject malformed, partial, or cross-page-incoherent strict pages before
+  // they can poison the generation-scoped recovery cache.
+  assertBuildoutInventoryPage(data, page, expected);
+  annotateBuildoutPage(data, {
+    observedAt: new Date().toISOString(),
+    generationId: refreshGenerationId(),
+    cacheDisposition: "live",
   });
   if (cachePolicy.write) writeBuildoutPageCache(company, pluginKey, page, opts, data);
   return data;
@@ -258,13 +393,22 @@ export async function buildoutInventory(
   pluginKey: string,
   opts: BuildoutInventoryOpts = {}
 ): Promise<{ items: any[]; total: number | null }> {
+  const strictFreshness = requireFreshDetails();
   const cached = buildoutCache.get(pluginKey);
-  if (cached) return cached;
+  if (
+    cached &&
+    (!strictFreshness ||
+      (cached.strictValidated === true && generationMatches(cached.generationId)))
+  ) {
+    return cached;
+  }
+  if (cached) buildoutCache.delete(pluginKey);
   const cachedFailure = buildoutFailureCache.get(pluginKey);
   if (cachedFailure) throw cachedFailure;
   const first = await fetchBuildoutInventoryPage(company, pluginKey, 0, opts);
-  const total: number | null = first.meta?.total ?? null;
-  const limit: number = first.meta?.limit ?? 30;
+  const firstPage = assertBuildoutInventoryPage(first, 0, null, strictFreshness);
+  const total: number | null = strictFreshness ? firstPage.total : first.meta?.total ?? null;
+  const limit: number = strictFreshness ? firstPage.limit : first.meta?.limit ?? 30;
   const pages = total && total > limit ? Math.min(Math.ceil(total / limit), 1200) : 1;
   const pageWindow = buildoutPageWindow(pages);
   const cacheOnly = envBool("BUILDOUT_CACHE_ONLY");
@@ -277,7 +421,7 @@ export async function buildoutInventory(
     );
   }
   const inventoryByPage = new Map<number, any[]>();
-  inventoryByPage.set(0, first.inventory ?? []);
+  inventoryByPage.set(0, buildoutInventoryRows(first));
   const failedPages = new Set<number>();
   const attemptedPages = new Set<number>([0]);
   const unattemptedPages = new Set<number>();
@@ -303,8 +447,15 @@ export async function buildoutInventory(
       }
       try {
         attemptedPages.add(p);
-        const d = await fetchBuildoutInventoryPage(company, pluginKey, p, opts);
-        inventoryByPage.set(p, d.inventory ?? []);
+        const d = await fetchBuildoutInventoryPage(
+          company,
+          pluginKey,
+          p,
+          opts,
+          strictFreshness ? firstPage : null
+        );
+        assertBuildoutInventoryPage(d, p, firstPage, strictFreshness);
+        inventoryByPage.set(p, buildoutInventoryRows(d));
         done++;
         if (done % 25 === 0) console.error(`  ${company}: inventory page ${done}/${pages}`);
       } catch (err) {
@@ -335,20 +486,40 @@ export async function buildoutInventory(
                 opts.directReferer ?? "https://buildout.com/"
               );
             } catch {
-              d = await fetchBuildoutInventoryPage(company, pluginKey, p, {
+              d = await fetchBuildoutInventoryPage(
+                company,
+                pluginKey,
+                p,
+                {
+                  ...opts,
+                  jsonAttempts: opts.jsonAttempts ?? 4,
+                  jsonBackoffMs: opts.jsonBackoffMs ?? 12000,
+                },
+                strictFreshness ? firstPage : null
+              );
+            }
+          } else {
+            d = await fetchBuildoutInventoryPage(
+              company,
+              pluginKey,
+              p,
+              {
                 ...opts,
                 jsonAttempts: opts.jsonAttempts ?? 4,
                 jsonBackoffMs: opts.jsonBackoffMs ?? 12000,
-              });
-            }
-          } else {
-            d = await fetchBuildoutInventoryPage(company, pluginKey, p, {
-              ...opts,
-              jsonAttempts: opts.jsonAttempts ?? 4,
-              jsonBackoffMs: opts.jsonBackoffMs ?? 12000,
+              },
+              strictFreshness ? firstPage : null
+            );
+          }
+          assertBuildoutInventoryPage(d, p, firstPage, strictFreshness);
+          if (!d?.__creFreshness) {
+            annotateBuildoutPage(d, {
+              observedAt: new Date().toISOString(),
+              generationId: refreshGenerationId(),
+              cacheDisposition: "live",
             });
           }
-          inventoryByPage.set(p, d.inventory ?? []);
+          inventoryByPage.set(p, buildoutInventoryRows(d));
           if (buildoutPageCachePolicy(opts).write) {
             writeBuildoutPageCache(company, pluginKey, p, opts, d);
           }
@@ -401,7 +572,13 @@ export async function buildoutInventory(
   }
   const items: any[] = [];
   for (let p = 0; p < pages; p++) items.push(...(inventoryByPage.get(p) ?? []));
-  const result = { items, total };
+  assertBuildoutInventoryReconciled(items, total, strictFreshness);
+  const result: BuildoutInventoryResult = {
+    items,
+    total,
+    strictValidated: strictFreshness,
+    generationId: refreshGenerationId(),
+  };
   buildoutCache.set(pluginKey, result);
   console.error(
     `  ${company}: full inventory cached (${items.length} items, total ${total ?? "?"}${failedPages.size ? `, ${failedPages.size} pages skipped` : ""})`
@@ -482,7 +659,11 @@ export async function enrichBuildoutDetail(sourceKey: string, listingUrl: string
   }
   let doc;
   try {
-    doc = await scrapeDoc(iframeUrl, { waitFor: 1500, timeout: 60000 });
+    doc = await scrapeDoc(iframeUrl, {
+      waitFor: 1500,
+      timeout: 60000,
+      ...(requireFreshDetails() ? { maxAge: 0 } : {}),
+    });
   } catch (err) {
     console.error(`  enrich/buildout(${sourceKey}): detail iframe scrape failed for ${listingUrl}: ${err}`);
     return null;
@@ -572,14 +753,16 @@ export async function srcBuildout(
   // Enumeration-only source: the Buildout inventory API has no per-listing detail
   // render, so monitor output == full output (status/price/id are all in-feed).
   const { items, total } = await buildoutInventory(company, pluginKey, inventoryOpts);
+  const eligibleItems = items.filter((x) => {
+    if (x.closed === true) return false;
+    const isSale = x.sale === true;
+    return tx === "sale" ? isSale : !isSale;
+  });
   const listings: any[] = [];
-  for (const x of items) {
+  for (const x of eligibleItems) {
     if (listings.length >= max) break;
-    if (x.closed === true) continue;
     const isSale = x.sale === true;
     const isLease = x.sale !== true; // inventory rows are active availabilities: not-for-sale = for-lease
-    if (tx === "sale" && !isSale) continue;
-    if (tx === "lease" && !isLease) continue;
     {
       const attrs = new Map<string, string>(
         (x.index_attributes ?? []).map((p: any) => [String(p[0]), String(p[1])])
@@ -668,6 +851,13 @@ export async function srcBuildout(
         photos: [x.photo_url, x.large_thumbnail_url].filter(Boolean).slice(0, 1),
         url: clean(x.show_link),
         underContract: x.under_contract === true,
+        inventoryObservedAt: x.__creFreshness?.observedAt,
+        freshnessProvenance: {
+          detailScope: "authoritative_inventory_feed",
+          generationId: x.__creFreshness?.generationId ?? refreshGenerationId(),
+          method: "buildout_inventory_feed",
+          cacheDisposition: x.__creFreshness?.cacheDisposition ?? "live",
+        },
       });
     }
   }
@@ -677,5 +867,14 @@ export async function srcBuildout(
     method: "Buildout plugin inventory API (JSON, paginated)",
     totalAvailable: total,
     listings,
+    truncated: buildoutCapTruncated(max, listings.length, eligibleItems.length),
   };
+}
+
+export function buildoutCapTruncated(
+  max: number,
+  emitted: number,
+  knownEligible: number
+): boolean {
+  return Number.isFinite(max) && emitted < knownEligible;
 }

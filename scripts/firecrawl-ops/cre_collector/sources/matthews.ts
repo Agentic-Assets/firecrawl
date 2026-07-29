@@ -1,6 +1,10 @@
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
+import {
+  refreshGenerationId,
+  requireFreshDetails,
+} from "../lib/freshness.js";
 import { clean, moneyToNumber, pmap, prune } from "../lib/util.js";
 import { SourceResult, Tx } from "../types.js";
 
@@ -22,18 +26,27 @@ async function matthewsGate(): Promise<void> {
   if (wait > 0) await matthewsSleep(wait);
 }
 
+export function matthewsFetchOptions(
+  strict = requireFreshDetails()
+): RequestInit {
+  const headers: Record<string, string> = {
+    "User-Agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  };
+  if (strict) headers["Cache-Control"] = "no-cache";
+  return {
+    headers,
+    ...(strict ? { cache: "no-store" as const } : {}),
+  };
+}
+
 async function matthewsFetch(url: string): Promise<string> {
   for (let attempt = 0; attempt < 6; attempt++) {
     await matthewsGate();
     let status = 0;
     try {
-      const res = await fetch(url, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
-          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-      });
+      const res = await fetch(url, matthewsFetchOptions());
       status = res.status;
       if (res.ok) return res.text();
     } catch {
@@ -164,9 +177,112 @@ export function matthewsTenureFromUrl(url: string): Tx {
   return /\/properties\/leasing-/i.test(url) ? "lease" : "sale";
 }
 
-export function parseMatthewsDetail(html: string, url: string, tx: Tx): any | null {
+function normalizedMatthewsPropertyUrl(raw: string | null, baseUrl: string): string | null {
+  const value = clean(raw);
+  if (!value) return null;
+  try {
+    const parsed = new URL(value, baseUrl);
+    if (parsed.hostname.toLowerCase().replace(/^www\./, "") !== "matthews.com") {
+      return null;
+    }
+    const path = parsed.pathname.replace(/\/+$/, "");
+    if (!/^\/properties\/[^/]+$/i.test(path)) return null;
+    return `https://www.matthews.com${path}`;
+  } catch {
+    return null;
+  }
+}
+
+export function matthewsProviderIdentity(
+  html: string,
+  url: string,
+  strict = requireFreshDetails()
+): string | null {
+  const requested = normalizedMatthewsPropertyUrl(url, MATTHEWS_HOST);
+  if (!requested) return null;
   const $ = cheerio.load(html);
-  const title = clean($("#propertyTitle").first().text()) || clean($("h1").first().text());
+  const declaredRaw =
+    $("link[rel='canonical']").first().attr("href") ??
+    $("meta[property='og:url']").first().attr("content") ??
+    null;
+  const declared = normalizedMatthewsPropertyUrl(declaredRaw, requested);
+  if (declaredRaw && declared !== requested) return null;
+  if (strict && declared !== requested) return null;
+  const identityUrl = declared ?? requested;
+  if (matthewsTenureFromUrl(identityUrl) !== matthewsTenureFromUrl(requested)) {
+    return null;
+  }
+  return identityUrl.split("/properties/")[1] ?? null;
+}
+
+export type MatthewsParseContext = {
+  inventoryObservedAt?: string;
+  detailObservedAt?: string;
+  strict?: boolean;
+};
+
+export function parseMatthewsDetail(
+  html: string,
+  url: string,
+  tx: Tx,
+  context: MatthewsParseContext = {}
+): any | null {
+  const $ = cheerio.load(html);
+  const strict = context.strict ?? requireFreshDetails();
+  const identity = matthewsProviderIdentity(
+    html,
+    url,
+    strict
+  );
+  if (!identity || matthewsTenureFromUrl(url) !== tx) return null;
+  const propertyTitle = clean($("#propertyTitle").first().text());
+  if (strict) {
+    const visibleBody = $("body").clone();
+    visibleBody.find("script, style, noscript").remove();
+    const visibleText = [
+      clean($("title").first().text()),
+      clean($("h1").first().text()),
+      clean(visibleBody.text()),
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n");
+    const headingText = [
+      clean($("title").first().text()),
+      clean($("h1").first().text()),
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n");
+    const hasStandalone404Heading = headingText
+      .split("\n")
+      .some((value) =>
+        /^404(?:\s*[-:]\s*(?:page\s*)?not found)?[.!]?\s*$/i.test(value)
+      );
+    const isErrorShell =
+      hasStandalone404Heading
+      || /\b(?:not found|error|access denied|forbidden|captcha|just a moment|something went wrong)\b/i.test(
+        headingText
+      )
+      ||
+      /\b(?:404(?:\s*[-:]\s*)?(?:page\s*)?not found|page not found|property not found|requested property (?:was )?not found|internal server error|service unavailable|access denied|request blocked|forbidden|captcha|verify you are human|checking (?:your )?browser|just a moment|an? error (?:occurred|has occurred)|something went wrong)\b/i.test(
+        visibleText
+      )
+      || /\b(?:cf-chl-|g-recaptcha|hcaptcha)\b/i.test(html);
+    const hasPropertyDetailStructure = Boolean(
+      propertyTitle
+      && (
+        clean($("#propertyAddress").first().text())
+        || clean($("#propertyPrice").first().text())
+        || (
+          $(".key-info-title").length > 0
+          && $(".key-info-value").length > 0
+        )
+        || clean($("#propertyDocumentLink").first().attr("href"))
+        || $('a[id="agentName"]').length > 0
+      )
+    );
+    if (isErrorShell || !hasPropertyDetailStructure) return null;
+  }
+  const title = propertyTitle || clean($("h1").first().text());
   const photos = matthewsImages(html);
   if (!title && photos.length === 0) return null;
 
@@ -238,10 +354,20 @@ export function parseMatthewsDetail(html: string, url: string, tx: Tx): any | nu
     )
     .filter((id): id is number => id !== null);
 
-  const slug = (url.split("/properties/")[1] ?? url).replace(/[/?#].*$/, "");
-
   return prune({
-    id: slug,
+    id: identity,
+    inventoryObservedAt: context.inventoryObservedAt,
+    detailObservedAt: context.detailObservedAt,
+    freshnessProvenance:
+      context.inventoryObservedAt && context.detailObservedAt
+        ? {
+            detailScope: "detail_page",
+            generationId: refreshGenerationId(),
+            method: "matthews_canonical_detail",
+            cacheDisposition: "live",
+            identityMethod: "canonical_property_url",
+          }
+        : undefined,
     name: title,
     transactionType: tx === "sale" ? "Sale" : "Lease",
     assetType,
@@ -268,8 +394,17 @@ export function parseMatthewsDetail(html: string, url: string, tx: Tx): any | nu
   });
 }
 
+export function matthewsParsedCoverage(
+  parsed: Array<any | null | undefined>
+): { listings: any[]; failures: number; truncated: boolean } {
+  const listings = parsed.filter((listing): listing is any => listing != null);
+  const failures = parsed.length - listings.length;
+  return { listings, failures, truncated: failures > 0 };
+}
+
 export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   const xml = await matthewsFetch(MATTHEWS_SITEMAP_URL);
+  const inventoryObservedAt = new Date().toISOString();
   const detailUrls = matthewsDetailUrlsFromSitemap(xml);
   if (!detailUrls.length) {
     throw new Error(
@@ -281,11 +416,16 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   const take = Number.isFinite(max) ? urls.slice(0, max) : urls;
 
   if (monitor) {
+    const truncated = take.length !== urls.length;
     return {
       company: "Matthews",
       sourceUrl: MATTHEWS_SOURCE_URL,
       method: "Public sitemap.xml enumeration filtered by /properties/leasing-* tenure slug",
       totalAvailable: urls.length,
+      truncated,
+      note: truncated
+        ? `Selected ${take.length}/${urls.length} sitemap detail page(s)`
+        : undefined,
       listings: take.map((url) =>
         prune({
           id: (url.split("/properties/")[1] ?? url).replace(/[/?#].*$/, ""),
@@ -297,21 +437,30 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
     };
   }
 
-  let failures = 0;
   const parsed = await pmap(take, Math.min(CONCURRENCY, 2), async (url) => {
     try {
       const html = await matthewsFetch(url);
-      return parseMatthewsDetail(html, url, tx);
+      const listing = parseMatthewsDetail(html, url, tx, {
+        inventoryObservedAt,
+        detailObservedAt: new Date().toISOString(),
+      });
+      if (!listing) {
+        console.error(`  matthews/${tx}: ${url} failed identity or detail validation`);
+      }
+      return listing;
     } catch (err) {
-      failures++;
       console.error(`  matthews/${tx}: ${url} failed: ${err}`);
       return null;
     }
   });
-  const listings = parsed.filter((listing): listing is any => listing !== null);
+  const coverage = matthewsParsedCoverage(parsed);
+  const listings = coverage.listings;
+  const failures = coverage.failures;
   if (!listings.length) {
     throw new Error("Matthews: sitemap enumerated detail pages but none parsed");
   }
+  const incompleteEnumeration = take.length !== urls.length;
+  const truncated = coverage.truncated || incompleteEnumeration;
 
   return {
     company: "Matthews",
@@ -319,7 +468,12 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
     method: "Public sitemap.xml enumeration to server-rendered detail pages, DOM parsed via throttled plain fetch",
     totalAvailable: urls.length,
     listings,
-    truncated: failures > 0,
-    note: failures > 0 ? `${failures} detail page(s) failed to fetch` : undefined,
+    truncated,
+    note:
+      failures > 0
+        ? `${failures} detail page(s) failed to fetch, parse, or validate identity`
+        : incompleteEnumeration
+          ? `Selected ${take.length}/${urls.length} sitemap detail page(s)`
+          : undefined,
   };
 }

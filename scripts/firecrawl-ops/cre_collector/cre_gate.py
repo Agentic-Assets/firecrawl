@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 from cre_ingest import (
     SOURCE_KEYS_BY_SLUG,
     SOURCE_TO_BROKERAGE,
+    assert_expected_database_target,
     find_psql,
     load_db_url,
     sql_lit,
@@ -212,9 +213,10 @@ def _psql_read(psql, db_url, sql):
     return rows
 
 
-def read_baseline(env_file, quiet):
+def read_baseline(env_file, quiet, expected_db_target_sha256=None):
     """Read credeals.cre_source_baseline. Returns (baseline, db_url, psql)."""
     db_url, env_path = load_db_url(env_file)
+    assert_expected_database_target(db_url, expected_db_target_sha256)
     psql = find_psql()
     _eprint(quiet, f"baseline credentials: {env_path}")
     rows = _psql_read(
@@ -363,6 +365,11 @@ def main():
     ap.add_argument("--in", dest="inputs", action="append", required=True,
                     help="collector run artifact JSON (repeatable)")
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
+    ap.add_argument(
+        "--expected-db-target-sha256",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     ap.add_argument("--dry-run", action="store_true",
                     help="default; compute verdicts with an empty baseline, no DB connection")
     ap.add_argument("--apply", action="store_true", help="live: read the baseline from the DB")
@@ -396,7 +403,14 @@ def main():
     db_url = None
     psql = None
     if live:
-        baseline, db_url, psql = read_baseline(args.env_file, quiet)
+        if args.expected_db_target_sha256 is None:
+            baseline, db_url, psql = read_baseline(args.env_file, quiet)
+        else:
+            baseline, db_url, psql = read_baseline(
+                args.env_file,
+                quiet,
+                args.expected_db_target_sha256,
+            )
     else:
         _eprint(quiet, "dry-run: no DB connection; baseline treated as empty (every source first_seen)")
 

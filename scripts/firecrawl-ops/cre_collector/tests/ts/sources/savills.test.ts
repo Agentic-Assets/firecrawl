@@ -9,6 +9,7 @@ import {
   savillsListTimeoutMs,
   savillsDirectListTimeoutMs,
   savillsListHtmlIsUsable,
+  srcSavills,
 } from "../../../sources/savills.js";
 
 test("savillsListTimeoutMs is bounded with a short recovery default", () => {
@@ -44,6 +45,65 @@ test("savillsListHtmlIsUsable accepts only a rendered Savills list state", () =>
     savillsListHtmlIsUsable('<script id="__NEXT_DATA__" type="application/json">{"props":{}}</script>'),
     false
   );
+});
+
+function savillsPageHtml(totalItems: number, withPaging: boolean): string {
+  const property = {
+    ExternalPropertyID: "US-1",
+    ExternalPropertyIDFormatted: "us-1",
+    IsCommercial: true,
+    AddressLine1: "100 Main Street",
+    AddressLine2: "Dallas, TX 75201",
+    PropertyTypes: [{ Caption: "Office" }],
+  };
+  return [
+    '<script id="__NEXT_DATA__" type="application/json">',
+    JSON.stringify({
+      props: {
+        initialReduxState: {
+          listPage: withPaging
+            ? {
+                currentPage: 1,
+                pageMap: {
+                  "1": {
+                    paging: { total: 1, totalItems },
+                    metaData: { NextUrl: null },
+                  },
+                },
+              }
+            : {},
+          properties: { "US-1": property },
+        },
+      },
+    }),
+    "</script>",
+  ].join("");
+}
+
+test("Savills full refresh rejects usable HTML with missing pagination metadata", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(savillsPageHtml(1, false), { status: 200 });
+  try {
+    await assert.rejects(
+      () => srcSavills("sale", Infinity, false),
+      /did not expose complete pagination metadata/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Savills full refresh reconciles unique rows to the provider total", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(savillsPageHtml(2, true), { status: 200 });
+  try {
+    await assert.rejects(
+      () => srcSavills("sale", Infinity, false),
+      /enumerated 1 unique commercial rows but provider reported 2/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("inferStateFromZip maps ZIP prefixes to states", () => {

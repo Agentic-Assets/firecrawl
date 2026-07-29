@@ -10,6 +10,12 @@ import { scrapeDoc, scrapeRaw } from "../lib/scrape.js";
 import { ScrapeOpts, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { parseLeaseRate } from "../lib/parse.js";
 import { boundedInt, clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
+import {
+  detailObservation,
+  generationMatches,
+  refreshGenerationId,
+  requireFreshDetails,
+} from "../lib/freshness.js";
 
 
 // --- Colliers main site: public XML sitemap discovery + detail-page render ---
@@ -40,7 +46,12 @@ export const COLLIERS_MAIN_SCRAPE_OPTS: ScrapeOpts = {
   ...(COLLIERS_MAIN_DETAIL_WAIT_MS ? { waitFor: COLLIERS_MAIN_DETAIL_WAIT_MS } : {}),
 };
 
-export type ColliersMainEntry = { url: string; lastmod: string | null; id: string };
+export type ColliersMainEntry = {
+  url: string;
+  lastmod: string | null;
+  id: string;
+  inventoryObservedAt?: string;
+};
 
 export let colliersMainSitemapCache: ColliersMainEntry[] | null = null;
 export let colliersMainEnrichedMemo: any[] | null = null;
@@ -50,9 +61,22 @@ export function colliersMainDetailPassTruncated(stats: { errors: number; deferre
   return stats.errors > 0 || stats.deferred > 0;
 }
 
+export function colliersMainResultTruncated(
+  stats: { errors: number; deferred: number },
+  max: number,
+  knownInventory: number | null
+): boolean {
+  return (
+    colliersMainDetailPassTruncated(stats) ||
+    (Number.isFinite(max) &&
+      knownInventory !== null &&
+      max < knownInventory)
+  );
+}
+
 export function colliersMainIsChallenge(doc: ScrapedDoc): boolean {
-  const status = doc.metadata?.statusCode;
-  if (status === 429 || status === 503) return true;
+  const httpStatus = doc.metadata?.statusCode;
+  if (httpStatus === 429 || httpStatus === 503) return true;
   const title = (clean(doc.metadata?.title) ?? "").toLowerCase();
   if (/just a moment|attention required|checking your browser|cf-browser-verification/i.test(title)) {
     return true;
@@ -68,11 +92,15 @@ export function colliersMainIsChallenge(doc: ScrapedDoc): boolean {
 // the parser then tombstones a real 404 or throws for retry on the next pass.
 export async function scrapeColliersMainDetailDoc(url: string): Promise<ScrapedDoc> {
   const maxAttempts = boundedInt(process.env.COLLIERS_MAIN_CHALLENGE_RETRIES, 4, 1, 8);
-  let doc = await scrapeDoc(url, COLLIERS_MAIN_SCRAPE_OPTS);
+  const scrapeOpts = {
+    ...COLLIERS_MAIN_SCRAPE_OPTS,
+    ...(requireFreshDetails() ? { maxAge: 0 } : {}),
+  };
+  let doc = await scrapeDoc(url, scrapeOpts);
   for (let attempt = 2; attempt <= maxAttempts && colliersMainIsChallenge(doc); attempt++) {
     const backoff = 4000 * (attempt - 1) + Math.floor(Math.random() * 3000);
     await new Promise((r) => setTimeout(r, backoff));
-    doc = await scrapeDoc(url, COLLIERS_MAIN_SCRAPE_OPTS);
+    doc = await scrapeDoc(url, scrapeOpts);
   }
   return doc;
 }
@@ -98,20 +126,25 @@ export function extractSitemapLocs(xml: string): string[] {
 
 export async function fetchColliersMainEntries(): Promise<ColliersMainEntry[]> {
   if (colliersMainSitemapCache) return colliersMainSitemapCache;
-  const indexXml = await scrapeRaw(COLLIERS_MAIN_SITEMAP_INDEX, COLLIERS_MAIN_SCRAPE_OPTS);
+  const scrapeOpts = {
+    ...COLLIERS_MAIN_SCRAPE_OPTS,
+    ...(requireFreshDetails() ? { maxAge: 0 } : {}),
+  };
+  const indexXml = await scrapeRaw(COLLIERS_MAIN_SITEMAP_INDEX, scrapeOpts);
   const childLocs = extractSitemapLocs(indexXml);
   const propsSitemap = childLocs.find((l) => /\/en\/sitemap\?type=properties\b/i.test(l));
   if (!propsSitemap) {
     throw new Error("Colliers main: en ?type=properties sitemap not found in sitemap index");
   }
-  const propsXml = await scrapeRaw(propsSitemap, COLLIERS_MAIN_SCRAPE_OPTS);
+  const propsXml = await scrapeRaw(propsSitemap, scrapeOpts);
   const seen = new Set<string>();
   const entries: ColliersMainEntry[] = [];
+  const inventoryObservedAt = new Date().toISOString();
   for (const e of extractSitemapUrlEntries(propsXml)) {
     const id = colliersMainIdFromUrl(e.loc);
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    entries.push({ url: e.loc, lastmod: e.lastmod, id });
+    entries.push({ url: e.loc, lastmod: e.lastmod, id, inventoryObservedAt });
   }
   if (!entries.length) {
     throw new Error("Colliers main: ?type=properties sitemap had no usa####### detail URLs");
@@ -222,17 +255,40 @@ export function colliersMainJsonLd(rawHtml: string): any | null {
 export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDoc): any {
   const raw = doc.rawHtml ?? "";
   const md = doc.markdown ?? "";
+  const httpStatus = doc.metadata?.statusCode;
+  const title = clean(doc.metadata?.title) ?? "";
+  if (requireFreshDetails()) {
+    if (httpStatus === 404 || httpStatus === 410) {
+      return {
+        id: entry.id,
+        url: entry.url,
+        skip: "not_found",
+        lastUpdated: entry.lastmod ? entry.lastmod.slice(0, 10) : null,
+      };
+    }
+    if (colliersMainIsChallenge(doc)) {
+      throw new Error(
+        `Colliers main detail still challenged (status ${httpStatus ?? "?"}, title "${title.slice(0, 60)}")`
+      );
+    }
+  }
   const ld = colliersMainJsonLd(raw);
   if (!ld) {
     // Live listings always carry a RealEstateListing JSON-LD block. Pages
     // without one fall into three cases, handled distinctly:
-    const title = clean(doc.metadata?.title) ?? "";
-    const status = doc.metadata?.statusCode;
+    if (requireFreshDetails()) {
+      // Strict refreshes may cache only transport-proven 404/410 tombstones.
+      // Unknown 200 templates, consent pages, and newly shaped challenge shells
+      // remain retryable so they cannot silently remove a live sitemap listing.
+      throw new Error(
+        `Colliers main HTTP ${httpStatus ?? "?"} detail lacks validated RealEstateListing JSON-LD`
+      );
+    }
     const notFound =
       /property not found|page not found|410 gone/i.test(title) ||
       /Property Not Found/i.test(md.slice(0, 3000)) ||
-      status === 404 ||
-      status === 410;
+      httpStatus === 404 ||
+      httpStatus === 410;
     if (notFound) {
       // 1) Expired/removed listing (the sitemap lags). Tombstone so we neither
       //    re-fetch it nor emit it.
@@ -247,7 +303,7 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
       // 2) Still a Cloudflare challenge after the retry wrapper exhausted its
       //    attempts. Throw so it is retried (un-cached) on the next pass.
       throw new Error(
-        `Colliers main detail still challenged (status ${status ?? "?"}, title "${title.slice(0, 60)}")`
+        `Colliers main detail still challenged (status ${httpStatus ?? "?"}, title "${title.slice(0, 60)}")`
       );
     }
     // 3) A real 200 page that lacks the standard RealEstateListing JSON-LD
@@ -466,6 +522,14 @@ export function appendColliersMainCache(path: string, listing: any): void {
 }
 
 export function colliersMainCachedListingIsCurrent(entry: ColliersMainEntry, listing: any): boolean {
+  if (!generationMatches(listing?.freshnessProvenance?.generationId)) return false;
+  if (
+    requireFreshDetails() &&
+    listing?.skip &&
+    listing.skip !== "not_found"
+  ) {
+    return false;
+  }
   const sourceLastmod = entry.lastmod ? entry.lastmod.slice(0, 10) : null;
   const cachedLastmod = clean(listing?.lastUpdated)?.slice(0, 10) ?? null;
   // When the source publishes lastmod, it is the admission boundary for cache
@@ -504,6 +568,22 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
       listing = undefined;
     }
     if (listing) {
+      const validatedAt = entry.inventoryObservedAt ?? new Date().toISOString();
+      listing = {
+        ...listing,
+        inventoryObservedAt: validatedAt,
+        detailValidatedAt: validatedAt,
+        freshnessProvenance: {
+          ...(listing.freshnessProvenance ?? {}),
+          detailScope: "detail_page",
+          generationId:
+            listing.freshnessProvenance?.generationId ?? refreshGenerationId(),
+          method: "colliers_main_detail",
+          cacheDisposition: "source_revision_cache",
+          sourceRevision: entry.lastmod,
+          validatedAt,
+        },
+      };
       fromCache++;
     } else if (fetchBudget <= 0) {
       deferred++;
@@ -513,13 +593,28 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
       fetchBudget--;
       try {
         const docDoc = await scrapeColliersMainDetailDoc(entry.url);
-        listing = parseColliersMainDetail(entry, docDoc);
+        const observed = detailObservation("colliers_main_detail", "live", new Date().toISOString(), {
+          sourceRevision: entry.lastmod,
+        });
+        listing = {
+          ...parseColliersMainDetail(entry, docDoc),
+          inventoryObservedAt: entry.inventoryObservedAt,
+          detailObservedAt: observed.observedAt,
+          freshnessProvenance: {
+            detailScope: "detail_page",
+            generationId: observed.generationId,
+            method: observed.method,
+            cacheDisposition: observed.cacheDisposition,
+            sourceRevision: observed.sourceRevision,
+          },
+        };
         fetched++;
       } catch (err) {
         console.error(`  colliers-main: detail failed for ${entry.url}: ${err}`);
         listing = prune({
           id: entry.id,
           url: entry.url,
+          inventoryObservedAt: entry.inventoryObservedAt,
           transactionType: null,
           detailError: String(err),
           lastUpdated: entry.lastmod ? entry.lastmod.slice(0, 10) : null,
@@ -570,6 +665,14 @@ export async function srcColliersMain(tx: Tx, max: number, monitor: boolean): Pr
       id: entry.id,
       url: entry.url,
       lastUpdated: entry.lastmod ? entry.lastmod.slice(0, 10) : null,
+      inventoryObservedAt: entry.inventoryObservedAt,
+      preserveChildCollections: true,
+      freshnessProvenance: {
+        detailScope: "inventory_only",
+        generationId: refreshGenerationId(),
+        method: "colliers_main_sitemap",
+        cacheDisposition: "live",
+      },
     }));
     return {
       company: "Colliers",
@@ -578,6 +681,11 @@ export async function srcColliersMain(tx: Tx, max: number, monitor: boolean): Pr
         "Public colliers.com XML sitemap enumeration (/sitemap -> en ?type=properties): url + lastmod only (monitor mode; detail render skipped)",
       totalAvailable: entries.length,
       listings,
+      truncated: colliersMainResultTruncated(
+        { errors: 0, deferred: 0 },
+        max,
+        entries.length
+      ),
       note: "Monitor mode: sitemap url + lastmod only (id matches the full-path main: external id). Status, price, and Sale/Lease classification are detail-only and deferred to the downstream render of new/changed listings.",
     };
   }
@@ -596,7 +704,11 @@ export async function srcColliersMain(tx: Tx, max: number, monitor: boolean): Pr
       "Public colliers.com XML sitemap discovery (/sitemap -> en ?type=properties) plus per-listing detail render through local Firecrawl; RealEstateListing JSON-LD + markdown parse",
     totalAvailable: colliersMainSitemapCache ? colliersMainSitemapCache.length : null,
     listings,
-    truncated: colliersMainDetailPassTruncated(colliersMainEnrichedStats),
+    truncated: colliersMainResultTruncated(
+      colliersMainEnrichedStats,
+      max,
+      colliersMainSitemapCache ? colliersMainSitemapCache.length : null
+    ),
     note:
       `Main colliers.com folded into the colliers brokerage as colliers-main with main: id prefix; SalesTracker rows untouched. ` +
       `${ok.length} live detail-enriched listing(s) of ${all.length} sitemap URL(s) scanned, ${notFound} expired/not-found and ${noData} no-structured-data (tombstoned), ${errored} detail error(s). ` +

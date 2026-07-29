@@ -18,15 +18,64 @@ import {
   harvestNai,
   naiBuildingClassFromTags,
   naiGraphqlPost,
+  fetchNaiFeedPage,
+  naiFeedPageCache,
+  srcNaiGlobal,
   naiFeedPageCacheKey,
   naiPageSignature,
+  naiResultTruncated,
   naiSourceIdBatches,
+  naiStrictSourceDiscovery,
+  discoverNaiSourceIds,
+  NAI_SOURCE_DISCOVERY_PARSER,
+  NAI_SOURCE_IDS,
   NAI_LISTING_URL_BASE,
+  NAI_WIDGET_URL,
 } from "../../../sources/nai-global.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(__dirname, "../../fixtures/raw_data/nai-global.json");
 const fixtures: any[] = JSON.parse(readFileSync(FIXTURE_PATH, "utf-8"));
+const MOCK_WIDGET_URL = "https://ab.infabode.test/nai-global/listings3";
+const MOCK_CHUNK_URL = "https://ab.infabode.test/_next/static/chunks/office-config.js";
+
+test("NAI finite caps and incomplete provider enumeration report truncation", () => {
+  assert.equal(naiResultTruncated(1, 1, 2, 0, 0), true);
+  assert.equal(naiResultTruncated(1, 1, 1, 0, 1), true);
+  assert.equal(naiResultTruncated(2, 2, 2, 0, 0), false);
+  assert.equal(
+    naiResultTruncated(Number.POSITIVE_INFINITY, 2, 2, 0, 0),
+    false
+  );
+  assert.equal(
+    naiResultTruncated(Number.POSITIVE_INFINITY, 2, 2, 1, 0),
+    true
+  );
+});
+
+function naiOfficeConfigScript(sourceIds: number[]): string {
+  const offices = sourceIds
+    .map(
+      (id, index) =>
+        `{id:${id},name:"${index === 0 ? "NAI Global" : `NAI Test Office ${index + 1}`}",country:"United States"}`
+    )
+    .join(",");
+  return `self.webpackChunk_N_E.push([[651],{4373:()=>{let a=[${offices}],o=[];}}]);`;
+}
+
+function naiDiscoveryFetch(scriptResponse: Response): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === MOCK_WIDGET_URL) {
+      return new Response(`<script src="${MOCK_CHUNK_URL}"></script>`, {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    }
+    if (url === MOCK_CHUNK_URL) return scriptResponse;
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+}
 
 test("naiGraphqlPost deadline covers a stalled response body", async (t) => {
   const originalFetch = globalThis.fetch;
@@ -59,12 +108,222 @@ test("NAI source batches cover each office once and namespace the page cache", (
   assert.deepEqual(naiSourceIdBatches([10, 11, 10, 12, 13], 2), [[10, 11], [12, 13]]);
   assert.equal(naiFeedPageCacheKey(18, [10, 11]), "10,11:18");
   assert.notEqual(naiFeedPageCacheKey(18, [10, 11]), naiFeedPageCacheKey(18, [12, 13]));
+  assert.equal(naiStrictSourceDiscovery(false), true, "full and checkpoint runs fail closed");
+});
+
+test("NAI live source discovery accepts an unchanged validated widget config", async () => {
+  const discovery = await discoverNaiSourceIds({
+    fetchImpl: naiDiscoveryFetch(new Response(naiOfficeConfigScript(NAI_SOURCE_IDS))),
+    strict: true,
+    widgetUrl: MOCK_WIDGET_URL,
+  });
+
+  assert.deepEqual(discovery.sourceIds, NAI_SOURCE_IDS);
+  assert.equal(discovery.usedFallback, false);
+  assert.equal(discovery.warning, null);
+  assert.equal(discovery.provenance.mode, "live-widget-js");
+  assert.equal(discovery.provenance.scriptUrl, MOCK_CHUNK_URL);
+  assert.equal(discovery.provenance.parser, NAI_SOURCE_DISCOVERY_PARSER);
+  assert.equal(discovery.provenance.sourceIdCount, NAI_SOURCE_IDS.length);
+  assert.match(discovery.provenance.sourceIdsSha256, /^[a-f0-9]{64}$/);
+  assert.match(discovery.provenance.configSha256 ?? "", /^[a-f0-9]{64}$/);
+});
+
+test("NAI live source discovery includes a newly added widget office", async () => {
+  const addedOfficeId = 999_991;
+  const liveIds = [...NAI_SOURCE_IDS, addedOfficeId];
+  const discovery = await discoverNaiSourceIds({
+    fetchImpl: naiDiscoveryFetch(new Response(naiOfficeConfigScript(liveIds))),
+    strict: true,
+    widgetUrl: MOCK_WIDGET_URL,
+  });
+
+  assert.deepEqual(discovery.sourceIds, liveIds);
+  assert.equal(discovery.sourceIds.at(-1), addedOfficeId);
+  assert.equal(discovery.provenance.sourceIdCount, NAI_SOURCE_IDS.length + 1);
+});
+
+test("NAI strict source discovery rejects a malformed duplicate-id config", async () => {
+  const malformedIds = [...NAI_SOURCE_IDS.slice(0, -1), NAI_SOURCE_IDS[0]!];
+  await assert.rejects(
+    () =>
+      discoverNaiSourceIds({
+        fetchImpl: naiDiscoveryFetch(new Response(naiOfficeConfigScript(malformedIds))),
+        strict: true,
+        widgetUrl: MOCK_WIDGET_URL,
+      }),
+    /invalid or duplicate ids/
+  );
+});
+
+test("NAI strict source discovery rejects removal of a documented office", async () => {
+  const driftedIds = NAI_SOURCE_IDS.slice(0, -1);
+  await assert.rejects(
+    () =>
+      discoverNaiSourceIds({
+        fetchImpl: naiDiscoveryFetch(new Response(naiOfficeConfigScript(driftedIds))),
+        strict: true,
+        widgetUrl: MOCK_WIDGET_URL,
+      }),
+    /omitted 1 documented id/
+  );
+});
+
+test("NAI source discovery fails closed or surfaces the documented monitor fallback", async () => {
+  const failedFetch = naiDiscoveryFetch(new Response("unavailable", { status: 503 }));
+  await assert.rejects(
+    () =>
+      discoverNaiSourceIds({
+        fetchImpl: failedFetch,
+        strict: true,
+        widgetUrl: MOCK_WIDGET_URL,
+      }),
+    /NAI source organization discovery failed/
+  );
+
+  const fallback = await discoverNaiSourceIds({
+    fetchImpl: failedFetch,
+    strict: false,
+    widgetUrl: MOCK_WIDGET_URL,
+  });
+  assert.deepEqual(fallback.sourceIds, NAI_SOURCE_IDS);
+  assert.equal(fallback.usedFallback, true);
+  assert.equal(fallback.provenance.mode, "documented-fallback");
+  assert.equal(fallback.provenance.scriptUrl, null);
+  assert.match(fallback.warning ?? "", /using 116 documented ids/);
+  assert.match(fallback.warning ?? "", /HTTP 503/);
+});
+
+test("NAI feed page rejects a structurally incomplete GraphQL payload", async (t) => {
+  const originalFetch = globalThis.fetch;
+  naiFeedPageCache.clear();
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ data: {} }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    naiFeedPageCache.clear();
+  });
+
+  await assert.rejects(() => fetchNaiFeedPage(0, [999_992]), /lacks a publicPosts array/);
 });
 
 test("NAI page signatures detect an exact repeated provider page", () => {
   assert.equal(naiPageSignature([{ id: 10 }, { id: "11" }]), "10,11");
   assert.equal(naiPageSignature([{ id: 10 }, { title: "missing id" }]), null);
   assert.equal(naiPageSignature([]), null);
+});
+
+test("NAI strict full enumeration observes every batch and emits freshness on every row", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalRequireFresh = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const liveChunkUrl = new URL("/_next/static/chunks/office-config.js", NAI_WIDGET_URL).href;
+  const rows = [
+    {
+      id: 1,
+      title: "Listing 1",
+      contentType: { id: 4, name: "Sale Listings" },
+      listingStatus: "FOR_SALE_ON_MARKET",
+      source: { name: "NAI Test" },
+    },
+    {
+      id: 2,
+      title: "Listing 2",
+      contentType: { id: 4, name: "Sale Listings" },
+      listingStatus: "FOR_SALE_ON_MARKET",
+      source: { name: "NAI Test" },
+    },
+  ];
+  let graphqlCalls = 0;
+  naiFeedPageCache.clear();
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "nai-complete-test";
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === NAI_WIDGET_URL) {
+      return new Response(`<script src="${liveChunkUrl}"></script>`, { status: 200 });
+    }
+    if (url === liveChunkUrl) {
+      return new Response(naiOfficeConfigScript(NAI_SOURCE_IDS), { status: 200 });
+    }
+    if (init?.method === "POST") {
+      graphqlCalls++;
+      return new Response(JSON.stringify({ data: { publicPosts: rows } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    naiFeedPageCache.clear();
+    if (originalRequireFresh === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalRequireFresh;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+
+  const result = await srcNaiGlobal("sale", Number.POSITIVE_INFINITY, false);
+  assert.equal(graphqlCalls, 3, "all three live source-ID batches must reach a short page");
+  assert.equal(result.truncated, false);
+  assert.equal(result.listings.length, 2);
+  for (const listing of result.listings) {
+    assert.match(listing.inventoryObservedAt, /^20\d\d-/);
+    assert.equal(listing.detailObservedAt, listing.inventoryObservedAt);
+    assert.equal(listing.freshnessProvenance.generationId, "nai-complete-test");
+    assert.equal(listing.freshnessProvenance.detailScope, "source_native_public_record");
+    assert.equal(listing.preserveChildCollections, undefined);
+  }
+});
+
+test("NAI strict freshness fails closed on a repeated full provider page", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalRequireFresh = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const liveChunkUrl = new URL("/_next/static/chunks/office-config.js", NAI_WIDGET_URL).href;
+  const rows = Array.from({ length: 100 }, (_, index) => ({
+    id: index + 1,
+    title: `Listing ${index + 1}`,
+    contentType: { id: 4, name: "Sale Listings" },
+    listingStatus: "FOR_SALE_ON_MARKET",
+    source: { name: "NAI Test" },
+  }));
+  naiFeedPageCache.clear();
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "nai-repeat-test";
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === NAI_WIDGET_URL) {
+      return new Response(`<script src="${liveChunkUrl}"></script>`, { status: 200 });
+    }
+    if (url === liveChunkUrl) {
+      return new Response(naiOfficeConfigScript(NAI_SOURCE_IDS), { status: 200 });
+    }
+    if (init?.method === "POST") {
+      return new Response(JSON.stringify({ data: { publicPosts: rows } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    naiFeedPageCache.clear();
+    if (originalRequireFresh === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalRequireFresh;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+
+  await assert.rejects(
+    () => srcNaiGlobal("sale", Number.POSITIVE_INFINITY, false),
+    /repeated a full page .* strict freshness collection/
+  );
 });
 
 test("naiLocation parses Infabode location path", () => {
@@ -226,12 +485,38 @@ test("naiListingFromFeed maps sale row with detail enrichment", () => {
   assert.equal(listing.detailError, undefined);
 });
 
+test("naiListingFromFeed emits strict-ready source-native freshness provenance", () => {
+  const observedAt = "2026-07-29T15:00:00.000Z";
+  const row = {
+    id: 12346,
+    title: "Current public record",
+    content: "<p>Current public record</p>",
+    contentType: { id: 4, name: "Sale Listings" },
+    listingStatus: "FOR_SALE_ON_MARKET",
+    source: { name: "NAI Test" },
+  };
+  const listing = naiListingFromFeed(row, "sale", row, null, false, {
+    observedAt,
+    generationId: "checkpoint-generation",
+    method: "infabode_public_posts_graphql",
+    cacheDisposition: "live",
+  });
+
+  assert.equal(listing.inventoryObservedAt, observedAt);
+  assert.equal(listing.detailObservedAt, observedAt);
+  assert.equal(listing.freshnessProvenance.generationId, "checkpoint-generation");
+  assert.equal(listing.freshnessProvenance.detailScope, "source_native_public_record");
+  assert.equal(listing.freshnessProvenance.cacheDisposition, "live");
+  assert.equal(listing.preserveChildCollections, undefined);
+});
+
 test("naiListingFromFeed omits children on detailError", () => {
   const row = { id: 99, title: "Stub", publishedAt: "2026-06-01" };
   const listing = naiListingFromFeed(row, "lease", null, "timeout");
 
   assert.equal(listing.transactionType, "Lease");
   assert.equal(listing.detailError, "timeout");
+  assert.equal(listing.preserveChildCollections, true);
   // Byte-identical legacy shape on a failed/absent detail: brochures kept, no
   // harvest keys added (the spread is empty when harvested is null).
   assert.deepEqual(listing.brochures, []);
@@ -267,6 +552,7 @@ test("naiListingFromFeed safely promotes current public-feed price and size scal
   assert.equal(listing.listingStatus, null, "feed mode must not invent a detail-only status");
   assert.equal(listing.contactsDetailed.length, 0);
   assert.equal(listing.documents, undefined);
+  assert.equal(listing.preserveChildCollections, true);
 });
 
 test("harvestNai extracts an iframe video from detail.content and classifies docs/links", () => {

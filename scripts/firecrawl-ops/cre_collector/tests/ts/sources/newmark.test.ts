@@ -9,7 +9,14 @@ import {
   newmarkGalleryUrls,
   newmarkExtraUrls,
   newmarkSalePrice,
+  newmarkCoverageTruncated,
+  assertNewmarkAlgoliaInventoryPage,
+  classifyNewmarkPeopleLookup,
+  newmarkPeopleFailure,
+  newmarkPeopleListingFields,
+  srcNewmark,
 } from "../../../sources/newmark.js";
+import { firecrawl } from "../../../lib/scrape.js";
 
 // ---------------------------------------------------------------------------
 // Existing helper tests (unchanged)
@@ -49,6 +56,16 @@ test("newmarkGalleryUrls keeps the FULL thumbnail gallery (no truncation)", () =
   assert.ok(urls.includes("https://cdn.example.com/c.jpg"));
 });
 
+test("Newmark finite caps report truncation against Algolia nbHits", () => {
+  assert.equal(newmarkCoverageTruncated(2, 2, 1), true);
+  assert.equal(newmarkCoverageTruncated(2, 2, 2), false);
+  assert.equal(
+    newmarkCoverageTruncated(2, 2, Number.POSITIVE_INFINITY),
+    false
+  );
+  assert.equal(newmarkCoverageTruncated(2, 1, Number.POSITIVE_INFINITY), true);
+});
+
 test("newmarkGalleryUrls dedupes and tolerates an empty/garbage hit", () => {
   assert.deepEqual(newmarkGalleryUrls({}), []);
   assert.deepEqual(newmarkGalleryUrls({ thumbnails: [{ url: "/x.jpg" }, { url: "/x.jpg" }] }), [
@@ -66,6 +83,172 @@ test("newmarkExtraUrls collects candidate media and document fields", () => {
   assert.ok(media.includes("https://my.matterport.com/show/?m=abc"));
   assert.ok(media.includes("https://vimeo.com/123"));
   assert.ok(docs.includes("https://cdn.example.com/om.pdf"));
+});
+
+test("newmarkCoverageTruncated fails closed when Algolia partitions under-recover nbHits", () => {
+  assert.equal(newmarkCoverageTruncated(1500, 1000, Infinity), true);
+  assert.equal(newmarkCoverageTruncated(1500, 1500, Infinity), false);
+  assert.equal(newmarkCoverageTruncated(1500, 100, 100), true);
+  assert.equal(newmarkCoverageTruncated(1500, 1500, Infinity, true), true);
+});
+
+test("strict Newmark Algolia inventory pages require coherent integer nbHits", () => {
+  assert.deepEqual(
+    assertNewmarkAlgoliaInventoryPage(
+      { hits: [{ objectID: "a" }], nbHits: 1 },
+      "test",
+      true
+    ).hits,
+    [{ objectID: "a" }]
+  );
+  assert.throws(
+    () => assertNewmarkAlgoliaInventoryPage({ hits: [] }, "test", true),
+    /nonnegative integer nbHits/
+  );
+  assert.throws(
+    () => assertNewmarkAlgoliaInventoryPage({ hits: [], nbHits: -1 }, "test", true),
+    /nonnegative integer nbHits/
+  );
+  assert.throws(
+    () => assertNewmarkAlgoliaInventoryPage({ hits: [], nbHits: 1.5 }, "test", true),
+    /nonnegative integer nbHits/
+  );
+  assert.throws(
+    () =>
+      assertNewmarkAlgoliaInventoryPage(
+        { hits: [{ objectID: "a" }, { objectID: "b" }], nbHits: 1 },
+        "test",
+        true
+      ),
+    /below returned hits/
+  );
+});
+
+test("non-strict Newmark monitoring remains compatible with missing nbHits", () => {
+  assert.doesNotThrow(() =>
+    assertNewmarkAlgoliaInventoryPage({ hits: [] }, "monitor", false)
+  );
+  assert.throws(
+    () => assertNewmarkAlgoliaInventoryPage({}, "monitor", false),
+    /no hits array/
+  );
+});
+
+test("Newmark People lookup distinguishes verified absence from malformed responses", () => {
+  assert.deepEqual(
+    classifyNewmarkPeopleLookup(
+      { hits: [{ fullName: "Different Broker" }], nbHits: 1 },
+      "Ada Broker",
+      true
+    ),
+    { status: "verified_absent" }
+  );
+  assert.throws(
+    () => classifyNewmarkPeopleLookup({}, "Ada Broker", true),
+    /People index response has no hits array/
+  );
+  assert.deepEqual(
+    classifyNewmarkPeopleLookup({}, "Ada Broker", false),
+    {
+      status: "failed",
+      error: "Newmark People index response has no hits array",
+    }
+  );
+  assert.throws(
+    () =>
+      classifyNewmarkPeopleLookup(
+        { hits: [], nbHits: Number.NaN },
+        "Ada Broker",
+        true
+      ),
+    /incoherent hits\/nbHits/
+  );
+  assert.deepEqual(
+    classifyNewmarkPeopleLookup(
+      { hits: [], nbHits: Number.NaN },
+      "Ada Broker",
+      false
+    ),
+    {
+      status: "failed",
+      error: "Newmark People index response has incoherent hits/nbHits",
+    }
+  );
+});
+
+test("Newmark People transport failures fail strict mode but preserve non-strict children", () => {
+  assert.throws(
+    () => newmarkPeopleFailure(new Error("HTTP 503"), "Ada Broker", true),
+    /people lookup failed for Ada Broker: HTTP 503/
+  );
+  assert.deepEqual(
+    newmarkPeopleFailure(new Error("HTTP 503"), "Ada Broker", false),
+    {
+      status: "failed",
+      error: "HTTP 503",
+    }
+  );
+  assert.deepEqual(
+    newmarkPeopleListingFields(
+      { status: "failed", error: "HTTP 503" },
+      false
+    ),
+    {
+      preserveChildCollections: true,
+      newmarkPeopleLookupStatus: "failed",
+    }
+  );
+  assert.deepEqual(
+    newmarkPeopleListingFields({ status: "verified_absent" }, false),
+    {
+      contactsDetailed: [],
+      newmarkPeopleLookupStatus: "verified_absent",
+    }
+  );
+});
+
+test("strict Newmark bypasses Firecrawl cache and rejects partition pages without nbHits", async () => {
+  const oldScrape = firecrawl.scrape;
+  const oldFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const scrapeCalls: any[] = [];
+  (firecrawl as any).scrape = async (_url: string, options: any) => {
+    scrapeCalls.push(options);
+    return {
+      rawHtml:
+        "<script>algoliaAppId='strict-app';algoliaSearchApiKey='strict-key';algoliaIndexName='strict-index';</script>",
+    };
+  };
+  let algoliaCall = 0;
+  globalThis.fetch = async () => {
+    algoliaCall++;
+    const body =
+      algoliaCall === 1
+        ? {
+            hits: [{ objectID: "listing-1", slug: "listing-1" }],
+            nbHits: 2,
+            facets: { state: { TX: 2 } },
+          }
+        : { hits: [], facets: { property_types: {} } };
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    await assert.rejects(
+      () => srcNewmark("sale", Infinity, true),
+      /nonnegative integer nbHits/
+    );
+    assert.equal(scrapeCalls.length, 1);
+    assert.equal(scrapeCalls[0]?.maxAge, 0);
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    globalThis.fetch = oldFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
 });
 
 // ---------------------------------------------------------------------------

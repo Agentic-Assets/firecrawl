@@ -8,6 +8,11 @@ import { parseLeaseRate } from "../lib/parse.js";
 import { scrapeDoc, scrapeJson } from "../lib/scrape.js";
 import { ScrapeOpts, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, moneyToNumber, pmap, prune } from "../lib/util.js";
+import {
+  detailObservation,
+  refreshGenerationId,
+  requireFreshDetails,
+} from "../lib/freshness.js";
 
 
 // --- Cushman & Wakefield: public JSON search API plus detail enrichment ---
@@ -30,6 +35,14 @@ export const CUSHMAN_DETAIL_CONCURRENCY = boundedInt(
 // `full` so it continues to harvest optional page-only facts.
 export function cushmanUseBaseRows(monitor: boolean): boolean {
   return monitor || process.env.CUSHMAN_DETAIL_MODE === "base";
+}
+
+export function assertCushmanFreshnessMode(monitor: boolean): void {
+  if (!monitor && requireFreshDetails() && cushmanUseBaseRows(monitor)) {
+    throw new Error(
+      "strict CRE refresh requires CUSHMAN_DETAIL_MODE=full; API-base rows cannot prove detail freshness"
+    );
+  }
 }
 
 export function canonicalCushmanUrl(url: string | null): string | null {
@@ -207,6 +220,185 @@ export function extractCushmanContacts(doc: ScrapedDoc): any[] {
   return [...contactsByKey.values()].filter((c) => c.name || c.phone || c.profileUrl || c.vcardUrl);
 }
 
+export function assertCushmanDetailDoc(doc: ScrapedDoc, expected: any): any {
+  const status = Number(doc.metadata?.statusCode);
+  if (Number.isFinite(status) && status >= 400) {
+    throw new Error(`Cushman detail returned HTTP ${status}`);
+  }
+  const combined = `${doc.rawHtml ?? ""}\n${doc.markdown ?? ""}`;
+  if (
+    !combined.trim()
+    || /just a moment|checking your browser|verify you are human|captcha|access denied|cf-chl-|page not found|404\s*[-:]\s*page not found|internal server error|service unavailable/i.test(
+      combined
+    )
+  ) {
+    throw new Error("Cushman detail returned a challenge or error shell");
+  }
+
+  const listing = firstJsonLd(doc.rawHtml, "RealEstateListing");
+  const expectedUrl = canonicalCushmanUrl(clean(expected?.url));
+  const observedUrl = canonicalCushmanUrl(
+    clean(
+      listing?.url
+      ?? doc.metadata?.sourceURL
+      ?? doc.metadata?.url
+    )
+  );
+  let urlMatches = false;
+  if (expectedUrl && observedUrl) {
+    try {
+      urlMatches =
+        new URL(expectedUrl).pathname.replace(/\/+$/, "").toLowerCase()
+        === new URL(observedUrl).pathname.replace(/\/+$/, "").toLowerCase();
+    } catch {
+      urlMatches = expectedUrl === observedUrl;
+    }
+    if (!urlMatches) {
+      throw new Error(
+        `Cushman detail identity does not match expected URL ${expectedUrl}`
+      );
+    }
+  }
+
+  const normalizedText = clean(
+    cheerio.load(doc.rawHtml)("body").text()
+    || doc.markdown
+  )?.toLowerCase() ?? "";
+  const identityValues = [
+    clean(expected?.name),
+    clean(expected?.street),
+    clean(expected?.id),
+  ]
+    .filter((value): value is string => Boolean(value && value.length >= 4))
+    .map((value) => value.toLowerCase());
+  const contentMatches = identityValues.some((value) =>
+    normalizedText.includes(value)
+  );
+  const $ = cheerio.load(doc.rawHtml);
+  const hasListingStructure = Boolean(
+    listing
+    || clean($("h1").first().text())
+    || /(?:property details|property overview|available space|building size|sale price|lease rate)/i.test(
+      doc.markdown ?? ""
+    )
+  );
+  if (!hasListingStructure || (!urlMatches && !contentMatches)) {
+    throw new Error("Cushman detail identity does not match the requested property");
+  }
+  return listing;
+}
+
+export type CushmanInventoryPageEvidence = {
+  total: number;
+};
+
+function cushmanProviderIdentity(row: any): string | null {
+  const value = row?.id;
+  if (typeof value === "string") return clean(value);
+  return typeof value === "number" && Number.isFinite(value)
+    ? String(value)
+    : null;
+}
+
+export function assertCushmanInventoryPage(
+  data: any,
+  offset: number,
+  expected: CushmanInventoryPageEvidence | null = null,
+  strict = requireFreshDetails()
+): CushmanInventoryPageEvidence {
+  if (!strict) {
+    const rows = Array.isArray(data?.content) ? data.content : [];
+    const parsedTotal = Number(data?.total_item);
+    return {
+      total: Number.isFinite(parsedTotal) ? parsedTotal : rows.length,
+    };
+  }
+  if (
+    !data
+    || typeof data !== "object"
+    || Array.isArray(data)
+    || !Array.isArray(data.content)
+  ) {
+    throw new Error(
+      `Cushman strict inventory offset ${offset} requires a content array`
+    );
+  }
+  const total = Number(data.total_item);
+  if (!Number.isFinite(total) || !Number.isInteger(total) || total < 0) {
+    throw new Error(
+      `Cushman strict inventory offset ${offset} requires a valid integer total`
+    );
+  }
+  if (expected && total !== expected.total) {
+    throw new Error(
+      `Cushman strict inventory total changed from ${expected.total} to ${total} at offset ${offset}`
+    );
+  }
+  const validOffset =
+    Number.isInteger(offset)
+    && offset >= 0
+    && offset % CUSHMAN_PAGE_SIZE === 0
+    && (total === 0 ? offset === 0 : offset < total);
+  if (!validOffset) {
+    throw new Error(
+      `Cushman strict inventory requested invalid offset ${offset} for total ${total}`
+    );
+  }
+  const expectedRows = Math.max(
+    0,
+    Math.min(CUSHMAN_PAGE_SIZE, total - offset)
+  );
+  if (data.content.length !== expectedRows) {
+    throw new Error(
+      `Cushman strict inventory offset ${offset} expected ${expectedRows} rows, received ${data.content.length}`
+    );
+  }
+  const identities = new Set<string>();
+  for (const [index, row] of data.content.entries()) {
+    const identity = cushmanProviderIdentity(row);
+    if (!identity) {
+      throw new Error(
+        `Cushman strict inventory offset ${offset} row ${index} requires a nonempty provider id`
+      );
+    }
+    if (identities.has(identity)) {
+      throw new Error(
+        `Cushman strict inventory offset ${offset} has duplicate provider identity ${identity}`
+      );
+    }
+    identities.add(identity);
+  }
+  return { total };
+}
+
+export function assertCushmanInventoryReconciled(
+  rows: any[],
+  total: number,
+  strict = requireFreshDetails()
+): void {
+  if (!strict) return;
+  const identities = new Set<string>();
+  for (const [index, row] of rows.entries()) {
+    const identity = cushmanProviderIdentity(row);
+    if (!identity) {
+      throw new Error(
+        `Cushman strict inventory aggregate row ${index} requires a nonempty provider id`
+      );
+    }
+    if (identities.has(identity)) {
+      throw new Error(
+        `Cushman strict inventory aggregate has duplicate provider identity ${identity}`
+      );
+    }
+    identities.add(identity);
+  }
+  if (rows.length !== total || identities.size !== total) {
+    throw new Error(
+      `Cushman strict inventory expected ${total} unique rows, reconciled ${identities.size}`
+    );
+  }
+}
+
 export function cushmanSearchApiUrl(tx: Tx, offset: number): string {
   const listingType = tx === "sale" ? "Buy" : "Lease";
   const params = new URLSearchParams({
@@ -267,22 +459,47 @@ export function baseCushmanListing(row: any, tx: Tx): any {
   };
 }
 
-export function cushmanBaseRefreshListing(row: any, tx: Tx): any {
+export function cushmanBaseRefreshListing(
+  row: any,
+  tx: Tx,
+  inventoryObservedAt = new Date().toISOString()
+): any {
   return {
     ...baseCushmanListing(row, tx),
     // The API-only path is intentionally incomplete. Tell ingestion to
     // preserve previously harvested contacts/documents/images/media/links
     // instead of treating omitted arrays as authoritative empty arrays.
     preserveChildCollections: true,
+    inventoryObservedAt,
+    freshnessProvenance: {
+      detailScope: "inventory_only",
+      generationId: refreshGenerationId(),
+      method: "cushman_search_api",
+      cacheDisposition: "live",
+    },
   };
 }
 
-export async function enrichCushmanListing(row: any, tx: Tx): Promise<any> {
+export async function enrichCushmanListing(
+  row: any,
+  tx: Tx,
+  inventoryObservedAt = new Date().toISOString()
+): Promise<any> {
   const base = baseCushmanListing(row, tx);
-  if (!base.url) return base;
+  if (!base.url) {
+    return {
+      ...base,
+      inventoryObservedAt,
+      detailError: "missing canonical detail URL",
+    };
+  }
   try {
-    const doc = await scrapeDoc(base.url, { waitFor: 1000, timeout: 60000 });
-    const listingLd = firstJsonLd(doc.rawHtml, "RealEstateListing");
+    const doc = await scrapeDoc(base.url, {
+      waitFor: 1000,
+      timeout: 60000,
+      ...(requireFreshDetails() ? { maxAge: 0 } : {}),
+    });
+    const listingLd = assertCushmanDetailDoc(doc, base);
     const assetUrls = extractCushmanAssetUrls(doc);
     const documents = extractCushmanDocuments(assetUrls);
     const photos = extractCushmanPhotos(assetUrls);
@@ -330,8 +547,17 @@ export async function enrichCushmanListing(row: any, tx: Tx): Promise<any> {
 
     // extraFacts inherits from base (sublease + is_investment_property), already computed there.
 
+    const observed = detailObservation("cushman_detail", "live");
     return prune({
       ...base,
+      inventoryObservedAt,
+      detailObservedAt: observed.observedAt,
+      freshnessProvenance: {
+        detailScope: "detail_page",
+        generationId: observed.generationId,
+        method: observed.method,
+        cacheDisposition: observed.cacheDisposition,
+      },
       name: clean(listingLd?.name) ?? base.name,
       description: clean(listingLd?.description) ?? clean(doc.markdown.match(/Overview\s*-+\s*([\s\S]{1,2500}?)(?:\n[A-Z][A-Za-z ]+\n-+|\n#{1,6}\s|\nCONTACT|\nLOCATION|$)/i)?.[1]),
       salePriceUsd: tx === "sale" ? moneyToNumber(salePriceText) : null,
@@ -371,53 +597,68 @@ export async function enrichCushmanListing(row: any, tx: Tx): Promise<any> {
     console.error(`  cushman-wakefield/${tx}: detail failed for ${base.url}: ${err}`);
     return prune({
       ...base,
+      inventoryObservedAt,
       detailError: String(err),
     });
   }
 }
 
 export async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+  assertCushmanFreshnessMode(monitor);
+  const strict = requireFreshDetails();
   const sourceUrl =
     tx === "sale"
       ? "https://www.cushmanwakefield.com/en/united-states/properties/invest/search"
       : "https://www.cushmanwakefield.com/en/united-states/properties/lease/search";
   const apiOpts: ScrapeOpts = { timeout: 90000, jsonAttempts: 8, jsonBackoffMs: 12000 };
-  const first = await scrapeJson(cushmanSearchApiUrl(tx, 0), apiOpts);
+  const strictApiOpts = {
+    ...apiOpts,
+    ...(strict ? { maxAge: 0 } : {}),
+  };
+  const first = await scrapeJson(cushmanSearchApiUrl(tx, 0), strictApiOpts);
+  const firstPage = assertCushmanInventoryPage(first, 0, null, strict);
   const content = Array.isArray(first.content) ? first.content : [];
-  const total: number = Number(first.total_item ?? content.length);
+  const total: number = strict
+    ? firstPage.total
+    : Number(first.total_item ?? content.length);
   if (!content.length) throw new Error(`Cushman & Wakefield API returned no ${tx} content`);
   const want = Math.min(max, total);
-  const pages = Math.ceil(want / CUSHMAN_PAGE_SIZE);
+  const fetchCount = strict ? total : want;
+  const pages = Math.ceil(fetchCount / CUSHMAN_PAGE_SIZE);
   console.error(`  cushman-wakefield/${tx}: ${total} total, fetching ${pages} API page(s)`);
   const chunks: any[][] = [content];
   if (pages > 1) {
     const offsets = Array.from({ length: pages - 1 }, (_, i) => (i + 1) * CUSHMAN_PAGE_SIZE);
     const rest = await pmap(offsets, CUSHMAN_API_CONCURRENCY, async (offset) => {
-      const d = await scrapeJson(cushmanSearchApiUrl(tx, offset), apiOpts);
+      const d = await scrapeJson(cushmanSearchApiUrl(tx, offset), strictApiOpts);
       const rows = Array.isArray(d.content) ? d.content : [];
+      assertCushmanInventoryPage(d, offset, firstPage, strict);
       console.error(`  cushman-wakefield/${tx}: API offset ${offset}, ${rows.length} rows`);
       return rows;
     });
     chunks.push(...rest);
   }
-  // Only the first page is validated (we throw on empty `content`); a later page
-  // that returns parseable JSON without a `content` array silently contributes
-  // []. If the collected count falls short of `want` (= min(max, total_item)),
-  // an empty/short later page (or a provider cap below the reported total)
-  // truncated this pass. This excludes --max-items (folded into `want`) and
-  // natural exhaustion (a complete run reaches `want`).
+  // Strict refreshes validate every page, fetch the full provider inventory,
+  // and reconcile unique provider ids before a finite output cap is applied.
+  // Non-strict monitoring retains the prior tolerant behavior and reports a
+  // short later page as truncation rather than failing the whole collection.
+  // Both paths report a finite output cap below the provider total.
   const collectedRows = chunks.flat();
-  const truncated = collectedRows.length < want;
+  assertCushmanInventoryReconciled(collectedRows, total, strict);
+  const truncated =
+    (strict ? collectedRows.length < total : collectedRows.length < want)
+    || want < total;
   const rows = collectedRows.slice(0, want);
+  const inventoryObservedAt = new Date().toISOString();
   let done = 0;
   // Monitor mode and explicit API-base recovery both skip per-listing rendering.
   // The base API mapping preserves the canonical identity and core inventory
   // fields; additive ingestion retains previously captured detail-only values.
   const useBaseRows = cushmanUseBaseRows(monitor);
   const listings = useBaseRows
-    ? rows.map((row) => cushmanBaseRefreshListing(row, tx))
+    ? rows.map((row) => cushmanBaseRefreshListing(row, tx, inventoryObservedAt))
     : await pmap(rows, CUSHMAN_DETAIL_CONCURRENCY, async (row) => {
-        const enriched = await enrichCushmanListing(row, tx);
+        const enriched = await enrichCushmanListing(row, tx, inventoryObservedAt);
         done++;
         if (done % 25 === 0 || done === rows.length) {
           console.error(`  cushman-wakefield/${tx}: detail enriched ${done}/${rows.length}`);

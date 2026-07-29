@@ -229,7 +229,11 @@ Date semantics (ingest scope):
 - `listing_date`: not populated by bulk collector; leave null unless a source
   proves a true first-listed/on-market field.
 - `updated_date` ← `listing.lastUpdated` (YYYY-MM-DD prefix only).
-- `scraped_at` ← artifact `finishedAt`.
+- `scraped_at` prefers the admitted `detailObservedAt`; a
+  source-revision-cache row uses its current-generation `validatedAt`; an
+  authoritative-inventory-feed row uses `inventoryObservedAt`. Artifact
+  `finishedAt` is a legacy fallback only. Generation-exact readback, not
+  `scraped_at` alone, proves current-source freshness.
 - `created_at`, `updated_at`, `deleted_at`: database lifecycle fields.
 
 Supabase access: `credeals.cre_*` tables and `v_cre_*` views are service-role
@@ -279,14 +283,31 @@ Step [3/4] runs `cre_gate.py` observe-only.
 
 For an operator-requested full freshness sweep, prefer
 `cre_checkpoint_refresh.py` over the monolithic daily runner. It checkpoints
-each source, uses strict cache generations, validates artifact provenance, and
-stops at the first non-`ok` source gate. All configured artifacts must pass
-their source gates and the aggregate gate before any live ingest begins.
-`first_seen` requires an explicit reviewed baseline seed and readback before
-resuming the same immutable run. Use
-`cre_refresh_report.py --since <run-start>` for the database readback; neither
-that report nor `cre_validate.py` turns a fresh `scraped_at` into proof that an
-old detail cache was refreshed.
+each source, binds observations to an immutable generation, bypasses Firecrawl
+response caches for strict source reads, expires resumable generations after
+24 hours, validates artifact provenance, and stops at the first non-`ok` source
+gate. All configured artifacts must pass their source gates and the aggregate
+gate before any live ingest begins. `first_seen` requires an explicit reviewed
+baseline seed and readback before resuming the same immutable run.
+
+The strict source set is `cbre`, `jll`, `jll-investor`, `colliers-main`,
+`cushman-wakefield`, `svn`, `lee-associates`, `franklin-street`, `newmark`, `savills`,
+`transwestern`, `marcus-millichap`, `nai-global`, `matthews`, `srs`, `hanley`,
+and `kidder-mathews`. `cbre-dealflow` and `colliers` may emit explicitly
+inventory-only provider cards. `avison-young` proves inventory and property
+detail freshness while preserving existing contacts when its supplemental team
+feed is unavailable; do not claim fresh contacts in that state.
+
+Child admission has three explicit classes. CBRE and Buildout
+(`svn`, `lee-associates`, `franklin-street`) replace collector-owned children
+from their authoritative feed. SRS, Hanley, and Kidder Mathews must preserve
+existing children. Every other strict source must provide an admitted current
+detail observation and must not preserve children after a detail failure.
+
+Use the checkpoint runner's generation-exact database readback as the write
+admission proof. `cre_refresh_report.py --since <run-start>` is the broader
+scope report; neither that report nor a fresh `scraped_at` proves that an old
+detail cache was refreshed.
 
 ## Adding a source
 

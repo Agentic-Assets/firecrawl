@@ -21,8 +21,10 @@ import {
   jllInvestorStrandedMedia,
   jllInvestorStrandedDocs,
   jllInvestorStrandedStructured,
+  srcJllInvestor,
 } from "../../../sources/jll-investor.js";
 import { harvestDetail } from "../../../lib/harvest.js";
+import { firecrawl } from "../../../lib/scrape.js";
 
 // ---------------------------------------------------------------------------
 // Phase-2 data-lift tests: fixture-based, pure transform, no network.
@@ -87,6 +89,101 @@ test("jllInvestorSitemapCandidateLimit applies max heuristics when scan limit is
   assert.equal(jllInvestorSitemapCandidateLimit(10, 500), 80);
   assert.equal(jllInvestorSitemapCandidateLimit(0, 40), 26);
   assert.equal(jllInvestorSitemapCandidateLimit(Number.POSITIVE_INFINITY, 200), 200);
+});
+
+test("strict JLL Investor collection preserves unresolved candidates and bypasses Firecrawl cache", async () => {
+  const oldScrape = firecrawl.scrape;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const oldStartedAt = process.env.CRE_REFRESH_STARTED_AT;
+  const calls: Array<{ url: string; options: any }> = [];
+  let secondCountry: string | undefined;
+  let secondId = "provider-unknown-2";
+  const detailHtml = (listing: Record<string, unknown>) => `
+    <script id="__NEXT_DATA__" type="application/json">
+      ${JSON.stringify({ props: { pageProps: { initialState: { pdp: { listing } } } } })}
+    </script>
+  `;
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    calls.push({ url, options });
+    if (url.endsWith("/sitemap_index.xml")) {
+      return { rawHtml: `<loc>https://invest.jll.com/us/sitemap-us.xml</loc>` };
+    }
+    if (url.endsWith("/us/sitemap-us.xml")) {
+      return {
+        rawHtml: `
+          <urlset>
+            <url><loc>https://invest.jll.com/us/en/listings/office/known-us</loc></url>
+            <url><loc>https://invest.jll.com/us/en/listings/office/unknown-country</loc></url>
+          </urlset>
+        `,
+      };
+    }
+    if (url.endsWith("/known-us")) {
+      return {
+        rawHtml: detailHtml({
+          id: "provider-us-1",
+          name: "Known US",
+          country: "United States",
+        }),
+        markdown: "Known US",
+        links: [],
+      };
+    }
+    return {
+      rawHtml: detailHtml({
+        id: secondId,
+        name: "Unknown country",
+        country: secondCountry,
+      }),
+      markdown: "Unknown country",
+      links: [],
+    };
+  };
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    process.env.CRE_REFRESH_GENERATION = "jll-investor-strict-test";
+    process.env.CRE_REFRESH_STARTED_AT = "2026-07-29T12:00:00.000Z";
+
+    const result = await srcJllInvestor("sale", Number.POSITIVE_INFINITY, false);
+
+    assert.equal(result.truncated, true);
+    assert.equal(result.listings.length, 2);
+    const accepted = result.listings.find((row) => row.id === "provider-us-1");
+    assert.match(accepted.inventoryObservedAt, /^20\d\d-/);
+    assert.match(accepted.detailObservedAt, /^20\d\d-/);
+    assert.equal(accepted.freshnessProvenance.generationId, "jll-investor-strict-test");
+    assert.equal(accepted.freshnessProvenance.detailScope, "detail_page");
+    assert.equal(accepted.freshnessProvenance.cacheDisposition, "live");
+    const unresolved = result.listings.find((row) => row.detailError);
+    assert.match(unresolved.detailError, /country/i);
+    assert.equal(unresolved.preserveChildCollections, true);
+    assert.ok(calls.length >= 4);
+    assert.ok(calls.every(({ options }) => options.maxAge === 0));
+
+    calls.length = 0;
+    secondCountry = "Canada";
+    const complete = await srcJllInvestor("sale", Number.POSITIVE_INFINITY, false);
+    assert.equal(complete.truncated, false);
+    assert.deepEqual(complete.listings.map((row) => row.id), ["provider-us-1"]);
+    assert.ok(calls.every(({ options }) => options.maxAge === 0));
+
+    secondId = "provider-us-1";
+    const duplicateIdentity = await srcJllInvestor(
+      "sale",
+      Number.POSITIVE_INFINITY,
+      false
+    );
+    assert.equal(duplicateIdentity.truncated, true);
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+    if (oldStartedAt === undefined) delete process.env.CRE_REFRESH_STARTED_AT;
+    else process.env.CRE_REFRESH_STARTED_AT = oldStartedAt;
+  }
 });
 
 test("jllInvestorStatus prefers under-contract flag then stage name", () => {

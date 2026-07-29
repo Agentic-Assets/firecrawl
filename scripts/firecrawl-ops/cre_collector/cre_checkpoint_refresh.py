@@ -17,20 +17,27 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from cre_ingest import (
+    AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS,
+    CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS,
     INVENTORY_ONLY_SOURCE_DEFINITIONS,
     SOURCE_TO_BROKERAGE,
+    STRICT_FRESHNESS_SOURCE_KEYS,
+    database_target_fingerprint_from_url,
+    load_db_url,
     merge_rows,
     to_inventory_only_row,
     to_row,
@@ -40,9 +47,12 @@ from cre_ingest import (
 COLLECTOR_DIR = Path(__file__).resolve().parent
 REPO_ROOT = COLLECTOR_DIR.parents[2]
 DEFAULT_OUT_ROOT = COLLECTOR_DIR / "out" / "checkpoint-refresh"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+DEFAULT_MAX_RESUME_AGE_HOURS = 24.0
+MAX_FUTURE_CLOCK_SKEW = timedelta(minutes=5)
 SOURCE_KEYS = tuple(SOURCE_TO_BROKERAGE)
 TRANSACTIONS = ("sale", "lease")
+PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS = {"avison-young"}
 FORBIDDEN_INGEST_FLAGS = {
     "--mark-missing",
     "--activate-status",
@@ -240,7 +250,13 @@ def build_collect_argv(
     ]
 
 
-def build_gate_argv(artifact: Path, output: Path, env_file: str | None) -> list[str]:
+def build_gate_argv(
+    artifact: Path,
+    output: Path,
+    env_file: str | None,
+    *,
+    expected_db_target_sha256: str | None = None,
+) -> list[str]:
     argv = [
         sys.executable,
         "cre_gate.py",
@@ -253,11 +269,20 @@ def build_gate_argv(artifact: Path, output: Path, env_file: str | None) -> list[
     ]
     if env_file:
         argv.extend(["--env-file", env_file])
+    if expected_db_target_sha256:
+        argv.extend(
+            ["--expected-db-target-sha256", expected_db_target_sha256]
+        )
     return argv
 
 
-def build_ingest_dry_run_argv(artifact: Path, sql_dir: Path) -> list[str]:
-    return [
+def build_ingest_dry_run_argv(
+    artifact: Path,
+    sql_dir: Path,
+    *,
+    require_strict_freshness: bool = False,
+) -> list[str]:
+    argv = [
         sys.executable,
         "cre_ingest.py",
         "--in",
@@ -266,18 +291,38 @@ def build_ingest_dry_run_argv(artifact: Path, sql_dir: Path) -> list[str]:
         "--keep-artifacts",
         str(sql_dir),
     ]
+    if require_strict_freshness:
+        argv.append("--require-strict-freshness")
+    return argv
 
 
-def build_ingest_argv(artifact: Path, env_file: str | None) -> list[str]:
+def build_ingest_argv(
+    artifact: Path,
+    env_file: str | None,
+    *,
+    require_strict_freshness: bool = False,
+    expected_db_target_sha256: str | None = None,
+) -> list[str]:
     argv = [sys.executable, "cre_ingest.py", "--in", str(artifact)]
+    if require_strict_freshness:
+        argv.append("--require-strict-freshness")
     if env_file:
         argv.extend(["--env-file", env_file])
+    if expected_db_target_sha256:
+        argv.extend(
+            ["--expected-db-target-sha256", expected_db_target_sha256]
+        )
     if FORBIDDEN_INGEST_FLAGS.intersection(argv):
         raise AssertionError("additive ingest argv contains a forbidden flag")
     return argv
 
 
-def build_validate_argv(output: Path, env_file: str | None) -> list[str]:
+def build_validate_argv(
+    output: Path,
+    env_file: str | None,
+    *,
+    expected_db_target_sha256: str | None = None,
+) -> list[str]:
     argv = [
         sys.executable,
         "cre_validate.py",
@@ -288,6 +333,10 @@ def build_validate_argv(output: Path, env_file: str | None) -> list[str]:
     ]
     if env_file:
         argv.extend(["--env-file", env_file])
+    if expected_db_target_sha256:
+        argv.extend(
+            ["--expected-db-target-sha256", expected_db_target_sha256]
+        )
     return argv
 
 
@@ -301,6 +350,7 @@ def fresh_source_env(
     source: str,
     run_dir: Path,
     base: Mapping[str, str] | None = None,
+    generation_started_at: str | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Return subprocess env plus a nonsecret manifest summary of overrides."""
     env = safe_process_env(base)
@@ -314,6 +364,18 @@ def fresh_source_env(
         env.pop(name, None)
         overrides[name] = "<unset>"
 
+    set_value("CRE_REFRESH_GENERATION", run_dir.name)
+    if generation_started_at:
+        set_value("CRE_REFRESH_STARTED_AT", generation_started_at)
+    if source in STRICT_FRESHNESS_SOURCE_KEYS:
+        set_value("CRE_REQUIRE_FRESH_DETAILS", "1")
+    else:
+        clear("CRE_REQUIRE_FRESH_DETAILS")
+    if source == "avison-young":
+        set_value("CRE_REQUIRE_FRESH_PROPERTY_DETAILS", "1")
+    else:
+        clear("CRE_REQUIRE_FRESH_PROPERTY_DETAILS")
+
     if source in {"svn", "lee-associates", "franklin-street"}:
         clear("BUILDOUT_CACHE_ONLY")
         clear("BUILDOUT_ASSEMBLE_FROM_CACHE")
@@ -322,6 +384,8 @@ def fresh_source_env(
         set_value("BUILDOUT_CACHE_DIR", str(run_dir / "cache" / "buildout"))
     if source == "jll":
         set_value("JLL_DETAIL_CACHE_DIR", str(run_dir / "cache" / "jll-detail"))
+        if generation_started_at:
+            set_value("JLL_DETAIL_CACHE_MIN_CACHED_AT", generation_started_at)
     if source == "jll-investor":
         set_value("JLL_INVESTOR_SITEMAP_SCAN_LIMIT", "0")
     if source == "avison-young":
@@ -432,6 +496,11 @@ def validate_source_artifact(
     path: Path,
     expected_source: str,
     attempt_started_at: str | datetime,
+    *,
+    require_strict_freshness: bool = False,
+    expected_generation_id: str | None = None,
+    expected_generation_started_at: str | datetime | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     if expected_source not in SOURCE_KEYS:
         raise ArtifactValidationError(f"unknown expected source: {expected_source}")
@@ -448,6 +517,12 @@ def validate_source_artifact(
 
     started = parse_iso8601(run_meta.get("startedAt"), field="runMeta.startedAt")
     finished = parse_iso8601(run_meta.get("finishedAt"), field="runMeta.finishedAt")
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    latest_allowed = current + MAX_FUTURE_CLOCK_SKEW
+    if started > latest_allowed or finished > latest_allowed:
+        raise ArtifactValidationError(
+            "artifact timestamps exceed the 5-minute clock-skew allowance"
+        )
     attempt = (
         attempt_started_at.astimezone(timezone.utc)
         if isinstance(attempt_started_at, datetime)
@@ -457,6 +532,77 @@ def validate_source_artifact(
         raise ArtifactValidationError("runMeta.finishedAt precedes startedAt")
     if started.timestamp() + 5 < attempt.timestamp():
         raise ArtifactValidationError("artifact predates the current collection attempt")
+
+    freshness = run_meta.get("freshness")
+    strict_freshness = (
+        isinstance(freshness, dict)
+        and freshness.get("requireFreshDetails") is True
+    )
+    property_detail_freshness = (
+        expected_source in PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS
+        and isinstance(freshness, dict)
+        and freshness.get("requireFreshPropertyDetails") is True
+        and not strict_freshness
+    )
+    if (
+        expected_source in PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS
+        and not strict_freshness
+        and not property_detail_freshness
+    ):
+        raise ArtifactValidationError(
+            f"{expected_source} requires "
+            "runMeta.freshness.requireFreshPropertyDetails=true"
+        )
+    if require_strict_freshness and not strict_freshness:
+        raise ArtifactValidationError(
+            f"{expected_source} requires runMeta.freshness.requireFreshDetails=true"
+        )
+    generation_started = None
+    generation_id = None
+    if strict_freshness or property_detail_freshness:
+        if not isinstance(freshness, dict):
+            raise ArtifactValidationError(
+                f"{expected_source} requires runMeta.freshness generation metadata"
+            )
+        generation_id = freshness.get("generationId")
+        if not isinstance(generation_id, str) or not generation_id.strip():
+            raise ArtifactValidationError(
+                "generation-backed freshness requires runMeta.freshness.generationId"
+            )
+        generation_started = parse_iso8601(
+            freshness.get("generationStartedAt"),
+            field="runMeta.freshness.generationStartedAt",
+        )
+        if generation_started > latest_allowed:
+            raise ArtifactValidationError(
+                "refresh generation start exceeds the 5-minute clock-skew allowance"
+            )
+        if (
+            expected_generation_id is not None
+            and generation_id != expected_generation_id
+        ):
+            raise ArtifactValidationError(
+                "runMeta.freshness.generationId does not match the checkpoint generation"
+            )
+        if expected_generation_started_at is not None:
+            if isinstance(expected_generation_started_at, datetime):
+                if expected_generation_started_at.tzinfo is None:
+                    raise ArtifactValidationError(
+                        "expected_generation_started_at must include a timezone"
+                    )
+                expected_started = expected_generation_started_at.astimezone(
+                    timezone.utc
+                )
+            else:
+                expected_started = parse_iso8601(
+                    expected_generation_started_at,
+                    field="expected_generation_started_at",
+                )
+            if generation_started != expected_started:
+                raise ArtifactValidationError(
+                    "runMeta.freshness.generationStartedAt does not match "
+                    "the checkpoint generation"
+                )
 
     entries = data.get("sources")
     if not isinstance(entries, list) or len(entries) != 2:
@@ -484,6 +630,66 @@ def validate_source_artifact(
         if not isinstance(count, int) or count < 0:
             raise ArtifactValidationError(f"{expected_source}/{tx} has an invalid listing count")
         entry_total += count
+        if strict_freshness or property_detail_freshness:
+            metrics = entry.get("freshness")
+            if not isinstance(metrics, dict):
+                raise ArtifactValidationError(
+                    f"{expected_source}/{tx} is missing freshness admission metrics"
+                )
+            if metrics.get("listings") != count:
+                raise ArtifactValidationError(
+                    f"{expected_source}/{tx} freshness listing count does not match"
+                )
+            for metric in (
+                "detailErrors",
+                "staleInventoryObservations",
+                "staleDetailObservations",
+            ):
+                if metrics.get(metric) != 0:
+                    raise ArtifactValidationError(
+                        f"{expected_source}/{tx} freshness metric {metric} must be zero"
+                    )
+            if metrics.get("inventoryObserved") != count:
+                raise ArtifactValidationError(
+                    f"{expected_source}/{tx} lacks current inventory observations"
+                )
+            child_preservation_rows = metrics.get("childPreservationRows")
+            if property_detail_freshness:
+                if child_preservation_rows not in {0, count}:
+                    raise ArtifactValidationError(
+                        f"{expected_source}/{tx} has partial child-preservation coverage"
+                    )
+                if metrics.get("detailObserved") != count:
+                    raise ArtifactValidationError(
+                        f"{expected_source}/{tx} lacks current property-detail observations"
+                    )
+                if metrics.get("authoritativeInventoryFeed") != 0:
+                    raise ArtifactValidationError(
+                        f"{expected_source}/{tx} incorrectly claims authoritative inventory detail"
+                    )
+            elif (
+                expected_source
+                in CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
+            ):
+                if child_preservation_rows != count:
+                    raise ArtifactValidationError(
+                        f"{expected_source}/{tx} must preserve every child collection"
+                    )
+            elif child_preservation_rows != 0:
+                raise ArtifactValidationError(
+                    f"{expected_source}/{tx} must not preserve child collections"
+                )
+            if property_detail_freshness:
+                pass
+            elif expected_source in AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS:
+                if metrics.get("authoritativeInventoryFeed") != count:
+                    raise ArtifactValidationError(
+                        f"{expected_source}/{tx} is not proven by its authoritative inventory feed"
+                    )
+            elif metrics.get("detailObserved") != count:
+                raise ArtifactValidationError(
+                    f"{expected_source}/{tx} lacks detail observations"
+                )
     if seen_transactions != set(TRANSACTIONS):
         raise ArtifactValidationError("source entries are missing sale or lease")
 
@@ -506,6 +712,135 @@ def validate_source_artifact(
             raise ArtifactValidationError(f"listings[{index}] has the wrong sourceKey")
         if listing.get("transactionMode") not in TRANSACTIONS:
             raise ArtifactValidationError(f"listings[{index}] has an invalid transactionMode")
+        observation_fields = [
+            ("inventoryObservedAt", listing.get("inventoryObservedAt")),
+            ("detailObservedAt", listing.get("detailObservedAt")),
+        ]
+        listing_provenance = listing.get("freshnessProvenance")
+        if isinstance(listing_provenance, dict):
+            observation_fields.append(
+                (
+                    "freshnessProvenance.validatedAt",
+                    listing_provenance.get("validatedAt"),
+                )
+            )
+        for field, value in observation_fields:
+            if value is None:
+                continue
+            observed = parse_iso8601(
+                value,
+                field=f"listings[{index}].{field}",
+            )
+            if observed > latest_allowed:
+                raise ArtifactValidationError(
+                    f"listings[{index}].{field} exceeds "
+                    "the 5-minute clock-skew allowance"
+                )
+        if strict_freshness or property_detail_freshness:
+            assert generation_started is not None
+            inventory_observed = parse_iso8601(
+                listing.get("inventoryObservedAt"),
+                field=f"listings[{index}].inventoryObservedAt",
+            )
+            if inventory_observed < generation_started:
+                raise ArtifactValidationError(
+                    f"listings[{index}] inventory observation predates the refresh generation"
+                )
+            if inventory_observed > latest_allowed:
+                raise ArtifactValidationError(
+                    f"listings[{index}] inventory observation exceeds "
+                    "the 5-minute clock-skew allowance"
+                )
+            provenance = listing.get("freshnessProvenance")
+            if not isinstance(provenance, dict):
+                raise ArtifactValidationError(
+                    f"listings[{index}] is missing freshnessProvenance"
+                )
+            if provenance.get("generationId") != generation_id:
+                raise ArtifactValidationError(
+                    f"listings[{index}] belongs to a different refresh generation"
+                )
+            if listing.get("detailError"):
+                raise ArtifactValidationError(
+                    f"listings[{index}] cannot satisfy property-detail freshness"
+                )
+            preserves_children = listing.get("preserveChildCollections") is True
+            if property_detail_freshness:
+                preserves_with_detail = (
+                    listing.get("detailObservedWithChildPreservation") is True
+                )
+                if preserves_children != preserves_with_detail:
+                    raise ArtifactValidationError(
+                        f"listings[{index}] has inconsistent child-preservation "
+                        "detail proof"
+                    )
+                if listing.get("detailUnavailable"):
+                    raise ArtifactValidationError(
+                        f"listings[{index}] has unavailable property detail"
+                    )
+                if provenance.get("detailScope") != "detail_page":
+                    raise ArtifactValidationError(
+                        f"listings[{index}] lacks property-detail provenance"
+                    )
+                if provenance.get("cacheDisposition") != "live":
+                    raise ArtifactValidationError(
+                        f"listings[{index}] property detail was not observed live"
+                    )
+                detail_observed = parse_iso8601(
+                    listing.get("detailObservedAt"),
+                    field=f"listings[{index}].detailObservedAt",
+                )
+                if detail_observed < generation_started:
+                    raise ArtifactValidationError(
+                        f"listings[{index}] detail observation predates "
+                        "the refresh generation"
+                    )
+                if detail_observed > latest_allowed:
+                    raise ArtifactValidationError(
+                        f"listings[{index}] detail observation exceeds "
+                        "the 5-minute clock-skew allowance"
+                    )
+            elif expected_source in AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS:
+                if provenance.get("detailScope") != "authoritative_inventory_feed":
+                    raise ArtifactValidationError(
+                        f"listings[{index}] lacks authoritative inventory-feed provenance"
+                    )
+                if (
+                    expected_source
+                    in CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
+                ):
+                    if not preserves_children:
+                        raise ArtifactValidationError(
+                            f"listings[{index}] must preserve child collections"
+                        )
+                elif preserves_children:
+                    raise ArtifactValidationError(
+                        f"listings[{index}] must not preserve child collections"
+                    )
+            else:
+                if preserves_children:
+                    raise ArtifactValidationError(
+                        f"listings[{index}] must not preserve child collections"
+                    )
+                detail_value = listing.get("detailObservedAt")
+                if (
+                    provenance.get("cacheDisposition") == "source_revision_cache"
+                    and provenance.get("validatedAt")
+                ):
+                    detail_value = provenance.get("validatedAt")
+                detail_observed = parse_iso8601(
+                    detail_value,
+                    field=f"listings[{index}].detailObservedAt",
+                )
+                if detail_observed < generation_started:
+                    raise ArtifactValidationError(
+                        f"listings[{index}] detail observation predates the refresh generation"
+                    )
+                if detail_observed > latest_allowed:
+                    raise ArtifactValidationError(
+                        f"listings[{index}] detail observation exceeds "
+                        "the 5-minute clock-skew allowance"
+                    )
 
     stats = compute_staged_stats(data)
     if stats["rejected_by_ingest"]:
@@ -538,6 +873,14 @@ def validate_source_artifact(
         **stats,
         "started_at": started.isoformat(),
         "finished_at": finished.isoformat(),
+        "strict_freshness": strict_freshness,
+        "property_detail_freshness": property_detail_freshness,
+        "freshness_generation_id": generation_id,
+        "freshness_generation_started_at": (
+            generation_started.isoformat()
+            if generation_started is not None
+            else None
+        ),
         "sha256": sha256_file(path),
         "bytes": path.stat().st_size,
     }
@@ -585,6 +928,15 @@ def git_identity() -> tuple[str, bool]:
     return sha, dirty
 
 
+def database_target_fingerprint(env_file: str | None) -> dict[str, str]:
+    """Return a credential-free identity for the selected PostgreSQL target."""
+    db_url, _env_path = load_db_url(env_file)
+    try:
+        return database_target_fingerprint_from_url(db_url)
+    except ValueError as exc:
+        raise RefreshError(f"cannot bind database target: {exc}") from exc
+
+
 def new_manifest(
     run_dir: Path,
     *,
@@ -593,6 +945,7 @@ def new_manifest(
     sources: Sequence[str],
     page_cap: int,
     concurrency: int,
+    database_target: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     now = utc_now()
     return {
@@ -619,7 +972,9 @@ def new_manifest(
             "status_activation": False,
             "mark_missing": False,
         },
-        "preflight": {},
+        "preflight": {
+            "database_target": dict(database_target) if database_target else None,
+        },
         "sources": {
             source: {
                 "state": "pending",
@@ -645,6 +1000,9 @@ def load_resume_manifest(
     sources: Sequence[str],
     page_cap: int,
     concurrency: int,
+    database_target: Mapping[str, str] | None = None,
+    max_age_hours: float = DEFAULT_MAX_RESUME_AGE_HOURS,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     value = _load_json(manifest_path)
     if value.get("schema_version") != SCHEMA_VERSION:
@@ -663,14 +1021,53 @@ def load_resume_manifest(
     }
     if value.get("config") != expected:
         raise RefreshError("resume configuration differs from the manifest")
+    if database_target is not None:
+        recorded_target = (value.get("preflight") or {}).get("database_target")
+        if recorded_target != dict(database_target):
+            raise RefreshError("cannot resume against a different database target")
     if not isinstance(value.get("sources"), dict):
         raise RefreshError("manifest sources checkpoint map is missing")
+    if not math.isfinite(max_age_hours) or max_age_hours <= 0:
+        raise RefreshError("maximum resume age must be finite and positive")
+    started_at = parse_iso8601(
+        value.get("started_at"),
+        field="manifest.started_at",
+    )
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    age = current - started_at
+    if age < timedelta(0):
+        raise RefreshError(
+            "checkpoint generation starts in the future; "
+            "start a new refresh generation instead of resuming"
+        )
+    if age > timedelta(hours=max_age_hours):
+        raise RefreshError(
+            f"checkpoint generation is older than {max_age_hours:g} hours; "
+            "start a new refresh generation instead of resuming"
+        )
     return value
 
 
 def save_manifest(run_dir: Path, manifest: dict[str, Any]) -> None:
     manifest["updated_at"] = utc_now()
     atomic_write_json(run_dir / "manifest.json", manifest)
+
+
+def manifest_database_target_sha256(
+    manifest: Mapping[str, Any],
+) -> str | None:
+    """Return the bound target hash; test-only manifests may be intentionally unbound."""
+    target = (manifest.get("preflight") or {}).get("database_target")
+    if target is None:
+        return None
+    if (
+        not isinstance(target, dict)
+        or target.get("algorithm") != "sha256"
+        or not isinstance(target.get("value"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", target["value"])
+    ):
+        raise GlobalStageError("checkpoint database target fingerprint is malformed")
+    return target["value"]
 
 
 def _relative_to_run(path: Path, run_dir: Path) -> str:
@@ -690,6 +1087,7 @@ def _checkpoint_artifact_valid(
     run_dir: Path,
     checkpoint: Mapping[str, Any],
     source: str,
+    generation_started_at: str | datetime | None = None,
 ) -> tuple[Path, dict[str, Any]] | None:
     artifact_info = checkpoint.get("artifact")
     if not isinstance(artifact_info, dict):
@@ -702,8 +1100,23 @@ def _checkpoint_artifact_valid(
     if not path.is_file() or sha256_file(path) != expected_hash:
         return None
     attempt_started = artifact_info.get("attempt_started_at") or artifact_info.get("started_at")
+    generation_bound = (
+        source in STRICT_FRESHNESS_SOURCE_KEYS
+        or source in PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS
+    )
     try:
-        stats = validate_source_artifact(path, source, attempt_started)
+        stats = validate_source_artifact(
+            path,
+            source,
+            attempt_started,
+            require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
+            expected_generation_id=(
+                run_dir.name if generation_bound else None
+            ),
+            expected_generation_started_at=(
+                generation_started_at if generation_bound else None
+            ),
+        )
     except ArtifactValidationError:
         return None
     return path, stats
@@ -719,7 +1132,12 @@ def collect_source(
     attempts_this_run: int,
 ) -> tuple[Path, dict[str, Any]] | None:
     checkpoint = manifest["sources"][source]
-    existing = _checkpoint_artifact_valid(run_dir, checkpoint, source)
+    existing = _checkpoint_artifact_valid(
+        run_dir,
+        checkpoint,
+        source,
+        manifest["started_at"],
+    )
     if existing:
         return existing
 
@@ -731,7 +1149,11 @@ def collect_source(
         attempt_started = utc_now()
         attempt_log = run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
         tmp_artifact.unlink(missing_ok=True)
-        env, overrides = fresh_source_env(source, run_dir)
+        env, overrides = fresh_source_env(
+            source,
+            run_dir,
+            generation_started_at=manifest["started_at"],
+        )
         attempt = {
             "number": attempt_number,
             "started_at": attempt_started,
@@ -769,7 +1191,22 @@ def collect_source(
             save_manifest(run_dir, manifest)
             continue
         try:
-            stats = validate_source_artifact(tmp_artifact, source, attempt_started)
+            generation_bound = (
+                source in STRICT_FRESHNESS_SOURCE_KEYS
+                or source in PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS
+            )
+            stats = validate_source_artifact(
+                tmp_artifact,
+                source,
+                attempt_started,
+                require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
+                expected_generation_id=(
+                    run_dir.name if generation_bound else None
+                ),
+                expected_generation_started_at=(
+                    manifest["started_at"] if generation_bound else None
+                ),
+            )
         except ArtifactValidationError as exc:
             attempt["error"] = str(exc)
             attempt["rejected_artifact"] = _archive_rejected(
@@ -804,7 +1241,12 @@ def gate_source(
     log_path = run_dir / "logs" / f"{source}-gate.log"
     gate_path.parent.mkdir(parents=True, exist_ok=True)
     rc = run_command(
-        build_gate_argv(artifact, gate_path, env_file),
+        build_gate_argv(
+            artifact,
+            gate_path,
+            env_file,
+            expected_db_target_sha256=manifest_database_target_sha256(manifest),
+        ),
         log_path,
         env=safe_process_env(),
     )
@@ -842,7 +1284,11 @@ def dry_run_source(
     log_path = run_dir / "logs" / f"{source}-ingest-dry-run.log"
     shutil.rmtree(sql_dir, ignore_errors=True)
     rc = run_command(
-        build_ingest_dry_run_argv(artifact, sql_dir),
+        build_ingest_dry_run_argv(
+            artifact,
+            sql_dir,
+            require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
+        ),
         log_path,
         env=safe_process_env(),
     )
@@ -875,7 +1321,12 @@ def ingest_source(
     checkpoint = manifest["sources"][source]
     log_path = run_dir / "logs" / f"{source}-ingest.log"
     started = utc_now()
-    argv = build_ingest_argv(artifact, env_file)
+    argv = build_ingest_argv(
+        artifact,
+        env_file,
+        require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
+        expected_db_target_sha256=manifest_database_target_sha256(manifest),
+    )
     checkpoint["ingest"] = {
         "started_at": started,
         "finished_at": None,
@@ -891,9 +1342,14 @@ def ingest_source(
     checkpoint["ingest"]["finished_at"] = utc_now()
     checkpoint["ingest"]["rc"] = rc
     if rc != 0:
-        checkpoint["state"] = "ingest_failed"
+        checkpoint["ingest_recovery"] = {
+            "reason": "nonzero_live_ingest_result",
+            "subprocess_rc": rc,
+            "readback_ok": False,
+        }
         save_manifest(run_dir, manifest)
-        raise GlobalStageError(f"additive ingest failed for {source} (rc={rc})")
+        recover_interrupted_ingest(run_dir, manifest, source, env_file)
+        return
     checkpoint["state"] = "ingested"
     save_manifest(run_dir, manifest)
 
@@ -909,7 +1365,12 @@ def advance_source(
     env_file: str | None,
 ) -> bool:
     checkpoint = manifest["sources"][source]
-    existing = _checkpoint_artifact_valid(run_dir, checkpoint, source)
+    existing = _checkpoint_artifact_valid(
+        run_dir,
+        checkpoint,
+        source,
+        manifest["started_at"],
+    )
     if checkpoint.get("state") == "ingest_recovery_required":
         raise GlobalStageError(
             f"source {source} requires reviewed ingest recovery before resume"
@@ -1013,6 +1474,9 @@ def run_aggregate_gate(
     argv.extend(["--apply", "--strict", "--out", str(output)])
     if env_file:
         argv.extend(["--env-file", env_file])
+    expected_target = manifest_database_target_sha256(manifest)
+    if expected_target:
+        argv.extend(["--expected-db-target-sha256", expected_target])
     rc = run_command(argv, log, env=safe_process_env())
     if rc not in (0, 2):
         raise GlobalStageError(f"aggregate coverage gate failed (rc={rc})")
@@ -1054,7 +1518,12 @@ def ingest_admitted_sources(
     """Ingest only after every configured source clears the aggregate gate."""
     for source in manifest["config"]["sources"]:
         checkpoint = manifest["sources"][source]
-        existing = _checkpoint_artifact_valid(run_dir, checkpoint, source)
+        existing = _checkpoint_artifact_valid(
+            run_dir,
+            checkpoint,
+            source,
+            manifest["started_at"],
+        )
         if checkpoint.get("state") == "ingested" and existing:
             continue
         if checkpoint.get("state") == "ingesting" and existing:
@@ -1085,7 +1554,11 @@ def recover_interrupted_ingest(
     log = run_dir / "logs" / f"{source}-ingest-recovery.log"
     output.parent.mkdir(parents=True, exist_ok=True)
     rc = run_command(
-        build_validate_argv(output, env_file),
+        build_validate_argv(
+            output,
+            env_file,
+            expected_db_target_sha256=manifest_database_target_sha256(manifest),
+        ),
         log,
         env=safe_process_env(),
     )
@@ -1094,7 +1567,14 @@ def recover_interrupted_ingest(
         "log": _relative_to_run(log, run_dir),
         "rc": rc,
         "readback_ok": False,
+        "reason": (
+            (checkpoint.get("ingest_recovery") or {}).get("reason")
+            or "interrupted_live_ingest"
+        ),
     }
+    prior_recovery = checkpoint.get("ingest_recovery") or {}
+    if prior_recovery.get("subprocess_rc") is not None:
+        recovery["subprocess_rc"] = prior_recovery["subprocess_rc"]
     checkpoint["ingest_recovery"] = recovery
     if rc != 0:
         checkpoint["state"] = "ingest_recovery_required"
@@ -1102,16 +1582,25 @@ def recover_interrupted_ingest(
         raise GlobalStageError(
             f"interrupted ingest readback failed for {source} (rc={rc})"
         )
-    validation = _load_json(output)
-    probe_manifest = {
-        "config": {"sources": [source]},
-        "sources": {
-            source: {
-                "artifact": checkpoint.get("artifact"),
-            }
-        },
-    }
-    readback = verify_validation_readback(run_dir, probe_manifest, validation)
+    try:
+        validation = _load_json(output)
+        probe_manifest = {
+            "config": {"sources": [source]},
+            "sources": {
+                source: {
+                    "artifact": checkpoint.get("artifact"),
+                }
+            },
+        }
+        readback = verify_validation_readback(run_dir, probe_manifest, validation)
+    except Exception as exc:
+        checkpoint["state"] = "ingest_recovery_required"
+        recovery["readback_error"] = str(exc)
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError(
+            f"interrupted ingest readback is invalid for {source}; "
+            "manual recovery is required before replay"
+        ) from exc
     checkpoint["readback"] = probe_manifest["sources"][source].get("readback")
     recovery["readback_ok"] = readback["ok"]
     if not readback["ok"]:
@@ -1134,7 +1623,11 @@ def verify_validation_readback(
     run_dir: Path,
     manifest: dict[str, Any],
     validation: Mapping[str, Any],
+    *,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    latest_allowed = current + MAX_FUTURE_CLOCK_SKEW
     queries = validation.get("queries")
     rows = queries.get("source_counts") if isinstance(queries, dict) else None
     if not isinstance(rows, list):
@@ -1143,6 +1636,18 @@ def verify_validation_readback(
         row.get("source_key"): row
         for row in rows
         if isinstance(row, dict) and isinstance(row.get("source_key"), str)
+    }
+    generation_rows = (
+        queries.get("freshness_generations")
+        if isinstance(queries, dict)
+        else None
+    )
+    generation_by_source = {
+        (row.get("source_key"), row.get("generation_id")): row
+        for row in (generation_rows or [])
+        if isinstance(row, dict)
+        and isinstance(row.get("source_key"), str)
+        and isinstance(row.get("generation_id"), str)
     }
     inventory_rows = (
         queries.get("inventory_only_index") if isinstance(queries, dict) else None
@@ -1159,7 +1664,6 @@ def verify_validation_readback(
         checkpoint = manifest["sources"][source]
         artifact = checkpoint.get("artifact") or {}
         try:
-            expected = _timestamp_second(artifact["finished_at"])
             staged = int(artifact["staged_unique"])
         except (KeyError, TypeError, ValueError, ArtifactValidationError):
             checkpoint["readback"] = {
@@ -1169,36 +1673,200 @@ def verify_validation_readback(
             failures.append(source)
             continue
         row = by_source.get(source)
-        inventory_only_canonical_na = (
-            staged == 0
-            and source in INVENTORY_ONLY_SOURCE_DEFINITIONS
+        generation_readback = (
+            source in STRICT_FRESHNESS_SOURCE_KEYS
+            or artifact.get("strict_freshness") is True
+            or artifact.get("property_detail_freshness") is True
         )
-        if row is None and not inventory_only_canonical_na:
-            checkpoint["readback"] = {"ok": False, "reason": "source missing from validation"}
-            failures.append(source)
-            continue
-        if inventory_only_canonical_na:
-            latest = None
-            latest_count = 0
-            ok = True
-            reason = None
-        else:
+        generation_id = None
+        generation_started = None
+        generation_row = None
+        if generation_readback:
             try:
-                latest = _timestamp_second(row["latest_inventory_observed_at"])
-                latest_count = int(row["latest_inventory_batch_active"])
+                generation_id = artifact["freshness_generation_id"]
+                if not isinstance(generation_id, str) or not generation_id:
+                    raise ValueError("missing generation id")
+                generation_started = _timestamp_second(
+                    artifact["freshness_generation_started_at"]
+                )
             except (KeyError, TypeError, ValueError, ArtifactValidationError):
-                checkpoint["readback"] = {"ok": False, "reason": "malformed validation row"}
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "reason": "malformed generation readback expectation",
+                }
                 failures.append(source)
                 continue
-            ok = latest >= expected and latest_count == staged
-            reason = None
-            if latest < expected:
-                reason = (
-                    f"latest inventory observation {latest.isoformat()} "
-                    f"predates artifact {expected.isoformat()}"
+            if generation_started > latest_allowed:
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "generation_id": generation_id,
+                    "reason": (
+                        "generation start exceeds the 5-minute "
+                        "clock-skew allowance"
+                    ),
+                }
+                failures.append(source)
+                continue
+            generation_row = generation_by_source.get((source, generation_id))
+            if generation_row is None:
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "generation_id": generation_id,
+                    "generation_started_at": generation_started.isoformat(),
+                    "reason": "generation is missing from validation readback",
+                }
+                failures.append(source)
+                continue
+            try:
+                generation_count = int(generation_row["active"])
+                earliest_inventory = _timestamp_second(
+                    generation_row["earliest_inventory_observed_at"]
                 )
-            elif latest_count != staged:
-                reason = f"latest batch {latest_count} != staged unique {staged}"
+                latest_inventory = _timestamp_second(
+                    generation_row["latest_inventory_observed_at"]
+                )
+                earliest_detail = _timestamp_second(
+                    generation_row["earliest_detail_scraped_at"]
+                )
+                latest_detail = _timestamp_second(
+                    generation_row["latest_detail_scraped_at"]
+                )
+            except (KeyError, TypeError, ValueError, ArtifactValidationError):
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "generation_id": generation_id,
+                    "reason": "malformed generation validation row",
+                }
+                failures.append(source)
+                continue
+            if any(
+                timestamp > latest_allowed
+                for timestamp in (
+                    earliest_inventory,
+                    latest_inventory,
+                    earliest_detail,
+                    latest_detail,
+                )
+            ):
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "generation_id": generation_id,
+                    "reason": (
+                        "generation readback observation exceeds the 5-minute "
+                        "clock-skew allowance"
+                    ),
+                }
+                failures.append(source)
+                continue
+            ok = (
+                generation_count == staged
+                and earliest_inventory >= generation_started
+                and earliest_detail >= generation_started
+            )
+            reason = None
+            if generation_count != staged:
+                reason = (
+                    f"generation batch {generation_count} != staged unique {staged}"
+                )
+            elif earliest_inventory < generation_started:
+                reason = "generation inventory observation predates generation start"
+            elif earliest_detail < generation_started:
+                reason = "generation detail observation predates generation start"
+            latest = latest_inventory
+            latest_count = generation_count
+            detail_latest_raw = generation_row["latest_detail_scraped_at"]
+            detail_count = generation_count
+            readback_boundary = generation_started
+        else:
+            try:
+                expected = _timestamp_second(artifact["finished_at"])
+            except (KeyError, TypeError, ValueError, ArtifactValidationError):
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "reason": "malformed artifact readback expectation",
+                }
+                failures.append(source)
+                continue
+            if expected > latest_allowed:
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "reason": (
+                        "artifact readback boundary exceeds the 5-minute "
+                        "clock-skew allowance"
+                    ),
+                }
+                failures.append(source)
+                continue
+            readback_boundary = expected
+            inventory_only_canonical_na = (
+                staged == 0
+                and source in INVENTORY_ONLY_SOURCE_DEFINITIONS
+            )
+            if row is None and not inventory_only_canonical_na:
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "reason": "source missing from validation",
+                }
+                failures.append(source)
+                continue
+            if inventory_only_canonical_na:
+                latest = None
+                latest_count = 0
+                ok = True
+                reason = None
+            else:
+                try:
+                    latest = _timestamp_second(row["latest_inventory_observed_at"])
+                    latest_count = int(row["latest_inventory_batch_active"])
+                    latest_detail_value = row.get("latest_scraped_at")
+                    latest_detail_timestamp = (
+                        _timestamp_second(latest_detail_value)
+                        if latest_detail_value
+                        else None
+                    )
+                except (KeyError, TypeError, ValueError, ArtifactValidationError):
+                    checkpoint["readback"] = {
+                        "ok": False,
+                        "reason": "malformed validation row",
+                    }
+                    failures.append(source)
+                    continue
+                ok = (
+                    latest >= expected
+                    and latest_count == staged
+                    and latest <= latest_allowed
+                    and (
+                        latest_detail_timestamp is None
+                        or latest_detail_timestamp <= latest_allowed
+                    )
+                )
+                reason = None
+                if (
+                    latest > latest_allowed
+                    or (
+                        latest_detail_timestamp is not None
+                        and latest_detail_timestamp > latest_allowed
+                    )
+                ):
+                    reason = (
+                        "validation readback observation exceeds the 5-minute "
+                        "clock-skew allowance"
+                    )
+                elif latest < expected:
+                    reason = (
+                        f"latest inventory observation {latest.isoformat()} "
+                        f"predates artifact {expected.isoformat()}"
+                    )
+                elif latest_count != staged:
+                    reason = (
+                        f"latest batch {latest_count} != staged unique {staged}"
+                    )
+            detail_latest_raw = (
+                row.get("latest_scraped_at") if row is not None else None
+            )
+            detail_count = (
+                row.get("latest_batch_active") if row is not None else None
+            )
         expected_inventory_only = int(artifact.get("inventory_only") or 0)
         inventory_readback = inventory_by_source.get(source)
         inventory_ok = True
@@ -1255,11 +1923,16 @@ def verify_validation_readback(
                             expected_inventory_only == 0
                             or (
                                 latest_inventory_at is not None
-                                and latest_inventory_at >= expected
+                                and latest_inventory_at >= readback_boundary
                             )
                         )
                         and scope_watermark is not None
-                        and scope_watermark >= expected
+                        and scope_watermark >= readback_boundary
+                        and (
+                            latest_inventory_at is None
+                            or latest_inventory_at <= latest_allowed
+                        )
+                        and scope_watermark <= latest_allowed
                     )
                     if active_inventory != expected_inventory_only:
                         inventory_reason = (
@@ -1271,13 +1944,31 @@ def verify_validation_readback(
                             f"latest inventory-only batch {latest_inventory_batch} "
                             f"!= expected {expected_inventory_only}"
                         )
+                    elif (
+                        (
+                            latest_inventory_at is not None
+                            and latest_inventory_at > latest_allowed
+                        )
+                        or (
+                            scope_watermark is not None
+                            and scope_watermark > latest_allowed
+                        )
+                    ):
+                        inventory_reason = (
+                            "inventory-only readback observation exceeds "
+                            "the 5-minute clock-skew allowance"
+                        )
                     elif expected_inventory_only and (
-                        latest_inventory_at is None or latest_inventory_at < expected
+                        latest_inventory_at is None
+                        or latest_inventory_at < readback_boundary
                     ):
                         inventory_reason = (
                             "inventory-only latest enumeration predates artifact"
                         )
-                    elif scope_watermark is None or scope_watermark < expected:
+                    elif (
+                        scope_watermark is None
+                        or scope_watermark < readback_boundary
+                    ):
                         inventory_reason = (
                             "inventory-only scope watermark predates artifact"
                         )
@@ -1288,16 +1979,30 @@ def verify_validation_readback(
             reason = inventory_reason
         checkpoint["readback"] = {
             "ok": ok,
+            "generation_id": generation_id,
+            "generation_started_at": (
+                generation_started.isoformat()
+                if generation_started is not None
+                else None
+            ),
+            "earliest_inventory_observed_at": (
+                generation_row.get("earliest_inventory_observed_at")
+                if generation_row is not None
+                else None
+            ),
             "latest_inventory_observed_at": (
-                row["latest_inventory_observed_at"] if row is not None else None
+                generation_row.get("latest_inventory_observed_at")
+                if generation_row is not None
+                else (row["latest_inventory_observed_at"] if row is not None else None)
             ),
             "latest_inventory_batch_active": latest_count,
-            "latest_detail_scraped_at": (
-                row.get("latest_scraped_at") if row is not None else None
+            "earliest_detail_scraped_at": (
+                generation_row.get("earliest_detail_scraped_at")
+                if generation_row is not None
+                else None
             ),
-            "latest_detail_batch_active": (
-                row.get("latest_batch_active") if row is not None else None
-            ),
+            "latest_detail_scraped_at": detail_latest_raw,
+            "latest_detail_batch_active": detail_count,
             "detail_unavailable": (
                 row.get("detail_unavailable") if row is not None else None
             ),
@@ -1319,7 +2024,11 @@ def run_final_validation(
     output = run_dir / "validation.json"
     log = run_dir / "logs" / "validation.log"
     rc = run_command(
-        build_validate_argv(output, env_file),
+        build_validate_argv(
+            output,
+            env_file,
+            expected_db_target_sha256=manifest_database_target_sha256(manifest),
+        ),
         log,
         env=safe_process_env(),
     )
@@ -1447,7 +2156,7 @@ def render_report(manifest: Mapping[str, Any]) -> str:
         f"- Finished: `{manifest.get('finished_at') or ''}`",
         f"- Collector SHA: `{manifest.get('collector_git_sha')}`",
         "- Write mode: additive only; status activation and mark-missing disabled.",
-        "- Readback proves current inventory observation. `Detail unavailable` rows retain their last-good detail timestamp/payload and are not claimed detail-fresh.",
+        "- Readback is source-class-aware: strict detail sources require current admitted detail observation; authoritative inventory feeds follow their explicit replace-or-preserve child contract; scoped sources never make a broader detail or contact freshness claim.",
         "",
         "| Source | State | Flat | Staged | Inventory-only | Detail unavailable | Provisional IDs | Gate | Readback |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
@@ -1512,6 +2221,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument("--attempts-per-source", type=int, default=3)
     parser.add_argument(
+        "--max-resume-age-hours",
+        type=float,
+        default=DEFAULT_MAX_RESUME_AGE_HOURS,
+        help=(
+            "reject resumed refresh generations older than this many hours "
+            f"(default: {DEFAULT_MAX_RESUME_AGE_HOURS:g})"
+        ),
+    )
+    parser.add_argument(
         "--lock-dir",
         default=None,
         help="shared CRE lock path; defaults to the primary checkout lock even from a worktree",
@@ -1523,11 +2241,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("page-cap must be positive and concurrency must be between 1 and 6")
     if args.attempts_per_source < 1:
         parser.error("attempts-per-source must be positive")
+    if (
+        not math.isfinite(args.max_resume_age_hours)
+        or args.max_resume_age_hours <= 0
+    ):
+        parser.error("max-resume-age-hours must be finite and positive")
     try:
         sources = parse_sources(args.sources)
     except ValueError as exc:
         parser.error(str(exc))
 
+    database_target = database_target_fingerprint(args.env_file)
     git_sha, git_dirty = git_identity()
     if git_dirty and not args.allow_dirty:
         raise RefreshError("refusing operational refresh from a dirty checkout")
@@ -1541,6 +2265,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             sources=sources,
             page_cap=args.page_cap,
             concurrency=args.concurrency,
+            database_target=database_target,
+            max_age_hours=args.max_resume_age_hours,
         )
         manifest["status"] = "running"
         manifest["error"] = None
@@ -1556,6 +2282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sources=sources,
             page_cap=args.page_cap,
             concurrency=args.concurrency,
+            database_target=database_target,
         )
     save_manifest(run_dir, manifest)
 
@@ -1596,7 +2323,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 pre_result = _load_json(pre_validation)
             else:
                 pre_rc = run_command(
-                    build_validate_argv(pre_validation, args.env_file),
+                    build_validate_argv(
+                        pre_validation,
+                        args.env_file,
+                        expected_db_target_sha256=(
+                            manifest_database_target_sha256(manifest)
+                        ),
+                    ),
                     pre_validation_log,
                     env=safe_process_env(),
                 )

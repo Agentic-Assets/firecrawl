@@ -26,6 +26,13 @@ import { SOURCE_KEYS, SourceKey, SourceResult, Tx } from "./types.js";
 import { prune } from "./lib/util.js";
 import { readFileSync } from "node:fs";
 import { EnrichItem, groupEnrichItems, resolveEnricher, runEnrichGroups } from "./lib/enrich.js";
+import {
+  refreshGenerationId,
+  refreshStartedAt,
+  requireFreshDetails,
+  requireFreshPropertyDetails,
+  summarizeListingFreshness,
+} from "./lib/freshness.js";
 
 
 // ---------- CLI ----------
@@ -159,6 +166,7 @@ async function main() {
       );
       try {
         const res = await runSource(key, tx, MAX_ITEMS, MONITOR);
+        const freshness = summarizeListingFreshness(res.listings);
         sources.push({
           sourceKey: key,
           transaction: tx,
@@ -170,6 +178,7 @@ async function main() {
           listingsCollected: res.listings.length,
           truncated: res.truncated === true,
           note: res.note ?? null,
+          freshness,
         });
         for (const l of res.listings) {
           listings.push(
@@ -224,6 +233,12 @@ async function main() {
       mode: MONITOR ? "monitor" : "full",
       startedAt,
       finishedAt: new Date().toISOString(),
+      freshness: {
+        generationId: refreshGenerationId(),
+        generationStartedAt: refreshStartedAt() ?? startedAt,
+        requireFreshDetails: requireFreshDetails(),
+        requireFreshPropertyDetails: requireFreshPropertyDetails(),
+      },
     },
     sources,
     listings,

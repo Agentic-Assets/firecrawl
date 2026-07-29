@@ -40,26 +40,77 @@ monolithic `cre_daily_update.sh` remains the scheduled backstop, not the proof
 path for a source-fresh detail sweep.
 
 ```bash
+# Start one bounded source generation from a clean, pushed SHA:
 python3 cre_checkpoint_refresh.py \
+  --sources cbre \
   --env-file "$HOME/.config/cre/equire.env"
 
-# Resume the exact run after interruption:
+# Another bounded group, using exact registry keys:
+python3 cre_checkpoint_refresh.py \
+  --sources svn,lee-associates,franklin-street \
+  --env-file "$HOME/.config/cre/equire.env"
+
+# Resume the exact run after interruption. Keep the same source list, page cap,
+# concurrency, attempts, collector SHA, and environment:
 python3 cre_checkpoint_refresh.py \
   --resume out/checkpoint-refresh/<run-id> \
+  --sources <same-exact-source-list> \
   --env-file "$HOME/.config/cre/equire.env"
 ```
 
 The strict runner never passes `--monitor`, `--mark-missing`,
-`--activate-status`, or `--update-baseline`. It uses run-scoped cache
-generations for JLL, Colliers Main, Buildout, and Marcus; forces full Cushman
-detail mode; and enables Avison Young detail collection. A `first_seen` verdict
-stops at `baseline_seed_required`; a `hold` stops at `gate_blocked`. Neither
-state reaches dry-run or live ingest. Seed a first baseline only after reviewing
-the complete exact artifact with `cre_gate.py --apply --update-baseline`, read
-it back without `--update-baseline`, and then resume the same immutable run.
+`--activate-status`, or `--update-baseline`. Never use `--allow-dirty` for a
+supervised production refresh. Before starting, require a clean worktree and
+verify that `git rev-parse HEAD` is the exact SHA pushed to the remote branch.
+The runner rejects source/config/SHA drift during resume and rejects a resume
+once its generation is more than 24 hours old. It also stores a credential-free
+SHA-256 fingerprint of the selected PostgreSQL host, port, and database and
+passes the expected fingerprint to every database child process for a
+before-access check. Ambiguous multi-host or target-overriding libpq URI forms
+fail closed. This prevents an environment-file change during a long run from
+redirecting a gate, validation query, or write.
+
+For strict sources, it binds every source artifact and listing observation to
+one immutable generation and bypasses Firecrawl response caches with
+`maxAge: 0`. The scoped non-strict `cbre-dealflow` and `colliers` paths do not
+make the blanket strict-detail claim; `avison-young` has its separate
+generation-backed inventory/property-detail contract described below. A
+`first_seen` verdict stops at `baseline_seed_required`; a `hold` stops at
+`gate_blocked`. Neither state reaches dry-run or live ingest. Seed a first
+baseline only after reviewing the complete exact artifact with
+`cre_gate.py --apply --update-baseline`, read it back without
+`--update-baseline`, and then resume the same immutable run.
+
+Seventeen sources currently satisfy the runner-owned strict contract:
+`cbre`, `jll`, `jll-investor`, `colliers-main`, `cushman-wakefield`, `svn`,
+`lee-associates`, `franklin-street`, `newmark`, `savills`, `transwestern`,
+`marcus-millichap`, `nai-global`, `matthews`, `srs`, `hanley`, and
+`kidder-mathews`. The three remaining supported sources have deliberately
+narrower claims:
+
+- `cbre-dealflow` and `colliers` can retain current provider cards as
+  inventory-only source-index rows when no canonical public detail identity is
+  available.
+- `avison-young` proves current inventory and property-detail observation but
+  preserves existing contacts when the supplemental team feed is unavailable;
+  it must not be described as a fresh-contact sweep in that state.
+
+Child handling is source-class-specific:
+
+- CBRE and the Buildout feeds (`svn`, `lee-associates`, `franklin-street`) are
+  authoritative inventory feeds and replace, rather than preserve, their
+  collector-owned child collections.
+- SRS, Hanley, and Kidder Mathews are authoritative inventory feeds that must
+  preserve existing child collections.
+- Other strict sources require an admitted current detail observation and must
+  not use child preservation as a substitute for a failed detail read.
+
 The manifest records `ingesting` before launching a live write. If execution
-stops in that window, resume performs an exact database readback and never
-automatically replays an ambiguous ingest.
+stops in that window, resume performs a generation-exact database readback and
+never automatically replays an ambiguous ingest. A successful live readback
+requires the expected generation ID, exact active canonical count, exact
+inventory-only scope count, and observation timestamps no earlier than the
+generation start.
 
 **Colliers SalesTracker identity safety (2026-07-29).** The list endpoint emits
 one HTML card per project, while the map endpoint emits one row per map pin.
@@ -93,10 +144,13 @@ python3 cre_refresh_report.py \
   --out /tmp/cre-refresh-report.md
 ```
 
-`scraped_at` proves that a row was re-observed and ingested. A strict
-detail-freshness claim additionally requires the run manifest, per-source cache
-generation, zero source errors/truncation, and explicit handling of any
-listing-level `detailError`.
+`scraped_at` proves only that a row was processed by ingest. A strict
+detail-freshness claim additionally requires current source observation
+provenance, the exact run generation, zero source errors or hidden truncation,
+explicit handling of every listing-level `detailError`, and the
+generation-exact database readback described above. Observation timestamps more
+than five minutes in the future are rejected in artifact admission, ingest, and
+database readback.
 
 **2026-06-15 (Phase-2 data-lift LIVE).** DDL `011` -> `012` -> `013` -> `014`
 applied to prod (project `fhqycqubkkrdgzswccwd`, schema `credeals`) in order via

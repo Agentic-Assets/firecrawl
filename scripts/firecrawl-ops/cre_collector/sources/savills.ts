@@ -1,5 +1,6 @@
 // sources/savills.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { brokerRef } from "../lib/broker.js";
+import { detailObservation } from "../lib/freshness.js";
 import { scrapeRaw } from "../lib/scrape.js";
 import { SourceResult, Tx } from "../types.js";
 import { clean, moneyToNumber, num } from "../lib/util.js";
@@ -235,7 +236,7 @@ async function savillsDirectListHtmlOnce(
  * legacy Firecrawl read is retained only as a validated fallback so an invalid
  * page cannot become a false "no listings" monitor observation.
  */
-export async function savillsListHtml(url: string): Promise<string> {
+export async function savillsListHtml(url: string, fresh = false): Promise<string> {
   const directTimeout = savillsDirectListTimeoutMs();
   let directError: unknown = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -249,7 +250,11 @@ export async function savillsListHtml(url: string): Promise<string> {
   }
 
   try {
-    const html = await scrapeRaw(url, { waitFor: 6000, timeout: savillsListTimeoutMs() });
+    const html = await scrapeRaw(url, {
+      waitFor: 6000,
+      timeout: savillsListTimeoutMs(),
+      ...(fresh ? { maxAge: 0 } : {}),
+    });
     if (!savillsListHtmlIsUsable(html)) {
       throw new Error("Savills Firecrawl fallback response did not contain the expected __NEXT_DATA__ list state");
     }
@@ -277,7 +282,23 @@ export function savillsTotalItems(html: string, fallback: number): number | null
   return Number.isFinite(headingTotal) && headingTotal > 0 ? Math.max(headingTotal, fallback) : fallback || null;
 }
 
-export function savillsPageInfo(html: string, fallbackRows: number): {
+export function savillsVerifiedTotalItems(html: string): number | null {
+  const data = parseSavillsNextData(html);
+  const listPage = data?.props?.initialReduxState?.listPage;
+  const currentPage = listPage?.currentPage;
+  const pageMap = listPage?.pageMap;
+  const currentMapPage =
+    pageMap?.[String(currentPage)] ??
+    (pageMap && typeof pageMap === "object" ? Object.values(pageMap)[0] : null);
+  const total = currentMapPage?.paging?.totalItems ?? listPage?.totalItems;
+  if (Number.isInteger(total) && total > 0) return total;
+  const headingTotal = Number(
+    (html.match(/([0-9][0-9,]*)\s+Properties for (?:let|sale|rent)/i) ?? [])[1]?.replace(/,/g, "")
+  );
+  return Number.isInteger(headingTotal) && headingTotal > 0 ? headingTotal : null;
+}
+
+export function savillsPageInfo(html: string, fallbackRows: number, requireVerifiedTotal = false): {
   currentPage: number | null;
   totalPages: number | null;
   totalItems: number | null;
@@ -293,7 +314,9 @@ export function savillsPageInfo(html: string, fallbackRows: number): {
   return {
     currentPage: Number.isInteger(currentPage) && currentPage > 0 ? currentPage : null,
     totalPages: Number.isInteger(totalPages) && totalPages > 0 ? totalPages : null,
-    totalItems: savillsTotalItems(html, fallbackRows),
+    totalItems: requireVerifiedTotal
+      ? savillsVerifiedTotalItems(html)
+      : savillsTotalItems(html, fallbackRows),
     nextUrl: clean(mapPage?.metaData?.NextUrl),
   };
 }
@@ -485,7 +508,7 @@ export function mapSavillsLeaseRow(row: any, sourceUrl: string): any | null {
   return mapSavillsRow(row, "lease", sourceUrl);
 }
 
-async function collectSavillsTransaction(tx: Tx, max: number): Promise<SourceResult> {
+async function collectSavillsTransaction(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   const sourceUrl = tx === "lease"
     ? "https://search.savills.com/com/en/list/commercial/property-to-let/united-states-of-america"
     : "https://search.savills.com/com/en/list/commercial/property-for-sale/united-states-of-america";
@@ -495,6 +518,8 @@ async function collectSavillsTransaction(tx: Tx, max: number): Promise<SourceRes
   const seenListingIds = new Set<string>();
   const visitedUrls = new Set<string>();
   let total: number | null = null;
+  let totalPages: number | null = null;
+  let finalPage: number | null = null;
   let url: string | null = sourceUrl;
   let eligibleCount = 0;
 
@@ -505,10 +530,35 @@ async function collectSavillsTransaction(tx: Tx, max: number): Promise<SourceRes
   while (url) {
     if (visitedUrls.has(url)) throw new Error(`Savills ${tx} pagination looped back to ${url}`);
     visitedUrls.add(url);
-    const html = await savillsListHtml(url);
+    const html = await savillsListHtml(url, !monitor);
+    const pageObservation = detailObservation("savills_next_data_public_record", "live");
     const rows = savillsNextDataProperties(html).filter((row) => row?.IsCommercial === true);
-    const pageInfo = savillsPageInfo(html, rows.length);
-    total = total === null ? pageInfo.totalItems : Math.max(total, pageInfo.totalItems ?? 0);
+    const pageInfo = savillsPageInfo(html, rows.length, !monitor);
+    if (
+      pageInfo.currentPage === null ||
+      pageInfo.totalPages === null ||
+      pageInfo.totalItems === null
+    ) {
+      throw new Error(`Savills ${tx} page did not expose complete pagination metadata`);
+    }
+    if (pageInfo.currentPage > pageInfo.totalPages) {
+      throw new Error(
+        `Savills ${tx} page ${pageInfo.currentPage} exceeds declared page count ${pageInfo.totalPages}`
+      );
+    }
+    if (total !== null && pageInfo.totalItems !== total) {
+      throw new Error(
+        `Savills ${tx} total changed during pagination (${total} -> ${pageInfo.totalItems})`
+      );
+    }
+    if (totalPages !== null && pageInfo.totalPages !== totalPages) {
+      throw new Error(
+        `Savills ${tx} page count changed during pagination (${totalPages} -> ${pageInfo.totalPages})`
+      );
+    }
+    total = pageInfo.totalItems;
+    totalPages = pageInfo.totalPages;
+    finalPage = pageInfo.currentPage;
     if ((pageInfo.totalItems ?? 0) > 0 && rows.length === 0) {
       throw new Error(`Savills ${tx} page ${pageInfo.currentPage ?? "?"} reported results but exposed no commercial rows`);
     }
@@ -525,25 +575,51 @@ async function collectSavillsTransaction(tx: Tx, max: number): Promise<SourceRes
       if (seenListingIds.has(listingId)) continue;
       seenListingIds.add(listingId);
       eligibleCount++;
-      if (listings.length < max) listings.push(mapped);
+      if (listings.length < max) {
+        listings.push({
+          ...mapped,
+          inventoryObservedAt: pageObservation.observedAt,
+          detailObservedAt: pageObservation.observedAt,
+          freshnessProvenance: {
+            detailScope: "source_native_public_record",
+            generationId: pageObservation.generationId,
+            method: pageObservation.method,
+            cacheDisposition: pageObservation.cacheDisposition,
+          },
+        });
+      }
     }
     const next = pageInfo.nextUrl;
     if (!next) {
-      if (
-        pageInfo.currentPage !== null &&
-        pageInfo.totalPages !== null &&
-        pageInfo.currentPage < pageInfo.totalPages
-      ) {
+      if (pageInfo.currentPage < pageInfo.totalPages) {
         throw new Error(
           `Savills ${tx} reports ${pageInfo.totalPages} pages but page ${pageInfo.currentPage} exposes no NextUrl`
         );
       }
       break;
     }
+    if (pageInfo.currentPage >= pageInfo.totalPages) {
+      throw new Error(
+        `Savills ${tx} final page ${pageInfo.currentPage}/${pageInfo.totalPages} unexpectedly exposes NextUrl`
+      );
+    }
     const nextUrl = new URL(next, "https://search.savills.com").toString();
     if (nextUrl === url) throw new Error(`Savills ${tx} page ${pageInfo.currentPage ?? "?"} returned a self-referential NextUrl`);
     url = nextUrl;
     console.error(`  savills/${tx}: ${listings.length} U.S. commercial rows collected (source total ${total ?? "?"})`);
+  }
+  if (total === null || totalPages === null || finalPage !== totalPages) {
+    throw new Error(`Savills ${tx} pagination did not reach a verified final page`);
+  }
+  if (seenRawIds.size !== total) {
+    throw new Error(
+      `Savills ${tx} enumerated ${seenRawIds.size} unique commercial rows but provider reported ${total}`
+    );
+  }
+  if (nonUsFiltered > 0 || eligibleCount !== seenRawIds.size) {
+    throw new Error(
+      `Savills ${tx} could not map ${seenRawIds.size - eligibleCount} provider row(s) into U.S. inventory`
+    );
   }
   const truncated =
     Number.isFinite(max) && eligibleCount > max
@@ -564,12 +640,12 @@ async function collectSavillsTransaction(tx: Tx, max: number): Promise<SourceRes
 }
 
 export async function srcSavillsCommercialLease(max: number): Promise<SourceResult> {
-  return collectSavillsTransaction("lease", max);
+  return collectSavillsTransaction("lease", max, false);
 }
 
-export async function srcSavills(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
+export async function srcSavills(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   // Enumeration-only source: both the sale list pages and the lease __NEXT_DATA__
   // parse extract every field from the list page (no per-listing detail render),
   // so monitor output == full output.
-  return collectSavillsTransaction(tx, max);
+  return collectSavillsTransaction(tx, max, monitor);
 }

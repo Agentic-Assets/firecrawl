@@ -8,6 +8,12 @@ import { scrapeDoc } from "../lib/scrape.js";
 import { harvestDetail, type HarvestResult } from "../lib/harvest.js";
 import { DocItem, LinkItem, MediaItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, num, pmap, prune } from "../lib/util.js";
+import {
+  detailObservation,
+  refreshGenerationId,
+  requireFreshDetails,
+  requireFreshPropertyDetails,
+} from "../lib/freshness.js";
 
 
 // --- Avison Young: SharpLaunch search app ---
@@ -30,6 +36,8 @@ export let avisonYoungCache:
       apiKey: string;
       websiteRows: any[];
       teamMembers: Map<string, any>;
+      teamFeedComplete: boolean;
+      teamFeedReason: string | null;
     }
   | null = null;
 
@@ -56,29 +64,64 @@ export async function fetchAvisonYoungEntity(entity: string, apiKey: string): Pr
   const res = await fetch(url, { headers: { "X-Api-Key": apiKey } });
   if (!res.ok) throw new Error(`Avison Young SharpLaunch ${entity} API HTTP ${res.status}`);
   const data = await res.json();
-  const items = Array.isArray((data as any).items) ? (data as any).items : [];
-  if (!items.length) throw new Error(`Avison Young SharpLaunch ${entity} API returned no items`);
+  return avisonYoungEntityItems(data, entity);
+}
+
+export function avisonYoungEntityItems(data: any, entity: string): any[] {
+  const items = Array.isArray(data?.items) ? data.items : [];
+  // SharpLaunch removed the Avison Young team_member export in July 2026 while
+  // continuing to expose the complete website inventory. Property detail pages
+  // remain the current source for broker cards, so an empty supplemental team
+  // feed must not hide every listing. The website inventory stays required.
+  if (!items.length && entity !== "team_member") {
+    throw new Error(`Avison Young SharpLaunch ${entity} API returned no items`);
+  }
   return items;
+}
+
+export function avisonYoungTeamFeedState(
+  rows: any[],
+  error: unknown = null
+): { rows: any[]; complete: boolean; reason: string | null } {
+  if (error) {
+    return { rows: [], complete: false, reason: `team_member request failed: ${String(error)}` };
+  }
+  if (!rows.length) {
+    return { rows: [], complete: false, reason: "team_member API returned no items" };
+  }
+  return { rows, complete: true, reason: null };
 }
 
 export async function getAvisonYoungFeed(): Promise<{
   apiKey: string;
   websiteRows: any[];
   teamMembers: Map<string, any>;
+  teamFeedComplete: boolean;
+  teamFeedReason: string | null;
 }> {
   if (avisonYoungCache) return avisonYoungCache;
   const apiKey = await fetchAvisonYoungApiKey();
-  const [websiteRows, teamRows] = await Promise.all([
+  const [websiteRows, rawTeamState] = await Promise.all([
     fetchAvisonYoungEntity("website", apiKey),
-    fetchAvisonYoungEntity("team_member", apiKey),
+    fetchAvisonYoungEntity("team_member", apiKey)
+      .then((rows) => avisonYoungTeamFeedState(rows))
+      .catch((error) => avisonYoungTeamFeedState([], error)),
   ]);
+  const { rows: teamRows, complete: teamFeedComplete, reason: teamFeedReason } = rawTeamState;
   const teamMembers = new Map<string, any>();
   for (const member of teamRows) {
     if (member?.id != null) teamMembers.set(String(member.id), member);
   }
-  avisonYoungCache = { apiKey, websiteRows, teamMembers };
+  avisonYoungCache = {
+    apiKey,
+    websiteRows,
+    teamMembers,
+    teamFeedComplete,
+    teamFeedReason,
+  };
   console.error(
-    `  avison-young: cached SharpLaunch feed (${websiteRows.length} active rows, ${teamMembers.size} team members)`
+    `  avison-young: cached SharpLaunch feed (${websiteRows.length} active rows, ${teamMembers.size} team members` +
+      `${teamFeedComplete ? "" : `; degraded: ${teamFeedReason}`})`
   );
   return avisonYoungCache;
 }
@@ -100,11 +143,109 @@ export function avisonYoungAbsoluteUrl(value: any, base = AVISON_YOUNG_HOST): st
   }
 }
 
-export function avisonYoungDetailLimit(max: number, selectedCount: number): number {
+export function avisonYoungDetailLimit(
+  max: number,
+  selectedCount: number,
+  strict = requireFreshDetails()
+): number {
+  if (strict) return selectedCount;
   if (process.env.AVISON_YOUNG_DETAIL_LIMIT !== undefined) {
     return boundedInt(process.env.AVISON_YOUNG_DETAIL_LIMIT, 0, 0, selectedCount);
   }
   return Number.isFinite(max) ? selectedCount : 0;
+}
+
+export function avisonYoungTruncated(
+  max: number,
+  selectedCount: number,
+  totalEligible: number
+): boolean {
+  return Number.isFinite(max) && selectedCount < totalEligible;
+}
+
+export function assertAvisonYoungStrictFeed(
+  teamFeedComplete: boolean,
+  teamFeedReason: string | null,
+  strict = requireFreshDetails()
+): void {
+  if (strict && !teamFeedComplete) {
+    throw new Error(
+      `Avison Young team feed is incomplete and would preserve child collections: ${
+        teamFeedReason ?? "unknown reason"
+      }`
+    );
+  }
+}
+
+export function assertAvisonYoungDetailDoc(
+  doc: ScrapedDoc,
+  requestedUrl: string,
+  base: any
+): any | null {
+  const status = Number(doc.metadata?.statusCode);
+  if (Number.isFinite(status) && status >= 400) {
+    throw new Error(`Avison Young detail returned HTTP ${status}`);
+  }
+  const combined = `${doc.rawHtml ?? ""}\n${doc.markdown ?? ""}`;
+  if (
+    !combined.trim()
+    || /just a moment|checking your browser|verify you are human|captcha|access denied|cf-chl-|page not found|404\s*[-:]\s*page not found|internal server error|service unavailable/i.test(
+      combined
+    )
+  ) {
+    throw new Error("Avison Young detail returned a challenge or error shell");
+  }
+
+  const listing = firstJsonLd(doc.rawHtml, "RealEstateListing");
+  const requested = avisonYoungAbsoluteUrl(requestedUrl);
+  const observed = avisonYoungAbsoluteUrl(
+    listing?.url
+      ?? doc.metadata?.sourceURL
+      ?? doc.metadata?.url
+  );
+  let urlMatches = false;
+  if (requested && observed) {
+    try {
+      const requestedParsed = new URL(requested);
+      const observedParsed = new URL(observed);
+      urlMatches =
+        requestedParsed.hostname.toLowerCase()
+          === observedParsed.hostname.toLowerCase()
+        && requestedParsed.pathname.replace(/\/+$/, "").toLowerCase()
+          === observedParsed.pathname.replace(/\/+$/, "").toLowerCase();
+    } catch {
+      urlMatches = requested === observed;
+    }
+  }
+
+  const $ = cheerio.load(doc.rawHtml);
+  const bodyText = clean($("body").text() || doc.markdown)?.toLowerCase() ?? "";
+  const identityValues = [
+    clean(base?.name),
+    clean(base?.street),
+    clean(base?.id),
+  ]
+    .filter((value): value is string => Boolean(value && value.length >= 4))
+    .map((value) => value.toLowerCase());
+  const contentMatches = identityValues.some((value) => bodyText.includes(value));
+  const hasStructure = Boolean(
+    listing
+    || (
+      clean($("h1").first().text())
+      && (
+        $("main, .property-detail, .property-details, .property-page").length > 0
+        || /property details|property overview|available space|building size|sale price|lease rate/i.test(
+          doc.markdown ?? bodyText
+        )
+      )
+    )
+  );
+  if (!hasStructure || (!urlMatches && !contentMatches)) {
+    throw new Error(
+      "Avison Young detail identity does not match the requested property"
+    );
+  }
+  return listing;
 }
 
 export function extractAvisonYoungUrls(doc: ScrapedDoc, baseUrl: string): string[] {
@@ -243,6 +384,160 @@ export function enrichAvisonYoungContacts(contacts: any[], docs: Array<{ doc: Sc
   });
 }
 
+export function decodeAvisonYoungCloudflareEmail(value: any): string | null {
+  const encoded = clean(value);
+  if (!encoded || encoded.length < 4 || encoded.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(encoded)) {
+    return null;
+  }
+  const key = Number.parseInt(encoded.slice(0, 2), 16);
+  let decoded = "";
+  for (let index = 2; index < encoded.length; index += 2) {
+    decoded += String.fromCharCode(Number.parseInt(encoded.slice(index, index + 2), 16) ^ key);
+  }
+  return clean(decoded);
+}
+
+function avisonYoungStrongContactIdentifiers(contact: any): Set<string> {
+  const identifiers = new Set<string>();
+  const email = clean(contact?.email)?.toLowerCase();
+  if (email) identifiers.add(`email:${email}`);
+  const profileUrl = clean(contact?.profileUrl)?.toLowerCase();
+  if (profileUrl) identifiers.add(`profile:${profileUrl}`);
+  return identifiers;
+}
+
+function avisonYoungContactFieldsConflict(left: any, right: any): boolean {
+  for (const [field, normalize] of [
+    ["email", (value: string) => value.toLowerCase()],
+    ["phone", (value: string) => value.replace(/\D+/g, "")],
+    ["profileUrl", (value: string) => value.toLowerCase()],
+  ] as const) {
+    const leftValue = clean(left?.[field]);
+    const rightValue = clean(right?.[field]);
+    if (leftValue && rightValue && normalize(leftValue) !== normalize(rightValue)) return true;
+  }
+  return false;
+}
+
+export function mergeAvisonYoungContacts(...groups: any[][]): any[] {
+  const merged: any[] = [];
+  for (const contact of groups.flat()) {
+    if (!contact || typeof contact !== "object") continue;
+    const incomingIdentifiers = avisonYoungStrongContactIdentifiers(contact);
+    const email = clean(contact.email)?.toLowerCase();
+    const name = avisonYoungNameSlug(clean(contact.name));
+    if (!name && !email && incomingIdentifiers.size === 0) continue;
+    const index = merged.findIndex((candidate) => {
+      const candidateName = avisonYoungNameSlug(clean(candidate.name));
+      const candidateIdentifiers = avisonYoungStrongContactIdentifiers(candidate);
+      const hasExactStrongMatch = [...incomingIdentifiers].some((identifier) =>
+        candidateIdentifiers.has(identifier)
+      );
+      if (hasExactStrongMatch) return true;
+      return Boolean(
+        name &&
+        candidateName &&
+        name === candidateName &&
+        !avisonYoungContactFieldsConflict(contact, candidate)
+      );
+    });
+    const previous = index >= 0 ? merged[index] : {};
+    const value = prune({
+      ...previous,
+      ...Object.fromEntries(
+        Object.entries(contact).filter(([, fieldValue]) => clean(fieldValue) !== null)
+      ),
+      company: clean(contact.company) ?? clean(previous.company) ?? "Avison Young",
+    });
+    if (index >= 0) merged[index] = value;
+    else merged.push(value);
+  }
+  return merged;
+}
+
+export function avisonYoungMailtoEmail(value: any): string | null {
+  const href = clean(value);
+  if (!href || !/^mailto:/i.test(href)) return null;
+  const rawAddress = href.replace(/^mailto:/i, "").split(/[?#]/, 1)[0] ?? "";
+  let address: string;
+  try {
+    address = decodeURIComponent(rawAddress).trim();
+  } catch {
+    return null;
+  }
+  if (
+    !address ||
+    /[,;]/.test(address) ||
+    !/^[^@\s]+@[^@\s.]+(?:\.[^@\s.]+)+$/.test(address)
+  ) {
+    return null;
+  }
+  return address;
+}
+
+export function extractAvisonYoungDetailContacts(
+  docs: Array<{ doc: ScrapedDoc; url: string }>
+): any[] {
+  const contacts: any[] = [];
+  for (const { doc, url: baseUrl } of docs) {
+    const $ = cheerio.load(doc.rawHtml);
+    $(".team-member").each((_, el) => {
+      const node = $(el);
+      const mailto = avisonYoungMailtoEmail(
+        node.find('a[href^="mailto:"]').first().attr("href")
+      );
+      const protectedEmail = decodeAvisonYoungCloudflareEmail(
+        node.find("[data-cfemail]").first().attr("data-cfemail")
+      );
+      const profileUrl = avisonYoungAbsoluteUrl(
+        node.find('a[href*="/professionals/-/ayp/view/"]').first().attr("href"),
+        baseUrl
+      );
+      const vcardUrl = avisonYoungAbsoluteUrl(
+        node.find('a[href*="vcard"], a[href*="vcf"], a[href*="GetVCard"]').first().attr("href"),
+        baseUrl
+      );
+      const avatarUrl = avisonYoungAbsoluteUrl(node.find("img[src]").first().attr("src"), baseUrl);
+      contacts.push(
+        prune({
+          name: clean(node.find(".team-member__name").first().text()),
+          title: clean(node.find(".team-member__job").first().text()),
+          company: clean(node.find(".team-member__company").first().text()) ?? "Avison Young",
+          phone:
+            clean(node.find('a[href^="tel:"]').first().attr("href"))?.replace(/^tel:/i, "") ??
+            clean(node.find(".team-member__phone").first().text()),
+          email: mailto ?? protectedEmail,
+          avatarUrl,
+          profileUrl,
+          vcardUrl,
+        })
+      );
+    });
+
+    const listing = firstJsonLd(doc.rawHtml, "RealEstateListing");
+    const agents = Array.isArray(listing?.agent)
+      ? listing.agent
+      : listing?.agent
+        ? [listing.agent]
+        : [];
+    for (const agent of agents) {
+      if (!agent || typeof agent !== "object") continue;
+      contacts.push(
+        prune({
+          name: clean(agent.name),
+          title: clean(agent.jobTitle),
+          company: clean(agent.worksFor?.name) ?? "Avison Young",
+          phone: clean(agent.telephone),
+          email: clean(agent.email),
+          avatarUrl: avisonYoungAbsoluteUrl(agent.image, baseUrl),
+          profileUrl: avisonYoungAbsoluteUrl(agent.url, baseUrl),
+        })
+      );
+    }
+  }
+  return mergeAvisonYoungContacts(contacts);
+}
+
 export function isAvisonYoungUsCompatible(row: any): boolean {
   const country = clean(row.country)?.toLowerCase();
   if (country) return ["us", "usa", "united states", "united states of america"].includes(country);
@@ -307,6 +602,56 @@ export function avisonYoungContact(member: any): any | null {
     company: clean(member.company) ?? clean(member.location) ?? "Avison Young",
     avatarUrl,
   });
+}
+
+function avisonYoungProviderId(value: unknown, context: string): string {
+  if (
+    (typeof value !== "string" && typeof value !== "number")
+    || typeof value === "boolean"
+  ) {
+    throw new Error(`Avison Young ${context} is missing a provider id`);
+  }
+  const providerId = clean(String(value));
+  if (!providerId) {
+    throw new Error(`Avison Young ${context} is missing a provider id`);
+  }
+  return providerId;
+}
+
+export function avisonYoungSelectedProviderIds(rows: any[]): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const providerId = avisonYoungProviderId(
+      row?.id,
+      "selected inventory row"
+    );
+    if (seen.has(providerId)) {
+      throw new Error(
+        `Avison Young selected inventory contains duplicate provider id ${providerId}`
+      );
+    }
+    seen.add(providerId);
+    ids.push(providerId);
+  }
+  return ids;
+}
+
+export function assertAvisonYoungOutputIdentity(
+  selectedProviderIds: string[],
+  listings: any[]
+): void {
+  const outputIds = listings.map((listing) =>
+    avisonYoungProviderId(listing?.id, "output listing")
+  );
+  if (
+    outputIds.length !== selectedProviderIds.length
+    || outputIds.some((providerId, index) => providerId !== selectedProviderIds[index])
+  ) {
+    throw new Error(
+      "Avison Young selected/output identity reconciliation failed"
+    );
+  }
 }
 
 export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>): any {
@@ -427,6 +772,9 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
     submarket,
     units,
     salePricePerSf,
+    preserveChildCollections: true,
+    detailUnavailable: true,
+    detailUnavailableReason: "base feed row; current detail page not yet fetched",
     rawSharpLaunch: row,
   });
 }
@@ -499,23 +847,52 @@ export function harvestAvisonYoung(
   };
 }
 
-export async function enrichAvisonYoungListing(base: any): Promise<any> {
+export async function enrichAvisonYoungListing(
+  base: any,
+  strict = requireFreshDetails()
+): Promise<any> {
+  const requireLiveDetails = strict || requireFreshPropertyDetails();
   const detailUrls = dedupeStrings([clean(base.sharpLaunchUrl), clean(base.externalUrl)]).filter((url) =>
     /^https?:\/\//i.test(url)
   );
-  if (!detailUrls.length) return prune({ ...base, detailError: "missing public detail URLs" });
+  if (strict && base.preserveChildCollections === true) {
+    throw new Error(
+      "Avison Young strict detail cannot authorize a row that preserves child collections"
+    );
+  }
+  if (!detailUrls.length) {
+    if (strict) {
+      throw new Error("Avison Young strict detail requires a public detail URL");
+    }
+    return prune({ ...base, detailError: "missing public detail URLs" });
+  }
 
   const docs: Array<{ doc: ScrapedDoc; url: string }> = [];
   const errors: string[] = [];
   for (const url of detailUrls) {
     try {
-      docs.push({ url, doc: await scrapeDoc(url, { waitFor: 1000, timeout: 60000 }) });
+      const doc = await scrapeDoc(url, {
+        waitFor: 1000,
+        timeout: 60000,
+        ...(requireLiveDetails ? { maxAge: 0 } : {}),
+      });
+      assertAvisonYoungDetailDoc(doc, url, base);
+      docs.push({ url, doc });
     } catch (err) {
-      errors.push(`${url}: ${String(err)}`);
+      const error = `${url}: ${String(err)}`;
+      if (strict) {
+        throw new Error(`Avison Young detail fetch failed: ${error}`);
+      }
+      errors.push(error);
     }
   }
   if (!docs.length) {
     return prune({ ...base, detailError: errors.join("; ") || "no detail pages scraped" });
+  }
+  if (strict && docs.length !== detailUrls.length) {
+    throw new Error(
+      `Avison Young strict detail is incomplete: validated ${docs.length}/${detailUrls.length} URLs`
+    );
   }
 
   const documents = extractAvisonYoungDocuments(docs);
@@ -529,7 +906,10 @@ export async function enrichAvisonYoungListing(base: any): Promise<any> {
   // harvester (a superset that already contains the SharpLaunch docs/photos).
   const harvested = harvestAvisonYoung(docs, documents, photos, listingLd);
   const contactsDetailed = enrichAvisonYoungContacts(
-    Array.isArray(base.contactsDetailed) ? base.contactsDetailed : [],
+    mergeAvisonYoungContacts(
+      Array.isArray(base.contactsDetailed) ? base.contactsDetailed : [],
+      extractAvisonYoungDetailContacts(docs)
+    ),
     docs
   );
   const brokerIds = contactsDetailed
@@ -543,6 +923,10 @@ export async function enrichAvisonYoungListing(base: any): Promise<any> {
       })
     )
     .filter((id: number | null): id is number => id !== null);
+  const observed = detailObservation(
+    "avison_young_detail",
+    requireLiveDetails ? "live" : "generation_cache"
+  );
 
   return prune({
     ...base,
@@ -570,38 +954,101 @@ export async function enrichAvisonYoungListing(base: any): Promise<any> {
       profileUrlCount: contactsDetailed.filter((c: any) => clean(c?.profileUrl)).length,
       vcardUrlCount: contactsDetailed.filter((c: any) => clean(c?.vcardUrl)).length,
     },
+    inventoryObservedAt: base.inventoryObservedAt ?? observed.observedAt,
+    detailObservedAt: observed.observedAt,
+    freshnessProvenance: {
+      detailScope: "detail_page",
+      generationId: observed.generationId,
+      method: observed.method,
+      cacheDisposition: observed.cacheDisposition,
+      identityMethod: "detail_url_or_property_content",
+    },
+    preserveChildCollections:
+      !strict && base.preserveChildCollections === true ? true : undefined,
+    detailObservedWithChildPreservation:
+      !strict && base.preserveChildCollections === true ? true : undefined,
+    detailUnavailable: undefined,
+    detailUnavailableReason: undefined,
     detailError: errors.length ? errors.join("; ") : undefined,
   });
 }
 
 export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+  const strict = requireFreshDetails();
+  const requireLiveDetails = strict || requireFreshPropertyDetails();
+  if (requireLiveDetails && !refreshGenerationId()) {
+    throw new Error(
+      "Avison Young fresh property detail contract requires CRE_REFRESH_GENERATION"
+    );
+  }
+  if (requireLiveDetails && monitor) {
+    throw new Error(
+      "Avison Young fresh property details require full detail mode, not monitor mode"
+    );
+  }
+  if (requireLiveDetails) {
+    // The module cache is useful for ordinary sale/lease passes, but a
+    // freshness generation must observe the provider feed during this
+    // invocation.
+    avisonYoungCache = null;
+  }
   const sourceUrl = `https://www.avisonyoung.us/properties/#/?transaction=${tx}&view=sidebar&status=active`;
-  const { websiteRows, teamMembers } = await getAvisonYoungFeed();
+  const { websiteRows, teamMembers, teamFeedComplete, teamFeedReason } = await getAvisonYoungFeed();
+  assertAvisonYoungStrictFeed(teamFeedComplete, teamFeedReason, strict);
+  const inventoryObservation = detailObservation(
+    "avison_young_sharplaunch_inventory",
+    requireLiveDetails ? "live" : "generation_cache"
+  );
   const rows = websiteRows
     .filter((row) => row?.status === "active")
     .filter(isAvisonYoungUsCompatible)
     .filter((row) => avisonYoungMatchesTx(row, tx))
     .sort((a, b) => Number(a.order_id ?? a.id ?? 0) - Number(b.order_id ?? b.id ?? 0));
   const want = Math.min(max, rows.length);
-  const baseListings = rows.slice(0, want).map((row) => avisonYoungBaseListing(row, teamMembers));
+  const selectedRows = rows.slice(0, want);
+  const truncated = avisonYoungTruncated(max, selectedRows.length, rows.length);
+  const selectedProviderIds = avisonYoungSelectedProviderIds(selectedRows);
+  const baseListings = selectedRows.map((row) => ({
+    ...avisonYoungBaseListing(row, teamMembers),
+    inventoryObservedAt: inventoryObservation.observedAt,
+    freshnessProvenance: {
+      detailScope: "inventory_only",
+      generationId: inventoryObservation.generationId,
+      method: inventoryObservation.method,
+      cacheDisposition: inventoryObservation.cacheDisposition,
+      identityMethod: "SharpLaunch website id",
+    },
+  }));
   if (monitor) {
     // Monitor mode: emit the SharpLaunch feed base listings only and skip the
     // detail-page enrichment. id/price/cap rate/lastUpdated are all free in the
     // feed; the feed already filters to status=active.
     if (!baseListings.length) throw new Error(`no ${tx} listings found in Avison Young SharpLaunch feed`);
+    assertAvisonYoungOutputIdentity(selectedProviderIds, baseListings);
     return {
       company: "Avison Young (US)",
       sourceUrl,
-      method: "SharpLaunch public website/team_member API base listings only (monitor mode; detail-page enrichment skipped)",
+      method: "SharpLaunch public website API base listings only (monitor mode; detail-page enrichment skipped)",
       totalAvailable: rows.length,
+      truncated,
       listings: baseListings,
-      note: "Monitor mode: SharpLaunch feed fields only (id, url, price, cap rate, lastUpdated, contacts from the team_member API); per-listing detail-page enrichment skipped.",
+      note:
+        "Monitor mode: SharpLaunch inventory fields only; per-listing detail-page enrichment skipped and prior child collections preserved. " +
+        (teamFeedComplete
+          ? `Supplemental team feed supplied ${teamMembers.size} brokers.`
+          : `Supplemental broker feed degraded (${teamFeedReason}); inventory remains complete.`),
     };
   }
-  const detailLimit = avisonYoungDetailLimit(max, baseListings.length);
+  const detailLimit = avisonYoungDetailLimit(max, baseListings.length, requireLiveDetails);
   const enrichedListings = detailLimit
     ? await pmap(baseListings.slice(0, detailLimit), AVISON_YOUNG_DETAIL_CONCURRENCY, async (listing, idx) => {
-        const enriched = await enrichAvisonYoungListing(listing);
+        const enriched = await enrichAvisonYoungListing(
+          {
+            ...listing,
+            preserveChildCollections: teamFeedComplete ? undefined : true,
+          },
+          strict
+        );
         if ((idx + 1) % 10 === 0 || idx + 1 === detailLimit) {
           console.error(`  avison-young/${tx}: detail enriched ${idx + 1}/${detailLimit}`);
         }
@@ -609,17 +1056,56 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Pro
       })
     : [];
   const listings = [...enrichedListings, ...baseListings.slice(detailLimit)];
+  assertAvisonYoungOutputIdentity(selectedProviderIds, listings);
+  if (requireLiveDetails) {
+    const generationId = refreshGenerationId();
+    const incomplete = listings.filter(
+      (listing) =>
+        !listing?.detailObservedAt
+        || listing?.detailError
+        || listing?.detailUnavailable
+        || listing?.freshnessProvenance?.detailScope !== "detail_page"
+        || listing?.freshnessProvenance?.generationId !== generationId
+        || listing?.freshnessProvenance?.cacheDisposition !== "live"
+        || (
+          strict
+          && listing?.preserveChildCollections === true
+        )
+    );
+    if (incomplete.length) {
+      throw new Error(
+        `Avison Young fresh property detail is incomplete for ${incomplete.length}/${listings.length} selected rows`
+      );
+    }
+  }
+  const recoveredContactRows = enrichedListings.filter(
+    (listing) => Array.isArray(listing.contactsDetailed) && listing.contactsDetailed.length > 0
+  ).length;
+  const recoveredContactCount = enrichedListings.reduce(
+    (count, listing) =>
+      count + (Array.isArray(listing.contactsDetailed) ? listing.contactsDetailed.length : 0),
+    0
+  );
   if (!listings.length) throw new Error(`no ${tx} listings found in Avison Young SharpLaunch feed`);
   return {
     company: "Avison Young (US)",
     sourceUrl,
     method:
-      "SharpLaunch public website/team_member API with bounded public detail-page enrichment for selected rows",
+      "SharpLaunch public website API with bounded public detail-page enrichment for selected rows",
     totalAvailable: rows.length,
+    truncated,
     listings,
     note:
       detailLimit > 0
-        ? `Detail enrichment fetched public SharpLaunch/Avison pages for ${detailLimit} selected row(s); documents, images, profile URLs, VCard URLs, and JSON-LD are stored as URLs/raw public metadata only.`
-        : "Full-feed run preserved as SharpLaunch-only by default. Set AVISON_YOUNG_DETAIL_LIMIT to enrich a bounded number of selected rows.",
+        ? `Detail enrichment fetched public SharpLaunch/Avison pages for ${detailLimit} selected row(s); documents, images, broker cards, profile URLs, VCard URLs, and JSON-LD are stored as URLs/raw public metadata only. ${
+            teamFeedComplete
+              ? `Supplemental team feed supplied ${teamMembers.size} brokers.`
+              : `Supplemental broker feed degraded (${teamFeedReason}); current property-page extraction found ${recoveredContactCount} broker card(s) across ${recoveredContactRows}/${detailLimit} enriched row(s), and child replacement remained disabled.`
+          }`
+        : `Full-feed run preserved as SharpLaunch-only by default and retains prior child collections. ${
+            teamFeedComplete
+              ? `Supplemental team feed supplied ${teamMembers.size} brokers.`
+              : `Supplemental broker feed degraded (${teamFeedReason}).`
+          } Set AVISON_YOUNG_DETAIL_LIMIT to enrich selected rows.`,
   };
 }

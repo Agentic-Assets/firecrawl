@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -17,7 +18,15 @@ import {
   buildoutAvailableSf,
   buildoutScalarFields,
   BUILDOUT_ENRICH_CONFIG,
+  readBuildoutPageCache,
+  writeBuildoutPageCache,
+  fetchBuildoutInventoryPage,
+  enrichBuildoutDetail,
+  assertBuildoutInventoryPage,
+  assertBuildoutInventoryReconciled,
+  buildoutCapTruncated,
 } from "../../../sources/buildout.js";
+import { firecrawl } from "../../../lib/scrape.js";
 
 // Fixture path for raw_data blobs (real scrubbed listings from DB).
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -54,6 +63,12 @@ test("buildoutInventoryUrl includes plugin key and page", () => {
   );
 });
 
+test("Buildout finite caps report truncation against known eligible inventory", () => {
+  assert.equal(buildoutCapTruncated(1, 1, 2), true);
+  assert.equal(buildoutCapTruncated(2, 2, 2), false);
+  assert.equal(buildoutCapTruncated(Number.POSITIVE_INFINITY, 2, 3), false);
+});
+
 test("envBool recognizes truthy string values", () => {
   process.env.TEST_BUILDOUT_BOOL = "true";
   assert.equal(envBool("TEST_BUILDOUT_BOOL"), true);
@@ -85,6 +100,140 @@ test("buildoutPageCachePath uses cache dir and padded page", () => {
   const path = buildoutPageCachePath("SVN", "plugin-key", 3, {});
   assert.equal(path, "/tmp/buildout-cache-test/svn/page-0003.json");
   delete process.env.BUILDOUT_CACHE_DIR;
+});
+
+test("Buildout page cache is admitted only within its refresh generation", () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "buildout-generation-cache-"));
+  const oldDir = process.env.BUILDOUT_CACHE_DIR;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  try {
+    process.env.BUILDOUT_CACHE_DIR = cacheDir;
+    process.env.CRE_REFRESH_GENERATION = "generation-a";
+    const data = { inventory: [{ id: 1 }], meta: { total: 1, limit: 30 } };
+    writeBuildoutPageCache("SVN", "plugin-key", 0, {}, data);
+    assert.equal(readBuildoutPageCache("SVN", "plugin-key", 0, {})?.inventory.length, 1);
+    process.env.CRE_REFRESH_GENERATION = "generation-b";
+    assert.equal(readBuildoutPageCache("SVN", "plugin-key", 0, {}), null);
+  } finally {
+    if (oldDir === undefined) delete process.env.BUILDOUT_CACHE_DIR;
+    else process.env.BUILDOUT_CACHE_DIR = oldDir;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("strict Buildout Firecrawl fallback bypasses cached responses", async () => {
+  const oldScrape = firecrawl.scrape;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const calls: any[] = [];
+  (firecrawl as any).scrape = async (_url: string, options: any) => {
+    calls.push(options);
+    return {
+      rawHtml: JSON.stringify({
+        inventory: [{ id: 1 }],
+        meta: { total: 1, limit: 30 },
+      }),
+    };
+  };
+  try {
+    clearEnv(ENV_KEYS);
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const result = await fetchBuildoutInventoryPage(
+      "SVN",
+      "strict-plugin-key",
+      0,
+      {}
+    );
+    const detail = await enrichBuildoutDetail(
+      "svn",
+      "https://svn.com/properties/?propertyId=1-sale"
+    );
+    assert.equal(result.inventory.length, 1);
+    assert.ok(detail);
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((options) => options.maxAge === 0));
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    clearEnv(ENV_KEYS);
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("strict Buildout inventory pages require coherent integer metadata and exact page shape", () => {
+  assert.throws(
+    () => assertBuildoutInventoryPage({ inventory: [{ id: 1 }] }, 0, null, true),
+    /valid integer meta\.total/
+  );
+  assert.throws(
+    () =>
+      assertBuildoutInventoryPage(
+        { inventory: [{ id: 1 }], meta: { total: 2, limit: 0 } },
+        0,
+        null,
+        true
+      ),
+    /valid positive integer meta\.limit/
+  );
+  assert.throws(
+    () =>
+      assertBuildoutInventoryPage(
+        { inventory: null, meta: { total: 1, limit: 30 } },
+        0,
+        null,
+        true
+      ),
+    /inventory array/
+  );
+  assert.throws(
+    () =>
+      assertBuildoutInventoryPage(
+        { inventory: [{ id: 2 }], meta: { total: 31, limit: 30 } },
+        1,
+        { total: 30, limit: 30 },
+        true
+      ),
+    /metadata changed/
+  );
+  assert.throws(
+    () =>
+      assertBuildoutInventoryPage(
+        { inventory: [{ id: 1 }], meta: { total: 31, limit: 30 } },
+        0,
+        null,
+        true
+      ),
+    /expected 30 inventory rows/
+  );
+});
+
+test("strict Buildout reconciliation rejects missing and duplicate identities", () => {
+  assert.throws(
+    () =>
+      assertBuildoutInventoryReconciled(
+        [{ id: 1 }, { id: 1 }],
+        2,
+        true
+      ),
+    /duplicate inventory identity/
+  );
+  assert.throws(
+    () =>
+      assertBuildoutInventoryReconciled(
+        [{ id: 1 }, { display_name: "missing id" }],
+        2,
+        true
+      ),
+    /missing a stable id/
+  );
+  assert.throws(
+    () => assertBuildoutInventoryReconciled([{ id: 1 }], 2, true),
+    /reconciled 1 unique inventory rows against provider total 2/
+  );
+  assert.doesNotThrow(() =>
+    assertBuildoutInventoryReconciled([{ id: 1 }, { id: "2" }], 2, true)
+  );
 });
 
 test("BUILDOUT_REFRESH_PAGE_CACHE forces a live read and refreshes the durable cache", () => {

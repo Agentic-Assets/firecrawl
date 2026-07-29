@@ -71,9 +71,127 @@ def write_artifact(tmp_path, payload):
     return path
 
 
+def strict_artifact(
+    source="svn",
+    detail_scope="authoritative_inventory_feed",
+    *,
+    generation="refresh-generation-1",
+    generation_started_at="2026-07-29T12:00:00+00:00",
+    preserve_children=False,
+):
+    payload = artifact(source=source)
+    observed = "2026-07-29T12:00:30+00:00"
+    payload["runMeta"]["freshness"] = {
+        "generationId": generation,
+        "generationStartedAt": generation_started_at,
+        "requireFreshDetails": True,
+    }
+    for row in payload["listings"]:
+        row["inventoryObservedAt"] = observed
+        row["freshnessProvenance"] = {
+            "detailScope": detail_scope,
+            "generationId": generation,
+            "method": "test",
+            "cacheDisposition": "live",
+        }
+        if detail_scope != "authoritative_inventory_feed":
+            row["detailObservedAt"] = observed
+        if preserve_children:
+            row["preserveChildCollections"] = True
+    for entry in payload["sources"]:
+        count = entry["listingsCollected"]
+        entry["freshness"] = {
+            "listings": count,
+            "inventoryObserved": count,
+            "detailObserved": 0 if detail_scope == "authoritative_inventory_feed" else count,
+            "authoritativeInventoryFeed": (
+                count if detail_scope == "authoritative_inventory_feed" else 0
+            ),
+            "detailErrors": 0,
+            "childPreservationRows": count if preserve_children else 0,
+            "staleInventoryObservations": 0,
+            "staleDetailObservations": 0,
+        }
+    return payload
+
+
+def avison_property_detail_artifact():
+    payload = artifact(source="avison-young")
+    generation = "refresh-generation-1"
+    observed = "2026-07-29T12:00:30+00:00"
+    payload["runMeta"]["freshness"] = {
+        "generationId": generation,
+        "generationStartedAt": "2026-07-29T12:00:00+00:00",
+        "requireFreshDetails": False,
+        "requireFreshPropertyDetails": True,
+    }
+    for row in payload["listings"]:
+        row.update(
+            {
+                "inventoryObservedAt": observed,
+                "detailObservedAt": observed,
+                "preserveChildCollections": True,
+                "detailObservedWithChildPreservation": True,
+                "freshnessProvenance": {
+                    "detailScope": "detail_page",
+                    "generationId": generation,
+                    "method": "avison_young_detail",
+                    "cacheDisposition": "live",
+                },
+            }
+        )
+    for entry in payload["sources"]:
+        count = entry["listingsCollected"]
+        entry["freshness"] = {
+            "listings": count,
+            "inventoryObserved": count,
+            "detailObserved": count,
+            "authoritativeInventoryFeed": 0,
+            "detailErrors": 0,
+            "childPreservationRows": count,
+            "staleInventoryObservations": 0,
+            "staleDetailObservations": 0,
+        }
+    return payload
+
+
+def strict_artifact_info(staged=2):
+    return {
+        "finished_at": "2026-07-29T12:01:00+00:00",
+        "staged_unique": staged,
+        "inventory_only": 0,
+        "strict_freshness": True,
+        "freshness_generation_id": "refresh-generation-1",
+        "freshness_generation_started_at": "2026-07-29T12:00:00+00:00",
+    }
+
+
+def freshness_generation_row(source="svn", active=2, **overrides):
+    return {
+        "source_key": source,
+        "generation_id": "refresh-generation-1",
+        "active": str(active),
+        "earliest_inventory_observed_at": "2026-07-29 12:00:10Z",
+        "latest_inventory_observed_at": "2026-07-29 12:00:40Z",
+        "earliest_detail_scraped_at": "2026-07-29 12:00:15Z",
+        "latest_detail_scraped_at": "2026-07-29 12:00:50Z",
+        **overrides,
+    }
+
+
 def test_registry_is_exactly_the_ingest_registry():
     assert refresh.SOURCE_KEYS == tuple(refresh.SOURCE_TO_BROKERAGE)
     assert len(refresh.SOURCE_KEYS) == 20
+
+
+def test_authoritative_feed_admission_does_not_expand_inventory_only_storage():
+    assert set(refresh.INVENTORY_ONLY_SOURCE_DEFINITIONS) == {
+        "cbre-dealflow",
+        "colliers",
+    }
+    assert refresh.CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS.isdisjoint(
+        refresh.INVENTORY_ONLY_SOURCE_DEFINITIONS
+    )
 
 
 def test_collect_argv_is_single_source_full_unlimited(tmp_path):
@@ -100,6 +218,38 @@ def test_ingest_argv_is_additive_and_status_neutral(tmp_path):
     assert not refresh.FORBIDDEN_INGEST_FLAGS.intersection(argv)
 
 
+def test_database_child_argv_carries_expected_target_fingerprint(tmp_path):
+    expected = "a" * 64
+    ingest = refresh.build_ingest_argv(
+        tmp_path / "source.json",
+        "/tmp/equire.env",
+        expected_db_target_sha256=expected,
+    )
+    gate = refresh.build_gate_argv(
+        tmp_path / "source.json",
+        tmp_path / "gate.json",
+        "/tmp/equire.env",
+        expected_db_target_sha256=expected,
+    )
+    validate = refresh.build_validate_argv(
+        tmp_path / "validation.json",
+        "/tmp/equire.env",
+        expected_db_target_sha256=expected,
+    )
+
+    for argv in (ingest, gate, validate):
+        assert argv[argv.index("--expected-db-target-sha256") + 1] == expected
+
+
+def test_strict_ingest_argv_passes_explicit_freshness_requirement(tmp_path):
+    argv = refresh.build_ingest_argv(
+        tmp_path / "source.json",
+        None,
+        require_strict_freshness=True,
+    )
+    assert "--require-strict-freshness" in argv
+
+
 def test_dry_run_argv_builds_sql_without_live_flags(tmp_path):
     argv = refresh.build_ingest_dry_run_argv(
         tmp_path / "source.json", tmp_path / "sql"
@@ -107,6 +257,15 @@ def test_dry_run_argv_builds_sql_without_live_flags(tmp_path):
     assert "--dry-run" in argv
     assert "--keep-artifacts" in argv
     assert not refresh.FORBIDDEN_INGEST_FLAGS.intersection(argv)
+
+
+def test_strict_dry_run_argv_passes_explicit_freshness_requirement(tmp_path):
+    argv = refresh.build_ingest_dry_run_argv(
+        tmp_path / "source.json",
+        tmp_path / "sql",
+        require_strict_freshness=True,
+    )
+    assert "--require-strict-freshness" in argv
 
 
 def test_gate_reads_live_baseline_strictly_without_updating_it(tmp_path):
@@ -141,6 +300,8 @@ def test_fresh_env_for_buildout_uses_empty_resumable_run_cache(tmp_path):
     assert "BUILDOUT_USE_PAGE_CACHE" not in env
     assert summary["BUILDOUT_CACHE_ONLY"] == "<unset>"
     assert str(tmp_path) in env["BUILDOUT_CACHE_DIR"]
+    assert env["CRE_REFRESH_GENERATION"] == tmp_path.name
+    assert env["CRE_REQUIRE_FRESH_DETAILS"] == "1"
 
 
 @pytest.mark.parametrize(
@@ -158,6 +319,43 @@ def test_fresh_env_source_profiles(tmp_path, source, key, value):
     assert value in env[key]
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "jll",
+        "jll-investor",
+        "colliers-main",
+        "cushman-wakefield",
+        "svn",
+        "lee-associates",
+        "franklin-street",
+        "newmark",
+        "savills",
+        "transwestern",
+        "marcus-millichap",
+        "nai-global",
+        "matthews",
+        "cbre",
+        "srs",
+        "hanley",
+        "kidder-mathews",
+    ],
+)
+def test_fresh_env_requires_provenance_for_strict_sources(tmp_path, source):
+    env, _summary = refresh.fresh_source_env(source, tmp_path, {})
+    assert env["CRE_REQUIRE_FRESH_DETAILS"] == "1"
+
+
+def test_fresh_env_enriches_all_avison_details_without_claiming_strict_contacts(
+    tmp_path,
+):
+    env, _summary = refresh.fresh_source_env("avison-young", tmp_path, {})
+    assert env["AVISON_YOUNG_DETAIL_LIMIT"] == "1000000"
+    assert env["CRE_REQUIRE_FRESH_PROPERTY_DETAILS"] == "1"
+    assert "CRE_REQUIRE_FRESH_DETAILS" not in env
+    assert env["CRE_REFRESH_GENERATION"] == tmp_path.name
+
+
 def test_valid_full_artifact_is_accepted(tmp_path):
     path = write_artifact(tmp_path, artifact())
     stats = refresh.validate_source_artifact(path, "svn", ATTEMPT)
@@ -165,6 +363,280 @@ def test_valid_full_artifact_is_accepted(tmp_path):
     assert stats["staged_unique"] == 2
     assert stats["rejected_by_ingest"] == 0
     assert len(stats["sha256"]) == 64
+
+
+def test_strict_buildout_artifact_accepts_current_authoritative_feed(tmp_path):
+    path = write_artifact(tmp_path, strict_artifact())
+    stats = refresh.validate_source_artifact(path, "svn", ATTEMPT)
+    assert stats["staged_unique"] == 2
+
+
+def test_source_artifact_rejects_future_run_timestamp_beyond_clock_skew(tmp_path):
+    payload = strict_artifact()
+    payload["runMeta"]["finishedAt"] = "2026-07-29T12:05:01+00:00"
+    path = write_artifact(tmp_path, payload)
+
+    with pytest.raises(refresh.ArtifactValidationError, match="clock-skew"):
+        refresh.validate_source_artifact(
+            path,
+            "svn",
+            ATTEMPT,
+            now=datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+        )
+
+
+@pytest.mark.parametrize("field", ["inventoryObservedAt", "detailObservedAt"])
+def test_source_artifact_rejects_future_listing_observation_beyond_clock_skew(
+    tmp_path, field
+):
+    payload = strict_artifact(source="jll", detail_scope="detail_page")
+    payload["listings"][0][field] = "2026-07-29T12:05:01+00:00"
+    path = write_artifact(tmp_path, payload)
+
+    with pytest.raises(refresh.ArtifactValidationError, match="clock-skew"):
+        refresh.validate_source_artifact(
+            path,
+            "jll",
+            ATTEMPT,
+            require_strict_freshness=True,
+            expected_generation_id="refresh-generation-1",
+            expected_generation_started_at="2026-07-29T12:00:00Z",
+            now=datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_avison_nonstrict_artifact_proves_current_property_details(tmp_path):
+    path = write_artifact(tmp_path, avison_property_detail_artifact())
+    stats = refresh.validate_source_artifact(
+        path,
+        "avison-young",
+        ATTEMPT,
+        expected_generation_id="refresh-generation-1",
+        expected_generation_started_at="2026-07-29T12:00:00Z",
+    )
+    assert stats["staged_unique"] == 2
+    assert stats["strict_freshness"] is False
+    assert stats["property_detail_freshness"] is True
+    assert stats["freshness_generation_id"] == "refresh-generation-1"
+
+
+def test_avison_nonstrict_artifact_rejects_incomplete_detail_identity(tmp_path):
+    payload = avison_property_detail_artifact()
+    payload["listings"][0].pop("detailObservedAt")
+    path = write_artifact(tmp_path, payload)
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="detailObservedAt",
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "avison-young",
+            ATTEMPT,
+            expected_generation_id="refresh-generation-1",
+            expected_generation_started_at="2026-07-29T12:00:00Z",
+        )
+
+
+def test_avison_property_detail_artifact_requires_explicit_live_contract(tmp_path):
+    payload = avison_property_detail_artifact()
+    payload["runMeta"]["freshness"].pop("requireFreshPropertyDetails")
+    path = write_artifact(tmp_path, payload)
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="requireFreshPropertyDetails=true",
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "avison-young",
+            ATTEMPT,
+            expected_generation_id="refresh-generation-1",
+            expected_generation_started_at="2026-07-29T12:00:00Z",
+        )
+
+
+def test_avison_property_detail_artifact_rejects_cached_detail_proof(tmp_path):
+    payload = avison_property_detail_artifact()
+    payload["listings"][0]["freshnessProvenance"]["cacheDisposition"] = (
+        "generation_cache"
+    )
+    path = write_artifact(tmp_path, payload)
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="property detail was not observed live",
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "avison-young",
+            ATTEMPT,
+            expected_generation_id="refresh-generation-1",
+            expected_generation_started_at="2026-07-29T12:00:00Z",
+        )
+
+
+def test_avison_nonstrict_preservation_requires_current_detail_proof(tmp_path):
+    payload = avison_property_detail_artifact()
+    payload["listings"][0].pop("detailObservedWithChildPreservation")
+    path = write_artifact(tmp_path, payload)
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="inconsistent child-preservation detail proof",
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "avison-young",
+            ATTEMPT,
+            expected_generation_id="refresh-generation-1",
+            expected_generation_started_at="2026-07-29T12:00:00Z",
+        )
+
+
+def test_strict_cbre_artifact_accepts_current_authoritative_feed(tmp_path):
+    path = write_artifact(tmp_path, strict_artifact("cbre"))
+    stats = refresh.validate_source_artifact(
+        path,
+        "cbre",
+        ATTEMPT,
+        require_strict_freshness=True,
+    )
+    assert stats["staged_unique"] == 2
+
+
+@pytest.mark.parametrize("source", ["srs", "hanley", "kidder-mathews"])
+def test_strict_child_preserving_feed_artifact_is_accepted(tmp_path, source):
+    path = write_artifact(
+        tmp_path,
+        strict_artifact(source, preserve_children=True),
+    )
+    stats = refresh.validate_source_artifact(
+        path,
+        source,
+        ATTEMPT,
+        require_strict_freshness=True,
+    )
+    assert stats["staged_unique"] == 2
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["svn", "lee-associates", "franklin-street", "cbre"],
+)
+def test_strict_nonpreserving_feed_rejects_preservation_rows(tmp_path, source):
+    path = write_artifact(
+        tmp_path,
+        strict_artifact(source, preserve_children=True),
+    )
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="must not preserve child collections",
+    ):
+        refresh.validate_source_artifact(
+            path,
+            source,
+            ATTEMPT,
+            require_strict_freshness=True,
+        )
+
+
+@pytest.mark.parametrize("source", ["srs", "hanley", "kidder-mathews"])
+def test_strict_child_preserving_feed_requires_preservation_rows(tmp_path, source):
+    path = write_artifact(tmp_path, strict_artifact(source))
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="must preserve every child collection",
+    ):
+        refresh.validate_source_artifact(
+            path,
+            source,
+            ATTEMPT,
+            require_strict_freshness=True,
+        )
+
+
+def test_strict_detail_source_rejects_preservation_rows(tmp_path):
+    path = write_artifact(
+        tmp_path,
+        strict_artifact("jll", "detail_page", preserve_children=True),
+    )
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="must not preserve child collections",
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "jll",
+            ATTEMPT,
+            require_strict_freshness=True,
+        )
+
+
+def test_strict_detail_artifact_rejects_stale_observation(tmp_path):
+    payload = strict_artifact("jll", "detail_page")
+    payload["listings"][0]["detailObservedAt"] = "2026-07-29T11:59:59+00:00"
+    path = write_artifact(tmp_path, payload)
+    with pytest.raises(refresh.ArtifactValidationError, match="predates"):
+        refresh.validate_source_artifact(path, "jll", ATTEMPT)
+
+
+def test_runner_policy_rejects_strict_source_artifact_that_opts_out(tmp_path):
+    path = write_artifact(tmp_path, artifact(source="jll"))
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="requires runMeta.freshness.requireFreshDetails=true",
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "jll",
+            ATTEMPT,
+            require_strict_freshness=True,
+        )
+
+
+def test_strict_artifact_must_match_expected_generation_id(tmp_path):
+    path = write_artifact(tmp_path, strict_artifact())
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="generationId does not match",
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "svn",
+            ATTEMPT,
+            require_strict_freshness=True,
+            expected_generation_id="different-generation",
+            expected_generation_started_at="2026-07-29T12:00:00Z",
+        )
+
+
+def test_strict_artifact_must_match_normalized_expected_generation_start(tmp_path):
+    path = write_artifact(
+        tmp_path,
+        strict_artifact(generation_started_at="2026-07-29T08:00:00-04:00"),
+    )
+    stats = refresh.validate_source_artifact(
+        path,
+        "svn",
+        ATTEMPT,
+        require_strict_freshness=True,
+        expected_generation_id="refresh-generation-1",
+        expected_generation_started_at="2026-07-29T12:00:00Z",
+    )
+    assert stats["freshness_generation_started_at"] == "2026-07-29T12:00:00+00:00"
+
+
+def test_strict_artifact_rejects_wrong_expected_generation_start(tmp_path):
+    path = write_artifact(tmp_path, strict_artifact())
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="generationStartedAt does not match",
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "svn",
+            ATTEMPT,
+            require_strict_freshness=True,
+            expected_generation_id="refresh-generation-1",
+            expected_generation_started_at="2026-07-29T11:59:59Z",
+        )
 
 
 @pytest.mark.parametrize("mode", ["monitor", "enrich", None])
@@ -418,6 +890,201 @@ def test_resume_rejects_git_or_configuration_drift(tmp_path):
         )
 
 
+def test_database_target_fingerprint_ignores_credentials_but_binds_target(tmp_path):
+    first = tmp_path / "first.env"
+    second = tmp_path / "second.env"
+    other = tmp_path / "other.env"
+    first.write_text(
+        "POSTGRES_URL=postgresql://user-one:secret-one@db.example.test:5432/cre\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        "POSTGRES_URL=postgresql://user-two:secret-two@db.example.test/cre\n",
+        encoding="utf-8",
+    )
+    other.write_text(
+        "POSTGRES_URL=postgresql://user-one:secret-one@other.example.test:5432/cre\n",
+        encoding="utf-8",
+    )
+
+    first_target = refresh.database_target_fingerprint(str(first))
+    assert first_target == refresh.database_target_fingerprint(str(second))
+    assert first_target != refresh.database_target_fingerprint(str(other))
+    assert "secret" not in json.dumps(first_target)
+    assert "user-" not in json.dumps(first_target)
+
+
+@pytest.mark.parametrize(
+    "url,error",
+    [
+        (
+            "postgresql://user:secret@db.example.test/cre?host=other.example.test",
+            "query parameters may override",
+        ),
+        (
+            "postgresql://user:secret@db.example.test/cre?port=6432",
+            "query parameters may override",
+        ),
+        (
+            "postgresql://user:secret@db.example.test/cre?dbname=other",
+            "query parameters may override",
+        ),
+        (
+            "postgresql://user:secret@db1.example.test,db2.example.test/cre",
+            "multi-host",
+        ),
+        (
+            "postgresql://user:secret@db1.example.test:5432,db2.example.test:5432/cre",
+            "multi-host",
+        ),
+    ],
+)
+def test_database_target_fingerprint_rejects_ambiguous_libpq_targets(
+    tmp_path, url, error
+):
+    env_file = tmp_path / "target.env"
+    env_file.write_text(f"POSTGRES_URL={url}\n", encoding="utf-8")
+
+    with pytest.raises(refresh.RefreshError, match=error):
+        refresh.database_target_fingerprint(str(env_file))
+
+
+def test_resume_rejects_database_target_drift(tmp_path):
+    run_dir = tmp_path / "run"
+    original_target = {"algorithm": "sha256", "value": "a" * 64}
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+        database_target=original_target,
+    )
+    path = run_dir / "manifest.json"
+    refresh.atomic_write_json(path, manifest)
+
+    loaded = refresh.load_resume_manifest(
+        path,
+        git_sha="abc",
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+        database_target=original_target,
+    )
+    assert loaded["preflight"]["database_target"] == original_target
+
+    with pytest.raises(refresh.RefreshError, match="different database target"):
+        refresh.load_resume_manifest(
+            path,
+            git_sha="abc",
+            sources=("svn",),
+            page_cap=400,
+            concurrency=3,
+            database_target={"algorithm": "sha256", "value": "b" * 64},
+        )
+
+
+def test_resume_rejects_generation_older_than_configured_maximum(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["started_at"] = "2026-07-28T11:59:59+00:00"
+    path = run_dir / "manifest.json"
+    refresh.atomic_write_json(path, manifest)
+
+    with pytest.raises(refresh.RefreshError, match="older than 24 hours"):
+        refresh.load_resume_manifest(
+            path,
+            git_sha="abc",
+            sources=("svn",),
+            page_cap=400,
+            concurrency=3,
+            now=datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_resume_accepts_generation_at_24_hour_boundary(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["started_at"] = "2026-07-28T12:00:00+00:00"
+    path = run_dir / "manifest.json"
+    refresh.atomic_write_json(path, manifest)
+
+    loaded = refresh.load_resume_manifest(
+        path,
+        git_sha="abc",
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+        now=datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+    )
+    assert loaded["run_id"] == "run"
+
+
+def test_resume_rejects_future_generation_start(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["started_at"] = "2026-07-29T12:00:01+00:00"
+    path = run_dir / "manifest.json"
+    refresh.atomic_write_json(path, manifest)
+
+    with pytest.raises(refresh.RefreshError, match="starts in the future"):
+        refresh.load_resume_manifest(
+            path,
+            git_sha="abc",
+            sources=("svn",),
+            page_cap=400,
+            concurrency=3,
+            now=datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+        )
+
+
+@pytest.mark.parametrize("max_age_hours", [0, -1, float("inf"), float("nan")])
+def test_resume_rejects_unsafe_maximum_age(tmp_path, max_age_hours):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    path = run_dir / "manifest.json"
+    refresh.atomic_write_json(path, manifest)
+
+    with pytest.raises(refresh.RefreshError, match="finite and positive"):
+        refresh.load_resume_manifest(
+            path,
+            git_sha="abc",
+            sources=("svn",),
+            page_cap=400,
+            concurrency=3,
+            max_age_hours=max_age_hours,
+        )
+
+
 def test_resume_checkpoint_requires_matching_artifact_hash(tmp_path):
     run_dir = tmp_path / "run"
     source_path = run_dir / "sources" / "svn.json"
@@ -431,6 +1098,33 @@ def test_resume_checkpoint_requires_matching_artifact_hash(tmp_path):
         }
     }
     assert refresh._checkpoint_artifact_valid(run_dir, checkpoint, "svn") is None
+
+
+def test_resume_checkpoint_rejects_artifact_from_another_generation(tmp_path):
+    run_dir = tmp_path / "expected-generation"
+    source_path = run_dir / "sources" / "svn.json"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        json.dumps(strict_artifact(generation="foreign-generation")),
+        encoding="utf-8",
+    )
+    checkpoint = {
+        "artifact": {
+            "path": "sources/svn.json",
+            "sha256": refresh.sha256_file(source_path),
+            "attempt_started_at": ATTEMPT,
+        }
+    }
+
+    assert (
+        refresh._checkpoint_artifact_valid(
+            run_dir,
+            checkpoint,
+            "svn",
+            generation_started_at="2026-07-29T12:00:00Z",
+        )
+        is None
+    )
 
 
 def test_lock_refuses_live_owner(tmp_path):
@@ -646,7 +1340,9 @@ def test_dry_run_failure_prevents_ready_state(tmp_path, monkeypatch):
     assert manifest["sources"]["svn"]["state"] == "dry_run_failed"
 
 
-def test_ingest_failure_remains_retryable(tmp_path, monkeypatch):
+def test_nonzero_ingest_result_requires_exact_readback_and_never_retries(
+    tmp_path, monkeypatch
+):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
         run_dir,
@@ -656,13 +1352,124 @@ def test_ingest_failure_remains_retryable(tmp_path, monkeypatch):
         page_cap=400,
         concurrency=3,
     )
-    monkeypatch.setattr(refresh, "run_command", lambda *_args, **_kwargs: 7)
-    with pytest.raises(refresh.GlobalStageError, match="additive ingest failed"):
+    manifest["sources"]["svn"]["artifact"] = strict_artifact_info()
+    validation = {
+        "queries": {
+            "source_counts": [
+                {
+                    "source_key": "svn",
+                    "latest_inventory_observed_at": "2026-07-29 12:01:00Z",
+                    "latest_inventory_batch_active": "1",
+                }
+            ],
+            "freshness_generations": [freshness_generation_row(active=1)],
+            "inventory_only_index": [],
+        }
+    }
+    calls = []
+
+    def fake_run(argv, _log, **_kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            return 7
+        output = Path(argv[argv.index("--out") + 1])
+        refresh.atomic_write_json(output, validation)
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    with pytest.raises(refresh.GlobalStageError, match="manual recovery"):
         refresh.ingest_source(
             run_dir, manifest, "svn", run_dir / "sources" / "svn.json", None
         )
-    assert manifest["sources"]["svn"]["state"] == "ingest_failed"
-    assert manifest["sources"]["svn"]["ingest"]["additive"] is True
+    checkpoint = manifest["sources"]["svn"]
+    assert len(calls) == 2
+    assert checkpoint["state"] == "ingest_recovery_required"
+    assert checkpoint["ingest"]["rc"] == 7
+    assert checkpoint["ingest_recovery"]["reason"] == "nonzero_live_ingest_result"
+    assert checkpoint["ingest_recovery"]["subprocess_rc"] == 7
+
+
+def test_nonzero_ingest_result_is_accepted_only_after_exact_readback(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["svn"]["artifact"] = strict_artifact_info()
+    validation = {
+        "queries": {
+            "source_counts": [
+                {
+                    "source_key": "svn",
+                    "latest_inventory_observed_at": "2026-07-29 12:01:00Z",
+                    "latest_inventory_batch_active": "2",
+                    "latest_scraped_at": "2026-07-29 12:01:00Z",
+                    "latest_batch_active": "2",
+                    "detail_unavailable": "0",
+                }
+            ],
+            "freshness_generations": [freshness_generation_row()],
+            "inventory_only_index": [],
+        }
+    }
+    calls = []
+
+    def fake_run(argv, _log, **_kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            return 7
+        output = Path(argv[argv.index("--out") + 1])
+        refresh.atomic_write_json(output, validation)
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    refresh.ingest_source(
+        run_dir, manifest, "svn", run_dir / "sources" / "svn.json", None
+    )
+
+    checkpoint = manifest["sources"]["svn"]
+    assert len(calls) == 2
+    assert checkpoint["state"] == "ingested"
+    assert checkpoint["ingest"]["rc"] == 7
+    assert checkpoint["ingest"]["recovered_from_exact_readback"] is True
+    assert checkpoint["ingest_recovery"]["readback_ok"] is True
+
+
+def test_nonzero_ingest_result_with_invalid_readback_persists_recovery_required(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["svn"]["artifact"] = strict_artifact_info()
+    return_codes = iter((7, 0))
+    monkeypatch.setattr(
+        refresh,
+        "run_command",
+        lambda *_args, **_kwargs: next(return_codes),
+    )
+
+    with pytest.raises(refresh.GlobalStageError, match="readback is invalid"):
+        refresh.ingest_source(
+            run_dir, manifest, "svn", run_dir / "sources" / "svn.json", None
+        )
+
+    checkpoint = manifest["sources"]["svn"]
+    assert checkpoint["state"] == "ingest_recovery_required"
+    assert checkpoint["ingest_recovery"]["readback_ok"] is False
+    assert checkpoint["ingest_recovery"]["reason"] == "nonzero_live_ingest_result"
 
 
 def test_ingest_persists_in_progress_state_before_subprocess(tmp_path, monkeypatch):
@@ -1106,11 +1913,7 @@ def test_recover_interrupted_ingest_accepts_only_exact_readback(
     )
     manifest["sources"]["svn"].update(
         {
-            "artifact": {
-                "finished_at": "2026-07-29T12:01:00+00:00",
-                "staged_unique": 2,
-                "inventory_only": 0,
-            },
+            "artifact": strict_artifact_info(),
             "ingest": {"rc": None},
             "state": "ingesting",
         }
@@ -1127,6 +1930,7 @@ def test_recover_interrupted_ingest_accepts_only_exact_readback(
                     "detail_unavailable": "0",
                 }
             ],
+            "freshness_generations": [freshness_generation_row()],
             "inventory_only_index": [],
         }
     }
@@ -1158,11 +1962,7 @@ def test_recover_interrupted_ingest_never_replays_on_mismatch(
     )
     manifest["sources"]["svn"].update(
         {
-            "artifact": {
-                "finished_at": "2026-07-29T12:01:00+00:00",
-                "staged_unique": 2,
-                "inventory_only": 0,
-            },
+            "artifact": strict_artifact_info(),
             "ingest": {"rc": None},
             "state": "ingesting",
         }
@@ -1176,6 +1976,7 @@ def test_recover_interrupted_ingest_never_replays_on_mismatch(
                     "latest_inventory_batch_active": "1",
                 }
             ],
+            "freshness_generations": [freshness_generation_row(active=1)],
             "inventory_only_index": [],
         }
     }
@@ -1201,10 +2002,7 @@ def test_validation_readback_requires_exact_staged_count(tmp_path):
         page_cap=400,
         concurrency=3,
     )
-    manifest["sources"]["svn"]["artifact"] = {
-        "finished_at": "2026-07-29T12:01:00+00:00",
-        "staged_unique": 2,
-    }
+    manifest["sources"]["svn"]["artifact"] = strict_artifact_info()
     validation = {
         "queries": {
             "source_counts": [
@@ -1217,6 +2015,7 @@ def test_validation_readback_requires_exact_staged_count(tmp_path):
                     "detail_unavailable": "1",
                 }
             ],
+            "freshness_generations": [freshness_generation_row(active=1)],
             "inventory_only_index": [
                 {
                     "source_key": "cbre-dealflow",
@@ -1232,6 +2031,158 @@ def test_validation_readback_requires_exact_staged_count(tmp_path):
     result = refresh.verify_validation_readback(run_dir, manifest, validation)
     assert result == {"ok": False, "failed_sources": ["svn"]}
     assert manifest["sources"]["svn"]["readback"]["ok"] is False
+    assert "generation batch 1 != staged unique 2" == (
+        manifest["sources"]["svn"]["readback"]["reason"]
+    )
+
+
+def test_strict_readback_uses_generation_not_artifact_finish_or_max_timestamp(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("jll",),
+        page_cap=400,
+        concurrency=3,
+    )
+    artifact_info = strict_artifact_info()
+    artifact_info["finished_at"] = "2026-07-29T18:00:00+00:00"
+    manifest["sources"]["jll"]["artifact"] = artifact_info
+    validation = {
+        "queries": {
+            "source_counts": [
+                {
+                    "source_key": "jll",
+                    "latest_inventory_observed_at": "2026-07-29 12:00:40Z",
+                    "latest_inventory_batch_active": "1",
+                    "latest_scraped_at": "2026-07-29 12:00:50Z",
+                    "latest_batch_active": "1",
+                    "detail_unavailable": "0",
+                }
+            ],
+            "freshness_generations": [
+                freshness_generation_row(source="jll", active=2)
+            ],
+            "inventory_only_index": [],
+        }
+    }
+
+    result = refresh.verify_validation_readback(run_dir, manifest, validation)
+
+    assert result == {"ok": True, "failed_sources": []}
+    readback = manifest["sources"]["jll"]["readback"]
+    assert readback["generation_id"] == "refresh-generation-1"
+    assert readback["latest_inventory_batch_active"] == 2
+    assert readback["latest_detail_batch_active"] == 2
+
+
+def test_strict_readback_rejects_future_observation_beyond_clock_skew(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("jll",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["jll"]["artifact"] = strict_artifact_info()
+    validation = {
+        "queries": {
+            "source_counts": [],
+            "freshness_generations": [
+                freshness_generation_row(
+                    source="jll",
+                    latest_detail_scraped_at="2026-07-29 12:05:01Z",
+                )
+            ],
+            "inventory_only_index": [],
+        }
+    }
+
+    result = refresh.verify_validation_readback(
+        run_dir,
+        manifest,
+        validation,
+        now=datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result == {"ok": False, "failed_sources": ["jll"]}
+    assert "clock-skew" in manifest["sources"]["jll"]["readback"]["reason"]
+
+
+def test_avison_nonstrict_readback_uses_property_detail_generation(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("avison-young",),
+        page_cap=400,
+        concurrency=3,
+    )
+    artifact_info = strict_artifact_info()
+    artifact_info.update(
+        {
+            "strict_freshness": False,
+            "property_detail_freshness": True,
+            "finished_at": "2026-07-29T18:00:00+00:00",
+        }
+    )
+    manifest["sources"]["avison-young"]["artifact"] = artifact_info
+    validation = {
+        "queries": {
+            "source_counts": [],
+            "freshness_generations": [
+                freshness_generation_row(source="avison-young", active=2)
+            ],
+            "inventory_only_index": [],
+        }
+    }
+
+    result = refresh.verify_validation_readback(run_dir, manifest, validation)
+
+    assert result == {"ok": True, "failed_sources": []}
+    assert (
+        manifest["sources"]["avison-young"]["readback"]["generation_id"]
+        == "refresh-generation-1"
+    )
+
+
+def test_strict_readback_rejects_generation_observation_before_start(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("jll",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["jll"]["artifact"] = strict_artifact_info()
+    validation = {
+        "queries": {
+            "source_counts": [],
+            "freshness_generations": [
+                freshness_generation_row(
+                    source="jll",
+                    earliest_detail_scraped_at="2026-07-29 11:59:59Z",
+                )
+            ],
+            "inventory_only_index": [],
+        }
+    }
+
+    result = refresh.verify_validation_readback(run_dir, manifest, validation)
+
+    assert result == {"ok": False, "failed_sources": ["jll"]}
+    assert (
+        manifest["sources"]["jll"]["readback"]["reason"]
+        == "generation detail observation predates generation start"
+    )
 
 
 def test_validation_readback_requires_exact_inventory_only_count(tmp_path):

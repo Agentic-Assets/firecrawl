@@ -1,5 +1,6 @@
 // sources/newmark.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { CONCURRENCY } from "../lib/config.js";
+import { detailObservation, requireFreshDetails } from "../lib/freshness.js";
 import { stripHtmlText } from "../lib/html.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { parseMoney } from "../lib/parse.js";
@@ -25,7 +26,11 @@ export function newmarkSalePrice(raw: any): number | null {
 // --- Newmark: Algolia search API, credentials read from the page ---
 
 export let newmarkCreds: { appId: string; searchKey: string; indexName: string } | null = null;
-export const newmarkPeopleCache = new Map<string, Promise<any | null>>();
+export type NewmarkPeopleLookup =
+  | { status: "matched"; person: any }
+  | { status: "verified_absent" }
+  | { status: "failed"; error: string };
+export const newmarkPeopleCache = new Map<string, Promise<NewmarkPeopleLookup>>();
 
 export async function newmarkAlgoliaJson(url: string): Promise<any> {
   const res = await fetch(url, {
@@ -40,6 +45,94 @@ export async function newmarkAlgoliaJson(url: string): Promise<any> {
 
 export function normalizePersonName(value: any): string | null {
   return clean(value)?.toLowerCase().replace(/\s+/g, " ") ?? null;
+}
+
+export function classifyNewmarkPeopleLookup(
+  result: any,
+  name: string | null,
+  strict = requireFreshDetails()
+): NewmarkPeopleLookup {
+  const key = normalizePersonName(name);
+  if (!key) return { status: "verified_absent" };
+  if (!Array.isArray(result?.hits)) {
+    const error = "Newmark People index response has no hits array";
+    if (strict) throw new Error(error);
+    return { status: "failed", error };
+  }
+  if (
+    !Number.isInteger(result.nbHits)
+    || result.nbHits < 0
+    || result.nbHits < result.hits.length
+    || result.hits.some(
+      (hit: any) => !hit || typeof hit !== "object" || Array.isArray(hit)
+    )
+  ) {
+    const error =
+      "Newmark People index response has incoherent hits/nbHits";
+    if (strict) throw new Error(error);
+    return { status: "failed", error };
+  }
+  const person = result.hits.find((hit: any) => {
+    const fullName = normalizePersonName(hit?.fullName ?? hit?.title);
+    return fullName === key;
+  });
+  return person
+    ? { status: "matched", person }
+    : { status: "verified_absent" };
+}
+
+export function newmarkPeopleFailure(
+  err: unknown,
+  name: string | null,
+  strict = requireFreshDetails()
+): NewmarkPeopleLookup {
+  const error = err instanceof Error ? err.message : String(err);
+  if (strict) {
+    throw new Error(`Newmark people lookup failed for ${name ?? "unknown"}: ${error}`);
+  }
+  return { status: "failed", error };
+}
+
+export function newmarkPeopleListingFields(
+  peopleLookup: NewmarkPeopleLookup,
+  monitor = false
+): {
+  contactsDetailed?: any[];
+  preserveChildCollections?: true;
+  newmarkPeopleLookupStatus?: NewmarkPeopleLookup["status"];
+} {
+  if (!monitor && peopleLookup.status === "failed") {
+    return {
+      preserveChildCollections: true,
+      newmarkPeopleLookupStatus: "failed",
+    };
+  }
+  const person =
+    peopleLookup.status === "matched" ? peopleLookup.person : null;
+  const contactsDetailed = person
+    ? [
+        {
+          name: clean(person.fullName) ?? clean(person.title),
+          title: clean(person.positionJobTitle),
+          email: clean(person.email),
+          phone:
+            stripHtmlText(person.phone)
+            ?? stripHtmlText(person.mobilePhoneNumber),
+          company: "Newmark",
+          office: Array.isArray(person.offices)
+            ? clean(person.offices.join(", "))
+            : clean(person.offices),
+          profileUrl: newmarkAbsoluteUrl(person.url),
+          avatarUrl: Array.isArray(person.thumbnails)
+            ? clean(person.thumbnails.at(-1)?.url)
+            : null,
+        },
+      ]
+    : [];
+  return {
+    contactsDetailed,
+    newmarkPeopleLookupStatus: monitor ? undefined : peopleLookup.status,
+  };
 }
 
 export function newmarkState(hit: any): string | null {
@@ -106,11 +199,52 @@ export function newmarkExtraUrls(hit: any): { media: string[]; docs: string[] } 
   return { media, docs };
 }
 
+export function newmarkCoverageTruncated(
+  total: number,
+  collected: number,
+  max: number,
+  partitionTruncated = false
+): boolean {
+  const expected = Math.min(max, total);
+  return (
+    partitionTruncated ||
+    collected < expected ||
+    (Number.isFinite(max) && expected < total)
+  );
+}
+
+export function assertNewmarkAlgoliaInventoryPage(
+  result: any,
+  context: string,
+  strict = requireFreshDetails()
+): any {
+  if (!Array.isArray(result?.hits)) {
+    throw new Error(`Newmark Algolia ${context} response has no hits array`);
+  }
+  if (!strict) return result;
+  const total = result.nbHits;
+  if (!Number.isInteger(total) || total < 0) {
+    throw new Error(
+      `Newmark Algolia ${context} response requires a finite nonnegative integer nbHits`
+    );
+  }
+  if (total < result.hits.length) {
+    throw new Error(
+      `Newmark Algolia ${context} response nbHits ${total} is below returned hits ${result.hits.length}`
+    );
+  }
+  return result;
+}
+
 export async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   const sourceUrl = "https://www.nmrk.com/properties";
+  const strictFreshness = requireFreshDetails();
   if (!newmarkCreds) {
     for (const waitFor of [3000, 8000]) {
-      const html = await scrapeRaw(sourceUrl, { waitFor });
+      const html = await scrapeRaw(sourceUrl, {
+        waitFor,
+        ...(strictFreshness ? { maxAge: 0 } : {}),
+      });
       const appId = html.match(/algoliaAppId='([^']+)'/)?.[1];
       const searchKey = html.match(/algoliaSearchApiKey='([^']+)'/)?.[1];
       const indexName = html.match(/algoliaIndexName='([^']+)'/)?.[1] ?? "prod_entries";
@@ -139,41 +273,57 @@ export async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise
         ...extraFacets,
       ])
     );
-    return newmarkAlgoliaJson(
+    return assertNewmarkAlgoliaInventoryPage(
+      await newmarkAlgoliaJson(
       `https://${appId}-dsn.algolia.net/1/indexes/${indexName}?x-algolia-application-id=${appId}&x-algolia-api-key=${searchKey}&query=&hitsPerPage=${hitsPerPage}&page=${page}&facets=${encodeURIComponent(facetsField)}&facetFilters=${facetFilters}`
+      ),
+      `facet page ${page}`,
+      strictFreshness
     );
   };
   const queryFilters = async (filters: string, hitsPerPage: number, page = 0) =>
-    newmarkAlgoliaJson(
-      `https://${appId}-dsn.algolia.net/1/indexes/${indexName}?x-algolia-application-id=${appId}&x-algolia-api-key=${searchKey}&query=&hitsPerPage=${hitsPerPage}&page=${page}&filters=${encodeURIComponent(filters)}`
+    assertNewmarkAlgoliaInventoryPage(
+      await newmarkAlgoliaJson(
+        `https://${appId}-dsn.algolia.net/1/indexes/${indexName}?x-algolia-application-id=${appId}&x-algolia-api-key=${searchKey}&query=&hitsPerPage=${hitsPerPage}&page=${page}&filters=${encodeURIComponent(filters)}`
+      ),
+      `filtered page ${page}`,
+      strictFreshness
     );
-  const lookupPerson = (name: string | null): Promise<any | null> => {
+  const lookupPerson = (name: string | null): Promise<NewmarkPeopleLookup> => {
     const key = normalizePersonName(name);
-    if (!key) return Promise.resolve(null);
+    if (!key) return Promise.resolve({ status: "verified_absent" });
     if (!newmarkPeopleCache.has(key)) {
       const run = (async () => {
         const facetFilters = encodeURIComponent(JSON.stringify(["sectionGroup:People", "siteHandle:enUs"]));
         const result = await newmarkAlgoliaJson(
           `https://${appId}-dsn.algolia.net/1/indexes/${indexName}?x-algolia-application-id=${appId}&x-algolia-api-key=${searchKey}&query=${encodeURIComponent(name ?? "")}&hitsPerPage=5&page=0&facetFilters=${facetFilters}`
         );
-        const hits = Array.isArray(result.hits) ? result.hits : [];
-        return (
-          hits.find((h: any) => {
-            const fullName = normalizePersonName(h.fullName ?? h.title);
-            return fullName === key;
-          }) ?? null
-        );
+        return classifyNewmarkPeopleLookup(result, name, strictFreshness);
       })().catch((err) => {
         console.error(`  newmark: people lookup failed for ${name}: ${err}`);
-        return null;
+        return newmarkPeopleFailure(err, name, strictFreshness);
       });
       newmarkPeopleCache.set(key, run);
+      void run.then(
+        (outcome) => {
+          if (
+            outcome.status === "failed"
+            && newmarkPeopleCache.get(key) === run
+          ) {
+            newmarkPeopleCache.delete(key);
+          }
+        },
+        () => {
+          if (newmarkPeopleCache.get(key) === run) {
+            newmarkPeopleCache.delete(key);
+          }
+        }
+      );
     }
     return newmarkPeopleCache.get(key)!;
   };
 
   const first = await query([], 1000);
-  if (!Array.isArray(first.hits)) throw new Error("Newmark Algolia response has no hits array");
   const total: number = first.nbHits ?? first.hits.length;
   const hitMap = new Map<string, any>();
   for (const h of first.hits) hitMap.set(h.objectID ?? h.slug ?? JSON.stringify(h), h);
@@ -233,25 +383,26 @@ export async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise
     }
   }
 
+  coverageTruncated = newmarkCoverageTruncated(total, hitMap.size, max, coverageTruncated);
+  if (coverageTruncated && hitMap.size < Math.min(max, total)) {
+    console.error(
+      `  newmark/${tx}: WARNING recovered ${hitMap.size}/${Math.min(max, total)} expected Algolia hits; coverage truncated`
+    );
+  }
+  const inventoryObservedAt = new Date().toISOString();
+  const sourceObservation = detailObservation(
+    "newmark_algolia_public_record",
+    "live",
+    inventoryObservedAt
+  );
   const hits = [...hitMap.values()].slice(0, Math.min(max, Number.MAX_SAFE_INTEGER));
   const listings = await pmap(hits, Math.min(CONCURRENCY, 4), async (h: any) => {
     // Monitor mode: skip the per-hit People-Algolia contact lookup (the only
     // detail call here); all other hit fields are free in the enumeration.
-    const person = monitor ? null : await lookupPerson(clean(h.broker_name));
-    const contactsDetailed = person
-      ? [
-          {
-            name: clean(person.fullName) ?? clean(person.title),
-            title: clean(person.positionJobTitle),
-            email: clean(person.email),
-            phone: stripHtmlText(person.phone) ?? stripHtmlText(person.mobilePhoneNumber),
-            company: "Newmark",
-            office: Array.isArray(person.offices) ? clean(person.offices.join(", ")) : clean(person.offices),
-            profileUrl: newmarkAbsoluteUrl(person.url),
-            avatarUrl: Array.isArray(person.thumbnails) ? clean(person.thumbnails.at(-1)?.url) : null,
-          },
-        ]
-      : [];
+    const peopleLookup: NewmarkPeopleLookup = monitor
+      ? { status: "verified_absent" }
+      : await lookupPerson(clean(h.broker_name));
+    const peopleFields = newmarkPeopleListingFields(peopleLookup, monitor);
     // Capture-everything (FULL PATH ONLY): the Algolia enumeration is the same
     // payload monitor consumes, so media/links/gallery promotion is gated behind
     // `!monitor` to keep the monitor artifact byte-identical (cre_monitor.py must
@@ -319,7 +470,7 @@ export async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise
     propertySubtype: clean(h.property_subtype) ?? null,
     canonicalUrl: propUrl ?? null,
     brokerIds: [],
-    contactsDetailed,
+    ...peopleFields,
     newmarkBrokerProvenance: {
       broker_name: clean(h.broker_name),
       broker_id: h.broker_id ?? null,
@@ -334,6 +485,14 @@ export async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise
     documents,
     url: propUrl ?? null,
     lastUpdated: clean(h.updateDate)?.slice(0, 10) ?? null,
+    inventoryObservedAt,
+    detailObservedAt: sourceObservation.observedAt,
+    freshnessProvenance: {
+      detailScope: "source_native_public_record",
+      generationId: sourceObservation.generationId,
+      method: sourceObservation.method,
+      cacheDisposition: sourceObservation.cacheDisposition,
+    },
     };
   });
   return {

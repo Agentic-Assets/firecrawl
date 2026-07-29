@@ -97,6 +97,21 @@ export type ScrapedDoc = {
   // rawHtml regex over iframe/video-source/data-video-url.
   attributes?: AttrBlock[];
   metadata?: Record<string, any>;
+  // Observation provenance is carried through generation-local caches so a
+  // cache hit cannot be mistaken for a detail page fetched when the artifact
+  // happened to finish.
+  detailObservation?: DetailObservation;
+};
+
+export type CacheDisposition = "live" | "generation_cache" | "source_revision_cache";
+
+export type DetailObservation = {
+  observedAt: string;
+  generationId: string | null;
+  method: string;
+  cacheDisposition: CacheDisposition;
+  sourceRevision?: string | null;
+  validatedAt?: string | null;
 };
 
 // ---------- source adapters ----------

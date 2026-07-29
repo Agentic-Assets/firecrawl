@@ -11,6 +11,12 @@ import { normBuildingClass } from "../lib/parse.js";
 import { scrapeDoc, scrapeRaw } from "../lib/scrape.js";
 import { DocItem, MediaItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
+import {
+  detailObservation,
+  generationMatches,
+  refreshGenerationId,
+  requireFreshDetails,
+} from "../lib/freshness.js";
 
 
 // --- JLL: rendered search pages ---
@@ -26,6 +32,7 @@ export const JLL_PROPERTY_TYPES = [
   "coworking",
   "data-center",
 ] as const;
+export const JLL_SEARCH_PAGE_SIZE = 50;
 export const JLL_DETAIL_CONCURRENCY = boundedInt(
   process.env.JLL_DETAIL_CONCURRENCY,
   Math.min(CONCURRENCY, 3),
@@ -68,10 +75,10 @@ export function parseJllSearchPage(html: string, tx: Tx, propertyType: string, p
   listings: any[];
 } {
   const $ = cheerio.load(html);
-  const total =
-    Number(
-      (($("h2").text() || html).match(/([0-9][0-9,]*)\s+propert(?:y|ies)/i) ?? [])[1]?.replace(/,/g, "")
-    ) || null;
+  const totalMatch = ($("h2").text() || html).match(
+    /([0-9][0-9,]*)\s+propert(?:y|ies)/i
+  );
+  const total = totalMatch ? Number(totalMatch[1].replace(/,/g, "")) : null;
   const seenHere = new Set<string>();
   const listings: any[] = [];
   $('a.text-base[href*="/listings/"]').each((_, el) => {
@@ -122,6 +129,60 @@ export function parseJllSearchPage(html: string, tx: Tx, propertyType: string, p
   return { total, listings };
 }
 
+export function assertJllSearchPageCompleteness(
+  parsed: { total: number | null; listings: any[] },
+  page: number,
+  expectedTotal: number | null = null,
+  strict = requireFreshDetails()
+): void {
+  if (!strict) return;
+  const total = parsed.total;
+  if (!Number.isInteger(total) || (total as number) < 0) {
+    throw new Error(`JLL search page ${page} lacks a finite nonnegative total`);
+  }
+  if (expectedTotal !== null && total !== expectedTotal) {
+    throw new Error(
+      `JLL search page ${page} total changed from ${expectedTotal} to ${total}`
+    );
+  }
+  const pages = Math.max(1, Math.ceil((total as number) / JLL_SEARCH_PAGE_SIZE));
+  if (!Number.isInteger(page) || page < 1 || page > pages) {
+    throw new Error(`JLL search page ${page} falls outside the declared ${pages}-page result`);
+  }
+  const expectedCards =
+    page < pages
+      ? JLL_SEARCH_PAGE_SIZE
+      : (total as number) - (page - 1) * JLL_SEARCH_PAGE_SIZE;
+  const urls = parsed.listings
+    .map((listing) => clean(listing?.url))
+    .filter((url): url is string => !!url);
+  const uniqueUrls = new Set(urls);
+  if (urls.length !== parsed.listings.length || uniqueUrls.size !== expectedCards) {
+    throw new Error(
+      `JLL search page ${page} expected ${expectedCards} unique cards from total=${total}, ` +
+        `received ${uniqueUrls.size}`
+    );
+  }
+}
+
+export function assertJllFilterCoverage(
+  propertyType: string,
+  total: number | null,
+  urls: Iterable<string>,
+  strict = requireFreshDetails()
+): void {
+  if (!strict) return;
+  if (!Number.isInteger(total) || (total as number) < 0) {
+    throw new Error(`JLL ${propertyType} filter lacks a finite nonnegative total`);
+  }
+  const uniqueUrls = new Set([...urls].map((url) => clean(url)).filter(Boolean));
+  if (uniqueUrls.size !== total) {
+    throw new Error(
+      `JLL ${propertyType} filter reconciled ${uniqueUrls.size} unique cards against reported total ${total}`
+    );
+  }
+}
+
 export async function fetchJllSearchPage(tx: Tx, propertyType: string, page: number): Promise<{
   total: number | null;
   listings: any[];
@@ -129,15 +190,33 @@ export async function fetchJllSearchPage(tx: Tx, propertyType: string, page: num
   const searchUrl = jllFilteredSearchUrl(tx === "sale" ? "sale" : "rent", propertyType, page);
   const waits = [8000, 12000, 16000];
   let lastParsed: { total: number | null; listings: any[] } | null = null;
+  let lastValidationError: unknown = null;
   for (const waitFor of waits) {
-    const html = await scrapeRaw(searchUrl, { waitFor });
+    const html = await scrapeRaw(searchUrl, {
+      waitFor,
+      ...(requireFreshDetails() ? { maxAge: 0 } : {}),
+    });
     const parsed = parseJllSearchPage(html, tx, propertyType, page);
     lastParsed = parsed;
+    if (requireFreshDetails()) {
+      try {
+        assertJllSearchPageCompleteness(parsed, page, null, true);
+        return parsed;
+      } catch (error) {
+        lastValidationError = error;
+        console.error(
+          `  jll/${tx}/${propertyType}: page ${page} failed strict coverage validation ` +
+            `(${String(error)}); retrying with waitFor=${waitFor}`
+        );
+        continue;
+      }
+    }
     if (parsed.listings.length > 0 || parsed.total === 0) return parsed;
     console.error(
       `  jll/${tx}/${propertyType}: page ${page} rendered 0 cards (total ${parsed.total ?? "?"}); retrying with waitFor=${waitFor}`
     );
   }
+  if (lastValidationError) throw lastValidationError;
   return lastParsed ?? { total: null, listings: [] };
 }
 
@@ -190,6 +269,9 @@ export function readJllDetailCache(url: string): ScrapedDoc | null {
     if (cached.url !== normalizedJllListingUrl(url)) return null;
     if (typeof cached.rawHtml !== "string") return null;
     if (!jllCachedAtMeetsBoundary(cached.cachedAt)) return null;
+    if (!generationMatches(cached.generationId)) return null;
+    const observedAt =
+      typeof cached.detailObservedAt === "string" ? cached.detailObservedAt : cached.cachedAt;
     return {
       rawHtml: cached.rawHtml,
       markdown: typeof cached.markdown === "string" ? cached.markdown : "",
@@ -197,6 +279,12 @@ export function readJllDetailCache(url: string): ScrapedDoc | null {
       images: Array.isArray(cached.images) ? cached.images.filter((image: any) => typeof image === "string") : undefined,
       attributes: Array.isArray(cached.attributes) ? cached.attributes : undefined,
       metadata: cached.metadata,
+      detailObservation: detailObservation(
+        "jll_detail",
+        "generation_cache",
+        observedAt,
+        { generationId: cached.generationId ?? null }
+      ),
     };
   } catch {
     return null;
@@ -207,12 +295,15 @@ export function writeJllDetailCache(url: string, doc: ScrapedDoc): void {
   const path = jllDetailCachePath(url);
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
+  const observed = doc.detailObservation?.observedAt ?? new Date().toISOString();
   writeFileSync(
     tmp,
     JSON.stringify(
       {
         url: normalizedJllListingUrl(url),
-        cachedAt: new Date().toISOString(),
+        cachedAt: observed,
+        generationId: doc.detailObservation?.generationId ?? refreshGenerationId(),
+        detailObservedAt: observed,
         rawHtml: doc.rawHtml,
         markdown: doc.markdown,
         links: doc.links,
@@ -233,7 +324,15 @@ export async function scrapeJllDetailDoc(
 ): Promise<ScrapedDoc> {
   const cached = opts.refresh ? null : readJllDetailCache(url);
   if (cached) return cached;
-  const doc = await scrapeDoc(url, { waitFor: opts.waitFor ?? JLL_DETAIL_WAIT_MS, timeout: 120000 });
+  const scraped = await scrapeDoc(url, {
+    waitFor: opts.waitFor ?? JLL_DETAIL_WAIT_MS,
+    timeout: 120000,
+    ...(requireFreshDetails() ? { maxAge: 0 } : {}),
+  });
+  const doc: ScrapedDoc = {
+    ...scraped,
+    detailObservation: detailObservation("jll_detail", "live"),
+  };
   writeJllDetailCache(url, doc);
   return doc;
 }
@@ -479,6 +578,13 @@ export async function enrichJllListing(base: any): Promise<any> {
 
     return prune({
       ...base,
+      detailObservedAt: doc.detailObservation?.observedAt,
+      freshnessProvenance: {
+        detailScope: "detail_page",
+        generationId: doc.detailObservation?.generationId ?? null,
+        method: doc.detailObservation?.method ?? "jll_detail",
+        cacheDisposition: doc.detailObservation?.cacheDisposition ?? "live",
+      },
       id: clean(property.id) ?? base.id,
       name: clean(property.title) ?? base.name,
       assetType: Array.isArray(property.propertyTypes)
@@ -568,6 +674,10 @@ export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<Sou
   const byUrl = new Map<string, any>();
   const filterTotals: Record<string, number | null> = {};
   const maxByFilterPage: Record<string, number | null> = {};
+  const filterUrls = new Map<string, Set<string>>(
+    JLL_PROPERTY_TYPES.map((propertyType) => [propertyType, new Set<string>()])
+  );
+  const strictFreshness = requireFreshDetails();
 
   for (let page = 1; listings.length < max && page <= PAGE_CAP; page++) {
     const activePropertyTypes = JLL_PROPERTY_TYPES.filter((propertyType) => {
@@ -581,13 +691,30 @@ export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<Sou
       if (filterTotals[propertyType] === undefined) {
         filterTotals[propertyType] = parsed.total;
         maxByFilterPage[propertyType] =
-          parsed.total === null ? null : Math.max(1, Math.ceil(parsed.total / 50));
+          parsed.total === null
+            ? null
+            : Math.max(1, Math.ceil(parsed.total / JLL_SEARCH_PAGE_SIZE));
+      } else {
+        assertJllSearchPageCompleteness(
+          parsed,
+          page,
+          filterTotals[propertyType],
+          strictFreshness
+        );
       }
       console.error(
         `  jll/${tx}/${propertyType}: page ${page}, ${parsed.listings.length} cards (filter total ${parsed.total ?? "?"})`
       );
       return { propertyType, ...parsed };
     });
+
+    for (const result of pageResults) {
+      const urls = filterUrls.get(result.propertyType)!;
+      for (const listing of result.listings) {
+        const url = clean(listing?.url);
+        if (url) urls.add(url);
+      }
+    }
 
     let addedOrSeenOnPage = 0;
     for (let offset = 0; ; offset++) {
@@ -615,8 +742,32 @@ export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<Sou
     if (addedOrSeenOnPage === 0) break;
   }
   if (!listings.length) throw new Error("no listing cards found on JLL search page");
+  const inventoryObservedAt = new Date().toISOString();
+  for (const listing of listings) {
+    listing.inventoryObservedAt = inventoryObservedAt;
+  }
   const knownTotals = Object.values(filterTotals).filter((n): n is number => typeof n === "number");
   const total = knownTotals.length ? knownTotals.reduce((sum, n) => sum + n, 0) : null;
+  let coverageTruncated = false;
+  for (const propertyType of JLL_PROPERTY_TYPES) {
+    try {
+      assertJllFilterCoverage(
+        propertyType,
+        filterTotals[propertyType] ?? null,
+        filterUrls.get(propertyType) ?? [],
+        strictFreshness
+      );
+    } catch (error) {
+      if (Number.isFinite(max) && listings.length >= max) {
+        coverageTruncated = true;
+        continue;
+      }
+      throw error;
+    }
+  }
+  if (strictFreshness && Number.isFinite(max) && listings.length >= max) {
+    coverageTruncated = true;
+  }
   let enrichedCount = 0;
   const enriched = await pmap(listings, JLL_DETAIL_CONCURRENCY, async (listing) => {
     const row = await enrichJllListing(listing);
@@ -636,6 +787,7 @@ export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<Sou
       "Rendered search pages parsed across public propertyTypes filters, then detail __NEXT_DATA__ enrichment with URL-only assets",
     totalAvailable: total,
     listings: enriched,
+    truncated: coverageTruncated,
     note: `Per-filter source totals before cross-filter de-dupe: ${totalEvidence}. Detail enrichment stores public brochure/image/profile URLs only and retains per-row detailError if a detail scrape fails.`,
   };
 }

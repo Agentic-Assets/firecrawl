@@ -22,11 +22,32 @@ import json
 import os
 import tempfile
 
+import pytest
+
 import cre_gate as g
 from cre_ingest import SOURCE_TO_BROKERAGE
 
 FLOOR = 100
 DROP = 0.30
+
+
+def test_read_baseline_rejects_target_drift_before_psql(monkeypatch):
+    monkeypatch.setattr(
+        g,
+        "load_db_url",
+        lambda _env_file: (
+            "postgresql://user:secret@db.example.test/cre",
+            "/fake/.env",
+        ),
+    )
+    monkeypatch.setattr(
+        g,
+        "find_psql",
+        lambda: pytest.fail("target drift must fail before psql discovery"),
+    )
+
+    with pytest.raises(SystemExit, match="does not match"):
+        g.read_baseline(None, True, "0" * 64)
 
 
 # ---------------------------------------------------------------------------

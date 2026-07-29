@@ -40,8 +40,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional  # used in the "Optional[str]" string return annotations
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 # Phase-2 data-lift: the shared text parsers live in cre_parse.py (the Python
 # mirror of lib/parse.ts), so the ingest, the monitor, and the WS2 backfill all
@@ -118,6 +119,36 @@ INVENTORY_ONLY_SOURCE_DEFINITIONS = {
 }
 
 BUILDOUT_SOURCE_KEYS = {"svn", "lee-associates", "franklin-street"}
+CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS = {
+    "srs",
+    "hanley",
+    "kidder-mathews",
+}
+AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS = (
+    BUILDOUT_SOURCE_KEYS
+    | CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
+    | {"cbre"}
+)
+STRICT_FRESHNESS_SOURCE_KEYS = {
+    "cbre",
+    "jll",
+    "jll-investor",
+    "colliers-main",
+    "cushman-wakefield",
+    "svn",
+    "lee-associates",
+    "franklin-street",
+    "newmark",
+    "savills",
+    "transwestern",
+    "marcus-millichap",
+    "nai-global",
+    "matthews",
+    "srs",
+    "hanley",
+    "kidder-mathews",
+}
+MAX_FUTURE_CLOCK_SKEW = timedelta(minutes=5)
 
 SOURCE_KEYS_BY_SLUG = {}
 for _source_key, (_slug, _prefix) in SOURCE_TO_BROKERAGE.items():
@@ -919,6 +950,164 @@ def parse_source_lastmod(value):
     return None
 
 
+def parse_strict_freshness_timestamp(value, *, field):
+    """Parse a strict freshness timestamp as an absolute UTC instant."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a nonempty ISO-8601 timestamp")
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"{field} is not valid ISO-8601") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field} must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def validate_strict_artifact_freshness(
+    data,
+    *,
+    require_strict_freshness=False,
+    now=None,
+):
+    """Reject a strict refresh artifact whose rows do not prove observation time.
+
+    Artifact completion time is intentionally not evidence that a detail page
+    was observed. Buildout is the one explicit exception because its paginated
+    inventory feed is the authoritative listing payload.
+    """
+    run_meta = data.get("runMeta")
+    freshness = run_meta.get("freshness") if isinstance(run_meta, dict) else None
+    artifact_is_strict = (
+        isinstance(freshness, dict)
+        and freshness.get("requireFreshDetails") is True
+    )
+    if require_strict_freshness and not artifact_is_strict:
+        raise ValueError(
+            "strict freshness is explicitly required but the artifact "
+            "does not assert requireFreshDetails=true"
+        )
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    latest_allowed = current + MAX_FUTURE_CLOCK_SKEW
+    for field in ("startedAt", "finishedAt"):
+        value = run_meta.get(field) if isinstance(run_meta, dict) else None
+        if value is None:
+            continue
+        artifact_timestamp = parse_strict_freshness_timestamp(
+            value,
+            field=f"runMeta.{field}",
+        )
+        if artifact_timestamp > latest_allowed:
+            raise ValueError(
+                f"runMeta.{field} exceeds the 5-minute clock-skew allowance"
+            )
+    for index, listing in enumerate(data.get("listings") or []):
+        if not isinstance(listing, dict):
+            continue
+        observation_fields = [
+            ("inventoryObservedAt", listing.get("inventoryObservedAt")),
+            ("detailObservedAt", listing.get("detailObservedAt")),
+        ]
+        provenance = listing.get("freshnessProvenance")
+        if isinstance(provenance, dict):
+            observation_fields.append(
+                (
+                    "freshnessProvenance.validatedAt",
+                    provenance.get("validatedAt"),
+                )
+            )
+        for field, value in observation_fields:
+            if value is None:
+                continue
+            observed = parse_strict_freshness_timestamp(
+                value,
+                field=f"listings[{index}].{field}",
+            )
+            if observed > latest_allowed:
+                raise ValueError(
+                    f"listings[{index}].{field} exceeds "
+                    "the 5-minute clock-skew allowance"
+                )
+    if not artifact_is_strict:
+        return
+    generation_id = freshness.get("generationId")
+    if not isinstance(generation_id, str) or not generation_id.strip():
+        raise ValueError("strict freshness artifact lacks a valid generation id/start")
+    boundary = parse_strict_freshness_timestamp(
+        freshness.get("generationStartedAt"),
+        field="runMeta.freshness.generationStartedAt",
+    )
+    if boundary > latest_allowed:
+        raise ValueError(
+            "runMeta.freshness.generationStartedAt exceeds "
+            "the 5-minute clock-skew allowance"
+        )
+    for index, listing in enumerate(data.get("listings") or []):
+        if not isinstance(listing, dict):
+            raise ValueError(f"strict freshness listings[{index}] is not an object")
+        provenance = listing.get("freshnessProvenance")
+        if not isinstance(provenance, dict):
+            raise ValueError(f"strict freshness listings[{index}] lacks provenance")
+        if provenance.get("generationId") != generation_id:
+            raise ValueError(f"strict freshness listings[{index}] has the wrong generation")
+        if listing.get("detailError"):
+            raise ValueError(f"strict freshness listings[{index}] has incomplete detail")
+        inventory_observed = parse_strict_freshness_timestamp(
+            listing.get("inventoryObservedAt"),
+            field=f"listings[{index}].inventoryObservedAt",
+        )
+        if inventory_observed < boundary:
+            raise ValueError(f"strict freshness listings[{index}] has stale inventory")
+        if inventory_observed > latest_allowed:
+            raise ValueError(
+                f"strict freshness listings[{index}] inventory observation "
+                "exceeds the 5-minute clock-skew allowance"
+            )
+        source_key = listing.get("sourceKey")
+        preserves_children = listing.get("preserveChildCollections") is True
+        if source_key in AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS:
+            if provenance.get("detailScope") != "authoritative_inventory_feed":
+                raise ValueError(
+                    f"strict freshness listings[{index}] lacks authoritative feed provenance"
+                )
+            if source_key in CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS:
+                if not preserves_children:
+                    raise ValueError(
+                        f"strict freshness listings[{index}] must preserve child collections"
+                    )
+            elif preserves_children:
+                raise ValueError(
+                    f"strict freshness listings[{index}] must not preserve child collections"
+                )
+            continue
+        if preserves_children:
+            raise ValueError(
+                f"strict freshness listings[{index}] must not preserve child collections"
+            )
+        detail_value = listing.get("detailObservedAt")
+        if provenance.get("cacheDisposition") == "source_revision_cache":
+            detail_value = provenance.get("validatedAt")
+        if not detail_value:
+            raise ValueError(f"strict freshness listings[{index}] has stale detail")
+        detail_observed = parse_strict_freshness_timestamp(
+            detail_value,
+            field=(
+                f"listings[{index}].freshnessProvenance.validatedAt"
+                if provenance.get("cacheDisposition") == "source_revision_cache"
+                else f"listings[{index}].detailObservedAt"
+            ),
+        )
+        if detail_observed < boundary:
+            raise ValueError(f"strict freshness listings[{index}] has stale detail")
+        if detail_observed > latest_allowed:
+            raise ValueError(
+                f"strict freshness listings[{index}] detail observation "
+                "exceeds the 5-minute clock-skew allowance"
+            )
+
+
 def group_source_lastmod(flat_listings):
     """First non-None parsed lastmod across a group's FLAT listings, preferring
     lastUpdated then dateModified. Mirrors the first-non-None rule used for
@@ -945,6 +1134,24 @@ def to_row(listing, brokers_by_idx, scraped_at):
     mapping = SOURCE_TO_BROKERAGE.get(source_key)
     if not mapping:
         return None
+    provenance = listing.get("freshnessProvenance")
+    observation_scraped_at = parse_source_lastmod(listing.get("detailObservedAt"))
+    if (
+        isinstance(provenance, dict)
+        and provenance.get("cacheDisposition") == "source_revision_cache"
+    ):
+        observation_scraped_at = (
+            parse_source_lastmod(provenance.get("validatedAt"))
+            or observation_scraped_at
+        )
+    if (
+        observation_scraped_at is None
+        and isinstance(provenance, dict)
+        and provenance.get("detailScope") == "authoritative_inventory_feed"
+    ):
+        observation_scraped_at = parse_source_lastmod(
+            listing.get("inventoryObservedAt")
+        )
     slug, prefix = mapping
 
     url = listing.get("url")
@@ -1197,7 +1404,10 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "status": norm_status(listing),
         "source_lastmod": group_source_lastmod([listing]),
         "canonical_key": _canonical_key(listing),
-        "scraped_at": scraped_at,
+        # Prefer the source observation timestamp. runMeta.finishedAt is only a
+        # compatibility fallback for legacy/non-strict artifacts and must not
+        # manufacture current detail freshness.
+        "scraped_at": observation_scraped_at or scraped_at,
         "raw_data": listing,
         "contacts": contacts,
         "documents": documents,
@@ -1747,21 +1957,37 @@ WITH ins AS (
            updated_date,
            CASE
              WHEN jsonb_path_exists(raw_data, '$.**.detailError')
-               OR jsonb_path_exists(
-                 raw_data,
-                 '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+               OR (
+                 jsonb_path_exists(
+                   raw_data,
+                   '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                 )
+                 AND NOT jsonb_path_exists(
+                   raw_data,
+                   '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
+                 )
                )
              THEN NULL
              ELSE scraped_at
            END,
            CASE
              WHEN jsonb_path_exists(raw_data, '$.**.detailError')
-               OR jsonb_path_exists(
-                 raw_data,
-                 '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+               OR (
+                 jsonb_path_exists(
+                   raw_data,
+                   '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                 )
+                 AND NOT jsonb_path_exists(
+                   raw_data,
+                   '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
+                 )
                )
              THEN jsonb_build_object(
-                    'sourceKey', raw_data->'sourceKey',
+                    'sourceKey', COALESCE(
+                      raw_data->'sourceKey',
+                      raw_data#>'{primary,sourceKey}',
+                      raw_data#>'{secondary_pass,sourceKey}'
+                    ),
                     'latestInventoryObservation', raw_data,
                     'inventoryObservedAt', to_jsonb(scraped_at)
                   )
@@ -1848,34 +2074,38 @@ WITH ins AS (
         -- sparse/empty pass from clobbering a fuller prior capture (COALESCE-keep).
         markdown          = COALESCE(NULLIF(EXCLUDED.markdown, ''), t.markdown),
         updated_date      = COALESCE(EXCLUDED.updated_date, t.updated_date),
-        -- `scraped_at` is detail-observation time. A detailError or explicit
-        -- preserveChildCollections row proves current inventory/card
-        -- observation, but not current detail. Keep the last-good detail time
-        -- and payload, and record the current inventory observation separately
-        -- inside raw_data. A later successful detail pass replaces this wrapper
-        -- normally.
+        -- `scraped_at` is detail-observation time. A detailError, or a
+        -- preserveChildCollections row without an explicit
+        -- detailObservedWithChildPreservation proof establishes inventory/card
+        -- observation only. Avison can record a current property-detail page
+        -- while preserving children when its supplemental team feed is degraded;
+        -- child refresh remains additive below.
         scraped_at        = CASE
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
-                                OR jsonb_path_exists(
-                                  EXCLUDED.raw_data,
-                                  '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                                OR (
+                                  jsonb_path_exists(
+                                    EXCLUDED.raw_data,
+                                    '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                                  )
+                                  AND NOT jsonb_path_exists(
+                                    EXCLUDED.raw_data,
+                                    '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
+                                  )
                                 )
                               THEN CASE
                                      WHEN jsonb_path_exists(t.raw_data, '$.detailError')
                                        OR jsonb_path_exists(t.raw_data, '$.detailUnavailable')
-                                       OR jsonb_path_exists(
-                                         t.raw_data,
-                                         '$.preserveChildCollections ? (@ == true || @ == "true")'
-                                       )
                                        OR jsonb_path_exists(t.raw_data, '$.primary.detailError')
                                        OR jsonb_path_exists(t.raw_data, '$.secondary_pass.detailError')
-                                       OR jsonb_path_exists(
-                                         t.raw_data,
-                                         '$.primary.preserveChildCollections ? (@ == true || @ == "true")'
-                                       )
-                                       OR jsonb_path_exists(
-                                         t.raw_data,
-                                         '$.secondary_pass.preserveChildCollections ? (@ == true || @ == "true")'
+                                       OR (
+                                         jsonb_path_exists(
+                                           t.raw_data,
+                                           '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                                         )
+                                         AND NOT jsonb_path_exists(
+                                           t.raw_data,
+                                           '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
+                                         )
                                        )
                                      THEN NULL
                                      ELSE t.scraped_at
@@ -1884,27 +2114,31 @@ WITH ins AS (
                             END,
         raw_data          = CASE
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
-                                OR jsonb_path_exists(
-                                  EXCLUDED.raw_data,
-                                  '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                                OR (
+                                  jsonb_path_exists(
+                                    EXCLUDED.raw_data,
+                                    '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                                  )
+                                  AND NOT jsonb_path_exists(
+                                    EXCLUDED.raw_data,
+                                    '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
+                                  )
                                 )
                               THEN (
                                      CASE
                                        WHEN jsonb_path_exists(t.raw_data, '$.detailError')
                                          OR jsonb_path_exists(t.raw_data, '$.detailUnavailable')
-                                         OR jsonb_path_exists(
-                                           t.raw_data,
-                                           '$.preserveChildCollections ? (@ == true || @ == "true")'
-                                         )
                                          OR jsonb_path_exists(t.raw_data, '$.primary.detailError')
                                          OR jsonb_path_exists(t.raw_data, '$.secondary_pass.detailError')
-                                         OR jsonb_path_exists(
-                                           t.raw_data,
-                                           '$.primary.preserveChildCollections ? (@ == true || @ == "true")'
-                                         )
-                                         OR jsonb_path_exists(
-                                           t.raw_data,
-                                           '$.secondary_pass.preserveChildCollections ? (@ == true || @ == "true")'
+                                         OR (
+                                           jsonb_path_exists(
+                                             t.raw_data,
+                                             '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                                           )
+                                           AND NOT jsonb_path_exists(
+                                             t.raw_data,
+                                             '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
+                                           )
                                          )
                                        THEN '{}'::jsonb
                                        ELSE COALESCE(t.raw_data, '{}'::jsonb)
@@ -1912,8 +2146,12 @@ WITH ins AS (
                                    )
                                    || jsonb_build_object(
                                         'sourceKey', COALESCE(
+                                          EXCLUDED.raw_data->'sourceKey',
+                                          EXCLUDED.raw_data#>'{primary,sourceKey}',
+                                          EXCLUDED.raw_data#>'{secondary_pass,sourceKey}',
                                           t.raw_data->'sourceKey',
-                                          EXCLUDED.raw_data->'sourceKey'
+                                          t.raw_data#>'{primary,sourceKey}',
+                                          t.raw_data#>'{secondary_pass,sourceKey}'
                                         ),
                                         'latestInventoryObservation', COALESCE(
                                           EXCLUDED.raw_data->'latestInventoryObservation',
@@ -2710,6 +2948,68 @@ def load_db_url(env_file):
     )
 
 
+DATABASE_TARGET_OVERRIDE_QUERY_KEYS = {
+    "dbname",
+    "host",
+    "hostaddr",
+    "port",
+    "service",
+    "servicefile",
+}
+
+
+def database_target_fingerprint_from_url(db_url):
+    """Return a credential-free hash for one unambiguous PostgreSQL URI target."""
+    parsed = urlsplit(db_url)
+    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
+        raise ValueError("selected database URL has no usable PostgreSQL host")
+    authority = parsed.netloc.rsplit("@", 1)[-1]
+    decoded_hostname = unquote(parsed.hostname)
+    if "," in authority or "," in decoded_hostname:
+        raise ValueError("multi-host PostgreSQL URLs are not supported")
+    override_keys = {
+        key.lower()
+        for key, _value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() in DATABASE_TARGET_OVERRIDE_QUERY_KEYS
+    }
+    if override_keys:
+        raise ValueError(
+            "database URL query parameters may override the target: "
+            + ", ".join(sorted(override_keys))
+        )
+    try:
+        port = parsed.port or 5432
+    except ValueError as exc:
+        raise ValueError("selected database URL has an invalid port") from exc
+    database = unquote(parsed.path.lstrip("/"))
+    if not database or "/" in database:
+        raise ValueError("selected database URL has no usable database name")
+    target = f"{decoded_hostname.lower().rstrip('.')}:{port}/{database}"
+    return {
+        "algorithm": "sha256",
+        "value": hashlib.sha256(target.encode("utf-8")).hexdigest(),
+    }
+
+
+def assert_expected_database_target(db_url, expected_sha256):
+    """Fail before DB access when an operational parent bound a different target."""
+    if expected_sha256 is None:
+        return
+    if not isinstance(expected_sha256, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", expected_sha256
+    ):
+        raise SystemExit("expected database target fingerprint must be 64 lowercase hex")
+    try:
+        actual = database_target_fingerprint_from_url(db_url)["value"]
+    except ValueError as exc:
+        raise SystemExit(f"refusing ambiguous database target: {exc}") from exc
+    if actual != expected_sha256:
+        raise SystemExit(
+            "refusing database access: selected target does not match "
+            "the checkpoint fingerprint"
+        )
+
+
 def find_psql():
     for p in PSQL_CANDIDATES:
         if p and os.path.isfile(p) and os.access(p, os.X_OK):
@@ -2829,7 +3129,20 @@ def main():
     ap.add_argument("--in", dest="inputs", action="append", required=True,
                     help="collect.ts output JSON (repeatable)")
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
+    ap.add_argument(
+        "--expected-db-target-sha256",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     ap.add_argument("--dry-run", action="store_true", help="build SQL, print stats, don't connect")
+    ap.add_argument(
+        "--require-strict-freshness",
+        action="store_true",
+        help=(
+            "require every input artifact to carry and satisfy the strict "
+            "freshness contract; checkpoint refresh passes this for strict sources"
+        ),
+    )
     ap.add_argument("--mark-missing", action="store_true",
                     help="soft-delete listings not present in this run (full runs only); "
                          "applies only to brokerages whose every source pass ran error-free "
@@ -2860,6 +3173,13 @@ def main():
                 "sole production OM extraction writer"
             )
         run_meta = data.get("runMeta") or {}
+        try:
+            validate_strict_artifact_freshness(
+                data,
+                require_strict_freshness=args.require_strict_freshness,
+            )
+        except ValueError as exc:
+            sys.exit(f"refusing strict freshness artifact: {exc}")
         mode = run_meta.get("mode")
         if not args.dry_run and mode not in {"full", "enrich"}:
             sys.exit(
@@ -3071,6 +3391,7 @@ def main():
         return
 
     db_url, env_path = load_db_url(args.env_file)
+    assert_expected_database_target(db_url, args.expected_db_target_sha256)
     print(f"credentials: {env_path}", file=sys.stderr)
     psql = find_psql()
     proc = subprocess.run(

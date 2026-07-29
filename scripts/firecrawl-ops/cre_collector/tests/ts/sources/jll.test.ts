@@ -27,8 +27,13 @@ import {
   jllStrandedMedia,
   jllStrandedDocs,
   jllStrandedStructured,
+  fetchJllSearchPage,
+  scrapeJllDetailDoc,
+  assertJllSearchPageCompleteness,
+  assertJllFilterCoverage,
 } from "../../../sources/jll.js";
 import { harvestDetail } from "../../../lib/harvest.js";
+import { firecrawl } from "../../../lib/scrape.js";
 
 // ---------------------------------------------------------------------------
 // Phase-2 data-lift tests: fixture-based, pure transform, no network.
@@ -200,6 +205,77 @@ test("parseJllSearchPage maps lease transaction and rent price text", () => {
   assert.equal(parsed.listings[0]?.salePriceUsd, null);
 });
 
+test("parseJllSearchPage preserves an explicit zero-result total", () => {
+  const parsed = parseJllSearchPage("<h2>0 properties</h2>", "sale", "office", 1);
+  assert.equal(parsed.total, 0);
+  assert.deepEqual(parsed.listings, []);
+  assert.doesNotThrow(() =>
+    assertJllSearchPageCompleteness(parsed, 1, 0, true)
+  );
+});
+
+test("strict JLL pagination rejects missing, unstable, and partial page evidence", () => {
+  assert.throws(
+    () => assertJllSearchPageCompleteness({ total: null, listings: [] }, 1, null, true),
+    /finite nonnegative total/
+  );
+  assert.throws(
+    () =>
+      assertJllSearchPageCompleteness(
+        { total: 51, listings: [{ url: "https://property.jll.com/listings/one" }] },
+        2,
+        50,
+        true
+      ),
+    /total changed/
+  );
+  assert.throws(
+    () =>
+      assertJllSearchPageCompleteness(
+        { total: 51, listings: [{ url: "https://property.jll.com/listings/one" }] },
+        1,
+        null,
+        true
+      ),
+    /expected 50 unique cards/
+  );
+  assert.doesNotThrow(() =>
+    assertJllSearchPageCompleteness(
+      { total: 51, listings: [{ url: "https://property.jll.com/listings/final" }] },
+      2,
+      51,
+      true
+    )
+  );
+});
+
+test("strict JLL filter reconciliation rejects cross-page gaps and duplicates", () => {
+  assert.throws(
+    () =>
+      assertJllFilterCoverage(
+        "office",
+        2,
+        [
+          "https://property.jll.com/listings/one",
+          "https://property.jll.com/listings/one",
+        ],
+        true
+      ),
+    /reconciled 1 unique cards against reported total 2/
+  );
+  assert.doesNotThrow(() =>
+    assertJllFilterCoverage(
+      "office",
+      2,
+      [
+        "https://property.jll.com/listings/one",
+        "https://property.jll.com/listings/two",
+      ],
+      true
+    )
+  );
+});
+
 test("jll detail cache round-trips through temp dir", () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "jll-detail-cache-"));
   const prev = process.env.JLL_DETAIL_CACHE_DIR;
@@ -250,6 +326,74 @@ test("JLL cache admission honors a run freshness boundary", () => {
   );
   assert.equal(jllCachedAtMeetsBoundary(undefined, "2026-07-29T12:00:00Z"), false);
   assert.equal(jllCachedAtMeetsBoundary("not-a-date", "2026-07-29T12:00:00Z"), false);
+});
+
+test("JLL detail cache is generation-specific and preserves observation time", () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-generation-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  try {
+    process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+    process.env.CRE_REFRESH_GENERATION = "generation-a";
+    const url = "https://property.jll.com/listings/generation-cache-1";
+    writeJllDetailCache(url, {
+      rawHtml: "<html></html>",
+      markdown: "",
+      links: [],
+      detailObservation: {
+        observedAt: "2026-07-29T12:00:00Z",
+        generationId: "generation-a",
+        method: "jll_detail",
+        cacheDisposition: "live",
+      },
+    });
+    const current = readJllDetailCache(url);
+    assert.equal(current?.detailObservation?.observedAt, "2026-07-29T12:00:00Z");
+    assert.equal(current?.detailObservation?.cacheDisposition, "generation_cache");
+    process.env.CRE_REFRESH_GENERATION = "generation-b";
+    assert.equal(readJllDetailCache(url), null);
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("strict JLL search and detail Firecrawl calls bypass cached responses", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-strict-transport-"));
+  const oldScrape = firecrawl.scrape;
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const calls: any[] = [];
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    calls.push(options);
+    if (url.includes("/search?")) {
+      return {
+        rawHtml:
+          '<h2>1 property</h2><a class="text-base" href="/listings/strict-1"><span>Strict</span><span>Dallas, TX</span></a>',
+      };
+    }
+    return { rawHtml: "<html>detail</html>", markdown: "", links: [] };
+  };
+  try {
+    process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    await fetchJllSearchPage("sale", "office", 1);
+    await scrapeJllDetailDoc("https://property.jll.com/listings/strict-1", {
+      refresh: true,
+    });
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((options) => options.maxAge === 0));
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
 });
 
 test("readJllDetailCache rejects mismatched url or malformed payload", () => {

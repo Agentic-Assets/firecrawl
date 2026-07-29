@@ -16,6 +16,7 @@ from pathlib import Path
 
 from cre_ingest import (
     INVENTORY_ONLY_SOURCE_DEFINITIONS,
+    assert_expected_database_target,
     find_psql,
     load_db_url,
 )
@@ -26,8 +27,21 @@ CASE
   WHEN b.slug = 'cbre' AND l.external_id LIKE 'dealflow:%' THEN 'cbre-dealflow'
   WHEN b.slug = 'jll' AND l.external_id LIKE 'investor:%' THEN 'jll-investor'
   WHEN b.slug = 'colliers' AND l.external_id LIKE 'main:%' THEN 'colliers-main'
-  WHEN NULLIF(l.raw_data->>'sourceKey', '') IS NOT NULL THEN l.raw_data->>'sourceKey'
-  ELSE b.slug
+  ELSE COALESCE(
+    NULLIF(l.raw_data #>> '{latestInventoryObservation,sourceKey}', ''),
+    NULLIF(
+      l.raw_data #>> '{latestInventoryObservation,primary,sourceKey}',
+      ''
+    ),
+    NULLIF(
+      l.raw_data #>> '{latestInventoryObservation,secondary_pass,sourceKey}',
+      ''
+    ),
+    NULLIF(l.raw_data->>'sourceKey', ''),
+    NULLIF(l.raw_data #>> '{primary,sourceKey}', ''),
+    NULLIF(l.raw_data #>> '{secondary_pass,sourceKey}', ''),
+    b.slug
+  )
 END
 """
 
@@ -118,6 +132,125 @@ JOIN latest ON latest.source_key = a.source_key
 LEFT JOIN soft_deleted ON soft_deleted.source_key = a.source_key
 GROUP BY a.source_key, latest.latest_scraped_at, latest.latest_inventory_observed_at
 ORDER BY a.source_key;
+""",
+    "freshness_generations": f"""
+WITH raw AS (
+  SELECT
+    {SOURCE_KEY_SQL} AS source_key,
+    COALESCE(
+      NULLIF(
+        l.raw_data #>> '{{latestInventoryObservation,freshnessProvenance,generationId}}',
+        ''
+      ),
+      NULLIF(
+        l.raw_data #>> '{{latestInventoryObservation,primary,freshnessProvenance,generationId}}',
+        ''
+      ),
+      NULLIF(
+        l.raw_data #>> '{{latestInventoryObservation,secondary_pass,freshnessProvenance,generationId}}',
+        ''
+      ),
+      NULLIF(
+        l.raw_data #>> '{{freshnessProvenance,generationId}}',
+        ''
+      ),
+      NULLIF(
+        l.raw_data #>> '{{primary,freshnessProvenance,generationId}}',
+        ''
+      ),
+      NULLIF(
+        l.raw_data #>> '{{secondary_pass,freshnessProvenance,generationId}}',
+        ''
+      )
+    ) AS generation_id,
+    COALESCE(
+      NULLIF(
+        l.raw_data #>> '{{latestInventoryObservation,freshnessProvenance,detailScope}}',
+        ''
+      ),
+      NULLIF(
+        l.raw_data #>> '{{latestInventoryObservation,primary,freshnessProvenance,detailScope}}',
+        ''
+      ),
+      NULLIF(
+        l.raw_data #>> '{{latestInventoryObservation,secondary_pass,freshnessProvenance,detailScope}}',
+        ''
+      ),
+      NULLIF(
+        l.raw_data #>> '{{freshnessProvenance,detailScope}}',
+        ''
+      ),
+      NULLIF(
+        l.raw_data #>> '{{primary,freshnessProvenance,detailScope}}',
+        ''
+      ),
+      NULLIF(
+        l.raw_data #>> '{{secondary_pass,freshnessProvenance,detailScope}}',
+        ''
+      )
+    ) AS detail_scope,
+    l.scraped_at,
+    COALESCE(
+      NULLIF(l.raw_data->>'inventoryObservedAt', '')::timestamptz,
+      NULLIF(
+        l.raw_data #>> '{{latestInventoryObservation,inventoryObservedAt}}',
+        ''
+      )::timestamptz,
+      NULLIF(
+        l.raw_data #>> '{{latestInventoryObservation,primary,inventoryObservedAt}}',
+        ''
+      )::timestamptz,
+      NULLIF(
+        l.raw_data #>> '{{latestInventoryObservation,secondary_pass,inventoryObservedAt}}',
+        ''
+      )::timestamptz,
+      NULLIF(l.raw_data #>> '{{primary,inventoryObservedAt}}', '')::timestamptz,
+      NULLIF(
+        l.raw_data #>> '{{secondary_pass,inventoryObservedAt}}',
+        ''
+      )::timestamptz,
+      l.scraped_at
+    ) AS inventory_observed_at
+  FROM credeals.cre_listings l
+  JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  WHERE l.deleted_at IS NULL
+),
+active AS (
+  SELECT
+    source_key,
+    generation_id,
+    inventory_observed_at,
+    CASE
+      WHEN detail_scope = 'authoritative_inventory_feed'
+      THEN inventory_observed_at
+      ELSE scraped_at
+    END AS detail_scraped_at
+  FROM raw
+)
+SELECT
+  source_key,
+  generation_id,
+  count(*)::text AS active,
+  to_char(
+    min(inventory_observed_at) AT TIME ZONE 'UTC',
+    'YYYY-MM-DD HH24:MI:SS"Z"'
+  ) AS earliest_inventory_observed_at,
+  to_char(
+    max(inventory_observed_at) AT TIME ZONE 'UTC',
+    'YYYY-MM-DD HH24:MI:SS"Z"'
+  ) AS latest_inventory_observed_at,
+  to_char(
+    min(detail_scraped_at) AT TIME ZONE 'UTC',
+    'YYYY-MM-DD HH24:MI:SS"Z"'
+  ) AS earliest_detail_scraped_at,
+  to_char(
+    max(detail_scraped_at) AT TIME ZONE 'UTC',
+    'YYYY-MM-DD HH24:MI:SS"Z"'
+  ) AS latest_detail_scraped_at
+FROM active
+WHERE generation_id IS NOT NULL
+GROUP BY source_key, generation_id
+ORDER BY source_key, generation_id;
 """,
     "inventory_only_index": f"""
 WITH definitions (
@@ -398,7 +531,11 @@ def parse_tsv(output):
 
 
 def run_query(psql, db_url, sql):
-    wrapped = f"BEGIN READ ONLY;\n{sql}\nROLLBACK;\n"
+    wrapped = (
+        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+        f"{sql}\n"
+        "ROLLBACK;\n"
+    )
     proc = subprocess.run(
         [
             psql,
@@ -422,6 +559,73 @@ def run_query(psql, db_url, sql):
         sys.stderr.write(proc.stderr)
         raise SystemExit(f"psql exited {proc.returncode}")
     return parse_tsv(proc.stdout), proc.stderr.strip()
+
+
+QUERY_MARKER_PREFIX = "__CRE_VALIDATION_QUERY__:"
+
+
+def parse_query_batch(output, query_names):
+    """Split one psql session's marked result sets without mixing snapshots."""
+    expected = list(query_names)
+    chunks = {name: [] for name in expected}
+    current = None
+    for line in output.splitlines():
+        if line.startswith(QUERY_MARKER_PREFIX):
+            name = line.removeprefix(QUERY_MARKER_PREFIX)
+            if name not in chunks:
+                raise SystemExit(f"unexpected validation query marker: {name!r}")
+            if current == name or chunks[name]:
+                raise SystemExit(f"duplicate validation query marker: {name!r}")
+            current = name
+            continue
+        if current is None:
+            if line.strip():
+                raise SystemExit("unexpected psql output before validation query marker")
+            continue
+        chunks[current].append(line)
+    missing = [name for name in expected if not chunks[name]]
+    if missing:
+        raise SystemExit(
+            "validation query output is missing marked result(s): "
+            + ", ".join(missing)
+        )
+    return {
+        name: parse_tsv("\n".join(chunks[name]))
+        for name in expected
+    }
+
+
+def run_queries(psql, db_url, queries):
+    """Run all validation queries in one repeatable-read, read-only snapshot."""
+    statements = [
+        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;"
+    ]
+    for name, sql in queries.items():
+        statements.extend((f"\\echo {QUERY_MARKER_PREFIX}{name}", sql))
+    statements.append("ROLLBACK;")
+    proc = subprocess.run(
+        [
+            psql,
+            db_url,
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-P",
+            "pager=off",
+            "-P",
+            "footer=off",
+            "-F",
+            "\t",
+            "-A",
+        ],
+        input="\n".join(statements) + "\n",
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+        raise SystemExit(f"psql exited {proc.returncode}")
+    return parse_query_batch(proc.stdout, queries), proc.stderr.strip()
 
 
 def normalize_warning(stderr):
@@ -465,6 +669,7 @@ def render_markdown(report):
     labels = {
         "totals": "Totals",
         "source_counts": "Source Counts",
+        "freshness_generations": "Freshness Generations",
         "inventory_only_index": "Inventory-Only Source Index",
         "quality_by_source": "Quality By Source",
         "duplicates": "Duplicate Checks",
@@ -482,11 +687,17 @@ def render_markdown(report):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
+    parser.add_argument(
+        "--expected-db-target-sha256",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--out", default=None, help="optional output path")
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
     args = parser.parse_args()
 
     db_url, env_path = load_db_url(args.env_file)
+    assert_expected_database_target(db_url, args.expected_db_target_sha256)
     psql = find_psql()
     report = {
         "ok": True,
@@ -495,12 +706,10 @@ def main():
         "queries": {},
         "psql_warnings": [],
     }
-    for name, sql in QUERIES.items():
-        rows, stderr = run_query(psql, db_url, sql)
-        report["queries"][name] = rows
-        warning = normalize_warning(stderr)
-        if warning and warning not in report["psql_warnings"]:
-            report["psql_warnings"].append(warning)
+    report["queries"], stderr = run_queries(psql, db_url, QUERIES)
+    warning = normalize_warning(stderr)
+    if warning:
+        report["psql_warnings"].append(warning)
 
     if args.format == "json":
         rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
