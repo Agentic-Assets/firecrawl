@@ -20,6 +20,8 @@ export const CBRE_DEALFLOW_PAGE_SIZE = 200;
 // page, so the former 30-second deadline rejected healthy inventory. Keep this
 // bounded independently from the 30-second per-listing detail deadline.
 export const CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS = 120000;
+export const CBRE_DEALFLOW_DETAIL_ATTEMPTS = 3;
+export const CBRE_DEALFLOW_DETAIL_RETRY_BACKOFF_MS = 1000;
 export const CBRE_DEALFLOW_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
 export const CBRE_DEALFLOW_PROJECT_TYPE_BY_TX: Record<Tx, string> = {
   sale: "Investment Sale",
@@ -67,13 +69,29 @@ export function cbreDealflowUrl(href: string | null | undefined): string | null 
   }
 }
 
-export async function cbreDealflowGetText(url: string): Promise<string> {
-  const res = await fetch(url, {
-    headers: cbreDealflowHeaders("text/html,application/json,*/*"),
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!res.ok) throw new Error(`CBRE Deal Flow GET ${url} HTTP ${res.status}`);
-  return res.text();
+export async function cbreDealflowGetText(
+  url: string,
+  attempts = 1,
+  retryBackoffMs = CBRE_DEALFLOW_DETAIL_RETRY_BACKOFF_MS
+): Promise<string> {
+  let lastError: unknown = null;
+  const boundedAttempts = Number.isFinite(attempts) ? Math.max(1, Math.trunc(attempts)) : 1;
+  for (let attempt = 1; attempt <= boundedAttempts; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: cbreDealflowHeaders("text/html,application/json,*/*"),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!res.ok) throw new Error(`CBRE Deal Flow GET ${url} HTTP ${res.status}`);
+      return await res.text();
+    } catch (error) {
+      lastError = error;
+      if (attempt < boundedAttempts && retryBackoffMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, retryBackoffMs * attempt));
+      }
+    }
+  }
+  throw lastError;
 }
 
 export async function cbreDealflowPostJson(path: string, body: URLSearchParams): Promise<any> {
@@ -545,7 +563,7 @@ export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Pr
     throw new Error("CBRE Deal Flow linked card is missing its public URL");
   }
   try {
-    const html = await cbreDealflowGetText(card.url);
+    const html = await cbreDealflowGetText(card.url, CBRE_DEALFLOW_DETAIL_ATTEMPTS);
     const data = parseCbreDealflowDetailData(html);
     if (!data) {
       const unavailableReason = cbreDealflowDetailUnavailableReason(html, card.name);

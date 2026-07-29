@@ -9,7 +9,9 @@ import {
   cbreDealflowUrl,
   extractCbreDealflowEngineKey,
   CBRE_DEALFLOW_FALLBACK_ENGINE_KEY,
+  CBRE_DEALFLOW_DETAIL_ATTEMPTS,
   CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS,
+  cbreDealflowGetText,
   cbreDealflowHarvestHtml,
   cbreDealflowStrandedStructured,
   cbreDealflowNewFieldsFromRawData,
@@ -90,6 +92,32 @@ test("CBRE Deal Flow inventory timeout admits slow complete provider pages", () 
     CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS >= 75000,
     "inventory deadline must exceed the observed 74-second complete-page latency"
   );
+});
+
+test("CBRE Deal Flow detail reads retry transient transport failures", async () => {
+  assert.equal(CBRE_DEALFLOW_DETAIL_ATTEMPTS, 3);
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    if (calls < CBRE_DEALFLOW_DETAIL_ATTEMPTS) {
+      throw new Error("transient provider timeout");
+    }
+    return new Response("<html>fresh detail</html>", { status: 200 });
+  }) as typeof fetch;
+  try {
+    assert.equal(
+      await cbreDealflowGetText(
+        "https://www.cbredealflow.com/handler/landing.aspx?pv=test",
+        CBRE_DEALFLOW_DETAIL_ATTEMPTS,
+        0
+      ),
+      "<html>fresh detail</html>"
+    );
+    assert.equal(calls, CBRE_DEALFLOW_DETAIL_ATTEMPTS);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("CBRE Deal Flow recognizes a current card with no configured public landing detail", () => {
