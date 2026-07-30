@@ -6,6 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   ENRICHERS,
+  REGISTERED_BUILDOUT_ENRICHERS,
   groupEnrichItems,
   resolveEnricher,
   runEnrichGroups,
@@ -13,6 +14,7 @@ import {
   type EnrichItem,
   type SourceEnricher,
 } from "../../../lib/enrich.js";
+import { REGISTERED_BUILDOUT_SOURCE_KEYS } from "../../../sources/buildout-registry.js";
 import {
   parseColliersMainDetail,
   type ColliersMainEntry,
@@ -36,7 +38,8 @@ test("ENRICHERS registry uses targeted source paths and excludes cbre", () => {
       "marcus-millichap",
       "srs",
       "svn",
-    ]
+      ...REGISTERED_BUILDOUT_SOURCE_KEYS,
+    ].sort()
   );
   assert.equal(ENRICHERS.cbre, undefined); // enumeration-only; no detail endpoint
 });
@@ -51,6 +54,10 @@ test("resolveEnricher returns bespoke for registered keys, generic otherwise", (
   assert.equal(resolveEnricher("avison-young").label, "bespoke");
   assert.equal(resolveEnricher("srs").label, "bespoke");
   assert.equal(resolveEnricher("kidder-mathews").label, "bespoke");
+  for (const sourceKey of REGISTERED_BUILDOUT_SOURCE_KEYS) {
+    assert.equal(resolveEnricher(sourceKey).label, "bespoke");
+    assert.ok(REGISTERED_BUILDOUT_ENRICHERS[sourceKey]);
+  }
   // cbre and any unregistered key fall through to the generic fallback.
   assert.equal(resolveEnricher("cbre").label, "generic");
   assert.equal(resolveEnricher("transwestern").label, "generic");

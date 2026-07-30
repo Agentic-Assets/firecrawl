@@ -33,14 +33,16 @@ labels; the hub workflow owns those transitions.
 
 ## Shared CRE data ownership
 
-The proposed cross-repository contract is tracked by
-[AGENTIC-1233](https://linear.app/agenticassets/issue/AGENTIC-1233) and is
-reviewable on its Context Engineering branch at
-`https://github.com/Agentic-Assets/Agentic-Assets-Context-Engineering/blob/docs/cre-data-object-ownership/products/equire/cre-data-object-ownership.yaml`.
-Do not resolve it through `$AA_CONTEXT_ROOT` until that issue's branch is merged.
-Until then, treat the live schema as unchanged. The collector must preserve the
-five-column OM-facts identity; it does not own OM extraction writes, market-data
-objects, or EQUIRE product views.
+The governed version-5 contract tracked by
+[AGENTIC-1233](https://linear.app/agenticassets/issue/AGENTIC-1233) is merged
+into Context Engineering `main` through
+[PR #145](https://github.com/Agentic-Assets/Agentic-Assets-Context-Engineering/pull/145).
+Resolve it from
+`$AA_CONTEXT_ROOT/products/equire/cre-data-object-ownership.yaml`. The merge
+establishes object ownership and contract tests; it does not itself authorize
+production DDL, cache refresh, scheduling, or deployment. The collector must
+preserve the five-column OM-facts identity; it does not own OM extraction
+writes, market-data objects, or EQUIRE product views.
 
 ## Env files (which is which)
 

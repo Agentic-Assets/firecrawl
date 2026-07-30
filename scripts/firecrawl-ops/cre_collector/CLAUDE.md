@@ -51,7 +51,7 @@ inventory numbers. Update the dated banner when you refresh docs.
 
 | File / dir | Purpose |
 |------------|---------|
-| `collect.ts` | Orchestrator: 20 sources, CLI, broker merge, artifact write |
+| `collect.ts` | Orchestrator: 51 sources, CLI, broker merge, artifact write |
 | `types.ts` | Shared listing vocabulary + `SourceResult` (`truncated?`, etc.) |
 | `sources/` | Per-broker adapters - see `sources/CLAUDE.md` |
 | `lib/` | Shared scrape/config/util - see `lib/CLAUDE.md` |
@@ -135,7 +135,7 @@ Flags: `--source=all|csv` `--transaction=sale|lease|both` (default `both`)
 Env: `FIRECRAWL_API_URL` (default `http://localhost:3002`);
 `FIRECRAWL_API_KEY` (optional; defaults to `local-self-hosted` when unset).
 
-**20 source keys** (sale/lease support, methods, monitor matrix, Buildout rules,
+**51 source keys** (sale/lease support, methods, monitor matrix, Buildout rules,
 `external_id` gotchas, per-source env vars): `sources/CLAUDE.md`. Live row counts:
 `START_HERE.md` (Latest Source Matrix; **verify before quoting**, see agent rule
 at top of that file) and `BROKERAGE_STATUS_2026-06-12.md` (may lag; prefer a

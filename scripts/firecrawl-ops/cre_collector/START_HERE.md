@@ -89,12 +89,9 @@ baseline only after reviewing the complete exact artifact with
 `cre_gate.py --apply --update-baseline`, read it back without
 `--update-baseline`, and then resume the same immutable run.
 
-Seventeen sources currently satisfy the runner-owned strict contract:
-`cbre`, `jll`, `jll-investor`, `colliers-main`, `cushman-wakefield`, `svn`,
-`lee-associates`, `franklin-street`, `newmark`, `savills`, `transwestern`,
-`marcus-millichap`, `nai-global`, `matthews`, `srs`, `hanley`, and
-`kidder-mathews`. The three remaining supported sources have deliberately
-narrower claims:
+Forty-eight of the 51 registered source keys satisfy the runner-owned strict
+contract. The three remaining supported sources have deliberately narrower
+claims:
 
 - `cbre-dealflow` and `colliers` can retain current provider cards as
   inventory-only source-index rows when no canonical public detail identity is
@@ -105,10 +102,10 @@ narrower claims:
 
 Child handling is source-class-specific:
 
-- CBRE and the Buildout feeds (`svn`, `lee-associates`, `franklin-street`) are
-  authoritative inventory feeds and replace, rather than preserve, their
-  collector-owned child collections.
-- Cushman & Wakefield, SRS, Hanley, Kidder Mathews, and Newmark are
+- CBRE is an authoritative inventory feed and replaces its collector-owned
+  child collections.
+- All Buildout feeds, Interra Realty, Cushman & Wakefield, SRS, Hanley, Kidder
+  Mathews, and Newmark are
   authoritative inventory feeds that must preserve existing child collections.
   Cushman's strict path uses its uncached, exactly reconciled public search API
   and makes an inventory-freshness claim only; it does not claim that challenged
@@ -120,6 +117,76 @@ Child handling is source-class-specific:
   before retrying that source.
 - Other strict sources require an admitted current detail observation and must
   not use child preservation as a substitute for a failed detail read.
+
+### Cushman URL-v1 identity consolidation
+
+`cre_repair_cushman_identity.py` is the one-time, artifact-pinned repair for
+the failed `2026-07-30T082113Z` Cushman generation. It is not a generic dedupe
+tool. It preserves every listing UUID, prefers the established active UUID,
+keeps older conflicting OM facts on superseded aliases, and fails if the
+reviewed database, artifact, child, source-index, or queue shape has drifted.
+The default mode is a locked read-only preflight.
+
+Run it only while the canonical CRE lock is free. Retain the owner-only
+preimage: explicit rollback is self-contained from that file and refuses newer
+Cushman inventory, source-index activity, claimed queue work, missing parent or
+child rows, and any parent or child mapping that differs from the recorded
+post-repair disposition. Source-index collisions retain one coherently ranked
+donor row; fields are never synthesized from independent per-column maxima.
+The recorded plan covers every audited parent, including old-only targets whose
+survivor keeps its existing source URL and freshness generation.
+The CLI has no alternate lock-path option: every mode acquires the canonical
+shared CRE lock before database access. Preimage schema v4 binds every parent
+and child to its original normalized target, requires exactly one active
+survivor per target, and records the normalized expected post-apply value of
+every parent field rollback can restore. Older or malformed preimages are
+refused. It also records image URL and OM fact-identity/ranking evidence so
+validation recomputes the exact child winner policy rather than trusting a
+stored destination ID.
+
+```bash
+ENV_FILE="$HOME/.config/cre/equire.env"
+ARTIFACT="out/checkpoint-refresh/2026-07-30T082113Z/sources/cushman-wakefield.json"
+install -d -m 700 "out/repair/cushman-identity/<timestamp>"
+PREIMAGE="$PWD/out/repair/cushman-identity/<timestamp>/preimage.json"
+
+# 1. Exact read-only scope.
+python3 cre_repair_cushman_identity.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE"
+
+# 2. Exercise the complete forward transaction without persistence.
+python3 cre_repair_cushman_identity.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE" \
+  --verify-apply-rollback
+
+# 3. Prove both the forward and explicit reverse paths.
+python3 cre_repair_cushman_identity.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE" \
+  --verify-rollback-roundtrip
+
+# 4. Apply only after reviewing all three results. The absolute preimage path
+# must not already exist; its parent must be owner-only and the file is created
+# with mode 0600. Retain the printed exact-byte SHA-256 with the run evidence.
+python3 cre_repair_cushman_identity.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE" \
+  --apply --preimage "$PREIMAGE"
+
+# Emergency reverse path. The preimage embeds the reviewed artifact plan, so
+# the original large collection artifact is not required for rollback. The
+# apply writes its exact transaction timestamp into the repair marker while the
+# listings trigger writes the same value to updated_at. Rollback refuses if
+# those timestamps differ or any expected parent field changed afterward.
+# During rollback, the trigger stamps the new transaction-start timestamp; that
+# exact value, every restored parent field, and every child mapping must read
+# back exactly.
+python3 cre_repair_cushman_identity.py \
+  --env-file "$ENV_FILE" --rollback-preimage "$PREIMAGE" \
+  --expected-preimage-sha256 <printed-sha256>
+```
+
+After apply, run a new strict Cushman collection and normal ingest, then require
+the complete validator to report zero active normalized identity duplicates.
+Do not describe the one-time repair alone as a fresh detail sweep.
 
 ### SVN missing-detail shell recovery
 
@@ -207,11 +274,18 @@ link remain current inventory evidence in `cre_source_index` under the
 `cre_listings` rows. Any detail request failure marks the pass truncated, and
 any repeated canonical ProjectId aborts artifact validation and direct ingest.
 
-“All” means the 20 source keys in the current TypeScript collector registry.
+“All” means the 51 source keys in the current TypeScript collector registry.
 Older active rows whose brokerage is outside that registry are reported by
 `cre_refresh_report.py`, but this runner cannot make those legacy rows
 source-fresh. Add or restore a supported adapter before claiming full-database
 source coverage.
+
+The governed shared adapter contains the exact 25 historical public Buildout
+definitions recovered from commit `6245a7144`. Their definitions, cache
+namespaces, strict contracts, child-preservation behavior, targeted-detail
+configuration, SQL seeds, and source-registry parity are covered offline. A
+current live canary and guarded database readback remain required for each
+source before claiming fresh production coverage.
 
 Accordingly, a successful manifest is labeled
 `supported_scope_complete`, not full-database complete.
@@ -417,8 +491,11 @@ impact is quantified in
 
 Historical Supabase snapshot from `credeals` (2026-07-05). **Re-query before
 quoting;** see **Agent rule: verify counts** at the top of this file. Board total
-**107,783 active** includes ~11,144 rows under additional seeded brokerages
-beyond this 20-source collector matrix (regional NAI franchises and similar).
+**107,783 active** included ~11,144 rows under additional seeded brokerages
+beyond the then-20-source collector matrix (regional NAI franchises and
+similar). The registry now includes all 25 recovered Buildout sources and six
+dedicated restored adapters, but this historical table predates their live
+canaries and should not be read as current coverage proof.
 
 | Source | Active rows (sale / lease / sale_or_lease) | Status |
 |---|---:|---|

@@ -7,21 +7,28 @@ import {
   BUILDOUT_SOURCE_INVENTORY_OPTS,
   srcBuildout,
 } from "./sources/buildout.js";
+import { registeredBuildoutFirmFor } from "./sources/buildout-registry.js";
 import { srcCbre } from "./sources/cbre.js";
 import { srcCbreDealflow } from "./sources/cbre-dealflow.js";
 import { srcColliers } from "./sources/colliers.js";
 import { srcColliersMain } from "./sources/colliers-main.js";
 import { API_URL, OUT_PATH, PAGE_CAP, flags } from "./lib/config.js";
 import { srcCushman } from "./sources/cushman-wakefield.js";
+import { srcDaumCommercial } from "./sources/daum-commercial.js";
+import { srcEssexRealty } from "./sources/essex-realty.js";
+import { srcFoundryCommercial } from "./sources/foundry-commercial.js";
 import { srcFranklinStreet } from "./sources/franklin-street.js";
 import { srcHanley } from "./sources/hanley.js";
+import { srcInterraRealty } from "./sources/interra-realty.js";
 import { srcJll } from "./sources/jll.js";
 import { srcJllInvestor } from "./sources/jll-investor.js";
 import { srcKidderMathews } from "./sources/kidder-mathews.js";
+import { srcLyonStahl } from "./sources/lyon-stahl.js";
 import { srcMarcusMillichap } from "./sources/marcus-millichap.js";
 import { srcMatthews } from "./sources/matthews.js";
 import { srcNaiGlobal } from "./sources/nai-global.js";
 import { srcNewmark } from "./sources/newmark.js";
+import { srcPyramidBrokerage } from "./sources/pyramid-brokerage.js";
 import { srcSavills } from "./sources/savills.js";
 import { srcSrs } from "./sources/srs.js";
 import { srcTranswestern } from "./sources/transwestern.js";
@@ -70,6 +77,18 @@ const UNSUPPORTED: Record<string, string> = {};
 // ---------- main ----------
 
 async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+  const registeredBuildoutFirm = registeredBuildoutFirmFor(key);
+  if (registeredBuildoutFirm) {
+    return srcBuildout(
+      registeredBuildoutFirm.company,
+      registeredBuildoutFirm.pluginKey,
+      registeredBuildoutFirm.listingsPage,
+      tx,
+      max,
+      monitor,
+      registeredBuildoutFirm.inventoryOpts
+    );
+  }
   switch (key) {
     case "cbre":
       return srcCbre(tx, max, monitor);
@@ -127,6 +146,18 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
       return srcHanley(tx, max, monitor);
     case "kidder-mathews":
       return srcKidderMathews(tx, max, monitor);
+    case "interra-realty":
+      return srcInterraRealty(tx, max, monitor);
+    case "essex-realty":
+      return srcEssexRealty(tx, max, monitor);
+    case "pyramid-brokerage":
+      return srcPyramidBrokerage(tx, max, monitor);
+    case "daum-commercial":
+      return srcDaumCommercial(tx, max, monitor);
+    case "foundry-commercial":
+      return srcFoundryCommercial(tx, max, monitor);
+    case "lyon-stahl":
+      return srcLyonStahl(tx, max, monitor);
     default:
       throw new Error(`unhandled source ${key}`);
   }
@@ -266,6 +297,12 @@ const ENRICH_COMPANY: Partial<Record<SourceKey, string>> = {
   srs: "SRS Real Estate Partners",
   hanley: "Hanley Investment Group",
   "kidder-mathews": "Kidder Mathews",
+  "interra-realty": "Interra Realty",
+  "essex-realty": "Essex Realty Group",
+  "pyramid-brokerage": "Cushman & Wakefield | Pyramid Brokerage Company",
+  "daum-commercial": "DAUM Commercial Real Estate Services",
+  "foundry-commercial": "Foundry Commercial",
+  "lyon-stahl": "Lyon Stahl",
 };
 
 // Targeted-detail (enrich) mode: read a worker claim batch, group by sourceKey,
@@ -279,7 +316,10 @@ async function enrichMain(claimPath: string): Promise<void> {
   const items = Array.isArray(parsed.items) ? parsed.items : [];
 
   const groups = groupEnrichItems(items);
-  const companyFor = (key: string) => ENRICH_COMPANY[key as SourceKey] ?? key;
+  const companyFor = (key: string) =>
+    ENRICH_COMPANY[key as SourceKey] ??
+    registeredBuildoutFirmFor(key as SourceKey)?.company ??
+    key;
   const { sources, listings } = await runEnrichGroups(groups, resolveEnricher, companyFor);
 
   console.error(

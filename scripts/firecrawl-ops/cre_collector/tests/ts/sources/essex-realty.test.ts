@@ -294,7 +294,7 @@ test("Essex mapping carries live detail freshness and monitor preservation", () 
   assert.equal(mapped.inventoryObservedAt, "2026-07-30T18:00:00.000Z");
   assert.equal(mapped.detailObservedAt, "2026-07-30T18:01:00.000Z");
   assert.equal(mapped.freshnessProvenance.generationId, "generation-2");
-  assert.equal(mapped.freshnessProvenance.detailScope, "property_detail");
+  assert.equal(mapped.freshnessProvenance.detailScope, "detail_page");
   assert.equal(mapped.freshnessProvenance.cacheDisposition, "live");
   assert.equal(mapped.preserveChildCollections, true);
 });

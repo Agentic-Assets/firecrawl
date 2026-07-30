@@ -145,7 +145,7 @@ class TestMarcusMillichap:
 
 class TestBuildout:
     """
-    svn and lee-associates use the Buildout inventory API.
+    Shared Buildout sources use the Buildout inventory API.
     A dual-mode property appears twice with -sale / -lease propertyId suffixes.
     The ingestor strips the suffix so both passes merge to the same external_id.
     """
@@ -190,6 +190,22 @@ class TestBuildout:
         assert row["external_id"] == "777", (
             f"franklin-street -{suffix} did not strip to '777'; got {row['external_id']!r}"
         )
+
+    @pytest.mark.parametrize(
+        "source_key",
+        sorted(BUILDOUT_SOURCE_KEYS - {"svn", "lee-associates", "franklin-street"}),
+    )
+    def test_registered_buildout_sources_collapse_sale_and_lease_identity(
+        self, source_key
+    ):
+        rows = []
+        for suffix in ("sale", "lease"):
+            url = f"https://broker.example/listings/?propertyId=777-{suffix}"
+            listing = {**_base(source_key, url)}
+            _assert_invariant(source_key, listing)
+            rows.append(_row(listing))
+
+        assert rows[0]["external_id"] == rows[1]["external_id"] == "777"
 
 
 class TestColliersMain:

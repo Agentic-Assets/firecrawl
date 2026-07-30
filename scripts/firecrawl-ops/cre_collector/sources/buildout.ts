@@ -235,13 +235,14 @@ export function buildoutPageCachePolicy(opts: BuildoutInventoryOpts): {
       "BUILDOUT_REFRESH_PAGE_CACHE=1 cannot be combined with BUILDOUT_CACHE_ONLY=1 or BUILDOUT_ASSEMBLE_FROM_CACHE=1"
     );
   }
-  const enabled =
-    refresh ||
-    opts.usePageCache ||
-    envBool("BUILDOUT_USE_PAGE_CACHE") ||
-    cacheOnly ||
-    assembleFromCache;
-  return { read: enabled && !refresh, write: enabled };
+  // Every successful live page is written as generation-scoped recovery
+  // evidence. Ordinary collection never reads that cache: a fresh invocation
+  // must observe the public provider again. Cache reads require an explicit
+  // operator mode. BUILDOUT_REFRESH_PAGE_CACHE keeps writes enabled but forces
+  // another live read after an identity/count failure.
+  const explicitRead =
+    envBool("BUILDOUT_USE_PAGE_CACHE") || cacheOnly || assembleFromCache;
+  return { read: explicitRead && !refresh, write: true };
 }
 
 export function envInt(name: string): number | null {
@@ -669,15 +670,29 @@ export async function buildoutInventory(
 // plugin key and the brokerage host that compose the iframe content URL. The
 // host is also recoverable from item.url, but pinning it keeps a malformed
 // show_link from yielding a wrong-host iframe URL.
-export const BUILDOUT_ENRICH_CONFIG: Record<string, { pluginKey: string; host: string; company: string }> = {
+export type BuildoutDetailConfig = {
+  pluginKey: string;
+  host: string;
+  /**
+   * Exact public listing hosts allowed to supply `propertyId` values for this
+   * plugin. Keep aliases explicit: a queue row must prove source ownership
+   * before its slug is used to fetch and complete a Buildout detail claim.
+   */
+  listingHosts: readonly string[];
+  company: string;
+};
+
+export const BUILDOUT_ENRICH_CONFIG: Record<string, BuildoutDetailConfig> = {
   svn: {
     pluginKey: "b933480474026c41d248b77156c84aef37dcac68",
     host: "svn.com",
+    listingHosts: ["svn.com"],
     company: "SVN",
   },
   "lee-associates": {
     pluginKey: "9a64a93980aeae8db347e72cdfa8ca61017acc9a",
     host: "www.lee-associates.com",
+    listingHosts: ["www.lee-associates.com"],
     company: "Lee & Associates",
   },
 };
@@ -701,13 +716,45 @@ export function buildoutSlugFromUrl(url: string | null): string | null {
 }
 
 // Compose the Buildout detail iframe content URL for a source. Returns null when
-// the slug cannot be derived (so the enricher skips the item, leaving its claim
-// queued for the weekly additive backstop). Pure; never throws.
+// the input URL is not a clean HTTPS URL owned by an explicitly admitted
+// listing host, or when the slug cannot be derived. Rejection leaves the claim
+// queued for the weekly additive backstop. Pure; never throws.
 //   buildout.com/plugins/<key>/<host>/inventory/<slug>?pluginId=0&iframe=true&embedded=true
-export function buildoutDetailIframeUrl(sourceKey: string, listingUrl: string | null): string | null {
-  const cfg = BUILDOUT_ENRICH_CONFIG[sourceKey];
+export function buildoutDetailIframeUrl(
+  sourceKey: string,
+  listingUrl: string | null,
+  detailConfig?: BuildoutDetailConfig
+): string | null {
+  const cfg = detailConfig ?? BUILDOUT_ENRICH_CONFIG[sourceKey];
   if (!cfg) return null;
-  const slug = buildoutSlugFromUrl(listingUrl);
+  const rawUrl = clean(listingUrl);
+  if (!rawUrl) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  // URL normalizes an explicit default `:443` away, so inspect the original
+  // authority too. These listing hosts are DNS names, not IPv6 literals.
+  const authority = rawUrl.match(/^https:\/\/([^/?#]+)(?:[/?#]|$)/i)?.[1] ?? "";
+  const hostPort = authority.slice(authority.lastIndexOf("@") + 1);
+  if (
+    parsed.protocol !== "https:" ||
+    authority.includes("@") ||
+    parsed.username ||
+    parsed.password ||
+    parsed.port ||
+    hostPort.includes(":") ||
+    rawUrl.includes("#") ||
+    !cfg.listingHosts.some(
+      (host) => parsed.hostname.toLowerCase() === host.toLowerCase()
+    )
+  ) {
+    return null;
+  }
+  const propertyId = parsed.searchParams.get("propertyId");
+  const slug = propertyId?.replace(/-(?:sale|lease)$/i, "") || null;
   if (!slug) return null;
   return (
     `https://buildout.com/plugins/${cfg.pluginKey}/${cfg.host}/inventory/` +
@@ -738,8 +785,12 @@ export function buildoutDetailDocIsUsable(
 // the input url (URL-keyed completion) plus the harvested media/links/documents/
 // images and full-page markdown. Returns null on a derivation or scrape failure
 // so the worker leaves the claim queued. NOT used by the bulk collect path.
-export async function enrichBuildoutDetail(sourceKey: string, listingUrl: string): Promise<any | null> {
-  const iframeUrl = buildoutDetailIframeUrl(sourceKey, listingUrl);
+export async function enrichBuildoutDetail(
+  sourceKey: string,
+  listingUrl: string,
+  detailConfig?: BuildoutDetailConfig
+): Promise<any | null> {
+  const iframeUrl = buildoutDetailIframeUrl(sourceKey, listingUrl, detailConfig);
   if (!iframeUrl) {
     console.error(`  enrich/buildout(${sourceKey}): no iframe url for ${listingUrl}`);
     return null;
@@ -767,7 +818,7 @@ export async function enrichBuildoutDetail(sourceKey: string, listingUrl: string
   // marks the claim done by url. The artifact is additive: only the harvested
   // child arrays + markdown are populated; price/status are left to the inventory
   // feed (the iframe has no authoritative status field worth flipping).
-  const cfg = BUILDOUT_ENRICH_CONFIG[sourceKey];
+  const cfg = detailConfig ?? BUILDOUT_ENRICH_CONFIG[sourceKey];
   return {
     id: buildoutSlugFromUrl(listingUrl),
     url: listingUrl,

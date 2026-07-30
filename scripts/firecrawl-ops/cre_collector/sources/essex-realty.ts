@@ -496,7 +496,7 @@ export function mapEssexDetail(
     detailObservedAt,
     freshnessProvenance: {
       ...observation,
-      detailScope: "property_detail",
+      detailScope: "detail_page",
     },
     preserveChildCollections: monitor ? true : undefined,
   });

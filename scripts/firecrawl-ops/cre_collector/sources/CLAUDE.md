@@ -22,7 +22,7 @@
 | Transport | Sources |
 |-----------|---------|
 | Firecrawl `scrapeJson` / `scrapeDoc` / `scrapeRaw` | cbre, colliers-main, jll, jll-investor, cushman, transwestern, avison-young (detail), newmark (cred bootstrap), buildout (fallback), savills (validated fallback only) |
-| Direct `fetch` (no Firecrawl) | cbre-dealflow, colliers (RCM), newmark (Algolia), marcus-millichap, nai-global, buildout (preferred path for svn/lee), savills (server-rendered public list pages) |
+| Direct `fetch` (no Firecrawl) | cbre-dealflow, colliers (RCM), newmark (Algolia), marcus-millichap, nai-global, buildout (preferred path for registered sources), savills (server-rendered public list pages) |
 
 Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for interstitials), `lib/broker.ts`, `lib/html.ts`, `lib/util.ts` (`pmap`, `prune`).
 
@@ -42,14 +42,14 @@ Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for in
 | marcus-millichap | `DealId` from map tile | **Lease skipped**; list API caps ~100; map ActivityIds required |
 | avison-young | SharpLaunch `row.id` | **Full runs skip detail** unless `AVISON_YOUNG_DETAIL_LIMIT` set |
 | nai-global | `infabode:{id}` (prefixed in adapter) | Bulk public `publicPosts` detail fields; full and monitor share the conservative `FOR_SALE_ON_MARKET` source-eligibility rule. Do not activate provider status. |
-| svn / lee | `propertyId` base from URL | Strip `-(sale|lease)`; dual rows merge to `sale_or_lease` |
+| Buildout sources | `propertyId` base from URL | Strip `-(sale|lease)`; dual rows merge to `sale_or_lease` |
 | savills | `ExternalPropertyID` | Direct server-rendered `__NEXT_DATA__`; provider `NextUrl` only, so an invalid or incomplete page fails closed |
 
 ## Monitor Mode Matrix
 
 | Behavior | Sources |
 |----------|---------|
-| Monitor ≈ full (same rows) | cbre, buildout (svn/lee), savills |
+| Monitor ≈ full (same rows) | cbre, registered Buildout sources, savills |
 | Monitor = enum, skips detail | cushman, marcus, colliers-main, newmark (skips People lookup), avison-young, transwestern |
 | Monitor ≈ full (bulk public detail fields) | nai-global |
 | Monitor returns `[]` | jll, jll-investor, cbre-dealflow, colliers (ST) - id only on detail page |
@@ -69,17 +69,27 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `jll.ts` | Search pages + `__NEXT_DATA__`; disk detail cache `out/cache/jll-detail/`; strict runs set `JLL_DETAIL_CACHE_MIN_CACHED_AT` |
 | `jll-investor.ts` | US sitemap + detail; sale only |
 | `colliers-main.ts` | XML sitemap + JSON-LD; resumable JSONL cache; live sitemap `lastmod` controls reuse; CF challenge retries |
-| `buildout.ts` | Shared inventory; svn/lee wired in `collect.ts` |
+| `buildout.ts` | Shared fail-closed inventory adapter |
+| `buildout-registry.ts` | Governed single-token Buildout source definitions |
 | `savills.ts` | Sale and lease: structured `__NEXT_DATA__`; provider `NextUrl` pagination; direct fetch with validated Firecrawl fallback |
 
 ## Buildout (`buildout.ts`) - Shared Adapter
 
 - **No server-side sale/lease filter**; one inventory fetch per `pluginKey`, `buildoutCache` shared across sale+lease passes.
-- **svn/lee**: `requireCompletePages: true` (any page fail aborts); durable page cache at `out/cache/buildout/{slug}/page-NNNN.json`.
+- **Registered strict sources**: `requireCompletePages: true` (any page fail aborts); stable provider ordering and durable source-scoped page cache at `out/cache/buildout/{slug}/page-NNNN.json`.
+- Cache policy is fail-fresh by default: ordinary collection reads live and
+  writes every validated page (`read=false`, `write=true`). Explicit
+  `BUILDOUT_USE_PAGE_CACHE`, cache-only, and cache-assembly modes read and
+  write. `BUILDOUT_REFRESH_PAGE_CACHE=1` forces live reads and still writes.
 - Lee assembly: all pages 0–332 present before `BUILDOUT_ASSEMBLE_FROM_CACHE=1`. Partial windows without cache-only → hard error.
 - `buildoutFailureCache`: sale pass failure blocks lease pass retry in same process.
 - Env: `BUILDOUT_CACHE_DIR`, `BUILDOUT_PAGE_START`/`END`, `BUILDOUT_CACHE_ONLY`, `BUILDOUT_ASSEMBLE_FROM_CACHE`, `BUILDOUT_PAGE_JITTER_MS`.
 - Manual freshness run: `BUILDOUT_REFRESH_PAGE_CACHE=1` bypasses durable page-cache reads, fetches the current inventory once per source invocation, and overwrites each successfully fetched cache page. It keeps the in-process sale/lease share. It fails fast if combined with cache-only or cache-assembly recovery modes.
+- The governed registry contains all 25 historical single-token public feeds
+  recovered from commit `6245a7144`. `REGISTERED_BUILDOUT_SOURCE_KEYS` is the
+  exact typed inventory; registry, ingest, checkpoint, SQL, and enrichment
+  parity tests prevent partial admission. Offline proof does not replace a
+  current live canary and guarded database readback for each source.
 
 ## Key Env Vars (by source)
 

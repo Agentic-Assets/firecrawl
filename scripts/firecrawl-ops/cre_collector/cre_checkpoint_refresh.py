@@ -32,6 +32,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from cre_ingest import (
     AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS,
+    BUILDOUT_SOURCE_KEYS,
     CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS,
     INVENTORY_ONLY_SOURCE_DEFINITIONS,
     SOURCE_TO_BROKERAGE,
@@ -394,7 +395,7 @@ def fresh_source_env(
     else:
         clear("CRE_REQUIRE_FRESH_PROPERTY_DETAILS")
 
-    if source in {"svn", "lee-associates", "franklin-street"}:
+    if source in BUILDOUT_SOURCE_KEYS:
         clear("BUILDOUT_CACHE_ONLY")
         clear("BUILDOUT_ASSEMBLE_FROM_CACHE")
         clear("BUILDOUT_USE_PAGE_CACHE")

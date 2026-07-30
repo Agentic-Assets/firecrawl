@@ -406,11 +406,30 @@ test("BUILDOUT_REFRESH_PAGE_CACHE forces a live read and refreshes the durable c
   clearEnv(ENV_KEYS);
 });
 
-test("Buildout page cache policy preserves cache reuse by default", () => {
+test("Buildout page cache policy writes but never reads during ordinary collection", () => {
   clearEnv(ENV_KEYS);
   assert.equal(buildoutRefreshPageCache(), false);
-  assert.deepEqual(buildoutPageCachePolicy({ usePageCache: true }), { read: true, write: true });
-  assert.deepEqual(buildoutPageCachePolicy({}), { read: false, write: false });
+  assert.deepEqual(buildoutPageCachePolicy({ usePageCache: true }), {
+    read: false,
+    write: true,
+  });
+  assert.deepEqual(buildoutPageCachePolicy({}), { read: false, write: true });
+  clearEnv(ENV_KEYS);
+});
+
+test("Buildout page cache reads require an explicit operator cache mode", () => {
+  for (const name of [
+    "BUILDOUT_USE_PAGE_CACHE",
+    "BUILDOUT_CACHE_ONLY",
+    "BUILDOUT_ASSEMBLE_FROM_CACHE",
+  ]) {
+    clearEnv(ENV_KEYS);
+    process.env[name] = "1";
+    assert.deepEqual(buildoutPageCachePolicy({}), {
+      read: true,
+      write: true,
+    });
+  }
   clearEnv(ENV_KEYS);
 });
 
@@ -474,6 +493,65 @@ test("buildoutDetailIframeUrl composes the Buildout iframe content URL per sourc
   // Unknown source key or missing slug -> null (no iframe URL to scrape).
   assert.equal(buildoutDetailIframeUrl("unknown", "https://x/?propertyId=a"), null);
   assert.equal(buildoutDetailIframeUrl("svn", "https://svn.com/properties/"), null);
+});
+
+test("buildoutDetailIframeUrl rejects unowned or unclean claim URLs", () => {
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://attacker.example/properties/?propertyId=rexall"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://user:secret@svn.com/properties/?propertyId=rexall"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://@svn.com/properties/?propertyId=rexall"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "http://svn.com/properties/?propertyId=rexall"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://svn.com:8443/properties/?propertyId=rexall"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://svn.com:443/properties/?propertyId=rexall"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://svn.com/properties/?propertyId=rexall#other-listing"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://svn.com/properties/?propertyId=rexall#"
+    ),
+    null
+  );
 });
 
 test("buildout detail admission rejects HTTP-success missing-listing shells", () => {

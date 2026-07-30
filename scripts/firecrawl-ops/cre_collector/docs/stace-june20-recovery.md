@@ -37,6 +37,49 @@ This means the stale branch was operationally useful even though its code never 
 - Voit LoopLink and CoStar dead-end warning.
 - Generic sitemap plus LLM extraction design.
 
+## Governed Buildout Restoration
+
+All 25 historical single-token public feeds from commit `6245a7144` have been
+ported into the current collector:
+
+- `faris-lee`
+- `fortis-net-lease`
+- `unique-properties`
+- `kiser-group`
+- `pinnacle-rea`
+- `cawley-chicago`
+- `bradford-allen`
+- `hudson-peters`
+- `gibson-commercial`
+- `leibsohn`
+- `nai-hiffman`
+- `nai-martens`
+- `bull-realty`
+- `tri-commercial`
+- `berger-commercial`
+- `nai-bergman`
+- `nai-isaac`
+- `trinity-partners`
+- `metro-commercial`
+- `33-realty`
+- `nai-hallmark`
+- `nai-plotkin`
+- `greysteel`
+- `nai-talcor`
+- `nai-dominion`
+
+The recovered company names, public plugin identifiers, and listings pages live
+in `sources/buildout-registry.ts`. They route through the current shared
+Buildout adapter with stable ordering, complete-page reconciliation,
+single-source cache namespaces, optional validated detail coordinates,
+targeted-detail enrichment, child preservation, and the existing sale/lease
+identity collapse. Registry, SQL-seed, strict-freshness, cache-policy, detail,
+and identity parity are covered offline.
+
+This is code admission, not production-freshness proof. Run each source as a
+bounded live canary, inspect its exact artifact and source totals, and require a
+guarded database readback before lifecycle reconciliation or a freshness claim.
+
 ## Write Risk
 
 `cre_ingest_rest.py` can delete and replace active brokerage rows. It must not be used until current-main mark-missing, source completeness, and dry-run gates are ported into it.

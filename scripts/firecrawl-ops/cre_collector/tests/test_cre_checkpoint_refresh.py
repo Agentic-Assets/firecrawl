@@ -190,7 +190,7 @@ def freshness_generation_row(source="svn", active=2, **overrides):
 
 def test_registry_is_exactly_the_ingest_registry():
     assert refresh.SOURCE_KEYS == tuple(refresh.SOURCE_TO_BROKERAGE)
-    assert len(refresh.SOURCE_KEYS) == 20
+    assert len(refresh.SOURCE_KEYS) == 51
 
 
 def test_authoritative_feed_admission_does_not_expand_inventory_only_storage():
@@ -408,6 +408,26 @@ def test_buildout_retry_refreshes_live_pages_instead_of_reusing_failed_snapshot(
     assert summary["BUILDOUT_REFRESH_PAGE_CACHE"] == "1"
 
 
+@pytest.mark.parametrize("source", sorted(refresh.BUILDOUT_SOURCE_KEYS))
+def test_every_buildout_source_gets_exact_fresh_cache_environment(tmp_path, source):
+    env, summary = refresh.fresh_source_env(
+        source,
+        tmp_path,
+        {
+            "BUILDOUT_CACHE_ONLY": "1",
+            "BUILDOUT_ASSEMBLE_FROM_CACHE": "1",
+            "BUILDOUT_USE_PAGE_CACHE": "1",
+        },
+        attempt_number=2,
+    )
+    assert env["BUILDOUT_REFRESH_PAGE_CACHE"] == "1"
+    assert env["BUILDOUT_CACHE_DIR"] == str(tmp_path / "cache" / "buildout")
+    assert "BUILDOUT_CACHE_ONLY" not in env
+    assert "BUILDOUT_ASSEMBLE_FROM_CACHE" not in env
+    assert "BUILDOUT_USE_PAGE_CACHE" not in env
+    assert summary["BUILDOUT_CACHE_ONLY"] == "<unset>"
+
+
 @pytest.mark.parametrize(
     "source,key,value",
     [
@@ -423,28 +443,7 @@ def test_fresh_env_source_profiles(tmp_path, source, key, value):
     assert value in env[key]
 
 
-@pytest.mark.parametrize(
-    "source",
-    [
-        "jll",
-        "jll-investor",
-        "colliers-main",
-        "cushman-wakefield",
-        "svn",
-        "lee-associates",
-        "franklin-street",
-        "newmark",
-        "savills",
-        "transwestern",
-        "marcus-millichap",
-        "nai-global",
-        "matthews",
-        "cbre",
-        "srs",
-        "hanley",
-        "kidder-mathews",
-    ],
-)
+@pytest.mark.parametrize("source", sorted(refresh.STRICT_FRESHNESS_SOURCE_KEYS))
 def test_fresh_env_requires_provenance_for_strict_sources(tmp_path, source):
     env, _summary = refresh.fresh_source_env(source, tmp_path, {})
     assert env["CRE_REQUIRE_FRESH_DETAILS"] == "1"
