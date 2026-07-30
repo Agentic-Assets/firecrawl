@@ -123,6 +123,7 @@ CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS = {
     "srs",
     "hanley",
     "kidder-mathews",
+    "newmark",
 }
 AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS = (
     BUILDOUT_SOURCE_KEYS
@@ -1477,28 +1478,38 @@ def merge_rows(a, b):
 
 
 def validate_duplicate_identity_before_merge(a, b):
-    """Fail closed whenever a Colliers canonical ProjectId repeats.
+    """Fail closed when a source contract requires one row per identity.
 
     Colliers SalesTracker is sale-only and the collector proves a one-to-one
     card-to-ProjectId mapping. Any repeated canonical ID therefore violates the
-    source contract, even when the duplicate payload happens to look identical.
-    Other providers retain the existing sale/lease merge behavior because their
-    adapters intentionally normalize dual-mode rows to one external ID.
+    source contract. Newmark's NIM adapter likewise proves unique output slugs
+    across its disjoint sale and lease feeds. Other providers retain the
+    existing sale/lease merge behavior because their adapters intentionally
+    normalize dual-mode rows to one external ID.
     """
-    def contains_colliers_source(payload):
+    def contains_source(payload, source_key):
         if not isinstance(payload, dict):
             return False
-        if payload.get("sourceKey") == "colliers":
+        if payload.get("sourceKey") == source_key:
             return True
         return any(
-            contains_colliers_source(payload.get(key))
+            contains_source(payload.get(key), source_key)
             for key in ("primary", "secondary_pass")
         )
 
-    if (
-        not contains_colliers_source(a.get("raw_data"))
-        or not contains_colliers_source(b.get("raw_data"))
-    ):
+    source_name = next(
+        (
+            name
+            for key, name in (
+                ("colliers", "Colliers"),
+                ("newmark", "Newmark"),
+            )
+            if contains_source(a.get("raw_data"), key)
+            and contains_source(b.get("raw_data"), key)
+        ),
+        None,
+    )
+    if source_name is None:
         return
 
     conflicts = []
@@ -1512,8 +1523,13 @@ def validate_duplicate_identity_before_merge(a, b):
         if conflicts
         else ""
     )
+    identity_label = (
+        "canonical ProjectId"
+        if source_name == "Colliers"
+        else "canonical identity"
+    )
     raise ValueError(
-        "duplicate Colliers canonical ProjectId "
+        f"duplicate {source_name} {identity_label} "
         f"{a.get('external_id')!r}{detail}"
     )
 

@@ -501,7 +501,10 @@ def test_strict_cbre_artifact_accepts_current_authoritative_feed(tmp_path):
     assert stats["staged_unique"] == 2
 
 
-@pytest.mark.parametrize("source", ["srs", "hanley", "kidder-mathews"])
+@pytest.mark.parametrize(
+    "source",
+    ["srs", "hanley", "kidder-mathews", "newmark"],
+)
 def test_strict_child_preserving_feed_artifact_is_accepted(tmp_path, source):
     path = write_artifact(
         tmp_path,
@@ -537,7 +540,10 @@ def test_strict_nonpreserving_feed_rejects_preservation_rows(tmp_path, source):
         )
 
 
-@pytest.mark.parametrize("source", ["srs", "hanley", "kidder-mathews"])
+@pytest.mark.parametrize(
+    "source",
+    ["srs", "hanley", "kidder-mathews", "newmark"],
+)
 def test_strict_child_preserving_feed_requires_preservation_rows(tmp_path, source):
     path = write_artifact(tmp_path, strict_artifact(source))
     with pytest.raises(
@@ -803,6 +809,22 @@ def test_colliers_duplicate_canonical_project_id_is_rejected(tmp_path):
         match="duplicate canonical ProjectId",
     ):
         refresh.validate_source_artifact(path, "colliers", ATTEMPT)
+
+
+def test_newmark_duplicate_canonical_slug_is_rejected(tmp_path):
+    payload = artifact(
+        source="newmark",
+        listings=[
+            listing("newmark", 1, "sale", id="same-slug"),
+            listing("newmark", 2, "lease", id="same-slug"),
+        ],
+    )
+    path = write_artifact(tmp_path, payload)
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="newmark artifact contains duplicate canonical identity",
+    ):
+        refresh.validate_source_artifact(path, "newmark", ATTEMPT)
 
 
 def test_colliers_duplicate_inventory_identity_is_rejected(tmp_path):

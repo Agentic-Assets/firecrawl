@@ -237,7 +237,11 @@ export function assertNewmarkAlgoliaInventoryPage(
   return result;
 }
 
-export async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+export async function srcNewmarkAlgoliaLegacy(
+  tx: Tx,
+  max: number,
+  monitor: boolean
+): Promise<SourceResult> {
   const sourceUrl = "https://www.nmrk.com/properties";
   const strictFreshness = requireFreshDetails();
   if (!newmarkCreds) {
@@ -509,5 +513,360 @@ export async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise
     // True only when an Algolia facet exceeded the ~1000-hit cap with no further
     // sub-split this run; the enumeration is then a known under-count.
     truncated: coverageTruncated,
+  };
+}
+
+const NEWMARK_NIM_API =
+  "https://api-public.nim.nmrk.com/api/properties/search";
+export const NEWMARK_NIM_PAGE_SIZE = 100;
+export const NEWMARK_NIM_MAX_ATTEMPTS = 6;
+const NEWMARK_NIM_TRANSIENT_STATUSES = new Set([
+  408,
+  425,
+  429,
+  500,
+  502,
+  503,
+  504,
+]);
+const NEWMARK_NIM_US_REGIONS = new Set([
+  "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+  "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+  "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+  "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+  "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+  "DC", "PR", "VI", "GU", "AS", "MP",
+]);
+
+function newmarkNimType(tx: Tx): 1 | 2 {
+  return tx === "sale" ? 2 : 1;
+}
+
+export function assertNewmarkNimPage(
+  result: any,
+  context: string,
+  page: number,
+  take: number,
+  expectedTotal: number | null,
+  strict = requireFreshDetails()
+): { data: any[]; total: number } {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error(`Newmark NIM ${context} response is not an object`);
+  }
+  if (!Array.isArray(result.data)) {
+    throw new Error(`Newmark NIM ${context} response has no data array`);
+  }
+  if (!Number.isInteger(result.total) || result.total < 0) {
+    throw new Error(
+      `Newmark NIM ${context} response requires a finite nonnegative integer total`
+    );
+  }
+  if (expectedTotal !== null && result.total !== expectedTotal) {
+    throw new Error(
+      `Newmark NIM ${context} total changed from ${expectedTotal} to ${result.total}`
+    );
+  }
+  if (strict) {
+    const expectedRows = Math.max(
+      0,
+      Math.min(take, result.total - page * take)
+    );
+    if (result.data.length !== expectedRows) {
+      throw new Error(
+        `Newmark NIM ${context} returned ${result.data.length}/${expectedRows} expected rows`
+      );
+    }
+    for (const [index, row] of result.data.entries()) {
+      if (
+        !row
+        || typeof row !== "object"
+        || Array.isArray(row)
+        || !clean(row.id)
+        || !clean(row.slug)
+        || !Array.isArray(row.properties)
+        || row.properties.length === 0
+      ) {
+        throw new Error(
+          `Newmark NIM ${context} row ${index} lacks provider identity or properties`
+        );
+      }
+    }
+  }
+  return result;
+}
+
+export async function newmarkNimPage(
+  tx: Tx,
+  page: number,
+  take = NEWMARK_NIM_PAGE_SIZE,
+  timeoutMs = 30_000,
+  retryBaseMs = 1_000
+): Promise<any> {
+  const requestBody = JSON.stringify({
+    type: newmarkNimType(tx),
+    listingIds: [],
+    propertyTypes: [],
+    brokers: [],
+    statuses: [],
+    propertySubtypes: [],
+    spaceTypes: [],
+    buildingClasses: [],
+    leaseTypes: [],
+    excludeUnpriced: false,
+    page,
+    take,
+    sortBy: "createdOn",
+    isAscending: true,
+  });
+  for (let attempt = 1; attempt <= NEWMARK_NIM_MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let response: Response | undefined;
+    let requestError: unknown;
+    try {
+      response = await fetch(NEWMARK_NIM_API, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "user-agent": "Mozilla/5.0 CRE collector",
+        },
+        body: requestBody,
+        signal: controller.signal,
+      });
+      if (response.ok) {
+        // Keep the same deadline through the response body. Fetch resolving
+        // headers is not proof that the JSON payload has arrived.
+        return await response.json();
+      }
+    } catch (error) {
+      requestError = controller.signal.aborted
+        ? new Error(`Newmark NIM request timed out after ${timeoutMs}ms`)
+        : error;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (requestError !== undefined) {
+      if (attempt === NEWMARK_NIM_MAX_ATTEMPTS) throw requestError;
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.min(retryBaseMs * 2 ** (attempt - 1), 16_000)
+        )
+      );
+      continue;
+    }
+    if (response === undefined) {
+      throw new Error("Newmark NIM request ended without a response");
+    }
+    if (
+      !NEWMARK_NIM_TRANSIENT_STATUSES.has(response.status)
+      || attempt === NEWMARK_NIM_MAX_ATTEMPTS
+    ) {
+      throw new Error(
+        `Newmark NIM HTTP ${response.status} after ${attempt} attempt(s)`
+      );
+    }
+    await response.body?.cancel();
+    const retryDelayMs = newmarkNimRetryDelayMs(
+      response.status,
+      response.headers.get("retry-after"),
+      attempt,
+      retryBaseMs
+    );
+    await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+  }
+  throw new Error("Newmark NIM request exhausted without a response");
+}
+
+export type NewmarkNimRegion = "us" | "non_us" | "ambiguous";
+
+export function newmarkNimRetryDelayMs(
+  status: number,
+  retryAfterHeader: string | null,
+  attempt: number,
+  retryBaseMs = 1_000
+): number {
+  const defaultDelayMs = status === 429
+    ? Math.min(10_000 * 2 ** (attempt - 1), 60_000)
+    : Math.min(retryBaseMs * 2 ** (attempt - 1), 16_000);
+  if (retryAfterHeader === null || retryAfterHeader.trim() === "") {
+    return defaultDelayMs;
+  }
+  const retryAfterSeconds = Number(retryAfterHeader);
+  return Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0
+    ? Math.min(retryAfterSeconds * 1_000, 60_000)
+    : defaultDelayMs;
+}
+
+export function newmarkNimPropertyRegion(property: any): NewmarkNimRegion {
+  const country = clean(property?.countryCode)?.toUpperCase();
+  if (country) {
+    return country === "US" || country === "USA" ? "us" : "non_us";
+  }
+  const state = clean(property?.stateAbbreviation)?.toUpperCase();
+  const postalCode = clean(property?.zip);
+  if (
+    state
+    && NEWMARK_NIM_US_REGIONS.has(state)
+    && postalCode
+    && /^\d{5}(?:-\d{4})?$/.test(postalCode)
+  ) {
+    return "us";
+  }
+  return "ambiguous";
+}
+
+export function mapNewmarkNimListing(
+  record: any,
+  tx: Tx,
+  inventoryObservedAt: string,
+  strict = requireFreshDetails()
+): any | null {
+  const properties = Array.isArray(record?.properties) ? record.properties : [];
+  if (strict && properties.length === 0) {
+    throw new Error(
+      `Newmark NIM record ${clean(record?.id) ?? "unknown"} has no property geography`
+    );
+  }
+  const property = properties.find(
+    (candidate: any) => newmarkNimPropertyRegion(candidate) === "us"
+  );
+  if (
+    !property
+    && strict
+    && properties.some(
+      (candidate: any) => newmarkNimPropertyRegion(candidate) === "ambiguous"
+    )
+  ) {
+    throw new Error(
+      `Newmark NIM record ${clean(record?.id) ?? "unknown"} has ambiguous geography`
+    );
+  }
+  const slug = clean(record?.slug);
+  if (!property || !slug) return null;
+  const providerUrl = clean(record?.externalWebsiteUrl);
+  const canonicalUrl =
+    providerUrl?.match(/^https:\/\/www\.nmrk\.com\/properties\/[^?#]+/i)?.[0]
+    ?? `https://www.nmrk.com/properties/${encodeURIComponent(slug)}`;
+  const observation = detailObservation(
+    "newmark_nim_public_inventory",
+    "live",
+    inventoryObservedAt
+  );
+  const priceText = clean(record?.priceSummary);
+  const propertyType = clean(property?.propertyTypeLabelOverride);
+  return {
+    id: slug,
+    name: clean(record?.name) ?? clean(property?.address) ?? slug,
+    transactionType: tx === "sale" ? "Sale" : "Lease",
+    assetType: propertyType,
+    street: clean(property?.address),
+    city: clean(property?.city),
+    state:
+      clean(property?.stateAbbreviation)
+      ?? clean(property?.stateDescription),
+    postalCode: clean(property?.zip),
+    county: clean(property?.county),
+    country: "US",
+    latitude: num(property?.latitude),
+    longitude: num(property?.longitude),
+    salePriceUsd: tx === "sale" ? newmarkSalePrice(priceText) : null,
+    salePriceText: tx === "sale" ? priceText : null,
+    buildingSizeSqft: num(property?.sizeSf) ?? num(property?.size),
+    canonicalUrl,
+    url: canonicalUrl,
+    lastUpdated: clean(record?.modifiedOn)?.slice(0, 10) ?? null,
+    inventoryObservedAt,
+    preserveChildCollections: true,
+    freshnessProvenance: {
+      detailScope: "authoritative_inventory_feed",
+      generationId: observation.generationId,
+      method: observation.method,
+      cacheDisposition: observation.cacheDisposition,
+    },
+    rawNewmarkNimRecord: record,
+  };
+}
+
+export async function srcNewmark(
+  tx: Tx,
+  max: number,
+  _monitor: boolean
+): Promise<SourceResult> {
+  const strict = requireFreshDetails();
+  const first = assertNewmarkNimPage(
+    await newmarkNimPage(tx, 0),
+    `${tx} page 0`,
+    0,
+    NEWMARK_NIM_PAGE_SIZE,
+    null,
+    strict
+  );
+  const pageCount = Math.ceil(first.total / NEWMARK_NIM_PAGE_SIZE);
+  const remainingPages = Array.from(
+    { length: Math.max(0, pageCount - 1) },
+    (_, index) => index + 1
+  );
+  const remaining = await pmap(
+    remainingPages,
+    1,
+    async (page) =>
+      assertNewmarkNimPage(
+        await newmarkNimPage(tx, page),
+        `${tx} page ${page}`,
+        page,
+        NEWMARK_NIM_PAGE_SIZE,
+        first.total,
+        strict
+      )
+  );
+  const globalRows = [
+    ...first.data,
+    ...remaining.flatMap((page) => page.data),
+  ];
+  const uniqueProviderIds = new Set(
+    globalRows.map((record) => clean(record?.id))
+  );
+  if (
+    strict
+    && (
+      globalRows.length !== first.total
+      || uniqueProviderIds.size !== first.total
+      || uniqueProviderIds.has(null)
+    )
+  ) {
+    throw new Error(
+      `Newmark NIM ${tx} reconciliation failed: `
+      + `${globalRows.length} rows, ${uniqueProviderIds.size} unique IDs, `
+      + `${first.total} provider total`
+    );
+  }
+
+  const inventoryObservedAt = new Date().toISOString();
+  const usListings = globalRows
+    .map((record) =>
+      mapNewmarkNimListing(record, tx, inventoryObservedAt, strict)
+    )
+    .filter((listing): listing is any => listing !== null);
+  const uniqueSlugs = new Set(usListings.map((listing) => listing.id));
+  if (strict && uniqueSlugs.size !== usListings.length) {
+    throw new Error(
+      `Newmark NIM ${tx} output identity reconciliation failed: `
+      + `${usListings.length} rows, ${uniqueSlugs.size} unique slugs`
+    );
+  }
+  const capped = usListings.slice(
+    0,
+    Math.min(max, Number.MAX_SAFE_INTEGER)
+  );
+  return {
+    company: "Newmark",
+    sourceUrl: "https://nim.nmrk.com/properties?mode=external",
+    method:
+      "Newmark NIM public search API (complete ascending pagination; US inventory filtered after global reconciliation)",
+    totalAvailable: usListings.length,
+    listings: capped,
+    truncated: capped.length < usListings.length,
   };
 }

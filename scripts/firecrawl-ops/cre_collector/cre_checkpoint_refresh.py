@@ -475,9 +475,18 @@ def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, int]:
             rejected += 1
             continue
         key = (row["slug"], row["external_id"])
-        if listing.get("sourceKey") == "colliers" and key in merged:
+        if (
+            listing.get("sourceKey") in {"colliers", "newmark"}
+            and key in merged
+        ):
+            identity_label = (
+                "canonical ProjectId"
+                if listing.get("sourceKey") == "colliers"
+                else "canonical identity"
+            )
             raise ArtifactValidationError(
-                "Colliers artifact contains duplicate canonical ProjectId "
+                f"{listing.get('sourceKey')} artifact contains duplicate "
+                f"{identity_label} "
                 f"{key[1]!r}"
             )
         merged[key] = merge_rows(merged[key], row) if key in merged else row
@@ -852,12 +861,12 @@ def validate_source_artifact(
             f"{stats['detail_errors']} listing(s) contain detailError"
         )
     if (
-        expected_source == "colliers"
+        expected_source in {"colliers", "newmark"}
         and stats["flat_listings"]
         != stats["staged_unique"] + stats["inventory_only"]
     ):
         raise ArtifactValidationError(
-            "Colliers artifact does not preserve a one-to-one provider-card "
+            f"{expected_source} artifact does not preserve a one-to-one provider-card "
             "identity across canonical and inventory-only rows"
         )
     if (

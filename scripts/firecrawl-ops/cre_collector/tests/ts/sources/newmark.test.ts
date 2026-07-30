@@ -14,8 +14,15 @@ import {
   classifyNewmarkPeopleLookup,
   newmarkPeopleFailure,
   newmarkPeopleListingFields,
+  assertNewmarkNimPage,
+  mapNewmarkNimListing,
+  NEWMARK_NIM_PAGE_SIZE,
+  NEWMARK_NIM_MAX_ATTEMPTS,
   NEWMARK_BOOTSTRAP_MAX_AGE_MS,
+  newmarkNimPage,
+  newmarkNimRetryDelayMs,
   srcNewmark,
+  srcNewmarkAlgoliaLegacy,
 } from "../../../sources/newmark.js";
 import { firecrawl } from "../../../lib/scrape.js";
 
@@ -208,7 +215,7 @@ test("Newmark People transport failures fail strict mode but preserve non-strict
   );
 });
 
-test("strict Newmark may cache credential bootstrap but rejects live Algolia pages without nbHits", async () => {
+test("legacy Newmark may cache credential bootstrap but rejects live Algolia pages without nbHits", async () => {
   const oldScrape = firecrawl.scrape;
   const oldFetch = globalThis.fetch;
   const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
@@ -239,7 +246,7 @@ test("strict Newmark may cache credential bootstrap but rejects live Algolia pag
   try {
     process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
     await assert.rejects(
-      () => srcNewmark("sale", Infinity, true),
+      () => srcNewmarkAlgoliaLegacy("sale", Infinity, true),
       /nonnegative integer nbHits/
     );
     assert.equal(scrapeCalls.length, 1);
@@ -251,6 +258,339 @@ test("strict Newmark may cache credential bootstrap but rejects live Algolia pag
     globalThis.fetch = oldFetch;
     if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
     else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("strict Newmark NIM pages require stable totals, exact page lengths, and identities", () => {
+  const row = {
+    id: "provider-1",
+    slug: "listing-1",
+    properties: [{ countryCode: "US" }],
+  };
+  assert.deepEqual(
+    assertNewmarkNimPage(
+      { data: [row], total: 1 },
+      "sale page 0",
+      0,
+      NEWMARK_NIM_PAGE_SIZE,
+      null,
+      true
+    ),
+    { data: [row], total: 1 }
+  );
+  assert.throws(
+    () =>
+      assertNewmarkNimPage(
+        { data: [], total: 1 },
+        "sale page 0",
+        0,
+        NEWMARK_NIM_PAGE_SIZE,
+        null,
+        true
+      ),
+    /returned 0\/1 expected rows/
+  );
+  assert.throws(
+    () =>
+      assertNewmarkNimPage(
+        { data: [row], total: 2 },
+        "sale page 0",
+        0,
+        NEWMARK_NIM_PAGE_SIZE,
+        1,
+        true
+      ),
+    /total changed from 1 to 2/
+  );
+  assert.throws(
+    () =>
+      assertNewmarkNimPage(
+        {
+          data: [
+            {
+              id: "provider-1",
+              properties: [{ countryCode: "US" }],
+            },
+          ],
+          total: 1,
+        },
+        "sale page 0",
+        0,
+        NEWMARK_NIM_PAGE_SIZE,
+        null,
+        true
+      ),
+    /lacks provider identity or properties/
+  );
+  assert.throws(
+    () =>
+      assertNewmarkNimPage(
+        {
+          data: [{ id: "provider-1", slug: "listing-1", properties: [] }],
+          total: 1,
+        },
+        "sale page 0",
+        0,
+        NEWMARK_NIM_PAGE_SIZE,
+        null,
+        true
+      ),
+    /lacks provider identity or properties/
+  );
+});
+
+test("Newmark NIM mapping preserves legacy identity and child collections", () => {
+  const mapped = mapNewmarkNimListing(
+    {
+      id: "provider-123",
+      slug: "100-main-street-sale",
+      name: "100 Main Street",
+      modifiedOn: "2026-07-29T12:34:56Z",
+      priceSummary: "$1,250,000",
+      externalWebsiteUrl:
+        "https://www.nmrk.com/properties/100-main-street-sale?campaign=test",
+      properties: [
+        {
+          countryCode: "CA",
+          address: "Canadian property",
+        },
+        {
+          countryCode: "US",
+          address: "100 Main Street",
+          city: "Tulsa",
+          stateAbbreviation: "OK",
+          zip: "74103",
+          county: "Tulsa",
+          latitude: 36.154,
+          longitude: -95.993,
+          sizeSf: 25000,
+          propertyTypeLabelOverride: "Industrial",
+        },
+      ],
+    },
+    "sale",
+    "2026-07-30T02:30:00Z"
+  );
+  assert.ok(mapped);
+  assert.equal(mapped.id, "100-main-street-sale");
+  assert.equal(mapped.street, "100 Main Street");
+  assert.equal(mapped.salePriceUsd, 1_250_000);
+  assert.equal(
+    mapped.canonicalUrl,
+    "https://www.nmrk.com/properties/100-main-street-sale"
+  );
+  assert.equal(mapped.lastUpdated, "2026-07-29");
+  assert.equal(mapped.preserveChildCollections, true);
+  assert.equal(
+    mapped.freshnessProvenance.detailScope,
+    "authoritative_inventory_feed"
+  );
+  assert.equal(mapped.contactsDetailed, undefined);
+  assert.equal(mapped.media, undefined);
+  assert.equal(mapped.documents, undefined);
+});
+
+test("Newmark NIM geography admits a blank-country US state and ZIP but fails ambiguity", () => {
+  const base = {
+    id: "provider-blank-country",
+    slug: "blank-country-us-listing",
+    properties: [
+      {
+        countryCode: null,
+        address: "1 Main Street",
+        city: "Tulsa",
+        stateAbbreviation: "OK",
+        zip: "74103",
+      },
+    ],
+  };
+  assert.equal(
+    mapNewmarkNimListing(
+      base,
+      "lease",
+      "2026-07-30T02:30:00Z",
+      true
+    )?.state,
+    "OK"
+  );
+  assert.throws(
+    () =>
+      mapNewmarkNimListing(
+        {
+          ...base,
+          properties: [
+            {
+              countryCode: null,
+              address: "Unknown location",
+              stateAbbreviation: "ZZ",
+              zip: "ABCDE",
+            },
+          ],
+        },
+        "lease",
+        "2026-07-30T02:30:00Z",
+        true
+      ),
+    /ambiguous geography/
+  );
+  assert.throws(
+    () =>
+      mapNewmarkNimListing(
+        {
+          id: "provider-empty-properties",
+          slug: "empty-properties",
+          properties: [],
+        },
+        "lease",
+        "2026-07-30T02:30:00Z",
+        true
+      ),
+    /has no property geography/
+  );
+});
+
+test("Newmark NIM source reconciles complete global pagination before US filtering", async () => {
+  const oldFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const calls: any[] = [];
+  const records = Array.from({ length: 101 }, (_, index) => ({
+    id: `provider-${index}`,
+    slug: `listing-${index}`,
+    name: `Listing ${index}`,
+    createdOn: `2026-07-29T00:${String(index % 60).padStart(2, "0")}:00Z`,
+    modifiedOn: "2026-07-29T12:00:00Z",
+    properties: [
+      {
+        countryCode: index === 100 ? "US" : "CA",
+        address: `${index} Main Street`,
+        city: index === 100 ? "Tulsa" : "Toronto",
+        stateAbbreviation: index === 100 ? "OK" : "ON",
+        zip: index === 100 ? "74103" : "M5H",
+      },
+    ],
+  }));
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    calls.push(body);
+    const start = body.page * body.take;
+    return new Response(
+      JSON.stringify({
+        data: records.slice(start, start + body.take),
+        total: records.length,
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }
+    );
+  };
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const result = await srcNewmark("sale", Infinity, true);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(
+      calls.map((call) => call.page),
+      [0, 1]
+    );
+    assert.ok(
+      calls.every(
+        (call) =>
+          call.type === 2
+          && call.take === NEWMARK_NIM_PAGE_SIZE
+          && call.sortBy === "createdOn"
+          && call.isAscending === true
+      )
+    );
+    assert.equal(result.totalAvailable, 1);
+    assert.equal(result.listings.length, 1);
+    assert.equal(result.listings[0]?.id, "listing-100");
+    assert.equal(result.truncated, false);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("Newmark NIM retries a transient rate limit but not a client error", async () => {
+  const oldFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    if (calls === 1) {
+      return new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "0" },
+      });
+    }
+    return new Response(JSON.stringify({ data: [], total: 0 }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    assert.deepEqual(await newmarkNimPage("lease", 0), {
+      data: [],
+      total: 0,
+    });
+    assert.equal(calls, 2);
+
+    calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      return new Response("bad request", { status: 400 });
+    };
+    await assert.rejects(
+      () => newmarkNimPage("lease", 0),
+      /HTTP 400 after 1 attempt/
+    );
+    assert.equal(calls, 1);
+    assert.equal(NEWMARK_NIM_MAX_ATTEMPTS, 6);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});
+
+test("Newmark NIM applies default 429 backoff only when Retry-After is absent", () => {
+  assert.equal(newmarkNimRetryDelayMs(429, null, 1), 10_000);
+  assert.equal(newmarkNimRetryDelayMs(429, "", 2), 20_000);
+  assert.equal(newmarkNimRetryDelayMs(429, "0", 3), 0);
+  assert.equal(newmarkNimRetryDelayMs(503, null, 2), 2_000);
+});
+
+test("Newmark NIM deadline covers a stalled response body and retries it", async () => {
+  const oldFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    if (calls === 1) {
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            init?.signal?.addEventListener("abort", () => {
+              controller.error(new Error("aborted body"));
+            });
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }
+      );
+    }
+    return new Response(JSON.stringify({ data: [], total: 0 }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    assert.deepEqual(
+      await newmarkNimPage("sale", 0, NEWMARK_NIM_PAGE_SIZE, 5, 0),
+      { data: [], total: 0 }
+    );
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = oldFetch;
   }
 });
 

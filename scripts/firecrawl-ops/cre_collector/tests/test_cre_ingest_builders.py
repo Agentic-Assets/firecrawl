@@ -564,7 +564,10 @@ def test_nonstrict_direct_artifact_rejects_future_listing_observation():
         )
 
 
-@pytest.mark.parametrize("source", ["srs", "hanley", "kidder-mathews"])
+@pytest.mark.parametrize(
+    "source",
+    ["srs", "hanley", "kidder-mathews", "newmark"],
+)
 def test_strict_child_preserving_authoritative_feed_is_accepted(source):
     ci.validate_strict_artifact_freshness(
         _strict_freshness_payload(
@@ -589,7 +592,10 @@ def test_strict_nonpreserving_authoritative_feed_rejects_child_preservation(sour
         ci.validate_strict_artifact_freshness(payload)
 
 
-@pytest.mark.parametrize("source", ["srs", "hanley", "kidder-mathews"])
+@pytest.mark.parametrize(
+    "source",
+    ["srs", "hanley", "kidder-mathews", "newmark"],
+)
 def test_strict_child_preserving_feed_requires_preservation_marker(source):
     payload = _strict_freshness_payload(
         source,
@@ -617,7 +623,7 @@ def test_direct_ingest_allows_unmarked_strict_source_without_explicit_flag(fresh
 
 @pytest.mark.parametrize(
     "source",
-    ["cbre", "srs", "hanley", "kidder-mathews"],
+    ["cbre", "srs", "hanley", "kidder-mathews", "newmark"],
 )
 def test_checkpoint_strict_sources_are_allowed_without_explicit_cli_contract(source):
     payload = {
@@ -1729,6 +1735,27 @@ def test_colliers_identity_guard_rejects_even_identical_duplicate_project_id():
         }
     )
     with pytest.raises(ValueError, match="duplicate Colliers canonical ProjectId"):
+        ci.validate_duplicate_identity_before_merge(first, duplicate)
+
+
+def test_newmark_identity_guard_rejects_duplicate_ingest_slug():
+    first = _row(
+        {
+            "sourceKey": "newmark",
+            "id": "same-slug",
+            "url": "https://www.nmrk.com/properties/same-slug",
+            "transactionMode": "sale",
+        }
+    )
+    duplicate = _row(
+        {
+            "sourceKey": "newmark",
+            "id": "same-slug",
+            "url": "https://www.nmrk.com/properties/same-slug",
+            "transactionMode": "lease",
+        }
+    )
+    with pytest.raises(ValueError, match="duplicate Newmark canonical identity"):
         ci.validate_duplicate_identity_before_merge(first, duplicate)
 
 
