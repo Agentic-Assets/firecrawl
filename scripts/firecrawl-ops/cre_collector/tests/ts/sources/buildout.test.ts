@@ -8,6 +8,8 @@ import {
   buildoutInventoryUrl,
   buildoutRefreshPageCache,
   buildoutPageCachePolicy,
+  buildoutQueryFingerprint,
+  requireCompleteBuildoutInventory,
   envBool,
   envInt,
   buildoutCacheSlug,
@@ -24,6 +26,9 @@ import {
   enrichBuildoutDetail,
   assertBuildoutInventoryPage,
   assertBuildoutInventoryReconciled,
+  buildoutInventory,
+  buildoutCache,
+  buildoutFailureCache,
   buildoutCapTruncated,
 } from "../../../sources/buildout.js";
 import { firecrawl } from "../../../lib/scrape.js";
@@ -62,8 +67,16 @@ test("buildoutInventoryUrl includes plugin key and page", () => {
     "https://buildout.com/plugins/abc123plugin/inventory.json?page=7"
   );
   assert.equal(
-    buildoutInventoryUrl("abc123plugin", 7, "created_at asc"),
-    "https://buildout.com/plugins/abc123plugin/inventory.json?page=7&q%5Bs%5D%5B%5D=created_at+asc"
+    buildoutInventoryUrl("abc123plugin", 7, "created_at asc, id asc"),
+    "https://buildout.com/plugins/abc123plugin/inventory.json?page=7&q%5Bs%5D%5B%5D=created_at+asc%2C+id+asc"
+  );
+});
+
+test("Buildout query fingerprint separates inventory sort contracts", () => {
+  assert.equal(buildoutQueryFingerprint({}), '{"inventorySort":null}');
+  assert.notEqual(
+    buildoutQueryFingerprint({ inventorySort: "created_at asc" }),
+    buildoutQueryFingerprint({ inventorySort: "created_at asc, id asc" })
   );
 });
 
@@ -118,6 +131,35 @@ test("Buildout page cache is admitted only within its refresh generation", () =>
     assert.equal(readBuildoutPageCache("SVN", "plugin-key", 0, {})?.inventory.length, 1);
     process.env.CRE_REFRESH_GENERATION = "generation-b";
     assert.equal(readBuildoutPageCache("SVN", "plugin-key", 0, {}), null);
+  } finally {
+    if (oldDir === undefined) delete process.env.BUILDOUT_CACHE_DIR;
+    else process.env.BUILDOUT_CACHE_DIR = oldDir;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("Buildout page cache rejects a different query contract", () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "buildout-query-cache-"));
+  const oldDir = process.env.BUILDOUT_CACHE_DIR;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  try {
+    process.env.BUILDOUT_CACHE_DIR = cacheDir;
+    process.env.CRE_REFRESH_GENERATION = "generation-query";
+    const data = { inventory: [{ id: 1 }], meta: { total: 1, limit: 30 } };
+    const original = { inventorySort: "created_at asc" };
+    writeBuildoutPageCache("Lee", "plugin-key", 0, original, data);
+    assert.ok(readBuildoutPageCache("Lee", "plugin-key", 0, original));
+    assert.equal(
+      readBuildoutPageCache(
+        "Lee",
+        "plugin-key",
+        0,
+        { inventorySort: "created_at asc, id asc" }
+      ),
+      null
+    );
   } finally {
     if (oldDir === undefined) delete process.env.BUILDOUT_CACHE_DIR;
     else process.env.BUILDOUT_CACHE_DIR = oldDir;
@@ -212,6 +254,18 @@ test("strict Buildout inventory pages require coherent integer metadata and exac
   );
 });
 
+test("complete-page Buildout runs stay strict without the freshness environment", () => {
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  try {
+    delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    assert.equal(requireCompleteBuildoutInventory({}), false);
+    assert.equal(requireCompleteBuildoutInventory({ requireCompletePages: true }), true);
+  } finally {
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
 test("strict Buildout reconciliation rejects missing and duplicate identities", () => {
   assert.throws(
     () =>
@@ -238,6 +292,90 @@ test("strict Buildout reconciliation rejects missing and duplicate identities", 
   assert.doesNotThrow(() =>
     assertBuildoutInventoryReconciled([{ id: 1 }, { id: "2" }], 2, true)
   );
+});
+
+test("complete Buildout inventory rejects repeated pinned rows instead of deduping", async () => {
+  const oldFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const pluginKey = "repeat-pinned-plugin";
+  const page0 = Array.from({ length: 30 }, (_, index) => ({ id: index + 1 }));
+  const page1 = [
+    { id: 30 },
+    ...Array.from({ length: 29 }, (_, index) => ({ id: index + 31 })),
+  ];
+  const requestedUrls: string[] = [];
+  try {
+    delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    buildoutCache.clear();
+    buildoutFailureCache.clear();
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      const page = Number(new URL(url).searchParams.get("page"));
+      return new Response(
+        JSON.stringify({
+          inventory: page === 0 ? page0 : page1,
+          meta: { total: 60, limit: 30 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    };
+    await assert.rejects(
+      buildoutInventory("Pinned Feed", pluginKey, {
+        preferDirectJson: true,
+        requireCompletePages: true,
+        inventorySort: "created_at asc, id asc",
+        pageConcurrency: 1,
+      }),
+      /duplicate inventory identity 30/
+    );
+    assert.ok(requestedUrls.length >= 2);
+    assert.ok(
+      requestedUrls.every(
+        (url) =>
+          new URL(url).searchParams.get("q[s][]") ===
+          "created_at asc, id asc"
+      )
+    );
+  } finally {
+    globalThis.fetch = oldFetch;
+    buildoutCache.clear();
+    buildoutFailureCache.clear();
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("complete Buildout inventory rejects an oversized page declaration early", async () => {
+  const oldFetch = globalThis.fetch;
+  const pluginKey = "oversized-page-plugin";
+  let requests = 0;
+  try {
+    buildoutCache.clear();
+    buildoutFailureCache.clear();
+    globalThis.fetch = async () => {
+      requests += 1;
+      return new Response(
+        JSON.stringify({
+          inventory: Array.from({ length: 30 }, (_, index) => ({ id: index + 1 })),
+          meta: { total: 36001, limit: 30 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    };
+    await assert.rejects(
+      buildoutInventory("Oversized Feed", pluginKey, {
+        preferDirectJson: true,
+        requireCompletePages: true,
+      }),
+      /exceeding the 1200-page safety cap/
+    );
+    assert.equal(requests, 1);
+  } finally {
+    globalThis.fetch = oldFetch;
+    buildoutCache.clear();
+    buildoutFailureCache.clear();
+  }
 });
 
 test("BUILDOUT_REFRESH_PAGE_CACHE forces a live read and refreshes the durable cache", () => {

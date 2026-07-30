@@ -56,6 +56,25 @@ export function buildoutInventoryUrl(
   return url.toString();
 }
 
+export function buildoutQueryFingerprint(opts: BuildoutInventoryOpts): string {
+  return JSON.stringify({
+    inventorySort: clean(opts.inventorySort),
+  });
+}
+
+function buildoutMemoryCacheKey(
+  pluginKey: string,
+  opts: BuildoutInventoryOpts
+): string {
+  return `${pluginKey}\u0000${buildoutQueryFingerprint(opts)}`;
+}
+
+export function requireCompleteBuildoutInventory(
+  opts: BuildoutInventoryOpts
+): boolean {
+  return requireFreshDetails() || opts.requireCompletePages === true;
+}
+
 type BuildoutInventoryPageExpectation = {
   total: number;
   limit: number;
@@ -254,6 +273,7 @@ export function readBuildoutPageCache(
   try {
     const cached = JSON.parse(readFileSync(path, "utf8"));
     if (cached.pluginKey !== pluginKey || cached.page !== page) return null;
+    if (cached.queryFingerprint !== buildoutQueryFingerprint(opts)) return null;
     if (!generationMatches(cached.generationId)) return null;
     const data = cached.data;
     if (!data || !Array.isArray(data.inventory)) return null;
@@ -289,6 +309,7 @@ export function writeBuildoutPageCache(
       {
         pluginKey,
         page,
+        queryFingerprint: buildoutQueryFingerprint(opts),
         cachedAt,
         generationId: observation?.generationId ?? refreshGenerationId(),
         data,
@@ -360,6 +381,7 @@ export async function fetchBuildoutInventoryPage(
   expected: BuildoutInventoryPageExpectation | null = null
 ): Promise<any> {
   const url = buildoutInventoryUrl(pluginKey, page, opts.inventorySort);
+  const requireComplete = requireCompleteBuildoutInventory(opts);
   const cachePolicy = buildoutPageCachePolicy(opts);
   if (cachePolicy.read) {
     const cached = readBuildoutPageCache(company, pluginKey, page, opts);
@@ -386,7 +408,7 @@ export async function fetchBuildoutInventoryPage(
   });
   // Reject malformed, partial, or cross-page-incoherent strict pages before
   // they can poison the generation-scoped recovery cache.
-  assertBuildoutInventoryPage(data, page, expected);
+  assertBuildoutInventoryPage(data, page, expected, requireComplete);
   annotateBuildoutPage(data, {
     observedAt: new Date().toISOString(),
     generationId: refreshGenerationId(),
@@ -401,23 +423,30 @@ export async function buildoutInventory(
   pluginKey: string,
   opts: BuildoutInventoryOpts = {}
 ): Promise<{ items: any[]; total: number | null }> {
-  const strictFreshness = requireFreshDetails();
-  const cached = buildoutCache.get(pluginKey);
+  const requireComplete = requireCompleteBuildoutInventory(opts);
+  const memoryCacheKey = buildoutMemoryCacheKey(pluginKey, opts);
+  const cached = buildoutCache.get(memoryCacheKey);
   if (
     cached &&
-    (!strictFreshness ||
+    (!requireComplete ||
       (cached.strictValidated === true && generationMatches(cached.generationId)))
   ) {
     return cached;
   }
-  if (cached) buildoutCache.delete(pluginKey);
-  const cachedFailure = buildoutFailureCache.get(pluginKey);
+  if (cached) buildoutCache.delete(memoryCacheKey);
+  const cachedFailure = buildoutFailureCache.get(memoryCacheKey);
   if (cachedFailure) throw cachedFailure;
   const first = await fetchBuildoutInventoryPage(company, pluginKey, 0, opts);
-  const firstPage = assertBuildoutInventoryPage(first, 0, null, strictFreshness);
-  const total: number | null = strictFreshness ? firstPage.total : first.meta?.total ?? null;
-  const limit: number = strictFreshness ? firstPage.limit : first.meta?.limit ?? 30;
-  const pages = total && total > limit ? Math.min(Math.ceil(total / limit), 1200) : 1;
+  const firstPage = assertBuildoutInventoryPage(first, 0, null, requireComplete);
+  const total: number | null = requireComplete ? firstPage.total : first.meta?.total ?? null;
+  const limit: number = requireComplete ? firstPage.limit : first.meta?.limit ?? 30;
+  const declaredPages = total && total > limit ? Math.ceil(total / limit) : 1;
+  if (requireComplete && declaredPages > 1200) {
+    throw new Error(
+      `${company}: Buildout declared ${declaredPages} pages, exceeding the 1200-page safety cap`
+    );
+  }
+  const pages = Math.min(declaredPages, 1200);
   const pageWindow = buildoutPageWindow(pages);
   const cacheOnly = envBool("BUILDOUT_CACHE_ONLY");
   const assembleFromCache = envBool("BUILDOUT_ASSEMBLE_FROM_CACHE");
@@ -460,9 +489,9 @@ export async function buildoutInventory(
           pluginKey,
           p,
           opts,
-          strictFreshness ? firstPage : null
+          requireComplete ? firstPage : null
         );
-        assertBuildoutInventoryPage(d, p, firstPage, strictFreshness);
+        assertBuildoutInventoryPage(d, p, firstPage, requireComplete);
         inventoryByPage.set(p, buildoutInventoryRows(d));
         done++;
         if (done % 25 === 0) console.error(`  ${company}: inventory page ${done}/${pages}`);
@@ -503,7 +532,7 @@ export async function buildoutInventory(
                   jsonAttempts: opts.jsonAttempts ?? 4,
                   jsonBackoffMs: opts.jsonBackoffMs ?? 12000,
                 },
-                strictFreshness ? firstPage : null
+                requireComplete ? firstPage : null
               );
             }
           } else {
@@ -516,10 +545,10 @@ export async function buildoutInventory(
                 jsonAttempts: opts.jsonAttempts ?? 4,
                 jsonBackoffMs: opts.jsonBackoffMs ?? 12000,
               },
-              strictFreshness ? firstPage : null
+              requireComplete ? firstPage : null
             );
           }
-          assertBuildoutInventoryPage(d, p, firstPage, strictFreshness);
+          assertBuildoutInventoryPage(d, p, firstPage, requireComplete);
           if (!d?.__creFreshness) {
             annotateBuildoutPage(d, {
               observedAt: new Date().toISOString(),
@@ -545,7 +574,7 @@ export async function buildoutInventory(
         `${company}: cache-only Buildout window complete (${pageWindow?.start ?? 0}-${pageWindow?.end ?? pages - 1}); ` +
           `${attemptedPages.size} page(s) attempted, ${missingAttempted.length} selected page(s) missing; not producing listing artifact`
       );
-      buildoutFailureCache.set(pluginKey, cacheError);
+      buildoutFailureCache.set(memoryCacheKey, cacheError);
       throw cacheError;
     }
 
@@ -553,7 +582,7 @@ export async function buildoutInventory(
       const windowError = new Error(
         `${company}: Buildout page window was requested without BUILDOUT_CACHE_ONLY=1 or BUILDOUT_ASSEMBLE_FROM_CACHE=1; refusing partial listing artifact`
       );
-      buildoutFailureCache.set(pluginKey, windowError);
+      buildoutFailureCache.set(memoryCacheKey, windowError);
       throw windowError;
     }
 
@@ -574,20 +603,20 @@ export async function buildoutInventory(
       const abortError = new Error(
         `${company}: ${failedPages.size}/${pages} inventory pages failed (${shown}${suffix}${unattempted}); aborting this source`
       );
-      buildoutFailureCache.set(pluginKey, abortError);
+      buildoutFailureCache.set(memoryCacheKey, abortError);
       throw abortError;
     }
   }
   const items: any[] = [];
   for (let p = 0; p < pages; p++) items.push(...(inventoryByPage.get(p) ?? []));
-  assertBuildoutInventoryReconciled(items, total, strictFreshness);
+  assertBuildoutInventoryReconciled(items, total, requireComplete);
   const result: BuildoutInventoryResult = {
     items,
     total,
-    strictValidated: strictFreshness,
+    strictValidated: requireComplete,
     generationId: refreshGenerationId(),
   };
-  buildoutCache.set(pluginKey, result);
+  buildoutCache.set(memoryCacheKey, result);
   console.error(
     `  ${company}: full inventory cached (${items.length} items, total ${total ?? "?"}${failedPages.size ? `, ${failedPages.size} pages skipped` : ""})`
   );

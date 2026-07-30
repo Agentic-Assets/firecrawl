@@ -126,7 +126,7 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
           // supported sort. New listings then append instead of shifting every
           // prior page; strict metadata and unique-ID reconciliation still fail
           // closed if the source mutates or hides a row during pagination.
-          inventorySort: "created_at asc",
+          inventorySort: "created_at asc, id asc",
           pageConcurrency: 3,
           requireCompletePages: true,
           cacheSlug: "lee-associates",
