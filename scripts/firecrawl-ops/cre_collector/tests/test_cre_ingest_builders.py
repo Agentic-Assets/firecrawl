@@ -566,7 +566,7 @@ def test_nonstrict_direct_artifact_rejects_future_listing_observation():
 
 @pytest.mark.parametrize(
     "source",
-    ["srs", "hanley", "kidder-mathews", "newmark"],
+    ["cushman-wakefield", "srs", "hanley", "kidder-mathews", "newmark"],
 )
 def test_strict_child_preserving_authoritative_feed_is_accepted(source):
     ci.validate_strict_artifact_freshness(
@@ -594,7 +594,7 @@ def test_strict_nonpreserving_authoritative_feed_rejects_child_preservation(sour
 
 @pytest.mark.parametrize(
     "source",
-    ["srs", "hanley", "kidder-mathews", "newmark"],
+    ["cushman-wakefield", "srs", "hanley", "kidder-mathews", "newmark"],
 )
 def test_strict_child_preserving_feed_requires_preservation_marker(source):
     payload = _strict_freshness_payload(
@@ -623,7 +623,14 @@ def test_direct_ingest_allows_unmarked_strict_source_without_explicit_flag(fresh
 
 @pytest.mark.parametrize(
     "source",
-    ["cbre", "srs", "hanley", "kidder-mathews", "newmark"],
+    [
+        "cbre",
+        "cushman-wakefield",
+        "srs",
+        "hanley",
+        "kidder-mathews",
+        "newmark",
+    ],
 )
 def test_checkpoint_strict_sources_are_allowed_without_explicit_cli_contract(source):
     payload = {

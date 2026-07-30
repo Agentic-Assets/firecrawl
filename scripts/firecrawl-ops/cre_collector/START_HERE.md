@@ -100,10 +100,22 @@ Child handling is source-class-specific:
 - CBRE and the Buildout feeds (`svn`, `lee-associates`, `franklin-street`) are
   authoritative inventory feeds and replace, rather than preserve, their
   collector-owned child collections.
-- SRS, Hanley, and Kidder Mathews are authoritative inventory feeds that must
-  preserve existing child collections.
+- Cushman & Wakefield, SRS, Hanley, Kidder Mathews, and Newmark are
+  authoritative inventory feeds that must preserve existing child collections.
+  Cushman's strict path uses its uncached, exactly reconciled public search API
+  and makes an inventory-freshness claim only; it does not claim that challenged
+  rendered detail pages or their child data were refreshed.
 - Other strict sources require an admitted current detail observation and must
   not use child preservation as a substitute for a failed detail read.
+
+JLL uses the public `SearchResults` GraphQL API for complete U.S. inventory
+enumeration, then requires each rendered detail payload to match the enumerated
+provider ID and normalized URL before detail freshness is admitted. JLL Investor
+Center keeps its public sitemap as the discovery surface and reads each public
+Next.js structured-detail JSON payload; it does not use the robots-disallowed
+filtered search index. Explicit non-U.S. detail is excluded, and unresolved
+country, identity, alias, or build-rotation failures make the strict pass
+truncated.
 
 The manifest records `ingesting` before launching a live write. If execution
 stops in that window, resume performs a generation-exact database readback and

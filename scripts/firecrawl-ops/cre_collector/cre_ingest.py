@@ -120,6 +120,7 @@ INVENTORY_ONLY_SOURCE_DEFINITIONS = {
 
 BUILDOUT_SOURCE_KEYS = {"svn", "lee-associates", "franklin-street"}
 CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS = {
+    "cushman-wakefield",
     "srs",
     "hanley",
     "kidder-mathews",

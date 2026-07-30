@@ -392,7 +392,7 @@ def fresh_source_env(
         set_value("AVISON_YOUNG_DETAIL_LIMIT", "1000000")
     if source == "cushman-wakefield":
         clear("CUSHMAN_QUERY")
-        set_value("CUSHMAN_DETAIL_MODE", "full")
+        set_value("CUSHMAN_DETAIL_MODE", "base")
     if source == "colliers-main":
         set_value(
             "COLLIERS_MAIN_DETAIL_CACHE_PATH",

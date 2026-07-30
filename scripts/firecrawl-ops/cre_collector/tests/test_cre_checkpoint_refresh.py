@@ -310,7 +310,7 @@ def test_fresh_env_for_buildout_uses_empty_resumable_run_cache(tmp_path):
         ("jll", "JLL_DETAIL_CACHE_DIR", "jll-detail"),
         ("jll-investor", "JLL_INVESTOR_SITEMAP_SCAN_LIMIT", "0"),
         ("avison-young", "AVISON_YOUNG_DETAIL_LIMIT", "1000000"),
-        ("cushman-wakefield", "CUSHMAN_DETAIL_MODE", "full"),
+        ("cushman-wakefield", "CUSHMAN_DETAIL_MODE", "base"),
         ("colliers-main", "COLLIERS_MAIN_MAX_FETCHES_PER_RUN", "2500"),
     ],
 )
@@ -503,7 +503,7 @@ def test_strict_cbre_artifact_accepts_current_authoritative_feed(tmp_path):
 
 @pytest.mark.parametrize(
     "source",
-    ["srs", "hanley", "kidder-mathews", "newmark"],
+    ["cushman-wakefield", "srs", "hanley", "kidder-mathews", "newmark"],
 )
 def test_strict_child_preserving_feed_artifact_is_accepted(tmp_path, source):
     path = write_artifact(
@@ -542,7 +542,7 @@ def test_strict_nonpreserving_feed_rejects_preservation_rows(tmp_path, source):
 
 @pytest.mark.parametrize(
     "source",
-    ["srs", "hanley", "kidder-mathews", "newmark"],
+    ["cushman-wakefield", "srs", "hanley", "kidder-mathews", "newmark"],
 )
 def test_strict_child_preserving_feed_requires_preservation_rows(tmp_path, source):
     path = write_artifact(tmp_path, strict_artifact(source))

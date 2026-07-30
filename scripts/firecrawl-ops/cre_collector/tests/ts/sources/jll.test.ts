@@ -28,9 +28,15 @@ import {
   jllStrandedDocs,
   jllStrandedStructured,
   fetchJllSearchPage,
+  jllGraphqlItemToListing,
+  jllGraphqlPriceText,
+  jllGraphqlVariables,
+  parseJllGraphqlSearchPage,
   scrapeJllDetailDoc,
   assertJllSearchPageCompleteness,
   assertJllFilterCoverage,
+  assertJllIdentityReconciliation,
+  enrichJllListing,
 } from "../../../sources/jll.js";
 import { harvestDetail } from "../../../lib/harvest.js";
 import { firecrawl } from "../../../lib/scrape.js";
@@ -214,6 +220,176 @@ test("parseJllSearchPage preserves an explicit zero-result total", () => {
   );
 });
 
+test("JLL GraphQL variables use exact public search paging and tenure inputs", () => {
+  assert.deepEqual(jllGraphqlVariables("sale", "office", 2), {
+    market: "us",
+    language: "en",
+    propertyTypes: ["office"],
+    tenureTypes: ["sale"],
+    skip: 50,
+    take: 50,
+    orderBy: {
+      field: "dateModified",
+      direction: "desc",
+      imagePriority: true,
+    },
+  });
+  assert.deepEqual(jllGraphqlVariables("lease", "industrial", 1), {
+    market: "us",
+    language: "en",
+    propertyTypes: ["industrial"],
+    tenureTypes: ["rent"],
+    skip: 0,
+    take: 50,
+    orderBy: {
+      field: "dateModified",
+      direction: "desc",
+      imagePriority: true,
+    },
+  });
+  assert.throws(() => jllGraphqlVariables("sale", "office", 0), /positive integer/);
+});
+
+test("JLL GraphQL item mapping preserves identity, location, price, surface, and images", () => {
+  const item = {
+    id: "656588",
+    title: "Medical Office",
+    images: [
+      "https://images.example/one.jpg",
+      "mailto:not-an-image@example.com",
+      "https://images.example/one.jpg",
+    ],
+    address: "80 W Gore St",
+    propertyTypes: ["office", "medical"],
+    tenureTypes: ["sale", "rent"],
+    salePrice: { amount: 3250000, currency: "USD", unit: null },
+    rentPrice: { amount: 32.5, currency: "USD", unit: "feet" },
+    hidePrice: false,
+    pageUrl: "/listings/80-w-gore-st-south-orange",
+    latitude: 28.53077,
+    longitude: -81.37962,
+    city: "Orlando",
+    state: "FL",
+    postcode: "32806",
+    surfaceAreas: [
+      {
+        value: 7237,
+        unit: "feet",
+        metrics: [{ value: 7237, unit: "feet" }],
+      },
+    ],
+  };
+  const sale = jllGraphqlItemToListing(item, "sale", "office", 1, 323);
+  assert.equal(sale.id, "656588");
+  assert.equal(sale.url, "https://property.jll.com/listings/80-w-gore-st-south-orange");
+  assert.equal(sale.street, "80 W Gore St");
+  assert.equal(sale.city, "Orlando");
+  assert.equal(sale.state, "FL");
+  assert.equal(sale.postalCode, "32806");
+  assert.equal(sale.latitude, 28.53077);
+  assert.equal(sale.longitude, -81.37962);
+  assert.equal(sale.salePriceUsd, 3250000);
+  assert.equal(sale.salePriceText, "$3,250,000");
+  assert.equal(sale.buildingSizeSqft, 7237);
+  assert.equal(sale.sizeText, "7,237 SF");
+  assert.deepEqual(sale.photos, ["https://images.example/one.jpg"]);
+  assert.deepEqual(sale.jllSearchResult.propertyTypes, ["office", "medical"]);
+  assert.deepEqual(sale.jllSearchResult.tenureTypes, ["sale", "rent"]);
+
+  const lease = jllGraphqlItemToListing(item, "lease", "office", 1, 4300);
+  assert.equal(lease.leaseRateText, "$32.50/feet");
+  assert.equal(lease.salePriceUsd, undefined);
+  assert.equal(jllGraphqlPriceText({ amount: 42, currency: "CAD", unit: "month" }), "CAD 42/month");
+});
+
+test("JLL GraphQL item mapping respects hidden prices and rejects unsafe identities", () => {
+  const hidden = jllGraphqlItemToListing(
+    {
+      id: "1",
+      pageUrl: "/listings/hidden",
+      hidePrice: true,
+      salePrice: { amount: 1000000, currency: "USD" },
+    },
+    "sale",
+    "office",
+    1,
+    1
+  );
+  assert.equal(hidden.salePriceUsd, undefined);
+  assert.equal(hidden.salePriceText, undefined);
+  assert.throws(
+    () => jllGraphqlItemToListing({ pageUrl: "/listings/missing" }, "sale", "office", 1, 1),
+    /lacks an id/
+  );
+  assert.throws(
+    () =>
+      jllGraphqlItemToListing(
+        { id: "1", pageUrl: "https://evil.example/listings/stolen" },
+        "sale",
+        "office",
+        1,
+        1
+      ),
+    /non-listing pageUrl/
+  );
+});
+
+test("parseJllGraphqlSearchPage validates exact response shape, zero totals, and identities", () => {
+  const payload = {
+    data: {
+      properties: {
+        count: 1,
+        items: [{ id: "1", title: "One", pageUrl: "/listings/one" }],
+      },
+    },
+  };
+  const parsed = parseJllGraphqlSearchPage(payload, "sale", "office", 1);
+  assert.equal(parsed.total, 1);
+  assert.equal(parsed.listings.length, 1);
+  assert.deepEqual(
+    parseJllGraphqlSearchPage(
+      { data: { properties: { count: 0, items: [] } } },
+      "sale",
+      "office",
+      1
+    ),
+    { total: 0, listings: [] }
+  );
+
+  for (const [bad, message] of [
+    [null, /not an object/],
+    [{ errors: [{ message: "nope" }] }, /contains errors/],
+    [{ data: {} }, /lacks data\.properties/],
+    [{ data: { properties: { count: -1, items: [] } } }, /nonnegative count/],
+    [{ data: { properties: { count: 1, items: null } } }, /items array/],
+  ] as const) {
+    assert.throws(
+      () => parseJllGraphqlSearchPage(bad, "sale", "office", 1),
+      message
+    );
+  }
+  assert.throws(
+    () =>
+      parseJllGraphqlSearchPage(
+        {
+          data: {
+            properties: {
+              count: 2,
+              items: [
+                { id: "1", pageUrl: "/listings/one" },
+                { id: "1", pageUrl: "/listings/two" },
+              ],
+            },
+          },
+        },
+        "sale",
+        "office",
+        1
+      ),
+    /duplicate or missing ids\/urls/
+  );
+});
+
 test("strict JLL pagination rejects missing, unstable, and partial page evidence", () => {
   assert.throws(
     () => assertJllSearchPageCompleteness({ total: null, listings: [] }, 1, null, true),
@@ -274,6 +450,74 @@ test("strict JLL filter reconciliation rejects cross-page gaps and duplicates", 
       true
     )
   );
+});
+
+test("JLL inventory identity reconciliation requires a one-to-one provider id and URL mapping", () => {
+  assert.doesNotThrow(() =>
+    assertJllIdentityReconciliation([
+      { id: "101", url: "https://property.jll.com/listings/one" },
+      { id: "101", url: "https://property.jll.com/listings/one/" },
+      { id: "202", url: "https://property.jll.com/listings/two" },
+    ])
+  );
+  assert.throws(
+    () =>
+      assertJllIdentityReconciliation([
+        { id: "101", url: "https://property.jll.com/listings/one" },
+        { id: "101", url: "https://property.jll.com/listings/other" },
+      ]),
+    /maps to multiple listing URLs/
+  );
+  assert.throws(
+    () =>
+      assertJllIdentityReconciliation([
+        { id: "101", url: "https://property.jll.com/listings/one" },
+        { id: "202", url: "https://property.jll.com/listings/one" },
+      ]),
+    /maps to multiple provider ids/
+  );
+});
+
+test("JLL detail enrichment fails closed when provider id or URL differs from inventory", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-identity-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const base = {
+    id: "101",
+    url: "https://property.jll.com/listings/one",
+    name: "Inventory One",
+  };
+  try {
+    writeJllDetailCache(base.url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        '{"props":{"pageProps":{"property":{"id":"202","pageUrl":"/listings/one"}}}}' +
+        "</script>",
+      markdown: "",
+      links: [],
+    });
+    const wrongId = await enrichJllListing(base);
+    assert.equal(wrongId.id, "101");
+    assert.equal(wrongId.url, base.url);
+    assert.match(wrongId.detailError, /provider id mismatch/);
+
+    writeJllDetailCache(base.url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        '{"props":{"pageProps":{"property":{"id":"101","pageUrl":"/listings/other"}}}}' +
+        "</script>",
+      markdown: "",
+      links: [],
+    });
+    const wrongUrl = await enrichJllListing(base);
+    assert.equal(wrongUrl.id, "101");
+    assert.equal(wrongUrl.url, base.url);
+    assert.match(wrongUrl.detailError, /does not match enumerated inventory URL/);
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
 });
 
 test("jll detail cache round-trips through temp dir", () => {
@@ -361,20 +605,163 @@ test("JLL detail cache is generation-specific and preserves observation time", (
   }
 });
 
-test("strict JLL search and detail Firecrawl calls bypass cached responses", async () => {
+test("JLL search uses an uncached GraphQL POST with exact page variables", async () => {
+  const oldFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const calls: Array<{ input: string; init: RequestInit; body: any }> = [];
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    calls.push({ input: String(input), init: init ?? {}, body });
+    return new Response(
+      JSON.stringify({
+        data: {
+          properties: {
+            count: 51,
+            items: [{ id: "last", pageUrl: "/listings/last" }],
+          },
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json; charset=utf-8" } }
+    );
+  };
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const parsed = await fetchJllSearchPage("lease", "industrial", 2);
+    assert.equal(parsed.total, 51);
+    assert.equal(parsed.listings.length, 1);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.input, "https://property.jll.com/api/graphql");
+    assert.equal(calls[0]?.init.method, "POST");
+    assert.equal(calls[0]?.init.cache, "no-store");
+    assert.deepEqual(calls[0]?.body.variables, {
+      market: "us",
+      language: "en",
+      propertyTypes: ["industrial"],
+      tenureTypes: ["rent"],
+      skip: 50,
+      take: 50,
+      orderBy: {
+        field: "dateModified",
+        direction: "desc",
+        imagePriority: true,
+      },
+    });
+    assert.equal(calls[0]?.body.operationName, "SearchResults");
+    assert.match(calls[0]?.body.query, /query SearchResults/);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("JLL GraphQL transport retries transient failures and fails closed on non-JSON", async () => {
+  const oldFetch = globalThis.fetch;
+  let attempts = 0;
+  try {
+    globalThis.fetch = async () => {
+      attempts++;
+      if (attempts === 1) {
+        return new Response("busy", {
+          status: 503,
+          headers: { "content-type": "text/plain" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ data: { properties: { count: 0, items: [] } } }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    };
+    const parsed = await fetchJllSearchPage("sale", "office", 1);
+    assert.deepEqual(parsed, { total: 0, listings: [] });
+    assert.equal(attempts, 2);
+
+    attempts = 0;
+    globalThis.fetch = async () => {
+      attempts++;
+      return new Response("<html>not json</html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    };
+    await assert.rejects(
+      () => fetchJllSearchPage("sale", "office", 1),
+      /non-JSON content-type/
+    );
+    assert.equal(attempts, 1);
+
+    attempts = 0;
+    globalThis.fetch = async () => {
+      attempts++;
+      return new Response("{broken", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    await assert.rejects(
+      () => fetchJllSearchPage("sale", "office", 1),
+      /malformed JSON/
+    );
+    assert.equal(attempts, 1);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});
+
+test("strict JLL GraphQL search retries incomplete page coverage before failing closed", async () => {
+  const oldFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  let attempts = 0;
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    globalThis.fetch = async () => {
+      attempts++;
+      const items =
+        attempts === 1
+          ? [{ id: "partial", pageUrl: "/listings/partial" }]
+          : Array.from({ length: 50 }, (_, index) => ({
+              id: `complete-${index}`,
+              pageUrl: `/listings/complete-${index}`,
+            }));
+      return new Response(
+        JSON.stringify({ data: { properties: { count: 51, items } } }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    };
+    const parsed = await fetchJllSearchPage("sale", "office", 1);
+    assert.equal(parsed.listings.length, 50);
+    assert.equal(attempts, 2);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("strict JLL GraphQL search and detail Firecrawl calls both bypass caches", async () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "jll-strict-transport-"));
   const oldScrape = firecrawl.scrape;
+  const oldFetch = globalThis.fetch;
   const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
   const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
-  const calls: any[] = [];
+  const detailCalls: any[] = [];
+  const searchCalls: RequestInit[] = [];
+  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    searchCalls.push(init ?? {});
+    return new Response(
+      JSON.stringify({
+        data: {
+          properties: {
+            count: 1,
+            items: [{ id: "strict-1", pageUrl: "/listings/strict-1" }],
+          },
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  };
   (firecrawl as any).scrape = async (url: string, options: any) => {
-    calls.push(options);
-    if (url.includes("/search?")) {
-      return {
-        rawHtml:
-          '<h2>1 property</h2><a class="text-base" href="/listings/strict-1"><span>Strict</span><span>Dallas, TX</span></a>',
-      };
-    }
+    detailCalls.push(options);
     return { rawHtml: "<html>detail</html>", markdown: "", links: [] };
   };
   try {
@@ -384,9 +771,13 @@ test("strict JLL search and detail Firecrawl calls bypass cached responses", asy
     await scrapeJllDetailDoc("https://property.jll.com/listings/strict-1", {
       refresh: true,
     });
-    assert.equal(calls.length, 2);
-    assert.ok(calls.every((options) => options.maxAge === 0));
+    assert.equal(searchCalls.length, 1);
+    assert.equal(searchCalls[0]?.cache, "no-store");
+    assert.equal((searchCalls[0]?.headers as Record<string, string>)["cache-control"], "no-cache");
+    assert.equal(detailCalls.length, 1);
+    assert.equal(detailCalls[0]?.maxAge, 0);
   } finally {
+    globalThis.fetch = oldFetch;
     (firecrawl as any).scrape = oldScrape;
     if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
     else process.env.JLL_DETAIL_CACHE_DIR = oldDir;

@@ -28,19 +28,23 @@ export const CUSHMAN_DETAIL_CONCURRENCY = boundedInt(
   1,
   CONCURRENCY
 );
-// The public search API carries the canonical external id and the primary
-// inventory fields. `base` is an explicit recovery mode for a time-bounded
-// additive refresh: it avoids rendering every detail page while preserving
-// existing detail fields through the ingest merge. Normal collection remains
-// `full` so it continues to harvest optional page-only facts.
+// The public search API carries the canonical external id and primary inventory
+// fields. In strict mode it is the authoritative inventory surface: every
+// uncached page is reconciled before rows are admitted, while detail-only
+// fields and child collections remain explicitly preserved. Non-strict full
+// collection can still attempt optional rendered-page enrichment.
 export function cushmanUseBaseRows(monitor: boolean): boolean {
-  return monitor || process.env.CUSHMAN_DETAIL_MODE === "base";
+  return (
+    monitor
+    || requireFreshDetails()
+    || process.env.CUSHMAN_DETAIL_MODE === "base"
+  );
 }
 
-export function assertCushmanFreshnessMode(monitor: boolean): void {
-  if (!monitor && requireFreshDetails() && cushmanUseBaseRows(monitor)) {
+export function assertCushmanFreshnessMode(_monitor: boolean): void {
+  if (requireFreshDetails() && !refreshGenerationId()) {
     throw new Error(
-      "strict CRE refresh requires CUSHMAN_DETAIL_MODE=full; API-base rows cannot prove detail freshness"
+      "Cushman strict authoritative inventory refresh requires CRE_REFRESH_GENERATION"
     );
   }
 }
@@ -462,20 +466,28 @@ export function baseCushmanListing(row: any, tx: Tx): any {
 export function cushmanBaseRefreshListing(
   row: any,
   tx: Tx,
-  inventoryObservedAt = new Date().toISOString()
+  inventoryObservedAt = new Date().toISOString(),
+  strict = requireFreshDetails()
 ): any {
+  const observed = detailObservation(
+    "cushman_search_api",
+    "live",
+    inventoryObservedAt
+  );
   return {
     ...baseCushmanListing(row, tx),
-    // The API-only path is intentionally incomplete. Tell ingestion to
-    // preserve previously harvested contacts/documents/images/media/links
-    // instead of treating omitted arrays as authoritative empty arrays.
+    // The API does not contain rendered-page facts. Preserve previously
+    // harvested contacts/documents/images/media/links and retain rich raw_data;
+    // strict mode proves current inventory only, never current detail.
     preserveChildCollections: true,
     inventoryObservedAt,
     freshnessProvenance: {
-      detailScope: "inventory_only",
-      generationId: refreshGenerationId(),
-      method: "cushman_search_api",
-      cacheDisposition: "live",
+      detailScope: strict
+        ? "authoritative_inventory_feed"
+        : "inventory_only",
+      generationId: observed.generationId,
+      method: observed.method,
+      cacheDisposition: observed.cacheDisposition,
     },
   };
 }
@@ -651,12 +663,15 @@ export async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise
   const rows = collectedRows.slice(0, want);
   const inventoryObservedAt = new Date().toISOString();
   let done = 0;
-  // Monitor mode and explicit API-base recovery both skip per-listing rendering.
-  // The base API mapping preserves the canonical identity and core inventory
-  // fields; additive ingestion retains previously captured detail-only values.
+  // Strict refreshes, monitor mode, and explicit API-base mode skip rendered
+  // detail pages. Strict mode admits the fully reconciled public API as an
+  // authoritative inventory observation while preserving all detail-only
+  // fields and child collections.
   const useBaseRows = cushmanUseBaseRows(monitor);
   const listings = useBaseRows
-    ? rows.map((row) => cushmanBaseRefreshListing(row, tx, inventoryObservedAt))
+    ? rows.map((row) =>
+        cushmanBaseRefreshListing(row, tx, inventoryObservedAt, strict)
+      )
     : await pmap(rows, CUSHMAN_DETAIL_CONCURRENCY, async (row) => {
         const enriched = await enrichCushmanListing(row, tx, inventoryObservedAt);
         done++;
@@ -669,7 +684,9 @@ export async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise
     company: "Cushman & Wakefield",
     sourceUrl,
     method: useBaseRows
-      ? "Cushman public /api/properties/search JSON pagination (API-base recovery mode)"
+      ? strict
+        ? "Cushman public /api/properties/search JSON authoritative inventory feed (uncached complete pagination with exact provider reconciliation; detail children preserved)"
+        : "Cushman public /api/properties/search JSON pagination (API-base mode; detail children preserved)"
       : "Cushman public /api/properties/search JSON pagination plus detail-page raw HTML enrichment",
     totalAvailable: total,
     listings,

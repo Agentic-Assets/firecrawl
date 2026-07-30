@@ -233,27 +233,62 @@ test("API-base mode selection is explicit and monitor-safe", () => {
 test("API-base refresh rows preserve previously harvested child collections", () => {
   const listing = cushmanBaseRefreshListing(
     { id: "cw-base-1", url: "/en/properties/cw-base-1" },
-    "sale"
+    "sale",
+    "2026-07-29T12:00:00Z",
+    false
   );
   assert.equal(listing.preserveChildCollections, true);
   assert.equal(listing.freshnessProvenance.detailScope, "inventory_only");
 });
 
-test("strict freshness rejects Cushman API-base mode before collection", () => {
+test("strict API-base rows carry authoritative inventory provenance and preserve children", () => {
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  try {
+    process.env.CRE_REFRESH_GENERATION = "cushman-generation-1";
+    const listing = cushmanBaseRefreshListing(
+      { id: "cw-strict-1", url: "/en/properties/cw-strict-1" },
+      "sale",
+      "2026-07-29T12:00:00Z",
+      true
+    );
+    assert.equal(listing.inventoryObservedAt, "2026-07-29T12:00:00Z");
+    assert.equal(listing.detailObservedAt, undefined);
+    assert.equal(listing.preserveChildCollections, true);
+    assert.deepEqual(listing.freshnessProvenance, {
+      detailScope: "authoritative_inventory_feed",
+      generationId: "cushman-generation-1",
+      method: "cushman_search_api",
+      cacheDisposition: "live",
+    });
+  } finally {
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+  }
+});
+
+test("strict freshness uses the authoritative API path and requires a generation", () => {
   const oldMode = process.env.CUSHMAN_DETAIL_MODE;
   const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
   try {
-    process.env.CUSHMAN_DETAIL_MODE = "base";
     process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
-    assert.throws(() => assertCushmanFreshnessMode(false), /requires CUSHMAN_DETAIL_MODE=full/);
-    assert.doesNotThrow(() => assertCushmanFreshnessMode(true));
+    delete process.env.CRE_REFRESH_GENERATION;
+    assert.throws(
+      () => assertCushmanFreshnessMode(false),
+      /requires CRE_REFRESH_GENERATION/
+    );
+    process.env.CRE_REFRESH_GENERATION = "cushman-generation-1";
     process.env.CUSHMAN_DETAIL_MODE = "full";
     assert.doesNotThrow(() => assertCushmanFreshnessMode(false));
+    assert.equal(cushmanUseBaseRows(false), true);
+    assert.doesNotThrow(() => assertCushmanFreshnessMode(true));
   } finally {
     if (oldMode === undefined) delete process.env.CUSHMAN_DETAIL_MODE;
     else process.env.CUSHMAN_DETAIL_MODE = oldMode;
     if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
     else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
   }
 });
 
@@ -364,10 +399,11 @@ test("Cushman rejected detail shells never stamp freshness or empty children", a
   }
 });
 
-test("strict Cushman inventory and detail Firecrawl calls bypass cached responses", async () => {
+test("strict Cushman authoritative inventory bypasses cache and never renders details", async () => {
   const oldScrape = firecrawl.scrape;
   const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
   const oldMode = process.env.CUSHMAN_DETAIL_MODE;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
   const calls: any[] = [];
   (firecrawl as any).scrape = async (url: string, options: any) => {
     calls.push(options);
@@ -396,17 +432,30 @@ test("strict Cushman inventory and detail Firecrawl calls bypass cached response
   };
   try {
     process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    process.env.CRE_REFRESH_GENERATION = "cushman-generation-1";
     process.env.CUSHMAN_DETAIL_MODE = "full";
     const result = await srcCushman("sale", 1, false);
     assert.equal(result.listings.length, 1);
-    assert.ok(calls.length >= 2);
+    assert.equal(calls.length, 1);
     assert.ok(calls.every((options) => options.maxAge === 0));
+    assert.equal(
+      result.listings[0].freshnessProvenance.detailScope,
+      "authoritative_inventory_feed"
+    );
+    assert.equal(
+      result.listings[0].freshnessProvenance.generationId,
+      "cushman-generation-1"
+    );
+    assert.equal(result.listings[0].preserveChildCollections, true);
+    assert.equal(result.listings[0].detailObservedAt, undefined);
   } finally {
     (firecrawl as any).scrape = oldScrape;
     if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
     else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
     if (oldMode === undefined) delete process.env.CUSHMAN_DETAIL_MODE;
     else process.env.CUSHMAN_DETAIL_MODE = oldMode;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
   }
 });
 
@@ -532,6 +581,7 @@ test("strict Cushman collection fully enumerates before applying a finite output
   const oldScrape = firecrawl.scrape;
   const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
   const oldMode = process.env.CUSHMAN_DETAIL_MODE;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
   const inventoryCalls: string[] = [];
   const firstRows = Array.from({ length: 100 }, (_, index) => ({
     id: `cw-${index}`,
@@ -553,6 +603,7 @@ test("strict Cushman collection fully enumerates before applying a finite output
   };
   try {
     process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    process.env.CRE_REFRESH_GENERATION = "cushman-generation-1";
     process.env.CUSHMAN_DETAIL_MODE = "full";
     await assert.rejects(
       () => srcCushman("sale", 1, false),
@@ -565,6 +616,61 @@ test("strict Cushman collection fully enumerates before applying a finite output
     else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
     if (oldMode === undefined) delete process.env.CUSHMAN_DETAIL_MODE;
     else process.env.CUSHMAN_DETAIL_MODE = oldMode;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+  }
+});
+
+test("strict Cushman collection admits exact complete API coverage before capping output", async () => {
+  const oldScrape = firecrawl.scrape;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const oldMode = process.env.CUSHMAN_DETAIL_MODE;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const inventoryCalls: string[] = [];
+  const firstRows = Array.from({ length: 100 }, (_, index) => ({
+    id: `cw-${index}`,
+    url: `/en/united-states/properties/invest/cw-${index}`,
+    nav_title: `Property ${index}`,
+  }));
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    assert.equal(options.maxAge, 0);
+    assert.ok(url.includes("/api/properties/search"));
+    inventoryCalls.push(url);
+    const offset = Number(new URL(url).searchParams.get("offset"));
+    return {
+      rawHtml: JSON.stringify({
+        total_item: 101,
+        content:
+          offset === 0
+            ? firstRows
+            : [
+                {
+                  id: "cw-100",
+                  url: "/en/united-states/properties/invest/cw-100",
+                  nav_title: "Property 100",
+                },
+              ],
+      }),
+    };
+  };
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    process.env.CRE_REFRESH_GENERATION = "cushman-generation-1";
+    process.env.CUSHMAN_DETAIL_MODE = "full";
+    const result = await srcCushman("sale", 1, false);
+    assert.equal(inventoryCalls.length, 2);
+    assert.equal(result.totalAvailable, 101);
+    assert.equal(result.listings.length, 1);
+    assert.equal(result.truncated, true);
+    assert.match(result.method, /authoritative inventory feed/);
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+    if (oldMode === undefined) delete process.env.CUSHMAN_DETAIL_MODE;
+    else process.env.CUSHMAN_DETAIL_MODE = oldMode;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
   }
 });
 
