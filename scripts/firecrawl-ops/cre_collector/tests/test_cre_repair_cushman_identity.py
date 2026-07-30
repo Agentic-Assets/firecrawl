@@ -3,6 +3,8 @@ import json
 import os
 import re
 import stat
+import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -457,6 +459,192 @@ def test_rollback_cli_requires_expected_preimage_sha(tmp_path):
             ]
         )
     assert exc.value.code == 2
+
+
+def test_run_psql_reports_rollback_verification_timeout(monkeypatch):
+    monkeypatch.setattr(repair, "find_psql", lambda: "psql")
+    monkeypatch.setattr(repair, "psql_connection_args", lambda _url: [])
+    monkeypatch.setattr(repair, "psql_connection_env", lambda _url: {})
+
+    def time_out(*_args, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd="psql", timeout=kwargs["timeout"]
+        )
+
+    monkeypatch.setattr(repair.subprocess, "run", time_out)
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"rollback-only verification exceeded its 1800s "
+            r"client wall-clock timeout"
+        ),
+    ):
+        repair.run_psql(
+            "postgresql://unused",
+            "ROLLBACK;",
+            timeout_seconds=repair.ROLLBACK_VERIFICATION_TIMEOUT_SECONDS,
+        )
+
+
+def test_roundtrip_cli_times_only_noncommitting_preimage_and_roundtrip(
+    monkeypatch, capsys
+):
+    calls = []
+    preimage = reviewed_empty_preimage()
+
+    def fake_run_psql(_db_url, sql, timeout_seconds=None):
+        calls.append((sql, timeout_seconds))
+        if sql == "PREIMAGE":
+            return preimage
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        repair, "load_db_url", lambda _path: ("postgresql://unused", {})
+    )
+    monkeypatch.setattr(repair, "assert_db_target", lambda _url: None)
+    monkeypatch.setattr(
+        repair, "shared_cre_lock", lambda _path: nullcontext()
+    )
+    monkeypatch.setattr(repair, "load_artifact", lambda _path: minimal_artifact())
+    monkeypatch.setattr(repair, "load_live_state", lambda _url: minimal_state())
+    monkeypatch.setattr(repair, "preflight_sql", lambda *_args: "PREFLIGHT")
+    monkeypatch.setattr(repair, "preimage_sql", lambda *_args: "PREIMAGE")
+    monkeypatch.setattr(
+        repair, "build_roundtrip_sql", lambda *_args: "ROUNDTRIP"
+    )
+    monkeypatch.setattr(repair, "run_psql", fake_run_psql)
+
+    assert (
+        repair.main(
+            ["--env-file", "unused.env", "--verify-rollback-roundtrip"]
+        )
+        == 0
+    )
+    assert calls == [
+        ("PREFLIGHT", None),
+        ("PREIMAGE", repair.ROLLBACK_VERIFICATION_TIMEOUT_SECONDS),
+        ("ROUNDTRIP", repair.ROLLBACK_VERIFICATION_TIMEOUT_SECONDS),
+    ]
+    assert '"mode": "verify_rollback_roundtrip"' in capsys.readouterr().out
+
+
+def test_apply_rollback_verification_uses_client_timeout(
+    monkeypatch, capsys
+):
+    calls = []
+
+    def fake_run_psql(_db_url, sql, timeout_seconds=None):
+        calls.append((sql, timeout_seconds))
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        repair, "load_db_url", lambda _path: ("postgresql://unused", {})
+    )
+    monkeypatch.setattr(repair, "assert_db_target", lambda _url: None)
+    monkeypatch.setattr(
+        repair, "shared_cre_lock", lambda _path: nullcontext()
+    )
+    monkeypatch.setattr(repair, "load_artifact", lambda _path: minimal_artifact())
+    monkeypatch.setattr(repair, "load_live_state", lambda _url: minimal_state())
+    monkeypatch.setattr(repair, "preflight_sql", lambda *_args: "PREFLIGHT")
+    monkeypatch.setattr(
+        repair,
+        "build_apply_sql",
+        lambda *_args: "BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT 1;\nCOMMIT;\n",
+    )
+    monkeypatch.setattr(repair, "run_psql", fake_run_psql)
+
+    assert (
+        repair.main(
+            ["--env-file", "unused.env", "--verify-apply-rollback"]
+        )
+        == 0
+    )
+    assert calls == [
+        ("PREFLIGHT", None),
+        (
+            "BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT 1;\nROLLBACK;\n",
+            repair.ROLLBACK_VERIFICATION_TIMEOUT_SECONDS,
+        ),
+    ]
+    assert '"mode": "verify_apply_rollback"' in capsys.readouterr().out
+
+
+def test_persistent_apply_and_explicit_rollback_have_no_client_timeout(
+    monkeypatch, tmp_path
+):
+    calls = []
+    preimage = reviewed_empty_preimage()
+
+    def fake_run_psql(_db_url, sql, timeout_seconds=None):
+        calls.append((sql, timeout_seconds))
+        if sql == "PREIMAGE":
+            return preimage
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        repair, "load_db_url", lambda _path: ("postgresql://unused", {})
+    )
+    monkeypatch.setattr(repair, "assert_db_target", lambda _url: None)
+    monkeypatch.setattr(
+        repair, "shared_cre_lock", lambda _path: nullcontext()
+    )
+    monkeypatch.setattr(repair, "load_artifact", lambda _path: minimal_artifact())
+    monkeypatch.setattr(repair, "load_live_state", lambda _url: minimal_state())
+    monkeypatch.setattr(repair, "preflight_sql", lambda *_args: "PREFLIGHT")
+    monkeypatch.setattr(repair, "preimage_sql", lambda *_args: "PREIMAGE")
+    monkeypatch.setattr(repair, "validate_preimage", lambda payload: payload)
+    monkeypatch.setattr(repair, "build_apply_sql", lambda *_args: "APPLY")
+    monkeypatch.setattr(repair, "run_psql", fake_run_psql)
+    monkeypatch.setattr(
+        repair, "atomic_private_json", lambda *_args: "0" * 64
+    )
+
+    assert (
+        repair.main(
+            [
+                "--env-file",
+                "unused.env",
+                "--apply",
+                "--preimage",
+                str(tmp_path / "preimage.json"),
+            ]
+        )
+        == 0
+    )
+    assert calls == [
+        ("PREFLIGHT", None),
+        ("PREIMAGE", None),
+        ("APPLY", None),
+    ]
+
+    calls.clear()
+    monkeypatch.setattr(
+        repair,
+        "load_private_preimage",
+        lambda *_args: (preimage, "0" * 64),
+    )
+    monkeypatch.setattr(
+        repair, "artifact_from_preimage", lambda _payload: minimal_artifact()
+    )
+    monkeypatch.setattr(
+        repair, "state_from_preimage", lambda _payload: minimal_state()
+    )
+    monkeypatch.setattr(repair, "build_rollback_sql", lambda *_args: "ROLLBACK")
+    assert (
+        repair.main(
+            [
+                "--env-file",
+                "unused.env",
+                "--rollback-preimage",
+                str(tmp_path / "preimage.json"),
+                "--expected-preimage-sha256",
+                "0" * 64,
+            ]
+        )
+        == 0
+    )
+    assert calls == [("ROLLBACK", None)]
 
 
 @pytest.mark.parametrize(

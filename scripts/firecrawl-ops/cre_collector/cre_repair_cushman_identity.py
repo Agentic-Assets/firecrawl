@@ -107,6 +107,12 @@ ADVISORY_LOCK_KEY = 734_251_907_300_821_130
 # child/index/queue rows. Bound serialization and rollback reads before they can
 # consume unbounded memory while leaving ample headroom for the reviewed shape.
 MAX_PREIMAGE_BYTES = 512 * 1024 * 1024
+# Client-side wall clock for rollback-only verification. PostgreSQL's
+# statement_timeout is per statement, so it cannot bound a stalled multi-
+# statement psql session or a dead connection. Persistent apply/rollback paths
+# deliberately do not use this timeout because losing a commit response would
+# require separate state reconciliation.
+ROLLBACK_VERIFICATION_TIMEOUT_SECONDS = 30 * 60
 REPAIR_TOKEN = hashlib.sha256(
     (
         EXPECTED_ARTIFACT_SHA256
@@ -219,26 +225,36 @@ def generation_expr(alias: str) -> str:
     )"""
 
 
-def run_psql(db_url: str, sql: str) -> object:
-    proc = subprocess.run(
-        [
-            find_psql(),
-            *psql_connection_args(db_url),
-            "-q",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-P",
-            "pager=off",
-            "-P",
-            "footer=off",
-            "-A",
-            "-t",
-        ],
-        env=psql_connection_env(db_url),
-        input=sql,
-        text=True,
-        capture_output=True,
-    )
+def run_psql(
+    db_url: str, sql: str, timeout_seconds: float | None = None
+) -> object:
+    try:
+        proc = subprocess.run(
+            [
+                find_psql(),
+                *psql_connection_args(db_url),
+                "-q",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-P",
+                "pager=off",
+                "-P",
+                "footer=off",
+                "-A",
+                "-t",
+            ],
+            env=psql_connection_env(db_url),
+            input=sql,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "rollback-only verification exceeded its "
+            f"{timeout_seconds:g}s client wall-clock timeout; "
+            "the database result was not accepted"
+        ) from exc
     if proc.returncode:
         if proc.stderr:
             sys.stderr.write(proc.stderr)
@@ -2235,13 +2251,20 @@ def main(argv: list[str] | None = None) -> int:
                 result = run_psql(
                     db_url,
                     "BEGIN ISOLATION LEVEL SERIALIZABLE;\n" + body + "\nROLLBACK;\n",
+                    timeout_seconds=ROLLBACK_VERIFICATION_TIMEOUT_SECONDS,
                 )
                 result["mode"] = "verify_apply_rollback"
                 result["persisted"] = False
             elif args.verify_rollback_roundtrip:
-                preimage = run_psql(db_url, preimage_sql(artifact, state))
+                preimage = run_psql(
+                    db_url,
+                    preimage_sql(artifact, state),
+                    timeout_seconds=ROLLBACK_VERIFICATION_TIMEOUT_SECONDS,
+                )
                 result = run_psql(
-                    db_url, build_roundtrip_sql(preimage, artifact, state)
+                    db_url,
+                    build_roundtrip_sql(preimage, artifact, state),
+                    timeout_seconds=ROLLBACK_VERIFICATION_TIMEOUT_SECONDS,
                 )
                 result["mode"] = "verify_rollback_roundtrip"
                 result["persisted"] = False
