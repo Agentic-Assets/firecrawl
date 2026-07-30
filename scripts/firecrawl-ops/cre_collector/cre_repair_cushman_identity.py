@@ -15,6 +15,8 @@ lock; any drift from the reviewed shape aborts before mutation.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import fcntl
 import hashlib
 import json
@@ -119,6 +121,25 @@ ROLLBACK_VERIFICATION_TIMEOUT_SECONDS = 30 * 60
 # ceiling leaves ample headroom above each 256 KiB raw chunk.
 PREIMAGE_SQL_CHUNK_BYTES = 256 * 1024
 PREIMAGE_SQL_STATEMENT_CEILING_BYTES = 1024 * 1024
+PREIMAGE_OUTPUT_PROTOCOL = "cushman-preimage-chunks-v1"
+PREIMAGE_OUTPUT_ENCODING = "base64"
+PREIMAGE_OUTPUT_CHUNK_CHARS = 256 * 1024
+PREIMAGE_OUTPUT_MAX_CHUNKS = (
+    4 * ((MAX_PREIMAGE_BYTES + 2) // 3)
+    + PREIMAGE_OUTPUT_CHUNK_CHARS
+    - 1
+) // PREIMAGE_OUTPUT_CHUNK_CHARS
+PREIMAGE_OUTPUT_KEYS = frozenset(
+    {
+        "protocol",
+        "seq",
+        "count",
+        "payloadBytes",
+        "payloadMd5",
+        "encoding",
+        "chunk",
+    }
+)
 REPAIR_TOKEN = hashlib.sha256(
     (
         EXPECTED_ARTIFACT_SHA256
@@ -232,8 +253,13 @@ def generation_expr(alias: str) -> str:
 
 
 def run_psql(
-    db_url: str, sql: str, timeout_seconds: float | None = None
+    db_url: str,
+    sql: str,
+    timeout_seconds: float | None = None,
+    result_mode: str = "json",
 ) -> object:
+    if result_mode not in {"json", "preimage_chunks"}:
+        raise ValueError("unsupported psql result mode")
     try:
         proc = subprocess.run(
             [
@@ -265,6 +291,8 @@ def run_psql(
         if proc.stderr:
             sys.stderr.write(proc.stderr)
         raise RuntimeError(f"psql exited {proc.returncode}")
+    if result_mode == "preimage_chunks":
+        return parse_preimage_chunk_output(proc.stdout)
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
     if not lines:
         raise RuntimeError("psql returned no JSON result")
@@ -272,6 +300,104 @@ def run_psql(
         return json.loads(lines[-1])
     except json.JSONDecodeError as exc:
         raise RuntimeError("psql returned an unexpected result") from exc
+
+
+def parse_preimage_chunk_output(stdout: str) -> dict:
+    """Strictly reassemble and validate the versioned preimage row protocol."""
+    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+    if not lines:
+        raise RuntimeError("psql returned no preimage chunks")
+    envelopes = []
+    for line in lines:
+        try:
+            envelope = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("psql returned an invalid preimage chunk") from exc
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope) != PREIMAGE_OUTPUT_KEYS
+            or envelope.get("protocol") != PREIMAGE_OUTPUT_PROTOCOL
+            or envelope.get("encoding") != PREIMAGE_OUTPUT_ENCODING
+            or type(envelope.get("seq")) is not int
+            or type(envelope.get("count")) is not int
+            or type(envelope.get("payloadBytes")) is not int
+            or not isinstance(envelope.get("payloadMd5"), str)
+            or not isinstance(envelope.get("chunk"), str)
+        ):
+            raise RuntimeError("psql returned an invalid preimage chunk envelope")
+        envelopes.append(envelope)
+
+    first = envelopes[0]
+    count = first["count"]
+    payload_bytes = first["payloadBytes"]
+    payload_md5 = first["payloadMd5"]
+    max_encoded_chars = 4 * ((MAX_PREIMAGE_BYTES + 2) // 3)
+    max_chunks = (
+        max_encoded_chars + PREIMAGE_OUTPUT_CHUNK_CHARS - 1
+    ) // PREIMAGE_OUTPUT_CHUNK_CHARS
+    if (
+        count <= 0
+        or count > max_chunks
+        or len(envelopes) != count
+        or payload_bytes <= 0
+        or payload_bytes > MAX_PREIMAGE_BYTES
+        or not re.fullmatch(r"[0-9a-f]{32}", payload_md5)
+    ):
+        raise RuntimeError("psql returned invalid preimage chunk geometry")
+
+    encoded_chunks = []
+    for seq, envelope in enumerate(envelopes):
+        if (
+            envelope["seq"] != seq
+            or envelope["count"] != count
+            or envelope["payloadBytes"] != payload_bytes
+            or envelope["payloadMd5"] != payload_md5
+        ):
+            raise RuntimeError("psql returned inconsistent preimage chunks")
+        chunk = envelope["chunk"]
+        try:
+            chunk.encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise RuntimeError("psql returned a non-ASCII preimage chunk") from exc
+        if (
+            (seq < count - 1 and len(chunk) != PREIMAGE_OUTPUT_CHUNK_CHARS)
+            or (
+                seq == count - 1
+                and not 1 <= len(chunk) <= PREIMAGE_OUTPUT_CHUNK_CHARS
+            )
+        ):
+            raise RuntimeError("psql returned invalid preimage chunk geometry")
+        encoded_chunks.append(chunk)
+
+    encoded = "".join(encoded_chunks)
+    recomputed_count = (
+        len(encoded) + PREIMAGE_OUTPUT_CHUNK_CHARS - 1
+    ) // PREIMAGE_OUTPUT_CHUNK_CHARS
+    if recomputed_count != count or len(encoded) % 4:
+        raise RuntimeError("psql returned invalid preimage chunk geometry")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise RuntimeError("psql returned invalid preimage base64") from exc
+    if len(raw) != payload_bytes:
+        raise RuntimeError("psql returned a preimage byte-count mismatch")
+    if (
+        hashlib.md5(raw, usedforsecurity=False).hexdigest()
+        != payload_md5
+    ):
+        raise RuntimeError("psql returned a preimage digest mismatch")
+    try:
+        decoded = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("psql returned invalid preimage UTF-8") from exc
+    try:
+        payload = json.loads(decoded)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("psql returned invalid preimage JSON") from exc
+    try:
+        return validate_preimage(payload)
+    except ValueError as exc:
+        raise RuntimeError("psql returned invalid preimage schema") from exc
 
 
 def state_read_sql() -> str:
@@ -963,7 +1089,9 @@ SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY});
 {stage_sql(artifact,state)}
 {invariant_sql()}
 {expected_parent_sql(artifact,state)}
-SELECT jsonb_build_object(
+CREATE TEMP TABLE _cw_preimage_output ON COMMIT DROP AS
+WITH source_payload AS (
+ SELECT jsonb_build_object(
   'schemaVersion',4,
   'capturedAt',clock_timestamp(),
   'applyTimestampBinding',
@@ -1005,11 +1133,76 @@ SELECT jsonb_build_object(
     SELECT jsonb_agg(to_jsonb(si) ORDER BY si.id)
     FROM credeals.cre_source_index si JOIN _cw_si_plan p ON p.id=si.id
   ),
-  'queue',(
-    SELECT jsonb_agg(to_jsonb(q) ORDER BY q.id)
-    FROM credeals.cre_enrichment_queue q JOIN _cw_queue_plan p ON p.id=q.id
-  )
-)::text;
+	  'queue',(
+	    SELECT jsonb_agg(to_jsonb(q) ORDER BY q.id)
+	    FROM credeals.cre_enrichment_queue q JOIN _cw_queue_plan p ON p.id=q.id
+	  )
+	)::text AS payload
+)
+SELECT payload,
+       octet_length(payload)::bigint AS payload_bytes,
+       md5(payload) AS payload_md5,
+       replace(
+         encode(convert_to(payload,'UTF8'),'base64'),
+         chr(10),
+         ''
+       ) AS encoded
+FROM source_payload;
+DO $cw_preimage_output$
+DECLARE
+ row_count integer;
+ payload_bytes bigint;
+ payload_md5 text;
+ encoded_text text;
+ chunk_count bigint;
+BEGIN
+ SELECT count(*) INTO row_count FROM _cw_preimage_output;
+ IF row_count<>1 THEN
+   RAISE EXCEPTION 'Cushman preimage output row count mismatch';
+ END IF;
+ SELECT o.payload_bytes,o.payload_md5,o.encoded,
+        (length(o.encoded)+{PREIMAGE_OUTPUT_CHUNK_CHARS - 1})
+          / {PREIMAGE_OUTPUT_CHUNK_CHARS}
+ INTO payload_bytes,payload_md5,encoded_text,chunk_count
+ FROM _cw_preimage_output o;
+ IF payload_bytes<=0 OR payload_bytes>{MAX_PREIMAGE_BYTES} THEN
+   RAISE EXCEPTION 'Cushman preimage output byte bound exceeded';
+ END IF;
+ IF payload_md5 !~ '^[0-9a-f]{{32}}$'
+    OR length(encoded_text)<=0
+    OR length(encoded_text)%4<>0
+    OR chunk_count<=0
+    OR chunk_count>{PREIMAGE_OUTPUT_MAX_CHUNKS} THEN
+   RAISE EXCEPTION 'Cushman preimage output geometry invalid';
+ END IF;
+ IF octet_length(decode(encoded_text,'base64'))<>payload_bytes
+    OR md5(convert_from(decode(encoded_text,'base64'),'UTF8'))<>payload_md5 THEN
+   RAISE EXCEPTION 'Cushman preimage output integrity mismatch';
+ END IF;
+END
+$cw_preimage_output$;
+WITH geometry AS (
+ SELECT o.*,
+        ((length(o.encoded)+{PREIMAGE_OUTPUT_CHUNK_CHARS - 1})
+          / {PREIMAGE_OUTPUT_CHUNK_CHARS})::integer AS chunk_count
+ FROM _cw_preimage_output o
+)
+SELECT jsonb_build_object(
+ 'protocol',{sql_lit(PREIMAGE_OUTPUT_PROTOCOL)},
+ 'seq',chunks.seq,
+ 'count',g.chunk_count,
+ 'payloadBytes',g.payload_bytes,
+ 'payloadMd5',g.payload_md5,
+ 'encoding',{sql_lit(PREIMAGE_OUTPUT_ENCODING)},
+ 'chunk',substring(
+   g.encoded
+   FROM chunks.seq*{PREIMAGE_OUTPUT_CHUNK_CHARS}+1
+   FOR {PREIMAGE_OUTPUT_CHUNK_CHARS}
+ )
+)::text
+FROM geometry g
+CROSS JOIN LATERAL generate_series(0,g.chunk_count-1) AS chunks(seq)
+ORDER BY chunks.seq;
 ROLLBACK;
 """
 
@@ -2340,6 +2533,7 @@ def main(argv: list[str] | None = None) -> int:
                     db_url,
                     preimage_sql(artifact, state),
                     timeout_seconds=ROLLBACK_VERIFICATION_TIMEOUT_SECONDS,
+                    result_mode="preimage_chunks",
                 )
                 result = run_psql(
                     db_url,
@@ -2350,7 +2544,11 @@ def main(argv: list[str] | None = None) -> int:
                 result["persisted"] = False
             elif args.apply:
                 assert args.preimage is not None
-                preimage = run_psql(db_url, preimage_sql(artifact, state))
+                preimage = run_psql(
+                    db_url,
+                    preimage_sql(artifact, state),
+                    result_mode="preimage_chunks",
+                )
                 validate_preimage(preimage)
                 preimage_sha256 = atomic_private_json(args.preimage, preimage)
                 result = run_psql(db_url, build_apply_sql(artifact, state))

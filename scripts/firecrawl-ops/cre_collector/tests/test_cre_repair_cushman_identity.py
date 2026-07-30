@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import os
@@ -202,6 +203,18 @@ def test_preimage_is_complete_and_rollback_restores_every_fk_surface():
         "'queue'",
     ):
         assert key in sql
+    assert "CREATE TEMP TABLE _cw_preimage_output ON COMMIT DROP" in sql
+    assert "Cushman preimage output row count mismatch" in sql
+    assert f"payload_bytes>{repair.MAX_PREIMAGE_BYTES}" in sql
+    assert "Cushman preimage output integrity mismatch" in sql
+    assert "encode(convert_to(payload,'UTF8'),'base64')" in sql
+    assert f"'protocol','{repair.PREIMAGE_OUTPUT_PROTOCOL}'" in sql
+    assert f"'encoding','{repair.PREIMAGE_OUTPUT_ENCODING}'" in sql
+    assert (
+        f"generate_series(0,g.chunk_count-1) AS chunks(seq)" in sql
+    )
+    assert f"FOR {repair.PREIMAGE_OUTPUT_CHUNK_CHARS}" in sql
+    assert "ORDER BY chunks.seq;" in sql
     payload = reviewed_empty_preimage()
     with (
         patch.object(repair, "EXPECTED_ARTIFACT_ROWS", 0),
@@ -253,6 +266,43 @@ def reviewed_empty_preimage():
         "sourceIndex": [],
         "queue": [],
     }
+
+
+def raw_output_envelopes(raw):
+    encoded = base64.b64encode(raw).decode("ascii")
+    chunks = [
+        encoded[start : start + repair.PREIMAGE_OUTPUT_CHUNK_CHARS]
+        for start in range(
+            0, len(encoded), repair.PREIMAGE_OUTPUT_CHUNK_CHARS
+        )
+    ]
+    digest = hashlib.md5(raw, usedforsecurity=False).hexdigest()
+    return [
+        {
+            "protocol": repair.PREIMAGE_OUTPUT_PROTOCOL,
+            "seq": seq,
+            "count": len(chunks),
+            "payloadBytes": len(raw),
+            "payloadMd5": digest,
+            "encoding": repair.PREIMAGE_OUTPUT_ENCODING,
+            "chunk": chunk,
+        }
+        for seq, chunk in enumerate(chunks)
+    ]
+
+
+def preimage_output_envelopes(payload):
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+    return raw_output_envelopes(raw)
+
+
+def preimage_output_stdout(envelopes):
+    return "\n".join(
+        json.dumps(envelope, separators=(",", ":"))
+        for envelope in envelopes
+    )
 
 
 def expected_post_state(
@@ -461,6 +511,127 @@ def test_rollback_cli_requires_expected_preimage_sha(tmp_path):
     assert exc.value.code == 2
 
 
+def test_preimage_output_chunks_reconstruct_exact_validated_object(monkeypatch):
+    monkeypatch.setattr(repair, "PREIMAGE_OUTPUT_CHUNK_CHARS", 64)
+    payload = reviewed_empty_preimage()
+    payload["transportProbe"] = "quotes ' \" newlines\nunicode \N{GREEK SMALL LETTER LAMDA}" * 20
+    stdout = preimage_output_stdout(preimage_output_envelopes(payload))
+    with patch.multiple(repair, **patched_review_counts(0)):
+        assert repair.parse_preimage_chunk_output(stdout) == payload
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("missing", "geometry"),
+        ("duplicate", "inconsistent"),
+        ("reordered", "inconsistent"),
+        ("metadata", "inconsistent"),
+        ("short_nonfinal", "geometry"),
+        ("extra_key", "envelope"),
+        ("bool_seq", "envelope"),
+        ("invalid_base64", "base64"),
+        ("byte_count", "byte-count"),
+        ("digest", "digest"),
+    ],
+)
+def test_preimage_output_chunks_reject_partial_or_corrupt_geometry(
+    monkeypatch, case, message
+):
+    monkeypatch.setattr(repair, "PREIMAGE_OUTPUT_CHUNK_CHARS", 32)
+    payload = reviewed_empty_preimage()
+    payload["transportProbe"] = "bounded-output-" * 20
+    envelopes = preimage_output_envelopes(payload)
+    assert len(envelopes) > 2
+    if case == "missing":
+        envelopes.pop(1)
+    elif case == "duplicate":
+        envelopes[1] = dict(envelopes[0])
+    elif case == "reordered":
+        envelopes[0], envelopes[1] = envelopes[1], envelopes[0]
+    elif case == "metadata":
+        envelopes[1]["payloadBytes"] += 1
+    elif case == "short_nonfinal":
+        envelopes[0]["chunk"] = envelopes[0]["chunk"][:-1]
+    elif case == "extra_key":
+        envelopes[0]["unexpected"] = True
+    elif case == "bool_seq":
+        envelopes[0]["seq"] = False
+    elif case == "invalid_base64":
+        envelopes[-1]["chunk"] = "!" + envelopes[-1]["chunk"][1:]
+    elif case == "byte_count":
+        for envelope in envelopes:
+            envelope["payloadBytes"] += 1
+    elif case == "digest":
+        for envelope in envelopes:
+            envelope["payloadMd5"] = "0" * 32
+    with (
+        patch.multiple(repair, **patched_review_counts(0)),
+        pytest.raises(RuntimeError, match=message),
+    ):
+        repair.parse_preimage_chunk_output(
+            preimage_output_stdout(envelopes)
+        )
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        (b"\xff", "UTF-8"),
+        (b"not-json", "JSON"),
+        (b'{"schemaVersion":3}', "schema"),
+    ],
+)
+def test_preimage_output_chunks_reject_invalid_payload(
+    monkeypatch, raw, message
+):
+    monkeypatch.setattr(repair, "PREIMAGE_OUTPUT_CHUNK_CHARS", 64)
+    with (
+        patch.multiple(repair, **patched_review_counts(0)),
+        pytest.raises(RuntimeError, match=message),
+    ):
+        repair.parse_preimage_chunk_output(
+            preimage_output_stdout(raw_output_envelopes(raw))
+        )
+
+
+def test_run_psql_keeps_default_json_parser_and_explicit_chunk_mode(
+    monkeypatch
+):
+    monkeypatch.setattr(repair, "find_psql", lambda: "psql")
+    monkeypatch.setattr(repair, "psql_connection_args", lambda _url: [])
+    monkeypatch.setattr(repair, "psql_connection_env", lambda _url: {})
+    outputs = iter(
+        [
+            '{"ok":true}\n',
+            preimage_output_stdout(
+                preimage_output_envelopes(reviewed_empty_preimage())
+            ),
+        ]
+    )
+
+    def succeed(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=["psql"],
+            returncode=0,
+            stdout=next(outputs),
+            stderr="",
+        )
+
+    monkeypatch.setattr(repair.subprocess, "run", succeed)
+    assert repair.run_psql("postgresql://unused", "SELECT 1") == {"ok": True}
+    with patch.multiple(repair, **patched_review_counts(0)):
+        assert repair.run_psql(
+            "postgresql://unused",
+            "SELECT chunks",
+            result_mode="preimage_chunks",
+        ) == reviewed_empty_preimage()
+    with pytest.raises(ValueError, match="unsupported"):
+        repair.run_psql(
+            "postgresql://unused", "SELECT 1", result_mode="auto"
+        )
+
+
 def test_run_psql_reports_rollback_verification_timeout(monkeypatch):
     monkeypatch.setattr(repair, "find_psql", lambda: "psql")
     monkeypatch.setattr(repair, "psql_connection_args", lambda _url: [])
@@ -492,8 +663,10 @@ def test_roundtrip_cli_times_only_noncommitting_preimage_and_roundtrip(
     calls = []
     preimage = reviewed_empty_preimage()
 
-    def fake_run_psql(_db_url, sql, timeout_seconds=None):
-        calls.append((sql, timeout_seconds))
+    def fake_run_psql(
+        _db_url, sql, timeout_seconds=None, result_mode="json"
+    ):
+        calls.append((sql, timeout_seconds, result_mode))
         if sql == "PREIMAGE":
             return preimage
         return {"ok": True}
@@ -521,9 +694,17 @@ def test_roundtrip_cli_times_only_noncommitting_preimage_and_roundtrip(
         == 0
     )
     assert calls == [
-        ("PREFLIGHT", None),
-        ("PREIMAGE", repair.ROLLBACK_VERIFICATION_TIMEOUT_SECONDS),
-        ("ROUNDTRIP", repair.ROLLBACK_VERIFICATION_TIMEOUT_SECONDS),
+        ("PREFLIGHT", None, "json"),
+        (
+            "PREIMAGE",
+            repair.ROLLBACK_VERIFICATION_TIMEOUT_SECONDS,
+            "preimage_chunks",
+        ),
+        (
+            "ROUNDTRIP",
+            repair.ROLLBACK_VERIFICATION_TIMEOUT_SECONDS,
+            "json",
+        ),
     ]
     assert '"mode": "verify_rollback_roundtrip"' in capsys.readouterr().out
 
@@ -533,8 +714,10 @@ def test_apply_rollback_verification_uses_client_timeout(
 ):
     calls = []
 
-    def fake_run_psql(_db_url, sql, timeout_seconds=None):
-        calls.append((sql, timeout_seconds))
+    def fake_run_psql(
+        _db_url, sql, timeout_seconds=None, result_mode="json"
+    ):
+        calls.append((sql, timeout_seconds, result_mode))
         return {"ok": True}
 
     monkeypatch.setattr(
@@ -561,10 +744,11 @@ def test_apply_rollback_verification_uses_client_timeout(
         == 0
     )
     assert calls == [
-        ("PREFLIGHT", None),
+        ("PREFLIGHT", None, "json"),
         (
             "BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT 1;\nROLLBACK;\n",
             repair.ROLLBACK_VERIFICATION_TIMEOUT_SECONDS,
+            "json",
         ),
     ]
     assert '"mode": "verify_apply_rollback"' in capsys.readouterr().out
@@ -576,8 +760,10 @@ def test_persistent_apply_and_explicit_rollback_have_no_client_timeout(
     calls = []
     preimage = reviewed_empty_preimage()
 
-    def fake_run_psql(_db_url, sql, timeout_seconds=None):
-        calls.append((sql, timeout_seconds))
+    def fake_run_psql(
+        _db_url, sql, timeout_seconds=None, result_mode="json"
+    ):
+        calls.append((sql, timeout_seconds, result_mode))
         if sql == "PREIMAGE":
             return preimage
         return {"ok": True}
@@ -613,9 +799,9 @@ def test_persistent_apply_and_explicit_rollback_have_no_client_timeout(
         == 0
     )
     assert calls == [
-        ("PREFLIGHT", None),
-        ("PREIMAGE", None),
-        ("APPLY", None),
+        ("PREFLIGHT", None, "json"),
+        ("PREIMAGE", None, "preimage_chunks"),
+        ("APPLY", None, "json"),
     ]
 
     calls.clear()
@@ -644,7 +830,7 @@ def test_persistent_apply_and_explicit_rollback_have_no_client_timeout(
         )
         == 0
     )
-    assert calls == [("ROLLBACK", None)]
+    assert calls == [("ROLLBACK", None, "json")]
 
 
 @pytest.mark.parametrize(
