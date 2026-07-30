@@ -624,7 +624,7 @@ GROUP BY target_id
 HAVING count(DISTINCT listing_id)=1;
 
 CREATE TEMP TABLE _cw_survivors ON COMMIT DROP AS
-SELECT target_id,(array_agg(r.id ORDER BY
+SELECT r.target_id,(array_agg(r.id ORDER BY
   CASE WHEN r.generation IS DISTINCT FROM {sql_lit(EXPECTED_GENERATION)}
        THEN 0 ELSE 1 END,
   CASE WHEN r.id=o.owner_id THEN 0 ELSE 1 END,
@@ -635,7 +635,7 @@ JOIN credeals.cre_listings l ON l.id=r.id
 JOIN _cw_relationship_score s ON s.id=r.id
 LEFT JOIN _cw_om_owner o ON o.target_id=r.target_id
 WHERE NOT r.deleted
-GROUP BY target_id;
+GROUP BY r.target_id;
 CREATE UNIQUE INDEX ON _cw_survivors(target_id);
 
 CREATE TEMP TABLE _cw_current ON COMMIT DROP AS

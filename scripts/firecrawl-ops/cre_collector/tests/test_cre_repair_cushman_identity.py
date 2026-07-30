@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import stat
 from pathlib import Path
 from unittest.mock import patch
@@ -110,6 +111,22 @@ def test_survivor_order_preserves_old_uuid_and_latest_om_owner():
     assert om_priority in sql
     assert sql.index(old_priority) < sql.index(om_priority)
     assert "count(DISTINCT listing_id)=1" in sql
+
+
+def test_survivor_projection_has_no_ambiguous_target_id_reference():
+    sql = repair.invariant_sql()
+    survivor_scope = sql.split(
+        "CREATE TEMP TABLE _cw_survivors ON COMMIT DROP AS", 1
+    )[1].split(
+        "CREATE UNIQUE INDEX ON _cw_survivors(target_id);", 1
+    )[0]
+    assert "LEFT JOIN _cw_om_owner o" in survivor_scope
+    unqualified_target = re.compile(r"(?<![.\w])target_id\b")
+    assert unqualified_target.findall(survivor_scope) == []
+    prior_failure = survivor_scope.replace(
+        "SELECT r.target_id", "SELECT target_id", 1
+    )
+    assert unqualified_target.findall(prior_failure) == ["target_id"]
 
 
 def test_source_index_merge_and_queue_rekey_preserve_retry_state():
