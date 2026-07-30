@@ -121,6 +121,63 @@ Child handling is source-class-specific:
 - Other strict sources require an admitted current detail observation and must
   not use child preservation as a substitute for a failed detail read.
 
+### SVN missing-detail shell recovery
+
+`cre_repair_buildout_detail_shells.py` is a one-time, SVN-only correction for
+the two verified Buildout "Listing not found" bodies. It does not use a broad
+text match for mutation. It clears only an exact shell-valued `markdown` field
+and/or the root `raw_data.markdown` key on active SVN rows. It does not change
+status, deletion state, queues, events, or child tables.
+
+Run it only after the source-scoped SVN enrichment drain has stopped and the
+canonical CRE lock is free:
+
+```bash
+ENV_FILE="$HOME/.config/cre/equire.env"
+
+# 1. Locked read-only scope and digest. Review every audit count.
+python3 cre_repair_buildout_detail_shells.py \
+  --env-file "$ENV_FILE"
+
+# 2. Prove the exact transaction and post-state, then roll it back.
+python3 cre_repair_buildout_detail_shells.py \
+  --env-file "$ENV_FILE" \
+  --expected-count <reviewed-count> \
+  --expected-digest <reviewed-digest> \
+  --verify-apply-rollback
+
+# 3. Create a new owner-only directory. The tool refuses to overwrite a
+#    preimage, follows the canonical lock, and rechecks the exact digest.
+install -d -m 700 out/repair/buildout-shells/<run-id>
+python3 cre_repair_buildout_detail_shells.py \
+  --env-file "$ENV_FILE" \
+  --expected-count <reviewed-count> \
+  --expected-digest <reviewed-digest> \
+  --preimage "$PWD/out/repair/buildout-shells/<run-id>/svn-preimage.json" \
+  --apply
+
+# 4. Repeat the locked preflight. Exact, broad, unexpected, and nested shell
+#    counts must all be zero.
+python3 cre_repair_buildout_detail_shells.py \
+  --env-file "$ENV_FILE"
+```
+
+Keep the printed preimage SHA-256 with the run evidence. Emergency rollback
+requires both the absolute owner-only preimage path and that exact digest:
+
+```bash
+python3 cre_repair_buildout_detail_shells.py \
+  --env-file "$ENV_FILE" \
+  --rollback-preimage "$PWD/out/repair/buildout-shells/<run-id>/svn-preimage.json" \
+  --expected-preimage-sha256 <printed-sha256>
+```
+
+No retained inventory or enrichment artifact contains prior usable Markdown
+for the poisoned rows, so the repair must not synthesize content from a
+description. Some bad detail ingests also removed existing child collections,
+but no defensible child preimage exists. Child restoration is therefore
+explicitly outside this repair and must not be fabricated.
+
 JLL uses the public `SearchResults` GraphQL API for complete U.S. inventory
 enumeration, then requires each rendered detail payload to match the enumerated
 provider ID and normalized URL before detail freshness is admitted. JLL Investor
