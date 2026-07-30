@@ -922,6 +922,11 @@ export async function srcBuildout(
         url: clean(x.show_link),
         underContract: x.under_contract === true,
         inventoryObservedAt: x.__creFreshness?.observedAt,
+        // The bulk Buildout endpoint is an authoritative inventory feed, not a
+        // rendered property-detail page. Keep the last-good detail children
+        // (contacts, documents, images, media, and links) and add the current
+        // card children idempotently during ingest.
+        preserveChildCollections: true,
         freshnessProvenance: {
           detailScope: "authoritative_inventory_feed",
           generationId: x.__creFreshness?.generationId ?? refreshGenerationId(),

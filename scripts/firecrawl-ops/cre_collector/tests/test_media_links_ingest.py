@@ -278,6 +278,162 @@ def test_merge_folds_media_links_from_other_pass():
     ]
 
 
+def test_merge_unions_distinct_children_when_both_passes_are_nonempty():
+    a = _row(_svn(
+        photos=["https://x.com/sale.jpg"],
+        media=[{"url": "https://vimeo.com/sale", "mediaType": "video"}],
+        links=[{"url": "https://x.com/sale", "linkType": "other"}],
+    ))
+    b = _row(_svn(
+        url="https://www.svn.com/property?propertyId=svn-0001-lease",
+        transactionMode="lease",
+        photos=["https://x.com/lease.jpg"],
+        media=[{"url": "https://vimeo.com/lease", "mediaType": "video"}],
+        links=[{"url": "https://x.com/lease", "linkType": "other"}],
+    ))
+    a["contacts"] = [{"name": "Sale Broker", "email": "sale@example.com"}]
+    b["contacts"] = [{"name": "Lease Broker", "email": "lease@example.com"}]
+    a["documents"] = [{"url": "https://x.com/sale.pdf", "title": None}]
+    b["documents"] = [{"url": "https://x.com/lease.pdf", "title": None}]
+
+    merged = merge_rows(a, b)
+
+    assert [row["email"] for row in merged["contacts"]] == [
+        "sale@example.com",
+        "lease@example.com",
+    ]
+    assert [row["url"] for row in merged["documents"]] == [
+        "https://x.com/sale.pdf",
+        "https://x.com/lease.pdf",
+    ]
+    assert [row["url"] for row in merged["images"]] == [
+        "https://x.com/sale.jpg",
+        "https://x.com/lease.jpg",
+    ]
+    assert [row["isPrimary"] for row in merged["images"]] == [True, False]
+    assert [row["url"] for row in merged["media"]] == [
+        "https://vimeo.com/sale",
+        "https://vimeo.com/lease",
+    ]
+    assert [row["url"] for row in merged["links"]] == [
+        "https://x.com/sale",
+        "https://x.com/lease",
+    ]
+
+
+def test_merge_dedupes_children_and_fills_missing_fields():
+    a = _row(_svn())
+    b = _row(_svn(
+        url="https://www.svn.com/property?propertyId=svn-0001-lease",
+        transactionMode="lease",
+    ))
+    a["contacts"] = [{
+        "name": "Same Broker",
+        "email": "same@example.com",
+        "phone": None,
+    }]
+    b["contacts"] = [{
+        "name": "Same Broker",
+        "email": "SAME@example.com",
+        "phone": "555-0100",
+    }]
+    a["documents"] = [{"url": "https://x.com/same.pdf", "title": None}]
+    b["documents"] = [{"url": "https://x.com/same.pdf", "title": "Current PDF"}]
+    a["images"] = [{"url": "https://x.com/same.jpg", "isPrimary": False}]
+    b["images"] = [{"url": "https://x.com/same.jpg", "isPrimary": True}]
+
+    merged = merge_rows(a, b)
+
+    assert len(merged["contacts"]) == 1
+    assert merged["contacts"][0]["phone"] == "555-0100"
+    assert len(merged["documents"]) == 1
+    assert merged["documents"][0]["title"] == "Current PDF"
+    assert len(merged["images"]) == 1
+    assert merged["images"][0]["isPrimary"] is True
+
+
+def test_merge_contacts_use_email_or_name_phone_aliases_and_dedupe_primary():
+    a = _row(_svn())
+    b = _row(_svn(
+        url="https://www.svn.com/property?propertyId=svn-0001-lease",
+        transactionMode="lease",
+    ))
+    a["contacts"] = [
+        {
+            "name": "Same Broker",
+            "email": "sale@example.com",
+            "phone": "555-0100",
+            "isPrimary": True,
+        },
+        {
+            "name": "Same Broker",
+            "email": None,
+            "phone": "555-0100",
+            "isPrimary": False,
+        },
+    ]
+    b["contacts"] = [
+        {
+            "name": "Same Broker",
+            "email": "lease@example.com",
+            "phone": "555-0100",
+            "isPrimary": True,
+        }
+    ]
+
+    merged = merge_rows(a, b)
+
+    assert len(merged["contacts"]) == 1
+    assert merged["contacts"][0]["email"] == "sale@example.com"
+    assert merged["contacts"][0]["isPrimary"] is True
+
+
+def test_merge_contacts_preserves_transitive_aliases_in_any_order():
+    contacts = [
+        {"name": "Alpha", "email": "a@example.com", "phone": "111"},
+        {"name": "Beta", "email": "b@example.com", "phone": "222"},
+        {"name": "Beta", "email": "a@example.com", "phone": "222"},
+        {"name": "Gamma", "email": "b@example.com", "phone": "333"},
+    ]
+
+    for ordered in (contacts, list(reversed(contacts))):
+        a = _row(_svn())
+        b = _row(_svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+        ))
+        a["contacts"] = ordered[:2]
+        b["contacts"] = ordered[2:]
+
+        merged = merge_rows(a, b)
+
+        assert len(merged["contacts"]) == 1
+        assert merged["contacts"][0]["isPrimary"] is True
+
+
+def test_merge_contacts_closes_aliases_synthesized_from_complementary_fields():
+    contacts = [
+        {"name": "Alice", "email": "a@example.com", "phone": None},
+        {"name": None, "email": "a@example.com", "phone": "111"},
+        {"name": "Alice", "email": "c@example.com", "phone": "111"},
+    ]
+
+    for ordered in (contacts, list(reversed(contacts))):
+        a = _row(_svn())
+        b = _row(_svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+        ))
+        a["contacts"] = ordered[:2]
+        b["contacts"] = ordered[2:]
+
+        merged = merge_rows(a, b)
+
+        assert len(merged["contacts"]) == 1
+        assert merged["contacts"][0]["name"] == "Alice"
+        assert merged["contacts"][0]["phone"] == "111"
+
+
 def test_merge_markdown_prefers_longer():
     a = _row(_svn(markdown="short"))
     b = _row(_svn(

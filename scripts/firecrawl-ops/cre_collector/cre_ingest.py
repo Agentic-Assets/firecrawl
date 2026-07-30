@@ -123,7 +123,7 @@ CUSHMAN_SOURCE_KEY = "cushman-wakefield"
 CUSHMAN_CANONICAL_HOST = "www.cushmanwakefield.com"
 CUSHMAN_ONECAP_HOST = "onecap.cushmanwakefield.com"
 CUSHMAN_AZURE_HOST = "cw-prod-gblgws-a-cm.azurewebsites.net"
-CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS = {
+CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS = BUILDOUT_SOURCE_KEYS | {
     "cushman-wakefield",
     "srs",
     "hanley",
@@ -1492,6 +1492,123 @@ def to_row(listing, brokers_by_idx, scraped_at):
     }
 
 
+def _contact_aliases(item):
+    """Return every SQL-equivalent identity for one staged contact."""
+    aliases = set()
+    email = clean_text(item.get("email"))
+    if email:
+        aliases.add(("email", email.lower()))
+    name = (clean_text(item.get("name")) or "").lower()
+    if name:
+        aliases.add(("name_phone", name, clean_text(item.get("phone")) or ""))
+    return aliases
+
+
+def _child_identity(collection, item):
+    """Return the database-aligned identity for one non-contact child row."""
+    if not isinstance(item, dict):
+        return ("value", json.dumps(item, sort_keys=True, default=str))
+    if collection in {"documents", "images"}:
+        url = clean_text(item.get("url"))
+        if url:
+            return ("url", url)
+    elif collection == "media":
+        url = clean_text(item.get("url"))
+        if url:
+            return ("media", item.get("mediaType") or "other", url)
+    elif collection == "links":
+        url = clean_text(item.get("url"))
+        if url:
+            return ("link", item.get("linkType") or "other", url)
+    elif collection == "om_facts":
+        return (
+            "om_fact",
+            item.get("factGroup") or "scalar",
+            item.get("factKey"),
+            item.get("sourceDocUrl"),
+            item.get("parserVersion"),
+        )
+    return ("row", json.dumps(item, sort_keys=True, default=str))
+
+
+def _merge_child_values(prior, item):
+    if not isinstance(prior, dict) or not isinstance(item, dict):
+        return
+    for key, value in item.items():
+        if key == "isPrimary":
+            prior[key] = bool(prior.get(key)) or bool(value)
+        elif (
+            (prior.get(key) is None or prior.get(key) == "")
+            and value is not None
+            and value != ""
+        ):
+            prior[key] = value
+
+
+def _merge_contact_collections(primary, secondary):
+    components = []
+    for item in [*(primary or []), *(secondary or [])]:
+        candidate = dict(item) if isinstance(item, dict) else item
+        aliases = _contact_aliases(candidate) if isinstance(candidate, dict) else set()
+        matches = [
+            index
+            for index, component in enumerate(components)
+            if aliases and aliases.intersection(component["aliases"])
+        ]
+        if not matches:
+            components.append({"row": candidate, "aliases": set(aliases)})
+            continue
+        target = components[matches[0]]
+        _merge_child_values(target["row"], candidate)
+        target["aliases"].update(aliases)
+        target["aliases"].update(_contact_aliases(target["row"]))
+        while True:
+            absorbed_components = [
+                component
+                for component in components
+                if component is not target
+                and target["aliases"].intersection(component["aliases"])
+            ]
+            if not absorbed_components:
+                break
+            for absorbed in absorbed_components:
+                _merge_child_values(target["row"], absorbed["row"])
+                target["aliases"].update(absorbed["aliases"])
+                target["aliases"].update(_contact_aliases(target["row"]))
+                components.remove(absorbed)
+    return [component["row"] for component in components]
+
+
+def _merge_child_collections(collection, primary, secondary):
+    """Union staged child rows without losing sale/lease-only observations."""
+    if collection == "contacts":
+        merged = _merge_contact_collections(primary, secondary)
+    else:
+        merged = []
+        positions = {}
+        for item in [*(primary or []), *(secondary or [])]:
+            identity = _child_identity(collection, item)
+            prior_index = positions.get(identity)
+            if prior_index is None:
+                positions[identity] = len(merged)
+                merged.append(dict(item) if isinstance(item, dict) else item)
+                continue
+            _merge_child_values(merged[prior_index], item)
+    if collection in {"contacts", "images"} and merged:
+        primary_index = next(
+            (
+                index
+                for index, item in enumerate(merged)
+                if isinstance(item, dict) and bool(item.get("isPrimary"))
+            ),
+            0,
+        )
+        for index, item in enumerate(merged):
+            if isinstance(item, dict):
+                item["isPrimary"] = index == primary_index
+    return merged
+
+
 def merge_rows(a, b):
     """Merge two staged rows for the same (slug, external_id) within a batch."""
     a["_modes"] |= b["_modes"]
@@ -1518,8 +1635,7 @@ def merge_rows(a, b):
         if a[k] is None and b[k] is not None:
             a[k] = b[k]
     for k in ("contacts", "documents", "images", "media", "links", "om_facts"):
-        if not a[k] and b[k]:
-            a[k] = b[k]
+        a[k] = _merge_child_collections(k, a[k], b[k])
     # extra_facts: merge the two long-tail blobs (union; the first pass wins a key
     # collision) so neither pass's facts are lost. Mirrors the jsonb `||` merge in
     # the upsert (a missing/empty pass keeps the other's blob).

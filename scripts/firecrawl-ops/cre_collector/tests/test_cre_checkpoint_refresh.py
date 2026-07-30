@@ -82,8 +82,12 @@ def strict_artifact(
     *,
     generation="refresh-generation-1",
     generation_started_at="2026-07-29T12:00:00+00:00",
-    preserve_children=False,
+    preserve_children=None,
 ):
+    if preserve_children is None:
+        preserve_children = (
+            source in refresh.CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
+        )
     payload = artifact(source=source)
     observed = "2026-07-29T12:00:30+00:00"
     payload["runMeta"]["freshness"] = {
@@ -604,7 +608,16 @@ def test_strict_cbre_artifact_accepts_current_authoritative_feed(tmp_path):
 
 @pytest.mark.parametrize(
     "source",
-    ["cushman-wakefield", "srs", "hanley", "kidder-mathews", "newmark"],
+    [
+        "svn",
+        "lee-associates",
+        "franklin-street",
+        "cushman-wakefield",
+        "srs",
+        "hanley",
+        "kidder-mathews",
+        "newmark",
+    ],
 )
 def test_strict_child_preserving_feed_artifact_is_accepted(tmp_path, source):
     path = write_artifact(
@@ -622,7 +635,7 @@ def test_strict_child_preserving_feed_artifact_is_accepted(tmp_path, source):
 
 @pytest.mark.parametrize(
     "source",
-    ["svn", "lee-associates", "franklin-street", "cbre"],
+    ["cbre"],
 )
 def test_strict_nonpreserving_feed_rejects_preservation_rows(tmp_path, source):
     path = write_artifact(
@@ -643,10 +656,22 @@ def test_strict_nonpreserving_feed_rejects_preservation_rows(tmp_path, source):
 
 @pytest.mark.parametrize(
     "source",
-    ["cushman-wakefield", "srs", "hanley", "kidder-mathews", "newmark"],
+    [
+        "svn",
+        "lee-associates",
+        "franklin-street",
+        "cushman-wakefield",
+        "srs",
+        "hanley",
+        "kidder-mathews",
+        "newmark",
+    ],
 )
 def test_strict_child_preserving_feed_requires_preservation_rows(tmp_path, source):
-    path = write_artifact(tmp_path, strict_artifact(source))
+    path = write_artifact(
+        tmp_path,
+        strict_artifact(source, preserve_children=False),
+    )
     with pytest.raises(
         refresh.ArtifactValidationError,
         match="must preserve every child collection",
