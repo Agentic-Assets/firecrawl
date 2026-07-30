@@ -355,16 +355,79 @@ def test_preimage_is_complete_and_rollback_restores_every_fk_surface():
     assert "parent post-repair disposition drift" in rollback
     assert "pgp_sym_decrypt(" in rollback
     assert "Cushman rollback inner payload integrity mismatch" in rollback
-    assert "plaintext IS DISTINCT FROM (plaintext::jsonb)::text" in rollback
+    assert "SELECT payload::text FROM _cw_rollback_inner" in rollback
+    assert "FULL JOIN _cw_rollback_sections actual USING(key)" in rollback
+    assert "DROP TABLE _cw_rollback_inner_text,_cw_rollback_inner" in rollback
     assert "raw_data=p.raw_data" in rollback
     assert "l.raw_data IS DISTINCT FROM p.raw_data" in rollback
     assert rollback.rstrip().endswith("COMMIT;")
 
 
+def test_inner_section_key_contract_is_exact_and_relationally_guarded():
+    assert repair.PREIMAGE_INNER_SECTION_KEYS == (
+        "schemaVersion",
+        "repairPlan",
+        "listings",
+        "contacts",
+        "documents",
+        "images",
+        "media",
+        "links",
+        "omFacts",
+        "events",
+        "priceHistory",
+        "scrapeLogs",
+        "sourceIndex",
+        "queue",
+    )
+    sql = repair.preimage_sql(minimal_artifact(), minimal_state())
+    with patch.multiple(
+        repair,
+        EXPECTED_ARTIFACT_ROWS=0,
+        EXPECTED_TOTAL_ROWS=0,
+        EXPECTED_CONTACT_ROWS=0,
+        EXPECTED_DOCUMENT_ROWS=0,
+        EXPECTED_IMAGE_ROWS=0,
+        EXPECTED_OM_FACTS=0,
+        EXPECTED_EVENT_ROWS=0,
+        EXPECTED_SOURCE_INDEX_ROWS=0,
+        EXPECTED_QUEUE_ROWS=0,
+    ):
+        rollback = repair.build_rollback_sql(
+            reviewed_empty_preimage(), minimal_artifact(), minimal_state()
+        )
+    for statement, table in (
+        (sql, "_cw_preimage_inner_sections"),
+        (rollback, "_cw_rollback_sections"),
+    ):
+        assert f"FULL JOIN {table} actual USING(key)" in statement
+        assert (
+            f"(SELECT count(*) FROM {table})\n"
+            f"      <>{len(repair.PREIMAGE_INNER_SECTION_KEYS)}"
+        ) in statement
+        for key in repair.PREIMAGE_INNER_SECTION_KEYS:
+            assert f"('{key}')" in statement
+    assert "DROP TABLE _cw_rollback_sections;" in rollback
+    assert rollback.index("CREATE UNIQUE INDEX ON _pre_queue(id);") < (
+        rollback.index("DROP TABLE _cw_rollback_sections;")
+    )
+    inner_rollback = rollback.split(
+        "CREATE TEMP TABLE _cw_rollback_inner_text", 1
+    )[1].split("CREATE TEMP TABLE _cw_rollback_inner", 1)[0]
+    assert inner_rollback.count("pgp_sym_decrypt(") == 1
+    for key in repair.PREIMAGE_INNER_COUNTS:
+        assert (
+            f"payload->'{key}' FROM _cw_rollback_inner"
+            not in rollback
+        )
+
+
 def test_preimage_payload_never_duplicates_uncompressed_raw_data():
     sql = repair.preimage_sql(minimal_artifact(), minimal_state())
-    source_payload = sql.split("WITH source_payload AS (", 1)[1].split(
-        "),\nencoded_payload AS (", 1
+    source_payload = sql.split(
+        "WITH source_payload AS MATERIALIZED (", 1
+    )[1].split(
+        "),\nencoded_payload AS MATERIALIZED (", 1
     )[0]
     assert "'raw_data',l.raw_data" not in source_payload
     for forbidden in (
@@ -382,6 +445,7 @@ def test_preimage_payload_never_duplicates_uncompressed_raw_data():
     )[1].split(
         "CREATE TEMP TABLE _cw_preimage_inner_readback", 1
     )[0]
+    assert "WITH inner_source AS MATERIALIZED (" in inner
     assert "'raw_data',l.raw_data" in inner
     assert "raw_data_pgp_base64" not in sql
     assert inner.count("pgp_sym_encrypt(") == 1

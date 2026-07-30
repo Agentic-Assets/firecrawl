@@ -172,6 +172,7 @@ PREIMAGE_INNER_COUNTS = {
     "sourceIndex": EXPECTED_SOURCE_INDEX_ROWS,
     "queue": EXPECTED_QUEUE_ROWS,
 }
+PREIMAGE_INNER_SECTION_KEYS = ("schemaVersion", *PREIMAGE_INNER_COUNTS)
 REPAIR_TOKEN = hashlib.sha256(
     (
         EXPECTED_ARTIFACT_SHA256
@@ -184,6 +185,13 @@ REPAIR_TOKEN = hashlib.sha256(
 def expected_inner_counts() -> dict[str, int]:
     """Return a copy of the immutable schema-v6 inner count contract."""
     return dict(PREIMAGE_INNER_COUNTS)
+
+
+def inner_section_values_sql() -> str:
+    """Return the exact relational key set for schema-v6 inner validation."""
+    return ",\n       ".join(
+        f"({sql_lit(key)})" for key in PREIMAGE_INNER_SECTION_KEYS
+    )
 
 
 SOURCE_INDEX_DONOR_ORDER_SQL = """si.last_enumerated_at DESC NULLS LAST,
@@ -1327,7 +1335,7 @@ SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY});
 {invariant_sql()}
 {expected_parent_sql(artifact,state)}
 CREATE TEMP TABLE _cw_preimage_inner ON COMMIT DROP AS
-WITH inner_source AS (
+WITH inner_source AS MATERIALIZED (
  SELECT jsonb_build_object(
   'schemaVersion',{PREIMAGE_INNER_SCHEMA_VERSION},
   'repairPlan',(
@@ -1399,15 +1407,32 @@ SELECT pgp_sym_decrypt(
 FROM _cw_preimage_inner;
 CREATE TEMP TABLE _cw_preimage_inner_json ON COMMIT DROP AS
 SELECT plaintext::jsonb AS payload FROM _cw_preimage_inner_readback;
+CREATE TEMP TABLE _cw_preimage_inner_sections ON COMMIT DROP AS
+SELECT section.key,section.value
+FROM _cw_preimage_inner_json i
+CROSS JOIN LATERAL jsonb_each(i.payload) section;
+CREATE UNIQUE INDEX ON _cw_preimage_inner_sections(key);
 DO $cw_preimage_inner$
 DECLARE
- inner_payload jsonb;
  mismatch integer;
 BEGIN
  IF (SELECT count(*) FROM _cw_preimage_inner)<>1
     OR (SELECT count(*) FROM _cw_preimage_inner_readback)<>1
-    OR (SELECT count(*) FROM _cw_preimage_inner_json)<>1 THEN
+    OR (SELECT count(*) FROM _cw_preimage_inner_json)<>1
+    OR (SELECT count(*) FROM _cw_preimage_inner_sections)
+      <>{len(PREIMAGE_INNER_SECTION_KEYS)} THEN
    RAISE EXCEPTION 'Cushman inner preimage row count mismatch';
+ END IF;
+ IF EXISTS (
+   SELECT 1
+   FROM (
+     VALUES
+       {inner_section_values_sql()}
+   ) expected(key)
+   FULL JOIN _cw_preimage_inner_sections actual USING(key)
+   WHERE expected.key IS NULL OR actual.key IS NULL
+ ) THEN
+   RAISE EXCEPTION 'Cushman inner preimage schema/count mismatch';
  END IF;
  IF (
    SELECT plaintext_bytes<=0
@@ -1430,59 +1455,74 @@ BEGIN
  ) THEN
    RAISE EXCEPTION 'Cushman inner preimage compression/integrity mismatch';
  END IF;
- SELECT payload INTO inner_payload FROM _cw_preimage_inner_json;
- IF (inner_payload->>'schemaVersion')::integer
+ IF ((SELECT value FROM _cw_preimage_inner_sections
+      WHERE key='schemaVersion')#>>'{{}}')::integer
       <>{PREIMAGE_INNER_SCHEMA_VERSION}
-    OR NOT inner_payload ?& ARRAY[
-      'schemaVersion','repairPlan','listings','contacts','documents',
-      'images','media','links','omFacts','events','priceHistory',
-      'scrapeLogs','sourceIndex','queue'
-    ]
-    OR inner_payload - ARRAY[
-      'schemaVersion','repairPlan','listings','contacts','documents',
-      'images','media','links','omFacts','events','priceHistory',
-      'scrapeLogs','sourceIndex','queue'
-    ]<>'{{}}'::jsonb
-    OR jsonb_array_length(inner_payload->'repairPlan')<>{EXPECTED_TOTAL_ROWS}
-    OR jsonb_array_length(inner_payload->'listings')<>{EXPECTED_TOTAL_ROWS}
-    OR jsonb_array_length(inner_payload->'contacts')<>{EXPECTED_CONTACT_ROWS}
-    OR jsonb_array_length(inner_payload->'documents')<>{EXPECTED_DOCUMENT_ROWS}
-    OR jsonb_array_length(inner_payload->'images')<>{EXPECTED_IMAGE_ROWS}
-    OR inner_payload->'media'<>'[]'::jsonb
-    OR inner_payload->'links'<>'[]'::jsonb
-    OR jsonb_array_length(inner_payload->'omFacts')<>{EXPECTED_OM_FACTS}
-    OR jsonb_array_length(inner_payload->'events')<>{EXPECTED_EVENT_ROWS}
-    OR inner_payload->'priceHistory'<>'[]'::jsonb
-    OR inner_payload->'scrapeLogs'<>'[]'::jsonb
-    OR jsonb_array_length(inner_payload->'sourceIndex')
+    OR jsonb_array_length((SELECT value
+          FROM _cw_preimage_inner_sections WHERE key='repairPlan'))
+      <>{EXPECTED_TOTAL_ROWS}
+    OR jsonb_array_length((SELECT value
+          FROM _cw_preimage_inner_sections WHERE key='listings'))
+      <>{EXPECTED_TOTAL_ROWS}
+    OR jsonb_array_length((SELECT value
+          FROM _cw_preimage_inner_sections WHERE key='contacts'))
+      <>{EXPECTED_CONTACT_ROWS}
+    OR jsonb_array_length((SELECT value
+          FROM _cw_preimage_inner_sections WHERE key='documents'))
+      <>{EXPECTED_DOCUMENT_ROWS}
+    OR jsonb_array_length((SELECT value
+          FROM _cw_preimage_inner_sections WHERE key='images'))
+      <>{EXPECTED_IMAGE_ROWS}
+    OR (SELECT value FROM _cw_preimage_inner_sections WHERE key='media')
+      <>'[]'::jsonb
+    OR (SELECT value FROM _cw_preimage_inner_sections WHERE key='links')
+      <>'[]'::jsonb
+    OR jsonb_array_length((SELECT value
+          FROM _cw_preimage_inner_sections WHERE key='omFacts'))
+      <>{EXPECTED_OM_FACTS}
+    OR jsonb_array_length((SELECT value
+          FROM _cw_preimage_inner_sections WHERE key='events'))
+      <>{EXPECTED_EVENT_ROWS}
+    OR (SELECT value FROM _cw_preimage_inner_sections
+        WHERE key='priceHistory')<>'[]'::jsonb
+    OR (SELECT value FROM _cw_preimage_inner_sections
+        WHERE key='scrapeLogs')<>'[]'::jsonb
+    OR jsonb_array_length((SELECT value
+          FROM _cw_preimage_inner_sections WHERE key='sourceIndex'))
       <>{EXPECTED_SOURCE_INDEX_ROWS}
-    OR jsonb_array_length(inner_payload->'queue')<>{EXPECTED_QUEUE_ROWS}
+    OR jsonb_array_length((SELECT value
+          FROM _cw_preimage_inner_sections WHERE key='queue'))
+      <>{EXPECTED_QUEUE_ROWS}
  THEN
    RAISE EXCEPTION 'Cushman inner preimage schema/count mismatch';
  END IF;
  SELECT count(*) INTO mismatch
- FROM jsonb_to_recordset(inner_payload->'listings') x(id uuid)
+ FROM jsonb_to_recordset((SELECT value
+      FROM _cw_preimage_inner_sections WHERE key='listings')) x(id uuid)
  FULL JOIN _cw_rows r USING(id)
  WHERE x.id IS NULL OR r.id IS NULL;
  IF mismatch<>0 THEN
    RAISE EXCEPTION 'Cushman inner listing identity mismatch: %',mismatch;
  END IF;
  SELECT count(*) INTO mismatch
- FROM jsonb_to_recordset(inner_payload->'repairPlan') x(id uuid)
+ FROM jsonb_to_recordset((SELECT value
+      FROM _cw_preimage_inner_sections WHERE key='repairPlan')) x(id uuid)
  FULL JOIN _cw_expected_parents p USING(id)
  WHERE x.id IS NULL OR p.id IS NULL;
  IF mismatch<>0 THEN
    RAISE EXCEPTION 'Cushman inner repair-plan identity mismatch: %',mismatch;
  END IF;
  SELECT count(*) INTO mismatch
- FROM jsonb_to_recordset(inner_payload->'sourceIndex') x(id uuid)
+ FROM jsonb_to_recordset((SELECT value
+      FROM _cw_preimage_inner_sections WHERE key='sourceIndex')) x(id uuid)
  FULL JOIN _cw_si_plan p USING(id)
  WHERE x.id IS NULL OR p.id IS NULL;
  IF mismatch<>0 THEN
    RAISE EXCEPTION 'Cushman inner source-index identity mismatch: %',mismatch;
  END IF;
  SELECT count(*) INTO mismatch
- FROM jsonb_to_recordset(inner_payload->'queue') x(id uuid)
+ FROM jsonb_to_recordset((SELECT value
+      FROM _cw_preimage_inner_sections WHERE key='queue')) x(id uuid)
  FULL JOIN _cw_queue_plan p USING(id)
  WHERE x.id IS NULL OR p.id IS NULL;
  IF mismatch<>0 THEN
@@ -1490,8 +1530,10 @@ BEGIN
  END IF;
 END
 $cw_preimage_inner$;
+DROP TABLE _cw_preimage_inner_sections,_cw_preimage_inner_json,
+ _cw_preimage_inner_readback;
 CREATE TEMP TABLE _cw_preimage_output ON COMMIT DROP AS
-WITH source_payload AS (
+WITH source_payload AS MATERIALIZED (
  SELECT jsonb_build_object(
   'schemaVersion',6,
   'capturedAt',clock_timestamp(),
@@ -1549,7 +1591,7 @@ WITH source_payload AS (
 )::text AS payload
  FROM _cw_preimage_inner i
 ),
-encoded_payload AS (
+encoded_payload AS MATERIALIZED (
  SELECT payload,
         replace(
           encode(convert_to(payload,'UTF8'),'base64'),
@@ -2454,7 +2496,7 @@ def rollback_body(preimage: dict, artifact: list[ArtifactRow], state: dict) -> s
         f"""
 CREATE TEMP TABLE _pre_{key} ON COMMIT DROP AS
 SELECT * FROM jsonb_to_recordset(
- (SELECT payload->{sql_lit(key)} FROM _cw_rollback_inner)
+ (SELECT value FROM _cw_rollback_sections WHERE key={sql_lit(key)})
 ) AS x(id uuid,listing_id uuid,post_listing_id uuid);
 CREATE UNIQUE INDEX ON _pre_{key}(id);
 """
@@ -2523,12 +2565,29 @@ SELECT
 FROM _cw_preimage;
 CREATE TEMP TABLE _cw_rollback_inner ON COMMIT DROP AS
 SELECT plaintext::jsonb AS payload FROM _cw_rollback_inner_text;
+CREATE TEMP TABLE _cw_rollback_sections ON COMMIT DROP AS
+SELECT section.key,section.value
+FROM _cw_rollback_inner i
+CROSS JOIN LATERAL jsonb_each(i.payload) section;
+CREATE UNIQUE INDEX ON _cw_rollback_sections(key);
 DO $cw_rollback_inner$
-DECLARE inner_payload jsonb;
 BEGIN
  IF (SELECT count(*) FROM _cw_rollback_inner_text)<>1
-    OR (SELECT count(*) FROM _cw_rollback_inner)<>1 THEN
+    OR (SELECT count(*) FROM _cw_rollback_inner)<>1
+    OR (SELECT count(*) FROM _cw_rollback_sections)
+      <>{len(PREIMAGE_INNER_SECTION_KEYS)} THEN
    RAISE EXCEPTION 'Cushman rollback inner payload row count mismatch';
+ END IF;
+ IF EXISTS (
+   SELECT 1
+   FROM (
+     VALUES
+       {inner_section_values_sql()}
+   ) expected(key)
+   FULL JOIN _cw_rollback_sections actual USING(key)
+   WHERE expected.key IS NULL OR actual.key IS NULL
+ ) THEN
+   RAISE EXCEPTION 'Cushman rollback inner payload schema/count mismatch';
  END IF;
  IF (
    SELECT expected_bytes<=0
@@ -2539,47 +2598,61 @@ BEGIN
        OR encode(
          digest(convert_to(plaintext,'UTF8'),'sha256'),'hex'
        ) IS DISTINCT FROM expected_sha256
-       OR plaintext IS DISTINCT FROM (plaintext::jsonb)::text
+       OR plaintext IS DISTINCT FROM (
+         SELECT payload::text FROM _cw_rollback_inner
+       )
    FROM _cw_rollback_inner_text
  ) THEN
    RAISE EXCEPTION 'Cushman rollback inner payload integrity mismatch';
  END IF;
- SELECT payload INTO inner_payload FROM _cw_rollback_inner;
- IF (inner_payload->>'schemaVersion')::integer
+ IF ((SELECT value FROM _cw_rollback_sections
+      WHERE key='schemaVersion')#>>'{{}}')::integer
       <>{PREIMAGE_INNER_SCHEMA_VERSION}
-    OR NOT inner_payload ?& ARRAY[
-      'schemaVersion','repairPlan','listings','contacts','documents',
-      'images','media','links','omFacts','events','priceHistory',
-      'scrapeLogs','sourceIndex','queue'
-    ]
-    OR inner_payload - ARRAY[
-      'schemaVersion','repairPlan','listings','contacts','documents',
-      'images','media','links','omFacts','events','priceHistory',
-      'scrapeLogs','sourceIndex','queue'
-    ]<>'{{}}'::jsonb
-    OR jsonb_array_length(inner_payload->'repairPlan')<>{EXPECTED_TOTAL_ROWS}
-    OR jsonb_array_length(inner_payload->'listings')<>{EXPECTED_TOTAL_ROWS}
-    OR jsonb_array_length(inner_payload->'contacts')<>{EXPECTED_CONTACT_ROWS}
-    OR jsonb_array_length(inner_payload->'documents')<>{EXPECTED_DOCUMENT_ROWS}
-    OR jsonb_array_length(inner_payload->'images')<>{EXPECTED_IMAGE_ROWS}
-    OR inner_payload->'media'<>'[]'::jsonb
-    OR inner_payload->'links'<>'[]'::jsonb
-    OR jsonb_array_length(inner_payload->'omFacts')<>{EXPECTED_OM_FACTS}
-    OR jsonb_array_length(inner_payload->'events')<>{EXPECTED_EVENT_ROWS}
-    OR inner_payload->'priceHistory'<>'[]'::jsonb
-    OR inner_payload->'scrapeLogs'<>'[]'::jsonb
-    OR jsonb_array_length(inner_payload->'sourceIndex')
+    OR jsonb_array_length((SELECT value
+          FROM _cw_rollback_sections WHERE key='repairPlan'))
+      <>{EXPECTED_TOTAL_ROWS}
+    OR jsonb_array_length((SELECT value
+          FROM _cw_rollback_sections WHERE key='listings'))
+      <>{EXPECTED_TOTAL_ROWS}
+    OR jsonb_array_length((SELECT value
+          FROM _cw_rollback_sections WHERE key='contacts'))
+      <>{EXPECTED_CONTACT_ROWS}
+    OR jsonb_array_length((SELECT value
+          FROM _cw_rollback_sections WHERE key='documents'))
+      <>{EXPECTED_DOCUMENT_ROWS}
+    OR jsonb_array_length((SELECT value
+          FROM _cw_rollback_sections WHERE key='images'))
+      <>{EXPECTED_IMAGE_ROWS}
+    OR (SELECT value FROM _cw_rollback_sections WHERE key='media')
+      <>'[]'::jsonb
+    OR (SELECT value FROM _cw_rollback_sections WHERE key='links')
+      <>'[]'::jsonb
+    OR jsonb_array_length((SELECT value
+          FROM _cw_rollback_sections WHERE key='omFacts'))
+      <>{EXPECTED_OM_FACTS}
+    OR jsonb_array_length((SELECT value
+          FROM _cw_rollback_sections WHERE key='events'))
+      <>{EXPECTED_EVENT_ROWS}
+    OR (SELECT value FROM _cw_rollback_sections
+        WHERE key='priceHistory')<>'[]'::jsonb
+    OR (SELECT value FROM _cw_rollback_sections
+        WHERE key='scrapeLogs')<>'[]'::jsonb
+    OR jsonb_array_length((SELECT value
+          FROM _cw_rollback_sections WHERE key='sourceIndex'))
       <>{EXPECTED_SOURCE_INDEX_ROWS}
-    OR jsonb_array_length(inner_payload->'queue')<>{EXPECTED_QUEUE_ROWS}
+    OR jsonb_array_length((SELECT value
+          FROM _cw_rollback_sections WHERE key='queue'))
+      <>{EXPECTED_QUEUE_ROWS}
  THEN
    RAISE EXCEPTION 'Cushman rollback inner payload schema/count mismatch';
  END IF;
 END
 $cw_rollback_inner$;
+DROP TABLE _cw_rollback_inner_text,_cw_rollback_inner;
 
 CREATE TEMP TABLE _pre_listings ON COMMIT DROP AS
 SELECT * FROM jsonb_to_recordset(
- (SELECT payload->'listings' FROM _cw_rollback_inner)
+ (SELECT value FROM _cw_rollback_sections WHERE key='listings')
 ) AS x(
  id uuid,external_id text,source_url text,canonical_url text,status text,
  transaction_type text,property_type text,title text,address text,city text,
@@ -2590,7 +2663,7 @@ SELECT * FROM jsonb_to_recordset(
 CREATE UNIQUE INDEX ON _pre_listings(id);
 CREATE TEMP TABLE _pre_repair_plan ON COMMIT DROP AS
 SELECT * FROM jsonb_to_recordset(
- (SELECT payload->'repairPlan' FROM _cw_rollback_inner)
+ (SELECT value FROM _cw_rollback_sections WHERE key='repairPlan')
 ) AS x(
  id uuid,target_id text,survivor_id uuid,post_external_id text,
  has_current boolean,post_source_url text,post_deleted boolean,
@@ -2611,15 +2684,16 @@ CREATE UNIQUE INDEX ON _pre_outer_topology(id);
 CREATE TEMP TABLE _pre_source_index ON COMMIT DROP AS
 SELECT * FROM jsonb_populate_recordset(
  NULL::credeals.cre_source_index,
- (SELECT payload->'sourceIndex' FROM _cw_rollback_inner)
+ (SELECT value FROM _cw_rollback_sections WHERE key='sourceIndex')
 );
 CREATE UNIQUE INDEX ON _pre_source_index(id);
 CREATE TEMP TABLE _pre_queue ON COMMIT DROP AS
 SELECT * FROM jsonb_populate_recordset(
  NULL::credeals.cre_enrichment_queue,
- (SELECT payload->'queue' FROM _cw_rollback_inner)
+ (SELECT value FROM _cw_rollback_sections WHERE key='queue')
 );
 CREATE UNIQUE INDEX ON _pre_queue(id);
+DROP TABLE _cw_rollback_sections;
 
 DO $cw_outer_inner_correlation$
 DECLARE mismatch integer;
