@@ -1198,3 +1198,99 @@ def test_roundtrip_runs_forward_and_reverse_in_one_rolled_back_transaction():
     assert sql.count("BEGIN ISOLATION LEVEL SERIALIZABLE;") == 1
     assert "DROP TABLE _cw_current" in sql
     assert sql.rstrip().endswith("ROLLBACK;")
+
+
+def test_preimage_chunk_transport_reconstructs_exact_validated_ascii_payload():
+    payload = reviewed_empty_preimage()
+    payload["transportProbe"] = "'\N{GREEK SMALL LETTER LAMDA};" * 120_000
+    with patch.multiple(repair, **patched_review_counts(0)):
+        chunks = repair.preimage_json_chunks(payload)
+        sql = repair.preimage_chunk_transport_sql(payload)
+
+    expected = json.dumps(
+        payload, separators=(",", ":"), ensure_ascii=True
+    )
+    expected_bytes = expected.encode("ascii")
+    expected_md5 = hashlib.md5(
+        expected_bytes, usedforsecurity=False
+    ).hexdigest()
+    assert "".join(chunks) == expected
+    assert all(
+        len(chunk.encode("ascii")) <= repair.PREIMAGE_SQL_CHUNK_BYTES
+        for chunk in chunks
+    )
+    assert len(chunks) > 1
+    assert f"HAVING count(*)={len(chunks)}" in sql
+    assert f"max(seq)={len(chunks) - 1}" in sql
+    assert "string_agg(payload,'' ORDER BY seq)" in sql
+    assert f"octet_length(payload)<>{len(expected_bytes)}" in sql
+    assert f"md5(payload)<>'{expected_md5}'" in sql
+
+
+def test_preimage_chunk_transport_validates_before_serialization():
+    payload = reviewed_empty_preimage()
+    payload["artifactSha256"] = "0" * 64
+    payload["unserializableProbe"] = object()
+    with pytest.raises(ValueError, match="artifactSha256"):
+        repair.preimage_json_chunks(payload)
+
+
+def test_preimage_chunk_transport_emits_bounded_separate_insert_statements():
+    payload = reviewed_empty_preimage()
+    # Apostrophes exercise the worst-case doubling performed by sql_lit.
+    payload["transportProbe"] = "'" * (repair.PREIMAGE_SQL_CHUNK_BYTES * 2 + 1)
+    with patch.multiple(repair, **patched_review_counts(0)):
+        chunks = repair.preimage_json_chunks(payload)
+        sql = repair.preimage_chunk_transport_sql(payload)
+
+    inserts = [
+        line
+        for line in sql.splitlines()
+        if line.startswith("INSERT INTO _cw_preimage_chunks")
+    ]
+    assert len(inserts) == len(chunks) >= 3
+    assert all(line.endswith(";") for line in inserts)
+    assert all(
+        len(line.encode("utf-8"))
+        <= repair.PREIMAGE_SQL_STATEMENT_CEILING_BYTES
+        for line in inserts
+    )
+
+
+def test_preimage_chunk_transport_fails_closed_before_jsonb_cast():
+    payload = reviewed_empty_preimage()
+    with patch.multiple(repair, **patched_review_counts(0)):
+        sql = repair.preimage_chunk_transport_sql(payload)
+
+    assert "seq integer PRIMARY KEY CHECK (seq>=0)" in sql
+    assert "min(seq)=0" in sql
+    assert "Cushman rollback preimage chunk geometry mismatch" in sql
+    assert "Cushman rollback preimage payload integrity mismatch" in sql
+    assert "SELECT payload::jsonb FROM _cw_preimage_assembled" in sql
+    assert "Cushman rollback preimage assembled row count mismatch" in sql
+    assert sql.index("payload integrity mismatch") < sql.index("payload::jsonb")
+    assert "DROP TABLE _cw_preimage_chunks,_cw_preimage_assembled;" in sql
+
+
+def test_chunked_roundtrip_preserves_every_rollback_child_guard():
+    payload = reviewed_empty_preimage()
+    with patch.multiple(repair, **patched_review_counts(0)):
+        sql = repair.build_roundtrip_sql(
+            payload, minimal_artifact(), minimal_state()
+        )
+
+    for key in (
+        "contacts",
+        "documents",
+        "images",
+        "media",
+        "links",
+        "omFacts",
+        "events",
+        "priceHistory",
+        "scrapeLogs",
+    ):
+        assert f"rollback refused: {key} post-repair mapping drift" in sql
+        assert f"Cushman rollback {key} readback failed" in sql
+    assert sql.count("BEGIN ISOLATION LEVEL SERIALIZABLE;") == 1
+    assert sql.rstrip().endswith("ROLLBACK;")

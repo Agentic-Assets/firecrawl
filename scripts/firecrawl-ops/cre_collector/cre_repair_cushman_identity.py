@@ -113,6 +113,12 @@ MAX_PREIMAGE_BYTES = 512 * 1024 * 1024
 # deliberately do not use this timeout because losing a commit response would
 # require separate state reconciliation.
 ROLLBACK_VERIFICATION_TIMEOUT_SECONDS = 30 * 60
+# Keep every psql simple-query message comfortably below hosted proxy limits.
+# json.dumps(..., ensure_ascii=True) makes one Python character exactly one byte;
+# SQL quote escaping can at most double apostrophes, so a 1 MiB emitted-statement
+# ceiling leaves ample headroom above each 256 KiB raw chunk.
+PREIMAGE_SQL_CHUNK_BYTES = 256 * 1024
+PREIMAGE_SQL_STATEMENT_CEILING_BYTES = 1024 * 1024
 REPAIR_TOKEN = hashlib.sha256(
     (
         EXPECTED_ARTIFACT_SHA256
@@ -1747,9 +1753,84 @@ def artifact_from_preimage(preimage: dict) -> list[ArtifactRow]:
     ]
 
 
-def rollback_body(preimage: dict, artifact: list[ArtifactRow], state: dict) -> str:
+def preimage_json_chunks(preimage: dict) -> tuple[str, ...]:
+    """Return validated, byte-bounded ASCII JSON chunks for psql transport."""
     validate_preimage(preimage)
-    value = sql_lit(json.dumps(preimage, separators=(",", ":")))
+    payload = json.dumps(
+        preimage, separators=(",", ":"), ensure_ascii=True
+    )
+    payload.encode("ascii")
+    return tuple(
+        payload[start : start + PREIMAGE_SQL_CHUNK_BYTES]
+        for start in range(0, len(payload), PREIMAGE_SQL_CHUNK_BYTES)
+    )
+
+
+def preimage_chunk_transport_sql(preimage: dict) -> str:
+    """Build fail-closed, bounded statements that assemble `_cw_preimage`."""
+    chunks = preimage_json_chunks(preimage)
+    payload = "".join(chunks)
+    expected_bytes = len(payload.encode("ascii"))
+    expected_md5 = hashlib.md5(
+        payload.encode("ascii"), usedforsecurity=False
+    ).hexdigest()
+    inserts = []
+    for seq, chunk in enumerate(chunks):
+        statement = (
+            "INSERT INTO _cw_preimage_chunks(seq,payload) VALUES "
+            f"({seq},{sql_lit(chunk)});"
+        )
+        if (
+            len(statement.encode("utf-8"))
+            > PREIMAGE_SQL_STATEMENT_CEILING_BYTES
+        ):
+            raise ValueError("rollback preimage SQL chunk exceeds statement ceiling")
+        inserts.append(statement)
+    return f"""
+CREATE TEMP TABLE _cw_preimage_chunks(
+ seq integer PRIMARY KEY CHECK (seq>=0),
+ payload text NOT NULL
+) ON COMMIT DROP;
+{chr(10).join(inserts)}
+CREATE TEMP TABLE _cw_preimage_assembled(
+ payload text NOT NULL
+) ON COMMIT DROP;
+INSERT INTO _cw_preimage_assembled(payload)
+SELECT string_agg(payload,'' ORDER BY seq)
+FROM _cw_preimage_chunks
+HAVING count(*)={len(chunks)}
+   AND min(seq)=0
+   AND max(seq)={len(chunks) - 1};
+DO $cw_preimage_transport$
+BEGIN
+ IF (SELECT count(*) FROM _cw_preimage_assembled)<>1 THEN
+   RAISE EXCEPTION 'Cushman rollback preimage chunk geometry mismatch';
+ END IF;
+ IF (
+   SELECT octet_length(payload)<>{expected_bytes}
+       OR md5(payload)<>{sql_lit(expected_md5)}
+   FROM _cw_preimage_assembled
+ ) THEN
+   RAISE EXCEPTION 'Cushman rollback preimage payload integrity mismatch';
+ END IF;
+END
+$cw_preimage_transport$;
+CREATE TEMP TABLE _cw_preimage(payload jsonb) ON COMMIT DROP;
+INSERT INTO _cw_preimage(payload)
+SELECT payload::jsonb FROM _cw_preimage_assembled;
+DO $cw_preimage_row$
+BEGIN
+ IF (SELECT count(*) FROM _cw_preimage)<>1 THEN
+   RAISE EXCEPTION 'Cushman rollback preimage assembled row count mismatch';
+ END IF;
+END
+$cw_preimage_row$;
+DROP TABLE _cw_preimage_chunks,_cw_preimage_assembled;
+"""
+
+
+def rollback_body(preimage: dict, artifact: list[ArtifactRow], state: dict) -> str:
+    preimage_transport = preimage_chunk_transport_sql(preimage)
     child_tables = {
         "contacts": "cre_listing_contacts",
         "documents": "cre_listing_documents",
@@ -1816,8 +1897,7 @@ FROM _pre_{key} p WHERE target.id=p.id;
 SET LOCAL statement_timeout='8min';
 SET LOCAL lock_timeout='15s';
 SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY});
-CREATE TEMP TABLE _cw_preimage(payload jsonb) ON COMMIT DROP;
-INSERT INTO _cw_preimage VALUES ({value}::jsonb);
+{preimage_transport}
 CREATE TEMP TABLE _cw_rollback_clock ON COMMIT DROP AS
 SELECT transaction_timestamp() AS trigger_updated_at;
 {stage_sql(artifact,state)}
