@@ -1315,6 +1315,21 @@ def collect_source(
     return None
 
 
+def subset_gate_can_admit(info: Mapping[str, Any]) -> bool:
+    """Allow only clean or baseline-only holds into additive subset mode."""
+    verdict = info.get("verdict")
+    reason = str(info.get("reason") or "")
+    if verdict == "ok":
+        return True
+    if verdict != "hold" or not reason.startswith("current_active "):
+        return False
+    return " below floor " in reason or (
+        " below " in reason
+        and " of baseline median " in reason
+        and " (threshold " in reason
+    )
+
+
 def gate_source(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -1346,17 +1361,46 @@ def gate_source(
     try:
         result = _load_json(gate_path)
         if not full_transaction_scope:
+            summary = result.get("summary")
+            if (
+                not isinstance(summary, dict)
+                or _int_value(summary.get("torow_errors")) != 0
+            ):
+                raise GlobalStageError(
+                    f"subset coverage gate reported conversion errors for {source}"
+                )
             result["scope"] = {
                 "kind": "additive_transaction_subset",
                 "transactions": list(manifest["config"]["transactions"]),
                 "whole_source_coverage": False,
             }
             scoped_info = result["per_source"][source]
+            scoped_info["raw_verdict"] = scoped_info.get("verdict")
+            scoped_info["raw_reason"] = scoped_info.get("reason")
+            subset_admitted = subset_gate_can_admit(scoped_info)
+            if subset_admitted:
+                scoped_info["verdict"] = "ok_additive_subset"
+                scoped_info["reason"] = (
+                    "strict selected-transaction artifact admitted additively; "
+                    "whole-source coverage baseline is advisory only"
+                )
             scoped_info["mark_missing_safe"] = False
-            scoped_info["admission_scope"] = "additive_transaction_subset"
-            summary = result.get("summary")
-            if isinstance(summary, dict):
-                summary["mark_missing_safe_brokerages"] = []
+            scoped_info["admission_scope"] = (
+                "additive_transaction_subset"
+                if subset_admitted
+                else "subset_admission_blocked"
+            )
+            summary["baseline_advisory_holds"] = (
+                [source]
+                if subset_admitted and scoped_info["raw_verdict"] == "hold"
+                else []
+            )
+            summary["hold_sources"] = (
+                []
+                if subset_admitted
+                else list(summary.get("hold_sources") or [])
+            )
+            summary["mark_missing_safe_brokerages"] = []
             atomic_write_json(gate_path, result)
         per_source = result["per_source"][source]
     except (ArtifactValidationError, KeyError, TypeError) as exc:
@@ -1369,6 +1413,9 @@ def gate_source(
         "rc": rc,
         "verdict": per_source.get("verdict"),
         "reason": per_source.get("reason"),
+        "raw_verdict": per_source.get("raw_verdict"),
+        "raw_reason": per_source.get("raw_reason"),
+        "admission_scope": per_source.get("admission_scope"),
         # A transaction subset can prove additive freshness for the selected
         # rows, but can never authorize whole-source lifecycle deletion.
         "mark_missing_safe": (
@@ -1494,12 +1541,17 @@ def advance_source(
         recover_interrupted_ingest(run_dir, manifest, source, env_file)
     if checkpoint.get("state") == "ingested" and existing:
         prior_verdict = (checkpoint.get("gate") or {}).get("verdict")
-        if prior_verdict == "ok":
+        admitted_verdict = (
+            "ok"
+            if transactions == TRANSACTIONS
+            else "ok_additive_subset"
+        )
+        if prior_verdict == admitted_verdict:
             return True
         artifact, _stats = existing
         gate_source(run_dir, manifest, source, artifact, env_file)
         verdict = (checkpoint.get("gate") or {}).get("verdict")
-        if verdict != "ok":
+        if verdict != admitted_verdict:
             checkpoint["state"] = "ingested"
             checkpoint["admission_state"] = (
                 "baseline_seed_required"
@@ -1526,7 +1578,12 @@ def advance_source(
     artifact, _stats = collected
     gate_source(run_dir, manifest, source, artifact, env_file)
     verdict = (checkpoint.get("gate") or {}).get("verdict")
-    if verdict != "ok":
+    admitted_verdict = (
+        "ok"
+        if transactions == TRANSACTIONS
+        else "ok_additive_subset"
+    )
+    if verdict != admitted_verdict:
         checkpoint["state"] = (
             "baseline_seed_required" if verdict == "first_seen" else "gate_blocked"
         )
@@ -1590,18 +1647,48 @@ def run_aggregate_gate(
         tuple(manifest["config"]["transactions"]) == TRANSACTIONS
     )
     if not full_transaction_scope:
+        summary = result.get("summary")
+        if (
+            not isinstance(summary, dict)
+            or _int_value(summary.get("torow_errors")) != 0
+        ):
+            raise GlobalStageError(
+                "subset aggregate coverage gate reported conversion errors"
+            )
         result["scope"] = {
             "kind": "additive_transaction_subset",
             "transactions": list(manifest["config"]["transactions"]),
             "whole_source_coverage": False,
         }
-        for info in (result.get("per_source") or {}).values():
+        baseline_advisory_holds: list[str] = []
+        for source, info in (result.get("per_source") or {}).items():
             if isinstance(info, dict):
+                info["raw_verdict"] = info.get("verdict")
+                info["raw_reason"] = info.get("reason")
+                subset_admitted = subset_gate_can_admit(info)
+                if subset_admitted:
+                    info["verdict"] = "ok_additive_subset"
+                    info["reason"] = (
+                        "strict selected-transaction artifact admitted additively; "
+                        "whole-source coverage baseline is advisory only"
+                    )
+                    if info["raw_verdict"] == "hold":
+                        baseline_advisory_holds.append(source)
                 info["mark_missing_safe"] = False
-                info["admission_scope"] = "additive_transaction_subset"
-        summary = result.get("summary")
-        if isinstance(summary, dict):
-            summary["mark_missing_safe_brokerages"] = []
+                info["admission_scope"] = (
+                    "additive_transaction_subset"
+                    if subset_admitted
+                    else "subset_admission_blocked"
+                )
+        summary["baseline_advisory_holds"] = sorted(
+            baseline_advisory_holds
+        )
+        summary["hold_sources"] = sorted(
+            source
+            for source, info in (result.get("per_source") or {}).items()
+            if isinstance(info, dict) and info.get("verdict") == "hold"
+        )
+        summary["mark_missing_safe_brokerages"] = []
         atomic_write_json(output, result)
     per_source = result.get("per_source") or {}
     configured_sources = set(manifest["config"]["sources"])
@@ -1611,7 +1698,9 @@ def run_aggregate_gate(
         | {
         source
         for source, info in per_source.items()
-        if not isinstance(info, dict) or info.get("verdict") != "ok"
+        if not isinstance(info, dict)
+        or info.get("verdict")
+        != ("ok" if full_transaction_scope else "ok_additive_subset")
         }
     )
     manifest["aggregate_gate"] = {
@@ -1619,6 +1708,9 @@ def run_aggregate_gate(
         "log": _relative_to_run(log, run_dir),
         "rc": rc,
         "hold_sources": (result.get("summary") or {}).get("hold_sources") or [],
+        "baseline_advisory_holds": (
+            (result.get("summary") or {}).get("baseline_advisory_holds") or []
+        ),
         "non_ok_sources": non_ok_sources,
         "mark_missing_safe_brokerages": (
             (result.get("summary") or {}).get("mark_missing_safe_brokerages") or []

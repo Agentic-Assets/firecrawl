@@ -1331,15 +1331,103 @@ def test_subset_gate_can_admit_additive_rows_but_never_mark_missing(tmp_path, mo
             run_dir / "gates" / "savills.json",
             {
                 "per_source": {
+                        "savills": {
+                            "verdict": "hold",
+                            "reason": "current_active 3 below floor 100",
+                            "mark_missing_safe": False,
+                        }
+                },
+                "summary": {
+                    "hold_sources": ["savills"],
+                    "mark_missing_safe_brokerages": ["savills"],
+                    "torow_errors": 0,
+                },
+            },
+        )
+        return 2
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    refresh.gate_source(run_dir, manifest, "savills", source_path, None)
+    recorded = manifest["sources"]["savills"]["gate"]
+    assert recorded["verdict"] == "ok_additive_subset"
+    assert recorded["transaction_scope"] == ["lease"]
+    assert recorded["mark_missing_safe"] is False
+    durable_gate = json.loads(
+        (run_dir / "gates" / "savills.json").read_text(encoding="utf-8")
+    )
+    assert durable_gate["scope"]["whole_source_coverage"] is False
+    assert durable_gate["per_source"]["savills"]["raw_verdict"] == "hold"
+    assert durable_gate["per_source"]["savills"]["mark_missing_safe"] is False
+    assert durable_gate["summary"]["mark_missing_safe_brokerages"] == []
+    assert durable_gate["summary"]["baseline_advisory_holds"] == ["savills"]
+    assert durable_gate["summary"]["hold_sources"] == []
+    assert (
+        durable_gate["per_source"]["savills"]["admission_scope"]
+        == "additive_transaction_subset"
+    )
+
+
+def test_subset_gate_admission_accepts_only_clean_or_baseline_only_holds():
+    assert refresh.subset_gate_can_admit({"verdict": "ok", "reason": None})
+    assert refresh.subset_gate_can_admit(
+        {
+            "verdict": "hold",
+            "reason": "current_active 3 below floor 100",
+        }
+    )
+    assert refresh.subset_gate_can_admit(
+        {
+            "verdict": "hold",
+            "reason": (
+                "current_active 60 below 70% of baseline median 100 "
+                "(threshold 70)"
+            ),
+        }
+    )
+    assert not refresh.subset_gate_can_admit(
+        {
+            "verdict": "first_seen",
+            "reason": "no baseline row; cannot gate (first sight)",
+        }
+    )
+    assert not refresh.subset_gate_can_admit(
+        {
+            "verdict": "hold",
+            "reason": "source pass error: timeout",
+        }
+    )
+
+
+def test_subset_first_seen_gate_remains_blocked(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("savills",),
+        transactions=("lease",),
+        page_cap=400,
+        concurrency=3,
+    )
+    source_path = run_dir / "sources" / "savills.json"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("{}", encoding="utf-8")
+
+    def fake_run(_argv, _log, **_kwargs):
+        refresh.atomic_write_json(
+            run_dir / "gates" / "savills.json",
+            {
+                "per_source": {
                     "savills": {
-                        "verdict": "ok",
-                        "reason": None,
-                        "mark_missing_safe": True,
+                        "verdict": "first_seen",
+                        "reason": "no baseline row; cannot gate (first sight)",
+                        "mark_missing_safe": False,
                     }
                 },
                 "summary": {
                     "hold_sources": [],
-                    "mark_missing_safe_brokerages": ["savills"],
+                    "mark_missing_safe_brokerages": [],
+                    "torow_errors": 0,
                 },
             },
         )
@@ -1348,19 +1436,9 @@ def test_subset_gate_can_admit_additive_rows_but_never_mark_missing(tmp_path, mo
     monkeypatch.setattr(refresh, "run_command", fake_run)
     refresh.gate_source(run_dir, manifest, "savills", source_path, None)
     recorded = manifest["sources"]["savills"]["gate"]
-    assert recorded["verdict"] == "ok"
-    assert recorded["transaction_scope"] == ["lease"]
+    assert recorded["verdict"] == "first_seen"
+    assert recorded["admission_scope"] == "subset_admission_blocked"
     assert recorded["mark_missing_safe"] is False
-    durable_gate = json.loads(
-        (run_dir / "gates" / "savills.json").read_text(encoding="utf-8")
-    )
-    assert durable_gate["scope"]["whole_source_coverage"] is False
-    assert durable_gate["per_source"]["savills"]["mark_missing_safe"] is False
-    assert durable_gate["summary"]["mark_missing_safe_brokerages"] == []
-    assert (
-        durable_gate["per_source"]["savills"]["admission_scope"]
-        == "additive_transaction_subset"
-    )
 
 
 def test_gate_infrastructure_failure_is_fatal(tmp_path, monkeypatch):
@@ -1448,6 +1526,7 @@ def test_subset_aggregate_gate_strips_whole_source_missing_safe_claim(
                 "summary": {
                     "hold_sources": [],
                     "mark_missing_safe_brokerages": ["savills"],
+                    "torow_errors": 0,
                 },
             },
         )
