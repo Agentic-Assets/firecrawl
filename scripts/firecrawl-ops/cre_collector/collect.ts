@@ -121,10 +121,12 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
         {
           preferDirectJson: true,
           directReferer: "https://www.lee-associates.com/properties/",
-          // Lee's 10k-row feed is mutable while it is being paged. A bounded
-          // three-request window shortens the snapshot enough to avoid the
-          // exact page-boundary duplication observed in production while
-          // retaining the existing complete-page and identity reconciliation.
+          // Buildout's implicit sort can inject repeated featured rows at page
+          // boundaries. Its own inventory UI exposes created_at ascending as a
+          // supported sort. New listings then append instead of shifting every
+          // prior page; strict metadata and unique-ID reconciliation still fail
+          // closed if the source mutates or hides a row during pagination.
+          inventorySort: "created_at asc",
           pageConcurrency: 3,
           requireCompletePages: true,
           cacheSlug: "lee-associates",

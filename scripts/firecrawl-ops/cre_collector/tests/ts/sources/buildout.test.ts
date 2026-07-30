@@ -61,6 +61,10 @@ test("buildoutInventoryUrl includes plugin key and page", () => {
     buildoutInventoryUrl("abc123plugin", 7),
     "https://buildout.com/plugins/abc123plugin/inventory.json?page=7"
   );
+  assert.equal(
+    buildoutInventoryUrl("abc123plugin", 7, "created_at asc"),
+    "https://buildout.com/plugins/abc123plugin/inventory.json?page=7&q%5Bs%5D%5B%5D=created_at+asc"
+  );
 });
 
 test("Buildout finite caps report truncation against known eligible inventory", () => {

@@ -33,6 +33,7 @@ export const buildoutFailureCache = new Map<string, Error>();
 export type BuildoutInventoryOpts = {
   preferDirectJson?: boolean;
   directReferer?: string;
+  inventorySort?: string;
   pageConcurrency?: number;
   requireCompletePages?: boolean;
   cacheSlug?: string;
@@ -44,8 +45,15 @@ export type BuildoutInventoryOpts = {
   jsonBackoffMs?: number;
 };
 
-export function buildoutInventoryUrl(pluginKey: string, page: number): string {
-  return `https://buildout.com/plugins/${pluginKey}/inventory.json?page=${page}`;
+export function buildoutInventoryUrl(
+  pluginKey: string,
+  page: number,
+  inventorySort?: string
+): string {
+  const url = new URL(`https://buildout.com/plugins/${pluginKey}/inventory.json`);
+  url.searchParams.set("page", String(page));
+  if (inventorySort) url.searchParams.set("q[s][]", inventorySort);
+  return url.toString();
 }
 
 type BuildoutInventoryPageExpectation = {
@@ -351,7 +359,7 @@ export async function fetchBuildoutInventoryPage(
   opts: BuildoutInventoryOpts,
   expected: BuildoutInventoryPageExpectation | null = null
 ): Promise<any> {
-  const url = buildoutInventoryUrl(pluginKey, page);
+  const url = buildoutInventoryUrl(pluginKey, page, opts.inventorySort);
   const cachePolicy = buildoutPageCachePolicy(opts);
   if (cachePolicy.read) {
     const cached = readBuildoutPageCache(company, pluginKey, page, opts);
@@ -482,7 +490,7 @@ export async function buildoutInventory(
           if (opts.preferDirectJson) {
             try {
               d = await directBuildoutJson(
-                buildoutInventoryUrl(pluginKey, p),
+                buildoutInventoryUrl(pluginKey, p, opts.inventorySort),
                 opts.directReferer ?? "https://buildout.com/"
               );
             } catch {
