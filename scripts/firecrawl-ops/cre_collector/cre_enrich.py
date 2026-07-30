@@ -79,6 +79,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cre_ingest import (  # noqa: E402
     find_psql,
     load_db_url,
+    psql_connection_args,
+    psql_connection_env,
     sql_lit,
 )
 
@@ -89,6 +91,12 @@ OUT_ENRICH_DIR = os.path.join(HERE, "out", "enrich")
 # and surface in credeals.v_cre_enrichment_dead (sql/010). Mirrors the claim SQL
 # `attempts < 5` predicate and select_done_and_retry's dead-letter threshold.
 MAX_ATTEMPTS = 5
+
+# Serialize queue replacement and worker claims in Postgres as well as through
+# the launchd filesystem lock. This closes the direct-CLI race where a worker
+# could claim a row after a source-refresh preflight but before that refresh
+# deleted and rebuilt the source's queue.
+QUEUE_MUTATION_ADVISORY_LOCK = 1_687_068_469
 
 # A crashed prior run leaves rows claimed (claimed_at set, done_at NULL). The
 # claim SQL reclaims any row whose claim is older than this interval. It is a SQL
@@ -149,6 +157,9 @@ def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL):
         "\\set ON_ERROR_STOP on",
         "BEGIN;",
         "SET LOCAL standard_conforming_strings = on;",
+        "SELECT pg_advisory_xact_lock({});".format(
+            QUEUE_MUTATION_ADVISORY_LOCK
+        ),
         "WITH claimed AS (",
         "  SELECT id FROM credeals.cre_enrichment_queue",
         "  WHERE done_at IS NULL AND attempts < {}".format(MAX_ATTEMPTS),
@@ -345,7 +356,19 @@ def _psql_query(db_url, sql):
     """
     psql = find_psql()
     proc = subprocess.run(
-        [psql, db_url, "-q", "-tA", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-f", "-"],
+        [
+            psql,
+            *psql_connection_args(db_url),
+            "-q",
+            "-tA",
+            "-F",
+            "\t",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            "-",
+        ],
+        env=psql_connection_env(db_url),
         input=sql,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
@@ -369,7 +392,16 @@ def _psql_exec(db_url, sql):
     """
     psql = find_psql()
     proc = subprocess.run(
-        [psql, db_url, "-q", "-v", "ON_ERROR_STOP=1", "-f", "-"],
+        [
+            psql,
+            *psql_connection_args(db_url),
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            "-",
+        ],
+        env=psql_connection_env(db_url),
         input=sql,
         stdout=sys.stderr, stderr=sys.stderr, text=True,
     )

@@ -175,6 +175,13 @@ class TestPsqlQuery:
         assert DB_URL not in captured.out
         assert DB_URL not in captured.err
 
+    def test_database_secret_is_not_in_process_argv(self, monkeypatch):
+        calls, _ = self._call(monkeypatch, "SELECT 1;")
+        argv, kwargs = calls[0]
+        assert DB_URL not in argv
+        assert "secret" not in " ".join(argv)
+        assert kwargs["env"]["PGPASSWORD"] == "secret"
+
     # --- Row parsing ----------------------------------------------------------
 
     def test_tab_split_tuples_blank_lines_skipped(self, monkeypatch):
@@ -323,6 +330,13 @@ class TestPsqlExec:
         captured = capsys.readouterr()
         assert DB_URL not in captured.out
         assert DB_URL not in captured.err
+
+    def test_database_secret_is_not_in_process_argv(self, monkeypatch):
+        calls = self._call(monkeypatch, "BEGIN; COMMIT;")
+        argv, kwargs = calls[0]
+        assert DB_URL not in argv
+        assert "secret" not in " ".join(argv)
+        assert kwargs["env"]["PGPASSWORD"] == "secret"
 
     # --- Non-zero returncode exits via sys.exit --------------------------------
 

@@ -48,6 +48,10 @@ def _noncomment_lines(sql):
 
 def test_claim_sql_core_shape_no_attempts_increment_at_claim():
     sql = build_claim_sql(200)
+    assert (
+        f"SELECT pg_advisory_xact_lock("
+        f"{cre_enrich.QUEUE_MUTATION_ADVISORY_LOCK});"
+    ) in sql
     assert "FOR UPDATE SKIP LOCKED" in sql
     assert "attempts < 5" in sql
     assert "done_at IS NULL" in sql
