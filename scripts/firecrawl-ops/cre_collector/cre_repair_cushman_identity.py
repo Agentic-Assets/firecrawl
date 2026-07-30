@@ -10,6 +10,11 @@ superseded alias, so no extracted fact value is invented, edited, or deleted.
 The default mode is read-only.  Persistent apply requires a new owner-only
 preimage path.  Every mode holds the canonical CRE lock and a database advisory
 lock; any drift from the reviewed shape aborts before mutation.
+
+Preimage schema v5 stores each original listing raw_data exactly once in a
+reversible pgcrypto PGP compression envelope, protected by plaintext byte and
+SHA-256 guards.  The envelope passphrase is a format constant, not a secret;
+owner-only preimage permissions remain the confidentiality boundary.
 """
 
 from __future__ import annotations
@@ -104,10 +109,10 @@ DEFAULT_ARTIFACT = Path(__file__).resolve().parent / (
 )
 DEFAULT_LOCK = canonical_shared_lock_dir()
 ADVISORY_LOCK_KEY = 734_251_907_300_821_130
-# The full Cushman rollback preimage contains parent rows plus all reviewed
-# child/index/queue rows. Bound serialization and rollback reads before they can
-# consume unbounded memory while leaving ample headroom for the reviewed shape.
-MAX_PREIMAGE_BYTES = 512 * 1024 * 1024
+# The reviewed schema-v5 preimage is expected below 32 MiB after compressing
+# original raw_data exactly once. Keep 2x headroom while bounding serialization,
+# rollback reads, and the number of fixed frontend SELECT statements.
+MAX_PREIMAGE_BYTES = 64 * 1024 * 1024
 # Client-side wall clock for rollback-only verification. PostgreSQL's
 # statement_timeout is per statement, so it cannot bound a stalled multi-
 # statement psql session or a dead connection. Persistent apply/rollback paths
@@ -120,7 +125,7 @@ ROLLBACK_VERIFICATION_TIMEOUT_SECONDS = 30 * 60
 # ceiling leaves ample headroom above each 256 KiB raw chunk.
 PREIMAGE_SQL_CHUNK_BYTES = 256 * 1024
 PREIMAGE_SQL_STATEMENT_CEILING_BYTES = 1024 * 1024
-PREIMAGE_OUTPUT_PROTOCOL = "cushman-preimage-chunks-v2"
+PREIMAGE_OUTPUT_PROTOCOL = "cushman-preimage-chunks-v3"
 PREIMAGE_OUTPUT_ENCODING = "base64"
 PREIMAGE_OUTPUT_CHUNK_CHARS = 256 * 1024
 PREIMAGE_OUTPUT_ROW_CEILING_BYTES = 512 * 1024
@@ -139,6 +144,16 @@ PREIMAGE_OUTPUT_KEYS = frozenset(
         "encoding",
         "chunk",
     }
+)
+PREIMAGE_RAW_DATA_ENCODING = "pgcrypto-pgp-zlib-base64-v1"
+# This domain-separated constant enables self-contained reversible compression.
+# It is not a confidentiality secret; the owner-only preimage file is the
+# confidentiality boundary.
+PREIMAGE_RAW_DATA_PASSPHRASE = (
+    "cushman-identity-preimage-v5:compression-envelope:not-a-secret"
+)
+PREIMAGE_RAW_DATA_PGP_OPTIONS = (
+    "cipher-algo=aes256,compress-algo=2,compress-level=9,s2k-count=1024"
 )
 REPAIR_TOKEN = hashlib.sha256(
     (
@@ -573,7 +588,7 @@ def state_from_preimage(preimage: dict) -> dict:
             "external_id": original["external_id"],
             "source_url": original["source_url"],
             "deleted": original.get("deleted_at") is not None,
-            "generation": _generation_from_raw_data(original.get("raw_data")),
+            "generation": original["generation"],
             "updated_at": original["updated_at"],
         }
         row["target_id"], row["identity_url"] = _target_for_url(
@@ -773,6 +788,44 @@ END
 $cw_stage_counts$;
 DROP TABLE _cw_stage_artifact_payload,_cw_stage_listings_payload,
  _cw_stage_source_index_payload,_cw_stage_queue_payload;
+"""
+
+
+def pgcrypto_preflight_sql() -> str:
+    """Fail closed unless the exact reversible-compression surface works."""
+    probe = '{"cushman":"preimage-v5","unicode":"λ"}'
+    probe_sha256 = hashlib.sha256(probe.encode()).hexdigest()
+    return f"""
+DO $cw_pgcrypto$
+DECLARE
+ probe text:={sql_lit(probe)};
+ packed bytea;
+ unpacked text;
+ probe_sha256 text;
+BEGIN
+ IF to_regprocedure('pgp_sym_encrypt(text,text,text)') IS NULL
+    OR to_regprocedure('pgp_sym_decrypt(bytea,text)') IS NULL
+    OR to_regprocedure('digest(bytea,text)') IS NULL THEN
+   RAISE EXCEPTION
+     'Cushman repair requires pgcrypto encrypt/decrypt/digest functions';
+ END IF;
+ packed:=pgp_sym_encrypt(
+   probe,
+   {sql_lit(PREIMAGE_RAW_DATA_PASSPHRASE)},
+   {sql_lit(PREIMAGE_RAW_DATA_PGP_OPTIONS)}
+ );
+ unpacked:=pgp_sym_decrypt(
+   packed,{sql_lit(PREIMAGE_RAW_DATA_PASSPHRASE)}
+ );
+ probe_sha256:=encode(
+   digest(convert_to(probe,'UTF8'),'sha256'),'hex'
+ );
+ IF unpacked IS DISTINCT FROM probe
+    OR probe_sha256 IS DISTINCT FROM {sql_lit(probe_sha256)} THEN
+   RAISE EXCEPTION 'Cushman pgcrypto preflight roundtrip failed';
+ END IF;
+END
+$cw_pgcrypto$;
 """
 
 
@@ -1018,6 +1071,7 @@ def preflight_sql(artifact: list[ArtifactRow], state: dict) -> str:
 BEGIN ISOLATION LEVEL REPEATABLE READ;
 SET LOCAL statement_timeout='3min';
 SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY});
+{pgcrypto_preflight_sql()}
 {stage_sql(artifact,state)}
 {invariant_sql()}
 CREATE TEMP TABLE _cw_expected_parents ON COMMIT DROP AS
@@ -1244,16 +1298,97 @@ def preimage_sql(artifact: list[ArtifactRow], state: dict) -> str:
 BEGIN ISOLATION LEVEL REPEATABLE READ;
 SET LOCAL statement_timeout='5min';
 SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY});
+{pgcrypto_preflight_sql()}
 {stage_sql(artifact,state)}
 {invariant_sql()}
 {expected_parent_sql(artifact,state)}
+CREATE TEMP TABLE _cw_preimage_listings ON COMMIT DROP AS
+SELECT l.id,jsonb_build_object(
+  'id',l.id,'external_id',l.external_id,'source_url',l.source_url,
+  'canonical_url',l.canonical_url,'status',l.status,
+  'transaction_type',l.transaction_type,'property_type',l.property_type,
+  'title',l.title,'address',l.address,'city',l.city,'state',l.state,
+  'zip',l.zip,'country',l.country,'lat',l.lat,'lng',l.lng,
+  'scraped_at',l.scraped_at,
+  'generation',{generation_expr("l")},
+  'raw_data_pgp_base64',CASE WHEN l.raw_data IS NULL THEN NULL ELSE
+    replace(
+      encode(
+        pgp_sym_encrypt(
+          l.raw_data::text,
+          {sql_lit(PREIMAGE_RAW_DATA_PASSPHRASE)},
+          {sql_lit(PREIMAGE_RAW_DATA_PGP_OPTIONS)}
+        ),
+        'base64'
+      ),
+      chr(10),
+      ''
+    )
+  END,
+  'raw_data_bytes',CASE WHEN l.raw_data IS NULL THEN NULL ELSE
+    octet_length(convert_to(l.raw_data::text,'UTF8'))
+  END,
+  'raw_data_sha256',CASE WHEN l.raw_data IS NULL THEN NULL ELSE
+    encode(
+      digest(convert_to(l.raw_data::text,'UTF8'),'sha256'),
+      'hex'
+    )
+  END,
+  'source_lastmod',l.source_lastmod,'canonical_key',l.canonical_key,
+  'deleted_at',l.deleted_at,'updated_at',l.updated_at
+) AS payload
+FROM credeals.cre_listings l JOIN _cw_rows r ON r.id=l.id;
+CREATE UNIQUE INDEX ON _cw_preimage_listings(id);
+DO $cw_preimage_raw_data$
+DECLARE mismatch integer;
+BEGIN
+ SELECT count(*) INTO mismatch
+ FROM _cw_preimage_listings p
+ FULL JOIN (
+   SELECT l.*
+   FROM credeals.cre_listings l JOIN _cw_rows r ON r.id=l.id
+ ) live USING(id)
+ WHERE p.id IS NULL OR live.id IS NULL
+    OR (
+      live.raw_data IS NULL
+      AND (
+        p.payload->>'raw_data_pgp_base64' IS NOT NULL
+        OR p.payload->>'raw_data_bytes' IS NOT NULL
+        OR p.payload->>'raw_data_sha256' IS NOT NULL
+      )
+    )
+    OR (
+      live.raw_data IS NOT NULL
+      AND (
+        p.payload->>'raw_data_pgp_base64' IS NULL
+        OR pgp_sym_decrypt(
+          decode(p.payload->>'raw_data_pgp_base64','base64'),
+          {sql_lit(PREIMAGE_RAW_DATA_PASSPHRASE)}
+        ) IS DISTINCT FROM live.raw_data::text
+        OR (p.payload->>'raw_data_bytes')::bigint
+          IS DISTINCT FROM octet_length(
+            convert_to(live.raw_data::text,'UTF8')
+          )
+        OR p.payload->>'raw_data_sha256' IS DISTINCT FROM encode(
+          digest(convert_to(live.raw_data::text,'UTF8'),'sha256'),
+          'hex'
+        )
+      )
+    );
+ IF mismatch<>0 THEN
+   RAISE EXCEPTION
+     'Cushman preimage raw-data compression roundtrip failed: %',mismatch;
+ END IF;
+END
+$cw_preimage_raw_data$;
 CREATE TEMP TABLE _cw_preimage_output ON COMMIT DROP AS
 WITH source_payload AS (
  SELECT jsonb_build_object(
-  'schemaVersion',4,
+  'schemaVersion',5,
   'capturedAt',clock_timestamp(),
   'applyTimestampBinding',
     'updated_at=raw_data.cushmanIdentityRepair.appliedAt=transaction_timestamp',
+  'rawDataEncoding',{sql_lit(PREIMAGE_RAW_DATA_ENCODING)},
   'artifactSha256',{sql_lit(EXPECTED_ARTIFACT_SHA256)},
   'databaseTargetSha256',{sql_lit(EXPECTED_DB_TARGET_SHA256)},
   'generation',{sql_lit(EXPECTED_GENERATION)},
@@ -1262,21 +1397,27 @@ WITH source_payload AS (
     SELECT jsonb_agg(to_jsonb(a) ORDER BY a.provider_id) FROM _cw_artifact a
   ),
   'repairPlan',(
-    SELECT jsonb_agg(to_jsonb(p) ORDER BY p.id)
+    SELECT jsonb_agg(
+      (to_jsonb(p)-'post_state')||jsonb_build_object(
+        'post_state',p.post_state-'raw_data_base',
+        'post_raw_data_bytes',octet_length(
+          convert_to((p.post_state->'raw_data_base')::text,'UTF8')
+        ),
+        'post_raw_data_sha256',encode(
+          digest(
+            convert_to((p.post_state->'raw_data_base')::text,'UTF8'),
+            'sha256'
+          ),
+          'hex'
+        )
+      )
+      ORDER BY p.id
+    )
     FROM _cw_expected_parents p
   ),
   'listings',(
-    SELECT jsonb_agg(jsonb_build_object(
-      'id',l.id,'external_id',l.external_id,'source_url',l.source_url,
-      'canonical_url',l.canonical_url,'status',l.status,
-      'transaction_type',l.transaction_type,'property_type',l.property_type,
-      'title',l.title,'address',l.address,'city',l.city,'state',l.state,
-      'zip',l.zip,'country',l.country,'lat',l.lat,'lng',l.lng,
-      'scraped_at',l.scraped_at,'raw_data',l.raw_data,
-      'source_lastmod',l.source_lastmod,'canonical_key',l.canonical_key,
-      'deleted_at',l.deleted_at,'updated_at',l.updated_at
-    ) ORDER BY l.id)
-    FROM credeals.cre_listings l JOIN _cw_rows r ON r.id=l.id
+    SELECT jsonb_agg(p.payload ORDER BY p.id)
+    FROM _cw_preimage_listings p
   ),
   'contacts',{moved_child_map("cre_listing_contacts","c")},
   'documents',{moved_child_map("cre_listing_documents","d")},
@@ -1377,6 +1518,7 @@ def apply_body(artifact: list[ArtifactRow], state: dict) -> str:
 SET LOCAL statement_timeout='8min';
 SET LOCAL lock_timeout='15s';
 SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY});
+{pgcrypto_preflight_sql()}
 {stage_sql(artifact,state)}
 {invariant_sql()}
 {expected_parent_sql(artifact,state)}
@@ -1782,11 +1924,12 @@ def validate_preimage(payload: object) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("rollback preimage is not an object")
     expected = {
-        "schemaVersion": 4,
+        "schemaVersion": 5,
         "applyTimestampBinding": (
             "updated_at=raw_data.cushmanIdentityRepair.appliedAt="
             "transaction_timestamp"
         ),
+        "rawDataEncoding": PREIMAGE_RAW_DATA_ENCODING,
         "artifactSha256": EXPECTED_ARTIFACT_SHA256,
         "databaseTargetSha256": EXPECTED_DB_TARGET_SHA256,
         "generation": EXPECTED_GENERATION,
@@ -1857,7 +2000,10 @@ def validate_preimage(payload: object) -> dict:
             "id",
             "external_id",
             "source_url",
-            "raw_data",
+            "generation",
+            "raw_data_pgp_base64",
+            "raw_data_bytes",
+            "raw_data_sha256",
             "deleted_at",
             "updated_at",
         },
@@ -1874,8 +2020,42 @@ def validate_preimage(payload: object) -> dict:
             or not isinstance(row["source_url"], str)
             or cushman_canonical_external_id(row["source_url"]) is None
             or not isinstance(row["updated_at"], str)
+            or not (
+                row["generation"] is None
+                or isinstance(row["generation"], str)
+            )
         ):
             raise ValueError("rollback preimage listing identity is invalid")
+        encoded_raw_data = row["raw_data_pgp_base64"]
+        if encoded_raw_data is None:
+            if (
+                row["raw_data_bytes"] is not None
+                or row["raw_data_sha256"] is not None
+            ):
+                raise ValueError(
+                    "rollback preimage listing raw-data envelope is invalid"
+                )
+        else:
+            try:
+                encrypted_raw_data = base64.b64decode(
+                    encoded_raw_data, validate=True
+                )
+            except (binascii.Error, TypeError, ValueError) as exc:
+                raise ValueError(
+                    "rollback preimage listing raw-data envelope is invalid"
+                ) from exc
+            if (
+                not encrypted_raw_data
+                or not isinstance(row["raw_data_bytes"], int)
+                or not 0 < row["raw_data_bytes"] <= MAX_PREIMAGE_BYTES
+                or not isinstance(row["raw_data_sha256"], str)
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}", row["raw_data_sha256"]
+                )
+            ):
+                raise ValueError(
+                    "rollback preimage listing raw-data envelope is invalid"
+                )
         listing_ids.add(listing_id)
         listing_target = cushman_canonical_external_id(row["source_url"])
         assert listing_target is not None
@@ -1893,6 +2073,8 @@ def validate_preimage(payload: object) -> dict:
             "post_deleted",
             "post_generation",
             "post_state",
+            "post_raw_data_bytes",
+            "post_raw_data_sha256",
         },
     )
     repair_ids: set[str] = set()
@@ -1902,7 +2084,7 @@ def validate_preimage(payload: object) -> dict:
     for row in listings:
         target_id = cushman_canonical_external_id(row["source_url"])
         assert target_id is not None
-        if _generation_from_raw_data(row["raw_data"]) == EXPECTED_GENERATION:
+        if row["generation"] == EXPECTED_GENERATION:
             target_has_current[target_id] = True
     for row in repair_plan:
         row_id = row["id"]
@@ -1919,7 +2101,7 @@ def validate_preimage(payload: object) -> dict:
         expected_generation = (
             EXPECTED_GENERATION
             if is_survivor and has_current
-            else _generation_from_raw_data(original["raw_data"])
+            else original["generation"]
             if original is not None
             else None
         )
@@ -1946,22 +2128,11 @@ def validate_preimage(payload: object) -> dict:
             "lat",
             "lng",
             "scraped_at",
-            "raw_data_base",
             "source_lastmod",
             "canonical_key",
             "deleted_at_static",
             "deleted_at_uses_apply_timestamp",
         }
-        raw_data_base = (
-            post_state.get("raw_data_base")
-            if isinstance(post_state, dict)
-            else None
-        )
-        repair_marker = (
-            raw_data_base.get("cushmanIdentityRepair")
-            if isinstance(raw_data_base, dict)
-            else None
-        )
         expected_deleted_at_static = (
             original.get("deleted_at")
             if original is not None and not is_survivor
@@ -1992,23 +2163,16 @@ def validate_preimage(payload: object) -> dict:
             or set(post_state) != required_post_state
             or post_state.get("external_id") != row["post_external_id"]
             or post_state.get("source_url") != row["post_source_url"]
-            or not isinstance(repair_marker, dict)
-            or repair_marker.get("repairToken") != REPAIR_TOKEN
-            or repair_marker.get("canonicalExternalId") != target_id
-            or repair_marker.get("canonicalListingId") != survivor_id
-            or repair_marker.get("generationId") != EXPECTED_GENERATION
-            or repair_marker.get("disposition")
-            != (
-                "canonical_survivor"
-                if is_survivor
-                else "superseded_duplicate"
+            or not isinstance(row["post_raw_data_bytes"], int)
+            or not 0 < row["post_raw_data_bytes"] <= MAX_PREIMAGE_BYTES
+            or not isinstance(row["post_raw_data_sha256"], str)
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", row["post_raw_data_sha256"]
             )
             or post_state.get("deleted_at_static")
             != expected_deleted_at_static
             or post_state.get("deleted_at_uses_apply_timestamp")
             is not expected_deleted_at_uses_apply_timestamp
-            or _generation_from_raw_data(raw_data_base)
-            != row["post_generation"]
             or (
                 is_survivor
                 and not has_current
@@ -2255,29 +2419,88 @@ FROM _pre_{key} p WHERE target.id=p.id;
 SET LOCAL statement_timeout='8min';
 SET LOCAL lock_timeout='15s';
 SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY});
+{pgcrypto_preflight_sql()}
 {preimage_transport}
 CREATE TEMP TABLE _cw_rollback_clock ON COMMIT DROP AS
 SELECT transaction_timestamp() AS trigger_updated_at;
 {stage_sql(artifact,state)}
 
-CREATE TEMP TABLE _pre_listings ON COMMIT DROP AS
+CREATE TEMP TABLE _pre_listings_encoded ON COMMIT DROP AS
 SELECT * FROM jsonb_to_recordset(
  (SELECT payload->'listings' FROM _cw_preimage)
 ) AS x(
  id uuid,external_id text,source_url text,canonical_url text,status text,
  transaction_type text,property_type text,title text,address text,city text,
  state text,zip text,country text,lat double precision,lng double precision,
- scraped_at timestamptz,raw_data jsonb,source_lastmod timestamptz,
+ scraped_at timestamptz,generation text,raw_data_pgp_base64 text,
+ raw_data_bytes bigint,raw_data_sha256 text,source_lastmod timestamptz,
  canonical_key text,deleted_at timestamptz,updated_at timestamptz
 );
+CREATE UNIQUE INDEX ON _pre_listings_encoded(id);
+CREATE TEMP TABLE _pre_listing_raw_data ON COMMIT DROP AS
+SELECT
+ id,
+ CASE WHEN raw_data_pgp_base64 IS NULL THEN NULL ELSE
+   pgp_sym_decrypt(
+     decode(raw_data_pgp_base64,'base64'),
+     {sql_lit(PREIMAGE_RAW_DATA_PASSPHRASE)}
+   )
+ END AS raw_data_text
+FROM _pre_listings_encoded;
+CREATE UNIQUE INDEX ON _pre_listing_raw_data(id);
+CREATE TEMP TABLE _pre_listings ON COMMIT DROP AS
+SELECT
+ e.id,e.external_id,e.source_url,e.canonical_url,e.status,
+ e.transaction_type,e.property_type,e.title,e.address,e.city,e.state,e.zip,
+ e.country,e.lat,e.lng,e.scraped_at,r.raw_data_text::jsonb AS raw_data,
+ e.source_lastmod,e.canonical_key,e.deleted_at,e.updated_at
+FROM _pre_listings_encoded e
+JOIN _pre_listing_raw_data r USING(id);
 CREATE UNIQUE INDEX ON _pre_listings(id);
+DO $cw_raw_data_restore$
+DECLARE mismatch integer;
+BEGIN
+ SELECT count(*) INTO mismatch
+ FROM _pre_listings_encoded e
+ FULL JOIN _pre_listing_raw_data r USING(id)
+ FULL JOIN _pre_listings p USING(id)
+ WHERE e.id IS NULL OR r.id IS NULL OR p.id IS NULL
+    OR (
+      e.raw_data_pgp_base64 IS NULL
+      AND (
+        r.raw_data_text IS NOT NULL
+        OR p.raw_data IS NOT NULL
+        OR e.raw_data_bytes IS NOT NULL
+        OR e.raw_data_sha256 IS NOT NULL
+      )
+    )
+    OR (
+      e.raw_data_pgp_base64 IS NOT NULL
+      AND (
+        r.raw_data_text IS NULL
+        OR p.raw_data IS NULL
+        OR p.raw_data::text IS DISTINCT FROM r.raw_data_text
+        OR octet_length(convert_to(r.raw_data_text,'UTF8'))
+          IS DISTINCT FROM e.raw_data_bytes
+        OR encode(
+          digest(convert_to(r.raw_data_text,'UTF8'),'sha256'),'hex'
+        ) IS DISTINCT FROM e.raw_data_sha256
+      )
+    );
+ IF mismatch<>0 THEN
+   RAISE EXCEPTION
+     'Cushman rollback raw-data decrypt/integrity mismatch: %',mismatch;
+ END IF;
+END
+$cw_raw_data_restore$;
 CREATE TEMP TABLE _pre_repair_plan ON COMMIT DROP AS
 SELECT * FROM jsonb_to_recordset(
  (SELECT payload->'repairPlan' FROM _cw_preimage)
 ) AS x(
  id uuid,target_id text,survivor_id uuid,post_external_id text,
  has_current boolean,post_source_url text,post_deleted boolean,
- post_generation text,post_state jsonb
+ post_generation text,post_state jsonb,post_raw_data_bytes bigint,
+ post_raw_data_sha256 text
 );
 CREATE UNIQUE INDEX ON _pre_repair_plan(id);
 {child_stage}
@@ -2338,7 +2561,6 @@ BEGIN
       'lat',l.lat,
       'lng',l.lng,
       'scraped_at',l.scraped_at,
-      'raw_data_base',l.raw_data #- '{{cushmanIdentityRepair,appliedAt}}',
       'source_lastmod',l.source_lastmod,
       'canonical_key',l.canonical_key,
       'deleted_at_static',CASE WHEN COALESCE(
@@ -2347,7 +2569,23 @@ BEGIN
       'deleted_at_uses_apply_timestamp',COALESCE(
         (p.post_state->>'deleted_at_uses_apply_timestamp')::boolean,false
       )
-    ) IS DISTINCT FROM p.post_state;
+    ) IS DISTINCT FROM p.post_state
+    OR octet_length(
+      convert_to(
+        (l.raw_data #- '{{cushmanIdentityRepair,appliedAt}}')::text,
+        'UTF8'
+      )
+    ) IS DISTINCT FROM p.post_raw_data_bytes
+    OR encode(
+      digest(
+        convert_to(
+          (l.raw_data #- '{{cushmanIdentityRepair,appliedAt}}')::text,
+          'UTF8'
+        ),
+        'sha256'
+      ),
+      'hex'
+    ) IS DISTINCT FROM p.post_raw_data_sha256;
  IF mismatch<>0 THEN
    RAISE EXCEPTION 'rollback refused: parent post-repair disposition drift: %',
      mismatch;

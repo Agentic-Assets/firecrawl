@@ -287,7 +287,16 @@ def test_source_index_donor_is_one_coherent_ranked_tuple():
 def test_preimage_is_complete_and_rollback_restores_every_fk_surface():
     sql = repair.preimage_sql(minimal_artifact(), minimal_state())
     assert "LEFT JOIN _cw_current current USING(target_id)" in sql
-    assert "'schemaVersion',4" in sql
+    assert "'schemaVersion',5" in sql
+    assert (
+        f"'rawDataEncoding','{repair.PREIMAGE_RAW_DATA_ENCODING}'" in sql
+    )
+    assert "pgp_sym_encrypt(" in sql
+    assert "Cushman preimage raw-data compression roundtrip failed" in sql
+    assert "'post_state',p.post_state-'raw_data_base'" in sql
+    assert "'post_raw_data_sha256'" in sql
+    assert "'post_raw_data_bytes'" in sql
+    assert "'raw_data',l.raw_data" not in sql
     assert "'url',ranked.url" in sql
     assert "'fact_group',ranked.fact_group" in sql
     assert "'parsed_at',ranked.parsed_at" in sql
@@ -318,6 +327,7 @@ def test_preimage_is_complete_and_rollback_restores_every_fk_surface():
     assert "generate_series" not in sql
     assert "Cushman preimage output completion guard failed" in sql
     assert "'chunk',''" in sql
+    assert repair.PREIMAGE_OUTPUT_MAX_CHUNKS < 400
     payload = reviewed_empty_preimage()
     with (
         patch.object(repair, "EXPECTED_ARTIFACT_ROWS", 0),
@@ -339,7 +349,50 @@ def test_preimage_is_complete_and_rollback_restores_every_fk_surface():
     assert "FULL JOIN" in rollback
     assert "post_listing_id" in rollback
     assert "parent post-repair disposition drift" in rollback
+    assert "pgp_sym_decrypt(" in rollback
+    assert "p.raw_data::text IS DISTINCT FROM r.raw_data_text" in rollback
+    assert "digest(convert_to(r.raw_data_text,'UTF8'),'sha256')" in rollback
+    assert "raw_data=p.raw_data" in rollback
+    assert "raw-data decrypt/integrity mismatch" in rollback
+    assert "l.raw_data IS DISTINCT FROM p.raw_data" in rollback
     assert rollback.rstrip().endswith("COMMIT;")
+
+
+def test_preimage_payload_never_duplicates_uncompressed_raw_data():
+    sql = repair.preimage_sql(minimal_artifact(), minimal_state())
+    source_payload = sql.split("WITH source_payload AS (", 1)[1].split(
+        "),\nencoded_payload AS (", 1
+    )[0]
+    assert "'raw_data',l.raw_data" not in source_payload
+    assert "'raw_data_base',p.post_state" not in source_payload
+    assert "'post_state',p.post_state-'raw_data_base'" in source_payload
+    assert "SELECT jsonb_agg(p.payload ORDER BY p.id)" in source_payload
+    assert "'raw_data_pgp_base64'" in sql
+    assert "pgp_sym_encrypt(" in sql
+    assert "pgp_sym_decrypt(" in sql
+    assert "IS DISTINCT FROM live.raw_data::text" in sql
+
+
+def test_pgcrypto_preflight_is_locked_and_proves_exact_surface():
+    preflight = repair.pgcrypto_preflight_sql()
+    for signature in (
+        "pgp_sym_encrypt(text,text,text)",
+        "pgp_sym_decrypt(bytea,text)",
+        "digest(bytea,text)",
+    ):
+        assert f"to_regprocedure('{signature}')" in preflight
+    assert repair.PREIMAGE_RAW_DATA_PASSPHRASE in preflight
+    assert repair.PREIMAGE_RAW_DATA_PGP_OPTIONS in preflight
+    assert "unpacked IS DISTINCT FROM probe" in preflight
+    assert "Cushman pgcrypto preflight roundtrip failed" in preflight
+
+    sql = repair.preimage_sql(minimal_artifact(), minimal_state())
+    assert sql.index("pg_advisory_xact_lock") < sql.index(
+        "Cushman repair requires pgcrypto"
+    )
+    assert sql.index("Cushman repair requires pgcrypto") < sql.index(
+        "CREATE TEMP TABLE _cw_preimage_listings"
+    )
 
 
 def test_preimage_output_uses_one_bounded_frontend_select_per_sequence():
@@ -377,12 +430,13 @@ def test_preimage_output_uses_one_bounded_frontend_select_per_sequence():
 
 def reviewed_empty_preimage():
     return {
-        "schemaVersion": 4,
+        "schemaVersion": 5,
         "capturedAt": "2026-07-30T18:00:00+00:00",
         "applyTimestampBinding": (
             "updated_at=raw_data.cushmanIdentityRepair.appliedAt="
             "transaction_timestamp"
         ),
+        "rawDataEncoding": repair.PREIMAGE_RAW_DATA_ENCODING,
         "artifactSha256": repair.EXPECTED_ARTIFACT_SHA256,
         "databaseTargetSha256": repair.EXPECTED_DB_TARGET_SHA256,
         "generation": repair.EXPECTED_GENERATION,
@@ -401,6 +455,61 @@ def reviewed_empty_preimage():
         "scrapeLogs": [],
         "sourceIndex": [],
         "queue": [],
+    }
+
+
+def raw_data_envelope(raw_data):
+    if raw_data is None:
+        return {
+            "raw_data_pgp_base64": None,
+            "raw_data_bytes": None,
+            "raw_data_sha256": None,
+        }
+    canonical = json.dumps(
+        raw_data,
+        ensure_ascii=False,
+        separators=(", ", ": "),
+        sort_keys=True,
+    ).encode()
+    return {
+        "raw_data_pgp_base64": base64.b64encode(
+            b"synthetic-pgp-envelope:" + canonical
+        ).decode(),
+        "raw_data_bytes": len(canonical),
+        "raw_data_sha256": hashlib.sha256(canonical).hexdigest(),
+    }
+
+
+def post_raw_data(target_id, survivor_id, disposition, raw_data=None):
+    marker = {
+        "generationId": repair.EXPECTED_GENERATION,
+        "canonicalExternalId": target_id,
+        "canonicalListingId": survivor_id,
+        "disposition": disposition,
+        "repairToken": repair.REPAIR_TOKEN,
+    }
+    result = dict(
+        raw_data
+        or {
+            "freshnessProvenance": {
+                "generationId": repair.EXPECTED_GENERATION
+            }
+        }
+    )
+    result["cushmanIdentityRepair"] = marker
+    return result
+
+
+def post_raw_data_geometry(raw_data):
+    canonical = json.dumps(
+        raw_data,
+        ensure_ascii=False,
+        separators=(", ", ": "),
+        sort_keys=True,
+    ).encode()
+    return {
+        "post_raw_data_bytes": len(canonical),
+        "post_raw_data_sha256": hashlib.sha256(canonical).hexdigest(),
     }
 
 
@@ -461,22 +570,6 @@ def expected_post_state(
     disposition,
     raw_data=None,
 ):
-    marker = {
-        "generationId": repair.EXPECTED_GENERATION,
-        "canonicalExternalId": target_id,
-        "canonicalListingId": survivor_id,
-        "disposition": disposition,
-        "repairToken": repair.REPAIR_TOKEN,
-    }
-    raw_data_base = dict(
-        raw_data
-        or {
-            "freshnessProvenance": {
-                "generationId": repair.EXPECTED_GENERATION
-            }
-        }
-    )
-    raw_data_base["cushmanIdentityRepair"] = marker
     return {
         "external_id": external_id,
         "source_url": source_url,
@@ -493,7 +586,6 @@ def expected_post_state(
         "lat": None,
         "lng": None,
         "scraped_at": None,
-        "raw_data_base": raw_data_base,
         "source_lastmod": None,
         "canonical_key": None,
         "deleted_at_static": None,
@@ -503,15 +595,17 @@ def expected_post_state(
 
 
 def current_listing(listing_id, source_url):
+    raw_data = {
+        "freshnessProvenance": {
+            "generationId": repair.EXPECTED_GENERATION
+        }
+    }
     return {
         "id": listing_id,
         "external_id": f"provider-{listing_id[-1]}",
         "source_url": source_url,
-        "raw_data": {
-            "freshnessProvenance": {
-                "generationId": repair.EXPECTED_GENERATION
-            }
-        },
+        "generation": repair.EXPECTED_GENERATION,
+        **raw_data_envelope(raw_data),
         "deleted_at": None,
         "updated_at": "2026-07-30T08:24:21+00:00",
     }
@@ -548,6 +642,13 @@ def plan_row(listing, survivor_id, source_url):
             target_id,
             survivor_id,
             disposition,
+        ),
+        **post_raw_data_geometry(
+            post_raw_data(
+                target_id,
+                survivor_id,
+                disposition,
+            )
         ),
     }
 
@@ -1067,27 +1168,91 @@ def test_preimage_validation_rejects_invalid_captured_listing_shape():
             repair.validate_preimage(payload)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload["listings"][0].__setitem__(
+            "raw_data_pgp_base64", "***"
+        ),
+        lambda payload: payload["listings"][0].__setitem__(
+            "raw_data_bytes", 0
+        ),
+        lambda payload: payload["listings"][0].__setitem__(
+            "raw_data_sha256", "A" * 64
+        ),
+        lambda payload: payload["repairPlan"][0].__setitem__(
+            "post_raw_data_bytes", 0
+        ),
+        lambda payload: payload["repairPlan"][0].__setitem__(
+            "post_raw_data_sha256", "A" * 64
+        ),
+    ],
+)
+def test_preimage_validation_rejects_raw_data_envelope_drift(mutation):
+    listing_id = "00000000-0000-0000-0000-000000000001"
+    source_url = (
+        "https://www.cushmanwakefield.com/en/"
+        "united-states/properties/raw-envelope"
+    )
+    listing = current_listing(listing_id, source_url)
+    payload = reviewed_empty_preimage()
+    payload["listings"] = [listing]
+    payload["repairPlan"] = [plan_row(listing, listing_id, source_url)]
+    with patch.multiple(repair, **patched_review_counts(1)):
+        assert repair.validate_preimage(payload) is payload
+        mutation(payload)
+        with pytest.raises(
+            ValueError, match="raw-data envelope|repairPlan identity"
+        ):
+            repair.validate_preimage(payload)
+
+
+def test_state_from_preimage_uses_explicit_generation_without_plaintext_raw_data():
+    listing_id = "00000000-0000-0000-0000-000000000001"
+    source_url = (
+        "https://www.cushmanwakefield.com/en/"
+        "united-states/properties/generation-envelope"
+    )
+    listing = current_listing(listing_id, source_url)
+    payload = reviewed_empty_preimage()
+    payload["listings"] = [listing]
+    payload["repairPlan"] = [plan_row(listing, listing_id, source_url)]
+    with patch.multiple(repair, **patched_review_counts(1)):
+        state = repair.state_from_preimage(payload)
+    assert state["listings"][0]["generation"] == repair.EXPECTED_GENERATION
+    assert "raw_data" not in payload["listings"][0]
+
+
 def test_exact_post_state_detects_title_and_raw_data_only_changes():
+    target_id = "url:v1:" + "1" * 32
+    survivor_id = "00000000-0000-0000-0000-000000000001"
     state = expected_post_state(
-        "url:v1:" + "1" * 32,
+        target_id,
         "https://www.cushmanwakefield.com/en/united-states/properties/example",
-        "url:v1:" + "1" * 32,
-        "00000000-0000-0000-0000-000000000001",
+        target_id,
+        survivor_id,
         "canonical_survivor",
     )
     title_change = json.loads(json.dumps(state))
     title_change["title"] = "Later enriched title"
-    raw_change = json.loads(json.dumps(state))
-    raw_change["raw_data_base"]["laterDetail"] = {"fresh": True}
     assert title_change != state
-    assert raw_change != state
+    raw_data = post_raw_data(
+        target_id, survivor_id, "canonical_survivor"
+    )
+    raw_change = json.loads(json.dumps(raw_data))
+    raw_change["laterDetail"] = {"fresh": True}
+    assert post_raw_data_geometry(raw_change) != post_raw_data_geometry(
+        raw_data
+    )
     payload = reviewed_empty_preimage()
     with patch.multiple(repair, **patched_review_counts(0)):
         sql = repair.build_rollback_sql(
             payload, minimal_artifact(), minimal_state()
         )
     assert "'title',l.title" in sql
-    assert "'raw_data_base',l.raw_data #-" in sql
+    assert "'raw_data_base',l.raw_data #-" not in sql
+    assert "IS DISTINCT FROM p.post_raw_data_bytes" in sql
+    assert "IS DISTINCT FROM p.post_raw_data_sha256" in sql
     assert ") IS DISTINCT FROM p.post_state" in sql
     assert "l.updated_at IS DISTINCT FROM (" in sql
 
@@ -1343,16 +1508,23 @@ def test_non_null_old_generation_alias_is_valid_roundtrip_disposition():
         + hashlib.md5(alias_id.encode(), usedforsecurity=False).hexdigest()
     )
     payload = reviewed_empty_preimage()
+    survivor_raw_data = {
+        "freshnessProvenance": {
+            "generationId": repair.EXPECTED_GENERATION
+        }
+    }
+    alias_raw_data = {
+        "freshnessProvenance": {
+            "generationId": "2026-07-01T000000Z"
+        }
+    }
     payload["listings"] = [
         {
             "id": survivor_id,
             "external_id": "current-provider",
             "source_url": source_url,
-            "raw_data": {
-                "freshnessProvenance": {
-                    "generationId": repair.EXPECTED_GENERATION
-                }
-            },
+            "generation": repair.EXPECTED_GENERATION,
+            **raw_data_envelope(survivor_raw_data),
             "deleted_at": None,
             "updated_at": "2026-07-30T08:24:21+00:00",
         },
@@ -1360,11 +1532,8 @@ def test_non_null_old_generation_alias_is_valid_roundtrip_disposition():
             "id": alias_id,
             "external_id": "old-provider",
             "source_url": source_url,
-            "raw_data": {
-                "freshnessProvenance": {
-                    "generationId": "2026-07-01T000000Z"
-                }
-            },
+            "generation": "2026-07-01T000000Z",
+            **raw_data_envelope(alias_raw_data),
             "deleted_at": None,
             "updated_at": "2026-07-01T00:00:00+00:00",
         },
@@ -1385,6 +1554,13 @@ def test_non_null_old_generation_alias_is_valid_roundtrip_disposition():
                 target_id,
                 survivor_id,
                 "canonical_survivor",
+            ),
+            **post_raw_data_geometry(
+                post_raw_data(
+                    target_id,
+                    survivor_id,
+                    "canonical_survivor",
+                )
             ),
         },
         {
@@ -1407,6 +1583,14 @@ def test_non_null_old_generation_alias_is_valid_roundtrip_disposition():
                         "generationId": "2026-07-01T000000Z"
                     }
                 },
+            ),
+            **post_raw_data_geometry(
+                post_raw_data(
+                    target_id,
+                    survivor_id,
+                    "superseded_duplicate",
+                    alias_raw_data,
+                )
             ),
         },
     ]
@@ -1441,14 +1625,16 @@ def test_old_only_survivor_plan_is_complete_and_preserves_source_generation():
     target_id = repair.cushman_canonical_external_id(source_url)
     assert target_id is not None
     payload = reviewed_empty_preimage()
+    old_raw_data = {
+        "freshnessProvenance": {"generationId": old_generation}
+    }
     payload["listings"] = [
         {
             "id": listing_id,
             "external_id": "old-only-provider",
             "source_url": source_url,
-            "raw_data": {
-                "freshnessProvenance": {"generationId": old_generation}
-            },
+            "generation": old_generation,
+            **raw_data_envelope(old_raw_data),
             "deleted_at": None,
             "updated_at": "2026-06-30T12:00:00+00:00",
         }
@@ -1474,6 +1660,14 @@ def test_old_only_survivor_plan_is_complete_and_preserves_source_generation():
                         "generationId": old_generation
                     }
                 },
+            ),
+            **post_raw_data_geometry(
+                post_raw_data(
+                    target_id,
+                    listing_id,
+                    "canonical_survivor",
+                    old_raw_data,
+                )
             ),
         }
     ]
