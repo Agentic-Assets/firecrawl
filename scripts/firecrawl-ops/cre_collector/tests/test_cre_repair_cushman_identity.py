@@ -155,6 +155,110 @@ def test_source_index_merge_and_queue_rekey_preserve_retry_state():
     assert "claimed_at=" not in queue_section
 
 
+def test_named_stage_payload_reconstructs_exact_geometry_and_digest():
+    payload = [
+        {
+            "id": 1,
+            "probe": "'\N{GREEK SMALL LETTER LAMDA};"
+            * (repair.PREIMAGE_SQL_CHUNK_BYTES // 4),
+        }
+    ]
+    chunks = repair.named_json_payload_chunks(payload)
+    sql = repair.named_json_payload_transport_sql("probe", payload)
+    expected = json.dumps(
+        payload, separators=(",", ":"), ensure_ascii=True
+    )
+    expected_bytes = expected.encode("ascii")
+    expected_md5 = hashlib.md5(
+        expected_bytes, usedforsecurity=False
+    ).hexdigest()
+    assert "".join(chunks) == expected
+    assert len(chunks) > 1
+    assert all(
+        len(chunk.encode("ascii")) <= repair.PREIMAGE_SQL_CHUNK_BYTES
+        for chunk in chunks
+    )
+    assert f"HAVING count(*)={len(chunks)}" in sql
+    assert f"max(seq)={len(chunks) - 1}" in sql
+    assert f"octet_length(payload)<>{len(expected_bytes)}" in sql
+    assert f"md5(payload)<>'{expected_md5}'" in sql
+    assert "string_agg(payload,'' ORDER BY seq)" in sql
+    assert "Cushman stage probe chunk geometry mismatch" in sql
+    assert "Cushman stage probe payload integrity mismatch" in sql
+    assert "Cushman stage probe array/count mismatch" in sql
+
+
+def test_named_stage_payload_preserves_empty_array_as_one_chunk():
+    chunks = repair.named_json_payload_chunks([])
+    sql = repair.named_json_payload_transport_sql("probe", [])
+    assert chunks == ("[]",)
+    assert "VALUES (0,'[]');" in sql
+    assert "HAVING count(*)=1" in sql
+    assert "max(seq)=0" in sql
+    assert "jsonb_array_length(payload))<>0" in sql
+
+
+def test_named_stage_payload_emits_only_bounded_terminated_inserts():
+    payload = [
+        {"probe": "'" * (repair.PREIMAGE_SQL_CHUNK_BYTES * 2 + 1)}
+    ]
+    sql = repair.named_json_payload_transport_sql("probe", payload)
+    inserts = [
+        line
+        for line in sql.splitlines()
+        if line.startswith("INSERT INTO _cw_stage_probe_chunks")
+    ]
+    assert len(inserts) >= 3
+    assert all(line.endswith(";") for line in inserts)
+    assert all(
+        len(line.encode("utf-8"))
+        < repair.PREIMAGE_SQL_STATEMENT_CEILING_BYTES
+        for line in inserts
+    )
+    static_sql = "\n".join(
+        line for line in sql.splitlines() if line not in inserts
+    )
+    assert (
+        len(static_sql.encode("utf-8"))
+        < repair.PREIMAGE_SQL_STATEMENT_CEILING_BYTES
+    )
+    for terminator in (
+        ") ON COMMIT DROP;",
+        "$cw_stage_probe$;",
+        "$cw_stage_probe_array$;",
+        "DROP TABLE _cw_stage_probe_chunks,_cw_stage_probe_assembled;",
+    ):
+        assert terminator in sql
+
+
+def test_stage_sql_chunks_all_four_arrays_and_removes_recordset_literals():
+    sql = repair.stage_sql(minimal_artifact(), minimal_state())
+    destinations = {
+        "artifact": "_cw_artifact",
+        "listings": "_cw_rows",
+        "source_index": "_cw_si_plan",
+        "queue": "_cw_queue_plan",
+    }
+    for name, destination in destinations.items():
+        assert f"CREATE TEMP TABLE _cw_stage_{name}_chunks" in sql
+        assert f"INSERT INTO _cw_stage_{name}_chunks" in sql
+        assert f"(SELECT payload FROM _cw_stage_{name}_payload)" in sql
+        assert f"CREATE TEMP TABLE {destination} ON COMMIT DROP AS" in sql
+        assert f"Cushman stage {name} array/count mismatch" in sql
+    assert not re.search(r"jsonb_to_recordset\s*\(\s*'", sql)
+    assert "Cushman staged artifact row count mismatch" in sql
+    assert "Cushman staged listings row count mismatch" in sql
+    assert "Cushman staged source-index row count mismatch" in sql
+    assert "Cushman staged queue row count mismatch" in sql
+
+
+def test_named_stage_payload_rejects_unsafe_name_and_non_array():
+    with pytest.raises(ValueError, match="name is unsafe"):
+        repair.named_json_payload_transport_sql("bad-name", [])
+    with pytest.raises(TypeError, match="must be an array"):
+        repair.named_json_payload_chunks({"not": "an array"})
+
+
 def test_source_index_donor_is_one_coherent_ranked_tuple():
     older_with_larger_values = {
         "id": "00000000-0000-0000-0000-000000000002",
@@ -558,7 +662,10 @@ def test_rollback_cli_requires_expected_preimage_sha(tmp_path):
 def test_preimage_output_chunks_reconstruct_exact_validated_object(monkeypatch):
     monkeypatch.setattr(repair, "PREIMAGE_OUTPUT_CHUNK_CHARS", 64)
     payload = reviewed_empty_preimage()
-    payload["transportProbe"] = "quotes ' \" newlines\nunicode \N{GREEK SMALL LETTER LAMDA}" * 20
+    payload["transportProbe"] = (
+        "quotes ' \" newlines\nunicode \N{GREEK SMALL LETTER LAMDA}"
+        * 20
+    )
     stdout = preimage_output_stdout(preimage_output_envelopes(payload))
     with patch.multiple(repair, **patched_review_counts(0)):
         assert repair.parse_preimage_chunk_output(stdout) == payload

@@ -43,7 +43,6 @@ from cre_ingest import (
     sql_lit,
 )
 
-
 EXPECTED_ARTIFACT_SHA256 = (
     "cce2ace6d12a7488c00cf431fde4cc8bd90187557a1dfd99b1b9d925a50b6aba"
 )
@@ -615,41 +614,165 @@ def state_from_preimage(preimage: dict) -> dict:
     }
 
 
-def stage_sql(artifact: list[ArtifactRow], state: dict) -> str:
-    artifact_json = sql_lit(
-        json.dumps([row.as_dict() for row in artifact], separators=(",", ":"))
+def named_json_payload_chunks(payload: list[object]) -> tuple[str, ...]:
+    """Serialize one reviewed stage array into bounded ASCII JSON chunks."""
+    if not isinstance(payload, list):
+        raise TypeError("staged JSON payload must be an array")
+    encoded = json.dumps(
+        payload, separators=(",", ":"), ensure_ascii=True
     )
-    listing_json = sql_lit(json.dumps(state["listings"], separators=(",", ":")))
-    si_json = sql_lit(json.dumps(state["sourceIndex"], separators=(",", ":")))
-    queue_json = sql_lit(json.dumps(state["queue"], separators=(",", ":")))
+    encoded.encode("ascii")
+    return tuple(
+        encoded[start : start + PREIMAGE_SQL_CHUNK_BYTES]
+        for start in range(0, len(encoded), PREIMAGE_SQL_CHUNK_BYTES)
+    )
+
+
+def named_json_payload_transport_sql(
+    name: str, payload: list[object]
+) -> str:
+    """Build bounded, integrity-checked SQL transport for one named array."""
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+        raise ValueError("staged JSON payload name is unsafe")
+    chunks = named_json_payload_chunks(payload)
+    encoded = "".join(chunks)
+    expected_bytes = len(encoded.encode("ascii"))
+    expected_md5 = hashlib.md5(
+        encoded.encode("ascii"), usedforsecurity=False
+    ).hexdigest()
+    chunks_table = f"_cw_stage_{name}_chunks"
+    assembled_table = f"_cw_stage_{name}_assembled"
+    payload_table = f"_cw_stage_{name}_payload"
+    inserts = []
+    for seq, chunk in enumerate(chunks):
+        statement = (
+            f"INSERT INTO {chunks_table}(seq,payload) VALUES "
+            f"({seq},{sql_lit(chunk)});"
+        )
+        if (
+            len(statement.encode("utf-8"))
+            > PREIMAGE_SQL_STATEMENT_CEILING_BYTES
+        ):
+            raise ValueError("staged JSON SQL chunk exceeds statement ceiling")
+        inserts.append(statement)
     return f"""
+CREATE TEMP TABLE {chunks_table}(
+ seq integer PRIMARY KEY CHECK (seq>=0),
+ payload text NOT NULL
+) ON COMMIT DROP;
+{chr(10).join(inserts)}
+CREATE TEMP TABLE {assembled_table}(
+ payload text NOT NULL
+) ON COMMIT DROP;
+INSERT INTO {assembled_table}(payload)
+SELECT string_agg(payload,'' ORDER BY seq)
+FROM {chunks_table}
+HAVING count(*)={len(chunks)}
+   AND min(seq)=0
+   AND max(seq)={len(chunks) - 1};
+DO $cw_stage_{name}$
+BEGIN
+ IF (SELECT count(*) FROM {assembled_table})<>1 THEN
+   RAISE EXCEPTION 'Cushman stage {name} chunk geometry mismatch';
+ END IF;
+ IF (
+   SELECT octet_length(payload)<>{expected_bytes}
+       OR md5(payload)<>{sql_lit(expected_md5)}
+   FROM {assembled_table}
+ ) THEN
+   RAISE EXCEPTION 'Cushman stage {name} payload integrity mismatch';
+ END IF;
+END
+$cw_stage_{name}$;
+CREATE TEMP TABLE {payload_table}(payload jsonb NOT NULL) ON COMMIT DROP;
+INSERT INTO {payload_table}(payload)
+SELECT payload::jsonb FROM {assembled_table};
+DO $cw_stage_{name}_array$
+BEGIN
+ IF (
+   SELECT count(*)<>1
+       OR min(jsonb_typeof(payload))<>'array'
+       OR min(jsonb_array_length(payload))<>{len(payload)}
+   FROM {payload_table}
+ ) THEN
+   RAISE EXCEPTION 'Cushman stage {name} array/count mismatch';
+ END IF;
+END
+$cw_stage_{name}_array$;
+DROP TABLE {chunks_table},{assembled_table};
+"""
+
+
+def stage_sql(artifact: list[ArtifactRow], state: dict) -> str:
+    artifact_payload = [row.as_dict() for row in artifact]
+    payloads = {
+        "artifact": artifact_payload,
+        "listings": state["listings"],
+        "source_index": state["sourceIndex"],
+        "queue": state["queue"],
+    }
+    if not all(isinstance(payload, list) for payload in payloads.values()):
+        raise ValueError("Cushman stage payload is not an array")
+    transport = "\n".join(
+        named_json_payload_transport_sql(name, payload)
+        for name, payload in payloads.items()
+    )
+    return f"""
+{transport}
 CREATE TEMP TABLE _cw_artifact ON COMMIT DROP AS
-SELECT * FROM jsonb_to_recordset({artifact_json}::jsonb) AS x(
+SELECT * FROM jsonb_to_recordset(
+ (SELECT payload FROM _cw_stage_artifact_payload)
+) AS x(
   provider_id text, source_url text, target_id text, transaction_mode text
 );
 CREATE UNIQUE INDEX ON _cw_artifact(provider_id);
 
 CREATE TEMP TABLE _cw_rows ON COMMIT DROP AS
-SELECT * FROM jsonb_to_recordset({listing_json}::jsonb) AS x(
+SELECT * FROM jsonb_to_recordset(
+ (SELECT payload FROM _cw_stage_listings_payload)
+) AS x(
   id uuid, external_id text, source_url text, deleted boolean,
   generation text, updated_at timestamptz, target_id text, identity_url text
 );
 CREATE UNIQUE INDEX ON _cw_rows(id);
 
 CREATE TEMP TABLE _cw_si_plan ON COMMIT DROP AS
-SELECT * FROM jsonb_to_recordset({si_json}::jsonb) AS x(
+SELECT * FROM jsonb_to_recordset(
+ (SELECT payload FROM _cw_stage_source_index_payload)
+) AS x(
   id uuid, external_id text, url text, last_seen timestamptz,
   last_enumerated_at timestamptz, target_id text
 );
 CREATE UNIQUE INDEX ON _cw_si_plan(id);
 
 CREATE TEMP TABLE _cw_queue_plan ON COMMIT DROP AS
-SELECT * FROM jsonb_to_recordset({queue_json}::jsonb) AS x(
+SELECT * FROM jsonb_to_recordset(
+ (SELECT payload FROM _cw_stage_queue_payload)
+) AS x(
   id uuid, external_id text, url text, reason text, claimed boolean,
   enqueued_at timestamptz, claimed_at timestamptz, done_at timestamptz,
   attempts integer, target_id text
 );
 CREATE UNIQUE INDEX ON _cw_queue_plan(id);
+
+DO $cw_stage_counts$
+BEGIN
+ IF (SELECT count(*) FROM _cw_artifact)<>{len(artifact_payload)} THEN
+   RAISE EXCEPTION 'Cushman staged artifact row count mismatch';
+ END IF;
+ IF (SELECT count(*) FROM _cw_rows)<>{len(payloads["listings"])} THEN
+   RAISE EXCEPTION 'Cushman staged listings row count mismatch';
+ END IF;
+ IF (SELECT count(*) FROM _cw_si_plan)<>{len(payloads["source_index"])} THEN
+   RAISE EXCEPTION 'Cushman staged source-index row count mismatch';
+ END IF;
+ IF (SELECT count(*) FROM _cw_queue_plan)<>{len(payloads["queue"])} THEN
+   RAISE EXCEPTION 'Cushman staged queue row count mismatch';
+ END IF;
+END
+$cw_stage_counts$;
+DROP TABLE _cw_stage_artifact_payload,_cw_stage_listings_payload,
+ _cw_stage_source_index_payload,_cw_stage_queue_payload;
 """
 
 
@@ -1168,11 +1291,11 @@ WITH source_payload AS (
     SELECT jsonb_agg(to_jsonb(si) ORDER BY si.id)
     FROM credeals.cre_source_index si JOIN _cw_si_plan p ON p.id=si.id
   ),
-	  'queue',(
-	    SELECT jsonb_agg(to_jsonb(q) ORDER BY q.id)
-	    FROM credeals.cre_enrichment_queue q JOIN _cw_queue_plan p ON p.id=q.id
-	  )
-	)::text AS payload
+  'queue',(
+    SELECT jsonb_agg(to_jsonb(q) ORDER BY q.id)
+    FROM credeals.cre_enrichment_queue q JOIN _cw_queue_plan p ON p.id=q.id
+  )
+)::text AS payload
 ),
 encoded_payload AS (
  SELECT payload,
