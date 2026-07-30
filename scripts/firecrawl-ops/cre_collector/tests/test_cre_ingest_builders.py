@@ -370,6 +370,178 @@ def test_to_row_blank_id_falls_to_sha1():
     assert r["external_id"].startswith("url:")
 
 
+def test_cushman_external_id_is_stable_across_provider_guid_rotation():
+    url = (
+        "https://www.cushmanwakefield.com/en/united-states/properties/"
+        "for-sale/office/tx/dallas/example-s"
+    )
+    first = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": url,
+        "id": "provider-guid-a",
+        "transactionMode": "sale",
+    })
+    rotated = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": url,
+        "id": "provider-guid-b",
+        "transactionMode": "sale",
+    })
+    expected = "url:v1:" + hashlib.sha256(url.encode()).hexdigest()[:32]
+    assert first["external_id"] == expected
+    assert rotated["external_id"] == expected
+
+
+def test_cushman_external_id_normalizes_legacy_host_and_url_noise():
+    path = (
+        "/en/united-states/properties/for-lease/industrial/oh/cleveland/"
+        "example-l"
+    )
+    public = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"https://www.cushmanwakefield.com{path}",
+        "id": "provider-guid-a",
+    })
+    legacy = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": (
+            f"https://sitecore-www.cushmanwakefield.com{path}/"
+            "?tracking=1#top"
+        ),
+        "id": "provider-guid-b",
+    })
+    assert public["external_id"] == legacy["external_id"]
+
+
+def test_cushman_external_id_maps_official_azure_host_to_public_path():
+    path = (
+        "/en/united-states/properties/for-sale/industrial/il/chicago/example-s"
+    )
+    public = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"https://www.cushmanwakefield.com{path}",
+        "id": "provider-guid-a",
+    })
+    azure = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"https://cw-prod-gblgws-a-cm.azurewebsites.net{path}",
+        "id": "provider-guid-b",
+    })
+    assert public["external_id"] == azure["external_id"]
+
+
+def test_cushman_onecap_identity_retains_record_id_query():
+    base = (
+        "https://onecap.cushmanwakefield.com/en/united-states/properties/"
+        "for-sale/listing"
+    )
+    first = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=a2N-A",
+        "id": "provider-guid-a",
+    })
+    second = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=a2N-B",
+        "id": "provider-guid-b",
+    })
+    missing = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": base,
+        "id": "provider-guid-c",
+    })
+    assert first["external_id"] != second["external_id"]
+    assert missing is None
+
+
+def test_cushman_onecap_identity_normalizes_whitespace_and_rejects_duplicates():
+    base = (
+        "https://onecap.cushmanwakefield.com/en/united-states/properties/"
+        "for-sale/listing"
+    )
+    normalized = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=A+B",
+        "id": "provider-guid-a",
+    })
+    noisy = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=%20A%20%20B%20",
+        "id": "provider-guid-b",
+    })
+    duplicate = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=A&recordId=B",
+        "id": "provider-guid-c",
+    })
+    duplicate_blank = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=A&recordId=",
+        "id": "provider-guid-d",
+    })
+    tilde = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=A%7EB",
+        "id": "provider-guid-e",
+    })
+    assert normalized["external_id"] == noisy["external_id"]
+    assert duplicate is None
+    assert duplicate_blank is None
+    assert (
+        tilde["external_id"]
+        == "url:v1:"
+        + hashlib.sha256(f"{base}?recordId=A%7EB".encode()).hexdigest()[:32]
+    )
+
+
+def test_cushman_rejects_noncanonical_identity_host():
+    assert _row({
+        "sourceKey": "cushman-wakefield",
+        "url": "https://example.com/property/1",
+        "id": "provider-guid",
+    }) is None
+
+
+def test_cushman_same_url_merge_preserves_provider_payload_and_children():
+    url = (
+        "https://www.cushmanwakefield.com/en/united-states/properties/"
+        "for-lease/industrial/oh/cleveland/example-l"
+    )
+    base = {
+        "sourceKey": "cushman-wakefield",
+        "url": url,
+        "transactionMode": "lease",
+        "preserveChildCollections": True,
+    }
+    first = _row({
+        **base,
+        "id": "provider-guid-a",
+        "name": "Example",
+        "rawCushmanApi": {"id": "provider-guid-a"},
+    })
+    second = _row({
+        **base,
+        "id": "provider-guid-b",
+        "documents": [{"url": "https://assets.example.com/example.pdf"}],
+        "rawCushmanApi": {"id": "provider-guid-b"},
+    })
+
+    merged = ci.merge_rows(first, second)
+    assert merged["external_id"] == first["external_id"]
+    assert merged["documents"] == [
+        {
+            "title": None,
+            "url": "https://assets.example.com/example.pdf",
+            "docType": "brochure",
+        }
+    ]
+    assert merged["raw_data"]["primary"]["rawCushmanApi"]["id"] == "provider-guid-a"
+    assert (
+        merged["raw_data"]["secondary_pass"]["rawCushmanApi"]["id"]
+        == "provider-guid-b"
+    )
+
+
 def test_to_row_buildout_propertyid_strips_sale_suffix():
     r = _row({"sourceKey": "svn",
               "url": "https://svn.com/x?propertyId=1614726-sale", "id": "99"})
@@ -651,6 +823,15 @@ def test_preservation_wrapper_retains_source_key_from_merged_payload():
     assert "raw_data#>'{secondary_pass,sourceKey}'" in sql
     assert "EXCLUDED.raw_data#>'{primary,sourceKey}'" in sql
     assert "EXCLUDED.raw_data#>'{secondary_pass,sourceKey}'" in sql
+
+
+def test_cushman_ingest_refuses_legacy_same_url_duplicate_growth():
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    assert "t.external_id IS NULL" in sql
+    assert "t.external_id !~ '^url:v1:[0-9a-f]{32}$'" in sql
+    assert "s.brokerage_id = t.brokerage_id" in sql
+    assert '@ == "cushman-wakefield"' in sql
+    assert "Cushman URL-v1 identity repair required" in sql
 
 
 def test_fresh_detail_with_child_preservation_updates_listing_without_child_deletion():
@@ -1863,16 +2044,16 @@ def test_merge_extra_facts_union_a_wins_collision():
 
 
 def test_merge_status_drop_signal_wins_over_transitional():
-    a = _row({"sourceKey": "cushman-wakefield", "url": "https://cw.com/1", "id": "1",
+    a = _row({"sourceKey": "cushman-wakefield", "url": "https://www.cushmanwakefield.com/1", "id": "1",
               "listingStatus": "Under Contract"})
-    b = _row({"sourceKey": "cushman-wakefield", "url": "https://cw.com/1", "id": "1",
+    b = _row({"sourceKey": "cushman-wakefield", "url": "https://www.cushmanwakefield.com/1", "id": "1",
               "listingStatus": "Sold"})
     assert ci.merge_rows(a, b)["status"] == "sold"
 
 
 def test_merge_status_fills_none_from_b():
     a = _row({"sourceKey": "cbre", "url": "https://cbre.com/g", "id": "1"})
-    b = _row({"sourceKey": "cushman-wakefield", "url": "https://cw.com/g", "id": "1",
+    b = _row({"sourceKey": "cushman-wakefield", "url": "https://www.cushmanwakefield.com/g", "id": "1",
               "listingStatus": "Pending"})
     assert a["status"] is None
     assert ci.merge_rows(a, b)["status"] == "pending"

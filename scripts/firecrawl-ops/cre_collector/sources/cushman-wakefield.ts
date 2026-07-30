@@ -1,5 +1,6 @@
 // sources/cushman-wakefield.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
+import { createHash } from "node:crypto";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, firstJsonLd, titleFromFilename } from "../lib/html.js";
@@ -19,6 +20,8 @@ import {
 
 export const CUSHMAN_HOST = "https://www.cushmanwakefield.com";
 export const CUSHMAN_API_BASE = `${CUSHMAN_HOST}/api/properties/search`;
+export const CUSHMAN_ONECAP_HOST = "onecap.cushmanwakefield.com";
+export const CUSHMAN_AZURE_HOST = "cw-prod-gblgws-a-cm.azurewebsites.net";
 export const CUSHMAN_PAGE_SIZE = 100;
 export const CUSHMAN_QUERY = clean(process.env.CUSHMAN_QUERY ?? null);
 export const CUSHMAN_API_CONCURRENCY = boundedInt(process.env.CUSHMAN_API_CONCURRENCY, 1, 1, CONCURRENCY);
@@ -28,11 +31,12 @@ export const CUSHMAN_DETAIL_CONCURRENCY = boundedInt(
   1,
   CONCURRENCY
 );
-// The public search API carries the canonical external id and primary inventory
-// fields. In strict mode it is the authoritative inventory surface: every
-// uncached page is reconciled before rows are admitted, while detail-only
-// fields and child collections remain explicitly preserved. Non-strict full
-// collection can still attempt optional rendered-page enrichment.
+// The public search API carries a per-observation provider GUID and primary
+// inventory fields. The normalized public URL is the canonical identity. In
+// strict mode the API is the authoritative inventory surface: every uncached
+// page is reconciled before rows are admitted, while detail-only fields and
+// child collections remain explicitly preserved. Non-strict full collection
+// can still attempt optional rendered-page enrichment.
 export function cushmanUseBaseRows(monitor: boolean): boolean {
   return (
     monitor
@@ -65,6 +69,74 @@ export function canonicalCushmanUrl(url: string | null): string | null {
   } catch {
     return abs;
   }
+}
+
+/**
+ * Cushman's search API `id` is an observation identifier, not a durable
+ * property identifier. The provider has emitted new GUIDs for an unchanged
+ * canonical property URL, which creates duplicate database rows when the GUID
+ * is used as `external_id`. Keep the provider GUID in `rawCushmanApi` and key
+ * the normalized public property URL instead.
+ */
+export function cushmanIdentityUrl(url: string | null): string | null {
+  const canonical = canonicalCushmanUrl(url);
+  if (!canonical) return null;
+  try {
+    const parsed = new URL(canonical);
+    let host = parsed.hostname.toLowerCase();
+    if (
+      host === "sitecore-www.cushmanwakefield.com"
+      || host === CUSHMAN_AZURE_HOST
+    ) {
+      host = "www.cushmanwakefield.com";
+    }
+    if (host !== "www.cushmanwakefield.com" && host !== CUSHMAN_ONECAP_HOST) {
+      return null;
+    }
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port) {
+      return null;
+    }
+    parsed.hostname = host;
+    if (host === CUSHMAN_ONECAP_HOST) {
+      const recordIds = parsed.searchParams
+        .getAll("recordId")
+        .map((value) => clean(value));
+      if (recordIds.length !== 1) return null;
+      const recordId = recordIds[0];
+      if (!recordId) return null;
+      parsed.search = "";
+      // Keep the identity byte-for-byte equivalent to Python. WHATWG
+      // URLSearchParams and urllib disagree about escaping "~", so use one
+      // explicit encoding that leaves only alphanumerics plus -_. unescaped.
+      const encodedRecordId = [...Buffer.from(recordId, "utf8")]
+        .map((byte) => (
+          (byte >= 0x41 && byte <= 0x5a)
+          || (byte >= 0x61 && byte <= 0x7a)
+          || (byte >= 0x30 && byte <= 0x39)
+          || byte === 0x2d
+          || byte === 0x5f
+          || byte === 0x2e
+            ? String.fromCharCode(byte)
+            : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`
+        ))
+        .join("");
+      parsed.search = `?recordId=${encodedRecordId}`;
+    } else {
+      parsed.search = "";
+    }
+    parsed.hash = "";
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+export function cushmanCanonicalIdentity(url: string | null): string | null {
+  const identityUrl = cushmanIdentityUrl(url);
+  if (!identityUrl) return null;
+  const digest = createHash("sha256").update(identityUrl, "utf8").digest("hex");
+  return `url:v1:${digest.slice(0, 32)}`;
 }
 
 export function canonicalCushmanAssetUrl(url: string): string | null {
@@ -431,6 +503,8 @@ export function baseCushmanExtraFacts(row: any): Record<string, unknown> | undef
 
 export function baseCushmanListing(row: any, tx: Tx): any {
   const url = canonicalCushmanUrl(row.url ?? row.relative_url);
+  const providerId = clean(row.id);
+  const canonicalIdentity = cushmanCanonicalIdentity(url);
   const street = clean(row.property_street);
   const city = clean(row.property_city);
   const state = clean(row.state_or_province)?.toUpperCase() ?? null;
@@ -438,7 +512,8 @@ export function baseCushmanListing(row: any, tx: Tx): any {
   const listingStatus = clean(row.listing_status);
   const extraFacts = baseCushmanExtraFacts(row);
   return {
-    id: clean(row.id) ?? clean(row.url) ?? clean(row.relative_url),
+    id: canonicalIdentity,
+    providerId,
     name: clean(row.nav_title) ?? street,
     headline: clean(row.attribute1),
     transactionType: tx === "sale" ? "Sale" : "Lease",

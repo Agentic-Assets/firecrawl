@@ -20,7 +20,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from cre_ingest import BUILDOUT_SOURCE_KEYS, SOURCE_TO_BROKERAGE, to_row
+from cre_ingest import (
+    BUILDOUT_SOURCE_KEYS,
+    SOURCE_TO_BROKERAGE,
+    canonical_cushman_identity_url,
+    to_row,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -57,6 +62,11 @@ def monitor_enum_key(source_key: str, record: dict) -> str:
     The caller is responsible for prepending _prefix(source_key).
     """
     url = record.get("url", "")
+
+    if source_key == "cushman-wakefield":
+        return "url:v1:" + hashlib.sha256(
+            canonical_cushman_identity_url(url).encode()
+        ).hexdigest()[:32]
 
     if source_key in BUILDOUT_SOURCE_KEYS:
         m = re.search(r"[?&]propertyId=([^&#]+)", url)
@@ -290,13 +300,19 @@ class TestSourceToBrokerageCoverage:
 
     @pytest.mark.parametrize("source_key", sorted(SOURCE_TO_BROKERAGE.keys()))
     def test_each_source_key_recognized(self, source_key):
+        host = (
+            "www.cushmanwakefield.com"
+            if source_key == "cushman-wakefield"
+            else "example.com"
+        )
         listing = {
             "sourceKey": source_key,
-            "url": f"https://example.com/listing/probe-{source_key}",
+            "url": f"https://{host}/listing/probe-{source_key}",
             "id": "PROBE1",
             "transactionMode": "sale",
         }
         row = _row(listing)
         assert row is not None, f"to_row returned None for source_key={source_key!r}"
         prefix = _prefix(source_key)
-        assert row["external_id"] == prefix + "PROBE1"
+        expected = prefix + monitor_enum_key(source_key, listing)
+        assert row["external_id"] == expected

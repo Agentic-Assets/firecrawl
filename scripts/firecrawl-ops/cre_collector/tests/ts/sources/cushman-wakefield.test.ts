@@ -12,6 +12,8 @@ import {
   CUSHMAN_HOST,
   canonicalCushmanUrl,
   canonicalCushmanAssetUrl,
+  cushmanIdentityUrl,
+  cushmanCanonicalIdentity,
   dedupeAssetsBestWidth,
   pmediaId,
   extractCushmanDocuments,
@@ -204,7 +206,8 @@ test("baseCushmanListing maps API rows into the shared listing shape", () => {
     url: "/en/united-states/properties/lease/dallas-midtown-tower",
   };
   const listing = baseCushmanListing(row, "lease");
-  assert.equal(listing.id, "cw-1001");
+  assert.equal(listing.id, cushmanCanonicalIdentity(row.url));
+  assert.equal(listing.providerId, "cw-1001");
   assert.equal(listing.name, "Dallas Midtown Tower");
   assert.equal(listing.transactionType, "Lease");
   assert.equal(listing.state, "TX");
@@ -214,6 +217,80 @@ test("baseCushmanListing maps API rows into the shared listing shape", () => {
   assert.equal(listing.photos.length, 1);
   assert.match(listing.photos[0], /card\.webp/);
   assert.equal(listing.salePriceText, null);
+});
+
+test("Cushman identity is URL-derived and provider GUID rotation is provenance-only", () => {
+  const url =
+    "https://www.cushmanwakefield.com/en/united-states/properties/for-sale/office/tx/dallas/example-s";
+  const rotated = baseCushmanListing({ id: "provider-guid-b", url }, "sale");
+  const original = baseCushmanListing({ id: "provider-guid-a", url }, "sale");
+
+  assert.equal(original.id, rotated.id);
+  assert.equal(original.id, cushmanCanonicalIdentity(url));
+  assert.equal(original.providerId, "provider-guid-a");
+  assert.equal(rotated.providerId, "provider-guid-b");
+  assert.equal(original.rawCushmanApi.id, "provider-guid-a");
+  assert.equal(rotated.rawCushmanApi.id, "provider-guid-b");
+});
+
+test("Cushman identity normalizes legacy host, query, fragment, and trailing slash", () => {
+  const path =
+    "/en/united-states/properties/for-lease/industrial/oh/cleveland/example-l";
+  const publicUrl = `https://www.cushmanwakefield.com${path}`;
+  const legacyUrl = `https://sitecore-www.cushmanwakefield.com${path}/?tracking=1#top`;
+
+  assert.equal(cushmanIdentityUrl(legacyUrl), publicUrl);
+  assert.equal(
+    cushmanCanonicalIdentity(legacyUrl),
+    cushmanCanonicalIdentity(publicUrl)
+  );
+  assert.equal(cushmanCanonicalIdentity("https://example.com/property/1"), null);
+});
+
+test("Cushman identity maps the official Azure host and retains OneCap record identity", () => {
+  const path =
+    "/en/united-states/properties/for-sale/industrial/il/chicago/example-s";
+  assert.equal(
+    cushmanCanonicalIdentity(
+      `https://cw-prod-gblgws-a-cm.azurewebsites.net${path}`
+    ),
+    cushmanCanonicalIdentity(`https://www.cushmanwakefield.com${path}`)
+  );
+  assert.notEqual(
+    cushmanCanonicalIdentity(
+      "https://onecap.cushmanwakefield.com/en/united-states/properties/for-sale/listing?recordId=a2N-A"
+    ),
+    cushmanCanonicalIdentity(
+      "https://onecap.cushmanwakefield.com/en/united-states/properties/for-sale/listing?recordId=a2N-B"
+    )
+  );
+  assert.equal(
+    cushmanCanonicalIdentity(
+      "https://onecap.cushmanwakefield.com/en/united-states/properties/for-sale/listing"
+    ),
+    null
+  );
+});
+
+test("Cushman OneCap identity normalizes recordId whitespace and rejects duplicates", () => {
+  const base =
+    "https://onecap.cushmanwakefield.com/en/united-states/properties/for-sale/listing";
+  assert.equal(
+    cushmanCanonicalIdentity(`${base}?recordId=A+B`),
+    cushmanCanonicalIdentity(`${base}?recordId=%20A%20%20B%20`)
+  );
+  assert.equal(
+    cushmanCanonicalIdentity(`${base}?recordId=A&recordId=B`),
+    null
+  );
+  assert.equal(
+    cushmanCanonicalIdentity(`${base}?recordId=A&recordId=`),
+    null
+  );
+  assert.equal(
+    cushmanIdentityUrl(`${base}?recordId=A%7EB`),
+    `${base}?recordId=A%7EB`
+  );
 });
 
 test("API-base mode selection is explicit and monitor-safe", () => {

@@ -104,7 +104,12 @@ Child handling is source-class-specific:
   authoritative inventory feeds that must preserve existing child collections.
   Cushman's strict path uses its uncached, exactly reconciled public search API
   and makes an inventory-freshness claim only; it does not claim that challenged
-  rendered detail pages or their child data were refreshed.
+  rendered detail pages or their child data were refreshed. Cushman's API GUID
+  is observation-scoped, so canonical identity is `url:v1:<sha256-prefix>` from
+  the normalized official property URL and the raw GUID remains provenance
+  only. Ingest fails closed when a current URL-v1 row would sit beside an active
+  legacy-GUID row; complete the separately reviewed identity consolidation
+  before retrying that source.
 - Other strict sources require an admitted current detail observation and must
   not use child preservation as a substitute for a failed detail read.
 

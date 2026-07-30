@@ -42,7 +42,7 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import Optional  # used in the "Optional[str]" string return annotations
-from urllib.parse import quote, unquote_to_bytes, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote_to_bytes, urlsplit, urlunsplit
 
 # Phase-2 data-lift: the shared text parsers live in cre_parse.py (the Python
 # mirror of lib/parse.ts), so the ingest, the monitor, and the WS2 backfill all
@@ -119,6 +119,10 @@ INVENTORY_ONLY_SOURCE_DEFINITIONS = {
 }
 
 BUILDOUT_SOURCE_KEYS = {"svn", "lee-associates", "franklin-street"}
+CUSHMAN_SOURCE_KEY = "cushman-wakefield"
+CUSHMAN_CANONICAL_HOST = "www.cushmanwakefield.com"
+CUSHMAN_ONECAP_HOST = "onecap.cushmanwakefield.com"
+CUSHMAN_AZURE_HOST = "cw-prod-gblgws-a-cm.azurewebsites.net"
 CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS = {
     "cushman-wakefield",
     "srs",
@@ -1122,6 +1126,69 @@ def group_source_lastmod(flat_listings):
     return None
 
 
+def canonical_cushman_identity_url(url):
+    """Return the URL-v1 identity input for one Cushman property.
+
+    Cushman's public search API GUID rotates independently of the public
+    property URL. Identity therefore uses the normalized HTTPS property URL,
+    while the GUID remains in raw_data as provider provenance.
+    """
+    if not isinstance(url, str):
+        return None
+    try:
+        parsed = urlsplit(url.strip())
+        host = (parsed.hostname or "").lower()
+        if host in {"sitecore-www.cushmanwakefield.com", CUSHMAN_AZURE_HOST}:
+            host = CUSHMAN_CANONICAL_HOST
+        if (
+            parsed.scheme.lower() != "https"
+            or host not in {CUSHMAN_CANONICAL_HOST, CUSHMAN_ONECAP_HOST}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port is not None
+        ):
+            return None
+    except ValueError:
+        return None
+    path = parsed.path.rstrip("/") or "/"
+    query = ""
+    if host == CUSHMAN_ONECAP_HOST:
+        record_ids = [
+            re.sub(r"\s+", " ", value).strip()
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key == "recordId"
+        ]
+        if len(record_ids) != 1:
+            return None
+        record_id = record_ids[0]
+        if not record_id:
+            return None
+        # Use an explicit byte-level encoding shared with TypeScript. Python's
+        # urllib and WHATWG URLSearchParams disagree about whether "~" is
+        # escaped, which would otherwise produce different identity hashes.
+        encoded_record_id = "".join(
+            chr(byte)
+            if (
+                ord("A") <= byte <= ord("Z")
+                or ord("a") <= byte <= ord("z")
+                or ord("0") <= byte <= ord("9")
+                or byte in {ord("-"), ord("_"), ord(".")}
+            )
+            else f"%{byte:02X}"
+            for byte in record_id.encode("utf-8")
+        )
+        query = f"recordId={encoded_record_id}"
+    return urlunsplit(("https", host, path, query, ""))
+
+
+def cushman_canonical_external_id(url):
+    identity_url = canonical_cushman_identity_url(url)
+    if identity_url is None:
+        return None
+    digest = hashlib.sha256(identity_url.encode("utf-8")).hexdigest()[:32]
+    return f"url:v1:{digest}"
+
+
 def to_row(listing, brokers_by_idx, scraped_at):
     """Map one collector listing to a staging row dict, or None to skip."""
     if is_retired_om_parse_listing(listing):
@@ -1169,7 +1236,11 @@ def to_row(listing, brokers_by_idx, scraped_at):
         m = re.search(r"[?&]propertyId=([^&#]+)", url)
         if m:
             buildout_pid = re.sub(r"-(sale|lease)$", "", m.group(1))
-    if buildout_pid:
+    if source_key == CUSHMAN_SOURCE_KEY:
+        external_id = cushman_canonical_external_id(url)
+        if external_id is None:
+            return None
+    elif buildout_pid:
         external_id = prefix + buildout_pid
     elif raw_id is not None and str(raw_id).strip():
         external_id = prefix + str(raw_id).strip()
@@ -1939,6 +2010,38 @@ WHERE s.slug = e.slug
 CREATE TEMP TABLE _src ON COMMIT DROP AS
 SELECT b.id AS brokerage_id, s.*
 FROM _stage s JOIN credeals.cre_brokerages b ON b.slug = s.slug;
+
+-- Cushman's provider GUID is not a durable property identity. Fixed artifacts
+-- stage URL-v1 identities, but inserting one beside an active legacy GUID row
+-- would grow the exact duplicate-URL defect this repair is intended to stop.
+-- Fail closed until the one-time identity migration has renamed/merged the
+-- active legacy row while preserving its UUID, detail, and children.
+DO $$
+DECLARE
+    legacy_rows bigint;
+BEGIN
+    SELECT count(*) INTO legacy_rows
+    FROM credeals.cre_listings t
+    WHERE t.deleted_at IS NULL
+      AND (
+        t.external_id IS NULL
+        OR t.external_id !~ '^url:v1:[0-9a-f]{32}$'
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM _src s
+        WHERE s.brokerage_id = t.brokerage_id
+          AND jsonb_path_exists(
+            s.raw_data,
+            '$.**.sourceKey ? (@ == "cushman-wakefield")'
+          )
+      );
+    IF legacy_rows > 0 THEN
+      RAISE EXCEPTION
+        'Cushman URL-v1 identity repair required for % active legacy identity row(s); refusing duplicate growth',
+        legacy_rows;
+    END IF;
+END $$;
 
 -- (H4a) Capture prior watched values BEFORE the upsert mutates them, so the
 -- append-only price history records a row only on a REAL change. This reads

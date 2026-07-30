@@ -17,11 +17,16 @@ ATTEMPT = "2026-07-29T12:00:00+00:00"
 
 
 def listing(source="svn", index=1, tx="sale", **extra):
+    host = (
+        "www.cushmanwakefield.com"
+        if source == "cushman-wakefield"
+        else "example.test"
+    )
     return {
         "sourceKey": source,
         "transactionMode": tx,
         "id": f"id-{index}",
-        "url": f"https://example.test/{source}/{index}",
+        "url": f"https://{host}/{source}/{index}",
         **extra,
     }
 
