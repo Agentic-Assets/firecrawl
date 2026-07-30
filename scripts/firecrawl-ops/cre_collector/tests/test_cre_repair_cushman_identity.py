@@ -287,16 +287,15 @@ def test_source_index_donor_is_one_coherent_ranked_tuple():
 def test_preimage_is_complete_and_rollback_restores_every_fk_surface():
     sql = repair.preimage_sql(minimal_artifact(), minimal_state())
     assert "LEFT JOIN _cw_current current USING(target_id)" in sql
-    assert "'schemaVersion',5" in sql
+    assert "'schemaVersion',6" in sql
     assert (
-        f"'rawDataEncoding','{repair.PREIMAGE_RAW_DATA_ENCODING}'" in sql
+        f"'innerEncoding','{repair.PREIMAGE_INNER_ENCODING}'" in sql
     )
     assert "pgp_sym_encrypt(" in sql
-    assert "Cushman preimage raw-data compression roundtrip failed" in sql
-    assert "'post_state',p.post_state-'raw_data_base'" in sql
-    assert "'post_raw_data_sha256'" in sql
-    assert "'post_raw_data_bytes'" in sql
-    assert "'raw_data',l.raw_data" not in sql
+    assert "Cushman inner preimage compression/integrity mismatch" in sql
+    assert "'innerPayloadPgpBase64'" in sql
+    assert "'repairTopology'" in sql
+    assert "'stateListings'" in sql
     assert "'url',ranked.url" in sql
     assert "'fact_group',ranked.fact_group" in sql
     assert "'parsed_at',ranked.parsed_at" in sql
@@ -319,6 +318,11 @@ def test_preimage_is_complete_and_rollback_restores_every_fk_surface():
     assert "CREATE TEMP TABLE _cw_preimage_output ON COMMIT DROP" in sql
     assert "Cushman preimage output row count mismatch" in sql
     assert f"payload_bytes>{repair.MAX_PREIMAGE_BYTES}" in sql
+    assert (
+        f"plaintext_bytes>{repair.MAX_INNER_PREIMAGE_BYTES}" in sql
+    )
+    assert repair.MAX_PREIMAGE_BYTES == 64 * 1024 * 1024
+    assert repair.MAX_INNER_PREIMAGE_BYTES == 128 * 1024 * 1024
     assert "Cushman preimage output integrity mismatch" in sql
     assert "encode(convert_to(payload,'UTF8'),'base64')" in sql
     assert f"'protocol','{repair.PREIMAGE_OUTPUT_PROTOCOL}'" in sql
@@ -350,10 +354,9 @@ def test_preimage_is_complete_and_rollback_restores_every_fk_surface():
     assert "post_listing_id" in rollback
     assert "parent post-repair disposition drift" in rollback
     assert "pgp_sym_decrypt(" in rollback
-    assert "p.raw_data::text IS DISTINCT FROM r.raw_data_text" in rollback
-    assert "digest(convert_to(r.raw_data_text,'UTF8'),'sha256')" in rollback
+    assert "Cushman rollback inner payload integrity mismatch" in rollback
+    assert "plaintext IS DISTINCT FROM (plaintext::jsonb)::text" in rollback
     assert "raw_data=p.raw_data" in rollback
-    assert "raw-data decrypt/integrity mismatch" in rollback
     assert "l.raw_data IS DISTINCT FROM p.raw_data" in rollback
     assert rollback.rstrip().endswith("COMMIT;")
 
@@ -364,13 +367,24 @@ def test_preimage_payload_never_duplicates_uncompressed_raw_data():
         "),\nencoded_payload AS (", 1
     )[0]
     assert "'raw_data',l.raw_data" not in source_payload
-    assert "'raw_data_base',p.post_state" not in source_payload
-    assert "'post_state',p.post_state-'raw_data_base'" in source_payload
-    assert "SELECT jsonb_agg(p.payload ORDER BY p.id)" in source_payload
-    assert "'raw_data_pgp_base64'" in sql
-    assert "pgp_sym_encrypt(" in sql
-    assert "pgp_sym_decrypt(" in sql
-    assert "IS DISTINCT FROM live.raw_data::text" in sql
+    for forbidden in (
+        "  'listings',(",
+        "  'repairPlan',(",
+        "  'sourceIndex',(",
+        "  'queue',(",
+    ):
+        assert forbidden not in source_payload
+    assert "'innerPayloadPgpBase64'" in source_payload
+    assert "'stateListings'" in source_payload
+    assert "'repairTopology'" in source_payload
+    inner = sql.split(
+        "CREATE TEMP TABLE _cw_preimage_inner ON COMMIT DROP AS", 1
+    )[1].split(
+        "CREATE TEMP TABLE _cw_preimage_inner_readback", 1
+    )[0]
+    assert "'raw_data',l.raw_data" in inner
+    assert "raw_data_pgp_base64" not in sql
+    assert inner.count("pgp_sym_encrypt(") == 1
 
 
 def test_pgcrypto_preflight_is_locked_and_proves_exact_surface():
@@ -381,8 +395,8 @@ def test_pgcrypto_preflight_is_locked_and_proves_exact_surface():
         "digest(bytea,text)",
     ):
         assert f"to_regprocedure('{signature}')" in preflight
-    assert repair.PREIMAGE_RAW_DATA_PASSPHRASE in preflight
-    assert repair.PREIMAGE_RAW_DATA_PGP_OPTIONS in preflight
+    assert repair.PREIMAGE_COMPRESSION_PASSPHRASE in preflight
+    assert repair.PREIMAGE_COMPRESSION_PGP_OPTIONS in preflight
     assert "unpacked IS DISTINCT FROM probe" in preflight
     assert "Cushman pgcrypto preflight roundtrip failed" in preflight
 
@@ -391,7 +405,7 @@ def test_pgcrypto_preflight_is_locked_and_proves_exact_surface():
         "Cushman repair requires pgcrypto"
     )
     assert sql.index("Cushman repair requires pgcrypto") < sql.index(
-        "CREATE TEMP TABLE _cw_preimage_listings"
+        "CREATE TEMP TABLE _cw_preimage_inner"
     )
 
 
@@ -429,54 +443,31 @@ def test_preimage_output_uses_one_bounded_frontend_select_per_sequence():
 
 
 def reviewed_empty_preimage():
+    synthetic_inner = b'{"schemaVersion":1}'
     return {
-        "schemaVersion": 5,
+        "schemaVersion": 6,
         "capturedAt": "2026-07-30T18:00:00+00:00",
         "applyTimestampBinding": (
             "updated_at=raw_data.cushmanIdentityRepair.appliedAt="
             "transaction_timestamp"
         ),
-        "rawDataEncoding": repair.PREIMAGE_RAW_DATA_ENCODING,
+        "innerSchemaVersion": repair.PREIMAGE_INNER_SCHEMA_VERSION,
+        "innerEncoding": repair.PREIMAGE_INNER_ENCODING,
         "artifactSha256": repair.EXPECTED_ARTIFACT_SHA256,
         "databaseTargetSha256": repair.EXPECTED_DB_TARGET_SHA256,
         "generation": repair.EXPECTED_GENERATION,
         "geometrySha256": repair.EXPECTED_GEOMETRY_SHA256,
-        "artifactPlan": [],
-        "repairPlan": [],
-        "listings": [],
-        "contacts": [],
-        "documents": [],
-        "images": [],
-        "media": [],
-        "links": [],
-        "omFacts": [],
-        "events": [],
-        "priceHistory": [],
-        "scrapeLogs": [],
-        "sourceIndex": [],
-        "queue": [],
-    }
-
-
-def raw_data_envelope(raw_data):
-    if raw_data is None:
-        return {
-            "raw_data_pgp_base64": None,
-            "raw_data_bytes": None,
-            "raw_data_sha256": None,
-        }
-    canonical = json.dumps(
-        raw_data,
-        ensure_ascii=False,
-        separators=(", ", ": "),
-        sort_keys=True,
-    ).encode()
-    return {
-        "raw_data_pgp_base64": base64.b64encode(
-            b"synthetic-pgp-envelope:" + canonical
+        "innerPayloadBytes": len(synthetic_inner),
+        "innerPayloadSha256": hashlib.sha256(synthetic_inner).hexdigest(),
+        "innerPayloadPgpBase64": base64.b64encode(
+            b"synthetic-pgp:" + synthetic_inner
         ).decode(),
-        "raw_data_bytes": len(canonical),
-        "raw_data_sha256": hashlib.sha256(canonical).hexdigest(),
+        "innerCounts": repair.expected_inner_counts(),
+        "artifactPlan": [],
+        "repairTopology": [],
+        "stateListings": [],
+        "stateSourceIndex": [],
+        "stateQueue": [],
     }
 
 
@@ -595,18 +586,12 @@ def expected_post_state(
 
 
 def current_listing(listing_id, source_url):
-    raw_data = {
-        "freshnessProvenance": {
-            "generationId": repair.EXPECTED_GENERATION
-        }
-    }
     return {
         "id": listing_id,
         "external_id": f"provider-{listing_id[-1]}",
         "source_url": source_url,
+        "deleted": False,
         "generation": repair.EXPECTED_GENERATION,
-        **raw_data_envelope(raw_data),
-        "deleted_at": None,
         "updated_at": "2026-07-30T08:24:21+00:00",
     }
 
@@ -624,9 +609,6 @@ def plan_row(listing, survivor_id, source_url):
             listing_id.encode(), usedforsecurity=False
         ).hexdigest()
     )
-    disposition = (
-        "canonical_survivor" if is_survivor else "superseded_duplicate"
-    )
     return {
         "id": listing_id,
         "target_id": target_id,
@@ -636,20 +618,6 @@ def plan_row(listing, survivor_id, source_url):
         "post_source_url": source_url,
         "post_deleted": not is_survivor,
         "post_generation": repair.EXPECTED_GENERATION,
-        "post_state": expected_post_state(
-            external_id,
-            source_url,
-            target_id,
-            survivor_id,
-            disposition,
-        ),
-        **post_raw_data_geometry(
-            post_raw_data(
-                target_id,
-                survivor_id,
-                disposition,
-            )
-        ),
     }
 
 
@@ -763,10 +731,9 @@ def test_rollback_cli_requires_expected_preimage_sha(tmp_path):
 def test_preimage_output_chunks_reconstruct_exact_validated_object(monkeypatch):
     monkeypatch.setattr(repair, "PREIMAGE_OUTPUT_CHUNK_CHARS", 64)
     payload = reviewed_empty_preimage()
-    payload["transportProbe"] = (
-        "quotes ' \" newlines\nunicode \N{GREEK SMALL LETTER LAMDA}"
-        * 20
-    )
+    payload["innerPayloadPgpBase64"] = base64.b64encode(
+        b"synthetic-compressed-inner" * 80
+    ).decode()
     stdout = preimage_output_stdout(preimage_output_envelopes(payload))
     with patch.multiple(repair, **patched_review_counts(0)):
         assert repair.parse_preimage_chunk_output(stdout) == payload
@@ -1129,20 +1096,34 @@ def test_alternate_lock_path_is_rejected_before_database_access(mode_args):
 def test_preimage_validation_rejects_metadata_and_count_drift():
     payload = reviewed_empty_preimage()
     with patch.object(repair, "EXPECTED_ARTIFACT_ROWS", 0):
-        with pytest.raises(ValueError, match="listings count"):
+        with pytest.raises(ValueError, match="repairTopology count"):
             repair.validate_preimage(payload)
     payload["artifactSha256"] = "0" * 64
     with pytest.raises(ValueError, match="artifactSha256"):
         repair.validate_preimage(payload)
     payload = reviewed_empty_preimage()
-    payload["schemaVersion"] = 3
+    payload["schemaVersion"] = 5
     with pytest.raises(ValueError, match="schemaVersion"):
+        repair.validate_preimage(payload)
+
+
+@pytest.mark.parametrize(
+    "legacy_key",
+    ["repairPlan", "listings", "omFacts", "sourceIndex", "queue"],
+)
+def test_preimage_validation_rejects_legacy_clear_state_arrays(legacy_key):
+    payload = reviewed_empty_preimage()
+    payload[legacy_key] = [{"oversizedClearState": "x"}]
+    with (
+        patch.multiple(repair, **patched_review_counts(0)),
+        pytest.raises(ValueError, match="outer schema"),
+    ):
         repair.validate_preimage(payload)
 
 
 def test_preimage_validation_rejects_invalid_captured_listing_shape():
     payload = reviewed_empty_preimage()
-    payload["listings"] = [
+    payload["stateListings"] = [
         {
             "id": "00000000-0000-0000-0000-000000000001",
             "external_id": "provider-a",
@@ -1151,7 +1132,7 @@ def test_preimage_validation_rejects_invalid_captured_listing_shape():
             "updated_at": "2026-07-30T08:24:21+00:00",
         }
     ]
-    payload["repairPlan"] = [{}]
+    payload["repairTopology"] = [{}]
     with (
         patch.object(repair, "EXPECTED_ARTIFACT_ROWS", 0),
         patch.object(repair, "EXPECTED_TOTAL_ROWS", 1),
@@ -1164,46 +1145,36 @@ def test_preimage_validation_rejects_invalid_captured_listing_shape():
         patch.object(repair, "EXPECTED_QUEUE_ROWS", 0),
         patch.object(repair, "EXPECTED_ARTIFACT_TARGETS", 0),
     ):
-        with pytest.raises(ValueError, match="listings row"):
+        with pytest.raises(ValueError, match="stateListings row"):
             repair.validate_preimage(payload)
 
 
 @pytest.mark.parametrize(
     "mutation",
     [
-        lambda payload: payload["listings"][0].__setitem__(
-            "raw_data_pgp_base64", "***"
+        lambda payload: payload.__setitem__(
+            "innerPayloadPgpBase64", "***"
         ),
-        lambda payload: payload["listings"][0].__setitem__(
-            "raw_data_bytes", 0
+        lambda payload: payload.__setitem__(
+            "innerPayloadBytes", 0
         ),
-        lambda payload: payload["listings"][0].__setitem__(
-            "raw_data_sha256", "A" * 64
+        lambda payload: payload.__setitem__(
+            "innerPayloadSha256", "A" * 64
         ),
-        lambda payload: payload["repairPlan"][0].__setitem__(
-            "post_raw_data_bytes", 0
+        lambda payload: payload.__setitem__(
+            "innerSchemaVersion", 0
         ),
-        lambda payload: payload["repairPlan"][0].__setitem__(
-            "post_raw_data_sha256", "A" * 64
+        lambda payload: payload["innerCounts"].__setitem__(
+            "omFacts", -1
         ),
     ],
 )
-def test_preimage_validation_rejects_raw_data_envelope_drift(mutation):
-    listing_id = "00000000-0000-0000-0000-000000000001"
-    source_url = (
-        "https://www.cushmanwakefield.com/en/"
-        "united-states/properties/raw-envelope"
-    )
-    listing = current_listing(listing_id, source_url)
+def test_preimage_validation_rejects_inner_envelope_drift(mutation):
     payload = reviewed_empty_preimage()
-    payload["listings"] = [listing]
-    payload["repairPlan"] = [plan_row(listing, listing_id, source_url)]
-    with patch.multiple(repair, **patched_review_counts(1)):
+    with patch.multiple(repair, **patched_review_counts(0)):
         assert repair.validate_preimage(payload) is payload
         mutation(payload)
-        with pytest.raises(
-            ValueError, match="raw-data envelope|repairPlan identity"
-        ):
+        with pytest.raises(ValueError, match="inner"):
             repair.validate_preimage(payload)
 
 
@@ -1215,12 +1186,30 @@ def test_state_from_preimage_uses_explicit_generation_without_plaintext_raw_data
     )
     listing = current_listing(listing_id, source_url)
     payload = reviewed_empty_preimage()
-    payload["listings"] = [listing]
-    payload["repairPlan"] = [plan_row(listing, listing_id, source_url)]
+    payload["stateListings"] = [listing]
+    payload["repairTopology"] = [plan_row(listing, listing_id, source_url)]
     with patch.multiple(repair, **patched_review_counts(1)):
         state = repair.state_from_preimage(payload)
     assert state["listings"][0]["generation"] == repair.EXPECTED_GENERATION
-    assert "raw_data" not in payload["listings"][0]
+    assert "raw_data" not in payload["stateListings"][0]
+
+
+def test_preimage_validation_rejects_extra_clear_listing_state():
+    listing_id = "00000000-0000-0000-0000-000000000001"
+    source_url = (
+        "https://www.cushmanwakefield.com/en/"
+        "united-states/properties/no-clear-raw-data"
+    )
+    listing = current_listing(listing_id, source_url)
+    listing["raw_data"] = {"large": "clear-state-is-forbidden"}
+    payload = reviewed_empty_preimage()
+    payload["stateListings"] = [listing]
+    payload["repairTopology"] = [plan_row(listing, listing_id, source_url)]
+    with (
+        patch.multiple(repair, **patched_review_counts(1)),
+        pytest.raises(ValueError, match="stateListings row"),
+    ):
+        repair.validate_preimage(payload)
 
 
 def test_exact_post_state_detects_title_and_raw_data_only_changes():
@@ -1255,6 +1244,10 @@ def test_exact_post_state_detects_title_and_raw_data_only_changes():
     assert "IS DISTINCT FROM p.post_raw_data_sha256" in sql
     assert ") IS DISTINCT FROM p.post_state" in sql
     assert "l.updated_at IS DISTINCT FROM (" in sql
+    assert "CREATE TEMP TABLE _cw_rollback_inner_text" in sql
+    assert "DO $cw_outer_inner_correlation$" in sql
+    assert "Cushman outer/inner listing state mismatch" in sql
+    assert "CREATE UNIQUE INDEX ON _pre_listings(id);" in sql
 
 
 @pytest.mark.parametrize(
@@ -1271,13 +1264,13 @@ def test_preimage_rejects_zero_or_multiple_survivors_per_target(survivor_mode):
     first = current_listing(first_id, source_url)
     second = current_listing(second_id, source_url)
     payload = reviewed_empty_preimage()
-    payload["listings"] = [first, second]
+    payload["stateListings"] = [first, second]
     assignments = (
         [second_id, first_id]
         if survivor_mode == "zero"
         else [first_id, second_id]
     )
-    payload["repairPlan"] = [
+    payload["repairTopology"] = [
         plan_row(first, assignments[0], source_url),
         plan_row(second, assignments[1], source_url),
     ]
@@ -1288,7 +1281,7 @@ def test_preimage_rejects_zero_or_multiple_survivors_per_target(survivor_mode):
         repair.validate_preimage(payload)
 
 
-def test_preimage_rejects_cross_target_plan_and_child_mapping():
+def test_preimage_rejects_cross_target_plan():
     first_id = "00000000-0000-0000-0000-000000000021"
     second_id = "00000000-0000-0000-0000-000000000022"
     first_url = (
@@ -1303,8 +1296,8 @@ def test_preimage_rejects_cross_target_plan_and_child_mapping():
     second = current_listing(second_id, second_url)
 
     swapped = reviewed_empty_preimage()
-    swapped["listings"] = [first, second]
-    swapped["repairPlan"] = [
+    swapped["stateListings"] = [first, second]
+    swapped["repairTopology"] = [
         plan_row(first, second_id, second_url),
         plan_row(second, first_id, first_url),
     ]
@@ -1313,26 +1306,6 @@ def test_preimage_rejects_cross_target_plan_and_child_mapping():
         pytest.raises(ValueError, match="repairPlan identity"),
     ):
         repair.validate_preimage(swapped)
-
-    cross_child = reviewed_empty_preimage()
-    cross_child["listings"] = [first, second]
-    cross_child["repairPlan"] = [
-        plan_row(first, first_id, first_url),
-        plan_row(second, second_id, second_url),
-    ]
-    cross_child["contacts"] = [
-        {
-            "id": "00000000-0000-0000-0000-000000000099",
-            "listing_id": first_id,
-            "post_listing_id": second_id,
-        }
-    ]
-    with (
-        patch.multiple(repair, **patched_review_counts(2, contacts=1)),
-        pytest.raises(ValueError, match="contacts identity"),
-    ):
-        repair.validate_preimage(cross_child)
-
 
 @pytest.mark.parametrize("key", ["contacts", "documents", "events"])
 def test_child_policy_rejects_direct_child_left_on_alias(key):
@@ -1508,37 +1481,25 @@ def test_non_null_old_generation_alias_is_valid_roundtrip_disposition():
         + hashlib.md5(alias_id.encode(), usedforsecurity=False).hexdigest()
     )
     payload = reviewed_empty_preimage()
-    survivor_raw_data = {
-        "freshnessProvenance": {
-            "generationId": repair.EXPECTED_GENERATION
-        }
-    }
-    alias_raw_data = {
-        "freshnessProvenance": {
-            "generationId": "2026-07-01T000000Z"
-        }
-    }
-    payload["listings"] = [
+    payload["stateListings"] = [
         {
             "id": survivor_id,
             "external_id": "current-provider",
             "source_url": source_url,
+            "deleted": False,
             "generation": repair.EXPECTED_GENERATION,
-            **raw_data_envelope(survivor_raw_data),
-            "deleted_at": None,
             "updated_at": "2026-07-30T08:24:21+00:00",
         },
         {
             "id": alias_id,
             "external_id": "old-provider",
             "source_url": source_url,
+            "deleted": False,
             "generation": "2026-07-01T000000Z",
-            **raw_data_envelope(alias_raw_data),
-            "deleted_at": None,
             "updated_at": "2026-07-01T00:00:00+00:00",
         },
     ]
-    payload["repairPlan"] = [
+    payload["repairTopology"] = [
         {
             "id": survivor_id,
             "target_id": target_id,
@@ -1548,20 +1509,6 @@ def test_non_null_old_generation_alias_is_valid_roundtrip_disposition():
             "post_source_url": source_url,
             "post_deleted": False,
             "post_generation": repair.EXPECTED_GENERATION,
-            "post_state": expected_post_state(
-                target_id,
-                source_url,
-                target_id,
-                survivor_id,
-                "canonical_survivor",
-            ),
-            **post_raw_data_geometry(
-                post_raw_data(
-                    target_id,
-                    survivor_id,
-                    "canonical_survivor",
-                )
-            ),
         },
         {
             "id": alias_id,
@@ -1572,26 +1519,6 @@ def test_non_null_old_generation_alias_is_valid_roundtrip_disposition():
             "post_source_url": source_url,
             "post_deleted": True,
             "post_generation": "2026-07-01T000000Z",
-            "post_state": expected_post_state(
-                alias_external_id,
-                source_url,
-                target_id,
-                survivor_id,
-                "superseded_duplicate",
-                {
-                    "freshnessProvenance": {
-                        "generationId": "2026-07-01T000000Z"
-                    }
-                },
-            ),
-            **post_raw_data_geometry(
-                post_raw_data(
-                    target_id,
-                    survivor_id,
-                    "superseded_duplicate",
-                    alias_raw_data,
-                )
-            ),
         },
     ]
     zero_child_counts = {
@@ -1625,21 +1552,17 @@ def test_old_only_survivor_plan_is_complete_and_preserves_source_generation():
     target_id = repair.cushman_canonical_external_id(source_url)
     assert target_id is not None
     payload = reviewed_empty_preimage()
-    old_raw_data = {
-        "freshnessProvenance": {"generationId": old_generation}
-    }
-    payload["listings"] = [
+    payload["stateListings"] = [
         {
             "id": listing_id,
             "external_id": "old-only-provider",
             "source_url": source_url,
+            "deleted": False,
             "generation": old_generation,
-            **raw_data_envelope(old_raw_data),
-            "deleted_at": None,
             "updated_at": "2026-06-30T12:00:00+00:00",
         }
     ]
-    payload["repairPlan"] = [
+    payload["repairTopology"] = [
         {
             "id": listing_id,
             "target_id": target_id,
@@ -1649,26 +1572,6 @@ def test_old_only_survivor_plan_is_complete_and_preserves_source_generation():
             "post_source_url": source_url,
             "post_deleted": False,
             "post_generation": old_generation,
-            "post_state": expected_post_state(
-                target_id,
-                source_url,
-                target_id,
-                listing_id,
-                "canonical_survivor",
-                {
-                    "freshnessProvenance": {
-                        "generationId": old_generation
-                    }
-                },
-            ),
-            **post_raw_data_geometry(
-                post_raw_data(
-                    target_id,
-                    listing_id,
-                    "canonical_survivor",
-                    old_raw_data,
-                )
-            ),
         }
     ]
     with (
@@ -1683,7 +1586,11 @@ def test_old_only_survivor_plan_is_complete_and_preserves_source_generation():
         patch.object(repair, "EXPECTED_QUEUE_ROWS", 0),
     ):
         assert repair.validate_preimage(payload) is payload
-    assert len(payload["repairPlan"]) == len(payload["listings"]) == 1
+    assert (
+        len(payload["repairTopology"])
+        == len(payload["stateListings"])
+        == 1
+    )
 
 
 def test_rollback_timestamp_readback_matches_before_update_trigger_clock():
@@ -1742,7 +1649,9 @@ def test_roundtrip_runs_forward_and_reverse_in_one_rolled_back_transaction():
 
 def test_preimage_chunk_transport_reconstructs_exact_validated_ascii_payload():
     payload = reviewed_empty_preimage()
-    payload["transportProbe"] = "'\N{GREEK SMALL LETTER LAMDA};" * 120_000
+    payload["innerPayloadPgpBase64"] = base64.b64encode(
+        b"synthetic-compressed-inner" * 20_000
+    ).decode()
     with patch.multiple(repair, **patched_review_counts(0)):
         chunks = repair.preimage_json_chunks(payload)
         sql = repair.preimage_chunk_transport_sql(payload)
@@ -1777,8 +1686,9 @@ def test_preimage_chunk_transport_validates_before_serialization():
 
 def test_preimage_chunk_transport_emits_bounded_separate_insert_statements():
     payload = reviewed_empty_preimage()
-    # Apostrophes exercise the worst-case doubling performed by sql_lit.
-    payload["transportProbe"] = "'" * (repair.PREIMAGE_SQL_CHUNK_BYTES * 2 + 1)
+    payload["innerPayloadPgpBase64"] = base64.b64encode(
+        b"x" * (repair.PREIMAGE_SQL_CHUNK_BYTES * 2 + 1)
+    ).decode()
     with patch.multiple(repair, **patched_review_counts(0)):
         chunks = repair.preimage_json_chunks(payload)
         sql = repair.preimage_chunk_transport_sql(payload)

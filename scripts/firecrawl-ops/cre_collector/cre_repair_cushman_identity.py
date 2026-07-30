@@ -11,10 +11,10 @@ The default mode is read-only.  Persistent apply requires a new owner-only
 preimage path.  Every mode holds the canonical CRE lock and a database advisory
 lock; any drift from the reviewed shape aborts before mutation.
 
-Preimage schema v5 stores each original listing raw_data exactly once in a
-reversible pgcrypto PGP compression envelope, protected by plaintext byte and
-SHA-256 guards.  The envelope passphrase is a format constant, not a secret;
-owner-only preimage permissions remain the confidentiality boundary.
+Preimage schema v6 keeps a compact clear validation/staging envelope and stores
+the full exact rollback state once inside a reversible pgcrypto PGP compression
+envelope. The passphrase is a format constant, not a secret; owner-only preimage
+permissions remain the confidentiality boundary.
 """
 
 from __future__ import annotations
@@ -109,10 +109,11 @@ DEFAULT_ARTIFACT = Path(__file__).resolve().parent / (
 )
 DEFAULT_LOCK = canonical_shared_lock_dir()
 ADVISORY_LOCK_KEY = 734_251_907_300_821_130
-# The reviewed schema-v5 preimage is expected below 32 MiB after compressing
-# original raw_data exactly once. Keep 2x headroom while bounding serialization,
-# rollback reads, and the number of fixed frontend SELECT statements.
+# Bound both the compact outer file and the exact decrypted rollback document.
+# Live schema-v5 diagnostics measured 96,244,620 inner bytes before whole-
+# document compression, so 128 MiB leaves bounded headroom for the exact state.
 MAX_PREIMAGE_BYTES = 64 * 1024 * 1024
+MAX_INNER_PREIMAGE_BYTES = 128 * 1024 * 1024
 # Client-side wall clock for rollback-only verification. PostgreSQL's
 # statement_timeout is per statement, so it cannot bound a stalled multi-
 # statement psql session or a dead connection. Persistent apply/rollback paths
@@ -125,7 +126,7 @@ ROLLBACK_VERIFICATION_TIMEOUT_SECONDS = 30 * 60
 # ceiling leaves ample headroom above each 256 KiB raw chunk.
 PREIMAGE_SQL_CHUNK_BYTES = 256 * 1024
 PREIMAGE_SQL_STATEMENT_CEILING_BYTES = 1024 * 1024
-PREIMAGE_OUTPUT_PROTOCOL = "cushman-preimage-chunks-v3"
+PREIMAGE_OUTPUT_PROTOCOL = "cushman-preimage-chunks-v4"
 PREIMAGE_OUTPUT_ENCODING = "base64"
 PREIMAGE_OUTPUT_CHUNK_CHARS = 256 * 1024
 PREIMAGE_OUTPUT_ROW_CEILING_BYTES = 512 * 1024
@@ -145,16 +146,32 @@ PREIMAGE_OUTPUT_KEYS = frozenset(
         "chunk",
     }
 )
-PREIMAGE_RAW_DATA_ENCODING = "pgcrypto-pgp-zlib-base64-v1"
+PREIMAGE_INNER_SCHEMA_VERSION = 1
+PREIMAGE_INNER_ENCODING = "pgcrypto-pgp-zlib-base64-v1"
 # This domain-separated constant enables self-contained reversible compression.
 # It is not a confidentiality secret; the owner-only preimage file is the
 # confidentiality boundary.
-PREIMAGE_RAW_DATA_PASSPHRASE = (
-    "cushman-identity-preimage-v5:compression-envelope:not-a-secret"
+PREIMAGE_COMPRESSION_PASSPHRASE = (
+    "cushman-identity-preimage-v6:compression-envelope:not-a-secret"
 )
-PREIMAGE_RAW_DATA_PGP_OPTIONS = (
+PREIMAGE_COMPRESSION_PGP_OPTIONS = (
     "cipher-algo=aes256,compress-algo=2,compress-level=9,s2k-count=1024"
 )
+PREIMAGE_INNER_COUNTS = {
+    "repairPlan": EXPECTED_TOTAL_ROWS,
+    "listings": EXPECTED_TOTAL_ROWS,
+    "contacts": EXPECTED_CONTACT_ROWS,
+    "documents": EXPECTED_DOCUMENT_ROWS,
+    "images": EXPECTED_IMAGE_ROWS,
+    "media": 0,
+    "links": 0,
+    "omFacts": EXPECTED_OM_FACTS,
+    "events": EXPECTED_EVENT_ROWS,
+    "priceHistory": 0,
+    "scrapeLogs": 0,
+    "sourceIndex": EXPECTED_SOURCE_INDEX_ROWS,
+    "queue": EXPECTED_QUEUE_ROWS,
+}
 REPAIR_TOKEN = hashlib.sha256(
     (
         EXPECTED_ARTIFACT_SHA256
@@ -162,6 +179,13 @@ REPAIR_TOKEN = hashlib.sha256(
         + EXPECTED_GENERATION
     ).encode()
 ).hexdigest()
+
+
+def expected_inner_counts() -> dict[str, int]:
+    """Return a copy of the immutable schema-v6 inner count contract."""
+    return dict(PREIMAGE_INNER_COUNTS)
+
+
 SOURCE_INDEX_DONOR_ORDER_SQL = """si.last_enumerated_at DESC NULLS LAST,
             si.last_seen DESC NULLS LAST,si.soft_deleted,si.id"""
 
@@ -582,12 +606,12 @@ def state_from_preimage(preimage: dict) -> dict:
     """Reconstruct the reviewed pre-repair plan for an explicit rollback."""
     validate_preimage(preimage)
     listings = []
-    for original in preimage["listings"]:
+    for original in preimage["stateListings"]:
         row = {
             "id": original["id"],
             "external_id": original["external_id"],
             "source_url": original["source_url"],
-            "deleted": original.get("deleted_at") is not None,
+            "deleted": original["deleted"],
             "generation": original["generation"],
             "updated_at": original["updated_at"],
         }
@@ -596,7 +620,7 @@ def state_from_preimage(preimage: dict) -> dict:
         )
         listings.append(row)
     source_index = []
-    for original in preimage["sourceIndex"]:
+    for original in preimage["stateSourceIndex"]:
         row = {
             "id": original["id"],
             "external_id": original["external_id"],
@@ -607,7 +631,7 @@ def state_from_preimage(preimage: dict) -> dict:
         row["target_id"], _ = _target_for_url(row["url"])
         source_index.append(row)
     queue = []
-    for original in preimage["queue"]:
+    for original in preimage["stateQueue"]:
         row = {
             "id": original["id"],
             "external_id": original["external_id"],
@@ -793,7 +817,7 @@ DROP TABLE _cw_stage_artifact_payload,_cw_stage_listings_payload,
 
 def pgcrypto_preflight_sql() -> str:
     """Fail closed unless the exact reversible-compression surface works."""
-    probe = '{"cushman":"preimage-v5","unicode":"λ"}'
+    probe = '{"cushman":"preimage-v6","unicode":"λ"}'
     probe_sha256 = hashlib.sha256(probe.encode()).hexdigest()
     return f"""
 DO $cw_pgcrypto$
@@ -811,11 +835,11 @@ BEGIN
  END IF;
  packed:=pgp_sym_encrypt(
    probe,
-   {sql_lit(PREIMAGE_RAW_DATA_PASSPHRASE)},
-   {sql_lit(PREIMAGE_RAW_DATA_PGP_OPTIONS)}
+   {sql_lit(PREIMAGE_COMPRESSION_PASSPHRASE)},
+   {sql_lit(PREIMAGE_COMPRESSION_PGP_OPTIONS)}
  );
  unpacked:=pgp_sym_decrypt(
-   packed,{sql_lit(PREIMAGE_RAW_DATA_PASSPHRASE)}
+   packed,{sql_lit(PREIMAGE_COMPRESSION_PASSPHRASE)}
  );
  probe_sha256:=encode(
    digest(convert_to(probe,'UTF8'),'sha256'),'hex'
@@ -1302,100 +1326,10 @@ SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY});
 {stage_sql(artifact,state)}
 {invariant_sql()}
 {expected_parent_sql(artifact,state)}
-CREATE TEMP TABLE _cw_preimage_listings ON COMMIT DROP AS
-SELECT l.id,jsonb_build_object(
-  'id',l.id,'external_id',l.external_id,'source_url',l.source_url,
-  'canonical_url',l.canonical_url,'status',l.status,
-  'transaction_type',l.transaction_type,'property_type',l.property_type,
-  'title',l.title,'address',l.address,'city',l.city,'state',l.state,
-  'zip',l.zip,'country',l.country,'lat',l.lat,'lng',l.lng,
-  'scraped_at',l.scraped_at,
-  'generation',{generation_expr("l")},
-  'raw_data_pgp_base64',CASE WHEN l.raw_data IS NULL THEN NULL ELSE
-    replace(
-      encode(
-        pgp_sym_encrypt(
-          l.raw_data::text,
-          {sql_lit(PREIMAGE_RAW_DATA_PASSPHRASE)},
-          {sql_lit(PREIMAGE_RAW_DATA_PGP_OPTIONS)}
-        ),
-        'base64'
-      ),
-      chr(10),
-      ''
-    )
-  END,
-  'raw_data_bytes',CASE WHEN l.raw_data IS NULL THEN NULL ELSE
-    octet_length(convert_to(l.raw_data::text,'UTF8'))
-  END,
-  'raw_data_sha256',CASE WHEN l.raw_data IS NULL THEN NULL ELSE
-    encode(
-      digest(convert_to(l.raw_data::text,'UTF8'),'sha256'),
-      'hex'
-    )
-  END,
-  'source_lastmod',l.source_lastmod,'canonical_key',l.canonical_key,
-  'deleted_at',l.deleted_at,'updated_at',l.updated_at
-) AS payload
-FROM credeals.cre_listings l JOIN _cw_rows r ON r.id=l.id;
-CREATE UNIQUE INDEX ON _cw_preimage_listings(id);
-DO $cw_preimage_raw_data$
-DECLARE mismatch integer;
-BEGIN
- SELECT count(*) INTO mismatch
- FROM _cw_preimage_listings p
- FULL JOIN (
-   SELECT l.*
-   FROM credeals.cre_listings l JOIN _cw_rows r ON r.id=l.id
- ) live USING(id)
- WHERE p.id IS NULL OR live.id IS NULL
-    OR (
-      live.raw_data IS NULL
-      AND (
-        p.payload->>'raw_data_pgp_base64' IS NOT NULL
-        OR p.payload->>'raw_data_bytes' IS NOT NULL
-        OR p.payload->>'raw_data_sha256' IS NOT NULL
-      )
-    )
-    OR (
-      live.raw_data IS NOT NULL
-      AND (
-        p.payload->>'raw_data_pgp_base64' IS NULL
-        OR pgp_sym_decrypt(
-          decode(p.payload->>'raw_data_pgp_base64','base64'),
-          {sql_lit(PREIMAGE_RAW_DATA_PASSPHRASE)}
-        ) IS DISTINCT FROM live.raw_data::text
-        OR (p.payload->>'raw_data_bytes')::bigint
-          IS DISTINCT FROM octet_length(
-            convert_to(live.raw_data::text,'UTF8')
-          )
-        OR p.payload->>'raw_data_sha256' IS DISTINCT FROM encode(
-          digest(convert_to(live.raw_data::text,'UTF8'),'sha256'),
-          'hex'
-        )
-      )
-    );
- IF mismatch<>0 THEN
-   RAISE EXCEPTION
-     'Cushman preimage raw-data compression roundtrip failed: %',mismatch;
- END IF;
-END
-$cw_preimage_raw_data$;
-CREATE TEMP TABLE _cw_preimage_output ON COMMIT DROP AS
-WITH source_payload AS (
+CREATE TEMP TABLE _cw_preimage_inner ON COMMIT DROP AS
+WITH inner_source AS (
  SELECT jsonb_build_object(
-  'schemaVersion',5,
-  'capturedAt',clock_timestamp(),
-  'applyTimestampBinding',
-    'updated_at=raw_data.cushmanIdentityRepair.appliedAt=transaction_timestamp',
-  'rawDataEncoding',{sql_lit(PREIMAGE_RAW_DATA_ENCODING)},
-  'artifactSha256',{sql_lit(EXPECTED_ARTIFACT_SHA256)},
-  'databaseTargetSha256',{sql_lit(EXPECTED_DB_TARGET_SHA256)},
-  'generation',{sql_lit(EXPECTED_GENERATION)},
-  'geometrySha256',{sql_lit(EXPECTED_GEOMETRY_SHA256)},
-  'artifactPlan',(
-    SELECT jsonb_agg(to_jsonb(a) ORDER BY a.provider_id) FROM _cw_artifact a
-  ),
+  'schemaVersion',{PREIMAGE_INNER_SCHEMA_VERSION},
   'repairPlan',(
     SELECT jsonb_agg(
       (to_jsonb(p)-'post_state')||jsonb_build_object(
@@ -1416,8 +1350,17 @@ WITH source_payload AS (
     FROM _cw_expected_parents p
   ),
   'listings',(
-    SELECT jsonb_agg(p.payload ORDER BY p.id)
-    FROM _cw_preimage_listings p
+    SELECT jsonb_agg(jsonb_build_object(
+      'id',l.id,'external_id',l.external_id,'source_url',l.source_url,
+      'canonical_url',l.canonical_url,'status',l.status,
+      'transaction_type',l.transaction_type,'property_type',l.property_type,
+      'title',l.title,'address',l.address,'city',l.city,'state',l.state,
+      'zip',l.zip,'country',l.country,'lat',l.lat,'lng',l.lng,
+      'scraped_at',l.scraped_at,'raw_data',l.raw_data,
+      'source_lastmod',l.source_lastmod,'canonical_key',l.canonical_key,
+      'deleted_at',l.deleted_at,'updated_at',l.updated_at
+    ) ORDER BY l.id)
+    FROM credeals.cre_listings l JOIN _cw_rows r ON r.id=l.id
   ),
   'contacts',{moved_child_map("cre_listing_contacts","c")},
   'documents',{moved_child_map("cre_listing_documents","d")},
@@ -1436,7 +1379,175 @@ WITH source_payload AS (
     SELECT jsonb_agg(to_jsonb(q) ORDER BY q.id)
     FROM credeals.cre_enrichment_queue q JOIN _cw_queue_plan p ON p.id=q.id
   )
+ )::text AS plaintext
+)
+SELECT
+ plaintext,
+ octet_length(plaintext)::bigint AS plaintext_bytes,
+ encode(digest(convert_to(plaintext,'UTF8'),'sha256'),'hex')
+   AS plaintext_sha256,
+ pgp_sym_encrypt(
+   plaintext,
+   {sql_lit(PREIMAGE_COMPRESSION_PASSPHRASE)},
+   {sql_lit(PREIMAGE_COMPRESSION_PGP_OPTIONS)}
+ ) AS packed
+FROM inner_source;
+CREATE TEMP TABLE _cw_preimage_inner_readback ON COMMIT DROP AS
+SELECT pgp_sym_decrypt(
+  packed,{sql_lit(PREIMAGE_COMPRESSION_PASSPHRASE)}
+) AS plaintext
+FROM _cw_preimage_inner;
+CREATE TEMP TABLE _cw_preimage_inner_json ON COMMIT DROP AS
+SELECT plaintext::jsonb AS payload FROM _cw_preimage_inner_readback;
+DO $cw_preimage_inner$
+DECLARE
+ inner_payload jsonb;
+ mismatch integer;
+BEGIN
+ IF (SELECT count(*) FROM _cw_preimage_inner)<>1
+    OR (SELECT count(*) FROM _cw_preimage_inner_readback)<>1
+    OR (SELECT count(*) FROM _cw_preimage_inner_json)<>1 THEN
+   RAISE EXCEPTION 'Cushman inner preimage row count mismatch';
+ END IF;
+ IF (
+   SELECT plaintext_bytes<=0
+       OR plaintext_bytes>{MAX_INNER_PREIMAGE_BYTES}
+       OR plaintext_sha256!~'^[0-9a-f]{{64}}$'
+       OR octet_length(packed)<=0
+       OR plaintext IS DISTINCT FROM (
+         SELECT plaintext FROM _cw_preimage_inner_readback
+       )
+       OR octet_length(convert_to(
+         (SELECT plaintext FROM _cw_preimage_inner_readback),'UTF8'
+       )) IS DISTINCT FROM plaintext_bytes
+       OR encode(digest(convert_to(
+         (SELECT plaintext FROM _cw_preimage_inner_readback),'UTF8'
+       ),'sha256'),'hex') IS DISTINCT FROM plaintext_sha256
+       OR plaintext IS DISTINCT FROM (
+         SELECT payload::text FROM _cw_preimage_inner_json
+       )
+   FROM _cw_preimage_inner
+ ) THEN
+   RAISE EXCEPTION 'Cushman inner preimage compression/integrity mismatch';
+ END IF;
+ SELECT payload INTO inner_payload FROM _cw_preimage_inner_json;
+ IF (inner_payload->>'schemaVersion')::integer
+      <>{PREIMAGE_INNER_SCHEMA_VERSION}
+    OR NOT inner_payload ?& ARRAY[
+      'schemaVersion','repairPlan','listings','contacts','documents',
+      'images','media','links','omFacts','events','priceHistory',
+      'scrapeLogs','sourceIndex','queue'
+    ]
+    OR inner_payload - ARRAY[
+      'schemaVersion','repairPlan','listings','contacts','documents',
+      'images','media','links','omFacts','events','priceHistory',
+      'scrapeLogs','sourceIndex','queue'
+    ]<>'{{}}'::jsonb
+    OR jsonb_array_length(inner_payload->'repairPlan')<>{EXPECTED_TOTAL_ROWS}
+    OR jsonb_array_length(inner_payload->'listings')<>{EXPECTED_TOTAL_ROWS}
+    OR jsonb_array_length(inner_payload->'contacts')<>{EXPECTED_CONTACT_ROWS}
+    OR jsonb_array_length(inner_payload->'documents')<>{EXPECTED_DOCUMENT_ROWS}
+    OR jsonb_array_length(inner_payload->'images')<>{EXPECTED_IMAGE_ROWS}
+    OR inner_payload->'media'<>'[]'::jsonb
+    OR inner_payload->'links'<>'[]'::jsonb
+    OR jsonb_array_length(inner_payload->'omFacts')<>{EXPECTED_OM_FACTS}
+    OR jsonb_array_length(inner_payload->'events')<>{EXPECTED_EVENT_ROWS}
+    OR inner_payload->'priceHistory'<>'[]'::jsonb
+    OR inner_payload->'scrapeLogs'<>'[]'::jsonb
+    OR jsonb_array_length(inner_payload->'sourceIndex')
+      <>{EXPECTED_SOURCE_INDEX_ROWS}
+    OR jsonb_array_length(inner_payload->'queue')<>{EXPECTED_QUEUE_ROWS}
+ THEN
+   RAISE EXCEPTION 'Cushman inner preimage schema/count mismatch';
+ END IF;
+ SELECT count(*) INTO mismatch
+ FROM jsonb_to_recordset(inner_payload->'listings') x(id uuid)
+ FULL JOIN _cw_rows r USING(id)
+ WHERE x.id IS NULL OR r.id IS NULL;
+ IF mismatch<>0 THEN
+   RAISE EXCEPTION 'Cushman inner listing identity mismatch: %',mismatch;
+ END IF;
+ SELECT count(*) INTO mismatch
+ FROM jsonb_to_recordset(inner_payload->'repairPlan') x(id uuid)
+ FULL JOIN _cw_expected_parents p USING(id)
+ WHERE x.id IS NULL OR p.id IS NULL;
+ IF mismatch<>0 THEN
+   RAISE EXCEPTION 'Cushman inner repair-plan identity mismatch: %',mismatch;
+ END IF;
+ SELECT count(*) INTO mismatch
+ FROM jsonb_to_recordset(inner_payload->'sourceIndex') x(id uuid)
+ FULL JOIN _cw_si_plan p USING(id)
+ WHERE x.id IS NULL OR p.id IS NULL;
+ IF mismatch<>0 THEN
+   RAISE EXCEPTION 'Cushman inner source-index identity mismatch: %',mismatch;
+ END IF;
+ SELECT count(*) INTO mismatch
+ FROM jsonb_to_recordset(inner_payload->'queue') x(id uuid)
+ FULL JOIN _cw_queue_plan p USING(id)
+ WHERE x.id IS NULL OR p.id IS NULL;
+ IF mismatch<>0 THEN
+   RAISE EXCEPTION 'Cushman inner queue identity mismatch: %',mismatch;
+ END IF;
+END
+$cw_preimage_inner$;
+CREATE TEMP TABLE _cw_preimage_output ON COMMIT DROP AS
+WITH source_payload AS (
+ SELECT jsonb_build_object(
+  'schemaVersion',6,
+  'capturedAt',clock_timestamp(),
+  'applyTimestampBinding',
+    'updated_at=raw_data.cushmanIdentityRepair.appliedAt=transaction_timestamp',
+  'innerSchemaVersion',{PREIMAGE_INNER_SCHEMA_VERSION},
+  'innerEncoding',{sql_lit(PREIMAGE_INNER_ENCODING)},
+  'artifactSha256',{sql_lit(EXPECTED_ARTIFACT_SHA256)},
+  'databaseTargetSha256',{sql_lit(EXPECTED_DB_TARGET_SHA256)},
+  'generation',{sql_lit(EXPECTED_GENERATION)},
+  'geometrySha256',{sql_lit(EXPECTED_GEOMETRY_SHA256)},
+  'innerPayloadBytes',i.plaintext_bytes,
+  'innerPayloadSha256',i.plaintext_sha256,
+  'innerPayloadPgpBase64',replace(encode(i.packed,'base64'),chr(10),''),
+  'innerCounts',jsonb_build_object(
+    'repairPlan',{EXPECTED_TOTAL_ROWS},'listings',{EXPECTED_TOTAL_ROWS},
+    'contacts',{EXPECTED_CONTACT_ROWS},'documents',{EXPECTED_DOCUMENT_ROWS},
+    'images',{EXPECTED_IMAGE_ROWS},'media',0,'links',0,
+    'omFacts',{EXPECTED_OM_FACTS},'events',{EXPECTED_EVENT_ROWS},
+    'priceHistory',0,'scrapeLogs',0,
+    'sourceIndex',{EXPECTED_SOURCE_INDEX_ROWS},'queue',{EXPECTED_QUEUE_ROWS}
+  ),
+  'artifactPlan',(
+    SELECT jsonb_agg(to_jsonb(a) ORDER BY a.provider_id) FROM _cw_artifact a
+  ),
+  'repairTopology',(
+    SELECT jsonb_agg(jsonb_build_object(
+      'id',p.id,'target_id',p.target_id,'survivor_id',p.survivor_id,
+      'has_current',p.has_current,'post_external_id',p.post_external_id,
+      'post_source_url',p.post_source_url,'post_deleted',p.post_deleted,
+      'post_generation',p.post_generation
+    ) ORDER BY p.id)
+    FROM _cw_expected_parents p
+  ),
+  'stateListings',(
+    SELECT jsonb_agg(jsonb_build_object(
+      'id',r.id,'external_id',r.external_id,'source_url',r.source_url,
+      'deleted',r.deleted,'generation',r.generation,
+      'updated_at',r.updated_at
+    ) ORDER BY r.id) FROM _cw_rows r
+  ),
+  'stateSourceIndex',(
+    SELECT jsonb_agg(jsonb_build_object(
+      'id',p.id,'external_id',p.external_id,'url',p.url,
+      'last_seen',p.last_seen,'last_enumerated_at',p.last_enumerated_at
+    ) ORDER BY p.id) FROM _cw_si_plan p
+  ),
+  'stateQueue',(
+    SELECT jsonb_agg(jsonb_build_object(
+      'id',p.id,'external_id',p.external_id,'url',p.url,
+      'reason',p.reason,'claimed',p.claimed,'enqueued_at',p.enqueued_at,
+      'claimed_at',p.claimed_at,'done_at',p.done_at,'attempts',p.attempts
+    ) ORDER BY p.id) FROM _cw_queue_plan p
+  )
 )::text AS payload
+ FROM _cw_preimage_inner i
 ),
 encoded_payload AS (
  SELECT payload,
@@ -1924,12 +2035,13 @@ def validate_preimage(payload: object) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("rollback preimage is not an object")
     expected = {
-        "schemaVersion": 5,
+        "schemaVersion": 6,
         "applyTimestampBinding": (
             "updated_at=raw_data.cushmanIdentityRepair.appliedAt="
             "transaction_timestamp"
         ),
-        "rawDataEncoding": PREIMAGE_RAW_DATA_ENCODING,
+        "innerSchemaVersion": PREIMAGE_INNER_SCHEMA_VERSION,
+        "innerEncoding": PREIMAGE_INNER_ENCODING,
         "artifactSha256": EXPECTED_ARTIFACT_SHA256,
         "databaseTargetSha256": EXPECTED_DB_TARGET_SHA256,
         "generation": EXPECTED_GENERATION,
@@ -1938,24 +2050,61 @@ def validate_preimage(payload: object) -> dict:
     for key, value in expected.items():
         if payload.get(key) != value:
             raise ValueError(f"rollback preimage has unexpected {key}")
+    required_keys = {
+        "schemaVersion",
+        "capturedAt",
+        "applyTimestampBinding",
+        "innerSchemaVersion",
+        "innerEncoding",
+        "artifactSha256",
+        "databaseTargetSha256",
+        "generation",
+        "geometrySha256",
+        "innerPayloadBytes",
+        "innerPayloadSha256",
+        "innerPayloadPgpBase64",
+        "innerCounts",
+        "artifactPlan",
+        "repairTopology",
+        "stateListings",
+        "stateSourceIndex",
+        "stateQueue",
+    }
+    if set(payload) != required_keys:
+        raise ValueError("rollback preimage outer schema drifted")
     required = {
         "artifactPlan": EXPECTED_ARTIFACT_ROWS,
-        "listings": EXPECTED_TOTAL_ROWS,
-        "repairPlan": EXPECTED_TOTAL_ROWS,
-        "contacts": EXPECTED_CONTACT_ROWS,
-        "documents": EXPECTED_DOCUMENT_ROWS,
-        "images": EXPECTED_IMAGE_ROWS,
-        "omFacts": EXPECTED_OM_FACTS,
-        "events": EXPECTED_EVENT_ROWS,
-        "sourceIndex": EXPECTED_SOURCE_INDEX_ROWS,
-        "queue": EXPECTED_QUEUE_ROWS,
+        "repairTopology": EXPECTED_TOTAL_ROWS,
+        "stateListings": EXPECTED_TOTAL_ROWS,
+        "stateSourceIndex": EXPECTED_SOURCE_INDEX_ROWS,
+        "stateQueue": EXPECTED_QUEUE_ROWS,
     }
     for key, count in required.items():
         if not isinstance(payload.get(key), list) or len(payload[key]) != count:
             raise ValueError(f"rollback preimage {key} count drifted")
-    for key in ("media", "links", "priceHistory", "scrapeLogs"):
-        if payload.get(key) != []:
-            raise ValueError(f"rollback preimage expected empty {key}")
+    inner_counts = payload.get("innerCounts")
+    if (
+        inner_counts != expected_inner_counts()
+        or not isinstance(inner_counts, dict)
+        or any(type(value) is not int for value in inner_counts.values())
+    ):
+        raise ValueError("rollback preimage inner counts drifted")
+    inner_bytes = payload.get("innerPayloadBytes")
+    inner_sha256 = payload.get("innerPayloadSha256")
+    inner_base64 = payload.get("innerPayloadPgpBase64")
+    try:
+        packed = base64.b64decode(inner_base64, validate=True)
+    except (binascii.Error, TypeError, ValueError) as exc:
+        raise ValueError("rollback preimage inner envelope is invalid") from exc
+    if (
+        type(inner_bytes) is not int
+        or not 0 < inner_bytes <= MAX_INNER_PREIMAGE_BYTES
+        or not isinstance(inner_sha256, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", inner_sha256)
+        or not packed
+        or len(packed) > MAX_PREIMAGE_BYTES
+    ):
+        raise ValueError("rollback preimage inner envelope is invalid")
     captured = payload.get("capturedAt")
     if not isinstance(captured, str):
         raise ValueError("rollback preimage lacks capturedAt")
@@ -1966,7 +2115,7 @@ def validate_preimage(payload: object) -> dict:
     def require_records(key: str, required_keys: set[str]) -> list[dict]:
         rows = payload[key]
         for row in rows:
-            if not isinstance(row, dict) or not required_keys.issubset(row):
+            if not isinstance(row, dict) or set(row) != required_keys:
                 raise ValueError(f"rollback preimage {key} row is invalid")
         return rows
 
@@ -1995,16 +2144,13 @@ def validate_preimage(payload: object) -> dict:
         raise ValueError("rollback preimage artifactPlan target count drifted")
 
     listings = require_records(
-        "listings",
+        "stateListings",
         {
             "id",
             "external_id",
             "source_url",
+            "deleted",
             "generation",
-            "raw_data_pgp_base64",
-            "raw_data_bytes",
-            "raw_data_sha256",
-            "deleted_at",
             "updated_at",
         },
     )
@@ -2020,49 +2166,23 @@ def validate_preimage(payload: object) -> dict:
             or not isinstance(row["source_url"], str)
             or cushman_canonical_external_id(row["source_url"]) is None
             or not isinstance(row["updated_at"], str)
+            or not isinstance(row["deleted"], bool)
             or not (
                 row["generation"] is None
-                or isinstance(row["generation"], str)
+                or (
+                    isinstance(row["generation"], str)
+                    and bool(row["generation"])
+                )
             )
         ):
             raise ValueError("rollback preimage listing identity is invalid")
-        encoded_raw_data = row["raw_data_pgp_base64"]
-        if encoded_raw_data is None:
-            if (
-                row["raw_data_bytes"] is not None
-                or row["raw_data_sha256"] is not None
-            ):
-                raise ValueError(
-                    "rollback preimage listing raw-data envelope is invalid"
-                )
-        else:
-            try:
-                encrypted_raw_data = base64.b64decode(
-                    encoded_raw_data, validate=True
-                )
-            except (binascii.Error, TypeError, ValueError) as exc:
-                raise ValueError(
-                    "rollback preimage listing raw-data envelope is invalid"
-                ) from exc
-            if (
-                not encrypted_raw_data
-                or not isinstance(row["raw_data_bytes"], int)
-                or not 0 < row["raw_data_bytes"] <= MAX_PREIMAGE_BYTES
-                or not isinstance(row["raw_data_sha256"], str)
-                or not re.fullmatch(
-                    r"[0-9a-f]{64}", row["raw_data_sha256"]
-                )
-            ):
-                raise ValueError(
-                    "rollback preimage listing raw-data envelope is invalid"
-                )
         listing_ids.add(listing_id)
         listing_target = cushman_canonical_external_id(row["source_url"])
         assert listing_target is not None
         listing_targets[listing_id] = listing_target
 
     repair_plan = require_records(
-        "repairPlan",
+        "repairTopology",
         {
             "id",
             "target_id",
@@ -2072,9 +2192,6 @@ def validate_preimage(payload: object) -> dict:
             "post_source_url",
             "post_deleted",
             "post_generation",
-            "post_state",
-            "post_raw_data_bytes",
-            "post_raw_data_sha256",
         },
     )
     repair_ids: set[str] = set()
@@ -2111,43 +2228,11 @@ def validate_preimage(payload: object) -> dict:
             else "cushman-superseded:v1:"
             + hashlib.md5(row_id.encode(), usedforsecurity=False).hexdigest()
         )
-        post_state = row.get("post_state")
-        required_post_state = {
-            "external_id",
-            "source_url",
-            "canonical_url",
-            "status",
-            "transaction_type",
-            "property_type",
-            "title",
-            "address",
-            "city",
-            "state",
-            "zip",
-            "country",
-            "lat",
-            "lng",
-            "scraped_at",
-            "source_lastmod",
-            "canonical_key",
-            "deleted_at_static",
-            "deleted_at_uses_apply_timestamp",
-        }
-        expected_deleted_at_static = (
-            original.get("deleted_at")
-            if original is not None and not is_survivor
-            else None
-        )
-        expected_deleted_at_uses_apply_timestamp = bool(
-            original is not None
-            and not is_survivor
-            and original.get("deleted_at") is None
-        )
         if (
             row_id not in listing_ids
             or row_id in repair_ids
             or survivor_id not in listing_ids
-            or listings_by_id.get(survivor_id, {}).get("deleted_at") is not None
+            or listings_by_id.get(survivor_id, {}).get("deleted") is not False
             or target_id != listing_targets.get(row_id)
             or target_id != listing_targets.get(survivor_id)
             or not isinstance(row["has_current"], bool)
@@ -2159,20 +2244,6 @@ def validate_preimage(payload: object) -> dict:
             or cushman_canonical_external_id(row["post_source_url"]) != target_id
             or row["post_deleted"] is not (not is_survivor)
             or row["post_generation"] != expected_generation
-            or not isinstance(post_state, dict)
-            or set(post_state) != required_post_state
-            or post_state.get("external_id") != row["post_external_id"]
-            or post_state.get("source_url") != row["post_source_url"]
-            or not isinstance(row["post_raw_data_bytes"], int)
-            or not 0 < row["post_raw_data_bytes"] <= MAX_PREIMAGE_BYTES
-            or not isinstance(row["post_raw_data_sha256"], str)
-            or not re.fullmatch(
-                r"[0-9a-f]{64}", row["post_raw_data_sha256"]
-            )
-            or post_state.get("deleted_at_static")
-            != expected_deleted_at_static
-            or post_state.get("deleted_at_uses_apply_timestamp")
-            is not expected_deleted_at_uses_apply_timestamp
             or (
                 is_survivor
                 and not has_current
@@ -2185,7 +2256,6 @@ def validate_preimage(payload: object) -> dict:
         plan_by_target[target_id].append(row)
     if repair_ids != listing_ids:
         raise ValueError("rollback preimage repairPlan coverage drifted")
-    survivor_by_target: dict[str, str] = {}
     for target_id, group in plan_by_target.items():
         survivor_ids = {row["survivor_id"] for row in group}
         if (
@@ -2197,31 +2267,27 @@ def validate_preimage(payload: object) -> dict:
             or any(row["target_id"] != target_id for row in group)
         ):
             raise ValueError("rollback preimage repairPlan survivor topology is invalid")
-        survivor_by_target[target_id] = next(iter(survivor_ids))
-
-    validate_child_dispositions(
-        payload, listing_targets, survivor_by_target
-    )
 
     for key, required_keys in (
         (
-            "sourceIndex",
+            "stateSourceIndex",
             {
                 "id",
                 "external_id",
                 "url",
                 "last_seen",
                 "last_enumerated_at",
-                "soft_deleted",
             },
         ),
         (
-            "queue",
+            "stateQueue",
             {
                 "id",
                 "external_id",
                 "url",
                 "reason",
+                "claimed",
+                "enqueued_at",
                 "claimed_at",
                 "done_at",
                 "attempts",
@@ -2230,7 +2296,8 @@ def validate_preimage(payload: object) -> dict:
     ):
         rows = require_records(key, required_keys)
         row_ids: set[str] = set()
-        source_groups: dict[str, list[dict]] = defaultdict(list)
+        target_ids: set[str] = set()
+        queue_keys: set[tuple[str, str]] = set()
         for row in rows:
             row_id = row["id"]
             if (
@@ -2242,23 +2309,42 @@ def validate_preimage(payload: object) -> dict:
                 or cushman_canonical_external_id(row["url"]) is None
             ):
                 raise ValueError(f"rollback preimage {key} identity is invalid")
-            if key == "queue" and (
+            target_id = cushman_canonical_external_id(row["url"])
+            assert target_id is not None
+            if key == "stateQueue" and (
                 not isinstance(row["reason"], str)
+                or row["claimed"] is not False
                 or row["claimed_at"] is not None
                 or row["done_at"] is not None
             ):
                 raise ValueError("rollback preimage queue lifecycle is invalid")
-            if key == "sourceIndex":
-                if not isinstance(row["soft_deleted"], bool):
+            if key == "stateQueue":
+                queue_key = (target_id, row["reason"])
+                if queue_key in queue_keys:
                     raise ValueError(
-                        "rollback preimage sourceIndex lifecycle is invalid"
+                        "rollback preimage queue identity is invalid"
                     )
-                target_id = cushman_canonical_external_id(row["url"])
-                assert target_id is not None
-                source_groups[target_id].append(row)
+                queue_keys.add(queue_key)
+            target_ids.add(target_id)
             row_ids.add(row_id)
-        for group in source_groups.values():
-            select_source_index_donor(group)
+        if (
+            key == "stateSourceIndex"
+            and EXPECTED_SOURCE_INDEX_ROWS
+            and len(target_ids) != EXPECTED_SOURCE_INDEX_TARGETS
+        ):
+            raise ValueError(
+                "rollback preimage source-index target count drifted"
+            )
+    try:
+        outer_bytes = len(
+            json.dumps(
+                payload, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("rollback preimage outer JSON is invalid") from exc
+    if not 0 < outer_bytes <= MAX_PREIMAGE_BYTES:
+        raise ValueError("rollback preimage outer size limit exceeded")
     return payload
 
 
@@ -2368,8 +2454,9 @@ def rollback_body(preimage: dict, artifact: list[ArtifactRow], state: dict) -> s
         f"""
 CREATE TEMP TABLE _pre_{key} ON COMMIT DROP AS
 SELECT * FROM jsonb_to_recordset(
- (SELECT payload->{sql_lit(key)} FROM _cw_preimage)
+ (SELECT payload->{sql_lit(key)} FROM _cw_rollback_inner)
 ) AS x(id uuid,listing_id uuid,post_listing_id uuid);
+CREATE UNIQUE INDEX ON _pre_{key}(id);
 """
         for key in child_tables
     )
@@ -2425,77 +2512,85 @@ CREATE TEMP TABLE _cw_rollback_clock ON COMMIT DROP AS
 SELECT transaction_timestamp() AS trigger_updated_at;
 {stage_sql(artifact,state)}
 
-CREATE TEMP TABLE _pre_listings_encoded ON COMMIT DROP AS
+CREATE TEMP TABLE _cw_rollback_inner_text ON COMMIT DROP AS
+SELECT
+ pgp_sym_decrypt(
+   decode(payload->>'innerPayloadPgpBase64','base64'),
+   {sql_lit(PREIMAGE_COMPRESSION_PASSPHRASE)}
+ ) AS plaintext,
+ (payload->>'innerPayloadBytes')::bigint AS expected_bytes,
+ payload->>'innerPayloadSha256' AS expected_sha256
+FROM _cw_preimage;
+CREATE TEMP TABLE _cw_rollback_inner ON COMMIT DROP AS
+SELECT plaintext::jsonb AS payload FROM _cw_rollback_inner_text;
+DO $cw_rollback_inner$
+DECLARE inner_payload jsonb;
+BEGIN
+ IF (SELECT count(*) FROM _cw_rollback_inner_text)<>1
+    OR (SELECT count(*) FROM _cw_rollback_inner)<>1 THEN
+   RAISE EXCEPTION 'Cushman rollback inner payload row count mismatch';
+ END IF;
+ IF (
+   SELECT expected_bytes<=0
+       OR expected_bytes>{MAX_INNER_PREIMAGE_BYTES}
+       OR expected_sha256!~'^[0-9a-f]{{64}}$'
+       OR octet_length(convert_to(plaintext,'UTF8'))
+          IS DISTINCT FROM expected_bytes
+       OR encode(
+         digest(convert_to(plaintext,'UTF8'),'sha256'),'hex'
+       ) IS DISTINCT FROM expected_sha256
+       OR plaintext IS DISTINCT FROM (plaintext::jsonb)::text
+   FROM _cw_rollback_inner_text
+ ) THEN
+   RAISE EXCEPTION 'Cushman rollback inner payload integrity mismatch';
+ END IF;
+ SELECT payload INTO inner_payload FROM _cw_rollback_inner;
+ IF (inner_payload->>'schemaVersion')::integer
+      <>{PREIMAGE_INNER_SCHEMA_VERSION}
+    OR NOT inner_payload ?& ARRAY[
+      'schemaVersion','repairPlan','listings','contacts','documents',
+      'images','media','links','omFacts','events','priceHistory',
+      'scrapeLogs','sourceIndex','queue'
+    ]
+    OR inner_payload - ARRAY[
+      'schemaVersion','repairPlan','listings','contacts','documents',
+      'images','media','links','omFacts','events','priceHistory',
+      'scrapeLogs','sourceIndex','queue'
+    ]<>'{{}}'::jsonb
+    OR jsonb_array_length(inner_payload->'repairPlan')<>{EXPECTED_TOTAL_ROWS}
+    OR jsonb_array_length(inner_payload->'listings')<>{EXPECTED_TOTAL_ROWS}
+    OR jsonb_array_length(inner_payload->'contacts')<>{EXPECTED_CONTACT_ROWS}
+    OR jsonb_array_length(inner_payload->'documents')<>{EXPECTED_DOCUMENT_ROWS}
+    OR jsonb_array_length(inner_payload->'images')<>{EXPECTED_IMAGE_ROWS}
+    OR inner_payload->'media'<>'[]'::jsonb
+    OR inner_payload->'links'<>'[]'::jsonb
+    OR jsonb_array_length(inner_payload->'omFacts')<>{EXPECTED_OM_FACTS}
+    OR jsonb_array_length(inner_payload->'events')<>{EXPECTED_EVENT_ROWS}
+    OR inner_payload->'priceHistory'<>'[]'::jsonb
+    OR inner_payload->'scrapeLogs'<>'[]'::jsonb
+    OR jsonb_array_length(inner_payload->'sourceIndex')
+      <>{EXPECTED_SOURCE_INDEX_ROWS}
+    OR jsonb_array_length(inner_payload->'queue')<>{EXPECTED_QUEUE_ROWS}
+ THEN
+   RAISE EXCEPTION 'Cushman rollback inner payload schema/count mismatch';
+ END IF;
+END
+$cw_rollback_inner$;
+
+CREATE TEMP TABLE _pre_listings ON COMMIT DROP AS
 SELECT * FROM jsonb_to_recordset(
- (SELECT payload->'listings' FROM _cw_preimage)
+ (SELECT payload->'listings' FROM _cw_rollback_inner)
 ) AS x(
  id uuid,external_id text,source_url text,canonical_url text,status text,
  transaction_type text,property_type text,title text,address text,city text,
  state text,zip text,country text,lat double precision,lng double precision,
- scraped_at timestamptz,generation text,raw_data_pgp_base64 text,
- raw_data_bytes bigint,raw_data_sha256 text,source_lastmod timestamptz,
+ scraped_at timestamptz,raw_data jsonb,source_lastmod timestamptz,
  canonical_key text,deleted_at timestamptz,updated_at timestamptz
 );
-CREATE UNIQUE INDEX ON _pre_listings_encoded(id);
-CREATE TEMP TABLE _pre_listing_raw_data ON COMMIT DROP AS
-SELECT
- id,
- CASE WHEN raw_data_pgp_base64 IS NULL THEN NULL ELSE
-   pgp_sym_decrypt(
-     decode(raw_data_pgp_base64,'base64'),
-     {sql_lit(PREIMAGE_RAW_DATA_PASSPHRASE)}
-   )
- END AS raw_data_text
-FROM _pre_listings_encoded;
-CREATE UNIQUE INDEX ON _pre_listing_raw_data(id);
-CREATE TEMP TABLE _pre_listings ON COMMIT DROP AS
-SELECT
- e.id,e.external_id,e.source_url,e.canonical_url,e.status,
- e.transaction_type,e.property_type,e.title,e.address,e.city,e.state,e.zip,
- e.country,e.lat,e.lng,e.scraped_at,r.raw_data_text::jsonb AS raw_data,
- e.source_lastmod,e.canonical_key,e.deleted_at,e.updated_at
-FROM _pre_listings_encoded e
-JOIN _pre_listing_raw_data r USING(id);
 CREATE UNIQUE INDEX ON _pre_listings(id);
-DO $cw_raw_data_restore$
-DECLARE mismatch integer;
-BEGIN
- SELECT count(*) INTO mismatch
- FROM _pre_listings_encoded e
- FULL JOIN _pre_listing_raw_data r USING(id)
- FULL JOIN _pre_listings p USING(id)
- WHERE e.id IS NULL OR r.id IS NULL OR p.id IS NULL
-    OR (
-      e.raw_data_pgp_base64 IS NULL
-      AND (
-        r.raw_data_text IS NOT NULL
-        OR p.raw_data IS NOT NULL
-        OR e.raw_data_bytes IS NOT NULL
-        OR e.raw_data_sha256 IS NOT NULL
-      )
-    )
-    OR (
-      e.raw_data_pgp_base64 IS NOT NULL
-      AND (
-        r.raw_data_text IS NULL
-        OR p.raw_data IS NULL
-        OR p.raw_data::text IS DISTINCT FROM r.raw_data_text
-        OR octet_length(convert_to(r.raw_data_text,'UTF8'))
-          IS DISTINCT FROM e.raw_data_bytes
-        OR encode(
-          digest(convert_to(r.raw_data_text,'UTF8'),'sha256'),'hex'
-        ) IS DISTINCT FROM e.raw_data_sha256
-      )
-    );
- IF mismatch<>0 THEN
-   RAISE EXCEPTION
-     'Cushman rollback raw-data decrypt/integrity mismatch: %',mismatch;
- END IF;
-END
-$cw_raw_data_restore$;
 CREATE TEMP TABLE _pre_repair_plan ON COMMIT DROP AS
 SELECT * FROM jsonb_to_recordset(
- (SELECT payload->'repairPlan' FROM _cw_preimage)
+ (SELECT payload->'repairPlan' FROM _cw_rollback_inner)
 ) AS x(
  id uuid,target_id text,survivor_id uuid,post_external_id text,
  has_current boolean,post_source_url text,post_deleted boolean,
@@ -2503,19 +2598,104 @@ SELECT * FROM jsonb_to_recordset(
  post_raw_data_sha256 text
 );
 CREATE UNIQUE INDEX ON _pre_repair_plan(id);
+CREATE TEMP TABLE _pre_outer_topology ON COMMIT DROP AS
+SELECT * FROM jsonb_to_recordset(
+ (SELECT payload->'repairTopology' FROM _cw_preimage)
+) AS x(
+ id uuid,target_id text,survivor_id uuid,post_external_id text,
+ has_current boolean,post_source_url text,post_deleted boolean,
+ post_generation text
+);
+CREATE UNIQUE INDEX ON _pre_outer_topology(id);
 {child_stage}
 CREATE TEMP TABLE _pre_source_index ON COMMIT DROP AS
 SELECT * FROM jsonb_populate_recordset(
  NULL::credeals.cre_source_index,
- (SELECT payload->'sourceIndex' FROM _cw_preimage)
+ (SELECT payload->'sourceIndex' FROM _cw_rollback_inner)
 );
 CREATE UNIQUE INDEX ON _pre_source_index(id);
 CREATE TEMP TABLE _pre_queue ON COMMIT DROP AS
 SELECT * FROM jsonb_populate_recordset(
  NULL::credeals.cre_enrichment_queue,
- (SELECT payload->'queue' FROM _cw_preimage)
+ (SELECT payload->'queue' FROM _cw_rollback_inner)
 );
 CREATE UNIQUE INDEX ON _pre_queue(id);
+
+DO $cw_outer_inner_correlation$
+DECLARE mismatch integer;
+BEGIN
+ IF (
+   SELECT payload->>'innerSchemaVersion'
+            IS DISTINCT FROM {sql_lit(str(PREIMAGE_INNER_SCHEMA_VERSION))}
+       OR payload->>'innerEncoding'
+            IS DISTINCT FROM {sql_lit(PREIMAGE_INNER_ENCODING)}
+       OR payload->'innerCounts' IS DISTINCT FROM jsonb_build_object(
+         'repairPlan',{EXPECTED_TOTAL_ROWS},'listings',{EXPECTED_TOTAL_ROWS},
+         'contacts',{EXPECTED_CONTACT_ROWS},
+         'documents',{EXPECTED_DOCUMENT_ROWS},'images',{EXPECTED_IMAGE_ROWS},
+         'media',0,'links',0,'omFacts',{EXPECTED_OM_FACTS},
+         'events',{EXPECTED_EVENT_ROWS},'priceHistory',0,'scrapeLogs',0,
+         'sourceIndex',{EXPECTED_SOURCE_INDEX_ROWS},'queue',{EXPECTED_QUEUE_ROWS}
+       )
+   FROM _cw_preimage
+ ) THEN
+   RAISE EXCEPTION 'Cushman outer/inner metadata mismatch';
+ END IF;
+ SELECT count(*) INTO mismatch
+ FROM _pre_listings p
+ FULL JOIN _cw_rows r USING(id)
+ WHERE p.id IS NULL OR r.id IS NULL
+    OR p.external_id IS DISTINCT FROM r.external_id
+    OR p.source_url IS DISTINCT FROM r.source_url
+    OR (p.deleted_at IS NOT NULL) IS DISTINCT FROM r.deleted
+    OR {generation_expr("p")} IS DISTINCT FROM r.generation
+    OR p.updated_at IS DISTINCT FROM r.updated_at;
+ IF mismatch<>0 THEN
+   RAISE EXCEPTION 'Cushman outer/inner listing state mismatch: %',mismatch;
+ END IF;
+ SELECT count(*) INTO mismatch
+ FROM _pre_repair_plan p
+ FULL JOIN _pre_outer_topology o USING(id)
+ WHERE p.id IS NULL OR o.id IS NULL
+    OR p.target_id IS DISTINCT FROM o.target_id
+    OR p.survivor_id IS DISTINCT FROM o.survivor_id
+    OR p.has_current IS DISTINCT FROM o.has_current
+    OR p.post_external_id IS DISTINCT FROM o.post_external_id
+    OR p.post_source_url IS DISTINCT FROM o.post_source_url
+    OR p.post_deleted IS DISTINCT FROM o.post_deleted
+    OR p.post_generation IS DISTINCT FROM o.post_generation;
+ IF mismatch<>0 THEN
+   RAISE EXCEPTION 'Cushman outer/inner repair topology mismatch: %',mismatch;
+ END IF;
+ SELECT count(*) INTO mismatch
+ FROM _pre_source_index p
+ FULL JOIN _cw_si_plan o USING(id)
+ WHERE p.id IS NULL OR o.id IS NULL
+    OR p.external_id IS DISTINCT FROM o.external_id
+    OR p.url IS DISTINCT FROM o.url
+    OR p.last_seen IS DISTINCT FROM o.last_seen
+    OR p.last_enumerated_at IS DISTINCT FROM o.last_enumerated_at;
+ IF mismatch<>0 THEN
+   RAISE EXCEPTION 'Cushman outer/inner source-index state mismatch: %',
+     mismatch;
+ END IF;
+ SELECT count(*) INTO mismatch
+ FROM _pre_queue p
+ FULL JOIN _cw_queue_plan o USING(id)
+ WHERE p.id IS NULL OR o.id IS NULL
+    OR p.external_id IS DISTINCT FROM o.external_id
+    OR p.url IS DISTINCT FROM o.url
+    OR p.reason IS DISTINCT FROM o.reason
+    OR (p.claimed_at IS NOT NULL) IS DISTINCT FROM o.claimed
+    OR p.enqueued_at IS DISTINCT FROM o.enqueued_at
+    OR p.claimed_at IS DISTINCT FROM o.claimed_at
+    OR p.done_at IS DISTINCT FROM o.done_at
+    OR p.attempts IS DISTINCT FROM o.attempts;
+ IF mismatch<>0 THEN
+   RAISE EXCEPTION 'Cushman outer/inner queue state mismatch: %',mismatch;
+ END IF;
+END
+$cw_outer_inner_correlation$;
 
 DO $guard$
 DECLARE
