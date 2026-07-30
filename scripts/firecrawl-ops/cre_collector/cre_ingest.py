@@ -1681,7 +1681,11 @@ def build_sql(
     w = lines.append
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
-    w("SET LOCAL statement_timeout = '600s';")
+    # Large complete-source artifacts (CBRE is ~80 MB of inline COPY data) can
+    # legitimately take more than ten minutes to traverse the Supavisor
+    # connection. Bound the data load separately, then restore the tighter
+    # mutation timeout after all four transaction-local COPY stages.
+    w("SET LOCAL statement_timeout = '1800s';")
     # Pin standard_conforming_strings so sql_lit()'s quote-doubling is provably
     # sufficient regardless of the server/role default: with it ON, a backslash
     # inside a '...' literal is literal, so a doubled single quote is the only
@@ -1755,6 +1759,7 @@ CREATE TEMP TABLE _jobmeta (
     for jm in job_meta:
         w("\t".join(copy_field(v) for v in (jm["slug"], jm["discovered"], jm["saved"], jm["errors"], jm["notes"])))
     w("\\.")
+    w("SET LOCAL statement_timeout = '600s';")
 
     w("""
 -- Fail loudly if a sourceKey maps to a brokerage slug that is not seeded.
