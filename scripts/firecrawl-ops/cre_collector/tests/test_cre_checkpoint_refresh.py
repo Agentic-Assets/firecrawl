@@ -278,6 +278,20 @@ def test_subset_manifest_records_non_full_scope(tmp_path):
     assert manifest["config"]["transactions"] == ["lease"]
 
 
+def test_full_manifest_can_bind_explicit_additive_coverage_hold_mode(tmp_path):
+    manifest = refresh.new_manifest(
+        tmp_path / "run",
+        git_sha="abc",
+        git_dirty=False,
+        sources=("nai-global",),
+        page_cap=400,
+        concurrency=3,
+        admit_baseline_hold_additively=True,
+    )
+    assert manifest["config"]["transactions"] == ["sale", "lease"]
+    assert manifest["config"]["admit_baseline_hold_additively"] is True
+
+
 def test_ingest_argv_is_additive_and_status_neutral(tmp_path):
     argv = refresh.build_ingest_argv(tmp_path / "source.json", "/tmp/equire.env")
     assert argv == [
@@ -1398,6 +1412,83 @@ def test_subset_gate_admission_accepts_only_clean_or_baseline_only_holds():
     )
 
 
+def test_full_additive_coverage_hold_is_admitted_without_lifecycle_claim(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("nai-global",),
+        page_cap=400,
+        concurrency=3,
+        admit_baseline_hold_additively=True,
+    )
+    source_path = run_dir / "sources" / "nai-global.json"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("{}", encoding="utf-8")
+
+    def fake_run(_argv, _log, **_kwargs):
+        refresh.atomic_write_json(
+            run_dir / "gates" / "nai-global.json",
+            {
+                "per_source": {
+                    "nai-global": {
+                        "verdict": "hold",
+                        "reason": (
+                            "current_active 408 below 70% of baseline median "
+                            "1080 (threshold 756)"
+                        ),
+                        "mark_missing_safe": False,
+                    }
+                },
+                "summary": {
+                    "hold_sources": ["nai-global"],
+                    "mark_missing_safe_brokerages": [],
+                    "torow_errors": 0,
+                },
+            },
+        )
+        return 2
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    refresh.gate_source(run_dir, manifest, "nai-global", source_path, None)
+    recorded = manifest["sources"]["nai-global"]["gate"]
+    assert recorded["verdict"] == "ok_additive_coverage_hold"
+    assert recorded["raw_verdict"] == "hold"
+    assert recorded["admission_scope"] == "additive_coverage_hold"
+    assert recorded["mark_missing_safe"] is False
+    assert refresh.gate_verdict_is_admitted(manifest, recorded["verdict"])
+    assert (
+        manifest["scope"]["kind"]
+        == "collector_registry_additive_coverage_hold"
+    )
+    durable_gate = json.loads(
+        (run_dir / "gates" / "nai-global.json").read_text(encoding="utf-8")
+    )
+    assert durable_gate["scope"]["whole_source_coverage"] is False
+    assert durable_gate["summary"]["baseline_advisory_holds"] == ["nai-global"]
+    assert durable_gate["summary"]["mark_missing_safe_brokerages"] == []
+
+
+def test_full_additive_hold_mode_does_not_admit_first_seen():
+    manifest = refresh.new_manifest(
+        Path("/tmp/run"),
+        git_sha="abc",
+        git_dirty=False,
+        sources=("nai-global",),
+        page_cap=400,
+        concurrency=3,
+        admit_baseline_hold_additively=True,
+    )
+    assert not refresh.gate_verdict_is_admitted(manifest, "first_seen")
+    assert not refresh.gate_verdict_is_admitted(manifest, "hold")
+    assert refresh.gate_verdict_is_admitted(
+        manifest, "ok_additive_coverage_hold"
+    )
+
+
 def test_subset_first_seen_gate_remains_blocked(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
@@ -1541,6 +1632,62 @@ def test_subset_aggregate_gate_strips_whole_source_missing_safe_claim(
     assert durable_gate["scope"]["whole_source_coverage"] is False
     assert durable_gate["summary"]["mark_missing_safe_brokerages"] == []
     assert durable_gate["per_source"]["savills"]["mark_missing_safe"] is False
+
+
+def test_full_aggregate_gate_can_admit_only_explicit_baseline_hold_additively(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("nai-global",),
+        page_cap=400,
+        concurrency=3,
+        admit_baseline_hold_additively=True,
+    )
+    artifact_path = run_dir / "sources" / "nai-global.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text("{}", encoding="utf-8")
+    manifest["sources"]["nai-global"]["artifact"] = {
+        "path": "sources/nai-global.json"
+    }
+
+    def fake_run(_argv, _log, **_kwargs):
+        refresh.atomic_write_json(
+            run_dir / "aggregate-gate.json",
+            {
+                "per_source": {
+                    "nai-global": {
+                        "verdict": "hold",
+                        "reason": "current_active 408 below floor 500",
+                        "mark_missing_safe": False,
+                    }
+                },
+                "summary": {
+                    "hold_sources": ["nai-global"],
+                    "mark_missing_safe_brokerages": [],
+                    "torow_errors": 0,
+                },
+            },
+        )
+        return 2
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    refresh.run_aggregate_gate(run_dir, manifest, None)
+    aggregate = manifest["aggregate_gate"]
+    assert aggregate["non_ok_sources"] == []
+    assert aggregate["baseline_advisory_holds"] == ["nai-global"]
+    assert aggregate["mark_missing_safe_brokerages"] == []
+    durable_gate = json.loads(
+        (run_dir / "aggregate-gate.json").read_text(encoding="utf-8")
+    )
+    assert (
+        durable_gate["per_source"]["nai-global"]["verdict"]
+        == "ok_additive_coverage_hold"
+    )
+    assert durable_gate["scope"]["whole_source_coverage"] is False
 
 
 def test_aggregate_gate_first_seen_prevents_completion(tmp_path, monkeypatch):
@@ -2653,3 +2800,21 @@ def test_subset_report_disclaims_whole_source_coverage(tmp_path):
     report = refresh.render_report(manifest)
     assert "Transaction scope: `['lease']`" in report
     assert "no whole-source coverage or lifecycle claim" in report
+
+
+def test_additive_coverage_hold_report_retains_lifecycle_warning(tmp_path):
+    manifest = refresh.new_manifest(
+        tmp_path / "run",
+        git_sha="abc",
+        git_dirty=False,
+        sources=("nai-global",),
+        page_cap=400,
+        concurrency=3,
+        admit_baseline_hold_additively=True,
+    )
+    manifest["aggregate_gate"] = {
+        "baseline_advisory_holds": ["nai-global"]
+    }
+    report = refresh.render_report(manifest)
+    assert "retained historical coverage hold" in report
+    assert "no lifecycle deletion or whole-source freshness claim" in report

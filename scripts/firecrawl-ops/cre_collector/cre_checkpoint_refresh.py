@@ -1001,6 +1001,7 @@ def new_manifest(
     page_cap: int,
     concurrency: int,
     transactions: Sequence[str] = TRANSACTIONS,
+    admit_baseline_hold_additively: bool = False,
     database_target: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     now = utc_now()
@@ -1031,6 +1032,7 @@ def new_manifest(
             "additive": True,
             "status_activation": False,
             "mark_missing": False,
+            "admit_baseline_hold_additively": admit_baseline_hold_additively,
         },
         "preflight": {
             "database_target": dict(database_target) if database_target else None,
@@ -1061,6 +1063,7 @@ def load_resume_manifest(
     page_cap: int,
     concurrency: int,
     transactions: Sequence[str] = TRANSACTIONS,
+    admit_baseline_hold_additively: bool = False,
     database_target: Mapping[str, str] | None = None,
     max_age_hours: float = DEFAULT_MAX_RESUME_AGE_HOURS,
     now: datetime | None = None,
@@ -1079,6 +1082,7 @@ def load_resume_manifest(
         "additive": True,
         "status_activation": False,
         "mark_missing": False,
+        "admit_baseline_hold_additively": admit_baseline_hold_additively,
     }
     if value.get("config") != expected:
         raise RefreshError("resume configuration differs from the manifest")
@@ -1330,6 +1334,17 @@ def subset_gate_can_admit(info: Mapping[str, Any]) -> bool:
     )
 
 
+def gate_verdict_is_admitted(
+    manifest: Mapping[str, Any], verdict: Any
+) -> bool:
+    transactions = tuple(manifest["config"]["transactions"])
+    if transactions != TRANSACTIONS:
+        return verdict == "ok_additive_subset"
+    if manifest["config"].get("admit_baseline_hold_additively") is True:
+        return verdict in {"ok", "ok_additive_coverage_hold"}
+    return verdict == "ok"
+
+
 def gate_source(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -1340,6 +1355,9 @@ def gate_source(
     checkpoint = manifest["sources"][source]
     full_transaction_scope = (
         tuple(manifest["config"]["transactions"]) == TRANSACTIONS
+    )
+    additive_hold_enabled = (
+        manifest["config"].get("admit_baseline_hold_additively") is True
     )
     gate_path = run_dir / "gates" / f"{source}.json"
     log_path = run_dir / "logs" / f"{source}-gate.log"
@@ -1360,49 +1378,75 @@ def gate_source(
         raise GlobalStageError(f"coverage gate infrastructure failed for {source} (rc={rc})")
     try:
         result = _load_json(gate_path)
-        if not full_transaction_scope:
+        per_source = result["per_source"][source]
+        subset_mode = not full_transaction_scope
+        additive_coverage_hold = (
+            full_transaction_scope
+            and additive_hold_enabled
+            and per_source.get("verdict") == "hold"
+            and subset_gate_can_admit(per_source)
+        )
+        limited_admission = subset_mode or additive_coverage_hold
+        if limited_admission:
             summary = result.get("summary")
             if (
                 not isinstance(summary, dict)
                 or _int_value(summary.get("torow_errors")) != 0
             ):
                 raise GlobalStageError(
-                    f"subset coverage gate reported conversion errors for {source}"
+                    f"additive coverage gate reported conversion errors for {source}"
                 )
+            scope_kind = (
+                "additive_transaction_subset"
+                if subset_mode
+                else "additive_coverage_hold"
+            )
             result["scope"] = {
-                "kind": "additive_transaction_subset",
+                "kind": scope_kind,
                 "transactions": list(manifest["config"]["transactions"]),
                 "whole_source_coverage": False,
             }
-            scoped_info = result["per_source"][source]
+            if additive_coverage_hold:
+                manifest["scope"]["kind"] = (
+                    "collector_registry_additive_coverage_hold"
+                )
+                manifest["scope"]["whole_source_coverage"] = False
+            scoped_info = per_source
             scoped_info["raw_verdict"] = scoped_info.get("verdict")
             scoped_info["raw_reason"] = scoped_info.get("reason")
-            subset_admitted = subset_gate_can_admit(scoped_info)
-            if subset_admitted:
-                scoped_info["verdict"] = "ok_additive_subset"
+            additive_admitted = subset_gate_can_admit(scoped_info)
+            if additive_admitted:
+                scoped_info["verdict"] = (
+                    "ok_additive_subset"
+                    if subset_mode
+                    else "ok_additive_coverage_hold"
+                )
                 scoped_info["reason"] = (
-                    "strict selected-transaction artifact admitted additively; "
-                    "whole-source coverage baseline is advisory only"
+                    "strict artifact admitted additively; whole-source "
+                    "coverage baseline is advisory only"
                 )
             scoped_info["mark_missing_safe"] = False
             scoped_info["admission_scope"] = (
-                "additive_transaction_subset"
-                if subset_admitted
-                else "subset_admission_blocked"
+                scope_kind
+                if additive_admitted
+                else (
+                    "subset_admission_blocked"
+                    if subset_mode
+                    else "coverage_hold_admission_blocked"
+                )
             )
             summary["baseline_advisory_holds"] = (
                 [source]
-                if subset_admitted and scoped_info["raw_verdict"] == "hold"
+                if additive_admitted and scoped_info["raw_verdict"] == "hold"
                 else []
             )
             summary["hold_sources"] = (
                 []
-                if subset_admitted
+                if additive_admitted
                 else list(summary.get("hold_sources") or [])
             )
             summary["mark_missing_safe_brokerages"] = []
             atomic_write_json(gate_path, result)
-        per_source = result["per_source"][source]
     except (ArtifactValidationError, KeyError, TypeError) as exc:
         checkpoint["state"] = "gate_failed"
         save_manifest(run_dir, manifest)
@@ -1420,6 +1464,7 @@ def gate_source(
         # rows, but can never authorize whole-source lifecycle deletion.
         "mark_missing_safe": (
             full_transaction_scope
+            and not additive_coverage_hold
             and per_source.get("mark_missing_safe") is True
         ),
         "transaction_scope": list(manifest["config"]["transactions"]),
@@ -1541,17 +1586,12 @@ def advance_source(
         recover_interrupted_ingest(run_dir, manifest, source, env_file)
     if checkpoint.get("state") == "ingested" and existing:
         prior_verdict = (checkpoint.get("gate") or {}).get("verdict")
-        admitted_verdict = (
-            "ok"
-            if transactions == TRANSACTIONS
-            else "ok_additive_subset"
-        )
-        if prior_verdict == admitted_verdict:
+        if gate_verdict_is_admitted(manifest, prior_verdict):
             return True
         artifact, _stats = existing
         gate_source(run_dir, manifest, source, artifact, env_file)
         verdict = (checkpoint.get("gate") or {}).get("verdict")
-        if verdict != admitted_verdict:
+        if not gate_verdict_is_admitted(manifest, verdict):
             checkpoint["state"] = "ingested"
             checkpoint["admission_state"] = (
                 "baseline_seed_required"
@@ -1578,12 +1618,7 @@ def advance_source(
     artifact, _stats = collected
     gate_source(run_dir, manifest, source, artifact, env_file)
     verdict = (checkpoint.get("gate") or {}).get("verdict")
-    admitted_verdict = (
-        "ok"
-        if transactions == TRANSACTIONS
-        else "ok_additive_subset"
-    )
-    if verdict != admitted_verdict:
+    if not gate_verdict_is_admitted(manifest, verdict):
         checkpoint["state"] = (
             "baseline_seed_required" if verdict == "first_seen" else "gate_blocked"
         )
@@ -1646,51 +1681,90 @@ def run_aggregate_gate(
     full_transaction_scope = (
         tuple(manifest["config"]["transactions"]) == TRANSACTIONS
     )
-    if not full_transaction_scope:
+    per_source = result.get("per_source") or {}
+    additive_hold_enabled = (
+        manifest["config"].get("admit_baseline_hold_additively") is True
+    )
+    additive_coverage_holds = sorted(
+        source
+        for source, info in per_source.items()
+        if (
+            full_transaction_scope
+            and additive_hold_enabled
+            and isinstance(info, dict)
+            and info.get("verdict") == "hold"
+            and subset_gate_can_admit(info)
+        )
+    )
+    limited_admission = (
+        not full_transaction_scope or bool(additive_coverage_holds)
+    )
+    if limited_admission:
         summary = result.get("summary")
         if (
             not isinstance(summary, dict)
             or _int_value(summary.get("torow_errors")) != 0
         ):
             raise GlobalStageError(
-                "subset aggregate coverage gate reported conversion errors"
+                "additive aggregate coverage gate reported conversion errors"
             )
+        scope_kind = (
+            "additive_transaction_subset"
+            if not full_transaction_scope
+            else "additive_coverage_hold"
+        )
         result["scope"] = {
-            "kind": "additive_transaction_subset",
+            "kind": scope_kind,
             "transactions": list(manifest["config"]["transactions"]),
             "whole_source_coverage": False,
         }
+        if additive_coverage_holds:
+            manifest["scope"]["kind"] = (
+                "collector_registry_additive_coverage_hold"
+            )
+            manifest["scope"]["whole_source_coverage"] = False
         baseline_advisory_holds: list[str] = []
-        for source, info in (result.get("per_source") or {}).items():
+        for source, info in per_source.items():
             if isinstance(info, dict):
                 info["raw_verdict"] = info.get("verdict")
                 info["raw_reason"] = info.get("reason")
-                subset_admitted = subset_gate_can_admit(info)
-                if subset_admitted:
-                    info["verdict"] = "ok_additive_subset"
+                additive_admitted = (
+                    subset_gate_can_admit(info)
+                    if not full_transaction_scope
+                    else source in additive_coverage_holds
+                )
+                if additive_admitted:
+                    info["verdict"] = (
+                        "ok_additive_subset"
+                        if not full_transaction_scope
+                        else "ok_additive_coverage_hold"
+                    )
                     info["reason"] = (
-                        "strict selected-transaction artifact admitted additively; "
-                        "whole-source coverage baseline is advisory only"
+                        "strict artifact admitted additively; whole-source "
+                        "coverage baseline is advisory only"
                     )
                     if info["raw_verdict"] == "hold":
                         baseline_advisory_holds.append(source)
                 info["mark_missing_safe"] = False
                 info["admission_scope"] = (
-                    "additive_transaction_subset"
-                    if subset_admitted
-                    else "subset_admission_blocked"
+                    scope_kind
+                    if additive_admitted
+                    else (
+                        "subset_admission_blocked"
+                        if not full_transaction_scope
+                        else "additive_coverage_hold_batch"
+                    )
                 )
         summary["baseline_advisory_holds"] = sorted(
             baseline_advisory_holds
         )
         summary["hold_sources"] = sorted(
             source
-            for source, info in (result.get("per_source") or {}).items()
+            for source, info in per_source.items()
             if isinstance(info, dict) and info.get("verdict") == "hold"
         )
         summary["mark_missing_safe_brokerages"] = []
         atomic_write_json(output, result)
-    per_source = result.get("per_source") or {}
     configured_sources = set(manifest["config"]["sources"])
     observed_sources = set(per_source) if isinstance(per_source, dict) else set()
     non_ok_sources = sorted(
@@ -1699,8 +1773,7 @@ def run_aggregate_gate(
         source
         for source, info in per_source.items()
         if not isinstance(info, dict)
-        or info.get("verdict")
-        != ("ok" if full_transaction_scope else "ok_additive_subset")
+        or not gate_verdict_is_admitted(manifest, info.get("verdict"))
         }
     )
     manifest["aggregate_gate"] = {
@@ -1714,7 +1787,7 @@ def run_aggregate_gate(
         "non_ok_sources": non_ok_sources,
         "mark_missing_safe_brokerages": (
             (result.get("summary") or {}).get("mark_missing_safe_brokerages") or []
-            if full_transaction_scope
+            if not limited_admission
             else []
         ),
         "transaction_scope": list(manifest["config"]["transactions"]),
@@ -2371,9 +2444,19 @@ def render_report(manifest: Mapping[str, Any]) -> str:
         "- Write mode: additive only; status activation and mark-missing disabled.",
         (
             "- Scope admission: whole-source coverage."
-            if tuple((manifest.get("config") or {}).get("transactions") or ())
-            == TRANSACTIONS
-            else "- Scope admission: additive transaction subset only; no whole-source coverage or lifecycle claim."
+            if (
+                tuple((manifest.get("config") or {}).get("transactions") or ())
+                == TRANSACTIONS
+                and not (manifest.get("aggregate_gate") or {}).get(
+                    "baseline_advisory_holds"
+                )
+            )
+            else (
+                "- Scope admission: additive transaction subset only; no whole-source coverage or lifecycle claim."
+                if tuple((manifest.get("config") or {}).get("transactions") or ())
+                != TRANSACTIONS
+                else "- Scope admission: additive verified rows under a retained historical coverage hold; no lifecycle deletion or whole-source freshness claim."
+            )
         ),
         "- Readback is source-class-aware: strict detail sources require current admitted detail observation; authoritative inventory feeds follow their explicit replace-or-preserve child contract; scoped sources never make a broader detail or contact freshness claim.",
         "",
@@ -2453,6 +2536,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "is additive and proves only the selected transaction scope."
         ),
     )
+    parser.add_argument(
+        "--admit-baseline-hold-additively",
+        action="store_true",
+        help=(
+            "for a strict full-transaction artifact only, treat an exact "
+            "historical floor/drop hold as an additive admission warning. "
+            "Never authorizes mark-missing or whole-source lifecycle coverage."
+        ),
+    )
     parser.add_argument("--page-cap", type=int, default=400)
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument("--attempts-per-source", type=int, default=3)
@@ -2487,6 +2579,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         transactions = parse_transactions(args.transactions)
     except ValueError as exc:
         parser.error(str(exc))
+    if args.admit_baseline_hold_additively and transactions != TRANSACTIONS:
+        parser.error(
+            "--admit-baseline-hold-additively is only valid with --transactions both"
+        )
 
     database_target = database_target_fingerprint(args.env_file)
     git_sha, git_dirty = git_identity()
@@ -2503,6 +2599,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             page_cap=args.page_cap,
             concurrency=args.concurrency,
             transactions=transactions,
+            admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             database_target=database_target,
             max_age_hours=args.max_resume_age_hours,
         )
@@ -2521,6 +2618,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             page_cap=args.page_cap,
             concurrency=args.concurrency,
             transactions=transactions,
+            admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             database_target=database_target,
         )
     save_manifest(run_dir, manifest)
@@ -2603,9 +2701,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             ingest_admitted_sources(run_dir, manifest, args.env_file)
             run_final_validation(run_dir, manifest, args.env_file)
             manifest["status"] = (
-                "supported_scope_complete"
-                if transactions == TRANSACTIONS
-                else "selected_transaction_scope_complete"
+                "selected_transaction_scope_complete"
+                if transactions != TRANSACTIONS
+                else (
+                    "additive_scope_complete_coverage_hold"
+                    if (manifest.get("aggregate_gate") or {}).get(
+                        "baseline_advisory_holds"
+                    )
+                    else "supported_scope_complete"
+                )
             )
             manifest["finished_at"] = utc_now()
             manifest["error"] = None
