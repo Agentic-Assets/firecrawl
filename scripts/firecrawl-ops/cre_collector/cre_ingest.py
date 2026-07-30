@@ -2197,7 +2197,17 @@ WITH ins AS (
         description       = COALESCE(EXCLUDED.description, t.description),
         -- markdown reuses the existing (currently-empty) column; NULLIF guards a
         -- sparse/empty pass from clobbering a fuller prior capture (COALESCE-keep).
-        markdown          = COALESCE(NULLIF(EXCLUDED.markdown, ''), t.markdown),
+        markdown          = CASE
+                              WHEN jsonb_path_exists(
+                                EXCLUDED.raw_data,
+                                '$.**.preserveExistingMarkdown ? (@ == true || @ == "true")'
+                              )
+                                THEN COALESCE(
+                                  NULLIF(t.markdown, ''),
+                                  NULLIF(EXCLUDED.markdown, '')
+                                )
+                              ELSE COALESCE(NULLIF(EXCLUDED.markdown, ''), t.markdown)
+                            END,
         updated_date      = COALESCE(EXCLUDED.updated_date, t.updated_date),
         -- `scraped_at` is detail-observation time. A detailError, or a
         -- preserveChildCollections row without an explicit

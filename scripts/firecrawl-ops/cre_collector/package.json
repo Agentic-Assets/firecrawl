@@ -13,10 +13,12 @@
   },
   "dependencies": {
     "@mendable/firecrawl-js": "^4.3.5",
-    "cheerio": "^1.0.0"
+    "cheerio": "^1.0.0",
+    "turndown": "^7.2.4"
   },
   "devDependencies": {
     "@types/node": "25.9.3",
+    "@types/turndown": "^5.0.6",
     "tsx": "^4.19.0",
     "typescript": "6.0.3"
   }

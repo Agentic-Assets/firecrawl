@@ -121,7 +121,11 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
         {
           preferDirectJson: true,
           directReferer: "https://www.lee-associates.com/properties/",
-          pageConcurrency: 1,
+          // Lee's 10k-row feed is mutable while it is being paged. A bounded
+          // three-request window shortens the snapshot enough to avoid the
+          // exact page-boundary duplication observed in production while
+          // retaining the existing complete-page and identity reconciliation.
+          pageConcurrency: 3,
           requireCompletePages: true,
           cacheSlug: "lee-associates",
           usePageCache: true,

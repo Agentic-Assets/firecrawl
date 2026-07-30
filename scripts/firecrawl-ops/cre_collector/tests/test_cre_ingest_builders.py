@@ -837,6 +837,13 @@ def test_cushman_ingest_refuses_legacy_same_url_duplicate_growth():
 def test_fresh_detail_with_child_preservation_updates_listing_without_child_deletion():
     sql = ci.build_sql([], [], _SCRAPED_AT, set())
     assert "$.**.detailObservedWithChildPreservation" in sql
+
+
+def test_direct_detail_markdown_inserts_new_evidence_but_preserves_existing_richer_text():
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    assert "$.**.preserveExistingMarkdown" in sql
+    assert "NULLIF(t.markdown, '')" in sql
+    assert "NULLIF(EXCLUDED.markdown, '')" in sql
     assert "NOT jsonb_path_exists" in sql
     assert "_child_additive" in sql
     assert (

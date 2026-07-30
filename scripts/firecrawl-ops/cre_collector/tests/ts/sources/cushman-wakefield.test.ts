@@ -614,35 +614,103 @@ test("strict Cushman inventory validates every page shape, total, cardinality, a
   assert.throws(
     () =>
       assertCushmanInventoryPage(
-        { total_item: 2, content: [{ id: "duplicate" }, { id: "duplicate" }] },
+        {
+          total_item: 2,
+          content: [
+            {
+              id: "duplicate",
+              url: "/en/united-states/properties/invest/duplicate-a",
+            },
+            {
+              id: "duplicate",
+              url: "/en/united-states/properties/invest/duplicate-b",
+            },
+          ],
+        },
         0,
         null,
         true
       ),
     /duplicate provider identity/
   );
+  for (const row of [
+    { id: "missing-url" },
+    { id: "wrong-host", url: "https://example.com/property/1" },
+    {
+      id: "onecap-without-record",
+      url: "https://onecap.cushmanwakefield.com/en/united-states/properties/listing",
+    },
+  ]) {
+    assert.throws(
+      () =>
+        assertCushmanInventoryPage(
+          { total_item: 1, content: [row] },
+          0,
+          null,
+          true
+        ),
+      /requires a canonical URL-v1 identity/
+    );
+  }
 });
 
 test("strict Cushman inventory rejects repeated pages and requires exact aggregate coverage", () => {
   assert.throws(
     () =>
       assertCushmanInventoryReconciled(
-        [{ id: "cw-1" }, { id: "cw-1" }],
+        [
+          {
+            id: "cw-1",
+            url: "/en/united-states/properties/invest/cw-1",
+          },
+          {
+            id: "cw-1",
+            url: "/en/united-states/properties/invest/cw-1-repeat",
+          },
+        ],
         2,
         true
       ),
     /duplicate provider identity/
   );
   assert.throws(
-    () => assertCushmanInventoryReconciled([{ id: "cw-1" }], 2, true),
+    () =>
+      assertCushmanInventoryReconciled(
+        [
+          {
+            id: "cw-1",
+            url: "/en/united-states/properties/invest/cw-1",
+          },
+        ],
+        2,
+        true
+      ),
     /expected 2 unique rows/
   );
   assert.doesNotThrow(() =>
     assertCushmanInventoryReconciled(
-      [{ id: "cw-1" }, { id: "cw-2" }],
+      [
+        {
+          id: "cw-1",
+          url: "/en/united-states/properties/invest/cw-1",
+        },
+        {
+          id: "cw-2",
+          url: "/en/united-states/properties/invest/cw-2",
+        },
+      ],
       2,
       true
     )
+  );
+  assert.throws(
+    () =>
+      assertCushmanInventoryReconciled(
+        [{ id: "cw-1", url: "https://example.com/property/1" }],
+        1,
+        true
+      ),
+    /requires a canonical URL-v1 identity/
   );
   assert.doesNotThrow(() =>
     assertCushmanInventoryPage(

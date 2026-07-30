@@ -443,6 +443,11 @@ export function assertCushmanInventoryPage(
       );
     }
     identities.add(identity);
+    if (!cushmanCanonicalIdentity(canonicalCushmanUrl(row.url ?? row.relative_url))) {
+      throw new Error(
+        `Cushman strict inventory offset ${offset} row ${index} requires a canonical URL-v1 identity`
+      );
+    }
   }
   return { total };
 }
@@ -467,6 +472,11 @@ export function assertCushmanInventoryReconciled(
       );
     }
     identities.add(identity);
+    if (!cushmanCanonicalIdentity(canonicalCushmanUrl(row.url ?? row.relative_url))) {
+      throw new Error(
+        `Cushman strict inventory aggregate row ${index} requires a canonical URL-v1 identity`
+      );
+    }
   }
   if (rows.length !== total || identities.size !== total) {
     throw new Error(

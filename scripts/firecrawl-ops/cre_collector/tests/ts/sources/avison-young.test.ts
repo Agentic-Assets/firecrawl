@@ -42,6 +42,9 @@ import {
   assertAvisonYoungOutputIdentity,
   assertAvisonYoungDetailDoc,
   assertAvisonYoungStrictFeed,
+  fetchAvisonYoungDirectDoc,
+  isAvisonYoungDirectDetailUrl,
+  isPublicAvisonYoungAddress,
   enrichAvisonYoungListing,
 } from "../../../sources/avison-young.js";
 import { firecrawl } from "../../../lib/scrape.js";
@@ -681,6 +684,174 @@ test("Avison detail admission rejects challenge and wrong-property shells", () =
         base
       ),
     /identity does not match/
+  );
+});
+
+test("Avison direct detail transport captures current HTML, links, images, and identity metadata", async (t) => {
+  const url =
+    "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease";
+  const detail = await fetchAvisonYoungDirectDoc(
+    url,
+    30000,
+    async () => ["93.184.216.34"],
+    async (_url, address) => {
+      assert.equal(address, "93.184.216.34");
+      return {
+        status: 200,
+        location: null,
+        body: `<html><main class="property-detail"><h1>602 N Capitol Ave</h1>
+         <p>Property details</p><a href="/brochure.pdf">Brochure</a>
+         <img src="/hero.jpg"></main></html>`,
+      };
+    }
+  );
+  assert.match(detail.rawHtml, /602 N Capitol Ave/);
+  assert.match(detail.markdown, /^# 602 N Capitol Ave/m);
+  assert.match(
+    detail.markdown,
+    /\[Brochure\]\(https:\/\/www\.avisonyoung\.us\/brochure\.pdf\)/
+  );
+  assert.deepEqual(detail.links, ["/brochure.pdf"]);
+  assert.deepEqual(detail.images, ["/hero.jpg"]);
+  assert.equal(detail.metadata?.statusCode, 200);
+  assert.doesNotThrow(() =>
+    assertAvisonYoungDetailDoc(detail, url, {
+      id: "17808",
+      name: "602 N Capitol Ave",
+      street: "602 N Capitol Ave",
+    })
+  );
+});
+
+test("Avison direct detail transport rejects unsafe URLs, addresses, and redirects", async (t) => {
+  assert.equal(
+    isAvisonYoungDirectDetailUrl("https://www.avisonyoung.us/properties/a"),
+    true
+  );
+  assert.equal(
+    isAvisonYoungDirectDetailUrl("https://listing.sharplaunch.com"),
+    true
+  );
+  for (const value of [
+    "http://www.avisonyoung.us/properties/a",
+    "https://example.com/property/a",
+    "https://127.0.0.1/property/a",
+    "https://user:pass@www.avisonyoung.us/property/a",
+  ]) {
+    assert.equal(isAvisonYoungDirectDetailUrl(value), false);
+  }
+  for (const address of [
+    "127.0.0.1",
+    "10.0.0.1",
+    "169.254.1.1",
+    "192.168.1.1",
+    "::1",
+    "fc00::1",
+    "2001:db8::1",
+    "::ffff:7f00:1",
+    "::ffff:0a00:0001",
+    "0:0:0:0:0:ffff:7f00:1",
+  ]) {
+    assert.equal(isPublicAvisonYoungAddress(address), false);
+  }
+  assert.equal(isPublicAvisonYoungAddress("93.184.216.34"), true);
+  assert.equal(isPublicAvisonYoungAddress("2606:2800:220:1:248:1893:25c8:1946"), true);
+
+  let calls = 0;
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDoc(
+        "https://www.avisonyoung.us/properties/a",
+        30000,
+        async () => ["93.184.216.34"],
+        async () => {
+          calls++;
+          return {
+            status: 302,
+            location: "https://example.com/private-target",
+            body: "",
+          };
+        }
+      ),
+    /not approved/
+  );
+  assert.equal(calls, 1);
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDoc(
+        "https://www.avisonyoung.us/properties/a",
+        30000,
+        async () => ["127.0.0.1"]
+      ),
+    /non-public address/
+  );
+});
+
+test("Avison direct detail creates durable Markdown from descriptive JSON-LD when the body is empty", async () => {
+  const url =
+    "https://www.avisonyoung.us/properties/json-ld-only";
+  const detail = await fetchAvisonYoungDirectDoc(
+    url,
+    30000,
+    async () => ["93.184.216.34"],
+    async () => ({
+      status: 200,
+      location: null,
+      body: `<html><head><script type="application/ld+json">
+        {"@type":"RealEstateListing","name":"JSON-LD Property",
+         "description":"Current verified description","url":"${url}"}
+      </script></head><body><main></main></body></html>`,
+    })
+  );
+  assert.match(detail.markdown, /^# JSON-LD Property/m);
+  assert.match(detail.markdown, /Current verified description/);
+  assert.match(detail.markdown, /\[Source property page\]/);
+});
+
+test("partial Avison alternate failure preserves children and prior Markdown evidence", async (t) => {
+  const originalTransport = process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
+  process.env.AVISON_YOUNG_DETAIL_TRANSPORT = "direct";
+  t.after(() => {
+    if (originalTransport === undefined) {
+      delete process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
+    } else {
+      process.env.AVISON_YOUNG_DETAIL_TRANSPORT = originalTransport;
+    }
+  });
+  const listing = await enrichAvisonYoungListing(
+    {
+      id: "17808",
+      name: "602 N Capitol Ave",
+      street: "602 N Capitol Ave",
+      sharpLaunchUrl: "https://stale-alias.sharplaunch.com",
+      externalUrl:
+        "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease",
+    },
+    false,
+    (url) =>
+      fetchAvisonYoungDirectDoc(
+        url,
+        30000,
+        async () => ["93.184.216.34"],
+        async (requestedUrl) => ({
+          status: 200,
+          location: null,
+          body: requestedUrl.hostname.includes("stale-alias")
+            ? "<html><main><h1>Access denied</h1><p>captcha</p></main></html>"
+            : `<html><main class="property-detail"><h1>602 N Capitol Ave</h1>
+               <p>Property details</p><a href="/brochure.pdf">Brochure</a></main></html>`,
+        })
+      )
+  );
+  assert.equal(listing.detailError, undefined);
+  assert.match(listing.detailWarning, /challenge or error shell/);
+  assert.equal(listing.preserveChildCollections, true);
+  assert.equal(listing.detailObservedWithChildPreservation, true);
+  assert.match(listing.markdown, /^# 602 N Capitol Ave/m);
+  assert.equal(listing.preserveExistingMarkdown, true);
+  assert.equal(
+    listing.detailScrape.markdownDisposition,
+    "preserve_existing_or_insert"
   );
 });
 

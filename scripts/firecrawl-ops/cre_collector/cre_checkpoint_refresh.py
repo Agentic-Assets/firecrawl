@@ -351,6 +351,7 @@ def fresh_source_env(
     run_dir: Path,
     base: Mapping[str, str] | None = None,
     generation_started_at: str | None = None,
+    attempt_number: int = 1,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Return subprocess env plus a nonsecret manifest summary of overrides."""
     env = safe_process_env(base)
@@ -380,7 +381,14 @@ def fresh_source_env(
         clear("BUILDOUT_CACHE_ONLY")
         clear("BUILDOUT_ASSEMBLE_FROM_CACHE")
         clear("BUILDOUT_USE_PAGE_CACHE")
-        clear("BUILDOUT_REFRESH_PAGE_CACHE")
+        if attempt_number > 1:
+            # A strict identity/count failure can reflect a provider feed that
+            # moved across page boundaries during collection. Re-reading the
+            # same generation cache would deterministically repeat the failed
+            # snapshot, so bounded retries must obtain a new live snapshot.
+            set_value("BUILDOUT_REFRESH_PAGE_CACHE", "1")
+        else:
+            clear("BUILDOUT_REFRESH_PAGE_CACHE")
         set_value("BUILDOUT_CACHE_DIR", str(run_dir / "cache" / "buildout"))
     if source == "jll":
         set_value("JLL_DETAIL_CACHE_DIR", str(run_dir / "cache" / "jll-detail"))
@@ -390,6 +398,7 @@ def fresh_source_env(
         set_value("JLL_INVESTOR_SITEMAP_SCAN_LIMIT", "0")
     if source == "avison-young":
         set_value("AVISON_YOUNG_DETAIL_LIMIT", "1000000")
+        set_value("AVISON_YOUNG_DETAIL_TRANSPORT", "direct")
     if source == "cushman-wakefield":
         clear("CUSHMAN_QUERY")
         set_value("CUSHMAN_DETAIL_MODE", "base")
@@ -1162,6 +1171,7 @@ def collect_source(
             source,
             run_dir,
             generation_started_at=manifest["started_at"],
+            attempt_number=attempt_number,
         )
         attempt = {
             "number": attempt_number,

@@ -1,5 +1,9 @@
 // sources/avison-young.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
+import { lookup } from "node:dns/promises";
+import { request as httpsRequest } from "node:https";
+import { BlockList, isIP } from "node:net";
+import TurndownService from "turndown";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, dedupeStrings, firstJsonLd, stripHtmlText, titleFromFilename } from "../lib/html.js";
@@ -30,6 +34,17 @@ export const AVISON_YOUNG_DETAIL_CONCURRENCY = boundedInt(
   1,
   CONCURRENCY
 );
+export const AVISON_YOUNG_DIRECT_DETAIL_TIMEOUT_MS = boundedInt(
+  process.env.AVISON_YOUNG_DIRECT_DETAIL_TIMEOUT_MS,
+  30000,
+  1000,
+  120000
+);
+const AVISON_YOUNG_TURNDOWN = new TurndownService({
+  headingStyle: "atx",
+  bulletListMarker: "-",
+  codeBlockStyle: "fenced",
+});
 
 export let avisonYoungCache:
   | {
@@ -246,6 +261,240 @@ export function assertAvisonYoungDetailDoc(
     );
   }
   return listing;
+}
+
+export function isAvisonYoungDirectDetailUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return (
+      url.protocol === "https:"
+      && !url.username
+      && !url.password
+      && !url.port
+      && (
+        host === "avisonyoung.us"
+        || host === "www.avisonyoung.us"
+        || host.endsWith(".sharplaunch.com")
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+const AVISON_YOUNG_BLOCKED_IPV4 = new BlockList();
+const AVISON_YOUNG_BLOCKED_IPV6 = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.0.0.0", 24],
+  ["192.0.2.0", 24],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
+  ["198.51.100.0", 24],
+  ["203.0.113.0", 24],
+  ["224.0.0.0", 4],
+  ["240.0.0.0", 4],
+] as Array<[string, number]>) {
+  AVISON_YOUNG_BLOCKED_IPV4.addSubnet(network, prefix, "ipv4");
+}
+for (const [network, prefix] of [
+  ["::", 96],
+  ["::ffff:0.0.0.0", 96],
+  ["64:ff9b::", 96],
+  ["100::", 64],
+  ["2001:2::", 48],
+  ["2001:10::", 28],
+  ["2001:20::", 28],
+  ["2001:db8::", 32],
+  ["fc00::", 7],
+  ["fe80::", 10],
+  ["ff00::", 8],
+] as Array<[string, number]>) {
+  AVISON_YOUNG_BLOCKED_IPV6.addSubnet(network, prefix, "ipv6");
+}
+
+export function isPublicAvisonYoungAddress(address: string): boolean {
+  const version = isIP(address);
+  return (
+    version !== 0
+    && !(version === 4
+      ? AVISON_YOUNG_BLOCKED_IPV4.check(address, "ipv4")
+      : AVISON_YOUNG_BLOCKED_IPV6.check(address, "ipv6"))
+  );
+}
+
+type AvisonYoungResolver = (hostname: string) => Promise<string[]>;
+type AvisonYoungPinnedResponse = {
+  status: number;
+  location: string | null;
+  body: string;
+};
+type AvisonYoungPinnedRequest = (
+  url: URL,
+  address: string,
+  timeoutMs: number
+) => Promise<AvisonYoungPinnedResponse>;
+
+async function resolveAvisonYoungHost(hostname: string): Promise<string[]> {
+  return (await lookup(hostname, { all: true, verbatim: true }))
+    .map((entry) => entry.address);
+}
+
+async function requestAvisonYoungPinned(
+  url: URL,
+  address: string,
+  timeoutMs: number
+): Promise<AvisonYoungPinnedResponse> {
+  return await new Promise((resolve, reject) => {
+    const request = httpsRequest(
+      url,
+      {
+        headers: {
+          accept: "text/html,application/xhtml+xml",
+          "user-agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+        },
+        lookup: ((_hostname: string, options: any, callback: Function) => {
+          const family = isIP(address);
+          if (options?.all === true) {
+            callback(null, [{ address, family }]);
+          } else {
+            callback(null, address, family);
+          }
+        }) as any,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        response.on("data", (chunk: Buffer | string) => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          bytes += buffer.length;
+          if (bytes > 5 * 1024 * 1024) {
+            request.destroy(new Error("Avison Young direct detail exceeded 5 MiB"));
+            return;
+          }
+          chunks.push(buffer);
+        });
+        response.on("end", () => {
+          resolve({
+            status: response.statusCode ?? 0,
+            location:
+              typeof response.headers.location === "string"
+                ? response.headers.location
+                : null,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      }
+    );
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(
+        new Error(`Avison Young direct detail timed out after ${timeoutMs}ms`)
+      );
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+export async function fetchAvisonYoungDirectDoc(
+  url: string,
+  timeoutMs = AVISON_YOUNG_DIRECT_DETAIL_TIMEOUT_MS,
+  resolveHost: AvisonYoungResolver = resolveAvisonYoungHost,
+  requestPinned: AvisonYoungPinnedRequest = requestAvisonYoungPinned
+): Promise<ScrapedDoc> {
+  let currentUrl = new URL(url);
+  let response: AvisonYoungPinnedResponse | null = null;
+  for (let redirect = 0; redirect <= 5; redirect++) {
+    if (!isAvisonYoungDirectDetailUrl(currentUrl.toString())) {
+      throw new Error(`Avison Young direct detail URL is not approved: ${currentUrl.hostname}`);
+    }
+    const addresses = await resolveHost(currentUrl.hostname);
+    if (!addresses.length || addresses.some((address) => !isPublicAvisonYoungAddress(address))) {
+      throw new Error(
+        `Avison Young direct detail resolved to a non-public address: ${currentUrl.hostname}`
+      );
+    }
+    response = await requestPinned(currentUrl, addresses[0]!, timeoutMs);
+    if (response.status < 300 || response.status >= 400) break;
+    const location = response.location;
+    if (!location) {
+      throw new Error(`Avison Young direct detail redirect ${response.status} lacks Location`);
+    }
+    if (redirect === 5) {
+      throw new Error("Avison Young direct detail exceeded five redirects");
+    }
+    currentUrl = new URL(location, currentUrl);
+  }
+  if (!response) {
+    throw new Error("Avison Young direct detail produced no response");
+  }
+  const rawHtml = response.body;
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Avison Young direct detail returned HTTP ${response.status}`);
+  }
+  if (!rawHtml.trim()) {
+    throw new Error("Avison Young direct detail returned an empty body");
+  }
+  const $ = cheerio.load(rawHtml);
+  const links = $("a[href]")
+    .map((_, element) => $(element).attr("href"))
+    .get()
+    .filter((value): value is string => Boolean(value));
+  const images = $("img[src], source[src]")
+    .map((_, element) => $(element).attr("src"))
+    .get()
+    .filter((value): value is string => Boolean(value));
+  // Convert the full primary content to durable structured Markdown. Normalize
+  // link/image targets first so new listings retain source-grounding URLs even
+  // when the provider page uses relative attributes.
+  const content = ($("main").first().length ? $("main").first() : $("body")).clone();
+  content.find("script, style, noscript").remove();
+  content.find("a[href]").each((_, element) => {
+    const absolute = avisonYoungAbsoluteUrl($(element).attr("href"), currentUrl.toString());
+    if (absolute) content.find(element).attr("href", absolute);
+  });
+  content.find("img[src], source[src]").each((_, element) => {
+    const absolute = avisonYoungAbsoluteUrl($(element).attr("src"), currentUrl.toString());
+    if (absolute) content.find(element).attr("src", absolute);
+  });
+  let markdown = AVISON_YOUNG_TURNDOWN.turndown(content.html() ?? "").trim();
+  if (!markdown) {
+    const listing = firstJsonLd(rawHtml, "RealEstateListing");
+    const name = clean(listing?.name);
+    const description = clean(listing?.description);
+    if (!name && !description) {
+      throw new Error(
+        "Avison Young direct detail has no durable Markdown or descriptive JSON-LD"
+      );
+    }
+    markdown = [
+      name ? `# ${name}` : null,
+      description,
+      `[Source property page](${currentUrl.toString()})`,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n");
+  }
+  return {
+    rawHtml,
+    markdown,
+    links,
+    images,
+    metadata: {
+      statusCode: response.status,
+      sourceURL: currentUrl.toString(),
+      url: currentUrl.toString(),
+      transport: "direct_http",
+    },
+  };
 }
 
 export function extractAvisonYoungUrls(doc: ScrapedDoc, baseUrl: string): string[] {
@@ -849,7 +1098,8 @@ export function harvestAvisonYoung(
 
 export async function enrichAvisonYoungListing(
   base: any,
-  strict = requireFreshDetails()
+  strict = requireFreshDetails(),
+  directFetch: (url: string) => Promise<ScrapedDoc> = fetchAvisonYoungDirectDoc
 ): Promise<any> {
   const requireLiveDetails = strict || requireFreshPropertyDetails();
   const detailUrls = dedupeStrings([clean(base.sharpLaunchUrl), clean(base.externalUrl)]).filter((url) =>
@@ -871,11 +1121,14 @@ export async function enrichAvisonYoungListing(
   const errors: string[] = [];
   for (const url of detailUrls) {
     try {
-      const doc = await scrapeDoc(url, {
-        waitFor: 1000,
-        timeout: 60000,
-        ...(requireLiveDetails ? { maxAge: 0 } : {}),
-      });
+      const doc =
+        process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
+          ? await directFetch(url)
+          : await scrapeDoc(url, {
+              waitFor: 1000,
+              timeout: 60000,
+              ...(requireLiveDetails ? { maxAge: 0 } : {}),
+            });
       assertAvisonYoungDetailDoc(doc, url, base);
       docs.push({ url, doc });
     } catch (err) {
@@ -927,6 +1180,12 @@ export async function enrichAvisonYoungListing(
     "avison_young_detail",
     requireLiveDetails ? "live" : "generation_cache"
   );
+  const preserveChildren =
+    !strict
+    && (base.preserveChildCollections === true || errors.length > 0);
+  const directOnly = docs.every(
+    ({ doc }) => doc.metadata?.transport === "direct_http"
+  );
 
   return prune({
     ...base,
@@ -941,6 +1200,10 @@ export async function enrichAvisonYoungListing(
     media: harvested.media,
     links: harvested.links,
     markdown: avisonYoungLongestMarkdown(docs),
+    // The ingestor uses this signal to retain an existing richer Markdown
+    // capture while still inserting the direct Turndown capture for new rows
+    // or filling an existing NULL.
+    preserveExistingMarkdown: directOnly ? true : undefined,
     documentCount: (harvested.documents.length || documents.length),
     photoCount: (harvested.images.length || photos.length) || base.photos?.length,
     detailJsonLd: listingLd,
@@ -953,6 +1216,11 @@ export async function enrichAvisonYoungListing(
       photoCount: photos.length,
       profileUrlCount: contactsDetailed.filter((c: any) => clean(c?.profileUrl)).length,
       vcardUrlCount: contactsDetailed.filter((c: any) => clean(c?.vcardUrl)).length,
+      transport: directOnly ? "direct_http" : "firecrawl",
+      markdownDisposition: directOnly
+        ? "preserve_existing_or_insert"
+        : "replace",
+      warnings: errors.length ? errors : undefined,
     },
     inventoryObservedAt: base.inventoryObservedAt ?? observed.observedAt,
     detailObservedAt: observed.observedAt,
@@ -963,13 +1231,12 @@ export async function enrichAvisonYoungListing(
       cacheDisposition: observed.cacheDisposition,
       identityMethod: "detail_url_or_property_content",
     },
-    preserveChildCollections:
-      !strict && base.preserveChildCollections === true ? true : undefined,
+    preserveChildCollections: preserveChildren ? true : undefined,
     detailObservedWithChildPreservation:
-      !strict && base.preserveChildCollections === true ? true : undefined,
+      preserveChildren ? true : undefined,
     detailUnavailable: undefined,
     detailUnavailableReason: undefined,
-    detailError: errors.length ? errors.join("; ") : undefined,
+    detailWarning: errors.length ? errors.join("; ") : undefined,
   });
 }
 

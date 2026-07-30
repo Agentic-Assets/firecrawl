@@ -39,6 +39,14 @@ complete prepared artifact set, and only then begins additive live ingest. The
 monolithic `cre_daily_update.sh` remains the scheduled backstop, not the proof
 path for a source-fresh detail sweep.
 
+Strict Avison generations use validated direct HTTP detail reads because the
+same public static property pages can exceed the local browser-render timeout.
+The direct transport pins validated public DNS addresses, converts the current
+HTML to structured Markdown for new rows, and preserves an existing richer
+Markdown capture on updates.
+Buildout retries force a new live page snapshot after an identity/count failure
+instead of replaying the failed run-local cache.
+
 ```bash
 # Start one bounded source generation from a clean, pushed SHA:
 python3 cre_checkpoint_refresh.py \

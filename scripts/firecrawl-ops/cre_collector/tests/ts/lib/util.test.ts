@@ -101,3 +101,19 @@ test("pmap preserves input order under concurrency", async () => {
 test("pmap handles empty input", async () => {
   assert.deepEqual(await pmap([], 2, async () => 1), []);
 });
+
+test("pmap stops scheduling new work after the first rejection", async () => {
+  const started: number[] = [];
+  await assert.rejects(
+    () =>
+      pmap([0, 1, 2, 3, 4, 5], 3, async (value) => {
+        started.push(value);
+        if (value === 0) throw new Error("terminal");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return value;
+      }),
+    /terminal/
+  );
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.deepEqual(started, [0, 1, 2]);
+});

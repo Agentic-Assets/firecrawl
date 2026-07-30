@@ -408,7 +408,10 @@ def test_dual_pass_preserve_flag_remains_recursively_guarded():
 
 
 def test_build_sql_markdown_coalesce_keep_with_nullif():
-    assert "markdown          = COALESCE(NULLIF(EXCLUDED.markdown, ''), t.markdown)" in _sql()
+    sql = _sql()
+    assert "$.**.preserveExistingMarkdown" in sql
+    assert "NULLIF(t.markdown, '')" in sql
+    assert "NULLIF(EXCLUDED.markdown, '')" in sql
 
 
 def test_build_sql_numeric_structured_coalesce_keep():

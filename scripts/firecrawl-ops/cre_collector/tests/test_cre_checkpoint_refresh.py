@@ -309,6 +309,19 @@ def test_fresh_env_for_buildout_uses_empty_resumable_run_cache(tmp_path):
     assert env["CRE_REQUIRE_FRESH_DETAILS"] == "1"
 
 
+def test_buildout_retry_refreshes_live_pages_instead_of_reusing_failed_snapshot(
+    tmp_path,
+):
+    env, summary = refresh.fresh_source_env(
+        "lee-associates",
+        tmp_path,
+        {},
+        attempt_number=2,
+    )
+    assert env["BUILDOUT_REFRESH_PAGE_CACHE"] == "1"
+    assert summary["BUILDOUT_REFRESH_PAGE_CACHE"] == "1"
+
+
 @pytest.mark.parametrize(
     "source,key,value",
     [
@@ -356,6 +369,7 @@ def test_fresh_env_enriches_all_avison_details_without_claiming_strict_contacts(
 ):
     env, _summary = refresh.fresh_source_env("avison-young", tmp_path, {})
     assert env["AVISON_YOUNG_DETAIL_LIMIT"] == "1000000"
+    assert env["AVISON_YOUNG_DETAIL_TRANSPORT"] == "direct"
     assert env["CRE_REQUIRE_FRESH_PROPERTY_DETAILS"] == "1"
     assert "CRE_REQUIRE_FRESH_DETAILS" not in env
     assert env["CRE_REFRESH_GENERATION"] == tmp_path.name
