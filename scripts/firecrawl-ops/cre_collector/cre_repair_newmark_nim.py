@@ -10,9 +10,12 @@ owner-only preimage path and performs one serializable transaction.
 ``--verify-apply-rollback`` exercises the forward path without persistence;
 ``--verify-rollback-roundtrip`` additionally proves the preimage restoration.
 ``--rollback-preimage`` is the explicit persistent reverse path and refuses
-newer inventory or logical-queue drift. PostgreSQL's audit trigger advances
-``updated_at`` during rollback; every other selected business field is restored
-exactly and that timestamp disposition is verified and reported.
+newer inventory or logical-queue drift. Apply is bound to the captured
+reviewed-state SHA-256; persistent rollback additionally requires the exact
+preimage-file and applied-postimage SHA-256 values printed by apply.
+PostgreSQL's audit trigger advances ``updated_at`` during rollback; every other
+selected business field is restored exactly and that timestamp disposition is
+verified and reported.
 
 This is not a generic deduplication tool. Any drift from the reviewed
 35-identity / 27-collision / 8-rename shape aborts before mutation.
@@ -67,6 +70,8 @@ EXPECTED_UNITS = {
     "Hectares": 15,
     "Sq. Meters": 176,
 }
+PREIMAGE_SCHEMA_VERSION = 3
+INTERNAL_POSTIMAGE_FROM_APPLY = "__nim_postimage_from_apply__"
 KNOWN_FALLBACK_HOSTS = {"my.rcm1.com", "properties.nmrk.com"}
 CANONICAL_HOSTS = {"www.nmrk.com", "nmrk.com"}
 IDENTITY_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
@@ -558,7 +563,286 @@ def deterministic_uuid_sql(namespace: str, expression: str) -> str:
     return f"md5({sql_lit(namespace)} || ':' || ({expression})::text)::uuid"
 
 
-def build_apply_sql(rows: list[PlanRow]) -> str:
+def sha256_jsonb_sql(expression: str) -> str:
+    return (
+        "encode(digest(convert_to(("
+        + expression
+        + ")::text,'UTF8'),'sha256'),'hex')"
+    )
+
+
+def reviewed_state_ctes_sql() -> str:
+    return f"""
+b AS (
+  SELECT id FROM credeals.cre_brokerages WHERE slug='newmark'
+), identity_rows AS (
+  SELECT DISTINCT l.id
+  FROM credeals.cre_listings l
+  CROSS JOIN b
+  WHERE l.brokerage_id=b.id
+    AND EXISTS (
+      SELECT 1 FROM _nim_identity p
+      WHERE l.external_id IN (p.old_id,p.canonical_id)
+    )
+), dq AS (
+  SELECT l.id, l.size_sf, l.lot_size_sf, l.units,
+         l.sale_price_usd, l.sale_price_per_sf, l.updated_at
+  FROM _nim_plan p
+  CROSS JOIN b
+  JOIN credeals.cre_listings l
+   ON l.brokerage_id=b.id
+   AND l.external_id=p.old_id
+   AND l.source_url=p.old_url
+   AND {generation_expr("l")}={sql_lit(EXPECTED_GENERATION)}
+   AND l.deleted_at IS NULL
+), identity_map AS (
+  SELECT p.provider_id, p.old_id, p.old_url,
+         p.canonical_id, p.canonical_url,
+         a.id AS alias_id, s.id AS survivor_id,
+         'nim-migration:' || p.provider_id || ':' ||
+           substring(md5(p.old_id || ':' || p.canonical_url),1,12) AS temp_id,
+         'nim-superseded:' || p.provider_id || ':' ||
+           substring(md5(p.old_id || ':' || p.canonical_url),1,12)
+             AS superseded_id,
+         {generation_expr("a")} AS alias_generation,
+         {inventory_observed_expr("a")} AS alias_inventory_observed_at
+  FROM _nim_identity p
+  CROSS JOIN b
+  JOIN credeals.cre_listings a
+    ON a.brokerage_id=b.id
+   AND a.external_id=p.old_id
+   AND a.source_url=p.old_url
+   AND {generation_expr("a")}={sql_lit(EXPECTED_GENERATION)}
+   AND a.deleted_at IS NULL
+  LEFT JOIN credeals.cre_listings s
+    ON s.brokerage_id=b.id
+   AND s.external_id=p.canonical_id
+   AND s.source_url=p.canonical_url
+   AND s.id<>a.id
+)
+"""
+
+
+def reviewed_state_expr() -> str:
+    return """
+jsonb_build_object(
+  'identityMap', (
+    SELECT COALESCE(
+      jsonb_agg(to_jsonb(identity_map) ORDER BY old_id),
+      '[]'::jsonb
+    )
+    FROM identity_map
+  ),
+  'identityListings', (
+    SELECT COALESCE(jsonb_agg(to_jsonb(l) ORDER BY l.id), '[]'::jsonb)
+    FROM credeals.cre_listings l JOIN identity_rows r USING(id)
+  ),
+  'dqColumns', (
+    SELECT COALESCE(jsonb_agg(to_jsonb(dq) ORDER BY id), '[]'::jsonb) FROM dq
+  ),
+  'contacts', (
+    SELECT COALESCE(jsonb_agg(to_jsonb(c) ORDER BY c.id), '[]'::jsonb)
+    FROM credeals.cre_listing_contacts c JOIN identity_rows r ON r.id=c.listing_id
+  ),
+  'documents', (
+    SELECT COALESCE(jsonb_agg(to_jsonb(d) ORDER BY d.id), '[]'::jsonb)
+    FROM credeals.cre_listing_documents d JOIN identity_rows r ON r.id=d.listing_id
+  ),
+  'images', (
+    SELECT COALESCE(jsonb_agg(to_jsonb(i) ORDER BY i.id), '[]'::jsonb)
+    FROM credeals.cre_listing_images i JOIN identity_rows r ON r.id=i.listing_id
+  ),
+  'media', (
+    SELECT COALESCE(jsonb_agg(to_jsonb(m) ORDER BY m.id), '[]'::jsonb)
+    FROM credeals.cre_listing_media m JOIN identity_rows r ON r.id=m.listing_id
+  ),
+  'links', (
+    SELECT COALESCE(jsonb_agg(to_jsonb(k) ORDER BY k.id), '[]'::jsonb)
+    FROM credeals.cre_listing_links k JOIN identity_rows r ON r.id=k.listing_id
+  ),
+  'sourceIndex', (
+    SELECT COALESCE(
+      jsonb_agg(to_jsonb(si) ORDER BY si.brokerage_id,si.external_id),
+      '[]'::jsonb
+    )
+    FROM credeals.cre_source_index si CROSS JOIN b
+    WHERE si.brokerage_id=b.id
+      AND EXISTS (
+        SELECT 1 FROM _nim_identity p
+        WHERE si.external_id IN (p.old_id,p.canonical_id)
+      )
+  ),
+  'queue', (
+    SELECT COALESCE(
+      jsonb_agg(
+        to_jsonb(q)
+        ORDER BY q.brokerage_id,q.external_id,q.reason,q.id
+      ),
+      '[]'::jsonb
+    )
+    FROM credeals.cre_enrichment_queue q CROSS JOIN b
+    WHERE q.brokerage_id=b.id
+      AND EXISTS (
+        SELECT 1 FROM _nim_identity p
+        WHERE q.external_id IN (p.old_id,p.canonical_id)
+      )
+  ),
+  'retainedHistoryCounts', jsonb_build_object(
+    'events', (SELECT count(*) FROM credeals.cre_listing_events e JOIN identity_rows r ON r.id=e.listing_id),
+    'priceHistory', (SELECT count(*) FROM credeals.cre_listing_price_history h JOIN identity_rows r ON r.id=h.listing_id),
+    'scrapeLogs', (SELECT count(*) FROM credeals.cre_scrape_log s JOIN identity_rows r ON r.id=s.listing_id)
+  )
+)
+"""
+
+
+def reviewed_state_guard_sql(preimage: dict) -> str:
+    expected_sha256 = str(preimage.get("reviewedStateSha256", ""))
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("reviewed-state SHA-256 must be lowercase hex")
+    preimage_value = sql_lit(json.dumps(preimage, separators=(",", ":")))
+    return f"""
+CREATE TEMP TABLE _nim_expected_reviewed_payload(payload jsonb) ON COMMIT DROP;
+INSERT INTO _nim_expected_reviewed_payload VALUES ({preimage_value}::jsonb);
+
+CREATE TEMP TABLE _nim_live_reviewed_state ON COMMIT DROP AS
+WITH {reviewed_state_ctes_sql()},
+reviewed_state AS (
+  SELECT {reviewed_state_expr()} AS payload
+)
+SELECT payload, {sha256_jsonb_sql("payload")} AS sha256
+FROM reviewed_state;
+
+DO $reviewed_state_guard$
+DECLARE
+  actual_sha256 text;
+  embedded_sha256 text;
+BEGIN
+  SELECT {sha256_jsonb_sql(
+      "payload - ARRAY["
+      "'schemaVersion','capturedAt','generation','artifactSha256',"
+      "'databaseTargetSha256','reviewedStateSha256'"
+      "]::text[]"
+  )}
+    INTO embedded_sha256
+  FROM _nim_expected_reviewed_payload;
+  IF embedded_sha256 IS DISTINCT FROM {sql_lit(expected_sha256)} THEN
+    RAISE EXCEPTION
+      'reviewed Newmark preimage payload digest is invalid: expected %, got %',
+      {sql_lit(expected_sha256)}, embedded_sha256;
+  END IF;
+  SELECT sha256 INTO actual_sha256 FROM _nim_live_reviewed_state;
+  IF actual_sha256 IS DISTINCT FROM {sql_lit(expected_sha256)} THEN
+    RAISE EXCEPTION
+      'reviewed Newmark preimage state drifted: expected %, got %',
+      {sql_lit(expected_sha256)}, actual_sha256;
+  END IF;
+END
+$reviewed_state_guard$;
+"""
+
+
+def postimage_state_sql(aliases_table: str, state_table: str) -> str:
+    for identifier in (aliases_table, state_table):
+        if not re.fullmatch(r"_[a-z0-9_]+", identifier):
+            raise ValueError("unsafe postimage state-table identifier")
+    return f"""
+CREATE TEMP TABLE {state_table} ON COMMIT DROP AS
+WITH affected_ids AS (
+  SELECT alias_id AS id FROM {aliases_table}
+  UNION
+  SELECT survivor_id AS id
+  FROM {aliases_table}
+  WHERE survivor_id IS NOT NULL
+), dq AS (
+  SELECT l.id, l.size_sf, l.lot_size_sf, l.units,
+         l.sale_price_usd, l.sale_price_per_sf, l.updated_at
+  FROM _nim_plan p
+  CROSS JOIN (
+    SELECT DISTINCT brokerage_id FROM {aliases_table}
+  ) b
+  JOIN credeals.cre_listings l
+    ON l.brokerage_id=b.brokerage_id
+   AND l.external_id=p.canonical_id
+   AND l.source_url=p.canonical_url
+   AND l.deleted_at IS NULL
+), postimage AS (
+  SELECT jsonb_build_object(
+    'identityMap', (
+      SELECT COALESCE(jsonb_agg(to_jsonb(a) ORDER BY a.old_id),'[]'::jsonb)
+      FROM {aliases_table} a
+    ),
+    'identityListings', (
+      SELECT COALESCE(jsonb_agg(to_jsonb(l) ORDER BY l.id),'[]'::jsonb)
+      FROM credeals.cre_listings l JOIN affected_ids i USING(id)
+    ),
+    'dqColumns', (
+      SELECT COALESCE(jsonb_agg(to_jsonb(dq) ORDER BY id),'[]'::jsonb) FROM dq
+    ),
+    'contacts', (
+      SELECT COALESCE(jsonb_agg(to_jsonb(c) ORDER BY c.id),'[]'::jsonb)
+      FROM credeals.cre_listing_contacts c JOIN affected_ids i ON i.id=c.listing_id
+    ),
+    'documents', (
+      SELECT COALESCE(jsonb_agg(to_jsonb(d) ORDER BY d.id),'[]'::jsonb)
+      FROM credeals.cre_listing_documents d JOIN affected_ids i ON i.id=d.listing_id
+    ),
+    'images', (
+      SELECT COALESCE(jsonb_agg(to_jsonb(img) ORDER BY img.id),'[]'::jsonb)
+      FROM credeals.cre_listing_images img JOIN affected_ids i ON i.id=img.listing_id
+    ),
+    'media', (
+      SELECT COALESCE(jsonb_agg(to_jsonb(m) ORDER BY m.id),'[]'::jsonb)
+      FROM credeals.cre_listing_media m JOIN affected_ids i ON i.id=m.listing_id
+    ),
+    'links', (
+      SELECT COALESCE(jsonb_agg(to_jsonb(k) ORDER BY k.id),'[]'::jsonb)
+      FROM credeals.cre_listing_links k JOIN affected_ids i ON i.id=k.listing_id
+    ),
+    'sourceIndex', (
+      SELECT COALESCE(
+        jsonb_agg(to_jsonb(si) ORDER BY si.brokerage_id,si.external_id),
+        '[]'::jsonb
+      )
+      FROM credeals.cre_source_index si
+      WHERE EXISTS (
+        SELECT 1 FROM {aliases_table} a
+        WHERE si.brokerage_id=a.brokerage_id
+          AND si.external_id IN (
+            a.old_id,a.canonical_id,a.temp_id,a.superseded_id
+          )
+      )
+    ),
+    'queue', (
+      SELECT COALESCE(
+        jsonb_agg(
+          to_jsonb(q)
+          ORDER BY q.brokerage_id,q.external_id,q.reason,q.id
+        ),
+        '[]'::jsonb
+      )
+      FROM credeals.cre_enrichment_queue q
+      WHERE EXISTS (
+        SELECT 1 FROM {aliases_table} a
+        WHERE q.brokerage_id=a.brokerage_id
+          AND q.external_id IN (
+            a.old_id,a.canonical_id,a.temp_id,a.superseded_id
+          )
+      )
+    ),
+    'retainedHistoryCounts', jsonb_build_object(
+      'events', (SELECT count(*) FROM credeals.cre_listing_events e JOIN affected_ids i ON i.id=e.listing_id),
+      'priceHistory', (SELECT count(*) FROM credeals.cre_listing_price_history h JOIN affected_ids i ON i.id=h.listing_id),
+      'scrapeLogs', (SELECT count(*) FROM credeals.cre_scrape_log s JOIN affected_ids i ON i.id=s.listing_id)
+    )
+  ) AS payload
+)
+SELECT payload, {sha256_jsonb_sql("payload")} AS sha256 FROM postimage;
+"""
+
+
+def build_apply_sql(rows: list[PlanRow], preimage: dict) -> str:
+    validate_preimage(preimage)
     contact_id = deterministic_uuid_sql(
         "newmark-nim-contact-v1", "a.survivor_id::text || ':' || c.id::text"
     )
@@ -634,6 +918,8 @@ WHERE EXISTS (
     AND q.external_id IN (a.old_id,a.canonical_id)
 )
 FOR UPDATE;
+
+{reviewed_state_guard_sql(preimage)}
 
 -- Snapshot logical identity rows before their overlapping keys are moved.
 CREATE TEMP TABLE _nim_si_old ON COMMIT DROP AS
@@ -1237,6 +1523,8 @@ BEGIN
 END
 $post$;
 
+{postimage_state_sql("_nim_aliases", "_nim_postimage_state")}
+
 SELECT jsonb_build_object(
   'ok', true,
   'mode', 'applied',
@@ -1246,7 +1534,8 @@ SELECT jsonb_build_object(
   'currentObservationRows', {EXPECTED_LISTINGS},
   'collisionsSuperseded', {EXPECTED_COLLISIONS},
   'rowsRenamed', {EXPECTED_RENAMES},
-  'rejectedPricesCleared', {EXPECTED_REJECTED_PRICES}
+  'rejectedPricesCleared', {EXPECTED_REJECTED_PRICES},
+  'postimageSha256', (SELECT sha256 FROM _nim_postimage_state)
 )::text;
 COMMIT;
 """
@@ -1258,117 +1547,21 @@ BEGIN ISOLATION LEVEL REPEATABLE READ;
 SET LOCAL statement_timeout='2min';
 {stage_sql(rows)}
 {invariant_sql()}
-WITH b AS (
-  SELECT id FROM credeals.cre_brokerages WHERE slug='newmark'
-), identity_rows AS (
-  SELECT DISTINCT l.id
-  FROM credeals.cre_listings l
-  CROSS JOIN b
-  WHERE l.brokerage_id=b.id
-    AND EXISTS (
-      SELECT 1 FROM _nim_identity p
-      WHERE l.external_id IN (p.old_id,p.canonical_id)
-    )
-), dq AS (
-  SELECT l.id, l.size_sf, l.lot_size_sf, l.units,
-         l.sale_price_usd, l.sale_price_per_sf, l.updated_at
-  FROM _nim_plan p
-  CROSS JOIN b
-  JOIN credeals.cre_listings l
-   ON l.brokerage_id=b.id
-   AND l.external_id=p.old_id
-   AND l.source_url=p.old_url
-   AND {generation_expr("l")}={sql_lit(EXPECTED_GENERATION)}
-   AND l.deleted_at IS NULL
-), identity_map AS (
-  SELECT p.provider_id, p.old_id, p.old_url,
-         p.canonical_id, p.canonical_url,
-         a.id AS alias_id, s.id AS survivor_id,
-         'nim-migration:' || p.provider_id || ':' ||
-           substring(md5(p.old_id || ':' || p.canonical_url),1,12) AS temp_id,
-         'nim-superseded:' || p.provider_id || ':' ||
-           substring(md5(p.old_id || ':' || p.canonical_url),1,12)
-             AS superseded_id,
-         {generation_expr("a")} AS alias_generation,
-         {inventory_observed_expr("a")} AS alias_inventory_observed_at
-  FROM _nim_identity p
-  CROSS JOIN b
-  JOIN credeals.cre_listings a
-    ON a.brokerage_id=b.id
-   AND a.external_id=p.old_id
-   AND a.source_url=p.old_url
-   AND {generation_expr("a")}={sql_lit(EXPECTED_GENERATION)}
-   AND a.deleted_at IS NULL
-  LEFT JOIN credeals.cre_listings s
-    ON s.brokerage_id=b.id
-   AND s.external_id=p.canonical_id
-   AND s.source_url=p.canonical_url
-   AND s.id<>a.id
+WITH {reviewed_state_ctes_sql()},
+reviewed_state AS (
+  SELECT {reviewed_state_expr()} AS payload
 )
-SELECT jsonb_build_object(
-  'schemaVersion', 2,
+SELECT (
+  jsonb_build_object(
+  'schemaVersion', {PREIMAGE_SCHEMA_VERSION},
   'capturedAt', to_jsonb(clock_timestamp()),
   'generation', {sql_lit(EXPECTED_GENERATION)},
   'artifactSha256', {sql_lit(EXPECTED_ARTIFACT_SHA256)},
   'databaseTargetSha256', {sql_lit(EXPECTED_DB_TARGET_SHA256)},
-  'identityMap', (
-    SELECT COALESCE(
-      jsonb_agg(to_jsonb(identity_map) ORDER BY old_id),
-      '[]'::jsonb
-    )
-    FROM identity_map
-  ),
-  'identityListings', (
-    SELECT COALESCE(jsonb_agg(to_jsonb(l) ORDER BY l.id), '[]'::jsonb)
-    FROM credeals.cre_listings l JOIN identity_rows r USING(id)
-  ),
-  'dqColumns', (
-    SELECT COALESCE(jsonb_agg(to_jsonb(dq) ORDER BY id), '[]'::jsonb) FROM dq
-  ),
-  'contacts', (
-    SELECT COALESCE(jsonb_agg(to_jsonb(c) ORDER BY c.id), '[]'::jsonb)
-    FROM credeals.cre_listing_contacts c JOIN identity_rows r ON r.id=c.listing_id
-  ),
-  'documents', (
-    SELECT COALESCE(jsonb_agg(to_jsonb(d) ORDER BY d.id), '[]'::jsonb)
-    FROM credeals.cre_listing_documents d JOIN identity_rows r ON r.id=d.listing_id
-  ),
-  'images', (
-    SELECT COALESCE(jsonb_agg(to_jsonb(i) ORDER BY i.id), '[]'::jsonb)
-    FROM credeals.cre_listing_images i JOIN identity_rows r ON r.id=i.listing_id
-  ),
-  'media', (
-    SELECT COALESCE(jsonb_agg(to_jsonb(m) ORDER BY m.id), '[]'::jsonb)
-    FROM credeals.cre_listing_media m JOIN identity_rows r ON r.id=m.listing_id
-  ),
-  'links', (
-    SELECT COALESCE(jsonb_agg(to_jsonb(k) ORDER BY k.id), '[]'::jsonb)
-    FROM credeals.cre_listing_links k JOIN identity_rows r ON r.id=k.listing_id
-  ),
-  'sourceIndex', (
-    SELECT COALESCE(jsonb_agg(to_jsonb(si)), '[]'::jsonb)
-    FROM credeals.cre_source_index si CROSS JOIN b
-    WHERE si.brokerage_id=b.id
-      AND EXISTS (
-        SELECT 1 FROM _nim_identity p
-        WHERE si.external_id IN (p.old_id,p.canonical_id)
-      )
-  ),
-  'queue', (
-    SELECT COALESCE(jsonb_agg(to_jsonb(q)), '[]'::jsonb)
-    FROM credeals.cre_enrichment_queue q CROSS JOIN b
-    WHERE q.brokerage_id=b.id
-      AND EXISTS (
-        SELECT 1 FROM _nim_identity p
-        WHERE q.external_id IN (p.old_id,p.canonical_id)
-      )
-  ),
-  'retainedHistoryCounts', jsonb_build_object(
-    'events', (SELECT count(*) FROM credeals.cre_listing_events e JOIN identity_rows r ON r.id=e.listing_id),
-    'priceHistory', (SELECT count(*) FROM credeals.cre_listing_price_history h JOIN identity_rows r ON r.id=h.listing_id),
-    'scrapeLogs', (SELECT count(*) FROM credeals.cre_scrape_log s JOIN identity_rows r ON r.id=s.listing_id)
-  )
-)::text;
+  'reviewedStateSha256', {sha256_jsonb_sql("payload")}
+  ) || payload
+)::text
+FROM reviewed_state;
 ROLLBACK;
 """
 
@@ -1377,7 +1570,7 @@ def validate_preimage(payload: dict) -> None:
     if not isinstance(payload, dict):
         raise ValueError("rollback preimage is not an object")
     expected = {
-        "schemaVersion": 2,
+        "schemaVersion": PREIMAGE_SCHEMA_VERSION,
         "generation": EXPECTED_GENERATION,
         "artifactSha256": EXPECTED_ARTIFACT_SHA256,
         "databaseTargetSha256": EXPECTED_DB_TARGET_SHA256,
@@ -1400,6 +1593,11 @@ def validate_preimage(payload: dict) -> None:
     for key in required_lists:
         if not isinstance(payload.get(key), list):
             raise ValueError(f"rollback preimage lacks list field {key}")
+    if not re.fullmatch(
+        r"[0-9a-f]{64}",
+        str(payload.get("reviewedStateSha256", "")),
+    ):
+        raise ValueError("rollback preimage reviewed-state SHA-256 is invalid")
     captured_at = payload.get("capturedAt")
     if not isinstance(captured_at, str):
         raise ValueError("rollback preimage lacks capturedAt")
@@ -1449,8 +1647,18 @@ def validate_preimage(payload: dict) -> None:
         raise ValueError("rollback preimage DQ count drifted")
 
 
-def build_rollback_sql(rows: list[PlanRow], preimage: dict) -> str:
+def build_rollback_sql(
+    rows: list[PlanRow],
+    preimage: dict,
+    expected_postimage_sha256: str,
+) -> str:
     validate_preimage(preimage)
+    if expected_postimage_sha256 == INTERNAL_POSTIMAGE_FROM_APPLY:
+        expected_postimage_sql = "(SELECT sha256 FROM _nim_postimage_state)"
+    else:
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_postimage_sha256):
+            raise ValueError("expected postimage SHA-256 must be lowercase hex")
+        expected_postimage_sql = sql_lit(expected_postimage_sha256)
     preimage_value = sql_lit(json.dumps(preimage, separators=(",", ":")))
     contact_id = deterministic_uuid_sql(
         "newmark-nim-contact-v1", "a.survivor_id::text || ':' || c.id::text"
@@ -1476,6 +1684,29 @@ SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY});
 
 CREATE TEMP TABLE _rollback_payload(payload jsonb) ON COMMIT DROP;
 INSERT INTO _rollback_payload VALUES ({preimage_value}::jsonb);
+
+DO $preimage_digest_guard$
+DECLARE
+  actual_sha256 text;
+  expected_sha256 text;
+BEGIN
+  SELECT
+    {sha256_jsonb_sql(
+        "payload - ARRAY["
+        "'schemaVersion','capturedAt','generation','artifactSha256',"
+        "'databaseTargetSha256','reviewedStateSha256'"
+        "]::text[]"
+    )},
+    payload->>'reviewedStateSha256'
+    INTO actual_sha256, expected_sha256
+  FROM _rollback_payload;
+  IF actual_sha256 IS DISTINCT FROM expected_sha256 THEN
+    RAISE EXCEPTION
+      'rollback preimage reviewed-state SHA-256 is invalid: expected %, got %',
+      expected_sha256, actual_sha256;
+  END IF;
+END
+$preimage_digest_guard$;
 
 CREATE TEMP TABLE _pre_identity ON COMMIT DROP AS
 SELECT *
@@ -1557,7 +1788,11 @@ FROM jsonb_populate_recordset(
 );
 
 CREATE TEMP TABLE _rollback_aliases ON COMMIT DROP AS
+WITH b AS (
+  SELECT id FROM credeals.cre_brokerages WHERE slug='newmark'
+)
 SELECT p.*,
+       b.id AS brokerage_id,
        a.id AS alias_id,
        s.id AS survivor_id,
        'nim-migration:' || p.provider_id || ':' ||
@@ -1565,12 +1800,28 @@ SELECT p.*,
        'nim-superseded:' || p.provider_id || ':' ||
          substring(md5(p.old_id || ':' || p.canonical_url),1,12) AS superseded_id
 FROM _nim_identity p
+CROSS JOIN b
 JOIN _pre_identity a
   ON a.external_id=p.old_id AND a.source_url=p.old_url
 LEFT JOIN _pre_identity s
   ON s.external_id=p.canonical_id
  AND s.source_url=p.canonical_url
  AND s.id<>a.id;
+
+{postimage_state_sql("_rollback_aliases", "_nim_live_postimage_state")}
+
+DO $postimage_digest_guard$
+DECLARE
+  actual_sha256 text;
+BEGIN
+  SELECT sha256 INTO actual_sha256 FROM _nim_live_postimage_state;
+  IF actual_sha256 IS DISTINCT FROM {expected_postimage_sql} THEN
+    RAISE EXCEPTION
+      'rollback refused: Newmark postimage SHA-256 drifted, expected %, got %',
+      {expected_postimage_sql}, actual_sha256;
+  END IF;
+END
+$postimage_digest_guard$;
 
 DO $guard$
 DECLARE
@@ -1885,6 +2136,7 @@ SELECT jsonb_build_object(
   'generation',{sql_lit(EXPECTED_GENERATION)},
   'identityListingsRestored',(SELECT count(*) FROM _pre_identity),
   'dqRowsRestored',(SELECT count(*) FROM _pre_dq),
+  'postimageSha256',{expected_postimage_sql},
   'updatedAtDisposition','advanced_by_rollback'
 )::text;
 COMMIT;
@@ -1903,8 +2155,14 @@ def transaction_body(sql: str) -> str:
 
 
 def build_rollback_roundtrip_sql(rows: list[PlanRow], preimage: dict) -> str:
-    apply_body = transaction_body(build_apply_sql(rows))
-    rollback_body = transaction_body(build_rollback_sql(rows, preimage))
+    apply_body = transaction_body(build_apply_sql(rows, preimage))
+    rollback_body = transaction_body(
+        build_rollback_sql(
+            rows,
+            preimage,
+            INTERNAL_POSTIMAGE_FROM_APPLY,
+        )
+    )
     return f"""
 BEGIN ISOLATION LEVEL SERIALIZABLE;
 {apply_body}
@@ -1915,6 +2173,7 @@ BEGIN ISOLATION LEVEL SERIALIZABLE;
 DROP TABLE _nim_queue_old;
 DROP TABLE _nim_si_old;
 DROP TABLE _nim_aliases;
+DROP TABLE _nim_live_reviewed_state;
 DROP TABLE _nim_identity;
 DROP TABLE _nim_plan;
 
@@ -1973,14 +2232,22 @@ def atomic_private_json(path: Path, payload: dict) -> None:
             os.unlink(temp_name)
 
 
-def load_private_preimage(path: Path) -> dict:
+def load_private_preimage(
+    path: Path,
+    expected_sha256: str,
+) -> tuple[dict, str]:
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("expected preimage SHA-256 must be lowercase hex")
     resolved = path.resolve()
     if resolved.stat().st_mode & 0o077:
         raise ValueError("rollback preimage must not be group- or world-accessible")
-    with resolved.open() as handle:
-        payload = json.load(handle)
+    raw = resolved.read_bytes()
+    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise ValueError("rollback preimage SHA-256 does not match")
+    payload = json.loads(raw)
     validate_preimage(payload)
-    return payload
+    return payload, actual_sha256
 
 
 def assert_db_target(db_url: str) -> None:
@@ -2046,6 +2313,14 @@ def main() -> int:
         help="persistently restore an owner-only preimage produced by --apply",
     )
     parser.add_argument(
+        "--expected-preimage-sha256",
+        help="exact SHA-256 printed by --apply for the reviewed preimage file",
+    )
+    parser.add_argument(
+        "--expected-postimage-sha256",
+        help="exact postimage SHA-256 printed by the matching --apply",
+    )
+    parser.add_argument(
         "--verify-apply-rollback",
         action="store_true",
         help="execute all mutation SQL and postconditions, then force ROLLBACK",
@@ -2074,6 +2349,23 @@ def main() -> int:
         parser.error("--apply requires --preimage")
     if args.preimage is not None and not args.apply:
         parser.error("--preimage is valid only with --apply")
+    if args.rollback_preimage is not None:
+        if args.expected_preimage_sha256 is None:
+            parser.error(
+                "--rollback-preimage requires --expected-preimage-sha256"
+            )
+        if args.expected_postimage_sha256 is None:
+            parser.error(
+                "--rollback-preimage requires --expected-postimage-sha256"
+            )
+    elif (
+        args.expected_preimage_sha256 is not None
+        or args.expected_postimage_sha256 is not None
+    ):
+        parser.error(
+            "--expected-preimage-sha256 and --expected-postimage-sha256 "
+            "are valid only with --rollback-preimage"
+        )
 
     rows = load_plan(args.artifact.resolve())
     db_url, _ = load_db_url(args.env_file)
@@ -2082,12 +2374,22 @@ def main() -> int:
     with shared_cre_lock(args.lock_dir):
         if args.rollback_preimage is not None:
             rollback_path = args.rollback_preimage.resolve()
-            preimage = load_private_preimage(rollback_path)
-            rolled_back = run_psql(db_url, build_rollback_sql(rows, preimage))
+            preimage, preimage_sha256 = load_private_preimage(
+                rollback_path,
+                args.expected_preimage_sha256,
+            )
+            rolled_back = run_psql(
+                db_url,
+                build_rollback_sql(
+                    rows,
+                    preimage,
+                    args.expected_postimage_sha256,
+                ),
+            )
             result = {
                 **rolled_back,
                 "preimage": str(rollback_path),
-                "preimageSha256": sha256_file(rollback_path),
+                "preimageSha256": preimage_sha256,
             }
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0
@@ -2104,7 +2406,8 @@ def main() -> int:
             print(json.dumps(verified, indent=2, sort_keys=True))
             return 0
         if args.verify_apply_rollback:
-            sql = build_apply_sql(rows)
+            preimage = run_psql(db_url, build_preimage_sql(rows))
+            sql = build_apply_sql(rows, preimage)
             body, marker, trailing = sql.rpartition("COMMIT;")
             if not marker or trailing.strip():
                 raise RuntimeError("could not force the apply transaction to roll back")
@@ -2119,7 +2422,7 @@ def main() -> int:
 
         preimage = run_psql(db_url, build_preimage_sql(rows))
         atomic_private_json(args.preimage.resolve(), preimage)
-        applied = run_psql(db_url, build_apply_sql(rows))
+        applied = run_psql(db_url, build_apply_sql(rows, preimage))
         result = {
             **applied,
             "preimage": str(args.preimage.resolve()),

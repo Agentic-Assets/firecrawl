@@ -1,6 +1,5 @@
 import hashlib
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -192,7 +191,7 @@ def test_apply_sql_moves_all_aliases_before_final_identity_assignment():
             rejected_price=False,
         ),
     ]
-    sql = repair.build_apply_sql(rows)
+    sql = repair.build_apply_sql(rows, valid_preimage())
     move = sql.index("SET external_id=a.temp_id")
     final = sql.index("WHEN a.survivor_id IS NULL THEN a.canonical_id")
     assert move < final
@@ -214,7 +213,7 @@ def test_apply_sql_contains_required_safety_and_data_quality_boundaries():
         units=None,
         rejected_price=True,
     )
-    sql = repair.build_apply_sql([row])
+    sql = repair.build_apply_sql([row], valid_preimage())
     for required in (
         "pg_advisory_xact_lock",
         "cre_listing_om_facts",
@@ -239,7 +238,35 @@ def test_apply_sql_contains_required_safety_and_data_quality_boundaries():
     assert "UPDATE credeals.cre_listing_events" not in sql
     assert "UPDATE credeals.cre_listing_price_history" not in sql
     assert "UPDATE credeals.cre_scrape_log" not in sql
+    assert "'postimageSha256', (SELECT sha256 FROM _nim_postimage_state)" in sql
     assert sql.rstrip().endswith("COMMIT;")
+
+
+def test_apply_is_bound_to_exact_reviewed_state_before_first_mutation():
+    row = repair.PlanRow(
+        provider_id="1",
+        old_id="old",
+        old_url="https://www.nmrk.com/properties/old",
+        canonical_id="canonical",
+        canonical_url="https://www.nmrk.com/properties/canonical",
+        transaction_mode="sale",
+        unit="Sq. Ft.",
+        size_sf=10_000,
+        lot_size_sf=None,
+        units=None,
+        rejected_price=False,
+    )
+    sql = repair.build_apply_sql([row], valid_preimage())
+    guard = sql.index("reviewed Newmark preimage state drifted")
+    first_mutation = min(
+        sql.index("UPDATE credeals.cre_source_index"),
+        sql.index("UPDATE credeals.cre_enrichment_queue"),
+        sql.index("UPDATE credeals.cre_listings"),
+    )
+    assert "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'" in sql
+    assert "digest(convert_to((payload)::text,'UTF8'),'sha256')" in sql
+    assert "reviewed Newmark preimage payload digest is invalid" in sql
+    assert guard < first_mutation
 
 
 def test_preimage_contains_every_mutated_surface_and_history_counts():
@@ -259,6 +286,7 @@ def test_preimage_contains_every_mutated_surface_and_history_counts():
     sql = repair.build_preimage_sql([row])
     for key in (
         "'capturedAt'",
+        "'reviewedStateSha256'",
         "'identityMap'",
         "'identityListings'",
         "'dqColumns'",
@@ -272,6 +300,8 @@ def test_preimage_contains_every_mutated_surface_and_history_counts():
         "'retainedHistoryCounts'",
     ):
         assert key in sql
+    assert "digest(convert_to((payload)::text,'UTF8'),'sha256')" in sql
+    assert "ORDER BY q.brokerage_id,q.external_id,q.reason,q.id" in sql
     assert sql.rstrip().endswith("ROLLBACK;")
 
 
@@ -284,11 +314,12 @@ def test_private_preimage_is_atomic_and_owner_only(tmp_path):
 
 def valid_preimage():
     return {
-        "schemaVersion": 2,
+        "schemaVersion": repair.PREIMAGE_SCHEMA_VERSION,
         "capturedAt": "2026-07-30T04:30:00+00:00",
         "generation": repair.EXPECTED_GENERATION,
         "artifactSha256": repair.EXPECTED_ARTIFACT_SHA256,
         "databaseTargetSha256": repair.EXPECTED_DB_TARGET_SHA256,
+        "reviewedStateSha256": "a" * 64,
         "identityMap": [
             {
                 "alias_id": f"alias-{i}",
@@ -325,7 +356,7 @@ def test_rollback_sql_restores_promoted_survivor_fields():
         units=None,
         rejected_price=False,
     )
-    sql = repair.build_rollback_sql([row], valid_preimage())
+    sql = repair.build_rollback_sql([row], valid_preimage(), "b" * 64)
     for restored in (
         "transaction_type=p.transaction_type",
         "property_type=p.property_type",
@@ -339,6 +370,32 @@ def test_rollback_sql_restores_promoted_survivor_fields():
     assert "'mode','rollback_applied'" in sql
     assert "SET external_id='nim-rollback:' || md5(l.id::text)" in sql
     assert sql.rstrip().endswith("COMMIT;")
+
+
+def test_rollback_refuses_exact_postimage_drift_before_first_mutation():
+    row = repair.PlanRow(
+        provider_id="1",
+        old_id="old",
+        old_url="https://www.nmrk.com/properties/old",
+        canonical_id="canonical",
+        canonical_url="https://www.nmrk.com/properties/canonical",
+        transaction_mode="sale",
+        unit="Sq. Ft.",
+        size_sf=10_000,
+        lot_size_sf=None,
+        units=None,
+        rejected_price=False,
+    )
+    sql = repair.build_rollback_sql([row], valid_preimage(), "b" * 64)
+    guard = sql.index("rollback refused: Newmark postimage SHA-256 drifted")
+    first_mutation = min(
+        sql.index("DELETE FROM credeals.cre_listing_contacts"),
+        sql.index("UPDATE credeals.cre_listings"),
+    )
+    assert "'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'" in sql
+    assert "_nim_live_postimage_state" in sql
+    assert "rollback preimage reviewed-state SHA-256 is invalid" in sql
+    assert guard < first_mutation
 
 
 def test_rollback_roundtrip_forces_outer_rollback_and_reuses_no_stage_tables():
@@ -358,8 +415,32 @@ def test_rollback_roundtrip_forces_outer_rollback_and_reuses_no_stage_tables():
     sql = repair.build_rollback_roundtrip_sql([row], valid_preimage())
     assert sql.count("BEGIN ISOLATION LEVEL SERIALIZABLE;") == 1
     assert "DROP TABLE _nim_aliases;" in sql
+    assert "DROP TABLE _nim_live_reviewed_state;" in sql
+    assert "(SELECT sha256 FROM _nim_postimage_state)" in sql
     assert "'mode','rollback_applied'" in sql
     assert sql.rstrip().endswith("ROLLBACK;")
+
+
+def test_preimage_validation_requires_reviewed_state_digest():
+    payload = valid_preimage()
+    payload.pop("reviewedStateSha256")
+    with pytest.raises(ValueError, match="reviewed-state SHA-256"):
+        repair.validate_preimage(payload)
+    payload["reviewedStateSha256"] = "A" * 64
+    with pytest.raises(ValueError, match="reviewed-state SHA-256"):
+        repair.validate_preimage(payload)
+
+
+def test_private_preimage_loader_binds_exact_file_digest(tmp_path):
+    path = tmp_path / "preimage.json"
+    path.write_text(json.dumps(valid_preimage()))
+    path.chmod(0o600)
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+    payload, actual = repair.load_private_preimage(path, expected)
+    assert payload == valid_preimage()
+    assert actual == expected
+    with pytest.raises(ValueError, match="does not match"):
+        repair.load_private_preimage(path, "0" * 64)
 
 
 def test_private_preimage_loader_rejects_broad_permissions(tmp_path):
@@ -367,7 +448,35 @@ def test_private_preimage_loader_rejects_broad_permissions(tmp_path):
     path.write_text(json.dumps(valid_preimage()))
     path.chmod(0o644)
     with pytest.raises(ValueError, match="group- or world-accessible"):
-        repair.load_private_preimage(path)
+        repair.load_private_preimage(
+            path,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+
+
+@pytest.mark.parametrize(
+    "digest_args",
+    [
+        ["--expected-preimage-sha256", "a" * 64],
+        ["--expected-postimage-sha256", "b" * 64],
+        [],
+    ],
+)
+def test_persistent_rollback_requires_both_reviewed_digests(digest_args):
+    argv = [
+        "cre_repair_newmark_nim.py",
+        "--env-file",
+        "unused.env",
+        "--rollback-preimage",
+        "/tmp/preimage.json",
+        *digest_args,
+    ]
+    with (
+        patch.object(repair.sys, "argv", argv),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        repair.main()
+    assert exc_info.value.code == 2
 
 
 def test_repair_uses_the_checkpoint_runners_shared_directory_lock(tmp_path):
