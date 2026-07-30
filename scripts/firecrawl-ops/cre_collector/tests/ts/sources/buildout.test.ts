@@ -30,6 +30,8 @@ import {
   buildoutCache,
   buildoutFailureCache,
   buildoutCapTruncated,
+  BUILDOUT_STABLE_INVENTORY_SORT,
+  BUILDOUT_SOURCE_INVENTORY_OPTS,
 } from "../../../sources/buildout.js";
 import { firecrawl } from "../../../lib/scrape.js";
 
@@ -62,13 +64,30 @@ function clearEnv(keys: readonly string[]): void {
 }
 
 test("buildoutInventoryUrl includes plugin key and page", () => {
+  assert.equal(BUILDOUT_STABLE_INVENTORY_SORT, "created_at asc, id asc");
   assert.equal(
     buildoutInventoryUrl("abc123plugin", 7),
     "https://buildout.com/plugins/abc123plugin/inventory.json?page=7"
   );
   assert.equal(
-    buildoutInventoryUrl("abc123plugin", 7, "created_at asc, id asc"),
+    buildoutInventoryUrl("abc123plugin", 7, BUILDOUT_STABLE_INVENTORY_SORT),
     "https://buildout.com/plugins/abc123plugin/inventory.json?page=7&q%5Bs%5D%5B%5D=created_at+asc%2C+id+asc"
+  );
+});
+
+test("both strict Buildout sources use the stable composite inventory sort", () => {
+  assert.equal(
+    BUILDOUT_SOURCE_INVENTORY_OPTS.svn.inventorySort,
+    BUILDOUT_STABLE_INVENTORY_SORT
+  );
+  assert.equal(
+    BUILDOUT_SOURCE_INVENTORY_OPTS["lee-associates"].inventorySort,
+    BUILDOUT_STABLE_INVENTORY_SORT
+  );
+  assert.equal(BUILDOUT_SOURCE_INVENTORY_OPTS.svn.requireCompletePages, true);
+  assert.equal(
+    BUILDOUT_SOURCE_INVENTORY_OPTS["lee-associates"].requireCompletePages,
+    true
   );
 });
 

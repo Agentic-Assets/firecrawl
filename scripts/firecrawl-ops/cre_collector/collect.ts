@@ -3,7 +3,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { srcAvisonYoung } from "./sources/avison-young.js";
 import { brokers } from "./lib/broker.js";
-import { srcBuildout } from "./sources/buildout.js";
+import {
+  BUILDOUT_SOURCE_INVENTORY_OPTS,
+  srcBuildout,
+} from "./sources/buildout.js";
 import { srcCbre } from "./sources/cbre.js";
 import { srcCbreDealflow } from "./sources/cbre-dealflow.js";
 import { srcColliers } from "./sources/colliers.js";
@@ -98,17 +101,7 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
         tx,
         max,
         monitor,
-        {
-          preferDirectJson: true,
-          directReferer: "https://svn.com/properties/",
-          pageConcurrency: 1,
-          requireCompletePages: true,
-          cacheSlug: "svn",
-          usePageCache: true,
-          recoveryPasses: 1,
-          recoveryCooldownMs: 15000,
-          maxRecoveryPages: 60,
-        }
+        BUILDOUT_SOURCE_INVENTORY_OPTS.svn
       );
     case "lee-associates":
       return srcBuildout(
@@ -118,23 +111,7 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
         tx,
         max,
         monitor,
-        {
-          preferDirectJson: true,
-          directReferer: "https://www.lee-associates.com/properties/",
-          // Buildout's implicit sort can inject repeated featured rows at page
-          // boundaries. Its own inventory UI exposes created_at ascending as a
-          // supported sort. New listings then append instead of shifting every
-          // prior page; strict metadata and unique-ID reconciliation still fail
-          // closed if the source mutates or hides a row during pagination.
-          inventorySort: "created_at asc, id asc",
-          pageConcurrency: 3,
-          requireCompletePages: true,
-          cacheSlug: "lee-associates",
-          usePageCache: true,
-          recoveryPasses: 1,
-          recoveryCooldownMs: 15000,
-          maxRecoveryPages: 60,
-        }
+        BUILDOUT_SOURCE_INVENTORY_OPTS["lee-associates"]
       );
     case "nai-global":
       return srcNaiGlobal(tx, max, monitor);

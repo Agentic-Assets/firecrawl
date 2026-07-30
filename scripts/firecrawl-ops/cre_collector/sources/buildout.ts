@@ -20,6 +20,8 @@ import {
 // boolean (false = lease availability). Fetch the full inventory once per
 // brokerage (cached across the sale and lease passes) and partition client-side.
 
+export const BUILDOUT_STABLE_INVENTORY_SORT = "created_at asc, id asc";
+
 type BuildoutInventoryResult = {
   items: any[];
   total: number | null;
@@ -44,6 +46,37 @@ export type BuildoutInventoryOpts = {
   jsonAttempts?: number;
   jsonBackoffMs?: number;
 };
+
+// Buildout's implicit order can shift or repeat rows at page boundaries while
+// inventory changes. Both strict feeds therefore use the provider-supported
+// created_at + id order so new rows append deterministically; exact metadata,
+// page-shape, and unique-ID reconciliation still fail closed on source drift.
+export const BUILDOUT_SOURCE_INVENTORY_OPTS = {
+  svn: {
+    preferDirectJson: true,
+    directReferer: "https://svn.com/properties/",
+    inventorySort: BUILDOUT_STABLE_INVENTORY_SORT,
+    pageConcurrency: 1,
+    requireCompletePages: true,
+    cacheSlug: "svn",
+    usePageCache: true,
+    recoveryPasses: 1,
+    recoveryCooldownMs: 15000,
+    maxRecoveryPages: 60,
+  },
+  "lee-associates": {
+    preferDirectJson: true,
+    directReferer: "https://www.lee-associates.com/properties/",
+    inventorySort: BUILDOUT_STABLE_INVENTORY_SORT,
+    pageConcurrency: 3,
+    requireCompletePages: true,
+    cacheSlug: "lee-associates",
+    usePageCache: true,
+    recoveryPasses: 1,
+    recoveryCooldownMs: 15000,
+    maxRecoveryPages: 60,
+  },
+} as const satisfies Record<"svn" | "lee-associates", BuildoutInventoryOpts>;
 
 export function buildoutInventoryUrl(
   pluginKey: string,
