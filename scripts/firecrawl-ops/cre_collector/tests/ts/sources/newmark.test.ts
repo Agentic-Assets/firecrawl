@@ -14,6 +14,7 @@ import {
   classifyNewmarkPeopleLookup,
   newmarkPeopleFailure,
   newmarkPeopleListingFields,
+  NEWMARK_BOOTSTRAP_MAX_AGE_MS,
   srcNewmark,
 } from "../../../sources/newmark.js";
 import { firecrawl } from "../../../lib/scrape.js";
@@ -207,7 +208,7 @@ test("Newmark People transport failures fail strict mode but preserve non-strict
   );
 });
 
-test("strict Newmark bypasses Firecrawl cache and rejects partition pages without nbHits", async () => {
+test("strict Newmark may cache credential bootstrap but rejects live Algolia pages without nbHits", async () => {
   const oldScrape = firecrawl.scrape;
   const oldFetch = globalThis.fetch;
   const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
@@ -242,7 +243,9 @@ test("strict Newmark bypasses Firecrawl cache and rejects partition pages withou
       /nonnegative integer nbHits/
     );
     assert.equal(scrapeCalls.length, 1);
-    assert.equal(scrapeCalls[0]?.maxAge, 0);
+    assert.equal(NEWMARK_BOOTSTRAP_MAX_AGE_MS, 86_400_000);
+    assert.equal(scrapeCalls[0]?.maxAge, NEWMARK_BOOTSTRAP_MAX_AGE_MS);
+    assert.ok(algoliaCall >= 2);
   } finally {
     (firecrawl as any).scrape = oldScrape;
     globalThis.fetch = oldFetch;

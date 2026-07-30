@@ -26,6 +26,7 @@ export function newmarkSalePrice(raw: any): number | null {
 // --- Newmark: Algolia search API, credentials read from the page ---
 
 export let newmarkCreds: { appId: string; searchKey: string; indexName: string } | null = null;
+export const NEWMARK_BOOTSTRAP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export type NewmarkPeopleLookup =
   | { status: "matched"; person: any }
   | { status: "verified_absent" }
@@ -241,9 +242,13 @@ export async function srcNewmark(tx: Tx, max: number, monitor: boolean): Promise
   const strictFreshness = requireFreshDetails();
   if (!newmarkCreds) {
     for (const waitFor of [3000, 8000]) {
+      // This page only bootstraps public Algolia routing credentials. Allow the
+      // local Firecrawl cache to bridge a temporary Cloudflare denial; every
+      // inventory and People query below still goes directly to live Algolia
+      // and strict mode validates hits/nbHits before admitting an artifact.
       const html = await scrapeRaw(sourceUrl, {
         waitFor,
-        ...(strictFreshness ? { maxAge: 0 } : {}),
+        maxAge: NEWMARK_BOOTSTRAP_MAX_AGE_MS,
       });
       const appId = html.match(/algoliaAppId='([^']+)'/)?.[1];
       const searchKey = html.match(/algoliaSearchApiKey='([^']+)'/)?.[1];
