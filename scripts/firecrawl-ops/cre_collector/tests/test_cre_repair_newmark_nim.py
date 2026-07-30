@@ -368,3 +368,32 @@ def test_private_preimage_loader_rejects_broad_permissions(tmp_path):
     path.chmod(0o644)
     with pytest.raises(ValueError, match="group- or world-accessible"):
         repair.load_private_preimage(path)
+
+
+def test_repair_uses_the_checkpoint_runners_shared_directory_lock(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    with repair.shared_cre_lock(lock_dir):
+        assert lock_dir.is_dir()
+        assert int((lock_dir / "pid").read_text().split()[0]) > 0
+    assert not lock_dir.exists()
+
+
+def test_repair_safely_migrates_its_empty_legacy_file_lock(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.write_text("")
+    with repair.shared_cre_lock(lock_dir):
+        assert lock_dir.is_dir()
+        assert (lock_dir / "pid").is_file()
+    assert not lock_dir.exists()
+
+
+def test_repair_refuses_to_migrate_an_actively_held_legacy_lock(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.write_text("")
+    with (
+        patch.object(repair.fcntl, "flock", side_effect=BlockingIOError),
+        pytest.raises(RuntimeError, match="actively held"),
+    ):
+        with repair.shared_cre_lock(lock_dir):
+            pass
+    assert lock_dir.is_file()

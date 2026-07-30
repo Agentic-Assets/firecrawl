@@ -29,11 +29,13 @@ import re
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from cre_checkpoint_refresh import SharedLock, canonical_shared_lock_dir
 from cre_ingest import (
     database_target_fingerprint_from_url,
     find_psql,
@@ -71,10 +73,7 @@ IDENTITY_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
 DEFAULT_ARTIFACT = Path(__file__).resolve().parent / (
     "out/checkpoint-refresh/2026-07-30T031805Z/sources/newmark.json"
 )
-DEFAULT_LOCK = Path(
-    "/Users/caymanseagraves/Github/agentic-assets/firecrawl/"
-    "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
-)
+DEFAULT_LOCK = canonical_shared_lock_dir()
 ADVISORY_LOCK_KEY = 734_251_907_300_318_050
 
 
@@ -1992,11 +1991,45 @@ def assert_db_target(db_url: str) -> None:
         )
 
 
+@contextmanager
+def shared_cre_lock(lock_dir: Path):
+    """Acquire the canonical directory lock, migrating our empty legacy file."""
+    lock_dir.parent.mkdir(parents=True, exist_ok=True)
+    if lock_dir.is_symlink():
+        raise ValueError("CRE lock path must not be a symlink")
+    if lock_dir.exists() and not lock_dir.is_dir():
+        current = lock_dir.stat()
+        if not lock_dir.is_file() or lock_dir.name != ".cre.lock" or current.st_size:
+            raise ValueError("CRE lock path is not a recognized empty legacy lock")
+        with lock_dir.open("a+") as legacy_handle:
+            try:
+                fcntl.flock(
+                    legacy_handle.fileno(),
+                    fcntl.LOCK_EX | fcntl.LOCK_NB,
+                )
+            except BlockingIOError as exc:
+                raise RuntimeError("legacy CRE file lock is actively held") from exc
+            opened = os.fstat(legacy_handle.fileno())
+            current = lock_dir.stat()
+            if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+                raise RuntimeError("legacy CRE lock changed during migration")
+            lock_dir.unlink()
+            lock = SharedLock(lock_dir)
+            lock.acquire()
+            try:
+                yield lock
+            finally:
+                lock.release()
+        return
+    with SharedLock(lock_dir) as lock:
+        yield lock
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact", type=Path, default=DEFAULT_ARTIFACT)
     parser.add_argument("--env-file", required=True)
-    parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK)
+    parser.add_argument("--lock-dir", type=Path, default=DEFAULT_LOCK)
     parser.add_argument(
         "--preimage",
         type=Path,
@@ -2046,13 +2079,7 @@ def main() -> int:
     db_url, _ = load_db_url(args.env_file)
     assert_db_target(db_url)
 
-    args.lock_file.parent.mkdir(parents=True, exist_ok=True)
-    with args.lock_file.open("a+") as lock_handle:
-        try:
-            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise SystemExit("CRE collector lock is already held") from exc
-
+    with shared_cre_lock(args.lock_dir):
         if args.rollback_preimage is not None:
             rollback_path = args.rollback_preimage.resolve()
             preimage = load_private_preimage(rollback_path)
