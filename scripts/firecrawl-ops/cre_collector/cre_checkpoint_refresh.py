@@ -37,6 +37,7 @@ from cre_ingest import (
     INVENTORY_ONLY_SOURCE_DEFINITIONS,
     SOURCE_TO_BROKERAGE,
     STRICT_FRESHNESS_SOURCE_KEYS,
+    child_count_regressed,
     database_target_fingerprint_from_url,
     load_db_url,
     merge_rows,
@@ -2408,7 +2409,7 @@ def compare_validation_quality(
     for identity, prior in old_children.items():
         old_count = _int_value(prior.get("count"))
         new_count = _int_value(new_children.get(identity, {}).get("count"))
-        if old_count >= 10 and new_count < int(old_count * 0.7):
+        if child_count_regressed(old_count, new_count):
             failures.append(
                 f"child_counts/{identity} fell more than 30%: {old_count}->{new_count}"
             )

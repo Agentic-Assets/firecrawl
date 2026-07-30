@@ -18,8 +18,9 @@ Covers the additive, forward-only capture of detail-page artifacts:
   - STAGE_COLS + the _stage DDL gain (media jsonb, links jsonb, markdown text)
     plus the lifted structured columns.
   - build_sql() emits the to_regclass-guarded DELETE+reinsert for both
-    cre_listing_media and cre_listing_links (mirroring the images block),
-    excludes detailError rows from the child-refresh set, uses ON CONFLICT
+    cre_listing_media and cre_listing_links (mirroring the images block), plus
+    non-destructive inserts for child-preserving existing rows. It excludes
+    detailError rows from the child-refresh set, uses ON CONFLICT
     (listing_id, <type>, url) DO NOTHING, COALESCE-keeps markdown via
     NULLIF(EXCLUDED.markdown,'') and COALESCE-keeps the lifted numeric columns,
     and widens the documents doc_type CASE to allow financials/rent_roll.
@@ -62,6 +63,17 @@ def _svn(**overrides):
         "sourceKey": "svn",
         "url": "https://www.svn.com/property?propertyId=svn-0001-sale",
         "id": "svn-0001",
+        "transactionMode": "sale",
+    }
+    base.update(overrides)
+    return base
+
+
+def _avison(**overrides):
+    base = {
+        "sourceKey": "avison-young",
+        "url": "https://www.avisonyoung.us/properties/example",
+        "id": "avison-0001",
         "transactionMode": "sale",
     }
     base.update(overrides)
@@ -516,6 +528,87 @@ def test_build_sql_links_block_guarded_delete_reinsert():
     assert "DELETE FROM credeals.cre_listing_links WHERE listing_id IN (SELECT id FROM _child_refresh)" in sql
     assert "INSERT INTO credeals.cre_listing_links (listing_id, link_type, url, rel)" in sql
     assert "ON CONFLICT (listing_id, link_type, url) DO NOTHING" in sql
+
+
+def test_build_sql_media_links_additive_inserts_use_schema_unique_keys():
+    sql = _sql()
+    expected = (
+        (
+            "media",
+            "INSERT INTO credeals.cre_listing_media "
+            "(listing_id, media_type, provider, url, embed_url, title)",
+            "ON CONFLICT (listing_id, media_type, url) DO NOTHING",
+        ),
+        (
+            "links",
+            "INSERT INTO credeals.cre_listing_links "
+            "(listing_id, link_type, url, rel)",
+            "ON CONFLICT (listing_id, link_type, url) DO NOTHING",
+        ),
+    )
+
+    for table, insert, conflict in expected:
+        guard = f"IF to_regclass('credeals.cre_listing_{table}') IS NOT NULL THEN"
+        block = sql[sql.index(guard):sql.index("END IF;", sql.index(guard))]
+        assert block.count(insert) == 2
+        assert block.count(conflict) == 2
+        assert "u.id IN (SELECT id FROM _child_additive)" in block
+
+
+def test_existing_avison_partial_detail_adds_media_links_without_deleting_children():
+    row = _row(
+        _avison(
+            preserveChildCollections=True,
+            detailObservedWithChildPreservation=True,
+            detailObservedAt="2026-06-15T00:00:00Z",
+            media=[
+                {
+                    "mediaType": "virtual_tour",
+                    "url": "https://tour.example/avison-0001",
+                }
+            ],
+            links=[
+                {
+                    "linkType": "external_listing",
+                    "url": "https://listing.example/avison-0001",
+                }
+            ],
+        )
+    )
+    sql = build_sql([row], [], _SCRAPED_AT, set())
+
+    assert row["raw_data"]["preserveChildCollections"] is True
+    assert row["raw_data"]["detailObservedWithChildPreservation"] is True
+    assert "https://tour.example/avison-0001" in sql
+    assert "https://listing.example/avison-0001" in sql
+
+    additive_start = sql.index("CREATE TEMP TABLE _child_additive")
+    additive_end = sql.index("DELETE FROM credeals.cre_listing_contacts", additive_start)
+    additive_definition = sql[additive_start:additive_end]
+    assert "JOIN _prior_vals p" in additive_definition
+    assert "$.**.preserveChildCollections" in additive_definition
+
+    delete_lines = [
+        line.strip()
+        for line in sql.splitlines()
+        if line.strip().startswith(
+            (
+                "DELETE FROM credeals.cre_listing_media",
+                "DELETE FROM credeals.cre_listing_links",
+            )
+        )
+    ]
+    assert delete_lines == [
+        (
+            "DELETE FROM credeals.cre_listing_media WHERE listing_id IN "
+            "(SELECT id FROM _child_refresh);"
+        ),
+        (
+            "DELETE FROM credeals.cre_listing_links WHERE listing_id IN "
+            "(SELECT id FROM _child_refresh);"
+        ),
+    ]
+    assert all("_child_additive" not in line for line in delete_lines)
 
 
 def test_build_sql_media_links_delete_inside_the_guard():

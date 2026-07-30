@@ -21,31 +21,11 @@ from cre_ingest import (
     load_db_url,
     psql_connection_args,
     psql_connection_env,
+    source_key_sql,
 )
 
 
-SOURCE_KEY_SQL = """
-CASE
-  WHEN b.slug = 'cbre' AND l.external_id LIKE 'dealflow:%' THEN 'cbre-dealflow'
-  WHEN b.slug = 'jll' AND l.external_id LIKE 'investor:%' THEN 'jll-investor'
-  WHEN b.slug = 'colliers' AND l.external_id LIKE 'main:%' THEN 'colliers-main'
-  ELSE COALESCE(
-    NULLIF(l.raw_data #>> '{latestInventoryObservation,sourceKey}', ''),
-    NULLIF(
-      l.raw_data #>> '{latestInventoryObservation,primary,sourceKey}',
-      ''
-    ),
-    NULLIF(
-      l.raw_data #>> '{latestInventoryObservation,secondary_pass,sourceKey}',
-      ''
-    ),
-    NULLIF(l.raw_data->>'sourceKey', ''),
-    NULLIF(l.raw_data #>> '{primary,sourceKey}', ''),
-    NULLIF(l.raw_data #>> '{secondary_pass,sourceKey}', ''),
-    b.slug
-  )
-END
-"""
+SOURCE_KEY_SQL = source_key_sql()
 
 
 def _sql_literal(value):

@@ -247,10 +247,59 @@ STRICT_FRESHNESS_SOURCE_KEYS = {
     "nai-dominion",
 }
 MAX_FUTURE_CLOCK_SKEW = timedelta(minutes=5)
+CHILD_COUNT_MIN_BASE = 10
+CHILD_COUNT_RETAIN_NUMERATOR = 7
+CHILD_COUNT_RETAIN_DENOMINATOR = 10
 
 SOURCE_KEYS_BY_SLUG = {}
 for _source_key, (_slug, _prefix) in SOURCE_TO_BROKERAGE.items():
     SOURCE_KEYS_BY_SLUG.setdefault(_slug, set()).add(_source_key)
+
+
+def source_key_sql(listing_alias="l", brokerage_alias="b"):
+    """Return the canonical source-key expression shared by ingest validation."""
+    return f"""
+CASE
+  WHEN {brokerage_alias}.slug = 'cbre'
+    AND {listing_alias}.external_id LIKE 'dealflow:%' THEN 'cbre-dealflow'
+  WHEN {brokerage_alias}.slug = 'jll'
+    AND {listing_alias}.external_id LIKE 'investor:%' THEN 'jll-investor'
+  WHEN {brokerage_alias}.slug = 'colliers'
+    AND {listing_alias}.external_id LIKE 'main:%' THEN 'colliers-main'
+  ELSE COALESCE(
+    NULLIF(
+      {listing_alias}.raw_data #>> '{{latestInventoryObservation,sourceKey}}',
+      ''
+    ),
+    NULLIF(
+      {listing_alias}.raw_data
+        #>> '{{latestInventoryObservation,primary,sourceKey}}',
+      ''
+    ),
+    NULLIF(
+      {listing_alias}.raw_data
+        #>> '{{latestInventoryObservation,secondary_pass,sourceKey}}',
+      ''
+    ),
+    NULLIF({listing_alias}.raw_data->>'sourceKey', ''),
+    NULLIF({listing_alias}.raw_data #>> '{{primary,sourceKey}}', ''),
+    NULLIF({listing_alias}.raw_data #>> '{{secondary_pass,sourceKey}}', ''),
+    {brokerage_alias}.slug
+  )
+END
+"""
+
+
+def child_count_regressed(before, after):
+    """Match the checkpoint quality gate for severe aggregate child loss."""
+    retained_threshold = (
+        before * CHILD_COUNT_RETAIN_NUMERATOR // CHILD_COUNT_RETAIN_DENOMINATOR
+    )
+    return (
+        before >= CHILD_COUNT_MIN_BASE
+        and after < retained_threshold
+    )
+
 
 # Ordered keyword -> property_type enum. First match wins.
 PROPERTY_TYPE_RULES = [
@@ -1990,6 +2039,8 @@ def build_sql(
     rows = [{**row, "om_facts": []} for row in rows]
     lines = []
     w = lines.append
+    staged_source_key_sql = source_key_sql("s", "b")
+    live_source_key_sql = source_key_sql("l", "b")
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
     # Large complete-source artifacts (CBRE is ~80 MB of inline COPY data) can
@@ -2248,8 +2299,79 @@ WHERE s.slug = e.slug
 
 CREATE TEMP TABLE _src ON COMMIT DROP AS
 SELECT b.id AS brokerage_id, s.*
-FROM _stage s JOIN credeals.cre_brokerages b ON b.slug = s.slug;
+FROM _stage s JOIN credeals.cre_brokerages b ON b.slug = s.slug;""")
 
+    w(f"""
+-- Capture the checkpoint-quality baseline before any listing or child mutation.
+-- Scope it to canonical source keys present in this ingest, not the folded
+-- brokerage slug, so a child regression in one source cannot be hidden by a
+-- sibling source sharing the brokerage.
+CREATE TEMP TABLE _ingest_child_sources ON COMMIT DROP AS
+SELECT DISTINCT source_key
+FROM (
+  SELECT {staged_source_key_sql} AS source_key
+  FROM _src s
+  JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+) staged_sources
+WHERE source_key IS NOT NULL;
+
+CREATE TEMP TABLE _active_child_scope_before ON COMMIT DROP AS
+SELECT listing_id, source_key
+FROM (
+  SELECT l.id AS listing_id, {live_source_key_sql} AS source_key
+  FROM credeals.cre_listings l
+  JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  WHERE l.deleted_at IS NULL
+) active
+JOIN _ingest_child_sources ingest_scope USING (source_key);
+
+CREATE TEMP TABLE _child_counts_before (
+  source_key text NOT NULL,
+  child_type text NOT NULL,
+  child_count bigint NOT NULL,
+  PRIMARY KEY (source_key, child_type)
+) ON COMMIT DROP;
+
+INSERT INTO _child_counts_before
+SELECT a.source_key, 'contacts', count(c.id)
+FROM _active_child_scope_before a
+LEFT JOIN credeals.cre_listing_contacts c ON c.listing_id = a.listing_id
+GROUP BY a.source_key
+UNION ALL
+SELECT a.source_key, 'documents', count(d.id)
+FROM _active_child_scope_before a
+LEFT JOIN credeals.cre_listing_documents d ON d.listing_id = a.listing_id
+GROUP BY a.source_key
+UNION ALL
+SELECT a.source_key, 'images', count(i.id)
+FROM _active_child_scope_before a
+LEFT JOIN credeals.cre_listing_images i ON i.listing_id = a.listing_id
+GROUP BY a.source_key;
+
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1
+    WHERE to_regclass('credeals.cre_listing_media') IS NOT NULL
+  ) THEN
+    INSERT INTO _child_counts_before
+    SELECT a.source_key, 'media', count(m.id)
+    FROM _active_child_scope_before a
+    LEFT JOIN credeals.cre_listing_media m ON m.listing_id = a.listing_id
+    GROUP BY a.source_key;
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    WHERE to_regclass('credeals.cre_listing_links') IS NOT NULL
+  ) THEN
+    INSERT INTO _child_counts_before
+    SELECT a.source_key, 'links', count(k.id)
+    FROM _active_child_scope_before a
+    LEFT JOIN credeals.cre_listing_links k ON k.listing_id = a.listing_id
+    GROUP BY a.source_key;
+  END IF;
+END $$;""")
+
+    w("""
 -- Cushman's provider GUID is not a durable property identity. Fixed artifacts
 -- stage URL-v1 identities, but inserting one beside an active legacy GUID row
 -- would grow the exact duplicate-URL defect this repair is intended to stop.
@@ -3018,6 +3140,9 @@ WHERE u.id IN (SELECT id FROM _child_additive)
 -- wholesale-replace fires only on a CLEAN detail touch (mirrors images exactly).
 -- media_type/link_type participate in the unique key because one url can
 -- legitimately appear once per type; ON CONFLICT ... DO NOTHING dedups in-batch.
+-- Existing child-preserving rows also add newly observed media/links without
+-- deleting last-good rows. This rides the generic _child_additive contract, not
+-- a source-specific branch, and uses the sql/011 unique keys for idempotence.
 DO $$ BEGIN
   IF to_regclass('credeals.cre_listing_media') IS NOT NULL THEN
     DELETE FROM credeals.cre_listing_media WHERE listing_id IN (SELECT id FROM _child_refresh);
@@ -3028,6 +3153,16 @@ DO $$ BEGIN
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.media) x
     WHERE u.id IN (SELECT id FROM _child_refresh)
+      AND jsonb_typeof(s.media) = 'array' AND x->>'url' IS NOT NULL
+    ON CONFLICT (listing_id, media_type, url) DO NOTHING;
+
+    INSERT INTO credeals.cre_listing_media (listing_id, media_type, provider, url, embed_url, title)
+    SELECT u.id, COALESCE(x->>'mediaType','other'), x->>'provider', x->>'url',
+           x->>'embedUrl', x->>'title'
+    FROM _up u
+    JOIN _src s USING (brokerage_id, external_id)
+    CROSS JOIN LATERAL jsonb_array_elements(s.media) x
+    WHERE u.id IN (SELECT id FROM _child_additive)
       AND jsonb_typeof(s.media) = 'array' AND x->>'url' IS NOT NULL
     ON CONFLICT (listing_id, media_type, url) DO NOTHING;
   END IF;
@@ -3042,6 +3177,15 @@ DO $$ BEGIN
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.links) x
     WHERE u.id IN (SELECT id FROM _child_refresh)
+      AND jsonb_typeof(s.links) = 'array' AND x->>'url' IS NOT NULL
+    ON CONFLICT (listing_id, link_type, url) DO NOTHING;
+
+    INSERT INTO credeals.cre_listing_links (listing_id, link_type, url, rel)
+    SELECT u.id, COALESCE(x->>'linkType','other'), x->>'url', x->>'rel'
+    FROM _up u
+    JOIN _src s USING (brokerage_id, external_id)
+    CROSS JOIN LATERAL jsonb_array_elements(s.links) x
+    WHERE u.id IN (SELECT id FROM _child_additive)
       AND jsonb_typeof(s.links) = 'array' AND x->>'url' IS NOT NULL
     ON CONFLICT (listing_id, link_type, url) DO NOTHING;
   END IF;
@@ -3252,6 +3396,97 @@ SELECT b.id,
        {sql_lit(started_at)}::timestamptz, now(),
        jm.discovered, jm.saved, jm.saved, jm.errors, jm.notes
 FROM _jobmeta jm JOIN credeals.cre_brokerages b ON b.slug = jm.slug;
+
+-- Enforce the same severe child-loss predicate as checkpoint final validation,
+-- but before COMMIT so a parser collapse rolls back listings, children, history,
+-- and the scrape-job row atomically. Explicit preserve/additive rows do not
+-- delete children and therefore keep or increase these source-wide counts.
+CREATE TEMP TABLE _active_child_scope_after ON COMMIT DROP AS
+SELECT listing_id, source_key
+FROM (
+  SELECT l.id AS listing_id, {live_source_key_sql} AS source_key
+  FROM credeals.cre_listings l
+  JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  WHERE l.deleted_at IS NULL
+) active
+JOIN _ingest_child_sources ingest_scope USING (source_key);
+
+CREATE TEMP TABLE _child_counts_after (
+  source_key text NOT NULL,
+  child_type text NOT NULL,
+  child_count bigint NOT NULL,
+  PRIMARY KEY (source_key, child_type)
+) ON COMMIT DROP;
+
+INSERT INTO _child_counts_after
+SELECT a.source_key, 'contacts', count(c.id)
+FROM _active_child_scope_after a
+LEFT JOIN credeals.cre_listing_contacts c ON c.listing_id = a.listing_id
+GROUP BY a.source_key
+UNION ALL
+SELECT a.source_key, 'documents', count(d.id)
+FROM _active_child_scope_after a
+LEFT JOIN credeals.cre_listing_documents d ON d.listing_id = a.listing_id
+GROUP BY a.source_key
+UNION ALL
+SELECT a.source_key, 'images', count(i.id)
+FROM _active_child_scope_after a
+LEFT JOIN credeals.cre_listing_images i ON i.listing_id = a.listing_id
+GROUP BY a.source_key;
+
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1
+    WHERE to_regclass('credeals.cre_listing_media') IS NOT NULL
+  ) THEN
+    INSERT INTO _child_counts_after
+    SELECT a.source_key, 'media', count(m.id)
+    FROM _active_child_scope_after a
+    LEFT JOIN credeals.cre_listing_media m ON m.listing_id = a.listing_id
+    GROUP BY a.source_key;
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    WHERE to_regclass('credeals.cre_listing_links') IS NOT NULL
+  ) THEN
+    INSERT INTO _child_counts_after
+    SELECT a.source_key, 'links', count(k.id)
+    FROM _active_child_scope_after a
+    LEFT JOIN credeals.cre_listing_links k ON k.listing_id = a.listing_id
+    GROUP BY a.source_key;
+  END IF;
+END $$;
+
+DO $$
+DECLARE regressions text;
+BEGIN
+  SELECT string_agg(
+    format(
+      '%s/%s fell more than 30%%: %s->%s',
+      prior_counts.source_key,
+      prior_counts.child_type,
+      prior_counts.child_count,
+      COALESCE(current_counts.child_count, 0)
+    ),
+    '; ' ORDER BY prior_counts.source_key, prior_counts.child_type
+  )
+  INTO regressions
+  FROM _child_counts_before prior_counts
+  LEFT JOIN _child_counts_after current_counts
+    USING (source_key, child_type)
+  WHERE prior_counts.child_count >= {CHILD_COUNT_MIN_BASE}
+    AND COALESCE(current_counts.child_count, 0)
+      < (
+        prior_counts.child_count * {CHILD_COUNT_RETAIN_NUMERATOR}
+        / {CHILD_COUNT_RETAIN_DENOMINATOR}
+      );
+
+  IF regressions IS NOT NULL THEN
+    RAISE EXCEPTION
+      'checkpoint child quality regression before commit: %',
+      regressions;
+  END IF;
+END $$;
 
 COMMIT;
 
