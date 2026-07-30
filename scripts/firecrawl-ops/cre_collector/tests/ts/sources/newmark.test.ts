@@ -16,6 +16,8 @@ import {
   newmarkPeopleListingFields,
   assertNewmarkNimPage,
   mapNewmarkNimListing,
+  newmarkNimCanonicalIdentity,
+  newmarkNimMeasurementFields,
   NEWMARK_NIM_PAGE_SIZE,
   NEWMARK_NIM_MAX_ATTEMPTS,
   NEWMARK_BOOTSTRAP_MAX_AGE_MS,
@@ -339,7 +341,7 @@ test("strict Newmark NIM pages require stable totals, exact page lengths, and id
   );
 });
 
-test("Newmark NIM mapping preserves legacy identity and child collections", () => {
+test("Newmark NIM mapping uses canonical identity and preserves child collections", () => {
   const mapped = mapNewmarkNimListing(
     {
       id: "provider-123",
@@ -347,6 +349,7 @@ test("Newmark NIM mapping preserves legacy identity and child collections", () =
       name: "100 Main Street",
       modifiedOn: "2026-07-29T12:34:56Z",
       priceSummary: "$1,250,000",
+      mainImageUrl: "https://cdn.example.com/newmark-main.jpg",
       externalWebsiteUrl:
         "https://www.nmrk.com/properties/100-main-street-sale?campaign=test",
       properties: [
@@ -388,6 +391,204 @@ test("Newmark NIM mapping preserves legacy identity and child collections", () =
   assert.equal(mapped.contactsDetailed, undefined);
   assert.equal(mapped.media, undefined);
   assert.equal(mapped.documents, undefined);
+  assert.deepEqual(mapped.photos, [
+    "https://cdn.example.com/newmark-main.jpg",
+  ]);
+});
+
+test("Newmark NIM identity uses the canonical URL path instead of the internal slug", () => {
+  assert.deepEqual(
+    newmarkNimCanonicalIdentity({
+      slug: "lowercase-internal-slug",
+      externalWebsiteUrl:
+        "https://www.nmrk.com/properties/Legacy-Canonical-Path-123?campaign=test",
+    }),
+    {
+      id: "Legacy-Canonical-Path-123",
+      url: "https://www.nmrk.com/properties/Legacy-Canonical-Path-123",
+    }
+  );
+  assert.deepEqual(
+    newmarkNimCanonicalIdentity({
+      slug: "ignored-lowercase-slug",
+      externalWebsiteUrl:
+        "https://nmrk.com/properties/Case-Sensitive-Canonical",
+    }),
+    {
+      id: "Case-Sensitive-Canonical",
+      url: "https://www.nmrk.com/properties/Case-Sensitive-Canonical",
+    }
+  );
+  assert.throws(
+    () =>
+      newmarkNimCanonicalIdentity({
+        slug: "unsafe",
+        externalWebsiteUrl:
+          "https://www.nmrk.com/properties/unsafe%2Fidentity",
+      }),
+    /canonical identity is unsafe/
+  );
+  assert.throws(
+    () =>
+      newmarkNimCanonicalIdentity({
+        slug: "unsafe-space",
+        externalWebsiteUrl:
+          "https://www.nmrk.com/properties/unsafe%20identity",
+      }),
+    /canonical identity is unsafe/
+  );
+  assert.throws(
+    () =>
+      newmarkNimCanonicalIdentity({
+        slug: "unexpected",
+        externalWebsiteUrl: "https://example.com/properties/unexpected",
+      }),
+    /unsupported host/
+  );
+  assert.deepEqual(
+    newmarkNimCanonicalIdentity({ slug: "fallback-slug" }),
+    {
+      id: "fallback-slug",
+      url: "https://www.nmrk.com/properties/fallback-slug",
+    }
+  );
+  assert.throws(
+    () =>
+      newmarkNimCanonicalIdentity({
+        slug: "../unsafe",
+      }),
+    /fallback slug identity is unsafe/
+  );
+  assert.throws(
+    () =>
+      newmarkNimCanonicalIdentity({
+        slug: "fallback-slug",
+        externalWebsiteUrl:
+          "http://my.rcm1.com/handler/modern.aspx?pv=unsafe",
+      }),
+    /safe HTTPS URL/
+  );
+  assert.throws(
+    () =>
+      newmarkNimMeasurementFields({
+        unitOfMeasurement: "Units",
+        size: 12.5,
+      }),
+    /positive integer/
+  );
+  assert.throws(
+    () =>
+      newmarkNimMeasurementFields({
+        unitOfMeasurement: "Square Furlongs",
+        size: 1,
+      }),
+    /unsupported unit/
+  );
+  assert.throws(
+    () =>
+      newmarkNimMeasurementFields({
+        unitOfMeasurement: "Acres",
+        size: -1,
+      }),
+    /measurement must be positive/
+  );
+});
+
+test("Newmark NIM measurement units map to the correct database dimensions", () => {
+  assert.deepEqual(
+    newmarkNimMeasurementFields({
+      unitOfMeasurement: "Sq. Ft.",
+      size: 25000,
+      sizeSf: 25000,
+    }),
+    {
+      buildingSizeSqft: 25000,
+      lotSizeAcres: null,
+      units: null,
+      kind: "building_sqft",
+      normalizedValue: 25000,
+    }
+  );
+  assert.deepEqual(
+    newmarkNimMeasurementFields({
+      unitOfMeasurement: "Sq. Meters",
+      size: 19941.26,
+      sizeSf: 1852.6,
+    }),
+    {
+      buildingSizeSqft: 19941.26,
+      lotSizeAcres: null,
+      units: null,
+      kind: "building_sqft",
+      normalizedValue: 19941.26,
+    }
+  );
+  assert.deepEqual(
+    newmarkNimMeasurementFields({
+      unitOfMeasurement: "Units",
+      size: 152,
+    }),
+    {
+      buildingSizeSqft: null,
+      lotSizeAcres: null,
+      units: 152,
+      kind: "units",
+      normalizedValue: 152,
+    }
+  );
+  assert.deepEqual(
+    newmarkNimMeasurementFields({
+      unitOfMeasurement: "Acres",
+      size: 1.5,
+    }),
+    {
+      buildingSizeSqft: null,
+      lotSizeAcres: 1.5,
+      units: null,
+      kind: "lot_acres",
+      normalizedValue: 1.5,
+    }
+  );
+  const hectares = newmarkNimMeasurementFields({
+    unitOfMeasurement: "Hectares",
+    size: 2,
+  });
+  assert.equal(hectares.buildingSizeSqft, null);
+  assert.equal(hectares.units, null);
+  assert.equal(hectares.kind, "lot_acres");
+  assert.ok(Math.abs((hectares.lotSizeAcres ?? 0) - 4.94210762) < 1e-9);
+  assert.ok(Math.abs((hectares.normalizedValue ?? 0) - 4.94210762) < 1e-9);
+});
+
+test("Newmark NIM rejects an implausible sale price relative to building area", () => {
+  const mapped = mapNewmarkNimListing(
+    {
+      id: "provider-bad-price",
+      slug: "bad-price",
+      priceSummary: "$24,200,000,000",
+      externalWebsiteUrl:
+        "https://www.nmrk.com/properties/bad-price",
+      properties: [
+        {
+          countryCode: "US",
+          stateAbbreviation: "CA",
+          zip: "95822",
+          size: 15125,
+          sizeSf: 15125,
+          unitOfMeasurement: "Sq. Ft.",
+        },
+      ],
+    },
+    "sale",
+    "2026-07-30T02:30:00Z",
+    true
+  );
+  assert.equal(mapped?.salePriceUsd, null);
+  assert.equal(
+    mapped?.newmarkNimPriceRejected,
+    "implausible_price_per_square_foot"
+  );
+  assert.equal(mapped?.salePriceText, "$24,200,000,000");
 });
 
 test("Newmark NIM geography admits a blank-country US state and ZIP but fails ambiguity", () => {

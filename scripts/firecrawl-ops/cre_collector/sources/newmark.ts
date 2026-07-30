@@ -717,6 +717,165 @@ export function newmarkNimPropertyRegion(property: any): NewmarkNimRegion {
   return "ambiguous";
 }
 
+export function newmarkNimCanonicalIdentity(record: any): {
+  id: string | null;
+  url: string | null;
+} {
+  const slug = clean(record?.slug);
+  const safeSlug =
+    slug
+    && slug !== "."
+    && slug !== ".."
+    && /^[A-Za-z0-9._~-]+$/.test(slug)
+      ? slug
+      : null;
+  const providerUrl = clean(record?.externalWebsiteUrl);
+  if (!providerUrl) {
+    if (slug && !safeSlug) {
+      throw new Error("Newmark NIM fallback slug identity is unsafe");
+    }
+    return safeSlug
+      ? {
+          id: safeSlug,
+          url: `https://www.nmrk.com/properties/${encodeURIComponent(safeSlug)}`,
+        }
+      : { id: null, url: null };
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(providerUrl);
+  } catch {
+    throw new Error("Newmark NIM externalWebsiteUrl is not a valid URL");
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  if (
+    parsed.protocol !== "https:"
+    || parsed.username
+    || parsed.password
+    || parsed.port
+  ) {
+    throw new Error("Newmark NIM externalWebsiteUrl is not a safe HTTPS URL");
+  }
+  if (
+    hostname === "my.rcm1.com"
+    || hostname === "properties.nmrk.com"
+  ) {
+    if (slug && !safeSlug) {
+      throw new Error("Newmark NIM fallback slug identity is unsafe");
+    }
+    return safeSlug
+      ? {
+          id: safeSlug,
+          url: `https://www.nmrk.com/properties/${encodeURIComponent(safeSlug)}`,
+        }
+      : { id: null, url: null };
+  }
+  if (
+    !["www.nmrk.com", "nmrk.com"].includes(hostname)
+  ) {
+    throw new Error(
+      `Newmark NIM externalWebsiteUrl has an unsupported host: ${hostname}`
+    );
+  }
+  const match = parsed.pathname.match(/^\/properties\/([^/]+)\/?$/);
+  if (!match) {
+    throw new Error("Newmark NIM externalWebsiteUrl has an unexpected path");
+  }
+  let id: string;
+  try {
+    id = decodeURIComponent(match[1]);
+  } catch (error) {
+    throw new Error(
+      `Newmark NIM canonical URL has an invalid encoded identity: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+  if (
+    id === "."
+    || id === ".."
+    || !/^[A-Za-z0-9._~-]+$/.test(id)
+  ) {
+    throw new Error("Newmark NIM canonical identity is unsafe");
+  }
+  return {
+    id,
+    url: `https://www.nmrk.com/properties/${match[1]}`,
+  };
+}
+
+export function newmarkNimMeasurementFields(property: any): {
+  buildingSizeSqft: number | null;
+  lotSizeAcres: number | null;
+  units: number | null;
+  kind: "building_sqft" | "lot_acres" | "units" | null;
+  normalizedValue: number | null;
+} {
+  const unit = clean(property?.unitOfMeasurement)?.toLowerCase();
+  const size = num(property?.size);
+  if (size !== null && size < 0) {
+    throw new Error("Newmark NIM measurement must be positive");
+  }
+  if (unit === "units") {
+    if (size !== null && !Number.isInteger(size)) {
+      throw new Error("Newmark NIM unit count must be a positive integer");
+    }
+    return {
+      buildingSizeSqft: null,
+      lotSizeAcres: null,
+      units: size,
+      kind: "units",
+      normalizedValue: size,
+    };
+  }
+  if (unit === "acres") {
+    return {
+      buildingSizeSqft: null,
+      lotSizeAcres: size,
+      units: null,
+      kind: "lot_acres",
+      normalizedValue: size,
+    };
+  }
+  if (unit === "hectares") {
+    const acres = size === null ? null : size * 2.47105381;
+    return {
+      buildingSizeSqft: null,
+      lotSizeAcres: acres,
+      units: null,
+      kind: "lot_acres",
+      normalizedValue: acres,
+    };
+  }
+  if (unit === "sq. meters") {
+    // NIM's `size` is already its normalized square-foot value; `sizeSf`
+    // carries the display-unit value despite the misleading field name.
+    return {
+      buildingSizeSqft: size,
+      lotSizeAcres: null,
+      units: null,
+      kind: "building_sqft",
+      normalizedValue: size,
+    };
+  }
+  if (unit && unit !== "sq. ft.") {
+    throw new Error(
+      `Newmark NIM has an unsupported unit of measurement: ${unit}`
+    );
+  }
+  const buildingSizeSqft =
+    unit === "sq. ft."
+      ? size ?? num(property?.sizeSf)
+      : num(property?.sizeSf) ?? size;
+  return {
+    buildingSizeSqft,
+    lotSizeAcres: null,
+    units: null,
+    kind: buildingSizeSqft === null ? null : "building_sqft",
+    normalizedValue: buildingSizeSqft,
+  };
+}
+
 export function mapNewmarkNimListing(
   record: any,
   tx: Tx,
@@ -743,22 +902,34 @@ export function mapNewmarkNimListing(
       `Newmark NIM record ${clean(record?.id) ?? "unknown"} has ambiguous geography`
     );
   }
-  const slug = clean(record?.slug);
-  if (!property || !slug) return null;
-  const providerUrl = clean(record?.externalWebsiteUrl);
-  const canonicalUrl =
-    providerUrl?.match(/^https:\/\/www\.nmrk\.com\/properties\/[^?#]+/i)?.[0]
-    ?? `https://www.nmrk.com/properties/${encodeURIComponent(slug)}`;
+  const canonicalIdentity = newmarkNimCanonicalIdentity(record);
+  if (!property || !canonicalIdentity.id || !canonicalIdentity.url) return null;
   const observation = detailObservation(
     "newmark_nim_public_inventory",
     "live",
     inventoryObservedAt
   );
   const priceText = clean(record?.priceSummary);
+  const measurements = newmarkNimMeasurementFields(property);
+  const candidateSalePrice =
+    tx === "sale" ? newmarkSalePrice(priceText) : null;
+  const rejectSalePrice =
+    candidateSalePrice !== null
+    && measurements.buildingSizeSqft !== null
+    && measurements.buildingSizeSqft > 100
+    && candidateSalePrice / measurements.buildingSizeSqft > 10_000;
   const propertyType = clean(property?.propertyTypeLabelOverride);
+  const mainImageUrl = clean(record?.mainImageUrl);
+  const cardPhotos =
+    mainImageUrl && /^https?:\/\//i.test(mainImageUrl)
+      ? [mainImageUrl]
+      : [];
   return {
-    id: slug,
-    name: clean(record?.name) ?? clean(property?.address) ?? slug,
+    id: canonicalIdentity.id,
+    name:
+      clean(record?.name)
+      ?? clean(property?.address)
+      ?? canonicalIdentity.id,
     transactionType: tx === "sale" ? "Sale" : "Lease",
     assetType: propertyType,
     street: clean(property?.address),
@@ -771,14 +942,25 @@ export function mapNewmarkNimListing(
     country: "US",
     latitude: num(property?.latitude),
     longitude: num(property?.longitude),
-    salePriceUsd: tx === "sale" ? newmarkSalePrice(priceText) : null,
+    salePriceUsd: rejectSalePrice ? null : candidateSalePrice,
     salePriceText: tx === "sale" ? priceText : null,
-    buildingSizeSqft: num(property?.sizeSf) ?? num(property?.size),
-    canonicalUrl,
-    url: canonicalUrl,
+    buildingSizeSqft: measurements.buildingSizeSqft,
+    lotSizeAcres: measurements.lotSizeAcres,
+    units: measurements.units,
+    canonicalUrl: canonicalIdentity.url,
+    url: canonicalIdentity.url,
     lastUpdated: clean(record?.modifiedOn)?.slice(0, 10) ?? null,
     inventoryObservedAt,
     preserveChildCollections: true,
+    newmarkNimMeasurement: {
+      kind: measurements.kind,
+      sourceUnit: clean(property?.unitOfMeasurement),
+      normalizedValue: measurements.normalizedValue,
+    },
+    newmarkNimPriceRejected: rejectSalePrice
+      ? "implausible_price_per_square_foot"
+      : null,
+    photos: cardPhotos,
     freshnessProvenance: {
       detailScope: "authoritative_inventory_feed",
       generationId: observation.generationId,
