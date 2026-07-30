@@ -233,6 +233,34 @@ test("savillsPageInfo reads provider pagination rather than top-level page count
   });
 });
 
+test("savillsPageInfo normalizes a reconciled provider zero-page singleton to one page", () => {
+  const html = `
+    <script id="__NEXT_DATA__" type="application/json">
+      {"props":{"initialReduxState":{"listPage":{"totalItems":0,"currentPage":1,"pageMap":{"1":{"paging":{"current":1,"total":0,"totalItems":2},"metaData":{"NextUrl":""}}}},"properties":{}}}}
+    </script>
+  `;
+  assert.deepEqual(savillsPageInfo(html, 2, true), {
+    currentPage: 1,
+    totalPages: 1,
+    totalItems: 2,
+    nextUrl: null,
+  });
+});
+
+test("savillsPageInfo rejects a zero-page shape when the page is incomplete", () => {
+  const html = `
+    <script id="__NEXT_DATA__" type="application/json">
+      {"props":{"initialReduxState":{"listPage":{"currentPage":1,"pageMap":{"1":{"paging":{"current":1,"total":0,"totalItems":2},"metaData":{"NextUrl":""}}}},"properties":{}}}}
+    </script>
+  `;
+  assert.deepEqual(savillsPageInfo(html, 1, true), {
+    currentPage: 1,
+    totalPages: null,
+    totalItems: 2,
+    nextUrl: null,
+  });
+});
+
 test("mapSavillsRow maps a U.S. sale row with display price", () => {
   const row = {
     ExternalPropertyID: "sale-us-1",

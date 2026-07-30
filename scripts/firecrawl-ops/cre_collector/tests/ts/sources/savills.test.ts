@@ -9,6 +9,7 @@ import {
   savillsListTimeoutMs,
   savillsDirectListTimeoutMs,
   savillsListHtmlIsUsable,
+  savillsClearlyNonUsLocation,
   srcSavills,
 } from "../../../sources/savills.js";
 
@@ -106,6 +107,63 @@ test("Savills full refresh reconciles unique rows to the provider total", async 
   }
 });
 
+test("Savills accepts a reconciled one-page provider shape whose paging total is zero", async () => {
+  const html = savillsPageHtml(1, true).replace(
+    '"paging":{"total":1',
+    '"paging":{"total":0'
+  );
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(html, { status: 200 });
+  try {
+    const result = await srcSavills("sale", Infinity, false);
+    assert.equal(result.listings.length, 1);
+    assert.equal(result.totalAvailable, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Savills rejects an anomalous nominal U.S. response containing only Canadian rows", async () => {
+  const property = {
+    ExternalPropertyID: "CA-1",
+    ExternalPropertyIDFormatted: "ca-1",
+    IsCommercial: true,
+    AddressLine1: "Sas Building",
+    AddressLine2: "280 King St E, Toronto On M5A 1K7",
+    PropertyTypes: [{ Caption: "Office" }],
+  };
+  const html = [
+    '<script id="__NEXT_DATA__" type="application/json">',
+    JSON.stringify({
+      props: {
+        initialReduxState: {
+          listPage: {
+            currentPage: 1,
+            pageMap: {
+              "1": {
+                paging: { total: 0, totalItems: 1 },
+                metaData: { NextUrl: "" },
+              },
+            },
+          },
+          properties: { "CA-1": property },
+        },
+      },
+    }),
+    "</script>",
+  ].join("");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(html, { status: 200 });
+  try {
+    await assert.rejects(
+      () => srcSavills("sale", Infinity, false),
+      /nominal U\.S\. endpoint returned only 1 explicitly non-U\.S\. row/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("inferStateFromZip maps ZIP prefixes to states", () => {
   assert.equal(inferStateFromZip("75201"), "TX");
   assert.equal(inferStateFromZip("10001"), "NY");
@@ -116,7 +174,7 @@ test("inferStateFromZip maps ZIP prefixes to states", () => {
 
 test("parseSavillsUsLocation parses city, state, and postal code", () => {
   assert.deepEqual(parseSavillsUsLocation("123 Main St, Dallas, TX 75201"), {
-    city: "123 Main St",
+    city: "Dallas",
     state: "TX",
     postalCode: "75201",
   });
@@ -125,7 +183,34 @@ test("parseSavillsUsLocation parses city, state, and postal code", () => {
     state: "WA",
     postalCode: "98101",
   });
+  assert.deepEqual(parseSavillsUsLocation("Phillipsburg Nj"), {
+    city: "Phillipsburg",
+    state: "NJ",
+    postalCode: null,
+  });
+  assert.deepEqual(parseSavillsUsLocation("La Jolla CA"), {
+    city: "La Jolla",
+    state: "CA",
+    postalCode: null,
+  });
+  assert.deepEqual(parseSavillsUsLocation("Washington Square, New York"), {
+    city: "Washington Square",
+    state: "NY",
+    postalCode: null,
+  });
+  assert.equal(parseSavillsUsLocation("Toronto On M5A 1K7"), null);
   assert.equal(parseSavillsUsLocation(""), null);
+});
+
+test("savillsClearlyNonUsLocation recognizes Canadian evidence only", () => {
+  assert.equal(
+    savillsClearlyNonUsLocation("280 King St E, Toronto On M5A 1K7"),
+    true
+  );
+  assert.equal(savillsClearlyNonUsLocation("Phillipsburg Nj"), false);
+  assert.equal(savillsClearlyNonUsLocation("Chicago IL"), false);
+  assert.equal(savillsClearlyNonUsLocation("On Main Street"), false);
+  assert.equal(savillsClearlyNonUsLocation("Unknown place"), false);
 });
 
 test("savillsSqft extracts square footage from text", () => {

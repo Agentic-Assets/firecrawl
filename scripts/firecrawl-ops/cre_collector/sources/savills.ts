@@ -84,6 +84,28 @@ export const US_STATE_NAME_TO_ABBR: Record<string, string> = {
   wyoming: "WY",
 };
 
+const US_STATE_ABBRS = new Set([
+  ...Object.values(US_STATE_NAME_TO_ABBR),
+  "DC",
+  "PR",
+]);
+
+const CANADIAN_PROVINCE_ABBRS = new Set([
+  "AB",
+  "BC",
+  "MB",
+  "NB",
+  "NL",
+  "NS",
+  "NT",
+  "NU",
+  "ON",
+  "PE",
+  "QC",
+  "SK",
+  "YT",
+]);
+
 export function inferStateFromZip(zip: string | null): string | null {
   if (!zip) return null;
   const prefix = Number(zip.slice(0, 3));
@@ -149,23 +171,59 @@ export function parseSavillsUsLocation(address2: string | null): {
 } | null {
   if (!address2) return null;
   const postalCode = (address2.match(/\b\d{5}(?:-\d{4})?\b/) ?? [])[0] ?? null;
-  const parts = address2
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean);
+  const withoutPostal = address2
+    .replace(/\b\d{5}(?:-\d{4})?\b\s*$/, "")
+    .trim();
+  const terminalAbbreviation = withoutPostal.match(/\b([A-Za-z]{2})\s*$/)?.[1]?.toUpperCase();
+  const stateFromAbbreviation =
+    terminalAbbreviation && US_STATE_ABBRS.has(terminalAbbreviation)
+      ? terminalAbbreviation
+      : null;
+  const stateNameMatch = Object.entries(US_STATE_NAME_TO_ABBR)
+    .sort(([left], [right]) => right.length - left.length)
+    .find(([name]) =>
+      new RegExp(`\\b${name.replace(/ /g, "\\s+")}\\s*$`, "i").test(withoutPostal)
+    );
   const state =
-    parts
-      .map((p) => p.match(/\b([A-Z]{2})\b/)?.[1] ?? US_STATE_NAME_TO_ABBR[p.toLowerCase()] ?? null)
-      .find((s): s is string => s !== null) ?? inferStateFromZip(postalCode);
+    stateFromAbbreviation ??
+    stateNameMatch?.[1] ??
+    inferStateFromZip(postalCode);
   if (!state && !postalCode) return null;
+  const statePattern = stateFromAbbreviation
+    ? stateFromAbbreviation
+    : stateNameMatch?.[0] ?? state;
+  const withoutState = (
+    statePattern
+      ? withoutPostal.replace(
+          new RegExp(`\\b${statePattern.replace(/ /g, "\\s+")}\\s*$`, "i"),
+          ""
+        )
+      : withoutPostal
+  )
+    .replace(/,+$/, "")
+    .trim();
   const city =
-    parts.find((p) => {
-      const lower = p.toLowerCase();
-      return !/^\d{5}(?:-\d{4})?$/.test(p) && !/\b[A-Z]{2}\b/.test(p) && !US_STATE_NAME_TO_ABBR[lower];
-    }) ??
-    clean(address2.replace(new RegExp(`\\b${state}\\b.*$`), "").replace(/\d{5}(?:-\d{4})?.*$/, "").replace(/,+$/, "")) ??
-    null;
+    clean(
+      withoutState
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .at(-1)
+    ) ?? null;
   return { city: clean(city), state, postalCode };
+}
+
+/**
+ * Distinguish a provider-side geographic spillover from an ambiguous U.S.
+ * address. Savills currently returns Toronto rows from its nominal U.S. sale
+ * URL. A Canadian postal code or province is sufficient to exclude those rows;
+ * an otherwise unmappable address remains a hard failure.
+ */
+export function savillsClearlyNonUsLocation(address2: string | null): boolean {
+  if (!address2) return false;
+  if (/\b[A-Z]\d[A-Z]\s?\d[A-Z]\d\b/i.test(address2)) return true;
+  const terminalProvince = address2.match(/\b([A-Za-z]{2})\s*$/)?.[1]?.toUpperCase();
+  return terminalProvince ? CANADIAN_PROVINCE_ABBRS.has(terminalProvince) : false;
 }
 
 export function parseSavillsNextData(html: string): any | null {
@@ -310,14 +368,30 @@ export function savillsPageInfo(html: string, fallbackRows: number, requireVerif
   const mapPage =
     pageMap?.[String(currentPage)] ??
     (pageMap && typeof pageMap === "object" ? Object.values(pageMap)[0] : null);
-  const totalPages = Number(mapPage?.paging?.total);
+  const rawTotalPages = Number(mapPage?.paging?.total);
+  const totalItems = requireVerifiedTotal
+    ? savillsVerifiedTotalItems(html)
+    : savillsTotalItems(html, fallbackRows);
+  const nextUrl = clean(mapPage?.metaData?.NextUrl);
+  // The provider currently emits paging.total=0 for a one-page result set
+  // while also reporting an exact positive totalItems. Accept that narrow
+  // shape only when page one contains every reported row and exposes no
+  // continuation. Any other zero/invalid page count remains fail-closed.
+  const totalPages =
+    Number.isInteger(rawTotalPages) && rawTotalPages > 0
+      ? rawTotalPages
+      : rawTotalPages === 0 &&
+          currentPage === 1 &&
+          nextUrl === null &&
+          totalItems !== null &&
+          totalItems === fallbackRows
+        ? 1
+        : null;
   return {
     currentPage: Number.isInteger(currentPage) && currentPage > 0 ? currentPage : null,
-    totalPages: Number.isInteger(totalPages) && totalPages > 0 ? totalPages : null,
-    totalItems: requireVerifiedTotal
-      ? savillsVerifiedTotalItems(html)
-      : savillsTotalItems(html, fallbackRows),
-    nextUrl: clean(mapPage?.metaData?.NextUrl),
+    totalPages,
+    totalItems,
+    nextUrl,
   };
 }
 
@@ -514,6 +588,7 @@ async function collectSavillsTransaction(tx: Tx, max: number, monitor: boolean):
     : "https://search.savills.com/com/en/list/commercial/property-for-sale/united-states-of-america";
   const listings: any[] = [];
   let nonUsFiltered = 0;
+  let unmappable = 0;
   const seenRawIds = new Set<string>();
   const seenListingIds = new Set<string>();
   const visitedUrls = new Set<string>();
@@ -568,7 +643,11 @@ async function collectSavillsTransaction(tx: Tx, max: number, monitor: boolean):
       seenRawIds.add(rawId);
       const mapped = mapSavillsRow(row, tx, sourceUrl);
       if (!mapped) {
-        nonUsFiltered++;
+        if (savillsClearlyNonUsLocation(clean(row.AddressLine2))) {
+          nonUsFiltered++;
+        } else {
+          unmappable++;
+        }
         continue;
       }
       const listingId = mapped.id ?? mapped.url;
@@ -616,9 +695,14 @@ async function collectSavillsTransaction(tx: Tx, max: number, monitor: boolean):
       `Savills ${tx} enumerated ${seenRawIds.size} unique commercial rows but provider reported ${total}`
     );
   }
-  if (nonUsFiltered > 0 || eligibleCount !== seenRawIds.size) {
+  if (unmappable > 0 || eligibleCount + nonUsFiltered !== seenRawIds.size) {
     throw new Error(
-      `Savills ${tx} could not map ${seenRawIds.size - eligibleCount} provider row(s) into U.S. inventory`
+      `Savills ${tx} could not classify ${unmappable} provider row(s) as U.S. or explicitly non-U.S. inventory`
+    );
+  }
+  if (eligibleCount === 0 && nonUsFiltered > 0) {
+    throw new Error(
+      `Savills ${tx} nominal U.S. endpoint returned only ${nonUsFiltered} explicitly non-U.S. row(s)`
     );
   }
   const truncated =
@@ -630,7 +714,7 @@ async function collectSavillsTransaction(tx: Tx, max: number, monitor: boolean):
     company: "Savills",
     sourceUrl,
     method: "Direct server-rendered Savills __NEXT_DATA__ enumeration using provider NextUrl pagination (validated Firecrawl fallback)",
-    totalAvailable: total,
+    totalAvailable: eligibleCount,
     listings,
     truncated,
     note: nonUsFiltered
