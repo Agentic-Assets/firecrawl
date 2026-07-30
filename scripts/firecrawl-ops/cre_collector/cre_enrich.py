@@ -443,8 +443,8 @@ def validate_enriched_artifact(claimed_rows, artifact):
     if not isinstance(artifact, dict) or (artifact.get("runMeta") or {}).get("mode") != "enrich":
         raise ValueError("enriched artifact must declare runMeta.mode == 'enrich'")
     listings = artifact.get("listings")
-    if not isinstance(listings, list) or len(listings) == 0:
-        raise ValueError("enriched artifact must contain a nonempty listings array")
+    if not isinstance(listings, list):
+        raise ValueError("enriched artifact must contain a listings array")
     claimed_by_url = {row.get("url"): row for row in claimed_rows if row.get("url")}
     safe = []
     seen_urls = set()
@@ -533,21 +533,29 @@ def run(args):
         return 1
 
     # (5) Additive ingest. ALWAYS ["--in", path]; never --mark-missing /
-    # --no-mark-missing / --activate-status.
-    ingest = subprocess.run(
-        [sys.executable, os.path.join(HERE, "cre_ingest.py"),
-         *build_ingest_argv(enriched_path)]
-        + (["--env-file", args.env_file] if args.env_file else []),
-        cwd=HERE, stdout=sys.stderr, stderr=sys.stderr,
-    )
-    if ingest.returncode != 0:
-        # Release so the batch re-enriches next run; re-ingest is idempotent
-        # (upsert key + COALESCE-keep), so at most one wasted render.
-        _psql_exec(db_url, build_release_sql(
-            claimed_ids, last_error=f"ingest rc={ingest.returncode}"))
-        print(f"ingest failed rc={ingest.returncode}; released "
-              f"{len(claimed_ids)} claim(s)", file=sys.stderr)
-        return 1
+    # --no-mark-missing / --activate-status. A valid empty artifact means every
+    # claimed detail was rejected by admission; skip ingest but continue into
+    # retry/dead-letter accounting so that batch cannot loop forever.
+    if enriched_listings:
+        ingest = subprocess.run(
+            [sys.executable, os.path.join(HERE, "cre_ingest.py"),
+             *build_ingest_argv(enriched_path)]
+            + (["--env-file", args.env_file] if args.env_file else []),
+            cwd=HERE, stdout=sys.stderr, stderr=sys.stderr,
+        )
+        if ingest.returncode != 0:
+            # Release so the batch re-enriches next run; re-ingest is idempotent
+            # (upsert key + COALESCE-keep), so at most one wasted render.
+            _psql_exec(db_url, build_release_sql(
+                claimed_ids, last_error=f"ingest rc={ingest.returncode}"))
+            print(f"ingest failed rc={ingest.returncode}; released "
+                  f"{len(claimed_ids)} claim(s)", file=sys.stderr)
+            return 1
+    else:
+        print(
+            "0 admitted listings: skipping ingest and advancing retry accounting",
+            file=sys.stderr,
+        )
 
     # (6) Complete: DELETE done rows; increment attempts ONLY on the
     # claimed-but-absent set (after a successful collect+ingest).

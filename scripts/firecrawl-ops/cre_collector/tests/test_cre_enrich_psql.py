@@ -522,6 +522,25 @@ class TestRunComplete:
         assert "DELETE FROM credeals.cre_enrichment_queue" in combined
         assert "attempts = attempts + 1" in combined
 
+    def test_all_rejected_batch_skips_ingest_and_advances_attempts(
+            self, monkeypatch, tmp_path):
+        rows = [
+            {"id": "id-miss", "url": "https://x/missing", "source_key": "svn",
+             "external_id": "missing", "reason": "changed", "attempts": 0},
+        ]
+        calls = _wire_run(
+            monkeypatch,
+            tmp_path,
+            claimed_rows=rows,
+            write_enriched={"listings": []},
+        )
+        rc = run(_Args())
+        assert rc == 0
+        assert calls["ingest_called"] is False
+        combined = "\n".join(calls["exec_sqls"])
+        assert "attempts = attempts + 1" in combined
+        assert "claimed_at = NULL" in combined
+
 
 class TestRunIngestFailure:
     """run() path: collect succeeds but ingest subprocess fails."""

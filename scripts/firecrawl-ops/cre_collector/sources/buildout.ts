@@ -715,6 +715,23 @@ export function buildoutDetailIframeUrl(sourceKey: string, listingUrl: string | 
   );
 }
 
+// Buildout returns an HTTP-success shell when an inventory slug no longer has a
+// detail page. Treat that as unavailable detail evidence, not as fresh Markdown:
+// ingesting the shell would overwrite the last useful description and falsely
+// complete the enrichment packet.
+export function buildoutDetailDocIsUsable(
+  doc: { markdown?: string | null; rawHtml?: string | null } | null | undefined
+): boolean {
+  const body = `${doc?.markdown ?? ""}\n${doc?.rawHtml ?? ""}`.toLowerCase();
+  if (!body.trim()) return false;
+  return !(
+    body.includes("listing_not_found") ||
+    body.includes("listing not found") ||
+    body.includes("sorry, we can't find the listing") ||
+    body.includes("sorry, we can&#39;t find the listing")
+  );
+}
+
 // Tier-B detail enricher for a single Buildout (svn / lee-associates) listing.
 // Scrapes the detail iframe URL with the capture-everything format set, runs
 // harvestDetail over the rendered doc, and returns an additive row that echoes
@@ -736,6 +753,12 @@ export async function enrichBuildoutDetail(sourceKey: string, listingUrl: string
     });
   } catch (err) {
     console.error(`  enrich/buildout(${sourceKey}): detail iframe scrape failed for ${listingUrl}: ${err}`);
+    return null;
+  }
+  if (!buildoutDetailDocIsUsable(doc)) {
+    console.error(
+      `  enrich/buildout(${sourceKey}): rejected missing-detail shell for ${listingUrl}`
+    );
     return null;
   }
   const harvested = harvestDetail(doc, { baseUrl: iframeUrl });

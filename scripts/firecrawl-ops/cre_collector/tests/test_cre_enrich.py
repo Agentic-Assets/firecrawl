@@ -215,14 +215,19 @@ def test_missing_enriched_artifact_releases_and_skips_ingest(monkeypatch, tmp_pa
     assert any("claimed_at = NULL" in s for s in calls["exec_sql"])
 
 
-def test_empty_listings_enriched_artifact_skips_ingest(monkeypatch, tmp_path):
+def test_empty_listings_enriched_artifact_advances_retry_without_ingest(
+    monkeypatch, tmp_path
+):
     calls = _wire_run(monkeypatch, tmp_path,
                       claimed=[("id-1", "colliers-main", "main:usa1",
                                 "https://x/a", "new", "0")],
                       collect_rc=0, write_enriched={"listings": []})
     rc = cre_enrich.run(_Args(env_file=None))
-    assert rc == 1
+    assert rc == 0
     assert calls["ingest_called"] is False
+    assert any(
+        "attempts = attempts + 1" in sql for sql in calls["exec_sql"]
+    )
 
 
 def test_validate_enriched_artifact_rejects_wrong_mode_url_source_and_duplicate():

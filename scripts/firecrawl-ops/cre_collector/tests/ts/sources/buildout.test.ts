@@ -17,6 +17,7 @@ import {
   buildoutPageWindow,
   buildoutSlugFromUrl,
   buildoutDetailIframeUrl,
+  buildoutDetailDocIsUsable,
   buildoutAvailableSf,
   buildoutScalarFields,
   BUILDOUT_ENRICH_CONFIG,
@@ -473,6 +474,31 @@ test("buildoutDetailIframeUrl composes the Buildout iframe content URL per sourc
   // Unknown source key or missing slug -> null (no iframe URL to scrape).
   assert.equal(buildoutDetailIframeUrl("unknown", "https://x/?propertyId=a"), null);
   assert.equal(buildoutDetailIframeUrl("svn", "https://svn.com/properties/"), null);
+});
+
+test("buildout detail admission rejects HTTP-success missing-listing shells", () => {
+  assert.equal(
+    buildoutDetailDocIsUsable({
+      markdown:
+        "![](https://assets.buildout.com/images/inventory/listing_not_found.svg)\n\n" +
+        "**Listing not found**\n\nSorry, we can't find the listing you are looking for.",
+    }),
+    false,
+  );
+  assert.equal(
+    buildoutDetailDocIsUsable({
+      rawHtml:
+        "<main><h1>Listing not found</h1><p>Sorry, we can&#39;t find the listing.</p></main>",
+    }),
+    false,
+  );
+  assert.equal(
+    buildoutDetailDocIsUsable({
+      markdown: "# 100 Main Street\n\nInvestment highlights and property details.",
+    }),
+    true,
+  );
+  assert.equal(buildoutDetailDocIsUsable({ markdown: "", rawHtml: "" }), false);
 });
 
 test("buildoutAvailableSf parses single and range available-SF attributes", () => {
