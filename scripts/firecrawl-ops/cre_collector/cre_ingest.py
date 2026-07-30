@@ -42,7 +42,7 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import Optional  # used in the "Optional[str]" string return annotations
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import quote, unquote_to_bytes, urlsplit, urlunsplit
 
 # Phase-2 data-lift: the shared text parsers live in cre_parse.py (the Python
 # mirror of lib/parse.ts), so the ingest, the monitor, and the WS2 backfill all
@@ -2958,18 +2958,49 @@ DATABASE_TARGET_OVERRIDE_QUERY_KEYS = {
 }
 
 
+def strict_uri_unquote(value, *, label):
+    """Decode one URI component as strict UTF-8 after validating every escape."""
+    invalid_escape = re.search(r"%(?![0-9A-Fa-f]{2})", value)
+    if invalid_escape is not None:
+        raise ValueError(f"{label} contains an invalid percent escape")
+    try:
+        return unquote_to_bytes(value).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{label} is not valid UTF-8") from exc
+
+
+def parse_postgres_uri_query(query):
+    """Strictly decode a PostgreSQL URI query without form-style ``+`` folding."""
+    if not query:
+        return []
+    pairs = []
+    for component in query.split("&"):
+        raw_key, separator, raw_value = component.partition("=")
+        if not separator:
+            raw_value = ""
+        pairs.append(
+            (
+                strict_uri_unquote(raw_key, label="PostgreSQL URL query key"),
+                strict_uri_unquote(raw_value, label="PostgreSQL URL query value"),
+            )
+        )
+    return pairs
+
+
 def database_target_fingerprint_from_url(db_url):
     """Return a credential-free hash for one unambiguous PostgreSQL URI target."""
     parsed = urlsplit(db_url)
     if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
         raise ValueError("selected database URL has no usable PostgreSQL host")
     authority = parsed.netloc.rsplit("@", 1)[-1]
-    decoded_hostname = unquote(parsed.hostname)
+    decoded_hostname = strict_uri_unquote(
+        parsed.hostname, label="PostgreSQL URL host"
+    )
     if "," in authority or "," in decoded_hostname:
         raise ValueError("multi-host PostgreSQL URLs are not supported")
     override_keys = {
         key.lower()
-        for key, _value in parse_qsl(parsed.query, keep_blank_values=True)
+        for key, _value in parse_postgres_uri_query(parsed.query)
         if key.lower() in DATABASE_TARGET_OVERRIDE_QUERY_KEYS
     }
     if override_keys:
@@ -2981,10 +3012,16 @@ def database_target_fingerprint_from_url(db_url):
         port = parsed.port or 5432
     except ValueError as exc:
         raise ValueError("selected database URL has an invalid port") from exc
-    database = unquote(parsed.path.lstrip("/"))
+    database = strict_uri_unquote(
+        parsed.path.lstrip("/"), label="PostgreSQL URL database"
+    )
     if not database or "/" in database:
         raise ValueError("selected database URL has no usable database name")
-    target = f"{decoded_hostname.lower().rstrip('.')}:{port}/{database}"
+    if decoded_hostname.startswith("/") or ":" in decoded_hostname:
+        fingerprint_host = decoded_hostname
+    else:
+        fingerprint_host = decoded_hostname.lower().rstrip(".")
+    target = f"{fingerprint_host}:{port}/{database}"
     return {
         "algorithm": "sha256",
         "value": hashlib.sha256(target.encode("utf-8")).hexdigest(),
@@ -3018,6 +3055,157 @@ def find_psql():
     if p:
         return p
     sys.exit("psql not found. brew install libpq, or set PSQL_BIN.")
+
+
+PSQL_QUERY_ENV = {
+    "application_name": "PGAPPNAME",
+    "channel_binding": "PGCHANNELBINDING",
+    "client_encoding": "PGCLIENTENCODING",
+    "connect_timeout": "PGCONNECT_TIMEOUT",
+    "gssencmode": "PGGSSENCMODE",
+    "gsslib": "PGGSSLIB",
+    "gssdelegation": "PGGSSDELEGATION",
+    "krbsrvname": "PGKRBSRVNAME",
+    "load_balance_hosts": "PGLOADBALANCEHOSTS",
+    "max_protocol_version": "PGMAXPROTOCOLVERSION",
+    "min_protocol_version": "PGMINPROTOCOLVERSION",
+    "options": "PGOPTIONS",
+    "passfile": "PGPASSFILE",
+    "password": "PGPASSWORD",
+    "require_auth": "PGREQUIREAUTH",
+    "requirepeer": "PGREQUIREPEER",
+    "requiressl": "PGREQUIRESSL",
+    "sslcert": "PGSSLCERT",
+    "sslcertmode": "PGSSLCERTMODE",
+    "sslcompression": "PGSSLCOMPRESSION",
+    "sslcrl": "PGSSLCRL",
+    "sslcrldir": "PGSSLCRLDIR",
+    "sslkey": "PGSSLKEY",
+    "ssl_max_protocol_version": "PGSSLMAXPROTOCOLVERSION",
+    "ssl_min_protocol_version": "PGSSLMINPROTOCOLVERSION",
+    "sslmode": "PGSSLMODE",
+    "sslnegotiation": "PGSSLNEGOTIATION",
+    "sslrootcert": "PGSSLROOTCERT",
+    "sslsni": "PGSSLSNI",
+    "target_session_attrs": "PGTARGETSESSIONATTRS",
+    "user": "PGUSER",
+}
+
+PSQL_URI_ONLY_QUERY_KEYS = {
+    "fallback_application_name",
+    "keepalives",
+    "keepalives_count",
+    "keepalives_idle",
+    "keepalives_interval",
+    "oauth_client_id",
+    "oauth_issuer",
+    "oauth_scope",
+    "replication",
+    "sslkeylogfile",
+    "tcp_user_timeout",
+}
+
+PSQL_UNSUPPORTED_SECRET_QUERY_KEYS = {
+    "oauth_client_secret",
+    "scram_client_key",
+    "scram_server_key",
+    "sslpassword",
+}
+
+PSQL_TARGET_ENV_KEYS = {
+    "PGDATABASE",
+    "PGHOST",
+    "PGHOSTADDR",
+    "PGPORT",
+    "PGSERVICE",
+    "PGSERVICEFILE",
+    *PSQL_QUERY_ENV.values(),
+}
+
+
+def psql_connection_env(db_url):
+    """Bind libpq through the child environment, never the process argv.
+
+    Clear inherited target/credential variables, then decompose the already
+    fingerprinted URI into libpq's dedicated environment variables. This keeps
+    credentials out of ``ps`` output without losing SSL/query settings.
+    """
+    parsed = urlsplit(db_url)
+    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
+        raise ValueError("selected database URL has no usable PostgreSQL host")
+    env = os.environ.copy()
+    for key in PSQL_TARGET_ENV_KEYS:
+        env.pop(key, None)
+    env["PGHOST"] = strict_uri_unquote(
+        parsed.hostname, label="PostgreSQL URL host"
+    )
+    try:
+        env["PGPORT"] = str(parsed.port or 5432)
+    except ValueError as exc:
+        raise ValueError("selected database URL has an invalid port") from exc
+    database = strict_uri_unquote(
+        parsed.path.lstrip("/"), label="PostgreSQL URL database"
+    )
+    if database:
+        env["PGDATABASE"] = database
+    if parsed.username is not None:
+        env["PGUSER"] = strict_uri_unquote(
+            parsed.username, label="PostgreSQL URL username"
+        )
+    if parsed.password is not None:
+        env["PGPASSWORD"] = strict_uri_unquote(
+            parsed.password, label="PostgreSQL URL password"
+        )
+    for key, value in parse_postgres_uri_query(parsed.query):
+        normalized = key.lower()
+        target = PSQL_QUERY_ENV.get(normalized)
+        if target is not None:
+            env[target] = value
+        elif normalized in PSQL_URI_ONLY_QUERY_KEYS:
+            continue
+        elif normalized in PSQL_UNSUPPORTED_SECRET_QUERY_KEYS:
+            raise ValueError(
+                f"PostgreSQL URL query parameter cannot be moved out of process argv safely: {key}"
+            )
+        else:
+            raise ValueError(
+                f"unsupported PostgreSQL URL query parameter for psql: {key}"
+            )
+    return env
+
+
+def psql_connection_args(db_url):
+    """Return a credential-free ``--dbname`` URI only when URI-only options exist."""
+    parsed = urlsplit(db_url)
+    uri_only = [
+        (key, value)
+        for key, value in parse_postgres_uri_query(parsed.query)
+        if key.lower() in PSQL_URI_ONLY_QUERY_KEYS
+    ]
+    if not uri_only:
+        return []
+    hostname = strict_uri_unquote(
+        parsed.hostname or "", label="PostgreSQL URL host"
+    )
+    if ":" in hostname:
+        rendered_host = f"[{quote(hostname, safe=':')}]"
+    else:
+        rendered_host = quote(hostname, safe="-._~")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("selected database URL has an invalid port") from exc
+    authority = rendered_host + (f":{port}" if port is not None else "")
+    database = strict_uri_unquote(
+        parsed.path.lstrip("/"), label="PostgreSQL URL database"
+    )
+    rendered_path = "/" + quote(database, safe="-._~")
+    query = "&".join(
+        f"{quote(key, safe='-._~')}={quote(value, safe='-._~')}"
+        for key, value in uri_only
+    )
+    safe_uri = urlunsplit((parsed.scheme, authority, rendered_path, query, ""))
+    return ["--dbname", safe_uri]
 
 
 # ---------------------------------------------------------------------------
@@ -3092,7 +3280,16 @@ def iter_copy_json_rows(psql, db_url, inner_select, *, label="read"):
     """
     sql = f"COPY ({inner_select}) TO STDOUT WITH (FORMAT csv)"
     proc = subprocess.run(
-        [psql, db_url, "-q", "-v", "ON_ERROR_STOP=1", "-c", sql],
+        [
+            psql,
+            *psql_connection_args(db_url),
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            sql,
+        ],
+        env=psql_connection_env(db_url),
         capture_output=True,
         text=True,
     )
@@ -3395,7 +3592,16 @@ def main():
     print(f"credentials: {env_path}", file=sys.stderr)
     psql = find_psql()
     proc = subprocess.run(
-        [psql, db_url, "-q", "-v", "ON_ERROR_STOP=1", "-f", sql_path],
+        [
+            psql,
+            *psql_connection_args(db_url),
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            sql_path,
+        ],
+        env=psql_connection_env(db_url),
         stdout=sys.stdout, stderr=sys.stderr,
     )
     if not args.keep_artifacts:

@@ -54,14 +54,24 @@ def test_run_query_uses_read_only_and_quotes_since(monkeypatch):
     def fake_run(argv, **kwargs):
         calls["argv"] = argv
         calls["input"] = kwargs["input"]
+        calls["env"] = kwargs["env"]
         return Proc()
 
     monkeypatch.setattr(report.subprocess, "run", fake_run)
-    rows = report.run_query("psql", "postgres://secret", "SELECT :since AS x;", "2026-07-18T13:00:00+00:00")
+    rows = report.run_query(
+        "psql",
+        "postgres://user:secret@db.test/cre",
+        "SELECT :since AS x;",
+        "2026-07-18T13:00:00+00:00",
+    )
     assert rows == [{"active_total": "10"}]
     assert "BEGIN READ ONLY" in calls["input"]
     assert "'2026-07-18T13:00:00+00:00'::timestamptz" in calls["input"]
     assert ":since" not in calls["input"]
+    assert all("secret" not in arg for arg in calls["argv"])
+    assert calls["env"]["PGHOST"] == "db.test"
+    assert calls["env"]["PGDATABASE"] == "cre"
+    assert calls["env"]["PGPASSWORD"] == "secret"
 
 
 def test_main_writes_json_without_credentials(monkeypatch, tmp_path):

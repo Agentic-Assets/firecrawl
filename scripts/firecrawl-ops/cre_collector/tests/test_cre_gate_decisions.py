@@ -252,8 +252,10 @@ class TestPsqlReadShape:
         monkeypatch.setattr(subprocess, "run", fake_run)
         rows = g._psql_read("psql", "postgresql://fake/db", "SELECT 1;")
         argv = captured["argv"]
-        # Must pass db_url as second positional arg
-        assert argv[1] == "postgresql://fake/db"
+        # Credentials must stay out of the process argument list.
+        assert "postgresql://fake/db" not in argv
+        assert captured["kw"]["env"]["PGHOST"] == "fake"
+        assert captured["kw"]["env"]["PGDATABASE"] == "db"
         # Must use unit-separator delimiter
         assert "\x1f" in argv
         # Must use -tAF (tuple-only, no alignment, with field sep)
@@ -389,8 +391,8 @@ class TestRunBaselineSql:
         g.run_baseline_sql("psql", "postgresql://fake/db", sql)
 
         argv = captured["argv"]
-        # DB URL is the second argv element
-        assert argv[1] == "postgresql://fake/db"
+        # Credentials must stay out of the process argument list.
+        assert "postgresql://fake/db" not in argv
         # -f flag must be present
         assert "-f" in argv
         # The SQL content was written to the temp file

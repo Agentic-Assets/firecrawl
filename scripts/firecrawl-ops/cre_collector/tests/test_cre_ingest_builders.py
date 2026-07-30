@@ -738,7 +738,7 @@ def test_cli_live_direct_ingest_supports_unmarked_strict_source_modes(
     monkeypatch.setattr(
         ci,
         "load_db_url",
-        lambda _env_file: ("postgres://SENTINEL", "/fake/.env"),
+        lambda _env_file: ("postgres://user:SENTINEL@db.test/cre", "/fake/.env"),
     )
     monkeypatch.setattr(ci, "find_psql", lambda: "psql")
 
@@ -753,6 +753,147 @@ def test_cli_live_direct_ingest_supports_unmarked_strict_source_modes(
 
     assert len(calls) == 1
     assert calls[0][0][0] == "psql"
+    assert all("SENTINEL" not in arg for arg in calls[0][0])
+    assert calls[0][1]["env"]["PGHOST"] == "db.test"
+    assert calls[0][1]["env"]["PGDATABASE"] == "cre"
+    assert calls[0][1]["env"]["PGPASSWORD"] == "SENTINEL"
+
+
+def test_psql_connection_env_clears_inherited_target_overrides(monkeypatch):
+    for key in ci.PSQL_TARGET_ENV_KEYS:
+        monkeypatch.setenv(key, "inherited-override")
+    monkeypatch.setenv("CRE_UNRELATED", "preserved")
+    url = (
+        "postgresql://user:secret@db.example.test:5432/cre"
+        "?sslmode=require"
+        "&application_name=a+b"
+        "&channel_binding=require"
+        "&requiressl=1"
+        "&target_session_attrs=read-write"
+    )
+    env = ci.psql_connection_env(url)
+    assert env["PGHOST"] == "db.example.test"
+    assert env["PGPORT"] == "5432"
+    assert env["PGDATABASE"] == "cre"
+    assert env["PGUSER"] == "user"
+    assert env["PGPASSWORD"] == "secret"
+    assert env["PGSSLMODE"] == "require"
+    assert env["PGAPPNAME"] == "a+b"
+    assert env["PGCHANNELBINDING"] == "require"
+    assert env["PGREQUIRESSL"] == "1"
+    assert env["PGTARGETSESSIONATTRS"] == "read-write"
+    assert env["CRE_UNRELATED"] == "preserved"
+    for key in ci.PSQL_TARGET_ENV_KEYS - {
+        "PGDATABASE",
+        "PGHOST",
+        "PGPORT",
+        "PGUSER",
+        "PGPASSWORD",
+        "PGSSLMODE",
+        "PGAPPNAME",
+        "PGCHANNELBINDING",
+        "PGREQUIRESSL",
+        "PGTARGETSESSIONATTRS",
+    }:
+        assert key not in env
+
+
+def test_database_target_fingerprint_normalizes_dns_but_not_special_hosts():
+    assert ci.database_target_fingerprint_from_url(
+        "postgresql://user:one@DB.EXAMPLE.TEST./cre"
+    ) == ci.database_target_fingerprint_from_url(
+        "postgresql://user:two@db.example.test/cre"
+    )
+    assert ci.database_target_fingerprint_from_url(
+        "postgresql://user:one@%2FUsers%2FCayman%2FPG/cre"
+    ) != ci.database_target_fingerprint_from_url(
+        "postgresql://user:two@%2Fusers%2Fcayman%2Fpg/cre"
+    )
+    assert ci.database_target_fingerprint_from_url(
+        "postgresql://user:one@%2Ftmp%2Fpg./cre"
+    ) != ci.database_target_fingerprint_from_url(
+        "postgresql://user:two@%2Ftmp%2Fpg/cre"
+    )
+    assert ci.database_target_fingerprint_from_url(
+        "postgresql://user:one@[fe80::1%25En0]/cre"
+    ) != ci.database_target_fingerprint_from_url(
+        "postgresql://user:two@[fe80::1%25en0]/cre"
+    )
+
+
+def test_psql_connection_args_preserve_uri_only_options_without_credentials():
+    url = (
+        "postgresql://user:secret@db.example.test:6543/cre"
+        "?sslmode=require"
+        "&keepalives=1"
+        "&fallback_application_name=a+b"
+    )
+    args = ci.psql_connection_args(url)
+    assert args[0] == "--dbname"
+    assert args[1].startswith("postgresql://db.example.test:6543/cre?")
+    assert "user" not in args[1]
+    assert "secret" not in args[1]
+    assert "sslmode" not in args[1]
+    assert "keepalives=1" in args[1]
+    assert "fallback_application_name=a%2Bb" in args[1]
+
+    env = ci.psql_connection_env(url)
+    assert env["PGUSER"] == "user"
+    assert env["PGPASSWORD"] == "secret"
+    assert env["PGSSLMODE"] == "require"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_host", "expected_uri_host"),
+    [
+        (
+            (
+                "postgresql://user:secret@%2FUsers%2FCayman%2FPG/cre"
+                "?keepalives=0"
+            ),
+            "/Users/Cayman/PG",
+            "postgresql://%2FUsers%2FCayman%2FPG/cre?",
+        ),
+        (
+            (
+                "postgresql://user:secret@[fe80::1%25en0]:5432/cre"
+                "?keepalives=1"
+            ),
+            "fe80::1%en0",
+            "postgresql://[fe80::1%25en0]:5432/cre?",
+        ),
+    ],
+)
+def test_psql_connection_args_reencode_special_hosts(
+    url, expected_host, expected_uri_host
+):
+    env = ci.psql_connection_env(url)
+    args = ci.psql_connection_args(url)
+    assert env["PGHOST"] == expected_host
+    assert args[1].startswith(expected_uri_host)
+    assert "user" not in args[1]
+    assert "secret" not in args[1]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://user:secret@db.example.test/cre?application_name=%ZZ",
+        "postgresql://user:%FF@db.example.test/cre",
+    ],
+)
+def test_psql_connection_rejects_invalid_or_non_utf8_percent_encoding(url):
+    with pytest.raises(ValueError, match="percent escape|valid UTF-8"):
+        ci.psql_connection_env(url)
+
+
+def test_psql_connection_rejects_secret_query_options():
+    url = (
+        "postgresql://user:secret@db.example.test/cre"
+        "?sslmode=require&sslpassword=query-secret"
+    )
+    with pytest.raises(ValueError, match="cannot be moved out of process argv safely"):
+        ci.psql_connection_env(url)
 
 
 def test_cli_rejects_target_drift_before_psql_discovery(tmp_path, monkeypatch):

@@ -19,6 +19,8 @@ from cre_ingest import (
     assert_expected_database_target,
     find_psql,
     load_db_url,
+    psql_connection_args,
+    psql_connection_env,
 )
 
 
@@ -539,7 +541,7 @@ def run_query(psql, db_url, sql):
     proc = subprocess.run(
         [
             psql,
-            db_url,
+            *psql_connection_args(db_url),
             "-q",
             "-v",
             "ON_ERROR_STOP=1",
@@ -551,6 +553,7 @@ def run_query(psql, db_url, sql):
             "\t",
             "-A",
         ],
+        env=psql_connection_env(db_url),
         input=wrapped,
         text=True,
         capture_output=True,
@@ -606,7 +609,7 @@ def run_queries(psql, db_url, queries):
     proc = subprocess.run(
         [
             psql,
-            db_url,
+            *psql_connection_args(db_url),
             "-q",
             "-v",
             "ON_ERROR_STOP=1",
@@ -618,6 +621,7 @@ def run_queries(psql, db_url, queries):
             "\t",
             "-A",
         ],
+        env=psql_connection_env(db_url),
         input="\n".join(statements) + "\n",
         text=True,
         capture_output=True,

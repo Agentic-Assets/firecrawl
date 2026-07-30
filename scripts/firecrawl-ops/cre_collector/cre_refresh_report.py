@@ -8,7 +8,14 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from cre_ingest import SOURCE_TO_BROKERAGE, find_psql, load_db_url, sql_lit
+from cre_ingest import (
+    SOURCE_TO_BROKERAGE,
+    find_psql,
+    load_db_url,
+    psql_connection_args,
+    psql_connection_env,
+    sql_lit,
+)
 
 
 SOURCE_KEY_SQL = """
@@ -132,7 +139,7 @@ def run_query(psql, db_url, sql, since):
     proc = subprocess.run(
         [
             psql,
-            db_url,
+            *psql_connection_args(db_url),
             "-q",
             "-v",
             "ON_ERROR_STOP=1",
@@ -144,6 +151,7 @@ def run_query(psql, db_url, sql, since):
             "\t",
             "-A",
         ],
+        env=psql_connection_env(db_url),
         input=f"BEGIN READ ONLY;\n{rendered}\nROLLBACK;\n",
         text=True,
         capture_output=True,

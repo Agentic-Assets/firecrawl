@@ -49,6 +49,8 @@ from cre_ingest import (
     assert_expected_database_target,
     find_psql,
     load_db_url,
+    psql_connection_args,
+    psql_connection_env,
     sql_lit,
     to_row,
 )
@@ -194,11 +196,21 @@ def _psql_read(psql, db_url, sql):
     """Run a read-only query and return rows as lists of strings.
 
     Uses -tA (tuples only, unaligned) with a unit-separator field delimiter so
-    ordinary text values do not collide with the separator. The DB URL is passed
-    as an argv element and is never printed.
+    ordinary text values do not collide with the separator. The DB URL is bound
+    through the child environment and never placed in the process argv.
     """
     proc = subprocess.run(
-        [psql, db_url, "-tAF", "\x1f", "-v", "ON_ERROR_STOP=1", "-c", sql],
+        [
+            psql,
+            *psql_connection_args(db_url),
+            "-tAF",
+            "\x1f",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            sql,
+        ],
+        env=psql_connection_env(db_url),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -280,7 +292,16 @@ def run_baseline_sql(psql, db_url, sql):
         with os.fdopen(fd, "w") as f:
             f.write(sql)
         proc = subprocess.run(
-            [psql, db_url, "-q", "-v", "ON_ERROR_STOP=1", "-f", path],
+            [
+                psql,
+                *psql_connection_args(db_url),
+                "-q",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-f",
+                path,
+            ],
+            env=psql_connection_env(db_url),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

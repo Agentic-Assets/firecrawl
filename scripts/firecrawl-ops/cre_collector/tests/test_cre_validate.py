@@ -419,6 +419,49 @@ def test_run_query_argv_contains_format_flags(monkeypatch):
     assert "ON_ERROR_STOP=1" in argv
 
 
+def test_run_query_keeps_database_url_out_of_process_argv(monkeypatch):
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        return _FakeProc(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
+    run_query("psql", "postgres://user:secret@db.example.test/cre", "SELECT 1;")
+    assert all("secret" not in arg for arg in captured["argv"])
+    assert captured["env"]["PGHOST"] == "db.example.test"
+    assert captured["env"]["PGDATABASE"] == "cre"
+    assert captured["env"]["PGUSER"] == "user"
+    assert captured["env"]["PGPASSWORD"] == "secret"
+
+
+def test_run_query_keeps_uri_only_options_in_credential_free_dbname(monkeypatch):
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        return _FakeProc(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
+    run_query(
+        "psql",
+        (
+            "postgres://user:secret@db.example.test/cre"
+            "?sslmode=require&keepalives=1&fallback_application_name=a+b"
+        ),
+        "SELECT 1;",
+    )
+    dbname = captured["argv"][captured["argv"].index("--dbname") + 1]
+    assert "secret" not in dbname
+    assert "user" not in dbname
+    assert "keepalives=1" in dbname
+    assert "fallback_application_name=a%2Bb" in dbname
+    assert captured["env"]["PGPASSWORD"] == "secret"
+    assert captured["env"]["PGSSLMODE"] == "require"
+
+
 def test_run_query_uses_text_and_capture_output(monkeypatch):
     captured = {}
 
@@ -453,17 +496,19 @@ def test_run_query_nonzero_returncode_raises_system_exit(monkeypatch):
         run_query("psql", "postgres://SENTINEL", "SELECT 1;")
 
 
-def test_run_query_db_url_passed_in_argv(monkeypatch):
-    """The DB URL must appear in the psql argv (so psql knows which server to hit)."""
+def test_run_query_db_url_passed_only_in_child_environment(monkeypatch):
+    """The DB URL reaches libpq without appearing in the process argument list."""
     captured = {}
 
     def fake_run(argv, **kwargs):
         captured["argv"] = argv
+        captured["env"] = kwargs["env"]
         return _FakeProc(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
-    run_query("psql", "postgres://SENTINEL_URL", "SELECT 1;")
-    assert "postgres://SENTINEL_URL" in captured["argv"]
+    run_query("psql", "postgres://user:SENTINEL_URL@db.test/cre", "SELECT 1;")
+    assert all("SENTINEL_URL" not in arg for arg in captured["argv"])
+    assert captured["env"]["PGPASSWORD"] == "SENTINEL_URL"
 
 
 def test_parse_query_batch_splits_marked_result_sets():
@@ -516,6 +561,8 @@ def test_run_queries_uses_one_repeatable_read_snapshot(monkeypatch):
         in captured["kwargs"]["input"]
     )
     assert captured["kwargs"]["input"].strip().endswith("ROLLBACK;")
+    assert "postgres://SENTINEL" not in captured["argv"]
+    assert captured["kwargs"]["env"]["PGHOST"] == "sentinel"
 
 
 # ---------------------------------------------------------------------------
