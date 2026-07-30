@@ -1,0 +1,995 @@
+import hashlib
+import json
+import os
+import stat
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+import cre_repair_cushman_identity as repair
+
+
+def minimal_state():
+    return {
+        "listings": [
+            {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "external_id": "provider-a",
+                "source_url": (
+                    "https://www.cushmanwakefield.com/en/"
+                    "united-states/properties/example"
+                ),
+                "deleted": False,
+                "generation": repair.EXPECTED_GENERATION,
+                "updated_at": "2026-07-30T08:24:21+00:00",
+                "target_id": "url:v1:00000000000000000000000000000000",
+                "identity_url": (
+                    "https://www.cushmanwakefield.com/en/"
+                    "united-states/properties/example"
+                ),
+            }
+        ],
+        "sourceIndex": [],
+        "queue": [],
+        "geometrySha256": repair.EXPECTED_GEOMETRY_SHA256,
+    }
+
+
+def minimal_artifact():
+    return [
+        repair.ArtifactRow(
+            provider_id="provider-a",
+            source_url=(
+                "https://www.cushmanwakefield.com/en/"
+                "united-states/properties/example"
+            ),
+            target_id="url:v1:00000000000000000000000000000000",
+            transaction_mode="sale",
+        )
+    ]
+
+
+def test_reviewed_artifact_loads_and_has_exact_geometry():
+    rows = repair.load_artifact(repair.DEFAULT_ARTIFACT)
+    assert len(rows) == repair.EXPECTED_ARTIFACT_ROWS
+    assert len({row.target_id for row in rows}) == repair.EXPECTED_ARTIFACT_TARGETS
+    assert all(row.target_id.startswith("url:v1:") for row in rows)
+
+
+def test_artifact_hash_and_generation_are_fail_closed(tmp_path):
+    path = tmp_path / "artifact.json"
+    path.write_text(
+        json.dumps(
+            {
+                "runMeta": {
+                    "freshness": {"generationId": repair.EXPECTED_GENERATION}
+                },
+                "listings": [],
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="SHA-256"):
+        repair.load_artifact(path)
+
+
+def test_apply_sql_contains_all_reviewed_surfaces_and_postconditions():
+    sql = repair.build_apply_sql(minimal_artifact(), minimal_state())
+    required = (
+        "pg_advisory_xact_lock",
+        "_cw_om_owner",
+        "_cw_survivors",
+        "cushman-superseded:v1:",
+        "cre_listing_contacts",
+        "cre_listing_documents",
+        "cre_listing_images",
+        "cre_listing_om_facts",
+        "cre_listing_events",
+        "cre_source_index",
+        "cre_enrichment_queue",
+        "latestInventoryObservation",
+        "activeOmFacts",
+        "totalParentsPreserved",
+    )
+    for value in required:
+        assert value in sql
+    assert "DELETE FROM credeals.cre_listings" not in sql
+    assert "DELETE FROM credeals.cre_listing_om_facts" not in sql
+    assert "UPDATE credeals.cre_listing_om_facts f SET listing_id" in sql
+    assert sql.rstrip().endswith("COMMIT;")
+
+
+def test_survivor_order_preserves_old_uuid_and_latest_om_owner():
+    sql = repair.invariant_sql()
+    old_priority = (
+        "CASE WHEN r.generation IS DISTINCT FROM "
+        f"'{repair.EXPECTED_GENERATION}'"
+    )
+    om_priority = "CASE WHEN r.id=o.owner_id THEN 0 ELSE 1 END"
+    assert old_priority in sql
+    assert om_priority in sql
+    assert sql.index(old_priority) < sql.index(om_priority)
+    assert "count(DISTINCT listing_id)=1" in sql
+
+
+def test_source_index_merge_and_queue_rekey_preserve_retry_state():
+    sql = repair.apply_body(minimal_artifact(), minimal_state())
+    assert "min(first_seen)" not in sql
+    assert "max(last_seen)" not in sql
+    assert "max(last_enumerated_at)" not in sql
+    for field in (
+        "source_lastmod",
+        "soft_deleted",
+        "first_seen",
+        "last_seen",
+        "last_enumerated_at",
+        "prior_sale_price",
+        "prior_lease_rate",
+        "prior_status",
+    ):
+        assert f"{field}=r.{field}" in sql
+    assert "DELETE FROM credeals.cre_source_index loser" in sql
+    queue_section = sql[sql.index("UPDATE credeals.cre_enrichment_queue q") :]
+    assert "SET external_id=p.target_id,url=survivor.source_url" in queue_section
+    assert "attempts=" not in queue_section
+    assert "claimed_at=" not in queue_section
+
+
+def test_source_index_donor_is_one_coherent_ranked_tuple():
+    older_with_larger_values = {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "last_enumerated_at": "2026-07-29T12:00:00+00:00",
+        "last_seen": "2026-07-29T12:00:00+00:00",
+        "soft_deleted": False,
+        "source_lastmod": "2026-07-31T00:00:00+00:00",
+        "prior_sale_price": 99_000_000,
+    }
+    freshest = {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "last_enumerated_at": "2026-07-30T12:00:00+00:00",
+        "last_seen": "2026-07-30T12:00:00+00:00",
+        "soft_deleted": False,
+        "source_lastmod": "2026-07-30T00:00:00+00:00",
+        "prior_sale_price": 1_000_000,
+    }
+    donor = repair.select_source_index_donor(
+        [older_with_larger_values, freshest]
+    )
+    assert donor is freshest
+    assert donor["source_lastmod"] == "2026-07-30T00:00:00+00:00"
+    assert donor["prior_sale_price"] == 1_000_000
+
+
+def test_preimage_is_complete_and_rollback_restores_every_fk_surface():
+    sql = repair.preimage_sql(minimal_artifact(), minimal_state())
+    assert "LEFT JOIN _cw_current current USING(target_id)" in sql
+    assert "'schemaVersion',4" in sql
+    assert "'url',ranked.url" in sql
+    assert "'fact_group',ranked.fact_group" in sql
+    assert "'parsed_at',ranked.parsed_at" in sql
+    for key in (
+        "'listings'",
+        "'repairPlan'",
+        "'contacts'",
+        "'documents'",
+        "'images'",
+        "'media'",
+        "'links'",
+        "'omFacts'",
+        "'events'",
+        "'priceHistory'",
+        "'scrapeLogs'",
+        "'sourceIndex'",
+        "'queue'",
+    ):
+        assert key in sql
+    payload = reviewed_empty_preimage()
+    with (
+        patch.object(repair, "EXPECTED_ARTIFACT_ROWS", 0),
+        patch.object(repair, "EXPECTED_TOTAL_ROWS", 0),
+        patch.object(repair, "EXPECTED_CONTACT_ROWS", 0),
+        patch.object(repair, "EXPECTED_DOCUMENT_ROWS", 0),
+        patch.object(repair, "EXPECTED_IMAGE_ROWS", 0),
+        patch.object(repair, "EXPECTED_OM_FACTS", 0),
+        patch.object(repair, "EXPECTED_EVENT_ROWS", 0),
+        patch.object(repair, "EXPECTED_SOURCE_INDEX_ROWS", 0),
+        patch.object(repair, "EXPECTED_QUEUE_ROWS", 0),
+    ):
+        rollback = repair.build_rollback_sql(
+            payload, minimal_artifact(), minimal_state()
+        )
+    for table in repair.EXPECTED_FK_TABLES:
+        assert table in rollback
+    assert "jsonb_populate_recordset" in rollback
+    assert "FULL JOIN" in rollback
+    assert "post_listing_id" in rollback
+    assert "parent post-repair disposition drift" in rollback
+    assert rollback.rstrip().endswith("COMMIT;")
+
+
+def reviewed_empty_preimage():
+    return {
+        "schemaVersion": 4,
+        "capturedAt": "2026-07-30T18:00:00+00:00",
+        "applyTimestampBinding": (
+            "updated_at=raw_data.cushmanIdentityRepair.appliedAt="
+            "transaction_timestamp"
+        ),
+        "artifactSha256": repair.EXPECTED_ARTIFACT_SHA256,
+        "databaseTargetSha256": repair.EXPECTED_DB_TARGET_SHA256,
+        "generation": repair.EXPECTED_GENERATION,
+        "geometrySha256": repair.EXPECTED_GEOMETRY_SHA256,
+        "artifactPlan": [],
+        "repairPlan": [],
+        "listings": [],
+        "contacts": [],
+        "documents": [],
+        "images": [],
+        "media": [],
+        "links": [],
+        "omFacts": [],
+        "events": [],
+        "priceHistory": [],
+        "scrapeLogs": [],
+        "sourceIndex": [],
+        "queue": [],
+    }
+
+
+def expected_post_state(
+    external_id,
+    source_url,
+    target_id,
+    survivor_id,
+    disposition,
+    raw_data=None,
+):
+    marker = {
+        "generationId": repair.EXPECTED_GENERATION,
+        "canonicalExternalId": target_id,
+        "canonicalListingId": survivor_id,
+        "disposition": disposition,
+        "repairToken": repair.REPAIR_TOKEN,
+    }
+    raw_data_base = dict(
+        raw_data
+        or {
+            "freshnessProvenance": {
+                "generationId": repair.EXPECTED_GENERATION
+            }
+        }
+    )
+    raw_data_base["cushmanIdentityRepair"] = marker
+    return {
+        "external_id": external_id,
+        "source_url": source_url,
+        "canonical_url": source_url,
+        "status": "active",
+        "transaction_type": "sale",
+        "property_type": None,
+        "title": None,
+        "address": None,
+        "city": None,
+        "state": None,
+        "zip": None,
+        "country": None,
+        "lat": None,
+        "lng": None,
+        "scraped_at": None,
+        "raw_data_base": raw_data_base,
+        "source_lastmod": None,
+        "canonical_key": None,
+        "deleted_at_static": None,
+        "deleted_at_uses_apply_timestamp": disposition
+        == "superseded_duplicate",
+    }
+
+
+def current_listing(listing_id, source_url):
+    return {
+        "id": listing_id,
+        "external_id": f"provider-{listing_id[-1]}",
+        "source_url": source_url,
+        "raw_data": {
+            "freshnessProvenance": {
+                "generationId": repair.EXPECTED_GENERATION
+            }
+        },
+        "deleted_at": None,
+        "updated_at": "2026-07-30T08:24:21+00:00",
+    }
+
+
+def plan_row(listing, survivor_id, source_url):
+    listing_id = listing["id"]
+    target_id = repair.cushman_canonical_external_id(source_url)
+    assert target_id is not None
+    is_survivor = listing_id == survivor_id
+    external_id = (
+        target_id
+        if is_survivor
+        else "cushman-superseded:v1:"
+        + hashlib.md5(
+            listing_id.encode(), usedforsecurity=False
+        ).hexdigest()
+    )
+    disposition = (
+        "canonical_survivor" if is_survivor else "superseded_duplicate"
+    )
+    return {
+        "id": listing_id,
+        "target_id": target_id,
+        "survivor_id": survivor_id,
+        "has_current": True,
+        "post_external_id": external_id,
+        "post_source_url": source_url,
+        "post_deleted": not is_survivor,
+        "post_generation": repair.EXPECTED_GENERATION,
+        "post_state": expected_post_state(
+            external_id,
+            source_url,
+            target_id,
+            survivor_id,
+            disposition,
+        ),
+    }
+
+
+def patched_review_counts(total, contacts=0):
+    return {
+        "EXPECTED_ARTIFACT_ROWS": 0,
+        "EXPECTED_TOTAL_ROWS": total,
+        "EXPECTED_CONTACT_ROWS": contacts,
+        "EXPECTED_DOCUMENT_ROWS": 0,
+        "EXPECTED_IMAGE_ROWS": 0,
+        "EXPECTED_OM_FACTS": 0,
+        "EXPECTED_EVENT_ROWS": 0,
+        "EXPECTED_SOURCE_INDEX_ROWS": 0,
+        "EXPECTED_QUEUE_ROWS": 0,
+    }
+
+
+def empty_child_policy_payload():
+    return {
+        "contacts": [],
+        "documents": [],
+        "images": [],
+        "media": [],
+        "links": [],
+        "omFacts": [],
+        "events": [],
+        "priceHistory": [],
+        "scrapeLogs": [],
+    }
+
+
+def test_private_preimage_is_owner_only_and_never_overwritten(tmp_path):
+    parent = tmp_path / "private"
+    parent.mkdir(mode=0o700)
+    path = parent / "preimage.json"
+    expected_bytes = b'{\n  "ok": true\n}\n'
+    digest = repair.atomic_private_json(path, {"ok": True})
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert path.read_bytes() == expected_bytes
+    assert digest == hashlib.sha256(expected_bytes).hexdigest()
+    with pytest.raises(FileExistsError, match="overwrite"):
+        repair.atomic_private_json(path, {"ok": False})
+    assert json.loads(path.read_text()) == {"ok": True}
+
+
+def test_private_preimage_rejects_unsafe_paths_and_oversize_payload(tmp_path):
+    relative = Path("relative-preimage.json")
+    with pytest.raises(ValueError, match="absolute"):
+        repair.atomic_private_json(relative, {"ok": True})
+
+    permissive = tmp_path / "permissive"
+    permissive.mkdir(mode=0o755)
+    with pytest.raises(ValueError, match="owner-only"):
+        repair.atomic_private_json(permissive / "preimage.json", {"ok": True})
+
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    symlink = tmp_path / "private-link"
+    symlink.symlink_to(private, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink"):
+        repair.atomic_private_json(symlink / "preimage.json", {"ok": True})
+
+    with patch.object(repair, "MAX_PREIMAGE_BYTES", 1):
+        with pytest.raises(ValueError, match="size limit"):
+            repair.atomic_private_json(private / "large.json", {"ok": True})
+
+
+def test_private_preimage_load_requires_exact_hash_and_private_file(tmp_path):
+    parent = tmp_path / "private"
+    parent.mkdir(mode=0o700)
+    path = parent / "preimage.json"
+    payload = reviewed_empty_preimage()
+    zero_counts = {
+        "EXPECTED_ARTIFACT_ROWS": 0,
+        "EXPECTED_TOTAL_ROWS": 0,
+        "EXPECTED_CONTACT_ROWS": 0,
+        "EXPECTED_DOCUMENT_ROWS": 0,
+        "EXPECTED_IMAGE_ROWS": 0,
+        "EXPECTED_OM_FACTS": 0,
+        "EXPECTED_EVENT_ROWS": 0,
+        "EXPECTED_SOURCE_INDEX_ROWS": 0,
+        "EXPECTED_QUEUE_ROWS": 0,
+    }
+    with patch.multiple(repair, **zero_counts):
+        digest = repair.atomic_private_json(path, payload)
+        loaded, actual = repair.load_private_preimage(path, digest)
+        assert loaded == payload
+        assert actual == digest
+        with pytest.raises(ValueError, match="does not match"):
+            repair.load_private_preimage(path, "0" * 64)
+        with pytest.raises(ValueError, match="lowercase hex"):
+            repair.load_private_preimage(path, "not-a-digest")
+        os.chmod(path, 0o640)
+        with pytest.raises(ValueError, match="owner-only"):
+            repair.load_private_preimage(path, digest)
+
+
+def test_rollback_cli_requires_expected_preimage_sha(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        repair.main(
+            [
+                "--env-file",
+                "unused.env",
+                "--rollback-preimage",
+                str(tmp_path / "preimage.json"),
+            ]
+        )
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "mode_args",
+    [
+        ["--apply", "--preimage", "/tmp/cushman-preimage.json"],
+        [
+            "--rollback-preimage",
+            "/tmp/cushman-preimage.json",
+            "--expected-preimage-sha256",
+            "0" * 64,
+        ],
+        ["--verify-apply-rollback"],
+        ["--verify-rollback-roundtrip"],
+    ],
+)
+def test_alternate_lock_path_is_rejected_before_database_access(mode_args):
+    with (
+        patch.object(repair, "load_db_url") as load_db_url,
+        pytest.raises(SystemExit) as exc,
+    ):
+        repair.main(
+            [
+                "--env-file",
+                "unused.env",
+                "--lock-dir",
+                "/tmp/not-the-canonical-cre-lock",
+                *mode_args,
+            ]
+        )
+    assert exc.value.code == 2
+    load_db_url.assert_not_called()
+
+
+def test_preimage_validation_rejects_metadata_and_count_drift():
+    payload = reviewed_empty_preimage()
+    with patch.object(repair, "EXPECTED_ARTIFACT_ROWS", 0):
+        with pytest.raises(ValueError, match="listings count"):
+            repair.validate_preimage(payload)
+    payload["artifactSha256"] = "0" * 64
+    with pytest.raises(ValueError, match="artifactSha256"):
+        repair.validate_preimage(payload)
+    payload = reviewed_empty_preimage()
+    payload["schemaVersion"] = 3
+    with pytest.raises(ValueError, match="schemaVersion"):
+        repair.validate_preimage(payload)
+
+
+def test_preimage_validation_rejects_invalid_captured_listing_shape():
+    payload = reviewed_empty_preimage()
+    payload["listings"] = [
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "external_id": "provider-a",
+            "raw_data": {},
+            "deleted_at": None,
+            "updated_at": "2026-07-30T08:24:21+00:00",
+        }
+    ]
+    payload["repairPlan"] = [{}]
+    with (
+        patch.object(repair, "EXPECTED_ARTIFACT_ROWS", 0),
+        patch.object(repair, "EXPECTED_TOTAL_ROWS", 1),
+        patch.object(repair, "EXPECTED_CONTACT_ROWS", 0),
+        patch.object(repair, "EXPECTED_DOCUMENT_ROWS", 0),
+        patch.object(repair, "EXPECTED_IMAGE_ROWS", 0),
+        patch.object(repair, "EXPECTED_OM_FACTS", 0),
+        patch.object(repair, "EXPECTED_EVENT_ROWS", 0),
+        patch.object(repair, "EXPECTED_SOURCE_INDEX_ROWS", 0),
+        patch.object(repair, "EXPECTED_QUEUE_ROWS", 0),
+        patch.object(repair, "EXPECTED_ARTIFACT_TARGETS", 0),
+    ):
+        with pytest.raises(ValueError, match="listings row"):
+            repair.validate_preimage(payload)
+
+
+def test_exact_post_state_detects_title_and_raw_data_only_changes():
+    state = expected_post_state(
+        "url:v1:" + "1" * 32,
+        "https://www.cushmanwakefield.com/en/united-states/properties/example",
+        "url:v1:" + "1" * 32,
+        "00000000-0000-0000-0000-000000000001",
+        "canonical_survivor",
+    )
+    title_change = json.loads(json.dumps(state))
+    title_change["title"] = "Later enriched title"
+    raw_change = json.loads(json.dumps(state))
+    raw_change["raw_data_base"]["laterDetail"] = {"fresh": True}
+    assert title_change != state
+    assert raw_change != state
+    payload = reviewed_empty_preimage()
+    with patch.multiple(repair, **patched_review_counts(0)):
+        sql = repair.build_rollback_sql(
+            payload, minimal_artifact(), minimal_state()
+        )
+    assert "'title',l.title" in sql
+    assert "'raw_data_base',l.raw_data #-" in sql
+    assert ") IS DISTINCT FROM p.post_state" in sql
+    assert "l.updated_at IS DISTINCT FROM (" in sql
+
+
+@pytest.mark.parametrize(
+    "survivor_mode",
+    ["zero", "multiple"],
+)
+def test_preimage_rejects_zero_or_multiple_survivors_per_target(survivor_mode):
+    first_id = "00000000-0000-0000-0000-000000000011"
+    second_id = "00000000-0000-0000-0000-000000000012"
+    source_url = (
+        "https://www.cushmanwakefield.com/en/"
+        "united-states/properties/topology-example"
+    )
+    first = current_listing(first_id, source_url)
+    second = current_listing(second_id, source_url)
+    payload = reviewed_empty_preimage()
+    payload["listings"] = [first, second]
+    assignments = (
+        [second_id, first_id]
+        if survivor_mode == "zero"
+        else [first_id, second_id]
+    )
+    payload["repairPlan"] = [
+        plan_row(first, assignments[0], source_url),
+        plan_row(second, assignments[1], source_url),
+    ]
+    with (
+        patch.multiple(repair, **patched_review_counts(2)),
+        pytest.raises(ValueError, match="survivor topology"),
+    ):
+        repair.validate_preimage(payload)
+
+
+def test_preimage_rejects_cross_target_plan_and_child_mapping():
+    first_id = "00000000-0000-0000-0000-000000000021"
+    second_id = "00000000-0000-0000-0000-000000000022"
+    first_url = (
+        "https://www.cushmanwakefield.com/en/"
+        "united-states/properties/first-target"
+    )
+    second_url = (
+        "https://www.cushmanwakefield.com/en/"
+        "united-states/properties/second-target"
+    )
+    first = current_listing(first_id, first_url)
+    second = current_listing(second_id, second_url)
+
+    swapped = reviewed_empty_preimage()
+    swapped["listings"] = [first, second]
+    swapped["repairPlan"] = [
+        plan_row(first, second_id, second_url),
+        plan_row(second, first_id, first_url),
+    ]
+    with (
+        patch.multiple(repair, **patched_review_counts(2)),
+        pytest.raises(ValueError, match="repairPlan identity"),
+    ):
+        repair.validate_preimage(swapped)
+
+    cross_child = reviewed_empty_preimage()
+    cross_child["listings"] = [first, second]
+    cross_child["repairPlan"] = [
+        plan_row(first, first_id, first_url),
+        plan_row(second, second_id, second_url),
+    ]
+    cross_child["contacts"] = [
+        {
+            "id": "00000000-0000-0000-0000-000000000099",
+            "listing_id": first_id,
+            "post_listing_id": second_id,
+        }
+    ]
+    with (
+        patch.multiple(repair, **patched_review_counts(2, contacts=1)),
+        pytest.raises(ValueError, match="contacts identity"),
+    ):
+        repair.validate_preimage(cross_child)
+
+
+@pytest.mark.parametrize("key", ["contacts", "documents", "events"])
+def test_child_policy_rejects_direct_child_left_on_alias(key):
+    survivor_id = "00000000-0000-0000-0000-000000000101"
+    alias_id = "00000000-0000-0000-0000-000000000102"
+    target_id = "url:v1:" + "a" * 32
+    payload = empty_child_policy_payload()
+    payload[key] = [
+        {
+            "id": "00000000-0000-0000-0000-000000000199",
+            "listing_id": alias_id,
+            "post_listing_id": alias_id,
+        }
+    ]
+    with pytest.raises(ValueError, match=f"{key} disposition"):
+        repair.validate_child_dispositions(
+            payload,
+            {survivor_id: target_id, alias_id: target_id},
+            {target_id: survivor_id},
+        )
+
+
+@pytest.mark.parametrize(
+    "key", ["media", "links", "priceHistory", "scrapeLogs"]
+)
+def test_child_policy_rejects_unchanged_child_moved_to_survivor(key):
+    survivor_id = "00000000-0000-0000-0000-000000000201"
+    alias_id = "00000000-0000-0000-0000-000000000202"
+    target_id = "url:v1:" + "b" * 32
+    payload = empty_child_policy_payload()
+    payload[key] = [
+        {
+            "id": "00000000-0000-0000-0000-000000000299",
+            "listing_id": alias_id,
+            "post_listing_id": survivor_id,
+        }
+    ]
+    with pytest.raises(ValueError, match=f"{key} disposition"):
+        repair.validate_child_dispositions(
+            payload,
+            {survivor_id: target_id, alias_id: target_id},
+            {target_id: survivor_id},
+        )
+
+
+def test_image_policy_recomputes_winner_and_preserves_conflicting_alias_rows():
+    survivor_id = "00000000-0000-0000-0000-000000000301"
+    first_alias = "00000000-0000-0000-0000-000000000302"
+    second_alias = "00000000-0000-0000-0000-000000000303"
+    target_id = "url:v1:" + "c" * 32
+    listing_targets = {
+        survivor_id: target_id,
+        first_alias: target_id,
+        second_alias: target_id,
+    }
+    payload = empty_child_policy_payload()
+    payload["images"] = [
+        {
+            "id": "00000000-0000-0000-0000-000000000310",
+            "listing_id": first_alias,
+            "post_listing_id": survivor_id,
+            "url": "https://images.example/property.jpg",
+        },
+        {
+            "id": "00000000-0000-0000-0000-000000000311",
+            "listing_id": second_alias,
+            "post_listing_id": second_alias,
+            "url": "https://images.example/property.jpg",
+        },
+    ]
+    repair.validate_child_dispositions(
+        payload, listing_targets, {target_id: survivor_id}
+    )
+    payload["images"][1]["post_listing_id"] = survivor_id
+    with pytest.raises(ValueError, match="images disposition"):
+        repair.validate_child_dispositions(
+            payload, listing_targets, {target_id: survivor_id}
+        )
+
+    payload["images"] = [
+        {
+            "id": "00000000-0000-0000-0000-000000000300",
+            "listing_id": first_alias,
+            "post_listing_id": first_alias,
+            "url": "https://images.example/survivor-owned.jpg",
+        },
+        {
+            "id": "00000000-0000-0000-0000-000000000399",
+            "listing_id": survivor_id,
+            "post_listing_id": survivor_id,
+            "url": "https://images.example/survivor-owned.jpg",
+        },
+    ]
+    repair.validate_child_dispositions(
+        payload, listing_targets, {target_id: survivor_id}
+    )
+
+
+def test_om_policy_recomputes_latest_winner_and_keeps_older_conflicts():
+    survivor_id = "00000000-0000-0000-0000-000000000401"
+    first_alias = "00000000-0000-0000-0000-000000000402"
+    second_alias = "00000000-0000-0000-0000-000000000403"
+    target_id = "url:v1:" + "d" * 32
+    listing_targets = {
+        survivor_id: target_id,
+        first_alias: target_id,
+        second_alias: target_id,
+    }
+    shared = {
+        "fact_group": "financial",
+        "fact_key": "noi",
+        "source_doc_url": "https://docs.example/om.pdf",
+        "parser_version": "v1",
+    }
+    payload = empty_child_policy_payload()
+    payload["omFacts"] = [
+        {
+            **shared,
+            "id": "00000000-0000-0000-0000-000000000410",
+            "listing_id": first_alias,
+            "post_listing_id": survivor_id,
+            "parsed_at": "2026-07-30T12:00:00+00:00",
+        },
+        {
+            **shared,
+            "id": "00000000-0000-0000-0000-000000000411",
+            "listing_id": second_alias,
+            "post_listing_id": second_alias,
+            "parsed_at": "2026-07-29T12:00:00+00:00",
+        },
+    ]
+    repair.validate_child_dispositions(
+        payload, listing_targets, {target_id: survivor_id}
+    )
+    payload["omFacts"][1]["post_listing_id"] = survivor_id
+    with pytest.raises(ValueError, match="omFacts disposition"):
+        repair.validate_child_dispositions(
+            payload, listing_targets, {target_id: survivor_id}
+        )
+
+    payload["omFacts"] = [
+        {
+            **shared,
+            "id": "00000000-0000-0000-0000-000000000420",
+            "listing_id": survivor_id,
+            "post_listing_id": survivor_id,
+            "parsed_at": "2026-07-31T12:00:00+00:00",
+        },
+        {
+            **shared,
+            "id": "00000000-0000-0000-0000-000000000421",
+            "listing_id": first_alias,
+            "post_listing_id": first_alias,
+            "parsed_at": "2026-07-30T12:00:00+00:00",
+        },
+    ]
+    repair.validate_child_dispositions(
+        payload, listing_targets, {target_id: survivor_id}
+    )
+
+
+def test_non_null_old_generation_alias_is_valid_roundtrip_disposition():
+    survivor_id = "00000000-0000-0000-0000-000000000001"
+    alias_id = "00000000-0000-0000-0000-000000000002"
+    source_url = (
+        "https://www.cushmanwakefield.com/en/"
+        "united-states/properties/old-generation-example"
+    )
+    target_id = repair.cushman_canonical_external_id(source_url)
+    assert target_id is not None
+    alias_external_id = (
+        "cushman-superseded:v1:"
+        + hashlib.md5(alias_id.encode(), usedforsecurity=False).hexdigest()
+    )
+    payload = reviewed_empty_preimage()
+    payload["listings"] = [
+        {
+            "id": survivor_id,
+            "external_id": "current-provider",
+            "source_url": source_url,
+            "raw_data": {
+                "freshnessProvenance": {
+                    "generationId": repair.EXPECTED_GENERATION
+                }
+            },
+            "deleted_at": None,
+            "updated_at": "2026-07-30T08:24:21+00:00",
+        },
+        {
+            "id": alias_id,
+            "external_id": "old-provider",
+            "source_url": source_url,
+            "raw_data": {
+                "freshnessProvenance": {
+                    "generationId": "2026-07-01T000000Z"
+                }
+            },
+            "deleted_at": None,
+            "updated_at": "2026-07-01T00:00:00+00:00",
+        },
+    ]
+    payload["repairPlan"] = [
+        {
+            "id": survivor_id,
+            "target_id": target_id,
+            "survivor_id": survivor_id,
+            "has_current": True,
+            "post_external_id": target_id,
+            "post_source_url": source_url,
+            "post_deleted": False,
+            "post_generation": repair.EXPECTED_GENERATION,
+            "post_state": expected_post_state(
+                target_id,
+                source_url,
+                target_id,
+                survivor_id,
+                "canonical_survivor",
+            ),
+        },
+        {
+            "id": alias_id,
+            "target_id": target_id,
+            "survivor_id": survivor_id,
+            "has_current": True,
+            "post_external_id": alias_external_id,
+            "post_source_url": source_url,
+            "post_deleted": True,
+            "post_generation": "2026-07-01T000000Z",
+            "post_state": expected_post_state(
+                alias_external_id,
+                source_url,
+                target_id,
+                survivor_id,
+                "superseded_duplicate",
+                {
+                    "freshnessProvenance": {
+                        "generationId": "2026-07-01T000000Z"
+                    }
+                },
+            ),
+        },
+    ]
+    zero_child_counts = {
+        "EXPECTED_ARTIFACT_ROWS": 0,
+        "EXPECTED_TOTAL_ROWS": 2,
+        "EXPECTED_CONTACT_ROWS": 0,
+        "EXPECTED_DOCUMENT_ROWS": 0,
+        "EXPECTED_IMAGE_ROWS": 0,
+        "EXPECTED_OM_FACTS": 0,
+        "EXPECTED_EVENT_ROWS": 0,
+        "EXPECTED_SOURCE_INDEX_ROWS": 0,
+        "EXPECTED_QUEUE_ROWS": 0,
+    }
+    with patch.multiple(repair, **zero_child_counts):
+        assert repair.validate_preimage(payload) is payload
+        sql = repair.build_roundtrip_sql(
+            payload, minimal_artifact(), minimal_state()
+        )
+    assert ") IS DISTINCT FROM p.post_state" in sql
+    assert "parent post-repair disposition drift" in sql
+    assert "rollback refused after newer Cushman data" not in sql
+
+
+def test_old_only_survivor_plan_is_complete_and_preserves_source_generation():
+    listing_id = "00000000-0000-0000-0000-000000000003"
+    source_url = (
+        "https://www.cushmanwakefield.com/en/"
+        "united-states/properties/old-only-example"
+    )
+    old_generation = "2026-06-30T120000Z"
+    target_id = repair.cushman_canonical_external_id(source_url)
+    assert target_id is not None
+    payload = reviewed_empty_preimage()
+    payload["listings"] = [
+        {
+            "id": listing_id,
+            "external_id": "old-only-provider",
+            "source_url": source_url,
+            "raw_data": {
+                "freshnessProvenance": {"generationId": old_generation}
+            },
+            "deleted_at": None,
+            "updated_at": "2026-06-30T12:00:00+00:00",
+        }
+    ]
+    payload["repairPlan"] = [
+        {
+            "id": listing_id,
+            "target_id": target_id,
+            "survivor_id": listing_id,
+            "has_current": False,
+            "post_external_id": target_id,
+            "post_source_url": source_url,
+            "post_deleted": False,
+            "post_generation": old_generation,
+            "post_state": expected_post_state(
+                target_id,
+                source_url,
+                target_id,
+                listing_id,
+                "canonical_survivor",
+                {
+                    "freshnessProvenance": {
+                        "generationId": old_generation
+                    }
+                },
+            ),
+        }
+    ]
+    with (
+        patch.object(repair, "EXPECTED_ARTIFACT_ROWS", 0),
+        patch.object(repair, "EXPECTED_TOTAL_ROWS", 1),
+        patch.object(repair, "EXPECTED_CONTACT_ROWS", 0),
+        patch.object(repair, "EXPECTED_DOCUMENT_ROWS", 0),
+        patch.object(repair, "EXPECTED_IMAGE_ROWS", 0),
+        patch.object(repair, "EXPECTED_OM_FACTS", 0),
+        patch.object(repair, "EXPECTED_EVENT_ROWS", 0),
+        patch.object(repair, "EXPECTED_SOURCE_INDEX_ROWS", 0),
+        patch.object(repair, "EXPECTED_QUEUE_ROWS", 0),
+    ):
+        assert repair.validate_preimage(payload) is payload
+    assert len(payload["repairPlan"]) == len(payload["listings"]) == 1
+
+
+def test_rollback_timestamp_readback_matches_before_update_trigger_clock():
+    payload = reviewed_empty_preimage()
+    with (
+        patch.object(repair, "EXPECTED_ARTIFACT_ROWS", 0),
+        patch.object(repair, "EXPECTED_TOTAL_ROWS", 0),
+        patch.object(repair, "EXPECTED_CONTACT_ROWS", 0),
+        patch.object(repair, "EXPECTED_DOCUMENT_ROWS", 0),
+        patch.object(repair, "EXPECTED_IMAGE_ROWS", 0),
+        patch.object(repair, "EXPECTED_OM_FACTS", 0),
+        patch.object(repair, "EXPECTED_EVENT_ROWS", 0),
+        patch.object(repair, "EXPECTED_SOURCE_INDEX_ROWS", 0),
+        patch.object(repair, "EXPECTED_QUEUE_ROWS", 0),
+    ):
+        sql = repair.build_rollback_sql(
+            payload, minimal_artifact(), minimal_state()
+        )
+    assert "transaction_timestamp() AS trigger_updated_at" in sql
+    assert "l.updated_at IS DISTINCT FROM (" in sql
+    assert "SELECT trigger_updated_at FROM _cw_rollback_clock" in sql
+    assert "clock_timestamp() AS started_at" not in sql
+
+
+def test_apply_timestamp_is_bound_to_private_preimage_and_parent_marker():
+    apply_sql = repair.build_apply_sql(minimal_artifact(), minimal_state())
+    preimage_sql = repair.preimage_sql(minimal_artifact(), minimal_state())
+    assert "'applyTimestampBinding'" in preimage_sql
+    assert "'appliedAt',transaction_timestamp()" in apply_sql
+    assert f"'repairToken','{repair.REPAIR_TOKEN}'" in apply_sql
+    assert "l.updated_at IS DISTINCT FROM (" in apply_sql
+    assert "cushmanIdentityRepair,appliedAt" in apply_sql
+    assert ") IS DISTINCT FROM p.post_state" in apply_sql
+
+
+def test_roundtrip_runs_forward_and_reverse_in_one_rolled_back_transaction():
+    payload = reviewed_empty_preimage()
+    with (
+        patch.object(repair, "EXPECTED_ARTIFACT_ROWS", 0),
+        patch.object(repair, "EXPECTED_TOTAL_ROWS", 0),
+        patch.object(repair, "EXPECTED_CONTACT_ROWS", 0),
+        patch.object(repair, "EXPECTED_DOCUMENT_ROWS", 0),
+        patch.object(repair, "EXPECTED_IMAGE_ROWS", 0),
+        patch.object(repair, "EXPECTED_OM_FACTS", 0),
+        patch.object(repair, "EXPECTED_EVENT_ROWS", 0),
+        patch.object(repair, "EXPECTED_SOURCE_INDEX_ROWS", 0),
+        patch.object(repair, "EXPECTED_QUEUE_ROWS", 0),
+    ):
+        sql = repair.build_roundtrip_sql(
+            payload, minimal_artifact(), minimal_state()
+        )
+    assert sql.count("BEGIN ISOLATION LEVEL SERIALIZABLE;") == 1
+    assert "DROP TABLE _cw_current" in sql
+    assert sql.rstrip().endswith("ROLLBACK;")
