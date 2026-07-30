@@ -210,11 +210,10 @@ def test_preimage_is_complete_and_rollback_restores_every_fk_surface():
     assert "encode(convert_to(payload,'UTF8'),'base64')" in sql
     assert f"'protocol','{repair.PREIMAGE_OUTPUT_PROTOCOL}'" in sql
     assert f"'encoding','{repair.PREIMAGE_OUTPUT_ENCODING}'" in sql
-    assert (
-        f"generate_series(0,g.chunk_count-1) AS chunks(seq)" in sql
-    )
     assert f"FOR {repair.PREIMAGE_OUTPUT_CHUNK_CHARS}" in sql
-    assert "ORDER BY chunks.seq;" in sql
+    assert "generate_series" not in sql
+    assert "Cushman preimage output completion guard failed" in sql
+    assert "'chunk',''" in sql
     payload = reviewed_empty_preimage()
     with (
         patch.object(repair, "EXPECTED_ARTIFACT_ROWS", 0),
@@ -237,6 +236,39 @@ def test_preimage_is_complete_and_rollback_restores_every_fk_surface():
     assert "post_listing_id" in rollback
     assert "parent post-repair disposition drift" in rollback
     assert rollback.rstrip().endswith("COMMIT;")
+
+
+def test_preimage_output_uses_one_bounded_frontend_select_per_sequence():
+    statements = repair.preimage_output_select_statements()
+    assert len(statements) == repair.PREIMAGE_OUTPUT_MAX_CHUNKS
+    covered = []
+    for expected_seq, statement in enumerate(statements):
+        assert statement.endswith(";")
+        assert statement.count("SELECT jsonb_build_object(") == 1
+        assert f"'seq',{expected_seq}," in statement
+        assert f"FROM {expected_seq}*" in statement
+        assert f"WHERE {expected_seq}<o.chunk_count;" in statement
+        assert "generate_series" not in statement
+        covered.append(expected_seq)
+    assert covered == list(range(repair.PREIMAGE_OUTPUT_MAX_CHUNKS))
+
+    maximal_envelope = {
+        "protocol": repair.PREIMAGE_OUTPUT_PROTOCOL,
+        "seq": repair.PREIMAGE_OUTPUT_MAX_CHUNKS - 1,
+        "count": repair.PREIMAGE_OUTPUT_MAX_CHUNKS,
+        "payloadBytes": repair.MAX_PREIMAGE_BYTES,
+        "payloadMd5": "f" * 32,
+        "encoding": repair.PREIMAGE_OUTPUT_ENCODING,
+        "chunk": "A" * repair.PREIMAGE_OUTPUT_CHUNK_CHARS,
+    }
+    assert (
+        len(
+            json.dumps(
+                maximal_envelope, separators=(",", ":")
+            ).encode("ascii")
+        )
+        < repair.PREIMAGE_OUTPUT_ROW_CEILING_BYTES
+    )
 
 
 def reviewed_empty_preimage():
@@ -277,7 +309,7 @@ def raw_output_envelopes(raw):
         )
     ]
     digest = hashlib.md5(raw, usedforsecurity=False).hexdigest()
-    return [
+    envelopes = [
         {
             "protocol": repair.PREIMAGE_OUTPUT_PROTOCOL,
             "seq": seq,
@@ -289,6 +321,18 @@ def raw_output_envelopes(raw):
         }
         for seq, chunk in enumerate(chunks)
     ]
+    envelopes.append(
+        {
+            "protocol": repair.PREIMAGE_OUTPUT_PROTOCOL,
+            "seq": len(chunks),
+            "count": len(chunks),
+            "payloadBytes": len(raw),
+            "payloadMd5": digest,
+            "encoding": repair.PREIMAGE_OUTPUT_ENCODING,
+            "chunk": "",
+        }
+    )
+    return envelopes
 
 
 def preimage_output_envelopes(payload):
@@ -524,6 +568,7 @@ def test_preimage_output_chunks_reconstruct_exact_validated_object(monkeypatch):
     ("case", "message"),
     [
         ("missing", "geometry"),
+        ("missing_terminal", "geometry"),
         ("duplicate", "inconsistent"),
         ("reordered", "inconsistent"),
         ("metadata", "inconsistent"),
@@ -531,6 +576,8 @@ def test_preimage_output_chunks_reconstruct_exact_validated_object(monkeypatch):
         ("extra_key", "envelope"),
         ("bool_seq", "envelope"),
         ("invalid_base64", "base64"),
+        ("terminal_seq", "completion"),
+        ("terminal_chunk", "completion"),
         ("byte_count", "byte-count"),
         ("digest", "digest"),
     ],
@@ -545,6 +592,8 @@ def test_preimage_output_chunks_reject_partial_or_corrupt_geometry(
     assert len(envelopes) > 2
     if case == "missing":
         envelopes.pop(1)
+    elif case == "missing_terminal":
+        envelopes.pop()
     elif case == "duplicate":
         envelopes[1] = dict(envelopes[0])
     elif case == "reordered":
@@ -558,7 +607,11 @@ def test_preimage_output_chunks_reject_partial_or_corrupt_geometry(
     elif case == "bool_seq":
         envelopes[0]["seq"] = False
     elif case == "invalid_base64":
-        envelopes[-1]["chunk"] = "!" + envelopes[-1]["chunk"][1:]
+        envelopes[-2]["chunk"] = "!" + envelopes[-2]["chunk"][1:]
+    elif case == "terminal_seq":
+        envelopes[-1]["seq"] -= 1
+    elif case == "terminal_chunk":
+        envelopes[-1]["chunk"] = "QQ=="
     elif case == "byte_count":
         for envelope in envelopes:
             envelope["payloadBytes"] += 1

@@ -121,9 +121,10 @@ ROLLBACK_VERIFICATION_TIMEOUT_SECONDS = 30 * 60
 # ceiling leaves ample headroom above each 256 KiB raw chunk.
 PREIMAGE_SQL_CHUNK_BYTES = 256 * 1024
 PREIMAGE_SQL_STATEMENT_CEILING_BYTES = 1024 * 1024
-PREIMAGE_OUTPUT_PROTOCOL = "cushman-preimage-chunks-v1"
+PREIMAGE_OUTPUT_PROTOCOL = "cushman-preimage-chunks-v2"
 PREIMAGE_OUTPUT_ENCODING = "base64"
 PREIMAGE_OUTPUT_CHUNK_CHARS = 256 * 1024
+PREIMAGE_OUTPUT_ROW_CEILING_BYTES = 512 * 1024
 PREIMAGE_OUTPUT_MAX_CHUNKS = (
     4 * ((MAX_PREIMAGE_BYTES + 2) // 3)
     + PREIMAGE_OUTPUT_CHUNK_CHARS
@@ -338,15 +339,25 @@ def parse_preimage_chunk_output(stdout: str) -> dict:
     if (
         count <= 0
         or count > max_chunks
-        or len(envelopes) != count
+        or len(envelopes) != count + 1
         or payload_bytes <= 0
         or payload_bytes > MAX_PREIMAGE_BYTES
         or not re.fullmatch(r"[0-9a-f]{32}", payload_md5)
     ):
         raise RuntimeError("psql returned invalid preimage chunk geometry")
 
+    terminal = envelopes[-1]
+    if (
+        terminal["seq"] != count
+        or terminal["count"] != count
+        or terminal["payloadBytes"] != payload_bytes
+        or terminal["payloadMd5"] != payload_md5
+        or terminal["chunk"] != ""
+    ):
+        raise RuntimeError("psql returned invalid preimage completion marker")
+
     encoded_chunks = []
-    for seq, envelope in enumerate(envelopes):
+    for seq, envelope in enumerate(envelopes[:-1]):
         if (
             envelope["seq"] != seq
             or envelope["count"] != count
@@ -1030,7 +1041,31 @@ def expected_parent_sql(artifact: list[ArtifactRow], state: dict) -> str:
     return rendered[start:end]
 
 
+def preimage_output_select_statements() -> tuple[str, ...]:
+    """Return one bounded frontend SELECT per possible preimage chunk."""
+    return tuple(
+        f"""SELECT jsonb_build_object(
+ 'protocol',{sql_lit(PREIMAGE_OUTPUT_PROTOCOL)},
+ 'seq',{seq},
+ 'count',o.chunk_count,
+ 'payloadBytes',o.payload_bytes,
+ 'payloadMd5',o.payload_md5,
+ 'encoding',{sql_lit(PREIMAGE_OUTPUT_ENCODING)},
+ 'chunk',substring(
+   o.encoded
+   FROM {seq}*{PREIMAGE_OUTPUT_CHUNK_CHARS}+1
+   FOR {PREIMAGE_OUTPUT_CHUNK_CHARS}
+ )
+)::text
+FROM _cw_preimage_output o
+WHERE {seq}<o.chunk_count;"""
+        for seq in range(PREIMAGE_OUTPUT_MAX_CHUNKS)
+    )
+
+
 def preimage_sql(artifact: list[ArtifactRow], state: dict) -> str:
+    output_selects = "\n".join(preimage_output_select_statements())
+
     def moved_child_map(table: str, alias: str) -> str:
         return f"""(
           SELECT COALESCE(jsonb_agg(jsonb_build_object(
@@ -1138,16 +1173,24 @@ WITH source_payload AS (
 	    FROM credeals.cre_enrichment_queue q JOIN _cw_queue_plan p ON p.id=q.id
 	  )
 	)::text AS payload
+),
+encoded_payload AS (
+ SELECT payload,
+        replace(
+          encode(convert_to(payload,'UTF8'),'base64'),
+          chr(10),
+          ''
+        ) AS encoded
+ FROM source_payload
 )
 SELECT payload,
        octet_length(payload)::bigint AS payload_bytes,
        md5(payload) AS payload_md5,
-       replace(
-         encode(convert_to(payload,'UTF8'),'base64'),
-         chr(10),
-         ''
-       ) AS encoded
-FROM source_payload;
+       encoded,
+       (
+         length(encoded)+{PREIMAGE_OUTPUT_CHUNK_CHARS - 1}
+       )/{PREIMAGE_OUTPUT_CHUNK_CHARS} AS chunk_count
+FROM encoded_payload;
 DO $cw_preimage_output$
 DECLARE
  row_count integer;
@@ -1160,9 +1203,7 @@ BEGIN
  IF row_count<>1 THEN
    RAISE EXCEPTION 'Cushman preimage output row count mismatch';
  END IF;
- SELECT o.payload_bytes,o.payload_md5,o.encoded,
-        (length(o.encoded)+{PREIMAGE_OUTPUT_CHUNK_CHARS - 1})
-          / {PREIMAGE_OUTPUT_CHUNK_CHARS}
+ SELECT o.payload_bytes,o.payload_md5,o.encoded,o.chunk_count
  INTO payload_bytes,payload_md5,encoded_text,chunk_count
  FROM _cw_preimage_output o;
  IF payload_bytes<=0 OR payload_bytes>{MAX_PREIMAGE_BYTES} THEN
@@ -1181,28 +1222,29 @@ BEGIN
  END IF;
 END
 $cw_preimage_output$;
-WITH geometry AS (
- SELECT o.*,
-        ((length(o.encoded)+{PREIMAGE_OUTPUT_CHUNK_CHARS - 1})
-          / {PREIMAGE_OUTPUT_CHUNK_CHARS})::integer AS chunk_count
- FROM _cw_preimage_output o
-)
+{output_selects}
+DO $cw_preimage_complete$
+BEGIN
+ IF (
+   SELECT count(*)<>1
+       OR min(chunk_count)<=0
+       OR max(chunk_count)>{PREIMAGE_OUTPUT_MAX_CHUNKS}
+   FROM _cw_preimage_output
+ ) THEN
+   RAISE EXCEPTION 'Cushman preimage output completion guard failed';
+ END IF;
+END
+$cw_preimage_complete$;
 SELECT jsonb_build_object(
  'protocol',{sql_lit(PREIMAGE_OUTPUT_PROTOCOL)},
- 'seq',chunks.seq,
- 'count',g.chunk_count,
- 'payloadBytes',g.payload_bytes,
- 'payloadMd5',g.payload_md5,
+ 'seq',o.chunk_count,
+ 'count',o.chunk_count,
+ 'payloadBytes',o.payload_bytes,
+ 'payloadMd5',o.payload_md5,
  'encoding',{sql_lit(PREIMAGE_OUTPUT_ENCODING)},
- 'chunk',substring(
-   g.encoded
-   FROM chunks.seq*{PREIMAGE_OUTPUT_CHUNK_CHARS}+1
-   FOR {PREIMAGE_OUTPUT_CHUNK_CHARS}
- )
+ 'chunk',''
 )::text
-FROM geometry g
-CROSS JOIN LATERAL generate_series(0,g.chunk_count-1) AS chunks(seq)
-ORDER BY chunks.seq;
+FROM _cw_preimage_output o;
 ROLLBACK;
 """
 
