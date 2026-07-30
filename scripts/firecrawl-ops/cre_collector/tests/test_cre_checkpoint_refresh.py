@@ -210,6 +210,74 @@ def test_collect_argv_is_single_source_full_unlimited(tmp_path):
     assert "--enrich-input" not in " ".join(argv)
 
 
+def test_collect_argv_can_select_one_additive_transaction_scope(tmp_path):
+    argv = refresh.build_collect_argv(
+        "savills",
+        tmp_path / "savills.json.tmp",
+        transactions=("lease",),
+    )
+    assert "--source=savills" in argv
+    assert "--transaction=lease" in argv
+    assert "--transaction=both" not in argv
+    assert "--max-items=0" in argv
+
+
+def test_parse_transactions_accepts_only_canonical_scopes():
+    assert refresh.parse_transactions("both") == ("sale", "lease")
+    assert refresh.parse_transactions("sale") == ("sale",)
+    assert refresh.parse_transactions("lease") == ("lease",)
+    with pytest.raises(ValueError, match="sale, lease, or both"):
+        refresh.parse_transactions("lease,sale")
+
+
+def test_single_transaction_artifact_is_valid_only_for_its_bound_scope(tmp_path):
+    payload = strict_artifact(source="svn")
+    payload["runMeta"]["transactions"] = ["lease"]
+    payload["sources"] = [
+        entry for entry in payload["sources"] if entry["transaction"] == "lease"
+    ]
+    payload["listings"] = [
+        row for row in payload["listings"] if row["transactionMode"] == "lease"
+    ]
+    payload["totalListings"] = len(payload["listings"])
+    path = write_artifact(tmp_path, payload)
+
+    stats = refresh.validate_source_artifact(
+        path,
+        "svn",
+        ATTEMPT,
+        require_strict_freshness=True,
+        expected_generation_id="refresh-generation-1",
+        expected_generation_started_at="2026-07-29T12:00:00+00:00",
+        expected_transactions=("lease",),
+        now=datetime(2026, 7, 29, 13, 0, tzinfo=timezone.utc),
+    )
+    assert stats["flat_listings"] == 1
+
+    with pytest.raises(refresh.ArtifactValidationError, match="runMeta.transactions"):
+        refresh.validate_source_artifact(
+            path,
+            "svn",
+            ATTEMPT,
+            require_strict_freshness=True,
+            now=datetime(2026, 7, 29, 13, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_subset_manifest_records_non_full_scope(tmp_path):
+    manifest = refresh.new_manifest(
+        tmp_path / "run",
+        git_sha="abc",
+        git_dirty=False,
+        sources=("savills",),
+        transactions=("lease",),
+        page_cap=400,
+        concurrency=3,
+    )
+    assert manifest["scope"]["kind"] == "collector_registry_transaction_subset"
+    assert manifest["config"]["transactions"] == ["lease"]
+
+
 def test_ingest_argv_is_additive_and_status_neutral(tmp_path):
     argv = refresh.build_ingest_argv(tmp_path / "source.json", "/tmp/equire.env")
     assert argv == [
@@ -1243,6 +1311,58 @@ def test_gate_hold_is_recorded_without_being_infrastructure_failure(tmp_path, mo
     assert manifest["sources"]["svn"]["gate"]["mark_missing_safe"] is False
 
 
+def test_subset_gate_can_admit_additive_rows_but_never_mark_missing(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("savills",),
+        transactions=("lease",),
+        page_cap=400,
+        concurrency=3,
+    )
+    source_path = run_dir / "sources" / "savills.json"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("{}", encoding="utf-8")
+
+    def fake_run(_argv, _log, **_kwargs):
+        refresh.atomic_write_json(
+            run_dir / "gates" / "savills.json",
+            {
+                "per_source": {
+                    "savills": {
+                        "verdict": "ok",
+                        "reason": None,
+                        "mark_missing_safe": True,
+                    }
+                },
+                "summary": {
+                    "hold_sources": [],
+                    "mark_missing_safe_brokerages": ["savills"],
+                },
+            },
+        )
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    refresh.gate_source(run_dir, manifest, "savills", source_path, None)
+    recorded = manifest["sources"]["savills"]["gate"]
+    assert recorded["verdict"] == "ok"
+    assert recorded["transaction_scope"] == ["lease"]
+    assert recorded["mark_missing_safe"] is False
+    durable_gate = json.loads(
+        (run_dir / "gates" / "savills.json").read_text(encoding="utf-8")
+    )
+    assert durable_gate["scope"]["whole_source_coverage"] is False
+    assert durable_gate["per_source"]["savills"]["mark_missing_safe"] is False
+    assert durable_gate["summary"]["mark_missing_safe_brokerages"] == []
+    assert (
+        durable_gate["per_source"]["savills"]["admission_scope"]
+        == "additive_transaction_subset"
+    )
+
+
 def test_gate_infrastructure_failure_is_fatal(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
@@ -1293,6 +1413,55 @@ def test_aggregate_gate_hold_prevents_completion(tmp_path, monkeypatch):
     with pytest.raises(refresh.RefreshError, match="not established"):
         refresh.run_aggregate_gate(run_dir, manifest, None)
     assert manifest["aggregate_gate"]["hold_sources"] == ["svn"]
+
+
+def test_subset_aggregate_gate_strips_whole_source_missing_safe_claim(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("savills",),
+        transactions=("lease",),
+        page_cap=400,
+        concurrency=3,
+    )
+    artifact_path = run_dir / "sources" / "savills.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text("{}", encoding="utf-8")
+    manifest["sources"]["savills"]["artifact"] = {
+        "path": "sources/savills.json"
+    }
+
+    def fake_run(_argv, _log, **_kwargs):
+        refresh.atomic_write_json(
+            run_dir / "aggregate-gate.json",
+            {
+                "per_source": {
+                    "savills": {
+                        "verdict": "ok",
+                        "mark_missing_safe": True,
+                    }
+                },
+                "summary": {
+                    "hold_sources": [],
+                    "mark_missing_safe_brokerages": ["savills"],
+                },
+            },
+        )
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    refresh.run_aggregate_gate(run_dir, manifest, None)
+    assert manifest["aggregate_gate"]["mark_missing_safe_brokerages"] == []
+    durable_gate = json.loads(
+        (run_dir / "aggregate-gate.json").read_text(encoding="utf-8")
+    )
+    assert durable_gate["scope"]["whole_source_coverage"] is False
+    assert durable_gate["summary"]["mark_missing_safe_brokerages"] == []
+    assert durable_gate["per_source"]["savills"]["mark_missing_safe"] is False
 
 
 def test_aggregate_gate_first_seen_prevents_completion(tmp_path, monkeypatch):
@@ -2387,5 +2556,21 @@ def test_report_contains_source_state_without_credentials(tmp_path):
     manifest["sources"]["svn"]["state"] = "ingested"
     report = refresh.render_report(manifest)
     assert "| svn | ingested |" in report
+    assert "Transaction scope: `['sale', 'lease']`" in report
     assert "postgres://" not in report
     assert "password" not in report.lower()
+
+
+def test_subset_report_disclaims_whole_source_coverage(tmp_path):
+    manifest = refresh.new_manifest(
+        tmp_path / "run",
+        git_sha="abc",
+        git_dirty=False,
+        sources=("savills",),
+        transactions=("lease",),
+        page_cap=400,
+        concurrency=3,
+    )
+    report = refresh.render_report(manifest)
+    assert "Transaction scope: `['lease']`" in report
+    assert "no whole-source coverage or lifecycle claim" in report

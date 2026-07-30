@@ -234,15 +234,32 @@ def build_collect_argv(
     *,
     page_cap: int = 400,
     concurrency: int = 3,
+    transactions: Sequence[str] = TRANSACTIONS,
 ) -> list[str]:
     if source not in SOURCE_KEYS:
         raise ValueError(f"unknown source: {source}")
+    selected_transactions = tuple(transactions)
+    if not selected_transactions or any(
+        transaction not in TRANSACTIONS for transaction in selected_transactions
+    ):
+        raise ValueError(f"invalid transaction selection: {selected_transactions}")
+    transaction_arg = (
+        "both"
+        if selected_transactions == TRANSACTIONS
+        else selected_transactions[0]
+        if len(selected_transactions) == 1
+        else None
+    )
+    if transaction_arg is None:
+        raise ValueError(
+            "transaction selection must be sale, lease, or canonical sale+lease"
+        )
     return [
         "npx",
         "tsx",
         "collect.ts",
         f"--source={source}",
-        "--transaction=both",
+        f"--transaction={transaction_arg}",
         "--max-items=0",
         f"--page-cap={page_cap}",
         f"--concurrency={concurrency}",
@@ -518,6 +535,7 @@ def validate_source_artifact(
     require_strict_freshness: bool = False,
     expected_generation_id: str | None = None,
     expected_generation_started_at: str | datetime | None = None,
+    expected_transactions: Sequence[str] = TRANSACTIONS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     if expected_source not in SOURCE_KEYS:
@@ -528,8 +546,17 @@ def validate_source_artifact(
         raise ArtifactValidationError("runMeta must be an object")
     if run_meta.get("mode") != "full":
         raise ArtifactValidationError("runMeta.mode must be 'full'")
-    if run_meta.get("transactions") != list(TRANSACTIONS):
-        raise ArtifactValidationError("runMeta.transactions must be ['sale', 'lease']")
+    selected_transactions = tuple(expected_transactions)
+    if (
+        not selected_transactions
+        or any(transaction not in TRANSACTIONS for transaction in selected_transactions)
+        or len(selected_transactions) != len(set(selected_transactions))
+    ):
+        raise ArtifactValidationError("expected transaction scope is invalid")
+    if run_meta.get("transactions") != list(selected_transactions):
+        raise ArtifactValidationError(
+            f"runMeta.transactions must be {list(selected_transactions)!r}"
+        )
     if run_meta.get("maxItemsPerSource") is not None:
         raise ArtifactValidationError("full refresh requires unlimited maxItemsPerSource")
 
@@ -623,8 +650,14 @@ def validate_source_artifact(
                 )
 
     entries = data.get("sources")
-    if not isinstance(entries, list) or len(entries) != 2:
-        raise ArtifactValidationError("single-source full artifact must contain two source entries")
+    if not isinstance(entries, list) or len(entries) != len(selected_transactions):
+        if selected_transactions == TRANSACTIONS:
+            raise ArtifactValidationError(
+                "single-source full artifact must contain two source entries"
+            )
+        raise ArtifactValidationError(
+            "single-source artifact must contain exactly one entry per selected transaction"
+        )
     seen_transactions: set[str] = set()
     entry_total = 0
     for index, entry in enumerate(entries):
@@ -633,8 +666,10 @@ def validate_source_artifact(
         if entry.get("sourceKey") != expected_source:
             raise ArtifactValidationError(f"sources[{index}] has the wrong sourceKey")
         tx = entry.get("transaction")
-        if tx not in TRANSACTIONS or tx in seen_transactions:
-            raise ArtifactValidationError("source entries must contain sale and lease exactly once")
+        if tx not in selected_transactions or tx in seen_transactions:
+            raise ArtifactValidationError(
+                "source entries must match the selected transactions exactly once"
+            )
         seen_transactions.add(tx)
         if entry.get("supported") is not True:
             raise ArtifactValidationError(f"{expected_source}/{tx} is not supported")
@@ -708,8 +743,10 @@ def validate_source_artifact(
                 raise ArtifactValidationError(
                     f"{expected_source}/{tx} lacks detail observations"
                 )
-    if seen_transactions != set(TRANSACTIONS):
-        raise ArtifactValidationError("source entries are missing sale or lease")
+    if seen_transactions != set(selected_transactions):
+        raise ArtifactValidationError(
+            "source entries do not cover the selected transaction scope"
+        )
 
     listings = data.get("listings")
     if not isinstance(listings, list):
@@ -728,7 +765,7 @@ def validate_source_artifact(
             raise ArtifactValidationError(f"listings[{index}] must be an object")
         if listing.get("sourceKey") != expected_source:
             raise ArtifactValidationError(f"listings[{index}] has the wrong sourceKey")
-        if listing.get("transactionMode") not in TRANSACTIONS:
+        if listing.get("transactionMode") not in selected_transactions:
             raise ArtifactValidationError(f"listings[{index}] has an invalid transactionMode")
         observation_fields = [
             ("inventoryObservedAt", listing.get("inventoryObservedAt")),
@@ -963,6 +1000,7 @@ def new_manifest(
     sources: Sequence[str],
     page_cap: int,
     concurrency: int,
+    transactions: Sequence[str] = TRANSACTIONS,
     database_target: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     now = utc_now()
@@ -976,13 +1014,17 @@ def new_manifest(
         "collector_git_sha": git_sha,
         "collector_git_dirty": git_dirty,
         "scope": {
-            "kind": "collector_registry",
+            "kind": (
+                "collector_registry"
+                if tuple(transactions) == TRANSACTIONS
+                else "collector_registry_transaction_subset"
+            ),
             "source_keys": list(sources),
             "unsupported_active_rows_before": None,
         },
         "config": {
             "sources": list(sources),
-            "transactions": list(TRANSACTIONS),
+            "transactions": list(transactions),
             "max_items": 0,
             "page_cap": page_cap,
             "concurrency": concurrency,
@@ -1018,6 +1060,7 @@ def load_resume_manifest(
     sources: Sequence[str],
     page_cap: int,
     concurrency: int,
+    transactions: Sequence[str] = TRANSACTIONS,
     database_target: Mapping[str, str] | None = None,
     max_age_hours: float = DEFAULT_MAX_RESUME_AGE_HOURS,
     now: datetime | None = None,
@@ -1029,7 +1072,7 @@ def load_resume_manifest(
         raise RefreshError("cannot resume with a different collector Git SHA")
     expected = {
         "sources": list(sources),
-        "transactions": list(TRANSACTIONS),
+        "transactions": list(transactions),
         "max_items": 0,
         "page_cap": page_cap,
         "concurrency": concurrency,
@@ -1106,6 +1149,8 @@ def _checkpoint_artifact_valid(
     checkpoint: Mapping[str, Any],
     source: str,
     generation_started_at: str | datetime | None = None,
+    *,
+    transactions: Sequence[str] = TRANSACTIONS,
 ) -> tuple[Path, dict[str, Any]] | None:
     artifact_info = checkpoint.get("artifact")
     if not isinstance(artifact_info, dict):
@@ -1134,10 +1179,34 @@ def _checkpoint_artifact_valid(
             expected_generation_started_at=(
                 generation_started_at if generation_bound else None
             ),
+            expected_transactions=transactions,
         )
     except ArtifactValidationError:
         return None
     return path, stats
+
+
+def _manifest_checkpoint_artifact_valid(
+    run_dir: Path,
+    manifest: Mapping[str, Any],
+    source: str,
+) -> tuple[Path, dict[str, Any]] | None:
+    checkpoint = manifest["sources"][source]
+    transactions = tuple(manifest["config"]["transactions"])
+    if transactions == TRANSACTIONS:
+        return _checkpoint_artifact_valid(
+            run_dir,
+            checkpoint,
+            source,
+            manifest["started_at"],
+        )
+    return _checkpoint_artifact_valid(
+        run_dir,
+        checkpoint,
+        source,
+        manifest["started_at"],
+        transactions=transactions,
+    )
 
 
 def collect_source(
@@ -1145,17 +1214,13 @@ def collect_source(
     manifest: dict[str, Any],
     source: str,
     *,
+    transactions: Sequence[str],
     page_cap: int,
     concurrency: int,
     attempts_this_run: int,
 ) -> tuple[Path, dict[str, Any]] | None:
     checkpoint = manifest["sources"][source]
-    existing = _checkpoint_artifact_valid(
-        run_dir,
-        checkpoint,
-        source,
-        manifest["started_at"],
-    )
+    existing = _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
     if existing:
         return existing
 
@@ -1195,6 +1260,7 @@ def collect_source(
                 tmp_artifact,
                 page_cap=page_cap,
                 concurrency=concurrency,
+                transactions=transactions,
             ),
             attempt_log,
             env=env,
@@ -1225,6 +1291,7 @@ def collect_source(
                 expected_generation_started_at=(
                     manifest["started_at"] if generation_bound else None
                 ),
+                expected_transactions=transactions,
             )
         except ArtifactValidationError as exc:
             attempt["error"] = str(exc)
@@ -1256,6 +1323,9 @@ def gate_source(
     env_file: str | None,
 ) -> None:
     checkpoint = manifest["sources"][source]
+    full_transaction_scope = (
+        tuple(manifest["config"]["transactions"]) == TRANSACTIONS
+    )
     gate_path = run_dir / "gates" / f"{source}.json"
     log_path = run_dir / "logs" / f"{source}-gate.log"
     gate_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1275,6 +1345,19 @@ def gate_source(
         raise GlobalStageError(f"coverage gate infrastructure failed for {source} (rc={rc})")
     try:
         result = _load_json(gate_path)
+        if not full_transaction_scope:
+            result["scope"] = {
+                "kind": "additive_transaction_subset",
+                "transactions": list(manifest["config"]["transactions"]),
+                "whole_source_coverage": False,
+            }
+            scoped_info = result["per_source"][source]
+            scoped_info["mark_missing_safe"] = False
+            scoped_info["admission_scope"] = "additive_transaction_subset"
+            summary = result.get("summary")
+            if isinstance(summary, dict):
+                summary["mark_missing_safe_brokerages"] = []
+            atomic_write_json(gate_path, result)
         per_source = result["per_source"][source]
     except (ArtifactValidationError, KeyError, TypeError) as exc:
         checkpoint["state"] = "gate_failed"
@@ -1286,7 +1369,13 @@ def gate_source(
         "rc": rc,
         "verdict": per_source.get("verdict"),
         "reason": per_source.get("reason"),
-        "mark_missing_safe": per_source.get("mark_missing_safe") is True,
+        # A transaction subset can prove additive freshness for the selected
+        # rows, but can never authorize whole-source lifecycle deletion.
+        "mark_missing_safe": (
+            full_transaction_scope
+            and per_source.get("mark_missing_safe") is True
+        ),
+        "transaction_scope": list(manifest["config"]["transactions"]),
     }
     checkpoint["state"] = "gated"
     save_manifest(run_dir, manifest)
@@ -1384,12 +1473,8 @@ def advance_source(
     env_file: str | None,
 ) -> bool:
     checkpoint = manifest["sources"][source]
-    existing = _checkpoint_artifact_valid(
-        run_dir,
-        checkpoint,
-        source,
-        manifest["started_at"],
-    )
+    transactions = tuple(manifest["config"]["transactions"])
+    existing = _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
     if checkpoint.get("state") == "ingest_recovery_required":
         raise GlobalStageError(
             f"source {source} requires reviewed ingest recovery before resume"
@@ -1431,6 +1516,7 @@ def advance_source(
         run_dir,
         manifest,
         source,
+        transactions=transactions,
         page_cap=page_cap,
         concurrency=concurrency,
         attempts_this_run=attempts_this_run,
@@ -1500,6 +1586,23 @@ def run_aggregate_gate(
     if rc not in (0, 2):
         raise GlobalStageError(f"aggregate coverage gate failed (rc={rc})")
     result = _load_json(output)
+    full_transaction_scope = (
+        tuple(manifest["config"]["transactions"]) == TRANSACTIONS
+    )
+    if not full_transaction_scope:
+        result["scope"] = {
+            "kind": "additive_transaction_subset",
+            "transactions": list(manifest["config"]["transactions"]),
+            "whole_source_coverage": False,
+        }
+        for info in (result.get("per_source") or {}).values():
+            if isinstance(info, dict):
+                info["mark_missing_safe"] = False
+                info["admission_scope"] = "additive_transaction_subset"
+        summary = result.get("summary")
+        if isinstance(summary, dict):
+            summary["mark_missing_safe_brokerages"] = []
+        atomic_write_json(output, result)
     per_source = result.get("per_source") or {}
     configured_sources = set(manifest["config"]["sources"])
     observed_sources = set(per_source) if isinstance(per_source, dict) else set()
@@ -1519,7 +1622,10 @@ def run_aggregate_gate(
         "non_ok_sources": non_ok_sources,
         "mark_missing_safe_brokerages": (
             (result.get("summary") or {}).get("mark_missing_safe_brokerages") or []
+            if full_transaction_scope
+            else []
         ),
+        "transaction_scope": list(manifest["config"]["transactions"]),
     }
     save_manifest(run_dir, manifest)
     if non_ok_sources:
@@ -1537,12 +1643,7 @@ def ingest_admitted_sources(
     """Ingest only after every configured source clears the aggregate gate."""
     for source in manifest["config"]["sources"]:
         checkpoint = manifest["sources"][source]
-        existing = _checkpoint_artifact_valid(
-            run_dir,
-            checkpoint,
-            source,
-            manifest["started_at"],
-        )
+        existing = _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
         if checkpoint.get("state") == "ingested" and existing:
             continue
         if checkpoint.get("state") == "ingesting" and existing:
@@ -2174,7 +2275,14 @@ def render_report(manifest: Mapping[str, Any]) -> str:
         f"- Started: `{manifest.get('started_at')}`",
         f"- Finished: `{manifest.get('finished_at') or ''}`",
         f"- Collector SHA: `{manifest.get('collector_git_sha')}`",
+        f"- Transaction scope: `{(manifest.get('config') or {}).get('transactions')}`",
         "- Write mode: additive only; status activation and mark-missing disabled.",
+        (
+            "- Scope admission: whole-source coverage."
+            if tuple((manifest.get("config") or {}).get("transactions") or ())
+            == TRANSACTIONS
+            else "- Scope admission: additive transaction subset only; no whole-source coverage or lifecycle claim."
+        ),
         "- Readback is source-class-aware: strict detail sources require current admitted detail observation; authoritative inventory feeds follow their explicit replace-or-preserve child contract; scoped sources never make a broader detail or contact freshness claim.",
         "",
         "| Source | State | Flat | Staged | Inventory-only | Detail unavailable | Provisional IDs | Gate | Readback |",
@@ -2226,6 +2334,15 @@ def parse_sources(raw: str) -> tuple[str, ...]:
     return values
 
 
+def parse_transactions(raw: str) -> tuple[str, ...]:
+    normalized = raw.strip().lower()
+    if normalized in {"both", "all", "sale,lease"}:
+        return TRANSACTIONS
+    if normalized in TRANSACTIONS:
+        return (normalized,)
+    raise ValueError("invalid transaction selection; use sale, lease, or both")
+
+
 def _run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
 
@@ -2236,6 +2353,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--sources", default="all")
+    parser.add_argument(
+        "--transactions",
+        default="both",
+        help=(
+            "transaction scope: sale, lease, or both (default). A subset run "
+            "is additive and proves only the selected transaction scope."
+        ),
+    )
     parser.add_argument("--page-cap", type=int, default=400)
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument("--attempts-per-source", type=int, default=3)
@@ -2267,6 +2392,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("max-resume-age-hours must be finite and positive")
     try:
         sources = parse_sources(args.sources)
+        transactions = parse_transactions(args.transactions)
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -2284,6 +2410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sources=sources,
             page_cap=args.page_cap,
             concurrency=args.concurrency,
+            transactions=transactions,
             database_target=database_target,
             max_age_hours=args.max_resume_age_hours,
         )
@@ -2301,6 +2428,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sources=sources,
             page_cap=args.page_cap,
             concurrency=args.concurrency,
+            transactions=transactions,
             database_target=database_target,
         )
     save_manifest(run_dir, manifest)
@@ -2382,7 +2510,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_aggregate_gate(run_dir, manifest, args.env_file)
             ingest_admitted_sources(run_dir, manifest, args.env_file)
             run_final_validation(run_dir, manifest, args.env_file)
-            manifest["status"] = "supported_scope_complete"
+            manifest["status"] = (
+                "supported_scope_complete"
+                if transactions == TRANSACTIONS
+                else "selected_transaction_scope_complete"
+            )
             manifest["finished_at"] = utc_now()
             manifest["error"] = None
             save_manifest(run_dir, manifest)
