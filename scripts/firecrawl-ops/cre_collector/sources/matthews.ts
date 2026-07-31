@@ -30,7 +30,8 @@ async function matthewsGate(): Promise<void> {
 export function matthewsFetchOptions(
   strict = requireFreshDetails(),
   timeoutMs = MATTHEWS_FETCH_TIMEOUT_MS,
-  redirect: RequestRedirect = "follow"
+  redirect: RequestRedirect = "follow",
+  signal: AbortSignal = AbortSignal.timeout(timeoutMs)
 ): RequestInit {
   const headers: Record<string, string> = {
     "User-Agent":
@@ -40,10 +41,34 @@ export function matthewsFetchOptions(
   if (strict) headers["Cache-Control"] = "no-cache";
   return {
     headers,
-    signal: AbortSignal.timeout(timeoutMs),
+    signal,
     redirect,
     ...(strict ? { cache: "no-store" as const } : {}),
   };
+}
+
+/**
+ * Bound the body separately from fetch()'s header phase. Some provider HTTP/2
+ * streams send headers and then leave a compressed response body open; relying
+ * only on fetch's request signal makes that detail pass wait indefinitely.
+ */
+export async function matthewsResponseText(
+  response: Pick<Response, "text">,
+  controller: AbortController,
+  timeoutMs = MATTHEWS_FETCH_TIMEOUT_MS
+): Promise<string> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`Matthews response body timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([response.text(), deadline]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 type MatthewsFetchResult = {
@@ -59,24 +84,36 @@ async function matthewsFetch(
   for (let attempt = 0; attempt < 6; attempt++) {
     await matthewsGate();
     let status = 0;
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      MATTHEWS_FETCH_TIMEOUT_MS
+    );
     try {
       const res = await fetch(
         url,
         matthewsFetchOptions(
           requireFreshDetails(),
           MATTHEWS_FETCH_TIMEOUT_MS,
-          manualRedirect ? "manual" : "follow"
+          manualRedirect ? "manual" : "follow",
+          controller.signal
         )
       );
       status = res.status;
       if (res.ok) {
-        return { html: await res.text(), status, location: null };
+        return {
+          html: await matthewsResponseText(res, controller),
+          status,
+          location: null,
+        };
       }
       if (manualRedirect && (status === 301 || status === 308)) {
         return { html: null, status, location: res.headers.get("location") };
       }
     } catch {
       /* retry transient network failures below */
+    } finally {
+      clearTimeout(timeout);
     }
     if (status === 0 || status === 429 || status === 403 || status === 503) {
       matthewsInterval = Math.min(matthewsInterval + 700, 7000);

@@ -5,6 +5,7 @@ import {
   matthewsParsedCoverage,
   matthewsPermanentRedirectTarget,
   matthewsProviderNotFound,
+  matthewsResponseText,
   parseMatthewsDetail,
   matthewsTenureFromUrl,
   srcMatthews,
@@ -261,6 +262,16 @@ test("Matthews fetch options abort a stalled request at the supplied timeout", a
   assert.equal(options.signal.aborted, false);
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(options.signal.aborted, true);
+});
+
+test("Matthews response body deadline aborts a stream that never completes", async () => {
+  const controller = new AbortController();
+  const never = { text: () => new Promise<string>(() => {}) };
+  await assert.rejects(
+    matthewsResponseText(never, controller, 1),
+    /response body timed out/
+  );
+  assert.equal(controller.signal.aborted, true);
 });
 
 test("Matthews full refresh excludes only an alias whose permanent target is in the fresh sitemap", async (t) => {
