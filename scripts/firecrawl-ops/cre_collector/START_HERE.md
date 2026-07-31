@@ -674,15 +674,16 @@ images into Supabase storage for the bulk collector.
   filter fix. The full detail run used `AVISON_YOUNG_DETAIL_LIMIT=2200` and was
   live-ingested additively without `--mark-missing`. VCards remain absent from
   the public path, and broker profile URLs are sparse.
-- **Savills historical-cap correction (2026-07-31):** the June conclusion that
-  commercial sale was permanently unavailable is superseded. The current
-  direct Savills enumerator follows provider pagination, verifies complete raw
-  provider-row enumeration, rejects unclassified rows, filters only explicitly
-  non-U.S. inventory, and fails closed on any count/pagination drift. Do not
-  treat the old two-lease-row snapshot as a permanent baseline or current
-  coverage proof. A Savills refresh is admissible only through the strict
-  full-scope gate described above; it still does not authorize a scheduler,
-  status activation, or `--mark-missing`.
+- **Savills live-cap evidence (2026-07-31):** the direct enumerator now proves
+  the provider pagination/count contract and fails closed on unclassified or
+  non-U.S.-only results. Its fresh full-scope attempt
+  `2026-07-31T145116Z` found three eligible lease records but the nominal U.S.
+  sale endpoint exposed only two explicitly non-U.S. rows. The artifact was
+  rejected before baseline, ingest, status activation, or `--mark-missing`.
+  Do not treat the old two-lease-row snapshot as a permanent baseline or a
+  current whole-source proof. The one-row Savills exception remains available
+  only if a future artifact proves complete eligible sale *and* lease coverage;
+  until then, the source is correctly blocked rather than silently partial.
 - `cre_ingest.py` now drops non-HTTP contact profile/avatar/VCard URLs and
   non-HTTP document URLs. Reingesting the complete Lee and SVN artifacts
   refreshed child rows and reduced active bad contact avatar URLs from 37 to 0.
