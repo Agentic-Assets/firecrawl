@@ -1,6 +1,11 @@
 # Firecrawl CRE operator runbook: ordered next steps (2026-07-11)
 
-**Start here for the live listing-pipeline handoff.** The Firecrawl safety
+> **Historical point-in-time runbook:** Runtime, SHA, PR, count, and deployment
+> statements below describe July 11 only. For current listing refresh status,
+> use the July 29 refresh summary, `cre_status.sh`, and exact checkpoint
+> manifests. Preserve the approval gates below for scheduler recovery.
+
+**Historical listing-pipeline handoff.** The Firecrawl safety
 branch is review-ready, but it is not deployed and no production canary is
 authorized. The current Mac mini has no active CRE job to pause, runs an older
 checkout under `~/Documents`, and has stopped Colima and an unreachable local

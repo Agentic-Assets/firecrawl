@@ -2,9 +2,8 @@ import hashlib
 import json
 from unittest.mock import patch
 
-import pytest
-
 import cre_repair_newmark_nim as repair
+import pytest
 
 
 def artifact_listing(
@@ -470,6 +469,22 @@ def test_persistent_rollback_requires_both_reviewed_digests(digest_args):
         "--rollback-preimage",
         "/tmp/preimage.json",
         *digest_args,
+    ]
+    with (
+        patch.object(repair.sys, "argv", argv),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        repair.main()
+    assert exc_info.value.code == 2
+
+
+def test_cli_refuses_an_alternate_cre_lock_path(tmp_path):
+    argv = [
+        "cre_repair_newmark_nim.py",
+        "--env-file",
+        "unused.env",
+        "--lock-dir",
+        str(tmp_path / ".cre.lock"),
     ]
     with (
         patch.object(repair.sys, "argv", argv),

@@ -1,9 +1,10 @@
 # CRE Brokerage Completion Playbook
 
-Last updated: 2026-06-13.
+Last reviewed: 2026-07-31.
 
 Use this playbook when upgrading one brokerage website from shallow coverage to
-complete public-feed coverage for EQUIRE. Work one brokerage at a time.
+complete public-feed coverage for EQUIRE. It is adapter-development guidance,
+not production refresh authorization. Work one brokerage at a time.
 
 ## Completion Standard
 
@@ -52,8 +53,10 @@ serve the local browser path but reject plain urllib.
 - Prefer public JSON APIs over rendered cards.
 - Use full pagination and cap by `--max-items`.
 - Preserve source raw rows in `raw_data`.
-- Add bounded concurrency and per-listing failure capture.
-- If a detail scrape fails, keep the feed row and store `detailError` rather than failing the whole source.
+- Add bounded concurrency and explicit per-listing failure evidence.
+- Exploratory probes may retain a feed row with `detailError`. Strict admission
+  fails closed on incomplete required detail. Only an explicitly registered
+  authoritative-inventory or scoped contract may preserve existing children.
 - Canonicalize hostnames and relative URLs.
 
 5. Detail-page enrichment:
@@ -80,7 +83,7 @@ python3 cre_ingest.py --in /tmp/source_target_probe.json \
 
 Check that staged child rows contain URLs only and no binary payload fields.
 
-8. Full proof:
+8. Development full proof:
 
 ```bash
 npx tsx collect.ts --source=<source-key> --transaction=both \
@@ -89,8 +92,12 @@ npx tsx collect.ts --source=<source-key> --transaction=both \
 python3 cre_ingest.py --in out/<source>_full_<timestamp>.json --dry-run
 ```
 
-Use live ingest only when source errors are understood. Use `--mark-missing`
-only after a clean full run with no source gaps.
+Do not treat the direct artifact/dry-run pair as production proof. A supervised
+production refresh must use `cre_checkpoint_refresh.py`, which binds a clean
+pushed SHA, freshness generation, source and aggregate gates, dry-run, additive
+ingest, and exact database readback. Lifecycle reconciliation is a separate
+reviewed action and is allowed only when the exact source gate reports
+`mark_missing_safe`.
 
 9. Monitor enablement (when enumeration key matches ingest `external_id`):
 
@@ -113,11 +120,13 @@ Each source should have:
 - Status in `scripts/firecrawl-ops/cre_collector/CLAUDE.md`
 - A dated handoff note for the current work session (the 2026-06 buildout
   handoff and lessons are archived in `scripts/firecrawl-ops/cre_collector/archive/`)
-- If the source changes counts or coverage, update `START_HERE.md` and the dated brokerage status report.
+- If the source changes counts or coverage, preserve a dated checkpoint/report
+  artifact. Do not hardcode undated live counts in `START_HERE.md`.
 
 ## Cushman Pattern To Reuse
 
-Cushman & Wakefield was upgraded by:
+Cushman & Wakefield's historical adapter investigation established the API and
+detail patterns below:
 
 - Finding the public API in browser network traffic.
 - Verifying local Firecrawl could fetch the API even when direct urllib got `403`.
@@ -127,7 +136,11 @@ Cushman & Wakefield was upgraded by:
 - Saving document/image URLs only.
 - Proving the known 1800 Central listing captured 2 PDFs, 15 photos, and the broker contact links.
 
-This is the model process for the remaining partial brokerage sources.
+The current strict Cushman path uses its uncached, exactly reconciled public
+search API as an authoritative inventory feed and intentionally preserves
+existing children. It proves inventory freshness, not a new rendered-detail or
+fresh-child sweep. Reuse the investigation techniques above, but follow each
+source's registered admission and child contract.
 
 ## Sitemap-Discovery Pattern To Reuse (Cloudflare-protected sites)
 

@@ -114,7 +114,7 @@ bash cre_status.sh               # run-health heartbeat (schedules, last runs, s
 Use `--mark-missing` only when every relevant source pass completed cleanly
 and staged enough rows for the per-broker guardrails. While Savills sale stays
 structurally capped (no public US commercial-sale feed), keep the ingest additive
-(`--no-mark-missing`). The collector registers **20 source keys** in
+(`--no-mark-missing`). The collector registers **51 source keys** in
 `collect.ts` / `types.ts`; live per-source status is in `START_HERE.md`.
 
 Live row counts, baseline artifacts, and per-source status belong in

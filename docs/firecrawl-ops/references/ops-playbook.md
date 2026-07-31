@@ -34,6 +34,16 @@ docker compose down && docker compose up -d
 scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
+## CRE listing operations
+
+Firecrawl runtime health is necessary but does not authorize a CRE database
+write, lifecycle reconciliation, baseline update, or launchd change. For CRE
+work, read `scripts/firecrawl-ops/cre_collector/START_HERE.md`, use
+`scripts/firecrawl-ops/cre_collector/SETUP.md` for host setup, and use
+`cre_checkpoint_refresh.py` for supervised production refresh proof. The
+checkpoint manifest, exact generation readback, canonical lock, and live
+`cre_status.sh` result are the operational evidence.
+
 ## Logs
 ```bash
 cd ~/Github/agentic-assets/firecrawl

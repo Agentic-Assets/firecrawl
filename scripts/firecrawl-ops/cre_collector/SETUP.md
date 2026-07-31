@@ -14,10 +14,11 @@ The pipeline has two halves:
   stdlib only): upserts into Supabase `credeals` by shelling out to `psql`.
   Needs `psql` and a `POSTGRES_URL`.
 
-> **Current operational gate, 2026-07-11:** This is a setup reference, not
-> authorization to change the Mac mini. Its runtime has no active CRE scheduler.
-> Before any stack recovery, scheduler load, database write, or canary, follow
-> `START_HERE.md` and the operator runbook's explicit gates.
+> **Historical operational gate, 2026-07-11:** This is a setup reference, not
+> authorization to change the Mac mini. The no-scheduler statement was verified
+> on that date only. Before any stack recovery, scheduler load, database write,
+> or canary, run `cre_status.sh`, follow `START_HERE.md`, and preserve the
+> operator runbook's explicit approval gates.
 
 ---
 

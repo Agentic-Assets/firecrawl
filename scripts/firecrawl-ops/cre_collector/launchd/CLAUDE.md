@@ -10,7 +10,8 @@ Historical state captured on 2026-06-15: the old monitor and daily tiers were
 loaded on that Mac, and the checkout was outside `~/Documents`. This is not
 current scheduler evidence. The 2026-07-11 read-only audit at
 `../../../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-execution-status-audit.md`
-records the actual Mac mini state and recovery gates. Re-run `cre_status.sh`
+records a historical point-in-time Mac mini state and recovery gates. Re-run
+`cre_status.sh`
 before any scheduler decision. The new enrich/restructured-monitor/weekly
 cutover remains held for explicit approval.
 

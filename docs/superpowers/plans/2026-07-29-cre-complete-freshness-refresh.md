@@ -1,10 +1,14 @@
 # CRE Complete Freshness Refresh Implementation Plan
 
+> **Implementation record:** This plan predates the completed 51-key registry,
+> child-preserving Buildout contract, and retained-parent child guard. Use the
+> July 29 refresh summary and exact checkpoint manifests for current status.
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Produce a current, complete, and auditable refresh of every supported CRE listing source, with fresh source observations, additive production writes, exact generation-based database readback, and an explicit accounting of unsupported legacy inventory.
 
-**Architecture:** A checkpoint run assigns one immutable generation ID and start time to each source artifact. Strict sources bypass Firecrawl response caches, record inventory and admitted detail or authoritative-feed observation times, and fail closed on incomplete source universes or detail pages. Child behavior is explicit by source class: CBRE and Buildout replace collector-owned children, SRS/Hanley/Kidder preserve children, and other strict sources require current detail rather than preservation. Production ingest remains additive and is admitted only after artifact validation; readback proves the exact generation, canonical row count, inventory-only scope count, and freshness timestamps rather than treating artifact creation time as source observation time.
+**Architecture:** A checkpoint run assigns one immutable generation ID and start time to each source artifact. Strict sources bypass Firecrawl response caches, record inventory and admitted detail or authoritative-feed observation times, and fail closed on incomplete source universes or detail pages. Child behavior is explicit by source class: CBRE replaces collector-owned children; all Buildout feeds plus Interra, Cushman, SRS, Hanley, Kidder, and Newmark preserve children; other strict sources require current detail rather than preservation. Production ingest remains additive and is admitted only after artifact validation; readback proves the exact generation, canonical row count, inventory-only scope count, and freshness timestamps rather than treating artifact creation time as source observation time.
 
 **Tech Stack:** TypeScript/tsx collector, local Firecrawl Docker API, Python 3 checkpoint/ingest/validation tools, PostgreSQL through `psql`, Node test runner, pytest, GitHub pull request, Linear.
 
@@ -163,7 +167,7 @@ Run each affected source test independently and require the failure message to i
 
 - [ ] **Step 3: Implement source-specific admission**
 
-Require stable provider totals and identities where exposed; bypass Firecrawl cache in strict mode; make every parse/detail failure truncate or fail the source; attach current-generation provenance. For authoritative inventory feeds, emit `detailScope: authoritative_inventory_feed`: CBRE and Buildout replace collector-owned children, while SRS, Hanley, and Kidder Mathews preserve existing children. Other strict sources require an admitted current detail observation and cannot use preservation after a detail failure.
+Require stable provider totals and identities where exposed; bypass Firecrawl cache in strict mode; make every parse/detail failure truncate or fail the source; attach current-generation provenance. For authoritative inventory feeds, emit `detailScope: authoritative_inventory_feed`: CBRE replaces collector-owned children, while all Buildout feeds, Interra Realty, Cushman & Wakefield, SRS, Hanley, Kidder Mathews, and Newmark preserve existing children. Other strict sources require an admitted current detail observation and cannot use preservation after a detail failure.
 
 - [ ] **Step 4: Keep public identity limits explicit**
 
@@ -298,7 +302,7 @@ Add the exact SHA, test counts, review outcome, known source exceptions, and sta
 
 **Interfaces:**
 
-- Consumes: clean pushed collector SHA, healthy local Firecrawl, free shared lock, safe database environment path, and the supported 20-source registry.
+- Consumes: clean pushed collector SHA, healthy local Firecrawl, free shared lock, safe database environment path, and the supported 51-source registry.
 - Produces: source artifacts, validation reports, additive writes, and exact post-write readback.
 
 - [ ] **Step 1: Reconfirm safety preflight**

@@ -3,7 +3,8 @@
 > **Superseded planning snapshot.** Use it for rationale, not live state. The
 > later Mac mini audit found no active CRE scheduler or healthy local runtime;
 > the [operator runbook](2026-07-11-firecrawl-operator-runbook.md)
-> defines the current gated sequence.
+> preserves the historical recovery approvals. Current refresh status belongs
+> in the July 29 refresh summary and exact checkpoint manifests.
 
 **Status:** Planning-only synthesis. No production DDL, database write, launchd
 change, scheduler activation, repository creation, deletion, PR, or merge is

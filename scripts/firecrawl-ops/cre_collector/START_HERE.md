@@ -5,11 +5,12 @@
 > `cre_enrich.py` has no OM-parse invocation. The dated snapshots below are
 > historical records, not authorization to reactivate that writer.
 >
-> **Current operational handoff:** Before any merge, Mac mini recovery,
-> scheduler change, or bounded canary, read
-> `../../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md`.
-> It is the current ordered runbook. The historical run counts and scheduler
-> states below must not be used as current live evidence.
+> **Current operational handoff:** For supervised listing refreshes, use the
+> strict-refresh procedure below and the dated status ledger at
+> `../../../tasks/2026-07-29-cre-complete-freshness-refresh/refresh-summary.md`.
+> The July 11 operator runbook remains historical scheduler-recovery and
+> OM-canary context only. Always obtain live scheduler, lock, manifest, and
+> database readback evidence before acting.
 
 > **Supported production path:** When collection and ingest are enabled, they
 > run here (`collect.ts`, `sources/*.ts`, `cre_ingest.py`, and
@@ -118,6 +119,13 @@ Child handling is source-class-specific:
 - Other strict sources require an admitted current detail observation and must
   not use child preservation as a substitute for a failed detail read.
 
+The atomic precommit child guard compares the same pre-existing parent listing
+IDs that remain active after ingest. A legitimate `--mark-missing` retirement
+is excluded from both sides of the comparison, while a child loss on retained
+parents still aborts the entire transaction when a source/type baseline of at
+least 10 rows retains less than 70%. The transaction therefore cannot confuse
+soft-retiring a parent with physically deleting its children.
+
 ### Cushman URL-v1 identity consolidation
 
 `cre_repair_cushman_identity.py` is the one-time, artifact-pinned repair for
@@ -136,13 +144,17 @@ donor row; fields are never synthesized from independent per-column maxima.
 The recorded plan covers every audited parent, including old-only targets whose
 survivor keeps its existing source URL and freshness generation.
 The CLI has no alternate lock-path option: every mode acquires the canonical
-shared CRE lock before database access. Preimage schema v4 binds every parent
-and child to its original normalized target, requires exactly one active
+shared CRE lock before database access. Rollback document schema v7 binds every
+parent and child to its original normalized target, requires exactly one active
 survivor per target, and records the normalized expected post-apply value of
-every parent field rollback can restore. Older or malformed preimages are
-refused. It also records image URL and OM fact-identity/ranking evidence so
-validation recomputes the exact child winner policy rather than trusting a
-stored destination ID.
+every parent field rollback can restore. Its canonical inner document has 14
+independently constructed, encrypted, and read-back sections. Each section has
+exact byte and SHA-256 guards, and the reconstructed whole document has its own
+canonical hash. The outer chunk transport retains the historical protocol name
+`cushman-preimage-chunks-v4`; that name is not the rollback document schema.
+Older or malformed preimages are refused. The document also records image URL
+and OM-fact identity/ranking evidence so validation recomputes the exact child
+winner policy rather than trusting a stored destination ID.
 
 ```bash
 ENV_FILE="$HOME/.config/cre/equire.env"
@@ -187,6 +199,39 @@ python3 cre_repair_cushman_identity.py \
 After apply, run a new strict Cushman collection and normal ingest, then require
 the complete validator to report zero active normalized identity duplicates.
 Do not describe the one-time repair alone as a fresh detail sweep.
+
+### Newmark NIM identity and unit repair
+
+`cre_repair_newmark_nim.py` is the one-time, artifact- and database-bound repair
+for the failed `2026-07-30T031805Z` Newmark generation. It is not a generic
+dedupe tool. It refuses any drift from the reviewed 35-identity,
+27-collision, 8-rename shape, uses one serializable transaction, and always
+acquires the canonical CRE lock. The CLI deliberately has no alternate
+lock-path option.
+
+The default is a locked rollback-only preflight. Before persistent apply, run
+both non-persistent verification modes. Apply requires a new owner-only
+preimage path; rollback requires both the exact preimage SHA-256 and exact
+postimage SHA-256 printed by the matching apply.
+
+```bash
+ENV_FILE="$HOME/.config/cre/equire.env"
+ARTIFACT="out/checkpoint-refresh/2026-07-30T031805Z/sources/newmark.json"
+
+python3 cre_repair_newmark_nim.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE"
+python3 cre_repair_newmark_nim.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE" \
+  --verify-apply-rollback
+python3 cre_repair_newmark_nim.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE" \
+  --verify-rollback-roundtrip
+
+install -d -m 700 out/repair/newmark-nim/<run-id>
+python3 cre_repair_newmark_nim.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE" \
+  --apply --preimage "$PWD/out/repair/newmark-nim/<run-id>/preimage.json"
+```
 
 ### SVN missing-detail shell recovery
 
@@ -374,11 +419,12 @@ Prior listing-ingest evidence (2026-06-12 local time), from run finished at `202
 
 This directory is the production daily path for public commercial real estate listing inventory feeding EQUIRE. Use it for sale and lease listings. The older `../cre_scrapers/` Python package is legacy support for source probes and detail-page enrichment.
 
-## Current State
+## Historical state snapshots
 
-**Live board and per-source counts:** see the 2026-07-05 banner and Latest Source
-Matrix below (107,783 active as of that snapshot). The subsection below is a
-historical artifact record from 2026-06-11 through 2026-06-14.
+**Historical board and per-source counts:** the 2026-07-05 matrix records
+107,783 active at that snapshot. Obtain current counts from a fresh validator
+or exact checkpoint readback. The subsection below is an artifact record from
+2026-06-11 through 2026-06-14.
 
 Latest full artifact (historical):
 
@@ -487,7 +533,7 @@ pending CRE_EQUIRE coordination and is NOT part of the additive build. Board
 impact is quantified in
 `docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md`.
 
-## Latest Source Matrix
+## Historical source matrix
 
 Historical Supabase snapshot from `credeals` (2026-07-05). **Re-query before
 quoting;** see **Agent rule: verify counts** at the top of this file. Board total
@@ -598,19 +644,21 @@ images into Supabase storage for the bulk collector.
   not currently loaded on the Mac mini. See the operator runbook, not the
   historical Section 9 design, for recovery authority.
 - Do not use `--mark-missing` after a run with Lee or other source errors.
-- Cushman & Wakefield is now current in Supabase from `out/cushman_full_2026-06-12_022841.json`: 11,318 active rows, 18,343 document URL rows, 24,278 image URL rows, 21,110 contact rows, 21,110 profile URLs, and 20,301 VCard URLs. Source-scoped `--mark-missing` soft-deleted 24 old probe rows.
+- **Historical per-source evidence below:** every “was current” statement is
+  bounded to its named 2026-06 artifact and is not a current freshness claim.
+- Cushman & Wakefield was current for the named June snapshot from `out/cushman_full_2026-06-12_022841.json`: 11,318 active rows, 18,343 document URL rows, 24,278 image URL rows, 21,110 contact rows, 21,110 profile URLs, and 20,301 VCard URLs. Source-scoped `--mark-missing` soft-deleted 24 old probe rows.
 - CBRE Deal Flow has been ingested from the public RCM endpoint. Do not use its reported 2,042 sale total as collected count; the public card pagination exposed 1,809 sale cards in the full run. A narrow cleanup soft-deleted 21 stale `dealflow:url:<sha1>` rows that duplicated newer enriched Deal Flow IDs.
 - Do not store source PDF or image binaries in Supabase. Store URLs only.
 - Colliers now has two folded sources under the `colliers` brokerage. SalesTracker (`colliers`, 1,172 investment-sale rows) via public RCM GET. Main site (`colliers-main`, COMPLETE 2026-06-14: 15,829 active rows) via the public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`, ~15,883 detail URLs) fetched through local Firecrawl plus detail-render JSON-LD parse; ids prefixed `main:`. The Coveo POST search is still not used and not needed. Full run converged via `run_colliers_main_full.sh` (chunked, resumable cache) and was ingested additively (status OFF); colliers brokerage total 17,001 active.
 - Do not ingest NAI Global's unbounded Infabode feed as active inventory. Use only rows whose public `publicPost.listingStatus` contains `FOR_SALE_ON_MARKET`. The 2026-06-12 active artifact `out/nai_active_only_from_full_2026-06-12_044310.json` was live-ingested with source-scoped `--mark-missing`; 19 old rendered-card probe rows were soft-deleted.
-- Transwestern is now current in Supabase from `out/transwestern_full_2026-06-12_121302_cleaned.json`: 2,021 active rows, 3,054 document URL rows, 4,838 image URL rows, 3,746 contact/profile/VCard URL rows, and 0 bad descriptions or bad asset URLs. The live DB needed the existing `sql/001_cre_brokerages.sql` Transwestern seed inserted before ingest.
-- Marcus & Millichap is now current in Supabase from `out/marcus_full_2026-06-12_130035.json`: 3,124 active public sale rows, 16,771 image URL rows, 7,915 contact/profile URL rows, 0 document rows, and 0 final detail errors. Gated deal-room URLs stay in raw metadata only. Public lease remains unsupported.
-- Lee & Associates is now current in Supabase from `out/lee_full_cache_2026-06-12_assembled.json`: 9,223 active rows, 9,062 image URL rows, 7,681 document URL rows, 9,223 contact rows, and 0 bad URLs, duplicate IDs, bad states, bad coordinates, or child orphans. The durable Buildout cache remains under gitignored `out/cache/buildout/lee-associates/`.
-- Newmark is now current in Supabase from `out/newmark_full_refined_2026-06-12.json`: 4,371 active rows, 4,303 image URL rows, 3,961 contact/profile URL rows, 0 document rows, 0 missing states, and 715 old additive rows soft-deleted. Listing documents, full galleries, second/third broker joins, and VCards remain unproven.
-- SVN is now current in Supabase from `out/svn_full_cache_2026-06-12_assembled.json`: 5,287 active rows, 5,235 image URL rows, 3,899 document URL rows, 5,287 contact rows, 0 duplicate external IDs, 0 bad URLs, 0 missing titles, 0 missing raw data, and 34 old rows soft-deleted. One active SVN row is missing state.
-- JLL main property feed is now current in Supabase from `out/jll_full_detail_enriched_2026-06-12.json`: 11,230 collected sale/lease rows, 10,604 staged unique rows, 0 detail errors, 0 skipped missing URLs, 9,747 artifact document URLs, 28,254 artifact image URLs, and 23,801 artifact contacts/profile URLs. Live JLL main now has 10,741 active rows after 4,406 old same-URL rows were soft-deleted. Remaining duplicate source URL groups are 135 latest-batch sale/lease same-page variants.
-- JLL Investor Center is now current in Supabase from `out/jll_investor_full_sitemap_detail_2026-06-12.json`: 934 active rows (all sale; lease not applicable for this path), 2,572 contact rows, 345 document URL rows, and 5,658 image URL rows. All jll-investor rows lack coordinates because the Investor detail path exposes none (known limitation, not a regression). Speed controls: `JLL_INVESTOR_DETAIL_WAIT_MS=1000`, `JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS=8000`, `JLL_INVESTOR_DETAIL_CONCURRENCY=4` (commit d0c9f5d63). The 50 stale early-probe rows were soft-deleted after user approval at ~23:25 UTC 2026-06-12.
-- Avison Young is now current in Supabase from
+- Transwestern was current for the named June snapshot from `out/transwestern_full_2026-06-12_121302_cleaned.json`: 2,021 active rows, 3,054 document URL rows, 4,838 image URL rows, 3,746 contact/profile/VCard URL rows, and 0 bad descriptions or bad asset URLs. The live DB needed the existing `sql/001_cre_brokerages.sql` Transwestern seed inserted before ingest.
+- Marcus & Millichap was current for the named June snapshot from `out/marcus_full_2026-06-12_130035.json`: 3,124 active public sale rows, 16,771 image URL rows, 7,915 contact/profile URL rows, 0 document rows, and 0 final detail errors. Gated deal-room URLs stay in raw metadata only. Public lease remains unsupported.
+- Lee & Associates was current for the named June snapshot from `out/lee_full_cache_2026-06-12_assembled.json`: 9,223 active rows, 9,062 image URL rows, 7,681 document URL rows, 9,223 contact rows, and 0 bad URLs, duplicate IDs, bad states, bad coordinates, or child orphans. The durable Buildout cache remains under gitignored `out/cache/buildout/lee-associates/`.
+- Newmark was current for the named June snapshot from `out/newmark_full_refined_2026-06-12.json`: 4,371 active rows, 4,303 image URL rows, 3,961 contact/profile URL rows, 0 document rows, 0 missing states, and 715 old additive rows soft-deleted. Listing documents, full galleries, second/third broker joins, and VCards remain unproven.
+- SVN was current for the named June snapshot from `out/svn_full_cache_2026-06-12_assembled.json`: 5,287 active rows, 5,235 image URL rows, 3,899 document URL rows, 5,287 contact rows, 0 duplicate external IDs, 0 bad URLs, 0 missing titles, 0 missing raw data, and 34 old rows soft-deleted. One active SVN row is missing state.
+- JLL main property feed was current for the named June snapshot from `out/jll_full_detail_enriched_2026-06-12.json`: 11,230 collected sale/lease rows, 10,604 staged unique rows, 0 detail errors, 0 skipped missing URLs, 9,747 artifact document URLs, 28,254 artifact image URLs, and 23,801 artifact contacts/profile URLs. Live JLL main then had 10,741 active rows after 4,406 old same-URL rows were soft-deleted. Remaining duplicate source URL groups were 135 latest-batch sale/lease same-page variants.
+- JLL Investor Center was current for the named June snapshot from `out/jll_investor_full_sitemap_detail_2026-06-12.json`: 934 active rows (all sale; lease not applicable for this path), 2,572 contact rows, 345 document URL rows, and 5,658 image URL rows. All jll-investor rows lack coordinates because the Investor detail path exposes none (known limitation, not a regression). Speed controls: `JLL_INVESTOR_DETAIL_WAIT_MS=1000`, `JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS=8000`, `JLL_INVESTOR_DETAIL_CONCURRENCY=4` (commit d0c9f5d63). The 50 stale early-probe rows were soft-deleted after user approval at ~23:25 UTC 2026-06-12.
+- Avison Young was current for the named June snapshot from
   `out/avison_full_detail_2026-06-12.json`: 2,201 active rows, 2,571 document
   URL rows, 31,570 image URL rows, 4,128 contacts, 0 detail errors in the
   artifact field, and 0 non-property photo leaks after the Avison-specific photo

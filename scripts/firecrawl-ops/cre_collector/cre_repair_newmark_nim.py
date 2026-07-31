@@ -48,7 +48,6 @@ from cre_ingest import (
     sql_lit,
 )
 
-
 EXPECTED_ARTIFACT_SHA256 = (
     "b18d5f5bc5a8f8e24b79cba29e36e51857d49c6547764c230ef6a1802447118c"
 )
@@ -2296,7 +2295,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact", type=Path, default=DEFAULT_ARTIFACT)
     parser.add_argument("--env-file", required=True)
-    parser.add_argument("--lock-dir", type=Path, default=DEFAULT_LOCK)
     parser.add_argument(
         "--preimage",
         type=Path,
@@ -2371,7 +2369,7 @@ def main() -> int:
     db_url, _ = load_db_url(args.env_file)
     assert_db_target(db_url)
 
-    with shared_cre_lock(args.lock_dir):
+    with shared_cre_lock(DEFAULT_LOCK):
         if args.rollback_preimage is not None:
             rollback_path = args.rollback_preimage.resolve()
             preimage, preimage_sha256 = load_private_preimage(

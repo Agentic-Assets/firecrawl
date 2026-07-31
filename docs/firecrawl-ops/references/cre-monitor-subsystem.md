@@ -150,6 +150,15 @@ the hard gotchas a new session needs before running anything.
    whole API / inventory / list to see ids). Their monitor benefit is purely
    downstream (fewer DB writes via the diff runner), not a faster collect.
 
+10. **Lifecycle reconciliation and child-regression checks use different
+    cohorts.** `--mark-missing` legitimately soft-retires parents and archives
+    their child state. The atomic ingest guard compares child counts only
+    across the same pre-existing parent IDs that remain active; a
+    retained-parent source/type baseline of at least 10 retaining less than 70%
+    aborts the whole transaction. Do not reuse the active-parent validation
+    snapshot itself as a post-reconciliation child-loss gate because retired
+    parents intentionally leave that scope.
+
 ## Run model (intended cadence, gated until go-ahead)
 
 ```bash

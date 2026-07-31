@@ -35,7 +35,8 @@ cutover).
 > Do not use this historical snapshot as current scheduler evidence. The
 > 2026-07-11 read-only audit in
 > `../../../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-execution-status-audit.md`
-> records the actual Mac mini state and required recovery gates. Re-run
+> records a historical point-in-time Mac mini state and required recovery
+> gates. Re-run
 > `../cre_status.sh` before any scheduler decision.
 >
 > Setup is portable: render + install plists per-machine with

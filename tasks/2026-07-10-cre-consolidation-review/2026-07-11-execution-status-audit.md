@@ -1,5 +1,10 @@
 # CRE consolidation execution-status audit (2026-07-11)
 
+> **Historical point-in-time audit:** Runtime, SHA, PR, count, and deployment
+> statements below describe July 11 only. For current listing refresh status,
+> use the July 29 refresh summary, `cre_status.sh`, and exact checkpoint
+> manifests.
+
 **Plan:** `OPTIMAL_EXECUTION_PLAN_2026-07-11.md`
 **Firecrawl branch:** `fix/cre-consolidation-safety` at `8510e9207` plus this
 cross-repository evidence refresh.
@@ -7,7 +12,7 @@ cross-repository evidence refresh.
 **Status:** The implementation-preparation phase is complete. The production
 execution phase is not authorized or proven.
 
-**Operator starting point:** Read
+**Historical operator starting point:** Read
 `2026-07-11-firecrawl-operator-runbook.md` before requesting a merge, runtime
 recovery, deployment, or canary. It turns the gates below into the required
 order, pass evidence, stop conditions, and rollback response.
