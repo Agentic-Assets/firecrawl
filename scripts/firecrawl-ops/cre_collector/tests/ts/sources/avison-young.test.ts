@@ -43,6 +43,7 @@ import {
   assertAvisonYoungDetailDoc,
   assertAvisonYoungStrictFeed,
   fetchAvisonYoungDirectDoc,
+  fetchAvisonYoungDirectDocWithRetry,
   isAvisonYoungDirectDetailUrl,
   isPublicAvisonYoungAddress,
   enrichAvisonYoungListing,
@@ -720,6 +721,43 @@ test("Avison direct detail transport captures current HTML, links, images, and i
       name: "602 N Capitol Ave",
       street: "602 N Capitol Ave",
     })
+  );
+});
+
+test("Avison strict direct detail retries only the failed page with bounded backoff", async () => {
+  const waits: number[] = [];
+  let calls = 0;
+  const detail = await fetchAvisonYoungDirectDocWithRetry(
+    "https://www.avisonyoung.us/properties/retry",
+    async () => {
+      calls++;
+      if (calls < 3) throw new Error(`transient ${calls}`);
+      return doc("<html><main><h1>Recovered property</h1></main></html>");
+    },
+    3,
+    20,
+    async (milliseconds) => {
+      waits.push(milliseconds);
+    }
+  );
+
+  assert.equal(calls, 3);
+  assert.deepEqual(waits, [20, 40]);
+  assert.match(detail.rawHtml, /Recovered property/);
+});
+
+test("Avison strict direct detail reports the terminal per-page failure", async () => {
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDocWithRetry(
+        "https://www.avisonyoung.us/properties/retry",
+        async () => {
+          throw new Error("HTTP 503");
+        },
+        3,
+        0
+      ),
+    /failed after 3 attempt\(s\): Error: HTTP 503/
   );
 });
 

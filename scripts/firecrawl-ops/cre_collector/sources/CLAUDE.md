@@ -104,6 +104,7 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `NAI_GRAPHQL_TIMEOUT_MS` / `NAI_SOURCE_BATCH_SIZE` / `NAI_PAGE_SIZE` / `NAI_ENUMERATION_CONCURRENCY` | nai-global | Bound each `publicPosts` GraphQL body read (default 30s), split source-office filters (default 40), request up to 100 bulk-detail rows per page, and enumerate unlimited batches at a bounded fan-out of two. A timeout or page cap fails closed for monitor coverage. |
 | `AVISON_YOUNG_DETAIL_LIMIT` | avison-young | **Required** for detail on unlimited full runs |
 | `AVISON_YOUNG_DETAIL_CONCURRENCY` | avison-young | Detail parallelism |
+| `AVISON_YOUNG_DIRECT_DETAIL_ATTEMPTS` / `AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS` | avison-young | Strict direct-property-detail retry count (default 3, max 5) and linear backoff base (default 250 ms, max 5 s). Only the failed page is retried; terminal failures report bounded listing IDs and reasons. |
 | `--page-cap` | jll, colliers*, nai | Caps rendered pages / feed offsets |
 | `--concurrency` | all Firecrawl-heavy | `pmap` limit (1–6) |
 

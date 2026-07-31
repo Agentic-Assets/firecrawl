@@ -40,6 +40,18 @@ export const AVISON_YOUNG_DIRECT_DETAIL_TIMEOUT_MS = boundedInt(
   1000,
   120000
 );
+export const AVISON_YOUNG_DIRECT_DETAIL_ATTEMPTS = boundedInt(
+  process.env.AVISON_YOUNG_DIRECT_DETAIL_ATTEMPTS,
+  3,
+  1,
+  5
+);
+export const AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS = boundedInt(
+  process.env.AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS,
+  250,
+  0,
+  5000
+);
 const AVISON_YOUNG_TURNDOWN = new TurndownService({
   headingStyle: "atx",
   bulletListMarker: "-",
@@ -1096,6 +1108,30 @@ export function harvestAvisonYoung(
   };
 }
 
+export async function fetchAvisonYoungDirectDocWithRetry(
+  url: string,
+  fetchDetail: (url: string) => Promise<ScrapedDoc> = fetchAvisonYoungDirectDoc,
+  attempts = AVISON_YOUNG_DIRECT_DETAIL_ATTEMPTS,
+  retryMs = AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS,
+  wait: (milliseconds: number) => Promise<void> = (milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds))
+): Promise<ScrapedDoc> {
+  let lastError: unknown = new Error("Avison Young direct detail was not attempted");
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fetchDetail(url);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts && retryMs > 0) {
+        await wait(retryMs * attempt);
+      }
+    }
+  }
+  throw new Error(
+    `Avison Young direct detail failed after ${attempts} attempt(s): ${String(lastError)}`
+  );
+}
+
 export async function enrichAvisonYoungListing(
   base: any,
   strict = requireFreshDetails(),
@@ -1123,7 +1159,9 @@ export async function enrichAvisonYoungListing(
     try {
       const doc =
         process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
-          ? await directFetch(url)
+          ? requireLiveDetails
+            ? await fetchAvisonYoungDirectDocWithRetry(url, directFetch)
+            : await directFetch(url)
           : await scrapeDoc(url, {
               waitFor: 1000,
               timeout: 60000,
@@ -1340,8 +1378,16 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Pro
         )
     );
     if (incomplete.length) {
+      const evidence = incomplete.slice(0, 10).map((listing) => {
+        const id = clean(listing?.id) ?? "unknown-id";
+        const reason =
+          clean(listing?.detailError)
+          ?? clean(listing?.detailUnavailableReason)
+          ?? "missing current detail provenance";
+        return `${id}: ${reason}`;
+      });
       throw new Error(
-        `Avison Young fresh property detail is incomplete for ${incomplete.length}/${listings.length} selected rows`
+        `Avison Young fresh property detail is incomplete for ${incomplete.length}/${listings.length} selected rows: ${evidence.join(" | ")}`
       );
     }
   }
