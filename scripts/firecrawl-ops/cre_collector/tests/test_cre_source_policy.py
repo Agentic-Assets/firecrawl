@@ -37,13 +37,22 @@ def _policy() -> dict[str, dict[str, object]]:
 def _expected_policy(source_key: str) -> dict[str, object]:
     inventory_definition = cre_ingest.INVENTORY_ONLY_SOURCE_DEFINITIONS.get(source_key)
     if inventory_definition:
+        if source_key == "cbre-dealflow":
+            return {
+                "evidence_class": "authoritative_inventory_feed",
+                "canonical_claim": "authoritative_inventory",
+                "detail_claim": "current_inventory_only",
+                "child_contract": "preserve_existing_children",
+                "inventory_only_namespace": inventory_definition["external_id_like"],
+                "lifecycle_reconciliation_eligible": True,
+            }
         return {
-            "evidence_class": "inventory_only_namespace",
-            "canonical_claim": "provisional_source_index_only",
-            "detail_claim": "no_listing_detail",
-            "child_contract": "no_child_collection_write",
+            "evidence_class": "strict_detail",
+            "canonical_claim": "canonical_listing",
+            "detail_claim": "current_strict_detail",
+            "child_contract": "replace_from_fresh_detail",
             "inventory_only_namespace": inventory_definition["external_id_like"],
-            "lifecycle_reconciliation_eligible": False,
+            "lifecycle_reconciliation_eligible": True,
         }
     if source_key in cre_ingest.AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS:
         return {

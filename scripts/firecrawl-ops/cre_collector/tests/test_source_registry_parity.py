@@ -112,14 +112,13 @@ def test_recovered_buildout_sources_share_strict_ingest_and_seed_contracts():
 def test_source_freshness_and_lifecycle_classes_are_exact():
     all_sources = set(cre_ingest.SOURCE_TO_BROKERAGE)
     assert cre_ingest.STRICT_FRESHNESS_SOURCE_KEYS == all_sources - {
-        "cbre-dealflow",
-        "colliers",
         "avison-young",
     }
     assert cre_ingest.AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS == (
         cre_ingest.BUILDOUT_SOURCE_KEYS
         | {
             "cbre",
+            "cbre-dealflow",
             "cushman-wakefield",
             "srs",
             "hanley",

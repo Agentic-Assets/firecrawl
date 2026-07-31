@@ -801,6 +801,20 @@ def test_strict_detail_source_rejects_child_preservation():
         ci.validate_strict_artifact_freshness(payload)
 
 
+def test_strict_colliers_contract_excludes_explicit_provisional_cards():
+    payload = _strict_freshness_payload("colliers")
+    payload["listings"].append(
+        {
+            "sourceKey": "colliers",
+            "id": "salestracker:card:unlinked",
+            "inventoryOnly": {"reason": "card_not_linked"},
+            "provisionalIdentity": {"historyContinuity": "not_guaranteed"},
+        }
+    )
+
+    ci.validate_strict_artifact_freshness(payload)
+
+
 @pytest.mark.parametrize("freshness", [None, {"requireFreshDetails": False}])
 def test_direct_ingest_allows_unmarked_strict_source_without_explicit_flag(freshness):
     payload = {
@@ -833,6 +847,10 @@ def test_checkpoint_strict_sources_are_allowed_without_explicit_cli_contract(sou
 
 def test_avison_is_not_a_strict_contact_freshness_source():
     assert "avison-young" not in ci.STRICT_FRESHNESS_SOURCE_KEYS
+
+
+def test_colliers_is_a_strict_detail_source():
+    assert "colliers" in ci.STRICT_FRESHNESS_SOURCE_KEYS
 
 
 def test_preservation_wrapper_retains_source_key_from_merged_payload():

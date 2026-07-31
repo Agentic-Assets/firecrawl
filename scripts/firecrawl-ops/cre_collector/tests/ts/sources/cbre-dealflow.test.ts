@@ -23,6 +23,7 @@ import {
   cbreDealflowNumProjects,
   cbreDealflowAssertPageCount,
   cbreDealflowAssertHtmlOnlyMix,
+  cbreDealflowCanonicalUrl,
 } from "../../../sources/cbre-dealflow.js";
 import { harvestDetail } from "../../../lib/harvest.js";
 
@@ -228,6 +229,10 @@ test("CBRE Deal Flow unavailable detail preserves prior children and keeps fresh
   assert.equal(row.detailUnavailable.reason, "landing_not_setup");
   assert.equal(row.detailUnavailable.publicPageObserved, true);
   assert.equal(row.preserveChildCollections, true);
+  assert.equal(
+    row.canonicalUrl,
+    "https://www.cbredealflow.com/handler/landing.aspx?pv=public-card-token"
+  );
   assert.equal(row.statusBadge, "Available");
   assert.deepEqual(row.extraFacts, { project_type: "Investment Sale" });
   assert.equal(row.name, "Current public card");
@@ -241,6 +246,30 @@ test("CBRE Deal Flow unavailable detail preserves prior children and keeps fresh
     "public_html_only"
   );
   assert.equal(htmlOnly.detailUnavailable.publicPageObserved, true);
+});
+
+test("CBRE Deal Flow canonical URL never falls back to agreement or brochure material", () => {
+  assert.equal(
+    cbreDealflowCanonicalUrl({
+      urlKind: "agreement",
+      url: "https://www.cbredealflow.com/buyer/agreement?pv=agreement-token",
+    }),
+    undefined
+  );
+  assert.equal(
+    cbreDealflowCanonicalUrl({
+      urlKind: "brochure",
+      url: "https://www.cbredealflow.com/files/public-brochure.pdf",
+    }),
+    undefined
+  );
+  assert.equal(
+    cbreDealflowCanonicalUrl({
+      urlKind: "detail",
+      url: "https://www.cbredealflow.com/handler/landing.aspx?pv=property-token",
+    }),
+    "https://www.cbredealflow.com/handler/landing.aspx?pv=property-token"
+  );
 });
 
 test("CBRE Deal Flow retains agreement-gated and unlinked provider cards", () => {

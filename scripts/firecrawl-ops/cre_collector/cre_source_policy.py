@@ -21,6 +21,9 @@ from cre_ingest import (
 
 
 POLICY_PATH: Final = Path(__file__).resolve().parent / "data" / "cre-source-policy.json"
+MIXED_CANONICAL_INVENTORY_SOURCE_KEYS: Final = frozenset(
+    INVENTORY_ONLY_SOURCE_DEFINITIONS
+)
 POLICY_FIELDS: Final = frozenset(
     {
         "evidence_class",
@@ -72,15 +75,25 @@ def _validate_entry(path: Path, source_key: str, entry: object) -> dict[str, obj
         raise _error(path, f"{source_key} lifecycle_reconciliation_eligible must be boolean")
 
     inventory_definition = INVENTORY_ONLY_SOURCE_DEFINITIONS.get(source_key)
-    if inventory_definition is not None:
-        expected = {
-            "evidence_class": "inventory_only_namespace",
-            "canonical_claim": "provisional_source_index_only",
-            "detail_claim": "no_listing_detail",
-            "child_contract": "no_child_collection_write",
-            "inventory_only_namespace": inventory_definition["external_id_like"],
-            "lifecycle_reconciliation_eligible": False,
-        }
+    if source_key in MIXED_CANONICAL_INVENTORY_SOURCE_KEYS:
+        if source_key == "cbre-dealflow":
+            expected = {
+                "evidence_class": "authoritative_inventory_feed",
+                "canonical_claim": "authoritative_inventory",
+                "detail_claim": "current_inventory_only",
+                "child_contract": "preserve_existing_children",
+                "inventory_only_namespace": inventory_definition["external_id_like"],
+                "lifecycle_reconciliation_eligible": True,
+            }
+        else:
+            expected = {
+                "evidence_class": "strict_detail",
+                "canonical_claim": "canonical_listing",
+                "detail_claim": "current_strict_detail",
+                "child_contract": "replace_from_fresh_detail",
+                "inventory_only_namespace": inventory_definition["external_id_like"],
+                "lifecycle_reconciliation_eligible": True,
+            }
     elif source_key in AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS:
         expected = {
             "evidence_class": "authoritative_inventory_feed",

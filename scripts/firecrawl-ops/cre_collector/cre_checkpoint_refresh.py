@@ -44,6 +44,7 @@ from cre_ingest import (
     to_inventory_only_row,
     to_row,
 )
+from cre_source_policy import load_source_policy
 
 
 COLLECTOR_DIR = Path(__file__).resolve().parent
@@ -671,6 +672,23 @@ def validate_source_artifact(
         raise ArtifactValidationError(
             "single-source artifact must contain exactly one entry per selected transaction"
         )
+    artifact_listings = data.get("listings")
+    if not isinstance(artifact_listings, list):
+        artifact_listings = []
+
+    def canonical_count_for_transaction(transaction: str, total: int) -> int:
+        if expected_source not in INVENTORY_ONLY_SOURCE_DEFINITIONS:
+            return total
+        provisional = sum(
+            1
+            for row in artifact_listings
+            if isinstance(row, dict)
+            and row.get("sourceKey") == expected_source
+            and row.get("transactionMode") == transaction
+            and row.get("inventoryOnly") is not None
+        )
+        return total - provisional
+
     seen_transactions: set[str] = set()
     entry_total = 0
     for index, entry in enumerate(entries):
@@ -697,12 +715,13 @@ def validate_source_artifact(
             raise ArtifactValidationError(f"{expected_source}/{tx} has an invalid listing count")
         entry_total += count
         if strict_freshness or property_detail_freshness:
+            canonical_count = canonical_count_for_transaction(tx, count)
             metrics = entry.get("freshness")
             if not isinstance(metrics, dict):
                 raise ArtifactValidationError(
                     f"{expected_source}/{tx} is missing freshness admission metrics"
                 )
-            if metrics.get("listings") != count:
+            if metrics.get("listings") != canonical_count:
                 raise ArtifactValidationError(
                     f"{expected_source}/{tx} freshness listing count does not match"
                 )
@@ -715,17 +734,17 @@ def validate_source_artifact(
                     raise ArtifactValidationError(
                         f"{expected_source}/{tx} freshness metric {metric} must be zero"
                     )
-            if metrics.get("inventoryObserved") != count:
+            if metrics.get("inventoryObserved") != canonical_count:
                 raise ArtifactValidationError(
                     f"{expected_source}/{tx} lacks current inventory observations"
                 )
             child_preservation_rows = metrics.get("childPreservationRows")
             if property_detail_freshness:
-                if child_preservation_rows not in {0, count}:
+                if child_preservation_rows not in {0, canonical_count}:
                     raise ArtifactValidationError(
                         f"{expected_source}/{tx} has partial child-preservation coverage"
                     )
-                if metrics.get("detailObserved") != count:
+                if metrics.get("detailObserved") != canonical_count:
                     raise ArtifactValidationError(
                         f"{expected_source}/{tx} lacks current property-detail observations"
                     )
@@ -737,7 +756,7 @@ def validate_source_artifact(
                 expected_source
                 in CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
             ):
-                if child_preservation_rows != count:
+                if child_preservation_rows != canonical_count:
                     raise ArtifactValidationError(
                         f"{expected_source}/{tx} must preserve every child collection"
                     )
@@ -748,11 +767,11 @@ def validate_source_artifact(
             if property_detail_freshness:
                 pass
             elif expected_source in AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS:
-                if metrics.get("authoritativeInventoryFeed") != count:
+                if metrics.get("authoritativeInventoryFeed") != canonical_count:
                     raise ArtifactValidationError(
                         f"{expected_source}/{tx} is not proven by its authoritative inventory feed"
                     )
-            elif metrics.get("detailObserved") != count:
+            elif metrics.get("detailObserved") != canonical_count:
                 raise ArtifactValidationError(
                     f"{expected_source}/{tx} lacks detail observations"
                 )
@@ -805,6 +824,10 @@ def validate_source_artifact(
                     "the 5-minute clock-skew allowance"
                 )
         if strict_freshness or property_detail_freshness:
+            if listing.get("inventoryOnly") is not None:
+                # Explicit source-index-only cards are never canonical listing
+                # evidence. Their identity and watermark have a separate gate.
+                continue
             assert generation_started is not None
             inventory_observed = parse_iso8601(
                 listing.get("inventoryObservedAt"),
@@ -2061,6 +2084,70 @@ def _timestamp_second(value: str) -> datetime:
     return parse_iso8601(value, field="timestamp").replace(microsecond=0)
 
 
+FRESHNESS_EVIDENCE_CONTRACT = {
+    "strict_detail": {
+        "detail_scopes": {
+            "detail_page",
+            "inventory_feed",
+            "source_native_public_record",
+        },
+        # JLL's disk cache is admitted only when it was written in this exact
+        # refresh generation and after its start boundary; its persisted
+        # observation timestamp is therefore still current evidence.
+        "cache_dispositions": {
+            "live",
+            "generation_cache",
+            "source_revision_cache",
+        },
+        "requires_detail": True,
+    },
+    # Avison Young's property-page proof is intentionally not a claim that
+    # every broker contact was refreshed.  Its supplemental team feed may be
+    # degraded while the public property detail remains current.
+    "property_detail": {
+        "detail_scopes": {"detail_page"},
+        "cache_dispositions": {"live"},
+        "requires_detail": True,
+    },
+    "authoritative_inventory_feed": {
+        "detail_scopes": {"authoritative_inventory_feed"},
+        "cache_dispositions": {"live", "generation_cache"},
+        "requires_detail": False,
+    },
+}
+
+
+def _generation_expectation(
+    manifest: Mapping[str, Any], artifact: Mapping[str, Any], source: str
+) -> tuple[str, datetime]:
+    """Return the checkpoint generation identity and its immutable boundary."""
+    generation_id = artifact.get("freshness_generation_id") or manifest.get("run_id")
+    generation_started_at = (
+        artifact.get("freshness_generation_started_at") or manifest.get("started_at")
+    )
+    if not isinstance(generation_id, str) or not generation_id:
+        raise ValueError(f"{source} is missing its refresh generation id")
+    return generation_id, _timestamp_second(generation_started_at)
+
+
+def _generation_evidence_values(
+    row: Mapping[str, Any], field: str
+) -> set[str] | None:
+    """Parse the validator's JSON aggregate for one generation evidence field."""
+    value = row.get(field)
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            # Fixtures and hand-authored validation evidence may provide the
+            # scalar form used before cache-disposition aggregation.
+            value = [value]
+    if not isinstance(value, list):
+        return None
+    values = {item for item in value if isinstance(item, str) and item}
+    return values if len(values) == len(value) and values else None
+
+
 def verify_validation_readback(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -2071,26 +2158,32 @@ def verify_validation_readback(
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     latest_allowed = current + MAX_FUTURE_CLOCK_SKEW
     queries = validation.get("queries")
-    rows = queries.get("source_counts") if isinstance(queries, dict) else None
-    if not isinstance(rows, list):
-        raise GlobalStageError("validation source_counts readback is missing")
-    by_source = {
-        row.get("source_key"): row
-        for row in rows
-        if isinstance(row, dict) and isinstance(row.get("source_key"), str)
-    }
+    source_policy = load_source_policy()
     generation_rows = (
         queries.get("freshness_generations")
         if isinstance(queries, dict)
         else None
     )
-    generation_by_source = {
-        (row.get("source_key"), row.get("generation_id")): row
-        for row in (generation_rows or [])
-        if isinstance(row, dict)
-        and isinstance(row.get("source_key"), str)
-        and isinstance(row.get("generation_id"), str)
-    }
+    def requires_canonical_generation(source: str) -> bool:
+        policy = source_policy[source]
+        if policy["inventory_only_namespace"] is None:
+            return True
+        artifact = manifest["sources"].get(source, {}).get("artifact") or {}
+        try:
+            return int(artifact.get("staged_unique") or 0) > 0
+        except (TypeError, ValueError):
+            # Let the per-source readback report the malformed expectation.
+            return False
+
+    canonical_sources = [
+        source
+        for source in manifest["config"]["sources"]
+        if requires_canonical_generation(source)
+    ]
+    if canonical_sources and not isinstance(generation_rows, list):
+        raise GlobalStageError("validation freshness_generations readback is missing")
+    if not isinstance(generation_rows, list):
+        generation_rows = []
     inventory_rows = (
         queries.get("inventory_only_index") if isinstance(queries, dict) else None
     )
@@ -2114,24 +2207,48 @@ def verify_validation_readback(
             }
             failures.append(source)
             continue
-        row = by_source.get(source)
-        generation_readback = (
-            source in STRICT_FRESHNESS_SOURCE_KEYS
-            or artifact.get("strict_freshness") is True
-            or artifact.get("property_detail_freshness") is True
-        )
+        policy = source_policy[source]
+        evidence_class = policy["evidence_class"]
+        expected_inventory_only = int(artifact.get("inventory_only") or 0)
         generation_id = None
         generation_started = None
         generation_row = None
-        if generation_readback:
+        latest = None
+        latest_count = 0
+        detail_latest_raw = None
+        detail_count = None
+        reason = None
+        readback_boundary = None
+        canonical_readback_required = (
+            staged > 0 or policy["inventory_only_namespace"] is None
+        )
+        if not canonical_readback_required:
             try:
-                generation_id = artifact["freshness_generation_id"]
-                if not isinstance(generation_id, str) or not generation_id:
-                    raise ValueError("missing generation id")
-                generation_started = _timestamp_second(
-                    artifact["freshness_generation_started_at"]
-                )
+                readback_boundary = _timestamp_second(artifact["finished_at"])
             except (KeyError, TypeError, ValueError, ArtifactValidationError):
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "reason": "malformed provisional-namespace readback expectation",
+                }
+                failures.append(source)
+                continue
+            if readback_boundary > latest_allowed:
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "reason": (
+                        "artifact readback boundary exceeds the 5-minute "
+                        "clock-skew allowance"
+                    ),
+                }
+                failures.append(source)
+                continue
+            ok = True
+        else:
+            try:
+                generation_id, generation_started = _generation_expectation(
+                    manifest, artifact, source
+                )
+            except (TypeError, ValueError, ArtifactValidationError):
                 checkpoint["readback"] = {
                     "ok": False,
                     "reason": "malformed generation readback expectation",
@@ -2149,30 +2266,100 @@ def verify_validation_readback(
                 }
                 failures.append(source)
                 continue
-            generation_row = generation_by_source.get((source, generation_id))
-            if generation_row is None:
+            candidates = [
+                row
+                for row in generation_rows
+                if isinstance(row, dict)
+                and row.get("source_key") == source
+                and row.get("generation_id") == generation_id
+            ]
+            if len(candidates) != 1:
                 checkpoint["readback"] = {
                     "ok": False,
                     "generation_id": generation_id,
                     "generation_started_at": generation_started.isoformat(),
-                    "reason": "generation is missing from validation readback",
+                    "reason": "generation must have exactly one persisted evidence row",
+                }
+                failures.append(source)
+                continue
+            generation_row = candidates[0]
+            contract = FRESHNESS_EVIDENCE_CONTRACT.get(evidence_class)
+            if contract is None:
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "generation_id": generation_id,
+                    "reason": "unsupported canonical source evidence class",
+                }
+                failures.append(source)
+                continue
+            if (
+                generation_row.get("evidence_class") != evidence_class
+                or generation_row.get("detail_claim") != policy["detail_claim"]
+            ):
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "generation_id": generation_id,
+                    "reason": "persisted generation evidence does not match source policy",
+                }
+                failures.append(source)
+                continue
+            detail_scopes = _generation_evidence_values(
+                generation_row, "detail_scopes"
+            )
+            cache_dispositions = _generation_evidence_values(
+                generation_row, "cache_dispositions"
+            )
+            if (
+                detail_scopes is None
+                or not detail_scopes <= contract["detail_scopes"]
+            ):
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "generation_id": generation_id,
+                    "reason": "persisted generation has an unaccepted detail scope",
+                }
+                failures.append(source)
+                continue
+            if (
+                cache_dispositions is None
+                or not cache_dispositions <= contract["cache_dispositions"]
+            ):
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "generation_id": generation_id,
+                    "reason": "persisted generation has an unaccepted cache disposition",
                 }
                 failures.append(source)
                 continue
             try:
                 generation_count = int(generation_row["active"])
+                persisted_inventory = int(
+                    generation_row["persisted_inventory_observed"]
+                )
                 earliest_inventory = _timestamp_second(
                     generation_row["earliest_inventory_observed_at"]
                 )
                 latest_inventory = _timestamp_second(
                     generation_row["latest_inventory_observed_at"]
                 )
-                earliest_detail = _timestamp_second(
-                    generation_row["earliest_detail_scraped_at"]
-                )
-                latest_detail = _timestamp_second(
-                    generation_row["latest_detail_scraped_at"]
-                )
+                if contract["requires_detail"]:
+                    persisted_detail = int(
+                        generation_row["persisted_detail_observed"]
+                    )
+                    missing_detail = int(
+                        generation_row["missing_persisted_detail_proof"]
+                    )
+                    earliest_detail = _timestamp_second(
+                        generation_row["earliest_detail_observed_at"]
+                    )
+                    latest_detail = _timestamp_second(
+                        generation_row["latest_detail_observed_at"]
+                    )
+                else:
+                    persisted_detail = None
+                    missing_detail = 0
+                    earliest_detail = None
+                    latest_detail = None
             except (KeyError, TypeError, ValueError, ArtifactValidationError):
                 checkpoint["readback"] = {
                     "ok": False,
@@ -2181,15 +2368,10 @@ def verify_validation_readback(
                 }
                 failures.append(source)
                 continue
-            if any(
-                timestamp > latest_allowed
-                for timestamp in (
-                    earliest_inventory,
-                    latest_inventory,
-                    earliest_detail,
-                    latest_detail,
-                )
-            ):
+            observed_timestamps = [earliest_inventory, latest_inventory]
+            if earliest_detail is not None and latest_detail is not None:
+                observed_timestamps.extend([earliest_detail, latest_detail])
+            if any(timestamp > latest_allowed for timestamp in observed_timestamps):
                 checkpoint["readback"] = {
                     "ok": False,
                     "generation_id": generation_id,
@@ -2202,114 +2384,47 @@ def verify_validation_readback(
                 continue
             ok = (
                 generation_count == staged
+                and persisted_inventory == staged
                 and earliest_inventory >= generation_started
-                and earliest_detail >= generation_started
+                and (
+                    not contract["requires_detail"]
+                    or (
+                        persisted_detail == staged
+                        and missing_detail == 0
+                        and earliest_detail is not None
+                        and earliest_detail >= generation_started
+                    )
+                )
             )
-            reason = None
             if generation_count != staged:
                 reason = (
                     f"generation batch {generation_count} != staged unique {staged}"
                 )
+            elif persisted_inventory != staged:
+                reason = (
+                    "persisted inventory observations "
+                    f"{persisted_inventory} != staged unique {staged}"
+                )
             elif earliest_inventory < generation_started:
                 reason = "generation inventory observation predates generation start"
-            elif earliest_detail < generation_started:
+            elif contract["requires_detail"] and persisted_detail != staged:
+                reason = (
+                    "persisted detail observations "
+                    f"{persisted_detail} != staged unique {staged}"
+                )
+            elif contract["requires_detail"] and missing_detail:
+                reason = "generation is missing persisted detail proof"
+            elif (
+                contract["requires_detail"]
+                and earliest_detail is not None
+                and earliest_detail < generation_started
+            ):
                 reason = "generation detail observation predates generation start"
             latest = latest_inventory
             latest_count = generation_count
-            detail_latest_raw = generation_row["latest_detail_scraped_at"]
-            detail_count = generation_count
+            detail_latest_raw = generation_row.get("latest_detail_observed_at")
+            detail_count = persisted_detail
             readback_boundary = generation_started
-        else:
-            try:
-                expected = _timestamp_second(artifact["finished_at"])
-            except (KeyError, TypeError, ValueError, ArtifactValidationError):
-                checkpoint["readback"] = {
-                    "ok": False,
-                    "reason": "malformed artifact readback expectation",
-                }
-                failures.append(source)
-                continue
-            if expected > latest_allowed:
-                checkpoint["readback"] = {
-                    "ok": False,
-                    "reason": (
-                        "artifact readback boundary exceeds the 5-minute "
-                        "clock-skew allowance"
-                    ),
-                }
-                failures.append(source)
-                continue
-            readback_boundary = expected
-            inventory_only_canonical_na = (
-                staged == 0
-                and source in INVENTORY_ONLY_SOURCE_DEFINITIONS
-            )
-            if row is None and not inventory_only_canonical_na:
-                checkpoint["readback"] = {
-                    "ok": False,
-                    "reason": "source missing from validation",
-                }
-                failures.append(source)
-                continue
-            if inventory_only_canonical_na:
-                latest = None
-                latest_count = 0
-                ok = True
-                reason = None
-            else:
-                try:
-                    latest = _timestamp_second(row["latest_inventory_observed_at"])
-                    latest_count = int(row["latest_inventory_batch_active"])
-                    latest_detail_value = row.get("latest_scraped_at")
-                    latest_detail_timestamp = (
-                        _timestamp_second(latest_detail_value)
-                        if latest_detail_value
-                        else None
-                    )
-                except (KeyError, TypeError, ValueError, ArtifactValidationError):
-                    checkpoint["readback"] = {
-                        "ok": False,
-                        "reason": "malformed validation row",
-                    }
-                    failures.append(source)
-                    continue
-                ok = (
-                    latest >= expected
-                    and latest_count == staged
-                    and latest <= latest_allowed
-                    and (
-                        latest_detail_timestamp is None
-                        or latest_detail_timestamp <= latest_allowed
-                    )
-                )
-                reason = None
-                if (
-                    latest > latest_allowed
-                    or (
-                        latest_detail_timestamp is not None
-                        and latest_detail_timestamp > latest_allowed
-                    )
-                ):
-                    reason = (
-                        "validation readback observation exceeds the 5-minute "
-                        "clock-skew allowance"
-                    )
-                elif latest < expected:
-                    reason = (
-                        f"latest inventory observation {latest.isoformat()} "
-                        f"predates artifact {expected.isoformat()}"
-                    )
-                elif latest_count != staged:
-                    reason = (
-                        f"latest batch {latest_count} != staged unique {staged}"
-                    )
-            detail_latest_raw = (
-                row.get("latest_scraped_at") if row is not None else None
-            )
-            detail_count = (
-                row.get("latest_batch_active") if row is not None else None
-            )
-        expected_inventory_only = int(artifact.get("inventory_only") or 0)
         inventory_readback = inventory_by_source.get(source)
         inventory_ok = True
         inventory_reason = None
@@ -2318,7 +2433,7 @@ def verify_validation_readback(
         }
         if (
             expected_inventory_only
-            or source in INVENTORY_ONLY_SOURCE_DEFINITIONS
+            or policy["inventory_only_namespace"] is not None
         ):
             if inventory_readback is None:
                 inventory_ok = False
@@ -2435,18 +2550,29 @@ def verify_validation_readback(
             "latest_inventory_observed_at": (
                 generation_row.get("latest_inventory_observed_at")
                 if generation_row is not None
-                else (row["latest_inventory_observed_at"] if row is not None else None)
+                else None
             ),
             "latest_inventory_batch_active": latest_count,
-            "earliest_detail_scraped_at": (
-                generation_row.get("earliest_detail_scraped_at")
+            "earliest_detail_observed_at": (
+                generation_row.get("earliest_detail_observed_at")
                 if generation_row is not None
                 else None
             ),
-            "latest_detail_scraped_at": detail_latest_raw,
+            "latest_detail_observed_at": detail_latest_raw,
             "latest_detail_batch_active": detail_count,
-            "detail_unavailable": (
-                row.get("detail_unavailable") if row is not None else None
+            "evidence_class": evidence_class,
+            "detail_scopes": (
+                sorted(_generation_evidence_values(generation_row, "detail_scopes") or [])
+                if generation_row is not None
+                else None
+            ),
+            "cache_dispositions": (
+                sorted(
+                    _generation_evidence_values(generation_row, "cache_dispositions")
+                    or []
+                )
+                if generation_row is not None
+                else None
             ),
             "expected_staged_unique": staged,
             "inventory_only": inventory_details,
@@ -2482,6 +2608,7 @@ def run_final_validation(
         raise GlobalStageError("pre-refresh validation snapshot is missing")
     before = _load_json(run_dir / before_rel)
     quality = compare_validation_quality(before, result)
+    absolute_quality = verify_absolute_validation_quality(result)
     readback = verify_validation_readback(run_dir, manifest, result)
     manifest["validation"] = {
         "path": _relative_to_run(output, run_dir),
@@ -2490,11 +2617,18 @@ def run_final_validation(
         "query_execution_ok": result.get("ok") is True,
         "quality_no_regression": quality["ok"],
         "quality_failures": quality["failures"],
+        "absolute_quality_ok": absolute_quality["ok"],
+        "absolute_quality_failures": absolute_quality["failures"],
         "readback_ok": readback["ok"],
         "failed_readback_sources": readback["failed_sources"],
     }
     save_manifest(run_dir, manifest)
-    if result.get("ok") is not True or not quality["ok"] or not readback["ok"]:
+    if (
+        result.get("ok") is not True
+        or not quality["ok"]
+        or not absolute_quality["ok"]
+        or not readback["ok"]
+    ):
         raise GlobalStageError("final validation or per-source freshness readback failed")
 
 
@@ -2533,11 +2667,15 @@ def compare_validation_quality(
             ("source_key",),
             (
                 "bad_source_url",
+                "missing_canonical_url",
+                "bad_canonical_url",
                 "invalid_state",
                 "impossible_lat",
                 "impossible_lng",
+                "sale_price_flags",
                 "sale_psf_flags",
-                "lease_rate_flags",
+                "lease_rate_min_flags",
+                "lease_rate_max_flags",
                 "cap_rate_flags",
             ),
         ),
@@ -2572,6 +2710,165 @@ def compare_validation_quality(
     for row in after_queries.get("search_smoke") or []:
         if isinstance(row, dict) and _int_value(row.get("rows")) <= 0:
             failures.append(f"search_smoke/{row.get('smoke')} returned zero rows")
+    return {"ok": not failures, "failures": failures}
+
+
+ABSOLUTE_LISTING_QUALITY_FIELDS = (
+    "bad_source_url",
+    "missing_canonical_url",
+    "bad_canonical_url",
+    "invalid_state",
+    "impossible_lat",
+    "impossible_lng",
+    "sale_price_flags",
+    "sale_psf_flags",
+    "lease_rate_min_flags",
+    "lease_rate_max_flags",
+    "cap_rate_flags",
+)
+ABSOLUTE_BAD_CHILD_URL_CHECKS = {
+    "document_bad_url",
+    "image_bad_url",
+    "media_bad_url",
+    "link_bad_url",
+    "contact_bad_profile_url",
+    "contact_bad_avatar_url",
+    "contact_bad_vcard_url",
+}
+ABSOLUTE_ORPHAN_CHILD_TYPES = {"contacts", "documents", "images", "media", "links"}
+
+
+def _absolute_count(
+    row: Mapping[str, Any], field: str, context: str, failures: list[str]
+) -> int | None:
+    """Return a non-negative validation count, rejecting malformed reports."""
+    value = row.get(field)
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        failures.append(f"{context}/{field} is not a non-negative integer: {value!r}")
+        return None
+    if count < 0:
+        failures.append(f"{context}/{field} is negative: {count}")
+        return None
+    return count
+
+
+def _absolute_rows(
+    queries: Mapping[str, Any], query: str, failures: list[str]
+) -> list[Mapping[str, Any]]:
+    rows = queries.get(query)
+    if not isinstance(rows, list):
+        failures.append(f"validation report is missing list query {query}")
+        return []
+    invalid_rows = sum(not isinstance(row, dict) for row in rows)
+    if invalid_rows:
+        failures.append(f"validation report {query} has {invalid_rows} malformed row(s)")
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def verify_absolute_validation_quality(after: Mapping[str, Any]) -> dict[str, Any]:
+    """Reject any known hard CRE data defect in the final validation snapshot.
+
+    This is deliberately absolute rather than a before/after regression check:
+    a checkpoint cannot be marked complete while queryable duplicate identities,
+    malformed URLs, child integrity defects, invalid geography, or impossible
+    economics remain.  Missing coordinates and other source-policy-permitted
+    sparse fields are informational and intentionally do not appear here.
+    """
+    queries = after.get("queries")
+    failures: list[str] = []
+    if not isinstance(queries, dict):
+        return {
+            "ok": False,
+            "failures": ["validation report is missing queries object"],
+        }
+
+    # The policy loader validates the complete source registry.  Inventory-only
+    # namespaces do not create canonical listing rows, so canonical URL fields
+    # are not imposed on those namespaces should a legacy row be present.
+    policy = load_source_policy()
+    canonical_url_fields = {"missing_canonical_url", "bad_canonical_url"}
+
+    duplicate_rows = _absolute_rows(queries, "duplicates", failures)
+    duplicate_checks = {
+        row.get("check_name") for row in duplicate_rows if isinstance(row, dict)
+    }
+    if "duplicate_external_id_groups" not in duplicate_checks:
+        failures.append("duplicates is missing duplicate_external_id_groups")
+    for row in duplicate_rows:
+        check_name = row.get("check_name")
+        if check_name not in {
+            "duplicate_external_id_groups",
+            "duplicate_source_url_groups",
+        }:
+            failures.append(f"duplicates has unknown check_name: {check_name!r}")
+            continue
+        context = f"duplicates/{check_name}/{row.get('source_key') or 'all'}"
+        for field in ("groups", "rows"):
+            count = _absolute_count(row, field, context, failures)
+            if count:
+                failures.append(f"{context}/{field} is nonzero: {count}")
+
+    bad_child_url_rows = _absolute_rows(queries, "bad_child_urls", failures)
+    bad_child_url_checks = {
+        row.get("check_name") for row in bad_child_url_rows if isinstance(row, dict)
+    }
+    missing_bad_child_url_checks = ABSOLUTE_BAD_CHILD_URL_CHECKS - bad_child_url_checks
+    if missing_bad_child_url_checks:
+        failures.append(
+            "bad_child_urls is missing checks: "
+            + ", ".join(sorted(missing_bad_child_url_checks))
+        )
+    for row in bad_child_url_rows:
+        identity = row.get("check_name") or "unknown"
+        context = f"bad_child_urls/{identity}"
+        count = _absolute_count(row, "count", context, failures)
+        if count:
+            failures.append(f"{context}/count is nonzero: {count}")
+
+    for row in _absolute_rows(queries, "primary_child_conflicts", failures):
+        identity = row.get("child_type") or "unknown"
+        context = f"primary_child_conflicts/{identity}"
+        count = _absolute_count(row, "listings", context, failures)
+        if count:
+            failures.append(f"{context}/listings is nonzero: {count}")
+
+    orphan_rows = _absolute_rows(queries, "orphans", failures)
+    orphan_child_types = {
+        row.get("child_type") for row in orphan_rows if isinstance(row, dict)
+    }
+    missing_orphan_types = ABSOLUTE_ORPHAN_CHILD_TYPES - orphan_child_types
+    if missing_orphan_types:
+        failures.append(
+            "orphans is missing child types: " + ", ".join(sorted(missing_orphan_types))
+        )
+    for row in orphan_rows:
+        identity = row.get("child_type") or "unknown"
+        context = f"orphans/{identity}"
+        count = _absolute_count(row, "orphan_rows", context, failures)
+        if count:
+            failures.append(f"{context}/orphan_rows is nonzero: {count}")
+
+    for row in _absolute_rows(queries, "quality_by_source", failures):
+        source_key = row.get("source_key")
+        if not isinstance(source_key, str) or not source_key:
+            failures.append(f"quality_by_source has invalid source_key: {source_key!r}")
+            continue
+        source_policy = policy.get(source_key)
+        is_inventory_only = (
+            isinstance(source_policy, dict)
+            and source_policy.get("canonical_claim")
+            == "provisional_source_index_only"
+        )
+        for field in ABSOLUTE_LISTING_QUALITY_FIELDS:
+            if is_inventory_only and field in canonical_url_fields:
+                continue
+            context = f"quality_by_source/{source_key}"
+            count = _absolute_count(row, field, context, failures)
+            if count:
+                failures.append(f"{context}/{field} is nonzero: {count}")
+
     return {"ok": not failures, "failures": failures}
 
 

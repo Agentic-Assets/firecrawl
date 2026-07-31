@@ -4,6 +4,7 @@ import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY, PAGE_CAP } from "../lib/config.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { decodeHtmlEntities, dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
+import { refreshGenerationId } from "../lib/freshness.js";
 import { parseJsonBody } from "../lib/scrape.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { parseLeaseRate } from "../lib/parse.js";
@@ -701,13 +702,32 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promis
   let done = 0;
   // Full path only (monitor mode returned [] above): SLP Init detail-enrich every
   // card so the persisted external id is the detail ProjectId.
-  const listings = await pmap(selected, COLLIERS_DETAIL_CONCURRENCY, async (card) => {
+  const enriched = await pmap(selected, COLLIERS_DETAIL_CONCURRENCY, async (card) => {
     const listing = await enrichColliersCard(card);
     done++;
     if (done % 25 === 0 || done === selected.length) {
       console.error(`  colliers/sale: detail enriched ${done}/${selected.length}`);
     }
     return listing;
+  });
+  const inventoryObservedAt = new Date().toISOString();
+  const listings = enriched.map((listing) => {
+    if (listing?.inventoryOnly) {
+      // An unlinked or failed SLP card is only provisional source-index
+      // evidence. It cannot inherit the canonical detail contract below.
+      return { ...listing, inventoryObservedAt };
+    }
+    return {
+      ...listing,
+      inventoryObservedAt,
+      detailObservedAt: inventoryObservedAt,
+      freshnessProvenance: {
+        detailScope: "detail_page",
+        generationId: refreshGenerationId(),
+        method: "colliers_salestracker_slp_detail",
+        cacheDisposition: "live",
+      },
+    };
   });
   const canonicalIds = new Set<string>();
   const duplicateCanonicalIds = new Set<string>();

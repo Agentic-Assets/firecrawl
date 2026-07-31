@@ -176,15 +176,77 @@ def strict_artifact_info(staged=2):
 
 
 def freshness_generation_row(source="svn", active=2, **overrides):
-    return {
+    policy = refresh.load_source_policy()[source]
+    evidence_class = policy["evidence_class"]
+    requires_detail = evidence_class in {"strict_detail", "property_detail"}
+    row = {
         "source_key": source,
+        "evidence_class": evidence_class,
+        "detail_claim": policy["detail_claim"],
         "generation_id": "refresh-generation-1",
+        "detail_scopes": [
+            "authoritative_inventory_feed"
+            if evidence_class == "authoritative_inventory_feed"
+            else "detail_page"
+        ],
+        "cache_dispositions": ["live"],
         "active": str(active),
+        "persisted_inventory_observed": str(active),
+        "persisted_detail_observed": str(active if requires_detail else 0),
+        "missing_persisted_detail_proof": "0",
         "earliest_inventory_observed_at": "2026-07-29 12:00:10Z",
         "latest_inventory_observed_at": "2026-07-29 12:00:40Z",
-        "earliest_detail_scraped_at": "2026-07-29 12:00:15Z",
-        "latest_detail_scraped_at": "2026-07-29 12:00:50Z",
-        **overrides,
+        "earliest_detail_observed_at": (
+            "2026-07-29 12:00:15Z" if requires_detail else None
+        ),
+        "latest_detail_observed_at": (
+            "2026-07-29 12:00:50Z" if requires_detail else None
+        ),
+    }
+    row.update(overrides)
+    return row
+
+
+def absolute_quality_report(source="svn", **quality_overrides):
+    quality = {
+        "source_key": source,
+        "bad_source_url": "0",
+        "missing_canonical_url": "0",
+        "bad_canonical_url": "0",
+        "invalid_state": "0",
+        "impossible_lat": "0",
+        "impossible_lng": "0",
+        "sale_price_flags": "0",
+        "sale_psf_flags": "0",
+        "lease_rate_min_flags": "0",
+        "lease_rate_max_flags": "0",
+        "cap_rate_flags": "0",
+        # Coordinates are intentionally allowed to be sparse.
+        "missing_coords": "99",
+    }
+    quality.update(quality_overrides)
+    return {
+        "ok": True,
+        "queries": {
+            "duplicates": [
+                {
+                    "check_name": "duplicate_external_id_groups",
+                    "source_key": None,
+                    "groups": "0",
+                    "rows": "0",
+                }
+            ],
+            "bad_child_urls": [
+                {"check_name": check_name, "count": "0"}
+                for check_name in refresh.ABSOLUTE_BAD_CHILD_URL_CHECKS
+            ],
+            "primary_child_conflicts": [],
+            "orphans": [
+                {"child_type": child_type, "orphan_rows": "0"}
+                for child_type in refresh.ABSOLUTE_ORPHAN_CHILD_TYPES
+            ],
+            "quality_by_source": [quality],
+        },
     }
 
 
@@ -198,8 +260,10 @@ def test_authoritative_feed_admission_does_not_expand_inventory_only_storage():
         "cbre-dealflow",
         "colliers",
     }
-    assert refresh.CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS.isdisjoint(
-        refresh.INVENTORY_ONLY_SOURCE_DEFINITIONS
+    assert (
+        refresh.CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
+        & set(refresh.INVENTORY_ONLY_SOURCE_DEFINITIONS)
+        == {"cbre-dealflow"}
     )
 
 
@@ -2735,7 +2799,7 @@ def test_strict_readback_rejects_future_observation_beyond_clock_skew(tmp_path):
             "freshness_generations": [
                 freshness_generation_row(
                     source="jll",
-                    latest_detail_scraped_at="2026-07-29 12:05:01Z",
+                    latest_detail_observed_at="2026-07-29 12:05:01Z",
                 )
             ],
             "inventory_only_index": [],
@@ -2808,7 +2872,7 @@ def test_strict_readback_rejects_generation_observation_before_start(tmp_path):
             "freshness_generations": [
                 freshness_generation_row(
                     source="jll",
-                    earliest_detail_scraped_at="2026-07-29 11:59:59Z",
+                    earliest_detail_observed_at="2026-07-29 11:59:59Z",
                 )
             ],
             "inventory_only_index": [],
@@ -2824,7 +2888,240 @@ def test_strict_readback_rejects_generation_observation_before_start(tmp_path):
     )
 
 
-def test_validation_readback_requires_exact_inventory_only_count(tmp_path):
+def test_strict_readback_uses_persisted_detail_proof_not_source_count_scrape_time(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("jll",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["jll"]["artifact"] = strict_artifact_info()
+    validation = {
+        "queries": {
+            # The legacy scrape timestamp is intentionally absent.  The
+            # generation report is the sole detail-freshness proof.
+            "freshness_generations": [freshness_generation_row(source="jll")],
+            "inventory_only_index": [],
+        }
+    }
+
+    assert refresh.verify_validation_readback(run_dir, manifest, validation) == {
+        "ok": True,
+        "failed_sources": [],
+    }
+    readback = manifest["sources"]["jll"]["readback"]
+    assert readback["detail_scopes"] == ["detail_page"]
+    assert readback["cache_dispositions"] == ["live"]
+    assert readback["latest_detail_observed_at"] == "2026-07-29 12:00:50Z"
+
+
+def test_jll_current_generation_cache_is_accepted_as_persisted_detail_evidence(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("jll",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["jll"]["artifact"] = strict_artifact_info()
+    validation = {
+        "queries": {
+            "freshness_generations": [
+                freshness_generation_row(
+                    source="jll", cache_dispositions=["generation_cache"]
+                )
+            ],
+            "inventory_only_index": [],
+        }
+    }
+
+    assert refresh.verify_validation_readback(run_dir, manifest, validation) == {
+        "ok": True,
+        "failed_sources": [],
+    }
+
+
+def test_jll_generation_with_live_and_current_cache_evidence_is_aggregated_once(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("jll",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["jll"]["artifact"] = strict_artifact_info()
+    validation = {
+        "queries": {
+            "freshness_generations": [
+                freshness_generation_row(
+                    source="jll",
+                    cache_dispositions='["generation_cache", "live"]',
+                )
+            ],
+            "inventory_only_index": [],
+        }
+    }
+
+    assert refresh.verify_validation_readback(run_dir, manifest, validation) == {
+        "ok": True,
+        "failed_sources": [],
+    }
+    assert manifest["sources"]["jll"]["readback"]["cache_dispositions"] == [
+        "generation_cache",
+        "live",
+    ]
+
+
+def test_strict_readback_rejects_missing_persisted_detail_proof(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("jll",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["jll"]["artifact"] = strict_artifact_info()
+    validation = {
+        "queries": {
+            "freshness_generations": [
+                freshness_generation_row(
+                    source="jll", missing_persisted_detail_proof="1"
+                )
+            ],
+            "inventory_only_index": [],
+        }
+    }
+
+    result = refresh.verify_validation_readback(run_dir, manifest, validation)
+
+    assert result == {"ok": False, "failed_sources": ["jll"]}
+    assert manifest["sources"]["jll"]["readback"]["reason"] == (
+        "generation is missing persisted detail proof"
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        (
+            "detail_scopes",
+            ["inventory_only"],
+            "persisted generation has an unaccepted detail scope",
+        ),
+        (
+            "cache_dispositions",
+            ["unrecognized_cache"],
+            "persisted generation has an unaccepted cache disposition",
+        ),
+    ],
+)
+def test_strict_readback_rejects_unaccepted_persisted_scope_or_cache(
+    tmp_path, field, value, reason
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("jll",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["jll"]["artifact"] = strict_artifact_info()
+    validation = {
+        "queries": {
+            "freshness_generations": [
+                freshness_generation_row(source="jll", **{field: value})
+            ],
+            "inventory_only_index": [],
+        }
+    }
+
+    result = refresh.verify_validation_readback(run_dir, manifest, validation)
+
+    assert result == {"ok": False, "failed_sources": ["jll"]}
+    assert manifest["sources"]["jll"]["readback"]["reason"] == reason
+
+
+def test_authoritative_inventory_readback_requires_persisted_inventory_evidence(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["svn"]["artifact"] = strict_artifact_info()
+    validation = {
+        "queries": {
+            "freshness_generations": [
+                freshness_generation_row(source="svn", persisted_inventory_observed="1")
+            ],
+            "inventory_only_index": [],
+        }
+    }
+
+    result = refresh.verify_validation_readback(run_dir, manifest, validation)
+
+    assert result == {"ok": False, "failed_sources": ["svn"]}
+    assert manifest["sources"]["svn"]["readback"]["reason"] == (
+        "persisted inventory observations 1 != staged unique 2"
+    )
+
+
+def test_avison_property_detail_readback_does_not_make_contact_freshness_claim(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("avison-young",),
+        page_cap=400,
+        concurrency=3,
+    )
+    artifact_info = strict_artifact_info()
+    artifact_info.update(
+        {"strict_freshness": False, "property_detail_freshness": True}
+    )
+    manifest["sources"]["avison-young"]["artifact"] = artifact_info
+    validation = {
+        "queries": {
+            # Contact counts are deliberately not part of this source policy.
+            "freshness_generations": [
+                freshness_generation_row(source="avison-young")
+            ],
+            "inventory_only_index": [],
+        }
+    }
+
+    assert refresh.verify_validation_readback(run_dir, manifest, validation) == {
+        "ok": True,
+        "failed_sources": [],
+    }
+
+
+def test_validation_readback_proves_mixed_canonical_and_inventory_only_lanes(tmp_path):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
         run_dir,
@@ -2835,21 +3132,13 @@ def test_validation_readback_requires_exact_inventory_only_count(tmp_path):
         concurrency=3,
     )
     manifest["sources"]["cbre-dealflow"]["artifact"] = {
-        "finished_at": "2026-07-29T12:01:00+00:00",
-        "staged_unique": 2,
+        **strict_artifact_info(),
         "inventory_only": 1,
     }
     validation = {
         "queries": {
-            "source_counts": [
-                {
-                    "source_key": "cbre-dealflow",
-                    "latest_inventory_observed_at": "2026-07-29 12:01:00Z",
-                    "latest_inventory_batch_active": "2",
-                    "latest_scraped_at": "2026-07-29 12:01:00Z",
-                    "latest_batch_active": "2",
-                    "detail_unavailable": "1",
-                }
+            "freshness_generations": [
+                freshness_generation_row(source="cbre-dealflow")
             ],
             "inventory_only_index": [
                 {
@@ -2867,7 +3156,8 @@ def test_validation_readback_requires_exact_inventory_only_count(tmp_path):
     assert result == {"ok": False, "failed_sources": ["cbre-dealflow"]}
     readback = manifest["sources"]["cbre-dealflow"]["readback"]
     assert readback["inventory_only"]["ok"] is False
-    assert "active inventory-only 2 != expected 1" == readback["reason"]
+    assert readback["reason"] == "active inventory-only 2 != expected 1"
+    assert readback["latest_inventory_batch_active"] == 2
 
 
 def test_colliers_all_inventory_only_snapshot_needs_no_canonical_row(tmp_path):
@@ -2948,6 +3238,110 @@ def test_validation_quality_rejects_new_defects_and_child_collapse():
     assert any("bad_child_urls" in failure for failure in result["failures"])
     assert any("fell more than 30%" in failure for failure in result["failures"])
     assert any("search_smoke" in failure for failure in result["failures"])
+
+
+def test_absolute_validation_quality_allows_sparse_coordinates_but_rejects_hard_defects():
+    zero = absolute_quality_report()
+    assert refresh.verify_absolute_validation_quality(zero) == {
+        "ok": True,
+        "failures": [],
+    }
+
+    defects = absolute_quality_report(
+        bad_source_url="1",
+        missing_canonical_url="1",
+        bad_canonical_url="1",
+        invalid_state="1",
+        impossible_lat="1",
+        impossible_lng="1",
+        sale_price_flags="1",
+        sale_psf_flags="1",
+        lease_rate_min_flags="1",
+        lease_rate_max_flags="1",
+        cap_rate_flags="1",
+    )
+    defects["queries"]["duplicates"][0]["groups"] = "1"
+    next(
+        row
+        for row in defects["queries"]["bad_child_urls"]
+        if row["check_name"] == "image_bad_url"
+    )["count"] = "1"
+    defects["queries"]["primary_child_conflicts"] = [
+        {"child_type": "images", "listings": "1"}
+    ]
+    next(
+        row
+        for row in defects["queries"]["orphans"]
+        if row["child_type"] == "images"
+    )["orphan_rows"] = "1"
+
+    result = refresh.verify_absolute_validation_quality(defects)
+    assert result["ok"] is False
+    for expected in (
+        "duplicates/duplicate_external_id_groups/all/groups",
+        "bad_child_urls/image_bad_url/count",
+        "primary_child_conflicts/images/listings",
+        "orphans/images/orphan_rows",
+        "quality_by_source/svn/missing_canonical_url",
+        "quality_by_source/svn/lease_rate_max_flags",
+    ):
+        assert any(expected in failure for failure in result["failures"])
+
+
+def test_absolute_validation_quality_requires_mixed_source_canonical_url_coverage():
+    result = refresh.verify_absolute_validation_quality(
+        absolute_quality_report(
+            source="cbre-dealflow",
+            missing_canonical_url="1",
+            bad_canonical_url="1",
+        )
+    )
+    assert result == {
+        "ok": False,
+        "failures": [
+            "quality_by_source/cbre-dealflow/missing_canonical_url is nonzero: 1",
+            "quality_by_source/cbre-dealflow/bad_canonical_url is nonzero: 1",
+        ],
+    }
+
+
+def test_final_validation_fails_closed_on_preexisting_absolute_defect(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    (run_dir / "logs").mkdir(parents=True)
+    report = absolute_quality_report(missing_canonical_url="1")
+    (run_dir / "pre-validation.json").write_text(json.dumps(report), encoding="utf-8")
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["preflight"]["validation_path"] = "pre-validation.json"
+
+    def write_final_validation(argv, _log, env):
+        assert "CRE_ACTIVATE_STATUS" not in env
+        Path(argv[argv.index("--out") + 1]).write_text(
+            json.dumps(report), encoding="utf-8"
+        )
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", write_final_validation)
+    monkeypatch.setattr(
+        refresh,
+        "verify_validation_readback",
+        lambda *_args: {"ok": True, "failed_sources": []},
+    )
+
+    with pytest.raises(refresh.GlobalStageError, match="final validation"):
+        refresh.run_final_validation(run_dir, manifest, None)
+    assert manifest["validation"]["quality_no_regression"] is True
+    assert manifest["validation"]["absolute_quality_ok"] is False
+    assert any(
+        "missing_canonical_url" in failure
+        for failure in manifest["validation"]["absolute_quality_failures"]
+    )
 
 
 def test_scope_readback_counts_unsupported_active_rows(tmp_path):

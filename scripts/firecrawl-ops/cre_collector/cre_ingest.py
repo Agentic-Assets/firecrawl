@@ -184,6 +184,7 @@ CUSHMAN_CANONICAL_HOST = "www.cushmanwakefield.com"
 CUSHMAN_ONECAP_HOST = "onecap.cushmanwakefield.com"
 CUSHMAN_AZURE_HOST = "cw-prod-gblgws-a-cm.azurewebsites.net"
 CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS = BUILDOUT_SOURCE_KEYS | {
+    "cbre-dealflow",
     "cushman-wakefield",
     "srs",
     "hanley",
@@ -198,6 +199,8 @@ AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS = (
 )
 STRICT_FRESHNESS_SOURCE_KEYS = {
     "cbre",
+    "cbre-dealflow",
+    "colliers",
     "jll",
     "jll-investor",
     "colliers-main",
@@ -1225,6 +1228,11 @@ def validate_strict_artifact_freshness(
     for index, listing in enumerate(data.get("listings") or []):
         if not isinstance(listing, dict):
             raise ValueError(f"strict freshness listings[{index}] is not an object")
+        # Provider cards in an explicit inventory-only namespace are not
+        # canonical listing rows. Their full-scope reconciliation is proved in
+        # the source-index lane, not by canonical detail evidence.
+        if listing.get("inventoryOnly") is not None:
+            continue
         provenance = listing.get("freshnessProvenance")
         if not isinstance(provenance, dict):
             raise ValueError(f"strict freshness listings[{index}] lacks provenance")

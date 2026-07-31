@@ -250,25 +250,102 @@ def test_source_key_inference_covers_preserved_and_merged_payloads():
     ) < SOURCE_KEY_SQL.index("l.raw_data->>'sourceKey'")
 
 
+def test_persisted_freshness_provenance_reads_every_supported_raw_shape():
+    fixtures = {
+        "flat": {
+            "inventoryObservedAt": "2026-07-31T01:00:00Z",
+            "detailObservedAt": "2026-07-31T01:01:00Z",
+            "freshnessProvenance": {
+                "generationId": "flat-generation",
+                "detailScope": "source_native_public_record",
+                "cacheDisposition": "live",
+            },
+        },
+        "primary": {
+            "primary": {
+                "inventoryObservedAt": "2026-07-31T02:00:00Z",
+                "detailObservedAt": "2026-07-31T02:01:00Z",
+                "freshnessProvenance": {
+                    "generationId": "primary-generation",
+                    "detailScope": "detail_page",
+                    "cacheDisposition": "generation_cache",
+                },
+            }
+        },
+        "secondary-pass": {
+            "secondary_pass": {
+                "inventoryObservedAt": "2026-07-31T03:00:00Z",
+                "detailObservedAt": "2026-07-31T03:01:00Z",
+                "freshnessProvenance": {
+                    "generationId": "secondary-generation",
+                    "detailScope": "detail_page",
+                    "cacheDisposition": "source_revision_cache",
+                },
+            }
+        },
+        "latest-inventory-observation": {
+            "latestInventoryObservation": {
+                "inventoryObservedAt": "2026-07-31T04:00:00Z",
+                "detailObservedAt": "2026-07-31T04:01:00Z",
+                "freshnessProvenance": {
+                    "generationId": "latest-generation",
+                    "detailScope": "authoritative_inventory_feed",
+                    "cacheDisposition": "live",
+                },
+            }
+        },
+    }
+
+    for name, raw_data in fixtures.items():
+        provenance = cre_validate.persisted_freshness_provenance(raw_data)
+        assert provenance["generation_id"] == f"{name.split('-')[0]}-generation"
+        assert provenance["inventory_observed_at"].endswith("00:00Z")
+        assert provenance["detail_observed_at"].endswith("01:00Z")
+        assert provenance["detail_scope"]
+        assert provenance["cache_disposition"]
+
+
+def test_persisted_freshness_provenance_never_uses_scraped_at_as_detail_proof():
+    assert cre_validate.persisted_freshness_provenance({}) == {
+        "inventory_observed_at": None,
+        "detail_observed_at": None,
+        "generation_id": None,
+        "detail_scope": None,
+        "cache_disposition": None,
+    }
+
+
 def test_freshness_generations_groups_readback_by_persisted_generation():
     sql = QUERIES["freshness_generations"]
-    assert "latestInventoryObservation,freshnessProvenance,generationId" in sql
-    assert "latestInventoryObservation,primary,freshnessProvenance,generationId" in sql
-    assert "latestInventoryObservation,secondary_pass,freshnessProvenance,generationId" in sql
-    assert "freshnessProvenance,generationId" in sql
-    assert "primary,freshnessProvenance,generationId" in sql
-    assert "secondary_pass,freshnessProvenance,generationId" in sql
-    assert "latestInventoryObservation,freshnessProvenance,detailScope" in sql
-    assert "authoritative_inventory_feed" in sql
-    assert "WHEN detail_scope = 'authoritative_inventory_feed'" in sql
-    assert "primary,inventoryObservedAt" in sql
-    assert "GROUP BY source_key, generation_id" in sql
+    assert "l.raw_data #> '{latestInventoryObservation}'" in sql
+    assert "l.raw_data #> '{latestInventoryObservation,primary}'" in sql
+    assert "l.raw_data #> '{latestInventoryObservation,secondary_pass}'" in sql
+    assert "l.raw_data #> '{primary}'" in sql
+    assert "l.raw_data #> '{secondary_pass}'" in sql
+    assert "jsonb_to_record(" in sql
+    assert 'provenance."generationId"' in sql
+    assert 'provenance."detailScope"' in sql
+    assert 'provenance."cacheDisposition"' in sql
+    assert 'observed."detailObservedAt"' in sql
+    assert "source_policy (source_key, evidence_class, detail_claim)" in sql
+    assert "missing_persisted_detail_proof" in sql
+    assert 'observed."inventoryObservedAt"' in sql
+    assert "GROUP BY" in sql
     assert "earliest_inventory_observed_at" in sql
-    assert "earliest_detail_scraped_at" in sql
+    assert "earliest_detail_observed_at" in sql
+    assert "l.scraped_at" not in sql
+    assert "detail_scraped_at" not in sql
     assert "latest_inventory_batch_active" not in sql
-    assert sql.index(
-        "latestInventoryObservation,freshnessProvenance,generationId"
-    ) < sql.index("l.raw_data #>> '{freshnessProvenance,generationId}'")
+
+
+def test_freshness_generations_materializes_once_and_has_no_presentation_sort():
+    sql = QUERIES["freshness_generations"]
+    assert "raw AS MATERIALIZED" in sql
+    assert "OFFSET 0" in sql
+    assert "ORDER BY active.source_key" not in sql
+    assert sql.rstrip().endswith("active.generation_id;")
+    assert "AS detail_scopes" in sql
+    assert "AS cache_dispositions" in sql
 
 
 def test_inventory_only_index_reports_each_declarative_source_namespace():
@@ -293,6 +370,20 @@ def test_primary_child_conflicts_checks_contacts_and_images():
     assert "cre_listing_contacts" in sql
     assert "cre_listing_images" in sql
     assert "HAVING count(*) > 1" in sql
+
+
+def test_quality_by_source_exposes_absolute_url_and_economic_defect_counts():
+    sql = QUERIES["quality_by_source"]
+    for field in (
+        "missing_canonical_url",
+        "bad_canonical_url",
+        "sale_price_flags",
+        "lease_rate_min_flags",
+        "lease_rate_max_flags",
+    ):
+        assert field in sql
+    assert "canonical_url IS NULL OR btrim(canonical_url) = ''" in sql
+    assert "sale_price_usd > 20000000000" in sql
 
 
 def test_render_markdown_credentials_not_in_output():

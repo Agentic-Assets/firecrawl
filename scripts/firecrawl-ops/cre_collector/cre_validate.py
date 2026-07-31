@@ -24,13 +24,113 @@ from cre_ingest import (
     psql_connection_env,
     source_key_sql,
 )
+from cre_source_policy import load_source_policy
 
 
 SOURCE_KEY_SQL = source_key_sql()
 
+# Raw payloads may be stored flat, as a merged sale/lease pass, or beneath the
+# inventory-only preservation wrapper.  Keep this ordered tuple shared by the
+# read-only SQL report and its pure fixture coverage.  The first payload with
+# persisted freshness evidence wins; no database column is a provenance
+# fallback.
+FRESHNESS_PAYLOAD_PATHS = (
+    ("latestInventoryObservation",),
+    ("latestInventoryObservation", "primary"),
+    ("latestInventoryObservation", "secondary_pass"),
+    (),
+    ("primary",),
+    ("secondary_pass",),
+)
+FRESHNESS_PROVENANCE_FIELDS = (
+    "inventory_observed_at",
+    "detail_observed_at",
+    "generation_id",
+    "detail_scope",
+    "cache_disposition",
+)
+
+
+def _raw_payload_at(raw_data, path):
+    payload = raw_data
+    for key in path:
+        if not isinstance(payload, dict):
+            return None
+        payload = payload.get(key)
+    return payload if isinstance(payload, dict) else None
+
+
+def _nonempty_string(value):
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def persisted_freshness_provenance(raw_data):
+    """Return only freshness values explicitly persisted in raw JSON data.
+
+    ``cre_listings.scraped_at`` is deliberately absent from this interface:
+    ingestion time is not evidence that the current collector observed a
+    provider detail page.  Callers receive ``None`` when a persisted payload
+    does not prove a field.
+    """
+    empty = dict.fromkeys(FRESHNESS_PROVENANCE_FIELDS)
+    if not isinstance(raw_data, dict):
+        return empty
+    for path in FRESHNESS_PAYLOAD_PATHS:
+        payload = _raw_payload_at(raw_data, path)
+        if payload is None:
+            continue
+        provenance = payload.get("freshnessProvenance")
+        provenance = provenance if isinstance(provenance, dict) else {}
+        result = {
+            "inventory_observed_at": _nonempty_string(
+                payload.get("inventoryObservedAt")
+            ),
+            "detail_observed_at": _nonempty_string(payload.get("detailObservedAt")),
+            "generation_id": _nonempty_string(provenance.get("generationId")),
+            "detail_scope": _nonempty_string(provenance.get("detailScope")),
+            "cache_disposition": _nonempty_string(
+                provenance.get("cacheDisposition")
+            ),
+        }
+        if any(result.values()):
+            return result
+    return empty
+
 
 def _sql_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
+
+
+def _raw_json_object(alias, path):
+    return f"{alias}.raw_data #> '{{{','.join(path)}}}'"
+
+
+def _freshness_payload_sql(alias):
+    branches = []
+    for path in FRESHNESS_PAYLOAD_PATHS:
+        payload = _raw_json_object(alias, path)
+        branches.append(
+            "WHEN jsonb_typeof({payload}) = 'object' AND (\n"
+            "          {payload} ? 'inventoryObservedAt' OR\n"
+            "          {payload} ? 'detailObservedAt' OR\n"
+            "          jsonb_typeof({payload}->'freshnessProvenance') = 'object'\n"
+            "        ) THEN {payload}".format(payload=payload)
+        )
+    return "CASE\n      " + "\n      ".join(branches) + "\n      ELSE NULL::jsonb\n    END"
+
+
+FRESHNESS_PAYLOAD_SQL = _freshness_payload_sql("l")
+
+
+SOURCE_POLICY = load_source_policy()
+SOURCE_POLICY_SQL = ",\n".join(
+    "    ({source_key}, {evidence_class}, {detail_claim})".format(
+        source_key=_sql_literal(source_key),
+        evidence_class=_sql_literal(entry["evidence_class"]),
+        detail_claim=_sql_literal(entry["detail_claim"]),
+    )
+    for source_key, entry in SOURCE_POLICY.items()
+)
 
 
 INVENTORY_ONLY_DEFINITIONS_SQL = ",\n".join(
@@ -67,10 +167,8 @@ WITH base AS (
     b.slug AS brokerage_slug,
     l.transaction_type,
     l.scraped_at,
-    COALESCE(
-      NULLIF(l.raw_data->>'inventoryObservedAt', '')::timestamptz,
-      l.scraped_at
-    ) AS inventory_observed_at,
+    NULLIF(l.raw_data->>'inventoryObservedAt', '')::timestamptz
+      AS inventory_observed_at,
     jsonb_path_exists(l.raw_data, '$.**.detailUnavailable') AS detail_unavailable,
     l.deleted_at
   FROM credeals.cre_listings l
@@ -117,123 +215,99 @@ GROUP BY a.source_key, latest.latest_scraped_at, latest.latest_inventory_observe
 ORDER BY a.source_key;
 """,
     "freshness_generations": f"""
-WITH raw AS (
+WITH source_policy (source_key, evidence_class, detail_claim) AS (
+  VALUES
+{SOURCE_POLICY_SQL}
+),
+-- Materialize the expensive JSON provenance projection once per active row.
+-- Without this fence, PostgreSQL inlines it into every aggregate and the final
+-- presentation sort, multiplying JSON extraction work enough to hit the
+-- production statement timeout.
+raw AS MATERIALIZED (
   SELECT
     {SOURCE_KEY_SQL} AS source_key,
-    COALESCE(
-      NULLIF(
-        l.raw_data #>> '{{latestInventoryObservation,freshnessProvenance,generationId}}',
-        ''
-      ),
-      NULLIF(
-        l.raw_data #>> '{{latestInventoryObservation,primary,freshnessProvenance,generationId}}',
-        ''
-      ),
-      NULLIF(
-        l.raw_data #>> '{{latestInventoryObservation,secondary_pass,freshnessProvenance,generationId}}',
-        ''
-      ),
-      NULLIF(
-        l.raw_data #>> '{{freshnessProvenance,generationId}}',
-        ''
-      ),
-      NULLIF(
-        l.raw_data #>> '{{primary,freshnessProvenance,generationId}}',
-        ''
-      ),
-      NULLIF(
-        l.raw_data #>> '{{secondary_pass,freshnessProvenance,generationId}}',
-        ''
-      )
-    ) AS generation_id,
-    COALESCE(
-      NULLIF(
-        l.raw_data #>> '{{latestInventoryObservation,freshnessProvenance,detailScope}}',
-        ''
-      ),
-      NULLIF(
-        l.raw_data #>> '{{latestInventoryObservation,primary,freshnessProvenance,detailScope}}',
-        ''
-      ),
-      NULLIF(
-        l.raw_data #>> '{{latestInventoryObservation,secondary_pass,freshnessProvenance,detailScope}}',
-        ''
-      ),
-      NULLIF(
-        l.raw_data #>> '{{freshnessProvenance,detailScope}}',
-        ''
-      ),
-      NULLIF(
-        l.raw_data #>> '{{primary,freshnessProvenance,detailScope}}',
-        ''
-      ),
-      NULLIF(
-        l.raw_data #>> '{{secondary_pass,freshnessProvenance,detailScope}}',
-        ''
-      )
-    ) AS detail_scope,
-    l.scraped_at,
-    COALESCE(
-      NULLIF(l.raw_data->>'inventoryObservedAt', '')::timestamptz,
-      NULLIF(
-        l.raw_data #>> '{{latestInventoryObservation,inventoryObservedAt}}',
-        ''
-      )::timestamptz,
-      NULLIF(
-        l.raw_data #>> '{{latestInventoryObservation,primary,inventoryObservedAt}}',
-        ''
-      )::timestamptz,
-      NULLIF(
-        l.raw_data #>> '{{latestInventoryObservation,secondary_pass,inventoryObservedAt}}',
-        ''
-      )::timestamptz,
-      NULLIF(l.raw_data #>> '{{primary,inventoryObservedAt}}', '')::timestamptz,
-      NULLIF(
-        l.raw_data #>> '{{secondary_pass,inventoryObservedAt}}',
-        ''
-      )::timestamptz,
-      l.scraped_at
-    ) AS inventory_observed_at
+    NULLIF(provenance."generationId", '') AS generation_id,
+    NULLIF(provenance."detailScope", '') AS detail_scope,
+    NULLIF(provenance."cacheDisposition", '') AS cache_disposition,
+    NULLIF(observed."inventoryObservedAt", '')::timestamptz
+      AS inventory_observed_at,
+    NULLIF(observed."detailObservedAt", '')::timestamptz
+      AS detail_observed_at
   FROM credeals.cre_listings l
   JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  CROSS JOIN LATERAL (
+    SELECT {FRESHNESS_PAYLOAD_SQL} AS payload
+    OFFSET 0
+  ) AS persisted
+  CROSS JOIN LATERAL jsonb_to_record(
+    coalesce(persisted.payload, '{{}}'::jsonb)
+  ) AS observed(
+    "inventoryObservedAt" text,
+    "detailObservedAt" text,
+    "freshnessProvenance" jsonb
+  )
+  CROSS JOIN LATERAL jsonb_to_record(
+    coalesce(observed."freshnessProvenance", '{{}}'::jsonb)
+  ) AS provenance(
+    "generationId" text,
+    "detailScope" text,
+    "cacheDisposition" text
+  )
   WHERE l.deleted_at IS NULL
 ),
 active AS (
-  SELECT
-    source_key,
-    generation_id,
-    inventory_observed_at,
-    CASE
-      WHEN detail_scope = 'authoritative_inventory_feed'
-      THEN inventory_observed_at
-      ELSE scraped_at
-    END AS detail_scraped_at
-  FROM raw
+  SELECT * FROM raw
+  WHERE source_key IS NOT NULL
+    AND generation_id IS NOT NULL
 )
 SELECT
-  source_key,
-  generation_id,
+  active.source_key,
+  source_policy.evidence_class,
+  source_policy.detail_claim,
+  active.generation_id,
+  coalesce(
+    jsonb_agg(DISTINCT active.detail_scope)
+      FILTER (WHERE active.detail_scope IS NOT NULL),
+    '[]'::jsonb
+  )::text AS detail_scopes,
+  coalesce(
+    jsonb_agg(DISTINCT active.cache_disposition)
+      FILTER (WHERE active.cache_disposition IS NOT NULL),
+    '[]'::jsonb
+  )::text AS cache_dispositions,
   count(*)::text AS active,
+  count(*) FILTER (WHERE active.inventory_observed_at IS NOT NULL)::text
+    AS persisted_inventory_observed,
+  count(*) FILTER (WHERE active.detail_observed_at IS NOT NULL)::text
+    AS persisted_detail_observed,
+  count(*) FILTER (
+    WHERE source_policy.detail_claim IN (
+      'current_strict_detail', 'current_property_detail'
+    ) AND active.detail_observed_at IS NULL
+  )::text AS missing_persisted_detail_proof,
   to_char(
-    min(inventory_observed_at) AT TIME ZONE 'UTC',
+    min(active.inventory_observed_at) AT TIME ZONE 'UTC',
     'YYYY-MM-DD HH24:MI:SS"Z"'
   ) AS earliest_inventory_observed_at,
   to_char(
-    max(inventory_observed_at) AT TIME ZONE 'UTC',
+    max(active.inventory_observed_at) AT TIME ZONE 'UTC',
     'YYYY-MM-DD HH24:MI:SS"Z"'
   ) AS latest_inventory_observed_at,
   to_char(
-    min(detail_scraped_at) AT TIME ZONE 'UTC',
+    min(active.detail_observed_at) AT TIME ZONE 'UTC',
     'YYYY-MM-DD HH24:MI:SS"Z"'
-  ) AS earliest_detail_scraped_at,
+  ) AS earliest_detail_observed_at,
   to_char(
-    max(detail_scraped_at) AT TIME ZONE 'UTC',
+    max(active.detail_observed_at) AT TIME ZONE 'UTC',
     'YYYY-MM-DD HH24:MI:SS"Z"'
-  ) AS latest_detail_scraped_at
+  ) AS latest_detail_observed_at
 FROM active
-WHERE generation_id IS NOT NULL
-GROUP BY source_key, generation_id
-ORDER BY source_key, generation_id;
+LEFT JOIN source_policy USING (source_key)
+GROUP BY
+  active.source_key,
+  source_policy.evidence_class,
+  source_policy.detail_claim,
+  active.generation_id;
 """,
     "inventory_only_index": f"""
 WITH definitions (
@@ -317,6 +391,14 @@ WITH active AS (
 SELECT
   source_key,
   count(*) FILTER (WHERE source_url IS NULL OR source_url !~* '^https?://')::text AS bad_source_url,
+  count(*) FILTER (
+    WHERE canonical_url IS NULL OR btrim(canonical_url) = ''
+  )::text AS missing_canonical_url,
+  count(*) FILTER (
+    WHERE canonical_url IS NOT NULL
+      AND btrim(canonical_url) <> ''
+      AND canonical_url !~* '^https?://'
+  )::text AS bad_canonical_url,
   count(*) FILTER (WHERE title IS NULL OR btrim(title) = '')::text AS missing_title,
   count(*) FILTER (WHERE raw_data IS NULL OR raw_data = '{{}}'::jsonb)::text AS missing_raw_data,
   count(*) FILTER (WHERE state IS NULL OR btrim(state::text) = '')::text AS missing_state,
@@ -324,8 +406,10 @@ SELECT
   count(*) FILTER (WHERE lat IS NULL OR lng IS NULL)::text AS missing_coords,
   count(*) FILTER (WHERE lat IS NOT NULL AND (lat < -90 OR lat > 90))::text AS impossible_lat,
   count(*) FILTER (WHERE lng IS NOT NULL AND (lng < -180 OR lng > 180))::text AS impossible_lng,
+  count(*) FILTER (WHERE sale_price_usd IS NOT NULL AND (sale_price_usd <= 0 OR sale_price_usd > 20000000000))::text AS sale_price_flags,
   count(*) FILTER (WHERE sale_price_per_sf IS NOT NULL AND (sale_price_per_sf <= 0 OR sale_price_per_sf > 10000))::text AS sale_psf_flags,
-  count(*) FILTER (WHERE lease_rate_min IS NOT NULL AND (lease_rate_min <= 0 OR lease_rate_min > 500))::text AS lease_rate_flags,
+  count(*) FILTER (WHERE lease_rate_min IS NOT NULL AND (lease_rate_min <= 0 OR lease_rate_min > 500))::text AS lease_rate_min_flags,
+  count(*) FILTER (WHERE lease_rate_max IS NOT NULL AND (lease_rate_max <= 0 OR lease_rate_max > 500))::text AS lease_rate_max_flags,
   count(*) FILTER (WHERE cap_rate IS NOT NULL AND (cap_rate <= 0 OR cap_rate >= 0.5))::text AS cap_rate_flags
 FROM active
 GROUP BY source_key

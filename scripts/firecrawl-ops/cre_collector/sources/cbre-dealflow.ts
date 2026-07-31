@@ -5,6 +5,7 @@ import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY, PAGE_CAP } from "../lib/config.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { dedupeStrings, titleFromFilename } from "../lib/html.js";
+import { refreshGenerationId } from "../lib/freshness.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { clean, num, pmap, prune } from "../lib/util.js";
 
@@ -386,6 +387,10 @@ export function cbreDealflowUnavailableCard(
   const projectType = clean(card.cbreDealflowCard?.projectType) ?? undefined;
   return prune({
     ...card,
+    // A linked provider PV is the canonical public landing URL even when its
+    // detail payload is unavailable. Unlinked cards deliberately remain
+    // provisional and therefore do not receive a canonical URL claim.
+    canonicalUrl: card.urlKind === "detail" ? card.url : undefined,
     statusBadge: clean(card.status) ?? undefined,
     extraFacts: projectType ? { project_type: projectType } : undefined,
     preserveChildCollections: true,
@@ -410,6 +415,15 @@ export function cbreDealflowUnavailableCard(
         reason === "landing_not_setup" || reason === "public_html_only",
     },
   });
+}
+
+export function cbreDealflowCanonicalUrl(listing: any): string | undefined {
+  // Agreement and brochure pages are source material, not canonical property
+  // landing pages. Preserve an explicit canonical URL if an enricher supplied
+  // one; otherwise admit only the provider's public detail landing URL.
+  return listing?.canonicalUrl ?? (
+    listing?.urlKind === "detail" ? listing.url : undefined
+  );
 }
 
 export function cbreDealflowTextFromHtml(html: string | null | undefined): string | null {
@@ -630,6 +644,7 @@ export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Pr
       // linked card must not change identity merely because detail became
       // available.
       id: card.id,
+      canonicalUrl: card.url,
       name: clean(data.name) ?? card.name,
       description: cbreDealflowDescription(data, card.description),
       assetType: clean(data.assetType?.full) ?? clean(data.assetType?.subType) ?? card.assetType,
@@ -784,13 +799,39 @@ export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Pr
   let done = 0;
   // Full path only (monitor mode returned [] above): detail-enrich every card
   // while keeping its public-card identity stable.
-  const listings = await pmap(selected, CBRE_DEALFLOW_DETAIL_CONCURRENCY, async (card) => {
+  const enriched = await pmap(selected, CBRE_DEALFLOW_DETAIL_CONCURRENCY, async (card) => {
     const listing = await enrichCbreDealflowCard(card, tx);
     done++;
     if (done % 25 === 0 || done === selected.length) {
       console.error(`  cbre-dealflow/${tx}: detail enriched ${done}/${selected.length}`);
     }
     return listing;
+  });
+  const inventoryObservedAt = new Date().toISOString();
+  const listings = enriched.map((listing) => {
+    if (listing?.inventoryOnly) {
+      // These rows are intentionally source-index-only evidence. Do not attach
+      // canonical inventory/detail provenance to an unlinked provider card.
+      return { ...listing, inventoryObservedAt };
+    }
+    return {
+      ...listing,
+      // Only a provider landing page is canonical. Agreement and brochure
+      // endpoints are supporting material, and must never replace a prior
+      // canonical property URL during an additive ingest.
+      canonicalUrl: cbreDealflowCanonicalUrl(listing),
+      inventoryObservedAt,
+      // Deal Flow's paginated public provider inventory is the canonical
+      // freshness proof. Detail enrichment remains additive and can be
+      // unavailable without turning a linked provider identity provisional.
+      freshnessProvenance: {
+        detailScope: "authoritative_inventory_feed",
+        generationId: refreshGenerationId(),
+        method: "cbre_dealflow_public_inventory",
+        cacheDisposition: "live",
+      },
+      preserveChildCollections: true,
+    };
   });
   const detailUnavailable = listings.filter((listing) => listing?.detailUnavailable).length;
   const publicHtmlOnly = cbreDealflowAssertHtmlOnlyMix(listings);

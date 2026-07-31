@@ -55,6 +55,10 @@ export type ListingFreshnessSummary = {
 };
 
 export function summarizeListingFreshness(listings: any[]): ListingFreshnessSummary {
+  // Provisional source-index cards are not canonical listing evidence. Keep
+  // their separate accounting in the artifact/index lane rather than allowing
+  // them to weaken a canonical source freshness denominator.
+  const canonicalListings = listings.filter((row) => row?.inventoryOnly == null);
   const boundary = refreshStartedAt();
   const boundaryMs = boundary ? Date.parse(boundary) : null;
   const stale = (value: unknown): boolean => {
@@ -64,16 +68,16 @@ export function summarizeListingFreshness(listings: any[]): ListingFreshnessSumm
     return !Number.isFinite(valueMs) || valueMs < boundaryMs;
   };
   return {
-    listings: listings.length,
-    inventoryObserved: listings.filter((row) => typeof row?.inventoryObservedAt === "string").length,
-    detailObserved: listings.filter((row) => typeof row?.detailObservedAt === "string").length,
-    authoritativeInventoryFeed: listings.filter(
+    listings: canonicalListings.length,
+    inventoryObserved: canonicalListings.filter((row) => typeof row?.inventoryObservedAt === "string").length,
+    detailObserved: canonicalListings.filter((row) => typeof row?.detailObservedAt === "string").length,
+    authoritativeInventoryFeed: canonicalListings.filter(
       (row) => row?.freshnessProvenance?.detailScope === "authoritative_inventory_feed"
     ).length,
-    detailErrors: listings.filter((row) => Boolean(row?.detailError)).length,
-    childPreservationRows: listings.filter((row) => row?.preserveChildCollections === true).length,
-    staleInventoryObservations: listings.filter((row) => stale(row?.inventoryObservedAt)).length,
-    staleDetailObservations: listings.filter((row) => {
+    detailErrors: canonicalListings.filter((row) => Boolean(row?.detailError)).length,
+    childPreservationRows: canonicalListings.filter((row) => row?.preserveChildCollections === true).length,
+    staleInventoryObservations: canonicalListings.filter((row) => stale(row?.inventoryObservedAt)).length,
+    staleDetailObservations: canonicalListings.filter((row) => {
       if (row?.freshnessProvenance?.detailScope === "authoritative_inventory_feed") {
         return false;
       }
