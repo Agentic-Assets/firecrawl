@@ -332,6 +332,26 @@ def test_single_transaction_artifact_is_valid_only_for_its_bound_scope(tmp_path)
         )
 
 
+def test_strict_artifact_rejects_observations_older_than_completion_slo(tmp_path):
+    payload = strict_artifact(source="svn")
+    payload["runMeta"]["finishedAt"] = "2026-07-30T12:01:00+00:00"
+    path = write_artifact(tmp_path, payload)
+
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="inventory observation exceeds the 24-hour artifact freshness SLO",
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "svn",
+            ATTEMPT,
+            require_strict_freshness=True,
+            expected_generation_id="refresh-generation-1",
+            expected_generation_started_at="2026-07-29T12:00:00+00:00",
+            now=datetime(2026, 7, 30, 13, tzinfo=timezone.utc),
+        )
+
+
 def test_subset_manifest_records_non_full_scope(tmp_path):
     manifest = refresh.new_manifest(
         tmp_path / "run",
@@ -2813,7 +2833,7 @@ def test_validation_readback_requires_exact_staged_count(tmp_path):
     )
 
 
-def test_strict_readback_uses_generation_not_artifact_finish_or_max_timestamp(
+def test_strict_readback_accepts_observations_within_artifact_freshness_slo(
     tmp_path,
 ):
     run_dir = tmp_path / "run"
@@ -2854,6 +2874,40 @@ def test_strict_readback_uses_generation_not_artifact_finish_or_max_timestamp(
     assert readback["generation_id"] == "refresh-generation-1"
     assert readback["latest_inventory_batch_active"] == 2
     assert readback["latest_detail_batch_active"] == 2
+
+
+def test_strict_readback_rejects_observations_older_than_artifact_freshness_slo(
+    tmp_path,
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("jll",),
+        page_cap=400,
+        concurrency=3,
+    )
+    artifact_info = strict_artifact_info()
+    artifact_info["finished_at"] = "2026-07-30T12:01:00+00:00"
+    manifest["sources"]["jll"]["artifact"] = artifact_info
+    validation = {
+        "queries": {
+            "source_counts": [],
+            "freshness_generations": [
+                freshness_generation_row(source="jll", active=2)
+            ],
+            "inventory_only_index": [],
+        }
+    }
+
+    result = refresh.verify_validation_readback(run_dir, manifest, validation)
+
+    assert result == {"ok": False, "failed_sources": ["jll"]}
+    assert (
+        manifest["sources"]["jll"]["readback"]["reason"]
+        == "generation inventory observation exceeds artifact freshness SLO"
+    )
 
 
 def test_strict_readback_rejects_future_observation_beyond_clock_skew(tmp_path):

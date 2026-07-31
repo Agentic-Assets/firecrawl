@@ -52,6 +52,11 @@ REPO_ROOT = COLLECTOR_DIR.parents[2]
 DEFAULT_OUT_ROOT = COLLECTOR_DIR / "out" / "checkpoint-refresh"
 SCHEMA_VERSION = 2
 DEFAULT_MAX_RESUME_AGE_HOURS = 24.0
+# A source artifact is only admissible when every canonical observation is
+# still within this bound at the *end of collection*.  Generation membership
+# alone is not a freshness guarantee: a long serial detail sweep could observe
+# its first listings days before its last while still sharing one generation.
+DEFAULT_MAX_OBSERVATION_AGE_HOURS = 24.0
 MAX_FUTURE_CLOCK_SKEW = timedelta(minutes=5)
 SOURCE_KEYS = tuple(SOURCE_TO_BROKERAGE)
 TRANSACTIONS = ("sale", "lease")
@@ -558,6 +563,7 @@ def validate_source_artifact(
     expected_generation_id: str | None = None,
     expected_generation_started_at: str | datetime | None = None,
     expected_transactions: Sequence[str] = TRANSACTIONS,
+    max_observation_age_hours: float = DEFAULT_MAX_OBSERVATION_AGE_HOURS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     if expected_source not in SOURCE_KEYS:
@@ -597,6 +603,14 @@ def validate_source_artifact(
     )
     if finished < started:
         raise ArtifactValidationError("runMeta.finishedAt precedes startedAt")
+    if (
+        not math.isfinite(max_observation_age_hours)
+        or max_observation_age_hours <= 0
+    ):
+        raise ArtifactValidationError(
+            "maximum artifact observation age must be finite and positive"
+        )
+    observation_cutoff = finished - timedelta(hours=max_observation_age_hours)
     if started.timestamp() + 5 < attempt.timestamp():
         raise ArtifactValidationError("artifact predates the current collection attempt")
 
@@ -845,6 +859,11 @@ def validate_source_artifact(
                 raise ArtifactValidationError(
                     f"listings[{index}] inventory observation predates the refresh generation"
                 )
+            if inventory_observed < observation_cutoff:
+                raise ArtifactValidationError(
+                    f"listings[{index}] inventory observation exceeds the "
+                    f"{max_observation_age_hours:g}-hour artifact freshness SLO"
+                )
             if inventory_observed > latest_allowed:
                 raise ArtifactValidationError(
                     f"listings[{index}] inventory observation exceeds "
@@ -894,6 +913,11 @@ def validate_source_artifact(
                         f"listings[{index}] detail observation predates "
                         "the refresh generation"
                     )
+                if detail_observed < observation_cutoff:
+                    raise ArtifactValidationError(
+                        f"listings[{index}] detail observation exceeds the "
+                        f"{max_observation_age_hours:g}-hour artifact freshness SLO"
+                    )
                 if detail_observed > latest_allowed:
                     raise ArtifactValidationError(
                         f"listings[{index}] detail observation exceeds "
@@ -935,6 +959,11 @@ def validate_source_artifact(
                     raise ArtifactValidationError(
                         f"listings[{index}] detail observation predates the refresh generation"
                     )
+                if detail_observed < observation_cutoff:
+                    raise ArtifactValidationError(
+                        f"listings[{index}] detail observation exceeds the "
+                        f"{max_observation_age_hours:g}-hour artifact freshness SLO"
+                    )
                 if detail_observed > latest_allowed:
                     raise ArtifactValidationError(
                         f"listings[{index}] detail observation exceeds "
@@ -972,6 +1001,8 @@ def validate_source_artifact(
         **stats,
         "started_at": started.isoformat(),
         "finished_at": finished.isoformat(),
+        "max_observation_age_hours": max_observation_age_hours,
+        "observation_cutoff_at": observation_cutoff.isoformat(),
         "strict_freshness": strict_freshness,
         "property_detail_freshness": property_detail_freshness,
         "freshness_generation_id": generation_id,
@@ -2287,6 +2318,7 @@ def verify_validation_readback(
         expected_inventory_only = int(artifact.get("inventory_only") or 0)
         generation_id = None
         generation_started = None
+        observation_cutoff = None
         generation_row = None
         latest = None
         latest_count = 0
@@ -2323,6 +2355,7 @@ def verify_validation_readback(
                 generation_id, generation_started = _generation_expectation(
                     manifest, artifact, source
                 )
+                artifact_finished = _timestamp_second(artifact["finished_at"])
             except (TypeError, ValueError, ArtifactValidationError):
                 checkpoint["readback"] = {
                     "ok": False,
@@ -2330,6 +2363,25 @@ def verify_validation_readback(
                 }
                 failures.append(source)
                 continue
+            max_observation_age_hours = artifact.get(
+                "max_observation_age_hours", DEFAULT_MAX_OBSERVATION_AGE_HOURS
+            )
+            if (
+                not isinstance(max_observation_age_hours, (int, float))
+                or isinstance(max_observation_age_hours, bool)
+                or not math.isfinite(float(max_observation_age_hours))
+                or float(max_observation_age_hours) <= 0
+            ):
+                checkpoint["readback"] = {
+                    "ok": False,
+                    "generation_id": generation_id,
+                    "reason": "malformed artifact observation-age SLO",
+                }
+                failures.append(source)
+                continue
+            observation_cutoff = artifact_finished - timedelta(
+                hours=float(max_observation_age_hours)
+            )
             if generation_started > latest_allowed:
                 checkpoint["readback"] = {
                     "ok": False,
@@ -2461,6 +2513,7 @@ def verify_validation_readback(
                 generation_count == staged
                 and persisted_inventory == staged
                 and earliest_inventory >= generation_started
+                and earliest_inventory >= observation_cutoff
                 and (
                     not contract["requires_detail"]
                     or (
@@ -2468,6 +2521,7 @@ def verify_validation_readback(
                         and missing_detail == 0
                         and earliest_detail is not None
                         and earliest_detail >= generation_started
+                        and earliest_detail >= observation_cutoff
                     )
                 )
             )
@@ -2482,6 +2536,8 @@ def verify_validation_readback(
                 )
             elif earliest_inventory < generation_started:
                 reason = "generation inventory observation predates generation start"
+            elif earliest_inventory < observation_cutoff:
+                reason = "generation inventory observation exceeds artifact freshness SLO"
             elif contract["requires_detail"] and persisted_detail != staged:
                 reason = (
                     "persisted detail observations "
@@ -2495,6 +2551,12 @@ def verify_validation_readback(
                 and earliest_detail < generation_started
             ):
                 reason = "generation detail observation predates generation start"
+            elif (
+                contract["requires_detail"]
+                and earliest_detail is not None
+                and earliest_detail < observation_cutoff
+            ):
+                reason = "generation detail observation exceeds artifact freshness SLO"
             latest = latest_inventory
             latest_count = generation_count
             detail_latest_raw = generation_row.get("latest_detail_observed_at")
@@ -2615,6 +2677,11 @@ def verify_validation_readback(
             "generation_started_at": (
                 generation_started.isoformat()
                 if generation_started is not None
+                else None
+            ),
+            "observation_cutoff_at": (
+                observation_cutoff.isoformat()
+                if observation_cutoff is not None
                 else None
             ),
             "earliest_inventory_observed_at": (

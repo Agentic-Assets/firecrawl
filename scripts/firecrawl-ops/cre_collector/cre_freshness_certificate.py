@@ -13,16 +13,21 @@ import hashlib
 import json
 import math
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from cre_checkpoint_refresh import TRANSACTIONS, parse_iso8601
+from cre_checkpoint_refresh import (
+    DEFAULT_MAX_OBSERVATION_AGE_HOURS,
+    MAX_FUTURE_CLOCK_SKEW,
+    TRANSACTIONS,
+    parse_iso8601,
+)
 from cre_ingest import SOURCE_TO_BROKERAGE
 from cre_source_policy import SourcePolicyValidationError, load_source_policy
 
 
-CERTIFICATE_VERSION = 1
+CERTIFICATE_VERSION = 2
 SOURCE_KEYS = tuple(SOURCE_TO_BROKERAGE)
 TERMINAL_STATE = "ingested"
 TERMINAL_RUN_STATUS = "supported_scope_complete"
@@ -85,6 +90,8 @@ def _validate_artifact_evidence(
     *,
     run_path: Path,
     reported_inventory_only: object,
+    observation_cutoff: datetime,
+    latest_allowed: datetime,
 ) -> None:
     """Validate the on-disk collection proof, not just its manifest summary."""
     try:
@@ -169,6 +176,20 @@ def _validate_artifact_evidence(
             if provenance.get("detailScope") != "authoritative_inventory_feed" or not row.get("inventoryObservedAt"):
                 _failure(failures, "artifact_evidence", "inventory-feed listing lacks current inventory proof", run_path=run_path, source_key=source_key)
                 return
+            try:
+                inventory_observed = parse_iso8601(
+                    row.get("inventoryObservedAt"),
+                    field="inventoryObservedAt",
+                )
+            except Exception as exc:
+                _failure(failures, "observation_age", str(exc), run_path=run_path, source_key=source_key)
+                return
+            if inventory_observed > latest_allowed:
+                _failure(failures, "observation_age", "inventory observation exceeds certificate clock-skew allowance", run_path=run_path, source_key=source_key)
+                return
+            if inventory_observed < observation_cutoff:
+                _failure(failures, "observation_age", "inventory observation exceeds certificate freshness SLO", run_path=run_path, source_key=source_key)
+                return
             preserves = row.get("preserveChildCollections") is True
             if (child_contract == "preserve_existing_children") != preserves:
                 _failure(failures, "artifact_evidence", "inventory-feed child contract conflicts with policy", run_path=run_path, source_key=source_key)
@@ -176,6 +197,36 @@ def _validate_artifact_evidence(
         elif evidence_class in {"strict_detail", "property_detail"}:
             if provenance.get("detailScope") != "detail_page" or not row.get("detailObservedAt"):
                 _failure(failures, "artifact_evidence", "detail listing lacks current detail proof", run_path=run_path, source_key=source_key)
+                return
+            try:
+                inventory_observed = parse_iso8601(
+                    row.get("inventoryObservedAt"),
+                    field="inventoryObservedAt",
+                )
+                detail_value = row.get("detailObservedAt")
+                if (
+                    provenance.get("cacheDisposition") == "source_revision_cache"
+                    and provenance.get("validatedAt")
+                ):
+                    detail_value = provenance.get("validatedAt")
+                detail_observed = parse_iso8601(
+                    detail_value,
+                    field="detailObservedAt",
+                )
+            except Exception as exc:
+                _failure(failures, "observation_age", str(exc), run_path=run_path, source_key=source_key)
+                return
+            if (
+                inventory_observed > latest_allowed
+                or detail_observed > latest_allowed
+            ):
+                _failure(failures, "observation_age", "canonical observation exceeds certificate clock-skew allowance", run_path=run_path, source_key=source_key)
+                return
+            if (
+                inventory_observed < observation_cutoff
+                or detail_observed < observation_cutoff
+            ):
+                _failure(failures, "observation_age", "canonical detail observation exceeds certificate freshness SLO", run_path=run_path, source_key=source_key)
                 return
             if evidence_class == "strict_detail" and row.get("preserveChildCollections") is True:
                 _failure(failures, "artifact_evidence", "strict-detail listing cannot preserve child collections", run_path=run_path, source_key=source_key)
@@ -193,6 +244,7 @@ def _validate_run(
     source_records: dict[str, dict[str, Any]],
     *,
     max_source_age_hours: float,
+    max_observation_age_hours: float,
     now: datetime,
 ) -> None:
     run_path = manifest_path.parent
@@ -324,6 +376,8 @@ def _validate_run(
                 failures,
                 run_path=run_path,
                 reported_inventory_only=artifact.get("inventory_only"),
+                observation_cutoff=now - timedelta(hours=max_observation_age_hours),
+                latest_allowed=now + MAX_FUTURE_CLOCK_SKEW,
             )
         evidence_class = evidence["evidence_class"]
         if evidence_class in {"strict_detail", "authoritative_inventory_feed"} and artifact.get("strict_freshness") is not True:
@@ -346,6 +400,7 @@ def build_freshness_certificate(
     run_paths: Sequence[str | Path],
     *,
     max_source_age_hours: float,
+    max_observation_age_hours: float = DEFAULT_MAX_OBSERVATION_AGE_HOURS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Return a read-only certificate for explicit checkpoint-run directories."""
@@ -354,6 +409,11 @@ def build_freshness_certificate(
     source_records: dict[str, dict[str, Any]] = {}
     if not math.isfinite(max_source_age_hours) or max_source_age_hours <= 0:
         _failure(failures, "argument", "max_source_age_hours must be finite and positive")
+    if (
+        not math.isfinite(max_observation_age_hours)
+        or max_observation_age_hours <= 0
+    ):
+        _failure(failures, "argument", "max_observation_age_hours must be finite and positive")
     if not run_paths:
         _failure(failures, "argument", "at least one explicit checkpoint run path is required")
     try:
@@ -374,7 +434,16 @@ def build_freshness_certificate(
             _failure(failures, "manifest_read", str(exc), run_path=manifest_path.parent)
             continue
         if policy:
-            _validate_run(manifest_path, manifest, policy, failures, source_records, max_source_age_hours=max_source_age_hours, now=current)
+            _validate_run(
+                manifest_path,
+                manifest,
+                policy,
+                failures,
+                source_records,
+                max_source_age_hours=max_source_age_hours,
+                max_observation_age_hours=max_observation_age_hours,
+                now=current,
+            )
 
     observed = set(source_records)
     expected = set(SOURCE_KEYS)
@@ -388,6 +457,7 @@ def build_freshness_certificate(
         "status": "valid" if not failures and len(sources) == len(SOURCE_KEYS) else "invalid",
         "generated_at": current.isoformat(),
         "max_source_age_hours": max_source_age_hours,
+        "max_observation_age_hours": max_observation_age_hours,
         "expected_source_count": len(SOURCE_KEYS),
         "certified_source_count": len(sources),
         "sources": sources,
@@ -399,10 +469,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("checkpoint_runs", nargs="+", help="explicit checkpoint run directories or manifest.json files")
     parser.add_argument("--max-source-age-hours", type=float, required=True)
+    parser.add_argument(
+        "--max-observation-age-hours",
+        type=float,
+        default=DEFAULT_MAX_OBSERVATION_AGE_HOURS,
+        help="maximum age of every canonical source observation at certification time",
+    )
     args = parser.parse_args(argv)
     certificate = build_freshness_certificate(
         args.checkpoint_runs,
         max_source_age_hours=args.max_source_age_hours,
+        max_observation_age_hours=args.max_observation_age_hours,
     )
     print(json.dumps(certificate, indent=2, sort_keys=True))
     return 0 if certificate["status"] == "valid" else 1

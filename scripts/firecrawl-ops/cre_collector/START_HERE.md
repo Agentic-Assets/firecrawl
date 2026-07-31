@@ -79,6 +79,20 @@ before-access check. Ambiguous multi-host or target-overriding libpq URI forms
 fail closed. This prevents an environment-file change during a long run from
 redirecting a gate, validation query, or write.
 
+### Freshness evidence SLO
+
+Generation membership is necessary but not sufficient: a long detail sweep can
+observe its first listing long before its last. Every canonical inventory
+observation and every required canonical detail observation must therefore be
+no more than 24 hours old when the source artifact finishes. The post-ingest
+readback proves that the persisted earliest observations still meet that same
+artifact-completion bound. The read-only certificate applies a second,
+independent 24-hour bound at certificate time with
+`--max-observation-age-hours 24`; it also retains the separate
+`--max-source-age-hours 24` ingest-completion limit. Source-index-only cards
+are not canonical listing evidence and can never support a whole-source
+freshness claim.
+
 ### Colliers Main runtime calibration
 
 `colliers-main` has a large sitemap and renders every current detail page. Do

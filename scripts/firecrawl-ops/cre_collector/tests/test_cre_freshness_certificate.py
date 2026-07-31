@@ -287,3 +287,86 @@ def test_certificate_rejects_duplicate_terminal_source_and_stale_source(tmp_path
 
     assert result["status"] == "invalid"
     assert {"duplicate_terminal_source", "source_age"} <= _codes(result)
+
+
+def test_certificate_rejects_observations_older_than_the_row_freshness_slo(tmp_path):
+    runs = _valid_runs(tmp_path)
+    jll_run = next(path for path in runs if path.name == "run-jll")
+    artifact_path = jll_run / "sources" / "jll.json"
+    artifact = json.loads(artifact_path.read_text())
+    artifact["listings"][0]["inventoryObservedAt"] = (
+        NOW - timedelta(hours=3)
+    ).isoformat()
+    artifact["listings"][0]["detailObservedAt"] = (
+        NOW - timedelta(hours=3)
+    ).isoformat()
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+    manifest_path = jll_run / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["sources"]["jll"]["artifact"].update(
+        sha256=_sha(artifact_path), bytes=artifact_path.stat().st_size
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = certificate.build_freshness_certificate(
+        runs,
+        max_source_age_hours=2,
+        max_observation_age_hours=2,
+        now=NOW,
+    )
+
+    assert result["status"] == "invalid"
+    assert "observation_age" in _codes(result)
+
+
+def test_certificate_rejects_future_observations_even_when_they_clear_age_cutoff(tmp_path):
+    runs = _valid_runs(tmp_path)
+    jll_run = next(path for path in runs if path.name == "run-jll")
+    artifact_path = jll_run / "sources" / "jll.json"
+    artifact = json.loads(artifact_path.read_text())
+    artifact["listings"][0]["inventoryObservedAt"] = (
+        NOW + timedelta(minutes=6)
+    ).isoformat()
+    artifact["listings"][0]["detailObservedAt"] = (
+        NOW + timedelta(minutes=6)
+    ).isoformat()
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+    manifest_path = jll_run / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["sources"]["jll"]["artifact"].update(
+        sha256=_sha(artifact_path), bytes=artifact_path.stat().st_size
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = certificate.build_freshness_certificate(
+        runs, max_source_age_hours=2, now=NOW
+    )
+
+    assert result["status"] == "invalid"
+    assert "observation_age" in _codes(result)
+
+
+def test_certificate_uses_fresh_revision_validation_for_cached_detail_evidence(tmp_path):
+    runs = _valid_runs(tmp_path)
+    jll_run = next(path for path in runs if path.name == "run-jll")
+    artifact_path = jll_run / "sources" / "jll.json"
+    artifact = json.loads(artifact_path.read_text())
+    listing = artifact["listings"][0]
+    listing["detailObservedAt"] = (NOW - timedelta(days=2)).isoformat()
+    listing["freshnessProvenance"].update(
+        cacheDisposition="source_revision_cache",
+        validatedAt=(NOW - timedelta(hours=1)).isoformat(),
+    )
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+    manifest_path = jll_run / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["sources"]["jll"]["artifact"].update(
+        sha256=_sha(artifact_path), bytes=artifact_path.stat().st_size
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = certificate.build_freshness_certificate(
+        runs, max_source_age_hours=2, now=NOW
+    )
+
+    assert result["status"] == "valid"
