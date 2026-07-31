@@ -543,6 +543,7 @@ def test_run_queries_uses_one_repeatable_read_snapshot(monkeypatch):
     def fake_run(argv, **kwargs):
         captured["argv"] = argv
         captured["kwargs"] = kwargs
+        captured["script"] = kwargs["stdin"].read()
         return _FakeProc(returncode=0, stdout=output, stderr="warning")
 
     monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
@@ -555,12 +556,13 @@ def test_run_queries_uses_one_repeatable_read_snapshot(monkeypatch):
     assert rows["first"] == [{"metric": "a", "value": "1"}]
     assert rows["second"] == [{"metric": "b", "value": "2"}]
     assert stderr == "warning"
-    assert captured["kwargs"]["input"].count("BEGIN TRANSACTION") == 1
+    assert captured["script"].count("BEGIN TRANSACTION") == 1
     assert (
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;"
-        in captured["kwargs"]["input"]
+        in captured["script"]
     )
-    assert captured["kwargs"]["input"].strip().endswith("ROLLBACK;")
+    assert captured["script"].strip().endswith("ROLLBACK;")
+    assert "input" not in captured["kwargs"]
     assert "postgres://SENTINEL" not in captured["argv"]
     assert captured["kwargs"]["env"]["PGHOST"] == "sentinel"
 

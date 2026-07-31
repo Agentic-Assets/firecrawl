@@ -11,6 +11,7 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -579,33 +580,43 @@ def parse_query_batch(output, query_names):
 
 
 def run_queries(psql, db_url, queries):
-    """Run all validation queries in one repeatable-read, read-only snapshot."""
+    """Run all validation queries in one repeatable-read, read-only snapshot.
+
+    The complete validation program is intentionally fed from a seekable file,
+    rather than ``subprocess.run(input=...)``.  The latter can deadlock when a
+    large multi-query script is still being written while psql fills its stdout
+    pipe with an early result set.  A file lets psql read independently while
+    Python drains stdout through ``communicate``.
+    """
     statements = [
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;"
     ]
     for name, sql in queries.items():
         statements.extend((f"\\echo {QUERY_MARKER_PREFIX}{name}", sql))
     statements.append("ROLLBACK;")
-    proc = subprocess.run(
-        [
-            psql,
-            *psql_connection_args(db_url),
-            "-q",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-P",
-            "pager=off",
-            "-P",
-            "footer=off",
-            "-F",
-            "\t",
-            "-A",
-        ],
-        env=psql_connection_env(db_url),
-        input="\n".join(statements) + "\n",
-        text=True,
-        capture_output=True,
-    )
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as script:
+        script.write("\n".join(statements) + "\n")
+        script.seek(0)
+        proc = subprocess.run(
+            [
+                psql,
+                *psql_connection_args(db_url),
+                "-q",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-P",
+                "pager=off",
+                "-P",
+                "footer=off",
+                "-F",
+                "\t",
+                "-A",
+            ],
+            env=psql_connection_env(db_url),
+            stdin=script,
+            text=True,
+            capture_output=True,
+        )
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
         raise SystemExit(f"psql exited {proc.returncode}")
