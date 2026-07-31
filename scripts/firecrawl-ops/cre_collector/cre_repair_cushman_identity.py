@@ -114,11 +114,14 @@ ADVISORY_LOCK_KEY = 734_251_907_300_821_130
 # document compression, so 128 MiB leaves bounded headroom for the exact state.
 MAX_PREIMAGE_BYTES = 64 * 1024 * 1024
 MAX_INNER_PREIMAGE_BYTES = 128 * 1024 * 1024
-# Client-side wall clock for rollback-only verification. PostgreSQL's
-# statement_timeout is per statement, so it cannot bound a stalled multi-
-# statement psql session or a dead connection. Persistent apply/rollback paths
-# deliberately do not use this timeout because losing a commit response would
-# require separate state reconciliation.
+# Client-side wall clocks for nonpersistent verification. PostgreSQL's
+# statement_timeout is per statement, while exact preimage capture contains
+# several independently bounded full-state statements. Live evidence showed
+# those statements can cumulatively exceed 30 minutes without any one statement
+# stalling, so capture gets a separate one-hour orchestration bound. Persistent
+# apply/rollback paths deliberately do not use client timeouts because losing a
+# commit response would require separate state reconciliation.
+PREIMAGE_CAPTURE_TIMEOUT_SECONDS = 60 * 60
 ROLLBACK_VERIFICATION_TIMEOUT_SECONDS = 30 * 60
 # Keep every psql simple-query message comfortably below hosted proxy limits.
 # json.dumps(..., ensure_ascii=True) makes one Python character exactly one byte;
@@ -3239,7 +3242,7 @@ def main(argv: list[str] | None = None) -> int:
                 preimage = run_psql(
                     db_url,
                     preimage_sql(artifact, state),
-                    timeout_seconds=ROLLBACK_VERIFICATION_TIMEOUT_SECONDS,
+                    timeout_seconds=PREIMAGE_CAPTURE_TIMEOUT_SECONDS,
                     result_mode="preimage_chunks",
                 )
                 result = run_psql(

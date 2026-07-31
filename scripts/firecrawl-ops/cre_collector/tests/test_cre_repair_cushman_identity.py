@@ -1007,7 +1007,7 @@ def test_roundtrip_cli_times_only_noncommitting_preimage_and_roundtrip(
         ("PREFLIGHT", None, "json"),
         (
             "PREIMAGE",
-            repair.ROLLBACK_VERIFICATION_TIMEOUT_SECONDS,
+            repair.PREIMAGE_CAPTURE_TIMEOUT_SECONDS,
             "preimage_chunks",
         ),
         (
@@ -1017,6 +1017,8 @@ def test_roundtrip_cli_times_only_noncommitting_preimage_and_roundtrip(
         ),
     ]
     assert '"mode": "verify_rollback_roundtrip"' in capsys.readouterr().out
+    assert repair.PREIMAGE_CAPTURE_TIMEOUT_SECONDS == 60 * 60
+    assert repair.ROLLBACK_VERIFICATION_TIMEOUT_SECONDS == 30 * 60
 
 
 def test_apply_rollback_verification_uses_client_timeout(
