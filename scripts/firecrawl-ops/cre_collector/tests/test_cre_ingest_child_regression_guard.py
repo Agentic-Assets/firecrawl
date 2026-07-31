@@ -2,11 +2,9 @@
 
 from datetime import datetime, timezone
 
-import pytest
-
 import cre_checkpoint_refresh as refresh
 import cre_ingest as ingest
-
+import pytest
 
 SCRAPED_AT = datetime(2026, 7, 30, tzinfo=timezone.utc).isoformat()
 
@@ -65,7 +63,7 @@ def test_checkpoint_quality_uses_the_central_child_predicate(before, after, ok):
 def test_build_sql_places_source_scoped_child_guard_before_commit():
     sql = ingest.build_sql([], [], SCRAPED_AT, set())
 
-    baseline = sql.index("CREATE TEMP TABLE _child_counts_before")
+    baseline = sql.index("CREATE TEMP TABLE _child_counts_by_listing_before")
     child_delete = sql.index(
         "DELETE FROM credeals.cre_listing_contacts  "
         "WHERE listing_id IN (SELECT id FROM _child_refresh)"
@@ -81,6 +79,25 @@ def test_build_sql_places_source_scoped_child_guard_before_commit():
     assert "prior_counts.child_count * 7" in sql
     assert "/ 10" in sql
     assert "RAISE EXCEPTION" in sql[guard - 100 : commit]
+
+
+def test_build_sql_excludes_legitimately_retired_parents_from_child_guard():
+    sql = ingest.build_sql([], [], SCRAPED_AT, {"cushman-wakefield"})
+
+    snapshot = sql.index("CREATE TEMP TABLE _child_counts_by_listing_before")
+    retirement = sql.index("CREATE TEMP TABLE _retired")
+    retained = sql.index("CREATE TEMP TABLE _retained_child_scope_after")
+    aggregate = sql.index("INSERT INTO _child_counts_before")
+    guard = sql.index("checkpoint child quality regression before commit")
+
+    assert snapshot < retirement < retained < aggregate < guard
+    assert "JOIN credeals.cre_listings l ON l.id = before.listing_id" in sql
+    assert "WHERE l.deleted_at IS NULL" in sql[retained:aggregate]
+    assert (
+        "JOIN _retained_child_scope_after retained\n"
+        "  USING (listing_id, source_key)"
+    ) in sql
+    assert sql.count("FROM _retained_child_scope_after a") == 5
 
 
 def test_build_sql_counts_all_checkpoint_child_types_and_guards_optional_tables():

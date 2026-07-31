@@ -2325,49 +2325,47 @@ FROM (
 ) active
 JOIN _ingest_child_sources ingest_scope USING (source_key);
 
-CREATE TEMP TABLE _child_counts_before (
-  source_key text NOT NULL,
-  child_type text NOT NULL,
-  child_count bigint NOT NULL,
-  PRIMARY KEY (source_key, child_type)
-) ON COMMIT DROP;
-
-INSERT INTO _child_counts_before
-SELECT a.source_key, 'contacts', count(c.id)
+-- Snapshot per-listing counts before mutation. The final guard compares only
+-- parents that remain active after reconciliation: a legitimately retired
+-- parent must not look like destructive child loss, while a parser collapse on
+-- a retained parent must still fail the whole transaction.
+CREATE TEMP TABLE _child_counts_by_listing_before ON COMMIT DROP AS
+SELECT a.listing_id, a.source_key, 'contacts'::text AS child_type,
+       count(c.id)::bigint AS child_count
 FROM _active_child_scope_before a
 LEFT JOIN credeals.cre_listing_contacts c ON c.listing_id = a.listing_id
-GROUP BY a.source_key
+GROUP BY a.listing_id, a.source_key
 UNION ALL
-SELECT a.source_key, 'documents', count(d.id)
+SELECT a.listing_id, a.source_key, 'documents'::text, count(d.id)::bigint
 FROM _active_child_scope_before a
 LEFT JOIN credeals.cre_listing_documents d ON d.listing_id = a.listing_id
-GROUP BY a.source_key
+GROUP BY a.listing_id, a.source_key
 UNION ALL
-SELECT a.source_key, 'images', count(i.id)
+SELECT a.listing_id, a.source_key, 'images'::text, count(i.id)::bigint
 FROM _active_child_scope_before a
 LEFT JOIN credeals.cre_listing_images i ON i.listing_id = a.listing_id
-GROUP BY a.source_key;
+GROUP BY a.listing_id, a.source_key;
 
 DO $$ BEGIN
   IF EXISTS (
     SELECT 1
     WHERE to_regclass('credeals.cre_listing_media') IS NOT NULL
   ) THEN
-    INSERT INTO _child_counts_before
-    SELECT a.source_key, 'media', count(m.id)
+    INSERT INTO _child_counts_by_listing_before
+    SELECT a.listing_id, a.source_key, 'media', count(m.id)
     FROM _active_child_scope_before a
     LEFT JOIN credeals.cre_listing_media m ON m.listing_id = a.listing_id
-    GROUP BY a.source_key;
+    GROUP BY a.listing_id, a.source_key;
   END IF;
   IF EXISTS (
     SELECT 1
     WHERE to_regclass('credeals.cre_listing_links') IS NOT NULL
   ) THEN
-    INSERT INTO _child_counts_before
-    SELECT a.source_key, 'links', count(k.id)
+    INSERT INTO _child_counts_by_listing_before
+    SELECT a.listing_id, a.source_key, 'links', count(k.id)
     FROM _active_child_scope_before a
     LEFT JOIN credeals.cre_listing_links k ON k.listing_id = a.listing_id
-    GROUP BY a.source_key;
+    GROUP BY a.listing_id, a.source_key;
   END IF;
 END $$;""")
 
@@ -3397,19 +3395,30 @@ SELECT b.id,
        jm.discovered, jm.saved, jm.saved, jm.errors, jm.notes
 FROM _jobmeta jm JOIN credeals.cre_brokerages b ON b.slug = jm.slug;
 
--- Enforce the same severe child-loss predicate as checkpoint final validation,
--- but before COMMIT so a parser collapse rolls back listings, children, history,
--- and the scrape-job row atomically. Explicit preserve/additive rows do not
--- delete children and therefore keep or increase these source-wide counts.
-CREATE TEMP TABLE _active_child_scope_after ON COMMIT DROP AS
-SELECT listing_id, source_key
-FROM (
-  SELECT l.id AS listing_id, {live_source_key_sql} AS source_key
-  FROM credeals.cre_listings l
-  JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
-  WHERE l.deleted_at IS NULL
-) active
-JOIN _ingest_child_sources ingest_scope USING (source_key);
+-- Enforce the severe child-loss predicate before COMMIT so a parser collapse
+-- rolls back listings, children, history, and the scrape-job row atomically.
+-- Compare the same pre-existing parents on both sides. Mark-missing may retire
+-- parents and archive their children without constituting a child parser
+-- regression; removing children from parents that remain active is guarded.
+CREATE TEMP TABLE _retained_child_scope_after ON COMMIT DROP AS
+SELECT before.listing_id, before.source_key
+FROM _active_child_scope_before before
+JOIN credeals.cre_listings l ON l.id = before.listing_id
+WHERE l.deleted_at IS NULL;
+
+CREATE TEMP TABLE _child_counts_before (
+  source_key text NOT NULL,
+  child_type text NOT NULL,
+  child_count bigint NOT NULL,
+  PRIMARY KEY (source_key, child_type)
+) ON COMMIT DROP;
+
+INSERT INTO _child_counts_before
+SELECT snapshot.source_key, snapshot.child_type, sum(snapshot.child_count)
+FROM _child_counts_by_listing_before snapshot
+JOIN _retained_child_scope_after retained
+  USING (listing_id, source_key)
+GROUP BY snapshot.source_key, snapshot.child_type;
 
 CREATE TEMP TABLE _child_counts_after (
   source_key text NOT NULL,
@@ -3420,17 +3429,17 @@ CREATE TEMP TABLE _child_counts_after (
 
 INSERT INTO _child_counts_after
 SELECT a.source_key, 'contacts', count(c.id)
-FROM _active_child_scope_after a
+FROM _retained_child_scope_after a
 LEFT JOIN credeals.cre_listing_contacts c ON c.listing_id = a.listing_id
 GROUP BY a.source_key
 UNION ALL
 SELECT a.source_key, 'documents', count(d.id)
-FROM _active_child_scope_after a
+FROM _retained_child_scope_after a
 LEFT JOIN credeals.cre_listing_documents d ON d.listing_id = a.listing_id
 GROUP BY a.source_key
 UNION ALL
 SELECT a.source_key, 'images', count(i.id)
-FROM _active_child_scope_after a
+FROM _retained_child_scope_after a
 LEFT JOIN credeals.cre_listing_images i ON i.listing_id = a.listing_id
 GROUP BY a.source_key;
 
@@ -3441,7 +3450,7 @@ DO $$ BEGIN
   ) THEN
     INSERT INTO _child_counts_after
     SELECT a.source_key, 'media', count(m.id)
-    FROM _active_child_scope_after a
+    FROM _retained_child_scope_after a
     LEFT JOIN credeals.cre_listing_media m ON m.listing_id = a.listing_id
     GROUP BY a.source_key;
   END IF;
@@ -3451,7 +3460,7 @@ DO $$ BEGIN
   ) THEN
     INSERT INTO _child_counts_after
     SELECT a.source_key, 'links', count(k.id)
-    FROM _active_child_scope_after a
+    FROM _retained_child_scope_after a
     LEFT JOIN credeals.cre_listing_links k ON k.listing_id = a.listing_id
     GROUP BY a.source_key;
   END IF;
