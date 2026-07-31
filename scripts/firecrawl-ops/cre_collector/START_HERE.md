@@ -129,10 +129,20 @@ C3 is permitted only after a clean C2 and must be recorded before any
 collection restart. It uses 200 deterministic samples at concurrency 3, a
 60-second maximum completion gap, zero errors, and exact terminal accounting.
 It passes only if its p95 latency is no more than 120% of C2 and it sustains at
-least 12.5 rows per minute. That rate gives the 15,776-detail sitemap more
-than a 10% margin inside the 24-hour per-observation SLO. A C3 failure means
+least 13.2 rows per minute, which targets a 20-hour acquisition window for
+gates and readback. A C3 failure means
 the source needs an official bulk-detail/API route or a different collection
 architecture; do not ingest or claim a full fresh sweep at C1/C2 speed.
+
+The 2026-07-31 C2 and C3 evidence is retained under `out/calibration/`.
+Both samples were transport-clean, but C2 reached 8.916 rows/minute and C3
+reached 9.560 rows/minute. C3 projects to about 27.5 hours for the observed
+15,776-detail sitemap, so the present per-page renderer is rejected for a
+24-hour all-detail baseline. A public first-party Coveo card surface is not an
+approved replacement: its reported inventory was incomplete relative to the
+sitemap and it did not prove detail-field parity. Treat any Coveo probe as an
+approval-gated, default-disabled, no-write investigation until coverage,
+terms, and field-level parity are independently proven.
 
 For strict sources, it binds every source artifact and listing observation to
 one immutable generation and bypasses Firecrawl response caches with

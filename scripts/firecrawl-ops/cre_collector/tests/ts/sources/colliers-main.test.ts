@@ -288,18 +288,50 @@ test("colliersMainDetailCachePath returns durable cache location", () => {
 });
 
 test("Colliers cache reuse follows live sitemap lastmod", () => {
-  const cached = { lastUpdated: "2026-07-28", name: "Listing" };
+  const cached = {
+    freshnessProvenance: { sourceRevision: "2026-07-28T12:00:00Z" },
+    name: "Listing",
+  };
   assert.equal(
-    colliersMainCachedListingIsCurrent(entry("usa1", "https://example.test/1", "2026-07-28"), cached),
+    colliersMainCachedListingIsCurrent(
+      entry("usa1", "https://example.test/1", "2026-07-28T12:00:00Z"),
+      cached
+    ),
     true
   );
   assert.equal(
-    colliersMainCachedListingIsCurrent(entry("usa1", "https://example.test/1", "2026-07-29"), cached),
+    colliersMainCachedListingIsCurrent(
+      entry("usa1", "https://example.test/1", "2026-07-29T12:00:00Z"),
+      cached
+    ),
     false
   );
   assert.equal(
     colliersMainCachedListingIsCurrent(entry("usa1", "https://example.test/1", null), cached),
     true
+  );
+});
+
+test("Colliers cache reuse rejects an intra-day source revision change", () => {
+  const cached = {
+    freshnessProvenance: { sourceRevision: "2026-07-28T08:15:00Z" },
+  };
+  assert.equal(
+    colliersMainCachedListingIsCurrent(
+      entry("usa1", "https://example.test/1", "2026-07-28T16:45:00Z"),
+      cached
+    ),
+    false
+  );
+});
+
+test("Colliers cache reuse rejects legacy lastUpdated-only proof when sitemap has a revision", () => {
+  assert.equal(
+    colliersMainCachedListingIsCurrent(
+      entry("usa1", "https://example.test/1", "2026-07-28T16:45:00Z"),
+      { lastUpdated: "2026-07-28T16:45:00Z" }
+    ),
+    false
   );
 });
 
@@ -316,31 +348,39 @@ test("Colliers cache reuse also requires the active refresh generation", () => {
     );
     assert.equal(
       colliersMainCachedListingIsCurrent(sitemapEntry, {
-        lastUpdated: "2026-07-29",
-        freshnessProvenance: { generationId: "generation-current" },
+        freshnessProvenance: {
+          generationId: "generation-current",
+          sourceRevision: "2026-07-29",
+        },
       }),
       true
     );
     assert.equal(
       colliersMainCachedListingIsCurrent(sitemapEntry, {
-        lastUpdated: "2026-07-29",
-        freshnessProvenance: { generationId: "generation-old" },
+        freshnessProvenance: {
+          generationId: "generation-old",
+          sourceRevision: "2026-07-29",
+        },
       }),
       false
     );
     assert.equal(
       colliersMainCachedListingIsCurrent(sitemapEntry, {
-        lastUpdated: "2026-07-29",
         skip: "no_structured_data",
-        freshnessProvenance: { generationId: "generation-current" },
+        freshnessProvenance: {
+          generationId: "generation-current",
+          sourceRevision: "2026-07-29",
+        },
       }),
       false
     );
     assert.equal(
       colliersMainCachedListingIsCurrent(sitemapEntry, {
-        lastUpdated: "2026-07-29",
         skip: "not_found",
-        freshnessProvenance: { generationId: "generation-current" },
+        freshnessProvenance: {
+          generationId: "generation-current",
+          sourceRevision: "2026-07-29",
+        },
       }),
       true
     );

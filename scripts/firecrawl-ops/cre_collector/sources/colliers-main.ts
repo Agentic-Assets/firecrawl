@@ -703,11 +703,13 @@ export function colliersMainCachedListingIsCurrent(entry: ColliersMainEntry, lis
   ) {
     return false;
   }
-  const sourceLastmod = entry.lastmod ? entry.lastmod.slice(0, 10) : null;
-  const cachedLastmod = clean(listing?.lastUpdated)?.slice(0, 10) ?? null;
+  const sourceRevision = clean(entry.lastmod);
+  const cachedRevision = clean(listing?.freshnessProvenance?.sourceRevision);
   // When the source publishes lastmod, it is the admission boundary for cache
-  // reuse. A changed or missing cached marker forces a fresh detail render.
-  return sourceLastmod ? cachedLastmod === sourceLastmod : true;
+  // reuse. Preserve and compare the exact revision rather than a date prefix:
+  // Colliers can revise a listing more than once in one day, and a legacy
+  // lastUpdated-only cache cannot prove that it saw the current source revision.
+  return sourceRevision ? cachedRevision === sourceRevision : true;
 }
 
 // Enrich the full sitemap once (memoized across the sale and lease passes and
