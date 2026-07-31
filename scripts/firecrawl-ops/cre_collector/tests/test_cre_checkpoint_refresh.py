@@ -500,6 +500,7 @@ def test_every_buildout_source_gets_exact_fresh_cache_environment(tmp_path, sour
         ("avison-young", "AVISON_YOUNG_DETAIL_LIMIT", "1000000"),
         ("cushman-wakefield", "CUSHMAN_DETAIL_MODE", "base"),
         ("colliers-main", "COLLIERS_MAIN_MAX_FETCHES_PER_RUN", "2500"),
+        ("colliers-main", "COLLIERS_MAIN_DETAIL_CONCURRENCY", "1"),
     ],
 )
 def test_fresh_env_source_profiles(tmp_path, source, key, value):
@@ -537,6 +538,42 @@ def test_colliers_cache_progress_ignores_interrupted_final_json_line(tmp_path):
     cache_path.write_text('{"id":"main:1"}\n{"id":', encoding="utf-8")
 
     assert refresh._cache_line_count(cache_path) == 1
+
+
+def test_colliers_dependency_preflight_fails_before_consuming_source_attempt(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "checkpoint"
+    monkeypatch.setattr(refresh, "utc_now", lambda: "2026-07-31T12:00:00+00:00")
+    monkeypatch.setattr(
+        refresh,
+        "collector_runtime_dependency_error",
+        lambda: "collector runtime dependencies are unavailable: cheerio",
+    )
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("colliers-main",),
+        page_cap=400,
+        concurrency=3,
+    )
+
+    result = refresh.collect_source(
+        run_dir,
+        manifest,
+        "colliers-main",
+        transactions=("sale", "lease"),
+        page_cap=400,
+        concurrency=3,
+        attempts_this_run=3,
+    )
+
+    assert result is None
+    checkpoint = manifest["sources"]["colliers-main"]
+    assert checkpoint["state"] == "collect_infrastructure_failed"
+    assert checkpoint["attempts"] == []
+    assert checkpoint["collection_preflight"]["ok"] is False
 
 
 def test_colliers_main_chunks_continue_until_complete_artifact(tmp_path, monkeypatch):

@@ -56,6 +56,7 @@ MAX_FUTURE_CLOCK_SKEW = timedelta(minutes=5)
 SOURCE_KEYS = tuple(SOURCE_TO_BROKERAGE)
 TRANSACTIONS = ("sale", "lease")
 COLLIERS_MAIN_FETCHES_PER_CHUNK = 2500
+COLLIERS_MAIN_DETAIL_CONCURRENCY = 1
 # The main Colliers sitemap is materially larger than a single Node process can
 # enrich without exhausting its heap. Keep the existing bounded-process model,
 # but make completion (rather than a one-chunk artifact) the checkpoint
@@ -438,6 +439,13 @@ def fresh_source_env(
         set_value(
             "COLLIERS_MAIN_MAX_FETCHES_PER_RUN",
             str(COLLIERS_MAIN_FETCHES_PER_CHUNK),
+        )
+        # Colliers begins serving Cloudflare challenge shells after parallel
+        # detail bursts. Keep this source serial while leaving the checkpoint's
+        # global concurrency available to all other sources.
+        set_value(
+            "COLLIERS_MAIN_DETAIL_CONCURRENCY",
+            str(COLLIERS_MAIN_DETAIL_CONCURRENCY),
         )
         set_value("NODE_OPTIONS", "--max-old-space-size=6144")
     return env, overrides
@@ -999,6 +1007,36 @@ def run_command(
     return proc.returncode
 
 
+def collector_runtime_dependency_error() -> str | None:
+    """Return a compact error when the collector checkout cannot import deps.
+
+    A failed import is an execution-environment failure, not a source response.
+    Check it before recording a bounded source attempt so an isolated worktree
+    without node_modules cannot burn retries or muddy source evidence.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "node",
+                "--input-type=module",
+                "--eval",
+                "await Promise.all([import('cheerio'), import('@mendable/firecrawl-js')])",
+            ],
+            cwd=COLLECTOR_DIR,
+            env=safe_process_env(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return f"collector runtime dependency preflight could not start: {exc}"
+    if proc.returncode == 0:
+        return None
+    detail = (proc.stderr or "dependency import failed").strip().splitlines()[-1]
+    return f"collector runtime dependencies are unavailable: {detail[:300]}"
+
+
 def git_identity() -> tuple[str, bool]:
     sha = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -1379,6 +1417,18 @@ def collect_source(
     existing = _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
     if existing:
         return existing
+
+    if source == "colliers-main":
+        runtime_error = collector_runtime_dependency_error()
+        if runtime_error:
+            checkpoint["state"] = "collect_infrastructure_failed"
+            checkpoint["collection_preflight"] = {
+                "ok": False,
+                "error": runtime_error,
+                "checked_at": utc_now(),
+            }
+            save_manifest(run_dir, manifest)
+            return None
 
     canonical = run_dir / "sources" / f"{source}.json"
     canonical.parent.mkdir(parents=True, exist_ok=True)

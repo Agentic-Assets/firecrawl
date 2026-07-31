@@ -25,6 +25,9 @@ import {
   fetchColliersMainEntries,
   scrapeColliersMainDetailDoc,
   assertColliersMainDetailRuntimeReady,
+  acquireColliersMainDetailStart,
+  coolDownColliersMainDetailStarts,
+  resetColliersMainDetailPacerForTest,
 } from "../../../sources/colliers-main.js";
 import type { ScrapedDoc } from "../../../types.js";
 import { firecrawl } from "../../../lib/scrape.js";
@@ -362,6 +365,102 @@ test("Colliers detail pass is truncated while work is deferred or errored", () =
   assert.equal(colliersMainDetailPassTruncated({ errors: 0, deferred: 0 }), false);
   assert.equal(colliersMainDetailPassTruncated({ errors: 1, deferred: 0 }), true);
   assert.equal(colliersMainDetailPassTruncated({ errors: 0, deferred: 1 }), true);
+});
+
+test("Colliers detail pacing serializes starts and honors a shared cooldown", async () => {
+  const oldInterval = process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+  const oldCooldown = process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+  let now = 1000;
+  const waits: number[] = [];
+  const wait = async (milliseconds: number) => {
+    waits.push(milliseconds);
+    now += milliseconds;
+  };
+  try {
+    process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = "100";
+    process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = "250";
+    resetColliersMainDetailPacerForTest();
+    await acquireColliersMainDetailStart(() => now, wait);
+    await acquireColliersMainDetailStart(() => now, wait);
+    coolDownColliersMainDetailStarts(now);
+    await acquireColliersMainDetailStart(() => now, wait);
+    assert.deepEqual(waits, [100, 250]);
+  } finally {
+    resetColliersMainDetailPacerForTest();
+    if (oldInterval === undefined) delete process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+    else process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = oldInterval;
+    if (oldCooldown === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+    else process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = oldCooldown;
+  }
+});
+
+test("Colliers detail retries exhausted transport failures with bounded source backoff", async () => {
+  const oldAttempts = process.env.COLLIERS_MAIN_CHALLENGE_RETRIES;
+  const oldInterval = process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+  const oldCooldown = process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+  const waits: number[] = [];
+  let calls = 0;
+  try {
+    process.env.COLLIERS_MAIN_CHALLENGE_RETRIES = "3";
+    process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = "0";
+    process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = "0";
+    resetColliersMainDetailPacerForTest();
+    const result = await scrapeColliersMainDetailDoc(
+      "https://www.colliers.com/en/properties/usa10006",
+      async () => {
+        calls++;
+        if (calls < 3) throw new Error("socket hang up");
+        return syntheticDoc(SALE_LD, "Building Size: 1,000 SF");
+      },
+      async (milliseconds) => void waits.push(milliseconds),
+      () => 0
+    );
+    assert.equal(result.metadata?.statusCode, 200);
+    assert.equal(calls, 3);
+    assert.deepEqual(waits, [4000, 8000]);
+  } finally {
+    resetColliersMainDetailPacerForTest();
+    if (oldAttempts === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_RETRIES;
+    else process.env.COLLIERS_MAIN_CHALLENGE_RETRIES = oldAttempts;
+    if (oldInterval === undefined) delete process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+    else process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = oldInterval;
+    if (oldCooldown === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+    else process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = oldCooldown;
+  }
+});
+
+test("Colliers detail retries challenge shells before admitting a usable detail", async () => {
+  const oldAttempts = process.env.COLLIERS_MAIN_CHALLENGE_RETRIES;
+  const oldInterval = process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+  const oldCooldown = process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+  let calls = 0;
+  try {
+    process.env.COLLIERS_MAIN_CHALLENGE_RETRIES = "2";
+    process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = "0";
+    process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = "0";
+    resetColliersMainDetailPacerForTest();
+    const result = await scrapeColliersMainDetailDoc(
+      "https://www.colliers.com/en/properties/usa10007",
+      async () => {
+        calls++;
+        return calls === 1
+          ? doc({ rawHtml: "<div>cf-chl-widget</div>", metadata: { statusCode: 429 } })
+          : syntheticDoc(SALE_LD, "Building Size: 1,000 SF");
+      },
+      async () => undefined,
+      () => 0
+    );
+    assert.equal(result.metadata?.statusCode, 200);
+    assert.equal(calls, 2);
+  } finally {
+    resetColliersMainDetailPacerForTest();
+    if (oldAttempts === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_RETRIES;
+    else process.env.COLLIERS_MAIN_CHALLENGE_RETRIES = oldAttempts;
+    if (oldInterval === undefined) delete process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+    else process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = oldInterval;
+    if (oldCooldown === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+    else process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = oldCooldown;
+  }
 });
 
 test("Colliers detail runtime canary refuses transport failures before cache fanout", async () => {

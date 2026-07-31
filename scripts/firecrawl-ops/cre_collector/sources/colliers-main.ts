@@ -46,6 +46,56 @@ export const COLLIERS_MAIN_RUNTIME_CANARY_COUNT = boundedInt(
   1,
   5
 );
+/**
+ * A shared start-rate gate keeps the stealth proxy below the sustained request
+ * rate at which Colliers begins returning Cloudflare challenge pages. It is a
+ * start interval, rather than a worker sleep, so the bounded worker pool may
+ * wait for browser renders without issuing a new burst as renders settle.
+ */
+export function colliersMainDetailStartIntervalMs(): number {
+  return boundedInt(process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS, 1500, 0, 30000);
+}
+
+export function colliersMainChallengeCooldownMs(): number {
+  return boundedInt(process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS, 30000, 0, 180000);
+}
+
+let colliersMainNextDetailStartAt = 0;
+
+type Sleep = (milliseconds: number) => Promise<void>;
+type Clock = () => number;
+
+const sleep: Sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+/** Test hook for the module-local pacer; production code never resets it. */
+export function resetColliersMainDetailPacerForTest(): void {
+  colliersMainNextDetailStartAt = 0;
+}
+
+export async function acquireColliersMainDetailStart(
+  now: Clock = Date.now,
+  wait: Sleep = sleep
+): Promise<void> {
+  // Re-check after every wait because a preceding worker can extend the
+  // shared cooldown while this worker is sleeping.
+  for (;;) {
+    const current = now();
+    const delay = colliersMainNextDetailStartAt - current;
+    if (delay > 0) {
+      await wait(delay);
+      continue;
+    }
+    colliersMainNextDetailStartAt = current + colliersMainDetailStartIntervalMs();
+    return;
+  }
+}
+
+export function coolDownColliersMainDetailStarts(now: number = Date.now()): void {
+  colliersMainNextDetailStartAt = Math.max(
+    colliersMainNextDetailStartAt,
+    now + colliersMainChallengeCooldownMs()
+  );
+}
 export const COLLIERS_MAIN_SCRAPE_OPTS: ScrapeOpts = {
   proxy: "stealth",
   timeout: 120000,
@@ -92,23 +142,42 @@ export function colliersMainIsChallenge(doc: ScrapedDoc): boolean {
 }
 
 // Colliers detail pages are Cloudflare-protected; under sustained paging the
-// site returns 429 "Just a moment..." challenge shells. The stealth proxy
-// rotates IPs per request, so retrying a challenged URL with backoff usually
-// lands on an un-challenged IP. Returns the last doc even if still challenged;
-// the parser then tombstones a real 404 or throws for retry on the next pass.
-export async function scrapeColliersMainDetailDoc(url: string): Promise<ScrapedDoc> {
+// site returns 429 "Just a moment..." challenge shells. Both those shells and
+// exhausted local transport errors use this source-level retry budget. The
+// underlying scrapeDoc retries an individual API call; this wrapper spaces
+// whole detail renders and extends the shared gate after a failure so the next
+// workers do not immediately recreate the burst.
+export async function scrapeColliersMainDetailDoc(
+  url: string,
+  request: (url: string, opts: ScrapeOpts) => Promise<ScrapedDoc> = scrapeDoc,
+  wait: Sleep = sleep,
+  random: () => number = Math.random
+): Promise<ScrapedDoc> {
   const maxAttempts = boundedInt(process.env.COLLIERS_MAIN_CHALLENGE_RETRIES, 4, 1, 8);
   const scrapeOpts = {
     ...COLLIERS_MAIN_SCRAPE_OPTS,
     ...(requireFreshDetails() ? { maxAge: 0 } : {}),
   };
-  let doc = await scrapeDoc(url, scrapeOpts);
-  for (let attempt = 2; attempt <= maxAttempts && colliersMainIsChallenge(doc); attempt++) {
-    const backoff = 4000 * (attempt - 1) + Math.floor(Math.random() * 3000);
-    await new Promise((r) => setTimeout(r, backoff));
-    doc = await scrapeDoc(url, scrapeOpts);
+  let lastError: unknown = null;
+  let lastChallenged: ScrapedDoc | null = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await acquireColliersMainDetailStart();
+      const doc = await request(url, scrapeOpts);
+      if (!colliersMainIsChallenge(doc)) return doc;
+      lastChallenged = doc;
+      lastError = new Error("Colliers main detail still challenged");
+    } catch (err) {
+      lastError = err;
+    }
+    coolDownColliersMainDetailStarts();
+    if (attempt < maxAttempts) {
+      const backoff = 4000 * attempt + Math.floor(random() * 3000);
+      await wait(backoff);
+    }
   }
-  return doc;
+  if (lastChallenged) return lastChallenged;
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 /**
