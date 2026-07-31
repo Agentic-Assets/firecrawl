@@ -29,7 +29,8 @@ async function matthewsGate(): Promise<void> {
 
 export function matthewsFetchOptions(
   strict = requireFreshDetails(),
-  timeoutMs = MATTHEWS_FETCH_TIMEOUT_MS
+  timeoutMs = MATTHEWS_FETCH_TIMEOUT_MS,
+  redirect: RequestRedirect = "follow"
 ): RequestInit {
   const headers: Record<string, string> = {
     "User-Agent":
@@ -40,18 +41,40 @@ export function matthewsFetchOptions(
   return {
     headers,
     signal: AbortSignal.timeout(timeoutMs),
+    redirect,
     ...(strict ? { cache: "no-store" as const } : {}),
   };
 }
 
-async function matthewsFetch(url: string): Promise<string> {
+type MatthewsFetchResult = {
+  html: string | null;
+  status: number;
+  location: string | null;
+};
+
+async function matthewsFetch(
+  url: string,
+  manualRedirect = false
+): Promise<MatthewsFetchResult> {
   for (let attempt = 0; attempt < 6; attempt++) {
     await matthewsGate();
     let status = 0;
     try {
-      const res = await fetch(url, matthewsFetchOptions());
+      const res = await fetch(
+        url,
+        matthewsFetchOptions(
+          requireFreshDetails(),
+          MATTHEWS_FETCH_TIMEOUT_MS,
+          manualRedirect ? "manual" : "follow"
+        )
+      );
       status = res.status;
-      if (res.ok) return res.text();
+      if (res.ok) {
+        return { html: await res.text(), status, location: null };
+      }
+      if (manualRedirect && (status === 301 || status === 308)) {
+        return { html: null, status, location: res.headers.get("location") };
+      }
     } catch {
       /* retry transient network failures below */
     }
@@ -194,6 +217,32 @@ function normalizedMatthewsPropertyUrl(raw: string | null, baseUrl: string): str
   } catch {
     return null;
   }
+}
+
+/**
+ * A permanent first-party redirect can retire a sitemap alias without making
+ * the target listing unavailable. The caller must still prove the target is
+ * enumerated in the same fresh sitemap before treating the alias as excluded.
+ */
+export function matthewsPermanentRedirectTarget(
+  status: number,
+  location: string | null,
+  requestedUrl: string,
+  tx: Tx
+): string | null {
+  if (status !== 301 && status !== 308) return null;
+  const requested = normalizedMatthewsPropertyUrl(requestedUrl, MATTHEWS_HOST);
+  const target = normalizedMatthewsPropertyUrl(location, requestedUrl);
+  if (
+    !requested
+    || !target
+    || target === requested
+    || matthewsTenureFromUrl(requested) !== tx
+    || matthewsTenureFromUrl(target) !== tx
+  ) {
+    return null;
+  }
+  return target;
 }
 
 export function matthewsProviderIdentity(
@@ -434,23 +483,36 @@ export function parseMatthewsDetail(
 
 export function matthewsParsedCoverage(
   parsed: Array<any | null | undefined>,
-  providerNotFound = 0
+  providerNotFound = 0,
+  permanentRedirectAliases = 0
 ): {
   listings: any[];
   failures: number;
   providerNotFound: number;
+  permanentRedirectAliases: number;
   truncated: boolean;
 } {
   const listings = parsed.filter((listing): listing is any => listing != null);
-  const failures = parsed.length - listings.length - providerNotFound;
-  if (providerNotFound < 0 || failures < 0) {
-    throw new Error("Matthews parsed coverage has an invalid inactive-page count");
+  const failures =
+    parsed.length - listings.length - providerNotFound - permanentRedirectAliases;
+  if (providerNotFound < 0 || permanentRedirectAliases < 0 || failures < 0) {
+    throw new Error("Matthews parsed coverage has an invalid excluded-page count");
   }
-  return { listings, failures, providerNotFound, truncated: failures > 0 };
+  return {
+    listings,
+    failures,
+    providerNotFound,
+    permanentRedirectAliases,
+    truncated: failures > 0,
+  };
 }
 
 export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
-  const xml = await matthewsFetch(MATTHEWS_SITEMAP_URL);
+  const sitemap = await matthewsFetch(MATTHEWS_SITEMAP_URL);
+  if (!sitemap.html) {
+    throw new Error("Matthews: sitemap did not return an XML response body");
+  }
+  const xml = sitemap.html;
   const inventoryObservedAt = new Date().toISOString();
   const detailUrls = matthewsDetailUrlsFromSitemap(xml);
   if (!detailUrls.length) {
@@ -460,6 +522,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   }
 
   const urls = detailUrls.filter((url) => matthewsTenureFromUrl(url) === tx);
+  const urlSet = new Set(urls);
   const take = Number.isFinite(max) ? urls.slice(0, max) : urls;
 
   if (monitor) {
@@ -486,10 +549,37 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
 
   const parsed = await pmap(take, Math.min(CONCURRENCY, 2), async (url) => {
     try {
-      const html = await matthewsFetch(url);
+      const response = await matthewsFetch(url, true);
+      const permanentRedirectTarget = matthewsPermanentRedirectTarget(
+        response.status,
+        response.location,
+        url,
+        tx
+      );
+      if (permanentRedirectTarget) {
+        if (urlSet.has(permanentRedirectTarget)) {
+          console.warn(
+            `  matthews/${tx}: ${url} excluded as permanent redirect alias to ${permanentRedirectTarget}`
+          );
+          return {
+            listing: null,
+            providerNotFound: false,
+            permanentRedirectAlias: true,
+          };
+        }
+        console.error(
+          `  matthews/${tx}: ${url} permanently redirects to a target absent from the fresh sitemap`
+        );
+        return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
+      }
+      if (!response.html) {
+        console.error(`  matthews/${tx}: ${url} returned HTTP ${response.status}`);
+        return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
+      }
+      const html = response.html;
       if (matthewsProviderNotFound(html, url, tx)) {
         console.warn(`  matthews/${tx}: ${url} excluded as provider 404`);
-        return { listing: null, providerNotFound: true };
+        return { listing: null, providerNotFound: true, permanentRedirectAlias: false };
       }
       const listing = parseMatthewsDetail(html, url, tx, {
         inventoryObservedAt,
@@ -498,15 +588,16 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
       if (!listing) {
         console.error(`  matthews/${tx}: ${url} failed identity or detail validation`);
       }
-      return { listing, providerNotFound: false };
+      return { listing, providerNotFound: false, permanentRedirectAlias: false };
     } catch (err) {
       console.error(`  matthews/${tx}: ${url} failed: ${err}`);
-      return { listing: null, providerNotFound: false };
+      return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
     }
   });
   const coverage = matthewsParsedCoverage(
     parsed.map((result) => result.listing),
-    parsed.filter((result) => result.providerNotFound).length
+    parsed.filter((result) => result.providerNotFound).length,
+    parsed.filter((result) => result.permanentRedirectAlias).length
   );
   const listings = coverage.listings;
   const failures = coverage.failures;
@@ -515,11 +606,17 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   }
   const incompleteEnumeration = take.length !== urls.length;
   const truncated = coverage.truncated || incompleteEnumeration;
-  const verifiedActiveTotal = urls.length - coverage.providerNotFound;
+  const verifiedActiveTotal =
+    urls.length - coverage.providerNotFound - coverage.permanentRedirectAliases;
   const notes: string[] = [];
   if (coverage.providerNotFound > 0) {
     notes.push(
       `Excluded ${coverage.providerNotFound} sitemap URL(s) with verified Matthews provider 404 responses`
+    );
+  }
+  if (coverage.permanentRedirectAliases > 0) {
+    notes.push(
+      `Excluded ${coverage.permanentRedirectAliases} sitemap URL(s) with permanent redirects to same-sitemap Matthews property URLs`
     );
   }
   if (failures > 0) {

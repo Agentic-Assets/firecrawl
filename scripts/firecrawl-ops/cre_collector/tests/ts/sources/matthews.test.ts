@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   matthewsFetchOptions,
   matthewsParsedCoverage,
+  matthewsPermanentRedirectTarget,
   matthewsProviderNotFound,
   parseMatthewsDetail,
   matthewsTenureFromUrl,
@@ -219,11 +220,37 @@ test("Matthews provider 404 exclusion rejects a mismatched canonical URL", () =>
   assert.equal(matthewsProviderNotFound(html, requested, "sale"), false);
 });
 
+test("Matthews accepts only permanent same-tenure property redirect targets", () => {
+  const requested = "https://www.matthews.com/properties/dollar-general-2";
+  const target = "https://www.matthews.com/properties/stnl-dollar-general-livingston-tx";
+  assert.equal(
+    matthewsPermanentRedirectTarget(308, "/properties/stnl-dollar-general-livingston-tx", requested, "sale"),
+    target
+  );
+  assert.equal(matthewsPermanentRedirectTarget(301, target, requested, "sale"), target);
+  assert.equal(matthewsPermanentRedirectTarget(302, target, requested, "sale"), null);
+  assert.equal(matthewsPermanentRedirectTarget(307, target, requested, "sale"), null);
+  assert.equal(matthewsPermanentRedirectTarget(308, "https://example.test/properties/a", requested, "sale"), null);
+  assert.equal(matthewsPermanentRedirectTarget(308, "/listings", requested, "sale"), null);
+  assert.equal(matthewsPermanentRedirectTarget(308, requested, requested, "sale"), null);
+  assert.equal(matthewsPermanentRedirectTarget(308, "/properties/leasing-space", requested, "sale"), null);
+});
+
+test("Matthews coverage excludes a verified permanent redirect alias separately", () => {
+  const coverage = matthewsParsedCoverage([{ id: "active" }, null], 0, 1);
+  assert.deepEqual(coverage.listings, [{ id: "active" }]);
+  assert.equal(coverage.providerNotFound, 0);
+  assert.equal(coverage.permanentRedirectAliases, 1);
+  assert.equal(coverage.failures, 0);
+  assert.equal(coverage.truncated, false);
+});
+
 test("strict Matthews direct fetches explicitly bypass caches", () => {
   const strict = matthewsFetchOptions(true);
   assert.equal(strict.cache, "no-store");
   assert.equal((strict.headers as Record<string, string>)["Cache-Control"], "no-cache");
   assert.ok(strict.signal instanceof AbortSignal);
+  assert.equal(strict.redirect, "follow");
   const compatible = matthewsFetchOptions(false);
   assert.equal(compatible.cache, undefined);
 });
@@ -234,6 +261,58 @@ test("Matthews fetch options abort a stalled request at the supplied timeout", a
   assert.equal(options.signal.aborted, false);
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(options.signal.aborted, true);
+});
+
+test("Matthews full refresh excludes only an alias whose permanent target is in the fresh sitemap", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  const alias = "https://www.matthews.com/properties/dollar-general-2";
+  const target = "https://www.matthews.com/properties/stnl-dollar-general-livingston-tx";
+  const detail = `<html><head><link rel="canonical" href="${target}"></head><body><h1 id="propertyTitle">Dollar General</h1><div id="propertyAddress">123 Main St, Livingston, TX 77351</div><div id="propertyPrice">$1,000,000</div></body></html>`;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/sitemap.xml")) {
+      return new Response(`<?xml version="1.0"?><urlset><url><loc>${alias}</loc></url><url><loc>${target}</loc></url></urlset>`, { status: 200 });
+    }
+    if (url === alias) return new Response(null, { status: 308, headers: { location: "/properties/stnl-dollar-general-livingston-tx" } });
+    if (url === target) return new Response(detail, { status: 200 });
+    throw new Error(`unexpected URL ${url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  });
+
+  const result = await srcMatthews("sale", Number.POSITIVE_INFINITY, false);
+  assert.equal(result.totalAvailable, 1);
+  assert.equal(result.listings.length, 1);
+  assert.equal(result.listings[0].url, target);
+  assert.equal(result.truncated, false);
+  assert.match(result.note ?? "", /permanent redirects/);
+});
+
+test("Matthews keeps an unenumerated permanent redirect target as truncation", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const alias = "https://www.matthews.com/properties/dollar-general-2";
+  const active = "https://www.matthews.com/properties/panera-bread";
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/sitemap.xml")) {
+      return new Response(`<?xml version="1.0"?><urlset><url><loc>${alias}</loc></url><url><loc>${active}</loc></url></urlset>`, { status: 200 });
+    }
+    if (url === alias) return new Response(null, { status: 308, headers: { location: "/properties/stnl-dollar-general-livingston-tx" } });
+    if (url === active) return new Response(`<html><head><link rel="canonical" href="${active}"></head><body><h1 id="propertyTitle">Panera Bread</h1><div id="propertyAddress">123 Main St, Tulsa, OK 74103</div></body></html>`, { status: 200 });
+    throw new Error(`unexpected URL ${url}`);
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const result = await srcMatthews("sale", Number.POSITIVE_INFINITY, false);
+  assert.equal(result.totalAvailable, 2);
+  assert.equal(result.listings.length, 1);
+  assert.equal(result.truncated, true);
+  assert.match(result.note ?? "", /failed to fetch, parse, or validate identity/);
 });
 
 test("Matthews monitor reports finite sitemap caps as truncation", async (t) => {
