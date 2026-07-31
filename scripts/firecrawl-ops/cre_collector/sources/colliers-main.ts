@@ -71,6 +71,16 @@ let colliersMainNextDetailStartAt = 0;
 type Sleep = (milliseconds: number) => Promise<void>;
 type Clock = () => number;
 
+export type ColliersMainDetailTelemetry = {
+  kind: "attempt_success" | "challenge" | "transport_error" | "cooldown";
+  attempt: number;
+  cooldownMs?: number;
+};
+
+export type ColliersMainDetailTelemetryObserver = (
+  event: ColliersMainDetailTelemetry
+) => void;
+
 const sleep: Sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 /** Test hook for the module-local pacer; production code never resets it. */
@@ -162,7 +172,8 @@ export async function scrapeColliersMainDetailDoc(
   url: string,
   request: (url: string, opts: ScrapeOpts) => Promise<ScrapedDoc> = scrapeDoc,
   wait: Sleep = sleep,
-  random: () => number = Math.random
+  random: () => number = Math.random,
+  observe?: ColliersMainDetailTelemetryObserver
 ): Promise<ScrapedDoc> {
   const maxAttempts = boundedInt(process.env.COLLIERS_MAIN_CHALLENGE_RETRIES, 4, 1, 8);
   const scrapeOpts = {
@@ -171,16 +182,33 @@ export async function scrapeColliersMainDetailDoc(
   };
   let lastError: unknown = null;
   let lastChallenged: ScrapedDoc | null = null;
+  const record = (event: ColliersMainDetailTelemetry): void => {
+    try {
+      observe?.(event);
+    } catch {
+      // Metrics must never alter the fail-closed scrape path.
+    }
+  };
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       await acquireColliersMainDetailStart();
       const doc = await request(url, scrapeOpts);
-      if (!colliersMainIsChallenge(doc)) return doc;
+      if (!colliersMainIsChallenge(doc)) {
+        record({ kind: "attempt_success", attempt });
+        return doc;
+      }
+      record({ kind: "challenge", attempt });
       lastChallenged = doc;
       lastError = new Error("Colliers main detail still challenged");
     } catch (err) {
+      record({ kind: "transport_error", attempt });
       lastError = err;
     }
+    record({
+      kind: "cooldown",
+      attempt,
+      cooldownMs: colliersMainChallengeCooldownMs(),
+    });
     coolDownColliersMainDetailStarts();
     if (attempt < maxAttempts) {
       const backoff = 4000 * attempt + Math.floor(random() * 3000);

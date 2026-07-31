@@ -563,6 +563,44 @@ test("Colliers detail retries challenge shells before admitting a usable detail"
   }
 });
 
+test("Colliers detail telemetry records retries without changing the scrape result", async () => {
+  const oldAttempts = process.env.COLLIERS_MAIN_CHALLENGE_RETRIES;
+  const oldInterval = process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+  const oldCooldown = process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+  const events: Array<{ kind: string; attempt: number; cooldownMs?: number }> = [];
+  let calls = 0;
+  try {
+    process.env.COLLIERS_MAIN_CHALLENGE_RETRIES = "2";
+    process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = "0";
+    process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = "0";
+    resetColliersMainDetailPacerForTest();
+    const result = await scrapeColliersMainDetailDoc(
+      "https://www.colliers.com/en/properties/usa10008",
+      async () => {
+        calls++;
+        if (calls === 1) throw new Error("socket hang up");
+        return syntheticDoc(SALE_LD, "Building Size: 1,000 SF");
+      },
+      async () => undefined,
+      () => 0,
+      (event) => events.push(event)
+    );
+    assert.equal(result.metadata?.statusCode, 200);
+    assert.deepEqual(
+      events.map((event) => `${event.kind}:${event.attempt}`),
+      ["transport_error:1", "cooldown:1", "attempt_success:2"]
+    );
+  } finally {
+    resetColliersMainDetailPacerForTest();
+    if (oldAttempts === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_RETRIES;
+    else process.env.COLLIERS_MAIN_CHALLENGE_RETRIES = oldAttempts;
+    if (oldInterval === undefined) delete process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+    else process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = oldInterval;
+    if (oldCooldown === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+    else process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = oldCooldown;
+  }
+});
+
 test("Colliers detail runtime canary refuses transport failures before cache fanout", async () => {
   const entries = [
     entry("usa10001", "https://www.colliers.com/en/properties/usa10001"),

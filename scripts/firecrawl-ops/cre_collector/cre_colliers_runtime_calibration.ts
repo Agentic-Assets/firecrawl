@@ -95,12 +95,34 @@ if (sample.length !== count) {
 
 let lastCompletionMs = Date.now();
 let maxCompletionGapMs = 0;
+const transport = {
+  attempts: 0,
+  retries: 0,
+  challenges: 0,
+  transportErrors: 0,
+  cooldowns: 0,
+};
 const calibrationStartedMs = Date.now();
 const outcomes = await pmap(sample, concurrency, async (entry): Promise<Outcome> => {
   const startedMs = Date.now();
   const startedAt = new Date(startedMs).toISOString();
   try {
-    const listing = parseColliersMainDetail(entry, await scrapeColliersMainDetailDoc(entry.url));
+    const listing = parseColliersMainDetail(
+      entry,
+      await scrapeColliersMainDetailDoc(
+        entry.url,
+        undefined,
+        undefined,
+        undefined,
+        (event) => {
+          transport.attempts++;
+          if (event.attempt > 1) transport.retries++;
+          if (event.kind === "challenge") transport.challenges++;
+          if (event.kind === "transport_error") transport.transportErrors++;
+          if (event.kind === "cooldown") transport.cooldowns++;
+        }
+      )
+    );
     const completedMs = Date.now();
     maxCompletionGapMs = Math.max(maxCompletionGapMs, completedMs - lastCompletionMs);
     lastCompletionMs = completedMs;
@@ -135,7 +157,7 @@ const orderedLatencies = outcomes.map((result) => result.elapsedMs).sort((a, b) 
 const p95LatencyMs = orderedLatencies[Math.max(0, Math.ceil(orderedLatencies.length * 0.95) - 1)] ?? 0;
 const terminal = errors.length === 0 && maxCompletionGapMs <= maxGapMs;
 const report = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   kind: "colliers_main_runtime_calibration",
   databaseMutationPath: false,
   ingestionInvoked: false,
@@ -152,6 +174,7 @@ const report = {
     challengeCooldownMs: Number(process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS ?? 30000),
     maxCompletionGapMs,
     maxAllowedCompletionGapMs: maxGapMs,
+    transport,
   },
   summary: {
     terminal,
