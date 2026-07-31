@@ -300,20 +300,27 @@ test("Matthews provider 404 exclusion rejects a mismatched canonical URL", () =>
   assert.equal(matthewsProviderNotFound(html, requested, "sale"), false);
 });
 
-test("Matthews accepts only permanent same-tenure property redirect targets", () => {
+test("Matthews accepts permanent first-party property redirect targets", () => {
   const requested = "https://www.matthews.com/properties/dollar-general-2";
   const target = "https://www.matthews.com/properties/stnl-dollar-general-livingston-tx";
   assert.equal(
-    matthewsPermanentRedirectTarget(308, "/properties/stnl-dollar-general-livingston-tx", requested, "sale"),
+    matthewsPermanentRedirectTarget(308, "/properties/stnl-dollar-general-livingston-tx", requested),
     target
   );
-  assert.equal(matthewsPermanentRedirectTarget(301, target, requested, "sale"), target);
-  assert.equal(matthewsPermanentRedirectTarget(302, target, requested, "sale"), null);
-  assert.equal(matthewsPermanentRedirectTarget(307, target, requested, "sale"), null);
-  assert.equal(matthewsPermanentRedirectTarget(308, "https://example.test/properties/a", requested, "sale"), null);
-  assert.equal(matthewsPermanentRedirectTarget(308, "/listings", requested, "sale"), null);
-  assert.equal(matthewsPermanentRedirectTarget(308, requested, requested, "sale"), null);
-  assert.equal(matthewsPermanentRedirectTarget(308, "/properties/leasing-space", requested, "sale"), null);
+  assert.equal(matthewsPermanentRedirectTarget(301, target, requested), target);
+  assert.equal(matthewsPermanentRedirectTarget(302, target, requested), null);
+  assert.equal(matthewsPermanentRedirectTarget(307, target, requested), null);
+  assert.equal(matthewsPermanentRedirectTarget(308, "https://example.test/properties/a", requested), null);
+  assert.equal(matthewsPermanentRedirectTarget(308, "/listings", requested), null);
+  assert.equal(matthewsPermanentRedirectTarget(308, requested, requested), null);
+  assert.equal(
+    matthewsPermanentRedirectTarget(
+      308,
+      "/properties/industrial-985-joyce-ave-columbus-oh-2",
+      "https://www.matthews.com/properties/leasing-985-joyce-ave-columbus-oh-2"
+    ),
+    "https://www.matthews.com/properties/industrial-985-joyce-ave-columbus-oh-2"
+  );
 });
 
 test("Matthews coverage excludes a verified permanent redirect alias separately", () => {
@@ -388,6 +395,37 @@ test("Matthews full refresh excludes only an alias whose permanent target is in 
   assert.equal(result.totalAvailable, 1);
   assert.equal(result.listings.length, 1);
   assert.equal(result.listings[0].url, target);
+  assert.equal(result.truncated, false);
+  assert.match(result.note ?? "", /permanent redirects/);
+});
+
+test("Matthews excludes a legacy lease alias when its current target is in the full fresh sitemap", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  const alias = "https://www.matthews.com/properties/leasing-985-joyce-ave-columbus-oh-2";
+  const target = "https://www.matthews.com/properties/industrial-985-joyce-ave-columbus-oh-2";
+  const activeLease = "https://www.matthews.com/properties/leasing-current-space";
+  const detail = `<html><head><link rel="canonical" href="${activeLease}"></head><body><h1 id="propertyTitle">Current Lease</h1><div id="propertyAddress">123 Main St, Tulsa, OK 74103</div><div id="propertyPrice">$20 / SF</div></body></html>`;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/sitemap.xml")) {
+      return new Response(`<?xml version="1.0"?><urlset><url><loc>${alias}</loc></url><url><loc>${target}</loc></url><url><loc>${activeLease}</loc></url></urlset>`, { status: 200 });
+    }
+    if (url === alias) return new Response(null, { status: 308, headers: { location: target } });
+    if (url === activeLease) return new Response(detail, { status: 200 });
+    throw new Error(`unexpected URL ${url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  });
+
+  const result = await srcMatthews("lease", Number.POSITIVE_INFINITY, false);
+  assert.equal(result.totalAvailable, 1);
+  assert.equal(result.listings.length, 1);
+  assert.equal(result.listings[0].url, activeLease);
   assert.equal(result.truncated, false);
   assert.match(result.note ?? "", /permanent redirects/);
 });

@@ -338,12 +338,16 @@ function matthewsPropertyComparisonUrl(raw: string | null, baseUrl: string): str
  * A permanent first-party redirect can retire a sitemap alias without making
  * the target listing unavailable. The caller must still prove the target is
  * enumerated in the same fresh sitemap before treating the alias as excluded.
+ *
+ * Matthews can also move a current property between its leasing and investment
+ * URL families. The target's own fresh sitemap entry, rather than the retired
+ * alias's legacy URL family, is authoritative for its current transaction
+ * classification.
  */
 export function matthewsPermanentRedirectTarget(
   status: number,
   location: string | null,
-  requestedUrl: string,
-  tx: Tx
+  requestedUrl: string
 ): string | null {
   if (status !== 301 && status !== 308) return null;
   const requested = normalizedMatthewsPropertyUrl(requestedUrl, MATTHEWS_HOST);
@@ -356,8 +360,6 @@ export function matthewsPermanentRedirectTarget(
     || !requestedComparison
     || !targetComparison
     || targetComparison === requestedComparison
-    || matthewsTenureFromUrl(requested) !== tx
-    || matthewsTenureFromUrl(target) !== tx
   ) {
     return null;
   }
@@ -644,8 +646,8 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   }
 
   const urls = detailUrls.filter((url) => matthewsTenureFromUrl(url) === tx);
-  const urlSet = new Set(
-    urls
+  const sitemapUrlSet = new Set(
+    detailUrls
       .map((url) => matthewsPropertyComparisonUrl(url, MATTHEWS_HOST))
       .filter((url): url is string => url != null)
   );
@@ -681,11 +683,10 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
       const permanentRedirectTarget = matthewsPermanentRedirectTarget(
         response.status,
         response.location,
-        url,
-        tx
+        url
       );
       if (permanentRedirectTarget) {
-        if (urlSet.has(matthewsPropertyComparisonUrl(permanentRedirectTarget, url) ?? "")) {
+        if (sitemapUrlSet.has(matthewsPropertyComparisonUrl(permanentRedirectTarget, url) ?? "")) {
           console.warn(
             `  matthews/${tx}: ${url} excluded as permanent redirect alias to ${permanentRedirectTarget}`
           );
