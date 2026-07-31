@@ -125,6 +125,15 @@ proof only: start a new clean strict checkpoint on the tested SHA afterward,
 then require its source gate, aggregate gate, additive ingest, and generation
 readback before claiming the source fresh.
 
+C3 is permitted only after a clean C2 and must be recorded before any
+collection restart. It uses 200 deterministic samples at concurrency 3, a
+60-second maximum completion gap, zero errors, and exact terminal accounting.
+It passes only if its p95 latency is no more than 120% of C2 and it sustains at
+least 12.5 rows per minute. That rate gives the 15,776-detail sitemap more
+than a 10% margin inside the 24-hour per-observation SLO. A C3 failure means
+the source needs an official bulk-detail/API route or a different collection
+architecture; do not ingest or claim a full fresh sweep at C1/C2 speed.
+
 For strict sources, it binds every source artifact and listing observation to
 one immutable generation and bypasses Firecrawl response caches with
 `maxAge: 0`. The scoped non-strict `cbre-dealflow` and `colliers` paths do not
