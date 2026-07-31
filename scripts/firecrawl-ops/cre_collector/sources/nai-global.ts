@@ -534,6 +534,15 @@ export function naiListingStatus(detail: any): string | null {
   return clean(value);
 }
 
+export function naiHasListingStatus(detail: any, wantedStatus: string): boolean {
+  const wanted = clean(wantedStatus)?.toUpperCase();
+  if (!wanted) return false;
+  const values: unknown[] = Array.isArray(detail?.listingStatus)
+    ? detail.listingStatus
+    : [detail?.listingStatus];
+  return values.some((value) => clean(value)?.toUpperCase() === wanted);
+}
+
 /**
  * The publicPosts feed includes historical posts. Keep one eligibility rule for
  * both full ingestion and monitoring so the two paths compare like-for-like.
@@ -541,7 +550,7 @@ export function naiListingStatus(detail: any): string | null {
 export function naiIsSourceEligible(row: any, tx: Tx): boolean {
   return (
     Number(row?.contentType?.id) === NAI_CONTENT_TYPE_BY_TX[tx] &&
-    naiListingStatus(row) === "FOR_SALE_ON_MARKET"
+    naiHasListingStatus(row, "FOR_SALE_ON_MARKET")
   );
 }
 

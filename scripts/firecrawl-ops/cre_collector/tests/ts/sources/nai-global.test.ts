@@ -13,6 +13,7 @@ import {
   naiPriceText,
   naiSizeText,
   naiListingStatus,
+  naiHasListingStatus,
   naiIsSourceEligible,
   naiListingFromFeed,
   harvestNai,
@@ -391,6 +392,27 @@ test("naiListingStatus normalizes scalar and array values", () => {
   );
   assert.equal(naiListingStatus({ listingStatus: [] }), null);
   assert.equal(naiListingStatus({}), null);
+});
+
+test("NAI active eligibility preserves public rows with additional status labels", () => {
+  assert.equal(
+    naiHasListingStatus(
+      { listingStatus: ["FOR_SALE_ON_MARKET", "ACTIVE"] },
+      "FOR_SALE_ON_MARKET"
+    ),
+    true
+  );
+  assert.equal(
+    naiIsSourceEligible(
+      { contentType: { id: 4 }, listingStatus: ["ACTIVE", "FOR_SALE_ON_MARKET"] },
+      "sale"
+    ),
+    true
+  );
+  assert.equal(
+    naiHasListingStatus({ listingStatus: ["ACTIVE", "OFF_MARKET"] }, "FOR_SALE_ON_MARKET"),
+    false
+  );
 });
 
 test("NAI full and monitor paths share the conservative source-eligibility rule", () => {
