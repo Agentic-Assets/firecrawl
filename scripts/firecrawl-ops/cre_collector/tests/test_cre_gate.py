@@ -114,6 +114,251 @@ class TestVerdict:
         assert median is None
 
 
+def _savills_full_scope_artifact(*, entries=None, listings=None, run_meta=None):
+    """Small but complete Savills fixture for the source-floor exception."""
+    return {
+        "runMeta": run_meta
+        or {
+            "transactions": ["sale", "lease"],
+            "mode": "full",
+            "maxItemsPerSource": None,
+        },
+        "sources": entries
+        if entries is not None
+        else [
+            {
+                "sourceKey": "savills",
+                "transaction": "sale",
+                "supported": True,
+                "truncated": False,
+                "listingsCollected": 1,
+                "totalAvailableOnSource": 1,
+                "sourceUrl": "https://search.savills.com/sale",
+                "method": "direct",
+            },
+            {
+                "sourceKey": "savills",
+                "transaction": "lease",
+                "supported": True,
+                "truncated": False,
+                "listingsCollected": 1,
+                "totalAvailableOnSource": 1,
+                "sourceUrl": "https://search.savills.com/lease",
+                "method": "direct",
+            },
+        ],
+        "listings": listings
+        if listings is not None
+        else [
+            {
+                "sourceKey": "savills",
+                "transactionMode": "sale",
+                "id": "sale-1",
+                "url": "https://search.savills.com/com/en/property-detail/sale-1",
+            },
+            {
+                "sourceKey": "savills",
+                "transactionMode": "lease",
+                "id": "lease-1",
+                "url": "https://search.savills.com/com/en/property-detail/lease-1",
+            },
+        ],
+        "brokers": [],
+    }
+
+
+class TestSavillsFullScopeCoverageFloor:
+    def test_complete_small_sale_and_lease_artifact_receives_its_declared_floor(self):
+        policy = g.load_gate_coverage_policy()
+        floor, policy_reason, failure = g.effective_floor_for_source(
+            "savills", g.DEFAULT_FLOOR, [_savills_full_scope_artifact()], policy
+        )
+
+        assert floor == 1
+        assert policy_reason == "savills full sale+lease coverage policy"
+        assert failure is None
+        verdict, reason, safe, _ = g.verdict_for(
+            2, False, None, {"median": 2, "last": 2}, floor, DROP
+        )
+        assert (verdict, reason, safe) == ("ok", None, True)
+
+    @pytest.mark.parametrize(
+        ("artifact", "expected_reason"),
+        [
+            (
+                _savills_full_scope_artifact(
+                    entries=[
+                        {
+                            "sourceKey": "savills",
+                            "transaction": "sale",
+                            "supported": True,
+                            "truncated": False,
+                            "listingsCollected": 2,
+                            "totalAvailableOnSource": 2,
+                            "sourceUrl": "https://search.savills.com/sale",
+                            "method": "direct",
+                        }
+                    ]
+                ),
+                "one Savills entry for sale and one for lease",
+            ),
+            (
+                _savills_full_scope_artifact(
+                    entries=[
+                        {
+                            **entry,
+                            "truncated": True,
+                        }
+                        if entry["transaction"] == "lease"
+                        else entry
+                        for entry in _savills_full_scope_artifact()["sources"]
+                    ]
+                ),
+                "lease is not explicitly untruncated",
+            ),
+            (
+                _savills_full_scope_artifact(
+                    entries=[
+                        {
+                            **entry,
+                            "error": "timeout",
+                        }
+                        if entry["transaction"] == "sale"
+                        else entry
+                        for entry in _savills_full_scope_artifact()["sources"]
+                    ]
+                ),
+                "sale carries a source error",
+            ),
+            (
+                _savills_full_scope_artifact(
+                    run_meta={
+                        "transactions": ["lease", "sale"],
+                        "mode": "full",
+                        "maxItemsPerSource": None,
+                    }
+                ),
+                "exactly sale+lease transactions",
+            ),
+            (
+                _savills_full_scope_artifact(
+                    entries=[
+                        {
+                            **entry,
+                            "totalAvailableOnSource": 2,
+                        }
+                        if entry["transaction"] == "sale"
+                        else entry
+                        for entry in _savills_full_scope_artifact()["sources"]
+                    ]
+                ),
+                "sale collected count does not reconcile to provider total",
+            ),
+            (
+                _savills_full_scope_artifact(
+                    listings=[
+                        _savills_full_scope_artifact()["listings"][0],
+                        {
+                            **_savills_full_scope_artifact()["listings"][0],
+                            "id": "sale-2",
+                        },
+                        _savills_full_scope_artifact()["listings"][1],
+                    ]
+                ),
+                "sale collected count does not reconcile to artifact listings",
+            ),
+            (
+                _savills_full_scope_artifact(
+                    listings=[],
+                    entries=[
+                        {
+                            **entry,
+                            "listingsCollected": 0,
+                            "totalAvailableOnSource": 0,
+                        }
+                        for entry in _savills_full_scope_artifact()["sources"]
+                    ],
+                ),
+                None,
+            ),
+        ],
+    )
+    def test_partial_or_unsafe_artifacts_cannot_use_the_small_source_exception(
+        self, artifact, expected_reason
+    ):
+        policy = g.load_gate_coverage_policy()
+        floor, policy_reason, failure = g.effective_floor_for_source(
+            "savills", g.DEFAULT_FLOOR, [artifact], policy
+        )
+
+        if expected_reason is None:
+            # A zero complete source still uses the reviewed floor, but 0 is
+            # below it and therefore never a raw-gate success.
+            assert (floor, policy_reason, failure) == (
+                1,
+                "savills full sale+lease coverage policy",
+                None,
+            )
+            verdict, _, safe, _ = g.verdict_for(
+                0, False, None, {"median": 0, "last": 0}, floor, DROP
+            )
+            assert verdict == "hold" and safe is False
+            return
+
+        assert floor == g.DEFAULT_FLOOR
+        assert policy_reason is None
+        assert expected_reason in failure
+        verdict, reason, safe, _ = g.verdict_for(
+            200, True, failure, {"median": 200, "last": 200}, floor, DROP
+        )
+        assert verdict == "hold" and safe is False
+        assert expected_reason in reason
+
+    def test_multiple_artifacts_cannot_claim_the_single_artifact_exception(self):
+        policy = g.load_gate_coverage_policy()
+        floor, policy_reason, failure = g.effective_floor_for_source(
+            "savills",
+            g.DEFAULT_FLOOR,
+            [_savills_full_scope_artifact(), _savills_full_scope_artifact()],
+            policy,
+        )
+
+        assert (floor, policy_reason) == (g.DEFAULT_FLOOR, None)
+        assert "exactly one full Savills artifact" in failure
+
+    def test_policy_loader_rejects_lowered_global_floor(self, tmp_path):
+        policy = g.load_gate_coverage_policy()
+        policy["default_floor"] = 1
+        path = tmp_path / "unsafe-coverage-policy.json"
+        path.write_text(json.dumps(policy), encoding="utf-8")
+
+        with pytest.raises(g.GateCoveragePolicyError, match="default_floor"):
+            g.load_gate_coverage_policy(path)
+
+    def test_policy_loader_rejects_non_list_transaction_scope(self, tmp_path):
+        policy = g.load_gate_coverage_policy()
+        policy["source_overrides"]["savills"]["required_transactions"] = "sale,lease"
+        path = tmp_path / "unsafe-coverage-policy.json"
+        path.write_text(json.dumps(policy), encoding="utf-8")
+
+        with pytest.raises(g.GateCoveragePolicyError, match="sale\\+lease"):
+            g.load_gate_coverage_policy(path)
+
+    def test_failed_coverage_is_retained_for_first_seen_baseline_selection(self):
+        coverage_error = "Savills full-coverage policy failed: mode must be full"
+        errors = {
+            "savills": g.effective_source_error(None, coverage_error),
+        }
+        updates = g.select_baseline_updates(
+            {"savills": {"verdict": "first_seen", "current_active": 2}},
+            errors,
+            {},
+        )
+
+        assert errors["savills"] == coverage_error
+        assert updates == []
+
+
 # ---------------------------------------------------------------------------
 # rolling_median
 # ---------------------------------------------------------------------------

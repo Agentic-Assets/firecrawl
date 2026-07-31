@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "default_floor": 100,
+  "source_overrides": {
+    "savills": {
+      "floor": 1,
+      "required_transactions": ["sale", "lease"],
+      "require_mode": "full",
+      "require_unlimited_max_items": true,
+      "require_supported_transactions": true,
+      "require_untruncated_transactions": true
+    }
+  }
+}
