@@ -40,6 +40,12 @@ export const COLLIERS_MAIN_DETAIL_CONCURRENCY = boundedInt(
 // returns 429 "Just a moment..." challenge shells. A waitFor lets the stealth
 // browser clear the challenge (same approach as CBRE waitFor 4000 / JLL 8000).
 export const COLLIERS_MAIN_DETAIL_WAIT_MS = boundedInt(process.env.COLLIERS_MAIN_DETAIL_WAIT_MS, 4000, 0, 30000);
+export const COLLIERS_MAIN_RUNTIME_CANARY_COUNT = boundedInt(
+  process.env.COLLIERS_MAIN_RUNTIME_CANARY_COUNT,
+  3,
+  1,
+  5
+);
 export const COLLIERS_MAIN_SCRAPE_OPTS: ScrapeOpts = {
   proxy: "stealth",
   timeout: 120000,
@@ -103,6 +109,45 @@ export async function scrapeColliersMainDetailDoc(url: string): Promise<ScrapedD
     doc = await scrapeDoc(url, scrapeOpts);
   }
   return doc;
+}
+
+/**
+ * Prove the local detail path can return a usable Colliers response before a
+ * fresh chunk fans out over thousands of URLs. A generic health check proves
+ * that the API is listening, but not that its Playwright/stealth detail path
+ * is ready. This probe deliberately writes no cache rows: an unavailable
+ * runtime must fail the chunk before it creates a misleading partial cache.
+ *
+ * An explicit 404/410 remains a valid detail result because the parser emits
+ * the source's verified not-found tombstone. Challenge shells and transport
+ * failures are never admitted as canary success.
+ */
+export async function assertColliersMainDetailRuntimeReady(
+  entries: ColliersMainEntry[],
+  cached: Map<string, any>,
+  scrape: (url: string) => Promise<ScrapedDoc> = scrapeColliersMainDetailDoc
+): Promise<void> {
+  const candidates = entries
+    .filter((entry) => {
+      const listing = cached.get(entry.id);
+      return !listing || !colliersMainCachedListingIsCurrent(entry, listing);
+    })
+    .slice(0, COLLIERS_MAIN_RUNTIME_CANARY_COUNT);
+  if (!candidates.length) return;
+
+  const failures: string[] = [];
+  for (const entry of candidates) {
+    try {
+      parseColliersMainDetail(entry, await scrape(entry.url));
+      console.error(`  colliers-main: detail runtime canary passed for ${entry.id}`);
+      return;
+    } catch (err) {
+      failures.push(`${entry.id}: ${String(err).slice(0, 180)}`);
+    }
+  }
+  throw new Error(
+    `Colliers main detail runtime readiness canary failed before fanout (${failures.join("; ")})`
+  );
 }
 
 export function colliersMainAbs(href: string | null | undefined): string | null {
@@ -549,6 +594,7 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
   if (cached.size) {
     console.error(`  colliers-main: loaded ${cached.size} cached detail row(s) from ${cachePath}`);
   }
+  await assertColliersMainDetailRuntimeReady(entries, cached);
   // Per-run cap on NEW detail fetches. Each detail render leaks ~0.8 MB in the
   // fetch/SDK layer, so an unbounded ~15.9k-URL run exhausts the V8 heap. With a
   // cap the process exits (freeing everything) before OOM; the durable cache

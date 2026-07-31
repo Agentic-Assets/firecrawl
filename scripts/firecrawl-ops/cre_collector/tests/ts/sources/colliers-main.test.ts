@@ -24,6 +24,7 @@ import {
   type ColliersMainEntry,
   fetchColliersMainEntries,
   scrapeColliersMainDetailDoc,
+  assertColliersMainDetailRuntimeReady,
 } from "../../../sources/colliers-main.js";
 import type { ScrapedDoc } from "../../../types.js";
 import { firecrawl } from "../../../lib/scrape.js";
@@ -361,6 +362,51 @@ test("Colliers detail pass is truncated while work is deferred or errored", () =
   assert.equal(colliersMainDetailPassTruncated({ errors: 0, deferred: 0 }), false);
   assert.equal(colliersMainDetailPassTruncated({ errors: 1, deferred: 0 }), true);
   assert.equal(colliersMainDetailPassTruncated({ errors: 0, deferred: 1 }), true);
+});
+
+test("Colliers detail runtime canary refuses transport failures before cache fanout", async () => {
+  const entries = [
+    entry("usa10001", "https://www.colliers.com/en/properties/usa10001"),
+    entry("usa10002", "https://www.colliers.com/en/properties/usa10002"),
+  ];
+  const cached = new Map<string, any>();
+  let calls = 0;
+  await assert.rejects(
+    () =>
+      assertColliersMainDetailRuntimeReady(entries, cached, async () => {
+        calls++;
+        throw new Error("local Playwright transport unavailable");
+      }),
+    /runtime readiness canary failed before fanout/
+  );
+  assert.equal(calls, entries.length);
+  assert.equal(cached.size, 0, "canary failures must not create cache rows");
+});
+
+test("Colliers detail runtime canary proceeds after a later valid detail", async () => {
+  const entries = [
+    entry("usa10003", "https://www.colliers.com/en/properties/usa10003"),
+    entry("usa10004", "https://www.colliers.com/en/properties/usa10004"),
+  ];
+  let calls = 0;
+  await assert.doesNotReject(() =>
+    assertColliersMainDetailRuntimeReady(entries, new Map(), async () => {
+      calls++;
+      if (calls === 1) throw new Error("socket hang up");
+      return syntheticDoc(SALE_LD, "Building Size: 1,000 SF");
+    })
+  );
+  assert.equal(calls, 2);
+});
+
+test("Colliers detail runtime canary accepts a verified not-found tombstone", async () => {
+  await assert.doesNotReject(() =>
+    assertColliersMainDetailRuntimeReady(
+      [entry("usa10005", "https://www.colliers.com/en/properties/usa10005")],
+      new Map(),
+      async () => doc({ rawHtml: "<html>gone</html>", markdown: "Gone", metadata: { statusCode: 410 } })
+    )
+  );
 });
 
 test("Colliers finite caps report truncation against sitemap inventory", () => {
