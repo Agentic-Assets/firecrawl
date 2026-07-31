@@ -20,12 +20,13 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -178,6 +179,14 @@ def _lock_owner(lock_dir: Path) -> int | None:
         return None
 
 
+def _lock_lease(lock_dir: Path) -> str | None:
+    try:
+        token = (lock_dir / "lease").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return token or None
+
+
 def canonical_shared_lock_dir(repo_root: Path = REPO_ROOT) -> Path:
     """Resolve the primary checkout's CRE lock, including from a worktree."""
     common_git_dir = subprocess.run(
@@ -199,10 +208,25 @@ def canonical_shared_lock_dir(repo_root: Path = REPO_ROOT) -> Path:
     )
 
 
+def checkpoint_lock_dir(lock_dir_override: str | None) -> Path:
+    """Return the one shared CRE lock, rejecting split-lock overrides."""
+    canonical = canonical_shared_lock_dir().resolve()
+    if lock_dir_override is None:
+        return canonical
+    supplied = Path(lock_dir_override).expanduser().resolve()
+    if supplied != canonical:
+        raise RefreshError(
+            "--lock-dir must resolve to the canonical shared CRE lock; "
+            f"expected {canonical}, got {supplied}"
+        )
+    return canonical
+
+
 @dataclass
 class SharedLock:
     path: Path
     held: bool = False
+    lease_token: str | None = field(default=None, init=False)
 
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -226,16 +250,30 @@ class SharedLock:
                 self.path.mkdir()
             finally:
                 shutil.rmtree(reclaim, ignore_errors=True)
-        (self.path / "pid").write_text(
-            f"{os.getpid()} {int(datetime.now(timezone.utc).timestamp())}\n",
-            encoding="utf-8",
-        )
+        lease_token = secrets.token_urlsafe(32)
+        try:
+            atomic_write_text(self.path / "lease", f"{lease_token}\n")
+            atomic_write_text(
+                self.path / "pid",
+                f"{os.getpid()} {int(datetime.now(timezone.utc).timestamp())}\n",
+            )
+        except Exception:
+            if _lock_lease(self.path) == lease_token:
+                shutil.rmtree(self.path, ignore_errors=True)
+            raise
+        self.lease_token = lease_token
         self.held = True
 
     def release(self) -> None:
-        if self.held and _lock_owner(self.path) == os.getpid():
+        if (
+            self.held
+            and self.lease_token is not None
+            and _lock_owner(self.path) == os.getpid()
+            and _lock_lease(self.path) == self.lease_token
+        ):
             shutil.rmtree(self.path, ignore_errors=True)
         self.held = False
+        self.lease_token = None
 
     def __enter__(self) -> "SharedLock":
         self.acquire()
@@ -3156,7 +3194,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--lock-dir",
         default=None,
-        help="shared CRE lock path; defaults to the primary checkout lock even from a worktree",
+        help="must resolve to the canonical shared CRE lock; retained for explicit test injection",
     )
     parser.add_argument("--allow-dirty", action="store_true")
     args = parser.parse_args(argv)
@@ -3180,6 +3218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--admit-baseline-hold-additively is only valid with --transactions both"
         )
 
+    lock_dir = checkpoint_lock_dir(args.lock_dir)
     database_target = database_target_fingerprint(args.env_file)
     git_sha, git_dirty = git_identity()
     if git_dirty and not args.allow_dirty:
@@ -3219,11 +3258,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     save_manifest(run_dir, manifest)
 
-    lock_dir = (
-        Path(args.lock_dir).expanduser().resolve()
-        if args.lock_dir
-        else canonical_shared_lock_dir()
-    )
     lock = SharedLock(lock_dir)
     try:
         with lock:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1633,6 +1634,25 @@ def test_lock_reclaims_dead_owner(tmp_path):
     assert not lock_dir.exists()
 
 
+def test_lock_release_preserves_replaced_same_pid_lease(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    lock = refresh.SharedLock(lock_dir)
+    lock.acquire()
+    original_lease = lock.lease_token
+    assert original_lease
+
+    shutil.rmtree(lock_dir)
+    lock_dir.mkdir()
+    (lock_dir / "pid").write_text(f"{os.getpid()} 1\n", encoding="utf-8")
+    (lock_dir / "lease").write_text("replacement-lease\n", encoding="utf-8")
+
+    lock.release()
+
+    assert lock_dir.is_dir()
+    assert refresh._lock_owner(lock_dir) == os.getpid()
+    assert refresh._lock_lease(lock_dir) == "replacement-lease"
+
+
 def test_canonical_lock_uses_primary_checkout_for_worktree(tmp_path, monkeypatch):
     primary = tmp_path / "primary"
     common_git = primary / ".git"
@@ -1650,6 +1670,21 @@ def test_canonical_lock_uses_primary_checkout_for_worktree(tmp_path, monkeypatch
         / "daily"
         / ".cre.lock"
     )
+
+
+def test_checkpoint_lock_dir_rejects_noncanonical_override(tmp_path, monkeypatch):
+    canonical = tmp_path / "canonical" / ".cre.lock"
+    monkeypatch.setattr(refresh, "canonical_shared_lock_dir", lambda: canonical)
+
+    with pytest.raises(refresh.RefreshError, match="canonical shared CRE lock"):
+        refresh.checkpoint_lock_dir(str(tmp_path / "split" / ".cre.lock"))
+
+
+def test_checkpoint_lock_dir_accepts_canonical_override_for_test_injection(tmp_path, monkeypatch):
+    canonical = tmp_path / "canonical" / ".cre.lock"
+    monkeypatch.setattr(refresh, "canonical_shared_lock_dir", lambda: canonical)
+
+    assert refresh.checkpoint_lock_dir(str(canonical)) == canonical.resolve()
 
 
 def test_gate_hold_is_recorded_without_being_infrastructure_failure(tmp_path, monkeypatch):
