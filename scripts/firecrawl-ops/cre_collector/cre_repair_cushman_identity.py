@@ -332,6 +332,11 @@ def run_psql(
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
+        partial_stderr = exc.stderr
+        if isinstance(partial_stderr, bytes):
+            partial_stderr = partial_stderr.decode("utf-8", errors="replace")
+        if partial_stderr:
+            sys.stderr.write(partial_stderr)
         raise RuntimeError(
             "rollback-only verification exceeded its "
             f"{timeout_seconds:g}s client wall-clock timeout; "
@@ -1334,6 +1339,7 @@ SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY});
 {stage_sql(artifact,state)}
 {invariant_sql()}
 {expected_parent_sql(artifact,state)}
+\\warn cre-cushman-phase: staged-reviewed-state
 CREATE TEMP TABLE _cw_preimage_inner ON COMMIT DROP AS
 WITH inner_source AS MATERIALIZED (
  SELECT jsonb_build_object(
@@ -1400,18 +1406,22 @@ SELECT
    {sql_lit(PREIMAGE_COMPRESSION_PGP_OPTIONS)}
  ) AS packed
 FROM inner_source;
+\\warn cre-cushman-phase: built-encrypted-inner
 CREATE TEMP TABLE _cw_preimage_inner_readback ON COMMIT DROP AS
 SELECT pgp_sym_decrypt(
   packed,{sql_lit(PREIMAGE_COMPRESSION_PASSPHRASE)}
 ) AS plaintext
 FROM _cw_preimage_inner;
+\\warn cre-cushman-phase: decrypted-inner-readback
 CREATE TEMP TABLE _cw_preimage_inner_json ON COMMIT DROP AS
 SELECT plaintext::jsonb AS payload FROM _cw_preimage_inner_readback;
+\\warn cre-cushman-phase: parsed-inner-json
 CREATE TEMP TABLE _cw_preimage_inner_sections ON COMMIT DROP AS
 SELECT section.key,section.value
 FROM _cw_preimage_inner_json i
 CROSS JOIN LATERAL jsonb_each(i.payload) section;
 CREATE UNIQUE INDEX ON _cw_preimage_inner_sections(key);
+\\warn cre-cushman-phase: materialized-inner-sections
 DO $cw_preimage_inner$
 DECLARE
  mismatch integer;
@@ -1530,6 +1540,7 @@ BEGIN
  END IF;
 END
 $cw_preimage_inner$;
+\\warn cre-cushman-phase: validated-inner
 DROP TABLE _cw_preimage_inner_sections,_cw_preimage_inner_json,
  _cw_preimage_inner_readback;
 CREATE TEMP TABLE _cw_preimage_output ON COMMIT DROP AS
@@ -1607,6 +1618,7 @@ SELECT octet_length(payload)::bigint AS payload_bytes,
          length(encoded)+{PREIMAGE_OUTPUT_CHUNK_CHARS - 1}
        )/{PREIMAGE_OUTPUT_CHUNK_CHARS} AS chunk_count
 FROM encoded_payload;
+\\warn cre-cushman-phase: built-outer-output
 DROP TABLE _cw_preimage_inner;
 DO $cw_preimage_output$
 DECLARE
@@ -1639,6 +1651,7 @@ BEGIN
  END IF;
 END
 $cw_preimage_output$;
+\\warn cre-cushman-phase: validated-outer-output
 CREATE TEMP TABLE _cw_preimage_chunks(
  seq integer PRIMARY KEY
    CHECK(seq>=0 AND seq<{PREIMAGE_OUTPUT_MAX_CHUNKS}),
@@ -1692,6 +1705,7 @@ BEGIN
  END IF;
 END
 $cw_preimage_chunks$;
+\\warn cre-cushman-phase: materialized-output-chunks
 CREATE TEMP TABLE _cw_preimage_meta ON COMMIT DROP AS
 SELECT payload_bytes,payload_md5,chunk_count FROM _cw_preimage_output;
 DROP TABLE _cw_preimage_output;
