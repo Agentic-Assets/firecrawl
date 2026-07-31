@@ -90,6 +90,15 @@ baseline only after reviewing the complete exact artifact with
 `cre_gate.py --apply --update-baseline`, read it back without
 `--update-baseline`, and then resume the same immutable run.
 
+The global admission floor is 100 listings. The sole reviewed exception is
+Savills, declared in `data/cre-gate-coverage-policy.json`: its floor is one
+only when the gate receives exactly one uncapped, full `sale` + `lease`
+artifact whose provider totals, collector counts, and artifact listings agree
+for both transactions. An error, truncation, subset, capped run, malformed
+evidence, or reconciliation mismatch retains the normal floor and cannot seed
+a baseline. This exception changes neither the no-schedule rule nor the
+separate whole-source freshness certificate requirements.
+
 Forty-eight of the 51 registered source keys satisfy the runner-owned strict
 contract. The three remaining supported sources have deliberately narrower
 claims:
@@ -665,16 +674,15 @@ images into Supabase storage for the bulk collector.
   filter fix. The full detail run used `AVISON_YOUNG_DETAIL_LIMIT=2200` and was
   live-ingested additively without `--mark-missing`. VCards remain absent from
   the public path, and broker profile URLs are sparse.
-- Savills sale is STRUCTURALLY CAPPED, not completable: the public U.S. sale
-  surface serves Savills Residential luxury homes only (no public commercial-sale
-  JSON / `__NEXT_DATA__` feed). On 2026-06-14 the 101 mis-categorized residential
-  "sale" rows and 1 non-U.S. ghost lease row (`cyelit10899`) were soft-deleted,
-  leaving 2 defensible Chicago retail lease rows. Treat current coverage as the
-  permanent Savills baseline. The commercial-sale route
-  `/com/en/list/commercial/property-for-sale/united-states-of-america` WAS probed
-  (22-URL test matrix, all returned HTTP 200 with `totalItems:0` or non-US
-  Canada/UK/Ireland objects). The cap is confirmed: no public US commercial-sale
-  feed exists on Savills. See `FRESHNESS_HISTORY_REVIEW_2026-06-15.md` section R1.
+- **Savills historical-cap correction (2026-07-31):** the June conclusion that
+  commercial sale was permanently unavailable is superseded. The current
+  direct Savills enumerator follows provider pagination, verifies complete raw
+  provider-row enumeration, rejects unclassified rows, filters only explicitly
+  non-U.S. inventory, and fails closed on any count/pagination drift. Do not
+  treat the old two-lease-row snapshot as a permanent baseline or current
+  coverage proof. A Savills refresh is admissible only through the strict
+  full-scope gate described above; it still does not authorize a scheduler,
+  status activation, or `--mark-missing`.
 - `cre_ingest.py` now drops non-HTTP contact profile/avatar/VCard URLs and
   non-HTTP document URLs. Reingesting the complete Lee and SVN artifacts
   refreshed child rows and reduced active bad contact avatar URLs from 37 to 0.
