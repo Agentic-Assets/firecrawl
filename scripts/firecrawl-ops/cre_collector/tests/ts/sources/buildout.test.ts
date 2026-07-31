@@ -28,6 +28,7 @@ import {
   assertBuildoutInventoryPage,
   assertBuildoutInventoryReconciled,
   buildoutInventory,
+  srcBuildout,
   buildoutCache,
   buildoutFailureCache,
   buildoutCapTruncated,
@@ -90,6 +91,75 @@ test("both strict Buildout sources use the stable composite inventory sort", () 
     BUILDOUT_SOURCE_INVENTORY_OPTS["lee-associates"].requireCompletePages,
     true
   );
+});
+
+test("SVN inventory rows preserve last-good detail children", async () => {
+  // Regression: the July 30 SVN checkpoint ingested a bulk Buildout artifact
+  // without this flag and collapsed retained listing links from 1,423 to 20.
+  // Buildout inventory is authoritative for inventory/card fields only; detail
+  // children are maintained by the separate enrichment pipeline.
+  const cacheDir = mkdtempSync(join(tmpdir(), "buildout-svn-preservation-"));
+  const oldFetch = globalThis.fetch;
+  const oldCacheDir = process.env.BUILDOUT_CACHE_DIR;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  try {
+    clearEnv(ENV_KEYS);
+    process.env.BUILDOUT_CACHE_DIR = cacheDir;
+    process.env.CRE_REFRESH_GENERATION = "svn-preservation-contract";
+    buildoutCache.clear();
+    buildoutFailureCache.clear();
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          inventory: [
+            {
+              id: 1423,
+              sale: true,
+              display_name: "SVN preservation fixture",
+              address: "1 Main Street",
+              city: "Tulsa",
+              state: "OK",
+              zip: "74103",
+              show_link: "https://svn.com/properties/?propertyId=1423-sale",
+              index_attributes: [["Price", "$1,000,000"]],
+            },
+          ],
+          meta: { total: 1, limit: 30 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+
+    const result = await srcBuildout(
+      "SVN",
+      "svn-preservation-plugin",
+      "https://svn.com/properties/",
+      "sale",
+      Number.POSITIVE_INFINITY,
+      false,
+      {
+        ...BUILDOUT_SOURCE_INVENTORY_OPTS.svn,
+        cacheSlug: "svn-preservation-contract",
+      }
+    );
+
+    assert.equal(result.listings.length, 1);
+    assert.equal(result.listings[0].preserveChildCollections, true);
+    assert.deepEqual(result.listings[0].freshnessProvenance, {
+      detailScope: "authoritative_inventory_feed",
+      generationId: "svn-preservation-contract",
+      method: "buildout_inventory_feed",
+      cacheDisposition: "live",
+    });
+  } finally {
+    globalThis.fetch = oldFetch;
+    buildoutCache.clear();
+    buildoutFailureCache.clear();
+    if (oldCacheDir === undefined) delete process.env.BUILDOUT_CACHE_DIR;
+    else process.env.BUILDOUT_CACHE_DIR = oldCacheDir;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
 });
 
 test("Buildout query fingerprint separates inventory sort contracts", () => {

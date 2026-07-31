@@ -13,6 +13,12 @@ SCRAPED_AT = datetime(2026, 7, 30, tzinfo=timezone.utc).isoformat()
     "before,after,regressed",
     [
         pytest.param(100, 69, True, id="destructive-drop-over-thirty-percent"),
+        pytest.param(
+            1423,
+            20,
+            True,
+            id="svn-link-preservation-regression-1423-to-20",
+        ),
         pytest.param(100, 70, False, id="exact-thirty-percent-boundary"),
         pytest.param(90, 62, True, id="integer-threshold-without-float-drift"),
         pytest.param(90, 63, False, id="integer-thirty-percent-boundary"),
