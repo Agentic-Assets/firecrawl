@@ -1282,6 +1282,37 @@ WHERE {seq}<o.chunk_count;"""
     )
 
 
+def preimage_section_constructor_statements(
+    section_expressions: dict[str, str],
+) -> tuple[str, ...]:
+    """Return one independently timed canonical constructor per section."""
+    if (
+        tuple(section_expressions) != PREIMAGE_INNER_SECTION_KEYS
+        or any(
+            not isinstance(expression, str) or not expression.strip()
+            for expression in section_expressions.values()
+        )
+    ):
+        raise ValueError("inner section constructor key set drifted")
+    return tuple(
+        f"""INSERT INTO _cw_preimage_section_source(
+ key,plaintext,plaintext_bytes,plaintext_sha256
+)
+WITH section_source AS MATERIALIZED (
+ SELECT ({section_expressions[key]})::jsonb AS value
+),
+canonical_section AS MATERIALIZED (
+ SELECT value::text AS plaintext FROM section_source
+)
+SELECT {sql_lit(key)},plaintext,
+       octet_length(plaintext)::bigint,
+       encode(digest(convert_to(plaintext,'UTF8'),'sha256'),'hex')
+FROM canonical_section;
+\\warn cre-cushman-phase: built-inner-section-{key}"""
+        for key in PREIMAGE_INNER_SECTION_KEYS
+    )
+
+
 def preimage_section_encrypt_statements() -> tuple[str, ...]:
     """Return one independently timed PGP-encryption statement per section."""
     return tuple(
@@ -1395,6 +1426,67 @@ def preimage_sql(artifact: list[ArtifactRow], state: dict) -> str:
       FROM _cw_om_ranked ranked
       JOIN _cw_survivors s USING(target_id)
     )"""
+    repair_plan = """(
+      SELECT jsonb_agg(
+        (to_jsonb(p)-'post_state')||jsonb_build_object(
+          'post_state',p.post_state-'raw_data_base',
+          'post_raw_data_bytes',octet_length(
+            convert_to((p.post_state->'raw_data_base')::text,'UTF8')
+          ),
+          'post_raw_data_sha256',encode(
+            digest(
+              convert_to((p.post_state->'raw_data_base')::text,'UTF8'),
+              'sha256'
+            ),
+            'hex'
+          )
+        )
+        ORDER BY p.id
+      )
+      FROM _cw_expected_parents p
+    )"""
+    listings = """(
+      SELECT jsonb_agg(jsonb_build_object(
+        'id',l.id,'external_id',l.external_id,'source_url',l.source_url,
+        'canonical_url',l.canonical_url,'status',l.status,
+        'transaction_type',l.transaction_type,'property_type',l.property_type,
+        'title',l.title,'address',l.address,'city',l.city,'state',l.state,
+        'zip',l.zip,'country',l.country,'lat',l.lat,'lng',l.lng,
+        'scraped_at',l.scraped_at,'raw_data',l.raw_data,
+        'source_lastmod',l.source_lastmod,'canonical_key',l.canonical_key,
+        'deleted_at',l.deleted_at,'updated_at',l.updated_at
+      ) ORDER BY l.id)
+      FROM credeals.cre_listings l JOIN _cw_rows r ON r.id=l.id
+    )"""
+    source_index = """(
+      SELECT jsonb_agg(to_jsonb(si) ORDER BY si.id)
+      FROM credeals.cre_source_index si JOIN _cw_si_plan p ON p.id=si.id
+    )"""
+    queue = """(
+      SELECT jsonb_agg(to_jsonb(q) ORDER BY q.id)
+      FROM credeals.cre_enrichment_queue q JOIN _cw_queue_plan p ON p.id=q.id
+    )"""
+    section_expressions = {
+        "schemaVersion": f"to_jsonb({PREIMAGE_INNER_SCHEMA_VERSION})",
+        "repairPlan": repair_plan,
+        "listings": listings,
+        "contacts": moved_child_map("cre_listing_contacts", "c"),
+        "documents": moved_child_map("cre_listing_documents", "d"),
+        "images": image_map,
+        "media": unchanged_child_map("cre_listing_media", "m"),
+        "links": unchanged_child_map("cre_listing_links", "k"),
+        "omFacts": om_map,
+        "events": moved_child_map("cre_listing_events", "e"),
+        "priceHistory": unchanged_child_map(
+            "cre_listing_price_history", "h"
+        ),
+        "scrapeLogs": unchanged_child_map("cre_scrape_log", "g"),
+        "sourceIndex": source_index,
+        "queue": queue,
+    }
+    section_constructors = "\n".join(
+        preimage_section_constructor_statements(section_expressions)
+    )
     return f"""
 BEGIN ISOLATION LEVEL REPEATABLE READ;
 SET LOCAL statement_timeout='5min';
@@ -1404,84 +1496,80 @@ SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY});
 {invariant_sql()}
 {expected_parent_sql(artifact,state)}
 \\warn cre-cushman-phase: staged-reviewed-state
-CREATE TEMP TABLE _cw_preimage_inner ON COMMIT DROP AS
-WITH inner_source AS MATERIALIZED (
- SELECT jsonb_build_object(
-  'schemaVersion',{PREIMAGE_INNER_SCHEMA_VERSION},
-  'repairPlan',(
-    SELECT jsonb_agg(
-      (to_jsonb(p)-'post_state')||jsonb_build_object(
-        'post_state',p.post_state-'raw_data_base',
-        'post_raw_data_bytes',octet_length(
-          convert_to((p.post_state->'raw_data_base')::text,'UTF8')
-        ),
-        'post_raw_data_sha256',encode(
-          digest(
-            convert_to((p.post_state->'raw_data_base')::text,'UTF8'),
-            'sha256'
-          ),
-          'hex'
-        )
-      )
-      ORDER BY p.id
+CREATE TEMP TABLE _cw_preimage_section_source(
+ key text PRIMARY KEY,
+ plaintext text NOT NULL,
+ plaintext_bytes bigint NOT NULL,
+ plaintext_sha256 text NOT NULL
+) ON COMMIT DROP;
+{section_constructors}
+CREATE TEMP TABLE _cw_preimage_source_sections ON COMMIT DROP AS
+SELECT key,plaintext::jsonb AS value
+FROM _cw_preimage_section_source;
+CREATE UNIQUE INDEX ON _cw_preimage_source_sections(key);
+DO $cw_preimage_section_source$
+BEGIN
+ IF (SELECT count(*) FROM _cw_preimage_section_source)
+      <>{len(PREIMAGE_INNER_SECTION_KEYS)}
+    OR EXISTS (
+      SELECT 1
+      FROM (
+        VALUES
+          {inner_section_values_sql()}
+      ) expected(key)
+      FULL JOIN _cw_preimage_section_source actual USING(key)
+      WHERE expected.key IS NULL OR actual.key IS NULL
     )
-    FROM _cw_expected_parents p
-  ),
-  'listings',(
-    SELECT jsonb_agg(jsonb_build_object(
-      'id',l.id,'external_id',l.external_id,'source_url',l.source_url,
-      'canonical_url',l.canonical_url,'status',l.status,
-      'transaction_type',l.transaction_type,'property_type',l.property_type,
-      'title',l.title,'address',l.address,'city',l.city,'state',l.state,
-      'zip',l.zip,'country',l.country,'lat',l.lat,'lng',l.lng,
-      'scraped_at',l.scraped_at,'raw_data',l.raw_data,
-      'source_lastmod',l.source_lastmod,'canonical_key',l.canonical_key,
-      'deleted_at',l.deleted_at,'updated_at',l.updated_at
-    ) ORDER BY l.id)
-    FROM credeals.cre_listings l JOIN _cw_rows r ON r.id=l.id
-  ),
-  'contacts',{moved_child_map("cre_listing_contacts","c")},
-  'documents',{moved_child_map("cre_listing_documents","d")},
-  'images',{image_map},
-  'media',{unchanged_child_map("cre_listing_media","m")},
-  'links',{unchanged_child_map("cre_listing_links","k")},
-  'omFacts',{om_map},
-  'events',{moved_child_map("cre_listing_events","e")},
-  'priceHistory',{unchanged_child_map("cre_listing_price_history","h")},
-  'scrapeLogs',{unchanged_child_map("cre_scrape_log","g")},
-  'sourceIndex',(
-    SELECT jsonb_agg(to_jsonb(si) ORDER BY si.id)
-    FROM credeals.cre_source_index si JOIN _cw_si_plan p ON p.id=si.id
-  ),
-  'queue',(
-    SELECT jsonb_agg(to_jsonb(q) ORDER BY q.id)
-    FROM credeals.cre_enrichment_queue q JOIN _cw_queue_plan p ON p.id=q.id
-  )
- )::text AS plaintext
-)
-SELECT
- plaintext,
- octet_length(plaintext)::bigint AS plaintext_bytes,
- encode(digest(convert_to(plaintext,'UTF8'),'sha256'),'hex')
-   AS plaintext_sha256
-FROM inner_source;
-\\warn cre-cushman-phase: built-canonical-inner
+    OR EXISTS (
+      SELECT 1 FROM _cw_preimage_section_source
+      WHERE plaintext_bytes<=0
+         OR plaintext_bytes>{MAX_INNER_PREIMAGE_BYTES}
+         OR plaintext_sha256!~'^[0-9a-f]{{64}}$'
+         OR octet_length(convert_to(plaintext,'UTF8'))
+            IS DISTINCT FROM plaintext_bytes
+         OR encode(
+           digest(convert_to(plaintext,'UTF8'),'sha256'),'hex'
+         ) IS DISTINCT FROM plaintext_sha256
+         OR plaintext IS DISTINCT FROM (plaintext::jsonb)::text
+    )
+    OR (SELECT sum(plaintext_bytes) FROM _cw_preimage_section_source)
+       >{MAX_INNER_PREIMAGE_BYTES} THEN
+   RAISE EXCEPTION 'Cushman inner section source mismatch';
+ END IF;
+END
+$cw_preimage_section_source$;
+\\warn cre-cushman-phase: validated-inner-section-source
+CREATE TEMP TABLE _cw_preimage_inner_rebuilt ON COMMIT DROP AS
+SELECT jsonb_object_agg(key,value)::text AS plaintext
+FROM _cw_preimage_source_sections;
 CREATE TEMP TABLE _cw_preimage_inner_meta ON COMMIT DROP AS
-SELECT plaintext_bytes,plaintext_sha256 FROM _cw_preimage_inner;
-CREATE TEMP TABLE _cw_preimage_inner_json ON COMMIT DROP AS
-SELECT plaintext::jsonb AS payload FROM _cw_preimage_inner;
-\\warn cre-cushman-phase: parsed-inner-json
-CREATE TEMP TABLE _cw_preimage_section_source ON COMMIT DROP AS
-SELECT section.key,section.value::text AS plaintext,
-       octet_length(section.value::text)::bigint AS plaintext_bytes,
+SELECT octet_length(plaintext)::bigint AS plaintext_bytes,
        encode(
-         digest(convert_to(section.value::text,'UTF8'),'sha256'),'hex'
+         digest(convert_to(plaintext,'UTF8'),'sha256'),'hex'
        ) AS plaintext_sha256
-FROM _cw_preimage_inner_json i
-CROSS JOIN LATERAL jsonb_each(i.payload) section;
-CREATE UNIQUE INDEX ON _cw_preimage_section_source(key);
-DROP TABLE _cw_preimage_inner_json,_cw_preimage_inner;
-\\warn cre-cushman-phase: materialized-inner-section-source
+FROM _cw_preimage_inner_rebuilt;
+\\warn cre-cushman-phase: rebuilt-canonical-inner
+DO $cw_preimage_inner_meta$
+BEGIN
+ IF (SELECT count(*) FROM _cw_preimage_inner_rebuilt)<>1
+    OR (SELECT count(*) FROM _cw_preimage_inner_meta)<>1
+    OR (
+      SELECT plaintext_bytes<=0
+          OR plaintext_bytes>{MAX_INNER_PREIMAGE_BYTES}
+          OR plaintext_sha256!~'^[0-9a-f]{{64}}$'
+          OR octet_length(convert_to(
+            (SELECT plaintext FROM _cw_preimage_inner_rebuilt),'UTF8'
+          )) IS DISTINCT FROM plaintext_bytes
+          OR encode(digest(convert_to(
+            (SELECT plaintext FROM _cw_preimage_inner_rebuilt),'UTF8'
+          ),'sha256'),'hex') IS DISTINCT FROM plaintext_sha256
+      FROM _cw_preimage_inner_meta
+    ) THEN
+   RAISE EXCEPTION 'Cushman whole inner preimage source mismatch';
+ END IF;
+END
+$cw_preimage_inner_meta$;
+\\warn cre-cushman-phase: validated-canonical-inner
 CREATE TEMP TABLE _cw_preimage_section_envelopes(
  key text PRIMARY KEY,
  plaintext_bytes bigint NOT NULL,
@@ -1500,10 +1588,10 @@ CREATE TEMP TABLE _cw_preimage_inner_sections ON COMMIT DROP AS
 SELECT key,plaintext::jsonb AS value
 FROM _cw_preimage_section_readback;
 CREATE UNIQUE INDEX ON _cw_preimage_inner_sections(key);
-CREATE TEMP TABLE _cw_preimage_inner_rebuilt ON COMMIT DROP AS
+CREATE TEMP TABLE _cw_preimage_inner_readback_rebuilt ON COMMIT DROP AS
 SELECT jsonb_object_agg(key,value)::text AS plaintext
 FROM _cw_preimage_inner_sections;
-\\warn cre-cushman-phase: rebuilt-canonical-inner
+\\warn cre-cushman-phase: rebuilt-canonical-inner-readback
 DO $cw_preimage_inner$
 DECLARE
  mismatch integer;
@@ -1511,12 +1599,16 @@ BEGIN
  IF (SELECT count(*) FROM _cw_preimage_inner_meta)<>1
     OR (SELECT count(*) FROM _cw_preimage_section_source)
       <>{len(PREIMAGE_INNER_SECTION_KEYS)}
+    OR (SELECT count(*) FROM _cw_preimage_source_sections)
+      <>{len(PREIMAGE_INNER_SECTION_KEYS)}
+    OR (SELECT count(*) FROM _cw_preimage_inner_rebuilt)<>1
     OR (SELECT count(*) FROM _cw_preimage_section_envelopes)
       <>{len(PREIMAGE_INNER_SECTION_KEYS)}
     OR (SELECT count(*) FROM _cw_preimage_section_readback)
       <>{len(PREIMAGE_INNER_SECTION_KEYS)}
     OR (SELECT count(*) FROM _cw_preimage_inner_sections)
-      <>{len(PREIMAGE_INNER_SECTION_KEYS)} THEN
+      <>{len(PREIMAGE_INNER_SECTION_KEYS)}
+    OR (SELECT count(*) FROM _cw_preimage_inner_readback_rebuilt)<>1 THEN
    RAISE EXCEPTION 'Cushman inner preimage row count mismatch';
  END IF;
  IF EXISTS (
@@ -1531,24 +1623,24 @@ BEGIN
    RAISE EXCEPTION 'Cushman inner preimage schema/count mismatch';
  END IF;
  SELECT count(*) INTO mismatch
- FROM _cw_preimage_section_source source
+ FROM _cw_preimage_section_source src
  FULL JOIN _cw_preimage_section_envelopes envelope USING(key)
  FULL JOIN _cw_preimage_section_readback readback USING(key)
- WHERE source.key IS NULL OR envelope.key IS NULL OR readback.key IS NULL
-    OR source.plaintext_bytes<=0
-    OR source.plaintext_bytes>{MAX_INNER_PREIMAGE_BYTES}
-    OR source.plaintext_sha256!~'^[0-9a-f]{{64}}$'
+ WHERE src.key IS NULL OR envelope.key IS NULL OR readback.key IS NULL
+    OR src.plaintext_bytes<=0
+    OR src.plaintext_bytes>{MAX_INNER_PREIMAGE_BYTES}
+    OR src.plaintext_sha256!~'^[0-9a-f]{{64}}$'
     OR octet_length(envelope.packed)<=0
-    OR envelope.plaintext_bytes IS DISTINCT FROM source.plaintext_bytes
-    OR envelope.plaintext_sha256 IS DISTINCT FROM source.plaintext_sha256
-    OR readback.expected_bytes IS DISTINCT FROM source.plaintext_bytes
-    OR readback.expected_sha256 IS DISTINCT FROM source.plaintext_sha256
-    OR readback.plaintext IS DISTINCT FROM source.plaintext
+    OR envelope.plaintext_bytes IS DISTINCT FROM src.plaintext_bytes
+    OR envelope.plaintext_sha256 IS DISTINCT FROM src.plaintext_sha256
+    OR readback.expected_bytes IS DISTINCT FROM src.plaintext_bytes
+    OR readback.expected_sha256 IS DISTINCT FROM src.plaintext_sha256
+    OR readback.plaintext IS DISTINCT FROM src.plaintext
     OR octet_length(convert_to(readback.plaintext,'UTF8'))
-       IS DISTINCT FROM source.plaintext_bytes
+       IS DISTINCT FROM src.plaintext_bytes
     OR encode(
       digest(convert_to(readback.plaintext,'UTF8'),'sha256'),'hex'
-    ) IS DISTINCT FROM source.plaintext_sha256
+    ) IS DISTINCT FROM src.plaintext_sha256
     OR readback.plaintext IS DISTINCT FROM (readback.plaintext::jsonb)::text;
  IF mismatch<>0 THEN
    RAISE EXCEPTION
@@ -1559,11 +1651,22 @@ BEGIN
    SELECT plaintext_bytes<=0
        OR plaintext_bytes>{MAX_INNER_PREIMAGE_BYTES}
        OR plaintext_sha256!~'^[0-9a-f]{{64}}$'
+       OR (SELECT plaintext FROM _cw_preimage_inner_rebuilt)
+          IS DISTINCT FROM (
+            SELECT plaintext
+            FROM _cw_preimage_inner_readback_rebuilt
+          )
        OR octet_length(convert_to(
-         (SELECT plaintext FROM _cw_preimage_inner_rebuilt),'UTF8'
+         (
+           SELECT plaintext
+           FROM _cw_preimage_inner_readback_rebuilt
+         ),'UTF8'
        )) IS DISTINCT FROM plaintext_bytes
        OR encode(digest(convert_to(
-         (SELECT plaintext FROM _cw_preimage_inner_rebuilt),'UTF8'
+         (
+           SELECT plaintext
+           FROM _cw_preimage_inner_readback_rebuilt
+         ),'UTF8'
        ),'sha256'),'hex') IS DISTINCT FROM plaintext_sha256
    FROM _cw_preimage_inner_meta
  ) THEN
@@ -1645,8 +1748,10 @@ BEGIN
 END
 $cw_preimage_inner$;
 \\warn cre-cushman-phase: validated-inner
-DROP TABLE _cw_preimage_inner_sections,_cw_preimage_inner_rebuilt,
- _cw_preimage_section_readback,_cw_preimage_section_source;
+DROP TABLE _cw_preimage_inner_sections,
+ _cw_preimage_inner_readback_rebuilt,_cw_preimage_inner_rebuilt,
+ _cw_preimage_source_sections,_cw_preimage_section_readback,
+ _cw_preimage_section_source;
 CREATE TEMP TABLE _cw_preimage_output ON COMMIT DROP AS
 WITH source_payload AS MATERIALIZED (
  SELECT jsonb_build_object(

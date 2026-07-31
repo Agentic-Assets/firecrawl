@@ -428,19 +428,51 @@ def test_inner_section_key_contract_is_exact_and_relationally_guarded():
 
 
 def test_section_envelopes_use_one_fixed_pgp_statement_per_exact_key():
+    constructor_expressions = {
+        key: (
+            f"to_jsonb({repair.PREIMAGE_INNER_SCHEMA_VERSION})"
+            if key == "schemaVersion"
+            else "'[]'::jsonb"
+        )
+        for key in repair.PREIMAGE_INNER_SECTION_KEYS
+    }
+    constructors = repair.preimage_section_constructor_statements(
+        constructor_expressions
+    )
+    with pytest.raises(ValueError, match="key set drifted"):
+        repair.preimage_section_constructor_statements(
+            {
+                **constructor_expressions,
+                "unexpected": "'[]'::jsonb",
+            }
+        )
+    with pytest.raises(ValueError, match="key set drifted"):
+        repair.preimage_section_constructor_statements(
+            dict(reversed(tuple(constructor_expressions.items())))
+        )
     encrypts = repair.preimage_section_encrypt_statements()
     capture_readbacks = repair.preimage_section_readback_statements()
     rollback_decrypts = repair.rollback_section_decrypt_statements()
-    assert len(encrypts) == len(capture_readbacks) == len(
-        rollback_decrypts
-    ) == len(repair.PREIMAGE_INNER_SECTION_KEYS)
-    for key, encrypt, capture_readback, rollback_decrypt in zip(
+    assert len(constructors) == len(encrypts) == len(
+        capture_readbacks
+    ) == len(rollback_decrypts) == len(repair.PREIMAGE_INNER_SECTION_KEYS)
+    for key, constructor, encrypt, capture_readback, rollback_decrypt in zip(
         repair.PREIMAGE_INNER_SECTION_KEYS,
+        constructors,
         encrypts,
         capture_readbacks,
         rollback_decrypts,
         strict=True,
     ):
+        assert constructor.count(
+            "INSERT INTO _cw_preimage_section_source("
+        ) == 1
+        assert f"SELECT '{key}',plaintext," in constructor
+        assert constructor.rstrip().endswith(
+            f"built-inner-section-{key}"
+        )
+        assert "pgp_sym_encrypt(" not in constructor
+        assert "pgp_sym_decrypt(" not in constructor
         assert f"WHERE key='{key}';" in encrypt
         assert f"WHERE key='{key}';" in capture_readback
         assert f"WHERE key='{key}';" in rollback_decrypt
@@ -466,8 +498,14 @@ def test_section_envelopes_use_one_fixed_pgp_statement_per_exact_key():
     assert "'plaintextSha256',e.plaintext_sha256" in capture
     assert "'pgpBase64',replace(encode(e.packed,'base64')" in capture
     assert "jsonb_object_agg(key,value)::text AS plaintext" in capture
+    assert "FROM _cw_preimage_source_sections;" in capture
+    assert "FROM _cw_preimage_inner_rebuilt;" in capture
     assert "Cushman whole inner preimage integrity mismatch" in capture
     assert f"plaintext_bytes>{repair.MAX_INNER_PREIMAGE_BYTES}" in capture
+    assert "CREATE TEMP TABLE _cw_preimage_inner ON COMMIT DROP AS" not in capture
+    assert "WITH inner_source AS MATERIALIZED" not in capture
+    for key in repair.PREIMAGE_INNER_SECTION_KEYS:
+        assert capture.count(f"built-inner-section-{key}") == 1
     with patch.multiple(repair, **patched_review_counts(0)):
         rollback = repair.build_rollback_sql(
             reviewed_empty_preimage(), minimal_artifact(), minimal_state()
@@ -500,15 +538,10 @@ def test_preimage_payload_never_duplicates_uncompressed_raw_data():
     assert "innerPayloadPgpBase64" not in source_payload
     assert "'stateListings'" in source_payload
     assert "'repairTopology'" in source_payload
-    inner = sql.split(
-        "CREATE TEMP TABLE _cw_preimage_inner ON COMMIT DROP AS", 1
-    )[1].split(
-        "CREATE TEMP TABLE _cw_preimage_inner_meta", 1
-    )[0]
-    assert "WITH inner_source AS MATERIALIZED (" in inner
-    assert "'raw_data',l.raw_data" in inner
+    assert "CREATE TEMP TABLE _cw_preimage_inner ON COMMIT DROP AS" not in sql
+    assert "WITH inner_source AS MATERIALIZED (" not in sql
+    assert "'raw_data',l.raw_data" in sql
     assert "raw_data_pgp_base64" not in sql
-    assert "pgp_sym_encrypt(" not in inner
 
 
 def test_pgcrypto_preflight_is_locked_and_proves_exact_surface():
@@ -558,9 +591,8 @@ def test_preimage_output_uses_one_bounded_frontend_select_per_sequence():
     assert "FOR chunk_seq IN 0..chunk_count-1 LOOP" in sql
     assert "substring(\n       encoded_bytes" in sql
     assert "Cushman preimage chunk materialization invalid" in sql
-    assert (
-        "DROP TABLE _cw_preimage_inner_json,_cw_preimage_inner;"
-    ) in sql
+    assert "CREATE TEMP TABLE _cw_preimage_section_source(" in sql
+    assert "CREATE TEMP TABLE _cw_preimage_inner_rebuilt" in sql
     assert "DROP TABLE _cw_preimage_output;" in sql
     assert "SELECT payload_bytes,payload_md5,chunk_count" in sql
     assert "octet_length(c.chunk)" in sql
