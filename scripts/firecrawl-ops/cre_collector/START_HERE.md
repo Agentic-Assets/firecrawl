@@ -79,6 +79,38 @@ before-access check. Ambiguous multi-host or target-overriding libpq URI forms
 fail closed. This prevents an environment-file change during a long run from
 redirecting a gate, validation query, or write.
 
+### Colliers Main runtime calibration
+
+`colliers-main` has a large sitemap and renders every current detail page. Do
+not change its detail concurrency based on a short or cached collection. Use
+the no-write calibration harness first. It only reads the public sitemap and
+rendered detail pages, writes a local evidence JSON file, clears database
+environment variables before importing collector code, and never invokes the
+collector, a gate, or ingest.
+
+```bash
+# Run from scripts/firecrawl-ops/cre_collector on a clean, pushed SHA.
+# Preserve each JSON file under out/calibration/ as operational evidence.
+npx tsx cre_colliers_runtime_calibration.ts \
+  --count=20 --concurrency=1 --sample=baseline --max-gap-ms=60000 \
+  --out="out/calibration/<timestamp>-colliers-c1.json"
+
+# Only after the 20-item C1 run is fully terminal, test the proposed C2 rate.
+npx tsx cre_colliers_runtime_calibration.ts \
+  --count=200 --concurrency=2 --sample=primary --max-gap-ms=90000 \
+  --out="out/calibration/<timestamp>-colliers-c2.json"
+```
+
+The C1 baseline must have 20 terminal parsed-or-tombstone outcomes, zero
+errors, and no completion gap above 60 seconds. C2 is admissible only when all
+200 outcomes are terminal, there are zero errors or unresolved retries, no gap
+above 90 seconds, exact outcome accounting, and at least eight rows per minute
+after warm-up. A calibration failure selects C1; it is never retried at a
+higher concurrency. Treat a successful calibration as a transport-capacity
+proof only: start a new clean strict checkpoint on the tested SHA afterward,
+then require its source gate, aggregate gate, additive ingest, and generation
+readback before claiming the source fresh.
+
 For strict sources, it binds every source artifact and listing observation to
 one immutable generation and bypasses Firecrawl response caches with
 `maxAge: 0`. The scoped non-strict `cbre-dealflow` and `colliers` paths do not
