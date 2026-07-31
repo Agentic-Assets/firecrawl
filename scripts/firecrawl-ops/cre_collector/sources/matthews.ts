@@ -77,13 +77,23 @@ type MatthewsFetchResult = {
   location: string | null;
 };
 
-async function matthewsFetch(
+/**
+ * A response body can time out after a successful HTTP status. Treat that as
+ * a transport failure, not as a deterministic HTTP 200 validation failure.
+ */
+export function matthewsRetryableFetchFailure(status: number, error: unknown): boolean {
+  return error != null || status === 0 || status === 429 || status === 403 || status === 503;
+}
+
+export async function matthewsFetch(
   url: string,
   manualRedirect = false
 ): Promise<MatthewsFetchResult> {
+  let lastError: unknown = null;
   for (let attempt = 0; attempt < 6; attempt++) {
     await matthewsGate();
     let status = 0;
+    let attemptError: unknown = null;
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(),
@@ -110,18 +120,23 @@ async function matthewsFetch(
       if (manualRedirect && (status === 301 || status === 308)) {
         return { html: null, status, location: res.headers.get("location") };
       }
-    } catch {
-      /* retry transient network failures below */
+    } catch (error) {
+      // This includes the separately bounded response-body timeout. `status`
+      // may already be 200 at this point, so retaining the error is essential
+      // to avoid converting a transient body stall into a hard HTTP failure.
+      attemptError = error;
     } finally {
       clearTimeout(timeout);
     }
-    if (status === 0 || status === 429 || status === 403 || status === 503) {
+    if (matthewsRetryableFetchFailure(status, attemptError)) {
+      lastError = attemptError;
       matthewsInterval = Math.min(matthewsInterval + 700, 7000);
       await matthewsSleep(20000 + attempt * 15000 + Math.random() * 5000);
       continue;
     }
     throw new Error(`Matthews HTTP ${status}`);
   }
+  if (lastError instanceof Error) throw lastError;
   throw new Error("Matthews: throttled after retries");
 }
 

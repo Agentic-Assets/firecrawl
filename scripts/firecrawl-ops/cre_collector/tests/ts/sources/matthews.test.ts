@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  MATTHEWS_FETCH_TIMEOUT_MS,
   matthewsFetchOptions,
+  matthewsFetch,
   matthewsParsedCoverage,
   matthewsPermanentRedirectTarget,
   matthewsProviderNotFound,
+  matthewsRetryableFetchFailure,
   matthewsResponseText,
   parseMatthewsDetail,
   matthewsTenureFromUrl,
@@ -274,6 +277,15 @@ test("Matthews response body deadline aborts a stream that never completes", asy
   assert.equal(controller.signal.aborted, true);
 });
 
+test("Matthews classifies a body transport failure as retryable even after HTTP 200 headers", () => {
+  assert.equal(
+    matthewsRetryableFetchFailure(200, new Error("Matthews response body timed out after 30000ms")),
+    true
+  );
+  assert.equal(matthewsRetryableFetchFailure(200, null), false);
+  assert.equal(matthewsRetryableFetchFailure(429, null), true);
+});
+
 test("Matthews full refresh excludes only an alias whose permanent target is in the fresh sitemap", async (t) => {
   const originalFetch = globalThis.fetch;
   const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
@@ -346,4 +358,39 @@ test("Matthews monitor reports finite sitemap caps as truncation", async (t) => 
   assert.equal(result.listings.length, 1);
   assert.equal(result.truncated, true);
   assert.match(result.note ?? "", /Selected 1\/2/);
+});
+
+test("Matthews retries a failed HTTP-200 response body before admitting a later response", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  let calls = 0;
+  globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    if (typeof delay === "number" && delay >= 1800 && delay < MATTHEWS_FETCH_TIMEOUT_MS) {
+      queueMicrotask(() => callback(...args));
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  }) as typeof setTimeout;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: async () => {
+          throw new Error("Matthews response body timed out after 30000ms");
+        },
+      } as unknown as Response;
+    }
+    return new Response("recovered", { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+  });
+
+  const response = await matthewsFetch("https://www.matthews.com/properties/retry-check");
+  assert.equal(calls, 2);
+  assert.equal(response.html, "recovered");
 });
