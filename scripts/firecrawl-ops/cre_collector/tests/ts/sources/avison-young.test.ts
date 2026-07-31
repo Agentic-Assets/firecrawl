@@ -47,6 +47,7 @@ import {
   isAvisonYoungDirectDetailUrl,
   isPublicAvisonYoungAddress,
   enrichAvisonYoungListing,
+  srcAvisonYoung,
 } from "../../../sources/avison-young.js";
 import { firecrawl } from "../../../lib/scrape.js";
 
@@ -200,6 +201,95 @@ test("avisonYoungEntityItems permits an empty supplemental team feed but not an 
     reason: "team_member API returned no items",
   });
   assert.match(avisonYoungTeamFeedState([], new Error("HTTP 503")).reason ?? "", /HTTP 503/);
+});
+
+test("Avison keeps authoritative website inventory when SharpLaunch team_member is empty", async (t) => {
+  // Regression: on July 29 the provider returned an empty `team_member`
+  // collection while `website` still contained active listings. Treating the
+  // supplemental broker collection as required caused all sale and lease rows
+  // to be discarded. Full property detail remains the source for broker-card
+  // enrichment, so the inventory row must be emitted in preservation mode.
+  const oldFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const oldPropertyStrict = process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const oldScrape = firecrawl.scrape;
+  delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+  process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "avison-empty-team-property-detail";
+  const detailCalls: Array<{ url: string; options: any }> = [];
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    detailCalls.push({ url, options });
+    return {
+      rawHtml: `<script type="application/ld+json">{"@type":"RealEstateListing","name":"Provider inventory fixture","url":"${url}"}</script>`,
+      markdown: "# Provider inventory fixture\nCurrent property detail",
+      links: [],
+      metadata: { sourceURL: url, statusCode: 200 },
+    };
+  };
+  t.after(() => {
+    globalThis.fetch = oldFetch;
+    (firecrawl as any).scrape = oldScrape;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+    if (oldPropertyStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = oldPropertyStrict;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+  });
+  // Cache isolation is intentional: this test runs before any collector call
+  // in this file and exercises the actual source path, not just its helper.
+  // The first request is the page key and the second is website inventory;
+  // replace the fetch response once the source has asked for `website`.
+  let requestCount = 0;
+  globalThis.fetch = async (input) => {
+    requestCount += 1;
+    const url = new URL(String(input));
+    if (url.hostname === "www.avisonyoung.us") {
+      return new Response(
+        "<script>SharpLaunch.PSE.create('0123456789abcdef0123456789abcdef')</script>",
+        { status: 200 }
+      );
+    }
+    assert.equal(url.hostname, "pse-api.sharplaunch.com");
+    const entity = url.searchParams.get("entity");
+    if (entity === "website") {
+      return new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: 17,
+              status: "active",
+              state: "TX",
+              transaction: ["sale"],
+              name: "Provider inventory fixture",
+              external_url: "https://www.avisonyoung.us/properties/provider-fixture",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+    assert.equal(entity, "team_member");
+    return new Response(JSON.stringify({ items: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  const result = await srcAvisonYoung("sale", 1, false);
+
+  assert.equal(requestCount, 3);
+  assert.equal(detailCalls.length, 1);
+  assert.equal(detailCalls[0].options.maxAge, 0);
+  assert.equal(result.listings.length, 1);
+  assert.equal(result.listings[0].id, "17");
+  assert.equal(result.listings[0].preserveChildCollections, true);
+  assert.equal(result.listings[0].detailObservedWithChildPreservation, true);
+  assert.match(result.listings[0].detailObservedAt, /^20\d\d-/);
+  assert.equal(result.listings[0].freshnessProvenance.detailScope, "detail_page");
+  assert.equal(result.listings[0].freshnessProvenance.cacheDisposition, "live");
+  assert.match(result.note ?? "", /Supplemental broker feed degraded/);
 });
 
 test("Avison selected inventory requires unique nonempty provider IDs", () => {
@@ -609,7 +699,7 @@ test("avisonYoungBaseListing never throws on a sparse or null-field rawSharpLaun
   assert.equal(listing.propertySubtype, undefined);
 });
 
-test("strict Avison full mode ignores ambient detail limits and rejects degraded team feeds", () => {
+test("strict-detail Avison mode rejects degraded team feeds while property-detail mode preserves contacts", () => {
   clearDetailLimitEnv();
   assert.equal(
     avisonYoungDetailLimit(Number.POSITIVE_INFINITY, 12, true),
