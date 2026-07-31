@@ -12,6 +12,7 @@ const MATTHEWS_HOST = "https://www.matthews.com";
 const MATTHEWS_SOURCE_URL = `${MATTHEWS_HOST}/listings`;
 const MATTHEWS_SITEMAP_URL = `${MATTHEWS_HOST}/sitemap.xml`;
 const MATTHEWS_NON_PHOTO = /headshot|web-use|brand-logo|logo|og-default|placeholder|favicon|sprite/i;
+export const MATTHEWS_FETCH_TIMEOUT_MS = 30_000;
 
 let matthewsNextSlot = 0;
 let matthewsInterval = 1800;
@@ -27,7 +28,8 @@ async function matthewsGate(): Promise<void> {
 }
 
 export function matthewsFetchOptions(
-  strict = requireFreshDetails()
+  strict = requireFreshDetails(),
+  timeoutMs = MATTHEWS_FETCH_TIMEOUT_MS
 ): RequestInit {
   const headers: Record<string, string> = {
     "User-Agent":
@@ -37,6 +39,7 @@ export function matthewsFetchOptions(
   if (strict) headers["Cache-Control"] = "no-cache";
   return {
     headers,
+    signal: AbortSignal.timeout(timeoutMs),
     ...(strict ? { cache: "no-store" as const } : {}),
   };
 }
@@ -221,6 +224,41 @@ export type MatthewsParseContext = {
   strict?: boolean;
 };
 
+/**
+ * Matthews leaves historical property URLs in its sitemap after the property
+ * page has been removed. Those URLs return HTTP 200, self-canonicalize, and
+ * carry a Next.js redirect payload instead of a property detail. Treat only
+ * this exact provider-originated inactive signal as absent inventory. Every
+ * other malformed, blocked, or incomplete detail remains a hard truncation.
+ */
+export function matthewsProviderNotFound(
+  html: string,
+  url: string,
+  tx: Tx
+): boolean {
+  if (
+    !matthewsProviderIdentity(html, url, true)
+    || matthewsTenureFromUrl(url) !== tx
+  ) {
+    return false;
+  }
+  const $ = cheerio.load(html);
+  const hasPropertyDetailDom = Boolean(
+    $("#propertyTitle").length
+    || $("#propertyAddress").length
+    || $("#propertyPrice").length
+    || $(".key-info-title").length
+    || $(".key-info-value").length
+    || $("#propertyDocumentLink").length
+    || $('a[id="agentName"]').length
+  );
+  return (
+    !hasPropertyDetailDom
+    && html.includes("NEXT_REDIRECT;replace;/listings;307;")
+    && /404\s*-\s*Page Not Found/i.test(html)
+  );
+}
+
 export function parseMatthewsDetail(
   html: string,
   url: string,
@@ -395,11 +433,20 @@ export function parseMatthewsDetail(
 }
 
 export function matthewsParsedCoverage(
-  parsed: Array<any | null | undefined>
-): { listings: any[]; failures: number; truncated: boolean } {
+  parsed: Array<any | null | undefined>,
+  providerNotFound = 0
+): {
+  listings: any[];
+  failures: number;
+  providerNotFound: number;
+  truncated: boolean;
+} {
   const listings = parsed.filter((listing): listing is any => listing != null);
-  const failures = parsed.length - listings.length;
-  return { listings, failures, truncated: failures > 0 };
+  const failures = parsed.length - listings.length - providerNotFound;
+  if (providerNotFound < 0 || failures < 0) {
+    throw new Error("Matthews parsed coverage has an invalid inactive-page count");
+  }
+  return { listings, failures, providerNotFound, truncated: failures > 0 };
 }
 
 export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
@@ -440,6 +487,10 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   const parsed = await pmap(take, Math.min(CONCURRENCY, 2), async (url) => {
     try {
       const html = await matthewsFetch(url);
+      if (matthewsProviderNotFound(html, url, tx)) {
+        console.warn(`  matthews/${tx}: ${url} excluded as provider 404`);
+        return { listing: null, providerNotFound: true };
+      }
       const listing = parseMatthewsDetail(html, url, tx, {
         inventoryObservedAt,
         detailObservedAt: new Date().toISOString(),
@@ -447,13 +498,16 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
       if (!listing) {
         console.error(`  matthews/${tx}: ${url} failed identity or detail validation`);
       }
-      return listing;
+      return { listing, providerNotFound: false };
     } catch (err) {
       console.error(`  matthews/${tx}: ${url} failed: ${err}`);
-      return null;
+      return { listing: null, providerNotFound: false };
     }
   });
-  const coverage = matthewsParsedCoverage(parsed);
+  const coverage = matthewsParsedCoverage(
+    parsed.map((result) => result.listing),
+    parsed.filter((result) => result.providerNotFound).length
+  );
   const listings = coverage.listings;
   const failures = coverage.failures;
   if (!listings.length) {
@@ -461,19 +515,27 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   }
   const incompleteEnumeration = take.length !== urls.length;
   const truncated = coverage.truncated || incompleteEnumeration;
+  const verifiedActiveTotal = urls.length - coverage.providerNotFound;
+  const notes: string[] = [];
+  if (coverage.providerNotFound > 0) {
+    notes.push(
+      `Excluded ${coverage.providerNotFound} sitemap URL(s) with verified Matthews provider 404 responses`
+    );
+  }
+  if (failures > 0) {
+    notes.push(`${failures} detail page(s) failed to fetch, parse, or validate identity`);
+  }
+  if (incompleteEnumeration) {
+    notes.push(`Selected ${take.length}/${urls.length} sitemap detail page(s)`);
+  }
 
   return {
     company: "Matthews",
     sourceUrl: MATTHEWS_SOURCE_URL,
     method: "Public sitemap.xml enumeration to server-rendered detail pages, DOM parsed via throttled plain fetch",
-    totalAvailable: urls.length,
+    totalAvailable: verifiedActiveTotal,
     listings,
     truncated,
-    note:
-      failures > 0
-        ? `${failures} detail page(s) failed to fetch, parse, or validate identity`
-        : incompleteEnumeration
-          ? `Selected ${take.length}/${urls.length} sitemap detail page(s)`
-          : undefined,
+    note: notes.length ? notes.join("; ") : undefined,
   };
 }

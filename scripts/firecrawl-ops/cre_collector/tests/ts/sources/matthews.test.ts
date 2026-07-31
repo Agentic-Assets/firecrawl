@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   matthewsFetchOptions,
   matthewsParsedCoverage,
+  matthewsProviderNotFound,
   parseMatthewsDetail,
   matthewsTenureFromUrl,
   srcMatthews,
@@ -186,12 +187,53 @@ test("Matthews coverage counts parse-null identity failures as truncation", () =
   assert.equal(coverage.truncated, true);
 });
 
+test("Matthews excludes only its exact self-canonical provider 404 payload", () => {
+  const url = "https://www.matthews.com/properties/retired-property";
+  const provider404 = `
+    <html><head><link rel="canonical" href="${url}"></head><body>
+      <script>self.__next_f.push([1,"NEXT_REDIRECT;replace;/listings;307;"])</script>
+      <script>self.__next_f.push([1,"404 - Page Not Found"])</script>
+    </body></html>`;
+  assert.equal(matthewsProviderNotFound(provider404, url, "sale"), true);
+  assert.equal(parseMatthewsDetail(provider404, url, "sale", { strict: true }), null);
+
+  const genericShell = provider404.replace(
+    "NEXT_REDIRECT;replace;/listings;307;",
+    "temporary template shell"
+  );
+  assert.equal(matthewsProviderNotFound(genericShell, url, "sale"), false);
+  assert.equal(parseMatthewsDetail(genericShell, url, "sale", { strict: true }), null);
+
+  const coverage = matthewsParsedCoverage([{ id: "active" }, null], 1);
+  assert.deepEqual(coverage.listings, [{ id: "active" }]);
+  assert.equal(coverage.providerNotFound, 1);
+  assert.equal(coverage.failures, 0);
+  assert.equal(coverage.truncated, false);
+});
+
+test("Matthews provider 404 exclusion rejects a mismatched canonical URL", () => {
+  const requested = "https://www.matthews.com/properties/retired-property";
+  const html = `
+    <html><head><link rel="canonical" href="https://www.matthews.com/properties/other-property"></head>
+      <body>NEXT_REDIRECT;replace;/listings;307; 404 - Page Not Found</body></html>`;
+  assert.equal(matthewsProviderNotFound(html, requested, "sale"), false);
+});
+
 test("strict Matthews direct fetches explicitly bypass caches", () => {
   const strict = matthewsFetchOptions(true);
   assert.equal(strict.cache, "no-store");
   assert.equal((strict.headers as Record<string, string>)["Cache-Control"], "no-cache");
+  assert.ok(strict.signal instanceof AbortSignal);
   const compatible = matthewsFetchOptions(false);
   assert.equal(compatible.cache, undefined);
+});
+
+test("Matthews fetch options abort a stalled request at the supplied timeout", async () => {
+  const options = matthewsFetchOptions(true, 1);
+  assert.ok(options.signal instanceof AbortSignal);
+  assert.equal(options.signal.aborted, false);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(options.signal.aborted, true);
 });
 
 test("Matthews monitor reports finite sitemap caps as truncation", async (t) => {
