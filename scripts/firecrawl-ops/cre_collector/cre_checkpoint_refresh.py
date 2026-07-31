@@ -54,6 +54,14 @@ DEFAULT_MAX_RESUME_AGE_HOURS = 24.0
 MAX_FUTURE_CLOCK_SKEW = timedelta(minutes=5)
 SOURCE_KEYS = tuple(SOURCE_TO_BROKERAGE)
 TRANSACTIONS = ("sale", "lease")
+COLLIERS_MAIN_FETCHES_PER_CHUNK = 2500
+# The main Colliers sitemap is materially larger than a single Node process can
+# enrich without exhausting its heap. Keep the existing bounded-process model,
+# but make completion (rather than a one-chunk artifact) the checkpoint
+# admission boundary. Ten chunks cover the currently observed sitemap with
+# headroom; an unexpectedly larger source fails closed and can resume from its
+# run-local cache on the next checkpoint attempt.
+COLLIERS_MAIN_MAX_CHUNKS_PER_ATTEMPT = 10
 PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS = {"avison-young"}
 FORBIDDEN_INGEST_FLAGS = {
     "--mark-missing",
@@ -426,7 +434,10 @@ def fresh_source_env(
             "COLLIERS_MAIN_DETAIL_CACHE_PATH",
             str(run_dir / "cache" / "colliers-main" / "detail-cache.jsonl"),
         )
-        set_value("COLLIERS_MAIN_MAX_FETCHES_PER_RUN", "2500")
+        set_value(
+            "COLLIERS_MAIN_MAX_FETCHES_PER_RUN",
+            str(COLLIERS_MAIN_FETCHES_PER_CHUNK),
+        )
         set_value("NODE_OPTIONS", "--max-old-space-size=6144")
     return env, overrides
 
@@ -1215,6 +1226,122 @@ def _manifest_checkpoint_artifact_valid(
     )
 
 
+def _cache_line_count(path: Path) -> int:
+    """Count durable cache records without treating an interrupted final line as progress."""
+    if not path.exists():
+        return 0
+    rows = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                rows += 1
+    return rows
+
+
+def _artifact_reports_complete_collection(
+    path: Path, transactions: Sequence[str]
+) -> bool:
+    """Return whether a collector artifact explicitly reports every selected pass complete.
+
+    This is intentionally narrower than ``validate_source_artifact``: it is the
+    loop-control check between bounded Colliers processes. Full artifact and
+    freshness validation remains the admission boundary below.
+    """
+    try:
+        payload = _load_json(path)
+    except (OSError, json.JSONDecodeError, RefreshError):
+        return False
+    entries = payload.get("sources")
+    selected = tuple(transactions)
+    if not isinstance(entries, list) or len(entries) != len(selected):
+        return False
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return False
+        transaction = entry.get("transaction")
+        if transaction not in selected or transaction in seen:
+            return False
+        seen.add(transaction)
+        if entry.get("truncated") is not False:
+            return False
+    return seen == set(selected)
+
+
+def collect_colliers_main_chunks(
+    run_dir: Path,
+    *,
+    output: Path,
+    attempt_number: int,
+    page_cap: int,
+    concurrency: int,
+    transactions: Sequence[str],
+    env: Mapping[str, str],
+    on_chunk: Any = None,
+) -> tuple[int, str | None]:
+    """Collect Colliers Main through bounded fresh processes until complete.
+
+    The detail cache is run-local and shared by every chunk. A partial artifact
+    is never returned as successful: only an artifact which explicitly reports
+    all selected transactions ``truncated=false`` leaves this loop. The caller
+    still validates its strict generation/freshness contract before admitting it.
+    """
+    output.parent.mkdir(parents=True, exist_ok=True)
+    cache_path = Path(env["COLLIERS_MAIN_DETAIL_CACHE_PATH"])
+    for chunk_number in range(1, COLLIERS_MAIN_MAX_CHUNKS_PER_ATTEMPT + 1):
+        before = _cache_line_count(cache_path)
+        chunk_log = (
+            run_dir
+            / "logs"
+            / f"colliers-main-collect-attempt-{attempt_number}-chunk-{chunk_number}.log"
+        )
+        rc = run_command(
+            build_collect_argv(
+                "colliers-main",
+                output,
+                page_cap=page_cap,
+                concurrency=concurrency,
+                transactions=transactions,
+            ),
+            chunk_log,
+            env=dict(env),
+        )
+        after = _cache_line_count(cache_path)
+        complete = rc == 0 and _artifact_reports_complete_collection(
+            output, transactions
+        )
+        chunk = {
+            "number": chunk_number,
+            "rc": rc,
+            "log": _relative_to_run(chunk_log, run_dir),
+            "cache_rows_before": before,
+            "cache_rows_after": after,
+            "artifact_complete": complete,
+        }
+        if on_chunk is not None:
+            on_chunk(chunk)
+        if rc != 0:
+            return rc, None
+        if complete:
+            return 0, None
+        if after <= before:
+            return (
+                75,
+                "colliers-main incomplete artifact made no durable detail-cache progress",
+            )
+    return (
+        75,
+        "colliers-main remained incomplete after "
+        f"{COLLIERS_MAIN_MAX_CHUNKS_PER_ATTEMPT} bounded collection chunks",
+    )
+
+
 def collect_source(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -1257,24 +1384,52 @@ def collect_source(
             "rejected_artifact": None,
             "error": None,
         }
+        if source == "colliers-main":
+            # Preserve the durable progression of each short-lived Node
+            # process. The run-local detail cache makes an interrupted attempt
+            # resumable even before a complete artifact exists.
+            attempt["chunks"] = []
         checkpoint["attempts"].append(attempt)
         checkpoint["state"] = "collecting"
         save_manifest(run_dir, manifest)
-        rc = run_command(
-            build_collect_argv(
-                source,
-                tmp_artifact,
+        collection_error = None
+        if source == "colliers-main":
+            def record_chunk(chunk: dict[str, Any]) -> None:
+                attempt["chunks"].append(chunk)
+                save_manifest(run_dir, manifest)
+
+            rc, collection_error = collect_colliers_main_chunks(
+                run_dir,
+                output=tmp_artifact,
+                attempt_number=attempt_number,
                 page_cap=page_cap,
                 concurrency=concurrency,
                 transactions=transactions,
-            ),
-            attempt_log,
-            env=env,
-        )
+                env=env,
+                on_chunk=record_chunk,
+            )
+            attempt_log.parent.mkdir(parents=True, exist_ok=True)
+            attempt_log.write_text(
+                "Colliers Main checkpoint collection uses bounded fresh-process "
+                "chunks; see attempt.chunks for per-process logs and cache progress.\n",
+                encoding="utf-8",
+            )
+        else:
+            rc = run_command(
+                build_collect_argv(
+                    source,
+                    tmp_artifact,
+                    page_cap=page_cap,
+                    concurrency=concurrency,
+                    transactions=transactions,
+                ),
+                attempt_log,
+                env=env,
+            )
         attempt["rc"] = rc
         attempt["finished_at"] = utc_now()
         if rc != 0:
-            attempt["error"] = f"collector exited {rc}"
+            attempt["error"] = collection_error or f"collector exited {rc}"
             attempt["rejected_artifact"] = _archive_rejected(
                 tmp_artifact, run_dir, source, attempt_number
             )

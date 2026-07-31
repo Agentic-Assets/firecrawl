@@ -460,6 +460,185 @@ def test_fresh_env_enriches_all_avison_details_without_claiming_strict_contacts(
     assert env["CRE_REFRESH_GENERATION"] == tmp_path.name
 
 
+def _colliers_chunk_artifact(*, complete: bool):
+    payload = artifact(source="colliers-main")
+    for entry in payload["sources"]:
+        entry["truncated"] = not complete
+    return payload
+
+
+def test_colliers_cache_progress_ignores_interrupted_final_json_line(tmp_path):
+    cache_path = tmp_path / "cache" / "colliers-main" / "detail-cache.jsonl"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text('{"id":"main:1"}\n{"id":', encoding="utf-8")
+
+    assert refresh._cache_line_count(cache_path) == 1
+
+
+def test_colliers_main_chunks_continue_until_complete_artifact(tmp_path, monkeypatch):
+    cache_path = tmp_path / "cache" / "colliers-main" / "detail-cache.jsonl"
+    chunks = []
+    calls = []
+
+    def fake_run(argv, log_path, *, env):
+        calls.append((argv, log_path, env))
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with cache_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"id": f"main:{len(calls)}"}) + "\n")
+        out = Path(next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--out=")))
+        out.write_text(
+            json.dumps(_colliers_chunk_artifact(complete=len(calls) == 3)),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    rc, error = refresh.collect_colliers_main_chunks(
+        tmp_path,
+        output=tmp_path / "sources" / "colliers-main.json.tmp",
+        attempt_number=1,
+        page_cap=400,
+        concurrency=2,
+        transactions=("sale", "lease"),
+        env={"COLLIERS_MAIN_DETAIL_CACHE_PATH": str(cache_path)},
+        on_chunk=chunks.append,
+    )
+
+    assert (rc, error) == (0, None)
+    assert len(calls) == 3
+    assert [chunk["cache_rows_before"] for chunk in chunks] == [0, 1, 2]
+    assert [chunk["cache_rows_after"] for chunk in chunks] == [1, 2, 3]
+    assert [chunk["artifact_complete"] for chunk in chunks] == [False, False, True]
+    assert all("--source=colliers-main" in argv for argv, _log, _env in calls)
+
+
+def test_colliers_main_chunks_resume_from_run_local_cache(tmp_path, monkeypatch):
+    cache_path = tmp_path / "cache" / "colliers-main" / "detail-cache.jsonl"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("\n".join('{"id":"main:old"}' for _ in range(2500)) + "\n")
+    chunks = []
+
+    def fake_run(argv, _log_path, *, env):
+        assert env["COLLIERS_MAIN_DETAIL_CACHE_PATH"] == str(cache_path)
+        with cache_path.open("a", encoding="utf-8") as handle:
+            handle.write('{"id":"main:new"}\n')
+        out = Path(next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--out=")))
+        out.write_text(json.dumps(_colliers_chunk_artifact(complete=True)), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    rc, error = refresh.collect_colliers_main_chunks(
+        tmp_path,
+        output=tmp_path / "sources" / "colliers-main.json.tmp",
+        attempt_number=2,
+        page_cap=400,
+        concurrency=2,
+        transactions=("sale", "lease"),
+        env={"COLLIERS_MAIN_DETAIL_CACHE_PATH": str(cache_path)},
+        on_chunk=chunks.append,
+    )
+
+    assert (rc, error) == (0, None)
+    assert chunks == [
+        {
+            "number": 1,
+            "rc": 0,
+            "log": "logs/colliers-main-collect-attempt-2-chunk-1.log",
+            "cache_rows_before": 2500,
+            "cache_rows_after": 2501,
+            "artifact_complete": True,
+        }
+    ]
+
+
+def test_colliers_main_chunks_fail_closed_when_partial_artifact_stalls(
+    tmp_path, monkeypatch
+):
+    cache_path = tmp_path / "cache" / "colliers-main" / "detail-cache.jsonl"
+    chunks = []
+
+    def fake_run(argv, _log_path, *, env):
+        assert env["COLLIERS_MAIN_DETAIL_CACHE_PATH"] == str(cache_path)
+        out = Path(next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--out=")))
+        out.write_text(json.dumps(_colliers_chunk_artifact(complete=False)), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    rc, error = refresh.collect_colliers_main_chunks(
+        tmp_path,
+        output=tmp_path / "sources" / "colliers-main.json.tmp",
+        attempt_number=1,
+        page_cap=400,
+        concurrency=2,
+        transactions=("sale", "lease"),
+        env={"COLLIERS_MAIN_DETAIL_CACHE_PATH": str(cache_path)},
+        on_chunk=chunks.append,
+    )
+
+    assert rc == 75
+    assert error == "colliers-main incomplete artifact made no durable detail-cache progress"
+    assert chunks[0]["artifact_complete"] is False
+    assert len(chunks) == 1
+
+
+def test_collect_source_routes_colliers_main_through_chunk_protocol(tmp_path, monkeypatch):
+    run_dir = tmp_path / "checkpoint"
+    monkeypatch.setattr(refresh, "utc_now", lambda: "2026-07-29T12:00:00+00:00")
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("colliers-main",),
+        page_cap=400,
+        concurrency=2,
+    )
+    calls = []
+
+    def fake_chunks(_run_dir, *, output, on_chunk, **kwargs):
+        calls.append(kwargs)
+        on_chunk(
+            {
+                "number": 1,
+                "rc": 0,
+                "log": "logs/colliers-main-collect-attempt-1-chunk-1.log",
+                "cache_rows_before": 0,
+                "cache_rows_after": 2,
+                "artifact_complete": True,
+            }
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(
+                strict_artifact(
+                    source="colliers-main",
+                    detail_scope="detail_page",
+                    generation=run_dir.name,
+                    generation_started_at=manifest["started_at"],
+                )
+            ),
+            encoding="utf-8",
+        )
+        return 0, None
+
+    monkeypatch.setattr(refresh, "collect_colliers_main_chunks", fake_chunks)
+    result = refresh.collect_source(
+        run_dir,
+        manifest,
+        "colliers-main",
+        transactions=("sale", "lease"),
+        page_cap=400,
+        concurrency=2,
+        attempts_this_run=1,
+    )
+
+    assert result is not None
+    assert len(calls) == 1
+    assert manifest["sources"]["colliers-main"]["state"] == "validated"
+    assert manifest["sources"]["colliers-main"]["attempts"][0]["chunks"][0][
+        "artifact_complete"
+    ]
+
+
 def test_valid_full_artifact_is_accepted(tmp_path):
     path = write_artifact(tmp_path, artifact())
     stats = refresh.validate_source_artifact(path, "svn", ATTEMPT)
