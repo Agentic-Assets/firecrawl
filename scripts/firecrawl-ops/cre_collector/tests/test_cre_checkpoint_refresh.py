@@ -438,6 +438,43 @@ def test_safe_process_env_clears_status_activation():
     assert env["PATH"] == "/bin"
 
 
+def test_run_command_interrupt_terminates_its_process_group(tmp_path, monkeypatch):
+    spawned = {}
+    signals = []
+
+    class FakeProcess:
+        pid = 4321
+
+        def __init__(self):
+            self.wait_calls = 0
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise KeyboardInterrupt
+            return -2
+
+    process = FakeProcess()
+
+    def fake_popen(argv, **kwargs):
+        spawned["argv"] = argv
+        spawned["kwargs"] = kwargs
+        return process
+
+    monkeypatch.setattr(refresh.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        refresh.os, "killpg", lambda pid, sig: signals.append((pid, sig))
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        refresh.run_command(["node", "collect.ts"], tmp_path / "command.log", env={})
+
+    assert spawned["kwargs"]["start_new_session"] is True
+    assert signals == [(4321, refresh.signal.SIGINT)]
+    assert process.wait_calls == 2
+    assert "terminating process group 4321" in (tmp_path / "command.log").read_text()
+
+
 def test_fresh_env_for_buildout_uses_empty_resumable_run_cache(tmp_path):
     env, summary = refresh.fresh_source_env(
         "svn",

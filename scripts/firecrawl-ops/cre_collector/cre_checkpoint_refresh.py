@@ -995,16 +995,41 @@ def run_command(
     with log_path.open("a", encoding="utf-8") as log:
         log.write(f"[{utc_now()}] command: {' '.join(argv)}\n")
         log.flush()
-        proc = subprocess.run(
+        # The checkpoint runner owns the child lifetime. Put the command in a
+        # fresh process group so an operator interrupt can stop an npx/Node
+        # descendant too, rather than leaving a collector that keeps scraping
+        # after its canonical lock and manifest have been released.
+        proc = subprocess.Popen(
             list(argv),
             cwd=COLLECTOR_DIR,
             env=dict(env) if env is not None else None,
             stdout=log,
             stderr=subprocess.STDOUT,
             text=True,
+            start_new_session=True,
         )
-        log.write(f"[{utc_now()}] rc={proc.returncode}\n")
-    return proc.returncode
+        try:
+            rc = proc.wait()
+        except KeyboardInterrupt:
+            log.write(f"[{utc_now()}] interrupt: terminating process group {proc.pid}\n")
+            log.flush()
+            try:
+                os.killpg(proc.pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                log.write(f"[{utc_now()}] interrupt: killing process group {proc.pid}\n")
+                log.flush()
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait()
+            raise
+        log.write(f"[{utc_now()}] rc={rc}\n")
+    return rc
 
 
 def collector_runtime_dependency_error() -> str | None:
