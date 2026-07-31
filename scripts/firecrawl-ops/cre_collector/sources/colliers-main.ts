@@ -46,6 +46,12 @@ export const COLLIERS_MAIN_RUNTIME_CANARY_COUNT = boundedInt(
   1,
   5
 );
+export const COLLIERS_MAIN_SITEMAP_RETRIES = boundedInt(
+  process.env.COLLIERS_MAIN_SITEMAP_RETRIES,
+  3,
+  1,
+  5
+);
 /**
  * A shared start-rate gate keeps the stealth proxy below the sustained request
  * rate at which Colliers begins returning Cloudflare challenge pages. It is a
@@ -112,6 +118,11 @@ export type ColliersMainEntry = {
 export let colliersMainSitemapCache: ColliersMainEntry[] | null = null;
 export let colliersMainEnrichedMemo: any[] | null = null;
 export let colliersMainEnrichedStats = { errors: 0, deferred: 0 };
+
+/** Test hook for a discovery cache that must never cross test cases. */
+export function resetColliersMainSitemapCacheForTest(): void {
+  colliersMainSitemapCache = null;
+}
 
 export function colliersMainDetailPassTruncated(stats: { errors: number; deferred: number }): boolean {
   return stats.errors > 0 || stats.deferred > 0;
@@ -238,34 +249,51 @@ export function extractSitemapLocs(xml: string): string[] {
   return [...xml.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/g)].map((m) => decodeHtmlEntities(m[1]).trim());
 }
 
-export async function fetchColliersMainEntries(): Promise<ColliersMainEntry[]> {
+export async function fetchColliersMainEntries(
+  raw: (url: string, opts: typeof COLLIERS_MAIN_SCRAPE_OPTS & { maxAge?: number }) => Promise<string> = scrapeRaw,
+  wait: Sleep = sleep
+): Promise<ColliersMainEntry[]> {
   if (colliersMainSitemapCache) return colliersMainSitemapCache;
   const scrapeOpts = {
     ...COLLIERS_MAIN_SCRAPE_OPTS,
     ...(requireFreshDetails() ? { maxAge: 0 } : {}),
   };
-  const indexXml = await scrapeRaw(COLLIERS_MAIN_SITEMAP_INDEX, scrapeOpts);
-  const childLocs = extractSitemapLocs(indexXml);
-  const propsSitemap = childLocs.find((l) => /\/en\/sitemap\?type=properties\b/i.test(l));
-  if (!propsSitemap) {
-    throw new Error("Colliers main: en ?type=properties sitemap not found in sitemap index");
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= COLLIERS_MAIN_SITEMAP_RETRIES; attempt++) {
+    try {
+      // A Cloudflare/interstitial response can be nonempty, so scrapeRaw's
+      // transport retry correctly returns it but cannot prove this source's
+      // sitemap contract. Retry the complete index -> child sequence instead
+      // of treating a transient semantic failure as empty inventory.
+      const indexXml = await raw(COLLIERS_MAIN_SITEMAP_INDEX, scrapeOpts);
+      const childLocs = extractSitemapLocs(indexXml);
+      const propsSitemap = childLocs.find((l) => /\/en\/sitemap\?type=properties\b/i.test(l));
+      if (!propsSitemap) {
+        throw new Error("Colliers main: en ?type=properties sitemap not found in sitemap index");
+      }
+      const propsXml = await raw(propsSitemap, scrapeOpts);
+      const seen = new Set<string>();
+      const entries: ColliersMainEntry[] = [];
+      const inventoryObservedAt = new Date().toISOString();
+      for (const e of extractSitemapUrlEntries(propsXml)) {
+        const id = colliersMainIdFromUrl(e.loc);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        entries.push({ url: e.loc, lastmod: e.lastmod, id, inventoryObservedAt });
+      }
+      if (!entries.length) {
+        throw new Error("Colliers main: ?type=properties sitemap had no usa####### detail URLs");
+      }
+      console.error(`  colliers-main: sitemap exposed ${entries.length} US property detail URL(s)`);
+      colliersMainSitemapCache = entries;
+      return entries;
+    } catch (err) {
+      lastError = err;
+      console.error(`  colliers-main: sitemap discovery attempt ${attempt} failed: ${err}`);
+      if (attempt < COLLIERS_MAIN_SITEMAP_RETRIES) await wait(2500 * attempt);
+    }
   }
-  const propsXml = await scrapeRaw(propsSitemap, scrapeOpts);
-  const seen = new Set<string>();
-  const entries: ColliersMainEntry[] = [];
-  const inventoryObservedAt = new Date().toISOString();
-  for (const e of extractSitemapUrlEntries(propsXml)) {
-    const id = colliersMainIdFromUrl(e.loc);
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    entries.push({ url: e.loc, lastmod: e.lastmod, id, inventoryObservedAt });
-  }
-  if (!entries.length) {
-    throw new Error("Colliers main: ?type=properties sitemap had no usa####### detail URLs");
-  }
-  console.error(`  colliers-main: sitemap exposed ${entries.length} US property detail URL(s)`);
-  colliersMainSitemapCache = entries;
-  return entries;
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 // Classify transaction from the JSON-LD name first, then markdown header, then

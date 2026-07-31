@@ -23,6 +23,7 @@ import {
   parseColliersMainDetail,
   type ColliersMainEntry,
   fetchColliersMainEntries,
+  resetColliersMainSitemapCacheForTest,
   scrapeColliersMainDetailDoc,
   assertColliersMainDetailRuntimeReady,
   acquireColliersMainDetailStart,
@@ -321,6 +322,33 @@ test("Colliers cache reuse also requires the active refresh generation", () => {
   }
 });
 
+test("Colliers retries a semantic sitemap failure before accepting inventory", async () => {
+  const waits: number[] = [];
+  let indexAttempts = 0;
+  resetColliersMainSitemapCacheForTest();
+  try {
+    const entries = await fetchColliersMainEntries(
+      async (url) => {
+        if (url.endsWith("/sitemap")) {
+          indexAttempts++;
+          return indexAttempts === 1
+            ? "<html><title>Just a moment...</title></html>"
+            : "<sitemapindex><sitemap><loc>https://www.colliers.com/en/sitemap?type=properties</loc></sitemap></sitemapindex>";
+        }
+        return "<urlset><url><loc>https://www.colliers.com/en/properties/usa12345</loc><lastmod>2026-07-31</lastmod></url></urlset>";
+      },
+      async (milliseconds) => {
+        waits.push(milliseconds);
+      }
+    );
+    assert.deepEqual(entries.map((entry) => entry.id), ["usa12345"]);
+    assert.equal(indexAttempts, 2);
+    assert.deepEqual(waits, [2500]);
+  } finally {
+    resetColliersMainSitemapCacheForTest();
+  }
+});
+
 test("strict Colliers sitemap and detail Firecrawl calls bypass cached responses", async () => {
   const oldScrape = firecrawl.scrape;
   const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
@@ -348,6 +376,7 @@ test("strict Colliers sitemap and detail Firecrawl calls bypass cached responses
     };
   };
   try {
+    resetColliersMainSitemapCacheForTest();
     process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
     const entries = await fetchColliersMainEntries();
     assert.equal(entries.length, 1);
@@ -356,6 +385,7 @@ test("strict Colliers sitemap and detail Firecrawl calls bypass cached responses
     assert.ok(calls.every((options) => options.maxAge === 0));
   } finally {
     (firecrawl as any).scrape = oldScrape;
+    resetColliersMainSitemapCacheForTest();
     if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
     else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
   }
