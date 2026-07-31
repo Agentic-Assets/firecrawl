@@ -698,10 +698,18 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
         console.error(
           `  matthews/${tx}: ${url} permanently redirects to a target absent from the fresh sitemap`
         );
+        if (requireFreshDetails()) {
+          throw new Error(
+            `Matthews strict ${tx} detail redirect target is absent from the fresh sitemap: ${url}`
+          );
+        }
         return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
       }
       if (!response.html) {
         console.error(`  matthews/${tx}: ${url} returned HTTP ${response.status}`);
+        if (requireFreshDetails()) {
+          throw new Error(`Matthews strict ${tx} detail returned HTTP ${response.status}: ${url}`);
+        }
         return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
       }
       const html = response.html;
@@ -715,10 +723,16 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
       });
       if (!listing) {
         console.error(`  matthews/${tx}: ${url} failed identity or detail validation`);
+        if (requireFreshDetails()) {
+          throw new Error(`Matthews strict ${tx} detail failed identity or detail validation: ${url}`);
+        }
       }
       return { listing, providerNotFound: false, permanentRedirectAlias: false };
     } catch (err) {
       console.error(`  matthews/${tx}: ${url} failed: ${err}`);
+      if (requireFreshDetails()) {
+        throw err;
+      }
       return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
     }
   });
