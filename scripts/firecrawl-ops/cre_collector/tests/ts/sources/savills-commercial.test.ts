@@ -10,6 +10,7 @@ import {
   savillsSaleCardIsCommercial,
   mapSavillsRow,
   mapSavillsLeaseRow,
+  savillsFailedSearchInformation,
   savillsPageInfo,
   savillsTotalItems,
 } from "../../../sources/savills.js";
@@ -217,6 +218,19 @@ test("savillsTotalItems returns fallback when no signal is found", () => {
   const html = `<p>No listings</p>`;
   const result = savillsTotalItems(html, 5);
   assert.equal(result, 5);
+});
+
+test("savillsFailedSearchInformation surfaces provider-side failures before stale cards can be reconciled", () => {
+  const html = `
+    <script id="__NEXT_DATA__" type="application/json">
+      {"props":{"initialReduxState":{"FailedSearchInformation":"There are no properties for sale that match your search criteria","listPage":{"totalItems":2},"properties":{"ca-1":{"IsCommercial":true,"AddressLine2":"Toronto, ON M5H 2N2"}}}}}
+    </script>
+  `;
+  assert.equal(
+    savillsFailedSearchInformation(html),
+    "There are no properties for sale that match your search criteria"
+  );
+  assert.equal(savillsFailedSearchInformation("<html>no state</html>"), null);
 });
 
 test("savillsPageInfo reads provider pagination rather than top-level page count", () => {

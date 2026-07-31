@@ -243,6 +243,25 @@ export function savillsNextDataProperties(html: string): any[] {
 }
 
 /**
+ * A nominally successful list page can carry a provider-side search failure
+ * alongside stale cards from another geography. That is not a zero-result U.S.
+ * inventory observation, so surface it before any card-level reconciliation.
+ */
+export function savillsFailedSearchInformation(html: string): string | null {
+  const state = parseSavillsNextData(html)?.props?.initialReduxState;
+  const candidate =
+    state?.FailedSearchInformation ??
+    state?.failedSearchInformation ??
+    state?.listPage?.FailedSearchInformation ??
+    state?.listPage?.failedSearchInformation;
+  if (typeof candidate === "string") return clean(candidate);
+  if (candidate && typeof candidate === "object") {
+    return clean(candidate.Message ?? candidate.message ?? candidate.Text ?? candidate.text);
+  }
+  return null;
+}
+
+/**
  * Reject challenge pages, redirect shells, and other successful-but-wrong
  * responses before allowing a list pass to emit a sparse source result. A
  * rejected page makes the source fail, which lets the monitor coverage gate
@@ -608,6 +627,12 @@ async function collectSavillsTransaction(tx: Tx, max: number, monitor: boolean):
     const html = await savillsListHtml(url, !monitor);
     const pageObservation = detailObservation("savills_next_data_public_record", "live");
     const rows = savillsNextDataProperties(html).filter((row) => row?.IsCommercial === true);
+    const failedSearchInformation = savillsFailedSearchInformation(html);
+    if (failedSearchInformation) {
+      throw new Error(
+        `Savills ${tx} provider reports no matching U.S. commercial inventory: ${failedSearchInformation}`
+      );
+    }
     const pageInfo = savillsPageInfo(html, rows.length, !monitor);
     if (pageInfo.currentPage === null || pageInfo.totalItems === null) {
       throw new Error(`Savills ${tx} page did not expose complete pagination metadata`);
