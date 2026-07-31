@@ -513,32 +513,53 @@ def parse_tsv(output):
     return rows
 
 
+def _run_psql_script(psql, db_url, script):
+    """Run a closed SQL script without a parent-to-psql stdin pipe."""
+    script_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix="cre-validate-",
+            suffix=".sql",
+            delete=False,
+        ) as script_file:
+            script_file.write(script)
+            script_path = Path(script_file.name)
+        return subprocess.run(
+            [
+                psql,
+                *psql_connection_args(db_url),
+                "-q",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-P",
+                "pager=off",
+                "-P",
+                "footer=off",
+                "-F",
+                "\t",
+                "-A",
+                "-f",
+                str(script_path),
+            ],
+            env=psql_connection_env(db_url),
+            text=True,
+            capture_output=True,
+        )
+    finally:
+        if script_path is not None:
+            script_path.unlink(missing_ok=True)
+
+
 def run_query(psql, db_url, sql):
     wrapped = (
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
         f"{sql}\n"
         "ROLLBACK;\n"
     )
-    proc = subprocess.run(
-        [
-            psql,
-            *psql_connection_args(db_url),
-            "-q",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-P",
-            "pager=off",
-            "-P",
-            "footer=off",
-            "-F",
-            "\t",
-            "-A",
-        ],
-        env=psql_connection_env(db_url),
-        input=wrapped,
-        text=True,
-        capture_output=True,
-    )
+    proc = _run_psql_script(psql, db_url, wrapped)
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
         raise SystemExit(f"psql exited {proc.returncode}")
@@ -594,29 +615,7 @@ def run_queries(psql, db_url, queries):
     for name, sql in queries.items():
         statements.extend((f"\\echo {QUERY_MARKER_PREFIX}{name}", sql))
     statements.append("ROLLBACK;")
-    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as script:
-        script.write("\n".join(statements) + "\n")
-        script.seek(0)
-        proc = subprocess.run(
-            [
-                psql,
-                *psql_connection_args(db_url),
-                "-q",
-                "-v",
-                "ON_ERROR_STOP=1",
-                "-P",
-                "pager=off",
-                "-P",
-                "footer=off",
-                "-F",
-                "\t",
-                "-A",
-            ],
-            env=psql_connection_env(db_url),
-            stdin=script,
-            text=True,
-            capture_output=True,
-        )
+    proc = _run_psql_script(psql, db_url, "\n".join(statements) + "\n")
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
         raise SystemExit(f"psql exited {proc.returncode}")

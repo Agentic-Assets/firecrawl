@@ -15,6 +15,7 @@ intercepted via monkeypatch.
 
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -370,16 +371,21 @@ def test_run_query_wraps_sql_in_repeatable_read_only_transaction(monkeypatch):
 
     def fake_run(argv, **kwargs):
         captured["kwargs"] = kwargs
+        captured["script_path"] = Path(argv[argv.index("-f") + 1])
+        captured["script"] = captured["script_path"].read_text()
         return _FakeProc(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
     run_query("psql", "postgres://SENTINEL", "SELECT 1;")
-    inp = captured["kwargs"]["input"]
-    assert inp.startswith(
+    script = captured["script"]
+    assert script.startswith(
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
     )
-    assert inp.strip().endswith("ROLLBACK;")
-    assert "SELECT 1;" in inp
+    assert script.strip().endswith("ROLLBACK;")
+    assert "SELECT 1;" in script
+    assert "input" not in captured["kwargs"]
+    assert "stdin" not in captured["kwargs"]
+    assert not captured["script_path"].exists()
 
 
 def test_run_query_sql_content_inside_wrapper(monkeypatch):
@@ -387,17 +393,17 @@ def test_run_query_sql_content_inside_wrapper(monkeypatch):
     captured = {}
 
     def fake_run(argv, **kwargs):
-        captured["input"] = kwargs["input"]
+        captured["script"] = Path(argv[argv.index("-f") + 1]).read_text()
         return _FakeProc(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
     run_query("psql", "postgres://SENTINEL", "SELECT count(*) FROM foo;")
-    inp = captured["input"]
-    begin_pos = inp.index(
+    script = captured["script"]
+    begin_pos = script.index(
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;"
     )
-    rollback_pos = inp.index("ROLLBACK;")
-    sql_pos = inp.index("SELECT count(*) FROM foo;")
+    rollback_pos = script.index("ROLLBACK;")
+    sql_pos = script.index("SELECT count(*) FROM foo;")
     assert begin_pos < sql_pos < rollback_pos
 
 
@@ -415,6 +421,7 @@ def test_run_query_argv_contains_format_flags(monkeypatch):
     assert "-F" in argv
     assert "\t" in argv
     assert "-A" in argv
+    assert "-f" in argv
     assert "-v" in argv
     assert "ON_ERROR_STOP=1" in argv
 
@@ -488,12 +495,16 @@ def test_run_query_returns_parsed_rows_and_stderr(monkeypatch):
 
 
 def test_run_query_nonzero_returncode_raises_system_exit(monkeypatch):
+    captured = {}
+
     def fake_run(argv, **kwargs):
+        captured["script_path"] = Path(argv[argv.index("-f") + 1])
         return _FakeProc(returncode=1, stdout="", stderr="fatal error")
 
     monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
     with pytest.raises(SystemExit):
         run_query("psql", "postgres://SENTINEL", "SELECT 1;")
+    assert not captured["script_path"].exists()
 
 
 def test_run_query_db_url_passed_only_in_child_environment(monkeypatch):
@@ -543,7 +554,8 @@ def test_run_queries_uses_one_repeatable_read_snapshot(monkeypatch):
     def fake_run(argv, **kwargs):
         captured["argv"] = argv
         captured["kwargs"] = kwargs
-        captured["script"] = kwargs["stdin"].read()
+        captured["script_path"] = Path(argv[argv.index("-f") + 1])
+        captured["script"] = captured["script_path"].read_text()
         return _FakeProc(returncode=0, stdout=output, stderr="warning")
 
     monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
@@ -563,6 +575,8 @@ def test_run_queries_uses_one_repeatable_read_snapshot(monkeypatch):
     )
     assert captured["script"].strip().endswith("ROLLBACK;")
     assert "input" not in captured["kwargs"]
+    assert "stdin" not in captured["kwargs"]
+    assert not captured["script_path"].exists()
     assert "postgres://SENTINEL" not in captured["argv"]
     assert captured["kwargs"]["env"]["PGHOST"] == "sentinel"
 
