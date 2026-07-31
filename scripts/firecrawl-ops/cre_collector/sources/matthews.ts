@@ -282,8 +282,8 @@ function normalizedMatthewsPropertyUrl(raw: string | null, baseUrl: string): str
 
 /**
  * RFC 3986 makes percent-escape hexadecimal digits case-insensitive. Use this
- * key only for equality and sitemap membership, never as a persisted listing
- * ID: the provider-declared canonical spelling remains the source identity.
+ * key for equality, sitemap membership, and the stable Matthews external ID.
+ * The emitted URL fields retain the provider-declared spelling for provenance.
  */
 function matthewsPropertyComparisonUrl(raw: string | null, baseUrl: string): string | null {
   const normalized = normalizedMatthewsPropertyUrl(raw, baseUrl);
@@ -338,10 +338,11 @@ export function matthewsProviderIdentity(
   if (declaredRaw && declaredComparison !== requestedComparison) return null;
   if (strict && declaredComparison !== requestedComparison) return null;
   const identityUrl = declared ?? requested;
-  if (matthewsTenureFromUrl(identityUrl) !== matthewsTenureFromUrl(requested)) {
+  const identityComparison = matthewsPropertyComparisonUrl(identityUrl, MATTHEWS_HOST);
+  if (!identityComparison || matthewsTenureFromUrl(identityUrl) !== matthewsTenureFromUrl(requested)) {
     return null;
   }
-  return identityUrl.split("/properties/")[1] ?? null;
+  return identityComparison.split("/properties/")[1] ?? null;
 }
 
 export type MatthewsParseContext = {
@@ -619,7 +620,9 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
         : undefined,
       listings: take.map((url) =>
         prune({
-          id: (url.split("/properties/")[1] ?? url).replace(/[/?#].*$/, ""),
+          id: (matthewsPropertyComparisonUrl(url, MATTHEWS_HOST) ?? url)
+            .split("/properties/")[1]
+            ?.replace(/[/?#].*$/, ""),
           url,
           canonicalUrl: url,
           transactionType: tx === "sale" ? "Sale" : "Lease",
