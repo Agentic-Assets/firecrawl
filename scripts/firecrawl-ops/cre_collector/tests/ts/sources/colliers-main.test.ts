@@ -241,6 +241,36 @@ test("strict Colliers retries unknown HTTP 200 pages without property JSON-LD", 
   }
 });
 
+test("strict Colliers admits a validated LightBox detail without JSON-LD", () => {
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const listing = parseColliersMainDetail(
+      entry("usa1167092", "https://www.colliers.com/en/properties/villa-encanto/usa1167092"),
+      doc({
+        rawHtml: `
+          <html><body>
+            <h1>Villa Encanto</h1>
+            <div class="address">2850 Clydedale Dr, Dallas, TX 75220-4667 | Multifamily - Garden Apartments</div>
+          </body></html>
+        `,
+        markdown: "Villa Encanto\n\nInvestment Sale\n\nBuilding Size: 100,000 SF",
+        metadata: { statusCode: 200, title: "Villa Encanto, Dallas, TX | Colliers | Powered by LightBox" },
+      })
+    );
+    assert.equal(listing.id, "usa1167092");
+    assert.equal(listing.city, "Dallas");
+    assert.equal(listing.state, "TX");
+    assert.equal(listing.postalCode, "75220-4667");
+    assert.equal(listing.assetType, "Multifamily - Garden Apartments");
+    assert.equal(listing.transactionType, "Sale");
+    assert.equal(listing.colliersMain.detailTemplate, "lightbox");
+  } finally {
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
 test("colliersMainDetailCachePath returns durable cache location", () => {
   const previous = process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH;
   try {

@@ -394,6 +394,34 @@ export function colliersMainJsonLd(rawHtml: string): any | null {
   return null;
 }
 
+type ColliersMainLightBoxDetail = {
+  name: string;
+  address: string;
+  propertyType: string | null;
+};
+
+/**
+ * A small, known LightBox-hosted subset of live Colliers listings does not
+ * include the standard RealEstateListing JSON-LD block. Admit it only when
+ * three independent, first-party template signals agree: the official title,
+ * a nonempty H1, and a parseable address block. This is intentionally narrower
+ * than accepting arbitrary HTTP-200 pages without JSON-LD.
+ */
+export function colliersMainLightBoxDetail(
+  rawHtml: string,
+  title: string
+): ColliersMainLightBoxDetail | null {
+  if (!/\|\s*Colliers\s*\|\s*Powered by LightBox\s*$/i.test(title)) return null;
+  const $ = cheerio.load(rawHtml);
+  const name = clean($("h1").first().text());
+  const addressBlock = clean($(".address").first().text());
+  if (!name || !addressBlock) return null;
+  const [address, propertyType] = addressBlock.split("|", 2).map((value) => clean(value));
+  const parsedAddress = parseColliersMainAddress(address ?? null);
+  if (!address || (!parsedAddress.street && !parsedAddress.city && !parsedAddress.postalCode)) return null;
+  return { name, address, propertyType: propertyType ?? null };
+}
+
 export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDoc): any {
   const raw = doc.rawHtml ?? "";
   const md = doc.markdown ?? "";
@@ -415,7 +443,8 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
     }
   }
   const ld = colliersMainJsonLd(raw);
-  if (!ld) {
+  const lightBox = ld ? null : colliersMainLightBoxDetail(raw, title);
+  if (!ld && !lightBox) {
     // Live listings always carry a RealEstateListing JSON-LD block. Pages
     // without one fall into three cases, handled distinctly:
     if (requireFreshDetails()) {
@@ -458,12 +487,12 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
       lastUpdated: entry.lastmod ? entry.lastmod.slice(0, 10) : null,
     };
   }
-  const ldName: string | null = clean(ld?.name);
+  const ldName: string | null = clean(ld?.name) ?? lightBox?.name ?? null;
 
   // ldName: "Office For sale — 11701 I-30, Little Rock, AR 72209, USA | United States | Colliers"
-  let typeWord: string | null = null;
-  let addrStr: string | null = null;
-  if (ldName) {
+  let typeWord: string | null = lightBox?.propertyType ?? null;
+  let addrStr: string | null = lightBox?.address ?? null;
+  if (ld && ldName) {
     const beforePipe = ldName.split("|")[0].trim();
     const dash = beforePipe.split(/\s[—–-]\s/);
     if (dash.length >= 2) {
@@ -490,6 +519,7 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
   const land = md.match(/Land Area:\s*([\d.,]+)\s*ac/i)?.[1];
   const ptype =
     clean(md.match(/\*\*Property Types?\*\*\s*([A-Za-z0-9 ,/&'-]+)/i)?.[1]) ??
+    lightBox?.propertyType ??
     clean(ld?.about?.category) ??
     typeWord;
   const status = clean(md.match(/\*\*Property Status\*\*\s*([A-Za-z ,/-]+)/i)?.[1]);
@@ -623,6 +653,7 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
     lastUpdated: entry.lastmod ? entry.lastmod.slice(0, 10) : null,
     colliersMain: {
       propertyStatus: status,
+      detailTemplate: lightBox ? "lightbox" : "real_estate_listing_json_ld",
       sublease: tx.sublease,
       jsonLdName: ldName,
       docCount: docs.length,
