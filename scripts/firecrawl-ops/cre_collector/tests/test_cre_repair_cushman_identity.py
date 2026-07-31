@@ -9,9 +9,8 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 import cre_repair_cushman_identity as repair
+import pytest
 
 
 def minimal_state():
@@ -287,13 +286,17 @@ def test_source_index_donor_is_one_coherent_ranked_tuple():
 def test_preimage_is_complete_and_rollback_restores_every_fk_surface():
     sql = repair.preimage_sql(minimal_artifact(), minimal_state())
     assert "LEFT JOIN _cw_current current USING(target_id)" in sql
-    assert "'schemaVersion',6" in sql
+    assert "'schemaVersion',7" in sql
     assert (
         f"'innerEncoding','{repair.PREIMAGE_INNER_ENCODING}'" in sql
     )
     assert "pgp_sym_encrypt(" in sql
-    assert "Cushman inner preimage compression/integrity mismatch" in sql
-    assert "'innerPayloadPgpBase64'" in sql
+    assert (
+        "Cushman inner preimage section compression/integrity mismatch"
+        in sql
+    )
+    assert "'innerSections'" in sql
+    assert "innerPayloadPgpBase64" not in sql
     assert "'repairTopology'" in sql
     assert "'stateListings'" in sql
     assert "'url',ranked.url" in sql
@@ -355,9 +358,9 @@ def test_preimage_is_complete_and_rollback_restores_every_fk_surface():
     assert "parent post-repair disposition drift" in rollback
     assert "pgp_sym_decrypt(" in rollback
     assert "Cushman rollback inner payload integrity mismatch" in rollback
-    assert "SELECT payload::text FROM _cw_rollback_inner" in rollback
+    assert "jsonb_object_agg(key,value)::text AS plaintext" in rollback
     assert "FULL JOIN _cw_rollback_sections actual USING(key)" in rollback
-    assert "DROP TABLE _cw_rollback_inner_text,_cw_rollback_inner" in rollback
+    assert "DROP TABLE _cw_rollback_section_envelopes" in rollback
     assert "raw_data=p.raw_data" in rollback
     assert "l.raw_data IS DISTINCT FROM p.raw_data" in rollback
     assert rollback.rstrip().endswith("COMMIT;")
@@ -411,15 +414,71 @@ def test_inner_section_key_contract_is_exact_and_relationally_guarded():
     assert rollback.index("CREATE UNIQUE INDEX ON _pre_queue(id);") < (
         rollback.index("DROP TABLE _cw_rollback_sections;")
     )
-    inner_rollback = rollback.split(
-        "CREATE TEMP TABLE _cw_rollback_inner_text", 1
-    )[1].split("CREATE TEMP TABLE _cw_rollback_inner", 1)[0]
-    assert inner_rollback.count("pgp_sym_decrypt(") == 1
+    decrypts = repair.rollback_section_decrypt_statements()
+    assert len(decrypts) == len(repair.PREIMAGE_INNER_SECTION_KEYS)
+    assert all(
+        statement.count("pgp_sym_decrypt(") == 1
+        for statement in decrypts
+    )
     for key in repair.PREIMAGE_INNER_COUNTS:
         assert (
             f"payload->'{key}' FROM _cw_rollback_inner"
             not in rollback
         )
+
+
+def test_section_envelopes_use_one_fixed_pgp_statement_per_exact_key():
+    encrypts = repair.preimage_section_encrypt_statements()
+    capture_readbacks = repair.preimage_section_readback_statements()
+    rollback_decrypts = repair.rollback_section_decrypt_statements()
+    assert len(encrypts) == len(capture_readbacks) == len(
+        rollback_decrypts
+    ) == len(repair.PREIMAGE_INNER_SECTION_KEYS)
+    for key, encrypt, capture_readback, rollback_decrypt in zip(
+        repair.PREIMAGE_INNER_SECTION_KEYS,
+        encrypts,
+        capture_readbacks,
+        rollback_decrypts,
+        strict=True,
+    ):
+        assert f"WHERE key='{key}';" in encrypt
+        assert f"WHERE key='{key}';" in capture_readback
+        assert f"WHERE key='{key}';" in rollback_decrypt
+        assert encrypt.count("pgp_sym_encrypt(") == 1
+        assert "pgp_sym_decrypt(" not in encrypt
+        assert capture_readback.count("pgp_sym_decrypt(") == 1
+        assert "pgp_sym_encrypt(" not in capture_readback
+        assert rollback_decrypt.count("pgp_sym_decrypt(") == 1
+        assert "pgp_sym_encrypt(" not in rollback_decrypt
+        assert encrypt.rstrip().endswith(
+            f"encrypted-inner-section-{key}"
+        )
+        assert capture_readback.rstrip().endswith(
+            f"decrypted-inner-section-{key}"
+        )
+        assert rollback_decrypt.rstrip().endswith(
+            f"rollback-decrypted-inner-section-{key}"
+        )
+
+    capture = repair.preimage_sql(minimal_artifact(), minimal_state())
+    assert "innerPayloadPgpBase64" not in capture
+    assert "'plaintextBytes',e.plaintext_bytes" in capture
+    assert "'plaintextSha256',e.plaintext_sha256" in capture
+    assert "'pgpBase64',replace(encode(e.packed,'base64')" in capture
+    assert "jsonb_object_agg(key,value)::text AS plaintext" in capture
+    assert "Cushman whole inner preimage integrity mismatch" in capture
+    assert f"plaintext_bytes>{repair.MAX_INNER_PREIMAGE_BYTES}" in capture
+    with patch.multiple(repair, **patched_review_counts(0)):
+        rollback = repair.build_rollback_sql(
+            reviewed_empty_preimage(), minimal_artifact(), minimal_state()
+        )
+    assert "innerPayloadPgpBase64" not in rollback
+    assert "payload->'innerSections'" in rollback
+    assert "Cushman rollback inner section integrity mismatch" in rollback
+    assert (
+        f"(payload->>'innerPayloadBytes')::bigint\n"
+        f"          >{repair.MAX_INNER_PREIMAGE_BYTES}"
+    ) in rollback
 
 
 def test_preimage_payload_never_duplicates_uncompressed_raw_data():
@@ -437,18 +496,19 @@ def test_preimage_payload_never_duplicates_uncompressed_raw_data():
         "  'queue',(",
     ):
         assert forbidden not in source_payload
-    assert "'innerPayloadPgpBase64'" in source_payload
+    assert "'innerSections'" in source_payload
+    assert "innerPayloadPgpBase64" not in source_payload
     assert "'stateListings'" in source_payload
     assert "'repairTopology'" in source_payload
     inner = sql.split(
         "CREATE TEMP TABLE _cw_preimage_inner ON COMMIT DROP AS", 1
     )[1].split(
-        "CREATE TEMP TABLE _cw_preimage_inner_readback", 1
+        "CREATE TEMP TABLE _cw_preimage_inner_meta", 1
     )[0]
     assert "WITH inner_source AS MATERIALIZED (" in inner
     assert "'raw_data',l.raw_data" in inner
     assert "raw_data_pgp_base64" not in sql
-    assert inner.count("pgp_sym_encrypt(") == 1
+    assert "pgp_sym_encrypt(" not in inner
 
 
 def test_pgcrypto_preflight_is_locked_and_proves_exact_surface():
@@ -498,7 +558,9 @@ def test_preimage_output_uses_one_bounded_frontend_select_per_sequence():
     assert "FOR chunk_seq IN 0..chunk_count-1 LOOP" in sql
     assert "substring(\n       encoded_bytes" in sql
     assert "Cushman preimage chunk materialization invalid" in sql
-    assert "DROP TABLE _cw_preimage_inner;" in sql
+    assert (
+        "DROP TABLE _cw_preimage_inner_json,_cw_preimage_inner;"
+    ) in sql
     assert "DROP TABLE _cw_preimage_output;" in sql
     assert "SELECT payload_bytes,payload_md5,chunk_count" in sql
     assert "octet_length(c.chunk)" in sql
@@ -526,9 +588,27 @@ def test_preimage_output_uses_one_bounded_frontend_select_per_sequence():
 
 
 def reviewed_empty_preimage():
-    synthetic_inner = b'{"schemaVersion":1}'
+    synthetic_sections = {
+        key: 1 if key == "schemaVersion" else []
+        for key in repair.PREIMAGE_INNER_SECTION_KEYS
+    }
+    synthetic_inner = json.dumps(
+        synthetic_sections, separators=(",", ":"), sort_keys=True
+    ).encode()
+    inner_sections = {}
+    for key, value in synthetic_sections.items():
+        plaintext = json.dumps(
+            value, separators=(",", ":"), sort_keys=True
+        ).encode()
+        inner_sections[key] = {
+            "plaintextBytes": len(plaintext),
+            "plaintextSha256": hashlib.sha256(plaintext).hexdigest(),
+            "pgpBase64": base64.b64encode(
+                b"synthetic-pgp:" + plaintext
+            ).decode(),
+        }
     return {
-        "schemaVersion": 6,
+        "schemaVersion": 7,
         "capturedAt": "2026-07-30T18:00:00+00:00",
         "applyTimestampBinding": (
             "updated_at=raw_data.cushmanIdentityRepair.appliedAt="
@@ -542,9 +622,7 @@ def reviewed_empty_preimage():
         "geometrySha256": repair.EXPECTED_GEOMETRY_SHA256,
         "innerPayloadBytes": len(synthetic_inner),
         "innerPayloadSha256": hashlib.sha256(synthetic_inner).hexdigest(),
-        "innerPayloadPgpBase64": base64.b64encode(
-            b"synthetic-pgp:" + synthetic_inner
-        ).decode(),
+        "innerSections": inner_sections,
         "innerCounts": repair.expected_inner_counts(),
         "artifactPlan": [],
         "repairTopology": [],
@@ -814,7 +892,7 @@ def test_rollback_cli_requires_expected_preimage_sha(tmp_path):
 def test_preimage_output_chunks_reconstruct_exact_validated_object(monkeypatch):
     monkeypatch.setattr(repair, "PREIMAGE_OUTPUT_CHUNK_CHARS", 64)
     payload = reviewed_empty_preimage()
-    payload["innerPayloadPgpBase64"] = base64.b64encode(
+    payload["innerSections"]["listings"]["pgpBase64"] = base64.b64encode(
         b"synthetic-compressed-inner" * 80
     ).decode()
     stdout = preimage_output_stdout(preimage_output_envelopes(payload))
@@ -1187,7 +1265,7 @@ def test_preimage_validation_rejects_metadata_and_count_drift():
     with pytest.raises(ValueError, match="artifactSha256"):
         repair.validate_preimage(payload)
     payload = reviewed_empty_preimage()
-    payload["schemaVersion"] = 5
+    payload["schemaVersion"] = 6
     with pytest.raises(ValueError, match="schemaVersion"):
         repair.validate_preimage(payload)
 
@@ -1199,6 +1277,18 @@ def test_preimage_validation_rejects_metadata_and_count_drift():
 def test_preimage_validation_rejects_legacy_clear_state_arrays(legacy_key):
     payload = reviewed_empty_preimage()
     payload[legacy_key] = [{"oversizedClearState": "x"}]
+    with (
+        patch.multiple(repair, **patched_review_counts(0)),
+        pytest.raises(ValueError, match="outer schema"),
+    ):
+        repair.validate_preimage(payload)
+
+
+def test_preimage_validation_rejects_legacy_monolithic_inner_envelope():
+    payload = reviewed_empty_preimage()
+    payload["innerPayloadPgpBase64"] = base64.b64encode(
+        b"legacy-monolithic-envelope"
+    ).decode()
     with (
         patch.multiple(repair, **patched_review_counts(0)),
         pytest.raises(ValueError, match="outer schema"),
@@ -1238,7 +1328,7 @@ def test_preimage_validation_rejects_invalid_captured_listing_shape():
     "mutation",
     [
         lambda payload: payload.__setitem__(
-            "innerPayloadPgpBase64", "***"
+            "innerSections", "***"
         ),
         lambda payload: payload.__setitem__(
             "innerPayloadBytes", 0
@@ -1260,6 +1350,36 @@ def test_preimage_validation_rejects_inner_envelope_drift(mutation):
         assert repair.validate_preimage(payload) is payload
         mutation(payload)
         with pytest.raises(ValueError, match="inner"):
+            repair.validate_preimage(payload)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda sections: sections.pop("queue"),
+        lambda sections: sections.__setitem__(
+            "unexpected", sections["queue"].copy()
+        ),
+        lambda sections: sections["listings"].__setitem__(
+            "plaintextBytes", 0
+        ),
+        lambda sections: sections["listings"].__setitem__(
+            "plaintextSha256", "A" * 64
+        ),
+        lambda sections: sections["listings"].__setitem__(
+            "pgpBase64", "***"
+        ),
+        lambda sections: sections["listings"].__setitem__(
+            "unexpected", True
+        ),
+    ],
+)
+def test_preimage_validation_rejects_section_key_or_metadata_drift(mutation):
+    payload = reviewed_empty_preimage()
+    with patch.multiple(repair, **patched_review_counts(0)):
+        assert repair.validate_preimage(payload) is payload
+        mutation(payload["innerSections"])
+        with pytest.raises(ValueError, match="inner section"):
             repair.validate_preimage(payload)
 
 
@@ -1329,7 +1449,7 @@ def test_exact_post_state_detects_title_and_raw_data_only_changes():
     assert "IS DISTINCT FROM p.post_raw_data_sha256" in sql
     assert ") IS DISTINCT FROM p.post_state" in sql
     assert "l.updated_at IS DISTINCT FROM (" in sql
-    assert "CREATE TEMP TABLE _cw_rollback_inner_text" in sql
+    assert "CREATE TEMP TABLE _cw_rollback_section_envelopes" in sql
     assert "DO $cw_outer_inner_correlation$" in sql
     assert "Cushman outer/inner listing state mismatch" in sql
     assert "CREATE UNIQUE INDEX ON _pre_listings(id);" in sql
@@ -1734,7 +1854,7 @@ def test_roundtrip_runs_forward_and_reverse_in_one_rolled_back_transaction():
 
 def test_preimage_chunk_transport_reconstructs_exact_validated_ascii_payload():
     payload = reviewed_empty_preimage()
-    payload["innerPayloadPgpBase64"] = base64.b64encode(
+    payload["innerSections"]["listings"]["pgpBase64"] = base64.b64encode(
         b"synthetic-compressed-inner" * 20_000
     ).decode()
     with patch.multiple(repair, **patched_review_counts(0)):
@@ -1771,7 +1891,7 @@ def test_preimage_chunk_transport_validates_before_serialization():
 
 def test_preimage_chunk_transport_emits_bounded_separate_insert_statements():
     payload = reviewed_empty_preimage()
-    payload["innerPayloadPgpBase64"] = base64.b64encode(
+    payload["innerSections"]["listings"]["pgpBase64"] = base64.b64encode(
         b"x" * (repair.PREIMAGE_SQL_CHUNK_BYTES * 2 + 1)
     ).decode()
     with patch.multiple(repair, **patched_review_counts(0)):

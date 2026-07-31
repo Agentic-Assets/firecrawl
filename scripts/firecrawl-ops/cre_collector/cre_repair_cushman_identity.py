@@ -11,10 +11,10 @@ The default mode is read-only.  Persistent apply requires a new owner-only
 preimage path.  Every mode holds the canonical CRE lock and a database advisory
 lock; any drift from the reviewed shape aborts before mutation.
 
-Preimage schema v6 keeps a compact clear validation/staging envelope and stores
-the full exact rollback state once inside a reversible pgcrypto PGP compression
-envelope. The passphrase is a format constant, not a secret; owner-only preimage
-permissions remain the confidentiality boundary.
+Preimage schema v7 keeps a compact clear validation/staging envelope and stores
+the full exact rollback state in fourteen independently compressed pgcrypto PGP
+section envelopes. The passphrase is a format constant, not a secret; owner-only
+preimage permissions remain the confidentiality boundary.
 """
 
 from __future__ import annotations
@@ -150,17 +150,18 @@ PREIMAGE_OUTPUT_KEYS = frozenset(
     }
 )
 PREIMAGE_INNER_SCHEMA_VERSION = 1
-PREIMAGE_INNER_ENCODING = "pgcrypto-pgp-zlib-base64-v1"
+PREIMAGE_INNER_ENCODING = "pgcrypto-pgp-zlib-sections-base64-v1"
 # This domain-separated constant enables self-contained reversible compression.
 # It is not a confidentiality secret; the owner-only preimage file is the
 # confidentiality boundary.
 PREIMAGE_COMPRESSION_PASSPHRASE = (
-    "cushman-identity-preimage-v6:compression-envelope:not-a-secret"
+    "cushman-identity-preimage-v7:section-envelope:not-a-secret"
 )
-# Level 9 held the pgcrypto zlib call for more than 15 minutes on the reviewed
-# 96 MiB inner document without honoring statement_timeout. Level 1 is still
-# lossless; the decrypted byte/SHA guards and 64 MiB outer bound prove that the
-# faster self-describing PGP envelope remains exact and transportable.
+# A single level-1 pgcrypto call over the reviewed 96 MiB inner document still
+# failed to return in 15 minutes. Each of the fourteen fixed sections is instead
+# compressed by its own statement, so PostgreSQL's five-minute statement timeout
+# remains effective. The decrypted byte/SHA guards and whole-inner canonical
+# hash prove that the sectioned envelope remains exact and transportable.
 PREIMAGE_COMPRESSION_PGP_OPTIONS = (
     "cipher-algo=aes256,compress-algo=2,compress-level=1,s2k-count=1024"
 )
@@ -190,12 +191,12 @@ REPAIR_TOKEN = hashlib.sha256(
 
 
 def expected_inner_counts() -> dict[str, int]:
-    """Return a copy of the immutable schema-v6 inner count contract."""
+    """Return a copy of the immutable schema-v7 inner count contract."""
     return dict(PREIMAGE_INNER_COUNTS)
 
 
 def inner_section_values_sql() -> str:
-    """Return the exact relational key set for schema-v6 inner validation."""
+    """Return the exact relational key set for schema-v7 inner validation."""
     return ",\n       ".join(
         f"({sql_lit(key)})" for key in PREIMAGE_INNER_SECTION_KEYS
     )
@@ -837,7 +838,7 @@ DROP TABLE _cw_stage_artifact_payload,_cw_stage_listings_payload,
 
 def pgcrypto_preflight_sql() -> str:
     """Fail closed unless the exact reversible-compression surface works."""
-    probe = '{"cushman":"preimage-v6","unicode":"λ"}'
+    probe = '{"cushman":"preimage-v7-sections","unicode":"λ"}'
     probe_sha256 = hashlib.sha256(probe.encode()).hexdigest()
     return f"""
 DO $cw_pgcrypto$
@@ -1281,8 +1282,67 @@ WHERE {seq}<o.chunk_count;"""
     )
 
 
+def preimage_section_encrypt_statements() -> tuple[str, ...]:
+    """Return one independently timed PGP-encryption statement per section."""
+    return tuple(
+        f"""INSERT INTO _cw_preimage_section_envelopes(
+ key,plaintext_bytes,plaintext_sha256,packed
+)
+SELECT key,plaintext_bytes,plaintext_sha256,
+ pgp_sym_encrypt(
+   plaintext,
+   {sql_lit(PREIMAGE_COMPRESSION_PASSPHRASE)},
+   {sql_lit(PREIMAGE_COMPRESSION_PGP_OPTIONS)}
+ )
+FROM _cw_preimage_section_source
+WHERE key={sql_lit(key)};
+\\warn cre-cushman-phase: encrypted-inner-section-{key}"""
+        for key in PREIMAGE_INNER_SECTION_KEYS
+    )
+
+
+def preimage_section_readback_statements() -> tuple[str, ...]:
+    """Return one independently timed capture readback per section."""
+    return tuple(
+        f"""INSERT INTO _cw_preimage_section_readback(
+ key,plaintext,expected_bytes,expected_sha256
+)
+SELECT key,
+ pgp_sym_decrypt(
+   packed,{sql_lit(PREIMAGE_COMPRESSION_PASSPHRASE)}
+ ),
+ plaintext_bytes,plaintext_sha256
+FROM _cw_preimage_section_envelopes
+WHERE key={sql_lit(key)};
+\\warn cre-cushman-phase: decrypted-inner-section-{key}"""
+        for key in PREIMAGE_INNER_SECTION_KEYS
+    )
+
+
+def rollback_section_decrypt_statements() -> tuple[str, ...]:
+    """Return one independently timed rollback decryption per section."""
+    return tuple(
+        f"""INSERT INTO _cw_rollback_section_readback(
+ key,plaintext,expected_bytes,expected_sha256
+)
+SELECT key,
+ pgp_sym_decrypt(
+   packed,{sql_lit(PREIMAGE_COMPRESSION_PASSPHRASE)}
+ ),
+ expected_bytes,expected_sha256
+FROM _cw_rollback_section_envelopes
+WHERE key={sql_lit(key)};
+\\warn cre-cushman-phase: rollback-decrypted-inner-section-{key}"""
+        for key in PREIMAGE_INNER_SECTION_KEYS
+    )
+
+
 def preimage_sql(artifact: list[ArtifactRow], state: dict) -> str:
     output_selects = "\n".join(preimage_output_select_statements())
+    section_encrypts = "\n".join(preimage_section_encrypt_statements())
+    section_readbacks = "\n".join(
+        preimage_section_readback_statements()
+    )
 
     def moved_child_map(table: str, alias: str) -> str:
         return f"""(
@@ -1403,36 +1463,58 @@ SELECT
  plaintext,
  octet_length(plaintext)::bigint AS plaintext_bytes,
  encode(digest(convert_to(plaintext,'UTF8'),'sha256'),'hex')
-   AS plaintext_sha256,
- pgp_sym_encrypt(
-   plaintext,
-   {sql_lit(PREIMAGE_COMPRESSION_PASSPHRASE)},
-   {sql_lit(PREIMAGE_COMPRESSION_PGP_OPTIONS)}
- ) AS packed
+   AS plaintext_sha256
 FROM inner_source;
-\\warn cre-cushman-phase: built-encrypted-inner
-CREATE TEMP TABLE _cw_preimage_inner_readback ON COMMIT DROP AS
-SELECT pgp_sym_decrypt(
-  packed,{sql_lit(PREIMAGE_COMPRESSION_PASSPHRASE)}
-) AS plaintext
-FROM _cw_preimage_inner;
-\\warn cre-cushman-phase: decrypted-inner-readback
+\\warn cre-cushman-phase: built-canonical-inner
+CREATE TEMP TABLE _cw_preimage_inner_meta ON COMMIT DROP AS
+SELECT plaintext_bytes,plaintext_sha256 FROM _cw_preimage_inner;
 CREATE TEMP TABLE _cw_preimage_inner_json ON COMMIT DROP AS
-SELECT plaintext::jsonb AS payload FROM _cw_preimage_inner_readback;
+SELECT plaintext::jsonb AS payload FROM _cw_preimage_inner;
 \\warn cre-cushman-phase: parsed-inner-json
-CREATE TEMP TABLE _cw_preimage_inner_sections ON COMMIT DROP AS
-SELECT section.key,section.value
+CREATE TEMP TABLE _cw_preimage_section_source ON COMMIT DROP AS
+SELECT section.key,section.value::text AS plaintext,
+       octet_length(section.value::text)::bigint AS plaintext_bytes,
+       encode(
+         digest(convert_to(section.value::text,'UTF8'),'sha256'),'hex'
+       ) AS plaintext_sha256
 FROM _cw_preimage_inner_json i
 CROSS JOIN LATERAL jsonb_each(i.payload) section;
+CREATE UNIQUE INDEX ON _cw_preimage_section_source(key);
+DROP TABLE _cw_preimage_inner_json,_cw_preimage_inner;
+\\warn cre-cushman-phase: materialized-inner-section-source
+CREATE TEMP TABLE _cw_preimage_section_envelopes(
+ key text PRIMARY KEY,
+ plaintext_bytes bigint NOT NULL,
+ plaintext_sha256 text NOT NULL,
+ packed bytea NOT NULL
+) ON COMMIT DROP;
+{section_encrypts}
+CREATE TEMP TABLE _cw_preimage_section_readback(
+ key text PRIMARY KEY,
+ plaintext text NOT NULL,
+ expected_bytes bigint NOT NULL,
+ expected_sha256 text NOT NULL
+) ON COMMIT DROP;
+{section_readbacks}
+CREATE TEMP TABLE _cw_preimage_inner_sections ON COMMIT DROP AS
+SELECT key,plaintext::jsonb AS value
+FROM _cw_preimage_section_readback;
 CREATE UNIQUE INDEX ON _cw_preimage_inner_sections(key);
-\\warn cre-cushman-phase: materialized-inner-sections
+CREATE TEMP TABLE _cw_preimage_inner_rebuilt ON COMMIT DROP AS
+SELECT jsonb_object_agg(key,value)::text AS plaintext
+FROM _cw_preimage_inner_sections;
+\\warn cre-cushman-phase: rebuilt-canonical-inner
 DO $cw_preimage_inner$
 DECLARE
  mismatch integer;
 BEGIN
- IF (SELECT count(*) FROM _cw_preimage_inner)<>1
-    OR (SELECT count(*) FROM _cw_preimage_inner_readback)<>1
-    OR (SELECT count(*) FROM _cw_preimage_inner_json)<>1
+ IF (SELECT count(*) FROM _cw_preimage_inner_meta)<>1
+    OR (SELECT count(*) FROM _cw_preimage_section_source)
+      <>{len(PREIMAGE_INNER_SECTION_KEYS)}
+    OR (SELECT count(*) FROM _cw_preimage_section_envelopes)
+      <>{len(PREIMAGE_INNER_SECTION_KEYS)}
+    OR (SELECT count(*) FROM _cw_preimage_section_readback)
+      <>{len(PREIMAGE_INNER_SECTION_KEYS)}
     OR (SELECT count(*) FROM _cw_preimage_inner_sections)
       <>{len(PREIMAGE_INNER_SECTION_KEYS)} THEN
    RAISE EXCEPTION 'Cushman inner preimage row count mismatch';
@@ -1448,26 +1530,44 @@ BEGIN
  ) THEN
    RAISE EXCEPTION 'Cushman inner preimage schema/count mismatch';
  END IF;
+ SELECT count(*) INTO mismatch
+ FROM _cw_preimage_section_source source
+ FULL JOIN _cw_preimage_section_envelopes envelope USING(key)
+ FULL JOIN _cw_preimage_section_readback readback USING(key)
+ WHERE source.key IS NULL OR envelope.key IS NULL OR readback.key IS NULL
+    OR source.plaintext_bytes<=0
+    OR source.plaintext_bytes>{MAX_INNER_PREIMAGE_BYTES}
+    OR source.plaintext_sha256!~'^[0-9a-f]{{64}}$'
+    OR octet_length(envelope.packed)<=0
+    OR envelope.plaintext_bytes IS DISTINCT FROM source.plaintext_bytes
+    OR envelope.plaintext_sha256 IS DISTINCT FROM source.plaintext_sha256
+    OR readback.expected_bytes IS DISTINCT FROM source.plaintext_bytes
+    OR readback.expected_sha256 IS DISTINCT FROM source.plaintext_sha256
+    OR readback.plaintext IS DISTINCT FROM source.plaintext
+    OR octet_length(convert_to(readback.plaintext,'UTF8'))
+       IS DISTINCT FROM source.plaintext_bytes
+    OR encode(
+      digest(convert_to(readback.plaintext,'UTF8'),'sha256'),'hex'
+    ) IS DISTINCT FROM source.plaintext_sha256
+    OR readback.plaintext IS DISTINCT FROM (readback.plaintext::jsonb)::text;
+ IF mismatch<>0 THEN
+   RAISE EXCEPTION
+     'Cushman inner preimage section compression/integrity mismatch: %',
+     mismatch;
+ END IF;
  IF (
    SELECT plaintext_bytes<=0
        OR plaintext_bytes>{MAX_INNER_PREIMAGE_BYTES}
        OR plaintext_sha256!~'^[0-9a-f]{{64}}$'
-       OR octet_length(packed)<=0
-       OR plaintext IS DISTINCT FROM (
-         SELECT plaintext FROM _cw_preimage_inner_readback
-       )
        OR octet_length(convert_to(
-         (SELECT plaintext FROM _cw_preimage_inner_readback),'UTF8'
+         (SELECT plaintext FROM _cw_preimage_inner_rebuilt),'UTF8'
        )) IS DISTINCT FROM plaintext_bytes
        OR encode(digest(convert_to(
-         (SELECT plaintext FROM _cw_preimage_inner_readback),'UTF8'
+         (SELECT plaintext FROM _cw_preimage_inner_rebuilt),'UTF8'
        ),'sha256'),'hex') IS DISTINCT FROM plaintext_sha256
-       OR plaintext IS DISTINCT FROM (
-         SELECT payload::text FROM _cw_preimage_inner_json
-       )
-   FROM _cw_preimage_inner
+   FROM _cw_preimage_inner_meta
  ) THEN
-   RAISE EXCEPTION 'Cushman inner preimage compression/integrity mismatch';
+   RAISE EXCEPTION 'Cushman whole inner preimage integrity mismatch';
  END IF;
  IF ((SELECT value FROM _cw_preimage_inner_sections
       WHERE key='schemaVersion')#>>'{{}}')::integer
@@ -1545,12 +1645,12 @@ BEGIN
 END
 $cw_preimage_inner$;
 \\warn cre-cushman-phase: validated-inner
-DROP TABLE _cw_preimage_inner_sections,_cw_preimage_inner_json,
- _cw_preimage_inner_readback;
+DROP TABLE _cw_preimage_inner_sections,_cw_preimage_inner_rebuilt,
+ _cw_preimage_section_readback,_cw_preimage_section_source;
 CREATE TEMP TABLE _cw_preimage_output ON COMMIT DROP AS
 WITH source_payload AS MATERIALIZED (
  SELECT jsonb_build_object(
-  'schemaVersion',6,
+  'schemaVersion',7,
   'capturedAt',clock_timestamp(),
   'applyTimestampBinding',
     'updated_at=raw_data.cushmanIdentityRepair.appliedAt=transaction_timestamp',
@@ -1562,7 +1662,17 @@ WITH source_payload AS MATERIALIZED (
   'geometrySha256',{sql_lit(EXPECTED_GEOMETRY_SHA256)},
   'innerPayloadBytes',i.plaintext_bytes,
   'innerPayloadSha256',i.plaintext_sha256,
-  'innerPayloadPgpBase64',replace(encode(i.packed,'base64'),chr(10),''),
+  'innerSections',(
+    SELECT jsonb_object_agg(
+      e.key,
+      jsonb_build_object(
+        'plaintextBytes',e.plaintext_bytes,
+        'plaintextSha256',e.plaintext_sha256,
+        'pgpBase64',replace(encode(e.packed,'base64'),chr(10),'')
+      )
+    )
+    FROM _cw_preimage_section_envelopes e
+  ),
   'innerCounts',jsonb_build_object(
     'repairPlan',{EXPECTED_TOTAL_ROWS},'listings',{EXPECTED_TOTAL_ROWS},
     'contacts',{EXPECTED_CONTACT_ROWS},'documents',{EXPECTED_DOCUMENT_ROWS},
@@ -1604,7 +1714,7 @@ WITH source_payload AS MATERIALIZED (
     ) ORDER BY p.id) FROM _cw_queue_plan p
   )
 )::text AS payload
- FROM _cw_preimage_inner i
+ FROM _cw_preimage_inner_meta i
 ),
 encoded_payload AS MATERIALIZED (
  SELECT payload,
@@ -1623,7 +1733,7 @@ SELECT octet_length(payload)::bigint AS payload_bytes,
        )/{PREIMAGE_OUTPUT_CHUNK_CHARS} AS chunk_count
 FROM encoded_payload;
 \\warn cre-cushman-phase: built-outer-output
-DROP TABLE _cw_preimage_inner;
+DROP TABLE _cw_preimage_inner_meta,_cw_preimage_section_envelopes;
 DO $cw_preimage_output$
 DECLARE
  row_count integer;
@@ -2148,7 +2258,7 @@ def validate_preimage(payload: object) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("rollback preimage is not an object")
     expected = {
-        "schemaVersion": 6,
+        "schemaVersion": 7,
         "applyTimestampBinding": (
             "updated_at=raw_data.cushmanIdentityRepair.appliedAt="
             "transaction_timestamp"
@@ -2175,7 +2285,7 @@ def validate_preimage(payload: object) -> dict:
         "geometrySha256",
         "innerPayloadBytes",
         "innerPayloadSha256",
-        "innerPayloadPgpBase64",
+        "innerSections",
         "innerCounts",
         "artifactPlan",
         "repairTopology",
@@ -2204,20 +2314,52 @@ def validate_preimage(payload: object) -> dict:
         raise ValueError("rollback preimage inner counts drifted")
     inner_bytes = payload.get("innerPayloadBytes")
     inner_sha256 = payload.get("innerPayloadSha256")
-    inner_base64 = payload.get("innerPayloadPgpBase64")
-    try:
-        packed = base64.b64decode(inner_base64, validate=True)
-    except (binascii.Error, TypeError, ValueError) as exc:
-        raise ValueError("rollback preimage inner envelope is invalid") from exc
     if (
         type(inner_bytes) is not int
         or not 0 < inner_bytes <= MAX_INNER_PREIMAGE_BYTES
         or not isinstance(inner_sha256, str)
         or not re.fullmatch(r"[0-9a-f]{64}", inner_sha256)
-        or not packed
-        or len(packed) > MAX_PREIMAGE_BYTES
     ):
         raise ValueError("rollback preimage inner envelope is invalid")
+    inner_sections = payload.get("innerSections")
+    if (
+        not isinstance(inner_sections, dict)
+        or set(inner_sections) != set(PREIMAGE_INNER_SECTION_KEYS)
+    ):
+        raise ValueError("rollback preimage inner sections drifted")
+    total_section_plaintext_bytes = 0
+    for key in PREIMAGE_INNER_SECTION_KEYS:
+        section = inner_sections[key]
+        if not isinstance(section, dict) or set(section) != {
+            "plaintextBytes",
+            "plaintextSha256",
+            "pgpBase64",
+        }:
+            raise ValueError(
+                f"rollback preimage inner section {key} is invalid"
+            )
+        section_bytes = section["plaintextBytes"]
+        section_sha256 = section["plaintextSha256"]
+        try:
+            packed = base64.b64decode(section["pgpBase64"], validate=True)
+        except (binascii.Error, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"rollback preimage inner section {key} is invalid"
+            ) from exc
+        if (
+            type(section_bytes) is not int
+            or not 0 < section_bytes <= MAX_INNER_PREIMAGE_BYTES
+            or not isinstance(section_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", section_sha256)
+            or not packed
+            or len(packed) > MAX_PREIMAGE_BYTES
+        ):
+            raise ValueError(
+                f"rollback preimage inner section {key} is invalid"
+            )
+        total_section_plaintext_bytes += section_bytes
+    if total_section_plaintext_bytes > MAX_INNER_PREIMAGE_BYTES:
+        raise ValueError("rollback preimage inner sections exceed size limit")
     captured = payload.get("capturedAt")
     if not isinstance(captured, str):
         raise ValueError("rollback preimage lacks capturedAt")
@@ -2552,6 +2694,9 @@ DROP TABLE _cw_preimage_chunks,_cw_preimage_assembled;
 
 def rollback_body(preimage: dict, artifact: list[ArtifactRow], state: dict) -> str:
     preimage_transport = preimage_chunk_transport_sql(preimage)
+    section_decrypts = "\n".join(
+        rollback_section_decrypt_statements()
+    )
     child_tables = {
         "contacts": "cre_listing_contacts",
         "documents": "cre_listing_documents",
@@ -2625,26 +2770,59 @@ CREATE TEMP TABLE _cw_rollback_clock ON COMMIT DROP AS
 SELECT transaction_timestamp() AS trigger_updated_at;
 {stage_sql(artifact,state)}
 
-CREATE TEMP TABLE _cw_rollback_inner_text ON COMMIT DROP AS
-SELECT
- pgp_sym_decrypt(
-   decode(payload->>'innerPayloadPgpBase64','base64'),
-   {sql_lit(PREIMAGE_COMPRESSION_PASSPHRASE)}
- ) AS plaintext,
- (payload->>'innerPayloadBytes')::bigint AS expected_bytes,
- payload->>'innerPayloadSha256' AS expected_sha256
-FROM _cw_preimage;
-CREATE TEMP TABLE _cw_rollback_inner ON COMMIT DROP AS
-SELECT plaintext::jsonb AS payload FROM _cw_rollback_inner_text;
+CREATE TEMP TABLE _cw_rollback_section_envelopes ON COMMIT DROP AS
+SELECT section.key,
+       (section.value->>'plaintextBytes')::bigint AS expected_bytes,
+       section.value->>'plaintextSha256' AS expected_sha256,
+       decode(section.value->>'pgpBase64','base64') AS packed
+FROM _cw_preimage i
+CROSS JOIN LATERAL jsonb_each(i.payload->'innerSections') section;
+CREATE UNIQUE INDEX ON _cw_rollback_section_envelopes(key);
+DO $cw_rollback_envelopes$
+BEGIN
+ IF (SELECT count(*) FROM _cw_rollback_section_envelopes)
+      <>{len(PREIMAGE_INNER_SECTION_KEYS)}
+    OR EXISTS (
+      SELECT 1
+      FROM (
+        VALUES
+          {inner_section_values_sql()}
+      ) expected(key)
+      FULL JOIN _cw_rollback_section_envelopes actual USING(key)
+      WHERE expected.key IS NULL OR actual.key IS NULL
+    )
+    OR EXISTS (
+      SELECT 1 FROM _cw_rollback_section_envelopes
+      WHERE expected_bytes<=0
+         OR expected_bytes>{MAX_INNER_PREIMAGE_BYTES}
+         OR expected_sha256!~'^[0-9a-f]{{64}}$'
+         OR octet_length(packed)<=0
+    )
+    OR (SELECT sum(expected_bytes)
+        FROM _cw_rollback_section_envelopes)
+       >{MAX_INNER_PREIMAGE_BYTES} THEN
+   RAISE EXCEPTION 'Cushman rollback inner section envelope mismatch';
+ END IF;
+END
+$cw_rollback_envelopes$;
+CREATE TEMP TABLE _cw_rollback_section_readback(
+ key text PRIMARY KEY,
+ plaintext text NOT NULL,
+ expected_bytes bigint NOT NULL,
+ expected_sha256 text NOT NULL
+) ON COMMIT DROP;
+{section_decrypts}
 CREATE TEMP TABLE _cw_rollback_sections ON COMMIT DROP AS
-SELECT section.key,section.value
-FROM _cw_rollback_inner i
-CROSS JOIN LATERAL jsonb_each(i.payload) section;
+SELECT key,plaintext::jsonb AS value
+FROM _cw_rollback_section_readback;
 CREATE UNIQUE INDEX ON _cw_rollback_sections(key);
+CREATE TEMP TABLE _cw_rollback_inner_rebuilt ON COMMIT DROP AS
+SELECT jsonb_object_agg(key,value)::text AS plaintext
+FROM _cw_rollback_sections;
 DO $cw_rollback_inner$
 BEGIN
- IF (SELECT count(*) FROM _cw_rollback_inner_text)<>1
-    OR (SELECT count(*) FROM _cw_rollback_inner)<>1
+ IF (SELECT count(*) FROM _cw_rollback_section_readback)
+      <>{len(PREIMAGE_INNER_SECTION_KEYS)}
     OR (SELECT count(*) FROM _cw_rollback_sections)
       <>{len(PREIMAGE_INNER_SECTION_KEYS)} THEN
    RAISE EXCEPTION 'Cushman rollback inner payload row count mismatch';
@@ -2660,19 +2838,38 @@ BEGIN
  ) THEN
    RAISE EXCEPTION 'Cushman rollback inner payload schema/count mismatch';
  END IF;
+ IF EXISTS (
+   SELECT 1
+   FROM _cw_rollback_section_readback readback
+   JOIN _cw_rollback_section_envelopes envelope USING(key)
+   WHERE readback.expected_bytes IS DISTINCT FROM envelope.expected_bytes
+      OR readback.expected_sha256
+         IS DISTINCT FROM envelope.expected_sha256
+      OR octet_length(convert_to(readback.plaintext,'UTF8'))
+         IS DISTINCT FROM envelope.expected_bytes
+      OR encode(
+        digest(convert_to(readback.plaintext,'UTF8'),'sha256'),'hex'
+      ) IS DISTINCT FROM envelope.expected_sha256
+      OR readback.plaintext
+         IS DISTINCT FROM (readback.plaintext::jsonb)::text
+ ) THEN
+   RAISE EXCEPTION
+     'Cushman rollback inner section integrity mismatch';
+ END IF;
  IF (
-   SELECT expected_bytes<=0
-       OR expected_bytes>{MAX_INNER_PREIMAGE_BYTES}
-       OR expected_sha256!~'^[0-9a-f]{{64}}$'
-       OR octet_length(convert_to(plaintext,'UTF8'))
-          IS DISTINCT FROM expected_bytes
+   SELECT (payload->>'innerPayloadBytes')::bigint<=0
+       OR (payload->>'innerPayloadBytes')::bigint
+          >{MAX_INNER_PREIMAGE_BYTES}
+       OR payload->>'innerPayloadSha256'!~'^[0-9a-f]{{64}}$'
+       OR octet_length(convert_to(
+         (SELECT plaintext FROM _cw_rollback_inner_rebuilt),'UTF8'
+       )) IS DISTINCT FROM (payload->>'innerPayloadBytes')::bigint
        OR encode(
-         digest(convert_to(plaintext,'UTF8'),'sha256'),'hex'
-       ) IS DISTINCT FROM expected_sha256
-       OR plaintext IS DISTINCT FROM (
-         SELECT payload::text FROM _cw_rollback_inner
-       )
-   FROM _cw_rollback_inner_text
+         digest(convert_to(
+           (SELECT plaintext FROM _cw_rollback_inner_rebuilt),'UTF8'
+         ),'sha256'),'hex'
+       ) IS DISTINCT FROM payload->>'innerPayloadSha256'
+   FROM _cw_preimage
  ) THEN
    RAISE EXCEPTION 'Cushman rollback inner payload integrity mismatch';
  END IF;
@@ -2719,7 +2916,8 @@ BEGIN
  END IF;
 END
 $cw_rollback_inner$;
-DROP TABLE _cw_rollback_inner_text,_cw_rollback_inner;
+DROP TABLE _cw_rollback_section_envelopes,
+ _cw_rollback_section_readback,_cw_rollback_inner_rebuilt;
 
 CREATE TEMP TABLE _pre_listings ON COMMIT DROP AS
 SELECT * FROM jsonb_to_recordset(
