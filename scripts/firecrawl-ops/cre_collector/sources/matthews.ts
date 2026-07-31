@@ -252,8 +252,9 @@ function matthewsDetailUrlsFromSitemap(xml: string): string[] {
   const seen = new Set<string>();
   for (const raw of xml.match(/https:\/\/www\.matthews\.com\/properties\/[^<\s"')]+/gi) ?? []) {
     const normalized = normalizedMatthewsPropertyUrl(raw, MATTHEWS_HOST);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
+    const comparison = matthewsPropertyComparisonUrl(raw, MATTHEWS_HOST);
+    if (!normalized || !comparison || seen.has(comparison)) continue;
+    seen.add(comparison);
     urls.push(normalized);
   }
   return urls;
@@ -271,19 +272,22 @@ function normalizedMatthewsPropertyUrl(raw: string | null, baseUrl: string): str
     if (parsed.hostname.toLowerCase().replace(/^www\./, "") !== "matthews.com") {
       return null;
     }
-    // RFC 3986 treats the hexadecimal digits in a percent-escape as
-    // case-insensitive. Matthews' sitemap and its canonical tag can differ
-    // only by that spelling (for example `%c2%b1` vs `%C2%B1`); normalize the
-    // representation before strict identity comparison without decoding a
-    // possible path separator or changing the property slug's semantics.
-    const path = parsed.pathname
-      .replace(/\/+$/, "")
-      .replace(/%[0-9a-f]{2}/gi, (escape) => escape.toLowerCase());
+    const path = parsed.pathname.replace(/\/+$/, "");
     if (!/^\/properties\/[^/]+$/i.test(path)) return null;
     return `https://www.matthews.com${path}`;
   } catch {
     return null;
   }
+}
+
+/**
+ * RFC 3986 makes percent-escape hexadecimal digits case-insensitive. Use this
+ * key only for equality and sitemap membership, never as a persisted listing
+ * ID: the provider-declared canonical spelling remains the source identity.
+ */
+function matthewsPropertyComparisonUrl(raw: string | null, baseUrl: string): string | null {
+  const normalized = normalizedMatthewsPropertyUrl(raw, baseUrl);
+  return normalized?.replace(/%[0-9a-f]{2}/gi, (escape) => escape.toLowerCase()) ?? null;
 }
 
 /**
@@ -300,10 +304,14 @@ export function matthewsPermanentRedirectTarget(
   if (status !== 301 && status !== 308) return null;
   const requested = normalizedMatthewsPropertyUrl(requestedUrl, MATTHEWS_HOST);
   const target = normalizedMatthewsPropertyUrl(location, requestedUrl);
+  const requestedComparison = matthewsPropertyComparisonUrl(requestedUrl, MATTHEWS_HOST);
+  const targetComparison = matthewsPropertyComparisonUrl(location, requestedUrl);
   if (
     !requested
     || !target
-    || target === requested
+    || !requestedComparison
+    || !targetComparison
+    || targetComparison === requestedComparison
     || matthewsTenureFromUrl(requested) !== tx
     || matthewsTenureFromUrl(target) !== tx
   ) {
@@ -318,15 +326,17 @@ export function matthewsProviderIdentity(
   strict = requireFreshDetails()
 ): string | null {
   const requested = normalizedMatthewsPropertyUrl(url, MATTHEWS_HOST);
-  if (!requested) return null;
+  const requestedComparison = matthewsPropertyComparisonUrl(url, MATTHEWS_HOST);
+  if (!requested || !requestedComparison) return null;
   const $ = cheerio.load(html);
   const declaredRaw =
     $("link[rel='canonical']").first().attr("href") ??
     $("meta[property='og:url']").first().attr("content") ??
     null;
   const declared = normalizedMatthewsPropertyUrl(declaredRaw, requested);
-  if (declaredRaw && declared !== requested) return null;
-  if (strict && declared !== requested) return null;
+  const declaredComparison = matthewsPropertyComparisonUrl(declaredRaw, requested);
+  if (declaredRaw && declaredComparison !== requestedComparison) return null;
+  if (strict && declaredComparison !== requestedComparison) return null;
   const identityUrl = declared ?? requested;
   if (matthewsTenureFromUrl(identityUrl) !== matthewsTenureFromUrl(requested)) {
     return null;
@@ -589,7 +599,11 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   }
 
   const urls = detailUrls.filter((url) => matthewsTenureFromUrl(url) === tx);
-  const urlSet = new Set(urls);
+  const urlSet = new Set(
+    urls
+      .map((url) => matthewsPropertyComparisonUrl(url, MATTHEWS_HOST))
+      .filter((url): url is string => url != null)
+  );
   const take = Number.isFinite(max) ? urls.slice(0, max) : urls;
 
   if (monitor) {
@@ -624,7 +638,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
         tx
       );
       if (permanentRedirectTarget) {
-        if (urlSet.has(permanentRedirectTarget)) {
+        if (urlSet.has(matthewsPropertyComparisonUrl(permanentRedirectTarget, url) ?? "")) {
           console.warn(
             `  matthews/${tx}: ${url} excluded as permanent redirect alias to ${permanentRedirectTarget}`
           );

@@ -116,9 +116,9 @@ test("strict Matthews identity normalizes percent-escape spelling and sitemap tr
     </body></html>`;
   assert.equal(
     matthewsProviderIdentity(html, sitemapUrl, true),
-    "%c2%b140k-sf-industrial-warehouse"
+    "%C2%B140k-sf-industrial-warehouse"
   );
-  assert.equal(parseMatthewsDetail(html, sitemapUrl, "sale", { strict: true })?.id, "%c2%b140k-sf-industrial-warehouse");
+  assert.equal(parseMatthewsDetail(html, sitemapUrl, "sale", { strict: true })?.id, "%C2%B140k-sf-industrial-warehouse");
 
   const originalFetch = globalThis.fetch;
   const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
@@ -148,6 +148,7 @@ test("strict Matthews identity normalizes percent-escape spelling and sitemap tr
   assert.equal(detailRequests, 1);
   assert.equal(result.totalAvailable, 1);
   assert.equal(result.listings.length, 1);
+  assert.equal(result.listings[0].id, "%C2%B140k-sf-industrial-warehouse");
   assert.equal(result.truncated, false);
 });
 
