@@ -461,6 +461,7 @@ def test_pgcrypto_preflight_is_locked_and_proves_exact_surface():
         assert f"to_regprocedure('{signature}')" in preflight
     assert repair.PREIMAGE_COMPRESSION_PASSPHRASE in preflight
     assert repair.PREIMAGE_COMPRESSION_PGP_OPTIONS in preflight
+    assert "compress-level=1" in repair.PREIMAGE_COMPRESSION_PGP_OPTIONS
     assert "unpacked IS DISTINCT FROM probe" in preflight
     assert "Cushman pgcrypto preflight roundtrip failed" in preflight
 

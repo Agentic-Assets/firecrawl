@@ -157,8 +157,12 @@ PREIMAGE_INNER_ENCODING = "pgcrypto-pgp-zlib-base64-v1"
 PREIMAGE_COMPRESSION_PASSPHRASE = (
     "cushman-identity-preimage-v6:compression-envelope:not-a-secret"
 )
+# Level 9 held the pgcrypto zlib call for more than 15 minutes on the reviewed
+# 96 MiB inner document without honoring statement_timeout. Level 1 is still
+# lossless; the decrypted byte/SHA guards and 64 MiB outer bound prove that the
+# faster self-describing PGP envelope remains exact and transportable.
 PREIMAGE_COMPRESSION_PGP_OPTIONS = (
-    "cipher-algo=aes256,compress-algo=2,compress-level=9,s2k-count=1024"
+    "cipher-algo=aes256,compress-algo=2,compress-level=1,s2k-count=1024"
 )
 PREIMAGE_INNER_COUNTS = {
     "repairPlan": EXPECTED_TOTAL_ROWS,
