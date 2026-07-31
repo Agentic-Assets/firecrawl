@@ -1251,7 +1251,7 @@ def expected_parent_sql(artifact: list[ArtifactRow], state: dict) -> str:
 
 
 def preimage_output_select_statements() -> tuple[str, ...]:
-    """Return one bounded frontend SELECT per possible preimage chunk."""
+    """Return one bounded frontend SELECT per materialized preimage chunk."""
     return tuple(
         f"""SELECT jsonb_build_object(
  'protocol',{sql_lit(PREIMAGE_OUTPUT_PROTOCOL)},
@@ -1260,13 +1260,10 @@ def preimage_output_select_statements() -> tuple[str, ...]:
  'payloadBytes',o.payload_bytes,
  'payloadMd5',o.payload_md5,
  'encoding',{sql_lit(PREIMAGE_OUTPUT_ENCODING)},
- 'chunk',substring(
-   o.encoded
-   FROM {seq}*{PREIMAGE_OUTPUT_CHUNK_CHARS}+1
-   FOR {PREIMAGE_OUTPUT_CHUNK_CHARS}
- )
+ 'chunk',c.chunk
 )::text
-FROM _cw_preimage_output o
+FROM _cw_preimage_meta o
+JOIN _cw_preimage_chunks c ON c.seq={seq}
 WHERE {seq}<o.chunk_count;"""
         for seq in range(PREIMAGE_OUTPUT_MAX_CHUNKS)
     )
@@ -1600,14 +1597,14 @@ encoded_payload AS MATERIALIZED (
         ) AS encoded
  FROM source_payload
 )
-SELECT payload,
-       octet_length(payload)::bigint AS payload_bytes,
+SELECT octet_length(payload)::bigint AS payload_bytes,
        md5(payload) AS payload_md5,
        encoded,
        (
          length(encoded)+{PREIMAGE_OUTPUT_CHUNK_CHARS - 1}
        )/{PREIMAGE_OUTPUT_CHUNK_CHARS} AS chunk_count
 FROM encoded_payload;
+DROP TABLE _cw_preimage_inner;
 DO $cw_preimage_output$
 DECLARE
  row_count integer;
@@ -1639,15 +1636,68 @@ BEGIN
  END IF;
 END
 $cw_preimage_output$;
+CREATE TEMP TABLE _cw_preimage_chunks(
+ seq integer PRIMARY KEY
+   CHECK(seq>=0 AND seq<{PREIMAGE_OUTPUT_MAX_CHUNKS}),
+ chunk text NOT NULL
+   CHECK(octet_length(chunk) BETWEEN 1 AND {PREIMAGE_OUTPUT_CHUNK_CHARS})
+) ON COMMIT DROP;
+DO $cw_preimage_chunks$
+DECLARE
+ encoded_bytes bytea;
+ chunk_count integer;
+ chunk_seq integer;
+ chunk_text text;
+BEGIN
+ SELECT convert_to(o.encoded,'UTF8'),o.chunk_count
+ INTO encoded_bytes,chunk_count
+ FROM _cw_preimage_output o;
+ IF encoded_bytes IS NULL
+    OR chunk_count<=0
+    OR chunk_count>{PREIMAGE_OUTPUT_MAX_CHUNKS} THEN
+   RAISE EXCEPTION 'Cushman preimage chunk materialization invalid';
+ END IF;
+ FOR chunk_seq IN 0..chunk_count-1 LOOP
+   chunk_text:=convert_from(
+     substring(
+       encoded_bytes
+       FROM chunk_seq*{PREIMAGE_OUTPUT_CHUNK_CHARS}+1
+       FOR {PREIMAGE_OUTPUT_CHUNK_CHARS}
+     ),
+     'UTF8'
+   );
+   INSERT INTO _cw_preimage_chunks(seq,chunk)
+   VALUES(chunk_seq,chunk_text);
+ END LOOP;
+ IF (
+   SELECT count(*) IS DISTINCT FROM chunk_count
+       OR min(c.seq) IS DISTINCT FROM 0
+       OR max(c.seq) IS DISTINCT FROM chunk_count-1
+       OR bool_or(
+         CASE
+           WHEN c.seq<chunk_count-1
+             THEN octet_length(c.chunk)<>{PREIMAGE_OUTPUT_CHUNK_CHARS}
+           ELSE NOT (
+             octet_length(c.chunk)
+               BETWEEN 1 AND {PREIMAGE_OUTPUT_CHUNK_CHARS}
+           )
+         END
+       )
+   FROM _cw_preimage_chunks c
+ ) THEN
+   RAISE EXCEPTION 'Cushman preimage chunk materialization invalid';
+ END IF;
+END
+$cw_preimage_chunks$;
+CREATE TEMP TABLE _cw_preimage_meta ON COMMIT DROP AS
+SELECT payload_bytes,payload_md5,chunk_count FROM _cw_preimage_output;
+DROP TABLE _cw_preimage_output;
 {output_selects}
 DO $cw_preimage_complete$
 BEGIN
- IF (
-   SELECT count(*)<>1
-       OR min(chunk_count)<=0
-       OR max(chunk_count)>{PREIMAGE_OUTPUT_MAX_CHUNKS}
-   FROM _cw_preimage_output
- ) THEN
+ IF (SELECT count(*) FROM _cw_preimage_chunks)
+      IS DISTINCT FROM
+    (SELECT chunk_count FROM _cw_preimage_meta) THEN
    RAISE EXCEPTION 'Cushman preimage output completion guard failed';
  END IF;
 END
@@ -1661,7 +1711,7 @@ SELECT jsonb_build_object(
  'encoding',{sql_lit(PREIMAGE_OUTPUT_ENCODING)},
  'chunk',''
 )::text
-FROM _cw_preimage_output o;
+FROM _cw_preimage_meta o;
 ROLLBACK;
 """
 

@@ -481,11 +481,29 @@ def test_preimage_output_uses_one_bounded_frontend_select_per_sequence():
         assert statement.endswith(";")
         assert statement.count("SELECT jsonb_build_object(") == 1
         assert f"'seq',{expected_seq}," in statement
-        assert f"FROM {expected_seq}*" in statement
+        assert f"JOIN _cw_preimage_chunks c ON c.seq={expected_seq}" in statement
         assert f"WHERE {expected_seq}<o.chunk_count;" in statement
+        assert "'chunk',c.chunk" in statement
+        assert "FROM _cw_preimage_meta o" in statement
+        assert "o.encoded" not in statement
+        assert "substring(" not in statement
         assert "generate_series" not in statement
         covered.append(expected_seq)
     assert covered == list(range(repair.PREIMAGE_OUTPUT_MAX_CHUNKS))
+
+    sql = repair.preimage_sql(minimal_artifact(), minimal_state())
+    assert "CREATE TEMP TABLE _cw_preimage_chunks(" in sql
+    assert "SELECT convert_to(o.encoded,'UTF8'),o.chunk_count" in sql
+    assert "FOR chunk_seq IN 0..chunk_count-1 LOOP" in sql
+    assert "substring(\n       encoded_bytes" in sql
+    assert "Cushman preimage chunk materialization invalid" in sql
+    assert "DROP TABLE _cw_preimage_inner;" in sql
+    assert "DROP TABLE _cw_preimage_output;" in sql
+    assert "SELECT payload_bytes,payload_md5,chunk_count" in sql
+    assert "octet_length(c.chunk)" in sql
+    assert "(SELECT count(*) FROM _cw_preimage_chunks)" in sql
+    assert "substring(\n   o.encoded" not in sql
+    assert "generate_series" not in sql
 
     maximal_envelope = {
         "protocol": repair.PREIMAGE_OUTPUT_PROTOCOL,
