@@ -1635,6 +1635,11 @@ def test_lock_reclaims_dead_owner(tmp_path):
     assert not lock_dir.exists()
 
 
+def test_checkpoint_sigterm_handler_uses_interrupt_cleanup_path():
+    with pytest.raises(KeyboardInterrupt):
+        refresh.checkpoint_sigterm_handler(refresh.signal.SIGTERM, None)
+
+
 def test_lock_release_preserves_replaced_same_pid_lease(tmp_path):
     lock_dir = tmp_path / ".cre.lock"
     lock = refresh.SharedLock(lock_dir)

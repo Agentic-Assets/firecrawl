@@ -99,6 +99,17 @@ class GlobalStageError(RefreshError):
     """A shared infrastructure or live-write stage failed."""
 
 
+def checkpoint_sigterm_handler(_signum: int, _frame: Any) -> None:
+    """Route supervisor termination through the guarded interrupt cleanup path.
+
+    The normal SIGTERM default exits immediately and skips ``SharedLock``'s
+    lease-aware release.  Raising KeyboardInterrupt lets ``run_command`` first
+    reap any owned collector process group, then lets main persist an
+    interrupted manifest before its lock context exits.
+    """
+    raise KeyboardInterrupt
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -3815,6 +3826,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     save_manifest(run_dir, manifest)
 
     lock = SharedLock(lock_dir)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, checkpoint_sigterm_handler)
     try:
         with lock:
             health_log = run_dir / "logs" / "healthcheck.log"
@@ -3916,6 +3929,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         save_manifest(run_dir, manifest)
         atomic_write_text(run_dir / "report.md", render_report(manifest))
         raise
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":
