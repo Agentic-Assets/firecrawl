@@ -26,6 +26,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -71,6 +72,9 @@ COLLIERS_MAIN_DETAIL_CONCURRENCY = 1
 # run-local cache on the next checkpoint attempt.
 COLLIERS_MAIN_MAX_CHUNKS_PER_ATTEMPT = 10
 PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS = {"avison-young"}
+COHORT_EXCLUSIVE_SOURCE_KEYS = {"colliers-main"}
+COHORT_JLL_SOURCE_KEYS = {"jll", "jll-investor"}
+COHORT_CBRE_SOURCE_KEYS = {"cbre", "cbre-dealflow"}
 FORBIDDEN_INGEST_FLAGS = {
     "--mark-missing",
     "--activate-status",
@@ -319,6 +323,48 @@ def build_collect_argv(
         f"--page-cap={page_cap}",
         f"--concurrency={concurrency}",
         f"--out={output}",
+    ]
+
+
+def build_cohort_collect_worker_argv(
+    source: str,
+    output: Path,
+    *,
+    run_dir: Path,
+    attempt_log: Path,
+    attempt_number: int,
+    generation_started_at: str,
+    page_cap: int,
+    concurrency: int,
+    transactions: Sequence[str],
+) -> list[str]:
+    """Build the no-manifest collection worker command for one source.
+
+    The checkpoint coordinator is the sole manifest writer.  This child only
+    collects an artifact (and writes source-local logs/cache), so a failed or
+    interrupted child cannot publish a partial checkpoint transition.
+    """
+    return [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--_cohort-collect-source",
+        source,
+        "--_cohort-run-dir",
+        str(run_dir),
+        "--_cohort-output",
+        str(output),
+        "--_cohort-attempt-log",
+        str(attempt_log),
+        "--_cohort-attempt-number",
+        str(attempt_number),
+        "--_cohort-generation-started-at",
+        generation_started_at,
+        "--page-cap",
+        str(page_cap),
+        "--concurrency",
+        str(concurrency),
+        "--transactions",
+        "both" if tuple(transactions) == TRANSACTIONS else transactions[0],
     ]
 
 
@@ -1101,6 +1147,325 @@ def run_command(
     return rc
 
 
+def run_cohort_collection_worker(
+    source: str,
+    output: Path,
+    *,
+    run_dir: Path,
+    attempt_log: Path,
+    attempt_number: int,
+    generation_started_at: str,
+    page_cap: int,
+    concurrency: int,
+    transactions: Sequence[str],
+) -> int:
+    """Collect one source without reading or writing a checkpoint manifest.
+
+    This is intentionally a narrow internal entry point used only by the
+    coordinator's bounded source-worker pool.  Validation, gates, dry-runs,
+    and every manifest state transition remain in the coordinator process.
+    """
+    if source not in SOURCE_KEYS:
+        raise ValueError(f"unknown source: {source}")
+    env, _overrides = fresh_source_env(
+        source,
+        run_dir,
+        generation_started_at=generation_started_at,
+        attempt_number=attempt_number,
+    )
+    if source == "colliers-main":
+        rc, _error = collect_colliers_main_chunks(
+            run_dir,
+            output=output,
+            attempt_number=attempt_number,
+            page_cap=page_cap,
+            concurrency=concurrency,
+            transactions=transactions,
+            env=env,
+        )
+        attempt_log.parent.mkdir(parents=True, exist_ok=True)
+        attempt_log.write_text(
+            "Colliers Main cohort worker uses bounded fresh-process chunks; "
+            "see sibling chunk logs for commands and output.\n",
+            encoding="utf-8",
+        )
+        return rc
+    return run_command(
+        build_collect_argv(
+            source,
+            output,
+            page_cap=page_cap,
+            concurrency=concurrency,
+            transactions=transactions,
+        ),
+        attempt_log,
+        env=env,
+    )
+
+
+@dataclass
+class CohortCollectionProcess:
+    """A source-local collector owned and reaped by the coordinator."""
+
+    source: str
+    process: Any
+    log_handle: Any
+    tmp_artifact: Path
+    attempt: dict[str, Any]
+    attempt_started_at: str
+
+
+def source_worker_lanes(source: str) -> frozenset[str]:
+    """Return conservative provider lanes for opt-in source concurrency."""
+    if source not in SOURCE_KEYS:
+        raise ValueError(f"unknown source: {source}")
+    lanes: set[str] = set()
+    if source in BUILDOUT_SOURCE_KEYS:
+        lanes.add("buildout")
+    if source in COHORT_JLL_SOURCE_KEYS:
+        lanes.add("jll")
+    if source in COHORT_CBRE_SOURCE_KEYS:
+        lanes.add("cbre")
+    return frozenset(lanes)
+
+
+def select_cohort_sources(
+    pending: Sequence[str],
+    active: Sequence[str],
+    *,
+    source_workers: int,
+) -> list[str]:
+    """Choose a bounded source cohort without unsafe provider overlap.
+
+    Colliers Main is an exclusive job because its large sitemap uses bounded
+    child processes and needs predictable source pressure.  JLL/JLL Investor
+    share a lane, and every Buildout source shares one lane.  The selection is
+    deterministic so a resumed run has explainable scheduling behavior.
+    """
+    if source_workers < 1:
+        raise ValueError("source_workers must be positive")
+    if len(active) >= source_workers or set(active) & COHORT_EXCLUSIVE_SOURCE_KEYS:
+        return []
+    active_lanes = set().union(*(source_worker_lanes(item) for item in active))
+    selected: list[str] = []
+    selected_lanes: set[str] = set()
+    for source in pending:
+        if len(active) + len(selected) >= source_workers:
+            break
+        if source in COHORT_EXCLUSIVE_SOURCE_KEYS:
+            if active or selected:
+                continue
+            return [source]
+        lanes = source_worker_lanes(source)
+        if lanes & (active_lanes | selected_lanes):
+            continue
+        selected.append(source)
+        selected_lanes.update(lanes)
+    return selected
+
+
+def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> None:
+    """Terminate every active source process group before releasing the lock."""
+    processes = list(active)
+    for item in processes:
+        if item.process.poll() is not None:
+            continue
+        item.log_handle.write(
+            f"[{utc_now()}] interrupt: terminating process group {item.process.pid}\n"
+        )
+        item.log_handle.flush()
+        try:
+            os.killpg(item.process.pid, signal.SIGINT)
+        except ProcessLookupError:
+            pass
+    for item in processes:
+        if item.process.poll() is not None:
+            item.log_handle.close()
+            continue
+        try:
+            item.process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            item.log_handle.write(
+                f"[{utc_now()}] interrupt: killing process group {item.process.pid}\n"
+            )
+            item.log_handle.flush()
+            try:
+                os.killpg(item.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            item.process.wait()
+        finally:
+            item.log_handle.close()
+
+
+def _cohort_attempt(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    source: str,
+) -> tuple[dict[str, Any], Path, Path, str] | None:
+    """Durably create one coordinator-owned source collection attempt."""
+    checkpoint = manifest["sources"][source]
+    if source == "colliers-main":
+        runtime_error = collector_runtime_dependency_error()
+        if runtime_error:
+            checkpoint["state"] = "collect_infrastructure_failed"
+            checkpoint["collection_preflight"] = {
+                "ok": False,
+                "error": runtime_error,
+                "checked_at": utc_now(),
+            }
+            save_manifest(run_dir, manifest)
+            return None
+    attempt_number = len(checkpoint["attempts"]) + 1
+    attempt_started = utc_now()
+    attempt_log = run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
+    tmp_artifact = run_dir / "sources" / f"{source}.json.tmp"
+    tmp_artifact.parent.mkdir(parents=True, exist_ok=True)
+    tmp_artifact.unlink(missing_ok=True)
+    attempt = {
+        "number": attempt_number,
+        "started_at": attempt_started,
+        "finished_at": None,
+        "rc": None,
+        "log": _relative_to_run(attempt_log, run_dir),
+        "freshness_overrides": {
+            key: ("<run-local-path>" if str(run_dir) in value else value)
+            for key, value in fresh_source_env(
+                source,
+                run_dir,
+                generation_started_at=manifest["started_at"],
+                attempt_number=attempt_number,
+            )[1].items()
+        },
+        "rejected_artifact": None,
+        "error": None,
+    }
+    if source == "colliers-main":
+        # The worker does not write the manifest, including incremental chunks.
+        attempt["chunks"] = []
+    checkpoint["attempts"].append(attempt)
+    checkpoint["state"] = "collecting"
+    save_manifest(run_dir, manifest)
+    return attempt, tmp_artifact, attempt_log, attempt_started
+
+
+def _start_cohort_collection(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    source: str,
+    *,
+    page_cap: int,
+    concurrency: int,
+) -> CohortCollectionProcess | None:
+    """Start one source collection in its own process group."""
+    created = _cohort_attempt(run_dir, manifest, source)
+    if created is None:
+        return None
+    attempt, tmp_artifact, attempt_log, attempt_started = created
+    argv = build_cohort_collect_worker_argv(
+        source,
+        tmp_artifact,
+        run_dir=run_dir,
+        attempt_log=attempt_log,
+        attempt_number=attempt["number"],
+        generation_started_at=manifest["started_at"],
+        page_cap=page_cap,
+        concurrency=concurrency,
+        transactions=tuple(manifest["config"]["transactions"]),
+    )
+    attempt_log.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = attempt_log.open("a", encoding="utf-8")
+    log_handle.write(f"[{utc_now()}] coordinator worker: {' '.join(argv)}\n")
+    log_handle.flush()
+    try:
+        process = subprocess.Popen(
+            argv,
+            cwd=COLLECTOR_DIR,
+            env=safe_process_env(),
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        log_handle.write(f"[{utc_now()}] worker start failed: {exc}\n")
+        log_handle.close()
+        attempt["finished_at"] = utc_now()
+        attempt["error"] = f"worker start failed: {exc}"
+        checkpoint = manifest["sources"][source]
+        checkpoint["state"] = "collect_failed"
+        save_manifest(run_dir, manifest)
+        return None
+    return CohortCollectionProcess(
+        source=source,
+        process=process,
+        log_handle=log_handle,
+        tmp_artifact=tmp_artifact,
+        attempt=attempt,
+        attempt_started_at=attempt_started,
+    )
+
+
+def _finalize_cohort_collection(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    item: CohortCollectionProcess,
+) -> bool:
+    """Validate and publish a completed source worker's artifact centrally."""
+    checkpoint = manifest["sources"][item.source]
+    rc = item.process.poll()
+    if rc is None:
+        raise RuntimeError("cannot finalize a running cohort source worker")
+    item.log_handle.write(f"[{utc_now()}] coordinator observed rc={rc}\n")
+    item.log_handle.close()
+    item.attempt["rc"] = rc
+    item.attempt["finished_at"] = utc_now()
+    if rc != 0:
+        item.attempt["error"] = f"collector exited {rc}"
+        item.attempt["rejected_artifact"] = _archive_rejected(
+            item.tmp_artifact, run_dir, item.source, item.attempt["number"]
+        )
+        checkpoint["state"] = "collect_failed"
+        save_manifest(run_dir, manifest)
+        return False
+    try:
+        generation_bound = (
+            item.source in STRICT_FRESHNESS_SOURCE_KEYS
+            or item.source in PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS
+        )
+        stats = validate_source_artifact(
+            item.tmp_artifact,
+            item.source,
+            item.attempt_started_at,
+            require_strict_freshness=item.source in STRICT_FRESHNESS_SOURCE_KEYS,
+            expected_generation_id=run_dir.name if generation_bound else None,
+            expected_generation_started_at=(
+                manifest["started_at"] if generation_bound else None
+            ),
+            expected_transactions=tuple(manifest["config"]["transactions"]),
+        )
+    except ArtifactValidationError as exc:
+        item.attempt["error"] = str(exc)
+        item.attempt["rejected_artifact"] = _archive_rejected(
+            item.tmp_artifact, run_dir, item.source, item.attempt["number"]
+        )
+        checkpoint["state"] = "artifact_rejected"
+        save_manifest(run_dir, manifest)
+        return False
+    canonical = run_dir / "sources" / f"{item.source}.json"
+    os.replace(item.tmp_artifact, canonical)
+    stats["sha256"] = sha256_file(canonical)
+    stats["bytes"] = canonical.stat().st_size
+    checkpoint["artifact"] = {
+        **stats,
+        "path": _relative_to_run(canonical, run_dir),
+        "attempt_started_at": item.attempt_started_at,
+    }
+    checkpoint["state"] = "validated"
+    save_manifest(run_dir, manifest)
+    return True
+
+
 def collector_runtime_dependency_error() -> str | None:
     """Return a compact error when the collector checkout cannot import deps.
 
@@ -1168,6 +1533,7 @@ def new_manifest(
     sources: Sequence[str],
     page_cap: int,
     concurrency: int,
+    source_workers: int = 1,
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
     database_target: Mapping[str, str] | None = None,
@@ -1197,6 +1563,7 @@ def new_manifest(
             "max_items": 0,
             "page_cap": page_cap,
             "concurrency": concurrency,
+            "source_workers": source_workers,
             "additive": True,
             "status_activation": False,
             "mark_missing": False,
@@ -1230,6 +1597,7 @@ def load_resume_manifest(
     sources: Sequence[str],
     page_cap: int,
     concurrency: int,
+    source_workers: int = 1,
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
     database_target: Mapping[str, str] | None = None,
@@ -1247,12 +1615,19 @@ def load_resume_manifest(
         "max_items": 0,
         "page_cap": page_cap,
         "concurrency": concurrency,
+        "source_workers": source_workers,
         "additive": True,
         "status_activation": False,
         "mark_missing": False,
         "admit_baseline_hold_additively": admit_baseline_hold_additively,
     }
-    if value.get("config") != expected:
+    recorded_config = dict(value.get("config") or {})
+    # Checkpoints created before the opt-in cohort pool retain the exact
+    # serial contract.  Normalize only for comparison, leaving their durable
+    # manifest byte-for-byte untouched until the coordinator writes a later
+    # state transition.
+    recorded_config.setdefault("source_workers", 1)
+    if recorded_config != expected:
         raise RefreshError("resume configuration differs from the manifest")
     if database_target is not None:
         recorded_target = (value.get("preflight") or {}).get("database_target")
@@ -1976,6 +2351,126 @@ def prepare_sources(
         ):
             return [source]
     return []
+
+
+def _cohort_needs_collection(
+    run_dir: Path,
+    manifest: Mapping[str, Any],
+    source: str,
+    *,
+    attempts_this_run: int,
+) -> bool:
+    checkpoint = manifest["sources"][source]
+    if _manifest_checkpoint_artifact_valid(run_dir, manifest, source):
+        return False
+    if checkpoint.get("state") == "collect_infrastructure_failed":
+        return False
+    return len(checkpoint.get("attempts") or []) < attempts_this_run
+
+
+def prepare_sources_cohort(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    sources: Sequence[str],
+    *,
+    page_cap: int,
+    concurrency: int,
+    attempts_this_run: int,
+    env_file: str | None,
+    source_workers: int,
+) -> list[str]:
+    """Collect sources concurrently, then gate/dry-run them coordinator-side.
+
+    There is deliberately no live ingest in this phase.  Every selected source
+    must have a validated artifact and a successful coordinator-side gate and
+    dry-run before the existing aggregate gate may authorize serial additive
+    ingestion.
+    """
+    if source_workers <= 1:
+        return prepare_sources(
+            run_dir,
+            manifest,
+            sources,
+            page_cap=page_cap,
+            concurrency=concurrency,
+            attempts_this_run=attempts_this_run,
+            env_file=env_file,
+        )
+
+    active: list[CohortCollectionProcess] = []
+    try:
+        while True:
+            pending = [
+                source
+                for source in sources
+                if _cohort_needs_collection(
+                    run_dir,
+                    manifest,
+                    source,
+                    attempts_this_run=attempts_this_run,
+                )
+            ]
+            for source in select_cohort_sources(
+                pending,
+                [item.source for item in active],
+                source_workers=source_workers,
+            ):
+                started = _start_cohort_collection(
+                    run_dir,
+                    manifest,
+                    source,
+                    page_cap=page_cap,
+                    concurrency=concurrency,
+                )
+                if started is not None:
+                    active.append(started)
+
+            completed = [item for item in active if item.process.poll() is not None]
+            for item in completed:
+                active.remove(item)
+                _finalize_cohort_collection(run_dir, manifest, item)
+
+            if active:
+                # Keep the coordinator responsive to operator interrupt while
+                # avoiding a busy poll loop around bounded source workers.
+                time.sleep(0.1)
+                continue
+            if not pending:
+                break
+            # A non-runnable pending source (for example an infrastructure
+            # preflight failure) cannot make progress and must not spin.
+            selectable = select_cohort_sources(
+                pending, (), source_workers=source_workers
+            )
+            if not selectable:
+                break
+    except BaseException:
+        _terminate_cohort_processes(active)
+        raise
+
+    collection_failures = [
+        source
+        for source in sources
+        if not _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
+    ]
+    if collection_failures:
+        return collection_failures
+
+    failures: list[str] = []
+    for source in sources:
+        # A valid artifact suppresses new collection in advance_source; the
+        # coordinator now performs its established gate and SQL dry-run.
+        if not advance_source(
+            run_dir,
+            manifest,
+            source,
+            page_cap=page_cap,
+            concurrency=concurrency,
+            attempts_this_run=attempts_this_run,
+            env_file=env_file,
+        ):
+            failures.append(source)
+    return failures
 
 
 def run_aggregate_gate(
@@ -3181,7 +3676,35 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--page-cap", type=int, default=400)
     parser.add_argument("--concurrency", type=int, default=3)
+    parser.add_argument(
+        "--source-workers",
+        type=int,
+        default=1,
+        help=(
+            "opt-in bounded source collection workers (default: 1 serial). "
+            "Provider lanes and coordinator-only checkpoint finalization apply."
+        ),
+    )
     parser.add_argument("--attempts-per-source", type=int, default=3)
+    parser.add_argument(
+        "--_cohort-collect-source",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument("--_cohort-run-dir", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--_cohort-output", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--_cohort-attempt-log", default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--_cohort-attempt-number",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--_cohort-generation-started-at",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--max-resume-age-hours",
         type=float,
@@ -3199,8 +3722,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--allow-dirty", action="store_true")
     args = parser.parse_args(argv)
 
+    if args._cohort_collect_source is not None:
+        if (
+            args._cohort_run_dir is None
+            or args._cohort_output is None
+            or args._cohort_attempt_log is None
+            or args._cohort_attempt_number is None
+            or args._cohort_generation_started_at is None
+        ):
+            parser.error("incomplete internal cohort collection worker arguments")
+        try:
+            worker_transactions = parse_transactions(args.transactions)
+            return run_cohort_collection_worker(
+                args._cohort_collect_source,
+                Path(args._cohort_output),
+                run_dir=Path(args._cohort_run_dir),
+                attempt_log=Path(args._cohort_attempt_log),
+                attempt_number=args._cohort_attempt_number,
+                generation_started_at=args._cohort_generation_started_at,
+                page_cap=args.page_cap,
+                concurrency=args.concurrency,
+                transactions=worker_transactions,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+
     if args.page_cap < 1 or not 1 <= args.concurrency <= 6:
         parser.error("page-cap must be positive and concurrency must be between 1 and 6")
+    # This is intentionally lower than the number of independent provider
+    # lanes.  Two workers lets a direct/API source overlap one heavy detail
+    # source without turning the first operational rollout into an unmeasured
+    # provider or local-queue stress test.
+    if not 1 <= args.source_workers <= 2:
+        parser.error("source-workers must be between 1 and 2")
     if args.attempts_per_source < 1:
         parser.error("attempts-per-source must be positive")
     if (
@@ -3233,6 +3787,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sources=sources,
             page_cap=args.page_cap,
             concurrency=args.concurrency,
+            source_workers=args.source_workers,
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             database_target=database_target,
@@ -3252,6 +3807,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sources=sources,
             page_cap=args.page_cap,
             concurrency=args.concurrency,
+            source_workers=args.source_workers,
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             database_target=database_target,
@@ -3314,7 +3870,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             record_scope_from_validation(manifest, pre_result)
             save_manifest(run_dir, manifest)
 
-            source_failures = prepare_sources(
+            source_failures = prepare_sources_cohort(
                 run_dir,
                 manifest,
                 sources,
@@ -3322,6 +3878,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 concurrency=args.concurrency,
                 attempts_this_run=args.attempts_per_source,
                 env_file=args.env_file,
+                source_workers=args.source_workers,
             )
             if source_failures:
                 raise RefreshError(

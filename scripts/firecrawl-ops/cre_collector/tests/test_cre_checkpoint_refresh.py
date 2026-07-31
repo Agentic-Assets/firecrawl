@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import shutil
 import sys
@@ -2463,6 +2464,242 @@ def test_prepare_sources_stops_before_later_source_after_gate_block(
     )
     assert failures == ["svn"]
     assert calls == ["svn"]
+
+
+def test_cohort_scheduler_respects_exclusive_and_provider_lanes():
+    assert refresh.select_cohort_sources(
+        ("colliers-main", "svn"), (), source_workers=3
+    ) == ["colliers-main"]
+    assert refresh.select_cohort_sources(
+        ("svn", "jll", "jll-investor", "nai-global", "svn"),
+        (),
+        source_workers=4,
+    ) == ["svn", "jll", "nai-global"]
+    assert refresh.select_cohort_sources(
+        ("jll-investor", "svn"), ("jll",), source_workers=3
+    ) == ["svn"]
+    assert refresh.select_cohort_sources(
+        ("cbre", "cbre-dealflow", "svn"), (), source_workers=3
+    ) == ["cbre", "svn"]
+    buildout = tuple(sorted(refresh.BUILDOUT_SOURCE_KEYS))
+    assert len(buildout) >= 2
+    assert refresh.select_cohort_sources(
+        buildout, (), source_workers=4
+    ) == [buildout[0]]
+
+
+def test_cohort_worker_argv_carries_only_collection_inputs(tmp_path):
+    argv = refresh.build_cohort_collect_worker_argv(
+        "svn",
+        tmp_path / "source.json.tmp",
+        run_dir=tmp_path / "run",
+        attempt_log=tmp_path / "attempt.log",
+        attempt_number=2,
+        generation_started_at="2026-07-31T12:00:00+00:00",
+        page_cap=400,
+        concurrency=3,
+        transactions=("sale", "lease"),
+    )
+    assert "--_cohort-collect-source" in argv
+    assert "--_cohort-generation-started-at" in argv
+    assert "--env-file" not in argv
+    assert "--mark-missing" not in argv
+    assert "cre_ingest.py" not in argv
+
+
+def test_one_source_worker_preserves_the_serial_preparation_path(
+    tmp_path, monkeypatch
+):
+    manifest = refresh.new_manifest(
+        tmp_path / "run",
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    observed = {}
+
+    def serial(*args, **kwargs):
+        observed["args"] = args
+        observed["kwargs"] = kwargs
+        return ["svn"]
+
+    monkeypatch.setattr(refresh, "prepare_sources", serial)
+    assert refresh.prepare_sources_cohort(
+        tmp_path / "run",
+        manifest,
+        ("svn",),
+        page_cap=400,
+        concurrency=3,
+        attempts_this_run=2,
+        env_file=None,
+        source_workers=1,
+    ) == ["svn"]
+    assert observed["kwargs"]["attempts_this_run"] == 2
+
+
+def test_resume_accepts_legacy_serial_manifest_without_source_workers(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    del manifest["config"]["source_workers"]
+    path = run_dir / "manifest.json"
+    refresh.atomic_write_json(path, manifest)
+    loaded = refresh.load_resume_manifest(
+        path,
+        git_sha="abc",
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+        source_workers=1,
+    )
+    assert "source_workers" not in loaded["config"]
+
+
+def test_cohort_prepares_all_artifacts_before_any_gate_or_dry_run(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn", "cbre", "jll", "jll-investor"),
+        page_cap=400,
+        concurrency=3,
+        source_workers=2,
+    )
+    events = []
+
+    class CompletedProcess:
+        def __init__(self, source):
+            self.pid = 5000 + len(events)
+            self.source = source
+
+        def poll(self):
+            return 0
+
+    def start(_run_dir, _manifest, source, **_kwargs):
+        events.append(("start", source))
+        return refresh.CohortCollectionProcess(
+            source=source,
+            process=CompletedProcess(source),
+            log_handle=io.StringIO(),
+            tmp_artifact=run_dir / "sources" / f"{source}.tmp",
+            attempt={"number": 1},
+            attempt_started_at=ATTEMPT,
+        )
+
+    def finalize(_run_dir, current_manifest, item):
+        events.append(("finalize", item.source))
+        current_manifest["sources"][item.source]["artifact"] = {
+            "path": f"sources/{item.source}.json"
+        }
+        current_manifest["sources"][item.source]["state"] = "validated"
+        return True
+
+    def artifact_valid(_run_dir, current_manifest, source):
+        if current_manifest["sources"][source].get("artifact"):
+            return run_dir / "sources" / f"{source}.json", {"staged_unique": 1}
+        return None
+
+    def advance(_run_dir, _manifest, source, **_kwargs):
+        events.append(("advance", source))
+        assert len([item for item in events if item[0] == "finalize"]) == 4
+        return True
+
+    monkeypatch.setattr(refresh, "_start_cohort_collection", start)
+    monkeypatch.setattr(refresh, "_finalize_cohort_collection", finalize)
+    monkeypatch.setattr(refresh, "_manifest_checkpoint_artifact_valid", artifact_valid)
+    monkeypatch.setattr(refresh, "advance_source", advance)
+
+    assert refresh.prepare_sources_cohort(
+        run_dir,
+        manifest,
+        tuple(manifest["config"]["sources"]),
+        page_cap=400,
+        concurrency=3,
+        attempts_this_run=1,
+        env_file=None,
+        source_workers=2,
+    ) == []
+    assert [source for kind, source in events if kind == "finalize"] == [
+        "svn",
+        "cbre",
+        "jll",
+        "jll-investor",
+    ]
+    assert [source for kind, source in events if kind == "advance"] == [
+        "svn",
+        "cbre",
+        "jll",
+        "jll-investor",
+    ]
+
+
+def test_cohort_interrupt_terminates_every_active_child_before_returning(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn", "cbre"),
+        page_cap=400,
+        concurrency=3,
+        source_workers=2,
+    )
+    signals = []
+
+    class RunningProcess:
+        def __init__(self, pid):
+            self.pid = pid
+            self.done = False
+
+        def poll(self):
+            return 0 if self.done else None
+
+        def wait(self, timeout=None):
+            self.done = True
+            return -2
+
+    def start(_run_dir, _manifest, source, **_kwargs):
+        return refresh.CohortCollectionProcess(
+            source=source,
+            process=RunningProcess(6000 + len(signals) + (1 if source == "cbre" else 0)),
+            log_handle=io.StringIO(),
+            tmp_artifact=run_dir / "sources" / f"{source}.tmp",
+            attempt={"number": 1},
+            attempt_started_at=ATTEMPT,
+        )
+
+    monkeypatch.setattr(refresh, "_start_cohort_collection", start)
+    monkeypatch.setattr(refresh.time, "sleep", lambda _seconds: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(
+        refresh.os, "killpg", lambda pid, sig: signals.append((pid, sig))
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        refresh.prepare_sources_cohort(
+            run_dir,
+            manifest,
+            ("svn", "cbre"),
+            page_cap=400,
+            concurrency=3,
+            attempts_this_run=1,
+            env_file=None,
+            source_workers=2,
+        )
+    assert {pid for pid, _signal in signals} == {6000, 6001}
+    assert {signal for _pid, signal in signals} == {refresh.signal.SIGINT}
 
 
 def test_two_resumes_preserve_ingest_then_refresh_first_seen_without_reingest(

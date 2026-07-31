@@ -60,12 +60,23 @@ python3 cre_checkpoint_refresh.py \
   --env-file "$HOME/.config/cre/equire.env"
 
 # Resume the exact run after interruption. Keep the same source list, page cap,
-# concurrency, attempts, collector SHA, and environment:
+# concurrency, source-worker count, attempts, collector SHA, and environment:
 python3 cre_checkpoint_refresh.py \
   --resume out/checkpoint-refresh/<run-id> \
   --sources <same-exact-source-list> \
   --env-file "$HOME/.config/cre/equire.env"
 ```
+
+`--source-workers` defaults to `1`, preserving serial source preparation. It
+is an explicit, opt-in collection-only pool, capped at `2`; it does not change
+the per-source `--concurrency` setting and it never permits concurrent ingest.
+The checkpoint coordinator remains the only manifest writer, waits until every
+selected artifact is collected and validated, then runs each gate and dry-run,
+one aggregate gate, and deterministic serial additive ingests. Colliers Main
+is exclusive; the JLL, CBRE, and Buildout source families each share a provider
+lane. Use the default until a specific two-source pairing has its own
+no-write calibration evidence. A source failure, rejected artifact, gate, or
+dry-run failure prevents aggregate admission and every database write.
 
 The strict runner never passes `--monitor`, `--mark-missing`,
 `--activate-status`, or `--update-baseline`. Never use `--allow-dirty` for a
