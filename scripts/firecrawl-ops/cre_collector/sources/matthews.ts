@@ -1,4 +1,5 @@
 import * as cheerio from "cheerio";
+import { Agent, fetch as undiciFetch } from "undici";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import {
@@ -13,6 +14,7 @@ const MATTHEWS_SOURCE_URL = `${MATTHEWS_HOST}/listings`;
 const MATTHEWS_SITEMAP_URL = `${MATTHEWS_HOST}/sitemap.xml`;
 const MATTHEWS_NON_PHOTO = /headshot|web-use|brand-logo|logo|og-default|placeholder|favicon|sprite/i;
 export const MATTHEWS_FETCH_TIMEOUT_MS = 30_000;
+const NATIVE_FETCH = globalThis.fetch;
 
 let matthewsNextSlot = 0;
 let matthewsInterval = 1800;
@@ -45,6 +47,33 @@ export function matthewsFetchOptions(
     redirect,
     ...(strict ? { cache: "no-store" as const } : {}),
   };
+}
+
+/**
+ * AbortSignal is necessary to close a request, but an upstream HTTP stack can
+ * occasionally fail to settle the fetch promise after it observes that abort.
+ * Race the header phase against an explicit rejecting deadline so one stalled
+ * provider connection can never hold the full refresh indefinitely.
+ */
+export async function matthewsFetchResponse(
+  url: string,
+  options: RequestInit,
+  controller: AbortController,
+  timeoutMs = MATTHEWS_FETCH_TIMEOUT_MS,
+  request: (url: string, options: RequestInit) => Promise<Response> = fetch
+): Promise<Response> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`Matthews response headers timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([request(url, options), deadline]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 /**
@@ -95,19 +124,34 @@ export async function matthewsFetch(
     let status = 0;
     let attemptError: unknown = null;
     const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      MATTHEWS_FETCH_TIMEOUT_MS
-    );
+    // Own each transport so a provider socket that ignores abort cannot remain
+    // alive after a timed-out attempt and keep the collector process running.
+    const agent = globalThis.fetch === NATIVE_FETCH
+      ? new Agent({
+          connectTimeout: MATTHEWS_FETCH_TIMEOUT_MS,
+          headersTimeout: MATTHEWS_FETCH_TIMEOUT_MS,
+          bodyTimeout: MATTHEWS_FETCH_TIMEOUT_MS,
+          keepAliveTimeout: 1,
+        })
+      : null;
     try {
-      const res = await fetch(
+      const res = await matthewsFetchResponse(
         url,
         matthewsFetchOptions(
           requireFreshDetails(),
           MATTHEWS_FETCH_TIMEOUT_MS,
           manualRedirect ? "manual" : "follow",
           controller.signal
-        )
+        ),
+        controller,
+        MATTHEWS_FETCH_TIMEOUT_MS,
+        (requestUrl, requestOptions) => {
+          if (!agent) return globalThis.fetch(requestUrl, requestOptions);
+          return undiciFetch(
+            requestUrl,
+            { ...requestOptions, dispatcher: agent } as unknown as Parameters<typeof undiciFetch>[1]
+          ) as unknown as Promise<Response>;
+        }
       );
       status = res.status;
       if (res.ok) {
@@ -126,7 +170,7 @@ export async function matthewsFetch(
       // to avoid converting a transient body stall into a hard HTTP failure.
       attemptError = error;
     } finally {
-      clearTimeout(timeout);
+      agent?.destroy();
     }
     if (matthewsRetryableFetchFailure(status, attemptError)) {
       lastError = attemptError;

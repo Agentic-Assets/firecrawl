@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MATTHEWS_FETCH_TIMEOUT_MS,
+  matthewsFetchResponse,
   matthewsFetchOptions,
   matthewsFetch,
   matthewsParsedCoverage,
@@ -14,6 +15,30 @@ import {
   matthewsTenureFromUrl,
   srcMatthews,
 } from "../../../sources/matthews.js";
+
+test("Matthews bounds a header stall even when fetch ignores abort", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const controller = new AbortController();
+  globalThis.fetch = async () => new Promise<Response>(() => {});
+  globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    if (delay === 1) {
+      queueMicrotask(() => callback(...args));
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  }) as typeof setTimeout;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+  });
+
+  await assert.rejects(
+    () => matthewsFetchResponse("https://www.matthews.com/sitemap.xml", {}, controller, 1),
+    /response headers timed out after 1ms/
+  );
+  assert.equal(controller.signal.aborted, true);
+});
 
 test("matthewsTenureFromUrl classifies leasing slugs as lease", () => {
   assert.equal(matthewsTenureFromUrl("https://www.matthews.com/properties/leasing-abc"), "lease");
@@ -444,4 +469,31 @@ test("Matthews retries a failed HTTP-200 response body before admitting a later 
   const response = await matthewsFetch("https://www.matthews.com/properties/retry-check");
   assert.equal(calls, 2);
   assert.equal(response.html, "recovered");
+});
+
+test("Matthews fetch retries then fails a header stall that ignores abort", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Promise<Response>(() => {});
+  };
+  globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    if (typeof delay === "number" && delay >= 1800) {
+      queueMicrotask(() => callback(...args));
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  }) as typeof setTimeout;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+  });
+
+  await assert.rejects(
+    () => matthewsFetch("https://www.matthews.com/sitemap.xml"),
+    /response headers timed out after 30000ms/
+  );
+  assert.equal(calls, 6);
 });
