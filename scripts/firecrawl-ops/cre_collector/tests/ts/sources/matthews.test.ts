@@ -6,6 +6,7 @@ import {
   matthewsFetch,
   matthewsParsedCoverage,
   matthewsPermanentRedirectTarget,
+  matthewsProviderIdentity,
   matthewsProviderNotFound,
   matthewsRetryableFetchFailure,
   matthewsResponseText,
@@ -103,6 +104,51 @@ test("strict Matthews parsing validates canonical provider identity and emits ge
     if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
     else process.env.CRE_REFRESH_GENERATION = oldGeneration;
   }
+});
+
+test("strict Matthews identity normalizes percent-escape spelling and sitemap trailing slashes", async (t) => {
+  const sitemapUrl = "https://www.matthews.com/properties/%c2%b140k-sf-industrial-warehouse/";
+  const canonicalUrl = "https://www.matthews.com/properties/%C2%B140k-sf-industrial-warehouse";
+  const html = `
+    <html><head><link rel="canonical" href="${canonicalUrl}"></head><body>
+      <h1 id="propertyTitle">40K SF Industrial Warehouse</h1>
+      <div id="propertyAddress">1 Main St, Tulsa, OK 74103</div>
+    </body></html>`;
+  assert.equal(
+    matthewsProviderIdentity(html, sitemapUrl, true),
+    "%c2%b140k-sf-industrial-warehouse"
+  );
+  assert.equal(parseMatthewsDetail(html, sitemapUrl, "sale", { strict: true })?.id, "%c2%b140k-sf-industrial-warehouse");
+
+  const originalFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  let detailRequests = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/sitemap.xml")) {
+      return new Response(
+        `<?xml version="1.0"?><urlset><url><loc>${sitemapUrl}</loc></url><url><loc>${canonicalUrl}</loc></url></urlset>`,
+        { status: 200 }
+      );
+    }
+    if (url === canonicalUrl.replace(/%C2%B1/g, "%c2%b1")) {
+      detailRequests += 1;
+      return new Response(html, { status: 200 });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  });
+
+  const result = await srcMatthews("sale", Number.POSITIVE_INFINITY, false);
+  assert.equal(detailRequests, 1);
+  assert.equal(result.totalAvailable, 1);
+  assert.equal(result.listings.length, 1);
+  assert.equal(result.truncated, false);
 });
 
 test("strict Matthews parsing rejects soft error shells with matching canonical identity", () => {

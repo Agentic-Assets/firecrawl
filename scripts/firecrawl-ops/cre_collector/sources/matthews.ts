@@ -248,7 +248,15 @@ function parseMatthewsAddress(line: string | null): {
 }
 
 function matthewsDetailUrlsFromSitemap(xml: string): string[] {
-  return Array.from(new Set(xml.match(/https:\/\/www\.matthews\.com\/properties\/[^<\s"')]+/gi) ?? []));
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of xml.match(/https:\/\/www\.matthews\.com\/properties\/[^<\s"')]+/gi) ?? []) {
+    const normalized = normalizedMatthewsPropertyUrl(raw, MATTHEWS_HOST);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    urls.push(normalized);
+  }
+  return urls;
 }
 
 export function matthewsTenureFromUrl(url: string): Tx {
@@ -263,7 +271,14 @@ function normalizedMatthewsPropertyUrl(raw: string | null, baseUrl: string): str
     if (parsed.hostname.toLowerCase().replace(/^www\./, "") !== "matthews.com") {
       return null;
     }
-    const path = parsed.pathname.replace(/\/+$/, "");
+    // RFC 3986 treats the hexadecimal digits in a percent-escape as
+    // case-insensitive. Matthews' sitemap and its canonical tag can differ
+    // only by that spelling (for example `%c2%b1` vs `%C2%B1`); normalize the
+    // representation before strict identity comparison without decoding a
+    // possible path separator or changing the property slug's semantics.
+    const path = parsed.pathname
+      .replace(/\/+$/, "")
+      .replace(/%[0-9a-f]{2}/gi, (escape) => escape.toLowerCase());
     if (!/^\/properties\/[^/]+$/i.test(path)) return null;
     return `https://www.matthews.com${path}`;
   } catch {
