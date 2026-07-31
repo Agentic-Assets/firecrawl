@@ -593,7 +593,7 @@ async function collectSavillsTransaction(tx: Tx, max: number, monitor: boolean):
   const seenListingIds = new Set<string>();
   const visitedUrls = new Set<string>();
   let total: number | null = null;
-  let totalPages: number | null = null;
+  let declaredTotalPages: number | null = null;
   let finalPage: number | null = null;
   let url: string | null = sourceUrl;
   let eligibleCount = 0;
@@ -609,16 +609,17 @@ async function collectSavillsTransaction(tx: Tx, max: number, monitor: boolean):
     const pageObservation = detailObservation("savills_next_data_public_record", "live");
     const rows = savillsNextDataProperties(html).filter((row) => row?.IsCommercial === true);
     const pageInfo = savillsPageInfo(html, rows.length, !monitor);
-    if (
-      pageInfo.currentPage === null ||
-      pageInfo.totalPages === null ||
-      pageInfo.totalItems === null
-    ) {
+    if (pageInfo.currentPage === null || pageInfo.totalItems === null) {
       throw new Error(`Savills ${tx} page did not expose complete pagination metadata`);
     }
-    if (pageInfo.currentPage > pageInfo.totalPages) {
+    if (finalPage !== null && pageInfo.currentPage !== finalPage + 1) {
       throw new Error(
-        `Savills ${tx} page ${pageInfo.currentPage} exceeds declared page count ${pageInfo.totalPages}`
+        `Savills ${tx} page sequence is not contiguous (${finalPage} -> ${pageInfo.currentPage})`
+      );
+    }
+    if (declaredTotalPages !== null && pageInfo.currentPage > declaredTotalPages) {
+      throw new Error(
+        `Savills ${tx} page ${pageInfo.currentPage} exceeds declared page count ${declaredTotalPages}`
       );
     }
     if (total !== null && pageInfo.totalItems !== total) {
@@ -626,13 +627,13 @@ async function collectSavillsTransaction(tx: Tx, max: number, monitor: boolean):
         `Savills ${tx} total changed during pagination (${total} -> ${pageInfo.totalItems})`
       );
     }
-    if (totalPages !== null && pageInfo.totalPages !== totalPages) {
+    if (declaredTotalPages !== null && pageInfo.totalPages !== null && pageInfo.totalPages !== declaredTotalPages) {
       throw new Error(
-        `Savills ${tx} page count changed during pagination (${totalPages} -> ${pageInfo.totalPages})`
+        `Savills ${tx} page count changed during pagination (${declaredTotalPages} -> ${pageInfo.totalPages})`
       );
     }
     total = pageInfo.totalItems;
-    totalPages = pageInfo.totalPages;
+    declaredTotalPages ??= pageInfo.totalPages;
     finalPage = pageInfo.currentPage;
     if ((pageInfo.totalItems ?? 0) > 0 && rows.length === 0) {
       throw new Error(`Savills ${tx} page ${pageInfo.currentPage ?? "?"} reported results but exposed no commercial rows`);
@@ -670,16 +671,16 @@ async function collectSavillsTransaction(tx: Tx, max: number, monitor: boolean):
     }
     const next = pageInfo.nextUrl;
     if (!next) {
-      if (pageInfo.currentPage < pageInfo.totalPages) {
+      if (declaredTotalPages !== null && pageInfo.currentPage < declaredTotalPages) {
         throw new Error(
-          `Savills ${tx} reports ${pageInfo.totalPages} pages but page ${pageInfo.currentPage} exposes no NextUrl`
+          `Savills ${tx} reports ${declaredTotalPages} pages but page ${pageInfo.currentPage} exposes no NextUrl`
         );
       }
       break;
     }
-    if (pageInfo.currentPage >= pageInfo.totalPages) {
+    if (declaredTotalPages !== null && pageInfo.currentPage >= declaredTotalPages) {
       throw new Error(
-        `Savills ${tx} final page ${pageInfo.currentPage}/${pageInfo.totalPages} unexpectedly exposes NextUrl`
+        `Savills ${tx} final page ${pageInfo.currentPage}/${declaredTotalPages} unexpectedly exposes NextUrl`
       );
     }
     const nextUrl = new URL(next, "https://search.savills.com").toString();
@@ -687,7 +688,7 @@ async function collectSavillsTransaction(tx: Tx, max: number, monitor: boolean):
     url = nextUrl;
     console.error(`  savills/${tx}: ${listings.length} U.S. commercial rows collected (source total ${total ?? "?"})`);
   }
-  if (total === null || totalPages === null || finalPage !== totalPages) {
+  if (total === null || finalPage === null || (declaredTotalPages !== null && finalPage !== declaredTotalPages)) {
     throw new Error(`Savills ${tx} pagination did not reach a verified final page`);
   }
   if (seenRawIds.size !== total) {

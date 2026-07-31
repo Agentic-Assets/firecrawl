@@ -123,6 +123,68 @@ test("Savills accepts a reconciled one-page provider shape whose paging total is
   }
 });
 
+test("Savills follows a complete NextUrl chain when the provider omits page count", async () => {
+  const first = savillsPageHtml(2, true)
+    .replace('"paging":{"total":1,"totalItems":2}', '"paging":{"total":0,"totalItems":2}')
+    .replace('"NextUrl":null', '"NextUrl":"/com/en/list/commercial/property-for-sale/united-states-of-america/page-2"');
+  const second = savillsPageHtml(2, true)
+    .replaceAll("US-1", "US-2")
+    .replaceAll("us-1", "us-2")
+    .replace('"paging":{"total":1,"totalItems":2}', '"paging":{"total":0,"totalItems":2}')
+    .replace('"currentPage":1', '"currentPage":2');
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) =>
+    new Response(String(input).endsWith("/page-2") ? second : first, { status: 200 });
+  try {
+    const result = await srcSavills("sale", Infinity, false);
+    assert.equal(result.listings.length, 2);
+    assert.equal(result.totalAvailable, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Savills rejects an address without U.S. or explicit non-U.S. evidence", async () => {
+  const property = {
+    ExternalPropertyID: "UNKNOWN-1",
+    ExternalPropertyIDFormatted: "unknown-1",
+    IsCommercial: true,
+    AddressLine1: "Unknown Building",
+    AddressLine2: "Unknown place",
+    PropertyTypes: [{ Caption: "Office" }],
+  };
+  const html = [
+    '<script id="__NEXT_DATA__" type="application/json">',
+    JSON.stringify({
+      props: {
+        initialReduxState: {
+          listPage: {
+            currentPage: 1,
+            pageMap: {
+              "1": {
+                paging: { total: 0, totalItems: 1 },
+                metaData: { NextUrl: null },
+              },
+            },
+          },
+          properties: { "UNKNOWN-1": property },
+        },
+      },
+    }),
+    "</script>",
+  ].join("");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(html, { status: 200 });
+  try {
+    await assert.rejects(
+      () => srcSavills("lease", Infinity, false),
+      /could not classify 1 provider row/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Savills rejects an anomalous nominal U.S. response containing only Canadian rows", async () => {
   const property = {
     ExternalPropertyID: "CA-1",
