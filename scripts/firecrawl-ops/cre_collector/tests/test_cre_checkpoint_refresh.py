@@ -3936,7 +3936,9 @@ def test_absolute_validation_quality_requires_mixed_source_canonical_url_coverag
     }
 
 
-def test_final_validation_fails_closed_on_preexisting_absolute_defect(tmp_path, monkeypatch):
+def test_final_validation_records_preexisting_absolute_defect_without_blocking_refresh(
+    tmp_path, monkeypatch
+):
     run_dir = tmp_path / "run"
     (run_dir / "logs").mkdir(parents=True)
     report = absolute_quality_report(missing_canonical_url="1")
@@ -3965,14 +3967,52 @@ def test_final_validation_fails_closed_on_preexisting_absolute_defect(tmp_path, 
         lambda *_args: {"ok": True, "failed_sources": []},
     )
 
-    with pytest.raises(refresh.GlobalStageError, match="final validation"):
-        refresh.run_final_validation(run_dir, manifest, None)
+    refresh.run_final_validation(run_dir, manifest, None)
     assert manifest["validation"]["quality_no_regression"] is True
     assert manifest["validation"]["absolute_quality_ok"] is False
     assert any(
         "missing_canonical_url" in failure
         for failure in manifest["validation"]["absolute_quality_failures"]
     )
+
+
+def test_final_validation_still_blocks_a_new_quality_regression(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    (run_dir / "logs").mkdir(parents=True)
+    before = absolute_quality_report()
+    after = absolute_quality_report()
+    after["queries"]["duplicates"][0]["groups"] = "1"
+    (run_dir / "pre-validation.json").write_text(
+        json.dumps(before), encoding="utf-8"
+    )
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["preflight"]["validation_path"] = "pre-validation.json"
+
+    def write_final_validation(argv, _log, env):
+        assert "CRE_ACTIVATE_STATUS" not in env
+        Path(argv[argv.index("--out") + 1]).write_text(
+            json.dumps(after), encoding="utf-8"
+        )
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", write_final_validation)
+    monkeypatch.setattr(
+        refresh,
+        "verify_validation_readback",
+        lambda *_args: {"ok": True, "failed_sources": []},
+    )
+
+    with pytest.raises(refresh.GlobalStageError, match="final validation"):
+        refresh.run_final_validation(run_dir, manifest, None)
+    assert manifest["validation"]["quality_no_regression"] is False
+    assert manifest["validation"]["absolute_quality_ok"] is False
 
 
 def test_scope_readback_counts_unsupported_active_rows(tmp_path):

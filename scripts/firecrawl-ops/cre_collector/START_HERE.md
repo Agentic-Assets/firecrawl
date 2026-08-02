@@ -158,6 +158,16 @@ independent 24-hour bound at certificate time with
 are not canonical listing evidence and can never support a whole-source
 freshness claim.
 
+The final validation records two distinct gates. A bounded source refresh
+requires successful query execution, no before/after quality regression, and
+an exact source freshness readback. The whole-database absolute-quality audit
+is also recorded, but historical defects outside the refreshed source do not
+block that source's additive refresh. They do block
+`cre_freshness_certificate.py`, so no whole-registry freshness certificate can
+be issued until the absolute-quality backlog is clean. This separation keeps a
+known legacy defect visible without making the serial 51-source refresh unable
+to make progress.
+
 ### Colliers Main runtime calibration
 
 `colliers-main` has a large sitemap and renders every current detail page. Do

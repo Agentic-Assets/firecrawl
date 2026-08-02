@@ -3591,10 +3591,14 @@ def run_final_validation(
         "failed_readback_sources": readback["failed_sources"],
     }
     save_manifest(run_dir, manifest)
+    # A bounded source generation must not be prevented from refreshing solely
+    # by historical, unrelated database defects. The regression comparison and
+    # exact per-source readback above remain admission-critical. The absolute
+    # audit is retained verbatim in the manifest and is enforced by
+    # cre_freshness_certificate.py before any whole-registry freshness claim.
     if (
         result.get("ok") is not True
         or not quality["ok"]
-        or not absolute_quality["ok"]
         or not readback["ok"]
     ):
         raise GlobalStageError("final validation or per-source freshness readback failed")

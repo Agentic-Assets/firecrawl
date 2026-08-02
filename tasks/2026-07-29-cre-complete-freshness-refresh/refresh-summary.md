@@ -31,6 +31,14 @@ list and stopped after read-only pre-validation. It recorded no source attempt,
 artifact, gate, dry-run, ingest, or readback. Do not resume it as the complete
 refresh. Start new bounded generations from the clean, pushed CPU-guard SHA.
 
+The August 2 Cbre Deal Flow generation proved the need to keep two validation
+claims distinct. Its source artifact, gate, additive ingest, and exact
+freshness readback all passed, with no before/after quality regression. The
+whole-database absolute-quality audit still found pre-existing defects in
+unrelated sources, so it must remain a certificate and release-readiness gate,
+not a per-source refresh blocker. The recorded absolute audit continues to
+block `cre_freshness_certificate.py` until that backlog is remediated.
+
 ## Scope and safety
 
 This refresh covers the 20 source keys supported by the TypeScript collector.
