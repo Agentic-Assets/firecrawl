@@ -6,6 +6,7 @@ import json
 import io
 import os
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1640,6 +1641,198 @@ def test_checkpoint_sigterm_handler_uses_interrupt_cleanup_path():
         refresh.checkpoint_sigterm_handler(refresh.signal.SIGTERM, None)
 
 
+def test_host_cpu_guard_requires_sustained_saturation(tmp_path):
+    guard = refresh.HostCpuGuard(
+        log_path=tmp_path / "cpu-guard.jsonl",
+        max_percent=80.0,
+        sustain_seconds=30.0,
+        sample_seconds=5.0,
+    )
+
+    assert guard.observe(95.0, observed_monotonic=100.0) is None
+    assert guard.observe(99.0, observed_monotonic=129.9) is None
+    reason = guard.observe(91.0, observed_monotonic=130.0)
+
+    assert reason is not None
+    assert "30.0 seconds" in reason
+    assert "80.0%" in reason
+
+
+def test_cpu_percent_from_ticks_includes_user_system_and_nice():
+    percent = refresh.cpu_percent_from_ticks(
+        (100, 200, 300, 400),
+        (110, 220, 370, 400),
+    )
+
+    assert percent == pytest.approx(30.0)
+
+
+def test_cpu_percent_from_ticks_handles_32_bit_counter_wrap():
+    percent = refresh.cpu_percent_from_ticks(
+        (0xFFFFFFFA, 10, 20, 30),
+        (4, 20, 100, 30),
+    )
+
+    assert percent == pytest.approx(20.0)
+
+
+def test_cpu_percent_from_ticks_rejects_zero_delta():
+    with pytest.raises(refresh.CpuTelemetryError, match="did not advance"):
+        refresh.cpu_percent_from_ticks((1, 2, 3, 4), (1, 2, 3, 4))
+
+
+def test_host_cpu_guard_recovery_resets_saturation_window(tmp_path):
+    guard = refresh.HostCpuGuard(
+        log_path=tmp_path / "cpu-guard.jsonl",
+        max_percent=80.0,
+        sustain_seconds=30.0,
+        sample_seconds=5.0,
+    )
+
+    assert guard.observe(90.0, observed_monotonic=100.0) is None
+    assert guard.observe(20.0, observed_monotonic=120.0) is None
+    assert guard.observe(90.0, observed_monotonic=140.0) is None
+    assert guard.observe(90.0, observed_monotonic=169.0) is None
+    assert guard.observe(90.0, observed_monotonic=170.0) is not None
+
+
+def test_checkpoint_sigterm_handler_surfaces_cpu_guard_trip():
+    refresh._set_cpu_guard_trip("host CPU stayed above the limit")
+    try:
+        with pytest.raises(refresh.CpuGuardTrip, match="above the limit"):
+            refresh.checkpoint_sigterm_handler(refresh.signal.SIGTERM, None)
+    finally:
+        refresh._clear_cpu_guard_trip()
+
+
+def test_host_cpu_guard_telemetry_failure_trips_fail_closed(tmp_path, monkeypatch):
+    signals = []
+
+    def broken_sampler():
+        raise refresh.CpuTelemetryError("top output unavailable")
+
+    guard = refresh.HostCpuGuard(
+        log_path=tmp_path / "cpu-guard.jsonl",
+        max_percent=80.0,
+        sustain_seconds=30.0,
+        sample_seconds=0.01,
+        sampler=broken_sampler,
+        coordinator_pid=4321,
+    )
+    monkeypatch.setattr(
+        refresh.os, "kill", lambda pid, sig: signals.append((pid, sig))
+    )
+
+    guard.start()
+    guard.thread.join(timeout=1)
+    guard.stop()
+
+    assert signals == [(4321, refresh.signal.SIGTERM)]
+    assert "telemetry failed" in refresh._peek_cpu_guard_trip()
+    refresh._clear_cpu_guard_trip()
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "cpu-guard.jsonl").read_text().splitlines()
+    ]
+    assert records[-1]["state"] == "tripped"
+    assert "top output unavailable" in records[-1]["reason"]
+
+
+def test_host_cpu_guard_log_failure_still_signals(tmp_path, monkeypatch):
+    signals = []
+    guard = refresh.HostCpuGuard(
+        log_path=tmp_path / "cpu-guard.jsonl",
+        coordinator_pid=4321,
+    )
+    monkeypatch.setattr(
+        guard,
+        "_write_record",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            refresh.CpuTelemetryError("disk full")
+        ),
+    )
+    monkeypatch.setattr(
+        refresh.os, "kill", lambda pid, sig: signals.append((pid, sig))
+    )
+
+    guard._trip("sustained saturation")
+
+    assert signals == [(4321, refresh.signal.SIGTERM)]
+    assert "disk full" in refresh._peek_cpu_guard_trip()
+    refresh._clear_cpu_guard_trip()
+
+
+def test_cpu_guard_preflight_telemetry_failure_uses_resource_trip(
+    tmp_path, monkeypatch
+):
+    guard = refresh.HostCpuGuard(log_path=tmp_path / "cpu-guard.jsonl")
+    monkeypatch.setattr(
+        guard,
+        "sample_once",
+        lambda: (_ for _ in ()).throw(
+            refresh.CpuTelemetryError("Mach counters unavailable")
+        ),
+    )
+
+    try:
+        with pytest.raises(refresh.CpuGuardTrip, match="preflight failed closed"):
+            refresh.run_cpu_guard_preflight(guard)
+    finally:
+        refresh._clear_cpu_guard_trip()
+
+    record = json.loads((tmp_path / "cpu-guard.jsonl").read_text().strip())
+    assert record["state"] == "tripped"
+    assert "Mach counters unavailable" in record["reason"]
+
+
+def test_host_cpu_guard_real_signal_releases_shared_lock(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    script = """
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+import cre_checkpoint_refresh as refresh
+
+lock = refresh.SharedLock(Path(sys.argv[1]))
+guard = refresh.HostCpuGuard(
+    log_path=Path(sys.argv[2]),
+    max_percent=80.0,
+    sustain_seconds=0.02,
+    sample_seconds=0.01,
+    sampler=lambda: 99.0,
+)
+previous = signal.getsignal(signal.SIGTERM)
+signal.signal(signal.SIGTERM, refresh.checkpoint_sigterm_handler)
+try:
+    with lock:
+        guard.sample_once()
+        guard.start()
+        while True:
+            time.sleep(1)
+except refresh.CpuGuardTrip:
+    raise SystemExit(75)
+finally:
+    guard.stop()
+    refresh._clear_cpu_guard_trip()
+    signal.signal(signal.SIGTERM, previous)
+"""
+
+    proc = subprocess.run(
+        [sys.executable, "-c", script, str(lock_dir), str(tmp_path / "cpu.jsonl")],
+        cwd=Path(refresh.__file__).parent,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert proc.returncode == 75, proc.stderr
+    assert not lock_dir.exists()
+
+
 def test_lock_release_preserves_replaced_same_pid_lease(tmp_path):
     lock_dir = tmp_path / ".cre.lock"
     lock = refresh.SharedLock(lock_dir)
@@ -2566,6 +2759,39 @@ def test_resume_accepts_legacy_serial_manifest_without_source_workers(tmp_path):
         source_workers=1,
     )
     assert "source_workers" not in loaded["config"]
+
+
+def test_legacy_resume_missing_cpu_guard_uses_fixed_safe_defaults(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    del manifest["config"]["host_cpu_guard"]
+    path = run_dir / "manifest.json"
+    refresh.atomic_write_json(path, manifest)
+
+    refresh.load_resume_manifest(
+        path,
+        git_sha="abc",
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    with pytest.raises(refresh.RefreshError, match="configuration differs"):
+        refresh.load_resume_manifest(
+            path,
+            git_sha="abc",
+            sources=("svn",),
+            page_cap=400,
+            concurrency=3,
+            max_host_cpu_percent=99.9,
+            cpu_sustain_seconds=999.0,
+        )
 
 
 def test_cohort_prepares_all_artifacts_before_any_gate_or_dry_run(

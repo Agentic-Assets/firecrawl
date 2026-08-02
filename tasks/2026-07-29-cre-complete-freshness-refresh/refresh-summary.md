@@ -8,6 +8,29 @@ Draft PR: <https://github.com/Agentic-Assets/firecrawl/pull/25>
 
 Linear: [AGENTIC-1229](https://linear.app/agenticassets/issue/AGENTIC-1229/restore-cre-listing-pipeline-correctness-and-prove-the-om-facts-canary)
 
+## 2026-08-02 execution amendment
+
+The collector registry now contains 51 source keys. The 20-source scope and
+matrix below describe the July 29 hardening snapshot and are no longer the
+complete execution scope. The August 2 refresh must use bounded source
+generations in the canonical `SOURCE_KEYS` order so every admitted generation
+can finish within the 24-hour observation window. A single `--sources all`
+generation is not acceptable for this runtime envelope. The supported command
+is `cre_checkpoint_series.py --sources all`, which creates one serial
+checkpoint generation per source and stops on global or resource failures.
+
+Every new checkpoint also uses the mandatory host CPU guard: Mach CPU samples
+every five seconds, refusal to start at or above 80 percent, interruption after
+30 sustained seconds at or above 80 percent, and fail-closed interruption when
+telemetry is unavailable. The API and Playwright containers remain capped at
+two CPU cores each. Resource trips preserve the exact checkpoint, write
+`logs/host-cpu-guard.jsonl`, release the canonical lock, and exit `75`.
+
+The abandoned `2026-08-02T045442Z` manifest used an explicit legacy 20-source
+list and stopped after read-only pre-validation. It recorded no source attempt,
+artifact, gate, dry-run, ingest, or readback. Do not resume it as the complete
+refresh. Start new bounded generations from the clean, pushed CPU-guard SHA.
+
 ## Scope and safety
 
 This refresh covers the 20 source keys supported by the TypeScript collector.

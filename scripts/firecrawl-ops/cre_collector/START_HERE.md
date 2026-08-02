@@ -78,6 +78,60 @@ lane. Use the default until a specific two-source pairing has its own
 no-write calibration evidence. A source failure, rejected artifact, gate, or
 dry-run failure prevents aggregate admission and every database write.
 
+Every checkpoint run also enables a fail-closed host CPU guard. It reads total
+Mac CPU utilization directly from Darwin's Mach counters every five seconds.
+The runner refuses to begin source work when the first sample is already at or
+above 80 percent. If utilization remains at or above 80 percent for 30 seconds,
+or CPU telemetry becomes unavailable, the guard interrupts the owned source
+process group, writes `resource_guard_interrupted` to the manifest, preserves
+the JSONL evidence at `logs/host-cpu-guard.jsonl`, releases the canonical lock,
+and exits `75` for a later exact resume. Short spikes reset when utilization
+falls below the ceiling. The Firecrawl API and Playwright containers retain
+their separate two-CPU Compose limits. Do not bypass this guard with a dirty
+checkout or an alternate runner.
+
+The thresholds are explicit resume-bound configuration:
+
+```bash
+python3 cre_checkpoint_refresh.py \
+  --sources cbre \
+  --max-host-cpu-percent 80 \
+  --cpu-sustain-seconds 30 \
+  --cpu-sample-seconds 5 \
+  --env-file "$HOME/.config/cre/equire.env"
+```
+
+For the complete current registry, use bounded generations that can each
+finish inside the 24-hour observation window. A single `--sources all`
+generation currently spans 51 source keys and is not operationally admissible
+when its slowest source would age earlier observations beyond that bound.
+`cre_checkpoint_series.py` is the supported wrapper for that full pass. It
+runs the canonical registry serially at nice level 10, gives every source a
+separate checkpoint generation, continues past source-local collection or
+coverage failures, and stops immediately on CPU, database, validation,
+infrastructure, or operator failure:
+
+```bash
+python3 cre_checkpoint_series.py \
+  --sources all \
+  --env-file "$HOME/.config/cre/equire.env"
+```
+
+The series manifest and per-source runs live under `out/checkpoint-series/`.
+Exit `0` means every selected source completed. Exit `2` means the series
+finished with explicitly recorded source-local failures. Exit `75` means the
+CPU guard stopped it and the exact series can be resumed after pressure clears:
+
+```bash
+python3 cre_checkpoint_series.py \
+  --resume out/checkpoint-series/<series-id> \
+  --sources all \
+  --env-file "$HOME/.config/cre/equire.env"
+```
+
+Use `--retry-failed` only after repairing or reviewing the recorded
+source-local failures. Resume configuration and collector SHA must match.
+
 The strict runner never passes `--monitor`, `--mark-missing`,
 `--activate-status`, or `--update-baseline`. Never use `--allow-dirty` for a
 supervised production refresh. Before starting, require a clean worktree and

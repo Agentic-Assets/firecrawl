@@ -15,6 +15,7 @@ launchd.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import math
@@ -26,11 +27,12 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from cre_ingest import (
     AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS,
@@ -54,6 +56,9 @@ REPO_ROOT = COLLECTOR_DIR.parents[2]
 DEFAULT_OUT_ROOT = COLLECTOR_DIR / "out" / "checkpoint-refresh"
 SCHEMA_VERSION = 2
 DEFAULT_MAX_RESUME_AGE_HOURS = 24.0
+DEFAULT_MAX_HOST_CPU_PERCENT = 80.0
+DEFAULT_CPU_SUSTAIN_SECONDS = 30.0
+DEFAULT_CPU_SAMPLE_SECONDS = 5.0
 # A source artifact is only admissible when every canonical observation is
 # still within this bound at the *end of collection*.  Generation membership
 # alone is not a freshness guarantee: a long serial detail sweep could observe
@@ -99,6 +104,250 @@ class GlobalStageError(RefreshError):
     """A shared infrastructure or live-write stage failed."""
 
 
+class CpuTelemetryError(GlobalStageError):
+    """Host CPU usage cannot be measured safely."""
+
+
+class CpuGuardTrip(KeyboardInterrupt):
+    """The host CPU guard interrupted the refresh before sustained saturation."""
+
+
+_CPU_GUARD_TRIP_REASON: str | None = None
+_CPU_GUARD_TRIP_LOCK = threading.Lock()
+_HOST_CPU_LOAD_INFO = 3
+_HOST_CPU_LOAD_INFO_COUNT = 4
+_CPU_STATE_MAX = 4
+
+
+def _set_cpu_guard_trip(reason: str) -> None:
+    global _CPU_GUARD_TRIP_REASON
+    with _CPU_GUARD_TRIP_LOCK:
+        _CPU_GUARD_TRIP_REASON = reason
+
+
+def _peek_cpu_guard_trip() -> str | None:
+    with _CPU_GUARD_TRIP_LOCK:
+        return _CPU_GUARD_TRIP_REASON
+
+
+def _clear_cpu_guard_trip() -> None:
+    global _CPU_GUARD_TRIP_REASON
+    with _CPU_GUARD_TRIP_LOCK:
+        _CPU_GUARD_TRIP_REASON = None
+
+
+class _HostCpuLoadInfo(ctypes.Structure):
+    _fields_ = [("cpu_ticks", ctypes.c_uint32 * _CPU_STATE_MAX)]
+
+
+def _read_darwin_cpu_ticks() -> tuple[int, int, int, int]:
+    """Read Darwin user/system/idle/nice CPU ticks through Mach."""
+    if sys.platform != "darwin":
+        raise CpuTelemetryError(
+            "host CPU guard currently requires Darwin Mach telemetry"
+        )
+    try:
+        libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        libsystem.mach_host_self.restype = ctypes.c_uint32
+        libsystem.host_statistics.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        libsystem.host_statistics.restype = ctypes.c_int
+        info = _HostCpuLoadInfo()
+        count = ctypes.c_uint32(_HOST_CPU_LOAD_INFO_COUNT)
+        result = libsystem.host_statistics(
+            libsystem.mach_host_self(),
+            _HOST_CPU_LOAD_INFO,
+            ctypes.byref(info),
+            ctypes.byref(count),
+        )
+    except (AttributeError, OSError) as exc:
+        raise CpuTelemetryError(f"Darwin CPU telemetry unavailable: {exc}") from exc
+    if result != 0 or count.value < _HOST_CPU_LOAD_INFO_COUNT:
+        raise CpuTelemetryError(
+            f"Mach host_statistics failed: result={result}, count={count.value}"
+        )
+    return tuple(int(value) for value in info.cpu_ticks)  # type: ignore[return-value]
+
+
+def cpu_percent_from_ticks(
+    previous: Sequence[int], current: Sequence[int]
+) -> float:
+    """Compute busy CPU percentage from wrapping 32-bit Mach tick counters."""
+    if len(previous) != _CPU_STATE_MAX or len(current) != _CPU_STATE_MAX:
+        raise CpuTelemetryError("Darwin CPU telemetry returned an invalid tick vector")
+    deltas = [
+        (int(current[index]) - int(previous[index])) & 0xFFFFFFFF
+        for index in range(_CPU_STATE_MAX)
+    ]
+    user_delta, system_delta, idle_delta, nice_delta = deltas
+    total_delta = user_delta + system_delta + idle_delta + nice_delta
+    if total_delta <= 0:
+        raise CpuTelemetryError("Darwin CPU tick counters did not advance")
+    return 100.0 * (user_delta + system_delta + nice_delta) / total_delta
+
+
+@dataclass
+class DarwinCpuSampler:
+    read_ticks: Callable[[], tuple[int, int, int, int]] = _read_darwin_cpu_ticks
+    initial_interval_seconds: float = 0.1
+    previous: tuple[int, int, int, int] | None = field(default=None, init=False)
+
+    def __call__(self) -> float:
+        previous = self.previous
+        if previous is None:
+            previous = self.read_ticks()
+            time.sleep(self.initial_interval_seconds)
+        current = self.read_ticks()
+        self.previous = current
+        return cpu_percent_from_ticks(previous, current)
+
+
+def read_host_cpu_percent() -> float:
+    """Return a one-shot total Darwin host CPU utilization sample."""
+    return DarwinCpuSampler()()
+
+
+@dataclass
+class HostCpuGuard:
+    """Fail-closed watchdog for sustained total host CPU saturation.
+
+    The collector's subprocesses are already placed in owned process groups.
+    The watchdog terminates the coordinator with SIGTERM after a sustained
+    threshold breach; the existing interrupt path then reaps the active source
+    group, writes a resumable manifest, and releases the canonical CRE lock.
+    """
+
+    log_path: Path
+    max_percent: float = DEFAULT_MAX_HOST_CPU_PERCENT
+    sustain_seconds: float = DEFAULT_CPU_SUSTAIN_SECONDS
+    sample_seconds: float = DEFAULT_CPU_SAMPLE_SECONDS
+    sampler: Callable[[], float] = field(default_factory=DarwinCpuSampler)
+    coordinator_pid: int = field(default_factory=os.getpid)
+    high_since: float | None = field(default=None, init=False)
+    stop_event: threading.Event = field(default_factory=threading.Event, init=False)
+    thread: threading.Thread | None = field(default=None, init=False)
+
+    def config(self) -> dict[str, float | str]:
+        return {
+            "max_host_cpu_percent": self.max_percent,
+            "sustain_seconds": self.sustain_seconds,
+            "sample_seconds": self.sample_seconds,
+            "action": "interrupt_and_checkpoint",
+            "telemetry_failure_action": "interrupt_and_checkpoint",
+        }
+
+    def observe(self, percent: float, *, observed_monotonic: float) -> str | None:
+        if not math.isfinite(percent) or not 0.0 <= percent <= 100.0:
+            raise CpuTelemetryError(f"invalid host CPU percentage: {percent!r}")
+        if percent < self.max_percent:
+            self.high_since = None
+            return None
+        if self.high_since is None:
+            self.high_since = observed_monotonic
+            return None
+        elapsed = observed_monotonic - self.high_since
+        if elapsed < self.sustain_seconds:
+            return None
+        return (
+            f"host CPU remained at or above {self.max_percent:.1f}% for "
+            f"{self.sustain_seconds:.1f} seconds; latest sample {percent:.1f}%"
+        )
+
+    def _write_record(
+        self,
+        *,
+        state: str,
+        percent: float | None = None,
+        reason: str | None = None,
+    ) -> None:
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            record: dict[str, Any] = {
+                "observed_at": utc_now(),
+                "state": state,
+                "max_host_cpu_percent": self.max_percent,
+            }
+            if percent is not None:
+                record["host_cpu_percent"] = round(percent, 2)
+            if reason is not None:
+                record["reason"] = reason
+            with self.log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+                handle.flush()
+        except OSError as exc:
+            raise CpuTelemetryError(f"host CPU guard log unavailable: {exc}") from exc
+
+    def sample_once(self) -> float:
+        percent = self.sampler()
+        reason = self.observe(percent, observed_monotonic=time.monotonic())
+        state = "high" if self.high_since is not None else "ok"
+        self._write_record(state=state, percent=percent, reason=reason)
+        if reason is not None:
+            self._trip(reason, percent=percent)
+        return percent
+
+    def _trip(self, reason: str, *, percent: float | None = None) -> None:
+        _set_cpu_guard_trip(reason)
+        try:
+            self._write_record(state="tripped", percent=percent, reason=reason)
+        except CpuTelemetryError as exc:
+            reason = f"{reason}; {exc}"
+            _set_cpu_guard_trip(reason)
+        finally:
+            # Termination is unconditional. Evidence writes can fail under the
+            # same disk-pressure conditions in which fail-closed behavior is
+            # most important.
+            try:
+                os.kill(self.coordinator_pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+    def _run(self) -> None:
+        while not self.stop_event.wait(self.sample_seconds):
+            try:
+                self.sample_once()
+            except CpuTelemetryError as exc:
+                self._trip(f"host CPU telemetry failed closed: {exc}")
+                return
+            if _peek_cpu_guard_trip() is not None:
+                return
+
+    def start(self) -> None:
+        if self.thread is not None and self.thread.is_alive():
+            raise RuntimeError("host CPU guard is already running")
+        self.stop_event.clear()
+        self.thread = threading.Thread(
+            target=self._run,
+            name="cre-host-cpu-guard",
+            daemon=True,
+        )
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.thread is not None and self.thread is not threading.current_thread():
+            self.thread.join(timeout=max(1.0, self.sample_seconds + 1.0))
+
+
+def run_cpu_guard_preflight(cpu_guard: HostCpuGuard) -> float:
+    """Take the admission sample and preserve resource-guard exit semantics."""
+    try:
+        return cpu_guard.sample_once()
+    except CpuTelemetryError as exc:
+        reason = f"host CPU guard preflight failed closed: {exc}"
+        _set_cpu_guard_trip(reason)
+        try:
+            cpu_guard._write_record(state="tripped", reason=reason)
+        except CpuTelemetryError as log_exc:
+            reason = f"{reason}; {log_exc}"
+            _set_cpu_guard_trip(reason)
+        raise CpuGuardTrip(reason) from exc
+
+
 def checkpoint_sigterm_handler(_signum: int, _frame: Any) -> None:
     """Route supervisor termination through the guarded interrupt cleanup path.
 
@@ -107,6 +356,9 @@ def checkpoint_sigterm_handler(_signum: int, _frame: Any) -> None:
     reap any owned collector process group, then lets main persist an
     interrupted manifest before its lock context exits.
     """
+    cpu_guard_reason = _peek_cpu_guard_trip()
+    if cpu_guard_reason is not None:
+        raise CpuGuardTrip(cpu_guard_reason)
     raise KeyboardInterrupt
 
 
@@ -1545,6 +1797,9 @@ def new_manifest(
     page_cap: int,
     concurrency: int,
     source_workers: int = 1,
+    max_host_cpu_percent: float = DEFAULT_MAX_HOST_CPU_PERCENT,
+    cpu_sustain_seconds: float = DEFAULT_CPU_SUSTAIN_SECONDS,
+    cpu_sample_seconds: float = DEFAULT_CPU_SAMPLE_SECONDS,
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
     database_target: Mapping[str, str] | None = None,
@@ -1575,6 +1830,13 @@ def new_manifest(
             "page_cap": page_cap,
             "concurrency": concurrency,
             "source_workers": source_workers,
+            "host_cpu_guard": {
+                "max_host_cpu_percent": max_host_cpu_percent,
+                "sustain_seconds": cpu_sustain_seconds,
+                "sample_seconds": cpu_sample_seconds,
+                "action": "interrupt_and_checkpoint",
+                "telemetry_failure_action": "interrupt_and_checkpoint",
+            },
             "additive": True,
             "status_activation": False,
             "mark_missing": False,
@@ -1609,6 +1871,9 @@ def load_resume_manifest(
     page_cap: int,
     concurrency: int,
     source_workers: int = 1,
+    max_host_cpu_percent: float = DEFAULT_MAX_HOST_CPU_PERCENT,
+    cpu_sustain_seconds: float = DEFAULT_CPU_SUSTAIN_SECONDS,
+    cpu_sample_seconds: float = DEFAULT_CPU_SAMPLE_SECONDS,
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
     database_target: Mapping[str, str] | None = None,
@@ -1627,6 +1892,13 @@ def load_resume_manifest(
         "page_cap": page_cap,
         "concurrency": concurrency,
         "source_workers": source_workers,
+        "host_cpu_guard": {
+            "max_host_cpu_percent": max_host_cpu_percent,
+            "sustain_seconds": cpu_sustain_seconds,
+            "sample_seconds": cpu_sample_seconds,
+            "action": "interrupt_and_checkpoint",
+            "telemetry_failure_action": "interrupt_and_checkpoint",
+        },
         "additive": True,
         "status_activation": False,
         "mark_missing": False,
@@ -1638,6 +1910,16 @@ def load_resume_manifest(
     # manifest byte-for-byte untouched until the coordinator writes a later
     # state transition.
     recorded_config.setdefault("source_workers", 1)
+    recorded_config.setdefault(
+        "host_cpu_guard",
+        {
+            "max_host_cpu_percent": DEFAULT_MAX_HOST_CPU_PERCENT,
+            "sustain_seconds": DEFAULT_CPU_SUSTAIN_SECONDS,
+            "sample_seconds": DEFAULT_CPU_SAMPLE_SECONDS,
+            "action": "interrupt_and_checkpoint",
+            "telemetry_failure_action": "interrupt_and_checkpoint",
+        },
+    )
     if recorded_config != expected:
         raise RefreshError("resume configuration differs from the manifest")
     if database_target is not None:
@@ -3696,6 +3978,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Provider lanes and coordinator-only checkpoint finalization apply."
         ),
     )
+    parser.add_argument(
+        "--max-host-cpu-percent",
+        type=float,
+        default=DEFAULT_MAX_HOST_CPU_PERCENT,
+        help=(
+            "fail-closed host CPU ceiling (default: "
+            f"{DEFAULT_MAX_HOST_CPU_PERCENT:g}%%)"
+        ),
+    )
+    parser.add_argument(
+        "--cpu-sustain-seconds",
+        type=float,
+        default=DEFAULT_CPU_SUSTAIN_SECONDS,
+        help=(
+            "interrupt after host CPU stays at the ceiling for this long "
+            f"(default: {DEFAULT_CPU_SUSTAIN_SECONDS:g}s)"
+        ),
+    )
+    parser.add_argument(
+        "--cpu-sample-seconds",
+        type=float,
+        default=DEFAULT_CPU_SAMPLE_SECONDS,
+        help=(
+            "host CPU sampling interval "
+            f"(default: {DEFAULT_CPU_SAMPLE_SECONDS:g}s)"
+        ),
+    )
     parser.add_argument("--attempts-per-source", type=int, default=3)
     parser.add_argument(
         "--_cohort-collect-source",
@@ -3769,6 +4078,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.attempts_per_source < 1:
         parser.error("attempts-per-source must be positive")
     if (
+        not math.isfinite(args.max_host_cpu_percent)
+        or not 0 < args.max_host_cpu_percent < 100
+    ):
+        parser.error("max-host-cpu-percent must be finite and between 0 and 100")
+    if (
+        not math.isfinite(args.cpu_sustain_seconds)
+        or args.cpu_sustain_seconds <= 0
+    ):
+        parser.error("cpu-sustain-seconds must be finite and positive")
+    if (
+        not math.isfinite(args.cpu_sample_seconds)
+        or args.cpu_sample_seconds <= 0
+        or args.cpu_sample_seconds > args.cpu_sustain_seconds
+    ):
+        parser.error(
+            "cpu-sample-seconds must be finite, positive, and no greater than "
+            "cpu-sustain-seconds"
+        )
+    if (
         not math.isfinite(args.max_resume_age_hours)
         or args.max_resume_age_hours <= 0
     ):
@@ -3799,6 +4127,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             page_cap=args.page_cap,
             concurrency=args.concurrency,
             source_workers=args.source_workers,
+            max_host_cpu_percent=args.max_host_cpu_percent,
+            cpu_sustain_seconds=args.cpu_sustain_seconds,
+            cpu_sample_seconds=args.cpu_sample_seconds,
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             database_target=database_target,
@@ -3806,6 +4137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         manifest["status"] = "running"
         manifest["error"] = None
+        manifest["finished_at"] = None
     else:
         run_dir = Path(args.out_root).expanduser().resolve() / _run_id()
         if run_dir.exists():
@@ -3819,6 +4151,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             page_cap=args.page_cap,
             concurrency=args.concurrency,
             source_workers=args.source_workers,
+            max_host_cpu_percent=args.max_host_cpu_percent,
+            cpu_sustain_seconds=args.cpu_sustain_seconds,
+            cpu_sample_seconds=args.cpu_sample_seconds,
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             database_target=database_target,
@@ -3826,10 +4161,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     save_manifest(run_dir, manifest)
 
     lock = SharedLock(lock_dir)
+    cpu_guard = HostCpuGuard(
+        log_path=run_dir / "logs" / "host-cpu-guard.jsonl",
+        max_percent=args.max_host_cpu_percent,
+        sustain_seconds=args.cpu_sustain_seconds,
+        sample_seconds=args.cpu_sample_seconds,
+    )
+    _clear_cpu_guard_trip()
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, checkpoint_sigterm_handler)
     try:
         with lock:
+            initial_host_cpu_percent = run_cpu_guard_preflight(cpu_guard)
+            manifest["preflight"]["host_cpu_guard"] = {
+                **cpu_guard.config(),
+                "log": _relative_to_run(cpu_guard.log_path, run_dir),
+                "initial_host_cpu_percent": round(initial_host_cpu_percent, 2),
+                "started_at": utc_now(),
+            }
+            save_manifest(run_dir, manifest)
+            if initial_host_cpu_percent >= args.max_host_cpu_percent:
+                raise GlobalStageError(
+                    "host CPU is already at or above the guarded ceiling; "
+                    "refusing to start source work"
+                )
+            cpu_guard.start()
             health_log = run_dir / "logs" / "healthcheck.log"
             health_rc = run_command(
                 ["bash", str(REPO_ROOT / "scripts/firecrawl-ops/firecrawl_healthcheck.sh")],
@@ -3917,6 +4273,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             atomic_write_text(run_dir / "report.md", render_report(manifest))
             print(run_dir)
             return 0
+    except CpuGuardTrip as exc:
+        manifest["status"] = "resource_guard_interrupted"
+        manifest["error"] = f"host CPU guard: {exc}"
+        manifest["finished_at"] = utc_now()
+        save_manifest(run_dir, manifest)
+        atomic_write_text(run_dir / "report.md", render_report(manifest))
+        return 75
     except KeyboardInterrupt:
         manifest["status"] = "interrupted"
         manifest["error"] = "operator interruption"
@@ -3930,6 +4293,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         atomic_write_text(run_dir / "report.md", render_report(manifest))
         raise
     finally:
+        cpu_guard.stop()
+        _clear_cpu_guard_trip()
         signal.signal(signal.SIGTERM, previous_sigterm)
 
 

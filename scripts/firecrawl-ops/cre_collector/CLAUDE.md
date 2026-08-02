@@ -289,6 +289,18 @@ gate. All configured artifacts must pass their source gates and the aggregate
 gate before any live ingest begins. `first_seen` requires an explicit reviewed
 baseline seed and readback before resuming the same immutable run.
 
+The checkpoint runner always applies the host CPU guard documented in
+`START_HERE.md`: five-second Darwin CPU samples, an 80-percent ceiling, and a
+fail-closed interruption after 30 sustained seconds or any telemetry failure.
+The interruption reaps the owned source process group, records JSONL evidence,
+releases the canonical lock, and preserves exact resume state. Keep
+`--source-workers=1` unless a separate no-write calibration proves a safe
+pairing. Run the current 51-key registry as bounded generations; do not use one
+`--sources all` generation when the 24-hour observation window cannot hold.
+Use `cre_checkpoint_series.py --sources all` for the serial full-registry pass;
+its manifest separates source-local failures from global and resource-guard
+failures while every mutation remains inside `cre_checkpoint_refresh.py`.
+
 The strict source set is `cbre`, `jll`, `jll-investor`, `colliers-main`,
 `cushman-wakefield`, `svn`, `lee-associates`, `franklin-street`, `newmark`, `savills`,
 `transwestern`, `marcus-millichap`, `nai-global`, `matthews`, `srs`, `hanley`,
