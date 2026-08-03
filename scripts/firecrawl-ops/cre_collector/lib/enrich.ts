@@ -26,7 +26,11 @@ import {
   scrapeColliersMainDetailDoc,
 } from "../sources/colliers-main.js";
 import { enrichJllInvestorListing } from "../sources/jll-investor.js";
-import { enrichBuildoutDetail } from "../sources/buildout.js";
+import {
+  enrichBuildoutDetail,
+  type BuildoutDetailConfig,
+} from "../sources/buildout.js";
+import { REGISTERED_BUILDOUT_FIRMS } from "../sources/buildout-registry.js";
 import { getAvisonYoungFeed, avisonYoungBaseListing } from "../sources/avison-young.js";
 import { enrichMarcusListing } from "../sources/marcus-millichap.js";
 import { mapSrsListing, srsFetchAll, srsTenure } from "../sources/srs.js";
@@ -110,19 +114,37 @@ export const jllInvestorEnricher: SourceEnricher = {
 // cre_ingest.to_row recomputes the Buildout external_id from that url. A
 // derivation or scrape failure omits the row so the worker leaves the claim
 // queued for the weekly additive backstop.
-export const buildoutEnricher: SourceEnricher = {
-  async enrich(items: EnrichItem[]): Promise<any[]> {
-    const rows = await pmap(items, CONCURRENCY, async (item) => {
-      try {
-        return await enrichBuildoutDetail(item.sourceKey, item.url);
-      } catch (err) {
-        console.error(`  enrich/buildout: detail failed for ${item.url}: ${err}`);
-        return null;
-      }
-    });
-    return rows.filter(Boolean);
-  },
-};
+export function buildoutEnricherFor(
+  detailConfig?: BuildoutDetailConfig
+): SourceEnricher {
+  return {
+    async enrich(items: EnrichItem[]): Promise<any[]> {
+      const rows = await pmap(items, CONCURRENCY, async (item) => {
+        try {
+          return await enrichBuildoutDetail(
+            item.sourceKey,
+            item.url,
+            detailConfig
+          );
+        } catch (err) {
+          console.error(`  enrich/buildout: detail failed for ${item.url}: ${err}`);
+          return null;
+        }
+      });
+      return rows.filter(Boolean);
+    },
+  };
+}
+
+export const buildoutEnricher: SourceEnricher = buildoutEnricherFor();
+
+export const REGISTERED_BUILDOUT_ENRICHERS = Object.fromEntries(
+  REGISTERED_BUILDOUT_FIRMS.flatMap((definition) =>
+    definition.detailConfig
+      ? [[definition.sourceKey, buildoutEnricherFor(definition.detailConfig)]]
+      : []
+  )
+) as Partial<Record<SourceKey, SourceEnricher>>;
 
 // The following adapters deliberately replay their established source APIs
 // rather than using the generic Firecrawl/JSON-LD fallback. The queue is fed by
@@ -273,6 +295,7 @@ export const ENRICHERS: Partial<Record<SourceKey, SourceEnricher>> = {
   "avison-young": avisonYoungEnricher,
   srs: srsEnricher,
   "kidder-mathews": kidderMathewsEnricher,
+  ...REGISTERED_BUILDOUT_ENRICHERS,
 };
 
 // Group claim items by sourceKey, dropping items missing a key or url (a row with

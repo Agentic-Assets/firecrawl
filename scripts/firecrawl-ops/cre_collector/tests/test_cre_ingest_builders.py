@@ -370,6 +370,178 @@ def test_to_row_blank_id_falls_to_sha1():
     assert r["external_id"].startswith("url:")
 
 
+def test_cushman_external_id_is_stable_across_provider_guid_rotation():
+    url = (
+        "https://www.cushmanwakefield.com/en/united-states/properties/"
+        "for-sale/office/tx/dallas/example-s"
+    )
+    first = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": url,
+        "id": "provider-guid-a",
+        "transactionMode": "sale",
+    })
+    rotated = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": url,
+        "id": "provider-guid-b",
+        "transactionMode": "sale",
+    })
+    expected = "url:v1:" + hashlib.sha256(url.encode()).hexdigest()[:32]
+    assert first["external_id"] == expected
+    assert rotated["external_id"] == expected
+
+
+def test_cushman_external_id_normalizes_legacy_host_and_url_noise():
+    path = (
+        "/en/united-states/properties/for-lease/industrial/oh/cleveland/"
+        "example-l"
+    )
+    public = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"https://www.cushmanwakefield.com{path}",
+        "id": "provider-guid-a",
+    })
+    legacy = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": (
+            f"https://sitecore-www.cushmanwakefield.com{path}/"
+            "?tracking=1#top"
+        ),
+        "id": "provider-guid-b",
+    })
+    assert public["external_id"] == legacy["external_id"]
+
+
+def test_cushman_external_id_maps_official_azure_host_to_public_path():
+    path = (
+        "/en/united-states/properties/for-sale/industrial/il/chicago/example-s"
+    )
+    public = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"https://www.cushmanwakefield.com{path}",
+        "id": "provider-guid-a",
+    })
+    azure = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"https://cw-prod-gblgws-a-cm.azurewebsites.net{path}",
+        "id": "provider-guid-b",
+    })
+    assert public["external_id"] == azure["external_id"]
+
+
+def test_cushman_onecap_identity_retains_record_id_query():
+    base = (
+        "https://onecap.cushmanwakefield.com/en/united-states/properties/"
+        "for-sale/listing"
+    )
+    first = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=a2N-A",
+        "id": "provider-guid-a",
+    })
+    second = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=a2N-B",
+        "id": "provider-guid-b",
+    })
+    missing = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": base,
+        "id": "provider-guid-c",
+    })
+    assert first["external_id"] != second["external_id"]
+    assert missing is None
+
+
+def test_cushman_onecap_identity_normalizes_whitespace_and_rejects_duplicates():
+    base = (
+        "https://onecap.cushmanwakefield.com/en/united-states/properties/"
+        "for-sale/listing"
+    )
+    normalized = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=A+B",
+        "id": "provider-guid-a",
+    })
+    noisy = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=%20A%20%20B%20",
+        "id": "provider-guid-b",
+    })
+    duplicate = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=A&recordId=B",
+        "id": "provider-guid-c",
+    })
+    duplicate_blank = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=A&recordId=",
+        "id": "provider-guid-d",
+    })
+    tilde = _row({
+        "sourceKey": "cushman-wakefield",
+        "url": f"{base}?recordId=A%7EB",
+        "id": "provider-guid-e",
+    })
+    assert normalized["external_id"] == noisy["external_id"]
+    assert duplicate is None
+    assert duplicate_blank is None
+    assert (
+        tilde["external_id"]
+        == "url:v1:"
+        + hashlib.sha256(f"{base}?recordId=A%7EB".encode()).hexdigest()[:32]
+    )
+
+
+def test_cushman_rejects_noncanonical_identity_host():
+    assert _row({
+        "sourceKey": "cushman-wakefield",
+        "url": "https://example.com/property/1",
+        "id": "provider-guid",
+    }) is None
+
+
+def test_cushman_same_url_merge_preserves_provider_payload_and_children():
+    url = (
+        "https://www.cushmanwakefield.com/en/united-states/properties/"
+        "for-lease/industrial/oh/cleveland/example-l"
+    )
+    base = {
+        "sourceKey": "cushman-wakefield",
+        "url": url,
+        "transactionMode": "lease",
+        "preserveChildCollections": True,
+    }
+    first = _row({
+        **base,
+        "id": "provider-guid-a",
+        "name": "Example",
+        "rawCushmanApi": {"id": "provider-guid-a"},
+    })
+    second = _row({
+        **base,
+        "id": "provider-guid-b",
+        "documents": [{"url": "https://assets.example.com/example.pdf"}],
+        "rawCushmanApi": {"id": "provider-guid-b"},
+    })
+
+    merged = ci.merge_rows(first, second)
+    assert merged["external_id"] == first["external_id"]
+    assert merged["documents"] == [
+        {
+            "title": None,
+            "url": "https://assets.example.com/example.pdf",
+            "docType": "brochure",
+        }
+    ]
+    assert merged["raw_data"]["primary"]["rawCushmanApi"]["id"] == "provider-guid-a"
+    assert (
+        merged["raw_data"]["secondary_pass"]["rawCushmanApi"]["id"]
+        == "provider-guid-b"
+    )
+
+
 def test_to_row_buildout_propertyid_strips_sale_suffix():
     r = _row({"sourceKey": "svn",
               "url": "https://svn.com/x?propertyId=1614726-sale", "id": "99"})
@@ -386,6 +558,637 @@ def test_to_row_buildout_propertyid_strips_lease_suffix():
 def test_to_row_buildout_no_pid_uses_raw_id():
     r = _row({"sourceKey": "svn", "url": "https://svn.com/x", "id": "99"})
     assert r["external_id"] == "99"
+
+
+def test_to_row_uses_explicit_detail_observation_not_artifact_finish():
+    r = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/1",
+            "id": "1",
+            "detailObservedAt": "2026-06-14T21:30:00Z",
+        }
+    )
+    assert r["scraped_at"] == "2026-06-14T21:30:00+00:00"
+
+
+def test_to_row_uses_inventory_observation_for_authoritative_feed():
+    r = _row(
+        {
+            "sourceKey": "svn",
+            "url": "https://svn.com/x?propertyId=1-sale",
+            "id": "1",
+            "inventoryObservedAt": "2026-06-14T22:00:00Z",
+            "freshnessProvenance": {
+                "detailScope": "authoritative_inventory_feed"
+            },
+        }
+    )
+    assert r["scraped_at"] == "2026-06-14T22:00:00+00:00"
+
+
+def test_to_row_uses_source_revision_validation_time_for_scraped_at():
+    r = _row(
+        {
+            "sourceKey": "colliers-main",
+            "url": "https://www.colliers.com/en/properties/x/usa12345",
+            "id": "usa12345",
+            "detailObservedAt": "2026-07-28T10:00:00Z",
+            "freshnessProvenance": {
+                "detailScope": "detail_page",
+                "cacheDisposition": "source_revision_cache",
+                "validatedAt": "2026-07-29T12:00:30Z",
+            },
+        }
+    )
+    assert r["scraped_at"] == "2026-07-29T12:00:30+00:00"
+
+
+def test_strict_artifact_freshness_rejects_completion_time_only():
+    payload = {
+        "runMeta": {
+            "freshness": {
+                "generationId": "generation-1",
+                "generationStartedAt": "2026-07-29T12:00:00Z",
+                "requireFreshDetails": True,
+            }
+        },
+        "listings": [
+            {
+                "sourceKey": "jll",
+                "inventoryObservedAt": "2026-07-29T12:00:01Z",
+                "freshnessProvenance": {
+                    "generationId": "generation-1",
+                    "detailScope": "detail_page",
+                    "cacheDisposition": "live",
+                },
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="stale detail"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
+def _strict_freshness_payload(
+    source="jll",
+    *,
+    detail_scope="detail_page",
+    preserve_children=False,
+):
+    observed = "2026-07-29T12:00:01Z"
+    listing = {
+        "sourceKey": source,
+        "inventoryObservedAt": observed,
+        "freshnessProvenance": {
+            "generationId": "generation-1",
+            "detailScope": detail_scope,
+            "cacheDisposition": "live",
+        },
+    }
+    if detail_scope == "detail_page":
+        listing["detailObservedAt"] = observed
+    if preserve_children:
+        listing["preserveChildCollections"] = True
+    return {
+        "runMeta": {
+            "freshness": {
+                "generationId": "generation-1",
+                "generationStartedAt": "2026-07-29T12:00:00Z",
+                "requireFreshDetails": True,
+            }
+        },
+        "sources": [{"sourceKey": source}],
+        "listings": [listing],
+    }
+
+
+@pytest.mark.parametrize(
+    "field_path",
+    [
+        ("runMeta", "freshness", "generationStartedAt"),
+        ("listings", 0, "inventoryObservedAt"),
+        ("listings", 0, "detailObservedAt"),
+    ],
+)
+def test_strict_artifact_freshness_rejects_naive_timestamps(field_path):
+    payload = _strict_freshness_payload()
+    target = payload
+    for part in field_path[:-1]:
+        target = target[part]
+    target[field_path[-1]] = "2026-07-29T12:00:01"
+
+    with pytest.raises(ValueError, match="timezone"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
+def test_strict_source_revision_cache_rejects_naive_validation_timestamp():
+    payload = _strict_freshness_payload()
+    listing = payload["listings"][0]
+    listing.pop("detailObservedAt")
+    listing["freshnessProvenance"].update(
+        {
+            "cacheDisposition": "source_revision_cache",
+            "validatedAt": "2026-07-29T12:00:01",
+        }
+    )
+
+    with pytest.raises(ValueError, match="timezone"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
+@pytest.mark.parametrize(
+    "field_path",
+    [
+        ("runMeta", "freshness", "generationStartedAt"),
+        ("listings", 0, "inventoryObservedAt"),
+        ("listings", 0, "detailObservedAt"),
+    ],
+)
+def test_strict_artifact_rejects_future_timestamps_beyond_clock_skew(field_path):
+    payload = _strict_freshness_payload()
+    target = payload
+    for part in field_path[:-1]:
+        target = target[part]
+    target[field_path[-1]] = "2026-07-29T12:05:01Z"
+
+    with pytest.raises(ValueError, match="clock-skew"):
+        ci.validate_strict_artifact_freshness(
+            payload,
+            now=datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_nonstrict_direct_artifact_rejects_future_listing_observation():
+    payload = {
+        "runMeta": {"freshness": {"requireFreshDetails": False}},
+        "listings": [
+            {
+                "sourceKey": "jll",
+                "inventoryObservedAt": "2026-07-29T12:05:01Z",
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="clock-skew"):
+        ci.validate_strict_artifact_freshness(
+            payload,
+            now=datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+        )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "svn",
+        "lee-associates",
+        "franklin-street",
+        "cushman-wakefield",
+        "srs",
+        "hanley",
+        "kidder-mathews",
+        "newmark",
+    ],
+)
+def test_strict_child_preserving_authoritative_feed_is_accepted(source):
+    ci.validate_strict_artifact_freshness(
+        _strict_freshness_payload(
+            source,
+            detail_scope="authoritative_inventory_feed",
+            preserve_children=True,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["cbre"],
+)
+def test_strict_nonpreserving_authoritative_feed_rejects_child_preservation(source):
+    payload = _strict_freshness_payload(
+        source,
+        detail_scope="authoritative_inventory_feed",
+        preserve_children=True,
+    )
+    with pytest.raises(ValueError, match="must not preserve child collections"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "svn",
+        "lee-associates",
+        "franklin-street",
+        "cushman-wakefield",
+        "srs",
+        "hanley",
+        "kidder-mathews",
+        "newmark",
+    ],
+)
+def test_strict_child_preserving_feed_requires_preservation_marker(source):
+    payload = _strict_freshness_payload(
+        source,
+        detail_scope="authoritative_inventory_feed",
+    )
+    with pytest.raises(ValueError, match="must preserve child collections"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
+def test_strict_detail_source_rejects_child_preservation():
+    payload = _strict_freshness_payload("jll", preserve_children=True)
+    with pytest.raises(ValueError, match="must not preserve child collections"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
+def test_strict_colliers_contract_excludes_explicit_provisional_cards():
+    payload = _strict_freshness_payload("colliers")
+    payload["listings"].append(
+        {
+            "sourceKey": "colliers",
+            "id": "salestracker:card:unlinked",
+            "inventoryOnly": {"reason": "card_not_linked"},
+            "provisionalIdentity": {"historyContinuity": "not_guaranteed"},
+        }
+    )
+
+    ci.validate_strict_artifact_freshness(payload)
+
+
+@pytest.mark.parametrize("freshness", [None, {"requireFreshDetails": False}])
+def test_direct_ingest_allows_unmarked_strict_source_without_explicit_flag(freshness):
+    payload = {
+        "runMeta": {"freshness": freshness} if freshness is not None else {},
+        "sources": [{"sourceKey": "jll"}],
+        "listings": [],
+    }
+    ci.validate_strict_artifact_freshness(payload)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "cbre",
+        "cushman-wakefield",
+        "srs",
+        "hanley",
+        "kidder-mathews",
+        "newmark",
+    ],
+)
+def test_checkpoint_strict_sources_are_allowed_without_explicit_cli_contract(source):
+    payload = {
+        "runMeta": {},
+        "sources": [{"sourceKey": source}],
+        "listings": [],
+    }
+    ci.validate_strict_artifact_freshness(payload)
+
+
+def test_avison_is_not_a_strict_contact_freshness_source():
+    assert "avison-young" not in ci.STRICT_FRESHNESS_SOURCE_KEYS
+
+
+def test_colliers_is_a_strict_detail_source():
+    assert "colliers" in ci.STRICT_FRESHNESS_SOURCE_KEYS
+
+
+def test_preservation_wrapper_retains_source_key_from_merged_payload():
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    assert "raw_data#>'{primary,sourceKey}'" in sql
+    assert "raw_data#>'{secondary_pass,sourceKey}'" in sql
+    assert "EXCLUDED.raw_data#>'{primary,sourceKey}'" in sql
+    assert "EXCLUDED.raw_data#>'{secondary_pass,sourceKey}'" in sql
+
+
+def test_cushman_ingest_refuses_legacy_same_url_duplicate_growth():
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    assert "t.external_id IS NULL" in sql
+    assert "t.external_id !~ '^url:v1:[0-9a-f]{32}$'" in sql
+    assert "s.brokerage_id = t.brokerage_id" in sql
+    assert '@ == "cushman-wakefield"' in sql
+    assert "Cushman URL-v1 identity repair required" in sql
+
+
+def test_fresh_detail_with_child_preservation_updates_listing_without_child_deletion():
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    assert "$.**.detailObservedWithChildPreservation" in sql
+
+
+def test_direct_detail_markdown_inserts_new_evidence_but_preserves_existing_richer_text():
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    assert "$.**.preserveExistingMarkdown" in sql
+    assert "NULLIF(t.markdown, '')" in sql
+    assert "NULLIF(EXCLUDED.markdown, '')" in sql
+    assert "NOT jsonb_path_exists" in sql
+    assert "_child_additive" in sql
+    assert (
+        "$.**.preserveChildCollections ? (@ == true || @ == \"true\")"
+        in sql
+    )
+
+
+def test_explicit_strict_ingest_flag_rejects_unmarked_nonstrict_artifact():
+    payload = {
+        "runMeta": {},
+        "sources": [{"sourceKey": "cbre"}],
+        "listings": [],
+    }
+    with pytest.raises(ValueError, match="explicitly required"):
+        ci.validate_strict_artifact_freshness(
+            payload,
+            require_strict_freshness=True,
+        )
+
+
+def test_cli_explicit_strict_flag_rejects_unmarked_input_before_database_access(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = tmp_path / "jll-without-freshness.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "runMeta": {"mode": "full"},
+                "sources": [{"sourceKey": "jll"}],
+                "listings": [],
+                "brokers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cre_ingest.py",
+            "--in",
+            str(artifact),
+            "--dry-run",
+            "--require-strict-freshness",
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="explicitly required"):
+        ci.main()
+
+
+@pytest.mark.parametrize("mode", ["full", "enrich"])
+def test_cli_live_direct_ingest_supports_unmarked_strict_source_modes(
+    tmp_path,
+    monkeypatch,
+    mode,
+):
+    artifact = tmp_path / f"jll-{mode}.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "runMeta": {
+                    "mode": mode,
+                    "startedAt": _SCRAPED_AT,
+                    "finishedAt": _SCRAPED_AT,
+                },
+                "sources": [
+                    {
+                        "sourceKey": "jll",
+                        "listingsCollected": 1,
+                    }
+                ],
+                "listings": [
+                    {
+                        "sourceKey": "jll",
+                        "id": f"{mode}-1",
+                        "url": f"https://example.com/jll/{mode}-1",
+                        "name": f"JLL {mode} listing",
+                    }
+                ],
+                "brokers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    class Proc:
+        returncode = 0
+
+    monkeypatch.setattr(
+        ci,
+        "load_db_url",
+        lambda _env_file: ("postgres://user:SENTINEL@db.test/cre", "/fake/.env"),
+    )
+    monkeypatch.setattr(ci, "find_psql", lambda: "psql")
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return Proc()
+
+    monkeypatch.setattr(ci.subprocess, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["cre_ingest.py", "--in", str(artifact)])
+
+    ci.main()
+
+    assert len(calls) == 1
+    assert calls[0][0][0] == "psql"
+    assert all("SENTINEL" not in arg for arg in calls[0][0])
+    assert calls[0][1]["env"]["PGHOST"] == "db.test"
+    assert calls[0][1]["env"]["PGDATABASE"] == "cre"
+    assert calls[0][1]["env"]["PGPASSWORD"] == "SENTINEL"
+
+
+def test_psql_connection_env_clears_inherited_target_overrides(monkeypatch):
+    for key in ci.PSQL_TARGET_ENV_KEYS:
+        monkeypatch.setenv(key, "inherited-override")
+    monkeypatch.setenv("CRE_UNRELATED", "preserved")
+    url = (
+        "postgresql://user:secret@db.example.test:5432/cre"
+        "?sslmode=require"
+        "&application_name=a+b"
+        "&channel_binding=require"
+        "&requiressl=1"
+        "&target_session_attrs=read-write"
+    )
+    env = ci.psql_connection_env(url)
+    assert env["PGHOST"] == "db.example.test"
+    assert env["PGPORT"] == "5432"
+    assert env["PGDATABASE"] == "cre"
+    assert env["PGUSER"] == "user"
+    assert env["PGPASSWORD"] == "secret"
+    assert env["PGSSLMODE"] == "require"
+    assert env["PGAPPNAME"] == "a+b"
+    assert env["PGCHANNELBINDING"] == "require"
+    assert env["PGREQUIRESSL"] == "1"
+    assert env["PGTARGETSESSIONATTRS"] == "read-write"
+    assert env["CRE_UNRELATED"] == "preserved"
+    for key in ci.PSQL_TARGET_ENV_KEYS - {
+        "PGDATABASE",
+        "PGHOST",
+        "PGPORT",
+        "PGUSER",
+        "PGPASSWORD",
+        "PGSSLMODE",
+        "PGAPPNAME",
+        "PGCHANNELBINDING",
+        "PGREQUIRESSL",
+        "PGTARGETSESSIONATTRS",
+    }:
+        assert key not in env
+
+
+def test_database_target_fingerprint_normalizes_dns_but_not_special_hosts():
+    assert ci.database_target_fingerprint_from_url(
+        "postgresql://user:one@DB.EXAMPLE.TEST./cre"
+    ) == ci.database_target_fingerprint_from_url(
+        "postgresql://user:two@db.example.test/cre"
+    )
+    assert ci.database_target_fingerprint_from_url(
+        "postgresql://user:one@%2FUsers%2FCayman%2FPG/cre"
+    ) != ci.database_target_fingerprint_from_url(
+        "postgresql://user:two@%2Fusers%2Fcayman%2Fpg/cre"
+    )
+    assert ci.database_target_fingerprint_from_url(
+        "postgresql://user:one@%2Ftmp%2Fpg./cre"
+    ) != ci.database_target_fingerprint_from_url(
+        "postgresql://user:two@%2Ftmp%2Fpg/cre"
+    )
+    assert ci.database_target_fingerprint_from_url(
+        "postgresql://user:one@[fe80::1%25En0]/cre"
+    ) != ci.database_target_fingerprint_from_url(
+        "postgresql://user:two@[fe80::1%25en0]/cre"
+    )
+
+
+def test_psql_connection_args_preserve_uri_only_options_without_credentials():
+    url = (
+        "postgresql://user:secret@db.example.test:6543/cre"
+        "?sslmode=require"
+        "&keepalives=1"
+        "&fallback_application_name=a+b"
+    )
+    args = ci.psql_connection_args(url)
+    assert args[0] == "--dbname"
+    assert args[1].startswith("postgresql://db.example.test:6543/cre?")
+    assert "user" not in args[1]
+    assert "secret" not in args[1]
+    assert "sslmode" not in args[1]
+    assert "keepalives=1" in args[1]
+    assert "fallback_application_name=a%2Bb" in args[1]
+
+    env = ci.psql_connection_env(url)
+    assert env["PGUSER"] == "user"
+    assert env["PGPASSWORD"] == "secret"
+    assert env["PGSSLMODE"] == "require"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_host", "expected_uri_host"),
+    [
+        (
+            (
+                "postgresql://user:secret@%2FUsers%2FCayman%2FPG/cre"
+                "?keepalives=0"
+            ),
+            "/Users/Cayman/PG",
+            "postgresql://%2FUsers%2FCayman%2FPG/cre?",
+        ),
+        (
+            (
+                "postgresql://user:secret@[fe80::1%25en0]:5432/cre"
+                "?keepalives=1"
+            ),
+            "fe80::1%en0",
+            "postgresql://[fe80::1%25en0]:5432/cre?",
+        ),
+    ],
+)
+def test_psql_connection_args_reencode_special_hosts(
+    url, expected_host, expected_uri_host
+):
+    env = ci.psql_connection_env(url)
+    args = ci.psql_connection_args(url)
+    assert env["PGHOST"] == expected_host
+    assert args[1].startswith(expected_uri_host)
+    assert "user" not in args[1]
+    assert "secret" not in args[1]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://user:secret@db.example.test/cre?application_name=%ZZ",
+        "postgresql://user:%FF@db.example.test/cre",
+    ],
+)
+def test_psql_connection_rejects_invalid_or_non_utf8_percent_encoding(url):
+    with pytest.raises(ValueError, match="percent escape|valid UTF-8"):
+        ci.psql_connection_env(url)
+
+
+def test_psql_connection_rejects_secret_query_options():
+    url = (
+        "postgresql://user:secret@db.example.test/cre"
+        "?sslmode=require&sslpassword=query-secret"
+    )
+    with pytest.raises(ValueError, match="cannot be moved out of process argv safely"):
+        ci.psql_connection_env(url)
+
+
+def test_cli_rejects_target_drift_before_psql_discovery(tmp_path, monkeypatch):
+    artifact = tmp_path / "jll-full.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "runMeta": {
+                    "mode": "full",
+                    "startedAt": _SCRAPED_AT,
+                    "finishedAt": _SCRAPED_AT,
+                },
+                "sources": [
+                    {
+                        "sourceKey": "jll",
+                        "listingsCollected": 1,
+                    }
+                ],
+                "listings": [
+                    {
+                        "sourceKey": "jll",
+                        "id": "full-1",
+                        "url": "https://example.com/jll/full-1",
+                        "name": "JLL full listing",
+                    }
+                ],
+                "brokers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        ci,
+        "load_db_url",
+        lambda _env_file: (
+            "postgresql://user:secret@db.example.test/cre",
+            "/fake/.env",
+        ),
+    )
+    monkeypatch.setattr(
+        ci,
+        "find_psql",
+        lambda: pytest.fail("target drift must fail before psql discovery"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cre_ingest.py",
+            "--in",
+            str(artifact),
+            "--expected-db-target-sha256",
+            "0" * 64,
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="does not match"):
+        ci.main()
 
 
 def test_to_row_franklin_street_buildout_propertyid_strips_suffix():
@@ -595,6 +1398,598 @@ def test_normal_brokerage_scalars_are_not_rejected_with_retired_artifacts():
     assert row["year_built"] == 2004
 
 
+def test_inventory_only_card_never_becomes_canonical_listing():
+    listing = {
+        "sourceKey": "cbre-dealflow",
+        "id": "card:abc123",
+        # Even if a future adapter supplies the shared index URL, the explicit
+        # marker must win and keep the card out of cre_listings.
+        "url": "https://www.cbredealflow.com/",
+        "name": "Unlinked Deal",
+        "city": "Tulsa",
+        "state": "OK",
+        "assetType": "Industrial",
+        "provisionalIdentity": {"historyContinuity": "not_guaranteed"},
+        "inventoryOnly": {
+            "reason": "no_provider_id_or_listing_url",
+            "indexUrl": "https://www.cbredealflow.com/",
+        },
+    }
+    assert _row(listing) is None
+    inventory = ci.to_inventory_only_row(listing, _SCRAPED_AT)
+    assert inventory is not None
+    assert inventory["slug"] == "cbre"
+    assert inventory["external_id"] == "dealflow:card:abc123"
+    assert inventory["source_key"] == "cbre-dealflow"
+
+
+def test_inventory_only_reconciliation_requires_strict_full_enumeration():
+    payload = {
+        "runMeta": {
+            "mode": "full",
+            "transactions": ["sale", "lease"],
+            "maxItemsPerSource": None,
+            "startedAt": _SCRAPED_AT,
+            "finishedAt": _SCRAPED_AT,
+        },
+        "sources": [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transaction": "sale",
+                "supported": True,
+                "listingsCollected": 10,
+                "truncated": False,
+            },
+            {
+                "sourceKey": "cbre-dealflow",
+                "transaction": "lease",
+                "supported": True,
+                "listingsCollected": 2,
+                "truncated": False,
+            },
+        ],
+        "listings": [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transactionMode": "sale",
+                "id": f"sale-{index}",
+            }
+            for index in range(10)
+        ]
+        + [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transactionMode": "lease",
+                "id": f"lease-{index}",
+            }
+            for index in range(2)
+        ],
+        "totalListings": 12,
+    }
+    assert ci.inventory_only_full_scopes(payload) == [
+        {
+            "slug": "cbre",
+            "source_key": "cbre-dealflow",
+            "external_id_like": "dealflow:card:%",
+            "watermark_external_id": (
+                "dealflow:scope:inventory-only-watermark"
+            ),
+            "watermark_url": "https://www.cbredealflow.com/",
+            "watermark_fingerprint": "inventory-only-scope-watermark-v1",
+            "observed_at": _SCRAPED_AT,
+        }
+    ]
+
+    # Existing all-source full artifacts remain compatible: only the Deal Flow
+    # subset authorizes this namespace.
+    payload["sources"].append(
+        {
+            "sourceKey": "svn",
+            "transaction": "sale",
+            "supported": True,
+            "listingsCollected": 1,
+            "truncated": False,
+        }
+    )
+    payload["listings"].append(
+        {"sourceKey": "svn", "transactionMode": "sale", "id": "svn-1"}
+    )
+    payload["totalListings"] = 13
+    assert ci.inventory_only_full_scopes(payload)[0]["source_key"] == "cbre-dealflow"
+
+    payload["sources"][0]["truncated"] = True
+    assert ci.inventory_only_full_scopes(payload) == []
+
+    payload["sources"][0]["truncated"] = False
+    payload["sources"][0]["listingsCollected"] = 9
+    assert ci.inventory_only_full_scopes(payload) == []
+
+    payload["sources"][0]["listingsCollected"] = 10
+    payload["runMeta"]["startedAt"] = "2026-06-16T00:00:00+00:00"
+    assert ci.inventory_only_full_scopes(payload) == []
+
+    payload["runMeta"]["startedAt"] = _SCRAPED_AT
+    payload["listings"][0]["inventoryOnly"] = {"reason": "malformed"}
+    assert ci.inventory_only_full_scopes(payload) == []
+
+
+def test_empty_inventory_only_scope_is_still_reconcilable():
+    payload = {
+        "runMeta": {
+            "mode": "full",
+            "transactions": ["sale", "lease"],
+            "maxItemsPerSource": None,
+            "startedAt": _SCRAPED_AT,
+            "finishedAt": _SCRAPED_AT,
+        },
+        "sources": [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transaction": tx,
+                "supported": True,
+                "listingsCollected": 0,
+                "truncated": False,
+            }
+            for tx in ("sale", "lease")
+        ],
+        "listings": [],
+        "totalListings": 0,
+    }
+    scopes = ci.inventory_only_full_scopes(payload)
+    assert len(scopes) == 1
+    assert scopes[0]["external_id_like"] == "dealflow:card:%"
+
+
+def test_colliers_inventory_only_card_uses_salestracker_namespace():
+    listing = {
+        "sourceKey": "colliers",
+        "transactionMode": "sale",
+        "id": "salestracker:card:abc123",
+        "name": "Unlinked Colliers Sale",
+        "city": "Tulsa",
+        "state": "OK",
+        "provisionalIdentity": {"historyContinuity": "not_guaranteed"},
+        "inventoryOnly": {
+            "reason": "no_public_slp_detail_link",
+            "indexUrl": "https://sales.colliers.com/",
+        },
+    }
+
+    assert _row(listing) is None
+    inventory = ci.to_inventory_only_row(listing, _SCRAPED_AT)
+    assert inventory is not None
+    assert inventory["slug"] == "colliers"
+    assert inventory["external_id"] == "salestracker:card:abc123"
+    assert inventory["source_key"] == "colliers"
+    assert inventory["url"] == "https://sales.colliers.com/"
+
+
+def test_colliers_full_snapshot_authorizes_its_own_inventory_scope():
+    payload = {
+        "runMeta": {
+            "mode": "full",
+            "transactions": ["sale", "lease"],
+            "maxItemsPerSource": None,
+            "startedAt": _SCRAPED_AT,
+            "finishedAt": _SCRAPED_AT,
+        },
+        "sources": [
+            {
+                "sourceKey": "colliers",
+                "transaction": "sale",
+                "supported": True,
+                "listingsCollected": 1,
+                "truncated": False,
+            },
+            {
+                "sourceKey": "colliers",
+                "transaction": "lease",
+                "supported": True,
+                "listingsCollected": 0,
+                "truncated": False,
+            },
+        ],
+        "listings": [
+            {
+                "sourceKey": "colliers",
+                "transactionMode": "sale",
+                "id": "salestracker:card:abc123",
+                "inventoryOnly": {
+                    "reason": "no_public_slp_detail_link",
+                    "indexUrl": "https://sales.colliers.com/",
+                },
+            }
+        ],
+        "totalListings": 1,
+    }
+
+    assert ci.inventory_only_full_scopes(payload) == [
+        {
+            "slug": "colliers",
+            "source_key": "colliers",
+            "external_id_like": "salestracker:card:%",
+            "watermark_external_id": (
+                "salestracker:scope:inventory-only-watermark"
+            ),
+            "watermark_url": "https://sales.colliers.com/",
+            "watermark_fingerprint": (
+                "inventory-only-scope-watermark-v1:colliers-salestracker"
+            ),
+            "observed_at": _SCRAPED_AT,
+        }
+    ]
+
+
+def test_cli_rejects_duplicate_complete_inventory_scopes(
+    tmp_path, monkeypatch
+):
+    payload = {
+        "runMeta": {
+            "mode": "full",
+            "transactions": ["sale", "lease"],
+            "maxItemsPerSource": None,
+            "startedAt": _SCRAPED_AT,
+            "finishedAt": _SCRAPED_AT,
+        },
+        "sources": [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transaction": tx,
+                "supported": True,
+                "listingsCollected": 0,
+                "truncated": False,
+            }
+            for tx in ("sale", "lease")
+        ],
+        "listings": [],
+        "brokers": [],
+        "totalListings": 0,
+    }
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    first.write_text(json.dumps(payload), encoding="utf-8")
+    second.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cre_ingest.py",
+            "--in",
+            str(first),
+            "--in",
+            str(second),
+            "--dry-run",
+        ],
+    )
+    with pytest.raises(SystemExit, match="duplicate complete inventory-only scopes"):
+        ci.main()
+
+
+def test_cli_does_not_let_complete_scope_authorize_partial_input(
+    tmp_path, monkeypatch
+):
+    complete = {
+        "runMeta": {
+            "mode": "full",
+            "transactions": ["sale", "lease"],
+            "maxItemsPerSource": None,
+            "startedAt": _SCRAPED_AT,
+            "finishedAt": _SCRAPED_AT,
+        },
+        "sources": [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transaction": tx,
+                "supported": True,
+                "listingsCollected": 0,
+                "truncated": False,
+            }
+            for tx in ("sale", "lease")
+        ],
+        "listings": [],
+        "brokers": [],
+        "totalListings": 0,
+    }
+    partial = {
+        "runMeta": {
+            "mode": "enrich",
+            "startedAt": _SCRAPED_AT,
+            "finishedAt": _SCRAPED_AT,
+        },
+        "sources": [],
+        "listings": [
+            {
+                "sourceKey": "cbre-dealflow",
+                "transactionMode": "sale",
+                "id": "card:partial",
+                "inventoryOnly": {
+                    "reason": "no_provider_id_or_listing_url",
+                    "indexUrl": "https://www.cbredealflow.com/",
+                },
+            }
+        ],
+        "brokers": [],
+        "totalListings": 1,
+    }
+    complete_path = tmp_path / "complete.json"
+    partial_path = tmp_path / "partial.json"
+    complete_path.write_text(json.dumps(complete), encoding="utf-8")
+    partial_path.write_text(json.dumps(partial), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cre_ingest.py",
+            "--in",
+            str(complete_path),
+            "--in",
+            str(partial_path),
+            "--dry-run",
+        ],
+    )
+    with pytest.raises(
+        SystemExit,
+        match="strict complete full scope in the same artifact",
+    ):
+        ci.main()
+
+
+def test_inventory_only_sql_covers_appearance_disappearance_and_reappearance():
+    row = {
+        "slug": "cbre",
+        "external_id": "dealflow:card:abc123",
+        "source_key": "cbre-dealflow",
+        "url": "https://www.cbredealflow.com/",
+        "fingerprint": "abc",
+        "observed_status": "Available",
+        "observed_at": _SCRAPED_AT,
+    }
+    scope = {
+        "slug": "cbre",
+        "source_key": "cbre-dealflow",
+        "external_id_like": "dealflow:card:%",
+        "watermark_external_id": "dealflow:scope:inventory-only-watermark",
+        "watermark_url": "https://www.cbredealflow.com/",
+        "watermark_fingerprint": "inventory-only-scope-watermark-v1",
+        "observed_at": _SCRAPED_AT,
+    }
+    sql = ci.build_sql(
+        [],
+        [],
+        _SCRAPED_AT,
+        set(),
+        inventory_only_rows=[row],
+        inventory_only_scopes=[scope],
+    )
+    assert "INSERT INTO credeals.cre_source_index AS si" in sql
+    assert "soft_deleted = false" in sql
+    assert "UPDATE credeals.cre_source_index si" in sql
+    assert "SET soft_deleted = true" in sql
+    assert "FROM _inventory_only_scope scope" in sql
+    assert "current.external_id = si.external_id" in sql
+    assert "refusing stale inventory-only replay" in sql
+    assert "prior.last_enumerated_at > scope.observed_at" in sql
+    assert "EXCLUDED.last_enumerated_at >= si.last_enumerated_at" in sql
+    assert "si.last_enumerated_at <= scope.observed_at" in sql
+    assert "prior.external_id = scope.watermark_external_id" in sql
+    assert "scope.watermark_external_id" in sql
+    assert "scope.watermark_url" in sql
+    assert "scope.watermark_fingerprint" in sql
+    assert "dealflow:scope:inventory-only-watermark" in sql
+    assert "inventory-only-scope-watermark-v1" in sql
+    assert "to_regclass('credeals.cre_source_index')" not in sql
+
+
+def test_inventory_only_stale_replay_watermarks_are_source_specific():
+    scopes = [
+        {
+            **definition,
+            "source_key": source_key,
+            "observed_at": _SCRAPED_AT,
+        }
+        for source_key, definition in ci.INVENTORY_ONLY_SOURCE_DEFINITIONS.items()
+    ]
+    sql = ci.build_sql(
+        [],
+        [],
+        _SCRAPED_AT,
+        set(),
+        inventory_only_scopes=scopes,
+    )
+
+    assert "dealflow:scope:inventory-only-watermark" in sql
+    assert "salestracker:scope:inventory-only-watermark" in sql
+    assert "https://www.cbredealflow.com/" in sql
+    assert "https://sales.colliers.com/" in sql
+    assert (
+        "inventory-only-scope-watermark-v1:colliers-salestracker" in sql
+    )
+    assert "prior.source_key = scope.source_key" in sql
+    assert "prior.external_id = scope.watermark_external_id" in sql
+
+
+def test_cli_refuses_conflicting_colliers_canonical_identity(
+    tmp_path, monkeypatch
+):
+    artifact = tmp_path / "colliers-conflict.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "runMeta": {
+                    "mode": "full",
+                    "startedAt": _SCRAPED_AT,
+                    "finishedAt": _SCRAPED_AT,
+                },
+                "sources": [],
+                "brokers": [],
+                "listings": [
+                    {
+                        "sourceKey": "colliers",
+                        "id": "12345",
+                        "url": (
+                            "https://my.rcm1.com/handler/modern.aspx?pv=linked"
+                        ),
+                        "canonicalUrl": (
+                            "https://my.rcm1.com/handler/modern.aspx?pv=linked"
+                        ),
+                        "name": "Linked Property",
+                        "transactionMode": "sale",
+                    },
+                    {
+                        "sourceKey": "colliers",
+                        "id": "12345",
+                        "url": "https://sales.colliers.com/#project-12345",
+                        "canonicalUrl": (
+                            "https://sales.colliers.com/#project-12345"
+                        ),
+                        "name": "Different Unlinked Property",
+                        "transactionMode": "sale",
+                    },
+                ],
+                "totalListings": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cre_ingest.py", "--in", str(artifact), "--dry-run"],
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="refusing duplicate canonical identity.*Colliers",
+    ):
+        ci.main()
+
+
+def test_cli_refuses_duplicate_colliers_provisional_identity(
+    tmp_path, monkeypatch
+):
+    artifact = tmp_path / "colliers-provisional-duplicate.json"
+    provisional = {
+        "sourceKey": "colliers",
+        "id": "salestracker:card:12345",
+        "url": None,
+        "transactionMode": "sale",
+        "inventoryOnly": {
+            "reason": "card_not_linked",
+            "indexUrl": "https://sales.colliers.com/",
+        },
+    }
+    artifact.write_text(
+        json.dumps(
+            {
+                "runMeta": {
+                    "mode": "full",
+                    "transactions": ["sale", "lease"],
+                    "maxItemsPerSource": None,
+                    "startedAt": _SCRAPED_AT,
+                    "finishedAt": _SCRAPED_AT,
+                },
+                "sources": [
+                    {
+                        "sourceKey": "colliers",
+                        "transaction": "sale",
+                        "supported": True,
+                        "listingsCollected": 2,
+                        "truncated": False,
+                    },
+                    {
+                        "sourceKey": "colliers",
+                        "transaction": "lease",
+                        "supported": True,
+                        "listingsCollected": 0,
+                        "truncated": False,
+                    },
+                ],
+                "brokers": [],
+                "listings": [provisional, dict(provisional)],
+                "totalListings": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cre_ingest.py", "--in", str(artifact), "--dry-run"],
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="duplicate Colliers provisional inventory identity",
+    ):
+        ci.main()
+
+
+def test_non_colliers_dual_mode_identity_still_merges():
+    sale = _row(
+        {
+            "sourceKey": "cbre",
+            "id": "dual-1",
+            "url": "https://www.cbre.com/properties/dual-1",
+            "transactionMode": "sale",
+        }
+    )
+    lease = _row(
+        {
+            "sourceKey": "cbre",
+            "id": "dual-1",
+            "url": "https://www.cbre.com/properties/dual-1?mode=lease",
+            "transactionMode": "lease",
+        }
+    )
+
+    ci.validate_duplicate_identity_before_merge(sale, lease)
+    assert ci.merge_rows(sale, lease)["transaction_type"] == "sale_or_lease"
+
+
+def test_colliers_identity_guard_rejects_even_identical_duplicate_project_id():
+    first = _row(
+        {
+            "sourceKey": "colliers",
+            "id": "12345",
+            "url": "https://my.rcm1.com/handler/modern.aspx?pv=linked",
+            "name": "Same Property",
+            "transactionMode": "sale",
+        }
+    )
+    duplicate = _row(
+        {
+            "sourceKey": "colliers",
+            "id": "12345",
+            "url": "https://my.rcm1.com/handler/modern.aspx?pv=linked",
+            "name": "Same Property",
+            "transactionMode": "sale",
+        }
+    )
+    with pytest.raises(ValueError, match="duplicate Colliers canonical ProjectId"):
+        ci.validate_duplicate_identity_before_merge(first, duplicate)
+
+
+def test_newmark_identity_guard_rejects_duplicate_ingest_slug():
+    first = _row(
+        {
+            "sourceKey": "newmark",
+            "id": "same-slug",
+            "url": "https://www.nmrk.com/properties/same-slug",
+            "transactionMode": "sale",
+        }
+    )
+    duplicate = _row(
+        {
+            "sourceKey": "newmark",
+            "id": "same-slug",
+            "url": "https://www.nmrk.com/properties/same-slug",
+            "transactionMode": "lease",
+        }
+    )
+    with pytest.raises(ValueError, match="duplicate Newmark canonical identity"):
+        ci.validate_duplicate_identity_before_merge(first, duplicate)
+
+
 def test_cli_refuses_marked_retired_om_parse_artifact(tmp_path, monkeypatch):
     artifact = tmp_path / "retired-om.json"
     artifact.write_text(json.dumps({
@@ -692,16 +2087,16 @@ def test_merge_extra_facts_union_a_wins_collision():
 
 
 def test_merge_status_drop_signal_wins_over_transitional():
-    a = _row({"sourceKey": "cushman-wakefield", "url": "https://cw.com/1", "id": "1",
+    a = _row({"sourceKey": "cushman-wakefield", "url": "https://www.cushmanwakefield.com/1", "id": "1",
               "listingStatus": "Under Contract"})
-    b = _row({"sourceKey": "cushman-wakefield", "url": "https://cw.com/1", "id": "1",
+    b = _row({"sourceKey": "cushman-wakefield", "url": "https://www.cushmanwakefield.com/1", "id": "1",
               "listingStatus": "Sold"})
     assert ci.merge_rows(a, b)["status"] == "sold"
 
 
 def test_merge_status_fills_none_from_b():
     a = _row({"sourceKey": "cbre", "url": "https://cbre.com/g", "id": "1"})
-    b = _row({"sourceKey": "cushman-wakefield", "url": "https://cw.com/g", "id": "1",
+    b = _row({"sourceKey": "cushman-wakefield", "url": "https://www.cushmanwakefield.com/g", "id": "1",
               "listingStatus": "Pending"})
     assert a["status"] is None
     assert ci.merge_rows(a, b)["status"] == "pending"

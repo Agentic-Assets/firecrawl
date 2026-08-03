@@ -89,14 +89,17 @@ the hard gotchas a new session needs before running anything.
    means shape-compatible for the diff layer, not safe for the listings upsert.
 
 2. **`jll`, `jll-investor`, `cbre-dealflow`, and `colliers` (SalesTracker) are excluded from monitor mode** (they return zero
-   monitor listings and stay on the full-sweep cadence). Their persisted
-   `external_id` is detail-derived and unrecoverable from cheap enumeration:
+   monitor listings and stay on the full-sweep cadence). The first three have
+   persisted `external_id` values that are detail-derived and unrecoverable
+   from cheap enumeration:
    jll uses the numeric `property.id` from `__NEXT_DATA__`; jll-investor uses
    the Salesforce `listing.id`; `cbre-dealflow` ingest persists `data.projectid`
-   while the monitor card yields the URL `listingPv` token (~78% mismatch across
-   ~1,836 rows); `colliers` (SalesTracker) ingest persists the SLP-detail
-   `ProjectId` while the monitor card yields a `GetMapData` `ProjectId` paired
-   by array index (~45% mismatch across ~1,300 rows). `colliers-main`
+   while the monitor card yields the URL `listingPv` token (~78% mismatch
+   across ~1,836 rows). Colliers SalesTracker now groups map pins by ProjectId
+   and verifies linked IDs against SLP detail during a full pass; unlinked
+   cards remain inventory-only. Monitor mode still emits no Colliers rows
+   because it does not perform those full-pass identity and completeness
+   checks. `colliers-main`
    (XML-sitemap ids) is unaffected and stays monitor-enabled. Verified
    11,230/11,230 (jll) and 934/934 (jll-investor) slug-vs-persisted-id mismatch
    against full artifacts. Emitting mismatched keys would make those rows read as
@@ -146,6 +149,15 @@ the hard gotchas a new session needs before running anything.
    to skip, so monitor request cost equals the full run (you still page the
    whole API / inventory / list to see ids). Their monitor benefit is purely
    downstream (fewer DB writes via the diff runner), not a faster collect.
+
+10. **Lifecycle reconciliation and child-regression checks use different
+    cohorts.** `--mark-missing` legitimately soft-retires parents and archives
+    their child state. The atomic ingest guard compares child counts only
+    across the same pre-existing parent IDs that remain active; a
+    retained-parent source/type baseline of at least 10 retaining less than 70%
+    aborts the whole transaction. Do not reuse the active-parent validation
+    snapshot itself as a post-reconciliation child-loss gate because retired
+    parents intentionally leave that scope.
 
 ## Run model (intended cadence, gated until go-ahead)
 

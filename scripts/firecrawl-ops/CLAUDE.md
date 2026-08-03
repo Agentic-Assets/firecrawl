@@ -159,7 +159,7 @@ or images into Supabase storage for the bulk collector.
 
 ## Monitor, enrichment, and automation
 
-The collector registers **20 source keys** in `types.ts` / `collect.ts`. Live
+The collector registers **51 source keys** in `types.ts` / `collect.ts`. Live
 counts, per-source status, and run-health belong in
 `cre_collector/START_HERE.md` only. Run `bash cre_status.sh` before quoting
 schedules or last-run verdicts.

@@ -6,7 +6,8 @@ Coverage targets:
   - markdown_table
   - render_markdown
   - run_query (monkeypatched subprocess.run)
-  - main (monkeypatched load_db_url + find_psql + run_query)
+  - run_queries single-snapshot batching (monkeypatched subprocess.run)
+  - main (monkeypatched load_db_url + find_psql + run_queries)
 
 No network, no live DB, no psql connection.  All subprocess calls are
 intercepted via monkeypatch.
@@ -14,6 +15,7 @@ intercepted via monkeypatch.
 
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -21,12 +23,24 @@ import pytest
 import cre_validate
 from cre_validate import (
     QUERIES,
+    SOURCE_KEY_SQL,
     markdown_table,
     normalize_warning,
+    parse_query_batch,
     parse_tsv,
     render_markdown,
     run_query,
+    run_queries,
 )
+
+
+def test_child_quality_queries_cover_media_and_links():
+    assert "'media'" in QUERIES["child_counts"]
+    assert "'links'" in QUERIES["child_counts"]
+    assert "media_bad_url" in QUERIES["bad_child_urls"]
+    assert "link_bad_url" in QUERIES["bad_child_urls"]
+    assert "SELECT 'media'" in QUERIES["orphans"]
+    assert "SELECT 'links'" in QUERIES["orphans"]
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +228,164 @@ def test_render_markdown_contains_generated_at():
     assert "2026-06-15T00:00:00+00:00" in md
 
 
+def test_source_counts_separates_inventory_and_detail_observation():
+    sql = QUERIES["source_counts"]
+    assert "inventoryObservedAt" in sql
+    assert "latest_inventory_observed_at" in sql
+    assert "latest_inventory_batch_active" in sql
+    assert "detail_unavailable" in sql
+
+
+def test_source_key_inference_covers_preserved_and_merged_payloads():
+    assert "latestInventoryObservation,sourceKey" in SOURCE_KEY_SQL
+    assert "latestInventoryObservation,primary,sourceKey" in SOURCE_KEY_SQL
+    assert "latestInventoryObservation,secondary_pass,sourceKey" in SOURCE_KEY_SQL
+    assert "primary,sourceKey" in SOURCE_KEY_SQL
+    assert "secondary_pass,sourceKey" in SOURCE_KEY_SQL
+    assert SOURCE_KEY_SQL.index("external_id LIKE 'investor:%'") < SOURCE_KEY_SQL.index(
+        "latestInventoryObservation,sourceKey"
+    )
+    assert SOURCE_KEY_SQL.index(
+        "latestInventoryObservation,sourceKey"
+    ) < SOURCE_KEY_SQL.index("l.raw_data->>'sourceKey'")
+
+
+def test_persisted_freshness_provenance_reads_every_supported_raw_shape():
+    fixtures = {
+        "flat": {
+            "inventoryObservedAt": "2026-07-31T01:00:00Z",
+            "detailObservedAt": "2026-07-31T01:01:00Z",
+            "freshnessProvenance": {
+                "generationId": "flat-generation",
+                "detailScope": "source_native_public_record",
+                "cacheDisposition": "live",
+            },
+        },
+        "primary": {
+            "primary": {
+                "inventoryObservedAt": "2026-07-31T02:00:00Z",
+                "detailObservedAt": "2026-07-31T02:01:00Z",
+                "freshnessProvenance": {
+                    "generationId": "primary-generation",
+                    "detailScope": "detail_page",
+                    "cacheDisposition": "generation_cache",
+                },
+            }
+        },
+        "secondary-pass": {
+            "secondary_pass": {
+                "inventoryObservedAt": "2026-07-31T03:00:00Z",
+                "detailObservedAt": "2026-07-31T03:01:00Z",
+                "freshnessProvenance": {
+                    "generationId": "secondary-generation",
+                    "detailScope": "detail_page",
+                    "cacheDisposition": "source_revision_cache",
+                },
+            }
+        },
+        "latest-inventory-observation": {
+            "latestInventoryObservation": {
+                "inventoryObservedAt": "2026-07-31T04:00:00Z",
+                "detailObservedAt": "2026-07-31T04:01:00Z",
+                "freshnessProvenance": {
+                    "generationId": "latest-generation",
+                    "detailScope": "authoritative_inventory_feed",
+                    "cacheDisposition": "live",
+                },
+            }
+        },
+    }
+
+    for name, raw_data in fixtures.items():
+        provenance = cre_validate.persisted_freshness_provenance(raw_data)
+        assert provenance["generation_id"] == f"{name.split('-')[0]}-generation"
+        assert provenance["inventory_observed_at"].endswith("00:00Z")
+        assert provenance["detail_observed_at"].endswith("01:00Z")
+        assert provenance["detail_scope"]
+        assert provenance["cache_disposition"]
+
+
+def test_persisted_freshness_provenance_never_uses_scraped_at_as_detail_proof():
+    assert cre_validate.persisted_freshness_provenance({}) == {
+        "inventory_observed_at": None,
+        "detail_observed_at": None,
+        "generation_id": None,
+        "detail_scope": None,
+        "cache_disposition": None,
+    }
+
+
+def test_freshness_generations_groups_readback_by_persisted_generation():
+    sql = QUERIES["freshness_generations"]
+    assert "l.raw_data #> '{latestInventoryObservation}'" in sql
+    assert "l.raw_data #> '{latestInventoryObservation,primary}'" in sql
+    assert "l.raw_data #> '{latestInventoryObservation,secondary_pass}'" in sql
+    assert "l.raw_data #> '{primary}'" in sql
+    assert "l.raw_data #> '{secondary_pass}'" in sql
+    assert "jsonb_to_record(" in sql
+    assert 'provenance."generationId"' in sql
+    assert 'provenance."detailScope"' in sql
+    assert 'provenance."cacheDisposition"' in sql
+    assert 'observed."detailObservedAt"' in sql
+    assert "source_policy (source_key, evidence_class, detail_claim)" in sql
+    assert "missing_persisted_detail_proof" in sql
+    assert 'observed."inventoryObservedAt"' in sql
+    assert "GROUP BY" in sql
+    assert "earliest_inventory_observed_at" in sql
+    assert "earliest_detail_observed_at" in sql
+    assert "l.scraped_at" not in sql
+    assert "detail_scraped_at" not in sql
+    assert "latest_inventory_batch_active" not in sql
+
+
+def test_freshness_generations_materializes_once_and_has_no_presentation_sort():
+    sql = QUERIES["freshness_generations"]
+    assert "raw AS MATERIALIZED" in sql
+    assert "OFFSET 0" in sql
+    assert "ORDER BY active.source_key" not in sql
+    assert sql.rstrip().endswith("active.generation_id;")
+    assert "AS detail_scopes" in sql
+    assert "AS cache_dispositions" in sql
+
+
+def test_inventory_only_index_reports_each_declarative_source_namespace():
+    sql = QUERIES["inventory_only_index"]
+    assert "credeals.cre_source_index" in sql
+    assert "dealflow:card:%" in sql
+    assert "salestracker:card:%" in sql
+    assert "definitions.external_id_like" in sql
+    assert "definitions.watermark_external_id" in sql
+    assert "cbre-dealflow" in sql
+    assert "colliers" in sql
+    assert "coalesce(summary.active, 0)" in sql
+    assert "latest_batch_active" in sql
+    assert "latest_enumerated_at" in sql
+    assert "dealflow:scope:inventory-only-watermark" in sql
+    assert "salestracker:scope:inventory-only-watermark" in sql
+    assert "scope_watermark_at" in sql
+
+
+def test_primary_child_conflicts_checks_contacts_and_images():
+    sql = QUERIES["primary_child_conflicts"]
+    assert "cre_listing_contacts" in sql
+    assert "cre_listing_images" in sql
+    assert "HAVING count(*) > 1" in sql
+
+
+def test_quality_by_source_exposes_absolute_url_and_economic_defect_counts():
+    sql = QUERIES["quality_by_source"]
+    for field in (
+        "missing_canonical_url",
+        "bad_canonical_url",
+        "sale_price_flags",
+        "lease_rate_min_flags",
+        "lease_rate_max_flags",
+    ):
+        assert field in sql
+    assert "canonical_url IS NULL OR btrim(canonical_url) = ''" in sql
+    assert "sale_price_usd > 20000000000" in sql
+
+
 def test_render_markdown_credentials_not_in_output():
     """The env_file path appears but the URL value must not."""
     report = _minimal_report()
@@ -241,10 +413,13 @@ def test_render_markdown_all_query_labels_present():
     labels = {
         "totals": "Totals",
         "source_counts": "Source Counts",
+        "freshness_generations": "Freshness Generations",
+        "inventory_only_index": "Inventory-Only Source Index",
         "quality_by_source": "Quality By Source",
         "duplicates": "Duplicate Checks",
         "child_counts": "Child Counts",
         "bad_child_urls": "Bad Child URLs",
+        "primary_child_conflicts": "Primary Child Conflicts",
         "orphans": "Child Orphans",
         "search_smoke": "Search Smoke",
     }
@@ -281,20 +456,27 @@ class _FakeProc:
         self.stderr = stderr
 
 
-def test_run_query_wraps_sql_in_read_only_transaction(monkeypatch):
-    """The SQL passed to psql must be wrapped in BEGIN READ ONLY; ... ROLLBACK;"""
+def test_run_query_wraps_sql_in_repeatable_read_only_transaction(monkeypatch):
+    """The SQL passed to psql must use a stable read-only snapshot."""
     captured = {}
 
     def fake_run(argv, **kwargs):
         captured["kwargs"] = kwargs
+        captured["script_path"] = Path(argv[argv.index("-f") + 1])
+        captured["script"] = captured["script_path"].read_text()
         return _FakeProc(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
     run_query("psql", "postgres://SENTINEL", "SELECT 1;")
-    inp = captured["kwargs"]["input"]
-    assert inp.startswith("BEGIN READ ONLY;\n")
-    assert inp.strip().endswith("ROLLBACK;")
-    assert "SELECT 1;" in inp
+    script = captured["script"]
+    assert script.startswith(
+        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+    )
+    assert script.strip().endswith("ROLLBACK;")
+    assert "SELECT 1;" in script
+    assert "input" not in captured["kwargs"]
+    assert "stdin" not in captured["kwargs"]
+    assert not captured["script_path"].exists()
 
 
 def test_run_query_sql_content_inside_wrapper(monkeypatch):
@@ -302,15 +484,17 @@ def test_run_query_sql_content_inside_wrapper(monkeypatch):
     captured = {}
 
     def fake_run(argv, **kwargs):
-        captured["input"] = kwargs["input"]
+        captured["script"] = Path(argv[argv.index("-f") + 1]).read_text()
         return _FakeProc(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
     run_query("psql", "postgres://SENTINEL", "SELECT count(*) FROM foo;")
-    inp = captured["input"]
-    begin_pos = inp.index("BEGIN READ ONLY;")
-    rollback_pos = inp.index("ROLLBACK;")
-    sql_pos = inp.index("SELECT count(*) FROM foo;")
+    script = captured["script"]
+    begin_pos = script.index(
+        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;"
+    )
+    rollback_pos = script.index("ROLLBACK;")
+    sql_pos = script.index("SELECT count(*) FROM foo;")
     assert begin_pos < sql_pos < rollback_pos
 
 
@@ -328,8 +512,52 @@ def test_run_query_argv_contains_format_flags(monkeypatch):
     assert "-F" in argv
     assert "\t" in argv
     assert "-A" in argv
+    assert "-f" in argv
     assert "-v" in argv
     assert "ON_ERROR_STOP=1" in argv
+
+
+def test_run_query_keeps_database_url_out_of_process_argv(monkeypatch):
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        return _FakeProc(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
+    run_query("psql", "postgres://user:secret@db.example.test/cre", "SELECT 1;")
+    assert all("secret" not in arg for arg in captured["argv"])
+    assert captured["env"]["PGHOST"] == "db.example.test"
+    assert captured["env"]["PGDATABASE"] == "cre"
+    assert captured["env"]["PGUSER"] == "user"
+    assert captured["env"]["PGPASSWORD"] == "secret"
+
+
+def test_run_query_keeps_uri_only_options_in_credential_free_dbname(monkeypatch):
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        return _FakeProc(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
+    run_query(
+        "psql",
+        (
+            "postgres://user:secret@db.example.test/cre"
+            "?sslmode=require&keepalives=1&fallback_application_name=a+b"
+        ),
+        "SELECT 1;",
+    )
+    dbname = captured["argv"][captured["argv"].index("--dbname") + 1]
+    assert "secret" not in dbname
+    assert "user" not in dbname
+    assert "keepalives=1" in dbname
+    assert "fallback_application_name=a%2Bb" in dbname
+    assert captured["env"]["PGPASSWORD"] == "secret"
+    assert captured["env"]["PGSSLMODE"] == "require"
 
 
 def test_run_query_uses_text_and_capture_output(monkeypatch):
@@ -358,29 +586,94 @@ def test_run_query_returns_parsed_rows_and_stderr(monkeypatch):
 
 
 def test_run_query_nonzero_returncode_raises_system_exit(monkeypatch):
+    captured = {}
+
     def fake_run(argv, **kwargs):
+        captured["script_path"] = Path(argv[argv.index("-f") + 1])
         return _FakeProc(returncode=1, stdout="", stderr="fatal error")
 
     monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
     with pytest.raises(SystemExit):
         run_query("psql", "postgres://SENTINEL", "SELECT 1;")
+    assert not captured["script_path"].exists()
 
 
-def test_run_query_db_url_passed_in_argv(monkeypatch):
-    """The DB URL must appear in the psql argv (so psql knows which server to hit)."""
+def test_run_query_db_url_passed_only_in_child_environment(monkeypatch):
+    """The DB URL reaches libpq without appearing in the process argument list."""
     captured = {}
 
     def fake_run(argv, **kwargs):
         captured["argv"] = argv
+        captured["env"] = kwargs["env"]
         return _FakeProc(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
-    run_query("psql", "postgres://SENTINEL_URL", "SELECT 1;")
-    assert "postgres://SENTINEL_URL" in captured["argv"]
+    run_query("psql", "postgres://user:SENTINEL_URL@db.test/cre", "SELECT 1;")
+    assert all("SENTINEL_URL" not in arg for arg in captured["argv"])
+    assert captured["env"]["PGPASSWORD"] == "SENTINEL_URL"
+
+
+def test_parse_query_batch_splits_marked_result_sets():
+    output = (
+        "__CRE_VALIDATION_QUERY__:first\n"
+        "metric\tvalue\n"
+        "a\t1\n"
+        "__CRE_VALIDATION_QUERY__:second\n"
+        "name\tcount\n"
+        "b\t2\n"
+    )
+
+    parsed = parse_query_batch(output, ("first", "second"))
+
+    assert parsed == {
+        "first": [{"metric": "a", "value": "1"}],
+        "second": [{"name": "b", "count": "2"}],
+    }
+
+
+def test_run_queries_uses_one_repeatable_read_snapshot(monkeypatch):
+    captured = {}
+    output = (
+        "__CRE_VALIDATION_QUERY__:first\n"
+        "metric\tvalue\n"
+        "a\t1\n"
+        "__CRE_VALIDATION_QUERY__:second\n"
+        "metric\tvalue\n"
+        "b\t2\n"
+    )
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        captured["script_path"] = Path(argv[argv.index("-f") + 1])
+        captured["script"] = captured["script_path"].read_text()
+        return _FakeProc(returncode=0, stdout=output, stderr="warning")
+
+    monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
+    rows, stderr = run_queries(
+        "psql",
+        "postgres://SENTINEL",
+        {"first": "SELECT 1;", "second": "SELECT 2;"},
+    )
+
+    assert rows["first"] == [{"metric": "a", "value": "1"}]
+    assert rows["second"] == [{"metric": "b", "value": "2"}]
+    assert stderr == "warning"
+    assert captured["script"].count("BEGIN TRANSACTION") == 1
+    assert (
+        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;"
+        in captured["script"]
+    )
+    assert captured["script"].strip().endswith("ROLLBACK;")
+    assert "input" not in captured["kwargs"]
+    assert "stdin" not in captured["kwargs"]
+    assert not captured["script_path"].exists()
+    assert "postgres://SENTINEL" not in captured["argv"]
+    assert captured["kwargs"]["env"]["PGHOST"] == "sentinel"
 
 
 # ---------------------------------------------------------------------------
-# main  (monkeypatched load_db_url + find_psql + run_query)
+# main  (monkeypatched load_db_url + find_psql + run_queries)
 # ---------------------------------------------------------------------------
 
 _DUMMY_ROWS = [{"metric": "cre_listings_active", "value": "99"}]
@@ -390,7 +683,14 @@ def _patch_main(monkeypatch):
     """Patch all I/O in main() so nothing connects."""
     monkeypatch.setattr(cre_validate, "load_db_url", lambda env_file: ("postgres://SENTINEL", "/fake/.env.local"))
     monkeypatch.setattr(cre_validate, "find_psql", lambda: "psql")
-    monkeypatch.setattr(cre_validate, "run_query", lambda psql, url, sql: (_DUMMY_ROWS, ""))
+    monkeypatch.setattr(
+        cre_validate,
+        "run_queries",
+        lambda psql, url, queries: (
+            {name: _DUMMY_ROWS for name in queries},
+            "",
+        ),
+    )
 
 
 def test_main_markdown_format_does_not_print_sentinel(monkeypatch, capsys):
@@ -407,6 +707,36 @@ def test_main_json_format_does_not_print_sentinel(monkeypatch, capsys):
     cre_validate.main()
     out = capsys.readouterr().out
     assert "SENTINEL" not in out
+
+
+def test_main_rejects_target_drift_before_psql_discovery(monkeypatch):
+    monkeypatch.setattr(
+        cre_validate,
+        "load_db_url",
+        lambda _env_file: (
+            "postgresql://user:secret@db.example.test/cre",
+            "/fake/.env.local",
+        ),
+    )
+    monkeypatch.setattr(
+        cre_validate,
+        "find_psql",
+        lambda: pytest.fail("target drift must fail before psql discovery"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cre_validate.py",
+            "--format",
+            "json",
+            "--expected-db-target-sha256",
+            "0" * 64,
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="does not match"):
+        cre_validate.main()
 
 
 def test_main_json_format_produces_valid_json(monkeypatch, capsys):
@@ -475,8 +805,12 @@ def test_main_collects_warnings(monkeypatch, capsys):
     monkeypatch.setattr(cre_validate, "load_db_url", lambda env_file: ("postgres://SENTINEL", "/fake/.env.local"))
     monkeypatch.setattr(cre_validate, "find_psql", lambda: "psql")
     monkeypatch.setattr(
-        cre_validate, "run_query",
-        lambda psql, url, sql: (_DUMMY_ROWS, "collation version mismatch WARNING")
+        cre_validate,
+        "run_queries",
+        lambda psql, url, queries: (
+            {name: _DUMMY_ROWS for name in queries},
+            "collation version mismatch WARNING",
+        ),
     )
     monkeypatch.setattr(sys, "argv", ["cre_validate.py", "--format", "markdown"])
     cre_validate.main()
@@ -489,8 +823,12 @@ def test_main_warnings_deduped(monkeypatch, capsys):
     monkeypatch.setattr(cre_validate, "load_db_url", lambda env_file: ("postgres://SENTINEL", "/fake/.env.local"))
     monkeypatch.setattr(cre_validate, "find_psql", lambda: "psql")
     monkeypatch.setattr(
-        cre_validate, "run_query",
-        lambda psql, url, sql: (_DUMMY_ROWS, "collation version mismatch alert")
+        cre_validate,
+        "run_queries",
+        lambda psql, url, queries: (
+            {name: _DUMMY_ROWS for name in queries},
+            "collation version mismatch alert",
+        ),
     )
     monkeypatch.setattr(sys, "argv", ["cre_validate.py", "--format", "json"])
     cre_validate.main()

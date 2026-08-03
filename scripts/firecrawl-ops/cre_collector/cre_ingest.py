@@ -40,8 +40,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional  # used in the "Optional[str]" string return annotations
+from urllib.parse import parse_qsl, quote, unquote_to_bytes, urlsplit, urlunsplit
 
 # Phase-2 data-lift: the shared text parsers live in cre_parse.py (the Python
 # mirror of lib/parse.ts), so the ingest, the monitor, and the WS2 backfill all
@@ -92,13 +93,216 @@ SOURCE_TO_BROKERAGE = {
     "srs": ("srs", ""),
     "hanley": ("hanley", ""),
     "kidder-mathews": ("kidder-mathews", ""),
+    "interra-realty": ("interra-realty", ""),
+    "essex-realty": ("essex-realty", ""),
+    "pyramid-brokerage": ("pyramid-brokerage", ""),
+    "daum-commercial": ("daum-commercial", ""),
+    "foundry-commercial": ("foundry-commercial", ""),
+    "lyon-stahl": ("lyon-stahl", ""),
+    "faris-lee": ("faris-lee", ""),
+    "fortis-net-lease": ("fortis-net-lease", ""),
+    "unique-properties": ("unique-properties", ""),
+    "kiser-group": ("kiser-group", ""),
+    "pinnacle-rea": ("pinnacle-rea", ""),
+    "cawley-chicago": ("cawley-chicago", ""),
+    "bradford-allen": ("bradford-allen", ""),
+    "hudson-peters": ("hudson-peters", ""),
+    "gibson-commercial": ("gibson-commercial", ""),
+    "leibsohn": ("leibsohn", ""),
+    "nai-hiffman": ("nai-hiffman", ""),
+    "nai-martens": ("nai-martens", ""),
+    "bull-realty": ("bull-realty", ""),
+    "tri-commercial": ("tri-commercial", ""),
+    "berger-commercial": ("berger-commercial", ""),
+    "nai-bergman": ("nai-bergman", ""),
+    "nai-isaac": ("nai-isaac", ""),
+    "trinity-partners": ("trinity-partners", ""),
+    "metro-commercial": ("metro-commercial", ""),
+    "33-realty": ("33-realty", ""),
+    "nai-hallmark": ("nai-hallmark", ""),
+    "nai-plotkin": ("nai-plotkin", ""),
+    "greysteel": ("greysteel", ""),
+    "nai-talcor": ("nai-talcor", ""),
+    "nai-dominion": ("nai-dominion", ""),
 }
 
-BUILDOUT_SOURCE_KEYS = {"svn", "lee-associates", "franklin-street"}
+# Provider cards that cannot yet prove a canonical listing identity are kept in
+# cre_source_index under an explicitly provisional namespace.  Reconciliation
+# is source-specific: each namespace has its own full-scope watermark so a
+# newer empty snapshot for one provider cannot block or authorize another.
+INVENTORY_ONLY_SOURCE_DEFINITIONS = {
+    "cbre-dealflow": {
+        "slug": "cbre",
+        "external_id_like": "dealflow:card:%",
+        "watermark_external_id": "dealflow:scope:inventory-only-watermark",
+        "watermark_url": "https://www.cbredealflow.com/",
+        "watermark_fingerprint": "inventory-only-scope-watermark-v1",
+    },
+    "colliers": {
+        "slug": "colliers",
+        "external_id_like": "salestracker:card:%",
+        "watermark_external_id": "salestracker:scope:inventory-only-watermark",
+        "watermark_url": "https://sales.colliers.com/",
+        "watermark_fingerprint": (
+            "inventory-only-scope-watermark-v1:colliers-salestracker"
+        ),
+    },
+}
+
+BUILDOUT_SOURCE_KEYS = {
+    "svn",
+    "lee-associates",
+    "franklin-street",
+    "faris-lee",
+    "fortis-net-lease",
+    "unique-properties",
+    "kiser-group",
+    "pinnacle-rea",
+    "cawley-chicago",
+    "bradford-allen",
+    "hudson-peters",
+    "gibson-commercial",
+    "leibsohn",
+    "nai-hiffman",
+    "nai-martens",
+    "bull-realty",
+    "tri-commercial",
+    "berger-commercial",
+    "nai-bergman",
+    "nai-isaac",
+    "trinity-partners",
+    "metro-commercial",
+    "33-realty",
+    "nai-hallmark",
+    "nai-plotkin",
+    "greysteel",
+    "nai-talcor",
+    "nai-dominion",
+}
+CUSHMAN_SOURCE_KEY = "cushman-wakefield"
+CUSHMAN_CANONICAL_HOST = "www.cushmanwakefield.com"
+CUSHMAN_ONECAP_HOST = "onecap.cushmanwakefield.com"
+CUSHMAN_AZURE_HOST = "cw-prod-gblgws-a-cm.azurewebsites.net"
+CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS = BUILDOUT_SOURCE_KEYS | {
+    "cbre-dealflow",
+    "cushman-wakefield",
+    "srs",
+    "hanley",
+    "kidder-mathews",
+    "newmark",
+    "interra-realty",
+}
+AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS = (
+    BUILDOUT_SOURCE_KEYS
+    | CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
+    | {"cbre"}
+)
+STRICT_FRESHNESS_SOURCE_KEYS = {
+    "cbre",
+    "cbre-dealflow",
+    "colliers",
+    "jll",
+    "jll-investor",
+    "colliers-main",
+    "cushman-wakefield",
+    "svn",
+    "lee-associates",
+    "franklin-street",
+    "newmark",
+    "savills",
+    "transwestern",
+    "marcus-millichap",
+    "nai-global",
+    "matthews",
+    "srs",
+    "hanley",
+    "kidder-mathews",
+    "interra-realty",
+    "essex-realty",
+    "pyramid-brokerage",
+    "daum-commercial",
+    "foundry-commercial",
+    "lyon-stahl",
+    "faris-lee",
+    "fortis-net-lease",
+    "unique-properties",
+    "kiser-group",
+    "pinnacle-rea",
+    "cawley-chicago",
+    "bradford-allen",
+    "hudson-peters",
+    "gibson-commercial",
+    "leibsohn",
+    "nai-hiffman",
+    "nai-martens",
+    "bull-realty",
+    "tri-commercial",
+    "berger-commercial",
+    "nai-bergman",
+    "nai-isaac",
+    "trinity-partners",
+    "metro-commercial",
+    "33-realty",
+    "nai-hallmark",
+    "nai-plotkin",
+    "greysteel",
+    "nai-talcor",
+    "nai-dominion",
+}
+MAX_FUTURE_CLOCK_SKEW = timedelta(minutes=5)
+CHILD_COUNT_MIN_BASE = 10
+CHILD_COUNT_RETAIN_NUMERATOR = 7
+CHILD_COUNT_RETAIN_DENOMINATOR = 10
 
 SOURCE_KEYS_BY_SLUG = {}
 for _source_key, (_slug, _prefix) in SOURCE_TO_BROKERAGE.items():
     SOURCE_KEYS_BY_SLUG.setdefault(_slug, set()).add(_source_key)
+
+
+def source_key_sql(listing_alias="l", brokerage_alias="b"):
+    """Return the canonical source-key expression shared by ingest validation."""
+    return f"""
+CASE
+  WHEN {brokerage_alias}.slug = 'cbre'
+    AND {listing_alias}.external_id LIKE 'dealflow:%' THEN 'cbre-dealflow'
+  WHEN {brokerage_alias}.slug = 'jll'
+    AND {listing_alias}.external_id LIKE 'investor:%' THEN 'jll-investor'
+  WHEN {brokerage_alias}.slug = 'colliers'
+    AND {listing_alias}.external_id LIKE 'main:%' THEN 'colliers-main'
+  ELSE COALESCE(
+    NULLIF(
+      {listing_alias}.raw_data #>> '{{latestInventoryObservation,sourceKey}}',
+      ''
+    ),
+    NULLIF(
+      {listing_alias}.raw_data
+        #>> '{{latestInventoryObservation,primary,sourceKey}}',
+      ''
+    ),
+    NULLIF(
+      {listing_alias}.raw_data
+        #>> '{{latestInventoryObservation,secondary_pass,sourceKey}}',
+      ''
+    ),
+    NULLIF({listing_alias}.raw_data->>'sourceKey', ''),
+    NULLIF({listing_alias}.raw_data #>> '{{primary,sourceKey}}', ''),
+    NULLIF({listing_alias}.raw_data #>> '{{secondary_pass,sourceKey}}', ''),
+    {brokerage_alias}.slug
+  )
+END
+"""
+
+
+def child_count_regressed(before, after):
+    """Match the checkpoint quality gate for severe aggregate child loss."""
+    retained_threshold = (
+        before * CHILD_COUNT_RETAIN_NUMERATOR // CHILD_COUNT_RETAIN_DENOMINATOR
+    )
+    return (
+        before >= CHILD_COUNT_MIN_BASE
+        and after < retained_threshold
+    )
+
 
 # Ordered keyword -> property_type enum. First match wins.
 PROPERTY_TYPE_RULES = [
@@ -451,6 +655,156 @@ def is_retired_om_parse_listing(listing):
 # Listing transformation
 # ---------------------------------------------------------------------------
 
+def to_inventory_only_row(listing, observed_at):
+    """Map a current provider card that lacks a canonical listing URL.
+
+    These rows belong in ``cre_source_index`` as enumeration evidence, not in
+    ``cre_listings``. Their external IDs are explicitly provisional and never
+    support automatic history continuity.
+    """
+    marker = listing.get("inventoryOnly")
+    if not isinstance(marker, dict):
+        return None
+    source_key = listing.get("sourceKey")
+    definition = INVENTORY_ONLY_SOURCE_DEFINITIONS.get(source_key)
+    mapping = SOURCE_TO_BROKERAGE.get(source_key)
+    raw_id = listing.get("id")
+    index_url = marker.get("indexUrl")
+    if (
+        not definition
+        or not mapping
+        or raw_id is None
+        or not str(raw_id).strip()
+        or not isinstance(index_url, str)
+        or index_url != definition["watermark_url"]
+    ):
+        return None
+    slug, prefix = mapping
+    external_id = prefix + str(raw_id).strip()
+    expected_prefix = definition["external_id_like"].removesuffix("%")
+    if slug != definition["slug"] or not external_id.startswith(expected_prefix):
+        return None
+    evidence = {
+        "title": listing.get("name") or listing.get("title"),
+        "city": listing.get("city"),
+        "state": listing.get("state"),
+        "assetType": listing.get("assetType"),
+        "sizeText": listing.get("sizeText"),
+        "status": listing.get("status") or listing.get("statusBadge"),
+        "provisionalIdentity": listing.get("provisionalIdentity"),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+    return {
+        "slug": slug,
+        "external_id": external_id,
+        "source_key": source_key,
+        "url": index_url,
+        "fingerprint": fingerprint,
+        "observed_status": clean_text(
+            listing.get("status") or listing.get("statusBadge"), 128
+        ),
+        "observed_at": observed_at,
+    }
+
+
+def inventory_only_full_scopes(data):
+    """Return strictly complete inventory-only namespaces safe to reconcile.
+
+    A namespace is included only when the artifact proves an unlimited,
+    error-free sale+lease full enumeration.  This makes absence meaningful:
+    provisional rows missing from that exact run may be retired from
+    ``cre_source_index`` without making any claim about canonical listings.
+    """
+    run_meta = data.get("runMeta")
+    if not isinstance(run_meta, dict):
+        return []
+    started_raw = run_meta.get("startedAt")
+    finished_raw = run_meta.get("finishedAt")
+    try:
+        started = datetime.fromisoformat(
+            str(started_raw).replace("Z", "+00:00")
+        )
+        finished = datetime.fromisoformat(
+            str(finished_raw).replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError):
+        return []
+    if (
+        started.tzinfo is None
+        or finished.tzinfo is None
+        or finished < started
+    ):
+        return []
+    if (
+        run_meta.get("mode") != "full"
+        or run_meta.get("transactions") != ["sale", "lease"]
+        or run_meta.get("maxItemsPerSource") is not None
+    ):
+        return []
+    entries = data.get("sources")
+    listings = data.get("listings")
+    if (
+        not isinstance(entries, list)
+        or not isinstance(listings, list)
+        or data.get("totalListings") != len(listings)
+    ):
+        return []
+
+    scopes = []
+    for source_key, definition in INVENTORY_ONLY_SOURCE_DEFINITIONS.items():
+        matching = [
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("sourceKey") == source_key
+        ]
+        source_listings = [
+            listing
+            for listing in listings
+            if isinstance(listing, dict)
+            and listing.get("sourceKey") == source_key
+        ]
+        transactions = {entry.get("transaction") for entry in matching}
+        if (
+            len(matching) != 2
+            or transactions != {"sale", "lease"}
+            or any(entry.get("supported") is not True for entry in matching)
+            or any(entry.get("error") for entry in matching)
+            or any(entry.get("truncated") is not False for entry in matching)
+            or any(
+                not isinstance(entry.get("listingsCollected"), int)
+                or entry["listingsCollected"] < 0
+                for entry in matching
+            )
+            or any(
+                listing.get("transactionMode") not in {"sale", "lease"}
+                for listing in source_listings
+            )
+            or any(
+                sum(
+                    listing.get("transactionMode") == entry["transaction"]
+                    for listing in source_listings
+                )
+                != entry["listingsCollected"]
+                for entry in matching
+            )
+            or any(
+                listing.get("inventoryOnly") is not None
+                and to_inventory_only_row(listing, finished.isoformat()) is None
+                for listing in source_listings
+            )
+        ):
+            continue
+        scopes.append(
+            {
+                **definition,
+                "source_key": source_key,
+                "observed_at": finished.isoformat(),
+            }
+        )
+    return scopes
+
 
 def transaction_type_of(listing):
     tt = (listing.get("transactionType") or "").lower()
@@ -515,6 +869,31 @@ STATUS_SOURCE_PATHS = {
     "nai-global": ["listingStatus"],
     "svn": ["closed", "underContract"],
     "lee-associates": ["closed", "underContract"],
+    "faris-lee": ["closed", "underContract"],
+    "fortis-net-lease": ["closed", "underContract"],
+    "unique-properties": ["closed", "underContract"],
+    "kiser-group": ["closed", "underContract"],
+    "pinnacle-rea": ["closed", "underContract"],
+    "cawley-chicago": ["closed", "underContract"],
+    "bradford-allen": ["closed", "underContract"],
+    "hudson-peters": ["closed", "underContract"],
+    "gibson-commercial": ["closed", "underContract"],
+    "leibsohn": ["closed", "underContract"],
+    "nai-hiffman": ["closed", "underContract"],
+    "nai-martens": ["closed", "underContract"],
+    "bull-realty": ["closed", "underContract"],
+    "tri-commercial": ["closed", "underContract"],
+    "berger-commercial": ["closed", "underContract"],
+    "nai-bergman": ["closed", "underContract"],
+    "nai-isaac": ["closed", "underContract"],
+    "trinity-partners": ["closed", "underContract"],
+    "metro-commercial": ["closed", "underContract"],
+    "33-realty": ["closed", "underContract"],
+    "nai-hallmark": ["closed", "underContract"],
+    "nai-plotkin": ["closed", "underContract"],
+    "greysteel": ["closed", "underContract"],
+    "nai-talcor": ["closed", "underContract"],
+    "nai-dominion": ["closed", "underContract"],
     "colliers": ["status"],
     "cbre-dealflow": ["status", "cbreDealflowCard.status", "cbreDealflowDetail.status"],
     "cushman-wakefield": ["listingStatus", "rawCushmanApi.listing_status"],
@@ -533,6 +912,12 @@ STATUS_SOURCE_PATHS = {
     "savills": [],
     "transwestern": [],
     "kidder-mathews": [],
+    "interra-realty": ["statusBadge"],
+    "essex-realty": ["statusBadge"],
+    "pyramid-brokerage": [],
+    "daum-commercial": [],
+    "foundry-commercial": ["statusBadge"],
+    "lyon-stahl": ["statusBadge"],
 }
 
 # Phase-2 data-lift: a UNIVERSAL leading status path read for EVERY source
@@ -746,6 +1131,169 @@ def parse_source_lastmod(value):
     return None
 
 
+def parse_strict_freshness_timestamp(value, *, field):
+    """Parse a strict freshness timestamp as an absolute UTC instant."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a nonempty ISO-8601 timestamp")
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"{field} is not valid ISO-8601") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field} must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def validate_strict_artifact_freshness(
+    data,
+    *,
+    require_strict_freshness=False,
+    now=None,
+):
+    """Reject a strict refresh artifact whose rows do not prove observation time.
+
+    Artifact completion time is intentionally not evidence that a detail page
+    was observed. Buildout is the one explicit exception because its paginated
+    inventory feed is the authoritative listing payload.
+    """
+    run_meta = data.get("runMeta")
+    freshness = run_meta.get("freshness") if isinstance(run_meta, dict) else None
+    artifact_is_strict = (
+        isinstance(freshness, dict)
+        and freshness.get("requireFreshDetails") is True
+    )
+    if require_strict_freshness and not artifact_is_strict:
+        raise ValueError(
+            "strict freshness is explicitly required but the artifact "
+            "does not assert requireFreshDetails=true"
+        )
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    latest_allowed = current + MAX_FUTURE_CLOCK_SKEW
+    for field in ("startedAt", "finishedAt"):
+        value = run_meta.get(field) if isinstance(run_meta, dict) else None
+        if value is None:
+            continue
+        artifact_timestamp = parse_strict_freshness_timestamp(
+            value,
+            field=f"runMeta.{field}",
+        )
+        if artifact_timestamp > latest_allowed:
+            raise ValueError(
+                f"runMeta.{field} exceeds the 5-minute clock-skew allowance"
+            )
+    for index, listing in enumerate(data.get("listings") or []):
+        if not isinstance(listing, dict):
+            continue
+        observation_fields = [
+            ("inventoryObservedAt", listing.get("inventoryObservedAt")),
+            ("detailObservedAt", listing.get("detailObservedAt")),
+        ]
+        provenance = listing.get("freshnessProvenance")
+        if isinstance(provenance, dict):
+            observation_fields.append(
+                (
+                    "freshnessProvenance.validatedAt",
+                    provenance.get("validatedAt"),
+                )
+            )
+        for field, value in observation_fields:
+            if value is None:
+                continue
+            observed = parse_strict_freshness_timestamp(
+                value,
+                field=f"listings[{index}].{field}",
+            )
+            if observed > latest_allowed:
+                raise ValueError(
+                    f"listings[{index}].{field} exceeds "
+                    "the 5-minute clock-skew allowance"
+                )
+    if not artifact_is_strict:
+        return
+    generation_id = freshness.get("generationId")
+    if not isinstance(generation_id, str) or not generation_id.strip():
+        raise ValueError("strict freshness artifact lacks a valid generation id/start")
+    boundary = parse_strict_freshness_timestamp(
+        freshness.get("generationStartedAt"),
+        field="runMeta.freshness.generationStartedAt",
+    )
+    if boundary > latest_allowed:
+        raise ValueError(
+            "runMeta.freshness.generationStartedAt exceeds "
+            "the 5-minute clock-skew allowance"
+        )
+    for index, listing in enumerate(data.get("listings") or []):
+        if not isinstance(listing, dict):
+            raise ValueError(f"strict freshness listings[{index}] is not an object")
+        # Provider cards in an explicit inventory-only namespace are not
+        # canonical listing rows. Their full-scope reconciliation is proved in
+        # the source-index lane, not by canonical detail evidence.
+        if listing.get("inventoryOnly") is not None:
+            continue
+        provenance = listing.get("freshnessProvenance")
+        if not isinstance(provenance, dict):
+            raise ValueError(f"strict freshness listings[{index}] lacks provenance")
+        if provenance.get("generationId") != generation_id:
+            raise ValueError(f"strict freshness listings[{index}] has the wrong generation")
+        if listing.get("detailError"):
+            raise ValueError(f"strict freshness listings[{index}] has incomplete detail")
+        inventory_observed = parse_strict_freshness_timestamp(
+            listing.get("inventoryObservedAt"),
+            field=f"listings[{index}].inventoryObservedAt",
+        )
+        if inventory_observed < boundary:
+            raise ValueError(f"strict freshness listings[{index}] has stale inventory")
+        if inventory_observed > latest_allowed:
+            raise ValueError(
+                f"strict freshness listings[{index}] inventory observation "
+                "exceeds the 5-minute clock-skew allowance"
+            )
+        source_key = listing.get("sourceKey")
+        preserves_children = listing.get("preserveChildCollections") is True
+        if source_key in AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS:
+            if provenance.get("detailScope") != "authoritative_inventory_feed":
+                raise ValueError(
+                    f"strict freshness listings[{index}] lacks authoritative feed provenance"
+                )
+            if source_key in CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS:
+                if not preserves_children:
+                    raise ValueError(
+                        f"strict freshness listings[{index}] must preserve child collections"
+                    )
+            elif preserves_children:
+                raise ValueError(
+                    f"strict freshness listings[{index}] must not preserve child collections"
+                )
+            continue
+        if preserves_children:
+            raise ValueError(
+                f"strict freshness listings[{index}] must not preserve child collections"
+            )
+        detail_value = listing.get("detailObservedAt")
+        if provenance.get("cacheDisposition") == "source_revision_cache":
+            detail_value = provenance.get("validatedAt")
+        if not detail_value:
+            raise ValueError(f"strict freshness listings[{index}] has stale detail")
+        detail_observed = parse_strict_freshness_timestamp(
+            detail_value,
+            field=(
+                f"listings[{index}].freshnessProvenance.validatedAt"
+                if provenance.get("cacheDisposition") == "source_revision_cache"
+                else f"listings[{index}].detailObservedAt"
+            ),
+        )
+        if detail_observed < boundary:
+            raise ValueError(f"strict freshness listings[{index}] has stale detail")
+        if detail_observed > latest_allowed:
+            raise ValueError(
+                f"strict freshness listings[{index}] detail observation "
+                "exceeds the 5-minute clock-skew allowance"
+            )
+
+
 def group_source_lastmod(flat_listings):
     """First non-None parsed lastmod across a group's FLAT listings, preferring
     lastUpdated then dateModified. Mirrors the first-non-None rule used for
@@ -758,14 +1306,101 @@ def group_source_lastmod(flat_listings):
     return None
 
 
+def canonical_cushman_identity_url(url):
+    """Return the URL-v1 identity input for one Cushman property.
+
+    Cushman's public search API GUID rotates independently of the public
+    property URL. Identity therefore uses the normalized HTTPS property URL,
+    while the GUID remains in raw_data as provider provenance.
+    """
+    if not isinstance(url, str):
+        return None
+    try:
+        parsed = urlsplit(url.strip())
+        host = (parsed.hostname or "").lower()
+        if host in {"sitecore-www.cushmanwakefield.com", CUSHMAN_AZURE_HOST}:
+            host = CUSHMAN_CANONICAL_HOST
+        if (
+            parsed.scheme.lower() != "https"
+            or host not in {CUSHMAN_CANONICAL_HOST, CUSHMAN_ONECAP_HOST}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port is not None
+        ):
+            return None
+    except ValueError:
+        return None
+    path = parsed.path.rstrip("/") or "/"
+    query = ""
+    if host == CUSHMAN_ONECAP_HOST:
+        record_ids = [
+            re.sub(r"\s+", " ", value).strip()
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key == "recordId"
+        ]
+        if len(record_ids) != 1:
+            return None
+        record_id = record_ids[0]
+        if not record_id:
+            return None
+        # Use an explicit byte-level encoding shared with TypeScript. Python's
+        # urllib and WHATWG URLSearchParams disagree about whether "~" is
+        # escaped, which would otherwise produce different identity hashes.
+        encoded_record_id = "".join(
+            chr(byte)
+            if (
+                ord("A") <= byte <= ord("Z")
+                or ord("a") <= byte <= ord("z")
+                or ord("0") <= byte <= ord("9")
+                or byte in {ord("-"), ord("_"), ord(".")}
+            )
+            else f"%{byte:02X}"
+            for byte in record_id.encode("utf-8")
+        )
+        query = f"recordId={encoded_record_id}"
+    return urlunsplit(("https", host, path, query, ""))
+
+
+def cushman_canonical_external_id(url):
+    identity_url = canonical_cushman_identity_url(url)
+    if identity_url is None:
+        return None
+    digest = hashlib.sha256(identity_url.encode("utf-8")).hexdigest()[:32]
+    return f"url:v1:{digest}"
+
+
 def to_row(listing, brokers_by_idx, scraped_at):
     """Map one collector listing to a staging row dict, or None to skip."""
     if is_retired_om_parse_listing(listing):
+        return None
+    # Inventory-only cards intentionally have no canonical listing identity or
+    # URL. Keep this guard ahead of URL/id derivation so a future adapter change
+    # cannot accidentally promote the shared provider index URL into
+    # cre_listings. main() routes the row to cre_source_index instead.
+    if listing.get("inventoryOnly") is not None:
         return None
     source_key = listing.get("sourceKey")
     mapping = SOURCE_TO_BROKERAGE.get(source_key)
     if not mapping:
         return None
+    provenance = listing.get("freshnessProvenance")
+    observation_scraped_at = parse_source_lastmod(listing.get("detailObservedAt"))
+    if (
+        isinstance(provenance, dict)
+        and provenance.get("cacheDisposition") == "source_revision_cache"
+    ):
+        observation_scraped_at = (
+            parse_source_lastmod(provenance.get("validatedAt"))
+            or observation_scraped_at
+        )
+    if (
+        observation_scraped_at is None
+        and isinstance(provenance, dict)
+        and provenance.get("detailScope") == "authoritative_inventory_feed"
+    ):
+        observation_scraped_at = parse_source_lastmod(
+            listing.get("inventoryObservedAt")
+        )
     slug, prefix = mapping
 
     url = listing.get("url")
@@ -781,7 +1416,11 @@ def to_row(listing, brokers_by_idx, scraped_at):
         m = re.search(r"[?&]propertyId=([^&#]+)", url)
         if m:
             buildout_pid = re.sub(r"-(sale|lease)$", "", m.group(1))
-    if buildout_pid:
+    if source_key == CUSHMAN_SOURCE_KEY:
+        external_id = cushman_canonical_external_id(url)
+        if external_id is None:
+            return None
+    elif buildout_pid:
         external_id = prefix + buildout_pid
     elif raw_id is not None and str(raw_id).strip():
         external_id = prefix + str(raw_id).strip()
@@ -1018,7 +1657,10 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "status": norm_status(listing),
         "source_lastmod": group_source_lastmod([listing]),
         "canonical_key": _canonical_key(listing),
-        "scraped_at": scraped_at,
+        # Prefer the source observation timestamp. runMeta.finishedAt is only a
+        # compatibility fallback for legacy/non-strict artifacts and must not
+        # manufacture current detail freshness.
+        "scraped_at": observation_scraped_at or scraped_at,
         "raw_data": listing,
         "contacts": contacts,
         "documents": documents,
@@ -1028,6 +1670,123 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "om_facts": om_facts,
         "_modes": {listing.get("transactionMode")},
     }
+
+
+def _contact_aliases(item):
+    """Return every SQL-equivalent identity for one staged contact."""
+    aliases = set()
+    email = clean_text(item.get("email"))
+    if email:
+        aliases.add(("email", email.lower()))
+    name = (clean_text(item.get("name")) or "").lower()
+    if name:
+        aliases.add(("name_phone", name, clean_text(item.get("phone")) or ""))
+    return aliases
+
+
+def _child_identity(collection, item):
+    """Return the database-aligned identity for one non-contact child row."""
+    if not isinstance(item, dict):
+        return ("value", json.dumps(item, sort_keys=True, default=str))
+    if collection in {"documents", "images"}:
+        url = clean_text(item.get("url"))
+        if url:
+            return ("url", url)
+    elif collection == "media":
+        url = clean_text(item.get("url"))
+        if url:
+            return ("media", item.get("mediaType") or "other", url)
+    elif collection == "links":
+        url = clean_text(item.get("url"))
+        if url:
+            return ("link", item.get("linkType") or "other", url)
+    elif collection == "om_facts":
+        return (
+            "om_fact",
+            item.get("factGroup") or "scalar",
+            item.get("factKey"),
+            item.get("sourceDocUrl"),
+            item.get("parserVersion"),
+        )
+    return ("row", json.dumps(item, sort_keys=True, default=str))
+
+
+def _merge_child_values(prior, item):
+    if not isinstance(prior, dict) or not isinstance(item, dict):
+        return
+    for key, value in item.items():
+        if key == "isPrimary":
+            prior[key] = bool(prior.get(key)) or bool(value)
+        elif (
+            (prior.get(key) is None or prior.get(key) == "")
+            and value is not None
+            and value != ""
+        ):
+            prior[key] = value
+
+
+def _merge_contact_collections(primary, secondary):
+    components = []
+    for item in [*(primary or []), *(secondary or [])]:
+        candidate = dict(item) if isinstance(item, dict) else item
+        aliases = _contact_aliases(candidate) if isinstance(candidate, dict) else set()
+        matches = [
+            index
+            for index, component in enumerate(components)
+            if aliases and aliases.intersection(component["aliases"])
+        ]
+        if not matches:
+            components.append({"row": candidate, "aliases": set(aliases)})
+            continue
+        target = components[matches[0]]
+        _merge_child_values(target["row"], candidate)
+        target["aliases"].update(aliases)
+        target["aliases"].update(_contact_aliases(target["row"]))
+        while True:
+            absorbed_components = [
+                component
+                for component in components
+                if component is not target
+                and target["aliases"].intersection(component["aliases"])
+            ]
+            if not absorbed_components:
+                break
+            for absorbed in absorbed_components:
+                _merge_child_values(target["row"], absorbed["row"])
+                target["aliases"].update(absorbed["aliases"])
+                target["aliases"].update(_contact_aliases(target["row"]))
+                components.remove(absorbed)
+    return [component["row"] for component in components]
+
+
+def _merge_child_collections(collection, primary, secondary):
+    """Union staged child rows without losing sale/lease-only observations."""
+    if collection == "contacts":
+        merged = _merge_contact_collections(primary, secondary)
+    else:
+        merged = []
+        positions = {}
+        for item in [*(primary or []), *(secondary or [])]:
+            identity = _child_identity(collection, item)
+            prior_index = positions.get(identity)
+            if prior_index is None:
+                positions[identity] = len(merged)
+                merged.append(dict(item) if isinstance(item, dict) else item)
+                continue
+            _merge_child_values(merged[prior_index], item)
+    if collection in {"contacts", "images"} and merged:
+        primary_index = next(
+            (
+                index
+                for index, item in enumerate(merged)
+                if isinstance(item, dict) and bool(item.get("isPrimary"))
+            ),
+            0,
+        )
+        for index, item in enumerate(merged):
+            if isinstance(item, dict):
+                item["isPrimary"] = index == primary_index
+    return merged
 
 
 def merge_rows(a, b):
@@ -1056,8 +1815,7 @@ def merge_rows(a, b):
         if a[k] is None and b[k] is not None:
             a[k] = b[k]
     for k in ("contacts", "documents", "images", "media", "links", "om_facts"):
-        if not a[k] and b[k]:
-            a[k] = b[k]
+        a[k] = _merge_child_collections(k, a[k], b[k])
     # extra_facts: merge the two long-tail blobs (union; the first pass wins a key
     # collision) so neither pass's facts are lost. Mirrors the jsonb `||` merge in
     # the upsert (a missing/empty pass keeps the other's blob).
@@ -1085,6 +1843,63 @@ def merge_rows(a, b):
     if b["raw_data"] is not a["raw_data"]:
         a["raw_data"] = {"primary": a["raw_data"], "secondary_pass": b["raw_data"]}
     return a
+
+
+def validate_duplicate_identity_before_merge(a, b):
+    """Fail closed when a source contract requires one row per identity.
+
+    Colliers SalesTracker is sale-only and the collector proves a one-to-one
+    card-to-ProjectId mapping. Any repeated canonical ID therefore violates the
+    source contract. Newmark's NIM adapter likewise proves unique output slugs
+    across its disjoint sale and lease feeds. Other providers retain the
+    existing sale/lease merge behavior because their adapters intentionally
+    normalize dual-mode rows to one external ID.
+    """
+    def contains_source(payload, source_key):
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("sourceKey") == source_key:
+            return True
+        return any(
+            contains_source(payload.get(key), source_key)
+            for key in ("primary", "secondary_pass")
+        )
+
+    source_name = next(
+        (
+            name
+            for key, name in (
+                ("colliers", "Colliers"),
+                ("newmark", "Newmark"),
+            )
+            if contains_source(a.get("raw_data"), key)
+            and contains_source(b.get("raw_data"), key)
+        ),
+        None,
+    )
+    if source_name is None:
+        return
+
+    conflicts = []
+    for field in ("source_url", "canonical_url", "title"):
+        value_a = a.get(field)
+        value_b = b.get(field)
+        if value_a and value_b and value_a != value_b:
+            conflicts.append(field)
+    detail = (
+        f": incompatible {', '.join(conflicts)}"
+        if conflicts
+        else ""
+    )
+    identity_label = (
+        "canonical ProjectId"
+        if source_name == "Colliers"
+        else "canonical identity"
+    )
+    raise ValueError(
+        f"duplicate {source_name} {identity_label} "
+        f"{a.get('external_id')!r}{detail}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1130,6 +1945,26 @@ STAGE_COLS = [
     "lease_years_remaining", "price_per_unit", "grm", "price_per_acre",
     "num_rooms", "revpar", "clear_height_ft", "dock_doors", "drive_in_doors",
     "power_service", "rail_served", "extra_facts", "om_facts",
+]
+
+INVENTORY_ONLY_COLS = [
+    "slug",
+    "external_id",
+    "source_key",
+    "url",
+    "fingerprint",
+    "observed_status",
+    "observed_at",
+]
+
+INVENTORY_ONLY_SCOPE_COLS = [
+    "slug",
+    "source_key",
+    "external_id_like",
+    "watermark_external_id",
+    "watermark_url",
+    "watermark_fingerprint",
+    "observed_at",
 ]
 
 
@@ -1197,16 +2032,30 @@ def apply_status_activation_gate(rows, activate_status):
     return suppressed
 
 
-def build_sql(rows, job_meta, started_at, mark_missing_slugs, history_guard=True):
+def build_sql(
+    rows,
+    job_meta,
+    started_at,
+    mark_missing_slugs,
+    history_guard=True,
+    inventory_only_rows=(),
+    inventory_only_scopes=(),
+):
     # Defense in depth for direct callers of this builder. Normal ingestion
     # reaches here through to_row(), which already drops `omFacts`, but this
     # prevents a manually constructed row from restoring the retired writer.
     rows = [{**row, "om_facts": []} for row in rows]
     lines = []
     w = lines.append
+    staged_source_key_sql = source_key_sql("s", "b")
+    live_source_key_sql = source_key_sql("l", "b")
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
-    w("SET LOCAL statement_timeout = '600s';")
+    # Large complete-source artifacts (CBRE is ~80 MB of inline COPY data) can
+    # legitimately take more than ten minutes to traverse the Supavisor
+    # connection. Bound the data load separately, then restore the tighter
+    # mutation timeout after all four transaction-local COPY stages.
+    w("SET LOCAL statement_timeout = '1800s';")
     # Pin standard_conforming_strings so sql_lit()'s quote-doubling is provably
     # sufficient regardless of the server/role default: with it ON, a backslash
     # inside a '...' literal is literal, so a doubled single quote is the only
@@ -1248,6 +2097,31 @@ CREATE TEMP TABLE _stage (
     w("\\.")
 
     w("""
+CREATE TEMP TABLE _inventory_only (
+    slug text, external_id text, source_key text, url text,
+    fingerprint text, observed_status text, observed_at timestamptz
+) ON COMMIT DROP;""")
+    w(f"COPY _inventory_only ({', '.join(INVENTORY_ONLY_COLS)}) FROM stdin;")
+    for r in inventory_only_rows:
+        w("\t".join(copy_field(r[c]) for c in INVENTORY_ONLY_COLS))
+    w("\\.")
+
+    w("""
+CREATE TEMP TABLE _inventory_only_scope (
+    slug text, source_key text, external_id_like text,
+    watermark_external_id text, watermark_url text,
+    watermark_fingerprint text,
+    observed_at timestamptz
+) ON COMMIT DROP;""")
+    w(
+        f"COPY _inventory_only_scope "
+        f"({', '.join(INVENTORY_ONLY_SCOPE_COLS)}) FROM stdin;"
+    )
+    for r in inventory_only_scopes:
+        w("\t".join(copy_field(r[c]) for c in INVENTORY_ONLY_SCOPE_COLS))
+    w("\\.")
+
+    w("""
 CREATE TEMP TABLE _jobmeta (
     slug text, discovered integer, saved integer, errors integer, notes text
 ) ON COMMIT DROP;""")
@@ -1255,6 +2129,7 @@ CREATE TEMP TABLE _jobmeta (
     for jm in job_meta:
         w("\t".join(copy_field(v) for v in (jm["slug"], jm["discovered"], jm["saved"], jm["errors"], jm["notes"])))
     w("\\.")
+    w("SET LOCAL statement_timeout = '600s';")
 
     w("""
 -- Fail loudly if a sourceKey maps to a brokerage slug that is not seeded.
@@ -1262,16 +2137,278 @@ DO $$
 DECLARE missing text;
 BEGIN
     SELECT string_agg(DISTINCT s.slug, ', ') INTO missing
-    FROM _stage s LEFT JOIN credeals.cre_brokerages b ON b.slug = s.slug
+    FROM (
+      SELECT slug FROM _stage
+      UNION ALL
+      SELECT slug FROM _inventory_only
+      UNION ALL
+      SELECT slug FROM _inventory_only_scope
+    ) s
+    LEFT JOIN credeals.cre_brokerages b ON b.slug = s.slug
     WHERE b.id IS NULL;
     IF missing IS NOT NULL THEN
         RAISE EXCEPTION 'unseeded brokerage slug(s): % (run sql/001_cre_brokerages.sql)', missing;
     END IF;
 END $$;
 
+-- Provider cards without a stable listing URL are enumeration evidence only.
+-- Keep them out of canonical cre_listings (no fake URL or stable-history
+-- claim), but persist their provisional identity in cre_source_index so the
+-- current inventory is not silently discarded.
+-- This table is a required production migration. Fail the transaction loudly
+-- if it is absent rather than silently dropping enumeration evidence.
+DO $$
+DECLARE stale_source text;
+BEGIN
+  SELECT scope.source_key INTO stale_source
+  FROM _inventory_only_scope scope
+  JOIN credeals.cre_brokerages b ON b.slug = scope.slug
+  WHERE EXISTS (
+    SELECT 1
+    FROM credeals.cre_source_index prior
+    WHERE prior.brokerage_id = b.id
+      AND prior.source_key = scope.source_key
+      AND (
+        prior.external_id LIKE scope.external_id_like
+        OR prior.external_id = scope.watermark_external_id
+      )
+      AND prior.last_enumerated_at > scope.observed_at
+  )
+  LIMIT 1;
+  IF stale_source IS NOT NULL THEN
+    RAISE EXCEPTION
+      'refusing stale inventory-only replay for source %', stale_source;
+  END IF;
+END $$;
+
+INSERT INTO credeals.cre_source_index AS si (
+  brokerage_id, external_id, source_key, url, fingerprint,
+  soft_deleted, observed_status, first_seen, last_seen, last_enumerated_at
+)
+SELECT b.id, i.external_id, i.source_key, i.url, i.fingerprint,
+       false, i.observed_status, i.observed_at, i.observed_at, i.observed_at
+FROM _inventory_only i
+JOIN credeals.cre_brokerages b ON b.slug = i.slug
+ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
+  source_key = EXCLUDED.source_key,
+  url = EXCLUDED.url,
+  fingerprint = EXCLUDED.fingerprint,
+  soft_deleted = false,
+  observed_status = EXCLUDED.observed_status,
+  last_seen = EXCLUDED.last_seen,
+  last_enumerated_at = EXCLUDED.last_enumerated_at
+WHERE EXCLUDED.last_enumerated_at >= si.last_enumerated_at;
+
+-- A strict full source enumeration makes absence meaningful for the
+-- provisional namespace. Retire vanished cards in the monitor index only;
+-- never infer a canonical listing disappearance from these mutable card IDs.
+UPDATE credeals.cre_source_index si
+SET soft_deleted = true,
+    last_enumerated_at = scope.observed_at
+FROM _inventory_only_scope scope
+JOIN credeals.cre_brokerages b ON b.slug = scope.slug
+WHERE si.brokerage_id = b.id
+  AND si.source_key = scope.source_key
+  AND si.external_id LIKE scope.external_id_like
+  AND si.soft_deleted = false
+  AND si.last_enumerated_at <= scope.observed_at
+  AND NOT EXISTS (
+    SELECT 1
+    FROM _inventory_only current
+    WHERE current.slug = scope.slug
+      AND current.source_key = scope.source_key
+      AND current.external_id = si.external_id
+  );
+
+-- Persist a namespace-level high-water mark even when a valid full run
+-- contains zero provisional cards. Without this sentinel, replaying an older
+-- nonempty artifact after a newer empty snapshot could resurrect stale cards.
+-- The sentinel is always soft-deleted and uses a non-card external-id prefix,
+-- so current inventory queries and monitor disappearance logic exclude it.
+INSERT INTO credeals.cre_source_index AS si (
+  brokerage_id, external_id, source_key, url, fingerprint,
+  soft_deleted, observed_status, first_seen, last_seen, last_enumerated_at
+)
+SELECT b.id,
+       scope.watermark_external_id,
+       scope.source_key,
+       scope.watermark_url,
+       scope.watermark_fingerprint,
+       true,
+       NULL,
+       scope.observed_at,
+       scope.observed_at,
+       scope.observed_at
+FROM _inventory_only_scope scope
+JOIN credeals.cre_brokerages b ON b.slug = scope.slug
+ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
+  source_key = EXCLUDED.source_key,
+  url = EXCLUDED.url,
+  fingerprint = EXCLUDED.fingerprint,
+  soft_deleted = true,
+  observed_status = NULL,
+  last_seen = EXCLUDED.last_seen,
+  last_enumerated_at = EXCLUDED.last_enumerated_at
+WHERE EXCLUDED.last_enumerated_at >= si.last_enumerated_at;
+
+-- CBRE Deal Flow may expose the same provider `pv` token under agreement,
+-- brochure, legacy landing, and modern landing paths. Reconcile by the
+-- provider token rather than the full URL. Prefer one active identity; when no
+-- active row exists, one unique historical identity is reused and resurrected.
+-- Ambiguous relevant identities fail the transaction and must be explicitly
+-- consolidated, never guessed.
+CREATE TEMP TABLE _dealflow_pv_identity ON COMMIT DROP AS
+SELECT b.slug,
+       substring(t.source_url from '[?&]pv=([^&#]+)') AS provider_pv,
+       COALESCE(
+         min(t.external_id) FILTER (WHERE t.deleted_at IS NULL),
+         min(t.external_id)
+       ) AS external_id,
+       count(*) FILTER (WHERE t.deleted_at IS NULL) AS active_count,
+       count(*) AS total_count
+  FROM credeals.cre_listings t
+  JOIN credeals.cre_brokerages b ON b.id = t.brokerage_id
+  WHERE b.slug = 'cbre'
+    AND t.external_id LIKE 'dealflow:%'
+    AND t.source_url IS NOT NULL
+    AND substring(t.source_url from '[?&]pv=([^&#]+)') IS NOT NULL
+  GROUP BY b.slug, substring(t.source_url from '[?&]pv=([^&#]+)');
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM _dealflow_pv_identity e
+    JOIN _stage s
+      ON s.slug = e.slug
+     AND substring(s.source_url from '[?&]pv=([^&#]+)') = e.provider_pv
+    WHERE (
+        e.active_count > 1
+        OR (e.active_count = 0 AND e.total_count > 1)
+      )
+      AND jsonb_path_exists(s.raw_data, '$.**.sourceKey ? (@ == "cbre-dealflow")')
+  ) THEN
+    RAISE EXCEPTION
+      'ambiguous active CBRE Deal Flow provider pv identity; consolidate duplicates before ingest';
+  END IF;
+END $$;
+
+UPDATE _stage s
+SET external_id = e.external_id
+FROM _dealflow_pv_identity e
+WHERE s.slug = e.slug
+  AND substring(s.source_url from '[?&]pv=([^&#]+)') = e.provider_pv
+  AND (
+    e.active_count = 1
+    OR (e.active_count = 0 AND e.total_count = 1)
+  )
+  AND jsonb_path_exists(s.raw_data, '$.**.sourceKey ? (@ == "cbre-dealflow")')
+  AND s.external_id IS DISTINCT FROM e.external_id;
+
 CREATE TEMP TABLE _src ON COMMIT DROP AS
 SELECT b.id AS brokerage_id, s.*
-FROM _stage s JOIN credeals.cre_brokerages b ON b.slug = s.slug;
+FROM _stage s JOIN credeals.cre_brokerages b ON b.slug = s.slug;""")
+
+    w(f"""
+-- Capture the checkpoint-quality baseline before any listing or child mutation.
+-- Scope it to canonical source keys present in this ingest, not the folded
+-- brokerage slug, so a child regression in one source cannot be hidden by a
+-- sibling source sharing the brokerage.
+CREATE TEMP TABLE _ingest_child_sources ON COMMIT DROP AS
+SELECT DISTINCT source_key
+FROM (
+  SELECT {staged_source_key_sql} AS source_key
+  FROM _src s
+  JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+) staged_sources
+WHERE source_key IS NOT NULL;
+
+CREATE TEMP TABLE _active_child_scope_before ON COMMIT DROP AS
+SELECT listing_id, source_key
+FROM (
+  SELECT l.id AS listing_id, {live_source_key_sql} AS source_key
+  FROM credeals.cre_listings l
+  JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  WHERE l.deleted_at IS NULL
+) active
+JOIN _ingest_child_sources ingest_scope USING (source_key);
+
+-- Snapshot per-listing counts before mutation. The final guard compares only
+-- parents that remain active after reconciliation: a legitimately retired
+-- parent must not look like destructive child loss, while a parser collapse on
+-- a retained parent must still fail the whole transaction.
+CREATE TEMP TABLE _child_counts_by_listing_before ON COMMIT DROP AS
+SELECT a.listing_id, a.source_key, 'contacts'::text AS child_type,
+       count(c.id)::bigint AS child_count
+FROM _active_child_scope_before a
+LEFT JOIN credeals.cre_listing_contacts c ON c.listing_id = a.listing_id
+GROUP BY a.listing_id, a.source_key
+UNION ALL
+SELECT a.listing_id, a.source_key, 'documents'::text, count(d.id)::bigint
+FROM _active_child_scope_before a
+LEFT JOIN credeals.cre_listing_documents d ON d.listing_id = a.listing_id
+GROUP BY a.listing_id, a.source_key
+UNION ALL
+SELECT a.listing_id, a.source_key, 'images'::text, count(i.id)::bigint
+FROM _active_child_scope_before a
+LEFT JOIN credeals.cre_listing_images i ON i.listing_id = a.listing_id
+GROUP BY a.listing_id, a.source_key;
+
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1
+    WHERE to_regclass('credeals.cre_listing_media') IS NOT NULL
+  ) THEN
+    INSERT INTO _child_counts_by_listing_before
+    SELECT a.listing_id, a.source_key, 'media', count(m.id)
+    FROM _active_child_scope_before a
+    LEFT JOIN credeals.cre_listing_media m ON m.listing_id = a.listing_id
+    GROUP BY a.listing_id, a.source_key;
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    WHERE to_regclass('credeals.cre_listing_links') IS NOT NULL
+  ) THEN
+    INSERT INTO _child_counts_by_listing_before
+    SELECT a.listing_id, a.source_key, 'links', count(k.id)
+    FROM _active_child_scope_before a
+    LEFT JOIN credeals.cre_listing_links k ON k.listing_id = a.listing_id
+    GROUP BY a.listing_id, a.source_key;
+  END IF;
+END $$;""")
+
+    w("""
+-- Cushman's provider GUID is not a durable property identity. Fixed artifacts
+-- stage URL-v1 identities, but inserting one beside an active legacy GUID row
+-- would grow the exact duplicate-URL defect this repair is intended to stop.
+-- Fail closed until the one-time identity migration has renamed/merged the
+-- active legacy row while preserving its UUID, detail, and children.
+DO $$
+DECLARE
+    legacy_rows bigint;
+BEGIN
+    SELECT count(*) INTO legacy_rows
+    FROM credeals.cre_listings t
+    WHERE t.deleted_at IS NULL
+      AND (
+        t.external_id IS NULL
+        OR t.external_id !~ '^url:v1:[0-9a-f]{32}$'
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM _src s
+        WHERE s.brokerage_id = t.brokerage_id
+          AND jsonb_path_exists(
+            s.raw_data,
+            '$.**.sourceKey ? (@ == "cushman-wakefield")'
+          )
+      );
+    IF legacy_rows > 0 THEN
+      RAISE EXCEPTION
+        'Cushman URL-v1 identity repair required for % active legacy identity row(s); refusing duplicate growth',
+        legacy_rows;
+    END IF;
+END $$;
 
 -- (H4a) Capture prior watched values BEFORE the upsert mutates them, so the
 -- append-only price history records a row only on a REAL change. This reads
@@ -1309,7 +2446,46 @@ WITH ins AS (
            CASE WHEN jsonb_typeof(amenities) = 'array'
                 THEN ARRAY(SELECT jsonb_array_elements_text(amenities)) END,
            zoning, NULLIF(markdown, ''),
-           updated_date, scraped_at, raw_data, source_lastmod, canonical_key
+           updated_date,
+           CASE
+             WHEN jsonb_path_exists(raw_data, '$.**.detailError')
+               OR (
+                 jsonb_path_exists(
+                   raw_data,
+                   '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                 )
+                 AND NOT jsonb_path_exists(
+                   raw_data,
+                   '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
+                 )
+               )
+             THEN NULL
+             ELSE scraped_at
+           END,
+           CASE
+             WHEN jsonb_path_exists(raw_data, '$.**.detailError')
+               OR (
+                 jsonb_path_exists(
+                   raw_data,
+                   '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                 )
+                 AND NOT jsonb_path_exists(
+                   raw_data,
+                   '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
+                 )
+               )
+             THEN jsonb_build_object(
+                    'sourceKey', COALESCE(
+                      raw_data->'sourceKey',
+                      raw_data#>'{primary,sourceKey}',
+                      raw_data#>'{secondary_pass,sourceKey}'
+                    ),
+                    'latestInventoryObservation', raw_data,
+                    'inventoryObservedAt', to_jsonb(scraped_at)
+                  )
+             ELSE raw_data
+           END,
+           source_lastmod, canonical_key
     FROM _src
     ON CONFLICT (brokerage_id, external_id) WHERE external_id IS NOT NULL
     DO UPDATE SET
@@ -1388,10 +2564,108 @@ WITH ins AS (
         description       = COALESCE(EXCLUDED.description, t.description),
         -- markdown reuses the existing (currently-empty) column; NULLIF guards a
         -- sparse/empty pass from clobbering a fuller prior capture (COALESCE-keep).
-        markdown          = COALESCE(NULLIF(EXCLUDED.markdown, ''), t.markdown),
+        markdown          = CASE
+                              WHEN jsonb_path_exists(
+                                EXCLUDED.raw_data,
+                                '$.**.preserveExistingMarkdown ? (@ == true || @ == "true")'
+                              )
+                                THEN COALESCE(
+                                  NULLIF(t.markdown, ''),
+                                  NULLIF(EXCLUDED.markdown, '')
+                                )
+                              ELSE COALESCE(NULLIF(EXCLUDED.markdown, ''), t.markdown)
+                            END,
         updated_date      = COALESCE(EXCLUDED.updated_date, t.updated_date),
-        scraped_at        = EXCLUDED.scraped_at,
-        raw_data          = EXCLUDED.raw_data,
+        -- `scraped_at` is detail-observation time. A detailError, or a
+        -- preserveChildCollections row without an explicit
+        -- detailObservedWithChildPreservation proof establishes inventory/card
+        -- observation only. Avison can record a current property-detail page
+        -- while preserving children when its supplemental team feed is degraded;
+        -- child refresh remains additive below.
+        scraped_at        = CASE
+                              WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
+                                OR (
+                                  jsonb_path_exists(
+                                    EXCLUDED.raw_data,
+                                    '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                                  )
+                                  AND NOT jsonb_path_exists(
+                                    EXCLUDED.raw_data,
+                                    '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
+                                  )
+                                )
+                              THEN CASE
+                                     WHEN jsonb_path_exists(t.raw_data, '$.detailError')
+                                       OR jsonb_path_exists(t.raw_data, '$.detailUnavailable')
+                                       OR jsonb_path_exists(t.raw_data, '$.primary.detailError')
+                                       OR jsonb_path_exists(t.raw_data, '$.secondary_pass.detailError')
+                                       OR (
+                                         jsonb_path_exists(
+                                           t.raw_data,
+                                           '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                                         )
+                                         AND NOT jsonb_path_exists(
+                                           t.raw_data,
+                                           '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
+                                         )
+                                       )
+                                     THEN NULL
+                                     ELSE t.scraped_at
+                                   END
+                              ELSE EXCLUDED.scraped_at
+                            END,
+        raw_data          = CASE
+                              WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
+                                OR (
+                                  jsonb_path_exists(
+                                    EXCLUDED.raw_data,
+                                    '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                                  )
+                                  AND NOT jsonb_path_exists(
+                                    EXCLUDED.raw_data,
+                                    '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
+                                  )
+                                )
+                              THEN (
+                                     CASE
+                                       WHEN jsonb_path_exists(t.raw_data, '$.detailError')
+                                         OR jsonb_path_exists(t.raw_data, '$.detailUnavailable')
+                                         OR jsonb_path_exists(t.raw_data, '$.primary.detailError')
+                                         OR jsonb_path_exists(t.raw_data, '$.secondary_pass.detailError')
+                                         OR (
+                                           jsonb_path_exists(
+                                             t.raw_data,
+                                             '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+                                           )
+                                           AND NOT jsonb_path_exists(
+                                             t.raw_data,
+                                             '$.**.detailObservedWithChildPreservation ? (@ == true || @ == "true")'
+                                           )
+                                         )
+                                       THEN '{}'::jsonb
+                                       ELSE COALESCE(t.raw_data, '{}'::jsonb)
+                                     END
+                                   )
+                                   || jsonb_build_object(
+                                        'sourceKey', COALESCE(
+                                          EXCLUDED.raw_data->'sourceKey',
+                                          EXCLUDED.raw_data#>'{primary,sourceKey}',
+                                          EXCLUDED.raw_data#>'{secondary_pass,sourceKey}',
+                                          t.raw_data->'sourceKey',
+                                          t.raw_data#>'{primary,sourceKey}',
+                                          t.raw_data#>'{secondary_pass,sourceKey}'
+                                        ),
+                                        'latestInventoryObservation', COALESCE(
+                                          EXCLUDED.raw_data->'latestInventoryObservation',
+                                          EXCLUDED.raw_data
+                                        ),
+                                        'inventoryObservedAt', COALESCE(
+                                          EXCLUDED.raw_data->'inventoryObservedAt',
+                                          to_jsonb(EXCLUDED.scraped_at)
+                                        )
+                                      )
+                              ELSE EXCLUDED.raw_data
+                            END,
         source_lastmod    = COALESCE(EXCLUDED.source_lastmod, t.source_lastmod),
         canonical_key     = COALESCE(EXCLUDED.canonical_key, t.canonical_key),
         deleted_at        = NULL,
@@ -1541,14 +2815,43 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- Children: refresh wholesale only when the latest source row did not hit a
--- detail-page error. This protects previously good documents/images/contacts
--- from transient detail-scrape failures while still refreshing normal rows.
+-- Children: refresh wholesale only when the latest source row completed a
+-- detail pass. This protects previously good documents/images/contacts from
+-- transient errors and from deliberate API-only/base refresh modes.
 CREATE TEMP TABLE _child_refresh ON COMMIT DROP AS
 SELECT DISTINCT u.id
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
-WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError');
+WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')
+  AND (
+    NOT jsonb_path_exists(
+      s.raw_data,
+      '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+    )
+    OR NOT EXISTS (
+      SELECT 1
+      FROM _prior_vals p
+      WHERE p.brokerage_id = s.brokerage_id
+        AND p.external_id = s.external_id
+    )
+  );
+
+-- Existing sparse/detail-unavailable rows retain their last-good child
+-- collections, but current public-card contacts/images/documents must still be
+-- visible. Add those current card children idempotently below without deleting
+-- older detail-derived rows whose continued availability cannot be rechecked.
+CREATE TEMP TABLE _child_additive ON COMMIT DROP AS
+SELECT DISTINCT u.id
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+JOIN _prior_vals p
+  ON p.brokerage_id = s.brokerage_id
+ AND p.external_id = s.external_id
+WHERE jsonb_path_exists(s.raw_data, '$.**.detailError')
+   OR jsonb_path_exists(
+        s.raw_data,
+        '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+      );
 
 DELETE FROM credeals.cre_listing_contacts  WHERE listing_id IN (SELECT id FROM _child_refresh);
 DELETE FROM credeals.cre_listing_documents WHERE listing_id IN (SELECT id FROM _child_refresh);
@@ -1612,6 +2915,230 @@ CROSS JOIN LATERAL jsonb_array_elements(s.images) x
 WHERE u.id IN (SELECT id FROM _child_refresh)
   AND jsonb_typeof(s.images) = 'array' AND x->>'url' IS NOT NULL;
 
+-- Sparse existing rows: upsert the contacts and images that were observed on
+-- the current public card, without deleting last-good detail children.
+UPDATE credeals.cre_listing_contacts c
+SET is_primary = false
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
+WHERE u.id IN (SELECT id FROM _child_additive)
+  AND c.listing_id = u.id
+  AND jsonb_typeof(s.contacts) = 'array'
+  AND COALESCE((x->>'isPrimary')::boolean, false);
+
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'credeals' AND table_name = 'cre_listing_contacts'
+      AND column_name = 'license'
+  ) THEN
+    WITH incoming AS (
+      SELECT u.id AS listing_id, x
+      FROM _up u
+      JOIN _src s USING (brokerage_id, external_id)
+      CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
+      WHERE u.id IN (SELECT id FROM _child_additive)
+        AND jsonb_typeof(s.contacts) = 'array'
+    )
+    UPDATE credeals.cre_listing_contacts c SET
+      name = COALESCE(i.x->>'name', c.name),
+      title = COALESCE(i.x->>'title', c.title),
+      license = COALESCE(i.x->>'license', c.license),
+      email = COALESCE(i.x->>'email', c.email),
+      phone = COALESCE(i.x->>'phone', c.phone),
+      brokerage_name = COALESCE(i.x->>'company', c.brokerage_name),
+      profile_url = COALESCE(i.x->>'profileUrl', c.profile_url),
+      avatar_url = COALESCE(i.x->>'avatarUrl', c.avatar_url),
+      vcard_url = COALESCE(i.x->>'vcardUrl', c.vcard_url),
+      is_primary = COALESCE((i.x->>'isPrimary')::boolean, c.is_primary)
+    FROM incoming i
+    WHERE c.listing_id = i.listing_id
+      AND (
+        (NULLIF(lower(i.x->>'email'), '') IS NOT NULL
+         AND lower(c.email) = lower(i.x->>'email'))
+        OR
+        (NULLIF(lower(i.x->>'name'), '') IS NOT NULL
+         AND lower(c.name) = lower(i.x->>'name')
+         AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', ''))
+      );
+
+    INSERT INTO credeals.cre_listing_contacts (
+      listing_id, name, title, license, email, phone, brokerage_name,
+      profile_url, avatar_url, vcard_url, is_primary
+    )
+    SELECT u.id, x->>'name', x->>'title', x->>'license', x->>'email', x->>'phone',
+           x->>'company', x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
+           COALESCE((x->>'isPrimary')::boolean, false)
+    FROM _up u
+    JOIN _src s USING (brokerage_id, external_id)
+    CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
+    WHERE u.id IN (SELECT id FROM _child_additive)
+      AND jsonb_typeof(s.contacts) = 'array'
+      AND NOT EXISTS (
+        SELECT 1 FROM credeals.cre_listing_contacts c
+        WHERE c.listing_id = u.id
+          AND (
+            (NULLIF(lower(x->>'email'), '') IS NOT NULL
+             AND lower(c.email) = lower(x->>'email'))
+            OR
+            (NULLIF(lower(x->>'name'), '') IS NOT NULL
+             AND lower(c.name) = lower(x->>'name')
+             AND COALESCE(c.phone, '') = COALESCE(x->>'phone', ''))
+          )
+      );
+  ELSE
+    WITH incoming AS (
+      SELECT u.id AS listing_id, x
+      FROM _up u
+      JOIN _src s USING (brokerage_id, external_id)
+      CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
+      WHERE u.id IN (SELECT id FROM _child_additive)
+        AND jsonb_typeof(s.contacts) = 'array'
+    )
+    UPDATE credeals.cre_listing_contacts c SET
+      name = COALESCE(i.x->>'name', c.name),
+      title = COALESCE(i.x->>'title', c.title),
+      email = COALESCE(i.x->>'email', c.email),
+      phone = COALESCE(i.x->>'phone', c.phone),
+      brokerage_name = COALESCE(i.x->>'company', c.brokerage_name),
+      profile_url = COALESCE(i.x->>'profileUrl', c.profile_url),
+      avatar_url = COALESCE(i.x->>'avatarUrl', c.avatar_url),
+      vcard_url = COALESCE(i.x->>'vcardUrl', c.vcard_url),
+      is_primary = COALESCE((i.x->>'isPrimary')::boolean, c.is_primary)
+    FROM incoming i
+    WHERE c.listing_id = i.listing_id
+      AND (
+        (NULLIF(lower(i.x->>'email'), '') IS NOT NULL
+         AND lower(c.email) = lower(i.x->>'email'))
+        OR
+        (NULLIF(lower(i.x->>'name'), '') IS NOT NULL
+         AND lower(c.name) = lower(i.x->>'name')
+         AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', ''))
+      );
+
+    INSERT INTO credeals.cre_listing_contacts (
+      listing_id, name, title, email, phone, brokerage_name,
+      profile_url, avatar_url, vcard_url, is_primary
+    )
+    SELECT u.id, x->>'name', x->>'title', x->>'email', x->>'phone',
+           x->>'company', x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
+           COALESCE((x->>'isPrimary')::boolean, false)
+    FROM _up u
+    JOIN _src s USING (brokerage_id, external_id)
+    CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
+    WHERE u.id IN (SELECT id FROM _child_additive)
+      AND jsonb_typeof(s.contacts) = 'array'
+      AND NOT EXISTS (
+        SELECT 1 FROM credeals.cre_listing_contacts c
+        WHERE c.listing_id = u.id
+          AND (
+            (NULLIF(lower(x->>'email'), '') IS NOT NULL
+             AND lower(c.email) = lower(x->>'email'))
+            OR
+            (NULLIF(lower(x->>'name'), '') IS NOT NULL
+             AND lower(c.name) = lower(x->>'name')
+             AND COALESCE(c.phone, '') = COALESCE(x->>'phone', ''))
+          )
+      );
+  END IF;
+END $$;
+
+-- `is_primary` is singular. Legacy duplicate match keys can cause an additive
+-- UPDATE to touch more than one existing contact; deterministically retain one
+-- primary on every listing touched by this ingest.
+WITH ranked_primary_contacts AS (
+  SELECT
+    c.id,
+    row_number() OVER (PARTITION BY c.listing_id ORDER BY c.id) AS ordinal
+  FROM credeals.cre_listing_contacts c
+  JOIN _up u ON u.id = c.listing_id
+  WHERE c.is_primary
+)
+UPDATE credeals.cre_listing_contacts c
+SET is_primary = false
+FROM ranked_primary_contacts ranked
+WHERE c.id = ranked.id
+  AND ranked.ordinal > 1;
+
+UPDATE credeals.cre_listing_images i
+SET is_primary = false
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+CROSS JOIN LATERAL jsonb_array_elements(s.images) x
+WHERE u.id IN (SELECT id FROM _child_additive)
+  AND i.listing_id = u.id
+  AND jsonb_typeof(s.images) = 'array'
+  AND COALESCE((x->>'isPrimary')::boolean, false);
+
+WITH incoming AS (
+  SELECT u.id AS listing_id, x
+  FROM _up u
+  JOIN _src s USING (brokerage_id, external_id)
+  CROSS JOIN LATERAL jsonb_array_elements(s.images) x
+  WHERE u.id IN (SELECT id FROM _child_additive)
+    AND jsonb_typeof(s.images) = 'array'
+    AND x->>'url' IS NOT NULL
+)
+UPDATE credeals.cre_listing_images i SET
+  is_primary = COALESCE((incoming.x->>'isPrimary')::boolean, i.is_primary),
+  display_order = COALESCE((incoming.x->>'order')::integer, i.display_order)
+FROM incoming
+WHERE i.listing_id = incoming.listing_id
+  AND i.url = incoming.x->>'url';
+
+INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order)
+SELECT u.id, x->>'url', COALESCE((x->>'isPrimary')::boolean, false),
+       COALESCE((x->>'order')::integer, 0)
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+CROSS JOIN LATERAL jsonb_array_elements(s.images) x
+WHERE u.id IN (SELECT id FROM _child_additive)
+  AND jsonb_typeof(s.images) = 'array'
+  AND x->>'url' IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM credeals.cre_listing_images i
+    WHERE i.listing_id = u.id AND i.url = x->>'url'
+  );
+
+WITH incoming AS (
+  SELECT u.id AS listing_id, x
+  FROM _up u
+  JOIN _src s USING (brokerage_id, external_id)
+  CROSS JOIN LATERAL jsonb_array_elements(s.documents) x
+  WHERE u.id IN (SELECT id FROM _child_additive)
+    AND jsonb_typeof(s.documents) = 'array'
+    AND x->>'url' IS NOT NULL
+)
+UPDATE credeals.cre_listing_documents d SET
+  doc_type = CASE
+               WHEN incoming.x->>'docType' IN (
+                 'brochure','om','flyer','floor_plan','financials','rent_roll'
+               ) THEN incoming.x->>'docType'
+               ELSE d.doc_type
+             END,
+  title = COALESCE(incoming.x->>'title', d.title),
+  scraped_at = now()
+FROM incoming
+WHERE d.listing_id = incoming.listing_id
+  AND d.url = incoming.x->>'url';
+
+INSERT INTO credeals.cre_listing_documents (listing_id, doc_type, title, url)
+SELECT u.id,
+       CASE WHEN x->>'docType' IN ('brochure','om','flyer','floor_plan','financials','rent_roll')
+            THEN x->>'docType' ELSE 'other' END,
+       x->>'title', x->>'url'
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+CROSS JOIN LATERAL jsonb_array_elements(s.documents) x
+WHERE u.id IN (SELECT id FROM _child_additive)
+  AND jsonb_typeof(s.documents) = 'array'
+  AND x->>'url' IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM credeals.cre_listing_documents d
+    WHERE d.listing_id = u.id AND d.url = x->>'url'
+  );
+
 -- Media + links (sql/011 tables). Existence-guarded so a pre-011 ingest is a
 -- no-op (mirrors the 009 to_regclass guard pattern): the DELETE and re-INSERT
 -- are wrapped together per table, since a DELETE with no table to refill would
@@ -1619,6 +3146,9 @@ WHERE u.id IN (SELECT id FROM _child_refresh)
 -- wholesale-replace fires only on a CLEAN detail touch (mirrors images exactly).
 -- media_type/link_type participate in the unique key because one url can
 -- legitimately appear once per type; ON CONFLICT ... DO NOTHING dedups in-batch.
+-- Existing child-preserving rows also add newly observed media/links without
+-- deleting last-good rows. This rides the generic _child_additive contract, not
+-- a source-specific branch, and uses the sql/011 unique keys for idempotence.
 DO $$ BEGIN
   IF to_regclass('credeals.cre_listing_media') IS NOT NULL THEN
     DELETE FROM credeals.cre_listing_media WHERE listing_id IN (SELECT id FROM _child_refresh);
@@ -1629,6 +3159,16 @@ DO $$ BEGIN
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.media) x
     WHERE u.id IN (SELECT id FROM _child_refresh)
+      AND jsonb_typeof(s.media) = 'array' AND x->>'url' IS NOT NULL
+    ON CONFLICT (listing_id, media_type, url) DO NOTHING;
+
+    INSERT INTO credeals.cre_listing_media (listing_id, media_type, provider, url, embed_url, title)
+    SELECT u.id, COALESCE(x->>'mediaType','other'), x->>'provider', x->>'url',
+           x->>'embedUrl', x->>'title'
+    FROM _up u
+    JOIN _src s USING (brokerage_id, external_id)
+    CROSS JOIN LATERAL jsonb_array_elements(s.media) x
+    WHERE u.id IN (SELECT id FROM _child_additive)
       AND jsonb_typeof(s.media) = 'array' AND x->>'url' IS NOT NULL
     ON CONFLICT (listing_id, media_type, url) DO NOTHING;
   END IF;
@@ -1643,6 +3183,15 @@ DO $$ BEGIN
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.links) x
     WHERE u.id IN (SELECT id FROM _child_refresh)
+      AND jsonb_typeof(s.links) = 'array' AND x->>'url' IS NOT NULL
+    ON CONFLICT (listing_id, link_type, url) DO NOTHING;
+
+    INSERT INTO credeals.cre_listing_links (listing_id, link_type, url, rel)
+    SELECT u.id, COALESCE(x->>'linkType','other'), x->>'url', x->>'rel'
+    FROM _up u
+    JOIN _src s USING (brokerage_id, external_id)
+    CROSS JOIN LATERAL jsonb_array_elements(s.links) x
+    WHERE u.id IN (SELECT id FROM _child_additive)
       AND jsonb_typeof(s.links) = 'array' AND x->>'url' IS NOT NULL
     ON CONFLICT (listing_id, link_type, url) DO NOTHING;
   END IF;
@@ -1854,6 +3403,108 @@ SELECT b.id,
        jm.discovered, jm.saved, jm.saved, jm.errors, jm.notes
 FROM _jobmeta jm JOIN credeals.cre_brokerages b ON b.slug = jm.slug;
 
+-- Enforce the severe child-loss predicate before COMMIT so a parser collapse
+-- rolls back listings, children, history, and the scrape-job row atomically.
+-- Compare the same pre-existing parents on both sides. Mark-missing may retire
+-- parents and archive their children without constituting a child parser
+-- regression; removing children from parents that remain active is guarded.
+CREATE TEMP TABLE _retained_child_scope_after ON COMMIT DROP AS
+SELECT before.listing_id, before.source_key
+FROM _active_child_scope_before before
+JOIN credeals.cre_listings l ON l.id = before.listing_id
+WHERE l.deleted_at IS NULL;
+
+CREATE TEMP TABLE _child_counts_before (
+  source_key text NOT NULL,
+  child_type text NOT NULL,
+  child_count bigint NOT NULL,
+  PRIMARY KEY (source_key, child_type)
+) ON COMMIT DROP;
+
+INSERT INTO _child_counts_before
+SELECT snapshot.source_key, snapshot.child_type, sum(snapshot.child_count)
+FROM _child_counts_by_listing_before snapshot
+JOIN _retained_child_scope_after retained
+  USING (listing_id, source_key)
+GROUP BY snapshot.source_key, snapshot.child_type;
+
+CREATE TEMP TABLE _child_counts_after (
+  source_key text NOT NULL,
+  child_type text NOT NULL,
+  child_count bigint NOT NULL,
+  PRIMARY KEY (source_key, child_type)
+) ON COMMIT DROP;
+
+INSERT INTO _child_counts_after
+SELECT a.source_key, 'contacts', count(c.id)
+FROM _retained_child_scope_after a
+LEFT JOIN credeals.cre_listing_contacts c ON c.listing_id = a.listing_id
+GROUP BY a.source_key
+UNION ALL
+SELECT a.source_key, 'documents', count(d.id)
+FROM _retained_child_scope_after a
+LEFT JOIN credeals.cre_listing_documents d ON d.listing_id = a.listing_id
+GROUP BY a.source_key
+UNION ALL
+SELECT a.source_key, 'images', count(i.id)
+FROM _retained_child_scope_after a
+LEFT JOIN credeals.cre_listing_images i ON i.listing_id = a.listing_id
+GROUP BY a.source_key;
+
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1
+    WHERE to_regclass('credeals.cre_listing_media') IS NOT NULL
+  ) THEN
+    INSERT INTO _child_counts_after
+    SELECT a.source_key, 'media', count(m.id)
+    FROM _retained_child_scope_after a
+    LEFT JOIN credeals.cre_listing_media m ON m.listing_id = a.listing_id
+    GROUP BY a.source_key;
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    WHERE to_regclass('credeals.cre_listing_links') IS NOT NULL
+  ) THEN
+    INSERT INTO _child_counts_after
+    SELECT a.source_key, 'links', count(k.id)
+    FROM _retained_child_scope_after a
+    LEFT JOIN credeals.cre_listing_links k ON k.listing_id = a.listing_id
+    GROUP BY a.source_key;
+  END IF;
+END $$;
+
+DO $$
+DECLARE regressions text;
+BEGIN
+  SELECT string_agg(
+    format(
+      '%s/%s fell more than 30%%: %s->%s',
+      prior_counts.source_key,
+      prior_counts.child_type,
+      prior_counts.child_count,
+      COALESCE(current_counts.child_count, 0)
+    ),
+    '; ' ORDER BY prior_counts.source_key, prior_counts.child_type
+  )
+  INTO regressions
+  FROM _child_counts_before prior_counts
+  LEFT JOIN _child_counts_after current_counts
+    USING (source_key, child_type)
+  WHERE prior_counts.child_count >= {CHILD_COUNT_MIN_BASE}
+    AND COALESCE(current_counts.child_count, 0)
+      < (
+        prior_counts.child_count * {CHILD_COUNT_RETAIN_NUMERATOR}
+        / {CHILD_COUNT_RETAIN_DENOMINATOR}
+      );
+
+  IF regressions IS NOT NULL THEN
+    RAISE EXCEPTION
+      'checkpoint child quality regression before commit: %',
+      regressions;
+  END IF;
+END $$;
+
 COMMIT;
 
 \\echo ''
@@ -1923,6 +3574,105 @@ def load_db_url(env_file):
     )
 
 
+DATABASE_TARGET_OVERRIDE_QUERY_KEYS = {
+    "dbname",
+    "host",
+    "hostaddr",
+    "port",
+    "service",
+    "servicefile",
+}
+
+
+def strict_uri_unquote(value, *, label):
+    """Decode one URI component as strict UTF-8 after validating every escape."""
+    invalid_escape = re.search(r"%(?![0-9A-Fa-f]{2})", value)
+    if invalid_escape is not None:
+        raise ValueError(f"{label} contains an invalid percent escape")
+    try:
+        return unquote_to_bytes(value).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{label} is not valid UTF-8") from exc
+
+
+def parse_postgres_uri_query(query):
+    """Strictly decode a PostgreSQL URI query without form-style ``+`` folding."""
+    if not query:
+        return []
+    pairs = []
+    for component in query.split("&"):
+        raw_key, separator, raw_value = component.partition("=")
+        if not separator:
+            raw_value = ""
+        pairs.append(
+            (
+                strict_uri_unquote(raw_key, label="PostgreSQL URL query key"),
+                strict_uri_unquote(raw_value, label="PostgreSQL URL query value"),
+            )
+        )
+    return pairs
+
+
+def database_target_fingerprint_from_url(db_url):
+    """Return a credential-free hash for one unambiguous PostgreSQL URI target."""
+    parsed = urlsplit(db_url)
+    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
+        raise ValueError("selected database URL has no usable PostgreSQL host")
+    authority = parsed.netloc.rsplit("@", 1)[-1]
+    decoded_hostname = strict_uri_unquote(
+        parsed.hostname, label="PostgreSQL URL host"
+    )
+    if "," in authority or "," in decoded_hostname:
+        raise ValueError("multi-host PostgreSQL URLs are not supported")
+    override_keys = {
+        key.lower()
+        for key, _value in parse_postgres_uri_query(parsed.query)
+        if key.lower() in DATABASE_TARGET_OVERRIDE_QUERY_KEYS
+    }
+    if override_keys:
+        raise ValueError(
+            "database URL query parameters may override the target: "
+            + ", ".join(sorted(override_keys))
+        )
+    try:
+        port = parsed.port or 5432
+    except ValueError as exc:
+        raise ValueError("selected database URL has an invalid port") from exc
+    database = strict_uri_unquote(
+        parsed.path.lstrip("/"), label="PostgreSQL URL database"
+    )
+    if not database or "/" in database:
+        raise ValueError("selected database URL has no usable database name")
+    if decoded_hostname.startswith("/") or ":" in decoded_hostname:
+        fingerprint_host = decoded_hostname
+    else:
+        fingerprint_host = decoded_hostname.lower().rstrip(".")
+    target = f"{fingerprint_host}:{port}/{database}"
+    return {
+        "algorithm": "sha256",
+        "value": hashlib.sha256(target.encode("utf-8")).hexdigest(),
+    }
+
+
+def assert_expected_database_target(db_url, expected_sha256):
+    """Fail before DB access when an operational parent bound a different target."""
+    if expected_sha256 is None:
+        return
+    if not isinstance(expected_sha256, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", expected_sha256
+    ):
+        raise SystemExit("expected database target fingerprint must be 64 lowercase hex")
+    try:
+        actual = database_target_fingerprint_from_url(db_url)["value"]
+    except ValueError as exc:
+        raise SystemExit(f"refusing ambiguous database target: {exc}") from exc
+    if actual != expected_sha256:
+        raise SystemExit(
+            "refusing database access: selected target does not match "
+            "the checkpoint fingerprint"
+        )
+
+
 def find_psql():
     for p in PSQL_CANDIDATES:
         if p and os.path.isfile(p) and os.access(p, os.X_OK):
@@ -1931,6 +3681,157 @@ def find_psql():
     if p:
         return p
     sys.exit("psql not found. brew install libpq, or set PSQL_BIN.")
+
+
+PSQL_QUERY_ENV = {
+    "application_name": "PGAPPNAME",
+    "channel_binding": "PGCHANNELBINDING",
+    "client_encoding": "PGCLIENTENCODING",
+    "connect_timeout": "PGCONNECT_TIMEOUT",
+    "gssencmode": "PGGSSENCMODE",
+    "gsslib": "PGGSSLIB",
+    "gssdelegation": "PGGSSDELEGATION",
+    "krbsrvname": "PGKRBSRVNAME",
+    "load_balance_hosts": "PGLOADBALANCEHOSTS",
+    "max_protocol_version": "PGMAXPROTOCOLVERSION",
+    "min_protocol_version": "PGMINPROTOCOLVERSION",
+    "options": "PGOPTIONS",
+    "passfile": "PGPASSFILE",
+    "password": "PGPASSWORD",
+    "require_auth": "PGREQUIREAUTH",
+    "requirepeer": "PGREQUIREPEER",
+    "requiressl": "PGREQUIRESSL",
+    "sslcert": "PGSSLCERT",
+    "sslcertmode": "PGSSLCERTMODE",
+    "sslcompression": "PGSSLCOMPRESSION",
+    "sslcrl": "PGSSLCRL",
+    "sslcrldir": "PGSSLCRLDIR",
+    "sslkey": "PGSSLKEY",
+    "ssl_max_protocol_version": "PGSSLMAXPROTOCOLVERSION",
+    "ssl_min_protocol_version": "PGSSLMINPROTOCOLVERSION",
+    "sslmode": "PGSSLMODE",
+    "sslnegotiation": "PGSSLNEGOTIATION",
+    "sslrootcert": "PGSSLROOTCERT",
+    "sslsni": "PGSSLSNI",
+    "target_session_attrs": "PGTARGETSESSIONATTRS",
+    "user": "PGUSER",
+}
+
+PSQL_URI_ONLY_QUERY_KEYS = {
+    "fallback_application_name",
+    "keepalives",
+    "keepalives_count",
+    "keepalives_idle",
+    "keepalives_interval",
+    "oauth_client_id",
+    "oauth_issuer",
+    "oauth_scope",
+    "replication",
+    "sslkeylogfile",
+    "tcp_user_timeout",
+}
+
+PSQL_UNSUPPORTED_SECRET_QUERY_KEYS = {
+    "oauth_client_secret",
+    "scram_client_key",
+    "scram_server_key",
+    "sslpassword",
+}
+
+PSQL_TARGET_ENV_KEYS = {
+    "PGDATABASE",
+    "PGHOST",
+    "PGHOSTADDR",
+    "PGPORT",
+    "PGSERVICE",
+    "PGSERVICEFILE",
+    *PSQL_QUERY_ENV.values(),
+}
+
+
+def psql_connection_env(db_url):
+    """Bind libpq through the child environment, never the process argv.
+
+    Clear inherited target/credential variables, then decompose the already
+    fingerprinted URI into libpq's dedicated environment variables. This keeps
+    credentials out of ``ps`` output without losing SSL/query settings.
+    """
+    parsed = urlsplit(db_url)
+    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
+        raise ValueError("selected database URL has no usable PostgreSQL host")
+    env = os.environ.copy()
+    for key in PSQL_TARGET_ENV_KEYS:
+        env.pop(key, None)
+    env["PGHOST"] = strict_uri_unquote(
+        parsed.hostname, label="PostgreSQL URL host"
+    )
+    try:
+        env["PGPORT"] = str(parsed.port or 5432)
+    except ValueError as exc:
+        raise ValueError("selected database URL has an invalid port") from exc
+    database = strict_uri_unquote(
+        parsed.path.lstrip("/"), label="PostgreSQL URL database"
+    )
+    if database:
+        env["PGDATABASE"] = database
+    if parsed.username is not None:
+        env["PGUSER"] = strict_uri_unquote(
+            parsed.username, label="PostgreSQL URL username"
+        )
+    if parsed.password is not None:
+        env["PGPASSWORD"] = strict_uri_unquote(
+            parsed.password, label="PostgreSQL URL password"
+        )
+    for key, value in parse_postgres_uri_query(parsed.query):
+        normalized = key.lower()
+        target = PSQL_QUERY_ENV.get(normalized)
+        if target is not None:
+            env[target] = value
+        elif normalized in PSQL_URI_ONLY_QUERY_KEYS:
+            continue
+        elif normalized in PSQL_UNSUPPORTED_SECRET_QUERY_KEYS:
+            raise ValueError(
+                f"PostgreSQL URL query parameter cannot be moved out of process argv safely: {key}"
+            )
+        else:
+            raise ValueError(
+                f"unsupported PostgreSQL URL query parameter for psql: {key}"
+            )
+    return env
+
+
+def psql_connection_args(db_url):
+    """Return a credential-free ``--dbname`` URI only when URI-only options exist."""
+    parsed = urlsplit(db_url)
+    uri_only = [
+        (key, value)
+        for key, value in parse_postgres_uri_query(parsed.query)
+        if key.lower() in PSQL_URI_ONLY_QUERY_KEYS
+    ]
+    if not uri_only:
+        return []
+    hostname = strict_uri_unquote(
+        parsed.hostname or "", label="PostgreSQL URL host"
+    )
+    if ":" in hostname:
+        rendered_host = f"[{quote(hostname, safe=':')}]"
+    else:
+        rendered_host = quote(hostname, safe="-._~")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("selected database URL has an invalid port") from exc
+    authority = rendered_host + (f":{port}" if port is not None else "")
+    database = strict_uri_unquote(
+        parsed.path.lstrip("/"), label="PostgreSQL URL database"
+    )
+    rendered_path = "/" + quote(database, safe="-._~")
+    query = "&".join(
+        f"{quote(key, safe='-._~')}={quote(value, safe='-._~')}"
+        for key, value in uri_only
+    )
+    safe_uri = urlunsplit((parsed.scheme, authority, rendered_path, query, ""))
+    return ["--dbname", safe_uri]
 
 
 # ---------------------------------------------------------------------------
@@ -2005,7 +3906,16 @@ def iter_copy_json_rows(psql, db_url, inner_select, *, label="read"):
     """
     sql = f"COPY ({inner_select}) TO STDOUT WITH (FORMAT csv)"
     proc = subprocess.run(
-        [psql, db_url, "-q", "-v", "ON_ERROR_STOP=1", "-c", sql],
+        [
+            psql,
+            *psql_connection_args(db_url),
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            sql,
+        ],
+        env=psql_connection_env(db_url),
         capture_output=True,
         text=True,
     )
@@ -2042,7 +3952,20 @@ def main():
     ap.add_argument("--in", dest="inputs", action="append", required=True,
                     help="collect.ts output JSON (repeatable)")
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
+    ap.add_argument(
+        "--expected-db-target-sha256",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     ap.add_argument("--dry-run", action="store_true", help="build SQL, print stats, don't connect")
+    ap.add_argument(
+        "--require-strict-freshness",
+        action="store_true",
+        help=(
+            "require every input artifact to carry and satisfy the strict "
+            "freshness contract; checkpoint refresh passes this for strict sources"
+        ),
+    )
     ap.add_argument("--mark-missing", action="store_true",
                     help="soft-delete listings not present in this run (full runs only); "
                          "applies only to brokerages whose every source pass ran error-free "
@@ -2057,6 +3980,8 @@ def main():
     args = ap.parse_args()
 
     merged = {}          # (slug, external_id) -> row
+    inventory_only_merged = {}  # (slug, external_id) -> source-index row
+    inventory_only_scopes_merged = {}  # source_key -> proven full scope
     skipped_no_url = 0
     per_source_counts = {}
     source_entries = []  # all sources[] entries across files
@@ -2071,17 +3996,74 @@ def main():
                 "sole production OM extraction writer"
             )
         run_meta = data.get("runMeta") or {}
+        try:
+            validate_strict_artifact_freshness(
+                data,
+                require_strict_freshness=args.require_strict_freshness,
+            )
+        except ValueError as exc:
+            sys.exit(f"refusing strict freshness artifact: {exc}")
+        mode = run_meta.get("mode")
+        if not args.dry_run and mode not in {"full", "enrich"}:
+            sys.exit(
+                f"refusing live ingest for artifact mode {mode!r}: "
+                "expected runMeta.mode to be 'full' or 'enrich'"
+            )
         started_at = started_at or run_meta.get("startedAt")
         scraped_at = run_meta.get("finishedAt") or datetime.now(timezone.utc).isoformat()
         brokers_by_idx = {i: b for i, b in enumerate(data.get("brokers") or [])}
         source_entries.extend(data.get("sources") or [])
+        artifact_scopes = inventory_only_full_scopes(data)
+        artifact_scope_sources = {scope["source_key"] for scope in artifact_scopes}
+        artifact_inventory_sources = {
+            listing.get("sourceKey")
+            for listing in (data.get("listings") or [])
+            if isinstance(listing, dict) and listing.get("inventoryOnly") is not None
+        }
+        artifact_unscoped_inventory = (
+            artifact_inventory_sources - artifact_scope_sources
+        )
+        if artifact_unscoped_inventory:
+            sys.exit(
+                "refusing inventory-only rows without a strict complete full "
+                "scope in the same artifact: "
+                f"{sorted(artifact_unscoped_inventory)}"
+            )
+        for scope in artifact_scopes:
+            if scope["source_key"] in inventory_only_scopes_merged:
+                sys.exit(
+                    "refusing duplicate complete inventory-only scopes for "
+                    f"{scope['source_key']!r}; provide exactly one current "
+                    "full snapshot for that source"
+                )
+            inventory_only_scopes_merged[scope["source_key"]] = scope
         for listing in data.get("listings") or []:
+            inventory_row = to_inventory_only_row(listing, scraped_at)
+            if inventory_row is not None:
+                inventory_key = (
+                    inventory_row["slug"],
+                    inventory_row["external_id"],
+                )
+                if (
+                    listing.get("sourceKey") == "colliers"
+                    and inventory_key in inventory_only_merged
+                ):
+                    sys.exit(
+                        "refusing duplicate Colliers provisional inventory "
+                        f"identity {inventory_key[1]!r}"
+                    )
+                inventory_only_merged[inventory_key] = inventory_row
+                continue
             row = to_row(listing, brokers_by_idx, scraped_at)
             if row is None:
                 skipped_no_url += 1
                 continue
             key = (row["slug"], row["external_id"])
             if key in merged:
+                try:
+                    validate_duplicate_identity_before_merge(merged[key], row)
+                except ValueError as exc:
+                    sys.exit(f"refusing duplicate canonical identity: {exc}")
                 merged[key] = merge_rows(merged[key], row)
             else:
                 merged[key] = row
@@ -2089,8 +4071,18 @@ def main():
             per_source_counts[sk] = per_source_counts.get(sk, 0) + 1
 
     rows = list(merged.values())
-    if not rows:
-        sys.exit("nothing to ingest (0 usable listings)")
+    inventory_only_rows = list(inventory_only_merged.values())
+    inventory_only_scopes = list(inventory_only_scopes_merged.values())
+    unscoped_inventory_sources = {
+        row["source_key"] for row in inventory_only_rows
+    } - set(inventory_only_scopes_merged)
+    if unscoped_inventory_sources:
+        sys.exit(
+            "refusing inventory-only ingest without a strict complete full "
+            f"enumeration scope: {sorted(unscoped_inventory_sources)}"
+        )
+    if not rows and not inventory_only_rows and not inventory_only_scopes:
+        sys.exit("nothing to ingest (0 usable listings or inventory-only rows)")
     for r in rows:
         r.pop("_modes", None)
     started_at = started_at or datetime.now(timezone.utc).isoformat()
@@ -2182,13 +4174,29 @@ def main():
             "notes": "; ".join(st["notes"]) or None,
         }
         for slug, st in sorted(slug_stats.items())
-        if slug_saved.get(slug, 0) > 0 or st["discovered"] > 0 or st["errors"] > 0
+        if (
+            slug_saved.get(slug, 0) > 0
+            or st["discovered"] > 0
+            or st["errors"] > 0
+            or slug in {scope["slug"] for scope in inventory_only_scopes}
+        )
     ]
 
-    sql = build_sql(rows, job_meta, started_at, mark_missing_slugs,
-                    history_guard=not args.dry_run)
+    sql = build_sql(
+        rows,
+        job_meta,
+        started_at,
+        mark_missing_slugs,
+        history_guard=not args.dry_run,
+        inventory_only_rows=inventory_only_rows,
+        inventory_only_scopes=inventory_only_scopes,
+    )
 
-    print(f"staged listings: {len(rows)} (skipped, no URL: {skipped_no_url})", file=sys.stderr)
+    print(
+        f"staged listings: {len(rows)}; inventory-only index rows: "
+        f"{len(inventory_only_rows)} (skipped, unusable: {skipped_no_url})",
+        file=sys.stderr,
+    )
     for sk in sorted(per_source_counts):
         print(f"  {sk}: {per_source_counts[sk]}", file=sys.stderr)
     if mark_missing_slugs:
@@ -2206,10 +4214,20 @@ def main():
         return
 
     db_url, env_path = load_db_url(args.env_file)
+    assert_expected_database_target(db_url, args.expected_db_target_sha256)
     print(f"credentials: {env_path}", file=sys.stderr)
     psql = find_psql()
     proc = subprocess.run(
-        [psql, db_url, "-q", "-v", "ON_ERROR_STOP=1", "-f", sql_path],
+        [
+            psql,
+            *psql_connection_args(db_url),
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            sql_path,
+        ],
+        env=psql_connection_env(db_url),
         stdout=sys.stdout, stderr=sys.stderr,
     )
     if not args.keep_artifacts:

@@ -14,7 +14,10 @@ import {
   parseTranswesternAvailability,
   transwesternStructured,
   liftTranswesternScalars,
+  transwesternCapTruncated,
+  srcTranswestern,
 } from "../../../sources/transwestern.js";
+import { firecrawl } from "../../../lib/scrape.js";
 
 // ---------------------------------------------------------------------------
 // Fixture loader (tests/fixtures/raw_data/transwestern.json)
@@ -33,6 +36,51 @@ function fx(id: string) {
   if (!f) throw new Error(`fixture not found: ${id}`);
   return f.raw_data;
 }
+
+test("Transwestern finite caps report truncation after bucket de-duplication", () => {
+  assert.equal(transwesternCapTruncated(1, 1, 2), true);
+  assert.equal(transwesternCapTruncated(2, 2, 2), false);
+  assert.equal(
+    transwesternCapTruncated(Number.POSITIVE_INFINITY, 2, 3),
+    false
+  );
+});
+
+test("Transwestern full refresh bypasses Firecrawl cache while monitor keeps defaults", async () => {
+  const original = firecrawl.scrape;
+  const calls: Array<{ url: string; options: any }> = [];
+  const feedRow = {
+    PageUrl: "sample-property",
+    BuildingName: "Sample Property",
+    PropertyTypeName: "Office",
+    FullAddress: "100 Main Street",
+    City: "Dallas",
+    State: "TX",
+    ZipCode: "75201",
+    PropertySize: 10000,
+  };
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    calls.push({ url, options });
+    if (url.includes("/properties?")) return { rawHtml: JSON.stringify([feedRow]) };
+    return {
+      rawHtml: "<html><h1>Sample Property</h1><div class='property-description'>Current detail</div></html>",
+      markdown: "Sample Property\nCurrent detail",
+      links: [],
+    };
+  };
+  try {
+    await srcTranswestern("sale", 1, false);
+    assert.ok(calls.length >= 3);
+    assert.ok(calls.every((call) => call.options.maxAge === 0));
+
+    calls.length = 0;
+    await srcTranswestern("sale", 1, true);
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((call) => !("maxAge" in call.options)));
+  } finally {
+    (firecrawl as any).scrape = original;
+  }
+});
 
 test("canonicalTranswesternUrl resolves relative paths and rejects junk", () => {
   assert.equal(

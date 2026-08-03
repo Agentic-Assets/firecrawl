@@ -4,8 +4,13 @@ import { CONCURRENCY } from "../lib/config.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { parseLeaseRate } from "../lib/parse.js";
 import { scrapeJson } from "../lib/scrape.js";
-import { DocItem, ScrapedDoc, ScrapeOpts, SourceResult, Tx } from "../types.js";
+import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { clean, num, pmap, prune } from "../lib/util.js";
+import {
+  detailObservation,
+  refreshGenerationId,
+  requireFreshDetails,
+} from "../lib/freshness.js";
 
 
 // --- CBRE: internal listings JSON API, paginated, behind Cloudflare (stealth) ---
@@ -134,27 +139,196 @@ export function cbreDocTypeFromName(name: string | null): DocItem["docType"] {
   return "brochure";
 }
 
+export type CbreValidatedPage = {
+  total: number;
+  documents: any[];
+};
+
+export function assertCbrePage(
+  response: any,
+  page: number,
+  pageSize: number,
+  expectedTotal: number | null,
+  strict = requireFreshDetails()
+): CbreValidatedPage {
+  if (
+    !Number.isInteger(page)
+    || page < 1
+    || !Number.isInteger(pageSize)
+    || pageSize < 1
+  ) {
+    throw new Error("CBRE listings API requires positive integer page metadata");
+  }
+  if (
+    !response
+    || typeof response !== "object"
+    || Array.isArray(response)
+    || !Array.isArray(response.Documents)
+  ) {
+    throw new Error(`CBRE listings API page ${page} is missing a Documents array`);
+  }
+  const total = response.DocumentCount;
+  if (!Number.isInteger(total) || total < 0) {
+    throw new Error(
+      `CBRE listings API page ${page} requires a nonnegative integer DocumentCount`
+    );
+  }
+  if (strict && expectedTotal !== null && total !== expectedTotal) {
+    throw new Error(
+      `CBRE listings API DocumentCount changed from ${expectedTotal} to ${total} on page ${page}`
+    );
+  }
+  if (strict) {
+    const providerPage = [
+      response.Page,
+      response.PageNumber,
+      response.CurrentPage,
+    ].find((value) => value !== undefined);
+    if (
+      providerPage !== undefined
+      && (!Number.isInteger(providerPage) || providerPage !== page)
+    ) {
+      throw new Error(
+        `CBRE listings API page metadata expected page ${page}, received ${String(providerPage)}`
+      );
+    }
+    if (
+      response.PageSize !== undefined
+      && (
+        !Number.isInteger(response.PageSize)
+        || response.PageSize !== pageSize
+      )
+    ) {
+      throw new Error(
+        `CBRE listings API page metadata expected PageSize ${pageSize}, received ${String(response.PageSize)}`
+      );
+    }
+  }
+
+  const documents = response.Documents.flat();
+  if (
+    strict
+    && documents.some(
+      (document: any) =>
+        !document || typeof document !== "object" || Array.isArray(document)
+    )
+  ) {
+    throw new Error(`CBRE listings API page ${page} contains a malformed document`);
+  }
+  if (strict) {
+    const expectedCount = Math.max(
+      0,
+      Math.min(pageSize, total - ((page - 1) * pageSize))
+    );
+    if (documents.length !== expectedCount) {
+      throw new Error(
+        `CBRE listings API page ${page} expected ${expectedCount} documents, received ${documents.length}`
+      );
+    }
+    const seen = new Set<string>();
+    for (const document of documents) {
+      const primaryKey = clean(document?.["Common.PrimaryKey"]);
+      if (!primaryKey) {
+        throw new Error(
+          `CBRE listings API page ${page} document lacks a nonempty Common.PrimaryKey`
+        );
+      }
+      if (seen.has(primaryKey)) {
+        throw new Error(
+          `CBRE listings API page ${page} has duplicate Common.PrimaryKey ${primaryKey}`
+        );
+      }
+      seen.add(primaryKey);
+    }
+  }
+  return { total, documents };
+}
+
+export function assertCbreAggregate(
+  documents: any[],
+  total: number,
+  fetchedPages: number,
+  strict = requireFreshDetails(),
+  pageSize = 200
+): void {
+  if (!strict) return;
+  const expectedCount = Math.min(total, Math.max(1, fetchedPages) * pageSize);
+  const seen = new Set<string>();
+  for (const document of documents) {
+    const primaryKey = clean(document?.["Common.PrimaryKey"]);
+    if (!primaryKey) {
+      throw new Error(
+        "CBRE listings API aggregate contains a document without a nonempty Common.PrimaryKey"
+      );
+    }
+    if (seen.has(primaryKey)) {
+      throw new Error(
+        `CBRE listings API aggregate has duplicate Common.PrimaryKey ${primaryKey}`
+      );
+    }
+    seen.add(primaryKey);
+  }
+  if (documents.length !== expectedCount || seen.size !== expectedCount) {
+    throw new Error(
+      `CBRE listings API aggregate expected ${expectedCount} unique documents, received ${seen.size}`
+    );
+  }
+}
+
+export function cbreResultTruncated(
+  max: number,
+  total: number,
+  collected: number
+): boolean {
+  const selectedTarget = Math.min(max, total);
+  return (
+    collected < selectedTarget ||
+    (Number.isFinite(max) && selectedTarget < total)
+  );
+}
+
 export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
   // Enumeration-only source: the listings-api JSON already returns fully mapped
   // rows with no per-listing detail render, so monitor output == full output.
-  const aspect = cbreAspect(tx);
-  const opts: ScrapeOpts = { proxy: "stealth", waitFor: 4000, timeout: 120000 };
-  const base = `https://www.cbre.com/listings-api/propertylistings/query?site=us-comm&Common.Aspects=${aspect}&PageSize=200`;
-  const first = await scrapeJson(`${base}&Page=1`, opts);
-  if (typeof first.DocumentCount !== "number" || !Array.isArray(first.Documents)) {
-    throw new Error("CBRE listings API response is missing DocumentCount/Documents fields");
+  const strict = requireFreshDetails();
+  if (strict && !refreshGenerationId()) {
+    throw new Error(
+      "CBRE strict freshness requires CRE_REFRESH_GENERATION"
+    );
   }
-  const total: number = first.DocumentCount;
+  const aspect = cbreAspect(tx);
+  const opts = {
+    proxy: "stealth" as const,
+    waitFor: 4000,
+    timeout: 120000,
+    ...(strict ? { maxAge: 0 } : {}),
+  };
+  const base = `https://www.cbre.com/listings-api/propertylistings/query?site=us-comm&Common.Aspects=${aspect}&PageSize=200`;
+  const first = assertCbrePage(
+    await scrapeJson(`${base}&Page=1`, opts),
+    1,
+    200,
+    null,
+    strict
+  );
+  const total = first.total;
   const want = Math.min(max, total);
   const pages = Math.ceil(want / 200);
   console.error(`  cbre/${tx}: ${total} total, fetching ${pages} page(s)`);
-  const docsArr: any[][] = [first.Documents.flat()];
+  const docsArr: any[][] = [first.documents];
   if (pages > 1) {
     const pageNums = Array.from({ length: pages - 1 }, (_, i) => i + 2);
     const rest = await pmap(pageNums, CONCURRENCY, async (p) => {
-      const d = await scrapeJson(`${base}&Page=${p}`, opts);
-      console.error(`  cbre/${tx}: page ${p}/${pages} (${(d.Documents ?? []).flat().length} docs)`);
-      return Array.isArray(d.Documents) ? d.Documents.flat() : [];
+      const raw = await scrapeJson(`${base}&Page=${p}`, opts);
+      if (!strict && !Array.isArray(raw?.Documents)) {
+        console.error(`  cbre/${tx}: page ${p}/${pages} returned no Documents array`);
+        return [];
+      }
+      const page = assertCbrePage(raw, p, 200, total, strict);
+      console.error(
+        `  cbre/${tx}: page ${p}/${pages} (${page.documents.length} docs)`
+      );
+      return page.documents;
     });
     docsArr.push(...rest);
   }
@@ -164,8 +338,13 @@ export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<S
   // later page truncated this pass. This excludes --max-items (folded into
   // `want`) and natural exhaustion (a complete run reaches `want`).
   const collectedDocs = docsArr.flat();
-  const truncated = collectedDocs.length < want;
+  assertCbreAggregate(collectedDocs, total, pages, strict);
+  const truncated = cbreResultTruncated(max, total, collectedDocs.length);
   const docs = collectedDocs.slice(0, want);
+  const observed = detailObservation(
+    "cbre_listings_api",
+    strict ? "live" : "generation_cache"
+  );
   const text = (loc: any) =>
     Array.isArray(loc) && loc.length ? clean(loc[0]["Common.Text"]) : null;
   const listings = docs.map((d: any) => {
@@ -252,6 +431,15 @@ export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<S
       canonicalUrl: listingUrl,
       lastUpdated: clean(d["Common.LastUpdated"])?.slice(0, 10) ?? null,
       created: clean(d["Common.Created"])?.slice(0, 10) ?? null,
+      inventoryObservedAt: observed.observedAt,
+      detailObservedAt: observed.observedAt,
+      freshnessProvenance: {
+        detailScope: "authoritative_inventory_feed",
+        generationId: observed.generationId,
+        method: observed.method,
+        cacheDisposition: observed.cacheDisposition,
+        identityMethod: "Common.PrimaryKey",
+      },
     };
   });
   return {

@@ -10,6 +10,7 @@ import {
   savillsSaleCardIsCommercial,
   mapSavillsRow,
   mapSavillsLeaseRow,
+  savillsFailedSearchInformation,
   savillsPageInfo,
   savillsTotalItems,
 } from "../../../sources/savills.js";
@@ -219,6 +220,19 @@ test("savillsTotalItems returns fallback when no signal is found", () => {
   assert.equal(result, 5);
 });
 
+test("savillsFailedSearchInformation surfaces provider-side failures before stale cards can be reconciled", () => {
+  const html = `
+    <script id="__NEXT_DATA__" type="application/json">
+      {"props":{"initialReduxState":{"FailedSearchInformation":"There are no properties for sale that match your search criteria","listPage":{"totalItems":2},"properties":{"ca-1":{"IsCommercial":true,"AddressLine2":"Toronto, ON M5H 2N2"}}}}}
+    </script>
+  `;
+  assert.equal(
+    savillsFailedSearchInformation(html),
+    "There are no properties for sale that match your search criteria"
+  );
+  assert.equal(savillsFailedSearchInformation("<html>no state</html>"), null);
+});
+
 test("savillsPageInfo reads provider pagination rather than top-level page count", () => {
   const html = `
     <script id="__NEXT_DATA__" type="application/json">
@@ -230,6 +244,34 @@ test("savillsPageInfo reads provider pagination rather than top-level page count
     totalPages: 2,
     totalItems: 36,
     nextUrl: "/com/en/list?cursor=next",
+  });
+});
+
+test("savillsPageInfo normalizes a reconciled provider zero-page singleton to one page", () => {
+  const html = `
+    <script id="__NEXT_DATA__" type="application/json">
+      {"props":{"initialReduxState":{"listPage":{"totalItems":0,"currentPage":1,"pageMap":{"1":{"paging":{"current":1,"total":0,"totalItems":2},"metaData":{"NextUrl":""}}}},"properties":{}}}}
+    </script>
+  `;
+  assert.deepEqual(savillsPageInfo(html, 2, true), {
+    currentPage: 1,
+    totalPages: 1,
+    totalItems: 2,
+    nextUrl: null,
+  });
+});
+
+test("savillsPageInfo rejects a zero-page shape when the page is incomplete", () => {
+  const html = `
+    <script id="__NEXT_DATA__" type="application/json">
+      {"props":{"initialReduxState":{"listPage":{"currentPage":1,"pageMap":{"1":{"paging":{"current":1,"total":0,"totalItems":2},"metaData":{"NextUrl":""}}}},"properties":{}}}}
+    </script>
+  `;
+  assert.deepEqual(savillsPageInfo(html, 1, true), {
+    currentPage: 1,
+    totalPages: null,
+    totalItems: 2,
+    nextUrl: null,
   });
 });
 

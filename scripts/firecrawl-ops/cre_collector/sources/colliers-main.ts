@@ -10,6 +10,12 @@ import { scrapeDoc, scrapeRaw } from "../lib/scrape.js";
 import { ScrapeOpts, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { parseLeaseRate } from "../lib/parse.js";
 import { boundedInt, clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
+import {
+  detailObservation,
+  generationMatches,
+  refreshGenerationId,
+  requireFreshDetails,
+} from "../lib/freshness.js";
 
 
 // --- Colliers main site: public XML sitemap discovery + detail-page render ---
@@ -34,20 +40,120 @@ export const COLLIERS_MAIN_DETAIL_CONCURRENCY = boundedInt(
 // returns 429 "Just a moment..." challenge shells. A waitFor lets the stealth
 // browser clear the challenge (same approach as CBRE waitFor 4000 / JLL 8000).
 export const COLLIERS_MAIN_DETAIL_WAIT_MS = boundedInt(process.env.COLLIERS_MAIN_DETAIL_WAIT_MS, 4000, 0, 30000);
+export const COLLIERS_MAIN_RUNTIME_CANARY_COUNT = boundedInt(
+  process.env.COLLIERS_MAIN_RUNTIME_CANARY_COUNT,
+  3,
+  1,
+  5
+);
+export const COLLIERS_MAIN_SITEMAP_RETRIES = boundedInt(
+  process.env.COLLIERS_MAIN_SITEMAP_RETRIES,
+  3,
+  1,
+  5
+);
+/**
+ * A shared start-rate gate keeps the stealth proxy below the sustained request
+ * rate at which Colliers begins returning Cloudflare challenge pages. It is a
+ * start interval, rather than a worker sleep, so the bounded worker pool may
+ * wait for browser renders without issuing a new burst as renders settle.
+ */
+export function colliersMainDetailStartIntervalMs(): number {
+  return boundedInt(process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS, 1500, 0, 30000);
+}
+
+export function colliersMainChallengeCooldownMs(): number {
+  return boundedInt(process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS, 30000, 0, 180000);
+}
+
+let colliersMainNextDetailStartAt = 0;
+
+type Sleep = (milliseconds: number) => Promise<void>;
+type Clock = () => number;
+
+export type ColliersMainDetailTelemetry = {
+  kind: "attempt_success" | "challenge" | "transport_error" | "cooldown";
+  attempt: number;
+  cooldownMs?: number;
+};
+
+export type ColliersMainDetailTelemetryObserver = (
+  event: ColliersMainDetailTelemetry
+) => void;
+
+const sleep: Sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+/** Test hook for the module-local pacer; production code never resets it. */
+export function resetColliersMainDetailPacerForTest(): void {
+  colliersMainNextDetailStartAt = 0;
+}
+
+export async function acquireColliersMainDetailStart(
+  now: Clock = Date.now,
+  wait: Sleep = sleep
+): Promise<void> {
+  // Re-check after every wait because a preceding worker can extend the
+  // shared cooldown while this worker is sleeping.
+  for (;;) {
+    const current = now();
+    const delay = colliersMainNextDetailStartAt - current;
+    if (delay > 0) {
+      await wait(delay);
+      continue;
+    }
+    colliersMainNextDetailStartAt = current + colliersMainDetailStartIntervalMs();
+    return;
+  }
+}
+
+export function coolDownColliersMainDetailStarts(now: number = Date.now()): void {
+  colliersMainNextDetailStartAt = Math.max(
+    colliersMainNextDetailStartAt,
+    now + colliersMainChallengeCooldownMs()
+  );
+}
 export const COLLIERS_MAIN_SCRAPE_OPTS: ScrapeOpts = {
   proxy: "stealth",
   timeout: 120000,
   ...(COLLIERS_MAIN_DETAIL_WAIT_MS ? { waitFor: COLLIERS_MAIN_DETAIL_WAIT_MS } : {}),
 };
 
-export type ColliersMainEntry = { url: string; lastmod: string | null; id: string };
+export type ColliersMainEntry = {
+  url: string;
+  lastmod: string | null;
+  id: string;
+  inventoryObservedAt?: string;
+};
 
 export let colliersMainSitemapCache: ColliersMainEntry[] | null = null;
 export let colliersMainEnrichedMemo: any[] | null = null;
+export let colliersMainEnrichedStats = { errors: 0, deferred: 0 };
+
+/** Test hook for a discovery cache that must never cross test cases. */
+export function resetColliersMainSitemapCacheForTest(): void {
+  colliersMainSitemapCache = null;
+}
+
+export function colliersMainDetailPassTruncated(stats: { errors: number; deferred: number }): boolean {
+  return stats.errors > 0 || stats.deferred > 0;
+}
+
+export function colliersMainResultTruncated(
+  stats: { errors: number; deferred: number },
+  max: number,
+  knownInventory: number | null
+): boolean {
+  return (
+    colliersMainDetailPassTruncated(stats) ||
+    (Number.isFinite(max) &&
+      knownInventory !== null &&
+      max < knownInventory)
+  );
+}
 
 export function colliersMainIsChallenge(doc: ScrapedDoc): boolean {
-  const status = doc.metadata?.statusCode;
-  if (status === 429 || status === 503) return true;
+  const httpStatus = doc.metadata?.statusCode;
+  if (httpStatus === 429 || httpStatus === 503) return true;
   const title = (clean(doc.metadata?.title) ?? "").toLowerCase();
   if (/just a moment|attention required|checking your browser|cf-browser-verification/i.test(title)) {
     return true;
@@ -57,19 +163,99 @@ export function colliersMainIsChallenge(doc: ScrapedDoc): boolean {
 }
 
 // Colliers detail pages are Cloudflare-protected; under sustained paging the
-// site returns 429 "Just a moment..." challenge shells. The stealth proxy
-// rotates IPs per request, so retrying a challenged URL with backoff usually
-// lands on an un-challenged IP. Returns the last doc even if still challenged;
-// the parser then tombstones a real 404 or throws for retry on the next pass.
-export async function scrapeColliersMainDetailDoc(url: string): Promise<ScrapedDoc> {
+// site returns 429 "Just a moment..." challenge shells. Both those shells and
+// exhausted local transport errors use this source-level retry budget. The
+// underlying scrapeDoc retries an individual API call; this wrapper spaces
+// whole detail renders and extends the shared gate after a failure so the next
+// workers do not immediately recreate the burst.
+export async function scrapeColliersMainDetailDoc(
+  url: string,
+  request: (url: string, opts: ScrapeOpts) => Promise<ScrapedDoc> = scrapeDoc,
+  wait: Sleep = sleep,
+  random: () => number = Math.random,
+  observe?: ColliersMainDetailTelemetryObserver
+): Promise<ScrapedDoc> {
   const maxAttempts = boundedInt(process.env.COLLIERS_MAIN_CHALLENGE_RETRIES, 4, 1, 8);
-  let doc = await scrapeDoc(url, COLLIERS_MAIN_SCRAPE_OPTS);
-  for (let attempt = 2; attempt <= maxAttempts && colliersMainIsChallenge(doc); attempt++) {
-    const backoff = 4000 * (attempt - 1) + Math.floor(Math.random() * 3000);
-    await new Promise((r) => setTimeout(r, backoff));
-    doc = await scrapeDoc(url, COLLIERS_MAIN_SCRAPE_OPTS);
+  const scrapeOpts = {
+    ...COLLIERS_MAIN_SCRAPE_OPTS,
+    ...(requireFreshDetails() ? { maxAge: 0 } : {}),
+  };
+  let lastError: unknown = null;
+  let lastChallenged: ScrapedDoc | null = null;
+  const record = (event: ColliersMainDetailTelemetry): void => {
+    try {
+      observe?.(event);
+    } catch {
+      // Metrics must never alter the fail-closed scrape path.
+    }
+  };
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await acquireColliersMainDetailStart();
+      const doc = await request(url, scrapeOpts);
+      if (!colliersMainIsChallenge(doc)) {
+        record({ kind: "attempt_success", attempt });
+        return doc;
+      }
+      record({ kind: "challenge", attempt });
+      lastChallenged = doc;
+      lastError = new Error("Colliers main detail still challenged");
+    } catch (err) {
+      record({ kind: "transport_error", attempt });
+      lastError = err;
+    }
+    record({
+      kind: "cooldown",
+      attempt,
+      cooldownMs: colliersMainChallengeCooldownMs(),
+    });
+    coolDownColliersMainDetailStarts();
+    if (attempt < maxAttempts) {
+      const backoff = 4000 * attempt + Math.floor(random() * 3000);
+      await wait(backoff);
+    }
   }
-  return doc;
+  if (lastChallenged) return lastChallenged;
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+/**
+ * Prove the local detail path can return a usable Colliers response before a
+ * fresh chunk fans out over thousands of URLs. A generic health check proves
+ * that the API is listening, but not that its Playwright/stealth detail path
+ * is ready. This probe deliberately writes no cache rows: an unavailable
+ * runtime must fail the chunk before it creates a misleading partial cache.
+ *
+ * An explicit 404/410 remains a valid detail result because the parser emits
+ * the source's verified not-found tombstone. Challenge shells and transport
+ * failures are never admitted as canary success.
+ */
+export async function assertColliersMainDetailRuntimeReady(
+  entries: ColliersMainEntry[],
+  cached: Map<string, any>,
+  scrape: (url: string) => Promise<ScrapedDoc> = scrapeColliersMainDetailDoc
+): Promise<void> {
+  const candidates = entries
+    .filter((entry) => {
+      const listing = cached.get(entry.id);
+      return !listing || !colliersMainCachedListingIsCurrent(entry, listing);
+    })
+    .slice(0, COLLIERS_MAIN_RUNTIME_CANARY_COUNT);
+  if (!candidates.length) return;
+
+  const failures: string[] = [];
+  for (const entry of candidates) {
+    try {
+      parseColliersMainDetail(entry, await scrape(entry.url));
+      console.error(`  colliers-main: detail runtime canary passed for ${entry.id}`);
+      return;
+    } catch (err) {
+      failures.push(`${entry.id}: ${String(err).slice(0, 180)}`);
+    }
+  }
+  throw new Error(
+    `Colliers main detail runtime readiness canary failed before fanout (${failures.join("; ")})`
+  );
 }
 
 export function colliersMainAbs(href: string | null | undefined): string | null {
@@ -91,29 +277,51 @@ export function extractSitemapLocs(xml: string): string[] {
   return [...xml.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/g)].map((m) => decodeHtmlEntities(m[1]).trim());
 }
 
-export async function fetchColliersMainEntries(): Promise<ColliersMainEntry[]> {
+export async function fetchColliersMainEntries(
+  raw: (url: string, opts: typeof COLLIERS_MAIN_SCRAPE_OPTS & { maxAge?: number }) => Promise<string> = scrapeRaw,
+  wait: Sleep = sleep
+): Promise<ColliersMainEntry[]> {
   if (colliersMainSitemapCache) return colliersMainSitemapCache;
-  const indexXml = await scrapeRaw(COLLIERS_MAIN_SITEMAP_INDEX, COLLIERS_MAIN_SCRAPE_OPTS);
-  const childLocs = extractSitemapLocs(indexXml);
-  const propsSitemap = childLocs.find((l) => /\/en\/sitemap\?type=properties\b/i.test(l));
-  if (!propsSitemap) {
-    throw new Error("Colliers main: en ?type=properties sitemap not found in sitemap index");
+  const scrapeOpts = {
+    ...COLLIERS_MAIN_SCRAPE_OPTS,
+    ...(requireFreshDetails() ? { maxAge: 0 } : {}),
+  };
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= COLLIERS_MAIN_SITEMAP_RETRIES; attempt++) {
+    try {
+      // A Cloudflare/interstitial response can be nonempty, so scrapeRaw's
+      // transport retry correctly returns it but cannot prove this source's
+      // sitemap contract. Retry the complete index -> child sequence instead
+      // of treating a transient semantic failure as empty inventory.
+      const indexXml = await raw(COLLIERS_MAIN_SITEMAP_INDEX, scrapeOpts);
+      const childLocs = extractSitemapLocs(indexXml);
+      const propsSitemap = childLocs.find((l) => /\/en\/sitemap\?type=properties\b/i.test(l));
+      if (!propsSitemap) {
+        throw new Error("Colliers main: en ?type=properties sitemap not found in sitemap index");
+      }
+      const propsXml = await raw(propsSitemap, scrapeOpts);
+      const seen = new Set<string>();
+      const entries: ColliersMainEntry[] = [];
+      const inventoryObservedAt = new Date().toISOString();
+      for (const e of extractSitemapUrlEntries(propsXml)) {
+        const id = colliersMainIdFromUrl(e.loc);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        entries.push({ url: e.loc, lastmod: e.lastmod, id, inventoryObservedAt });
+      }
+      if (!entries.length) {
+        throw new Error("Colliers main: ?type=properties sitemap had no usa####### detail URLs");
+      }
+      console.error(`  colliers-main: sitemap exposed ${entries.length} US property detail URL(s)`);
+      colliersMainSitemapCache = entries;
+      return entries;
+    } catch (err) {
+      lastError = err;
+      console.error(`  colliers-main: sitemap discovery attempt ${attempt} failed: ${err}`);
+      if (attempt < COLLIERS_MAIN_SITEMAP_RETRIES) await wait(2500 * attempt);
+    }
   }
-  const propsXml = await scrapeRaw(propsSitemap, COLLIERS_MAIN_SCRAPE_OPTS);
-  const seen = new Set<string>();
-  const entries: ColliersMainEntry[] = [];
-  for (const e of extractSitemapUrlEntries(propsXml)) {
-    const id = colliersMainIdFromUrl(e.loc);
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    entries.push({ url: e.loc, lastmod: e.lastmod, id });
-  }
-  if (!entries.length) {
-    throw new Error("Colliers main: ?type=properties sitemap had no usa####### detail URLs");
-  }
-  console.error(`  colliers-main: sitemap exposed ${entries.length} US property detail URL(s)`);
-  colliersMainSitemapCache = entries;
-  return entries;
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 // Classify transaction from the JSON-LD name first, then markdown header, then
@@ -214,20 +422,72 @@ export function colliersMainJsonLd(rawHtml: string): any | null {
   return null;
 }
 
+type ColliersMainLightBoxDetail = {
+  name: string;
+  address: string;
+  propertyType: string | null;
+};
+
+/**
+ * A small, known LightBox-hosted subset of live Colliers listings does not
+ * include the standard RealEstateListing JSON-LD block. Admit it only when
+ * three independent, first-party template signals agree: the official title,
+ * a nonempty H1, and a parseable address block. This is intentionally narrower
+ * than accepting arbitrary HTTP-200 pages without JSON-LD.
+ */
+export function colliersMainLightBoxDetail(
+  rawHtml: string,
+  title: string
+): ColliersMainLightBoxDetail | null {
+  if (!/\|\s*Colliers\s*\|\s*Powered by LightBox\s*$/i.test(title)) return null;
+  const $ = cheerio.load(rawHtml);
+  const name = clean($("h1").first().text());
+  const addressBlock = clean($(".address").first().text());
+  if (!name || !addressBlock) return null;
+  const [address, propertyType] = addressBlock.split("|", 2).map((value) => clean(value));
+  const parsedAddress = parseColliersMainAddress(address ?? null);
+  if (!address || (!parsedAddress.street && !parsedAddress.city && !parsedAddress.postalCode)) return null;
+  return { name, address, propertyType: propertyType ?? null };
+}
+
 export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDoc): any {
   const raw = doc.rawHtml ?? "";
   const md = doc.markdown ?? "";
+  const httpStatus = doc.metadata?.statusCode;
+  const title = clean(doc.metadata?.title) ?? "";
+  if (requireFreshDetails()) {
+    if (httpStatus === 404 || httpStatus === 410) {
+      return {
+        id: entry.id,
+        url: entry.url,
+        skip: "not_found",
+        lastUpdated: entry.lastmod ? entry.lastmod.slice(0, 10) : null,
+      };
+    }
+    if (colliersMainIsChallenge(doc)) {
+      throw new Error(
+        `Colliers main detail still challenged (status ${httpStatus ?? "?"}, title "${title.slice(0, 60)}")`
+      );
+    }
+  }
   const ld = colliersMainJsonLd(raw);
-  if (!ld) {
+  const lightBox = ld ? null : colliersMainLightBoxDetail(raw, title);
+  if (!ld && !lightBox) {
     // Live listings always carry a RealEstateListing JSON-LD block. Pages
     // without one fall into three cases, handled distinctly:
-    const title = clean(doc.metadata?.title) ?? "";
-    const status = doc.metadata?.statusCode;
+    if (requireFreshDetails()) {
+      // Strict refreshes may cache only transport-proven 404/410 tombstones.
+      // Unknown 200 templates, consent pages, and newly shaped challenge shells
+      // remain retryable so they cannot silently remove a live sitemap listing.
+      throw new Error(
+        `Colliers main HTTP ${httpStatus ?? "?"} detail lacks validated RealEstateListing JSON-LD`
+      );
+    }
     const notFound =
       /property not found|page not found|410 gone/i.test(title) ||
       /Property Not Found/i.test(md.slice(0, 3000)) ||
-      status === 404 ||
-      status === 410;
+      httpStatus === 404 ||
+      httpStatus === 410;
     if (notFound) {
       // 1) Expired/removed listing (the sitemap lags). Tombstone so we neither
       //    re-fetch it nor emit it.
@@ -242,7 +502,7 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
       // 2) Still a Cloudflare challenge after the retry wrapper exhausted its
       //    attempts. Throw so it is retried (un-cached) on the next pass.
       throw new Error(
-        `Colliers main detail still challenged (status ${status ?? "?"}, title "${title.slice(0, 60)}")`
+        `Colliers main detail still challenged (status ${httpStatus ?? "?"}, title "${title.slice(0, 60)}")`
       );
     }
     // 3) A real 200 page that lacks the standard RealEstateListing JSON-LD
@@ -255,12 +515,12 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
       lastUpdated: entry.lastmod ? entry.lastmod.slice(0, 10) : null,
     };
   }
-  const ldName: string | null = clean(ld?.name);
+  const ldName: string | null = clean(ld?.name) ?? lightBox?.name ?? null;
 
   // ldName: "Office For sale — 11701 I-30, Little Rock, AR 72209, USA | United States | Colliers"
-  let typeWord: string | null = null;
-  let addrStr: string | null = null;
-  if (ldName) {
+  let typeWord: string | null = lightBox?.propertyType ?? null;
+  let addrStr: string | null = lightBox?.address ?? null;
+  if (ld && ldName) {
     const beforePipe = ldName.split("|")[0].trim();
     const dash = beforePipe.split(/\s[—–-]\s/);
     if (dash.length >= 2) {
@@ -287,6 +547,7 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
   const land = md.match(/Land Area:\s*([\d.,]+)\s*ac/i)?.[1];
   const ptype =
     clean(md.match(/\*\*Property Types?\*\*\s*([A-Za-z0-9 ,/&'-]+)/i)?.[1]) ??
+    lightBox?.propertyType ??
     clean(ld?.about?.category) ??
     typeWord;
   const status = clean(md.match(/\*\*Property Status\*\*\s*([A-Za-z ,/-]+)/i)?.[1]);
@@ -420,6 +681,7 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
     lastUpdated: entry.lastmod ? entry.lastmod.slice(0, 10) : null,
     colliersMain: {
       propertyStatus: status,
+      detailTemplate: lightBox ? "lightbox" : "real_estate_listing_json_ld",
       sublease: tx.sublease,
       jsonLdName: ldName,
       docCount: docs.length,
@@ -432,8 +694,9 @@ export function parseColliersMainDetail(entry: ColliersMainEntry, doc: ScrapedDo
 }
 
 export function colliersMainDetailCachePath(): string {
-  // Durable, OUT_PATH-independent so a long run can resume across attempts.
-  return "out/cache/colliers-main/detail-cache.jsonl";
+  // A run-specific override lets a freshness sweep start from an empty cache
+  // while remaining resumable across bounded worker processes.
+  return process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH ?? "out/cache/colliers-main/detail-cache.jsonl";
 }
 
 export function readColliersMainCache(path: string): Map<string, any> {
@@ -459,6 +722,24 @@ export function appendColliersMainCache(path: string, listing: any): void {
   appendFileSync(path, `${JSON.stringify(listing)}\n`);
 }
 
+export function colliersMainCachedListingIsCurrent(entry: ColliersMainEntry, listing: any): boolean {
+  if (!generationMatches(listing?.freshnessProvenance?.generationId)) return false;
+  if (
+    requireFreshDetails() &&
+    listing?.skip &&
+    listing.skip !== "not_found"
+  ) {
+    return false;
+  }
+  const sourceRevision = clean(entry.lastmod);
+  const cachedRevision = clean(listing?.freshnessProvenance?.sourceRevision);
+  // When the source publishes lastmod, it is the admission boundary for cache
+  // reuse. Preserve and compare the exact revision rather than a date prefix:
+  // Colliers can revise a listing more than once in one day, and a legacy
+  // lastUpdated-only cache cannot prove that it saw the current source revision.
+  return sourceRevision ? cachedRevision === sourceRevision : true;
+}
+
 // Enrich the full sitemap once (memoized across the sale and lease passes and
 // backed by a durable JSONL cache), then srcColliersMain filters per pass.
 export async function colliersMainEnrichAll(max: number): Promise<any[]> {
@@ -471,6 +752,7 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
   if (cached.size) {
     console.error(`  colliers-main: loaded ${cached.size} cached detail row(s) from ${cachePath}`);
   }
+  await assertColliersMainDetailRuntimeReady(entries, cached);
   // Per-run cap on NEW detail fetches. Each detail render leaks ~0.8 MB in the
   // fetch/SDK layer, so an unbounded ~15.9k-URL run exhausts the V8 heap. With a
   // cap the process exits (freeing everything) before OOM; the durable cache
@@ -486,7 +768,26 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
   let deferred = 0;
   const listings = await pmap(selected, COLLIERS_MAIN_DETAIL_CONCURRENCY, async (entry) => {
     let listing = cached.get(entry.id);
+    if (listing && !colliersMainCachedListingIsCurrent(entry, listing)) {
+      listing = undefined;
+    }
     if (listing) {
+      const validatedAt = entry.inventoryObservedAt ?? new Date().toISOString();
+      listing = {
+        ...listing,
+        inventoryObservedAt: validatedAt,
+        detailValidatedAt: validatedAt,
+        freshnessProvenance: {
+          ...(listing.freshnessProvenance ?? {}),
+          detailScope: "detail_page",
+          generationId:
+            listing.freshnessProvenance?.generationId ?? refreshGenerationId(),
+          method: "colliers_main_detail",
+          cacheDisposition: "source_revision_cache",
+          sourceRevision: entry.lastmod,
+          validatedAt,
+        },
+      };
       fromCache++;
     } else if (fetchBudget <= 0) {
       deferred++;
@@ -496,13 +797,28 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
       fetchBudget--;
       try {
         const docDoc = await scrapeColliersMainDetailDoc(entry.url);
-        listing = parseColliersMainDetail(entry, docDoc);
+        const observed = detailObservation("colliers_main_detail", "live", new Date().toISOString(), {
+          sourceRevision: entry.lastmod,
+        });
+        listing = {
+          ...parseColliersMainDetail(entry, docDoc),
+          inventoryObservedAt: entry.inventoryObservedAt,
+          detailObservedAt: observed.observedAt,
+          freshnessProvenance: {
+            detailScope: "detail_page",
+            generationId: observed.generationId,
+            method: observed.method,
+            cacheDisposition: observed.cacheDisposition,
+            sourceRevision: observed.sourceRevision,
+          },
+        };
         fetched++;
       } catch (err) {
         console.error(`  colliers-main: detail failed for ${entry.url}: ${err}`);
         listing = prune({
           id: entry.id,
           url: entry.url,
+          inventoryObservedAt: entry.inventoryObservedAt,
           transactionType: null,
           detailError: String(err),
           lastUpdated: entry.lastmod ? entry.lastmod.slice(0, 10) : null,
@@ -520,6 +836,7 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
     return listing;
   });
   const result = listings.filter(Boolean);
+  colliersMainEnrichedStats = { errors, deferred };
   if (deferred > 0) {
     console.error(
       `  colliers-main: ${deferred} URL(s) deferred under fetch cap ${fetchCap}; re-run to continue (${result.length} ready, ${fetched} newly fetched this run)`
@@ -552,6 +869,14 @@ export async function srcColliersMain(tx: Tx, max: number, monitor: boolean): Pr
       id: entry.id,
       url: entry.url,
       lastUpdated: entry.lastmod ? entry.lastmod.slice(0, 10) : null,
+      inventoryObservedAt: entry.inventoryObservedAt,
+      preserveChildCollections: true,
+      freshnessProvenance: {
+        detailScope: "inventory_only",
+        generationId: refreshGenerationId(),
+        method: "colliers_main_sitemap",
+        cacheDisposition: "live",
+      },
     }));
     return {
       company: "Colliers",
@@ -560,6 +885,11 @@ export async function srcColliersMain(tx: Tx, max: number, monitor: boolean): Pr
         "Public colliers.com XML sitemap enumeration (/sitemap -> en ?type=properties): url + lastmod only (monitor mode; detail render skipped)",
       totalAvailable: entries.length,
       listings,
+      truncated: colliersMainResultTruncated(
+        { errors: 0, deferred: 0 },
+        max,
+        entries.length
+      ),
       note: "Monitor mode: sitemap url + lastmod only (id matches the full-path main: external id). Status, price, and Sale/Lease classification are detail-only and deferred to the downstream render of new/changed listings.",
     };
   }
@@ -578,6 +908,11 @@ export async function srcColliersMain(tx: Tx, max: number, monitor: boolean): Pr
       "Public colliers.com XML sitemap discovery (/sitemap -> en ?type=properties) plus per-listing detail render through local Firecrawl; RealEstateListing JSON-LD + markdown parse",
     totalAvailable: colliersMainSitemapCache ? colliersMainSitemapCache.length : null,
     listings,
+    truncated: colliersMainResultTruncated(
+      colliersMainEnrichedStats,
+      max,
+      colliersMainSitemapCache ? colliersMainSitemapCache.length : null
+    ),
     note:
       `Main colliers.com folded into the colliers brokerage as colliers-main with main: id prefix; SalesTracker rows untouched. ` +
       `${ok.length} live detail-enriched listing(s) of ${all.length} sitemap URL(s) scanned, ${notFound} expired/not-found and ${noData} no-structured-data (tombstoned), ${errored} detail error(s). ` +

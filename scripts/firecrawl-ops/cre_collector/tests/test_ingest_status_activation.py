@@ -160,6 +160,16 @@ def test_build_sql_pins_standard_conforming_strings():
     assert sql.index("BEGIN;") < set_idx < sql.index("COPY _stage")
 
 
+def test_build_sql_gives_large_copy_a_separate_bounded_timeout():
+    sql = _sql()
+    load_timeout = sql.index("SET LOCAL statement_timeout = '1800s';")
+    first_copy = sql.index("COPY _stage")
+    last_copy = sql.index("COPY _jobmeta")
+    mutation_timeout = sql.index("SET LOCAL statement_timeout = '600s';")
+    first_mutation = sql.index("-- Fail loudly if a sourceKey maps")
+    assert load_timeout < first_copy < last_copy < mutation_timeout < first_mutation
+
+
 # --- terminal-stickiness guard (review LOW: code must match the prose) --------
 
 def test_targeted_upgrade_never_downgrades_terminal_to_transitional():

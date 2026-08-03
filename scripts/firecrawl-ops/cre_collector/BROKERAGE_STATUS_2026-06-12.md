@@ -1,8 +1,13 @@
 # Brokerage Coverage Status - 2026-06-12
 
-This status is for the CRE collector in `scripts/firecrawl-ops/cre_collector/`.
-It combines the latest full artifact, the post-validation Cushman upgrade, and
-source-specific notes in `cre_scrapers/brokers/*/README.md`.
+> **Historical snapshot:** Counts and completion labels below describe June 12,
+> 2026 only. Use the July 29 refresh ledger plus a fresh checkpoint manifest
+> and `cre_validate.py` output for current status.
+
+This snapshot is for the CRE collector in
+`scripts/firecrawl-ops/cre_collector/`. It combines the then-latest full
+artifact, the post-validation Cushman upgrade, and source-specific notes in
+`cre_scrapers/brokers/*/README.md`.
 
 ## Status Definitions
 

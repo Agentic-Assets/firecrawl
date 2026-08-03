@@ -18,8 +18,9 @@ Covers the additive, forward-only capture of detail-page artifacts:
   - STAGE_COLS + the _stage DDL gain (media jsonb, links jsonb, markdown text)
     plus the lifted structured columns.
   - build_sql() emits the to_regclass-guarded DELETE+reinsert for both
-    cre_listing_media and cre_listing_links (mirroring the images block),
-    excludes detailError rows from the child-refresh set, uses ON CONFLICT
+    cre_listing_media and cre_listing_links (mirroring the images block), plus
+    non-destructive inserts for child-preserving existing rows. It excludes
+    detailError rows from the child-refresh set, uses ON CONFLICT
     (listing_id, <type>, url) DO NOTHING, COALESCE-keeps markdown via
     NULLIF(EXCLUDED.markdown,'') and COALESCE-keeps the lifted numeric columns,
     and widens the documents doc_type CASE to allow financials/rent_roll.
@@ -62,6 +63,17 @@ def _svn(**overrides):
         "sourceKey": "svn",
         "url": "https://www.svn.com/property?propertyId=svn-0001-sale",
         "id": "svn-0001",
+        "transactionMode": "sale",
+    }
+    base.update(overrides)
+    return base
+
+
+def _avison(**overrides):
+    base = {
+        "sourceKey": "avison-young",
+        "url": "https://www.avisonyoung.us/properties/example",
+        "id": "avison-0001",
         "transactionMode": "sale",
     }
     base.update(overrides)
@@ -278,6 +290,162 @@ def test_merge_folds_media_links_from_other_pass():
     ]
 
 
+def test_merge_unions_distinct_children_when_both_passes_are_nonempty():
+    a = _row(_svn(
+        photos=["https://x.com/sale.jpg"],
+        media=[{"url": "https://vimeo.com/sale", "mediaType": "video"}],
+        links=[{"url": "https://x.com/sale", "linkType": "other"}],
+    ))
+    b = _row(_svn(
+        url="https://www.svn.com/property?propertyId=svn-0001-lease",
+        transactionMode="lease",
+        photos=["https://x.com/lease.jpg"],
+        media=[{"url": "https://vimeo.com/lease", "mediaType": "video"}],
+        links=[{"url": "https://x.com/lease", "linkType": "other"}],
+    ))
+    a["contacts"] = [{"name": "Sale Broker", "email": "sale@example.com"}]
+    b["contacts"] = [{"name": "Lease Broker", "email": "lease@example.com"}]
+    a["documents"] = [{"url": "https://x.com/sale.pdf", "title": None}]
+    b["documents"] = [{"url": "https://x.com/lease.pdf", "title": None}]
+
+    merged = merge_rows(a, b)
+
+    assert [row["email"] for row in merged["contacts"]] == [
+        "sale@example.com",
+        "lease@example.com",
+    ]
+    assert [row["url"] for row in merged["documents"]] == [
+        "https://x.com/sale.pdf",
+        "https://x.com/lease.pdf",
+    ]
+    assert [row["url"] for row in merged["images"]] == [
+        "https://x.com/sale.jpg",
+        "https://x.com/lease.jpg",
+    ]
+    assert [row["isPrimary"] for row in merged["images"]] == [True, False]
+    assert [row["url"] for row in merged["media"]] == [
+        "https://vimeo.com/sale",
+        "https://vimeo.com/lease",
+    ]
+    assert [row["url"] for row in merged["links"]] == [
+        "https://x.com/sale",
+        "https://x.com/lease",
+    ]
+
+
+def test_merge_dedupes_children_and_fills_missing_fields():
+    a = _row(_svn())
+    b = _row(_svn(
+        url="https://www.svn.com/property?propertyId=svn-0001-lease",
+        transactionMode="lease",
+    ))
+    a["contacts"] = [{
+        "name": "Same Broker",
+        "email": "same@example.com",
+        "phone": None,
+    }]
+    b["contacts"] = [{
+        "name": "Same Broker",
+        "email": "SAME@example.com",
+        "phone": "555-0100",
+    }]
+    a["documents"] = [{"url": "https://x.com/same.pdf", "title": None}]
+    b["documents"] = [{"url": "https://x.com/same.pdf", "title": "Current PDF"}]
+    a["images"] = [{"url": "https://x.com/same.jpg", "isPrimary": False}]
+    b["images"] = [{"url": "https://x.com/same.jpg", "isPrimary": True}]
+
+    merged = merge_rows(a, b)
+
+    assert len(merged["contacts"]) == 1
+    assert merged["contacts"][0]["phone"] == "555-0100"
+    assert len(merged["documents"]) == 1
+    assert merged["documents"][0]["title"] == "Current PDF"
+    assert len(merged["images"]) == 1
+    assert merged["images"][0]["isPrimary"] is True
+
+
+def test_merge_contacts_use_email_or_name_phone_aliases_and_dedupe_primary():
+    a = _row(_svn())
+    b = _row(_svn(
+        url="https://www.svn.com/property?propertyId=svn-0001-lease",
+        transactionMode="lease",
+    ))
+    a["contacts"] = [
+        {
+            "name": "Same Broker",
+            "email": "sale@example.com",
+            "phone": "555-0100",
+            "isPrimary": True,
+        },
+        {
+            "name": "Same Broker",
+            "email": None,
+            "phone": "555-0100",
+            "isPrimary": False,
+        },
+    ]
+    b["contacts"] = [
+        {
+            "name": "Same Broker",
+            "email": "lease@example.com",
+            "phone": "555-0100",
+            "isPrimary": True,
+        }
+    ]
+
+    merged = merge_rows(a, b)
+
+    assert len(merged["contacts"]) == 1
+    assert merged["contacts"][0]["email"] == "sale@example.com"
+    assert merged["contacts"][0]["isPrimary"] is True
+
+
+def test_merge_contacts_preserves_transitive_aliases_in_any_order():
+    contacts = [
+        {"name": "Alpha", "email": "a@example.com", "phone": "111"},
+        {"name": "Beta", "email": "b@example.com", "phone": "222"},
+        {"name": "Beta", "email": "a@example.com", "phone": "222"},
+        {"name": "Gamma", "email": "b@example.com", "phone": "333"},
+    ]
+
+    for ordered in (contacts, list(reversed(contacts))):
+        a = _row(_svn())
+        b = _row(_svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+        ))
+        a["contacts"] = ordered[:2]
+        b["contacts"] = ordered[2:]
+
+        merged = merge_rows(a, b)
+
+        assert len(merged["contacts"]) == 1
+        assert merged["contacts"][0]["isPrimary"] is True
+
+
+def test_merge_contacts_closes_aliases_synthesized_from_complementary_fields():
+    contacts = [
+        {"name": "Alice", "email": "a@example.com", "phone": None},
+        {"name": None, "email": "a@example.com", "phone": "111"},
+        {"name": "Alice", "email": "c@example.com", "phone": "111"},
+    ]
+
+    for ordered in (contacts, list(reversed(contacts))):
+        a = _row(_svn())
+        b = _row(_svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+        ))
+        a["contacts"] = ordered[:2]
+        b["contacts"] = ordered[2:]
+
+        merged = merge_rows(a, b)
+
+        assert len(merged["contacts"]) == 1
+        assert merged["contacts"][0]["name"] == "Alice"
+        assert merged["contacts"][0]["phone"] == "111"
+
+
 def test_merge_markdown_prefers_longer():
     a = _row(_svn(markdown="short"))
     b = _row(_svn(
@@ -362,6 +530,87 @@ def test_build_sql_links_block_guarded_delete_reinsert():
     assert "ON CONFLICT (listing_id, link_type, url) DO NOTHING" in sql
 
 
+def test_build_sql_media_links_additive_inserts_use_schema_unique_keys():
+    sql = _sql()
+    expected = (
+        (
+            "media",
+            "INSERT INTO credeals.cre_listing_media "
+            "(listing_id, media_type, provider, url, embed_url, title)",
+            "ON CONFLICT (listing_id, media_type, url) DO NOTHING",
+        ),
+        (
+            "links",
+            "INSERT INTO credeals.cre_listing_links "
+            "(listing_id, link_type, url, rel)",
+            "ON CONFLICT (listing_id, link_type, url) DO NOTHING",
+        ),
+    )
+
+    for table, insert, conflict in expected:
+        guard = f"IF to_regclass('credeals.cre_listing_{table}') IS NOT NULL THEN"
+        block = sql[sql.index(guard):sql.index("END IF;", sql.index(guard))]
+        assert block.count(insert) == 2
+        assert block.count(conflict) == 2
+        assert "u.id IN (SELECT id FROM _child_additive)" in block
+
+
+def test_existing_avison_partial_detail_adds_media_links_without_deleting_children():
+    row = _row(
+        _avison(
+            preserveChildCollections=True,
+            detailObservedWithChildPreservation=True,
+            detailObservedAt="2026-06-15T00:00:00Z",
+            media=[
+                {
+                    "mediaType": "virtual_tour",
+                    "url": "https://tour.example/avison-0001",
+                }
+            ],
+            links=[
+                {
+                    "linkType": "external_listing",
+                    "url": "https://listing.example/avison-0001",
+                }
+            ],
+        )
+    )
+    sql = build_sql([row], [], _SCRAPED_AT, set())
+
+    assert row["raw_data"]["preserveChildCollections"] is True
+    assert row["raw_data"]["detailObservedWithChildPreservation"] is True
+    assert "https://tour.example/avison-0001" in sql
+    assert "https://listing.example/avison-0001" in sql
+
+    additive_start = sql.index("CREATE TEMP TABLE _child_additive")
+    additive_end = sql.index("DELETE FROM credeals.cre_listing_contacts", additive_start)
+    additive_definition = sql[additive_start:additive_end]
+    assert "JOIN _prior_vals p" in additive_definition
+    assert "$.**.preserveChildCollections" in additive_definition
+
+    delete_lines = [
+        line.strip()
+        for line in sql.splitlines()
+        if line.strip().startswith(
+            (
+                "DELETE FROM credeals.cre_listing_media",
+                "DELETE FROM credeals.cre_listing_links",
+            )
+        )
+    ]
+    assert delete_lines == [
+        (
+            "DELETE FROM credeals.cre_listing_media WHERE listing_id IN "
+            "(SELECT id FROM _child_refresh);"
+        ),
+        (
+            "DELETE FROM credeals.cre_listing_links WHERE listing_id IN "
+            "(SELECT id FROM _child_refresh);"
+        ),
+    ]
+    assert all("_child_additive" not in line for line in delete_lines)
+
+
 def test_build_sql_media_links_delete_inside_the_guard():
     # The DELETE for each new table must sit INSIDE its to_regclass guard, so a
     # pre-011 ingest never deletes with no table to refill. Assert the DELETE
@@ -382,8 +631,24 @@ def test_build_sql_media_links_excludes_detail_error_via_child_refresh():
     # clean detail touch (mirrors the images block).
     sql = _sql()
     assert "WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')" in sql
+    assert "$.**.preserveChildCollections ? (@ == true || @ == \"true\")" in sql
     # the media/links INSERTs reference the same _child_refresh gate
     assert sql.count("u.id IN (SELECT id FROM _child_refresh)") >= 5  # contacts, docs, images, media, links
+
+
+def test_dual_pass_preserve_flag_remains_recursively_guarded():
+    sale = _row(_svn(preserveChildCollections=True))
+    lease = _row(
+        _svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+            preserveChildCollections=True,
+        )
+    )
+    merged = merge_rows(sale, lease)
+    assert merged["raw_data"]["primary"]["preserveChildCollections"] is True
+    assert merged["raw_data"]["secondary_pass"]["preserveChildCollections"] is True
+    assert "$.**.preserveChildCollections" in _sql()
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +657,10 @@ def test_build_sql_media_links_excludes_detail_error_via_child_refresh():
 
 
 def test_build_sql_markdown_coalesce_keep_with_nullif():
-    assert "markdown          = COALESCE(NULLIF(EXCLUDED.markdown, ''), t.markdown)" in _sql()
+    sql = _sql()
+    assert "$.**.preserveExistingMarkdown" in sql
+    assert "NULLIF(t.markdown, '')" in sql
+    assert "NULLIF(EXCLUDED.markdown, '')" in sql
 
 
 def test_build_sql_numeric_structured_coalesce_keep():
@@ -458,6 +726,48 @@ def test_detail_error_row_present_but_child_refresh_self_excludes(tmp_path):
     # ...and the _child_refresh gate excludes any detailError-bearing row, so the
     # guarded media/links delete+reinsert never touches it.
     assert "WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')" in sql
+
+
+def test_base_row_preserves_child_collections(tmp_path):
+    payload = {
+        "runMeta": {"mode": "full", "startedAt": _SCRAPED_AT, "finishedAt": _SCRAPED_AT},
+        "brokers": [],
+        "sources": [{"sourceKey": "svn", "transaction": "sale", "listingsCollected": 1}],
+        "listings": [_svn(preserveChildCollections=True)],
+    }
+    art = _write_artifact(payload, tmp_path)
+    rc, stderr, sql = _run_dry(art, tmp_path)
+    assert rc == 0, f"ingestor exited {rc}. stderr:\n{stderr}"
+    assert sql is not None
+    assert "preserveChildCollections" in sql
+    assert "$.**.preserveChildCollections ? (@ == true || @ == \"true\")" in sql
+    assert "OR NOT EXISTS" in sql
+    assert "FROM _prior_vals p" in sql
+    assert "THEN NULL\n                                     ELSE t.scraped_at" in sql
+    assert "'latestInventoryObservation', COALESCE(" in sql
+    assert "EXCLUDED.raw_data->'latestInventoryObservation'" in sql
+    assert "'inventoryObservedAt', COALESCE(" in sql
+    assert "to_jsonb(EXCLUDED.scraped_at)" in sql
+    assert "CREATE TEMP TABLE _child_additive" in sql
+    assert "u.id IN (SELECT id FROM _child_additive)" in sql
+    assert "UPDATE credeals.cre_listing_contacts c\nSET is_primary = false" in sql
+    assert "WITH ranked_primary_contacts AS" in sql
+    assert "ranked.ordinal > 1" in sql
+    assert "UPDATE credeals.cre_listing_images i\nSET is_primary = false" in sql
+    assert "INSERT INTO credeals.cre_listing_documents" in sql
+
+
+def test_dealflow_reconciles_provider_pv_and_fails_on_ambiguous_live_identity():
+    sql = _sql()
+    assert "CREATE TEMP TABLE _dealflow_pv_identity" in sql
+    assert "substring(t.source_url from '[?&]pv=([^&#]+)')" in sql
+    assert "active_count > 1" in sql
+    assert "e.active_count = 0 AND e.total_count > 1" in sql
+    assert "e.active_count = 0 AND e.total_count = 1" in sql
+    assert "consolidate duplicates before ingest" in sql
+    assert 'sourceKey ? (@ == "cbre-dealflow")' in sql
+    assert "JOIN _stage s" in sql
+    assert "substring(s.source_url from '[?&]pv=([^&#]+)') = e.provider_pv" in sql
 
 
 def test_media_links_archive_emitted_guarded_on_mark_missing(tmp_path):

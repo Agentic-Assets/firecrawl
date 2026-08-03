@@ -8,11 +8,16 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
   JLL_INVESTOR_HOST,
+  JLL_INVESTOR_HOME_URL,
   jllInvestorNextData,
+  jllInvestorBuildId,
+  jllInvestorStructuredListing,
+  jllInvestorDetailRoute,
   jllInvestorUrlFromAlias,
   jllInvestorSitemapUrls,
   jllInvestorSitemapCandidateLimit,
   jllInvestorStatus,
+  jllInvestorDetailCountryClassification,
   jllInvestorSearchListing,
   jllInvestorDocumentUrls,
   jllInvestorImageUrls,
@@ -21,8 +26,13 @@ import {
   jllInvestorStrandedMedia,
   jllInvestorStrandedDocs,
   jllInvestorStrandedStructured,
+  parseJllInvestorStructuredDetail,
+  enrichJllInvestorListing,
+  resetJllInvestorBuildIdForTests,
+  srcJllInvestor,
 } from "../../../sources/jll-investor.js";
 import { harvestDetail } from "../../../lib/harvest.js";
+import { firecrawl } from "../../../lib/scrape.js";
 
 // ---------------------------------------------------------------------------
 // Phase-2 data-lift tests: fixture-based, pure transform, no network.
@@ -51,6 +61,76 @@ test("jllInvestorNextData parses __NEXT_DATA__ JSON from HTML", () => {
   const data = jllInvestorNextData(html);
   assert.equal(data?.props?.pageProps?.initialState?.pdp?.listing?.id, "SF-001");
   assert.equal(jllInvestorNextData("<html></html>"), null);
+});
+
+test("JLL Investor build id and structured detail helpers fail closed", () => {
+  const html = `
+    <script id="__NEXT_DATA__" type="application/json">
+      {"buildId":"_safe-Build_123"}
+    </script>
+  `;
+  assert.equal(jllInvestorBuildId(html), "_safe-Build_123");
+  assert.equal(
+    jllInvestorBuildId(
+      `<script id="__NEXT_DATA__" type="application/json">{"buildId":"../bad"}</script>`
+    ),
+    null
+  );
+  const payload = {
+    pageProps: {
+      initialState: {
+        pdp: {
+          listing: { id: "006P500000f2tXYIAY" },
+        },
+      },
+    },
+  };
+  assert.equal(jllInvestorStructuredListing(payload)?.id, "006P500000f2tXYIAY");
+  assert.equal(jllInvestorStructuredListing({}), null);
+});
+
+test("jllInvestorDetailRoute builds an encoded public Next-data route and rejects unsafe paths", () => {
+  const route = jllInvestorDetailRoute(
+    "_safe-Build_123",
+    "https://invest.jll.com/us/en/listings/retail/the-village"
+  );
+  assert.equal(route.alias, "retail/the-village");
+  assert.equal(
+    route.url,
+    "https://invest.jll.com/_next/data/_safe-Build_123/us/en/listings/retail/the-village.json?region=us&locale=en&asset=retail&alias=the-village"
+  );
+  assert.throws(
+    () =>
+      jllInvestorDetailRoute(
+        "../bad",
+        "https://invest.jll.com/us/en/listings/retail/the-village"
+      ),
+    /build id/i
+  );
+  assert.throws(
+    () =>
+      jllInvestorDetailRoute(
+        "_safe-Build_123",
+        "https://evil.example/us/en/listings/retail/the-village"
+      ),
+    /unsafe/i
+  );
+  assert.throws(
+    () =>
+      jllInvestorDetailRoute(
+        "_safe-Build_123",
+        "https://invest.jll.com/us/en/listings/retail/%2Fetc"
+      ),
+    /unsafe/i
+  );
+  assert.throws(
+    () =>
+      jllInvestorDetailRoute(
+        "_safe-Build_123",
+        "https://invest.jll.com/us/en/listings/retail/the-village?preview=1"
+      ),
+    /unsafe/i
+  );
 });
 
 test("jllInvestorUrlFromAlias resolves slug, path, and absolute URLs", () => {
@@ -87,6 +167,252 @@ test("jllInvestorSitemapCandidateLimit applies max heuristics when scan limit is
   assert.equal(jllInvestorSitemapCandidateLimit(10, 500), 80);
   assert.equal(jllInvestorSitemapCandidateLimit(0, 40), 26);
   assert.equal(jllInvestorSitemapCandidateLimit(Number.POSITIVE_INFINITY, 200), 200);
+});
+
+test("JLL Investor detail country classification uses exact fullLocation US token only when country is absent", () => {
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
+      fullLocation: "Pooler, GA, US, Americas",
+    }),
+    "us"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
+      fullLocation: "Various USA locations",
+    }),
+    "unknown"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: "Canada",
+      fullLocation: "Toronto, ON, US, Americas",
+    }),
+    "non_us"
+  );
+});
+
+test("structured JLL Investor detail validates Salesforce id and exact alias", () => {
+  const base = {
+    id: "00608000010RMQHAA4",
+    url: "https://invest.jll.com/us/en/listings/industrial-logistics/morgan-lakes",
+    inventoryObservedAt: "2026-07-30T08:00:00.000Z",
+    photos: [],
+  };
+  const payload = {
+    pageProps: {
+      initialState: {
+        pdp: {
+          listing: {
+            id: base.id,
+            alias: "industrial-logistics/morgan-lakes",
+            name: "Morgan Lakes",
+            country: null,
+            fullLocation: "Pooler, GA, US, Americas",
+          },
+        },
+      },
+    },
+  };
+  const parsed = parseJllInvestorStructuredDetail(
+    base,
+    payload,
+    "industrial-logistics/morgan-lakes"
+  );
+  assert.equal(parsed.id, base.id);
+  assert.equal(parsed.country, "US");
+  assert.equal(parsed.preserveChildCollections, undefined);
+  assert.equal(parsed.freshnessProvenance.method, "jll_investor_next_data_detail");
+
+  const aliasMismatch = parseJllInvestorStructuredDetail(
+    base,
+    payload,
+    "industrial-logistics/other"
+  );
+  assert.match(aliasMismatch.detailError, /alias mismatch/i);
+
+  const invalidId = parseJllInvestorStructuredDetail(
+    base,
+    {
+      pageProps: {
+        initialState: {
+          pdp: {
+            listing: {
+              ...payload.pageProps.initialState.pdp.listing,
+              id: "slug-only",
+            },
+          },
+        },
+      },
+    },
+    "industrial-logistics/morgan-lakes"
+  );
+  assert.match(invalidId.detailError, /Salesforce Opportunity id/i);
+});
+
+test("JLL Investor structured enrichment refreshes build id once after rotation", async () => {
+  const oldScrape = firecrawl.scrape;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const calls: Array<{ url: string; options: any }> = [];
+  let homepageCalls = 0;
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    calls.push({ url, options });
+    if (url === JLL_INVESTOR_HOME_URL) {
+      homepageCalls++;
+      const buildId = homepageCalls === 1 ? "_old-build" : "_new-build";
+      return {
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ buildId })}</script>`,
+      };
+    }
+    if (url.includes("/_old-build/")) {
+      return { rawHtml: JSON.stringify({ pageProps: { initialState: {} } }) };
+    }
+    return {
+      rawHtml: JSON.stringify({
+        pageProps: {
+          initialState: {
+            pdp: {
+              listing: {
+                id: "006P500000f2tXYIAY",
+                alias: "retail/the-village",
+                name: "The Village",
+                country: "United States",
+              },
+            },
+          },
+        },
+      }),
+    };
+  };
+  try {
+    resetJllInvestorBuildIdForTests();
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const row = await enrichJllInvestorListing({
+      id: "006P500000f2tXYIAY",
+      url: "https://invest.jll.com/us/en/listings/retail/the-village",
+      inventoryObservedAt: "2026-07-30T08:00:00.000Z",
+      photos: [],
+    });
+    assert.equal(row.id, "006P500000f2tXYIAY");
+    assert.equal(row.detailError, undefined);
+    assert.equal(homepageCalls, 2);
+    assert.ok(calls.some(({ url }) => url.includes("/_old-build/")));
+    assert.ok(calls.some(({ url }) => url.includes("/_new-build/")));
+    assert.ok(calls.every(({ options }) => options.maxAge === 0));
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    resetJllInvestorBuildIdForTests();
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("strict JLL Investor collection preserves unresolved candidates and bypasses Firecrawl cache", async () => {
+  const oldScrape = firecrawl.scrape;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const oldStartedAt = process.env.CRE_REFRESH_STARTED_AT;
+  const calls: Array<{ url: string; options: any }> = [];
+  let secondCountry: string | undefined;
+  let secondId = "006080000100J8bAAE";
+  const homepageHtml = `
+    <script id="__NEXT_DATA__" type="application/json">
+      ${JSON.stringify({ buildId: "_strict-build" })}
+    </script>
+  `;
+  const detailPayload = (listing: Record<string, unknown>) => ({
+    pageProps: { initialState: { pdp: { listing } } },
+  });
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    calls.push({ url, options });
+    if (url.endsWith("/sitemap_index.xml")) {
+      return { rawHtml: `<loc>https://invest.jll.com/us/sitemap-us.xml</loc>` };
+    }
+    if (url.endsWith("/us/sitemap-us.xml")) {
+      return {
+        rawHtml: `
+          <urlset>
+            <url><loc>https://invest.jll.com/us/en/listings/office/known-us</loc></url>
+            <url><loc>https://invest.jll.com/us/en/listings/office/unknown-country</loc></url>
+            <url><loc>https://invest.jll.com/us/en/listings/office/known-us</loc></url>
+          </urlset>
+        `,
+      };
+    }
+    if (url === JLL_INVESTOR_HOME_URL) {
+      return { rawHtml: homepageHtml };
+    }
+    if (url.includes("/known-us.json")) {
+      return {
+        rawHtml: JSON.stringify(detailPayload({
+          id: "006P500000f2tXYIAY",
+          alias: "office/known-us",
+          name: "Known US",
+          country: "United States",
+        })),
+      };
+    }
+    return {
+      rawHtml: JSON.stringify(detailPayload({
+        id: secondId,
+        alias: "office/unknown-country",
+        name: "Unknown country",
+        country: secondCountry,
+      })),
+    };
+  };
+  try {
+    resetJllInvestorBuildIdForTests();
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    process.env.CRE_REFRESH_GENERATION = "jll-investor-strict-test";
+    process.env.CRE_REFRESH_STARTED_AT = "2026-07-29T12:00:00.000Z";
+
+    const result = await srcJllInvestor("sale", Number.POSITIVE_INFINITY, false);
+
+    assert.equal(result.truncated, true);
+    assert.equal(result.listings.length, 2);
+    const accepted = result.listings.find((row) => row.id === "006P500000f2tXYIAY");
+    assert.match(accepted.inventoryObservedAt, /^20\d\d-/);
+    assert.match(accepted.detailObservedAt, /^20\d\d-/);
+    assert.equal(accepted.freshnessProvenance.generationId, "jll-investor-strict-test");
+    assert.equal(accepted.freshnessProvenance.detailScope, "detail_page");
+    assert.equal(accepted.freshnessProvenance.cacheDisposition, "live");
+    const unresolved = result.listings.find((row) => row.detailError);
+    assert.match(unresolved.detailError, /country/i);
+    assert.equal(unresolved.preserveChildCollections, true);
+    assert.equal(
+      calls.filter(({ url }) => url.includes("/known-us.json")).length,
+      1
+    );
+    assert.ok(calls.every(({ options }) => options.maxAge === 0));
+
+    calls.length = 0;
+    resetJllInvestorBuildIdForTests();
+    secondCountry = "Canada";
+    const complete = await srcJllInvestor("sale", Number.POSITIVE_INFINITY, false);
+    assert.equal(complete.truncated, false);
+    assert.deepEqual(complete.listings.map((row) => row.id), ["006P500000f2tXYIAY"]);
+    assert.ok(calls.every(({ options }) => options.maxAge === 0));
+
+    resetJllInvestorBuildIdForTests();
+    secondId = "006P500000f2tXYIAY";
+    const duplicateIdentity = await srcJllInvestor(
+      "sale",
+      Number.POSITIVE_INFINITY,
+      false
+    );
+    assert.equal(duplicateIdentity.truncated, true);
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    resetJllInvestorBuildIdForTests();
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+    if (oldStartedAt === undefined) delete process.env.CRE_REFRESH_STARTED_AT;
+    else process.env.CRE_REFRESH_STARTED_AT = oldStartedAt;
+  }
 });
 
 test("jllInvestorStatus prefers under-contract flag then stage name", () => {

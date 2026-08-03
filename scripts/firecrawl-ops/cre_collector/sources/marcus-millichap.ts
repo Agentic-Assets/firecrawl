@@ -1,10 +1,16 @@
 // sources/marcus-millichap.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { CONCURRENCY, OUT_PATH, flags } from "../lib/config.js";
 import { dedupeStrings } from "../lib/html.js";
 import { harvestDetail } from "../lib/harvest.js";
+import {
+  detailObservation,
+  refreshGenerationId,
+  requireFreshDetails,
+} from "../lib/freshness.js";
 import {
   acresToSf,
   parseLeaseRate,
@@ -104,6 +110,7 @@ export function parseMarcusAddress(address: string | null): {
 
 export function parseMarcusTileHtml(tileHtml: string | null | undefined, row: any = {}): any {
   const $ = cheerio.load(tileHtml ?? "");
+  const { __creInventoryObservedAt: _inventoryObservedAt, ...rawMarcusSearchRow } = row;
   const tile = $(".mm-tile").first();
   const href = tile.find('a[href^="/properties/"], a[href*="marcusmillichap.com/properties/"]').first().attr("href");
   const location = parseMarcusLocation(clean(tile.find(".mm-location").first().text()));
@@ -143,14 +150,81 @@ export function parseMarcusTileHtml(tileHtml: string | null | undefined, row: an
       newlyListed: Boolean(row.NewlyListed),
       newlyReduced: Boolean(row.NewlyReduced),
     },
-    rawMarcusSearchRow: row,
+    inventoryObservedAt: clean(row.__creInventoryObservedAt),
+    freshnessProvenance: {
+      detailScope: "inventory_feed",
+      generationId: refreshGenerationId(),
+      method: "marcus_mapproperties",
+      cacheDisposition: "live",
+    },
+    rawMarcusSearchRow,
   });
 }
 
-export async function fetchMarcusMapRows(): Promise<any[]> {
-  const map = await marcusPost("/api/contentsearch/mapproperties", marcusSearchBody(1));
-  const results = map.Results ?? map;
-  const rows = Array.isArray(results.Properties) ? results.Properties : Array.isArray(results) ? results : [];
+export function parseMarcusPropertiesResponse(
+  search: any,
+  strict = requireFreshDetails()
+): { rows: any[]; total: number | null } {
+  const results = search?.Results ?? search;
+  if (
+    strict
+    && (
+      !results
+      || typeof results !== "object"
+      || Array.isArray(results)
+      || !Array.isArray(results.Properties)
+    )
+  ) {
+    throw new Error(
+      "Marcus & Millichap properties response has no Properties array"
+    );
+  }
+  const rows = Array.isArray(results?.Properties) ? results.Properties : [];
+  const total =
+    typeof results?.TotalCount === "number" ? results.TotalCount : null;
+  if (
+    strict
+    && (
+      !Number.isFinite(total)
+      || !Number.isInteger(total)
+      || (total as number) < 0
+    )
+  ) {
+    throw new Error(
+      "Marcus & Millichap properties response requires a finite nonnegative integer TotalCount"
+    );
+  }
+  if (strict && (total as number) < rows.length) {
+    throw new Error(
+      `Marcus & Millichap properties response TotalCount ${total} is below returned rows ${rows.length}`
+    );
+  }
+  return { rows, total };
+}
+
+export function parseMarcusMapRowsResponse(
+  map: any,
+  strict = requireFreshDetails()
+): any[] {
+  const results = map?.Results ?? map;
+  if (
+    strict
+    && (
+      !results
+      || typeof results !== "object"
+      || Array.isArray(results)
+      || !Array.isArray(results.Properties)
+    )
+  ) {
+    throw new Error(
+      "Marcus & Millichap mapproperties response has no Properties array"
+    );
+  }
+  const rows = Array.isArray(results?.Properties)
+    ? results.Properties
+    : Array.isArray(results)
+      ? results
+      : [];
   const seen = new Set<string>();
   return rows.filter((row: any) => {
     const activityId = clean(row.ActivityId);
@@ -158,6 +232,11 @@ export async function fetchMarcusMapRows(): Promise<any[]> {
     seen.add(activityId);
     return true;
   });
+}
+
+export async function fetchMarcusMapRows(): Promise<any[]> {
+  const map = await marcusPost("/api/contentsearch/mapproperties", marcusSearchBody(1));
+  return parseMarcusMapRowsResponse(map);
 }
 
 export async function fetchMarcusMapListing(mapRow: any): Promise<any | null> {
@@ -174,6 +253,7 @@ export async function fetchMarcusMapListing(mapRow: any): Promise<any | null> {
     });
   } catch (err) {
     console.error(`  marcus-millichap/sale: map detail failed for ${activityId}: ${err}`);
+    const { __creInventoryObservedAt: _inventoryObservedAt, ...rawMarcusSearchRow } = mapRow;
     return prune({
       activityId,
       latitude: num(Number(mapRow.Latitude)),
@@ -184,10 +264,61 @@ export async function fetchMarcusMapListing(mapRow: any): Promise<any | null> {
         newlyListed: Boolean(mapRow.NewlyListed),
         newlyReduced: Boolean(mapRow.NewlyReduced),
       },
+      inventoryObservedAt: clean(mapRow.__creInventoryObservedAt),
+      freshnessProvenance: {
+        detailScope: "inventory_feed",
+        generationId: refreshGenerationId(),
+        method: "marcus_mapproperties",
+        cacheDisposition: "live",
+      },
       detailError: String(err),
-      rawMarcusSearchRow: mapRow,
+      rawMarcusSearchRow,
     });
   }
+}
+
+export function assertMarcusInventoryCount(
+  total: number | null,
+  mapRows: any[],
+  strict = requireFreshDetails()
+): void {
+  if (
+    strict
+    && (
+      !Number.isFinite(total)
+      || !Number.isInteger(total)
+      || (total as number) < 0
+    )
+  ) {
+    throw new Error(
+      "Marcus & Millichap properties response requires a finite nonnegative integer TotalCount"
+    );
+  }
+  if (strict && mapRows.length !== total) {
+    throw new Error(
+      `Marcus & Millichap inventory mismatch: properties API reported ${total}, map API returned ${mapRows.length} unique ActivityIds`
+    );
+  }
+}
+
+export function assertMarcusMapDetails(selectedMapRows: any[], baseRows: any[]): void {
+  const failedBaseRows = baseRows.filter((listing: any) => !listing?.url || listing?.detailError);
+  if (!failedBaseRows.length) return;
+  const sample = failedBaseRows
+    .slice(0, 3)
+    .map((listing: any) => listing?.activityId ?? "unknown")
+    .join(", ");
+  throw new Error(
+    `Marcus & Millichap map detail failed for ${failedBaseRows.length}/${selectedMapRows.length} ActivityIds (${sample})`
+  );
+}
+
+export function marcusCapTruncated(
+  max: number,
+  selected: number,
+  knownInventory: number
+): boolean {
+  return Number.isFinite(max) && selected < knownInventory;
 }
 
 export async function fetchMarcusDetailHtml(url: string): Promise<string> {
@@ -200,6 +331,20 @@ export async function fetchMarcusDetailHtml(url: string): Promise<string> {
   });
   if (!res.ok) throw new Error(`Marcus & Millichap detail HTTP ${res.status}`);
   return res.text();
+}
+
+export function marcusDetailHtmlIsUsable(html: string): boolean {
+  if (
+    !html.trim() ||
+    /captcha|access denied|verify you are human|cf-chl-/i.test(html)
+  ) {
+    return false;
+  }
+  const $ = cheerio.load(html);
+  const title = clean($("h1").first().text());
+  const hasPropertyBody =
+    $(".score-hero-body, .specification-outer, .mm-property-investment-overview, .mm-property").length > 0;
+  return !!title && hasPropertyBody;
 }
 
 export function extractMarcusDetailImages($: cheerio.CheerioAPI, seed: string[]): string[] {
@@ -462,20 +607,92 @@ export function marcusListingCacheKey(listing: any): string | null {
   return clean(String(listing?.id ?? listing?.activityId ?? listing?.url ?? ""));
 }
 
+export const MARCUS_DETAIL_CACHE_SCHEMA_VERSION = 2;
+
+export function marcusListingCacheIdentity(listing: any): string | null {
+  const key = marcusListingCacheKey(listing);
+  if (!key) return null;
+  const payload = {
+    key,
+    id: clean(String(listing?.id ?? "")),
+    activityId: clean(String(listing?.activityId ?? "")),
+    url: clean(listing?.url),
+    salePriceUsd: listing?.salePriceUsd ?? null,
+    capRatePct: listing?.capRatePct ?? null,
+    rawMarcusSearchRow: listing?.rawMarcusSearchRow ?? null,
+  };
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
 export function marcusDetailCachePath(): string {
   return OUT_PATH ? `${OUT_PATH}.marcus-detail-cache.jsonl` : "out/marcus-millichap-detail-cache.jsonl";
 }
 
-export function readMarcusDetailCache(path: string): Map<string, any> {
+export function prepareMarcusDetailCache(path: string, attemptId: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const header = {
+    kind: "marcus-detail-cache",
+    schemaVersion: MARCUS_DETAIL_CACHE_SCHEMA_VERSION,
+    attemptId,
+    createdAt: new Date().toISOString(),
+  };
+  // Every collector process is a distinct freshness attempt. Reusing a sidecar
+  // from a prior retry would make a newly timestamped artifact stale, so reset
+  // it unless it carries this exact process-local attempt identity.
+  if (existsSync(path)) {
+    try {
+      const firstLine = readFileSync(path, "utf8").split(/\r?\n/, 1)[0];
+      const prior = JSON.parse(firstLine);
+      if (
+        prior?.kind === header.kind &&
+        prior?.schemaVersion === header.schemaVersion &&
+        prior?.attemptId === attemptId
+      ) {
+        return;
+      }
+    } catch {
+      // Invalid or legacy cache files are replaced below.
+    }
+  }
+  writeFileSync(path, `${JSON.stringify(header)}\n`);
+}
+
+export function readMarcusDetailCache(
+  path: string,
+  attemptId: string,
+  baseListings: any[]
+): Map<string, any> {
   const cached = new Map<string, any>();
   if (!existsSync(path)) return cached;
+  const expectedIdentities = new Map<string, string>();
+  for (const listing of baseListings) {
+    const key = marcusListingCacheKey(listing);
+    const identity = marcusListingCacheIdentity(listing);
+    if (key && identity) expectedIdentities.set(key, identity);
+  }
   for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
-      const listing = JSON.parse(line);
+      const record = JSON.parse(line);
+      if (
+        record?.kind !== "listing" ||
+        record?.schemaVersion !== MARCUS_DETAIL_CACHE_SCHEMA_VERSION ||
+        record?.attemptId !== attemptId ||
+        typeof record?.fetchedAt !== "string" ||
+        !Number.isFinite(Date.parse(record.fetchedAt))
+      ) {
+        continue;
+      }
+      const listing = record.listing;
       if (listing?.detailError) continue;
       const key = marcusListingCacheKey(listing);
-      if (key) cached.set(key, listing);
+      if (
+        key &&
+        key === record.key &&
+        expectedIdentities.get(key) === record.baseIdentity
+      ) {
+        cached.set(key, listing);
+      }
     } catch {
       // Ignore a partial final line if a prior run was interrupted mid-write.
     }
@@ -483,16 +700,39 @@ export function readMarcusDetailCache(path: string): Map<string, any> {
   return cached;
 }
 
-export function appendMarcusDetailCache(path: string, listing: any): void {
+export function appendMarcusDetailCache(
+  path: string,
+  attemptId: string,
+  base: any,
+  listing: any
+): void {
   if (listing?.detailError) return;
+  const key = marcusListingCacheKey(base);
+  const baseIdentity = marcusListingCacheIdentity(base);
+  if (!key || !baseIdentity || marcusListingCacheKey(listing) !== key) return;
   mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, `${JSON.stringify(listing)}\n`);
+  appendFileSync(
+    path,
+    `${JSON.stringify({
+      kind: "listing",
+      schemaVersion: MARCUS_DETAIL_CACHE_SCHEMA_VERSION,
+      attemptId,
+      key,
+      baseIdentity,
+      fetchedAt: new Date().toISOString(),
+      listing,
+    })}\n`
+  );
 }
 
 export async function enrichMarcusListing(base: any): Promise<any> {
   if (!base.url) return base;
   try {
     const html = await fetchMarcusDetailHtml(base.url);
+    if (!marcusDetailHtmlIsUsable(html)) {
+      throw new Error("detail HTML did not contain a verified Marcus & Millichap property page");
+    }
+    const observed = detailObservation("marcus_detail_page", "live");
     const $ = cheerio.load(html);
     const address = parseMarcusAddress(clean($(".score-hero-body p").first().text()));
     const specs = parseMarcusSpecifications($);
@@ -605,6 +845,13 @@ export async function enrichMarcusListing(base: any): Promise<any> {
         harvestLinkCount: harvested.links.length,
         harvestDocCount: harvested.documents.length,
       },
+      detailObservedAt: observed.observedAt,
+      freshnessProvenance: {
+        detailScope: "detail_page",
+        generationId: observed.generationId,
+        method: observed.method,
+        cacheDisposition: observed.cacheDisposition,
+      },
     });
   } catch (err) {
     console.error(`  marcus-millichap/sale: detail failed for ${base.url}: ${err}`);
@@ -625,9 +872,7 @@ export async function srcMarcusMillichap(tx: Tx, max: number, monitor: boolean):
     };
   }
   const search = await marcusPost("/api/contentsearch/properties", marcusSearchBody(2));
-  const results = search.Results ?? search;
-  const rows = Array.isArray(results.Properties) ? results.Properties : [];
-  const total = typeof results.TotalCount === "number" ? results.TotalCount : null;
+  const { rows, total } = parseMarcusPropertiesResponse(search);
   if (!rows.length) throw new Error("Marcus & Millichap public properties API sanity check returned no rows");
   console.error(
     `  marcus-millichap/sale: public properties API sanity check returned ${rows.length} row(s), total ${
@@ -636,13 +881,28 @@ export async function srcMarcusMillichap(tx: Tx, max: number, monitor: boolean):
   );
   const mapRows = await fetchMarcusMapRows();
   if (!mapRows.length) throw new Error("Marcus & Millichap public mapproperties API returned no rows");
-  const want = Math.min(max, mapRows.length);
-  const selectedMapRows = mapRows.slice(0, Number.isFinite(want) ? want : mapRows.length);
+  assertMarcusInventoryCount(total, mapRows);
+  const inventoryObservedAt = new Date().toISOString();
+  const observedMapRows = mapRows.map((row) => ({
+    ...row,
+    __creInventoryObservedAt: inventoryObservedAt,
+  }));
+  const want = Math.min(max, observedMapRows.length);
+  const selectedMapRows = observedMapRows.slice(
+    0,
+    Number.isFinite(want) ? want : observedMapRows.length
+  );
+  const truncated = marcusCapTruncated(
+    max,
+    selectedMapRows.length,
+    observedMapRows.length
+  );
   console.error(
     `  marcus-millichap/sale: public map API returned ${mapRows.length} ActivityId row(s), expanding ${selectedMapRows.length}`
   );
   const baseRows = await pmap(selectedMapRows, CONCURRENCY, fetchMarcusMapListing);
-  const baseListings = baseRows.filter((l: any) => l?.url);
+  assertMarcusMapDetails(selectedMapRows, baseRows);
+  const baseListings = baseRows as any[];
   if (monitor) {
     // Monitor mode: keep the lightweight per-ActivityId mappropertydetail POST
     // (it is the only source of the DealId external id and the http PropertyUrl,
@@ -655,11 +915,17 @@ export async function srcMarcusMillichap(tx: Tx, max: number, monitor: boolean):
         "Public POST /api/contentsearch/mapproperties ActivityIds plus mappropertydetail tiles for id/url/price/cap rate (monitor mode; detail HTML enrichment skipped)",
       totalAvailable: total,
       listings: baseListings,
+      truncated,
       note: "Monitor mode: map + mappropertydetail tile fields only (id, url, price, cap rate, flags); the per-listing detail-HTML render is skipped. No terminal status (flags-only source).",
     };
   }
   const cachePath = marcusDetailCachePath();
-  const cachedDetails = readMarcusDetailCache(cachePath);
+  // A checkpoint refresh generation is the freshness boundary. Reuse only
+  // exact-identity details fetched earlier in that same generation so a crash
+  // can resume without admitting data from an older refresh.
+  const cacheAttemptId = refreshGenerationId() ?? randomUUID();
+  prepareMarcusDetailCache(cachePath, cacheAttemptId);
+  const cachedDetails = readMarcusDetailCache(cachePath, cacheAttemptId, baseListings);
   if (cachedDetails.size) {
     console.error(`  marcus-millichap/sale: loaded ${cachedDetails.size} cached detail row(s) from ${cachePath}`);
   }
@@ -668,7 +934,7 @@ export async function srcMarcusMillichap(tx: Tx, max: number, monitor: boolean):
     const key = marcusListingCacheKey(row);
     const cached = key ? cachedDetails.get(key) : null;
     const enriched = cached ?? (await enrichMarcusListing(row));
-    if (!cached) appendMarcusDetailCache(cachePath, enriched);
+    if (!cached) appendMarcusDetailCache(cachePath, cacheAttemptId, row, enriched);
     done++;
     if (done % 10 === 0 || done === baseListings.length) {
       console.error(`  marcus-millichap/sale: detail enriched ${done}/${baseListings.length}`);
@@ -682,6 +948,7 @@ export async function srcMarcusMillichap(tx: Tx, max: number, monitor: boolean):
       "Public POST /api/contentsearch/mapproperties ActivityIds, mappropertydetail tiles, and direct public detail HTML enrichment",
     totalAvailable: total,
     listings,
+    truncated,
     note:
       "Public sale inventory only. The list endpoint still caps unfiltered visible rows at the newest 100, so discovery uses public map ActivityIds plus mappropertydetail tiles. Lease remains skipped because no public lease UI mode or endpoint has been proven.",
   };

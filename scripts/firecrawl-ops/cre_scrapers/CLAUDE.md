@@ -14,7 +14,7 @@ counts: work in `../cre_collector/`, not here.**
 
 | Status | Path (from `scripts/firecrawl-ops/`) | Agent use |
 |--------|--------------------------------------|-----------|
-| **ACTIVE** | `cre_collector/collect.ts` | Supported production collect CLI (20 source keys), not currently scheduled |
+| **ACTIVE** | `cre_collector/collect.ts` | Supported production collect CLI (51 source keys), not currently scheduled |
 | **ACTIVE** | `cre_collector/sources/*.ts` | Per-broker adapters for the supported collector |
 | **ACTIVE** | `cre_collector/cre_ingest.py` | Supabase `credeals` upsert |
 | **ACTIVE** | `cre_collector/cre_daily_update.sh` | Full-refresh implementation, not currently scheduled |

@@ -5,11 +5,12 @@
 > `cre_enrich.py` has no OM-parse invocation. The dated snapshots below are
 > historical records, not authorization to reactivate that writer.
 >
-> **Current operational handoff:** Before any merge, Mac mini recovery,
-> scheduler change, or bounded canary, read
-> `../../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md`.
-> It is the current ordered runbook. The historical run counts and scheduler
-> states below must not be used as current live evidence.
+> **Current operational handoff:** For supervised listing refreshes, use the
+> strict-refresh procedure below and the dated status ledger at
+> `../../../tasks/2026-07-29-cre-complete-freshness-refresh/refresh-summary.md`.
+> The July 11 operator runbook remains historical scheduler-recovery and
+> OM-canary context only. Always obtain live scheduler, lock, manifest, and
+> database readback evidence before acting.
 
 > **Supported production path:** When collection and ingest are enabled, they
 > run here (`collect.ts`, `sources/*.ts`, `cre_ingest.py`, and
@@ -29,6 +30,477 @@ bash cre_status.sh                    # read-only scheduler and marker preflight
 python3 -m pytest tests/ -q           # obtain the current pytest count
 npm run test:unit                     # obtain the current TypeScript count
 ```
+
+## Strict listing refresh
+
+Use `cre_checkpoint_refresh.py` for an operator-requested full refresh. It
+collects, validates, gates, and dry-runs each source into a resumable manifest.
+It stops on the first non-`ok` source gate, runs one aggregate gate over the
+complete prepared artifact set, and only then begins additive live ingest. The
+monolithic `cre_daily_update.sh` remains the scheduled backstop, not the proof
+path for a source-fresh detail sweep.
+
+Strict Avison generations use validated direct HTTP detail reads because the
+same public static property pages can exceed the local browser-render timeout.
+The direct transport pins validated public DNS addresses, converts the current
+HTML to structured Markdown for new rows, and preserves an existing richer
+Markdown capture on updates.
+Buildout retries force a new live page snapshot after an identity/count failure
+instead of replaying the failed run-local cache.
+
+```bash
+# Start one bounded source generation from a clean, pushed SHA:
+python3 cre_checkpoint_refresh.py \
+  --sources cbre \
+  --env-file "$HOME/.config/cre/equire.env"
+
+# Another bounded group, using exact registry keys:
+python3 cre_checkpoint_refresh.py \
+  --sources svn,lee-associates,franklin-street \
+  --env-file "$HOME/.config/cre/equire.env"
+
+# Resume the exact run after interruption. Keep the same source list, page cap,
+# concurrency, source-worker count, attempts, collector SHA, and environment:
+python3 cre_checkpoint_refresh.py \
+  --resume out/checkpoint-refresh/<run-id> \
+  --sources <same-exact-source-list> \
+  --env-file "$HOME/.config/cre/equire.env"
+```
+
+`--source-workers` defaults to `1`, preserving serial source preparation. It
+is an explicit, opt-in collection-only pool, capped at `2`; it does not change
+the per-source `--concurrency` setting and it never permits concurrent ingest.
+The checkpoint coordinator remains the only manifest writer, waits until every
+selected artifact is collected and validated, then runs each gate and dry-run,
+one aggregate gate, and deterministic serial additive ingests. Colliers Main
+is exclusive; the JLL, CBRE, and Buildout source families each share a provider
+lane. Use the default until a specific two-source pairing has its own
+no-write calibration evidence. A source failure, rejected artifact, gate, or
+dry-run failure prevents aggregate admission and every database write.
+
+Every checkpoint run also enables a fail-closed host CPU guard. It reads total
+Mac CPU utilization directly from Darwin's Mach counters every five seconds.
+The runner refuses to begin source work when the first sample is already at or
+above 80 percent. If utilization remains at or above 80 percent for 30 seconds,
+or CPU telemetry becomes unavailable, the guard interrupts the owned source
+process group, writes `resource_guard_interrupted` to the manifest, preserves
+the JSONL evidence at `logs/host-cpu-guard.jsonl`, releases the canonical lock,
+and exits `75` for a later exact resume. Short spikes reset when utilization
+falls below the ceiling. The Firecrawl API and Playwright containers retain
+their separate two-CPU Compose limits. Do not bypass this guard with a dirty
+checkout or an alternate runner.
+
+The thresholds are explicit resume-bound configuration:
+
+```bash
+python3 cre_checkpoint_refresh.py \
+  --sources cbre \
+  --max-host-cpu-percent 80 \
+  --cpu-sustain-seconds 30 \
+  --cpu-sample-seconds 5 \
+  --env-file "$HOME/.config/cre/equire.env"
+```
+
+For the complete current registry, use bounded generations that can each
+finish inside the 24-hour observation window. A single `--sources all`
+generation currently spans 51 source keys and is not operationally admissible
+when its slowest source would age earlier observations beyond that bound.
+`cre_checkpoint_series.py` is the supported wrapper for that full pass. It
+runs the canonical registry serially at nice level 10, gives every source a
+separate checkpoint generation, continues past source-local collection or
+coverage failures, and stops immediately on CPU, database, validation,
+infrastructure, or operator failure:
+
+```bash
+python3 cre_checkpoint_series.py \
+  --sources all \
+  --env-file "$HOME/.config/cre/equire.env"
+```
+
+The series manifest and per-source runs live under `out/checkpoint-series/`.
+Exit `0` means every selected source completed. Exit `2` means the series
+finished with explicitly recorded source-local failures. Exit `75` means the
+CPU guard stopped it and the exact series can be resumed after pressure clears:
+
+```bash
+python3 cre_checkpoint_series.py \
+  --resume out/checkpoint-series/<series-id> \
+  --sources all \
+  --env-file "$HOME/.config/cre/equire.env"
+```
+
+Use `--retry-failed` only after repairing or reviewing the recorded
+source-local failures. Resume configuration and collector SHA must match.
+
+The strict runner never passes `--monitor`, `--mark-missing`,
+`--activate-status`, or `--update-baseline`. Never use `--allow-dirty` for a
+supervised production refresh. Before starting, require a clean worktree and
+verify that `git rev-parse HEAD` is the exact SHA pushed to the remote branch.
+The runner rejects source/config/SHA drift during resume and rejects a resume
+once its generation is more than 24 hours old. It also stores a credential-free
+SHA-256 fingerprint of the selected PostgreSQL host, port, and database and
+passes the expected fingerprint to every database child process for a
+before-access check. Ambiguous multi-host or target-overriding libpq URI forms
+fail closed. This prevents an environment-file change during a long run from
+redirecting a gate, validation query, or write.
+
+### Freshness evidence SLO
+
+Generation membership is necessary but not sufficient: a long detail sweep can
+observe its first listing long before its last. Every canonical inventory
+observation and every required canonical detail observation must therefore be
+no more than 24 hours old when the source artifact finishes. The post-ingest
+readback proves that the persisted earliest observations still meet that same
+artifact-completion bound. The read-only certificate applies a second,
+independent 24-hour bound at certificate time with
+`--max-observation-age-hours 24`; it also retains the separate
+`--max-source-age-hours 24` ingest-completion limit. Source-index-only cards
+are not canonical listing evidence and can never support a whole-source
+freshness claim.
+
+The final validation records two distinct gates. A bounded source refresh
+requires successful query execution, no before/after quality regression, and
+an exact source freshness readback. The whole-database absolute-quality audit
+is also recorded, but historical defects outside the refreshed source do not
+block that source's additive refresh. They do block
+`cre_freshness_certificate.py`, so no whole-registry freshness certificate can
+be issued until the absolute-quality backlog is clean. This separation keeps a
+known legacy defect visible without making the serial 51-source refresh unable
+to make progress.
+
+### Colliers Main runtime calibration
+
+`colliers-main` has a large sitemap and renders every current detail page. Do
+not change its detail concurrency based on a short or cached collection. Use
+the no-write calibration harness first. It only reads the public sitemap and
+rendered detail pages, writes a local evidence JSON file, clears database
+environment variables before importing collector code, and never invokes the
+collector, a gate, or ingest.
+
+```bash
+# Run from scripts/firecrawl-ops/cre_collector on a clean, pushed SHA.
+# Preserve each JSON file under out/calibration/ as operational evidence.
+npx tsx cre_colliers_runtime_calibration.ts \
+  --count=20 --concurrency=1 --sample=baseline --max-gap-ms=60000 \
+  --out="out/calibration/<timestamp>-colliers-c1.json"
+
+# Only after the 20-item C1 run is fully terminal, test the proposed C2 rate.
+npx tsx cre_colliers_runtime_calibration.ts \
+  --count=200 --concurrency=2 --sample=primary --max-gap-ms=90000 \
+  --out="out/calibration/<timestamp>-colliers-c2.json"
+```
+
+The C1 baseline must have 20 terminal parsed-or-tombstone outcomes, zero
+errors, and no completion gap above 60 seconds. C2 is admissible only when all
+200 outcomes are terminal, there are zero errors or unresolved retries, no gap
+above 90 seconds, exact outcome accounting, and at least eight rows per minute
+after warm-up. A calibration failure selects C1; it is never retried at a
+higher concurrency. Treat a successful calibration as a transport-capacity
+proof only: start a new clean strict checkpoint on the tested SHA afterward,
+then require its source gate, aggregate gate, additive ingest, and generation
+readback before claiming the source fresh.
+
+C3 is permitted only after a clean C2 and must be recorded before any
+collection restart. It uses 200 deterministic samples at concurrency 3, a
+60-second maximum completion gap, zero errors, and exact terminal accounting.
+It passes only if its p95 latency is no more than 120% of C2 and it sustains at
+least 13.2 rows per minute, which targets a 20-hour acquisition window for
+gates and readback. A C3 failure means
+the source needs an official bulk-detail/API route or a different collection
+architecture; do not ingest or claim a full fresh sweep at C1/C2 speed.
+
+The 2026-07-31 C2 and C3 evidence is retained under `out/calibration/`.
+Both samples were transport-clean, but C2 reached 8.916 rows/minute and C3
+reached 9.560 rows/minute. C3 projects to about 27.5 hours for the observed
+15,776-detail sitemap, so the present per-page renderer is rejected for a
+24-hour all-detail baseline. A public first-party Coveo card surface is not an
+approved replacement: its reported inventory was incomplete relative to the
+sitemap and it did not prove detail-field parity. Treat any Coveo probe as an
+approval-gated, default-disabled, no-write investigation until coverage,
+terms, and field-level parity are independently proven.
+
+For strict sources, it binds every source artifact and listing observation to
+one immutable generation and bypasses Firecrawl response caches with
+`maxAge: 0`. The scoped non-strict `cbre-dealflow` and `colliers` paths do not
+make the blanket strict-detail claim; `avison-young` has its separate
+generation-backed inventory/property-detail contract described below. A
+`first_seen` verdict stops at `baseline_seed_required`; a `hold` stops at
+`gate_blocked`. Neither state reaches dry-run or live ingest. Seed a first
+baseline only after reviewing the complete exact artifact with
+`cre_gate.py --apply --update-baseline`, read it back without
+`--update-baseline`, and then resume the same immutable run.
+
+The global admission floor is 100 listings. The sole reviewed exception is
+Savills, declared in `data/cre-gate-coverage-policy.json`: its floor is one
+only when the gate receives exactly one uncapped, full `sale` + `lease`
+artifact whose provider totals, collector counts, and artifact listings agree
+for both transactions. An error, truncation, subset, capped run, malformed
+evidence, or reconciliation mismatch retains the normal floor and cannot seed
+a baseline. This exception changes neither the no-schedule rule nor the
+separate whole-source freshness certificate requirements.
+
+Forty-eight of the 51 registered source keys satisfy the runner-owned strict
+contract. The three remaining supported sources have deliberately narrower
+claims:
+
+- `cbre-dealflow` and `colliers` can retain current provider cards as
+  inventory-only source-index rows when no canonical public detail identity is
+  available.
+- `avison-young` proves current inventory and property-detail observation but
+  preserves existing contacts when the supplemental team feed is unavailable;
+  it must not be described as a fresh-contact sweep in that state.
+
+Child handling is source-class-specific:
+
+- CBRE is an authoritative inventory feed and replaces its collector-owned
+  child collections.
+- All Buildout feeds, Interra Realty, Cushman & Wakefield, SRS, Hanley, Kidder
+  Mathews, and Newmark are
+  authoritative inventory feeds that must preserve existing child collections.
+  Cushman's strict path uses its uncached, exactly reconciled public search API
+  and makes an inventory-freshness claim only; it does not claim that challenged
+  rendered detail pages or their child data were refreshed. Cushman's API GUID
+  is observation-scoped, so canonical identity is `url:v1:<sha256-prefix>` from
+  the normalized official property URL and the raw GUID remains provenance
+  only. Ingest fails closed when a current URL-v1 row would sit beside an active
+  legacy-GUID row; complete the separately reviewed identity consolidation
+  before retrying that source.
+- Other strict sources require an admitted current detail observation and must
+  not use child preservation as a substitute for a failed detail read.
+
+The atomic precommit child guard compares the same pre-existing parent listing
+IDs that remain active after ingest. A legitimate `--mark-missing` retirement
+is excluded from both sides of the comparison, while a child loss on retained
+parents still aborts the entire transaction when a source/type baseline of at
+least 10 rows retains less than 70%. The transaction therefore cannot confuse
+soft-retiring a parent with physically deleting its children.
+
+### Cushman URL-v1 identity consolidation
+
+`cre_repair_cushman_identity.py` is the one-time, artifact-pinned repair for
+the failed `2026-07-30T082113Z` Cushman generation. It is not a generic dedupe
+tool. It preserves every listing UUID, prefers the established active UUID,
+keeps older conflicting OM facts on superseded aliases, and fails if the
+reviewed database, artifact, child, source-index, or queue shape has drifted.
+The default mode is a locked read-only preflight.
+
+Run it only while the canonical CRE lock is free. Retain the owner-only
+preimage: explicit rollback is self-contained from that file and refuses newer
+Cushman inventory, source-index activity, claimed queue work, missing parent or
+child rows, and any parent or child mapping that differs from the recorded
+post-repair disposition. Source-index collisions retain one coherently ranked
+donor row; fields are never synthesized from independent per-column maxima.
+The recorded plan covers every audited parent, including old-only targets whose
+survivor keeps its existing source URL and freshness generation.
+The CLI has no alternate lock-path option: every mode acquires the canonical
+shared CRE lock before database access. Rollback document schema v7 binds every
+parent and child to its original normalized target, requires exactly one active
+survivor per target, and records the normalized expected post-apply value of
+every parent field rollback can restore. Its canonical inner document has 14
+independently constructed, encrypted, and read-back sections. Each section has
+exact byte and SHA-256 guards, and the reconstructed whole document has its own
+canonical hash. The outer chunk transport retains the historical protocol name
+`cushman-preimage-chunks-v4`; that name is not the rollback document schema.
+Older or malformed preimages are refused. The document also records image URL
+and OM-fact identity/ranking evidence so validation recomputes the exact child
+winner policy rather than trusting a stored destination ID.
+
+```bash
+ENV_FILE="$HOME/.config/cre/equire.env"
+ARTIFACT="out/checkpoint-refresh/2026-07-30T082113Z/sources/cushman-wakefield.json"
+install -d -m 700 "out/repair/cushman-identity/<timestamp>"
+PREIMAGE="$PWD/out/repair/cushman-identity/<timestamp>/preimage.json"
+
+# 1. Exact read-only scope.
+python3 cre_repair_cushman_identity.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE"
+
+# 2. Exercise the complete forward transaction without persistence.
+python3 cre_repair_cushman_identity.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE" \
+  --verify-apply-rollback
+
+# 3. Prove both the forward and explicit reverse paths.
+python3 cre_repair_cushman_identity.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE" \
+  --verify-rollback-roundtrip
+
+# 4. Apply only after reviewing all three results. The absolute preimage path
+# must not already exist; its parent must be owner-only and the file is created
+# with mode 0600. Retain the printed exact-byte SHA-256 with the run evidence.
+python3 cre_repair_cushman_identity.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE" \
+  --apply --preimage "$PREIMAGE"
+
+# Emergency reverse path. The preimage embeds the reviewed artifact plan, so
+# the original large collection artifact is not required for rollback. The
+# apply writes its exact transaction timestamp into the repair marker while the
+# listings trigger writes the same value to updated_at. Rollback refuses if
+# those timestamps differ or any expected parent field changed afterward.
+# During rollback, the trigger stamps the new transaction-start timestamp; that
+# exact value, every restored parent field, and every child mapping must read
+# back exactly.
+python3 cre_repair_cushman_identity.py \
+  --env-file "$ENV_FILE" --rollback-preimage "$PREIMAGE" \
+  --expected-preimage-sha256 <printed-sha256>
+```
+
+After apply, run a new strict Cushman collection and normal ingest, then require
+the complete validator to report zero active normalized identity duplicates.
+Do not describe the one-time repair alone as a fresh detail sweep.
+
+### Newmark NIM identity and unit repair
+
+`cre_repair_newmark_nim.py` is the one-time, artifact- and database-bound repair
+for the failed `2026-07-30T031805Z` Newmark generation. It is not a generic
+dedupe tool. It refuses any drift from the reviewed 35-identity,
+27-collision, 8-rename shape, uses one serializable transaction, and always
+acquires the canonical CRE lock. The CLI deliberately has no alternate
+lock-path option.
+
+The default is a locked rollback-only preflight. Before persistent apply, run
+both non-persistent verification modes. Apply requires a new owner-only
+preimage path; rollback requires both the exact preimage SHA-256 and exact
+postimage SHA-256 printed by the matching apply.
+
+```bash
+ENV_FILE="$HOME/.config/cre/equire.env"
+ARTIFACT="out/checkpoint-refresh/2026-07-30T031805Z/sources/newmark.json"
+
+python3 cre_repair_newmark_nim.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE"
+python3 cre_repair_newmark_nim.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE" \
+  --verify-apply-rollback
+python3 cre_repair_newmark_nim.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE" \
+  --verify-rollback-roundtrip
+
+install -d -m 700 out/repair/newmark-nim/<run-id>
+python3 cre_repair_newmark_nim.py \
+  --artifact "$ARTIFACT" --env-file "$ENV_FILE" \
+  --apply --preimage "$PWD/out/repair/newmark-nim/<run-id>/preimage.json"
+```
+
+### SVN missing-detail shell recovery
+
+`cre_repair_buildout_detail_shells.py` is a one-time, SVN-only correction for
+the two verified Buildout "Listing not found" bodies. It does not use a broad
+text match for mutation. It clears only an exact shell-valued `markdown` field
+and/or the root `raw_data.markdown` key on active SVN rows. It does not change
+status, deletion state, queues, events, or child tables.
+
+Run it only after the source-scoped SVN enrichment drain has stopped and the
+canonical CRE lock is free:
+
+```bash
+ENV_FILE="$HOME/.config/cre/equire.env"
+
+# 1. Locked read-only scope and digest. Review every audit count.
+python3 cre_repair_buildout_detail_shells.py \
+  --env-file "$ENV_FILE"
+
+# 2. Prove the exact transaction and post-state, then roll it back.
+python3 cre_repair_buildout_detail_shells.py \
+  --env-file "$ENV_FILE" \
+  --expected-count <reviewed-count> \
+  --expected-digest <reviewed-digest> \
+  --verify-apply-rollback
+
+# 3. Create a new owner-only directory. The tool refuses to overwrite a
+#    preimage, follows the canonical lock, and rechecks the exact digest.
+install -d -m 700 out/repair/buildout-shells/<run-id>
+python3 cre_repair_buildout_detail_shells.py \
+  --env-file "$ENV_FILE" \
+  --expected-count <reviewed-count> \
+  --expected-digest <reviewed-digest> \
+  --preimage "$PWD/out/repair/buildout-shells/<run-id>/svn-preimage.json" \
+  --apply
+
+# 4. Repeat the locked preflight. Exact, broad, unexpected, and nested shell
+#    counts must all be zero.
+python3 cre_repair_buildout_detail_shells.py \
+  --env-file "$ENV_FILE"
+```
+
+Keep the printed preimage SHA-256 with the run evidence. Emergency rollback
+requires both the absolute owner-only preimage path and that exact digest:
+
+```bash
+python3 cre_repair_buildout_detail_shells.py \
+  --env-file "$ENV_FILE" \
+  --rollback-preimage "$PWD/out/repair/buildout-shells/<run-id>/svn-preimage.json" \
+  --expected-preimage-sha256 <printed-sha256>
+```
+
+No retained inventory or enrichment artifact contains prior usable Markdown
+for the poisoned rows, so the repair must not synthesize content from a
+description. Some bad detail ingests also removed existing child collections,
+but no defensible child preimage exists. Child restoration is therefore
+explicitly outside this repair and must not be fabricated.
+
+JLL uses the public `SearchResults` GraphQL API for complete U.S. inventory
+enumeration, then requires each rendered detail payload to match the enumerated
+provider ID and normalized URL before detail freshness is admitted. JLL Investor
+Center keeps its public sitemap as the discovery surface and reads each public
+Next.js structured-detail JSON payload; it does not use the robots-disallowed
+filtered search index. Explicit non-U.S. detail is excluded, and unresolved
+country, identity, alias, or build-rotation failures make the strict pass
+truncated.
+
+The manifest records `ingesting` before launching a live write. If execution
+stops in that window, resume performs a generation-exact database readback and
+never automatically replays an ambiguous ingest. A successful live readback
+requires the expected generation ID, exact active canonical count, exact
+inventory-only scope count, and observation timestamps no earlier than the
+generation start.
+
+**Colliers SalesTracker identity safety (2026-07-29).** The list endpoint emits
+one HTML card per project, while the map endpoint emits one row per map pin.
+Never pair raw map rows to cards by array index. The adapter first groups map
+rows by `ProjectId` in first-seen order, then requires
+`map groups == HTML cards == numProjects` on every page, unique ProjectIds
+across the run, and exact agreement between each linked card's grouped
+ProjectId and SLP detail ProjectId. A multi-pin project keeps all pins in raw
+metadata and gets no arbitrary scalar coordinate. Cards without a public SLP
+link remain current inventory evidence in `cre_source_index` under the
+`salestracker:card:` namespace; they never become fake canonical
+`cre_listings` rows. Any detail request failure marks the pass truncated, and
+any repeated canonical ProjectId aborts artifact validation and direct ingest.
+
+“All” means the 51 source keys in the current TypeScript collector registry.
+Older active rows whose brokerage is outside that registry are reported by
+`cre_refresh_report.py`, but this runner cannot make those legacy rows
+source-fresh. Add or restore a supported adapter before claiming full-database
+source coverage.
+
+The governed shared adapter contains the exact 25 historical public Buildout
+definitions recovered from commit `6245a7144`. Their definitions, cache
+namespaces, strict contracts, child-preservation behavior, targeted-detail
+configuration, SQL seeds, and source-registry parity are covered offline. A
+current live canary and guarded database readback remain required for each
+source before claiming fresh production coverage.
+
+Accordingly, a successful manifest is labeled
+`supported_scope_complete`, not full-database complete.
+
+After the run, create a date-bounded database readback from the exact run start:
+
+```bash
+python3 cre_refresh_report.py \
+  --since <run-start-utc> \
+  --env-file "$HOME/.config/cre/equire.env" \
+  --format markdown \
+  --out /tmp/cre-refresh-report.md
+```
+
+`scraped_at` proves only that a row was processed by ingest. A strict
+detail-freshness claim additionally requires current source observation
+provenance, the exact run generation, zero source errors or hidden truncation,
+explicit handling of every listing-level `detailError`, and the
+generation-exact database readback described above. Observation timestamps more
+than five minutes in the future are rejected in artifact admission, ingest, and
+database readback.
 
 **2026-06-15 (Phase-2 data-lift LIVE).** DDL `011` -> `012` -> `013` -> `014`
 applied to prod (project `fhqycqubkkrdgzswccwd`, schema `credeals`) in order via
@@ -96,11 +568,12 @@ Prior listing-ingest evidence (2026-06-12 local time), from run finished at `202
 
 This directory is the production daily path for public commercial real estate listing inventory feeding EQUIRE. Use it for sale and lease listings. The older `../cre_scrapers/` Python package is legacy support for source probes and detail-page enrichment.
 
-## Current State
+## Historical state snapshots
 
-**Live board and per-source counts:** see the 2026-07-05 banner and Latest Source
-Matrix below (107,783 active as of that snapshot). The subsection below is a
-historical artifact record from 2026-06-11 through 2026-06-14.
+**Historical board and per-source counts:** the 2026-07-05 matrix records
+107,783 active at that snapshot. Obtain current counts from a fresh validator
+or exact checkpoint readback. The subsection below is an artifact record from
+2026-06-11 through 2026-06-14.
 
 Latest full artifact (historical):
 
@@ -209,12 +682,15 @@ pending CRE_EQUIRE coordination and is NOT part of the additive build. Board
 impact is quantified in
 `docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md`.
 
-## Latest Source Matrix
+## Historical source matrix
 
 Historical Supabase snapshot from `credeals` (2026-07-05). **Re-query before
 quoting;** see **Agent rule: verify counts** at the top of this file. Board total
-**107,783 active** includes ~11,144 rows under additional seeded brokerages
-beyond this 20-source collector matrix (regional NAI franchises and similar).
+**107,783 active** included ~11,144 rows under additional seeded brokerages
+beyond the then-20-source collector matrix (regional NAI franchises and
+similar). The registry now includes all 25 recovered Buildout sources and six
+dedicated restored adapters, but this historical table predates their live
+canaries and should not be read as current coverage proof.
 
 | Source | Active rows (sale / lease / sale_or_lease) | Status |
 |---|---:|---|
@@ -317,35 +793,37 @@ images into Supabase storage for the bulk collector.
   not currently loaded on the Mac mini. See the operator runbook, not the
   historical Section 9 design, for recovery authority.
 - Do not use `--mark-missing` after a run with Lee or other source errors.
-- Cushman & Wakefield is now current in Supabase from `out/cushman_full_2026-06-12_022841.json`: 11,318 active rows, 18,343 document URL rows, 24,278 image URL rows, 21,110 contact rows, 21,110 profile URLs, and 20,301 VCard URLs. Source-scoped `--mark-missing` soft-deleted 24 old probe rows.
+- **Historical per-source evidence below:** every “was current” statement is
+  bounded to its named 2026-06 artifact and is not a current freshness claim.
+- Cushman & Wakefield was current for the named June snapshot from `out/cushman_full_2026-06-12_022841.json`: 11,318 active rows, 18,343 document URL rows, 24,278 image URL rows, 21,110 contact rows, 21,110 profile URLs, and 20,301 VCard URLs. Source-scoped `--mark-missing` soft-deleted 24 old probe rows.
 - CBRE Deal Flow has been ingested from the public RCM endpoint. Do not use its reported 2,042 sale total as collected count; the public card pagination exposed 1,809 sale cards in the full run. A narrow cleanup soft-deleted 21 stale `dealflow:url:<sha1>` rows that duplicated newer enriched Deal Flow IDs.
 - Do not store source PDF or image binaries in Supabase. Store URLs only.
 - Colliers now has two folded sources under the `colliers` brokerage. SalesTracker (`colliers`, 1,172 investment-sale rows) via public RCM GET. Main site (`colliers-main`, COMPLETE 2026-06-14: 15,829 active rows) via the public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`, ~15,883 detail URLs) fetched through local Firecrawl plus detail-render JSON-LD parse; ids prefixed `main:`. The Coveo POST search is still not used and not needed. Full run converged via `run_colliers_main_full.sh` (chunked, resumable cache) and was ingested additively (status OFF); colliers brokerage total 17,001 active.
 - Do not ingest NAI Global's unbounded Infabode feed as active inventory. Use only rows whose public `publicPost.listingStatus` contains `FOR_SALE_ON_MARKET`. The 2026-06-12 active artifact `out/nai_active_only_from_full_2026-06-12_044310.json` was live-ingested with source-scoped `--mark-missing`; 19 old rendered-card probe rows were soft-deleted.
-- Transwestern is now current in Supabase from `out/transwestern_full_2026-06-12_121302_cleaned.json`: 2,021 active rows, 3,054 document URL rows, 4,838 image URL rows, 3,746 contact/profile/VCard URL rows, and 0 bad descriptions or bad asset URLs. The live DB needed the existing `sql/001_cre_brokerages.sql` Transwestern seed inserted before ingest.
-- Marcus & Millichap is now current in Supabase from `out/marcus_full_2026-06-12_130035.json`: 3,124 active public sale rows, 16,771 image URL rows, 7,915 contact/profile URL rows, 0 document rows, and 0 final detail errors. Gated deal-room URLs stay in raw metadata only. Public lease remains unsupported.
-- Lee & Associates is now current in Supabase from `out/lee_full_cache_2026-06-12_assembled.json`: 9,223 active rows, 9,062 image URL rows, 7,681 document URL rows, 9,223 contact rows, and 0 bad URLs, duplicate IDs, bad states, bad coordinates, or child orphans. The durable Buildout cache remains under gitignored `out/cache/buildout/lee-associates/`.
-- Newmark is now current in Supabase from `out/newmark_full_refined_2026-06-12.json`: 4,371 active rows, 4,303 image URL rows, 3,961 contact/profile URL rows, 0 document rows, 0 missing states, and 715 old additive rows soft-deleted. Listing documents, full galleries, second/third broker joins, and VCards remain unproven.
-- SVN is now current in Supabase from `out/svn_full_cache_2026-06-12_assembled.json`: 5,287 active rows, 5,235 image URL rows, 3,899 document URL rows, 5,287 contact rows, 0 duplicate external IDs, 0 bad URLs, 0 missing titles, 0 missing raw data, and 34 old rows soft-deleted. One active SVN row is missing state.
-- JLL main property feed is now current in Supabase from `out/jll_full_detail_enriched_2026-06-12.json`: 11,230 collected sale/lease rows, 10,604 staged unique rows, 0 detail errors, 0 skipped missing URLs, 9,747 artifact document URLs, 28,254 artifact image URLs, and 23,801 artifact contacts/profile URLs. Live JLL main now has 10,741 active rows after 4,406 old same-URL rows were soft-deleted. Remaining duplicate source URL groups are 135 latest-batch sale/lease same-page variants.
-- JLL Investor Center is now current in Supabase from `out/jll_investor_full_sitemap_detail_2026-06-12.json`: 934 active rows (all sale; lease not applicable for this path), 2,572 contact rows, 345 document URL rows, and 5,658 image URL rows. All jll-investor rows lack coordinates because the Investor detail path exposes none (known limitation, not a regression). Speed controls: `JLL_INVESTOR_DETAIL_WAIT_MS=1000`, `JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS=8000`, `JLL_INVESTOR_DETAIL_CONCURRENCY=4` (commit d0c9f5d63). The 50 stale early-probe rows were soft-deleted after user approval at ~23:25 UTC 2026-06-12.
-- Avison Young is now current in Supabase from
+- Transwestern was current for the named June snapshot from `out/transwestern_full_2026-06-12_121302_cleaned.json`: 2,021 active rows, 3,054 document URL rows, 4,838 image URL rows, 3,746 contact/profile/VCard URL rows, and 0 bad descriptions or bad asset URLs. The live DB needed the existing `sql/001_cre_brokerages.sql` Transwestern seed inserted before ingest.
+- Marcus & Millichap was current for the named June snapshot from `out/marcus_full_2026-06-12_130035.json`: 3,124 active public sale rows, 16,771 image URL rows, 7,915 contact/profile URL rows, 0 document rows, and 0 final detail errors. Gated deal-room URLs stay in raw metadata only. Public lease remains unsupported.
+- Lee & Associates was current for the named June snapshot from `out/lee_full_cache_2026-06-12_assembled.json`: 9,223 active rows, 9,062 image URL rows, 7,681 document URL rows, 9,223 contact rows, and 0 bad URLs, duplicate IDs, bad states, bad coordinates, or child orphans. The durable Buildout cache remains under gitignored `out/cache/buildout/lee-associates/`.
+- Newmark was current for the named June snapshot from `out/newmark_full_refined_2026-06-12.json`: 4,371 active rows, 4,303 image URL rows, 3,961 contact/profile URL rows, 0 document rows, 0 missing states, and 715 old additive rows soft-deleted. Listing documents, full galleries, second/third broker joins, and VCards remain unproven.
+- SVN was current for the named June snapshot from `out/svn_full_cache_2026-06-12_assembled.json`: 5,287 active rows, 5,235 image URL rows, 3,899 document URL rows, 5,287 contact rows, 0 duplicate external IDs, 0 bad URLs, 0 missing titles, 0 missing raw data, and 34 old rows soft-deleted. One active SVN row is missing state.
+- JLL main property feed was current for the named June snapshot from `out/jll_full_detail_enriched_2026-06-12.json`: 11,230 collected sale/lease rows, 10,604 staged unique rows, 0 detail errors, 0 skipped missing URLs, 9,747 artifact document URLs, 28,254 artifact image URLs, and 23,801 artifact contacts/profile URLs. Live JLL main then had 10,741 active rows after 4,406 old same-URL rows were soft-deleted. Remaining duplicate source URL groups were 135 latest-batch sale/lease same-page variants.
+- JLL Investor Center was current for the named June snapshot from `out/jll_investor_full_sitemap_detail_2026-06-12.json`: 934 active rows (all sale; lease not applicable for this path), 2,572 contact rows, 345 document URL rows, and 5,658 image URL rows. All jll-investor rows lack coordinates because the Investor detail path exposes none (known limitation, not a regression). Speed controls: `JLL_INVESTOR_DETAIL_WAIT_MS=1000`, `JLL_INVESTOR_DETAIL_FALLBACK_WAIT_MS=8000`, `JLL_INVESTOR_DETAIL_CONCURRENCY=4` (commit d0c9f5d63). The 50 stale early-probe rows were soft-deleted after user approval at ~23:25 UTC 2026-06-12.
+- Avison Young was current for the named June snapshot from
   `out/avison_full_detail_2026-06-12.json`: 2,201 active rows, 2,571 document
   URL rows, 31,570 image URL rows, 4,128 contacts, 0 detail errors in the
   artifact field, and 0 non-property photo leaks after the Avison-specific photo
   filter fix. The full detail run used `AVISON_YOUNG_DETAIL_LIMIT=2200` and was
   live-ingested additively without `--mark-missing`. VCards remain absent from
   the public path, and broker profile URLs are sparse.
-- Savills sale is STRUCTURALLY CAPPED, not completable: the public U.S. sale
-  surface serves Savills Residential luxury homes only (no public commercial-sale
-  JSON / `__NEXT_DATA__` feed). On 2026-06-14 the 101 mis-categorized residential
-  "sale" rows and 1 non-U.S. ghost lease row (`cyelit10899`) were soft-deleted,
-  leaving 2 defensible Chicago retail lease rows. Treat current coverage as the
-  permanent Savills baseline. The commercial-sale route
-  `/com/en/list/commercial/property-for-sale/united-states-of-america` WAS probed
-  (22-URL test matrix, all returned HTTP 200 with `totalItems:0` or non-US
-  Canada/UK/Ireland objects). The cap is confirmed: no public US commercial-sale
-  feed exists on Savills. See `FRESHNESS_HISTORY_REVIEW_2026-06-15.md` section R1.
+- **Savills live-cap evidence (2026-07-31):** the direct enumerator now proves
+  the provider pagination/count contract and fails closed on unclassified or
+  non-U.S.-only results. Its fresh full-scope attempt
+  `2026-07-31T145116Z` found three eligible lease records but the nominal U.S.
+  sale endpoint exposed only two explicitly non-U.S. rows. The artifact was
+  rejected before baseline, ingest, status activation, or `--mark-missing`.
+  Do not treat the old two-lease-row snapshot as a permanent baseline or a
+  current whole-source proof. The one-row Savills exception remains available
+  only if a future artifact proves complete eligible sale *and* lease coverage;
+  until then, the source is correctly blocked rather than silently partial.
 - `cre_ingest.py` now drops non-HTTP contact profile/avatar/VCard URLs and
   non-HTTP document URLs. Reingesting the complete Lee and SVN artifacts
   refreshed child rows and reduced active bad contact avatar URLs from 37 to 0.

@@ -39,7 +39,11 @@ set -euo pipefail
 # need absolute paths; generate them per-machine with install_launchd.sh.
 COLLECTOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DAILY_OUT_DIR="${COLLECTOR_DIR}/out/daily"
-LOCKDIR="${DAILY_OUT_DIR}/.cre.lock"   # mkdir-based lock dir (portable; no flock dependency)
+# Resolve the primary checkout from Git's common directory so a linked worktree
+# and the scheduled main checkout cannot accidentally use separate locks.
+GIT_COMMON_DIR="$(git -C "${COLLECTOR_DIR}" rev-parse --path-format=absolute --git-common-dir)"
+PRIMARY_CHECKOUT="$(cd "$(dirname "${GIT_COMMON_DIR}")" && pwd)"
+LOCKDIR="${PRIMARY_CHECKOUT}/scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
 MONITOR_SCRIPT="${COLLECTOR_DIR}/cre_monitor.py"
 ENRICH_SCRIPT="${COLLECTOR_DIR}/cre_enrich.py"
 DAILY_SCRIPT="${COLLECTOR_DIR}/cre_daily_update.sh"
@@ -325,7 +329,13 @@ case "${TIER}" in
 
     enrich)
         echo "[cre_run_tier] Running enrich queue worker (additive; --in only, never --mark-missing/--activate-status)"
-        python3 "${ENRICH_SCRIPT}" --batch "${CRE_ENRICH_BATCH:-200}"
+        ENRICH_SOURCE_ARGS=()
+        if [ -n "${CRE_ENRICH_SOURCE:-}" ]; then
+            ENRICH_SOURCE_ARGS=(--source "${CRE_ENRICH_SOURCE}")
+        fi
+        python3 "${ENRICH_SCRIPT}" \
+            --batch "${CRE_ENRICH_BATCH:-200}" \
+            "${ENRICH_SOURCE_ARGS[@]}"
         ;;
 
     weekly)

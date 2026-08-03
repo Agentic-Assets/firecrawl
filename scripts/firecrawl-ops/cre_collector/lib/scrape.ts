@@ -3,6 +3,15 @@ import Firecrawl from "@mendable/firecrawl-js";
 import { API_URL } from "./config.js";
 import { ScrapeOpts, ScrapedDoc } from "../types.js";
 
+export type CollectorScrapeOpts = ScrapeOpts & {
+  /**
+   * Maximum age, in milliseconds, of a Firecrawl index result that may satisfy
+   * this request. Full refresh callers use zero so a newly written artifact
+   * cannot silently contain the local API's default cached response.
+   */
+  maxAge?: number;
+};
+
 // Self-hosted with USE_DB_AUTHENTICATION=false accepts any non-empty key.
 export const firecrawl = new Firecrawl({
   apiKey: process.env.FIRECRAWL_API_KEY || "local-self-hosted",
@@ -29,7 +38,7 @@ export async function withRequestDeadline<T>(request: Promise<T>, timeoutMs: num
   }
 }
 
-export async function scrapeRaw(url: string, opts: ScrapeOpts = {}): Promise<string> {
+export async function scrapeRaw(url: string, opts: CollectorScrapeOpts = {}): Promise<string> {
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
@@ -38,6 +47,7 @@ export async function scrapeRaw(url: string, opts: ScrapeOpts = {}): Promise<str
         formats: ["rawHtml"],
         ...(opts.waitFor ? { waitFor: opts.waitFor } : {}),
         ...(opts.proxy ? { proxy: opts.proxy } : {}),
+        ...(opts.maxAge !== undefined ? { maxAge: opts.maxAge } : {}),
         timeout,
       } as any), timeout);
       const body = (doc as any).rawHtml ?? "";
@@ -52,7 +62,7 @@ export async function scrapeRaw(url: string, opts: ScrapeOpts = {}): Promise<str
   throw lastErr;
 }
 
-export async function scrapeDoc(url: string, opts: ScrapeOpts = {}): Promise<ScrapedDoc> {
+export async function scrapeDoc(url: string, opts: CollectorScrapeOpts = {}): Promise<ScrapedDoc> {
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
@@ -84,6 +94,7 @@ export async function scrapeDoc(url: string, opts: ScrapeOpts = {}): Promise<Scr
         onlyMainContent: false,
         ...(opts.waitFor ? { waitFor: opts.waitFor } : {}),
         ...(opts.proxy ? { proxy: opts.proxy } : {}),
+        ...(opts.maxAge !== undefined ? { maxAge: opts.maxAge } : {}),
         timeout,
       } as any), timeout);
       const anyDoc = doc as any;
@@ -175,7 +186,7 @@ export function repairUnescapedJsonStringQuotes(body: string): string {
   return out;
 }
 
-export async function scrapeJson(url: string, opts: ScrapeOpts = {}): Promise<any> {
+export async function scrapeJson(url: string, opts: CollectorScrapeOpts = {}): Promise<any> {
   // A successful scrape can still return a non-JSON body (rate-limit or
   // challenge interstitial, e.g. Buildout under sustained paging). Retry the
   // whole scrape with growing backoff before giving up.

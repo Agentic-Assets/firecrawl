@@ -9,7 +9,24 @@ import {
   newmarkGalleryUrls,
   newmarkExtraUrls,
   newmarkSalePrice,
+  newmarkCoverageTruncated,
+  assertNewmarkAlgoliaInventoryPage,
+  classifyNewmarkPeopleLookup,
+  newmarkPeopleFailure,
+  newmarkPeopleListingFields,
+  assertNewmarkNimPage,
+  mapNewmarkNimListing,
+  newmarkNimCanonicalIdentity,
+  newmarkNimMeasurementFields,
+  NEWMARK_NIM_PAGE_SIZE,
+  NEWMARK_NIM_MAX_ATTEMPTS,
+  NEWMARK_BOOTSTRAP_MAX_AGE_MS,
+  newmarkNimPage,
+  newmarkNimRetryDelayMs,
+  srcNewmark,
+  srcNewmarkAlgoliaLegacy,
 } from "../../../sources/newmark.js";
+import { firecrawl } from "../../../lib/scrape.js";
 
 // ---------------------------------------------------------------------------
 // Existing helper tests (unchanged)
@@ -49,6 +66,16 @@ test("newmarkGalleryUrls keeps the FULL thumbnail gallery (no truncation)", () =
   assert.ok(urls.includes("https://cdn.example.com/c.jpg"));
 });
 
+test("Newmark finite caps report truncation against Algolia nbHits", () => {
+  assert.equal(newmarkCoverageTruncated(2, 2, 1), true);
+  assert.equal(newmarkCoverageTruncated(2, 2, 2), false);
+  assert.equal(
+    newmarkCoverageTruncated(2, 2, Number.POSITIVE_INFINITY),
+    false
+  );
+  assert.equal(newmarkCoverageTruncated(2, 1, Number.POSITIVE_INFINITY), true);
+});
+
 test("newmarkGalleryUrls dedupes and tolerates an empty/garbage hit", () => {
   assert.deepEqual(newmarkGalleryUrls({}), []);
   assert.deepEqual(newmarkGalleryUrls({ thumbnails: [{ url: "/x.jpg" }, { url: "/x.jpg" }] }), [
@@ -66,6 +93,706 @@ test("newmarkExtraUrls collects candidate media and document fields", () => {
   assert.ok(media.includes("https://my.matterport.com/show/?m=abc"));
   assert.ok(media.includes("https://vimeo.com/123"));
   assert.ok(docs.includes("https://cdn.example.com/om.pdf"));
+});
+
+test("newmarkCoverageTruncated fails closed when Algolia partitions under-recover nbHits", () => {
+  assert.equal(newmarkCoverageTruncated(1500, 1000, Infinity), true);
+  assert.equal(newmarkCoverageTruncated(1500, 1500, Infinity), false);
+  assert.equal(newmarkCoverageTruncated(1500, 100, 100), true);
+  assert.equal(newmarkCoverageTruncated(1500, 1500, Infinity, true), true);
+});
+
+test("strict Newmark Algolia inventory pages require coherent integer nbHits", () => {
+  assert.deepEqual(
+    assertNewmarkAlgoliaInventoryPage(
+      { hits: [{ objectID: "a" }], nbHits: 1 },
+      "test",
+      true
+    ).hits,
+    [{ objectID: "a" }]
+  );
+  assert.throws(
+    () => assertNewmarkAlgoliaInventoryPage({ hits: [] }, "test", true),
+    /nonnegative integer nbHits/
+  );
+  assert.throws(
+    () => assertNewmarkAlgoliaInventoryPage({ hits: [], nbHits: -1 }, "test", true),
+    /nonnegative integer nbHits/
+  );
+  assert.throws(
+    () => assertNewmarkAlgoliaInventoryPage({ hits: [], nbHits: 1.5 }, "test", true),
+    /nonnegative integer nbHits/
+  );
+  assert.throws(
+    () =>
+      assertNewmarkAlgoliaInventoryPage(
+        { hits: [{ objectID: "a" }, { objectID: "b" }], nbHits: 1 },
+        "test",
+        true
+      ),
+    /below returned hits/
+  );
+});
+
+test("non-strict Newmark monitoring remains compatible with missing nbHits", () => {
+  assert.doesNotThrow(() =>
+    assertNewmarkAlgoliaInventoryPage({ hits: [] }, "monitor", false)
+  );
+  assert.throws(
+    () => assertNewmarkAlgoliaInventoryPage({}, "monitor", false),
+    /no hits array/
+  );
+});
+
+test("Newmark People lookup distinguishes verified absence from malformed responses", () => {
+  assert.deepEqual(
+    classifyNewmarkPeopleLookup(
+      { hits: [{ fullName: "Different Broker" }], nbHits: 1 },
+      "Ada Broker",
+      true
+    ),
+    { status: "verified_absent" }
+  );
+  assert.throws(
+    () => classifyNewmarkPeopleLookup({}, "Ada Broker", true),
+    /People index response has no hits array/
+  );
+  assert.deepEqual(
+    classifyNewmarkPeopleLookup({}, "Ada Broker", false),
+    {
+      status: "failed",
+      error: "Newmark People index response has no hits array",
+    }
+  );
+  assert.throws(
+    () =>
+      classifyNewmarkPeopleLookup(
+        { hits: [], nbHits: Number.NaN },
+        "Ada Broker",
+        true
+      ),
+    /incoherent hits\/nbHits/
+  );
+  assert.deepEqual(
+    classifyNewmarkPeopleLookup(
+      { hits: [], nbHits: Number.NaN },
+      "Ada Broker",
+      false
+    ),
+    {
+      status: "failed",
+      error: "Newmark People index response has incoherent hits/nbHits",
+    }
+  );
+});
+
+test("Newmark People transport failures fail strict mode but preserve non-strict children", () => {
+  assert.throws(
+    () => newmarkPeopleFailure(new Error("HTTP 503"), "Ada Broker", true),
+    /people lookup failed for Ada Broker: HTTP 503/
+  );
+  assert.deepEqual(
+    newmarkPeopleFailure(new Error("HTTP 503"), "Ada Broker", false),
+    {
+      status: "failed",
+      error: "HTTP 503",
+    }
+  );
+  assert.deepEqual(
+    newmarkPeopleListingFields(
+      { status: "failed", error: "HTTP 503" },
+      false
+    ),
+    {
+      preserveChildCollections: true,
+      newmarkPeopleLookupStatus: "failed",
+    }
+  );
+  assert.deepEqual(
+    newmarkPeopleListingFields({ status: "verified_absent" }, false),
+    {
+      contactsDetailed: [],
+      newmarkPeopleLookupStatus: "verified_absent",
+    }
+  );
+});
+
+test("legacy Newmark may cache credential bootstrap but rejects live Algolia pages without nbHits", async () => {
+  const oldScrape = firecrawl.scrape;
+  const oldFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const scrapeCalls: any[] = [];
+  (firecrawl as any).scrape = async (_url: string, options: any) => {
+    scrapeCalls.push(options);
+    return {
+      rawHtml:
+        "<script>algoliaAppId='strict-app';algoliaSearchApiKey='strict-key';algoliaIndexName='strict-index';</script>",
+    };
+  };
+  let algoliaCall = 0;
+  globalThis.fetch = async () => {
+    algoliaCall++;
+    const body =
+      algoliaCall === 1
+        ? {
+            hits: [{ objectID: "listing-1", slug: "listing-1" }],
+            nbHits: 2,
+            facets: { state: { TX: 2 } },
+          }
+        : { hits: [], facets: { property_types: {} } };
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    await assert.rejects(
+      () => srcNewmarkAlgoliaLegacy("sale", Infinity, true),
+      /nonnegative integer nbHits/
+    );
+    assert.equal(scrapeCalls.length, 1);
+    assert.equal(NEWMARK_BOOTSTRAP_MAX_AGE_MS, 86_400_000);
+    assert.equal(scrapeCalls[0]?.maxAge, NEWMARK_BOOTSTRAP_MAX_AGE_MS);
+    assert.ok(algoliaCall >= 2);
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    globalThis.fetch = oldFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("strict Newmark NIM pages require stable totals, exact page lengths, and identities", () => {
+  const row = {
+    id: "provider-1",
+    slug: "listing-1",
+    properties: [{ countryCode: "US" }],
+  };
+  assert.deepEqual(
+    assertNewmarkNimPage(
+      { data: [row], total: 1 },
+      "sale page 0",
+      0,
+      NEWMARK_NIM_PAGE_SIZE,
+      null,
+      true
+    ),
+    { data: [row], total: 1 }
+  );
+  assert.throws(
+    () =>
+      assertNewmarkNimPage(
+        { data: [], total: 1 },
+        "sale page 0",
+        0,
+        NEWMARK_NIM_PAGE_SIZE,
+        null,
+        true
+      ),
+    /returned 0\/1 expected rows/
+  );
+  assert.throws(
+    () =>
+      assertNewmarkNimPage(
+        { data: [row], total: 2 },
+        "sale page 0",
+        0,
+        NEWMARK_NIM_PAGE_SIZE,
+        1,
+        true
+      ),
+    /total changed from 1 to 2/
+  );
+  assert.throws(
+    () =>
+      assertNewmarkNimPage(
+        {
+          data: [
+            {
+              id: "provider-1",
+              properties: [{ countryCode: "US" }],
+            },
+          ],
+          total: 1,
+        },
+        "sale page 0",
+        0,
+        NEWMARK_NIM_PAGE_SIZE,
+        null,
+        true
+      ),
+    /lacks provider identity or properties/
+  );
+  assert.throws(
+    () =>
+      assertNewmarkNimPage(
+        {
+          data: [{ id: "provider-1", slug: "listing-1", properties: [] }],
+          total: 1,
+        },
+        "sale page 0",
+        0,
+        NEWMARK_NIM_PAGE_SIZE,
+        null,
+        true
+      ),
+    /lacks provider identity or properties/
+  );
+});
+
+test("Newmark NIM mapping uses canonical identity and preserves child collections", () => {
+  const mapped = mapNewmarkNimListing(
+    {
+      id: "provider-123",
+      slug: "100-main-street-sale",
+      name: "100 Main Street",
+      modifiedOn: "2026-07-29T12:34:56Z",
+      priceSummary: "$1,250,000",
+      mainImageUrl: "https://cdn.example.com/newmark-main.jpg",
+      externalWebsiteUrl:
+        "https://www.nmrk.com/properties/100-main-street-sale?campaign=test",
+      properties: [
+        {
+          countryCode: "CA",
+          address: "Canadian property",
+        },
+        {
+          countryCode: "US",
+          address: "100 Main Street",
+          city: "Tulsa",
+          stateAbbreviation: "OK",
+          zip: "74103",
+          county: "Tulsa",
+          latitude: 36.154,
+          longitude: -95.993,
+          sizeSf: 25000,
+          propertyTypeLabelOverride: "Industrial",
+        },
+      ],
+    },
+    "sale",
+    "2026-07-30T02:30:00Z"
+  );
+  assert.ok(mapped);
+  assert.equal(mapped.id, "100-main-street-sale");
+  assert.equal(mapped.street, "100 Main Street");
+  assert.equal(mapped.salePriceUsd, 1_250_000);
+  assert.equal(
+    mapped.canonicalUrl,
+    "https://www.nmrk.com/properties/100-main-street-sale"
+  );
+  assert.equal(mapped.lastUpdated, "2026-07-29");
+  assert.equal(mapped.preserveChildCollections, true);
+  assert.equal(
+    mapped.freshnessProvenance.detailScope,
+    "authoritative_inventory_feed"
+  );
+  assert.equal(mapped.contactsDetailed, undefined);
+  assert.equal(mapped.media, undefined);
+  assert.equal(mapped.documents, undefined);
+  assert.deepEqual(mapped.photos, [
+    "https://cdn.example.com/newmark-main.jpg",
+  ]);
+});
+
+test("Newmark NIM identity uses the canonical URL path instead of the internal slug", () => {
+  assert.deepEqual(
+    newmarkNimCanonicalIdentity({
+      slug: "lowercase-internal-slug",
+      externalWebsiteUrl:
+        "https://www.nmrk.com/properties/Legacy-Canonical-Path-123?campaign=test",
+    }),
+    {
+      id: "Legacy-Canonical-Path-123",
+      url: "https://www.nmrk.com/properties/Legacy-Canonical-Path-123",
+    }
+  );
+  assert.deepEqual(
+    newmarkNimCanonicalIdentity({
+      slug: "ignored-lowercase-slug",
+      externalWebsiteUrl:
+        "https://nmrk.com/properties/Case-Sensitive-Canonical",
+    }),
+    {
+      id: "Case-Sensitive-Canonical",
+      url: "https://www.nmrk.com/properties/Case-Sensitive-Canonical",
+    }
+  );
+  assert.throws(
+    () =>
+      newmarkNimCanonicalIdentity({
+        slug: "unsafe",
+        externalWebsiteUrl:
+          "https://www.nmrk.com/properties/unsafe%2Fidentity",
+      }),
+    /canonical identity is unsafe/
+  );
+  assert.throws(
+    () =>
+      newmarkNimCanonicalIdentity({
+        slug: "unsafe-space",
+        externalWebsiteUrl:
+          "https://www.nmrk.com/properties/unsafe%20identity",
+      }),
+    /canonical identity is unsafe/
+  );
+  assert.throws(
+    () =>
+      newmarkNimCanonicalIdentity({
+        slug: "unexpected",
+        externalWebsiteUrl: "https://example.com/properties/unexpected",
+      }),
+    /unsupported host/
+  );
+  assert.deepEqual(
+    newmarkNimCanonicalIdentity({ slug: "fallback-slug" }),
+    {
+      id: "fallback-slug",
+      url: "https://www.nmrk.com/properties/fallback-slug",
+    }
+  );
+  assert.throws(
+    () =>
+      newmarkNimCanonicalIdentity({
+        slug: "../unsafe",
+      }),
+    /fallback slug identity is unsafe/
+  );
+  assert.throws(
+    () =>
+      newmarkNimCanonicalIdentity({
+        slug: "fallback-slug",
+        externalWebsiteUrl:
+          "http://my.rcm1.com/handler/modern.aspx?pv=unsafe",
+      }),
+    /safe HTTPS URL/
+  );
+  assert.throws(
+    () =>
+      newmarkNimMeasurementFields({
+        unitOfMeasurement: "Units",
+        size: 12.5,
+      }),
+    /positive integer/
+  );
+  assert.throws(
+    () =>
+      newmarkNimMeasurementFields({
+        unitOfMeasurement: "Square Furlongs",
+        size: 1,
+      }),
+    /unsupported unit/
+  );
+  assert.throws(
+    () =>
+      newmarkNimMeasurementFields({
+        unitOfMeasurement: "Acres",
+        size: -1,
+      }),
+    /measurement must be positive/
+  );
+});
+
+test("Newmark NIM measurement units map to the correct database dimensions", () => {
+  assert.deepEqual(
+    newmarkNimMeasurementFields({
+      unitOfMeasurement: "Sq. Ft.",
+      size: 25000,
+      sizeSf: 25000,
+    }),
+    {
+      buildingSizeSqft: 25000,
+      lotSizeAcres: null,
+      units: null,
+      kind: "building_sqft",
+      normalizedValue: 25000,
+    }
+  );
+  assert.deepEqual(
+    newmarkNimMeasurementFields({
+      unitOfMeasurement: "Sq. Meters",
+      size: 19941.26,
+      sizeSf: 1852.6,
+    }),
+    {
+      buildingSizeSqft: 19941.26,
+      lotSizeAcres: null,
+      units: null,
+      kind: "building_sqft",
+      normalizedValue: 19941.26,
+    }
+  );
+  assert.deepEqual(
+    newmarkNimMeasurementFields({
+      unitOfMeasurement: "Units",
+      size: 152,
+    }),
+    {
+      buildingSizeSqft: null,
+      lotSizeAcres: null,
+      units: 152,
+      kind: "units",
+      normalizedValue: 152,
+    }
+  );
+  assert.deepEqual(
+    newmarkNimMeasurementFields({
+      unitOfMeasurement: "Acres",
+      size: 1.5,
+    }),
+    {
+      buildingSizeSqft: null,
+      lotSizeAcres: 1.5,
+      units: null,
+      kind: "lot_acres",
+      normalizedValue: 1.5,
+    }
+  );
+  const hectares = newmarkNimMeasurementFields({
+    unitOfMeasurement: "Hectares",
+    size: 2,
+  });
+  assert.equal(hectares.buildingSizeSqft, null);
+  assert.equal(hectares.units, null);
+  assert.equal(hectares.kind, "lot_acres");
+  assert.ok(Math.abs((hectares.lotSizeAcres ?? 0) - 4.94210762) < 1e-9);
+  assert.ok(Math.abs((hectares.normalizedValue ?? 0) - 4.94210762) < 1e-9);
+});
+
+test("Newmark NIM rejects an implausible sale price relative to building area", () => {
+  const mapped = mapNewmarkNimListing(
+    {
+      id: "provider-bad-price",
+      slug: "bad-price",
+      priceSummary: "$24,200,000,000",
+      externalWebsiteUrl:
+        "https://www.nmrk.com/properties/bad-price",
+      properties: [
+        {
+          countryCode: "US",
+          stateAbbreviation: "CA",
+          zip: "95822",
+          size: 15125,
+          sizeSf: 15125,
+          unitOfMeasurement: "Sq. Ft.",
+        },
+      ],
+    },
+    "sale",
+    "2026-07-30T02:30:00Z",
+    true
+  );
+  assert.equal(mapped?.salePriceUsd, null);
+  assert.equal(
+    mapped?.newmarkNimPriceRejected,
+    "implausible_price_per_square_foot"
+  );
+  assert.equal(mapped?.salePriceText, "$24,200,000,000");
+});
+
+test("Newmark NIM geography admits a blank-country US state and ZIP but fails ambiguity", () => {
+  const base = {
+    id: "provider-blank-country",
+    slug: "blank-country-us-listing",
+    properties: [
+      {
+        countryCode: null,
+        address: "1 Main Street",
+        city: "Tulsa",
+        stateAbbreviation: "OK",
+        zip: "74103",
+      },
+    ],
+  };
+  assert.equal(
+    mapNewmarkNimListing(
+      base,
+      "lease",
+      "2026-07-30T02:30:00Z",
+      true
+    )?.state,
+    "OK"
+  );
+  assert.throws(
+    () =>
+      mapNewmarkNimListing(
+        {
+          ...base,
+          properties: [
+            {
+              countryCode: null,
+              address: "Unknown location",
+              stateAbbreviation: "ZZ",
+              zip: "ABCDE",
+            },
+          ],
+        },
+        "lease",
+        "2026-07-30T02:30:00Z",
+        true
+      ),
+    /ambiguous geography/
+  );
+  assert.throws(
+    () =>
+      mapNewmarkNimListing(
+        {
+          id: "provider-empty-properties",
+          slug: "empty-properties",
+          properties: [],
+        },
+        "lease",
+        "2026-07-30T02:30:00Z",
+        true
+      ),
+    /has no property geography/
+  );
+});
+
+test("Newmark NIM source reconciles complete global pagination before US filtering", async () => {
+  const oldFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const calls: any[] = [];
+  const records = Array.from({ length: 101 }, (_, index) => ({
+    id: `provider-${index}`,
+    slug: `listing-${index}`,
+    name: `Listing ${index}`,
+    createdOn: `2026-07-29T00:${String(index % 60).padStart(2, "0")}:00Z`,
+    modifiedOn: "2026-07-29T12:00:00Z",
+    properties: [
+      {
+        countryCode: index === 100 ? "US" : "CA",
+        address: `${index} Main Street`,
+        city: index === 100 ? "Tulsa" : "Toronto",
+        stateAbbreviation: index === 100 ? "OK" : "ON",
+        zip: index === 100 ? "74103" : "M5H",
+      },
+    ],
+  }));
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    calls.push(body);
+    const start = body.page * body.take;
+    return new Response(
+      JSON.stringify({
+        data: records.slice(start, start + body.take),
+        total: records.length,
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }
+    );
+  };
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const result = await srcNewmark("sale", Infinity, true);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(
+      calls.map((call) => call.page),
+      [0, 1]
+    );
+    assert.ok(
+      calls.every(
+        (call) =>
+          call.type === 2
+          && call.take === NEWMARK_NIM_PAGE_SIZE
+          && call.sortBy === "createdOn"
+          && call.isAscending === true
+      )
+    );
+    assert.equal(result.totalAvailable, 1);
+    assert.equal(result.listings.length, 1);
+    assert.equal(result.listings[0]?.id, "listing-100");
+    assert.equal(result.truncated, false);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("Newmark NIM retries a transient rate limit but not a client error", async () => {
+  const oldFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    if (calls === 1) {
+      return new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "0" },
+      });
+    }
+    return new Response(JSON.stringify({ data: [], total: 0 }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    assert.deepEqual(await newmarkNimPage("lease", 0), {
+      data: [],
+      total: 0,
+    });
+    assert.equal(calls, 2);
+
+    calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      return new Response("bad request", { status: 400 });
+    };
+    await assert.rejects(
+      () => newmarkNimPage("lease", 0),
+      /HTTP 400 after 1 attempt/
+    );
+    assert.equal(calls, 1);
+    assert.equal(NEWMARK_NIM_MAX_ATTEMPTS, 6);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});
+
+test("Newmark NIM applies default 429 backoff only when Retry-After is absent", () => {
+  assert.equal(newmarkNimRetryDelayMs(429, null, 1), 10_000);
+  assert.equal(newmarkNimRetryDelayMs(429, "", 2), 20_000);
+  assert.equal(newmarkNimRetryDelayMs(429, "0", 3), 0);
+  assert.equal(newmarkNimRetryDelayMs(503, null, 2), 2_000);
+});
+
+test("Newmark NIM deadline covers a stalled response body and retries it", async () => {
+  const oldFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    if (calls === 1) {
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            init?.signal?.addEventListener("abort", () => {
+              controller.error(new Error("aborted body"));
+            });
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }
+      );
+    }
+    return new Response(JSON.stringify({ data: [], total: 0 }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    assert.deepEqual(
+      await newmarkNimPage("sale", 0, NEWMARK_NIM_PAGE_SIZE, 5, 0),
+      { data: [], total: 0 }
+    );
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
 });
 
 // ---------------------------------------------------------------------------

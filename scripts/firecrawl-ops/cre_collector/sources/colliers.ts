@@ -4,6 +4,7 @@ import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY, PAGE_CAP } from "../lib/config.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { decodeHtmlEntities, dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
+import { refreshGenerationId } from "../lib/freshness.js";
 import { parseJsonBody } from "../lib/scrape.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { parseLeaseRate } from "../lib/parse.js";
@@ -21,7 +22,8 @@ export const COLLIERS_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
 
 export type ColliersCard = {
   id: string | null;
-  url: string;
+  mapProjectId: string;
+  url: string | null;
   detailUrl: string | null;
   detailPv: string | null;
   name: string | null;
@@ -41,6 +43,18 @@ export type ColliersCard = {
   photos: string[];
   colliersSalesTrackerCard: Record<string, any>;
 };
+
+export type ColliersMapPin = {
+  latitude: number;
+  longitude: number;
+};
+
+export type ColliersMapGroup = {
+  projectId: string;
+  pins: ColliersMapPin[];
+};
+
+export class ColliersIdentityError extends Error {}
 
 export function colliersHeaders(accept = "application/json, text/javascript, */*; q=0.01"): Record<string, string> {
   return {
@@ -117,6 +131,55 @@ export function listingPvFromColliersUrl(url: string | null): string | null {
   }
 }
 
+export function groupColliersMapLocations(rows: any[]): ColliersMapGroup[] {
+  const groups = new Map<string, ColliersMapGroup>();
+  for (const [index, row] of rows.entries()) {
+    const rawProjectId = row?.ProjectId ?? row?.projectId;
+    if (
+      rawProjectId === null ||
+      rawProjectId === undefined ||
+      !String(rawProjectId).trim()
+    ) {
+      throw new Error(`Colliers map row ${index} is missing ProjectId`);
+    }
+    const projectId = String(rawProjectId).trim();
+    let group = groups.get(projectId);
+    if (!group) {
+      group = { projectId, pins: [] };
+      groups.set(projectId, group);
+    }
+    const latitude = num(Number(row?.Latitude ?? row?.latitude));
+    const longitude = num(Number(row?.Longitude ?? row?.longitude));
+    if (
+      latitude !== null &&
+      longitude !== null &&
+      latitude >= -90 &&
+      latitude <= 90 &&
+      longitude >= -180 &&
+      longitude <= 180 &&
+      !group.pins.some(
+        (pin) => pin.latitude === latitude && pin.longitude === longitude
+      )
+    ) {
+      group.pins.push({ latitude, longitude });
+    }
+  }
+  return [...groups.values()];
+}
+
+export function colliersMapScalarCoordinates(group: ColliersMapGroup): {
+  latitude: number | null;
+  longitude: number | null;
+} {
+  if (group.pins.length !== 1) {
+    return { latitude: null, longitude: null };
+  }
+  return {
+    latitude: group.pins[0]!.latitude,
+    longitude: group.pins[0]!.longitude,
+  };
+}
+
 export function colliersContactsFromCard($: cheerio.CheerioAPI, card: cheerio.Cheerio<any>): any[] {
   const contacts: any[] = [];
   card.find(".contacts .contact").each((_, el) => {
@@ -139,7 +202,11 @@ export function colliersContactsFromCard($: cheerio.CheerioAPI, card: cheerio.Ch
   return contacts;
 }
 
-export function parseColliersCards(html: string, mapLocations: any[], start: number): ColliersCard[] {
+export function parseColliersCards(
+  html: string,
+  mapGroups: ColliersMapGroup[],
+  start: number
+): ColliersCard[] {
   const $ = cheerio.load(html);
   const cards: ColliersCard[] = [];
   $("li.item").each((idx, el) => {
@@ -149,11 +216,20 @@ export function parseColliersCards(html: string, mapLocations: any[], start: num
       card.find('a[href*="landing.aspx"], a[href*="modern.aspx"], a[href*="/slp/"]').first().attr("href")
     );
     const detailPv = listingPvFromColliersUrl(detailUrl);
-    const mapRow = mapLocations[idx] ?? {};
-    const projectId = mapRow.ProjectId ?? mapRow.projectId ?? null;
-    const id = projectId != null ? String(projectId) : detailPv;
+    const mapGroup = mapGroups[idx];
+    if (!mapGroup) {
+      throw new Error(
+        `Colliers card ${start + idx} has no ordered ProjectId map group`
+      );
+    }
+    const mapCoordinates = colliersMapScalarCoordinates(mapGroup);
     const location = parseColliersLocation(card.find(".city").first().text());
     const photo = colliersUrl(card.find("img").first().attr("src"));
+    const name = clean(card.find(".headline").first().text());
+    const assetType = clean(card.find(".asset").first().text());
+    const salePriceText = clean(card.find(".price").first().text());
+    const sizeText = clean(card.find(".sq-ft").first().text());
+    const id = `salestracker:card:${mapGroup.projectId}`;
     const contactsDetailed = colliersContactsFromCard($, card);
     const brokerIds = contactsDetailed
       .map((c) =>
@@ -167,33 +243,98 @@ export function parseColliersCards(html: string, mapLocations: any[], start: num
       .filter((brokerId: number | null): brokerId is number => brokerId !== null);
     cards.push({
       id,
-      url: detailUrl ?? `${COLLIERS_SOURCE_URL}#project-${id ?? start + idx}`,
+      mapProjectId: mapGroup.projectId,
+      url: detailUrl,
       detailUrl,
       detailPv,
-      name: clean(card.find(".headline").first().text()),
+      name,
       transactionType: "Investment Sale",
-      assetType: clean(card.find(".asset").first().text()),
+      assetType,
       status: clean(card.find(".status").first().text()),
       city: location.city,
       state: location.state,
       country: "US",
-      salePriceUsd: moneyToNumber(clean(card.find(".price").first().text())),
-      salePriceText: clean(card.find(".price").first().text()),
-      sizeText: clean(card.find(".sq-ft").first().text()),
-      latitude: num(Number(mapRow.Latitude ?? mapRow.latitude)),
-      longitude: num(Number(mapRow.Longitude ?? mapRow.longitude)),
+      salePriceUsd: moneyToNumber(salePriceText),
+      salePriceText,
+      sizeText,
+      latitude: mapCoordinates.latitude,
+      longitude: mapCoordinates.longitude,
       brokerIds,
       contactsDetailed,
       photos: photo ? [photo] : [],
       colliersSalesTrackerCard: prune({
         detailPv,
-        projectId,
+        projectId: mapGroup.projectId,
         hasDetailUrl: Boolean(detailUrl),
         cardIndex: start + idx,
+        identitySource: "ordered-map-project-group",
+        mapPinCount: mapGroup.pins.length,
+        mapPins: mapGroup.pins,
       }) ?? {},
     });
   });
+  if (cards.length !== mapGroups.length) {
+    throw new Error(
+      `Colliers parsed-card/map-group parity failed at start ${start}: ${cards.length} != ${mapGroups.length}`
+    );
+  }
   return cards;
+}
+
+export function colliersNumProjects(value: unknown, start: number): number {
+  if (
+    value === null ||
+    value === undefined ||
+    (typeof value === "string" && value.trim() === "") ||
+    (typeof value !== "string" && typeof value !== "number")
+  ) {
+    throw new Error(
+      `Colliers returned invalid numProjects=${JSON.stringify(value)} at start ${start}`
+    );
+  }
+  const count = Number(value);
+  if (!Number.isInteger(count) || count < 0) {
+    throw new Error(
+      `Colliers returned invalid numProjects=${JSON.stringify(value)} at start ${start}`
+    );
+  }
+  return count;
+}
+
+export function colliersAssertPageCount(
+  value: unknown,
+  providerCardCount: number,
+  start: number
+): number {
+  const count = colliersNumProjects(value, start);
+  if (count !== providerCardCount) {
+    throw new Error(
+      `Colliers numProjects/card parity failed at start ${start}: ${count} != ${providerCardCount}`
+    );
+  }
+  return count;
+}
+
+export function colliersAssertDetailProjectId(
+  mapProjectId: string,
+  detailProjectId: unknown
+): string {
+  if (
+    detailProjectId === null ||
+    detailProjectId === undefined ||
+    !String(detailProjectId).trim()
+  ) {
+    throw new ColliersIdentityError(
+      `Colliers SLP detail for map ProjectId ${mapProjectId} omitted ProjectId`
+    );
+  }
+  const normalized = String(detailProjectId).trim();
+  if (normalized !== mapProjectId) {
+    throw new ColliersIdentityError(
+      `Colliers grouped map/detail ProjectId mismatch: ${mapProjectId} != ${normalized}`
+    );
+  }
+  return normalized;
 }
 
 export function colliersProjectField(details: any, name: string): string | null {
@@ -301,17 +442,38 @@ export function colliersStrandedStructured(detail: any, details: any): Record<st
   }) ?? {};
 }
 
+export function colliersInventoryOnlyCard(
+  card: ColliersCard,
+  reason: "card_not_linked" | "detail_request_failed"
+): any {
+  return prune({
+    ...card,
+    canonicalUrl: undefined,
+    statusBadge: card.status ?? undefined,
+    preserveChildCollections: true,
+    provisionalIdentity: {
+      reason: "provider_card_not_canonicalized",
+      historyContinuity: "not_guaranteed",
+      detailPvObserved: Boolean(card.detailPv),
+    },
+    inventoryOnly: {
+      reason,
+      indexUrl: COLLIERS_SOURCE_URL,
+    },
+    detailUnavailable: {
+      reason,
+      publicCardObserved: true,
+      publicPageObserved: Boolean(card.detailPv),
+    },
+    colliersSalesTrackerDetail: {
+      skipped: reason,
+    },
+  });
+}
+
 export async function enrichColliersCard(card: ColliersCard): Promise<any> {
   if (!card.detailPv) {
-    // Even without a detail page, emit canonicalUrl and statusBadge from the card.
-    return prune({
-      ...card,
-      canonicalUrl: card.url ?? null,
-      statusBadge: card.status ?? null,
-      colliersSalesTrackerDetail: {
-        skipped: "card did not expose a public SLP detail link",
-      },
-    });
+    return colliersInventoryOnlyCard(card, "card_not_linked");
   }
   try {
     const detail = await colliersGetJson(colliersSlpInitUrl(card.detailPv));
@@ -334,7 +496,10 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
       stripHtmlText(detail?.SimpleLandingPageValues?.Description) ??
       stripHtmlText(detail?.SimpleLandingPageValues?.InvestmentHighlights) ??
       clean(detail?.Seo?.MetaDescription);
-    const projectId = summary?.AttributeVisibility?.ProjectId ?? summary?.ProjectId ?? card.id;
+    const projectId = colliersAssertDetailProjectId(
+      card.mapProjectId,
+      summary?.AttributeVisibility?.ProjectId ?? summary?.ProjectId ?? null
+    );
     const photos = colliersDetailImages(detail, card.photos);
     // Capture-everything harvest. Colliers SalesTracker has no scraped HTML detail
     // (the detail is the SLP Init JSON), so harvest runs over a synthetic empty
@@ -342,14 +507,17 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
     // agreement urls (classified docs), any video/tour fields, and the gallery
     // images. harvestDetail classifies + dedups by url.
     const harvested = harvestDetail({} as ScrapedDoc, {
-      baseUrl: card.url,
+      baseUrl: card.detailUrl ?? COLLIERS_SOURCE_URL,
       extraDocs: colliersStrandedDocs(detail),
       extraMedia: colliersStrandedMedia(detail),
       extraImages: photos,
     });
     const lifted = colliersStrandedStructured(detail, details);
     // Canonical URL: live url from the detail summary or card.
-    const canonicalUrl = clean(summary?.SiteUrl) ?? clean(summary?.CanonicalUrl) ?? card.url;
+    const canonicalUrl =
+      clean(summary?.SiteUrl) ??
+      clean(summary?.CanonicalUrl) ??
+      card.detailUrl;
     // Status badge: prefer detail summary.Status, then card status.
     const resolvedStatus = clean(summary?.Status) ?? colliersProjectField(details, "Status") ?? card.status;
     // Lease rate (low yield on SalesTracker: investment-sale focus).
@@ -360,7 +528,7 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
     const extraFacts: Record<string, string> | undefined = projectType ? { project_type: projectType } : undefined;
     return prune({
       ...card,
-      id: projectId != null ? String(projectId) : card.id,
+      id: projectId,
       name: clean(summary?.ProjectName) ?? card.name,
       description,
       assetType: clean(details?.AssetType?.Value) ?? card.assetType,
@@ -408,11 +576,13 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
       },
     });
   } catch (err) {
-    console.error(`  colliers/sale: detail failed for ${card.url}: ${err}`);
-    return prune({
-      ...card,
-      detailError: String(err),
-    });
+    if (err instanceof ColliersIdentityError) {
+      throw err;
+    }
+    console.error(
+      `  colliers/sale: detail unavailable for ${card.detailUrl ?? card.id}: ${err}`
+    );
+    return colliersInventoryOnlyCard(card, "detail_request_failed");
   }
 }
 
@@ -430,60 +600,109 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promis
   }
   if (monitor) {
     // Monitor mode is NOT supported for colliers (SalesTracker): the persisted
-    // external id is the SLP-detail ProjectId (enrichColliersCard overrides
-    // id = summary.ProjectId), while the cheap card id is the GetMapData ProjectId
-    // paired to the list card by ARRAY INDEX. Index pairing is fragile (mapLocations
-    // can be shorter/reordered), so ~581/1,300 (45%) of cards carry a parse-time id
-    // that differs from the persisted detail ProjectId. Emitting those keys would
-    // orphan against the persisted colliers:<ProjectId> rows and corrupt the change
-    // ledger, so colliers stays on the full-sweep cadence and emits no monitor rows
+    // external id is the SLP-detail ProjectId, which is unavailable on many public
+    // cards and requires one detail request per linked card. Emitting provisional
+    // visible-card keys would orphan against persisted colliers:<ProjectId> rows
+    // and corrupt the change ledger, so colliers stays on the full-sweep cadence
+    // and emits no monitor rows
     // (same exclusion as jll/cbre-dealflow). NOTE: colliers-main (main: ids) keys on
     // a stable sitemap id in both modes and remains monitor-enabled; this exclusion
     // is for the SalesTracker `colliers` source only.
     return {
       company: "Colliers",
       sourceUrl: COLLIERS_SOURCE_URL,
-      method: "Monitor mode unsupported (detail-derived ProjectId; fragile index-paired card id); full-sweep cadence only",
+      method: "Monitor mode unsupported (detail-derived ProjectId); full-sweep cadence only",
       totalAvailable: null,
       listings: [],
-      note: "Monitor mode emits no rows for colliers (SalesTracker): its external id is the SLP-detail ProjectId and cannot be reliably derived from the index-paired card id. Refresh this source via the full (non-monitor) collection path. colliers-main is unaffected.",
+      note: "Monitor mode emits no rows for colliers (SalesTracker): its canonical external id is verified by the SLP detail pass, which monitor mode intentionally skips. Refresh this source via the full (non-monitor) collection path. colliers-main is unaffected.",
     };
   }
   const home = await colliersGetText(COLLIERS_SOURCE_URL);
   const engineKey = extractColliersEngineKey(home);
   const want = Math.min(max, Number.MAX_SAFE_INTEGER);
-  const listingsById = new Map<string, ColliersCard>();
+  const selected: ColliersCard[] = [];
   let total: number | null = null;
   let totalAvail: number | null = null;
+  let providerRowsScanned = 0;
+  let mapRowsScanned = 0;
+  let parseOmissions = 0;
+  let exhausted = false;
+  const providerProjectIds = new Set<string>();
   let start = 1;
-  for (let page = 1; page <= PAGE_CAP && listingsById.size < want; page++) {
-    const pageSize = Math.min(COLLIERS_PAGE_SIZE, want - listingsById.size);
+  for (let page = 1; page <= PAGE_CAP && selected.length < want; page++) {
+    const pageSize = Math.min(COLLIERS_PAGE_SIZE, want - selected.length);
     const [listData, mapData] = await Promise.all([
       colliersGetJson(colliersListUrl(engineKey, start, pageSize)),
       colliersGetJson(colliersMapUrl(engineKey, start, pageSize)),
     ]);
-    total = total ?? (Number.isFinite(Number(listData.total)) ? Number(listData.total) : null);
+    const reportedTotal = Number.isFinite(Number(listData.total))
+      ? Number(listData.total)
+      : null;
+    if (total !== null && reportedTotal !== null && reportedTotal !== total) {
+      throw new Error(
+        `Colliers total changed during pagination: ${total} -> ${reportedTotal}`
+      );
+    }
+    total = total ?? reportedTotal;
     totalAvail =
       totalAvail ?? (Number.isFinite(Number(listData.totalAvail)) ? Number(listData.totalAvail) : null);
-    const mapLocations = Array.isArray(mapData?.projectLocations) ? mapData.projectLocations : [];
-    const cards = parseColliersCards(String(listData.html ?? ""), mapLocations, start);
-    for (const card of cards) {
-      const key = card.id ?? card.detailPv ?? card.url;
-      if (!listingsById.has(key) && listingsById.size < want) listingsById.set(key, card);
+    const pageHtml = String(listData.html ?? "");
+    const providerCardCount = cheerio.load(pageHtml)("li.item").length;
+    const mapRows = Array.isArray(mapData?.projectLocations)
+      ? mapData.projectLocations
+      : [];
+    const mapGroups = groupColliersMapLocations(mapRows);
+    if (mapGroups.length !== providerCardCount) {
+      throw new Error(
+        `Colliers card/map-group parity failed at start ${start}: ${providerCardCount} != ${mapGroups.length}`
+      );
     }
+    for (const group of mapGroups) {
+      if (providerProjectIds.has(group.projectId)) {
+        throw new Error(
+          `Colliers repeated map ProjectId ${group.projectId} across pages`
+        );
+      }
+      providerProjectIds.add(group.projectId);
+    }
+    const cards = parseColliersCards(pageHtml, mapGroups, start);
+    providerRowsScanned += providerCardCount;
+    mapRowsScanned += mapRows.length;
+    parseOmissions += Math.max(0, providerCardCount - cards.length);
+    selected.push(...cards.slice(0, Math.max(0, want - selected.length)));
     console.error(
-      `  colliers/sale: page ${page} start ${start}, ${cards.length} cards (${listingsById.size}/${total ?? "?"})`
+      `  colliers/sale: page ${page} start ${start}, ${cards.length}/${providerCardCount} parsed cards (${selected.length}/${total ?? "?"})`
     );
-    const numProjects = Number(listData.numProjects ?? cards.length);
-    if (!numProjects || cards.length === 0) break;
+    const numProjects = colliersAssertPageCount(
+      listData.numProjects,
+      providerCardCount,
+      start
+    );
+    if (numProjects === 0) {
+      exhausted = true;
+      break;
+    }
     start += numProjects;
+    if (total !== null && start > total) {
+      exhausted = true;
+      break;
+    }
   }
-  const selected = [...listingsById.values()];
   if (!selected.length) throw new Error("no public Colliers SalesTracker cards found");
+  const stoppedAtRequestedLimit =
+    selected.length >= want && Number.isFinite(max);
+  const providerTotalMismatch =
+    !Number.isFinite(max) &&
+    total !== null &&
+    providerRowsScanned !== total;
+  let truncated =
+    parseOmissions > 0 ||
+    providerTotalMismatch ||
+    (!exhausted && !stoppedAtRequestedLimit);
   let done = 0;
   // Full path only (monitor mode returned [] above): SLP Init detail-enrich every
   // card so the persisted external id is the detail ProjectId.
-  const listings = await pmap(selected, COLLIERS_DETAIL_CONCURRENCY, async (card) => {
+  const enriched = await pmap(selected, COLLIERS_DETAIL_CONCURRENCY, async (card) => {
     const listing = await enrichColliersCard(card);
     done++;
     if (done % 25 === 0 || done === selected.length) {
@@ -491,17 +710,63 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promis
     }
     return listing;
   });
-  const missingDetails = selected.filter((card) => !card.detailPv).length;
+  const inventoryObservedAt = new Date().toISOString();
+  const listings = enriched.map((listing) => {
+    if (listing?.inventoryOnly) {
+      // An unlinked or failed SLP card is only provisional source-index
+      // evidence. It cannot inherit the canonical detail contract below.
+      return { ...listing, inventoryObservedAt };
+    }
+    return {
+      ...listing,
+      inventoryObservedAt,
+      detailObservedAt: inventoryObservedAt,
+      freshnessProvenance: {
+        detailScope: "detail_page",
+        generationId: refreshGenerationId(),
+        method: "colliers_salestracker_slp_detail",
+        cacheDisposition: "live",
+      },
+    };
+  });
+  const canonicalIds = new Set<string>();
+  const duplicateCanonicalIds = new Set<string>();
+  for (const listing of listings) {
+    if (listing?.inventoryOnly) continue;
+    const id = clean(listing?.id);
+    if (!id) {
+      throw new Error("Colliers detail enrichment produced a canonical row without an id");
+    }
+    if (canonicalIds.has(id)) duplicateCanonicalIds.add(id);
+    canonicalIds.add(id);
+  }
+  if (duplicateCanonicalIds.size) {
+    throw new Error(
+      `Colliers detail enrichment produced ${duplicateCanonicalIds.size} duplicate canonical ProjectId(s)`
+    );
+  }
+  const inventoryOnly = listings.filter((listing) => listing?.inventoryOnly).length;
+  const detailRequestFailures = listings.filter(
+    (listing) =>
+      listing?.inventoryOnly?.reason === "detail_request_failed"
+  ).length;
+  if (detailRequestFailures > 0) truncated = true;
+  const detailUnavailable = listings.filter(
+    (listing) => listing?.detailUnavailable
+  ).length;
   return {
     company: "Colliers",
     sourceUrl: COLLIERS_SOURCE_URL,
     method:
-      "Public Colliers SalesTracker RCM ListingEngine GET list/map endpoints plus anonymous SLP Init detail enrichment",
+      "Public Colliers SalesTracker RCM ListingEngine GET list/map endpoints with ordered ProjectId grouping plus anonymous SLP Init detail enrichment",
     totalAvailable: total,
     listings,
+    truncated,
     note:
       `SalesTracker public list totalAvail was ${totalAvail ?? "unknown"} and filtered total was ${total ?? "unknown"}. ` +
-      `${missingDetails} collected card(s) in this run did not expose a public SLP detail link and were kept as card/map rows. ` +
+      `Scanned ${providerRowsScanned} provider card(s), retained ${selected.length}, and omitted ${parseOmissions} unparseable card(s). ` +
+      `Grouped ${mapRowsScanned} map pin row(s) into ${providerProjectIds.size} unique ordered ProjectId(s). ` +
+      `${canonicalIds.size} card(s) resolved to unique detail ProjectIds; ${inventoryOnly} remained inventory-only evidence; ${detailUnavailable} lacked canonical detail, including ${detailRequestFailures} failed detail request(s). ` +
       "Main colliers.com Coveo sale/lease coverage remains blocked; no POST, agreement, or gated document path is used.",
   };
 }

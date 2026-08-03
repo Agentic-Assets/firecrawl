@@ -3,6 +3,12 @@
 Owner: EQUIRE deal-intelligence feed.
 Last reviewed against code: 2026-06-13.
 
+> **Historical architecture record:** Counts, source totals, scheduler state,
+> line numbers, and “live now” statements below are bounded to June 2026. The
+> implemented collector now registers 51 keys. Use `START_HERE.md`, the July 29
+> refresh ledger, live `cre_status.sh`, and exact checkpoint manifests for
+> current operations. Preserve this file as design rationale.
+>
 > **Implementation status (2026-06-13).** Subsystem 1 (acquisition) and the
 > change-tracking schema are SHIPPED; the monitor runs observe-only. Live now:
 > migration `007` (`cre_listing_events`, `cre_source_index`,
@@ -67,12 +73,14 @@ EQUIRE needs one system that does three things across many brokerage sites:
 2. DETECT NEW listings added to any source, with low latency and without re-scraping everything.
 3. DETECT CHANGES to existing listings: status lifecycle (for_sale to under_contract to pending to sold or leased or withdrawn) and price moves, plus disappearance and re-listing.
 
-The current system does (1) well (about 87,300 active rows as of 2026-06-14 from 15 source adapters across 12 parent brokerages; live per-source counts in `START_HERE.md` and `BROKERAGE_STATUS_2026-06-12.md`) and does (2) and (3) only implicitly. This document defines a cohesive architecture that keeps the working acquisition layer, adds a persisted change ledger and a normalized status, and layers an incremental monitor and safety gates on top, with every adversarial review fix folded in.
+At the June 14 snapshot, the system did (1) well (about 87,300 active rows from
+15 source adapters across 12 parent brokerages) and did (2) and (3) only
+implicitly. This document defines the architecture proposed from that snapshot.
 
 ## 2. What already exists (verified) vs what must be built
 
 ### Already exists and is reused as-is
-- Collector layout: `collect.ts` (~248-line CLI) + `types.ts` + `lib/{config,scrape,util,broker,html}.ts` + `sources/<broker>.ts`. Fifteen source adapters register in `collect.ts` (`SOURCE_KEYS`, `runSource`); each exports `src*(tx, max, monitor)` returning the shared `SourceResult` contract from `types.ts`. Shared primitives live in `lib/`: `scrapeRaw`/`scrapeDoc`/`scrapeJson` with retry and JSON repair, `pmap` bounded concurrency, `brokerRef` global dedup, sitemap parsers (`extractSitemapLocs`, `extractSitemapUrlEntries`), durable JSONL detail caches, and bounded-fetch resume patterns in the per-source modules. Per-source file map and monitor matrix: `scripts/firecrawl-ops/cre_collector/sources/CLAUDE.md`.
+- Collector layout at the snapshot: `collect.ts` (~248-line CLI) + `types.ts` + `lib/{config,scrape,util,broker,html}.ts` + `sources/<broker>.ts`. Fifteen source adapters then registered in `collect.ts`; the current registry has 51 keys. Each adapter returns the shared `SourceResult` contract from `types.ts`. Shared primitives live in `lib/`: `scrapeRaw`/`scrapeDoc`/`scrapeJson` with retry and JSON repair, `pmap` bounded concurrency, `brokerRef` global dedup, sitemap parsers (`extractSitemapLocs`, `extractSitemapUrlEntries`), durable JSONL detail caches, and bounded-fetch resume patterns in the per-source modules. Current per-source file map and monitor matrix: `scripts/firecrawl-ops/cre_collector/sources/CLAUDE.md`.
 - cre_ingest.py: COPY-to-staging then single-statement CTE upsert keyed on (brokerage_id, external_id), with prefixed id folding (`dealflow:`, `investor:`, `main:`) and per-brokerage mark-missing eligibility (797-812). `raw_data = listing` (437) so every source payload, including source status fields, is already persisted.
 - SQL schema sql/001-006: `cre_listings` with a status CHECK allowing six values (002:27-28), child tables, `cre_scrape_jobs`/`cre_scrape_log` (003), GIN index on raw_data (004), four EQUIRE views plus `search_cre_listings()` all gating on `status = 'active' AND deleted_at IS NULL` (005:73,108-109,145-146,174-175,237-238), and the BEFORE UPDATE `updated_at` trigger (005:279-283).
 - Ops: cre_daily_update.sh (healthcheck, full collect at page-cap 400 concurrency 3 in about 27 minutes, ingest, prune), run_colliers_main_full.sh (bounded-chunk resumable driver with convergence detection), cre_validate.py (read-only 8-query quality reporter), and the launchd plist template.
@@ -679,4 +687,3 @@ throttle risk.
 
 The EQUIRE-facing view-gate / NULL-status change (section 12.4) stays pending
 CRE_EQUIRE coordination and is NOT part of the additive build.
-

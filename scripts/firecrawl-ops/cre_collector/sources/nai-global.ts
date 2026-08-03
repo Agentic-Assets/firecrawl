@@ -1,9 +1,15 @@
 // sources/nai-global.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
+import { createHash } from "node:crypto";
 import { PAGE_CAP } from "../lib/config.js";
 import { stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { harvestDetail } from "../lib/harvest.js";
+import {
+  detailObservation,
+  generationMatches,
+  requireFreshDetails,
+} from "../lib/freshness.js";
 import { parseAmountIgnoringCurrencyLabel, normBuildingClass } from "../lib/parse.js";
-import { LinkItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
+import { DetailObservation, LinkItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, num, pmap } from "../lib/util.js";
 
 
@@ -13,7 +19,7 @@ export const NAI_WIDGET_URL = "https://ab.infabode.com/nai-global/listings3";
 export const NAI_PUBLIC_POST_URL = "https://infabode.com/graphql";
 export const NAI_LISTING_URL_BASE = "https://infabode.com/services/listings";
 // Infabode accepts 100 rows per public GraphQL page. Its widget uses 18, but
-// retaining that UI-sized page makes a complete 117-office monitor take dozens
+// retaining that UI-sized page makes a complete 116-office monitor take dozens
 // of slow round trips. A bounded 100-row page preserves offset pagination
 // while making the source practical to refresh.
 export const NAI_PAGE_SIZE = boundedInt(process.env.NAI_PAGE_SIZE, 100, 18, 100);
@@ -27,7 +33,7 @@ export const NAI_GRAPHQL_TIMEOUT_MS = boundedInt(
   60000
 );
 // The public API becomes unreliable when every member-office id is placed in
-// one large filter. Enumerating the documented offices in modest, disjoint
+// one large filter. Enumerating the live widget offices in modest, disjoint
 // batches returns the same public feed without making a partial source result
 // look complete. Each batch is paginated to its own short page.
 export const NAI_SOURCE_BATCH_SIZE = boundedInt(process.env.NAI_SOURCE_BATCH_SIZE, 40, 1, 40);
@@ -53,11 +59,284 @@ export const NAI_SOURCE_IDS = [
   268194, 99557, 92846, 77680, 99558, 99559, 99560, 268195, 99561, 99535, 99584, 99562,
   99563, 109852, 99498, 99566, 99567, 99569, 99585, 92843,
 ];
+export const NAI_SOURCE_DISCOVERY_TIMEOUT_MS = boundedInt(
+  process.env.NAI_SOURCE_DISCOVERY_TIMEOUT_MS,
+  15000,
+  3000,
+  60000
+);
+export const NAI_SOURCE_DISCOVERY_MAX_SCRIPTS = 20;
+export const NAI_SOURCE_DISCOVERY_MAX_BODY_BYTES = 750_000;
+export const NAI_SOURCE_DISCOVERY_MIN_IDS = Math.floor(NAI_SOURCE_IDS.length * 0.75);
+export const NAI_SOURCE_DISCOVERY_MAX_IDS = 500;
+export const NAI_SOURCE_DISCOVERY_PARSER = "next-static-nai-office-array-v1";
+
+export type NaiSourceIdDiscovery = {
+  sourceIds: number[];
+  usedFallback: boolean;
+  warning: string | null;
+  provenance: {
+    mode: "live-widget-js" | "documented-fallback";
+    widgetUrl: string;
+    scriptUrl: string | null;
+    parser: string;
+    sourceIdCount: number;
+    sourceIdsSha256: string;
+    configSha256: string | null;
+  };
+};
+
+type NaiSourceIdDiscoveryOptions = {
+  fetchImpl?: typeof fetch;
+  strict?: boolean;
+  widgetUrl?: string;
+  timeoutMs?: number;
+};
+
+function naiSha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function naiDiscoveryError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function fetchNaiDiscoveryText(
+  url: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+  referer = NAI_WIDGET_URL
+): Promise<string> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    const response = await Promise.race([
+      fetchImpl(url, {
+        headers: {
+          referer,
+          "user-agent": "Mozilla/5.0 CRE collector",
+        },
+        signal: controller.signal,
+      }),
+      deadline,
+    ]);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const contentLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > NAI_SOURCE_DISCOVERY_MAX_BODY_BYTES) {
+      throw new Error(`body exceeds ${NAI_SOURCE_DISCOVERY_MAX_BODY_BYTES} bytes`);
+    }
+    if (!response.body) return "";
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    while (true) {
+      const { done, value } = await Promise.race([reader.read(), deadline]);
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > NAI_SOURCE_DISCOVERY_MAX_BODY_BYTES) {
+        controller.abort();
+        await reader.cancel();
+        throw new Error(`body exceeds ${NAI_SOURCE_DISCOVERY_MAX_BODY_BYTES} bytes`);
+      }
+      chunks.push(value);
+    }
+    const body = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new TextDecoder().decode(body);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+export function naiWidgetScriptUrls(html: string, widgetUrl = NAI_WIDGET_URL): string[] {
+  const widget = new URL(widgetUrl);
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  for (const match of html.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)) {
+    const url = new URL(match[1]!, widget);
+    if (
+      url.origin !== widget.origin ||
+      !url.pathname.startsWith("/_next/static/chunks/") ||
+      !url.pathname.endsWith(".js") ||
+      seen.has(url.href)
+    ) {
+      continue;
+    }
+    seen.add(url.href);
+    urls.push(url.href);
+    if (urls.length >= NAI_SOURCE_DISCOVERY_MAX_SCRIPTS) break;
+  }
+  return urls;
+}
+
+/**
+ * Parse the widget's domestic NAI-office config without evaluating provider JS.
+ * The domestic and international configs are emitted as contiguous arrays of
+ * exact `{id,name,country}` objects. Only one current array is large enough to
+ * satisfy the domestic-list sanity bound; ambiguity or malformed IDs fails.
+ */
+export function parseNaiSourceIdsFromScript(
+  script: string,
+  scriptUrl: string
+): NaiSourceIdDiscovery | null {
+  const objectPattern =
+    String.raw`\{id:(\d+),name:"((?:\\.|[^"\\])*)",country:(?:null|"(?:\\.|[^"\\])*")\}`;
+  const arrayPattern = new RegExp(String.raw`\[((?:${objectPattern},?)+)\]`, "g");
+  const candidates: Array<{ literal: string; sourceIds: number[] }> = [];
+  for (const match of script.matchAll(arrayPattern)) {
+    const literal = match[0]!;
+    const entries = [...literal.matchAll(new RegExp(objectPattern, "g"))];
+    const sourceIds = entries.map((entry) => Number(entry[1]));
+    const names = entries.map((entry) => entry[2]!);
+    if (
+      sourceIds.length >= NAI_SOURCE_DISCOVERY_MIN_IDS &&
+      names.every((name) => /^NAI(?: |$)/.test(name)) &&
+      names.includes("NAI Global")
+    ) {
+      candidates.push({ literal, sourceIds });
+    }
+  }
+  if (!candidates.length) return null;
+  if (candidates.length !== 1) {
+    throw new Error(
+      `ambiguous NAI office config in ${scriptUrl}: found ${candidates.length} sane-size arrays`
+    );
+  }
+  const candidate = candidates[0]!;
+  if (candidate.sourceIds.length > NAI_SOURCE_DISCOVERY_MAX_IDS) {
+    throw new Error(
+      `NAI office config in ${scriptUrl} has ${candidate.sourceIds.length} ids, above ${NAI_SOURCE_DISCOVERY_MAX_IDS}`
+    );
+  }
+  if (
+    candidate.sourceIds.some((id) => !Number.isSafeInteger(id) || id <= 0) ||
+    new Set(candidate.sourceIds).size !== candidate.sourceIds.length
+  ) {
+    throw new Error(`NAI office config in ${scriptUrl} contains invalid or duplicate ids`);
+  }
+  return {
+    sourceIds: candidate.sourceIds,
+    usedFallback: false,
+    warning: null,
+    provenance: {
+      mode: "live-widget-js",
+      widgetUrl: NAI_WIDGET_URL,
+      scriptUrl,
+      parser: NAI_SOURCE_DISCOVERY_PARSER,
+      sourceIdCount: candidate.sourceIds.length,
+      sourceIdsSha256: naiSha256(candidate.sourceIds.join(",")),
+      configSha256: naiSha256(candidate.literal),
+    },
+  };
+}
+
+function naiDocumentedSourceIdFallback(error: unknown, widgetUrl: string): NaiSourceIdDiscovery {
+  const warning =
+    `live NAI widget source-id discovery failed; using ${NAI_SOURCE_IDS.length} documented ids: ` +
+    naiDiscoveryError(error);
+  return {
+    sourceIds: [...NAI_SOURCE_IDS],
+    usedFallback: true,
+    warning,
+    provenance: {
+      mode: "documented-fallback",
+      widgetUrl,
+      scriptUrl: null,
+      parser: NAI_SOURCE_DISCOVERY_PARSER,
+      sourceIdCount: NAI_SOURCE_IDS.length,
+      sourceIdsSha256: naiSha256(NAI_SOURCE_IDS.join(",")),
+      configSha256: null,
+    },
+  };
+}
+
+export async function discoverNaiSourceIds(
+  options: NaiSourceIdDiscoveryOptions = {}
+): Promise<NaiSourceIdDiscovery> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const strict = options.strict ?? true;
+  const widgetUrl = options.widgetUrl ?? NAI_WIDGET_URL;
+  const timeoutMs = options.timeoutMs ?? NAI_SOURCE_DISCOVERY_TIMEOUT_MS;
+  try {
+    const html = await fetchNaiDiscoveryText(widgetUrl, fetchImpl, timeoutMs, widgetUrl);
+    const scriptUrls = naiWidgetScriptUrls(html, widgetUrl);
+    if (!scriptUrls.length) throw new Error("widget HTML contains no eligible Next.js script chunks");
+    const scriptErrors: string[] = [];
+    for (const scriptUrl of scriptUrls) {
+      try {
+        const script = await fetchNaiDiscoveryText(scriptUrl, fetchImpl, timeoutMs, widgetUrl);
+        const discovered = parseNaiSourceIdsFromScript(script, scriptUrl);
+        if (discovered) {
+          discovered.provenance.widgetUrl = widgetUrl;
+          const liveIds = new Set(discovered.sourceIds);
+          const missingDocumentedIds = NAI_SOURCE_IDS.filter((id) => !liveIds.has(id));
+          if (strict && missingDocumentedIds.length) {
+            throw new Error(
+              `live NAI office config omitted ${missingDocumentedIds.length} documented id(s): ` +
+                missingDocumentedIds.join(",")
+            );
+          }
+          return discovered;
+        }
+      } catch (error) {
+        scriptErrors.push(`${scriptUrl}: ${naiDiscoveryError(error)}`);
+      }
+    }
+    const suffix = scriptErrors.length ? `; ${scriptErrors.join("; ")}` : "";
+    throw new Error(`no validated domestic NAI office config found in ${scriptUrls.length} chunks${suffix}`);
+  } catch (error) {
+    const wrapped = new Error(`NAI source organization discovery failed: ${naiDiscoveryError(error)}`);
+    if (strict) throw wrapped;
+    return naiDocumentedSourceIdFallback(wrapped, widgetUrl);
+  }
+}
+
+let naiLiveSourceIdDiscovery: Promise<NaiSourceIdDiscovery> | null = null;
+
+async function resolveNaiSourceIds(strict: boolean): Promise<NaiSourceIdDiscovery> {
+  if (!naiLiveSourceIdDiscovery) {
+    naiLiveSourceIdDiscovery = discoverNaiSourceIds({ strict: true });
+  }
+  try {
+    return await naiLiveSourceIdDiscovery;
+  } catch (error) {
+    naiLiveSourceIdDiscovery = null;
+    if (strict) throw error;
+    return naiDocumentedSourceIdFallback(error, NAI_WIDGET_URL);
+  }
+}
+
+export function naiStrictSourceDiscovery(monitor: boolean): boolean {
+  if (!monitor) return true;
+  return /^(1|true|yes)$/i.test(clean(process.env.NAI_STRICT_SOURCE_DISCOVERY) ?? "");
+}
+
+export function naiSourceDiscoveryNote(discovery: NaiSourceIdDiscovery): string {
+  const provenance = discovery.provenance;
+  const script = provenance.scriptUrl ? ` from ${provenance.scriptUrl}` : "";
+  const configHash = provenance.configSha256 ? `; config sha256 ${provenance.configSha256}` : "";
+  return (
+    `${provenance.sourceIdCount} NAI source organization ids (${provenance.mode}${script}; ` +
+    `${provenance.parser}; ids sha256 ${provenance.sourceIdsSha256}${configHash})` +
+    (discovery.warning ? `; WARNING: ${discovery.warning}` : "")
+  );
+}
 
 export const NAI_FEED_QUERY =
   "query GET_LISTINGS_PUBLIC_POSTS($filter: PostFilter, $offset: Int, $limit: Int) { publicPosts(filter: $filter, offset: $offset, limit: $limit) { id title summary content tags currency listingStatus price landSize sizeTotal sizeRangeH sizeRangeL url urlOriginal contactEmail urlDocument documentPreview updatedAt publishedAt contentType { id name } postImages { id url index } locations { id name geometry path } source { id socialLinks name bannerS3 logoS3(format: LOGO_100X100) } } }";
 
 export const naiFeedPageCache = new Map<string, any[]>();
+const naiFeedRowObservations = new WeakMap<object, DetailObservation>();
 
 export function naiSourceIdBatches(sourceIds = NAI_SOURCE_IDS, batchSize = NAI_SOURCE_BATCH_SIZE): number[][] {
   const unique = [...new Set(sourceIds.filter((id) => Number.isInteger(id) && id > 0))];
@@ -86,6 +365,20 @@ export function naiPageSignature(rows: any[]): string | null {
     })
     .filter((id): id is string => !!id);
   return ids.length === rows.length && ids.length > 0 ? ids.join(",") : null;
+}
+
+export function naiResultTruncated(
+  max: number,
+  selected: number,
+  knownEligible: number,
+  incompleteSourceBatches: number,
+  unenumeratedSourceBatches: number
+): boolean {
+  return (
+    incompleteSourceBatches > 0 ||
+    (Number.isFinite(max) &&
+      (selected < knownEligible || unenumeratedSourceBatches > 0))
+  );
 }
 
 export async function naiGraphqlPost(
@@ -161,7 +454,14 @@ export async function fetchNaiFeedPage(offset: number, sourceIds: number[] = NAI
     },
     NAI_WIDGET_URL
   );
-  const rows = Array.isArray(data?.publicPosts) ? data.publicPosts : [];
+  if (!Array.isArray(data?.publicPosts)) {
+    throw new Error("Infabode GraphQL response lacks a publicPosts array");
+  }
+  const rows = data.publicPosts;
+  const observed = detailObservation("infabode_public_posts_graphql", "live");
+  for (const row of rows) {
+    if (row && typeof row === "object") naiFeedRowObservations.set(row, observed);
+  }
   naiFeedPageCache.set(cacheKey, rows);
   return rows;
 }
@@ -234,6 +534,15 @@ export function naiListingStatus(detail: any): string | null {
   return clean(value);
 }
 
+export function naiHasListingStatus(detail: any, wantedStatus: string): boolean {
+  const wanted = clean(wantedStatus)?.toUpperCase();
+  if (!wanted) return false;
+  const values: unknown[] = Array.isArray(detail?.listingStatus)
+    ? detail.listingStatus
+    : [detail?.listingStatus];
+  return values.some((value) => clean(value)?.toUpperCase() === wanted);
+}
+
 /**
  * The publicPosts feed includes historical posts. Keep one eligibility rule for
  * both full ingestion and monitoring so the two paths compare like-for-like.
@@ -241,7 +550,7 @@ export function naiListingStatus(detail: any): string | null {
 export function naiIsSourceEligible(row: any, tx: Tx): boolean {
   return (
     Number(row?.contentType?.id) === NAI_CONTENT_TYPE_BY_TX[tx] &&
-    naiListingStatus(row) === "FOR_SALE_ON_MARKET"
+    naiHasListingStatus(row, "FOR_SALE_ON_MARKET")
   );
 }
 
@@ -285,7 +594,8 @@ export function naiListingFromFeed(
   tx: Tx,
   detail: any,
   detailError: string | null,
-  useFeedScalars = false
+  useFeedScalars = false,
+  observation: DetailObservation | null = null
 ): any {
   // The publicPosts feed carries the public listing detail fields, including
   // price, size, contacts, documents, and the provider status label.
@@ -396,6 +706,20 @@ export function naiListingFromFeed(
     feedRow: row,
     publicPost: detail ?? undefined,
     detailError: detailError ?? undefined,
+    // Inventory-only and failed-detail rows may carry useful current card
+    // fields, but must not authorize wholesale replacement of last-good child
+    // collections in the ingest path.
+    preserveChildCollections: !detail || detailError ? true : undefined,
+    inventoryObservedAt: observation?.observedAt,
+    detailObservedAt: detail && !detailError ? observation?.observedAt : undefined,
+    freshnessProvenance: observation
+      ? {
+          detailScope: detail && !detailError ? "source_native_public_record" : "inventory_only",
+          generationId: observation.generationId,
+          method: observation.method,
+          cacheDisposition: observation.cacheDisposition,
+        }
+      : undefined,
     sourceOrganization: detail?.source ?? row?.source,
     sourceWebsiteUrl: clean(detail?.urlOriginal ?? detail?.url),
     sourceSocialLinks: Array.isArray(detail?.source?.socialLinks) ? detail.source.socialLinks : undefined,
@@ -408,7 +732,9 @@ export function naiListingFromFeed(
 }
 
 export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
-  const sourceBatches = naiSourceIdBatches();
+  const sourceIdDiscovery = await resolveNaiSourceIds(naiStrictSourceDiscovery(monitor));
+  if (sourceIdDiscovery.warning) console.error(`  nai-global/${tx}: ${sourceIdDiscovery.warning}`);
+  const sourceBatches = naiSourceIdBatches(sourceIdDiscovery.sourceIds);
   const collectBatch = async (sourceIds: number[], batchIndex: number) => {
     const batchRows: any[] = [];
     const seenPageSignatures = new Set<string>();
@@ -418,6 +744,12 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
       const page = await fetchNaiFeedPage(offset, sourceIds);
       const signature = naiPageSignature(page);
       if (signature && seenPageSignatures.has(signature)) {
+        if (requireFreshDetails()) {
+          throw new Error(
+            `NAI ${tx} office batch ${batchIndex + 1}/${sourceBatches.length} repeated ` +
+              `a full page at offset ${offset} during strict freshness collection`
+          );
+        }
         console.error(
           `  nai-global/${tx}: office batch ${batchIndex + 1}/${sourceBatches.length}, API offset ${offset}, ` +
             "repeated page; treating the prior page as the end of the public feed"
@@ -448,7 +780,7 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
   // fan-out. Capped runs stay sequential so a probe stops after enough
   // source-eligible rows have been found.
   const batchResults: Array<{ rows: any[]; enumeratedFeedRows: number; complete: boolean }> = [];
-  if (Number.isFinite(max)) {
+  if (Number.isFinite(max) && !requireFreshDetails()) {
     for (const [batchIndex, sourceIds] of sourceBatches.entries()) {
       const result = await collectBatch(sourceIds, batchIndex);
       batchResults.push(result);
@@ -462,7 +794,7 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
     );
   }
 
-  const rows: any[] = [];
+  const eligibleRows: any[] = [];
   const seenPostIds = new Set<string>();
   for (const batch of batchResults) {
     for (const row of batch.rows) {
@@ -470,24 +802,37 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
       const id = Number.isFinite(numericId) ? String(numericId) : clean(row?.id);
       if (id && seenPostIds.has(id)) continue;
       if (id) seenPostIds.add(id);
-      rows.push(row);
-      if (rows.length >= max) break;
+      eligibleRows.push(row);
     }
-    if (rows.length >= max) break;
   }
+  const rows = eligibleRows.slice(0, Math.min(max, Number.MAX_SAFE_INTEGER));
   const incompleteSourceBatches = batchResults.filter((batch) => !batch.complete).length;
+  const unenumeratedSourceBatches = sourceBatches.length - batchResults.length;
   const enumeratedFeedRows = batchResults.reduce((count, batch) => count + batch.enumeratedFeedRows, 0);
+  const sourceBatchCoverage =
+    batchResults.length === sourceBatches.length
+      ? String(sourceBatches.length)
+      : `${batchResults.length}/${sourceBatches.length}`;
   if (!rows.length) throw new Error(`no ${tx} listing rows found in NAI Global Infabode feed`);
   // A batch is complete only after its short page. Any page-cap hit makes the
   // source artifact explicitly truncated instead of allowing a monitor to
-  // infer disappearances from an incomplete office subset. An intentional
-  // --max-items cap remains non-truncating as in the prior implementation.
-  const truncated = incompleteSourceBatches > 0 && rows.length < max;
+  // infer disappearances from an incomplete office subset. A finite
+  // --max-items cap is also truncating whenever it slices known eligible rows
+  // or stops before every provider-office batch has been enumerated.
+  const truncated = naiResultTruncated(
+    max,
+    rows.length,
+    eligibleRows.length,
+    incompleteSourceBatches,
+    unenumeratedSourceBatches
+  );
   if (monitor) {
     // Monitor uses the same source-eligible inventory as the full path. It
     // neither activates a terminal status nor deactivates a listing; those
     // decisions remain outside the collector/monitor contract.
-    const listings = rows.map((row) => naiListingFromFeed(row, tx, row, null));
+    const listings = rows.map((row) =>
+      naiListingFromFeed(row, tx, row, null, false, naiFeedRowObservations.get(row) ?? null)
+    );
     return {
       company: "NAI Global",
       sourceUrl: NAI_WIDGET_URL,
@@ -495,14 +840,22 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
       totalAvailable: truncated ? null : listings.length,
       listings,
       truncated,
-      note: "Monitor uses the same source-native public detail fields and FOR_SALE_ON_MARKET eligibility as full ingestion, without status activation or listing deactivation.",
+      note:
+        `${naiSourceDiscoveryNote(sourceIdDiscovery)}. ` +
+        "Monitor uses the same source-native public detail fields and FOR_SALE_ON_MARKET eligibility as full ingestion, without status activation or listing deactivation.",
     };
   }
   // publicPosts already carries the public detail fields needed for the normal
   // listing shape. A complete source refresh is now bounded by feed pages, not
   // by a potentially hours-long request-per-listing fanout.
-  const listings = rows.map((row) => naiListingFromFeed(row, tx, row, null));
-  const activeListings = listings.slice(0, max);
+  const listings = rows.map((row) => {
+    const observation = naiFeedRowObservations.get(row) ?? null;
+    if (requireFreshDetails() && (!observation || !generationMatches(observation.generationId))) {
+      throw new Error(`NAI ${tx} row ${clean(row?.id) ?? "unknown"} lacks current-generation provenance`);
+    }
+    return naiListingFromFeed(row, tx, row, null, false, observation);
+  });
+  const activeListings = listings;
   return {
     company: "NAI Global",
     sourceUrl: NAI_WIDGET_URL,
@@ -511,9 +864,9 @@ export async function srcNaiGlobal(tx: Tx, max: number, monitor: boolean): Promi
     listings: activeListings,
     truncated,
     note:
-      `${NAI_SOURCE_IDS.length} documented NAI source organization ids; stable Infabode IDs and detail URLs captured. ` +
+      `${naiSourceDiscoveryNote(sourceIdDiscovery)}; stable Infabode IDs and detail URLs captured. ` +
       `Documents and contacts remain URL-only when public fields exist. ` +
-      `Scanned ${enumeratedFeedRows} bulk public-detail rows across ${sourceBatches.length} office batches for ${tx}; ` +
+      `Scanned ${enumeratedFeedRows} bulk public-detail rows across ${sourceBatchCoverage} office batches for ${tx}; ` +
       `retained ${activeListings.length} source-eligible on-market rows.`,
   };
 }

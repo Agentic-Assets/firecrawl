@@ -13,6 +13,7 @@ import {
   sharpLaunchCdnUrl,
   avisonYoungAbsoluteUrl,
   avisonYoungDetailLimit,
+  avisonYoungTruncated,
   isAvisonYoungPropertyPhoto,
   avisonYoungNameSlug,
   isAvisonYoungUsCompatible,
@@ -22,6 +23,12 @@ import {
   avisonYoungSizeText,
   avisonYoungLeaseRateText,
   avisonYoungContact,
+  avisonYoungEntityItems,
+  avisonYoungTeamFeedState,
+  decodeAvisonYoungCloudflareEmail,
+  avisonYoungMailtoEmail,
+  extractAvisonYoungDetailContacts,
+  mergeAvisonYoungContacts,
   extractAvisonYoungUrls,
   extractAvisonYoungDocuments,
   extractAvisonYoungPhotos,
@@ -31,7 +38,18 @@ import {
   harvestAvisonYoung,
   avisonYoungLongestMarkdown,
   avisonYoungBaseListing,
+  avisonYoungSelectedProviderIds,
+  assertAvisonYoungOutputIdentity,
+  assertAvisonYoungDetailDoc,
+  assertAvisonYoungStrictFeed,
+  fetchAvisonYoungDirectDoc,
+  fetchAvisonYoungDirectDocWithRetry,
+  isAvisonYoungDirectDetailUrl,
+  isPublicAvisonYoungAddress,
+  enrichAvisonYoungListing,
+  srcAvisonYoung,
 } from "../../../sources/avison-young.js";
+import { firecrawl } from "../../../lib/scrape.js";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -83,6 +101,15 @@ test("avisonYoungDetailLimit honors env override and finite max", () => {
   process.env[DETAIL_LIMIT_ENV] = "99";
   assert.equal(avisonYoungDetailLimit(50, 12), 12);
   clearDetailLimitEnv();
+});
+
+test("Avison finite caps report truncation while unlimited runs do not", () => {
+  assert.equal(avisonYoungTruncated(10, 10, 12), true);
+  assert.equal(avisonYoungTruncated(12, 12, 12), false);
+  assert.equal(
+    avisonYoungTruncated(Number.POSITIVE_INFINITY, 12, 20),
+    false
+  );
 });
 
 test("isAvisonYoungPropertyPhoto accepts listing photos and rejects avatars/logos", () => {
@@ -159,6 +186,219 @@ test("avisonYoungContact maps SharpLaunch team members", () => {
     avatarUrl: `${AVISON_YOUNG_CDN_BASE}/media/77`,
   });
   assert.equal(avisonYoungContact(null), null);
+});
+
+test("avisonYoungEntityItems permits an empty supplemental team feed but not an empty inventory", () => {
+  assert.deepEqual(avisonYoungEntityItems({ items: [] }, "team_member"), []);
+  assert.throws(
+    () => avisonYoungEntityItems({ items: [] }, "website"),
+    /website API returned no items/
+  );
+  assert.deepEqual(avisonYoungEntityItems({ items: [{ id: 1 }] }, "website"), [{ id: 1 }]);
+  assert.deepEqual(avisonYoungTeamFeedState([]), {
+    rows: [],
+    complete: false,
+    reason: "team_member API returned no items",
+  });
+  assert.match(avisonYoungTeamFeedState([], new Error("HTTP 503")).reason ?? "", /HTTP 503/);
+});
+
+test("Avison keeps authoritative website inventory when SharpLaunch team_member is empty", async (t) => {
+  // Regression: on July 29 the provider returned an empty `team_member`
+  // collection while `website` still contained active listings. Treating the
+  // supplemental broker collection as required caused all sale and lease rows
+  // to be discarded. Full property detail remains the source for broker-card
+  // enrichment, so the inventory row must be emitted in preservation mode.
+  const oldFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const oldPropertyStrict = process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const oldScrape = firecrawl.scrape;
+  delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+  process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "avison-empty-team-property-detail";
+  const detailCalls: Array<{ url: string; options: any }> = [];
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    detailCalls.push({ url, options });
+    return {
+      rawHtml: `<script type="application/ld+json">{"@type":"RealEstateListing","name":"Provider inventory fixture","url":"${url}"}</script>`,
+      markdown: "# Provider inventory fixture\nCurrent property detail",
+      links: [],
+      metadata: { sourceURL: url, statusCode: 200 },
+    };
+  };
+  t.after(() => {
+    globalThis.fetch = oldFetch;
+    (firecrawl as any).scrape = oldScrape;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+    if (oldPropertyStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = oldPropertyStrict;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+  });
+  // Cache isolation is intentional: this test runs before any collector call
+  // in this file and exercises the actual source path, not just its helper.
+  // The first request is the page key and the second is website inventory;
+  // replace the fetch response once the source has asked for `website`.
+  let requestCount = 0;
+  globalThis.fetch = async (input) => {
+    requestCount += 1;
+    const url = new URL(String(input));
+    if (url.hostname === "www.avisonyoung.us") {
+      return new Response(
+        "<script>SharpLaunch.PSE.create('0123456789abcdef0123456789abcdef')</script>",
+        { status: 200 }
+      );
+    }
+    assert.equal(url.hostname, "pse-api.sharplaunch.com");
+    const entity = url.searchParams.get("entity");
+    if (entity === "website") {
+      return new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: 17,
+              status: "active",
+              state: "TX",
+              transaction: ["sale"],
+              name: "Provider inventory fixture",
+              external_url: "https://www.avisonyoung.us/properties/provider-fixture",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+    assert.equal(entity, "team_member");
+    return new Response(JSON.stringify({ items: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  const result = await srcAvisonYoung("sale", 1, false);
+
+  assert.equal(requestCount, 3);
+  assert.equal(detailCalls.length, 1);
+  assert.equal(detailCalls[0].options.maxAge, 0);
+  assert.equal(result.listings.length, 1);
+  assert.equal(result.listings[0].id, "17");
+  assert.equal(result.listings[0].preserveChildCollections, true);
+  assert.equal(result.listings[0].detailObservedWithChildPreservation, true);
+  assert.match(result.listings[0].detailObservedAt, /^20\d\d-/);
+  assert.equal(result.listings[0].freshnessProvenance.detailScope, "detail_page");
+  assert.equal(result.listings[0].freshnessProvenance.cacheDisposition, "live");
+  assert.match(result.note ?? "", /Supplemental broker feed degraded/);
+});
+
+test("Avison selected inventory requires unique nonempty provider IDs", () => {
+  assert.deepEqual(
+    avisonYoungSelectedProviderIds([{ id: 17 }, { id: " 18 " }]),
+    ["17", "18"]
+  );
+  assert.throws(
+    () => avisonYoungSelectedProviderIds([{ id: 17 }, { id: "17" }]),
+    /duplicate provider id 17/
+  );
+  assert.throws(
+    () => avisonYoungSelectedProviderIds([{ id: " " }]),
+    /missing a provider id/
+  );
+  assert.throws(
+    () => avisonYoungSelectedProviderIds([{}]),
+    /missing a provider id/
+  );
+});
+
+test("Avison output identities reconcile exactly to selected provider IDs", () => {
+  assert.doesNotThrow(() =>
+    assertAvisonYoungOutputIdentity(
+      ["17", "18"],
+      [{ id: "17" }, { id: "18" }]
+    )
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungOutputIdentity(
+        ["17", "18"],
+        [{ id: "17" }, { id: "19" }]
+      ),
+    /identity reconciliation failed/
+  );
+  assert.throws(
+    () => assertAvisonYoungOutputIdentity(["17"], [{ id: "17" }, { id: "17" }]),
+    /identity reconciliation failed/
+  );
+  assert.throws(
+    () => assertAvisonYoungOutputIdentity(["17"], [{ id: null }]),
+    /output listing is missing a provider id/
+  );
+});
+
+test("detail contacts recover broker data when the supplemental team feed is empty", () => {
+  const encodedEmail = "c5abaca6adaaa9a4b6ebb5a0a9b0b6acaa85a4b3acb6aaabbcaab0aba2eba6aaa8";
+  assert.equal(decodeAvisonYoungCloudflareEmail(encodedEmail), "nicholas.pelusio@avisonyoung.com");
+  assert.equal(decodeAvisonYoungCloudflareEmail("not-hex"), null);
+  assert.equal(
+    avisonYoungMailtoEmail("mailto:frank.simpson%40avisonyoung.com?bcc=webleads%40avisonyoung.com"),
+    "frank.simpson@avisonyoung.com"
+  );
+  assert.equal(avisonYoungMailtoEmail("mailto:first@example.com,second@example.com"), null);
+
+  const contacts = extractAvisonYoungDetailContacts([
+    {
+      url: `${AVISON_YOUNG_HOST}/properties/mesa`,
+      doc: doc(`
+        <script type="application/ld+json">
+          {"@context":"https://schema.org","@type":"RealEstateListing",
+           "agent":[{"@type":"RealEstateAgent","name":"Nicholas Pelusio",
+                     "image":"https://example.com/nicholas.jpg"}]}
+        </script>
+        <div class="team-member">
+          <img src="https://example.com/nicholas.jpg">
+          <h4 class="team-member__name">Nicholas Pelusio</h4>
+          <div class="team-member__job">Principal</div>
+          <div class="team-member__company">Avison Young</div>
+          <div class="team-member__phone"><a href="tel:+16025550101">Call</a></div>
+          <div class="team-member__email">
+            <span class="__cf_email__" data-cfemail="${encodedEmail}">protected</span>
+          </div>
+        </div>
+      `),
+    },
+  ]);
+  assert.deepEqual(contacts, [
+    {
+      name: "Nicholas Pelusio",
+      title: "Principal",
+      company: "Avison Young",
+      phone: "+16025550101",
+      email: "nicholas.pelusio@avisonyoung.com",
+      avatarUrl: "https://example.com/nicholas.jpg",
+    },
+  ]);
+  assert.equal(
+    mergeAvisonYoungContacts(
+      [{ name: "Nicholas Pelusio", company: "Avison Young" }],
+      contacts
+    ).length,
+    1
+  );
+  assert.equal(
+    mergeAvisonYoungContacts(
+      [{ name: "Alex Smith", email: "alex.one@example.com", phone: "212-555-0101" }],
+      [{ name: "Alex Smith", email: "alex.two@example.com", phone: "305-555-0202" }]
+    ).length,
+    2
+  );
+  assert.equal(
+    mergeAvisonYoungContacts(
+      [{ name: "Alex Smith", email: "alex@example.com", phone: "212-555-0100" }],
+      [{ name: "Jordan Lee", email: "jordan@example.com", phone: "212-555-0100" }]
+    ).length,
+    2
+  );
 });
 
 test("extractAvisonYoungUrls dedupes absolute links from HTML and doc.links", () => {
@@ -457,4 +697,428 @@ test("avisonYoungBaseListing never throws on a sparse or null-field rawSharpLaun
   assert.equal(listing.salePricePerSf, undefined);
   assert.equal(listing.buildingClass, undefined);
   assert.equal(listing.propertySubtype, undefined);
+});
+
+test("strict-detail Avison mode rejects degraded team feeds while property-detail mode preserves contacts", () => {
+  clearDetailLimitEnv();
+  assert.equal(
+    avisonYoungDetailLimit(Number.POSITIVE_INFINITY, 12, true),
+    12
+  );
+  process.env[DETAIL_LIMIT_ENV] = "3";
+  assert.equal(avisonYoungDetailLimit(50, 12, true), 12);
+  assert.equal(avisonYoungDetailLimit(50, 12, false), 3);
+  clearDetailLimitEnv();
+
+  assert.throws(
+    () =>
+      assertAvisonYoungStrictFeed(
+        false,
+        "team_member API returned no items",
+        true
+      ),
+    /team feed is incomplete/
+  );
+  assert.doesNotThrow(() =>
+    assertAvisonYoungStrictFeed(false, "degraded", false)
+  );
+});
+
+test("strict Avison source requires an explicit refresh generation", async (t) => {
+  const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  delete process.env.CRE_REFRESH_GENERATION;
+  t.after(() => {
+    if (originalStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalStrict;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+  const { srcAvisonYoung } = await import(
+    "../../../sources/avison-young.js"
+  );
+  await assert.rejects(
+    () => srcAvisonYoung("sale", 1, false),
+    /requires CRE_REFRESH_GENERATION/
+  );
+});
+
+test("Avison detail admission rejects challenge and wrong-property shells", () => {
+  const base = {
+    id: "17808",
+    name: "602 N Capitol Ave",
+    street: "602 N Capitol Ave",
+    externalUrl:
+      "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease",
+  };
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        doc("<html><title>Just a moment...</title><div>captcha</div></html>"),
+        base.externalUrl,
+        base
+      ),
+    /challenge or error shell/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc("<html><h1>Unrelated Chicago Property</h1><main>Property details</main></html>"),
+          metadata: {
+            sourceURL:
+              "https://www.avisonyoung.us/properties/unrelated-chicago-property",
+          },
+        },
+        base.externalUrl,
+        base
+      ),
+    /identity does not match/
+  );
+});
+
+test("Avison direct detail transport captures current HTML, links, images, and identity metadata", async (t) => {
+  const url =
+    "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease";
+  const detail = await fetchAvisonYoungDirectDoc(
+    url,
+    30000,
+    async () => ["93.184.216.34"],
+    async (_url, address) => {
+      assert.equal(address, "93.184.216.34");
+      return {
+        status: 200,
+        location: null,
+        body: `<html><main class="property-detail"><h1>602 N Capitol Ave</h1>
+         <p>Property details</p><a href="/brochure.pdf">Brochure</a>
+         <img src="/hero.jpg"></main></html>`,
+      };
+    }
+  );
+  assert.match(detail.rawHtml, /602 N Capitol Ave/);
+  assert.match(detail.markdown, /^# 602 N Capitol Ave/m);
+  assert.match(
+    detail.markdown,
+    /\[Brochure\]\(https:\/\/www\.avisonyoung\.us\/brochure\.pdf\)/
+  );
+  assert.deepEqual(detail.links, ["/brochure.pdf"]);
+  assert.deepEqual(detail.images, ["/hero.jpg"]);
+  assert.equal(detail.metadata?.statusCode, 200);
+  assert.doesNotThrow(() =>
+    assertAvisonYoungDetailDoc(detail, url, {
+      id: "17808",
+      name: "602 N Capitol Ave",
+      street: "602 N Capitol Ave",
+    })
+  );
+});
+
+test("Avison strict direct detail retries only the failed page with bounded backoff", async () => {
+  const waits: number[] = [];
+  let calls = 0;
+  const detail = await fetchAvisonYoungDirectDocWithRetry(
+    "https://www.avisonyoung.us/properties/retry",
+    async () => {
+      calls++;
+      if (calls < 3) throw new Error(`transient ${calls}`);
+      return doc("<html><main><h1>Recovered property</h1></main></html>");
+    },
+    3,
+    20,
+    async (milliseconds) => {
+      waits.push(milliseconds);
+    }
+  );
+
+  assert.equal(calls, 3);
+  assert.deepEqual(waits, [20, 40]);
+  assert.match(detail.rawHtml, /Recovered property/);
+});
+
+test("Avison strict direct detail reports the terminal per-page failure", async () => {
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDocWithRetry(
+        "https://www.avisonyoung.us/properties/retry",
+        async () => {
+          throw new Error("HTTP 503");
+        },
+        3,
+        0
+      ),
+    /failed after 3 attempt\(s\): Error: HTTP 503/
+  );
+});
+
+test("Avison direct detail transport rejects unsafe URLs, addresses, and redirects", async (t) => {
+  assert.equal(
+    isAvisonYoungDirectDetailUrl("https://www.avisonyoung.us/properties/a"),
+    true
+  );
+  assert.equal(
+    isAvisonYoungDirectDetailUrl("https://listing.sharplaunch.com"),
+    true
+  );
+  for (const value of [
+    "http://www.avisonyoung.us/properties/a",
+    "https://example.com/property/a",
+    "https://127.0.0.1/property/a",
+    "https://user:pass@www.avisonyoung.us/property/a",
+  ]) {
+    assert.equal(isAvisonYoungDirectDetailUrl(value), false);
+  }
+  for (const address of [
+    "127.0.0.1",
+    "10.0.0.1",
+    "169.254.1.1",
+    "192.168.1.1",
+    "::1",
+    "fc00::1",
+    "2001:db8::1",
+    "::ffff:7f00:1",
+    "::ffff:0a00:0001",
+    "0:0:0:0:0:ffff:7f00:1",
+  ]) {
+    assert.equal(isPublicAvisonYoungAddress(address), false);
+  }
+  assert.equal(isPublicAvisonYoungAddress("93.184.216.34"), true);
+  assert.equal(isPublicAvisonYoungAddress("2606:2800:220:1:248:1893:25c8:1946"), true);
+
+  let calls = 0;
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDoc(
+        "https://www.avisonyoung.us/properties/a",
+        30000,
+        async () => ["93.184.216.34"],
+        async () => {
+          calls++;
+          return {
+            status: 302,
+            location: "https://example.com/private-target",
+            body: "",
+          };
+        }
+      ),
+    /not approved/
+  );
+  assert.equal(calls, 1);
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDoc(
+        "https://www.avisonyoung.us/properties/a",
+        30000,
+        async () => ["127.0.0.1"]
+      ),
+    /non-public address/
+  );
+});
+
+test("Avison direct detail creates durable Markdown from descriptive JSON-LD when the body is empty", async () => {
+  const url =
+    "https://www.avisonyoung.us/properties/json-ld-only";
+  const detail = await fetchAvisonYoungDirectDoc(
+    url,
+    30000,
+    async () => ["93.184.216.34"],
+    async () => ({
+      status: 200,
+      location: null,
+      body: `<html><head><script type="application/ld+json">
+        {"@type":"RealEstateListing","name":"JSON-LD Property",
+         "description":"Current verified description","url":"${url}"}
+      </script></head><body><main></main></body></html>`,
+    })
+  );
+  assert.match(detail.markdown, /^# JSON-LD Property/m);
+  assert.match(detail.markdown, /Current verified description/);
+  assert.match(detail.markdown, /\[Source property page\]/);
+});
+
+test("partial Avison alternate failure preserves children and prior Markdown evidence", async (t) => {
+  const originalTransport = process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
+  process.env.AVISON_YOUNG_DETAIL_TRANSPORT = "direct";
+  t.after(() => {
+    if (originalTransport === undefined) {
+      delete process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
+    } else {
+      process.env.AVISON_YOUNG_DETAIL_TRANSPORT = originalTransport;
+    }
+  });
+  const listing = await enrichAvisonYoungListing(
+    {
+      id: "17808",
+      name: "602 N Capitol Ave",
+      street: "602 N Capitol Ave",
+      sharpLaunchUrl: "https://stale-alias.sharplaunch.com",
+      externalUrl:
+        "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease",
+    },
+    false,
+    (url) =>
+      fetchAvisonYoungDirectDoc(
+        url,
+        30000,
+        async () => ["93.184.216.34"],
+        async (requestedUrl) => ({
+          status: 200,
+          location: null,
+          body: requestedUrl.hostname.includes("stale-alias")
+            ? "<html><main><h1>Access denied</h1><p>captcha</p></main></html>"
+            : `<html><main class="property-detail"><h1>602 N Capitol Ave</h1>
+               <p>Property details</p><a href="/brochure.pdf">Brochure</a></main></html>`,
+        })
+      )
+  );
+  assert.equal(listing.detailError, undefined);
+  assert.match(listing.detailWarning, /challenge or error shell/);
+  assert.equal(listing.preserveChildCollections, true);
+  assert.equal(listing.detailObservedWithChildPreservation, true);
+  assert.match(listing.markdown, /^# 602 N Capitol Ave/m);
+  assert.equal(listing.preserveExistingMarkdown, true);
+  assert.equal(
+    listing.detailScrape.markdownDisposition,
+    "preserve_existing_or_insert"
+  );
+});
+
+test("strict Avison detail scrape is uncached, complete, and generation-bound", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const calls: any[] = [];
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    calls.push({ url, options });
+    return {
+      rawHtml: `
+        <html><main class="property-detail"><h1>602 N Capitol Ave</h1>
+        <script type="application/ld+json">
+          {"@type":"RealEstateListing","name":"602 N Capitol Ave",
+           "url":"${url}","description":"Current property detail"}
+        </script></main></html>`,
+      markdown: "# 602 N Capitol Ave\nProperty details",
+      links: [],
+      metadata: { sourceURL: url, statusCode: 200 },
+    };
+  };
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "avison-strict-test";
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+    if (originalStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalStrict;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+
+  const listing = await enrichAvisonYoungListing(
+    {
+      id: "17808",
+      name: "602 N Capitol Ave",
+      street: "602 N Capitol Ave",
+      contactsDetailed: [{ name: "Ada Broker" }],
+      externalUrl:
+        "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease",
+      inventoryObservedAt: "2026-07-29T12:00:00.000Z",
+    },
+    true
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.maxAge, 0);
+  assert.match(listing.detailObservedAt, /^20\d\d-/);
+  assert.equal(listing.freshnessProvenance.generationId, "avison-strict-test");
+  assert.equal(listing.freshnessProvenance.detailScope, "detail_page");
+  assert.equal(listing.preserveChildCollections, undefined);
+  assert.equal(listing.detailError, undefined);
+});
+
+test("degraded non-strict detail refresh preserves prior child collections", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  const originalFreshDetails =
+    process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const calls: any[] = [];
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    calls.push({ url, options });
+    return {
+      rawHtml: `
+        <html><main class="property-detail"><h1>602 N Capitol Ave</h1>
+        <script type="application/ld+json">
+          {"@type":"RealEstateListing","name":"602 N Capitol Ave","url":"${url}"}
+        </script></main></html>`,
+      markdown: "# 602 N Capitol Ave\nProperty details",
+      links: [],
+      metadata: { sourceURL: url, statusCode: 200 },
+    };
+  };
+  process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "avison-property-detail-test";
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+    if (originalFreshDetails === undefined) {
+      delete process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+    } else {
+      process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS =
+        originalFreshDetails;
+    }
+    if (originalGeneration === undefined) {
+      delete process.env.CRE_REFRESH_GENERATION;
+    } else {
+      process.env.CRE_REFRESH_GENERATION = originalGeneration;
+    }
+  });
+
+  const listing = await enrichAvisonYoungListing(
+    {
+      id: "17808",
+      name: "602 N Capitol Ave",
+      street: "602 N Capitol Ave",
+      externalUrl:
+        "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease",
+      preserveChildCollections: true,
+    },
+    false
+  );
+
+  assert.equal(listing.id, "17808");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.maxAge, 0);
+  assert.equal(listing.preserveChildCollections, true);
+  assert.equal(listing.detailObservedWithChildPreservation, true);
+  assert.match(listing.detailObservedAt, /^20\d\d-/);
+  assert.equal(listing.freshnessProvenance.detailScope, "detail_page");
+  assert.equal(listing.freshnessProvenance.cacheDisposition, "live");
+  assert.equal(
+    listing.freshnessProvenance.generationId,
+    "avison-property-detail-test"
+  );
+  assert.equal(listing.detailError, undefined);
+});
+
+test("strict Avison fails on detail admission errors while non-strict preserves the row", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  (firecrawl as any).scrape = async () => {
+    return {
+      rawHtml: "<html><h1>Service unavailable</h1></html>",
+      markdown: "Service unavailable",
+      links: [],
+      metadata: { statusCode: 503 },
+    };
+  };
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+  });
+  const base = {
+    id: "17808",
+    name: "602 N Capitol Ave",
+    externalUrl:
+      "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease",
+  };
+  await assert.rejects(
+    () => enrichAvisonYoungListing(base, true),
+    /detail fetch failed/
+  );
+  const fallback = await enrichAvisonYoungListing(base, false);
+  assert.match(fallback.detailError, /HTTP 503/);
 });

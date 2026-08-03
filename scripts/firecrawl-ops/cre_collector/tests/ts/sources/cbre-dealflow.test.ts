@@ -9,9 +9,21 @@ import {
   cbreDealflowUrl,
   extractCbreDealflowEngineKey,
   CBRE_DEALFLOW_FALLBACK_ENGINE_KEY,
+  CBRE_DEALFLOW_DETAIL_ATTEMPTS,
+  CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS,
+  cbreDealflowGetText,
   cbreDealflowHarvestHtml,
   cbreDealflowStrandedStructured,
   cbreDealflowNewFieldsFromRawData,
+  cbreDealflowDetailUnavailableReason,
+  cbreDealflowUnavailableCard,
+  cbreDealflowUnlinkedCardId,
+  parseCbreDealflowCards,
+  enrichCbreDealflowCard,
+  cbreDealflowNumProjects,
+  cbreDealflowAssertPageCount,
+  cbreDealflowAssertHtmlOnlyMix,
+  cbreDealflowCanonicalUrl,
 } from "../../../sources/cbre-dealflow.js";
 import { harvestDetail } from "../../../lib/harvest.js";
 
@@ -73,6 +85,297 @@ test("extractCbreDealflowEngineKey falls back to pv token or default", () => {
   const html = `<a href="/x?pv=${"A".repeat(32)}">link</a>`;
   assert.equal(extractCbreDealflowEngineKey(html), "A".repeat(32));
   assert.equal(extractCbreDealflowEngineKey("<html></html>"), CBRE_DEALFLOW_FALLBACK_ENGINE_KEY);
+});
+
+test("CBRE Deal Flow inventory timeout admits slow complete provider pages", () => {
+  assert.equal(CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS, 120000);
+  assert.ok(
+    CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS >= 75000,
+    "inventory deadline must exceed the observed 74-second complete-page latency"
+  );
+});
+
+test("CBRE Deal Flow detail reads retry transient transport failures", async () => {
+  assert.equal(CBRE_DEALFLOW_DETAIL_ATTEMPTS, 3);
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    if (calls < CBRE_DEALFLOW_DETAIL_ATTEMPTS) {
+      throw new Error("transient provider timeout");
+    }
+    return new Response("<html>fresh detail</html>", { status: 200 });
+  }) as typeof fetch;
+  try {
+    assert.equal(
+      await cbreDealflowGetText(
+        "https://www.cbredealflow.com/handler/landing.aspx?pv=test",
+        CBRE_DEALFLOW_DETAIL_ATTEMPTS,
+        0
+      ),
+      "<html>fresh detail</html>"
+    );
+    assert.equal(calls, CBRE_DEALFLOW_DETAIL_ATTEMPTS);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("CBRE Deal Flow recognizes a current card with no configured public landing detail", () => {
+  const html = `
+    <div>
+      The landing page executive summary has been enabled,
+      but the landing page has not been setup.
+    </div>
+  `;
+  assert.equal(cbreDealflowDetailUnavailableReason(html), "landing_not_setup");
+  assert.equal(
+    cbreDealflowDetailUnavailableReason(`
+      <html>
+        <head><title>State of Florida Surplus Lands | CBRE | Powered by LightBox</title></head>
+        <body>
+          <div id="ProjectNameAndAddress">
+            <div id="ProjectName">State of Florida Surplus Lands</div>
+          </div>
+          <div id="Content">
+            <div class="TabContent">
+              <p>This public property landing page is available without an embedded data object.</p>
+              <p>Contact the listed brokerage team for current offering information.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `, "State of Florida Surplus Lands"),
+    "public_html_only"
+  );
+  assert.equal(
+    cbreDealflowDetailUnavailableReason(`
+      <html>
+        <head><title>Maintenance | CBRE | Powered by LightBox</title></head>
+        <body>
+          <script>${"provider shell ".repeat(20)}</script>
+          <p>Temporarily unavailable. Please try again later.</p>
+        </body>
+      </html>
+    `, "Maintenance"),
+    null
+  );
+  assert.equal(
+    cbreDealflowDetailUnavailableReason(`
+      <html>
+        <head><title>Different Property | CBRE | Powered by LightBox</title></head>
+        <body>
+          <div id="ProjectNameAndAddress">
+            <div id="ProjectName">Different Property</div>
+          </div>
+          <div id="Content">
+            <div class="TabContent">
+              <p>This is a substantive public property page with enough visible body text to pass the length floor.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `, "Expected Property"),
+    null
+  );
+  assert.equal(cbreDealflowDetailUnavailableReason("<html>unexpected empty page</html>"), null);
+});
+
+test("CBRE Deal Flow HTML-only classification fails closed on a layout-wide anomaly", () => {
+  const listing = (reason: string | null) => ({
+    detailUnavailable: reason ? { reason } : undefined,
+  });
+  assert.equal(
+    cbreDealflowAssertHtmlOnlyMix([
+      ...Array.from({ length: 5 }, () => listing("public_html_only")),
+      ...Array.from({ length: 95 }, () => listing(null)),
+    ]),
+    5
+  );
+  assert.throws(
+    () =>
+      cbreDealflowAssertHtmlOnlyMix([
+        ...Array.from({ length: 6 }, () => listing("public_html_only")),
+        ...Array.from({ length: 94 }, () => listing(null)),
+      ]),
+    /public_html_only anomaly/
+  );
+});
+
+test("CBRE Deal Flow unavailable detail preserves prior children and keeps fresh card fields", () => {
+  const row = cbreDealflowUnavailableCard(
+    {
+      id: "public-card-token",
+      url: "https://www.cbredealflow.com/handler/landing.aspx?pv=public-card-token",
+      urlKind: "detail",
+      listingPv: "public-card-token",
+      name: "Current public card",
+      transactionType: "Investment Sale",
+      assetType: "Multifamily",
+      description: "Fresh card description",
+      city: "New York",
+      state: "NY",
+      country: "United States",
+      sizeText: "9,766 sf",
+      status: "Available",
+      brokerIds: [],
+      contactsDetailed: [{ name: "Current Broker" }],
+      brochures: [],
+      photos: ["https://example.test/current.jpg"],
+      cbreDealflowCard: { projectType: "Investment Sale" },
+    },
+    "landing_not_setup"
+  );
+  assert.equal(row.detailUnavailable.reason, "landing_not_setup");
+  assert.equal(row.detailUnavailable.publicPageObserved, true);
+  assert.equal(row.preserveChildCollections, true);
+  assert.equal(
+    row.canonicalUrl,
+    "https://www.cbredealflow.com/handler/landing.aspx?pv=public-card-token"
+  );
+  assert.equal(row.statusBadge, "Available");
+  assert.deepEqual(row.extraFacts, { project_type: "Investment Sale" });
+  assert.equal(row.name, "Current public card");
+
+  const htmlOnly = cbreDealflowUnavailableCard(
+    {
+      ...row,
+      urlKind: "detail",
+      cbreDealflowCard: { projectType: "Investment Sale" },
+    },
+    "public_html_only"
+  );
+  assert.equal(htmlOnly.detailUnavailable.publicPageObserved, true);
+});
+
+test("CBRE Deal Flow canonical URL never falls back to agreement or brochure material", () => {
+  assert.equal(
+    cbreDealflowCanonicalUrl({
+      urlKind: "agreement",
+      url: "https://www.cbredealflow.com/buyer/agreement?pv=agreement-token",
+    }),
+    undefined
+  );
+  assert.equal(
+    cbreDealflowCanonicalUrl({
+      urlKind: "brochure",
+      url: "https://www.cbredealflow.com/files/public-brochure.pdf",
+    }),
+    undefined
+  );
+  assert.equal(
+    cbreDealflowCanonicalUrl({
+      urlKind: "detail",
+      url: "https://www.cbredealflow.com/handler/landing.aspx?pv=property-token",
+    }),
+    "https://www.cbredealflow.com/handler/landing.aspx?pv=property-token"
+  );
+});
+
+test("CBRE Deal Flow retains agreement-gated and unlinked provider cards", () => {
+  const html = `
+    <ul class="gridview">
+      <li class="item">
+        <div class="card">
+          <div class="img"><a class="summary" href="/buyer/agreement?pv=agreement-token"><p>Agreement listing</p></a></div>
+          <div class="headline">Agreement listing</div>
+          <div class="location"><div class="city">Dallas, TX</div></div>
+          <span class="asset">Retail</span><span class="status">Available</span>
+          <div class="details">Investment Sale | 10,000 sq ft</div>
+        </div>
+      </li>
+      <li class="item">
+        <div class="card">
+          <div class="img"><a class="summary"><p>Coming soon listing</p></a></div>
+          <div class="headline">Coming soon listing</div>
+          <div class="location"><div class="city">Austin, TX</div></div>
+          <span class="asset">Industrial</span><span class="status">Coming Soon</span>
+          <div class="details">Investment Sale | 20,000 sq ft</div>
+        </div>
+      </li>
+    </ul>
+  `;
+  const cards = parseCbreDealflowCards(html, "sale");
+  assert.equal(cards.length, 2);
+  assert.equal(cards[0]?.urlKind, "agreement");
+  assert.equal(cards[0]?.listingPv, "agreement-token");
+  assert.equal(cards[1]?.urlKind, "unlinked");
+  assert.match(cards[1]?.id ?? "", /^card:[0-9a-f]{24}$/);
+  assert.equal(cards[1]?.cbreDealflowCard.cardIdentity, cards[1]?.id);
+  assert.match(cards[0]?.cbreDealflowCard.cardIdentity ?? "", /^card:[0-9a-f]{24}$/);
+  assert.equal(cards[1]?.url, null);
+});
+
+test("CBRE Deal Flow unlinked-card identity is deterministic and rejects nameless cards", () => {
+  const fields = {
+    name: "Coming Soon Listing",
+    city: "Austin",
+    state: "TX",
+    assetType: "Industrial",
+  };
+  assert.equal(cbreDealflowUnlinkedCardId(fields), cbreDealflowUnlinkedCardId(fields));
+  assert.notEqual(
+    cbreDealflowUnlinkedCardId(fields),
+    cbreDealflowUnlinkedCardId({ ...fields, city: "Dallas" })
+  );
+  assert.equal(cbreDealflowUnlinkedCardId({ ...fields, name: null }), null);
+});
+
+test("CBRE Deal Flow pagination count fails closed when malformed", () => {
+  assert.equal(cbreDealflowNumProjects(200, 1), 200);
+  assert.equal(cbreDealflowNumProjects("0", 2001), 0);
+  for (const invalid of [undefined, null, "not-a-number", -1, 1.5, Number.NaN]) {
+    assert.throws(() => cbreDealflowNumProjects(invalid, 1), /invalid numProjects/);
+  }
+  assert.equal(cbreDealflowAssertPageCount(200, 200, 1), 200);
+  assert.throws(() => cbreDealflowAssertPageCount(0, 200, 1), /parity failed/);
+  assert.throws(() => cbreDealflowAssertPageCount(201, 200, 1), /parity failed/);
+});
+
+test("CBRE Deal Flow classifies agreement and unlinked cards without a failing detail request", async () => {
+  const base = {
+    id: "card-id",
+    url: "https://www.cbredealflow.com/",
+    listingPv: null,
+    name: "Current card",
+    transactionType: "Investment Sale",
+    assetType: "Office",
+    description: null,
+    city: "Dallas",
+    state: "TX",
+    country: "United States",
+    sizeText: null,
+    status: "Available",
+    brokerIds: [],
+    photos: [],
+    cbreDealflowCard: { projectType: "Investment Sale" },
+  };
+  const agreement = await enrichCbreDealflowCard(
+    { ...base, urlKind: "agreement", url: "https://www.cbredealflow.com/buyer/agreement?pv=card-id" },
+    "sale"
+  );
+  const unlinked = await enrichCbreDealflowCard({ ...base, urlKind: "unlinked", url: null }, "sale");
+  const brochure = await enrichCbreDealflowCard(
+    {
+      ...base,
+      urlKind: "brochure",
+      url: "https://www.cbredealflow.com/buyer/brochure?pv=card-id",
+      brochures: [{ name: "Public brochure", url: "https://www.cbredealflow.com/buyer/brochure?pv=card-id" }],
+    },
+    "sale"
+  );
+  assert.equal(agreement.detailUnavailable.reason, "gated_agreement");
+  assert.equal(unlinked.detailUnavailable.reason, "card_not_linked");
+  assert.equal(unlinked.provisionalIdentity.historyContinuity, "not_guaranteed");
+  assert.equal(unlinked.inventoryOnly.reason, "no_provider_id_or_listing_url");
+  assert.equal(unlinked.inventoryOnly.indexUrl, "https://www.cbredealflow.com/");
+  assert.equal(brochure.detailUnavailable.reason, "public_brochure_only");
+  assert.equal(brochure.brochures.length, 1);
+  assert.equal(agreement.detailUnavailable.publicCardObserved, true);
+  assert.equal(agreement.detailUnavailable.publicPageObserved, undefined);
+  assert.equal(unlinked.detailUnavailable.publicPageObserved, undefined);
+  assert.equal(agreement.preserveChildCollections, true);
+  assert.equal(unlinked.preserveChildCollections, true);
 });
 
 test("cbreDealflowHarvestHtml concatenates page html + section content fragments", () => {

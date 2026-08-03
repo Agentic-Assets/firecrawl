@@ -79,6 +79,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cre_ingest import (  # noqa: E402
     find_psql,
     load_db_url,
+    psql_connection_args,
+    psql_connection_env,
     sql_lit,
 )
 
@@ -89,6 +91,12 @@ OUT_ENRICH_DIR = os.path.join(HERE, "out", "enrich")
 # and surface in credeals.v_cre_enrichment_dead (sql/010). Mirrors the claim SQL
 # `attempts < 5` predicate and select_done_and_retry's dead-letter threshold.
 MAX_ATTEMPTS = 5
+
+# Serialize queue replacement and worker claims in Postgres as well as through
+# the launchd filesystem lock. This closes the direct-CLI race where a worker
+# could claim a row after a source-refresh preflight but before that refresh
+# deleted and rebuilt the source's queue.
+QUEUE_MUTATION_ADVISORY_LOCK = 1_687_068_469
 
 # A crashed prior run leaves rows claimed (claimed_at set, done_at NULL). The
 # claim SQL reclaims any row whose claim is older than this interval. It is a SQL
@@ -149,6 +157,9 @@ def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL):
         "\\set ON_ERROR_STOP on",
         "BEGIN;",
         "SET LOCAL standard_conforming_strings = on;",
+        "SELECT pg_advisory_xact_lock({});".format(
+            QUEUE_MUTATION_ADVISORY_LOCK
+        ),
         "WITH claimed AS (",
         "  SELECT id FROM credeals.cre_enrichment_queue",
         "  WHERE done_at IS NULL AND attempts < {}".format(MAX_ATTEMPTS),
@@ -345,7 +356,19 @@ def _psql_query(db_url, sql):
     """
     psql = find_psql()
     proc = subprocess.run(
-        [psql, db_url, "-q", "-tA", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-f", "-"],
+        [
+            psql,
+            *psql_connection_args(db_url),
+            "-q",
+            "-tA",
+            "-F",
+            "\t",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            "-",
+        ],
+        env=psql_connection_env(db_url),
         input=sql,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
@@ -369,7 +392,16 @@ def _psql_exec(db_url, sql):
     """
     psql = find_psql()
     proc = subprocess.run(
-        [psql, db_url, "-q", "-v", "ON_ERROR_STOP=1", "-f", "-"],
+        [
+            psql,
+            *psql_connection_args(db_url),
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            "-",
+        ],
+        env=psql_connection_env(db_url),
         input=sql,
         stdout=sys.stderr, stderr=sys.stderr, text=True,
     )
@@ -395,21 +427,39 @@ def _parse_claimed(rows):
     return claimed
 
 
-def _load_enriched_listings(enriched_path):
-    """Read the enriched artifact and return its listings list, or None if the
-    artifact is missing / invalid JSON / has zero listings. None signals a
-    whole-run failure (release claims, do not ingest)."""
+def _load_enriched_artifact(enriched_path):
+    """Read an enriched artifact, or return None when it is unavailable."""
     if not enriched_path or not os.path.isfile(enriched_path):
         return None
     try:
         with open(enriched_path) as f:
-            data = json.load(f)
+            return json.load(f)
     except (ValueError, OSError):
         return None
-    listings = data.get("listings")
-    if not isinstance(listings, list) or len(listings) == 0:
-        return None
-    return listings
+
+
+def validate_enriched_artifact(claimed_rows, artifact):
+    """Fail closed unless every emitted row belongs to its claimed source."""
+    if not isinstance(artifact, dict) or (artifact.get("runMeta") or {}).get("mode") != "enrich":
+        raise ValueError("enriched artifact must declare runMeta.mode == 'enrich'")
+    listings = artifact.get("listings")
+    if not isinstance(listings, list):
+        raise ValueError("enriched artifact must contain a listings array")
+    claimed_by_url = {row.get("url"): row for row in claimed_rows if row.get("url")}
+    safe = []
+    seen_urls = set()
+    for listing in listings:
+        url = listing.get("url") if isinstance(listing, dict) else None
+        claimed = claimed_by_url.get(url)
+        if claimed is None:
+            raise ValueError(f"enriched artifact URL was not claimed: {url!r}")
+        if listing.get("sourceKey") != claimed.get("source_key"):
+            raise ValueError(f"enriched artifact source key mismatch: {url!r}")
+        if url in seen_urls:
+            raise ValueError(f"enriched artifact contains duplicate URL: {url!r}")
+        seen_urls.add(url)
+        safe.append(listing)
+    return safe
 
 
 # ---------------------------------------------------------------------------
@@ -463,13 +513,19 @@ def run(args):
     # (4) GATE on collect success before ingesting. A whole-run failure releases
     # the claims (attempts untouched) so the batch retries free next run.
     enriched_listings = None
+    artifact_error = None
     if collect.returncode == 0:
-        enriched_listings = _load_enriched_listings(enriched_path)
+        artifact = _load_enriched_artifact(enriched_path)
+        if artifact is not None:
+            try:
+                enriched_listings = validate_enriched_artifact(claimed_rows, artifact)
+            except ValueError as exc:
+                artifact_error = str(exc)
     if collect.returncode != 0 or enriched_listings is None:
         err = (
             f"collect rc={collect.returncode}"
             if collect.returncode != 0
-            else "enriched artifact missing/invalid/empty"
+            else artifact_error or "enriched artifact missing/invalid/empty"
         )
         _psql_exec(db_url, build_release_sql(claimed_ids, last_error=err))
         print(f"enrich run failed: {err}; released {len(claimed_ids)} claim(s)",
@@ -477,21 +533,29 @@ def run(args):
         return 1
 
     # (5) Additive ingest. ALWAYS ["--in", path]; never --mark-missing /
-    # --no-mark-missing / --activate-status.
-    ingest = subprocess.run(
-        [sys.executable, os.path.join(HERE, "cre_ingest.py"),
-         *build_ingest_argv(enriched_path)]
-        + (["--env-file", args.env_file] if args.env_file else []),
-        cwd=HERE, stdout=sys.stderr, stderr=sys.stderr,
-    )
-    if ingest.returncode != 0:
-        # Release so the batch re-enriches next run; re-ingest is idempotent
-        # (upsert key + COALESCE-keep), so at most one wasted render.
-        _psql_exec(db_url, build_release_sql(
-            claimed_ids, last_error=f"ingest rc={ingest.returncode}"))
-        print(f"ingest failed rc={ingest.returncode}; released "
-              f"{len(claimed_ids)} claim(s)", file=sys.stderr)
-        return 1
+    # --no-mark-missing / --activate-status. A valid empty artifact means every
+    # claimed detail was rejected by admission; skip ingest but continue into
+    # retry/dead-letter accounting so that batch cannot loop forever.
+    if enriched_listings:
+        ingest = subprocess.run(
+            [sys.executable, os.path.join(HERE, "cre_ingest.py"),
+             *build_ingest_argv(enriched_path)]
+            + (["--env-file", args.env_file] if args.env_file else []),
+            cwd=HERE, stdout=sys.stderr, stderr=sys.stderr,
+        )
+        if ingest.returncode != 0:
+            # Release so the batch re-enriches next run; re-ingest is idempotent
+            # (upsert key + COALESCE-keep), so at most one wasted render.
+            _psql_exec(db_url, build_release_sql(
+                claimed_ids, last_error=f"ingest rc={ingest.returncode}"))
+            print(f"ingest failed rc={ingest.returncode}; released "
+                  f"{len(claimed_ids)} claim(s)", file=sys.stderr)
+            return 1
+    else:
+        print(
+            "0 admitted listings: skipping ingest and advancing retry accounting",
+            file=sys.stderr,
+        )
 
     # (6) Complete: DELETE done rows; increment attempts ONLY on the
     # claimed-but-absent set (after a successful collect+ingest).

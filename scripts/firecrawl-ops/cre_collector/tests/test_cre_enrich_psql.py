@@ -175,6 +175,13 @@ class TestPsqlQuery:
         assert DB_URL not in captured.out
         assert DB_URL not in captured.err
 
+    def test_database_secret_is_not_in_process_argv(self, monkeypatch):
+        calls, _ = self._call(monkeypatch, "SELECT 1;")
+        argv, kwargs = calls[0]
+        assert DB_URL not in argv
+        assert "secret" not in " ".join(argv)
+        assert kwargs["env"]["PGPASSWORD"] == "secret"
+
     # --- Row parsing ----------------------------------------------------------
 
     def test_tab_split_tuples_blank_lines_skipped(self, monkeypatch):
@@ -324,6 +331,13 @@ class TestPsqlExec:
         assert DB_URL not in captured.out
         assert DB_URL not in captured.err
 
+    def test_database_secret_is_not_in_process_argv(self, monkeypatch):
+        calls = self._call(monkeypatch, "BEGIN; COMMIT;")
+        argv, kwargs = calls[0]
+        assert DB_URL not in argv
+        assert "secret" not in " ".join(argv)
+        assert kwargs["env"]["PGPASSWORD"] == "secret"
+
     # --- Non-zero returncode exits via sys.exit --------------------------------
 
     def test_nonzero_returncode_raises_system_exit(self, monkeypatch):
@@ -425,9 +439,24 @@ def _wire_run(monkeypatch, tmp_path, *, claimed_rows, collect_rc=0,
             calls["collect_called"] = True
             out_path = argv[argv.index("--out") + 1]
             if write_enriched == "__unset__":
-                payload = {"listings": [{"url": u} for u in claimed_urls]}
+                payload = {
+                    "runMeta": {"mode": "enrich"},
+                    "listings": [
+                        {"url": r.get("url", "https://x/1"), "sourceKey": r.get("source_key", "colliers-main")}
+                        for r in claimed_rows
+                    ],
+                }
             else:
                 payload = write_enriched
+                if isinstance(payload, dict):
+                    payload.setdefault("runMeta", {"mode": "enrich"})
+                    source_by_url = {
+                        r.get("url", "https://x/1"): r.get("source_key", "colliers-main")
+                        for r in claimed_rows
+                    }
+                    for listing in payload.get("listings") or []:
+                        if isinstance(listing, dict) and "sourceKey" not in listing:
+                            listing["sourceKey"] = source_by_url.get(listing.get("url"))
             if payload is not None:
                 import json as _json
                 with open(out_path, "w") as f:
@@ -492,6 +521,25 @@ class TestRunComplete:
         combined = "\n".join(calls["exec_sqls"])
         assert "DELETE FROM credeals.cre_enrichment_queue" in combined
         assert "attempts = attempts + 1" in combined
+
+    def test_all_rejected_batch_skips_ingest_and_advances_attempts(
+            self, monkeypatch, tmp_path):
+        rows = [
+            {"id": "id-miss", "url": "https://x/missing", "source_key": "svn",
+             "external_id": "missing", "reason": "changed", "attempts": 0},
+        ]
+        calls = _wire_run(
+            monkeypatch,
+            tmp_path,
+            claimed_rows=rows,
+            write_enriched={"listings": []},
+        )
+        rc = run(_Args())
+        assert rc == 0
+        assert calls["ingest_called"] is False
+        combined = "\n".join(calls["exec_sqls"])
+        assert "attempts = attempts + 1" in combined
+        assert "claimed_at = NULL" in combined
 
 
 class TestRunIngestFailure:
@@ -643,7 +691,13 @@ class TestMain:
             if "collect.ts" in argv:
                 out_path = argv[argv.index("--out") + 1]
                 with open(out_path, "w") as f:
-                    json.dump({"listings": [{"url": "https://x/a"}]}, f)
+                    json.dump(
+                        {
+                            "runMeta": {"mode": "enrich"},
+                            "listings": [{"url": "https://x/a", "sourceKey": "colliers-main"}],
+                        },
+                        f,
+                    )
                 return _Proc(0)
             if any(str(a).endswith("cre_ingest.py") for a in argv):
                 return _Proc(0)

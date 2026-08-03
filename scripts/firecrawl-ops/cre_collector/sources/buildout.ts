@@ -8,6 +8,11 @@ import { SourceResult, Tx } from "../types.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { clean, isPerSfPriceText, moneyToNumber, num, pmap } from "../lib/util.js";
 import { isPerSfText, parseLeaseRate, parseSizeText } from "../lib/parse.js";
+import {
+  generationMatches,
+  refreshGenerationId,
+  requireFreshDetails,
+} from "../lib/freshness.js";
 
 
 // --- Buildout platform (SVN, Lee & Associates): inventory JSON API, paginated ---
@@ -15,12 +20,22 @@ import { isPerSfText, parseLeaseRate, parseSizeText } from "../lib/parse.js";
 // boolean (false = lease availability). Fetch the full inventory once per
 // brokerage (cached across the sale and lease passes) and partition client-side.
 
-export const buildoutCache = new Map<string, { items: any[]; total: number | null }>();
+export const BUILDOUT_STABLE_INVENTORY_SORT = "created_at asc, id asc";
+
+type BuildoutInventoryResult = {
+  items: any[];
+  total: number | null;
+  strictValidated?: boolean;
+  generationId?: string | null;
+};
+
+export const buildoutCache = new Map<string, BuildoutInventoryResult>();
 export const buildoutFailureCache = new Map<string, Error>();
 
 export type BuildoutInventoryOpts = {
   preferDirectJson?: boolean;
   directReferer?: string;
+  inventorySort?: string;
   pageConcurrency?: number;
   requireCompletePages?: boolean;
   cacheSlug?: string;
@@ -32,8 +47,143 @@ export type BuildoutInventoryOpts = {
   jsonBackoffMs?: number;
 };
 
-export function buildoutInventoryUrl(pluginKey: string, page: number): string {
-  return `https://buildout.com/plugins/${pluginKey}/inventory.json?page=${page}`;
+// Buildout's implicit order can shift or repeat rows at page boundaries while
+// inventory changes. Both strict feeds therefore use the provider-supported
+// created_at + id order so new rows append deterministically; exact metadata,
+// page-shape, and unique-ID reconciliation still fail closed on source drift.
+export const BUILDOUT_SOURCE_INVENTORY_OPTS = {
+  svn: {
+    preferDirectJson: true,
+    directReferer: "https://svn.com/properties/",
+    inventorySort: BUILDOUT_STABLE_INVENTORY_SORT,
+    pageConcurrency: 1,
+    requireCompletePages: true,
+    cacheSlug: "svn",
+    usePageCache: true,
+    recoveryPasses: 1,
+    recoveryCooldownMs: 15000,
+    maxRecoveryPages: 60,
+  },
+  "lee-associates": {
+    preferDirectJson: true,
+    directReferer: "https://www.lee-associates.com/properties/",
+    inventorySort: BUILDOUT_STABLE_INVENTORY_SORT,
+    pageConcurrency: 3,
+    requireCompletePages: true,
+    cacheSlug: "lee-associates",
+    usePageCache: true,
+    recoveryPasses: 1,
+    recoveryCooldownMs: 15000,
+    maxRecoveryPages: 60,
+  },
+} as const satisfies Record<"svn" | "lee-associates", BuildoutInventoryOpts>;
+
+export function buildoutInventoryUrl(
+  pluginKey: string,
+  page: number,
+  inventorySort?: string
+): string {
+  const url = new URL(`https://buildout.com/plugins/${pluginKey}/inventory.json`);
+  url.searchParams.set("page", String(page));
+  if (inventorySort) url.searchParams.set("q[s][]", inventorySort);
+  return url.toString();
+}
+
+export function buildoutQueryFingerprint(opts: BuildoutInventoryOpts): string {
+  return JSON.stringify({
+    inventorySort: clean(opts.inventorySort),
+  });
+}
+
+function buildoutMemoryCacheKey(
+  pluginKey: string,
+  opts: BuildoutInventoryOpts
+): string {
+  return `${pluginKey}\u0000${buildoutQueryFingerprint(opts)}`;
+}
+
+export function requireCompleteBuildoutInventory(
+  opts: BuildoutInventoryOpts
+): boolean {
+  return requireFreshDetails() || opts.requireCompletePages === true;
+}
+
+type BuildoutInventoryPageExpectation = {
+  total: number;
+  limit: number;
+};
+
+export function assertBuildoutInventoryPage(
+  data: any,
+  page: number,
+  expected: BuildoutInventoryPageExpectation | null = null,
+  strict = requireFreshDetails()
+): BuildoutInventoryPageExpectation {
+  if (!strict) {
+    return {
+      total: Number.isInteger(data?.meta?.total) && data.meta.total >= 0 ? data.meta.total : 0,
+      limit: Number.isInteger(data?.meta?.limit) && data.meta.limit > 0 ? data.meta.limit : 30,
+    };
+  }
+  if (!Array.isArray(data?.inventory)) {
+    throw new Error(`Buildout page ${page} response lacks an inventory array`);
+  }
+  const total = data?.meta?.total;
+  if (!Number.isInteger(total) || total < 0) {
+    throw new Error(`Buildout page ${page} response lacks a valid integer meta.total`);
+  }
+  const limit = data?.meta?.limit;
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new Error(`Buildout page ${page} response lacks a valid positive integer meta.limit`);
+  }
+  if (expected && (total !== expected.total || limit !== expected.limit)) {
+    throw new Error(
+      `Buildout page ${page} metadata changed from total=${expected.total}, limit=${expected.limit} ` +
+        `to total=${total}, limit=${limit}`
+    );
+  }
+  const pages = Math.max(1, Math.ceil(total / limit));
+  if (!Number.isInteger(page) || page < 0 || page >= pages) {
+    throw new Error(`Buildout page ${page} falls outside the declared ${pages}-page inventory`);
+  }
+  const expectedRows = page < pages - 1 ? limit : total - page * limit;
+  if (data.inventory.length !== expectedRows) {
+    throw new Error(
+      `Buildout page ${page} expected ${expectedRows} inventory rows from total=${total}, ` +
+        `limit=${limit}, received ${data.inventory.length}`
+    );
+  }
+  return { total, limit };
+}
+
+export function assertBuildoutInventoryReconciled(
+  items: any[],
+  total: number | null,
+  strict = requireFreshDetails()
+): void {
+  if (!strict) return;
+  if (!Number.isInteger(total) || (total as number) < 0) {
+    throw new Error("Buildout strict inventory reconciliation requires a valid provider total");
+  }
+  const identities = new Set<string>();
+  for (const item of items) {
+    const id =
+      typeof item?.id === "string" || typeof item?.id === "number"
+        ? clean(String(item.id))
+        : null;
+    if (!id) {
+      throw new Error("Buildout inventory row is missing a stable id");
+    }
+    if (identities.has(id)) {
+      throw new Error(`Buildout duplicate inventory identity ${id}`);
+    }
+    identities.add(id);
+  }
+  if (identities.size !== total) {
+    throw new Error(
+      `Buildout reconciled ${identities.size} unique inventory rows against provider total ${total}`
+    );
+  }
 }
 
 // Parse a Buildout "Available" attribute (e.g. "175 - 2,396 SF" or "4,750 SF")
@@ -85,13 +235,14 @@ export function buildoutPageCachePolicy(opts: BuildoutInventoryOpts): {
       "BUILDOUT_REFRESH_PAGE_CACHE=1 cannot be combined with BUILDOUT_CACHE_ONLY=1 or BUILDOUT_ASSEMBLE_FROM_CACHE=1"
     );
   }
-  const enabled =
-    refresh ||
-    opts.usePageCache ||
-    envBool("BUILDOUT_USE_PAGE_CACHE") ||
-    cacheOnly ||
-    assembleFromCache;
-  return { read: enabled && !refresh, write: enabled };
+  // Every successful live page is written as generation-scoped recovery
+  // evidence. Ordinary collection never reads that cache: a fresh invocation
+  // must observe the public provider again. Cache reads require an explicit
+  // operator mode. BUILDOUT_REFRESH_PAGE_CACHE keeps writes enabled but forces
+  // another live read after an identity/count failure.
+  const explicitRead =
+    envBool("BUILDOUT_USE_PAGE_CACHE") || cacheOnly || assembleFromCache;
+  return { read: explicitRead && !refresh, write: true };
 }
 
 export function envInt(name: string): number | null {
@@ -121,6 +272,30 @@ export function buildoutPageCachePath(company: string, pluginKey: string, page: 
   return `${buildoutCacheDir()}/${buildoutCacheSlug(company, pluginKey, opts)}/page-${String(page).padStart(4, "0")}.json`;
 }
 
+type BuildoutPageObservation = {
+  observedAt: string;
+  generationId: string | null;
+  cacheDisposition: "live" | "generation_cache";
+};
+
+function annotateBuildoutPage(data: any, observation: BuildoutPageObservation): any {
+  if (!data || typeof data !== "object") return data;
+  Object.defineProperty(data, "__creFreshness", {
+    value: observation,
+    enumerable: false,
+    configurable: true,
+  });
+  return data;
+}
+
+function buildoutInventoryRows(data: any): any[] {
+  const observation = data?.__creFreshness as BuildoutPageObservation | undefined;
+  return (Array.isArray(data?.inventory) ? data.inventory : []).map((item: any) => ({
+    ...item,
+    __creFreshness: observation,
+  }));
+}
+
 export function readBuildoutPageCache(
   company: string,
   pluginKey: string,
@@ -132,9 +307,18 @@ export function readBuildoutPageCache(
   try {
     const cached = JSON.parse(readFileSync(path, "utf8"));
     if (cached.pluginKey !== pluginKey || cached.page !== page) return null;
+    if (cached.queryFingerprint !== buildoutQueryFingerprint(opts)) return null;
+    if (!generationMatches(cached.generationId)) return null;
     const data = cached.data;
     if (!data || !Array.isArray(data.inventory)) return null;
-    return data;
+    if (typeof cached.cachedAt !== "string" || !Number.isFinite(Date.parse(cached.cachedAt))) {
+      return null;
+    }
+    return annotateBuildoutPage(data, {
+      observedAt: cached.cachedAt,
+      generationId: cached.generationId ?? null,
+      cacheDisposition: "generation_cache",
+    });
   } catch {
     return null;
   }
@@ -151,13 +335,17 @@ export function writeBuildoutPageCache(
   const path = buildoutPageCachePath(company, pluginKey, page, opts);
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  const observation = data.__creFreshness as BuildoutPageObservation | undefined;
+  const cachedAt = observation?.observedAt ?? new Date().toISOString();
   writeFileSync(
     tmp,
     JSON.stringify(
       {
         pluginKey,
         page,
-        cachedAt: new Date().toISOString(),
+        queryFingerprint: buildoutQueryFingerprint(opts),
+        cachedAt,
+        generationId: observation?.generationId ?? refreshGenerationId(),
         data,
       },
       null,
@@ -223,9 +411,11 @@ export async function fetchBuildoutInventoryPage(
   company: string,
   pluginKey: string,
   page: number,
-  opts: BuildoutInventoryOpts
+  opts: BuildoutInventoryOpts,
+  expected: BuildoutInventoryPageExpectation | null = null
 ): Promise<any> {
-  const url = buildoutInventoryUrl(pluginKey, page);
+  const url = buildoutInventoryUrl(pluginKey, page, opts.inventorySort);
+  const requireComplete = requireCompleteBuildoutInventory(opts);
   const cachePolicy = buildoutPageCachePolicy(opts);
   if (cachePolicy.read) {
     const cached = readBuildoutPageCache(company, pluginKey, page, opts);
@@ -248,6 +438,15 @@ export async function fetchBuildoutInventoryPage(
     timeout: 60000,
     jsonAttempts: opts.jsonAttempts,
     jsonBackoffMs: opts.jsonBackoffMs,
+    ...(requireFreshDetails() ? { maxAge: 0 } : {}),
+  });
+  // Reject malformed, partial, or cross-page-incoherent strict pages before
+  // they can poison the generation-scoped recovery cache.
+  assertBuildoutInventoryPage(data, page, expected, requireComplete);
+  annotateBuildoutPage(data, {
+    observedAt: new Date().toISOString(),
+    generationId: refreshGenerationId(),
+    cacheDisposition: "live",
   });
   if (cachePolicy.write) writeBuildoutPageCache(company, pluginKey, page, opts, data);
   return data;
@@ -258,14 +457,30 @@ export async function buildoutInventory(
   pluginKey: string,
   opts: BuildoutInventoryOpts = {}
 ): Promise<{ items: any[]; total: number | null }> {
-  const cached = buildoutCache.get(pluginKey);
-  if (cached) return cached;
-  const cachedFailure = buildoutFailureCache.get(pluginKey);
+  const requireComplete = requireCompleteBuildoutInventory(opts);
+  const memoryCacheKey = buildoutMemoryCacheKey(pluginKey, opts);
+  const cached = buildoutCache.get(memoryCacheKey);
+  if (
+    cached &&
+    (!requireComplete ||
+      (cached.strictValidated === true && generationMatches(cached.generationId)))
+  ) {
+    return cached;
+  }
+  if (cached) buildoutCache.delete(memoryCacheKey);
+  const cachedFailure = buildoutFailureCache.get(memoryCacheKey);
   if (cachedFailure) throw cachedFailure;
   const first = await fetchBuildoutInventoryPage(company, pluginKey, 0, opts);
-  const total: number | null = first.meta?.total ?? null;
-  const limit: number = first.meta?.limit ?? 30;
-  const pages = total && total > limit ? Math.min(Math.ceil(total / limit), 1200) : 1;
+  const firstPage = assertBuildoutInventoryPage(first, 0, null, requireComplete);
+  const total: number | null = requireComplete ? firstPage.total : first.meta?.total ?? null;
+  const limit: number = requireComplete ? firstPage.limit : first.meta?.limit ?? 30;
+  const declaredPages = total && total > limit ? Math.ceil(total / limit) : 1;
+  if (requireComplete && declaredPages > 1200) {
+    throw new Error(
+      `${company}: Buildout declared ${declaredPages} pages, exceeding the 1200-page safety cap`
+    );
+  }
+  const pages = Math.min(declaredPages, 1200);
   const pageWindow = buildoutPageWindow(pages);
   const cacheOnly = envBool("BUILDOUT_CACHE_ONLY");
   const assembleFromCache = envBool("BUILDOUT_ASSEMBLE_FROM_CACHE");
@@ -277,7 +492,7 @@ export async function buildoutInventory(
     );
   }
   const inventoryByPage = new Map<number, any[]>();
-  inventoryByPage.set(0, first.inventory ?? []);
+  inventoryByPage.set(0, buildoutInventoryRows(first));
   const failedPages = new Set<number>();
   const attemptedPages = new Set<number>([0]);
   const unattemptedPages = new Set<number>();
@@ -303,8 +518,15 @@ export async function buildoutInventory(
       }
       try {
         attemptedPages.add(p);
-        const d = await fetchBuildoutInventoryPage(company, pluginKey, p, opts);
-        inventoryByPage.set(p, d.inventory ?? []);
+        const d = await fetchBuildoutInventoryPage(
+          company,
+          pluginKey,
+          p,
+          opts,
+          requireComplete ? firstPage : null
+        );
+        assertBuildoutInventoryPage(d, p, firstPage, requireComplete);
+        inventoryByPage.set(p, buildoutInventoryRows(d));
         done++;
         if (done % 25 === 0) console.error(`  ${company}: inventory page ${done}/${pages}`);
       } catch (err) {
@@ -331,24 +553,44 @@ export async function buildoutInventory(
           if (opts.preferDirectJson) {
             try {
               d = await directBuildoutJson(
-                buildoutInventoryUrl(pluginKey, p),
+                buildoutInventoryUrl(pluginKey, p, opts.inventorySort),
                 opts.directReferer ?? "https://buildout.com/"
               );
             } catch {
-              d = await fetchBuildoutInventoryPage(company, pluginKey, p, {
+              d = await fetchBuildoutInventoryPage(
+                company,
+                pluginKey,
+                p,
+                {
+                  ...opts,
+                  jsonAttempts: opts.jsonAttempts ?? 4,
+                  jsonBackoffMs: opts.jsonBackoffMs ?? 12000,
+                },
+                requireComplete ? firstPage : null
+              );
+            }
+          } else {
+            d = await fetchBuildoutInventoryPage(
+              company,
+              pluginKey,
+              p,
+              {
                 ...opts,
                 jsonAttempts: opts.jsonAttempts ?? 4,
                 jsonBackoffMs: opts.jsonBackoffMs ?? 12000,
-              });
-            }
-          } else {
-            d = await fetchBuildoutInventoryPage(company, pluginKey, p, {
-              ...opts,
-              jsonAttempts: opts.jsonAttempts ?? 4,
-              jsonBackoffMs: opts.jsonBackoffMs ?? 12000,
+              },
+              requireComplete ? firstPage : null
+            );
+          }
+          assertBuildoutInventoryPage(d, p, firstPage, requireComplete);
+          if (!d?.__creFreshness) {
+            annotateBuildoutPage(d, {
+              observedAt: new Date().toISOString(),
+              generationId: refreshGenerationId(),
+              cacheDisposition: "live",
             });
           }
-          inventoryByPage.set(p, d.inventory ?? []);
+          inventoryByPage.set(p, buildoutInventoryRows(d));
           if (buildoutPageCachePolicy(opts).write) {
             writeBuildoutPageCache(company, pluginKey, p, opts, d);
           }
@@ -366,7 +608,7 @@ export async function buildoutInventory(
         `${company}: cache-only Buildout window complete (${pageWindow?.start ?? 0}-${pageWindow?.end ?? pages - 1}); ` +
           `${attemptedPages.size} page(s) attempted, ${missingAttempted.length} selected page(s) missing; not producing listing artifact`
       );
-      buildoutFailureCache.set(pluginKey, cacheError);
+      buildoutFailureCache.set(memoryCacheKey, cacheError);
       throw cacheError;
     }
 
@@ -374,7 +616,7 @@ export async function buildoutInventory(
       const windowError = new Error(
         `${company}: Buildout page window was requested without BUILDOUT_CACHE_ONLY=1 or BUILDOUT_ASSEMBLE_FROM_CACHE=1; refusing partial listing artifact`
       );
-      buildoutFailureCache.set(pluginKey, windowError);
+      buildoutFailureCache.set(memoryCacheKey, windowError);
       throw windowError;
     }
 
@@ -395,14 +637,20 @@ export async function buildoutInventory(
       const abortError = new Error(
         `${company}: ${failedPages.size}/${pages} inventory pages failed (${shown}${suffix}${unattempted}); aborting this source`
       );
-      buildoutFailureCache.set(pluginKey, abortError);
+      buildoutFailureCache.set(memoryCacheKey, abortError);
       throw abortError;
     }
   }
   const items: any[] = [];
   for (let p = 0; p < pages; p++) items.push(...(inventoryByPage.get(p) ?? []));
-  const result = { items, total };
-  buildoutCache.set(pluginKey, result);
+  assertBuildoutInventoryReconciled(items, total, requireComplete);
+  const result: BuildoutInventoryResult = {
+    items,
+    total,
+    strictValidated: requireComplete,
+    generationId: refreshGenerationId(),
+  };
+  buildoutCache.set(memoryCacheKey, result);
   console.error(
     `  ${company}: full inventory cached (${items.length} items, total ${total ?? "?"}${failedPages.size ? `, ${failedPages.size} pages skipped` : ""})`
   );
@@ -422,15 +670,29 @@ export async function buildoutInventory(
 // plugin key and the brokerage host that compose the iframe content URL. The
 // host is also recoverable from item.url, but pinning it keeps a malformed
 // show_link from yielding a wrong-host iframe URL.
-export const BUILDOUT_ENRICH_CONFIG: Record<string, { pluginKey: string; host: string; company: string }> = {
+export type BuildoutDetailConfig = {
+  pluginKey: string;
+  host: string;
+  /**
+   * Exact public listing hosts allowed to supply `propertyId` values for this
+   * plugin. Keep aliases explicit: a queue row must prove source ownership
+   * before its slug is used to fetch and complete a Buildout detail claim.
+   */
+  listingHosts: readonly string[];
+  company: string;
+};
+
+export const BUILDOUT_ENRICH_CONFIG: Record<string, BuildoutDetailConfig> = {
   svn: {
     pluginKey: "b933480474026c41d248b77156c84aef37dcac68",
     host: "svn.com",
+    listingHosts: ["svn.com"],
     company: "SVN",
   },
   "lee-associates": {
     pluginKey: "9a64a93980aeae8db347e72cdfa8ca61017acc9a",
     host: "www.lee-associates.com",
+    listingHosts: ["www.lee-associates.com"],
     company: "Lee & Associates",
   },
 };
@@ -454,17 +716,66 @@ export function buildoutSlugFromUrl(url: string | null): string | null {
 }
 
 // Compose the Buildout detail iframe content URL for a source. Returns null when
-// the slug cannot be derived (so the enricher skips the item, leaving its claim
-// queued for the weekly additive backstop). Pure; never throws.
+// the input URL is not a clean HTTPS URL owned by an explicitly admitted
+// listing host, or when the slug cannot be derived. Rejection leaves the claim
+// queued for the weekly additive backstop. Pure; never throws.
 //   buildout.com/plugins/<key>/<host>/inventory/<slug>?pluginId=0&iframe=true&embedded=true
-export function buildoutDetailIframeUrl(sourceKey: string, listingUrl: string | null): string | null {
-  const cfg = BUILDOUT_ENRICH_CONFIG[sourceKey];
+export function buildoutDetailIframeUrl(
+  sourceKey: string,
+  listingUrl: string | null,
+  detailConfig?: BuildoutDetailConfig
+): string | null {
+  const cfg = detailConfig ?? BUILDOUT_ENRICH_CONFIG[sourceKey];
   if (!cfg) return null;
-  const slug = buildoutSlugFromUrl(listingUrl);
+  const rawUrl = clean(listingUrl);
+  if (!rawUrl) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  // URL normalizes an explicit default `:443` away, so inspect the original
+  // authority too. These listing hosts are DNS names, not IPv6 literals.
+  const authority = rawUrl.match(/^https:\/\/([^/?#]+)(?:[/?#]|$)/i)?.[1] ?? "";
+  const hostPort = authority.slice(authority.lastIndexOf("@") + 1);
+  if (
+    parsed.protocol !== "https:" ||
+    authority.includes("@") ||
+    parsed.username ||
+    parsed.password ||
+    parsed.port ||
+    hostPort.includes(":") ||
+    rawUrl.includes("#") ||
+    !cfg.listingHosts.some(
+      (host) => parsed.hostname.toLowerCase() === host.toLowerCase()
+    )
+  ) {
+    return null;
+  }
+  const propertyId = parsed.searchParams.get("propertyId");
+  const slug = propertyId?.replace(/-(?:sale|lease)$/i, "") || null;
   if (!slug) return null;
   return (
     `https://buildout.com/plugins/${cfg.pluginKey}/${cfg.host}/inventory/` +
     `${encodeURIComponent(slug)}?pluginId=0&iframe=true&embedded=true`
+  );
+}
+
+// Buildout returns an HTTP-success shell when an inventory slug no longer has a
+// detail page. Treat that as unavailable detail evidence, not as fresh Markdown:
+// ingesting the shell would overwrite the last useful description and falsely
+// complete the enrichment packet.
+export function buildoutDetailDocIsUsable(
+  doc: { markdown?: string | null; rawHtml?: string | null } | null | undefined
+): boolean {
+  const body = `${doc?.markdown ?? ""}\n${doc?.rawHtml ?? ""}`.toLowerCase();
+  if (!body.trim()) return false;
+  return !(
+    body.includes("listing_not_found") ||
+    body.includes("listing not found") ||
+    body.includes("sorry, we can't find the listing") ||
+    body.includes("sorry, we can&#39;t find the listing")
   );
 }
 
@@ -474,17 +785,31 @@ export function buildoutDetailIframeUrl(sourceKey: string, listingUrl: string | 
 // the input url (URL-keyed completion) plus the harvested media/links/documents/
 // images and full-page markdown. Returns null on a derivation or scrape failure
 // so the worker leaves the claim queued. NOT used by the bulk collect path.
-export async function enrichBuildoutDetail(sourceKey: string, listingUrl: string): Promise<any | null> {
-  const iframeUrl = buildoutDetailIframeUrl(sourceKey, listingUrl);
+export async function enrichBuildoutDetail(
+  sourceKey: string,
+  listingUrl: string,
+  detailConfig?: BuildoutDetailConfig
+): Promise<any | null> {
+  const iframeUrl = buildoutDetailIframeUrl(sourceKey, listingUrl, detailConfig);
   if (!iframeUrl) {
     console.error(`  enrich/buildout(${sourceKey}): no iframe url for ${listingUrl}`);
     return null;
   }
   let doc;
   try {
-    doc = await scrapeDoc(iframeUrl, { waitFor: 1500, timeout: 60000 });
+    doc = await scrapeDoc(iframeUrl, {
+      waitFor: 1500,
+      timeout: 60000,
+      ...(requireFreshDetails() ? { maxAge: 0 } : {}),
+    });
   } catch (err) {
     console.error(`  enrich/buildout(${sourceKey}): detail iframe scrape failed for ${listingUrl}: ${err}`);
+    return null;
+  }
+  if (!buildoutDetailDocIsUsable(doc)) {
+    console.error(
+      `  enrich/buildout(${sourceKey}): rejected missing-detail shell for ${listingUrl}`
+    );
     return null;
   }
   const harvested = harvestDetail(doc, { baseUrl: iframeUrl });
@@ -493,7 +818,7 @@ export async function enrichBuildoutDetail(sourceKey: string, listingUrl: string
   // marks the claim done by url. The artifact is additive: only the harvested
   // child arrays + markdown are populated; price/status are left to the inventory
   // feed (the iframe has no authoritative status field worth flipping).
-  const cfg = BUILDOUT_ENRICH_CONFIG[sourceKey];
+  const cfg = detailConfig ?? BUILDOUT_ENRICH_CONFIG[sourceKey];
   return {
     id: buildoutSlugFromUrl(listingUrl),
     url: listingUrl,
@@ -572,14 +897,16 @@ export async function srcBuildout(
   // Enumeration-only source: the Buildout inventory API has no per-listing detail
   // render, so monitor output == full output (status/price/id are all in-feed).
   const { items, total } = await buildoutInventory(company, pluginKey, inventoryOpts);
+  const eligibleItems = items.filter((x) => {
+    if (x.closed === true) return false;
+    const isSale = x.sale === true;
+    return tx === "sale" ? isSale : !isSale;
+  });
   const listings: any[] = [];
-  for (const x of items) {
+  for (const x of eligibleItems) {
     if (listings.length >= max) break;
-    if (x.closed === true) continue;
     const isSale = x.sale === true;
     const isLease = x.sale !== true; // inventory rows are active availabilities: not-for-sale = for-lease
-    if (tx === "sale" && !isSale) continue;
-    if (tx === "lease" && !isLease) continue;
     {
       const attrs = new Map<string, string>(
         (x.index_attributes ?? []).map((p: any) => [String(p[0]), String(p[1])])
@@ -668,6 +995,18 @@ export async function srcBuildout(
         photos: [x.photo_url, x.large_thumbnail_url].filter(Boolean).slice(0, 1),
         url: clean(x.show_link),
         underContract: x.under_contract === true,
+        inventoryObservedAt: x.__creFreshness?.observedAt,
+        // The bulk Buildout endpoint is an authoritative inventory feed, not a
+        // rendered property-detail page. Keep the last-good detail children
+        // (contacts, documents, images, media, and links) and add the current
+        // card children idempotently during ingest.
+        preserveChildCollections: true,
+        freshnessProvenance: {
+          detailScope: "authoritative_inventory_feed",
+          generationId: x.__creFreshness?.generationId ?? refreshGenerationId(),
+          method: "buildout_inventory_feed",
+          cacheDisposition: x.__creFreshness?.cacheDisposition ?? "live",
+        },
       });
     }
   }
@@ -677,5 +1016,14 @@ export async function srcBuildout(
     method: "Buildout plugin inventory API (JSON, paginated)",
     totalAvailable: total,
     listings,
+    truncated: buildoutCapTruncated(max, listings.length, eligibleItems.length),
   };
+}
+
+export function buildoutCapTruncated(
+  max: number,
+  emitted: number,
+  knownEligible: number
+): boolean {
+  return Number.isFinite(max) && emitted < knownEligible;
 }

@@ -1,20 +1,76 @@
+import * as cheerio from "cheerio";
+import {
+  generationMatches,
+  refreshGenerationId,
+  requireFreshDetails,
+} from "../lib/freshness.js";
 import { scrapeRaw } from "../lib/scrape.js";
 import { clean, prune } from "../lib/util.js";
-import { SourceResult, Tx } from "../types.js";
+import { CacheDisposition, SourceResult, Tx } from "../types.js";
 
 const HANLEY_URL = "https://hanleyinvestmentgroup.com/listings/";
 
-let hanleyCache: any[] | null = null;
+type HanleyCache = {
+  rows: any[];
+  inventoryObservedAt: string;
+  generationId: string | null;
+  strictValidated: boolean;
+};
+
+export type HanleyMappingContext = {
+  inventoryObservedAt?: string;
+  generationId?: string | null;
+  cacheDisposition?: CacheDisposition;
+  strict?: boolean;
+};
+
+let hanleyCache: HanleyCache | null = null;
 
 function numeric(value: any): number | null {
   return value != null && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
 }
 
-export function extractRethinkProperties(html: string): any[] {
-  const marker = html.indexOf("rethink_properties");
-  if (marker < 0) return [];
+function hanleyChallenge(html: string): boolean {
+  // Legitimate Hanley pages load Google reCAPTCHA scripts, so bare "captcha"
+  // text is not challenge evidence. Keep only provider/error-shell markers
+  // that cannot appear as ordinary third-party page assets.
+  return /verify you are human|attention required|cf-chl-|cloudflare ray id|access denied/i.test(
+    html
+  );
+}
+
+function renderedHanleyInventory(html: string): {
+  containerCount: number;
+  cardCount: number;
+  ids: string[];
+  invalidCardCount: number;
+} {
+  const $ = cheerio.load(html);
+  const containers = $("#rethink-properties-container");
+  const cards = containers.children();
+  const ids: string[] = [];
+  let invalidCardCount = 0;
+  cards.each((_, element) => {
+    const card = $(element);
+    const id = clean(card.attr("data-id"));
+    const isResult = clean(card.attr("data-result"))?.toLowerCase() === "true";
+    if (!id || !isResult) {
+      invalidCardCount++;
+      return;
+    }
+    ids.push(id);
+  });
+  return {
+    containerCount: containers.length,
+    cardCount: cards.length,
+    ids,
+    invalidCardCount,
+  };
+}
+
+function embeddedArrayAt(html: string, marker: number): any[] | null {
   const start = html.indexOf("[", marker);
-  if (start < 0) return [];
+  if (start < 0) return null;
   let depth = 0;
   let end = -1;
   let inString = false;
@@ -35,30 +91,142 @@ export function extractRethinkProperties(html: string): any[] {
       }
     }
   }
-  if (end < 0) return [];
+  if (end < 0) return null;
   try {
-    return JSON.parse(html.slice(start, end));
+    const parsed = JSON.parse(html.slice(start, end));
+    return Array.isArray(parsed) ? parsed : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
-async function fetchHanleyHtml(): Promise<string> {
+export function parseHanleyInventory(
+  html: string,
+  strict = requireFreshDetails()
+): { rows: any[]; publicRows: any[] } {
+  if (strict && hanleyChallenge(html)) {
+    throw new Error("Hanley strict inventory response is a challenge page");
+  }
+  const assignments = [...html.matchAll(/\brethink_properties\s*=/g)];
+  if (strict && assignments.length !== 1) {
+    throw new Error(
+      `Hanley strict inventory requires exactly one rethink_properties assignment; found ${assignments.length}`
+    );
+  }
+  const marker = assignments[0]?.index ?? html.indexOf("rethink_properties");
+  if (marker < 0) {
+    if (strict) throw new Error("Hanley strict inventory is missing rethink_properties");
+    return { rows: [], publicRows: [] };
+  }
+  const rows = embeddedArrayAt(html, marker);
+  if (!rows) {
+    if (strict) {
+      throw new Error("Hanley strict inventory requires one complete JSON array");
+    }
+    return { rows: [], publicRows: [] };
+  }
+  if (strict && rows.length === 0) {
+    throw new Error("Hanley strict inventory embedded dataset is empty");
+  }
+  const identities = new Set<string>();
+  const publicRows: any[] = [];
+  for (const [index, row] of rows.entries()) {
+    if (strict && (!row || typeof row !== "object" || Array.isArray(row))) {
+      throw new Error(`Hanley strict inventory row ${index} is not an object`);
+    }
+    const identity =
+      typeof row?.id === "string"
+        ? clean(row.id)
+        : typeof row?.id === "number" && Number.isFinite(row.id)
+          ? String(row.id)
+          : null;
+    if (strict && !identity) {
+      throw new Error(`Hanley strict inventory row ${index} requires a nonempty provider id`);
+    }
+    if (identity) {
+      if (strict && identities.has(identity)) {
+        throw new Error(`Hanley strict inventory duplicate provider identity ${identity}`);
+      }
+      identities.add(identity);
+    }
+    const visibility = clean(row?.visibility);
+    if (strict && !visibility) {
+      throw new Error(`Hanley strict inventory row ${identity ?? index} requires visibility`);
+    }
+    if (String(visibility ?? "").toLowerCase().startsWith("public")) {
+      publicRows.push(row);
+    }
+  }
+  if (strict) {
+    const rendered = renderedHanleyInventory(html);
+    const renderedIds = rendered.ids;
+    const renderedSet = new Set(renderedIds);
+    const publicIds = publicRows.map((row) => clean(String(row.id))).filter(Boolean) as string[];
+    const publicSet = new Set(publicIds);
+    if (rendered.containerCount !== 1 || rendered.cardCount === 0) {
+      throw new Error("Hanley strict inventory is missing rendered listing cards");
+    }
+    if (rendered.invalidCardCount > 0 || renderedIds.length !== rendered.cardCount) {
+      throw new Error(
+        `Hanley strict inventory contains ${rendered.invalidCardCount} rendered card(s) without a valid provider identity/result marker`
+      );
+    }
+    if (renderedSet.size !== renderedIds.length) {
+      throw new Error("Hanley strict inventory contains duplicate rendered provider identities");
+    }
+    if (
+      renderedSet.size !== publicSet.size ||
+      publicIds.some((id) => !renderedSet.has(id))
+    ) {
+      throw new Error(
+        `Hanley strict inventory embedded/rendered identity parity failed (${publicSet.size} != ${renderedSet.size})`
+      );
+    }
+  }
+  return { rows, publicRows };
+}
+
+export function extractRethinkProperties(html: string): any[] {
+  return parseHanleyInventory(html, false).rows;
+}
+
+export function hanleyFallbackOptions(strict = requireFreshDetails()): {
+  proxy: "stealth";
+  waitFor: number;
+  timeout: number;
+  maxAge?: number;
+} {
+  return {
+    proxy: "stealth",
+    waitFor: 3000,
+    timeout: 120000,
+    ...(strict ? { maxAge: 0 } : {}),
+  };
+}
+
+async function fetchHanleyHtml(strict = requireFreshDetails()): Promise<string> {
   try {
     const res = await fetch(HANLEY_URL, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/125 Safari/537.36",
         Accept: "text/html",
+        ...(strict ? { "Cache-Control": "no-cache" } : {}),
       },
+      ...(strict ? { cache: "no-store" as const } : {}),
     });
     if (res.ok) {
       const html = await res.text();
-      if (html.includes("rethink_properties")) return html;
+      if (html.includes("rethink_properties")) {
+        parseHanleyInventory(html, strict);
+        return html;
+      }
     }
   } catch {
     /* fall back to Firecrawl raw HTML */
   }
-  return scrapeRaw(HANLEY_URL, { proxy: "stealth", waitFor: 3000 });
+  const html = await scrapeRaw(HANLEY_URL, hanleyFallbackOptions(strict));
+  if (strict) parseHanleyInventory(html, true);
+  return html;
 }
 
 export function hanleyIsLease(row: any): boolean {
@@ -68,12 +236,36 @@ export function hanleyIsLease(row: any): boolean {
   return /landlord|tenant|lease/.test(tags);
 }
 
-export function mapHanleyListing(row: any, tx: Tx): any {
+export function mapHanleyListing(
+  row: any,
+  tx: Tx,
+  context: HanleyMappingContext = {}
+): any {
+  const strict = context.strict ?? requireFreshDetails();
+  const providerIdentity =
+    typeof row?.id === "string"
+      ? clean(row.id)
+      : typeof row?.id === "number" && Number.isFinite(row.id)
+        ? String(row.id)
+        : null;
+  if (strict && !providerIdentity) {
+    throw new Error("Hanley strict listing requires a nonempty provider id");
+  }
   const isLease = hanleyIsLease(row);
   const sqft = numeric(row.propertySquareFootage) ?? numeric(row.spaceSquareFootage);
-  const url = row.id ? `${HANLEY_URL}?id=${row.id}` : HANLEY_URL;
+  const url = providerIdentity ? `${HANLEY_URL}?id=${providerIdentity}` : HANLEY_URL;
   return prune({
-    id: clean(row.id),
+    id: providerIdentity,
+    inventoryObservedAt: context.inventoryObservedAt,
+    freshnessProvenance: context.inventoryObservedAt
+      ? {
+          detailScope: "authoritative_inventory_feed",
+          generationId: context.generationId ?? refreshGenerationId(),
+          method: "hanley_embedded_inventory_feed",
+          cacheDisposition: context.cacheDisposition ?? "live",
+        }
+      : undefined,
+    preserveChildCollections: true,
     name: clean(row.name) || clean(row.address),
     transactionType: tx === "sale" ? "Sale" : "Lease",
     assetType: clean(row.propertyType) ?? clean(row.propertyRecordType),
@@ -101,22 +293,52 @@ export function mapHanleyListing(row: any, tx: Tx): any {
 }
 
 export async function srcHanley(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
+  const strict = requireFreshDetails();
+  const generationId = refreshGenerationId();
+  if (strict && !generationId) {
+    throw new Error("Hanley strict inventory requires CRE_REFRESH_GENERATION");
+  }
+  let cacheDisposition: CacheDisposition = "live";
+  if (
+    hanleyCache &&
+    strict &&
+    (!hanleyCache.strictValidated || !generationMatches(hanleyCache.generationId))
+  ) {
+    hanleyCache = null;
+  }
   if (!hanleyCache) {
-    const rows = extractRethinkProperties(await fetchHanleyHtml());
-    if (!rows.length) throw new Error("Hanley: rethink_properties array not found or empty");
-    hanleyCache = rows.filter((row) => String(row.visibility ?? "").toLowerCase().startsWith("public"));
+    const parsed = parseHanleyInventory(await fetchHanleyHtml(strict), strict);
+    if (!parsed.rows.length) throw new Error("Hanley: rethink_properties array not found or empty");
+    hanleyCache = {
+      rows: parsed.publicRows,
+      inventoryObservedAt: new Date().toISOString(),
+      generationId,
+      strictValidated: strict,
+    };
+  } else {
+    cacheDisposition = "generation_cache";
   }
   const listings: any[] = [];
-  for (const row of hanleyCache) {
-    if (listings.length >= max) break;
+  let eligible = 0;
+  for (const row of hanleyCache.rows) {
     if (tx === "lease" ? !hanleyIsLease(row) : hanleyIsLease(row)) continue;
-    listings.push(mapHanleyListing(row, tx));
+    eligible++;
+    if (listings.length >= max) continue;
+    listings.push(
+      mapHanleyListing(row, tx, {
+        strict,
+        inventoryObservedAt: hanleyCache.inventoryObservedAt,
+        generationId: hanleyCache.generationId,
+        cacheDisposition,
+      })
+    );
   }
   return {
     company: "Hanley Investment Group",
     sourceUrl: HANLEY_URL,
     method: "Direct fetch of /listings/ with embedded rethink_properties JSON",
-    totalAvailable: hanleyCache.length,
+    totalAvailable: hanleyCache.rows.length,
     listings,
+    truncated: listings.length < eligible,
   };
 }

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -11,6 +12,15 @@ import {
   parseMarcusTileHtml,
   parseMarcusScalars,
   parseMarcusContactLicense,
+  appendMarcusDetailCache,
+  assertMarcusInventoryCount,
+  assertMarcusMapDetails,
+  marcusCapTruncated,
+  parseMarcusPropertiesResponse,
+  parseMarcusMapRowsResponse,
+  marcusDetailHtmlIsUsable,
+  prepareMarcusDetailCache,
+  readMarcusDetailCache,
 } from "../../../sources/marcus-millichap.js";
 
 // ---------------------------------------------------------------------------
@@ -33,6 +43,12 @@ test("marcusUrl resolves relative property links", () => {
     "https://www.marcusmillichap.com/properties/dallas-retail-123"
   );
   assert.equal(marcusUrl(""), null);
+});
+
+test("Marcus finite caps report truncation against map inventory", () => {
+  assert.equal(marcusCapTruncated(1, 1, 2), true);
+  assert.equal(marcusCapTruncated(2, 2, 2), false);
+  assert.equal(marcusCapTruncated(Number.POSITIVE_INFINITY, 2, 3), false);
 });
 
 test("parseMarcusLocation splits city, state, and zip", () => {
@@ -102,6 +118,137 @@ test("parseMarcusTileHtml maps tile markup and row fields", () => {
   assert.equal(listing.capRatePct, 6.25);
   assert.ok(listing.photos?.[0]?.includes("mmimageservice"));
   assert.equal(listing.url, "https://www.marcusmillichap.com/properties/sample-deal");
+});
+
+test("marcusDetailHtmlIsUsable rejects challenge shells and requires property identity", () => {
+  assert.equal(
+    marcusDetailHtmlIsUsable("<html><h1>Sample Property</h1><div class='score-hero-body'>Dallas, TX</div></html>"),
+    true
+  );
+  assert.equal(marcusDetailHtmlIsUsable("<html><h1>Access denied</h1><div>captcha</div></html>"), false);
+  assert.equal(marcusDetailHtmlIsUsable("<html><h1>Generic page</h1></html>"), false);
+});
+
+test("Marcus detail cache accepts only the same attempt and unchanged provider identity", () => {
+  const dir = mkdtempSync(join(tmpdir(), "marcus-cache-test-"));
+  const cachePath = join(dir, "detail-cache.jsonl");
+  const base = {
+    id: "deal-1",
+    activityId: "activity-1",
+    url: "https://www.marcusmillichap.com/properties/deal-1",
+    salePriceUsd: 1000000,
+    rawMarcusSearchRow: { ActivityId: "activity-1", NewlyListed: true },
+  };
+  const enriched = { ...base, description: "Current detail" };
+  try {
+    prepareMarcusDetailCache(cachePath, "attempt-a");
+    appendMarcusDetailCache(cachePath, "attempt-a", base, enriched);
+    assert.equal(readMarcusDetailCache(cachePath, "attempt-a", [base]).get("deal-1")?.description, "Current detail");
+    assert.equal(
+      readMarcusDetailCache(cachePath, "attempt-a", [{ ...base, salePriceUsd: 1100000 }]).size,
+      0
+    );
+
+    prepareMarcusDetailCache(cachePath, "attempt-b");
+    assert.equal(readMarcusDetailCache(cachePath, "attempt-b", [base]).size, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Marcus inventory reconciliation rejects provider-total and map-detail gaps", () => {
+  assert.doesNotThrow(() =>
+    assertMarcusInventoryCount(
+      2,
+      [{ ActivityId: "a" }, { ActivityId: "b" }],
+      true
+    )
+  );
+  assert.throws(
+    () =>
+      assertMarcusInventoryCount(
+        3,
+        [{ ActivityId: "a" }, { ActivityId: "b" }],
+        true
+      ),
+    /properties API reported 3, map API returned 2/
+  );
+  assert.throws(
+    () =>
+      assertMarcusMapDetails(
+        [{ ActivityId: "a" }, { ActivityId: "b" }],
+        [
+          { activityId: "a", url: "https://www.marcusmillichap.com/properties/a" },
+          { activityId: "b", detailError: "HTTP 503" },
+        ]
+      ),
+    /map detail failed for 1\/2 ActivityIds \(b\)/
+  );
+});
+
+test("strict Marcus inventory requires coherent finite TotalCount and response shape", () => {
+  assert.deepEqual(
+    parseMarcusPropertiesResponse(
+      { Results: { Properties: [{ ActivityId: "a" }], TotalCount: 1 } },
+      true
+    ),
+    { rows: [{ ActivityId: "a" }], total: 1 }
+  );
+  for (const total of [null, Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5]) {
+    assert.throws(
+      () =>
+        parseMarcusPropertiesResponse(
+          { Results: { Properties: [{ ActivityId: "a" }], TotalCount: total } },
+          true
+        ),
+      /finite nonnegative integer TotalCount/
+    );
+  }
+  assert.throws(
+    () => parseMarcusPropertiesResponse({ Results: { TotalCount: 1 } }, true),
+    /Properties array/
+  );
+});
+
+test("strict Marcus map inventory requires a Properties array and exact total", () => {
+  assert.throws(
+    () => parseMarcusMapRowsResponse({ Results: {} }, true),
+    /mapproperties response has no Properties array/
+  );
+  const rows = parseMarcusMapRowsResponse(
+    {
+      Results: {
+        Properties: [
+          { ActivityId: "a" },
+          { ActivityId: "a" },
+          { ActivityId: "b" },
+        ],
+      },
+    },
+    true
+  );
+  assert.deepEqual(rows.map((row: any) => row.ActivityId), ["a", "b"]);
+  assert.throws(
+    () => assertMarcusInventoryCount(null, rows, true),
+    /finite nonnegative integer TotalCount/
+  );
+  assert.doesNotThrow(() => assertMarcusInventoryCount(null, rows, false));
+  assert.throws(
+    () => assertMarcusInventoryCount(3, rows, true),
+    /properties API reported 3, map API returned 2/
+  );
+  assert.doesNotThrow(() => assertMarcusInventoryCount(3, rows, false));
+  assert.deepEqual(
+    parseMarcusPropertiesResponse(
+      { Results: { Properties: [{ ActivityId: "legacy" }] } },
+      false
+    ),
+    { rows: [{ ActivityId: "legacy" }], total: null }
+  );
+  assert.deepEqual(
+    parseMarcusMapRowsResponse([{ ActivityId: "legacy" }], false),
+    [{ ActivityId: "legacy" }]
+  );
 });
 
 // ---------------------------------------------------------------------------

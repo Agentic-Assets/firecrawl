@@ -12,7 +12,8 @@
   reported total (or hit a hard cap). `cre_monitor.py` treats `truncated` like
   `error` for disappearance gating. Adapters that set it: `newmark` (Algolia
   ~1000-hit cap unsplit), `cbre` and `cushman-wakefield` (collected <
-  `min(max, reported total)`), `nai-global` (`--page-cap` clip with a full last page).
+  `min(max, reported total)`), `nai-global` (`--page-cap` clip with a full last
+  page), and `colliers-main` (deferred or errored detail renders).
 - **`monitor=true`**: cheap enumeration only. Skip detail unless the feed is already complete.
 - Folded sub-sources get ingest prefixes (`dealflow:`, `investor:`, `main:`), not adapter prefixes. `colliers-main` emits bare `usa#####`; ingest adds `main:`.
 
@@ -21,7 +22,7 @@
 | Transport | Sources |
 |-----------|---------|
 | Firecrawl `scrapeJson` / `scrapeDoc` / `scrapeRaw` | cbre, colliers-main, jll, jll-investor, cushman, transwestern, avison-young (detail), newmark (cred bootstrap), buildout (fallback), savills (validated fallback only) |
-| Direct `fetch` (no Firecrawl) | cbre-dealflow, colliers (RCM), newmark (Algolia), marcus-millichap, nai-global, buildout (preferred path for svn/lee), savills (server-rendered public list pages) |
+| Direct `fetch` (no Firecrawl) | cbre-dealflow, colliers (RCM), newmark (Algolia), marcus-millichap, nai-global, buildout (preferred path for registered sources), savills (server-rendered public list pages) |
 
 Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for interstitials), `lib/broker.ts`, `lib/html.ts`, `lib/util.ts` (`pmap`, `prune`).
 
@@ -41,14 +42,14 @@ Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for in
 | marcus-millichap | `DealId` from map tile | **Lease skipped**; list API caps ~100; map ActivityIds required |
 | avison-young | SharpLaunch `row.id` | **Full runs skip detail** unless `AVISON_YOUNG_DETAIL_LIMIT` set |
 | nai-global | `infabode:{id}` (prefixed in adapter) | Bulk public `publicPosts` detail fields; full and monitor share the conservative `FOR_SALE_ON_MARKET` source-eligibility rule. Do not activate provider status. |
-| svn / lee | `propertyId` base from URL | Strip `-(sale|lease)`; dual rows merge to `sale_or_lease` |
+| Buildout sources | `propertyId` base from URL | Strip `-(sale|lease)`; dual rows merge to `sale_or_lease` |
 | savills | `ExternalPropertyID` | Direct server-rendered `__NEXT_DATA__`; provider `NextUrl` only, so an invalid or incomplete page fails closed |
 
 ## Monitor Mode Matrix
 
 | Behavior | Sources |
 |----------|---------|
-| Monitor ≈ full (same rows) | cbre, buildout (svn/lee), savills |
+| Monitor ≈ full (same rows) | cbre, registered Buildout sources, savills |
 | Monitor = enum, skips detail | cushman, marcus, colliers-main, newmark (skips People lookup), avison-young, transwestern |
 | Monitor ≈ full (bulk public detail fields) | nai-global |
 | Monitor returns `[]` | jll, jll-investor, cbre-dealflow, colliers (ST) - id only on detail page |
@@ -65,39 +66,76 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `newmark.ts` | Algolia via `fetch`; People lookup on full path only |
 | `nai-global.ts` | Infabode GraphQL `publicPosts` bulk detail feed; identical conservative eligibility on full and monitor paths |
 | `marcus-millichap.ts` | Map ActivityId tiles + detail HTML; JSONL detail cache |
-| `jll.ts` | Search pages + `__NEXT_DATA__`; disk detail cache `out/cache/jll-detail/` |
+| `jll.ts` | Search pages + `__NEXT_DATA__`; disk detail cache `out/cache/jll-detail/`; strict runs set `JLL_DETAIL_CACHE_MIN_CACHED_AT` |
 | `jll-investor.ts` | US sitemap + detail; sale only |
-| `colliers-main.ts` | XML sitemap + JSON-LD; JSONL cache `out/cache/colliers-main/detail-cache.jsonl`; CF challenge retries |
-| `buildout.ts` | Shared inventory; svn/lee wired in `collect.ts` |
+| `colliers-main.ts` | XML sitemap + JSON-LD; resumable JSONL cache; live sitemap `lastmod` controls reuse; CF challenge retries |
+| `buildout.ts` | Shared fail-closed inventory adapter |
+| `buildout-registry.ts` | Governed single-token Buildout source definitions |
 | `savills.ts` | Sale and lease: structured `__NEXT_DATA__`; provider `NextUrl` pagination; direct fetch with validated Firecrawl fallback |
 
 ## Buildout (`buildout.ts`) - Shared Adapter
 
 - **No server-side sale/lease filter**; one inventory fetch per `pluginKey`, `buildoutCache` shared across sale+lease passes.
-- **svn/lee**: `requireCompletePages: true` (any page fail aborts); durable page cache at `out/cache/buildout/{slug}/page-NNNN.json`.
+- **Registered strict sources**: `requireCompletePages: true` (any page fail aborts); stable provider ordering and durable source-scoped page cache at `out/cache/buildout/{slug}/page-NNNN.json`.
+- Cache policy is fail-fresh by default: ordinary collection reads live and
+  writes every validated page (`read=false`, `write=true`). Explicit
+  `BUILDOUT_USE_PAGE_CACHE`, cache-only, and cache-assembly modes read and
+  write. `BUILDOUT_REFRESH_PAGE_CACHE=1` forces live reads and still writes.
 - Lee assembly: all pages 0–332 present before `BUILDOUT_ASSEMBLE_FROM_CACHE=1`. Partial windows without cache-only → hard error.
 - `buildoutFailureCache`: sale pass failure blocks lease pass retry in same process.
 - Env: `BUILDOUT_CACHE_DIR`, `BUILDOUT_PAGE_START`/`END`, `BUILDOUT_CACHE_ONLY`, `BUILDOUT_ASSEMBLE_FROM_CACHE`, `BUILDOUT_PAGE_JITTER_MS`.
 - Manual freshness run: `BUILDOUT_REFRESH_PAGE_CACHE=1` bypasses durable page-cache reads, fetches the current inventory once per source invocation, and overwrites each successfully fetched cache page. It keeps the in-process sale/lease share. It fails fast if combined with cache-only or cache-assembly recovery modes.
+- The governed registry contains all 25 historical single-token public feeds
+  recovered from commit `6245a7144`. `REGISTERED_BUILDOUT_SOURCE_KEYS` is the
+  exact typed inventory; registry, ingest, checkpoint, SQL, and enrichment
+  parity tests prevent partial admission. Offline proof does not replace a
+  current live canary and guarded database readback for each source.
 
 ## Key Env Vars (by source)
 
 | Var | Source | Effect |
 |-----|--------|--------|
 | `CUSHMAN_QUERY` | cushman | Targeted API probe |
-| `COLLIERS_MAIN_*` | colliers-main | Detail concurrency, wait, challenge retries, `MAX_FETCHES_PER_RUN` |
-| `JLL_DETAIL_*` / `JLL_INVESTOR_*` | jll, jll-investor | Detail concurrency, wait, cache dir, sitemap scan limit |
+| `CUSHMAN_DETAIL_MODE` | cushman | `full` renders detail pages; `base` refreshes API inventory and explicitly preserves existing child collections |
+| `COLLIERS_MAIN_*` | colliers-main | Detail concurrency, wait, challenge retries, `MAX_FETCHES_PER_RUN`, and run-scoped `DETAIL_CACHE_PATH` |
+| `JLL_DETAIL_*` / `JLL_INVESTOR_*` | jll, jll-investor | Detail concurrency, wait, cache dir, minimum cache timestamp, sitemap scan limit |
 | `SAVILLS_DIRECT_LIST_TIMEOUT_MS` | savills | Direct public list-page timeout (default 25s; bounded 5–60s; two attempts) |
 | `SAVILLS_LIST_TIMEOUT_MS` | savills | Firecrawl fallback list-page timeout (default 30s; bounded 10–90s) |
 | `NAI_GRAPHQL_TIMEOUT_MS` / `NAI_SOURCE_BATCH_SIZE` / `NAI_PAGE_SIZE` / `NAI_ENUMERATION_CONCURRENCY` | nai-global | Bound each `publicPosts` GraphQL body read (default 30s), split source-office filters (default 40), request up to 100 bulk-detail rows per page, and enumerate unlimited batches at a bounded fan-out of two. A timeout or page cap fails closed for monitor coverage. |
 | `AVISON_YOUNG_DETAIL_LIMIT` | avison-young | **Required** for detail on unlimited full runs |
 | `AVISON_YOUNG_DETAIL_CONCURRENCY` | avison-young | Detail parallelism |
+| `AVISON_YOUNG_DIRECT_DETAIL_ATTEMPTS` / `AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS` | avison-young | Strict direct-property-detail retry count (default 3, max 5) and linear backoff base (default 250 ms, max 5 s). Only the failed page is retried; terminal failures report bounded listing IDs and reasons. |
 | `--page-cap` | jll, colliers*, nai | Caps rendered pages / feed offsets |
 | `--concurrency` | all Firecrawl-heavy | `pmap` limit (1–6) |
 
 ## Detail Failures & Status
 
 - Most detail-enrich sources return rows with `detailError` string; ingest skips child-row refresh when `detailError` in `raw_data`.
+- A provider-confirmed absence of public detail is not a scrape error. Such rows
+  use structured `detailUnavailable` plus `preserveChildCollections=true`;
+  fresh card fields still upsert, while `scraped_at` and the top-level raw
+  payload remain the last successful detail observation. The current sparse
+  payload and time are stored as `latestInventoryObservation` and
+  `inventoryObservedAt`. Existing detail children remain; current card contacts
+  and images are applied additively, and new listings insert card children.
+- CBRE Deal Flow includes public cards whose only link is a gated agreement or
+  public brochure, plus cards with no link at all. All remain inventory and use
+  `gated_agreement`, `public_brochure_only`, or `card_not_linked`
+  detail-unavailable reasons. Unlinked
+  cards receive a deterministic provisional `card:` identity from their
+  visible card fields and point to the public Deal Flow index. Because those
+  fields are not a provider key, a later unlinked-to-linked transition is never
+  auto-merged; reconcile it only with explicit evidence.
+- A small number of CBRE/LightBox landing pages are valid public HTML but omit
+  the normal embedded data object. They use `public_html_only`, prove that the
+  public page was observed, and preserve last-good detail. The collector fails
+  closed if this state exceeds the larger of five listings or 1% of a source
+  pass, which guards against silently accepting a provider-wide layout change.
+- Deliberately incomplete API/base rows carry `preserveChildCollections=true`;
+  ingestion also excludes them from wholesale child replacement.
+- A live ingest accepts only `runMeta.mode="full"` or `"enrich"`. Monitor
+  artifacts can still be inspected with `--dry-run`, but cannot reach the
+  database.
 - Native terminal status: cbre-dealflow, colliers-main, cushman (`listingStatus`). NAI's provider status is used only for conservative source eligibility and is never activated. **Disappearance-only** (no status field): jll, jll-investor, newmark, marcus, savills, transwestern (monitor).
 
 ## Probe One Source

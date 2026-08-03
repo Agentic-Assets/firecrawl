@@ -1,12 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
   buildoutInventoryUrl,
   buildoutRefreshPageCache,
   buildoutPageCachePolicy,
+  buildoutQueryFingerprint,
+  requireCompleteBuildoutInventory,
   envBool,
   envInt,
   buildoutCacheSlug,
@@ -14,10 +17,25 @@ import {
   buildoutPageWindow,
   buildoutSlugFromUrl,
   buildoutDetailIframeUrl,
+  buildoutDetailDocIsUsable,
   buildoutAvailableSf,
   buildoutScalarFields,
   BUILDOUT_ENRICH_CONFIG,
+  readBuildoutPageCache,
+  writeBuildoutPageCache,
+  fetchBuildoutInventoryPage,
+  enrichBuildoutDetail,
+  assertBuildoutInventoryPage,
+  assertBuildoutInventoryReconciled,
+  buildoutInventory,
+  srcBuildout,
+  buildoutCache,
+  buildoutFailureCache,
+  buildoutCapTruncated,
+  BUILDOUT_STABLE_INVENTORY_SORT,
+  BUILDOUT_SOURCE_INVENTORY_OPTS,
 } from "../../../sources/buildout.js";
+import { firecrawl } from "../../../lib/scrape.js";
 
 // Fixture path for raw_data blobs (real scrubbed listings from DB).
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -48,10 +66,114 @@ function clearEnv(keys: readonly string[]): void {
 }
 
 test("buildoutInventoryUrl includes plugin key and page", () => {
+  assert.equal(BUILDOUT_STABLE_INVENTORY_SORT, "created_at asc, id asc");
   assert.equal(
     buildoutInventoryUrl("abc123plugin", 7),
     "https://buildout.com/plugins/abc123plugin/inventory.json?page=7"
   );
+  assert.equal(
+    buildoutInventoryUrl("abc123plugin", 7, BUILDOUT_STABLE_INVENTORY_SORT),
+    "https://buildout.com/plugins/abc123plugin/inventory.json?page=7&q%5Bs%5D%5B%5D=created_at+asc%2C+id+asc"
+  );
+});
+
+test("both strict Buildout sources use the stable composite inventory sort", () => {
+  assert.equal(
+    BUILDOUT_SOURCE_INVENTORY_OPTS.svn.inventorySort,
+    BUILDOUT_STABLE_INVENTORY_SORT
+  );
+  assert.equal(
+    BUILDOUT_SOURCE_INVENTORY_OPTS["lee-associates"].inventorySort,
+    BUILDOUT_STABLE_INVENTORY_SORT
+  );
+  assert.equal(BUILDOUT_SOURCE_INVENTORY_OPTS.svn.requireCompletePages, true);
+  assert.equal(
+    BUILDOUT_SOURCE_INVENTORY_OPTS["lee-associates"].requireCompletePages,
+    true
+  );
+});
+
+test("SVN inventory rows preserve last-good detail children", async () => {
+  // Regression: the July 30 SVN checkpoint ingested a bulk Buildout artifact
+  // without this flag and collapsed retained listing links from 1,423 to 20.
+  // Buildout inventory is authoritative for inventory/card fields only; detail
+  // children are maintained by the separate enrichment pipeline.
+  const cacheDir = mkdtempSync(join(tmpdir(), "buildout-svn-preservation-"));
+  const oldFetch = globalThis.fetch;
+  const oldCacheDir = process.env.BUILDOUT_CACHE_DIR;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  try {
+    clearEnv(ENV_KEYS);
+    process.env.BUILDOUT_CACHE_DIR = cacheDir;
+    process.env.CRE_REFRESH_GENERATION = "svn-preservation-contract";
+    buildoutCache.clear();
+    buildoutFailureCache.clear();
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          inventory: [
+            {
+              id: 1423,
+              sale: true,
+              display_name: "SVN preservation fixture",
+              address: "1 Main Street",
+              city: "Tulsa",
+              state: "OK",
+              zip: "74103",
+              show_link: "https://svn.com/properties/?propertyId=1423-sale",
+              index_attributes: [["Price", "$1,000,000"]],
+            },
+          ],
+          meta: { total: 1, limit: 30 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+
+    const result = await srcBuildout(
+      "SVN",
+      "svn-preservation-plugin",
+      "https://svn.com/properties/",
+      "sale",
+      Number.POSITIVE_INFINITY,
+      false,
+      {
+        ...BUILDOUT_SOURCE_INVENTORY_OPTS.svn,
+        cacheSlug: "svn-preservation-contract",
+      }
+    );
+
+    assert.equal(result.listings.length, 1);
+    assert.equal(result.listings[0].preserveChildCollections, true);
+    assert.deepEqual(result.listings[0].freshnessProvenance, {
+      detailScope: "authoritative_inventory_feed",
+      generationId: "svn-preservation-contract",
+      method: "buildout_inventory_feed",
+      cacheDisposition: "live",
+    });
+  } finally {
+    globalThis.fetch = oldFetch;
+    buildoutCache.clear();
+    buildoutFailureCache.clear();
+    if (oldCacheDir === undefined) delete process.env.BUILDOUT_CACHE_DIR;
+    else process.env.BUILDOUT_CACHE_DIR = oldCacheDir;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("Buildout query fingerprint separates inventory sort contracts", () => {
+  assert.equal(buildoutQueryFingerprint({}), '{"inventorySort":null}');
+  assert.notEqual(
+    buildoutQueryFingerprint({ inventorySort: "created_at asc" }),
+    buildoutQueryFingerprint({ inventorySort: "created_at asc, id asc" })
+  );
+});
+
+test("Buildout finite caps report truncation against known eligible inventory", () => {
+  assert.equal(buildoutCapTruncated(1, 1, 2), true);
+  assert.equal(buildoutCapTruncated(2, 2, 2), false);
+  assert.equal(buildoutCapTruncated(Number.POSITIVE_INFINITY, 2, 3), false);
 });
 
 test("envBool recognizes truthy string values", () => {
@@ -87,6 +209,265 @@ test("buildoutPageCachePath uses cache dir and padded page", () => {
   delete process.env.BUILDOUT_CACHE_DIR;
 });
 
+test("Buildout page cache is admitted only within its refresh generation", () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "buildout-generation-cache-"));
+  const oldDir = process.env.BUILDOUT_CACHE_DIR;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  try {
+    process.env.BUILDOUT_CACHE_DIR = cacheDir;
+    process.env.CRE_REFRESH_GENERATION = "generation-a";
+    const data = { inventory: [{ id: 1 }], meta: { total: 1, limit: 30 } };
+    writeBuildoutPageCache("SVN", "plugin-key", 0, {}, data);
+    assert.equal(readBuildoutPageCache("SVN", "plugin-key", 0, {})?.inventory.length, 1);
+    process.env.CRE_REFRESH_GENERATION = "generation-b";
+    assert.equal(readBuildoutPageCache("SVN", "plugin-key", 0, {}), null);
+  } finally {
+    if (oldDir === undefined) delete process.env.BUILDOUT_CACHE_DIR;
+    else process.env.BUILDOUT_CACHE_DIR = oldDir;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("Buildout page cache rejects a different query contract", () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "buildout-query-cache-"));
+  const oldDir = process.env.BUILDOUT_CACHE_DIR;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  try {
+    process.env.BUILDOUT_CACHE_DIR = cacheDir;
+    process.env.CRE_REFRESH_GENERATION = "generation-query";
+    const data = { inventory: [{ id: 1 }], meta: { total: 1, limit: 30 } };
+    const original = { inventorySort: "created_at asc" };
+    writeBuildoutPageCache("Lee", "plugin-key", 0, original, data);
+    assert.ok(readBuildoutPageCache("Lee", "plugin-key", 0, original));
+    assert.equal(
+      readBuildoutPageCache(
+        "Lee",
+        "plugin-key",
+        0,
+        { inventorySort: "created_at asc, id asc" }
+      ),
+      null
+    );
+  } finally {
+    if (oldDir === undefined) delete process.env.BUILDOUT_CACHE_DIR;
+    else process.env.BUILDOUT_CACHE_DIR = oldDir;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("strict Buildout Firecrawl fallback bypasses cached responses", async () => {
+  const oldScrape = firecrawl.scrape;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const calls: any[] = [];
+  (firecrawl as any).scrape = async (_url: string, options: any) => {
+    calls.push(options);
+    return {
+      rawHtml: JSON.stringify({
+        inventory: [{ id: 1 }],
+        meta: { total: 1, limit: 30 },
+      }),
+    };
+  };
+  try {
+    clearEnv(ENV_KEYS);
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const result = await fetchBuildoutInventoryPage(
+      "SVN",
+      "strict-plugin-key",
+      0,
+      {}
+    );
+    const detail = await enrichBuildoutDetail(
+      "svn",
+      "https://svn.com/properties/?propertyId=1-sale"
+    );
+    assert.equal(result.inventory.length, 1);
+    assert.ok(detail);
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((options) => options.maxAge === 0));
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    clearEnv(ENV_KEYS);
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("strict Buildout inventory pages require coherent integer metadata and exact page shape", () => {
+  assert.throws(
+    () => assertBuildoutInventoryPage({ inventory: [{ id: 1 }] }, 0, null, true),
+    /valid integer meta\.total/
+  );
+  assert.throws(
+    () =>
+      assertBuildoutInventoryPage(
+        { inventory: [{ id: 1 }], meta: { total: 2, limit: 0 } },
+        0,
+        null,
+        true
+      ),
+    /valid positive integer meta\.limit/
+  );
+  assert.throws(
+    () =>
+      assertBuildoutInventoryPage(
+        { inventory: null, meta: { total: 1, limit: 30 } },
+        0,
+        null,
+        true
+      ),
+    /inventory array/
+  );
+  assert.throws(
+    () =>
+      assertBuildoutInventoryPage(
+        { inventory: [{ id: 2 }], meta: { total: 31, limit: 30 } },
+        1,
+        { total: 30, limit: 30 },
+        true
+      ),
+    /metadata changed/
+  );
+  assert.throws(
+    () =>
+      assertBuildoutInventoryPage(
+        { inventory: [{ id: 1 }], meta: { total: 31, limit: 30 } },
+        0,
+        null,
+        true
+      ),
+    /expected 30 inventory rows/
+  );
+});
+
+test("complete-page Buildout runs stay strict without the freshness environment", () => {
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  try {
+    delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    assert.equal(requireCompleteBuildoutInventory({}), false);
+    assert.equal(requireCompleteBuildoutInventory({ requireCompletePages: true }), true);
+  } finally {
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("strict Buildout reconciliation rejects missing and duplicate identities", () => {
+  assert.throws(
+    () =>
+      assertBuildoutInventoryReconciled(
+        [{ id: 1 }, { id: 1 }],
+        2,
+        true
+      ),
+    /duplicate inventory identity/
+  );
+  assert.throws(
+    () =>
+      assertBuildoutInventoryReconciled(
+        [{ id: 1 }, { display_name: "missing id" }],
+        2,
+        true
+      ),
+    /missing a stable id/
+  );
+  assert.throws(
+    () => assertBuildoutInventoryReconciled([{ id: 1 }], 2, true),
+    /reconciled 1 unique inventory rows against provider total 2/
+  );
+  assert.doesNotThrow(() =>
+    assertBuildoutInventoryReconciled([{ id: 1 }, { id: "2" }], 2, true)
+  );
+});
+
+test("complete Buildout inventory rejects repeated pinned rows instead of deduping", async () => {
+  const oldFetch = globalThis.fetch;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const pluginKey = "repeat-pinned-plugin";
+  const page0 = Array.from({ length: 30 }, (_, index) => ({ id: index + 1 }));
+  const page1 = [
+    { id: 30 },
+    ...Array.from({ length: 29 }, (_, index) => ({ id: index + 31 })),
+  ];
+  const requestedUrls: string[] = [];
+  try {
+    delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    buildoutCache.clear();
+    buildoutFailureCache.clear();
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      const page = Number(new URL(url).searchParams.get("page"));
+      return new Response(
+        JSON.stringify({
+          inventory: page === 0 ? page0 : page1,
+          meta: { total: 60, limit: 30 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    };
+    await assert.rejects(
+      buildoutInventory("Pinned Feed", pluginKey, {
+        preferDirectJson: true,
+        requireCompletePages: true,
+        inventorySort: "created_at asc, id asc",
+        pageConcurrency: 1,
+      }),
+      /duplicate inventory identity 30/
+    );
+    assert.ok(requestedUrls.length >= 2);
+    assert.ok(
+      requestedUrls.every(
+        (url) =>
+          new URL(url).searchParams.get("q[s][]") ===
+          "created_at asc, id asc"
+      )
+    );
+  } finally {
+    globalThis.fetch = oldFetch;
+    buildoutCache.clear();
+    buildoutFailureCache.clear();
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("complete Buildout inventory rejects an oversized page declaration early", async () => {
+  const oldFetch = globalThis.fetch;
+  const pluginKey = "oversized-page-plugin";
+  let requests = 0;
+  try {
+    buildoutCache.clear();
+    buildoutFailureCache.clear();
+    globalThis.fetch = async () => {
+      requests += 1;
+      return new Response(
+        JSON.stringify({
+          inventory: Array.from({ length: 30 }, (_, index) => ({ id: index + 1 })),
+          meta: { total: 36001, limit: 30 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    };
+    await assert.rejects(
+      buildoutInventory("Oversized Feed", pluginKey, {
+        preferDirectJson: true,
+        requireCompletePages: true,
+      }),
+      /exceeding the 1200-page safety cap/
+    );
+    assert.equal(requests, 1);
+  } finally {
+    globalThis.fetch = oldFetch;
+    buildoutCache.clear();
+    buildoutFailureCache.clear();
+  }
+});
+
 test("BUILDOUT_REFRESH_PAGE_CACHE forces a live read and refreshes the durable cache", () => {
   clearEnv(ENV_KEYS);
   process.env.BUILDOUT_REFRESH_PAGE_CACHE = "1";
@@ -95,11 +476,30 @@ test("BUILDOUT_REFRESH_PAGE_CACHE forces a live read and refreshes the durable c
   clearEnv(ENV_KEYS);
 });
 
-test("Buildout page cache policy preserves cache reuse by default", () => {
+test("Buildout page cache policy writes but never reads during ordinary collection", () => {
   clearEnv(ENV_KEYS);
   assert.equal(buildoutRefreshPageCache(), false);
-  assert.deepEqual(buildoutPageCachePolicy({ usePageCache: true }), { read: true, write: true });
-  assert.deepEqual(buildoutPageCachePolicy({}), { read: false, write: false });
+  assert.deepEqual(buildoutPageCachePolicy({ usePageCache: true }), {
+    read: false,
+    write: true,
+  });
+  assert.deepEqual(buildoutPageCachePolicy({}), { read: false, write: true });
+  clearEnv(ENV_KEYS);
+});
+
+test("Buildout page cache reads require an explicit operator cache mode", () => {
+  for (const name of [
+    "BUILDOUT_USE_PAGE_CACHE",
+    "BUILDOUT_CACHE_ONLY",
+    "BUILDOUT_ASSEMBLE_FROM_CACHE",
+  ]) {
+    clearEnv(ENV_KEYS);
+    process.env[name] = "1";
+    assert.deepEqual(buildoutPageCachePolicy({}), {
+      read: true,
+      write: true,
+    });
+  }
   clearEnv(ENV_KEYS);
 });
 
@@ -163,6 +563,90 @@ test("buildoutDetailIframeUrl composes the Buildout iframe content URL per sourc
   // Unknown source key or missing slug -> null (no iframe URL to scrape).
   assert.equal(buildoutDetailIframeUrl("unknown", "https://x/?propertyId=a"), null);
   assert.equal(buildoutDetailIframeUrl("svn", "https://svn.com/properties/"), null);
+});
+
+test("buildoutDetailIframeUrl rejects unowned or unclean claim URLs", () => {
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://attacker.example/properties/?propertyId=rexall"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://user:secret@svn.com/properties/?propertyId=rexall"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://@svn.com/properties/?propertyId=rexall"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "http://svn.com/properties/?propertyId=rexall"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://svn.com:8443/properties/?propertyId=rexall"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://svn.com:443/properties/?propertyId=rexall"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://svn.com/properties/?propertyId=rexall#other-listing"
+    ),
+    null
+  );
+  assert.equal(
+    buildoutDetailIframeUrl(
+      "svn",
+      "https://svn.com/properties/?propertyId=rexall#"
+    ),
+    null
+  );
+});
+
+test("buildout detail admission rejects HTTP-success missing-listing shells", () => {
+  assert.equal(
+    buildoutDetailDocIsUsable({
+      markdown:
+        "![](https://assets.buildout.com/images/inventory/listing_not_found.svg)\n\n" +
+        "**Listing not found**\n\nSorry, we can't find the listing you are looking for.",
+    }),
+    false,
+  );
+  assert.equal(
+    buildoutDetailDocIsUsable({
+      rawHtml:
+        "<main><h1>Listing not found</h1><p>Sorry, we can&#39;t find the listing.</p></main>",
+    }),
+    false,
+  );
+  assert.equal(
+    buildoutDetailDocIsUsable({
+      markdown: "# 100 Main Street\n\nInvestment highlights and property details.",
+    }),
+    true,
+  );
+  assert.equal(buildoutDetailDocIsUsable({ markdown: "", rawHtml: "" }), false);
 });
 
 test("buildoutAvailableSf parses single and range available-SF attributes", () => {

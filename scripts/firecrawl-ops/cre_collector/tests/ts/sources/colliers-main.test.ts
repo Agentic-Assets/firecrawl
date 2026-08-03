@@ -17,10 +17,21 @@ import {
   colliersMainDetailCachePath,
   readColliersMainCache,
   appendColliersMainCache,
+  colliersMainCachedListingIsCurrent,
+  colliersMainDetailPassTruncated,
+  colliersMainResultTruncated,
   parseColliersMainDetail,
   type ColliersMainEntry,
+  fetchColliersMainEntries,
+  resetColliersMainSitemapCacheForTest,
+  scrapeColliersMainDetailDoc,
+  assertColliersMainDetailRuntimeReady,
+  acquireColliersMainDetailStart,
+  coolDownColliersMainDetailStarts,
+  resetColliersMainDetailPacerForTest,
 } from "../../../sources/colliers-main.js";
 import type { ScrapedDoc } from "../../../types.js";
+import { firecrawl } from "../../../lib/scrape.js";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -185,8 +196,465 @@ test("colliersMainJsonLd extracts RealEstateListing JSON-LD from HTML", () => {
   assert.equal(colliersMainJsonLd("<html><body>no json-ld</body></html>"), null);
 });
 
+test("strict Colliers retries unknown HTTP 200 pages without property JSON-LD", () => {
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const e = entry("usa12345", "https://www.colliers.com/en/properties/usa12345");
+    assert.throws(
+      () =>
+        parseColliersMainDetail(
+          e,
+          doc({
+            rawHtml: "<html><h1>Consent required</h1></html>",
+            markdown: "Consent required",
+            metadata: { statusCode: 200, title: "Consent required" },
+          })
+        ),
+      /lacks validated RealEstateListing JSON-LD/
+    );
+    assert.deepEqual(
+      parseColliersMainDetail(
+        e,
+        doc({
+          rawHtml: "<html>gone</html>",
+          markdown: "Gone",
+          metadata: { statusCode: 410, title: "Gone" },
+        })
+      ).skip,
+      "not_found"
+    );
+    assert.equal(
+      parseColliersMainDetail(
+        e,
+        syntheticDoc(SALE_LD, "stale property body", {
+          statusCode: 404,
+          title: "Not Found",
+        })
+      ).skip,
+      "not_found",
+      "explicit HTTP tombstones must win over a stale JSON-LD body"
+    );
+  } finally {
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("strict Colliers admits a validated LightBox detail without JSON-LD", () => {
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  try {
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const listing = parseColliersMainDetail(
+      entry("usa1167092", "https://www.colliers.com/en/properties/villa-encanto/usa1167092"),
+      doc({
+        rawHtml: `
+          <html><body>
+            <h1>Villa Encanto</h1>
+            <div class="address">2850 Clydedale Dr, Dallas, TX 75220-4667 | Multifamily - Garden Apartments</div>
+          </body></html>
+        `,
+        markdown: "Villa Encanto\n\nInvestment Sale\n\nBuilding Size: 100,000 SF",
+        metadata: { statusCode: 200, title: "Villa Encanto, Dallas, TX | Colliers | Powered by LightBox" },
+      })
+    );
+    assert.equal(listing.id, "usa1167092");
+    assert.equal(listing.city, "Dallas");
+    assert.equal(listing.state, "TX");
+    assert.equal(listing.postalCode, "75220-4667");
+    assert.equal(listing.assetType, "Multifamily - Garden Apartments");
+    assert.equal(listing.transactionType, "Sale");
+    assert.equal(listing.colliersMain.detailTemplate, "lightbox");
+  } finally {
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
 test("colliersMainDetailCachePath returns durable cache location", () => {
-  assert.equal(colliersMainDetailCachePath(), "out/cache/colliers-main/detail-cache.jsonl");
+  const previous = process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH;
+  try {
+    delete process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH;
+    assert.equal(colliersMainDetailCachePath(), "out/cache/colliers-main/detail-cache.jsonl");
+    process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH = "out/cache/colliers-main/fresh-2026-07-29.jsonl";
+    assert.equal(
+      colliersMainDetailCachePath(),
+      "out/cache/colliers-main/fresh-2026-07-29.jsonl"
+    );
+  } finally {
+    if (previous === undefined) delete process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH;
+    else process.env.COLLIERS_MAIN_DETAIL_CACHE_PATH = previous;
+  }
+});
+
+test("Colliers cache reuse follows live sitemap lastmod", () => {
+  const cached = {
+    freshnessProvenance: { sourceRevision: "2026-07-28T12:00:00Z" },
+    name: "Listing",
+  };
+  assert.equal(
+    colliersMainCachedListingIsCurrent(
+      entry("usa1", "https://example.test/1", "2026-07-28T12:00:00Z"),
+      cached
+    ),
+    true
+  );
+  assert.equal(
+    colliersMainCachedListingIsCurrent(
+      entry("usa1", "https://example.test/1", "2026-07-29T12:00:00Z"),
+      cached
+    ),
+    false
+  );
+  assert.equal(
+    colliersMainCachedListingIsCurrent(entry("usa1", "https://example.test/1", null), cached),
+    true
+  );
+});
+
+test("Colliers cache reuse rejects an intra-day source revision change", () => {
+  const cached = {
+    freshnessProvenance: { sourceRevision: "2026-07-28T08:15:00Z" },
+  };
+  assert.equal(
+    colliersMainCachedListingIsCurrent(
+      entry("usa1", "https://example.test/1", "2026-07-28T16:45:00Z"),
+      cached
+    ),
+    false
+  );
+});
+
+test("Colliers cache reuse rejects legacy lastUpdated-only proof when sitemap has a revision", () => {
+  assert.equal(
+    colliersMainCachedListingIsCurrent(
+      entry("usa1", "https://example.test/1", "2026-07-28T16:45:00Z"),
+      { lastUpdated: "2026-07-28T16:45:00Z" }
+    ),
+    false
+  );
+});
+
+test("Colliers cache reuse also requires the active refresh generation", () => {
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  try {
+    process.env.CRE_REFRESH_GENERATION = "generation-current";
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const sitemapEntry = entry(
+      "usa1",
+      "https://example.test/1",
+      "2026-07-29"
+    );
+    assert.equal(
+      colliersMainCachedListingIsCurrent(sitemapEntry, {
+        freshnessProvenance: {
+          generationId: "generation-current",
+          sourceRevision: "2026-07-29",
+        },
+      }),
+      true
+    );
+    assert.equal(
+      colliersMainCachedListingIsCurrent(sitemapEntry, {
+        freshnessProvenance: {
+          generationId: "generation-old",
+          sourceRevision: "2026-07-29",
+        },
+      }),
+      false
+    );
+    assert.equal(
+      colliersMainCachedListingIsCurrent(sitemapEntry, {
+        skip: "no_structured_data",
+        freshnessProvenance: {
+          generationId: "generation-current",
+          sourceRevision: "2026-07-29",
+        },
+      }),
+      false
+    );
+    assert.equal(
+      colliersMainCachedListingIsCurrent(sitemapEntry, {
+        skip: "not_found",
+        freshnessProvenance: {
+          generationId: "generation-current",
+          sourceRevision: "2026-07-29",
+        },
+      }),
+      true
+    );
+  } finally {
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("Colliers retries a semantic sitemap failure before accepting inventory", async () => {
+  const waits: number[] = [];
+  let indexAttempts = 0;
+  resetColliersMainSitemapCacheForTest();
+  try {
+    const entries = await fetchColliersMainEntries(
+      async (url) => {
+        if (url.endsWith("/sitemap")) {
+          indexAttempts++;
+          return indexAttempts === 1
+            ? "<html><title>Just a moment...</title></html>"
+            : "<sitemapindex><sitemap><loc>https://www.colliers.com/en/sitemap?type=properties</loc></sitemap></sitemapindex>";
+        }
+        return "<urlset><url><loc>https://www.colliers.com/en/properties/usa12345</loc><lastmod>2026-07-31</lastmod></url></urlset>";
+      },
+      async (milliseconds) => {
+        waits.push(milliseconds);
+      }
+    );
+    assert.deepEqual(entries.map((entry) => entry.id), ["usa12345"]);
+    assert.equal(indexAttempts, 2);
+    assert.deepEqual(waits, [2500]);
+  } finally {
+    resetColliersMainSitemapCacheForTest();
+  }
+});
+
+test("strict Colliers sitemap and detail Firecrawl calls bypass cached responses", async () => {
+  const oldScrape = firecrawl.scrape;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const calls: any[] = [];
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    calls.push(options);
+    if (url.includes("type=properties")) {
+      return {
+        rawHtml:
+          "<urlset><url><loc>https://www.colliers.com/en/properties/usa12345</loc><lastmod>2026-07-29</lastmod></url></urlset>",
+      };
+    }
+    if (url.endsWith("/sitemap")) {
+      return {
+        rawHtml:
+          "<sitemapindex><sitemap><loc>https://www.colliers.com/en/sitemap?type=properties</loc></sitemap></sitemapindex>",
+      };
+    }
+    return {
+      rawHtml:
+        '<script type="application/ld+json">{"@type":"RealEstateListing","name":"Strict Property For Sale"}</script>',
+      markdown: "Strict Property For Sale",
+      links: [],
+      metadata: { statusCode: 200, title: "Strict Property For Sale" },
+    };
+  };
+  try {
+    resetColliersMainSitemapCacheForTest();
+    process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+    const entries = await fetchColliersMainEntries();
+    assert.equal(entries.length, 1);
+    await scrapeColliersMainDetailDoc(entries[0]!.url);
+    assert.equal(calls.length, 3);
+    assert.ok(calls.every((options) => options.maxAge === 0));
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    resetColliersMainSitemapCacheForTest();
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("Colliers detail pass is truncated while work is deferred or errored", () => {
+  assert.equal(colliersMainDetailPassTruncated({ errors: 0, deferred: 0 }), false);
+  assert.equal(colliersMainDetailPassTruncated({ errors: 1, deferred: 0 }), true);
+  assert.equal(colliersMainDetailPassTruncated({ errors: 0, deferred: 1 }), true);
+});
+
+test("Colliers detail pacing serializes starts and honors a shared cooldown", async () => {
+  const oldInterval = process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+  const oldCooldown = process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+  let now = 1000;
+  const waits: number[] = [];
+  const wait = async (milliseconds: number) => {
+    waits.push(milliseconds);
+    now += milliseconds;
+  };
+  try {
+    process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = "100";
+    process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = "250";
+    resetColliersMainDetailPacerForTest();
+    await acquireColliersMainDetailStart(() => now, wait);
+    await acquireColliersMainDetailStart(() => now, wait);
+    coolDownColliersMainDetailStarts(now);
+    await acquireColliersMainDetailStart(() => now, wait);
+    assert.deepEqual(waits, [100, 250]);
+  } finally {
+    resetColliersMainDetailPacerForTest();
+    if (oldInterval === undefined) delete process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+    else process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = oldInterval;
+    if (oldCooldown === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+    else process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = oldCooldown;
+  }
+});
+
+test("Colliers detail retries exhausted transport failures with bounded source backoff", async () => {
+  const oldAttempts = process.env.COLLIERS_MAIN_CHALLENGE_RETRIES;
+  const oldInterval = process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+  const oldCooldown = process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+  const waits: number[] = [];
+  let calls = 0;
+  try {
+    process.env.COLLIERS_MAIN_CHALLENGE_RETRIES = "3";
+    process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = "0";
+    process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = "0";
+    resetColliersMainDetailPacerForTest();
+    const result = await scrapeColliersMainDetailDoc(
+      "https://www.colliers.com/en/properties/usa10006",
+      async () => {
+        calls++;
+        if (calls < 3) throw new Error("socket hang up");
+        return syntheticDoc(SALE_LD, "Building Size: 1,000 SF");
+      },
+      async (milliseconds) => void waits.push(milliseconds),
+      () => 0
+    );
+    assert.equal(result.metadata?.statusCode, 200);
+    assert.equal(calls, 3);
+    assert.deepEqual(waits, [4000, 8000]);
+  } finally {
+    resetColliersMainDetailPacerForTest();
+    if (oldAttempts === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_RETRIES;
+    else process.env.COLLIERS_MAIN_CHALLENGE_RETRIES = oldAttempts;
+    if (oldInterval === undefined) delete process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+    else process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = oldInterval;
+    if (oldCooldown === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+    else process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = oldCooldown;
+  }
+});
+
+test("Colliers detail retries challenge shells before admitting a usable detail", async () => {
+  const oldAttempts = process.env.COLLIERS_MAIN_CHALLENGE_RETRIES;
+  const oldInterval = process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+  const oldCooldown = process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+  let calls = 0;
+  try {
+    process.env.COLLIERS_MAIN_CHALLENGE_RETRIES = "2";
+    process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = "0";
+    process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = "0";
+    resetColliersMainDetailPacerForTest();
+    const result = await scrapeColliersMainDetailDoc(
+      "https://www.colliers.com/en/properties/usa10007",
+      async () => {
+        calls++;
+        return calls === 1
+          ? doc({ rawHtml: "<div>cf-chl-widget</div>", metadata: { statusCode: 429 } })
+          : syntheticDoc(SALE_LD, "Building Size: 1,000 SF");
+      },
+      async () => undefined,
+      () => 0
+    );
+    assert.equal(result.metadata?.statusCode, 200);
+    assert.equal(calls, 2);
+  } finally {
+    resetColliersMainDetailPacerForTest();
+    if (oldAttempts === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_RETRIES;
+    else process.env.COLLIERS_MAIN_CHALLENGE_RETRIES = oldAttempts;
+    if (oldInterval === undefined) delete process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+    else process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = oldInterval;
+    if (oldCooldown === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+    else process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = oldCooldown;
+  }
+});
+
+test("Colliers detail telemetry records retries without changing the scrape result", async () => {
+  const oldAttempts = process.env.COLLIERS_MAIN_CHALLENGE_RETRIES;
+  const oldInterval = process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+  const oldCooldown = process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+  const events: Array<{ kind: string; attempt: number; cooldownMs?: number }> = [];
+  let calls = 0;
+  try {
+    process.env.COLLIERS_MAIN_CHALLENGE_RETRIES = "2";
+    process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = "0";
+    process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = "0";
+    resetColliersMainDetailPacerForTest();
+    const result = await scrapeColliersMainDetailDoc(
+      "https://www.colliers.com/en/properties/usa10008",
+      async () => {
+        calls++;
+        if (calls === 1) throw new Error("socket hang up");
+        return syntheticDoc(SALE_LD, "Building Size: 1,000 SF");
+      },
+      async () => undefined,
+      () => 0,
+      (event) => events.push(event)
+    );
+    assert.equal(result.metadata?.statusCode, 200);
+    assert.deepEqual(
+      events.map((event) => `${event.kind}:${event.attempt}`),
+      ["transport_error:1", "cooldown:1", "attempt_success:2"]
+    );
+  } finally {
+    resetColliersMainDetailPacerForTest();
+    if (oldAttempts === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_RETRIES;
+    else process.env.COLLIERS_MAIN_CHALLENGE_RETRIES = oldAttempts;
+    if (oldInterval === undefined) delete process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS;
+    else process.env.COLLIERS_MAIN_DETAIL_START_INTERVAL_MS = oldInterval;
+    if (oldCooldown === undefined) delete process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS;
+    else process.env.COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS = oldCooldown;
+  }
+});
+
+test("Colliers detail runtime canary refuses transport failures before cache fanout", async () => {
+  const entries = [
+    entry("usa10001", "https://www.colliers.com/en/properties/usa10001"),
+    entry("usa10002", "https://www.colliers.com/en/properties/usa10002"),
+  ];
+  const cached = new Map<string, any>();
+  let calls = 0;
+  await assert.rejects(
+    () =>
+      assertColliersMainDetailRuntimeReady(entries, cached, async () => {
+        calls++;
+        throw new Error("local Playwright transport unavailable");
+      }),
+    /runtime readiness canary failed before fanout/
+  );
+  assert.equal(calls, entries.length);
+  assert.equal(cached.size, 0, "canary failures must not create cache rows");
+});
+
+test("Colliers detail runtime canary proceeds after a later valid detail", async () => {
+  const entries = [
+    entry("usa10003", "https://www.colliers.com/en/properties/usa10003"),
+    entry("usa10004", "https://www.colliers.com/en/properties/usa10004"),
+  ];
+  let calls = 0;
+  await assert.doesNotReject(() =>
+    assertColliersMainDetailRuntimeReady(entries, new Map(), async () => {
+      calls++;
+      if (calls === 1) throw new Error("socket hang up");
+      return syntheticDoc(SALE_LD, "Building Size: 1,000 SF");
+    })
+  );
+  assert.equal(calls, 2);
+});
+
+test("Colliers detail runtime canary accepts a verified not-found tombstone", async () => {
+  await assert.doesNotReject(() =>
+    assertColliersMainDetailRuntimeReady(
+      [entry("usa10005", "https://www.colliers.com/en/properties/usa10005")],
+      new Map(),
+      async () => doc({ rawHtml: "<html>gone</html>", markdown: "Gone", metadata: { statusCode: 410 } })
+    )
+  );
+});
+
+test("Colliers finite caps report truncation against sitemap inventory", () => {
+  const complete = { errors: 0, deferred: 0 };
+  assert.equal(colliersMainResultTruncated(complete, 1, 2), true);
+  assert.equal(colliersMainResultTruncated(complete, 2, 2), false);
+  assert.equal(
+    colliersMainResultTruncated(complete, Number.POSITIVE_INFINITY, 2),
+    false
+  );
+  assert.equal(colliersMainResultTruncated({ errors: 1, deferred: 0 }, 2, 2), true);
 });
 
 test("readColliersMainCache and appendColliersMainCache round-trip JSONL rows", () => {

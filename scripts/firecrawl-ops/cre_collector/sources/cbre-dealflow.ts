@@ -1,9 +1,11 @@
 // sources/cbre-dealflow.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
+import { createHash } from "node:crypto";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY, PAGE_CAP } from "../lib/config.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { dedupeStrings, titleFromFilename } from "../lib/html.js";
+import { refreshGenerationId } from "../lib/freshness.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { clean, num, pmap, prune } from "../lib/util.js";
 
@@ -14,6 +16,13 @@ export const CBRE_DEALFLOW_BASE = "https://www.cbredealflow.com";
 export const CBRE_DEALFLOW_SOURCE_URL = `${CBRE_DEALFLOW_BASE}/`;
 export const CBRE_DEALFLOW_FALLBACK_ENGINE_KEY = "oi5qxFqUeAwpuWTlIxfX2WDpoZa3NjIo51F63rmSsEI";
 export const CBRE_DEALFLOW_PAGE_SIZE = 200;
+// The provider renders each 200-card Investment Sale page server-side. A live
+// 2026-07-29 response took 74 seconds while still returning a complete 200-card
+// page, so the former 30-second deadline rejected healthy inventory. Keep this
+// bounded independently from the 30-second per-listing detail deadline.
+export const CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS = 120000;
+export const CBRE_DEALFLOW_DETAIL_ATTEMPTS = 3;
+export const CBRE_DEALFLOW_DETAIL_RETRY_BACKOFF_MS = 1000;
 export const CBRE_DEALFLOW_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
 export const CBRE_DEALFLOW_PROJECT_TYPE_BY_TX: Record<Tx, string> = {
   sale: "Investment Sale",
@@ -22,8 +31,8 @@ export const CBRE_DEALFLOW_PROJECT_TYPE_BY_TX: Record<Tx, string> = {
 
 export type CbreDealflowCard = {
   id: string | null;
-  url: string;
-  urlKind: "detail" | "brochure";
+  url: string | null;
+  urlKind: "detail" | "brochure" | "agreement" | "unlinked";
   listingPv: string | null;
   name: string | null;
   transactionType: string;
@@ -61,13 +70,29 @@ export function cbreDealflowUrl(href: string | null | undefined): string | null 
   }
 }
 
-export async function cbreDealflowGetText(url: string): Promise<string> {
-  const res = await fetch(url, {
-    headers: cbreDealflowHeaders("text/html,application/json,*/*"),
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!res.ok) throw new Error(`CBRE Deal Flow GET ${url} HTTP ${res.status}`);
-  return res.text();
+export async function cbreDealflowGetText(
+  url: string,
+  attempts = 1,
+  retryBackoffMs = CBRE_DEALFLOW_DETAIL_RETRY_BACKOFF_MS
+): Promise<string> {
+  let lastError: unknown = null;
+  const boundedAttempts = Number.isFinite(attempts) ? Math.max(1, Math.trunc(attempts)) : 1;
+  for (let attempt = 1; attempt <= boundedAttempts; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: cbreDealflowHeaders("text/html,application/json,*/*"),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!res.ok) throw new Error(`CBRE Deal Flow GET ${url} HTTP ${res.status}`);
+      return await res.text();
+    } catch (error) {
+      lastError = error;
+      if (attempt < boundedAttempts && retryBackoffMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, retryBackoffMs * attempt));
+      }
+    }
+  }
+  throw lastError;
 }
 
 export async function cbreDealflowPostJson(path: string, body: URLSearchParams): Promise<any> {
@@ -79,7 +104,7 @@ export async function cbreDealflowPostJson(path: string, body: URLSearchParams):
       "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
     },
     body,
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS),
   });
   const text = await res.text();
   let parsed: any = null;
@@ -130,6 +155,54 @@ export function listingPvFromCbreDealflowUrl(url: string | null): string | null 
   }
 }
 
+export function cbreDealflowUnlinkedCardId(fields: {
+  name: string | null;
+  city: string | null;
+  state: string | null;
+  assetType: string | null;
+}): string | null {
+  const name = clean(fields.name);
+  if (!name) return null;
+  const identity = [name, fields.city, fields.state, fields.assetType]
+    .map((value) => clean(value)?.toLowerCase() ?? "")
+    .join("|");
+  return `card:${createHash("sha256").update(identity).digest("hex").slice(0, 24)}`;
+}
+
+export function cbreDealflowNumProjects(value: unknown, start: number): number {
+  if (
+    value === null ||
+    value === undefined ||
+    (typeof value === "string" && value.trim() === "") ||
+    (typeof value !== "string" && typeof value !== "number")
+  ) {
+    throw new Error(
+      `CBRE Deal Flow returned invalid numProjects=${JSON.stringify(value)} at start ${start}`
+    );
+  }
+  const count = Number(value);
+  if (!Number.isInteger(count) || count < 0) {
+    throw new Error(
+      `CBRE Deal Flow returned invalid numProjects=${JSON.stringify(value)} at start ${start}`
+    );
+  }
+  return count;
+}
+
+export function cbreDealflowAssertPageCount(
+  value: unknown,
+  providerCardCount: number,
+  start: number
+): number {
+  const count = cbreDealflowNumProjects(value, start);
+  if (count !== providerCardCount) {
+    throw new Error(
+      `CBRE Deal Flow numProjects/card parity failed at start ${start}: ${count} != ${providerCardCount}`
+    );
+  }
+  return count;
+}
+
 export function cbreDealflowCardContacts($: cheerio.CheerioAPI, card: cheerio.Cheerio<any>): any[] {
   const contacts: any[] = [];
   card.find(".contacts .tab-text").each((_, el) => {
@@ -157,24 +230,44 @@ export function parseCbreDealflowCards(html: string, tx: Tx): CbreDealflowCard[]
   const cards: CbreDealflowCard[] = [];
   $("li.item, ul.gridview > li").each((_, el) => {
     const card = $(el);
-    const detailUrl = cbreDealflowUrl(
-      card.find('a[href*="landing.aspx"], a[href*="modern.aspx"], a[href*="/buyer/brochure"]').first().attr("href")
-    );
-    if (!detailUrl) return;
-    const urlKind = /\/buyer\/brochure/i.test(detailUrl) ? "brochure" : "detail";
     const detailText = clean(card.find(".details").first().text());
     const projectType =
       clean(detailText?.match(/\b(Investment Sale|Leasing)\b/i)?.[1] ?? null) ??
       CBRE_DEALFLOW_PROJECT_TYPE_BY_TX[tx];
     const wanted = CBRE_DEALFLOW_PROJECT_TYPE_BY_TX[tx];
     if (projectType.toLowerCase() !== wanted.toLowerCase()) return;
+    const linkedUrl = cbreDealflowUrl(
+      card
+        .find(
+          'a[href*="landing.aspx"], a[href*="modern.aspx"], a[href*="/buyer/brochure"], a[href*="/buyer/agreement"]'
+        )
+        .first()
+        .attr("href")
+    );
+    const urlKind = linkedUrl
+      ? /\/buyer\/brochure/i.test(linkedUrl)
+        ? "brochure"
+        : /\/buyer\/agreement/i.test(linkedUrl)
+          ? "agreement"
+          : "detail"
+      : "unlinked";
     const location = parseCbreDealflowLocation(card.find(".location .city, .location").first().text());
     const country = clean(card.find(".country").first().text()?.replace(/\|/g, ""));
     const img = cbreDealflowUrl(card.find("img").first().attr("src"));
     const sizeText =
       clean(detailText?.match(/\b(?:Investment Sale|Leasing)\s*\|\s*([^|]+)$/i)?.[1] ?? null) ??
       clean(detailText?.match(/([0-9][0-9,.]*\s*(?:sq ft|sf|units?|acres?|ac)\b)/i)?.[1] ?? null);
-    const listingPv = listingPvFromCbreDealflowUrl(detailUrl);
+    const name = clean(card.find(".headline").first().text()) ?? clean(card.find("a.summary p").attr("title"));
+    const assetType = clean(card.find(".asset").first().text()?.replace(/^--$/, ""));
+    const listingPv = listingPvFromCbreDealflowUrl(linkedUrl);
+    const cardIdentity = cbreDealflowUnlinkedCardId({
+      name,
+      city: location.city,
+      state: location.state,
+      assetType,
+    });
+    const id = listingPv ?? cardIdentity;
+    if (!id) return;
     const contactsDetailed = cbreDealflowCardContacts($, card);
     const brokerIds = contactsDetailed
       .map((c) =>
@@ -187,13 +280,13 @@ export function parseCbreDealflowCards(html: string, tx: Tx): CbreDealflowCard[]
       )
       .filter((id: number | null): id is number => id !== null);
     cards.push({
-      id: listingPv,
-      url: detailUrl,
+      id,
+      url: linkedUrl,
       urlKind,
       listingPv,
-      name: clean(card.find(".headline").first().text()) ?? clean(card.find("a.summary p").attr("title")),
+      name,
       transactionType: tx === "sale" ? "Investment Sale" : "Lease",
-      assetType: clean(card.find(".asset").first().text()?.replace(/^--$/, "")),
+      assetType,
       description: clean(card.find("a.summary p").first().text()),
       city: location.city,
       state: location.state,
@@ -207,13 +300,14 @@ export function parseCbreDealflowCards(html: string, tx: Tx): CbreDealflowCard[]
           ? [
               {
                 name: "Public brochure",
-                url: detailUrl,
+                url: linkedUrl,
               },
             ]
           : [],
       photos: img ? [img] : [],
       cbreDealflowCard: prune({
         listingPv,
+        cardIdentity,
         urlKind,
         projectType,
         status: clean(card.find(".status").first().text()),
@@ -233,6 +327,103 @@ export function parseCbreDealflowDetailData(html: string): any | null {
   } catch {
     return null;
   }
+}
+
+function cbreDealflowComparableName(value: string | null | undefined): string {
+  return (clean(value)?.toLowerCase() ?? "").replace(/[^a-z0-9]+/g, "");
+}
+
+export function cbreDealflowDetailUnavailableReason(
+  html: string,
+  expectedName?: string | null
+): string | null {
+  const $ = cheerio.load(html);
+  const body = $("body").clone();
+  body.find("script, style").remove();
+  const text = clean(body.text())?.toLowerCase() ?? "";
+  if (
+    text.includes("landing page executive summary has been enabled") &&
+    text.includes("landing page has not been setup")
+  ) {
+    return "landing_not_setup";
+  }
+  const title = clean($("title").first().text())?.toLowerCase() ?? "";
+  const propertyTitle = clean(title.split("|")[0]);
+  const pagePropertyName = clean($("#ProjectName").first().text());
+  const comparableExpectedName = cbreDealflowComparableName(expectedName);
+  if (
+    propertyTitle &&
+    propertyTitle.length >= 4 &&
+    comparableExpectedName &&
+    cbreDealflowComparableName(pagePropertyName) === comparableExpectedName &&
+    /\|\s*cbre\s*\|\s*powered by lightbox\b/i.test(title) &&
+    $("#ProjectNameAndAddress").length === 1 &&
+    $("#Content").length === 1 &&
+    $(".TabContent").length >= 1 &&
+    text.length >= 80
+  ) {
+    return "public_html_only";
+  }
+  return null;
+}
+
+export function cbreDealflowAssertHtmlOnlyMix(listings: any[]): number {
+  const count = listings.filter(
+    (listing) => listing?.detailUnavailable?.reason === "public_html_only"
+  ).length;
+  const limit = Math.max(5, Math.ceil(listings.length * 0.01));
+  if (count > limit) {
+    throw new Error(
+      `CBRE Deal Flow public_html_only anomaly: ${count}/${listings.length} exceeds ${limit}`
+    );
+  }
+  return count;
+}
+
+export function cbreDealflowUnavailableCard(
+  card: CbreDealflowCard,
+  reason: string
+): any {
+  const projectType = clean(card.cbreDealflowCard?.projectType) ?? undefined;
+  return prune({
+    ...card,
+    // A linked provider PV is the canonical public landing URL even when its
+    // detail payload is unavailable. Unlinked cards deliberately remain
+    // provisional and therefore do not receive a canonical URL claim.
+    canonicalUrl: card.urlKind === "detail" ? card.url : undefined,
+    statusBadge: clean(card.status) ?? undefined,
+    extraFacts: projectType ? { project_type: projectType } : undefined,
+    preserveChildCollections: true,
+    provisionalIdentity:
+      card.urlKind === "unlinked"
+        ? {
+            reason: "provider_card_has_no_stable_id",
+            historyContinuity: "not_guaranteed",
+          }
+        : undefined,
+    inventoryOnly:
+      card.urlKind === "unlinked"
+        ? {
+            reason: "no_provider_id_or_listing_url",
+            indexUrl: CBRE_DEALFLOW_SOURCE_URL,
+          }
+        : undefined,
+    detailUnavailable: {
+      reason,
+      publicCardObserved: true,
+      publicPageObserved:
+        reason === "landing_not_setup" || reason === "public_html_only",
+    },
+  });
+}
+
+export function cbreDealflowCanonicalUrl(listing: any): string | undefined {
+  // Agreement and brochure pages are source material, not canonical property
+  // landing pages. Preserve an explicit canonical URL if an enricher supplied
+  // one; otherwise admit only the provider's public detail landing URL.
+  return listing?.canonicalUrl ?? (
+    listing?.urlKind === "detail" ? listing.url : undefined
+  );
 }
 
 export function cbreDealflowTextFromHtml(html: string | null | undefined): string | null {
@@ -374,24 +565,27 @@ export function cbreDealflowNewFieldsFromRawData(raw: any): {
 
 export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Promise<any> {
   if (card.urlKind === "brochure") {
-    // WS1: statusBadge from card.status on brochure-only cards (no detail fetch)
-    const statusBadge = clean(card.status) ?? undefined;
-    const projectType = clean(card.cbreDealflowCard?.projectType) ?? undefined;
-    const extraFacts = projectType ? { project_type: projectType } : undefined;
-    return prune({
-      ...card,
-      statusBadge,
-      extraFacts,
-      cbreDealflowDetail: {
-        pagePvValue: card.listingPv,
-        publicBrochureCard: true,
-      },
-    });
+    return cbreDealflowUnavailableCard(card, "public_brochure_only");
+  }
+  if (card.urlKind === "agreement") {
+    return cbreDealflowUnavailableCard(card, "gated_agreement");
+  }
+  if (card.urlKind === "unlinked") {
+    return cbreDealflowUnavailableCard(card, "card_not_linked");
+  }
+  if (!card.url) {
+    throw new Error("CBRE Deal Flow linked card is missing its public URL");
   }
   try {
-    const html = await cbreDealflowGetText(card.url);
+    const html = await cbreDealflowGetText(card.url, CBRE_DEALFLOW_DETAIL_ATTEMPTS);
     const data = parseCbreDealflowDetailData(html);
-    if (!data) throw new Error("detail page had no parseable public data object");
+    if (!data) {
+      const unavailableReason = cbreDealflowDetailUnavailableReason(html, card.name);
+      if (unavailableReason) {
+        return cbreDealflowUnavailableCard(card, unavailableReason);
+      }
+      throw new Error("detail page had no parseable public data object");
+    }
     const addr = data.addresses ?? {};
     const fields = data.projectfields ?? {};
     const detailContacts = cbreDealflowContacts(data);
@@ -445,7 +639,12 @@ export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Pr
     const extraFacts = projectTypeVal ? { project_type: projectTypeVal } : undefined;
     return prune({
       ...card,
-      id: data.projectid != null ? String(data.projectid) : card.id,
+      // Keep the public card token as the forward identity. Existing numeric
+      // identities are reconciled by source URL during ingest, but a newly
+      // linked card must not change identity merely because detail became
+      // available.
+      id: card.id,
+      canonicalUrl: card.url,
       name: clean(data.name) ?? card.name,
       description: cbreDealflowDescription(data, card.description),
       assetType: clean(data.assetType?.full) ?? clean(data.assetType?.subType) ?? card.assetType,
@@ -500,22 +699,19 @@ export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Pr
 
 export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   if (monitor) {
-    // Monitor mode is NOT supported for cbre-dealflow: the persisted external id
-    // is the detail-page numeric data.projectid (enrichCbreDealflowCard overrides
-    // card.id = String(data.projectid)), which cannot be recovered from the cheap
-    // card. The parsed card id is the URL listingPv token; ~1,430/1,836 (78%) of
-    // detail-enriched cards have projectid != listingPv. Emitting listingPv-keyed
-    // rows would never match the persisted dealflow:<projectid> keys, silently
-    // blacking out change tracking for the whole source. So cbre-dealflow stays on
-    // the full-sweep cadence and emits no monitor rows (same exclusion as jll). A
-    // cheap path would need URL-keyed reconciliation in cre_monitor.py (not built).
+    // Monitor mode remains unsupported while the live table contains both
+    // legacy detail-derived numeric IDs and public-card-token IDs. Full ingest
+    // reconciles the one unambiguous existing row by source URL; the monitor
+    // does not have that reconciliation layer and could emit false new/missing
+    // events. Keep this source on the full-sweep cadence until identities are
+    // normalized.
     return {
       company: "CBRE Deal Flow",
       sourceUrl: CBRE_DEALFLOW_SOURCE_URL,
-      method: "Monitor mode unsupported (detail-derived numeric external id); full-sweep cadence only",
+      method: "Monitor mode unsupported (mixed legacy numeric and public-card identities); full-sweep cadence only",
       totalAvailable: null,
       listings: [],
-      note: "Monitor mode emits no rows for cbre-dealflow: its external id is the detail-page numeric data.projectid and cannot be derived from the search-card listingPv token. Refresh this source via the full (non-monitor) collection path.",
+      note: "Monitor mode emits no rows for cbre-dealflow while the live table contains mixed legacy numeric and public-card identities. Refresh this source via the full (non-monitor) collection path.",
     };
   }
   const projectType = CBRE_DEALFLOW_PROJECT_TYPE_BY_TX[tx];
@@ -527,12 +723,16 @@ export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Pr
   );
   const filterSummary = parseCbreDealflowFilters(filters);
   const want = Math.min(max, Number.MAX_SAFE_INTEGER);
-  const listingsByUrl = new Map<string, CbreDealflowCard>();
+  const listingsByIdentity = new Map<string, CbreDealflowCard>();
   let total: number | null = null;
   let totalAvail: number | null = null;
   let start = 1;
-  for (let page = 1; page <= PAGE_CAP && listingsByUrl.size < want; page++) {
-    const pageSize = Math.min(CBRE_DEALFLOW_PAGE_SIZE, want - listingsByUrl.size);
+  let providerRowsScanned = 0;
+  let parseOmissions = 0;
+  let duplicateIdentities = 0;
+  let exhausted = false;
+  for (let page = 1; page <= PAGE_CAP && listingsByIdentity.size < want; page++) {
+    const pageSize = Math.min(CBRE_DEALFLOW_PAGE_SIZE, want - listingsByIdentity.size);
     const data = await cbreDealflowPostJson(
       `/api/AjaxEngine/GetListingsHtml?&pv=${encodeURIComponent(engineKey)}`,
       new URLSearchParams({
@@ -541,25 +741,65 @@ export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Pr
         FilterProjectType: projectType,
       })
     );
-    total = total ?? (Number.isFinite(Number(data.total)) ? Number(data.total) : null);
+    const pageTotal = Number(data.total);
+    if (!Number.isInteger(pageTotal) || pageTotal < 0) {
+      throw new Error(
+        `CBRE Deal Flow returned invalid total=${JSON.stringify(data.total)} at start ${start}`
+      );
+    }
+    if (total !== null && pageTotal !== total) {
+      throw new Error(
+        `CBRE Deal Flow total changed during pagination (${total} -> ${pageTotal})`
+      );
+    }
+    total = pageTotal;
     totalAvail = totalAvail ?? (Number.isFinite(Number(data.totalAvail)) ? Number(data.totalAvail) : null);
-    const cards = parseCbreDealflowCards(String(data.html ?? ""), tx);
+    const pageHtml = String(data.html ?? "");
+    const providerCardCount = cheerio.load(pageHtml)("li.item, ul.gridview > li").length;
+    const cards = parseCbreDealflowCards(pageHtml, tx);
+    providerRowsScanned += providerCardCount;
+    parseOmissions += Math.max(0, providerCardCount - cards.length);
     for (const card of cards) {
-      if (!listingsByUrl.has(card.url) && listingsByUrl.size < want) listingsByUrl.set(card.url, card);
+      const identity = card.id ?? card.url;
+      if (!identity) {
+        throw new Error(
+          `CBRE Deal Flow parsed a ${tx} card without an inventory identity`
+        );
+      }
+      if (!listingsByIdentity.has(identity) && listingsByIdentity.size < want) {
+        listingsByIdentity.set(identity, card);
+      } else if (listingsByIdentity.has(identity)) {
+        duplicateIdentities++;
+      }
     }
     console.error(
-      `  cbre-dealflow/${tx}: page ${page} start ${start}, ${cards.length} ${projectType} cards (${listingsByUrl.size}/${total ?? "?"})`
+      `  cbre-dealflow/${tx}: page ${page} start ${start}, ${cards.length}/${providerCardCount} parsed ${projectType} cards (${listingsByIdentity.size}/${total ?? "?"})`
     );
-    const numProjects = Number(data.numProjects ?? cards.length);
-    if (!numProjects || cards.length === 0) break;
+    const numProjects = cbreDealflowAssertPageCount(data.numProjects, providerCardCount, start);
+    if (numProjects === 0) {
+      exhausted = true;
+      break;
+    }
     start += numProjects;
+    if (total !== null && start > total) {
+      exhausted = true;
+      break;
+    }
   }
-  const selected = [...listingsByUrl.values()];
+  const selected = [...listingsByIdentity.values()];
   if (!selected.length) throw new Error(`no public ${projectType} cards found on CBRE Deal Flow`);
+  const stoppedAtRequestedLimit = selected.length >= want && Number.isFinite(max);
+  const providerTotalMismatch =
+    !Number.isFinite(max) && total !== null && providerRowsScanned !== total;
+  const truncated =
+    parseOmissions > 0 ||
+    duplicateIdentities > 0 ||
+    providerTotalMismatch ||
+    (!exhausted && !stoppedAtRequestedLimit);
   let done = 0;
-  // Full path only (monitor mode returned [] above): detail-enrich every card so
-  // the persisted external id is the numeric data.projectid.
-  const listings = await pmap(selected, CBRE_DEALFLOW_DETAIL_CONCURRENCY, async (card) => {
+  // Full path only (monitor mode returned [] above): detail-enrich every card
+  // while keeping its public-card identity stable.
+  const enriched = await pmap(selected, CBRE_DEALFLOW_DETAIL_CONCURRENCY, async (card) => {
     const listing = await enrichCbreDealflowCard(card, tx);
     done++;
     if (done % 25 === 0 || done === selected.length) {
@@ -567,6 +807,35 @@ export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Pr
     }
     return listing;
   });
+  const inventoryObservedAt = new Date().toISOString();
+  const listings = enriched.map((listing) => {
+    if (listing?.inventoryOnly) {
+      // These rows are intentionally source-index-only evidence. Do not attach
+      // canonical inventory/detail provenance to an unlinked provider card.
+      return { ...listing, inventoryObservedAt };
+    }
+    return {
+      ...listing,
+      // Only a provider landing page is canonical. Agreement and brochure
+      // endpoints are supporting material, and must never replace a prior
+      // canonical property URL during an additive ingest.
+      canonicalUrl: cbreDealflowCanonicalUrl(listing),
+      inventoryObservedAt,
+      // Deal Flow's paginated public provider inventory is the canonical
+      // freshness proof. Detail enrichment remains additive and can be
+      // unavailable without turning a linked provider identity provisional.
+      freshnessProvenance: {
+        detailScope: "authoritative_inventory_feed",
+        generationId: refreshGenerationId(),
+        method: "cbre_dealflow_public_inventory",
+        cacheDisposition: "live",
+      },
+      preserveChildCollections: true,
+    };
+  });
+  const detailUnavailable = listings.filter((listing) => listing?.detailUnavailable).length;
+  const publicHtmlOnly = cbreDealflowAssertHtmlOnlyMix(listings);
+  const provisionalIdentities = listings.filter((listing) => listing?.provisionalIdentity).length;
   return {
     company: "CBRE Deal Flow",
     sourceUrl: CBRE_DEALFLOW_SOURCE_URL,
@@ -574,7 +843,8 @@ export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Pr
       "Public RCM ListingEngine API filtered by FilterProjectType, paginated cards plus anonymous detail data object enrichment",
     totalAvailable: total,
     listings,
-    note: `Public filter totalAvail was ${totalAvail ?? "unknown"} across all project types; ${projectType} filtered total was ${total ?? "unknown"}. Filter facets sampled: ${Object.entries(filterSummary)
+    truncated,
+    note: `Public filter totalAvail was ${totalAvail ?? "unknown"} across all project types; ${projectType} filtered total was ${total ?? "unknown"}. Scanned ${providerRowsScanned} provider card(s), retained ${selected.length}, omitted ${parseOmissions} unparseable card(s), and detected ${duplicateIdentities} duplicate identity/identities. ${detailUnavailable} current card(s) had no public detail payload (${publicHtmlOnly} public HTML-only page(s)); ${provisionalIdentities} unlinked card identity/identities have no guaranteed history continuity. Fresh card fields are retained without deleting previously harvested detail data. Filter facets sampled: ${Object.entries(filterSummary)
       .map(([k, v]) => `${k}=${Array.isArray(v) ? v.length : "?"}`)
       .join(", ")}. Gated agreement, brochure, executive-summary, and deal-room links are retained only in raw metadata labels, not document rows.`,
   };

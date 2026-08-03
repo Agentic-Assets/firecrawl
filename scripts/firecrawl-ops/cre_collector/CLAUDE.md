@@ -5,10 +5,11 @@
 > implement daily collection in `../cre_scrapers/` (legacy Python
 > probes/archives only).
 
-> **Current runtime source, 2026-07-11:** The Mac mini audit found no CRE
-> launchd jobs, markers, or collector artifacts. Treat dated counts and
-> scheduler claims below as historical. The [operator runbook](../../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md)
-> is the current ordered recovery and canary procedure.
+> **Historical runtime source, 2026-07-11:** The Mac mini audit found no CRE
+> launchd jobs, markers, or collector artifacts at that point in time. For
+> current refresh work, use `cre_status.sh`, the strict checkpoint runner, and
+> the July 29 refresh ledger. The July 11 operator runbook remains historical
+> scheduler-recovery and OM-canary context.
 
 Multi-source CRE listing collector + Supabase ingestor. This is the
 **production path** for building and refreshing the `credeals` listing
@@ -23,7 +24,7 @@ is **stale** for production; README/archive there is reference-only).
 | New/changed broker collect logic | `sources/<broker>.ts`, `collect.ts` | `../cre_scrapers/brokers/*/scraper.py` |
 | Ingest / board upsert | `cre_ingest.py` | `../cre_pipeline.py`, `../cre_scrapers/pipeline.py` |
 | Daily / scheduled refresh | `cre_daily_update.sh`, `launchd/` | `../cre_scrapers/config.py` |
-| Live counts / source status | `START_HERE.md` | `../cre_scrapers/config.py` `active` flags |
+| Live counts / source status | fresh `cre_validate.py` output + checkpoint manifest | dated docs or `../cre_scrapers/config.py` `active` flags |
 | Broker endpoint research notes | read `../cre_scrapers/brokers/*/README.md` | do not treat as runtime code |
 
 Adapted from the Prometheus cloud collector reference in `../prometheus/`.
@@ -31,17 +32,15 @@ Runs entirely against the local self-hosted Firecrawl API.
 
 ## Live counts and run-health (agents)
 
-`START_HERE.md` holds the canonical **Latest Source Matrix** and operational
-snapshot. Those figures (board totals, per-source rows, pytest counts, launchd
-last-run rc, index sizes) **stale quickly**. Before quoting or editing them,
-follow the **Agent rule: verify counts** section at the top of `START_HERE.md`:
-run `cre_status.sh`, re-run the test suites, and query Supabase when you need
-inventory numbers. Update the dated banner when you refresh docs.
+No Markdown file is a live-count source. Before quoting board totals,
+per-source rows, tests, launchd state, or index sizes, run `cre_status.sh`,
+re-run the relevant test suites, and obtain a fresh `cre_validate.py` or exact
+checkpoint-manifest readback. Dated docs are operational history.
 
 ## Read order
 
-1. `START_HERE.md` - live counts, next steps, session bootstrap, Known Limits
-2. `BROKERAGE_STATUS_2026-06-12.md` - per-broker completion status and upgrade order
+1. `START_HERE.md` - current procedures, next steps, session bootstrap, Known Limits
+2. `BROKERAGE_STATUS_2026-06-12.md` - historical per-broker snapshot and upgrade order
 3. This file - orchestration, ingest contract, monitor safety rails
 4. Module docs (each has its own `CLAUDE.md`): `sources/`, `lib/`, `launchd/`, `tests/`
 5. `../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` when touching
@@ -51,7 +50,7 @@ inventory numbers. Update the dated banner when you refresh docs.
 
 | File / dir | Purpose |
 |------------|---------|
-| `collect.ts` | Orchestrator: 20 sources, CLI, broker merge, artifact write |
+| `collect.ts` | Orchestrator: 51 sources, CLI, broker merge, artifact write |
 | `types.ts` | Shared listing vocabulary + `SourceResult` (`truncated?`, etc.) |
 | `sources/` | Per-broker adapters - see `sources/CLAUDE.md` |
 | `lib/` | Shared scrape/config/util - see `lib/CLAUDE.md` |
@@ -75,8 +74,8 @@ inventory numbers. Update the dated banner when you refresh docs.
 | `launchd/` | macOS tier schedules (portable `*.plist.template` + `install_launchd.sh`) - see `launchd/CLAUDE.md` |
 | `tests/` | pytest contracts - see `tests/CLAUDE.md` |
 | `SETUP.md` | Fresh-clone setup runbook (Mac mini production + dev): `cre_setup.sh`, env, launchd generator |
-| `START_HERE.md` | Current status and new-session runbook |
-| `BROKERAGE_STATUS_2026-06-12.md` | Per-broker coverage counts (live) |
+| `START_HERE.md` | Current procedures and new-session runbook |
+| `BROKERAGE_STATUS_2026-06-12.md` | Historical per-broker coverage snapshot |
 | `HANDOFF_COLLIERS_MAIN_2026-06-13.md` | colliers-main full detail run handoff |
 | `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` | Monitor hardening, module split, first `--apply` seed |
 | `SECURITY_REVIEW_2026-06-14.md` | Branch security review: verdict, the `standard_conforming_strings` pin fix, deferred base-table REVOKE |
@@ -113,7 +112,8 @@ python3 -m pytest tests/ -q      # Python collector tests
 # Small probe of one source, both transactions
 npx tsx collect.ts --source=svn --transaction=both --max-items=6 --out=/tmp/probe.json
 
-# Full US collection (everything, sale + lease)
+# Development collection (everything, sale + lease). Production proof uses
+# cre_checkpoint_refresh.py instead.
 npx tsx collect.ts --source=all --transaction=both --max-items=0 \
   --page-cap=400 --concurrency=3 --out=out/run.json
 
@@ -135,11 +135,10 @@ Flags: `--source=all|csv` `--transaction=sale|lease|both` (default `both`)
 Env: `FIRECRAWL_API_URL` (default `http://localhost:3002`);
 `FIRECRAWL_API_KEY` (optional; defaults to `local-self-hosted` when unset).
 
-**20 source keys** (sale/lease support, methods, monitor matrix, Buildout rules,
-`external_id` gotchas, per-source env vars): `sources/CLAUDE.md`. Live row counts:
-`START_HERE.md` (Latest Source Matrix; **verify before quoting**, see agent rule
-at top of that file) and `BROKERAGE_STATUS_2026-06-12.md` (may lag; prefer a
-fresh `psql` check when accuracy matters).
+**51 source keys** (sale/lease support, methods, monitor matrix, Buildout rules,
+`external_id` gotchas, per-source env vars): `sources/CLAUDE.md`. Obtain current
+row counts from a fresh validator or exact checkpoint readback. The matrices in
+`START_HERE.md` and `BROKERAGE_STATUS_2026-06-12.md` are dated history.
 
 **`--page-cap`** bounds pagination on `jll`, `cbre-dealflow`, `colliers`
 (SalesTracker), `nai-global` (`PAGE_CAP × page size`), and Savills sale pages.
@@ -172,6 +171,11 @@ Key behavior:
   prefers URL `propertyId` with `-sale`/`-lease` stripped first. Buildout sources:
   `svn`, `lee-associates`, `franklin-street`.
 - Sale + lease passes merge to `transaction_type='sale_or_lease'`.
+- Provider cards without a canonical listing URL are not written to
+  `cre_listings`. Complete CBRE Deal Flow and Colliers SalesTracker snapshots
+  persist them as explicitly provisional `cre_source_index` rows under
+  source-specific namespaces and watermarks. Colliers canonical ProjectIds are
+  one-to-one and never merge, including identical duplicates.
 - `cap_rate` stored as a decimal fraction (e.g. `0.065`); `norm_cap_rate` drops
   non-numeric, `<= 0`, percent inputs `>= 30`, and `>= 0.5`. Upsert uses
   `COALESCE` so a null new cap rate keeps the existing DB value. Price columns
@@ -224,7 +228,11 @@ Date semantics (ingest scope):
 - `listing_date`: not populated by bulk collector; leave null unless a source
   proves a true first-listed/on-market field.
 - `updated_date` ← `listing.lastUpdated` (YYYY-MM-DD prefix only).
-- `scraped_at` ← artifact `finishedAt`.
+- `scraped_at` prefers the admitted `detailObservedAt`; a
+  source-revision-cache row uses its current-generation `validatedAt`; an
+  authoritative-inventory-feed row uses `inventoryObservedAt`. Artifact
+  `finishedAt` is a legacy fallback only. Generation-exact readback, not
+  `scraped_at` alone, proves current-source freshness.
 - `created_at`, `updated_at`, `deleted_at`: database lifecycle fields.
 
 Supabase access: `credeals.cre_*` tables and `v_cre_*` views are service-role
@@ -251,9 +259,9 @@ coverage figures: `START_HERE.md`.
 - Per-source monitor behavior (excluded sources, supersets, detail skips):
   `sources/CLAUDE.md` + `cre-monitor-subsystem.md`.
 - Scheduled monitor tier uses default `--page-cap=60` unless overridden; see
-  `launchd/CLAUDE.md`. **Current audit (2026-07-11):** no CRE scheduler is
-  installed on the Mac mini. Run `bash cre_status.sh` only as a read-only
-  preflight, then follow the operator runbook before a recovery attempt. `cre_gate.py`
+  `launchd/CLAUDE.md`. Scheduler state is host-local and can change without a
+  repository commit. Run `bash cre_status.sh` as the read-only preflight, then
+  follow the operator runbook before a recovery attempt. `cre_gate.py`
   is wired into `cre_daily_update.sh` as observe-only step [3/4]
   (`--in RUN --apply --strict --out gate.json`); if the strict gate detects any
   partial/regressed source, the script auto-downgrades to `--no-mark-missing`.
@@ -268,8 +276,53 @@ trap; keeps 14 `run_*.json`, 29 `run_*.log`, 14 `gate_*.json` under
 structurally capped (colliers-main is now complete). See `START_HERE.md` Known
 Limits and Operational Recovery.
 
-Tiered schedules: `launchd/CLAUDE.md`. They are implemented in code but not
-currently loaded on the Mac mini. Step [3/4] runs `cre_gate.py` observe-only.
+Tiered schedules: `launchd/CLAUDE.md`. Never infer whether they are loaded from
+this file; use `bash cre_status.sh` and `launchctl list` on the target host.
+Step [3/4] runs `cre_gate.py` observe-only.
+
+For an operator-requested full freshness sweep, prefer
+`cre_checkpoint_refresh.py` over the monolithic daily runner. It checkpoints
+each source, binds observations to an immutable generation, bypasses Firecrawl
+response caches for strict source reads, expires resumable generations after
+24 hours, validates artifact provenance, and stops at the first non-`ok` source
+gate. All configured artifacts must pass their source gates and the aggregate
+gate before any live ingest begins. `first_seen` requires an explicit reviewed
+baseline seed and readback before resuming the same immutable run.
+
+The checkpoint runner always applies the host CPU guard documented in
+`START_HERE.md`: five-second Darwin CPU samples, an 80-percent ceiling, and a
+fail-closed interruption after 30 sustained seconds or any telemetry failure.
+The interruption reaps the owned source process group, records JSONL evidence,
+releases the canonical lock, and preserves exact resume state. Keep
+`--source-workers=1` unless a separate no-write calibration proves a safe
+pairing. Run the current 51-key registry as bounded generations; do not use one
+`--sources all` generation when the 24-hour observation window cannot hold.
+Use `cre_checkpoint_series.py --sources all` for the serial full-registry pass;
+its manifest separates source-local failures from global and resource-guard
+failures while every mutation remains inside `cre_checkpoint_refresh.py`.
+
+The strict source set is `cbre`, `jll`, `jll-investor`, `colliers-main`,
+`cushman-wakefield`, `svn`, `lee-associates`, `franklin-street`, `newmark`, `savills`,
+`transwestern`, `marcus-millichap`, `nai-global`, `matthews`, `srs`, `hanley`,
+and `kidder-mathews`. `cbre-dealflow` and `colliers` may emit explicitly
+inventory-only provider cards. `avison-young` proves inventory and property
+detail freshness while preserving existing contacts when its supplemental team
+feed is unavailable; do not claim fresh contacts in that state.
+
+Child admission has explicit source classes. CBRE replaces its
+collector-owned children. All Buildout feeds, Interra Realty, Cushman &
+Wakefield, SRS, Hanley, Kidder Mathews, and Newmark preserve existing children.
+Every other strict source must provide an admitted current detail observation
+and must not preserve children after a detail failure. The precommit child
+guard compares only the same pre-existing parents that remain active, so
+legitimate mark-missing retirement is not mistaken for physical child loss;
+less than 70% retained for a child type with a baseline of at least 10 aborts
+the transaction.
+
+Use the checkpoint runner's generation-exact database readback as the write
+admission proof. `cre_refresh_report.py --since <run-start>` is the broader
+scope report; neither that report nor a fresh `scraped_at` proves that an old
+detail cache was refreshed.
 
 ## Adding a source
 
