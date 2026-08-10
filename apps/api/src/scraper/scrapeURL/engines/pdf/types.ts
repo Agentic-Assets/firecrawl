@@ -13,7 +13,15 @@ export type PDFProcessorResult = {
 };
 
 export type PdfMetadata = {
+  /** Pages actually parsed for this request (capped by maxPages). */
   numPages: number;
+  /**
+   * True page count of the document, before any maxPages capping. Omitted when
+   * the underlying engine couldn't determine it (e.g. native detection failed),
+   * so consumers must treat undefined as "no signal" rather than "not truncated".
+   * When present, `totalPages > numPages` means the result was truncated.
+   */
+  totalPages?: number;
   title?: string;
   ocr?: Record<string, unknown>;
 };

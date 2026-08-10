@@ -160,6 +160,9 @@ export async function scrapePDF(meta: Meta): Promise<EngineScrapeResult> {
 
     let result: PDFProcessorResult | null = null;
     let effectivePageCount: number = 0;
+    // True page count of the document before maxPages capping. Stays undefined
+    // when native detection fails, so it can be omitted from the response.
+    let totalPageCount: number | undefined;
     let metadataTitle: string | undefined;
     let rustMarkdownForShadow: string | undefined;
     let shadowPdfType: string | undefined;
@@ -218,6 +221,7 @@ export async function scrapePDF(meta: Meta): Promise<EngineScrapeResult> {
           mode,
         });
 
+        totalPageCount = detection.pageCount;
         effectivePageCount = maxPages
           ? Math.min(detection.pageCount, maxPages)
           : detection.pageCount;
@@ -274,6 +278,7 @@ export async function scrapePDF(meta: Meta): Promise<EngineScrapeResult> {
           mode,
         });
 
+        totalPageCount = pdfResult.pageCount;
         effectivePageCount = maxPages
           ? Math.min(pdfResult.pageCount, maxPages)
           : pdfResult.pageCount;
@@ -612,6 +617,7 @@ export async function scrapePDF(meta: Meta): Promise<EngineScrapeResult> {
       markdown: result?.markdown ?? "",
       pdfMetadata: {
         numPages: effectivePageCount,
+        totalPages: totalPageCount,
         title: metadataTitle,
         ...(result?.ocrMetadata ? { ocr: result.ocrMetadata } : {}),
       },
