@@ -234,6 +234,70 @@ def _load_child_manifest(
     return candidates[0]
 
 
+def _reconciled_state(child_manifest: Mapping[str, Any]) -> str:
+    status = child_manifest.get("status")
+    if status == SUCCESS_STATUS:
+        return "complete"
+    if status == RESOURCE_GUARD_STATUS:
+        return "resource_guard_interrupted"
+    if status == "interrupted":
+        return "interrupted"
+    if source_local_failure(child_manifest):
+        return "failed_source"
+    return "failed_global"
+
+
+def reconcile_stale_running_sources(series_dir: Path, manifest: dict[str, Any]) -> None:
+    """Repair only explicitly requested, provable parent/child interruption drift.
+
+    A terminal child can outlive an interrupted series driver.  Never guess at
+    ownership: each stale parent must have exactly one child from its current
+    outer attempt, on the same collector SHA and one-source configuration.
+    """
+    child_root = series_dir / "runs"
+    git_sha = manifest["collector_git_sha"]
+    for source, checkpoint in manifest["sources"].items():
+        if checkpoint.get("state") != "running":
+            continue
+        attempts = checkpoint.get("attempts") or []
+        if not attempts or not isinstance(attempts[-1], Mapping):
+            raise SeriesError(f"cannot reconcile stale {source}: missing current attempt")
+        attempt_started = attempts[-1].get("started_at")
+        if not isinstance(attempt_started, str):
+            raise SeriesError(f"cannot reconcile stale {source}: missing attempt start")
+        matches: list[tuple[Path, dict[str, Any]]] = []
+        for path in child_root.glob("*/manifest.json"):
+            try:
+                child = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            config = child.get("config") or {}
+            if (
+                child.get("collector_git_sha") == git_sha
+                and config.get("sources") == [source]
+                and isinstance(child.get("started_at"), str)
+                and child["started_at"] >= attempt_started
+                and child.get("status") in {
+                    SUCCESS_STATUS,
+                    RESOURCE_GUARD_STATUS,
+                    "interrupted",
+                    "failed",
+                }
+            ):
+                matches.append((path, child))
+        if len(matches) != 1:
+            raise SeriesError(
+                f"cannot reconcile stale {source}: expected exactly one terminal child, found {len(matches)}"
+            )
+        path, child = matches[0]
+        checkpoint["checkpoint_run"] = str(path.parent.relative_to(series_dir))
+        checkpoint["checkpoint_status"] = child.get("status")
+        checkpoint["state"] = _reconciled_state(child)
+        checkpoint["error"] = child.get("error")
+        attempts[-1]["finished_at"] = child.get("finished_at") or utc_now()
+        save_manifest(series_dir, manifest)
+
+
 def _terminate_child(proc: subprocess.Popen[Any]) -> None:
     if proc.poll() is not None:
         return
@@ -412,6 +476,11 @@ def run_series(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resume", default=None)
+    parser.add_argument(
+        "--reconcile-stale-series",
+        action="store_true",
+        help="explicitly repair a stale running parent from exactly one terminal child before resume",
+    )
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--env-file", default=None)
@@ -494,6 +563,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             git_sha=git_sha,
             config=config,
         )
+        if args.reconcile_stale_series:
+            reconcile_stale_running_sources(series_dir, manifest)
         manifest["status"] = "running"
         manifest["error"] = None
         manifest["finished_at"] = None
