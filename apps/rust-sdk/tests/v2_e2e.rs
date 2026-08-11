@@ -305,9 +305,9 @@ fn test_client_creation() {
     let cloud_result = Client::new("test-key");
     assert!(cloud_result.is_ok());
 
-    // Cloud client without API key should fail
+    // Cloud client without an API key is supported for keyless routes.
     let cloud_no_key = Client::new_selfhosted("https://api.firecrawl.dev", None::<&str>);
-    assert!(cloud_no_key.is_err());
+    assert!(cloud_no_key.is_ok());
 
     // Self-hosted client without API key should work
     let selfhosted = Client::new_selfhosted("http://localhost:3000", None::<&str>);

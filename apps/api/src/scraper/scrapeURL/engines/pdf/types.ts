@@ -1,6 +1,15 @@
+export type PdfPageMarkdown = {
+  /** 1-based physical PDF page number returned by fire-pdf. */
+  page: number;
+  markdown: string;
+};
+
 export type PDFProcessorResult = {
   html: string;
   markdown?: string;
+  pageMarkdown?: PdfPageMarkdown[];
+  /** Provider-specific OCR diagnostics retained for local Docling QA. */
+  ocrMetadata?: Record<string, unknown>;
   /**
    * Pages the underlying engine actually processed for this request.
    * Currently populated only by fire-pdf (via OcrSuccessBody.pages_processed).
@@ -9,12 +18,20 @@ export type PDFProcessorResult = {
    * and fall back to whatever upstream metadata pass set.
    */
   pagesProcessed?: number;
-  ocrMetadata?: Record<string, unknown>;
 };
 
 export type PdfMetadata = {
+  /** Pages actually parsed for this request (capped by maxPages). */
   numPages: number;
+  /**
+   * True page count of the document, before any maxPages capping. Omitted when
+   * the underlying engine couldn't determine it (e.g. native detection failed),
+   * so consumers must treat undefined as "no signal" rather than "not truncated".
+   * When present, `totalPages > numPages` means the result was truncated.
+   */
+  totalPages?: number;
   title?: string;
+  /** Provider-specific OCR diagnostics retained for local Docling QA. */
   ocr?: Record<string, unknown>;
 };
 

@@ -7,10 +7,7 @@ import {
   scrapeURLWithFireEngineChromeCDP,
   scrapeURLWithFireEngineTLSClient,
 } from "./fire-engine";
-import {
-  dataLayerMaxReasonableTime,
-  scrapeURLWithDataLayer,
-} from "./data-layer";
+import { exchangeMaxReasonableTime, scrapeURLWithExchange } from "./exchange";
 import { pdfMaxReasonableTime, scrapePDF } from "./pdf";
 import { fetchMaxReasonableTime, scrapeURLWithFetch } from "./fetch";
 import {
@@ -30,17 +27,21 @@ import {
 } from "./x-twitter";
 import { queryEngpickerVerdict, useIndex } from "../../../services";
 import { hasFormatOfType } from "../../../lib/format-utils";
-import { getPDFMaxPages } from "../../../controllers/v2/types";
+import {
+  getPDFMaxPages,
+  getPDFPageMarkdown,
+} from "../../../controllers/v2/types";
 import type { PdfMetadata } from "./pdf/types";
 import { BrandingProfile } from "../../../types/branding";
 import { BrandingNotSupportedError } from "../error";
+import { isUrlBlocked } from "../../WebScraper/utils/blocklist";
 import {
-  canUseDataLayerForRequest,
-  type DataLayerScrapeMetadata,
-} from "../../../lib/data-layer";
+  canUseExchangeForRequest,
+  type ExchangeScrapeMetadata,
+} from "../../../lib/exchange";
 
 export type Engine =
-  | "data-layer"
+  | "exchange"
   | "fire-engine;chrome-cdp"
   | "fire-engine(retry);chrome-cdp"
   | "fire-engine;chrome-cdp;stealth"
@@ -140,6 +141,7 @@ export type EngineScrapeResult = {
 
   html: string;
   markdown?: string;
+  pages?: Array<{ pageNumber: number; markdown: string }>;
   json?: unknown;
   statusCode: number;
   error?: string;
@@ -171,13 +173,13 @@ export type EngineScrapeResult = {
 
   proxyUsed: "basic" | "stealth";
   timezone?: string;
-  dataLayer?: DataLayerScrapeMetadata;
+  exchange?: ExchangeScrapeMetadata;
 };
 
 const engineHandlers: {
   [E in Engine]: (meta: Meta) => Promise<EngineScrapeResult>;
 } = {
-  "data-layer": scrapeURLWithDataLayer,
+  exchange: scrapeURLWithExchange,
   index: scrapeURLWithIndex,
   "index;documents": scrapeURLWithIndex,
   "fire-engine;chrome-cdp": scrapeURLWithFireEngineChromeCDP,
@@ -197,7 +199,7 @@ const engineHandlers: {
 const engineMRTs: {
   [E in Engine]: (meta: Meta) => number;
 } = {
-  "data-layer": dataLayerMaxReasonableTime,
+  exchange: exchangeMaxReasonableTime,
   index: indexMaxReasonableTime,
   "index;documents": indexMaxReasonableTime,
   "fire-engine;chrome-cdp": meta =>
@@ -230,7 +232,7 @@ const engineOptions: {
     quality: number;
   };
 } = {
-  "data-layer": {
+  exchange: {
     features: {
       actions: false,
       waitFor: false,
@@ -565,6 +567,8 @@ export function shouldUseIndex(meta: Meta) {
     !hasFormatOfType(meta.options.formats, "branding") &&
     // Skip index if a non-default PDF maxPages is specified
     getPDFMaxPages(meta.options.parsers) === undefined &&
+    // The URL index does not yet persist physical-page capability metadata.
+    !getPDFPageMarkdown(meta.options.parsers) &&
     !hasCustomScreenshotSettings &&
     meta.options.maxAge !== 0 &&
     (meta.options.headers === undefined ||
@@ -582,27 +586,69 @@ export async function buildFallbackList(meta: Meta): Promise<
 > {
   if (
     !meta.internalOptions.agentIndexOnly &&
-    (await canUseDataLayerForRequest({
-      url: meta.rewrittenUrl ?? meta.url,
-      formats: meta.options.formats,
-      actions: meta.options.actions,
-      headers: meta.options.headers,
-      waitFor: meta.options.waitFor,
-      mobile: meta.options.mobile,
-      location: meta.options.location,
-      proxy: meta.options.proxy,
-      blockAds: meta.options.blockAds,
-      zeroDataRetention: meta.internalOptions.zeroDataRetention,
-      lockdown: meta.options.lockdown,
-      flags: meta.internalOptions.teamFlags ?? null,
-    }))
+    meta.internalOptions.forceEngine === undefined
   ) {
-    return [
-      {
-        engine: "data-layer",
-        unsupportedFeatures: new Set(),
-      },
-    ];
+    if (
+      await canUseExchangeForRequest({
+        url: meta.rewrittenUrl ?? meta.url,
+        formats: meta.options.formats,
+        actions: meta.options.actions,
+        headers: meta.options.headers,
+        waitFor: meta.options.waitFor,
+        mobile: meta.options.mobile,
+        location: meta.options.location,
+        proxy: meta.options.proxy,
+        blockAds: meta.options.blockAds,
+        profile: meta.options.profile,
+        atsv: meta.internalOptions.atsv,
+        minAge: meta.options.minAge,
+        includeTags: meta.options.includeTags,
+        excludeTags: meta.options.excludeTags,
+        zeroDataRetention: meta.internalOptions.zeroDataRetention,
+        lockdown: meta.options.lockdown,
+        flags: meta.internalOptions.teamFlags ?? null,
+      })
+    ) {
+      return [
+        {
+          engine: "exchange",
+          unsupportedFeatures: new Set(),
+        },
+      ];
+    }
+
+    // A blocked URL can only have been admitted by the Exchange bypass in
+    // blocklistMiddleware, which only applies to flagged orgs; if the
+    // Exchange is no longer usable by execution time (catalog changed,
+    // service down), fail closed rather than letting normal engines scrape
+    // a blocklisted site. An error here also fails closed: this branch only
+    // runs for flagged orgs, and a retryable scrape failure is preferable
+    // to scraping a potentially blocklisted site with normal engines.
+    if (
+      meta.internalOptions.teamFlags?.professionalProfileCompanyDataBeta ===
+      true
+    ) {
+      try {
+        if (
+          isUrlBlocked(
+            meta.rewrittenUrl ?? meta.url,
+            meta.internalOptions.teamFlags ?? null,
+            {
+              team_id: meta.internalOptions.teamId ?? null,
+              org_id: meta.internalOptions.orgId ?? null,
+              origin: null,
+            },
+          )
+        ) {
+          return [];
+        }
+      } catch (error) {
+        meta.logger.warn("Exchange blocklist re-check failed; failing closed", {
+          error,
+        });
+        return [];
+      }
+    }
   }
 
   const shouldPrioritizeTlsClient = meta.options.__experimental_engpicker
@@ -645,6 +691,43 @@ export async function buildFallbackList(meta: Meta): Promise<
     const indexDocumentsIndex = _engines.indexOf("index;documents");
     if (indexDocumentsIndex !== -1) {
       _engines.splice(indexDocumentsIndex, 1);
+    }
+  }
+
+  // When fire-engine is available, drop tlsclient and fetch from the general
+  // waterfall: once chrome-cdp (and its retry) fail, degrading to a plain
+  // HTTP client tends to produce bot-walled or otherwise low-quality content,
+  // so we'd rather fail the scrape outright. They stay reachable when the
+  // request asks for them: fastMode/atsv set feature flags that chrome-cdp
+  // can't satisfy (and are handled here), audio/video keep tlsclient as the
+  // avgrab fallback behind chrome-cdp, and forceEngine bypasses _engines
+  // entirely, reading straight from internalOptions.
+  if (
+    useFireEngine &&
+    !meta.featureFlags.has("useFastMode") &&
+    !meta.featureFlags.has("atsv") &&
+    !meta.featureFlags.has("audio") &&
+    !meta.featureFlags.has("video")
+  ) {
+    // The sort-time quality boost below cannot resurrect an engine that was
+    // spliced out here, so dropping tlsclient unconditionally would silently
+    // neuter the engpicker opt-in on exactly the TlsClientOk domains where
+    // engpicker measured its output to match chrome-cdp's. Keep both variants
+    // when that verdict is in hand; regular scrapes never set the flag, so they
+    // drop tlsclient as intended.
+    const enginesToDrop: Engine[] = ["fetch"];
+    if (!shouldPrioritizeTlsClient) {
+      enginesToDrop.push(
+        "fire-engine;tlsclient",
+        "fire-engine;tlsclient;stealth",
+      );
+    }
+
+    for (const engine of enginesToDrop) {
+      const index = _engines.indexOf(engine);
+      if (index !== -1) {
+        _engines.splice(index, 1);
+      }
     }
   }
 

@@ -18,7 +18,7 @@ FORBIDDEN_PACKAGE_PNPM_KEYS = {
     "allowedDeprecatedVersions",
     "allowBuilds",
 }
-REQUIRED_WORKSPACE_SECTIONS = ("overrides:", "onlyBuiltDependencies:", "patchedDependencies:")
+REQUIRED_WORKSPACE_SECTIONS = ("overrides:", "patchedDependencies:", "allowBuilds:")
 REQUIRED_NATIVE_DEPS = ("foundationdb", "libpq")
 
 
@@ -30,12 +30,16 @@ def load_package_json(api_dir: Path) -> dict:
     return json.loads((api_dir / "package.json").read_text(encoding="utf-8"))
 
 
-def section_contains_list_item(text: str, section_name: str, item: str) -> bool:
+def section_contains_true_mapping(text: str, section_name: str, item: str) -> bool:
     pattern = re.compile(rf"^{re.escape(section_name)}:\n(?P<body>(?:  .+\n)+)", re.MULTILINE)
     match = pattern.search(text)
     if not match:
         return False
-    return re.search(rf"^\s*-\s+{re.escape(item)}\s*$", match.group("body"), re.MULTILINE) is not None
+    return re.search(
+        rf"^\s*{re.escape(item)}:\s*true\s*$",
+        match.group("body"),
+        re.MULTILINE,
+    ) is not None
 
 
 def dockerfile_has_fdb_before_pnpm_install(text: str) -> bool:
@@ -65,8 +69,8 @@ def run_checks(api_dir: Path) -> list[str]:
             )
 
     package_manager = package_json.get("packageManager", "")
-    if package_manager != "pnpm@10.16.1":
-        fail(errors, f"packageManager should remain pnpm@10.16.1, got {package_manager!r}")
+    if package_manager != "pnpm@11.4.0":
+        fail(errors, f"packageManager should remain pnpm@11.4.0, got {package_manager!r}")
 
     if not workspace_path.is_file():
         fail(errors, "apps/api/pnpm-workspace.yaml is missing")
@@ -74,12 +78,8 @@ def run_checks(api_dir: Path) -> list[str]:
         if section not in workspace_text:
             fail(errors, f"pnpm-workspace.yaml is missing {section}")
     for dependency in REQUIRED_NATIVE_DEPS:
-        if not section_contains_list_item(workspace_text, "onlyBuiltDependencies", dependency):
-            fail(errors, f"onlyBuiltDependencies must include {dependency}")
-    if re.search(r"allowBuilds:\s*\n(?:\s+.+\n)*\s+foundationdb:\s*true", workspace_text):
-        fail(errors, "pnpm-workspace.yaml must not force host allowBuilds.foundationdb=true")
-    if re.search(r"allowBuilds:\s*\n(?:\s+.+\n)*\s+libpq:\s*true", workspace_text):
-        fail(errors, "pnpm-workspace.yaml must not force host allowBuilds.libpq=true")
+        if not section_contains_true_mapping(workspace_text, "allowBuilds", dependency):
+            fail(errors, f"allowBuilds must include {dependency}: true")
 
     if not dockerfile_path.is_file():
         fail(errors, "apps/api/Dockerfile is missing")

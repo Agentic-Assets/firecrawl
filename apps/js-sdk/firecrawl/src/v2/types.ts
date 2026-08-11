@@ -183,6 +183,10 @@ export type ActionOption =
   | ExecuteJavascriptAction
   | PDFAction;
 
+export interface AuditMetadata {
+  username: string;
+}
+
 export interface ScrapeOptions {
   formats?: FormatOption[];
   headers?: Record<string, string>;
@@ -203,11 +207,17 @@ export interface ScrapeOptions {
   useMock?: string;
   blockAds?: boolean;
   proxy?: "basic" | "stealth" | "enhanced" | "auto" | string;
+  /**
+   * Maximum age, in milliseconds, of indexed content that may be reused.
+   * Set to `0` to bypass index reuse.
+   */
   maxAge?: number;
   minAge?: number;
   storeInCache?: boolean;
   lockdown?: boolean;
   redactPII?: boolean | RedactPIIOptions;
+  threatProtection?: ThreatProtectionOptions;
+  auditMetadata?: AuditMetadata;
   profile?: {
     name: string;
     saveChanges?: boolean;
@@ -241,6 +251,27 @@ export interface RedactPIIOptions {
   replaceStyle?: "tag" | "mask" | "remove";
 }
 
+/**
+ * Enterprise: per-request field-level override of your team's threat
+ * protection policy. Requires threat protection to be enabled for your team
+ * and request overrides to be allowed in the team configuration. Only the
+ * fields you provide replace the team policy's values.
+ */
+export interface ThreatProtectionOptions {
+  /** "off" disables scanning for this request; "normal" applies the policy. */
+  mode?: "off" | "normal";
+  /** Block verdicts at or above this risk score (integer 0-100). */
+  riskScoreThreshold?: number;
+  /** Exact domains or globs like "*.example.com" to always block (max 1000). */
+  blacklist?: string[];
+  /** Exact domains or globs to always allow; wins over everything (max 1000). */
+  whitelist?: string[];
+  /** Lowercase TLDs without the leading dot, e.g. "zip" (max 1000). */
+  blockedTlds?: string[];
+  /** Behavior when scanning is unavailable: "closed" blocks, "open" allows. */
+  failurePolicy?: "open" | "closed";
+}
+
 export type ParseFileData =
   | Blob
   | File
@@ -267,6 +298,7 @@ export type ParseOptions = Omit<
   | "storeInCache"
   | "lockdown"
   | "proxy"
+  | "threatProtection"
 > & {
   formats?: ParseFormatOption[];
   proxy?: "basic" | "auto";
@@ -530,6 +562,7 @@ export interface DocumentMetadata {
   // Common metadata fields
   title?: string;
   description?: string;
+  /** URL reported by the selected scrape engine. */
   url?: string;
   language?: string;
   keywords?: string | string[];
@@ -566,10 +599,13 @@ export interface DocumentMetadata {
   articleSection?: string;
 
   // Response-level metadata
+  /** URL requested for the scrape. */
   sourceURL?: string;
+  /** HTTP status code reported for the scrape response. */
   statusCode?: number;
   scrapeId?: string;
   numPages?: number;
+  totalPages?: number;
   contentType?: string;
   timezone?: string;
   proxyUsed?: "basic" | "stealth";
@@ -628,6 +664,7 @@ export interface SearchResultWeb {
   url: string;
   title?: string;
   description?: string;
+  position?: number;
   category?: string;
 }
 
@@ -654,10 +691,11 @@ export interface SearchData {
   web?: Array<SearchResultWeb | Document>;
   news?: Array<SearchResultNews | Document>;
   images?: Array<SearchResultImages | Document>;
+  developer?: Array<SearchResultWeb | Document>;
 }
 
 export interface CategoryOption {
-  type: "github" | "research" | "pdf";
+  type: "github" | "research" | "pdf" | "developer";
 }
 
 export interface SearchRequest {
@@ -665,7 +703,9 @@ export interface SearchRequest {
   sources?: Array<
     "web" | "news" | "images" | { type: "web" | "news" | "images" }
   >;
-  categories?: Array<"github" | "research" | "pdf" | CategoryOption>;
+  categories?: Array<
+    "github" | "research" | "pdf" | "developer" | CategoryOption
+  >;
   includeDomains?: string[];
   excludeDomains?: string[];
   limit?: number;
@@ -673,7 +713,16 @@ export interface SearchRequest {
   location?: string;
   ignoreInvalidURLs?: boolean;
   timeout?: number; // ms
+  /** Generate query-relevant highlights for search results. Defaults to true. */
+  highlights?: boolean;
   scrapeOptions?: ScrapeOptions;
+  /**
+   * Enterprise search options. Use `["zdr"]` for end-to-end Zero Data
+   * Retention or `["anon"]` for anonymized search. Must be enabled for
+   * your team.
+   */
+  enterprise?: Array<"default" | "anon" | "zdr">;
+  threatProtection?: ThreatProtectionOptions;
   integration?: string;
   origin?: string;
 }
@@ -762,6 +811,8 @@ export interface MapOptions {
   integration?: string;
   origin?: string;
   location?: LocationConfig;
+  threatProtection?: ThreatProtectionOptions;
+  auditMetadata?: AuditMetadata;
 }
 
 export type FeedbackRating = "good" | "partial" | "bad";

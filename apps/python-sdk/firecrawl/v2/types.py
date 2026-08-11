@@ -83,6 +83,7 @@ class DocumentMetadata(BaseModel):
     # Common metadata fields
     title: Optional[str] = None
     description: Optional[str] = None
+    # URL reported by the selected scrape engine.
     url: Optional[str] = None
     language: Optional[str] = None
     keywords: Optional[Union[str, List[str]]] = None
@@ -119,10 +120,13 @@ class DocumentMetadata(BaseModel):
     article_section: Optional[str] = None
 
     # Response-level metadata
+    # URL requested for the scrape.
     source_url: Optional[str] = None
+    # HTTP status code reported for the scrape response.
     status_code: Optional[int] = None
     scrape_id: Optional[str] = None
     num_pages: Optional[int] = None
+    total_pages: Optional[int] = None
     content_type: Optional[str] = None
     proxy_used: Optional[Literal["basic", "stealth"]] = None
     timezone: Optional[str] = None
@@ -211,6 +215,7 @@ class DocumentMetadata(BaseModel):
             if isinstance(v, list) and k in {
                 "status_code",
                 "num_pages",
+                "total_pages",
                 "credits_used",
             }:
                 first = v[0] if v else None
@@ -558,6 +563,8 @@ class Category(BaseModel):
     - "github": Filter results to GitHub repositories
     - "research": Filter results to research papers and academic sites
     - "pdf": Filter results to PDF files (adds filetype:pdf to search)
+    - "developer": Add developer results (issues, pull requests, READMEs and
+      documentation) under `.developer`
     """
 
     type: str
@@ -747,6 +754,43 @@ class RedactPIIOptions(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ThreatProtectionOptions(BaseModel):
+    """Enterprise: per-request field-level override of your team's threat
+    protection policy.
+
+    Requires threat protection to be enabled for your team and request
+    overrides to be allowed in the team configuration. Only the fields you
+    explicitly provide replace the team policy's values.
+    """
+
+    # "off" disables scanning for this request; "normal" applies the policy.
+    mode: Optional[Literal["off", "normal"]] = None
+    # Block verdicts at or above this risk score (integer 0-100).
+    risk_score_threshold: Optional[int] = Field(
+        default=None, alias="riskScoreThreshold"
+    )
+    # Exact domains or globs like "*.example.com" to always block (max 1000).
+    blacklist: Optional[List[str]] = None
+    # Exact domains or globs to always allow; wins over everything (max 1000).
+    whitelist: Optional[List[str]] = None
+    # Lowercase TLDs without the leading dot, e.g. "zip" (max 1000).
+    blocked_tlds: Optional[List[str]] = Field(default=None, alias="blockedTlds")
+    # Behavior when scanning is unavailable: "closed" blocks, "open" allows.
+    failure_policy: Optional[Literal["open", "closed"]] = Field(
+        default=None, alias="failurePolicy"
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+class AuditMetadata(BaseModel):
+    """User attribution included with SIEM logging events."""
+
+    username: str = Field(max_length=1024)
+
+    model_config = {"extra": "forbid"}
+
+
 class ScrapeOptions(BaseModel):
     """Options for scraping operations."""
 
@@ -781,12 +825,20 @@ class ScrapeOptions(BaseModel):
     use_mock: Optional[str] = None
     block_ads: Optional[bool] = None
     proxy: Optional[Literal["basic", "stealth", "enhanced", "auto"]] = None
+    # Maximum age, in milliseconds, of indexed content that may be reused.
+    # Set to 0 to bypass index reuse.
     max_age: Optional[int] = None
     min_age: Optional[int] = None
     store_in_cache: Optional[bool] = None
     lockdown: Optional[bool] = None
     redact_pii: Optional[Union[bool, RedactPIIOptions]] = Field(
         default=None, alias="redactPII"
+    )
+    threat_protection: Optional[ThreatProtectionOptions] = Field(
+        default=None, alias="threatProtection"
+    )
+    audit_metadata: Optional[AuditMetadata] = Field(
+        default=None, alias="auditMetadata"
     )
     profile: Optional[Dict[str, Any]] = None
     integration: Optional[str] = None
@@ -885,11 +937,12 @@ class CrawlStatusRequest(BaseModel):
 
 
 class SearchResultWeb(BaseModel):
-    """A web search result with URL, title, and description."""
+    """A web search result with URL, title, description, and position."""
 
     url: str
     title: Optional[str] = None
     description: Optional[str] = None
+    position: Optional[int] = None
     category: Optional[str] = None
 
 
@@ -1019,6 +1072,8 @@ class MapOptions(BaseModel):
     timeout: Optional[int] = None
     integration: Optional[str] = None
     location: Optional["Location"] = None
+    threat_protection: Optional[ThreatProtectionOptions] = None
+    audit_metadata: Optional[AuditMetadata] = None
 
 
 class MapRequest(BaseModel):
@@ -1567,7 +1622,12 @@ class SearchRequest(BaseModel):
     location: Optional[str] = None
     ignore_invalid_urls: Optional[bool] = None
     timeout: Optional[int] = 300000
+    highlights: Optional[bool] = None
     scrape_options: Optional[ScrapeOptions] = None
+    # Enterprise search options. Use ["zdr"] for end-to-end Zero Data
+    # Retention or ["anon"] for anonymized search. Must be enabled for your team.
+    enterprise: Optional[List[str]] = None
+    threat_protection: Optional[ThreatProtectionOptions] = None
     integration: Optional[str] = None
 
     @field_validator("sources")
@@ -1640,6 +1700,7 @@ class SearchData(BaseModel):
     web: Optional[List[Union[SearchResultWeb, Document]]] = None
     news: Optional[List[Union[SearchResultNews, Document]]] = None
     images: Optional[List[Union[SearchResultImages, Document]]] = None
+    developer: Optional[List[Union[SearchResultWeb, Document]]] = None
 
     @property
     def data(self):
@@ -1650,6 +1711,8 @@ class SearchData(BaseModel):
             parts.append(f".news ({len(self.news)} results)")
         if self.images:
             parts.append(f".images ({len(self.images)} results)")
+        if self.developer:
+            parts.append(f".developer ({len(self.developer)} results)")
         available = ", ".join(parts) if parts else ".web, .news, or .images"
         raise AttributeError(
             f"SearchData has no '.data'. Results are grouped by source: {available}"

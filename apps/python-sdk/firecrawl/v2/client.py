@@ -42,6 +42,8 @@ from .types import (
     Location,
     PaginationConfig,
     AgentOptions,
+    AuditMetadata,
+    ThreatProtectionOptions,
     Monitor,
     MonitorCheck,
     MonitorCheckDetail,
@@ -76,7 +78,8 @@ _SCRAPE_OPTION_KEYS = frozenset({
     "only_main_content", "timeout", "wait_for", "mobile",
     "parsers", "actions", "location", "skip_tls_verification",
     "remove_base64_images", "fast_mode", "use_mock", "block_ads",
-    "proxy", "max_age", "store_in_cache", "lockdown", "profile",
+    "proxy", "max_age", "store_in_cache", "lockdown", "threat_protection",
+    "profile", "audit_metadata",
 })
 
 
@@ -157,7 +160,9 @@ class FirecrawlClient:
         max_age: Optional[int] = None,
         store_in_cache: Optional[bool] = None,
         lockdown: Optional[bool] = None,
+        threat_protection: Optional[ThreatProtectionOptions] = None,
         profile: Optional[Dict[str, Any]] = None,
+        audit_metadata: Optional[AuditMetadata] = None,
         integration: Optional[str] = None,
     ) -> Document:
         """
@@ -184,7 +189,9 @@ class FirecrawlClient:
             max_age: Maximum age of the cache
             store_in_cache: Whether to store the result in the cache
             lockdown: Serve only previously cached results; never make outbound requests. Returns 404 SCRAPE_LOCKDOWN_CACHE_MISS on cache miss.
+            threat_protection: Enterprise per-request override of the team's threat protection policy
             profile: Browser profile for persistent state (e.g. {"name": "my-profile", "saveChanges": True})
+            audit_metadata: Metadata to include in SIEM logging events
         Returns:
             Document
         """
@@ -210,10 +217,12 @@ class FirecrawlClient:
                 max_age=max_age,
                 store_in_cache=store_in_cache,
                 lockdown=lockdown,
+                threat_protection=threat_protection,
                 profile=profile,
+                audit_metadata=audit_metadata,
                 integration=integration,
             ).items() if v is not None}
-        ) if any(v is not None for v in [formats, headers, include_tags, exclude_tags, only_main_content, timeout, wait_for, mobile, parsers, actions, location, skip_tls_verification, remove_base64_images, fast_mode, use_mock, block_ads, proxy, max_age, store_in_cache, lockdown, profile, integration]) else None
+        ) if any(v is not None for v in [formats, headers, include_tags, exclude_tags, only_main_content, timeout, wait_for, mobile, parsers, actions, location, skip_tls_verification, remove_base64_images, fast_mode, use_mock, block_ads, proxy, max_age, store_in_cache, lockdown, threat_protection, profile, audit_metadata, integration]) else None
         return scrape_module.scrape(self.http_client, url, options)
 
     def search_papers(self, query: str, **kwargs):
@@ -390,8 +399,11 @@ class FirecrawlClient:
         location: Optional[str] = None,
         ignore_invalid_urls: Optional[bool] = None,
         timeout: Optional[int] = None,
+        highlights: Optional[bool] = None,
         scrape_options: Optional[ScrapeOptions] = None,
         integration: Optional[str] = None,
+        enterprise: Optional[List[str]] = None,
+        threat_protection: Optional[ThreatProtectionOptions] = None,
     ) -> SearchData:
         """
         Search for documents.
@@ -402,7 +414,14 @@ class FirecrawlClient:
             tbs: Time-based search filter
             location: Location string for search
             timeout: Request timeout in milliseconds (default: 300000)
+            highlights: Generate query-relevant highlights for search results
+                (default: true)
             page_options: Options for scraping individual pages
+            enterprise: Enterprise search options. Use ["zdr"] for end-to-end
+                Zero Data Retention or ["anon"] for anonymized search. Must be
+                enabled for your team.
+            threat_protection: Enterprise per-request override of the team's
+                threat protection policy
 
         Returns:
             SearchData containing the search results
@@ -418,8 +437,11 @@ class FirecrawlClient:
             location=location,
             ignore_invalid_urls=ignore_invalid_urls,
             timeout=timeout,
+            highlights=highlights,
             scrape_options=scrape_options,
             integration=integration,
+            enterprise=enterprise,
+            threat_protection=threat_protection,
         )
 
         return search_module.search(self.http_client, request)
@@ -463,7 +485,9 @@ class FirecrawlClient:
         max_age: Optional[int] = None,
         store_in_cache: Optional[bool] = None,
         lockdown: Optional[bool] = None,
+        threat_protection: Optional[ThreatProtectionOptions] = None,
         profile: Optional[Dict[str, Any]] = None,
+        audit_metadata: Optional[AuditMetadata] = None,
         regex_on_full_url: bool = False,
         deduplicate_similar_urls: bool = True,
         zero_data_retention: bool = False,
@@ -512,7 +536,9 @@ class FirecrawlClient:
             max_age: Cache max age (convenience kwarg)
             store_in_cache: Cache results (convenience kwarg)
             lockdown: Serve only cached results (convenience kwarg)
+            threat_protection: Enterprise threat protection override (convenience kwarg)
             profile: Browser profile (convenience kwarg)
+            audit_metadata: Metadata to include in SIEM logging events
             regex_on_full_url: Apply includePaths/excludePaths regex to the full URL (including query parameters) instead of just the pathname
             deduplicate_similar_urls: Whether to deduplicate similar URLs during crawl (default: True)
             zero_data_retention: Whether to delete data after 24 hours
@@ -537,7 +563,8 @@ class FirecrawlClient:
                 remove_base64_images=remove_base64_images, fast_mode=fast_mode,
                 use_mock=use_mock, block_ads=block_ads, proxy=proxy,
                 max_age=max_age, store_in_cache=store_in_cache, lockdown=lockdown,
-                profile=profile,
+                threat_protection=threat_protection, profile=profile,
+                audit_metadata=audit_metadata,
             ).items() if v is not None}
             if scrape_kwargs:
                 scrape_options = ScrapeOptions(**scrape_kwargs)
@@ -620,7 +647,9 @@ class FirecrawlClient:
         max_age: Optional[int] = None,
         store_in_cache: Optional[bool] = None,
         lockdown: Optional[bool] = None,
+        threat_protection: Optional[ThreatProtectionOptions] = None,
         profile: Optional[Dict[str, Any]] = None,
+        audit_metadata: Optional[AuditMetadata] = None,
         regex_on_full_url: bool = False,
         deduplicate_similar_urls: bool = True,
         zero_data_retention: bool = False,
@@ -667,7 +696,9 @@ class FirecrawlClient:
             max_age: Cache max age (convenience kwarg)
             store_in_cache: Cache results (convenience kwarg)
             lockdown: Serve only cached results (convenience kwarg)
+            threat_protection: Enterprise threat protection override (convenience kwarg)
             profile: Browser profile (convenience kwarg)
+            audit_metadata: Metadata to include in SIEM logging events
             regex_on_full_url: Apply includePaths/excludePaths regex to the full URL (including query parameters) instead of just the pathname
             deduplicate_similar_urls: Whether to deduplicate similar URLs during crawl (default: True)
             zero_data_retention: Whether to delete data after 24 hours
@@ -689,7 +720,8 @@ class FirecrawlClient:
                 remove_base64_images=remove_base64_images, fast_mode=fast_mode,
                 use_mock=use_mock, block_ads=block_ads, proxy=proxy,
                 max_age=max_age, store_in_cache=store_in_cache, lockdown=lockdown,
-                profile=profile,
+                threat_protection=threat_protection, profile=profile,
+                audit_metadata=audit_metadata,
             ).items() if v is not None}
             if scrape_kwargs:
                 scrape_options = ScrapeOptions(**scrape_kwargs)
@@ -820,6 +852,8 @@ class FirecrawlClient:
         timeout: Optional[int] = None,
         integration: Optional[str] = None,
         location: Optional[Location] = None,
+        threat_protection: Optional[ThreatProtectionOptions] = None,
+        audit_metadata: Optional[AuditMetadata] = None,
     ) -> MapData:
         """Map a URL and return discovered links.
 
@@ -831,6 +865,9 @@ class FirecrawlClient:
             limit: Maximum number of links to return
             sitemap: Sitemap usage mode ("only" | "include" | "skip")
             timeout: Request timeout in milliseconds
+            threat_protection: Enterprise per-request override of the team's
+                threat protection policy
+            audit_metadata: Metadata to include in SIEM logging events
 
         Returns:
             MapData containing the discovered links
@@ -843,8 +880,10 @@ class FirecrawlClient:
             sitemap=sitemap if sitemap is not None else "include",
             timeout=timeout,
             integration=integration,
-            location=location
-        ) if any(v is not None for v in [search, include_subdomains, ignore_query_parameters, limit, sitemap, timeout, integration, location]) else None
+            location=location,
+            threat_protection=threat_protection,
+            audit_metadata=audit_metadata,
+        ) if any(v is not None for v in [search, include_subdomains, ignore_query_parameters, limit, sitemap, timeout, integration, location, threat_protection, audit_metadata]) else None
 
         return map_module.map(self.http_client, url, options)
 
@@ -1001,6 +1040,7 @@ class FirecrawlClient:
         ignore_invalid_urls: Optional[bool] = None,
         integration: Optional[str] = None,
         agent: Optional[AgentOptions] = None,
+        threat_protection: Optional[ThreatProtectionOptions] = None,
     ):
         """Start an extract job (non-blocking).
 
@@ -1021,6 +1061,8 @@ class FirecrawlClient:
             ignore_invalid_urls: Skip invalid URLs instead of failing
             integration: Integration tag/name
             agent: Agent configuration
+            threat_protection: Enterprise per-request override of the team's
+                threat protection policy
         Returns:
             Response payload with job id/status (poll with get_extract_status)
         """
@@ -1037,6 +1079,7 @@ class FirecrawlClient:
             ignore_invalid_urls=ignore_invalid_urls,
             integration=integration,
             agent=agent,
+            threat_protection=threat_protection,
         )
 
     def extract(
@@ -1055,6 +1098,7 @@ class FirecrawlClient:
         timeout: Optional[int] = None,
         integration: Optional[str] = None,
         agent: Optional[AgentOptions] = None,
+        threat_protection: Optional[ThreatProtectionOptions] = None,
     ):
         """Extract structured data and wait until completion.
 
@@ -1077,6 +1121,8 @@ class FirecrawlClient:
             timeout: Maximum seconds to wait (None for no timeout)
             integration: Integration tag/name
             agent: Agent configuration
+            threat_protection: Enterprise per-request override of the team's
+                threat protection policy
         Returns:
             Final extract response when completed
         """
@@ -1095,6 +1141,7 @@ class FirecrawlClient:
             timeout=timeout,
             integration=integration,
             agent=agent,
+            threat_protection=threat_protection,
         )
 
     def start_batch_scrape(
@@ -1121,6 +1168,8 @@ class FirecrawlClient:
         max_age: Optional[int] = None,
         store_in_cache: Optional[bool] = None,
         lockdown: Optional[bool] = None,
+        threat_protection: Optional[ThreatProtectionOptions] = None,
+        audit_metadata: Optional[AuditMetadata] = None,
         webhook: Optional[Union[str, WebhookConfig]] = None,
         append_to_id: Optional[str] = None,
         ignore_invalid_urls: Optional[bool] = None,
@@ -1153,6 +1202,8 @@ class FirecrawlClient:
             max_age: Cache max age
             store_in_cache: Whether to store results in cache
             lockdown: Serve only previously cached results; never make outbound requests.
+            threat_protection: Enterprise per-request override of the team's threat protection policy
+            audit_metadata: Metadata to include in SIEM logging events
             webhook: Webhook configuration
             append_to_id: Append to an existing batch job
             ignore_invalid_urls: Skip invalid URLs without failing
@@ -1186,8 +1237,9 @@ class FirecrawlClient:
                 max_age=max_age,
                 store_in_cache=store_in_cache,
                 lockdown=lockdown,
+                threat_protection=threat_protection,
             ).items() if v is not None}
-        ) if any(v is not None for v in [formats, headers, include_tags, exclude_tags, only_main_content, timeout, wait_for, mobile, parsers, actions, location, skip_tls_verification, remove_base64_images, fast_mode, use_mock, block_ads, proxy, max_age, store_in_cache, lockdown]) else None
+        ) if any(v is not None for v in [formats, headers, include_tags, exclude_tags, only_main_content, timeout, wait_for, mobile, parsers, actions, location, skip_tls_verification, remove_base64_images, fast_mode, use_mock, block_ads, proxy, max_age, store_in_cache, lockdown, threat_protection]) else None
 
         return batch_module.start_batch_scrape(
             self.http_client,
@@ -1199,6 +1251,7 @@ class FirecrawlClient:
             max_concurrency=max_concurrency,
             zero_data_retention=zero_data_retention,
             integration=integration,
+            audit_metadata=audit_metadata,
             idempotency_key=idempotency_key,
         )
 
@@ -1292,6 +1345,8 @@ class FirecrawlClient:
         strict_constrain_to_urls: Optional[bool] = None,
         model: Optional[Literal["spark-1-pro", "spark-1-mini"]] = None,
         webhook: Optional[Union[str, AgentWebhookConfig]] = None,
+        threat_protection: Optional[ThreatProtectionOptions] = None,
+        audit_metadata: Optional[AuditMetadata] = None,
     ):
         """Start an agent job (non-blocking).
 
@@ -1303,6 +1358,9 @@ class FirecrawlClient:
             max_credits: Maximum credits to use (optional)
             model: Model to use for the agent ("spark-1-pro" or "spark-1-mini")
             webhook: Webhook URL or configuration for notifications
+            threat_protection: Enterprise per-request override of the team's
+                threat protection policy
+            audit_metadata: Metadata to include in SIEM logging events
         Returns:
             Response payload with job id/status (poll with get_agent_status)
         """
@@ -1316,6 +1374,8 @@ class FirecrawlClient:
             strict_constrain_to_urls=strict_constrain_to_urls,
             model=model,
             webhook=webhook,
+            threat_protection=threat_protection,
+            audit_metadata=audit_metadata,
         )
 
     def agent(
@@ -1331,6 +1391,8 @@ class FirecrawlClient:
         strict_constrain_to_urls: Optional[bool] = None,
         model: Optional[Literal["spark-1-pro", "spark-1-mini"]] = None,
         webhook: Optional[Union[str, AgentWebhookConfig]] = None,
+        threat_protection: Optional[ThreatProtectionOptions] = None,
+        audit_metadata: Optional[AuditMetadata] = None,
     ):
         """Run an agent and wait until completion.
 
@@ -1344,6 +1406,9 @@ class FirecrawlClient:
             max_credits: Maximum credits to use (optional)
             model: Model to use for the agent ("spark-1-pro" or "spark-1-mini")
             webhook: Webhook URL or configuration for notifications
+            threat_protection: Enterprise per-request override of the team's
+                threat protection policy
+            audit_metadata: Metadata to include in SIEM logging events
         Returns:
             Final agent response when completed
         """
@@ -1359,6 +1424,8 @@ class FirecrawlClient:
             strict_constrain_to_urls=strict_constrain_to_urls,
             model=model,
             webhook=webhook,
+            threat_protection=threat_protection,
+            audit_metadata=audit_metadata,
         )
 
     def get_agent_status(self, job_id: str):
@@ -1537,6 +1604,8 @@ class FirecrawlClient:
         max_age: Optional[int] = None,
         store_in_cache: Optional[bool] = None,
         lockdown: Optional[bool] = None,
+        threat_protection: Optional[ThreatProtectionOptions] = None,
+        audit_metadata: Optional[AuditMetadata] = None,
         webhook: Optional[Union[str, WebhookConfig]] = None,
         append_to_id: Optional[str] = None,
         ignore_invalid_urls: Optional[bool] = None,
@@ -1572,8 +1641,9 @@ class FirecrawlClient:
                 max_age=max_age,
                 store_in_cache=store_in_cache,
                 lockdown=lockdown,
+                threat_protection=threat_protection,
             ).items() if v is not None}
-        ) if any(v is not None for v in [formats, headers, include_tags, exclude_tags, only_main_content, timeout, wait_for, mobile, parsers, actions, location, skip_tls_verification, remove_base64_images, fast_mode, use_mock, block_ads, proxy, max_age, store_in_cache, lockdown]) else None
+        ) if any(v is not None for v in [formats, headers, include_tags, exclude_tags, only_main_content, timeout, wait_for, mobile, parsers, actions, location, skip_tls_verification, remove_base64_images, fast_mode, use_mock, block_ads, proxy, max_age, store_in_cache, lockdown, threat_protection]) else None
 
         return batch_module.batch_scrape(
             self.http_client,
@@ -1585,6 +1655,7 @@ class FirecrawlClient:
             max_concurrency=max_concurrency,
             zero_data_retention=zero_data_retention,
             integration=integration,
+            audit_metadata=audit_metadata,
             idempotency_key=idempotency_key,
             poll_interval=poll_interval,
             timeout=wait_timeout,

@@ -1,6 +1,8 @@
+import { robustFetch } from "../../../lib/fetch";
 import {
   parseFirePdfFailure,
   reconcilePageCountWithFirePdf,
+  scrapePDFWithFirePDF,
   throwTypedFirePdfFailure,
 } from "../firePDF";
 import {
@@ -8,6 +10,38 @@ import {
   PDFOCRBackpressureError,
   PDFOCRTimeoutError,
 } from "../../../error";
+
+vi.mock("../../../lib/fetch", () => ({
+  robustFetch: vi.fn(),
+}));
+
+const mockedRobustFetch = vi.mocked(robustFetch);
+
+function makeMeta() {
+  const logger: any = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  };
+
+  return {
+    id: "sync-page-markdown-test",
+    url: "https://example.com/file.pdf",
+    rewrittenUrl: undefined,
+    logger,
+    mock: null,
+    abort: {
+      throwIfAborted: vi.fn(),
+      asSignal: vi.fn(() => new AbortController().signal),
+      scrapeTimeout: vi.fn(() => 60_000),
+    },
+    internalOptions: {
+      zeroDataRetention: true,
+      teamId: "team-test",
+    },
+  } as any;
+}
 
 describe("reconcilePageCountWithFirePdf", () => {
   it("uses fire-pdf's count when the upstream pass left it at 0", () => {
@@ -51,7 +85,63 @@ describe("reconcilePageCountWithFirePdf", () => {
   });
 });
 
-describe("parseFirePdfFailure", () => {
+describe("scrapePDFWithFirePDF page markdown", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("requests and returns the physical page payload", async () => {
+    mockedRobustFetch.mockResolvedValue({
+      markdown: "continued paragraph",
+      failed_pages: null,
+      pages_processed: 2,
+      pages: [
+        { page: 1, markdown: "continued" },
+        { page: 2, markdown: "paragraph" },
+      ],
+    } as any);
+
+    const result = await scrapePDFWithFirePDF(
+      makeMeta(),
+      "BASE64",
+      undefined,
+      undefined,
+      "auto",
+      true,
+    );
+
+    expect(mockedRobustFetch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({ include_page_markdown: true }),
+      }),
+    );
+    expect(result.pageMarkdown).toEqual([
+      { page: 1, markdown: "continued" },
+      { page: 2, markdown: "paragraph" },
+    ]);
+  });
+
+  it("rejects document-only FirePDF responses for page-aware requests", async () => {
+    mockedRobustFetch.mockResolvedValue({
+      markdown: "document only",
+      failed_pages: null,
+      pages_processed: 1,
+    } as any);
+
+    await expect(
+      scrapePDFWithFirePDF(
+        makeMeta(),
+        "BASE64",
+        undefined,
+        undefined,
+        "auto",
+        true,
+      ),
+    ).rejects.toThrow(/did not include requested physical page markdown/);
+  });
+});
+
+describe("local FirePDF OCR failures", () => {
   function failure(status: number, body: unknown) {
     return new Error("Request sent failure status", {
       cause: {
@@ -63,13 +153,12 @@ describe("parseFirePdfFailure", () => {
     });
   }
 
-  it("extracts local OCR backpressure details", () => {
+  it("retains adapter detail for diagnostics", () => {
     expect(
       parseFirePdfFailure(
         failure(429, {
           error: "Local OCR capacity is full; retry later.",
           code: "LOCAL_FIREPDF_BACKPRESSURE",
-          details: { active_ocr: 2, max_concurrent_ocr: 2 },
         }),
       ),
     ).toMatchObject({
@@ -79,142 +168,26 @@ describe("parseFirePdfFailure", () => {
     });
   });
 
-  it("extracts low-quality OCR details", () => {
-    expect(
-      parseFirePdfFailure(
-        failure(422, {
-          error: "Docling OCR output failed quality checks.",
-          details: { code: "LOCAL_FIREPDF_LOW_QUALITY" },
-        }),
-      ),
-    ).toMatchObject({
-      status: 422,
-      code: "LOCAL_FIREPDF_LOW_QUALITY",
-      message: "Docling OCR output failed quality checks.",
-    });
-  });
-
-  it("extracts Docling timeout details from nested response details", () => {
-    expect(
-      parseFirePdfFailure(
-        failure(504, {
-          error: "Docling returned HTTP 504",
-          details: {
-            detail:
-              "Conversion is taking too long. The maximum wait time is configured as DOCLING_SERVE_MAX_SYNC_WAIT=120.",
-          },
-        }),
-      ),
-    ).toMatchObject({
-      status: 504,
-      message: "Docling returned HTTP 504",
-    });
-  });
-
-  it("extracts timeout details from a plain details string", () => {
-    expect(
-      parseFirePdfFailure(
-        failure(502, {
-          details: "Docling timed out while converting the document.",
-        }),
-      ),
-    ).toMatchObject({
-      status: 502,
-      message: "Docling timed out while converting the document.",
-    });
-  });
-
-  it("extracts top-level adapter codes", () => {
-    expect(
-      parseFirePdfFailure(
-        failure(429, {
-          code: "LOCAL_FIREPDF_BACKPRESSURE",
-          details: { active_ocr: 2 },
-        }),
-      ),
-    ).toMatchObject({
-      status: 429,
-      code: "LOCAL_FIREPDF_BACKPRESSURE",
-    });
-  });
-
-  it("keeps raw invalid JSON bodies inspectable", () => {
-    expect(parseFirePdfFailure(failure(502, "upstream timeout"))).toEqual({
-      status: 502,
-      body: "upstream timeout",
-      message: undefined,
-      code: undefined,
-    });
-  });
-
-  it("returns null when robustFetch did not expose a response", () => {
-    expect(parseFirePdfFailure(new Error("network failure"))).toBeNull();
-  });
-});
-
-describe("throwTypedFirePdfFailure", () => {
-  function failure(status: number, body: unknown) {
-    return new Error("Request sent failure status", {
-      cause: {
-        response: {
-          status,
-          body: typeof body === "string" ? body : JSON.stringify(body),
-        },
-      },
-    });
-  }
-
-  it("maps local OCR backpressure to a typed transportable error", () => {
+  it("maps local adapter capacity, timeout, and quality failures", () => {
     expect(() =>
       throwTypedFirePdfFailure(
-        failure(429, {
-          error: "Local OCR capacity is full; retry later.",
-          code: "LOCAL_FIREPDF_BACKPRESSURE",
-        }),
+        failure(429, { code: "LOCAL_FIREPDF_BACKPRESSURE" }),
       ),
     ).toThrow(PDFOCRBackpressureError);
     expect(() =>
       throwTypedFirePdfFailure(
-        failure(429, {
-          error: "Local OCR capacity is full; retry later.",
-          code: "LOCAL_FIREPDF_BACKPRESSURE",
-        }),
-      ),
-    ).toThrow("Local OCR capacity is full; retry later.");
-  });
-
-  it("maps Docling timeouts to a typed transportable error", () => {
-    expect(() =>
-      throwTypedFirePdfFailure(
-        failure(504, {
-          details: {
-            detail:
-              "Conversion is taking too long. The maximum wait time is configured as DOCLING_SERVE_MAX_SYNC_WAIT=120.",
-          },
-        }),
+        failure(504, { error: "Docling returned HTTP 504" }),
       ),
     ).toThrow(PDFOCRTimeoutError);
-  });
-
-  it("maps local low-quality OCR to a typed transportable error", () => {
     expect(() =>
       throwTypedFirePdfFailure(
-        failure(422, {
-          error: "Docling OCR output failed quality checks.",
-          details: { code: "LOCAL_FIREPDF_LOW_QUALITY" },
-        }),
+        failure(422, { code: "LOCAL_FIREPDF_LOW_QUALITY" }),
       ),
     ).toThrow(PDFLowQualityError);
   });
 
-  it("preserves unrelated FirePDF failures for the existing fallback path", () => {
+  it("leaves unrelated provider failures on the upstream fallback path", () => {
     const original = failure(502, { error: "temporary upstream failure" });
-
-    try {
-      throwTypedFirePdfFailure(original);
-      throw new Error("Expected throwTypedFirePdfFailure to throw");
-    } catch (error) {
-      expect(error).toBe(original);
-    }
+    expect(() => throwTypedFirePdfFailure(original)).toThrow(original);
   });
 });

@@ -13,6 +13,9 @@ type CachedPdfResult = {
   markdown: string;
   html: string;
   pagesProcessed?: number;
+  /** Physical page markdown; present only in page-capable cache variants. */
+  pageMarkdown?: Array<{ page: number; markdown: string }>;
+  /** Provider-specific OCR diagnostics retained for local Docling QA. */
   ocrMetadata?: Record<string, unknown>;
 };
 

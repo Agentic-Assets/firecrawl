@@ -5,11 +5,8 @@ import { z } from "zod";
 import type { PDFProcessorResult } from "./types";
 import type { PDFMode } from "../../../../controllers/v2/types";
 import { safeMarkdownToHtml } from "./markdownToHtml";
-import {
-  createPdfCacheKey,
-  getPdfResultFromCache,
-  savePdfResultToCache,
-} from "../../../../lib/gcs-pdf-cache";
+import { createPdfCacheKey } from "../../../../lib/gcs-pdf-cache";
+import { maybeSaveResult, tryGetCached } from "./fire-pdf/cache";
 import {
   PDFLowQualityError,
   PDFOCRBackpressureError,
@@ -48,9 +45,8 @@ export function reconcilePageCountWithFirePdf(
 
 export function parseFirePdfFailure(
   error: unknown,
-): { status?: number; body?: any; message?: string; code?: string } | null {
-  const cause = (error as { cause?: any })?.cause;
-  const response = cause?.response;
+): { status?: number; body?: unknown; message?: string; code?: string } | null {
+  const response = (error as { cause?: { response?: any } })?.cause?.response;
   if (!response) return null;
 
   let body: any = response.body;
@@ -58,18 +54,18 @@ export function parseFirePdfFailure(
     try {
       body = JSON.parse(body);
     } catch {
-      // Keep raw body.
+      // Keep raw body for the generic upstream failure path.
     }
   }
 
   const details = body?.details;
-  const detailCode =
+  const code =
     (typeof details === "object" && details !== null && details.code) ||
     body?.code;
   const message =
     body?.error ||
     (typeof details === "object" && details !== null
-      ? details?.detail || details?.message
+      ? details.detail || details.message
       : undefined) ||
     (typeof details === "string" ? details : undefined);
 
@@ -77,28 +73,30 @@ export function parseFirePdfFailure(
     status: response.status,
     body,
     message: typeof message === "string" ? message : undefined,
-    code: typeof detailCode === "string" ? detailCode : undefined,
+    code: typeof code === "string" ? code : undefined,
   };
 }
 
 export function throwTypedFirePdfFailure(error: unknown): never {
   const failure = parseFirePdfFailure(error);
-  const status = failure?.status;
-  const code = failure?.code;
   const message = failure?.message;
 
-  if (status === 429 || code === "LOCAL_FIREPDF_BACKPRESSURE") {
+  if (
+    failure?.status === 429 ||
+    failure?.code === "LOCAL_FIREPDF_BACKPRESSURE"
+  ) {
     throw new PDFOCRBackpressureError(message);
   }
-
   if (
-    status === 504 ||
-    (status === 502 && /timeout|timed out/i.test(message ?? ""))
+    failure?.status === 504 ||
+    (failure?.status === 502 && /timeout|timed out/i.test(message ?? ""))
   ) {
     throw new PDFOCRTimeoutError(message);
   }
-
-  if (status === 422 || code === "LOCAL_FIREPDF_LOW_QUALITY") {
+  if (
+    failure?.status === 422 ||
+    failure?.code === "LOCAL_FIREPDF_LOW_QUALITY"
+  ) {
     throw new PDFLowQualityError(message);
   }
 
@@ -111,57 +109,35 @@ export async function scrapePDFWithFirePDF(
   maxPages?: number,
   pagesProcessed?: number,
   mode?: PDFMode,
+  includePageMarkdown = false,
 ): Promise<PDFProcessorResult> {
   const logger = meta.logger;
 
   // Cache layout:
+  //   - `ocr` mode reads/writes a dedicated `…-ocr.json` bucket. ocr
+  //     requests explicitly want forced layout-mode OCR, so they must
+  //     not be served a base-cache entry that was written by `auto`.
   //   - `auto` (and legacy undefined-mode) reads/writes the base
   //     `firepdf-<sha>.json` bucket — same key main has always used,
-  //     so existing entries keep working.
-  //   - `ocr` is bypassed. Local Docling profile/env settings can change
-  //     underneath the same PDF bytes, and Cursor OCR canaries must not
-  //     reuse output generated under a stale profile. Most local agent
-  //     OCR calls also pass maxPages, which is bypassed for the same reason.
+  //     so existing entries keep working. As a free upgrade, auto also
+  //     reads the ocr bucket as a fallback: if some prior `ocr` run
+  //     already produced markdown for this PDF, reuse it rather than
+  //     running fire-pdf again.
   //   - `fast` is bypassed entirely (hard cost ceiling — must fail on
   //     scanned PDFs, not serve a cached OCR result).
   const cacheable =
-    mode !== "fast" &&
-    mode !== "ocr" &&
-    !maxPages &&
-    !meta.internalOptions.zeroDataRetention;
-  const ownVariant: string | undefined = undefined;
-  const lookupVariants: (string | undefined)[] = [undefined];
-
-  if (cacheable) {
-    for (const variant of lookupVariants) {
-      try {
-        const cached = await getPdfResultFromCache(
-          base64Content,
-          "firepdf",
-          variant,
-        );
-        if (cached) {
-          logger.info("Using cached FirePDF result", {
-            scrapeId: meta.id,
-            requestedMode: mode,
-            cacheVariant: variant ?? "base",
-          });
-          // Cache entries written before pagesProcessed existed don't carry
-          // the field. Fall back to the caller's pagesProcessed argument so
-          // billing on a stale hit doesn't silently regress to 0.
-          return {
-            ...cached,
-            pagesProcessed: cached.pagesProcessed ?? pagesProcessed,
-          };
-        }
-      } catch (error) {
-        logger.warn("Error checking FirePDF cache, proceeding", {
-          error,
-          cacheVariant: variant ?? "base",
-        });
-      }
-    }
-  }
+    mode !== "fast" && !maxPages && !meta.internalOptions.zeroDataRetention;
+  const cached = cacheable
+    ? await tryGetCached(
+        meta,
+        base64Content,
+        mode,
+        maxPages,
+        pagesProcessed,
+        includePageMarkdown,
+      )
+    : null;
+  if (cached) return cached;
 
   meta.abort.throwIfAborted();
 
@@ -201,6 +177,7 @@ export async function scrapePDFWithFirePDF(
     markdown: string;
     failed_pages: number[] | null;
     pages_processed?: number;
+    pages?: Array<{ page: number; markdown: string }>;
     metadata?: Record<string, unknown>;
   };
   try {
@@ -215,6 +192,7 @@ export async function scrapePDFWithFirePDF(
         scrape_id: meta.id,
         ...(maxPages !== undefined && { max_pages: maxPages }),
         ...(mode !== undefined && { mode }),
+        ...(includePageMarkdown && { include_page_markdown: true }),
         // Enrichment for the fire-pdf jobs DB / dashboard. fire-pdf treats
         // these as optional — older fire-pdf builds will ignore unknown fields.
         team_id: meta.internalOptions.teamId,
@@ -232,6 +210,14 @@ export async function scrapePDFWithFirePDF(
         markdown: z.string(),
         failed_pages: z.array(z.number()).nullable(),
         pages_processed: z.number().optional(),
+        pages: z
+          .array(
+            z.object({
+              page: z.number().int().positive(),
+              markdown: z.string(),
+            }),
+          )
+          .optional(),
         metadata: z.record(z.string(), z.unknown()).optional(),
       }),
       mock: meta.mock,
@@ -242,6 +228,11 @@ export async function scrapePDFWithFirePDF(
   }
 
   const durationMs = Date.now() - startedAt;
+  if (includePageMarkdown && resp.pages === undefined) {
+    throw new Error(
+      "FirePDF response did not include requested physical page markdown",
+    );
+  }
   const pages = resp.pages_processed ?? pagesProcessed;
 
   logger.info("FirePDF completed", {
@@ -251,6 +242,7 @@ export async function scrapePDFWithFirePDF(
     markdownLength: resp.markdown.length,
     failedPages: resp.failed_pages,
     pagesProcessed: pages,
+    pageMarkdownPages: resp.pages?.length,
     ocrMetadata: resp.metadata,
     perPageMs: pages ? Math.round(durationMs / pages) : undefined,
   });
@@ -259,20 +251,19 @@ export async function scrapePDFWithFirePDF(
     markdown: resp.markdown,
     html: await safeMarkdownToHtml(resp.markdown, logger, meta.id),
     pagesProcessed: pages,
+    ...(resp.pages ? { pageMarkdown: resp.pages } : {}),
     ocrMetadata: resp.metadata,
   };
 
   if (cacheable) {
-    try {
-      await savePdfResultToCache(
-        base64Content,
-        processorResult,
-        "firepdf",
-        ownVariant,
-      );
-    } catch (error) {
-      logger.warn("Error saving FirePDF result to cache", { error });
-    }
+    await maybeSaveResult({
+      meta,
+      base64Content,
+      mode,
+      maxPages,
+      includePageMarkdown,
+      result: processorResult,
+    });
   }
 
   return processorResult;
