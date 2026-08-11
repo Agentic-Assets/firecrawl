@@ -4,6 +4,11 @@
 
 **Do not `launchctl load` any plist until gate 5 in the 2026-07-11 operator runbook records Cayman's explicit approval of the named coordinator, owner, exact labels, credentials, observation window, and rollback.** Weekly is the only tier that may pass `--mark-missing` (soft-delete rows), and only under the separate `CRE_WEEKLY_MARK_MISSING=1` escalation; by default it runs additive (`--no-mark-missing`). The `--mark-missing` escalation stays held until `cre_gate.py` is proven on at least one Tier-1 source with prefix-aware scope (it already wires into `cre_daily_update.sh` as observe-only step [3/4]). GitHub Actions remains manual-only, and aa-hub is not an execution control plane.
 
+**CPU-safety gate.** The current templates call the legacy daily backstop, not
+the checkpoint-series runner. They do not have the supervised host-CPU guard
+or resource profile, so no tier is eligible to load until equivalent protection
+is designed, tested, and approved.
+
 Tier set (cadence restructure SHIPPED in code 2026-06-15; live cutover gated): **monitor** (2x/day), **enrich** (every 4h, drains `cre_enrichment_queue`), **weekly** (additive full backstop). The heavy **daily** tier is RETIRED (monitor + enrich replace its freshness role); its case + template are kept for rollback only. Design + cutover runbook: `../ENRICHMENT_WORKER_DESIGN_2026-06-15.md` Section 9.
 
 Historical state captured on 2026-06-15: the old monitor and daily tiers were

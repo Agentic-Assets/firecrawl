@@ -164,16 +164,19 @@ Two ways to avoid this:
 
 ## Testing here on the MacBook Pro (dev)
 
-Steps 1-4 work identically. Run the pipeline manually to exercise it without
-scheduling:
+Steps 1-4 work identically. Use a bounded, no-write probe for development:
 
 ```bash
 bash cre_setup.sh
-bash cre_daily_update.sh --no-mark-missing   # full additive run, status activation OFF
+npx tsx collect.ts --source=svn --transaction=both --max-items=6 --out=/tmp/svn-probe.json
+python3 cre_ingest.py --in /tmp/svn-probe.json --dry-run
 ```
 
+For a supervised high-volume refresh, do not invoke `cre_daily_update.sh`
+directly. Apply the resource profile, recreate `api` and `playwright-service`,
+then use the CPU-guarded checkpoint-series procedure in `START_HERE.md`.
 Do **not** load launchd schedules on the dev machine; scheduling belongs on the
-Mac mini.
+approved target host.
 
 ---
 

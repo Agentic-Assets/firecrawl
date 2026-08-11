@@ -38,11 +38,15 @@ scripts/firecrawl-ops/firecrawl_healthcheck.sh
 
 Firecrawl runtime health is necessary but does not authorize a CRE database
 write, lifecycle reconciliation, baseline update, or launchd change. For CRE
-work, read `scripts/firecrawl-ops/cre_collector/START_HERE.md`, use
-`scripts/firecrawl-ops/cre_collector/SETUP.md` for host setup, and use
-`cre_checkpoint_refresh.py` for supervised production refresh proof. The
-checkpoint manifest, exact generation readback, canonical lock, and live
-`cre_status.sh` result are the operational evidence.
+work, read `scripts/firecrawl-ops/cre_collector/START_HERE.md` and use
+`scripts/firecrawl-ops/cre_collector/SETUP.md` for host setup. Use
+`cre_checkpoint_refresh.py` for a bounded selected-source refresh and
+`cre_checkpoint_series.py --sources all` for the full registry. Before a
+resource-sensitive run, apply the reversible CRE resource profile and recreate
+the API and Playwright services. The checkpoint manifest, exact generation
+readback, canonical lock, live `cre_status.sh` result, and CPU evidence
+(`host-cpu-guard.jsonl`, plus `cpu-incidents.jsonl` when present) are the
+operational record.
 
 ## Logs
 ```bash

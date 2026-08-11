@@ -1,5 +1,11 @@
 # CRE Monitor Subsystem (change-tracking layer)
 
+> **Current contract, not current deployment state.** The dated counts,
+> scheduler outcomes, and production claims below are historical evidence.
+> Before any action, verify the target host with `cre_status.sh` and the exact
+> run artifacts. For supervised full listing refreshes, use the CPU-guarded
+> checkpoint series in `cre_collector/START_HERE.md`, not this monitor guide.
+
 Status as of 2026-06-14: built, hardened, and adversarially reviewed. Schema
 applied to prod. The observe-only seed now spans all 11 monitor-enabled sources
 (`cre_source_baseline`=11, `cre_source_index`=73,693), zero events / queue /
@@ -63,13 +69,14 @@ the hard gotchas a new session needs before running anything.
   fields, skipping the per-listing detail render / enrichment. Additive and
   gated entirely on the flag; the default (non-monitor) path is byte-identical
   when the flag is absent. `runMeta.mode` is `"monitor"` or `"full"`.
-- `cre_monitor.py`  -  OBSERVE-ONLY diff / event / snapshot runner. Reads the
+- `cre_monitor.py`  -  listing-observe-only diff / event / snapshot runner. Reads the
   same artifact JSON `cre_ingest` reads, diffs against `cre_source_index` +
   `cre_listings`, writes `cre_listing_events`, refreshes `cre_source_index`,
   enqueues `cre_enrichment_queue`, and updates ONLY the neutral `cre_listings`
   columns (`source_lastmod`, `canonical_key`), change-guarded so it never churns
   `updated_at`. It NEVER writes `status` or `deleted_at`. `--dry-run` (the
-  default) never connects; `--apply` writes one `ON_ERROR_STOP` transaction.
+  default) never connects; `--apply` writes the monitor/index/event/queue layer
+  in one `ON_ERROR_STOP` transaction. It is therefore not a no-write mode.
 - `cre_gate.py`  -  per-source coverage-and-anomaly gate. Counts
   `to_row`-accepted listings per source, compares to the rolling baseline in
   `cre_source_baseline`, and emits `ok` / `hold` / `first_seen` plus a

@@ -6,8 +6,11 @@ consumer-facing companion to the architecture doc
 (`cre-intelligence-system-design.md`), which owns the build/design decisions.
 
 Extracted and de-staled 2026-06-13 from the superseded design doc (now at
-`archive/cre-listing-system-design-2026-06-12.md`). Source-of-truth for live source status is
-`scripts/firecrawl-ops/cre_collector/BROKERAGE_STATUS_2026-06-12.md`.
+`archive/cre-listing-system-design-2026-06-12.md`). For host/run health, run
+`scripts/firecrawl-ops/cre_collector/cre_status.sh` and inspect the exact
+checkpoint manifest. For current persisted source counts and listing state, use
+a current `npm run validate:supabase` database readback. `BROKERAGE_STATUS_2026-06-12.md`
+is historical context.
 
 ## 1. The agent contract (views and function)
 
@@ -121,25 +124,24 @@ DATABASE_URL=postgresql://postgres:<pwd>@db.fhqycqubkkrdgzswccwd.supabase.co:543
 `CRE_EQUIRE/.env.local`, or from `--env-file`. It prints only the env file path,
 never the credential value. Never commit these values.
 
-## 4. Quick start
+## 4. Collector verification
 
 ```bash
 # --- 0. Firecrawl up? (firecrawl-ops skill / healthcheck) ---
 scripts/firecrawl-ops/firecrawl_healthcheck.sh
 
-# --- 1. Production collector quick probe ---
+# --- 1. Bounded, no-write collector probe ---
 cd scripts/firecrawl-ops/cre_collector
 npm install
 npm run typecheck
-npx tsx collect.ts --source=savills,nai-global,newmark --transaction=both --max-items=3 --page-cap=5 --concurrency=2 --out=/tmp/cre_probe.json
+npx tsx collect.ts --source=svn --transaction=both --max-items=3 --page-cap=5 --concurrency=1 --out=/tmp/cre_probe.json
 python3 cre_ingest.py --in /tmp/cre_probe.json --dry-run --keep-artifacts /tmp/cre_probe_ingest
-
-# --- 2. Latest safe daily command ---
-bash cre_daily_update.sh --no-mark-missing
-
-# --- 3. Full collect only, no ingest ---
-npx tsx collect.ts --source=all --transaction=both --max-items=0 --page-cap=400 --concurrency=3 --out=out/run.json
 ```
+
+For a supervised full registry refresh, use the resource-profile and
+checkpoint-series procedure in `scripts/firecrawl-ops/cre_collector/START_HERE.md`.
+Do not use raw all-source `collect.ts` or `cre_daily_update.sh` as the routine
+high-volume path.
 
 ## 5. Scale and cadence notes
 
@@ -149,15 +151,12 @@ high-volume sources (CBRE, Cushman, Newmark, Marcus, Colliers SalesTracker,
 Transwestern, the Buildout sources) enumerate through JSON/feed endpoints and do
 not render per listing.
 
-**Measured full-collector timing.** A full all-source `collect.ts` run at
-`--page-cap=400 --concurrency=3` runs ~27 minutes and writes a ~40 MB JSON
-artifact (colliers-main full detail enrich is the exception and runs in bounded,
-resumable chunks). Additive live ingest through `psql` takes under a minute.
-
-**Operational cadence.** Use `cre_daily_update.sh --no-mark-missing` while any
-source is still being completed (currently the colliers-main full detail run and
-Savills coverage). Use the default (with `--mark-missing`) only after a clean
-all-source run with acceptable per-broker mark-missing guards.
+**Operational cadence.** Timing, coverage, and scheduler state are
+environment-dependent. Verify them from the exact checkpoint manifest and
+`cre_status.sh`; do not use historical all-source timing estimates as an
+operating limit. Full registry work is a serial checkpoint series with an
+explicit CPU guard. `cre_daily_update.sh` is a legacy scheduled backstop, not
+the supervised full-refresh path.
 
 **Monitor vs ingest.** Full detail collect plus `cre_ingest.py` remains the
 source of truth for listing content (daily). The observe-only monitor path

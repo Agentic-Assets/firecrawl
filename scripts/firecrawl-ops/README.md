@@ -7,11 +7,10 @@ upstream Firecrawl package. Treat it as Agentic Assets local infrastructure.
 Use `CLAUDE.md` for compact agent routing. Use this README when you need a
 more detailed operator guide.
 
-> **Current runtime source, 2026-07-11:** The Mac mini has no active CRE
-> launchd job or healthy local Firecrawl runtime. Historical schedule and
-> count claims in this guide are not a deployment record. Use the
-> [operator runbook](../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md)
-> before any runtime, scheduler, database-write, or canary action.
+> **Verify before operating.** Runtime, scheduler, lock, and database state
+> are host-specific and change without a repository commit. Before a CRE run,
+> use `firecrawl_healthcheck.sh`, `cre_status.sh`, and the exact checkpoint
+> manifest. Historical schedules and row counts are not deployment proof.
 
 ## What Lives Here
 
@@ -96,21 +95,22 @@ Read these before making claims or changing behavior:
 
 Historical validation and handoff detail lives in `archive/` (see `archive/README.md`).
 
-Common commands:
+For a supervised production refresh, use the CPU-safe checkpoint-series
+procedure in [`cre_collector/START_HERE.md`](cre_collector/START_HERE.md).
+The commands below are development probes only. They do not use the checkpoint
+CPU guard and do not write the listing database.
 
 ```bash
 npm run typecheck
 
 npx tsx collect.ts --source=svn --transaction=both --max-items=6 --out=/tmp/svn-probe.json
 python3 cre_ingest.py --in /tmp/svn-probe.json --dry-run
-
-npx tsx collect.ts --source=all --transaction=both --max-items=0 \
-  --page-cap=400 --concurrency=3 --out=out/full-run.json
-
-python3 cre_ingest.py --in out/full-run.json
-bash cre_daily_update.sh --no-mark-missing
 bash cre_status.sh               # run-health heartbeat (schedules, last runs, staleness)
 ```
+
+`cre_ingest.py` without `--dry-run` and `cre_daily_update.sh` can write the
+live listing database. They are not routine local commands and are not the
+supervised full-refresh path.
 
 Use `--mark-missing` only when every relevant source pass completed cleanly
 and staged enough rows for the per-broker guardrails. While Savills sale stays
@@ -335,6 +335,10 @@ scripts/firecrawl-ops/set_cre_resource_profile.sh restore
 
 The small restore state is stored under ignored `tasks/tmp/`. Do not run
 `restore` without the state file: the helper intentionally refuses to guess.
+The checkpoint runner supplies the separate host-CPU watchdog; the profile
+limits container capacity but does not replace that guard. See
+[`cre_collector/START_HERE.md`](cre_collector/START_HERE.md) for the only
+supported high-volume CRE procedure.
 
 ## Local PDF OCR
 
