@@ -296,6 +296,41 @@ class BodyBuilderTests(unittest.TestCase):
 
 
 class CommandBoundaryTests(unittest.TestCase):
+    def test_cmd_search_forwards_explicit_safe_filter_only(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_run_and_write(_args, _method, _path, body, _basename):
+            calls.append(body)
+
+        with patch.object(helper, "run_and_write", fake_run_and_write):
+            helper.cmd_search(
+                SimpleNamespace(
+                    query="commercial real estate listings",
+                    limit=2,
+                    safe=True,
+                    scrape_formats="markdown,links",
+                )
+            )
+            helper.cmd_search(
+                SimpleNamespace(
+                    query="commercial real estate listings",
+                    limit=2,
+                    safe=None,
+                    scrape_formats=None,
+                )
+            )
+
+        self.assertEqual(
+            calls[0],
+            {
+                "query": "commercial real estate listings",
+                "limit": 2,
+                "safe": True,
+                "scrapeOptions": {"formats": ["markdown", "links"]},
+            },
+        )
+        self.assertEqual(calls[1], {"query": "commercial real estate listings", "limit": 2})
+
     def test_cmd_post_inline_body_overrides_body_file(self) -> None:
         calls: list[tuple[str, str, str, object, str]] = []
 

@@ -59,6 +59,13 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 
 COPY . .
 
+# Native bindings are generated and gitignored. Rebuild after copying source so
+# a developer's stale local artifacts cannot mask exports added in Rust.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/native/target \
+    pnpm --dir native run build && \
+    node -e "const native = require('./native'); if (typeof native.convertDocumentToMarkdown !== 'function') throw new Error('Native document converter export is missing');"
+
 # Build the application from a clean output directory.
 RUN rm -rf dist && pnpm run build
 ARG GIT_SHA=unknown

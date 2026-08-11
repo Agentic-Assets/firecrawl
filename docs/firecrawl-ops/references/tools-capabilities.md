@@ -21,6 +21,7 @@ Verified locally on 2026-05-23 after rebuilding the OrbStack Docker stack and te
 - `PDF_RUST_EXTRACT_ENABLE=true` is the local default through compose; it improves simple text PDFs without credits
 - Figure-heavy, table-heavy, scanned, or multi-column PDFs may still flatten on the default path
 - Stronger local OCR/layout output is available through the fork's Docling-backed Fire PDF adapter: `scripts/firecrawl-ops/local_firepdf_ocr.sh start`, `enable-firecrawl`, then parse with `mode:"ocr"`
+- Upstream page-level PDF markdown is intentionally not exposed by the local helper yet. It requires a Fire PDF `pages:[{page,markdown}]` response, while the local Docling adapter currently returns document-level markdown and QA metadata; requests fail explicitly rather than silently approximating page output.
 - External Fire PDF or RunPod MinerU env can also be used, but those may spend that provider's budget
 
 ### `POST /v2/extract` + `GET /v2/extract/:id`
@@ -75,9 +76,15 @@ scripts/firecrawl-ops/firecrawl_request.py scrape https://example.com \
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html,images --pdf-mode auto --max-pages 25 \
   --out-dir ./out/firecrawl --save-fields ./out/report-fields --quiet
+
+# Optional content-safety filtering for exploratory search. Omit --safe for the API default.
+scripts/firecrawl-ops/firecrawl_request.py search "commercial real estate listings" \
+  --limit 5 --safe true --scrape-formats markdown,links --out ./out/search.json
 ```
 
 Do not duplicate official SDK behavior in production code. Use JS/Python/Go/Ruby/Rust/PHP/etc. SDKs there. Use the helper when an agent needs a shell-stable way to call the local API from another codebase.
+
+`--safe` is deliberately opt-in. It is useful for exploratory agent searches but can reduce recall, so the governed CRE collector retains its source-specific acquisition paths and does not set it.
 
 ## Local verification tools
 

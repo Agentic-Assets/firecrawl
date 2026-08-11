@@ -384,6 +384,8 @@ def cmd_scrape(args: argparse.Namespace) -> None:
 
 def cmd_search(args: argparse.Namespace) -> None:
     body: dict[str, Any] = {"query": args.query, "limit": args.limit}
+    if args.safe is not None:
+        body["safe"] = args.safe
     scrape_formats = parse_csv(args.scrape_formats)
     if scrape_formats:
         body["scrapeOptions"] = {"formats": scrape_formats}
@@ -471,6 +473,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(search)
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=3)
+    search.add_argument(
+        "--safe",
+        type=parse_bool,
+        help="Opt in or out of v2 safe-search filtering; omit to use the server default.",
+    )
     search.add_argument("--scrape-formats", help="Comma-separated formats for scrapeOptions.")
     search.set_defaults(func=cmd_search)
 
