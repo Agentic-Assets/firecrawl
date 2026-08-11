@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import json
 import os
-from firecrawl import FirecrawlApp
+from firecrawl.v1 import V1FirecrawlApp
 
 class TestChangeTracking(unittest.TestCase):
     @patch('requests.post')
@@ -22,17 +22,17 @@ class TestChangeTracking(unittest.TestCase):
         }
         mock_post.return_value = mock_response
 
-        app = FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
-        result = app.scrape_url('https://example.com', {
-            'formats': ['markdown', 'changeTracking']
-        })
+        app = V1FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
+        result = app.scrape_url(
+            'https://example.com', formats=['markdown', 'changeTracking']
+        )
 
         args, kwargs = mock_post.call_args
         self.assertEqual(kwargs['json']['formats'], ['markdown', 'changeTracking'])
         
-        self.assertEqual(result['changeTracking']['previousScrapeAt'], '2023-01-01T00:00:00Z')
-        self.assertEqual(result['changeTracking']['changeStatus'], 'changed')
-        self.assertEqual(result['changeTracking']['visibility'], 'visible')
+        self.assertEqual(result.changeTracking.previousScrapeAt, '2023-01-01T00:00:00Z')
+        self.assertEqual(result.changeTracking.changeStatus, 'changed')
+        self.assertEqual(result.changeTracking.visibility, 'visible')
 
     @patch('requests.post')
     def test_change_tracking_options(self, mock_post):
@@ -80,19 +80,21 @@ class TestChangeTracking(unittest.TestCase):
         }
         mock_post.return_value = mock_response
 
-        app = FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
-        result = app.scrape_url('https://example.com', {
-            'formats': ['markdown', 'changeTracking'],
-            'changeTrackingOptions': {
+        app = V1FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
+        result = app.scrape_url(
+            'https://example.com',
+            formats=['markdown', 'changeTracking'],
+            change_tracking_options={
                 'modes': ['git-diff', 'json'],
                 'schema': {'type': 'object', 'properties': {'title': {'type': 'string'}}}
-            }
-        })
+            },
+        )
 
         args, kwargs = mock_post.call_args
         self.assertEqual(kwargs['json']['formats'], ['markdown', 'changeTracking'])
         self.assertEqual(kwargs['json']['changeTrackingOptions']['modes'], ['git-diff', 'json'])
         
-        self.assertEqual(result['changeTracking']['diff']['text'], '@@ -1,1 +1,1 @@\n-old content\n+new content')
-        self.assertEqual(result['changeTracking']['json']['title']['previous'], 'Old Title')
-        self.assertEqual(result['changeTracking']['json']['title']['current'], 'New Title')
+        self.assertEqual(result.changeTracking.diff['text'], '@@ -1,1 +1,1 @@\n-old content\n+new content')
+        change_tracking = result.changeTracking.model_dump(by_alias=True)
+        self.assertEqual(change_tracking['json']['title']['previous'], 'Old Title')
+        self.assertEqual(change_tracking['json']['title']['current'], 'New Title')

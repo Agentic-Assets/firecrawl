@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock
 import os
-from firecrawl import FirecrawlApp
+from firecrawl.v1 import V1FirecrawlApp
 
 
 class TestTimeoutConversion(unittest.TestCase):
@@ -18,7 +18,7 @@ class TestTimeoutConversion(unittest.TestCase):
         }
         mock_post.return_value = mock_response
 
-        app = FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
+        app = V1FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
         app.scrape_url('https://example.com', timeout=60000)
 
         args, kwargs = mock_post.call_args
@@ -36,7 +36,7 @@ class TestTimeoutConversion(unittest.TestCase):
         }
         mock_post.return_value = mock_response
 
-        app = FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
+        app = V1FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
         app.scrape_url('https://example.com')
 
         args, kwargs = mock_post.call_args
@@ -48,7 +48,7 @@ class TestTimeoutConversion(unittest.TestCase):
         mock_response.status_code = 200
         mock_post.return_value = mock_response
 
-        app = FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
+        app = V1FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
         
         data = {'timeout': 30000}
         headers = {'Content-Type': 'application/json'}
@@ -64,7 +64,7 @@ class TestTimeoutConversion(unittest.TestCase):
         mock_response.status_code = 200
         mock_post.return_value = mock_response
 
-        app = FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
+        app = V1FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
         
         data = {'timeout': 30000, 'url': 'https://example.com'}
         headers = {'Content-Type': 'application/json'}
@@ -86,7 +86,7 @@ class TestTimeoutConversion(unittest.TestCase):
         }
         mock_post.return_value = mock_response
 
-        app = FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
+        app = V1FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
         
         app.scrape_url('https://example.com', timeout=1000)
         args, kwargs = mock_post.call_args
@@ -102,7 +102,7 @@ class TestTimeoutConversion(unittest.TestCase):
         mock_response.status_code = 200
         mock_post.return_value = mock_response
 
-        app = FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
+        app = V1FirecrawlApp(api_key=os.environ.get('TEST_API_KEY', 'dummy-api-key-for-testing'))
         
         data = {'url': 'https://example.com'}
         headers = {'Content-Type': 'application/json'}
