@@ -52,6 +52,36 @@ class SetModelProfileTests(unittest.TestCase):
         self.assertEqual(values["OPENAI_BASE_URL"], VERCEL_GATEWAY_URL)
         self.assertEqual(values["MODEL_NAME"], "deepseek/deepseek-v4-pro-0813")
 
+    def test_invalid_profile_leaves_existing_or_missing_env_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            env_path = Path(tmp_dir) / ".env"
+            env = os.environ | {"ENV_PATH": str(env_path), "FC_DIR": str(REPO_ROOT)}
+
+            missing_result = subprocess.run(
+                ["bash", str(PROFILE_SCRIPT), "not-a-profile"],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(missing_result.returncode, 2)
+            self.assertIn("Unknown profile", missing_result.stderr)
+            self.assertFalse(env_path.exists())
+
+            original = b"UNRELATED_SETTING=preserve\n"
+            env_path.write_bytes(original)
+            existing_result = subprocess.run(
+                ["bash", str(PROFILE_SCRIPT), "not-a-profile"],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(existing_result.returncode, 2)
+            self.assertEqual(env_path.read_bytes(), original)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,16 @@ set -euo pipefail
 PROFILE="${1:-gateway}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+case "$PROFILE" in
+  gateway|gateway-pro|gateway-codex|openai-direct|budget|escalated)
+    ;;
+  *)
+    echo "Unknown profile: $PROFILE" >&2
+    echo "Use one of: gateway | gateway-pro | gateway-codex | openai-direct | budget | escalated" >&2
+    exit 2
+    ;;
+esac
+
 resolve_fc_dir() {
   if [[ -n "${FC_DIR:-}" ]]; then
     printf '%s\n' "$FC_DIR"
@@ -152,11 +162,6 @@ case "$PROFILE" in
     # Requires OPENAI_API_KEY=<openrouter-key> in .env.
     set_kv OPENAI_BASE_URL "https://openrouter.ai/api/v1"
     set_kv MODEL_NAME "deepseek/deepseek-v4-pro"
-    ;;
-  *)
-    echo "Unknown profile: $PROFILE" >&2
-    echo "Use one of: gateway | gateway-pro | gateway-codex | openai-direct | budget | escalated" >&2
-    exit 2
     ;;
 esac
 
