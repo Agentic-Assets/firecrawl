@@ -61,6 +61,21 @@ class FirecrawlRequestParserTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["post", "/v2/scrape", "--body-json", "{}", "--body-file", "payload.json"])
 
+    def test_parser_rejects_nonfinite_and_negative_polling_controls(self) -> None:
+        parser = HELPER.build_parser()
+        invalid_cases = [
+            ["scrape", "https://example.com", "--timeout", "nan"],
+            ["scrape", "https://example.com", "--timeout", "-1"],
+            ["crawl", "https://example.com", "--poll-timeout", "nan"],
+            ["crawl", "https://example.com", "--poll-timeout", "-1"],
+            ["crawl-status", "crawl-123", "--poll-interval", "nan"],
+            ["crawl-status", "crawl-123", "--poll-interval", "-1"],
+        ]
+
+        for argv in invalid_cases:
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args(argv)
+
     def test_main_dispatches_after_profile_application(self) -> None:
         calls: list[str] = []
 
@@ -174,6 +189,37 @@ class FirecrawlRequestCommandTests(unittest.TestCase):
         run.assert_called_once()
         self.assertIn("not recreated", stderr.getvalue())
 
+    def test_headers_file_array_exits_actionably_for_scrape_and_crawl_with_user_agent(self) -> None:
+        parser = HELPER.build_parser()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            headers_file = Path(tmp_dir) / "headers.json"
+            headers_file.write_text('["not", "headers"]', encoding="utf-8")
+            cases = [
+                [
+                    "scrape",
+                    "https://example.com",
+                    "--headers-file",
+                    str(headers_file),
+                    "--user-agent",
+                    "Agentic Assets test",
+                ],
+                [
+                    "crawl",
+                    "https://example.com",
+                    "--headers-file",
+                    str(headers_file),
+                    "--user-agent",
+                    "Agentic Assets test",
+                ],
+            ]
+            for argv in cases:
+                with self.subTest(command=argv[0]):
+                    args = parser.parse_args(argv)
+                    with self.assertRaises(SystemExit) as exc:
+                        args.func(args)
+                    self.assertIn("--headers-file", str(exc.exception))
+                    self.assertIn("object", str(exc.exception))
+
     def test_map_parse_and_health_error_paths_write_durable_output(self) -> None:
         calls: list[tuple[str, object]] = []
 
@@ -265,6 +311,60 @@ class FirecrawlRequestCommandTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit):
                 HELPER.poll_crawl(args, "crawl-5")
+
+    def test_poll_crawl_caps_request_timeout_and_sleep_to_remaining_budget(self) -> None:
+        args = self.crawl_args(timeout=30.0, poll_timeout=1.0, poll_interval=5.0)
+        responses = iter(
+            [
+                (200, b'{"status":"scraping"}'),
+                (200, b'{"status":"completed"}'),
+            ]
+        )
+        request_timeouts: list[float] = []
+        monotonic_values = iter([100.0, 100.75])
+
+        def fake_monotonic() -> float:
+            return next(monotonic_values, 100.75)
+
+        def fake_request_json(*call_args: object, **call_kwargs: object) -> tuple[int, bytes]:
+            timeout = call_kwargs.get("timeout", call_args[-1])
+            request_timeouts.append(float(timeout))
+            return next(responses)
+
+        with patch.object(HELPER.time, "monotonic", fake_monotonic), patch.object(
+            HELPER, "request_json", fake_request_json
+        ), patch.object(HELPER.time, "sleep") as sleep:
+            status, result, _raw = HELPER.poll_crawl(args, "crawl-123")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(request_timeouts)
+        for request_timeout in request_timeouts:
+            self.assertLessEqual(request_timeout, 0.25)
+        sleep.assert_called_once()
+        self.assertLessEqual(sleep.call_args.args[0], 0.25)
+
+    def test_metrics_only_redacts_http_error_body_while_normal_output_keeps_it(self) -> None:
+        parser = HELPER.build_parser()
+        secret_body = b'{"error":"sensitive source body"}'
+
+        def failing_urlopen(req: object, timeout: float) -> object:
+            raise HELPER.HTTPError(req.full_url, 503, "unavailable", {}, io.BytesIO(secret_body))
+
+        def stderr_for(argv: list[str]) -> str:
+            args = parser.parse_args(argv)
+            stderr = io.StringIO()
+            with patch.object(HELPER, "urlopen", failing_urlopen), contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit):
+                    HELPER.cmd_scrape(args)
+            return stderr.getvalue()
+
+        metrics_stderr = stderr_for(["scrape", "https://example.com", "--metrics-only", "--quiet"])
+        regular_stderr = stderr_for(["scrape", "https://example.com", "--quiet"])
+
+        self.assertIn("HTTP 503", metrics_stderr)
+        self.assertNotIn("sensitive source body", metrics_stderr)
+        self.assertIn("sensitive source body", regular_stderr)
 
 
 if __name__ == "__main__":

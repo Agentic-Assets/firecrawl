@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import mimetypes
 import os
 import re
@@ -55,6 +56,26 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def finite_positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Expected a finite positive number, got {value!r}") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError(f"Expected a finite positive number, got {value!r}")
+    return parsed
+
+
+def finite_nonnegative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Expected a finite nonnegative number, got {value!r}") from exc
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError(f"Expected a finite nonnegative number, got {value!r}")
+    return parsed
+
+
 def load_json_arg(value: str | None, *, label: str) -> Any:
     if value is None:
         return None
@@ -73,6 +94,15 @@ def load_json_file(path: str | None, *, label: str) -> Any:
         raise SystemExit(f"Missing {label} file: {path}") from exc
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Invalid JSON in {label} file {path}: {exc}") from exc
+
+
+def load_headers_file(path: str | None) -> dict[str, Any] | None:
+    headers = load_json_file(path, label="--headers-file")
+    if headers is None:
+        return None
+    if not isinstance(headers, dict) or not all(isinstance(key, str) for key in headers):
+        raise SystemExit(f"--headers-file must contain a JSON object with string keys: {path}")
+    return headers
 
 
 def slugify(value: str) -> str:
@@ -201,8 +231,6 @@ def open_request(req: Request, timeout_value: float) -> tuple[int, bytes]:
     except HTTPError as exc:
         body = exc.read()
         sys.stderr.write(f"HTTP {exc.code} from {req.full_url}\n")
-        if body:
-            sys.stderr.write(body.decode("utf-8", errors="replace") + "\n")
         return exc.code, body
     except URLError as exc:
         raise SystemExit(f"Could not reach {req.full_url}: {exc}") from exc
@@ -348,6 +376,9 @@ def write_response(
     else:
         output_result = result
 
+    if status >= 400 and not metrics_only and raw:
+        sys.stderr.write(raw.decode("utf-8", errors="replace") + "\n")
+
     written = write_outputs(
         output_result,
         raw,
@@ -386,7 +417,7 @@ def add_common(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="With --model-profile, run the local healthcheck after api recreation.",
     )
-    parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--timeout", type=finite_positive_float, default=180.0)
     parser.add_argument("--out", "-o", help="Write the full JSON response to this file.")
     parser.add_argument("--out-dir", help="Write the full JSON response to a timestamped file in this directory.")
     parser.add_argument("--basename", help="Filename label to use with --out-dir.")
@@ -435,7 +466,7 @@ def scrape_body(args: argparse.Namespace) -> dict[str, Any]:
     if args.max_age is not None:
         body["maxAge"] = args.max_age
     if args.headers_file:
-        body["headers"] = load_json_file(args.headers_file, label="--headers-file")
+        body["headers"] = load_headers_file(args.headers_file)
     if getattr(args, "user_agent", None):
         body.setdefault("headers", {})["User-Agent"] = args.user_agent
     return body
@@ -578,7 +609,7 @@ def crawl_body(args: argparse.Namespace) -> dict[str, Any]:
         scrape_options["formats"] = formats
     headers_file = getattr(args, "headers_file", None)
     if headers_file:
-        scrape_options["headers"] = load_json_file(headers_file, label="--headers-file")
+        scrape_options["headers"] = load_headers_file(headers_file)
     if getattr(args, "user_agent", None):
         scrape_options.setdefault("headers", {})["User-Agent"] = args.user_agent
     if scrape_options:
@@ -611,8 +642,44 @@ def poll_crawl(
 ) -> tuple[int, Any, bytes]:
     deadline = time.monotonic() + args.poll_timeout
     last_status = "unknown"
+    last_http_status = 0
+
+    def timeout_exit() -> None:
+        message = (
+            f"Timed out waiting for crawl {crawl_id}; last status={last_status}. "
+            f"Poll it with: crawl-status {crawl_id}"
+        )
+        timeout_result = {
+            "success": False,
+            "id": crawl_id,
+            "status": last_status,
+            "error": message,
+        }
+        write_response(
+            args,
+            timeout_result,
+            json.dumps(timeout_result).encode("utf-8"),
+            last_http_status or 408,
+            crawl_id,
+            crawl_id,
+        )
+        raise SystemExit(message)
+
     while True:
-        status, raw = request_json(args.api_url, "GET", f"/v2/crawl/{crawl_id}", None, args.api_key, args.timeout)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timeout_exit()
+        status, raw = request_json(
+            args.api_url,
+            "GET",
+            f"/v2/crawl/{crawl_id}",
+            None,
+            args.api_key,
+            min(args.timeout, remaining),
+        )
+        last_http_status = status
+        if time.monotonic() >= deadline:
+            timeout_exit()
         result = decode_json_or_bytes(raw)
         if status >= 400:
             write_response(args, result, raw, status, crawl_id, crawl_id)
@@ -626,20 +693,10 @@ def poll_crawl(
                 write_response(args, result, raw, status, crawl_id, crawl_id)
                 raise SystemExit(crawl_terminal_error(crawl_id, last_status))
             return status, result, raw
-        if time.monotonic() >= deadline:
-            message = (
-                f"Timed out waiting for crawl {crawl_id}; last status={last_status}. "
-                f"Poll it with: crawl-status {crawl_id}"
-            )
-            timeout_result = {
-                "success": False,
-                "id": crawl_id,
-                "status": last_status,
-                "error": message,
-            }
-            write_response(args, timeout_result, json.dumps(timeout_result).encode("utf-8"), status, crawl_id, crawl_id)
-            raise SystemExit(message)
-        time.sleep(args.poll_interval)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timeout_exit()
+        time.sleep(min(args.poll_interval, remaining))
 
 
 def cmd_crawl(args: argparse.Namespace) -> None:
@@ -735,16 +792,16 @@ def build_parser() -> argparse.ArgumentParser:
     crawl.add_argument("--headers-file", help="JSON file of page request headers.")
     crawl.add_argument("--user-agent", help="Set a descriptive User-Agent for each crawled page.")
     crawl.add_argument("--wait", action="store_true", help="Poll HTTP status until the crawl reaches a terminal state.")
-    crawl.add_argument("--poll-interval", type=float, default=1.0)
-    crawl.add_argument("--poll-timeout", type=float, default=180.0)
+    crawl.add_argument("--poll-interval", type=finite_nonnegative_float, default=1.0)
+    crawl.add_argument("--poll-timeout", type=finite_positive_float, default=180.0)
     crawl.set_defaults(func=cmd_crawl)
 
     crawl_status = subparsers.add_parser("crawl-status", help="GET /v2/crawl/:id.")
     add_common(crawl_status)
     crawl_status.add_argument("id")
     crawl_status.add_argument("--wait", action="store_true", help="Poll until the crawl reaches a terminal state.")
-    crawl_status.add_argument("--poll-interval", type=float, default=1.0)
-    crawl_status.add_argument("--poll-timeout", type=float, default=180.0)
+    crawl_status.add_argument("--poll-interval", type=finite_nonnegative_float, default=1.0)
+    crawl_status.add_argument("--poll-timeout", type=finite_positive_float, default=180.0)
     crawl_status.set_defaults(func=cmd_crawl_status)
 
     parse = subparsers.add_parser("parse", help="POST /v2/parse multipart upload.")

@@ -249,6 +249,12 @@ Use `firecrawl_request.py` when an agent needs bounded HTTP crawl polling,
 metrics-only output, advanced `/v2/parse` PDF options, or split saved
 artifacts. Do not use CLI `crawl --wait` for agent automation.
 
+Helper contract: `crawl --wait` and `crawl-status --wait` accept only finite
+poll controls and keep each status request and sleep within the remaining
+deadline. With `--metrics-only`, response and HTTP error bodies stay out of
+terminal output; `--headers-file` must contain a JSON object before a
+`--user-agent` overlay is applied.
+
 ```bash
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html --pdf-mode ocr --max-pages 25 --out-dir ./out/report
