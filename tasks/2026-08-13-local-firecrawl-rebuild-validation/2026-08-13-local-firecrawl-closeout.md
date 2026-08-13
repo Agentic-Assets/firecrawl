@@ -3,8 +3,9 @@
 **Branch:** `fix/local-firecrawl-rebuild-validation`
 **Base:** `origin/main` at `a925132eb53269c89b12a7a4a90b9e0f0ea01ef2`
 **Implementation commit:** `81a1f8f32df8d2a2a42a650e36bb47617453c0ae`
-**State at capture:** one commit ahead of `origin/main`, locally verified,
-unpushed, with no CI run.
+**State at final handoff:** draft [PR #30](https://github.com/Agentic-Assets/firecrawl/pull/30)
+is open from this branch. Local verification is complete; GitHub CI has not
+started a reported check yet.
 
 ## Goal
 
@@ -63,5 +64,5 @@ the commercial-real-estate collection boundary.
 - The full CRE Python suite remains blocked by one pre-existing missing ignored
   Cushman artifact (2084 passed, 1 failed). This closeout does not manufacture
   a substitute.
-- Push the branch, review the draft PR, and merge only with required human
-  approval. Roll back with `git revert 81a1f8f32` and rebuild the API service.
+- Review the draft PR and merge only with required human approval. Roll back
+  with `git revert 81a1f8f32` and rebuild the API service.
