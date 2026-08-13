@@ -118,6 +118,11 @@ copy_skill() {
   fi
 
   run mkdir -p "$TARGET_ROOT"
+  # The installed copy must be a real directory. Otherwise rsync --delete
+  # follows a pre-existing destination symlink and can modify its target.
+  if [[ -L "$dst" ]]; then
+    run rm "$dst"
+  fi
   run mkdir -p "$dst"
   run rsync -aL --delete "$src/" "$dst/"
   echo "Copied $skill -> $dst"
