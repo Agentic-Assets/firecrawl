@@ -9,6 +9,12 @@ Last reviewed against code: 2026-06-13.
 > refresh ledger, live `cre_status.sh`, and exact checkpoint manifests for
 > current operations. Preserve this file as design rationale.
 >
+> **Do not operate from this document.** Its implementation notes include
+> superseded scheduler, deployment, and roadmap statements. The current
+> supervised refresh procedure, CPU guard, and resource profile are only in
+> `scripts/firecrawl-ops/cre_collector/START_HERE.md`; monitor behavior is in
+> `cre-monitor-subsystem.md`.
+>
 > **Implementation status (2026-06-13).** Subsystem 1 (acquisition) and the
 > change-tracking schema are SHIPPED; the monitor runs observe-only. Live now:
 > migration `007` (`cre_listing_events`, `cre_source_index`,

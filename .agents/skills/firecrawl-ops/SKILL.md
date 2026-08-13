@@ -26,6 +26,25 @@ scripts/firecrawl-ops/pdf_parse_canary.py
 scripts/firecrawl-ops/check_pnpm_docker_config.py
 ```
 
+## CRE Supervised Refresh
+
+`scripts/firecrawl-ops/cre_collector/START_HERE.md` is the canonical CRE
+operator guide. For a high-volume listing refresh, do not use raw
+`collect.ts --source=all` or `cre_daily_update.sh` as the normal path.
+
+1. Apply `set_cre_resource_profile.sh apply --with-pids`, review `show`, then
+   recreate `api` and `playwright-service`.
+2. Run `cre_checkpoint_series.py --sources all` with serial collection,
+   explicit CPU settings, and `nice`; use the exact command in `START_HERE.md`.
+3. The checkpoint guard stops and checkpoints a sustained host-CPU breach. It
+   is not a permanent monitor or auto-resume service. Inspect
+   `host-cpu-guard.jsonl` and, when present, `cpu-incidents.jsonl` before
+   resuming exit `75`.
+
+The supervised path never passes `--monitor`, `--mark-missing`,
+`--activate-status`, or `--update-baseline`. GetCREdata remains the only
+production OM-extraction writer.
+
 This Mac uses OrbStack, not Docker Desktop. If Docker commands fail, open OrbStack and confirm `docker context show` is `orbstack`. The expected local API is `http://localhost:3002`.
 
 For a fresh clone on another Mac, start with `LOCAL_DEVELOPMENT_GUIDE.md` or `references/partner-orbstack-onboarding.md`. The short path is: install/start OrbStack, confirm `docker context show`, run `scripts/firecrawl-ops/set_model_profile.sh budget`, optionally run `install_git_hooks.sh` and `sync_agent_skills.sh`, then `docker compose build`, `docker compose up -d`, and `firecrawl_healthcheck.sh`.

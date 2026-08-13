@@ -112,16 +112,16 @@ python3 -m pytest tests/ -q      # Python collector tests
 # Small probe of one source, both transactions
 npx tsx collect.ts --source=svn --transaction=both --max-items=6 --out=/tmp/probe.json
 
-# Development collection (everything, sale + lease). Production proof uses
-# cre_checkpoint_refresh.py instead.
+# Development-only artifact collection. This bypasses checkpoint CPU controls
+# and must not be used for a supervised registry refresh.
 npx tsx collect.ts --source=all --transaction=both --max-items=0 \
   --page-cap=400 --concurrency=3 --out=out/run.json
 
-# Ingest to Supabase credeals schema
-python3 cre_ingest.py --in out/run.json                  # additive upsert
-python3 cre_ingest.py --in out/run.json --mark-missing   # full-run reconcile
+# Dry-run contract check. The supervised production path is START_HERE.md's
+# checkpoint series; do not use --mark-missing for that path.
+python3 cre_ingest.py --in out/run.json --dry-run
 
-# Safe daily cycle while any source is partial or blocked
+# Legacy scheduled backstop: not CPU-guarded; see START_HERE.md first.
 bash cre_daily_update.sh --no-mark-missing
 ```
 
@@ -289,17 +289,15 @@ gate. All configured artifacts must pass their source gates and the aggregate
 gate before any live ingest begins. `first_seen` requires an explicit reviewed
 baseline seed and readback before resuming the same immutable run.
 
-The checkpoint runner always applies the host CPU guard documented in
-`START_HERE.md`: five-second Darwin CPU samples, an 80-percent ceiling, and a
-fail-closed interruption after 30 sustained seconds or any telemetry failure.
-The interruption reaps the owned source process group, records JSONL evidence,
-releases the canonical lock, and preserves exact resume state. Keep
-`--source-workers=1` unless a separate no-write calibration proves a safe
-pairing. Run the current 51-key registry as bounded generations; do not use one
-`--sources all` generation when the 24-hour observation window cannot hold.
-Use `cre_checkpoint_series.py --sources all` for the serial full-registry pass;
-its manifest separates source-local failures from global and resource-guard
-failures while every mutation remains inside `cre_checkpoint_refresh.py`.
+The checkpoint runner has a fail-closed Darwin CPU guard and writes resumable
+evidence. For exact thresholds, resource-profile setup, guard and incident
+logs, full-registry commands, and stale-parent recovery, follow
+`START_HERE.md` rather than duplicating operational settings here. Keep
+`--source-workers=1` unless a no-write calibration proves a safe pairing.
+`cre_checkpoint_series.py --sources all` is the serial full-registry path;
+source-local failures may continue, while resource-guard and global failures
+stop the series. Every listing write remains inside
+`cre_checkpoint_refresh.py`.
 
 The strict source set is `cbre`, `jll`, `jll-investor`, `colliers-main`,
 `cushman-wakefield`, `svn`, `lee-associates`, `franklin-street`, `newmark`, `savills`,

@@ -78,56 +78,99 @@ lane. Use the default until a specific two-source pairing has its own
 no-write calibration evidence. A source failure, rejected artifact, gate, or
 dry-run failure prevents aggregate admission and every database write.
 
-Every checkpoint run also enables a fail-closed host CPU guard. It reads total
-Mac CPU utilization directly from Darwin's Mach counters every five seconds.
-The runner refuses to begin source work when the first sample is already at or
-above 80 percent. If utilization remains at or above 80 percent for 30 seconds,
-or CPU telemetry becomes unavailable, the guard interrupts the owned source
-process group, writes `resource_guard_interrupted` to the manifest, preserves
-the JSONL evidence at `logs/host-cpu-guard.jsonl`, releases the canonical lock,
-and exits `75` for a later exact resume. Short spikes reset when utilization
-falls below the ceiling. The Firecrawl API and Playwright containers retain
-their separate two-CPU Compose limits. Do not bypass this guard with a dirty
-checkout or an alternate runner.
+### CPU safety and evidence
 
-The thresholds are explicit resume-bound configuration:
+Every checkpoint run has a fail-closed Darwin host-CPU watchdog. The code
+defaults are 80% for 30 seconds, sampled every 5 seconds. It rejects a start
+already at the ceiling and, on sustained pressure or telemetry failure,
+terminates its owned collector process group, releases the canonical lock,
+writes `resource_guard_interrupted`, and exits `75`.
+
+This is a safe stop with an exact resume point, not a background monitor or an
+automatic pause/resume service. `logs/host-cpu-guard.jsonl` records samples;
+`logs/cpu-incidents.jsonl` records one best-effort, sanitized process and
+container snapshot when a high window begins. Incident capture is evidence
+only; the watchdog makes the stop decision.
+
+For a supervised full-registry run on a shared Mac, use the more conservative
+profile below. It limits the browser to one page and gives the API and browser
+sidecar one CPU each. Compose defaults are two CPUs each, so the profile takes
+effect only after the explicit recreate.
 
 ```bash
-python3 cre_checkpoint_refresh.py \
-  --sources cbre \
-  --max-host-cpu-percent 80 \
-  --cpu-sustain-seconds 30 \
-  --cpu-sample-seconds 5 \
-  --env-file "$HOME/.config/cre/equire.env"
+# From the repository root. This changes only four non-secret .env keys.
+bash scripts/firecrawl-ops/set_cre_resource_profile.sh apply --with-pids
+bash scripts/firecrawl-ops/set_cre_resource_profile.sh show
+docker compose up -d --force-recreate api playwright-service
+bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
-For the complete current registry, use bounded generations that can each
-finish inside the 24-hour observation window. A single `--sources all`
-generation currently spans 51 source keys and is not operationally admissible
-when its slowest source would age earlier observations beyond that bound.
-`cre_checkpoint_series.py` is the supported wrapper for that full pass. It
-runs the canonical registry serially at nice level 10, gives every source a
-separate checkpoint generation, continues past source-local collection or
-coverage failures, and stops immediately on CPU, database, validation,
-infrastructure, or operator failure:
+After the run, restore the prior values and recreate the same services:
 
 ```bash
-python3 cre_checkpoint_series.py \
+bash scripts/firecrawl-ops/set_cre_resource_profile.sh restore
+docker compose up -d --force-recreate api playwright-service
+```
+
+Do not bypass the guard with a dirty checkout or an alternate runner.
+
+For the complete registry, use `cre_checkpoint_series.py`. It gives every
+source its own checkpoint generation, so a slow provider does not age other
+sources' observation windows. Source-local collection or coverage failures are
+recorded and the series continues. CPU, database, validation, infrastructure,
+or operator failures stop the series. Earlier sources may already have
+completed additive ingests, so this is not an all-registry atomic transaction.
+
+Use this conservative supervised command after applying the resource profile:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+JLL_DETAIL_CONCURRENCY=1 \
+JLL_INVESTOR_DETAIL_CONCURRENCY=1 \
+CUSHMAN_DETAIL_CONCURRENCY=1 \
+COLLIERS_MAIN_DETAIL_CONCURRENCY=1 \
+COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000 \
+COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000 \
+NAI_ENUMERATION_CONCURRENCY=1 \
+/usr/bin/nice -n 15 python3 cre_checkpoint_series.py \
   --sources all \
+  --concurrency 1 \
+  --nice 15 \
+  --max-host-cpu-percent 55 \
+  --cpu-sustain-seconds 10 \
+  --cpu-sample-seconds 2 \
   --env-file "$HOME/.config/cre/equire.env"
 ```
 
 The series manifest and per-source runs live under `out/checkpoint-series/`.
 Exit `0` means every selected source completed. Exit `2` means the series
-finished with explicitly recorded source-local failures. Exit `75` means the
-CPU guard stopped it and the exact series can be resumed after pressure clears:
+finished with recorded source-local failures. Exit `75` means the CPU guard
+stopped it; inspect the guard and incident evidence, let host pressure clear,
+then resume the exact series:
 
 ```bash
-python3 cre_checkpoint_series.py \
+JLL_DETAIL_CONCURRENCY=1 \
+JLL_INVESTOR_DETAIL_CONCURRENCY=1 \
+CUSHMAN_DETAIL_CONCURRENCY=1 \
+COLLIERS_MAIN_DETAIL_CONCURRENCY=1 \
+COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000 \
+COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000 \
+NAI_ENUMERATION_CONCURRENCY=1 \
+/usr/bin/nice -n 15 python3 cre_checkpoint_series.py \
   --resume out/checkpoint-series/<series-id> \
   --sources all \
+  --concurrency 1 \
+  --nice 15 \
+  --max-host-cpu-percent 55 \
+  --cpu-sustain-seconds 10 \
+  --cpu-sample-seconds 2 \
   --env-file "$HOME/.config/cre/equire.env"
 ```
+
+Use `--reconcile-stale-series` only when the series manifest is stale
+`running` and exactly one linked child manifest is terminal. It repairs that
+parent/child relationship before the resume. Do not edit manifests or locks by
+hand, and do not use this flag as a normal retry mechanism.
 
 Use `--retry-failed` only after repairing or reviewing the recorded
 source-local failures. Resume configuration and collector SHA must match.
@@ -566,7 +609,10 @@ events/queue/soft-deletes, board unchanged at 72,544). See
 `docs/firecrawl-ops/references/cre-monitor-subsystem.md`.
 Prior listing-ingest evidence (2026-06-12 local time), from run finished at `2026-06-12T04:31:24.562Z`, validation on 2026-06-12, CBRE Deal Flow plus Colliers SalesTracker full ingests, NAI active-status-filtered ingest, Cushman full live ingest, Transwestern full live ingest, Marcus & Millichap full public sale ingest, and Lee & Associates full Buildout ingest on 2026-06-12. JLL Investor full sitemap detail ingest finished 2026-06-12 22:47 UTC (934 U.S. sale rows live); 50 stale early-probe rows soft-deleted 2026-06-12 ~23:25 UTC after user approval. Avison Young full detail-enriched ingest finished 2026-06-13 00:35 UTC and was live-ingested additively with 2,201 active rows.
 
-This directory is the production daily path for public commercial real estate listing inventory feeding EQUIRE. Use it for sale and lease listings. The older `../cre_scrapers/` Python package is legacy support for source probes and detail-page enrichment.
+This directory contains the production collector for public commercial real
+estate listing inventory feeding EQUIRE. The supervised full-refresh procedure
+is the checkpoint series above. The older `../cre_scrapers/` Python package is
+legacy support for source probes and detail-page enrichment.
 
 ## Historical state snapshots
 
@@ -753,9 +799,15 @@ python3 -m py_compile cre_ingest.py
 npm run validate:supabase -- --out /tmp/cre_validate_latest.md
 ```
 
-## Safe Daily Command
+## Legacy scheduled backstop
 
-Use this while any all-source errors or partial source decisions remain:
+`cre_daily_update.sh` is a legacy scheduled backstop. It does not use the
+checkpoint CPU watchdog or create resumable per-source manifests, so it is not
+the supervised full-refresh path. Use the checkpoint-series procedure above
+for an operator-requested registry refresh.
+
+When an explicitly approved legacy run is necessary, keep it additive while
+any all-source errors or partial-source decisions remain:
 
 ```bash
 cd <repo>/scripts/firecrawl-ops/cre_collector   # the firecrawl clone root on this machine

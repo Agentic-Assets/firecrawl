@@ -4,6 +4,12 @@ Lock-serialized launchd tiers that automate the CRE listing pipeline. All tiers
 are authored here and gated: **do not load any plist until the prerequisite
 listed for that tier is satisfied.**
 
+> **CPU-safety gate:** These templates invoke the legacy daily backstop, not
+> the supervised checkpoint-series runner with its host-CPU watchdog and
+> resource profile. They are not eligible for loading until equivalent runtime
+> protection is deliberately designed, tested, and approved. Additive behavior
+> does not make an unguarded high-volume run resource-safe.
+
 Tier set (cadence restructure SHIPPED in code 2026-06-15):
 
 - **monitor** (2x/day, 06:10 / 18:10): cheap enumeration diff; enqueues

@@ -8,6 +8,12 @@ Draft PR: <https://github.com/Agentic-Assets/firecrawl/pull/25>
 
 Linear: [AGENTIC-1229](https://linear.app/agenticassets/issue/AGENTIC-1229/restore-cre-listing-pipeline-correctness-and-prove-the-om-facts-canary)
 
+> **Historical handoff.** This records the July/August 2026 refresh work and
+> its then-current commands, counts, and host assumptions. Do not use it as a
+> live runbook. The current CPU-safe registry procedure, including the
+> 1-CPU resource profile and conservative 55%/10-second/2-second guard
+> settings, is `scripts/firecrawl-ops/cre_collector/START_HERE.md`.
+
 ## 2026-08-02 execution amendment
 
 The collector registry now contains 51 source keys. The 20-source scope and

@@ -219,3 +219,40 @@ def test_series_resumes_exact_interrupted_child_checkpoint(tmp_path, monkeypatch
         resume_run
     )
     assert manifest["sources"]["cbre"]["state"] == "complete"
+
+
+def test_reconcile_stale_running_source_binds_exact_interrupted_child(tmp_path):
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=config(("jll",)))
+    checkpoint = manifest["sources"]["jll"]
+    checkpoint["state"] = "running"
+    checkpoint["attempts"] = [{"number": 1, "started_at": "2026-08-11T00:00:00+00:00"}]
+    child = tmp_path / "runs" / "2026-08-11T000001Z"
+    child.mkdir(parents=True)
+    (child / "manifest.json").write_text(
+        '{"collector_git_sha":"' + "a" * 40 + '","started_at":"2026-08-11T00:00:01+00:00","finished_at":"2026-08-11T00:00:02+00:00","status":"interrupted","error":"operator interruption","config":{"sources":["jll"]}}',
+        encoding="utf-8",
+    )
+
+    series.reconcile_stale_running_sources(tmp_path, manifest)
+
+    assert checkpoint["state"] == "interrupted"
+    assert checkpoint["checkpoint_run"] == "runs/2026-08-11T000001Z"
+    assert checkpoint["checkpoint_status"] == "interrupted"
+
+
+def test_reconcile_stale_running_source_refuses_ambiguous_children(tmp_path):
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=config(("jll",)))
+    checkpoint = manifest["sources"]["jll"]
+    checkpoint["state"] = "running"
+    checkpoint["attempts"] = [{"number": 1, "started_at": "2026-08-11T00:00:00+00:00"}]
+    for suffix in ("01", "02"):
+        child = tmp_path / "runs" / suffix
+        child.mkdir(parents=True)
+        (child / "manifest.json").write_text(
+            '{"collector_git_sha":"' + "a" * 40 + '","started_at":"2026-08-11T00:00:01+00:00","status":"interrupted","config":{"sources":["jll"]}}',
+            encoding="utf-8",
+        )
+
+    with pytest.raises(series.SeriesError, match="exactly one terminal child"):
+        series.reconcile_stale_running_sources(tmp_path, manifest)
+    assert checkpoint["state"] == "running"

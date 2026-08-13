@@ -83,7 +83,7 @@ python3 cre_ingest.py --in /tmp/source_target_probe.json \
 
 Check that staged child rows contain URLs only and no binary payload fields.
 
-8. Development full proof:
+8. Development artifact proof (not CPU-guarded and never a production refresh):
 
 ```bash
 npx tsx collect.ts --source=<source-key> --transaction=both \
@@ -92,11 +92,13 @@ npx tsx collect.ts --source=<source-key> --transaction=both \
 python3 cre_ingest.py --in out/<source>_full_<timestamp>.json --dry-run
 ```
 
-Do not treat the direct artifact/dry-run pair as production proof. A supervised
-production refresh must use `cre_checkpoint_refresh.py`, which binds a clean
-pushed SHA, freshness generation, source and aggregate gates, dry-run, additive
-ingest, and exact database readback. Lifecycle reconciliation is a separate
-reviewed action and is allowed only when the exact source gate reports
+Do not treat the direct artifact/dry-run pair as production proof or use it for
+a full registry. A supervised production refresh uses
+`cre_checkpoint_refresh.py` for a selected source or `cre_checkpoint_series.py`
+for the registry, with the CPU resource profile in `START_HERE.md`. Those paths
+bind a clean pushed SHA, freshness generation, source and aggregate gates,
+dry-run, additive ingest, and exact database readback. Lifecycle reconciliation
+is separate and allowed only when the exact source gate reports
 `mark_missing_safe`.
 
 9. Monitor enablement (when enumeration key matches ingest `external_id`):

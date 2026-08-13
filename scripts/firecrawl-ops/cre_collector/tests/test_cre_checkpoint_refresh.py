@@ -1658,6 +1658,42 @@ def test_host_cpu_guard_requires_sustained_saturation(tmp_path):
     assert "80.0%" in reason
 
 
+def test_host_cpu_guard_captures_one_sanitized_snapshot_per_high_window(tmp_path, monkeypatch):
+    captured = []
+
+    def snapshot(path, **kwargs):
+        captured.append((path, kwargs))
+        return {"log": str(path), "observed_at": "2026-08-11T00:00:00+00:00"}
+
+    samples = iter([90.0, 95.0, 20.0, 91.0])
+    monkeypatch.setattr(refresh, "append_incident", snapshot)
+    guard = refresh.HostCpuGuard(
+        log_path=tmp_path / "cpu-guard.jsonl",
+        incident_log_path=tmp_path / "cpu-incidents.jsonl",
+        incident_context={"phase": "collect", "source": "jll", "child_pid": 42},
+        max_percent=80.0,
+        sampler=lambda: next(samples),
+    )
+
+    for _ in range(4):
+        guard.sample_once()
+
+    assert len(captured) == 2
+    assert captured[0][1]["context"] == {
+        "phase": "collect", "source": "jll", "child_pid": 42
+    }
+    records = [json.loads(line) for line in (tmp_path / "cpu-guard.jsonl").read_text().splitlines()]
+    assert records[-1]["incident_snapshot"]["log"].endswith("cpu-incidents.jsonl")
+
+
+def test_set_cpu_guard_context_is_structured_and_contains_process_identity(tmp_path):
+    guard = refresh.HostCpuGuard(log_path=tmp_path / "cpu-guard.jsonl")
+    refresh.set_cpu_guard_context(guard, phase="collect", source="cbre")
+    assert guard.incident_context["phase"] == "collect"
+    assert guard.incident_context["source"] == "cbre"
+    assert guard.incident_context["child_pid"] == os.getpid()
+
+
 def test_cpu_percent_from_ticks_includes_user_system_and_nice():
     percent = refresh.cpu_percent_from_ticks(
         (100, 200, 300, 400),

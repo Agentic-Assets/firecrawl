@@ -86,7 +86,9 @@ services:
       ALLOW_LOCAL_WEBHOOKS: ${ALLOW_LOCAL_WEBHOOKS:-false}
       BLOCK_MEDIA: ${BLOCK_MEDIA:-false}
       # Configure maximum concurrent pages for Playwright browser instances
-      MAX_CONCURRENT_PAGES: ${CRAWL_CONCURRENT_REQUESTS:-10}
+      # Keep this separate from API crawl concurrency so resource-sensitive
+      # local workflows can constrain the browser sidecar independently.
+      MAX_CONCURRENT_PAGES: ${PLAYWRIGHT_MAX_CONCURRENT_PAGES:-${CRAWL_CONCURRENT_REQUESTS:-10}}
     networks:
       - backend
     security_opt:
@@ -95,6 +97,8 @@ services:
       - ALL
     # Resource limits for Docker Compose (not Swarm)
     cpus: ${PLAYWRIGHT_CPUS:-2.0}
+    # Optional local safety backstop. Docker treats 0 as unlimited.
+    pids_limit: ${PLAYWRIGHT_PIDS_LIMIT:-0}
     mem_limit: 4G
     memswap_limit: 4G
     logging:

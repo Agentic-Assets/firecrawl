@@ -49,6 +49,7 @@ from cre_ingest import (
     to_row,
 )
 from cre_source_policy import load_source_policy
+from cre_runtime_observability import append_incident
 
 
 COLLECTOR_DIR = Path(__file__).resolve().parent
@@ -227,7 +228,10 @@ class HostCpuGuard:
     sample_seconds: float = DEFAULT_CPU_SAMPLE_SECONDS
     sampler: Callable[[], float] = field(default_factory=DarwinCpuSampler)
     coordinator_pid: int = field(default_factory=os.getpid)
+    incident_log_path: Path | None = None
+    incident_context: dict[str, Any] = field(default_factory=dict)
     high_since: float | None = field(default=None, init=False)
+    last_incident_snapshot: dict[str, Any] | None = field(default=None, init=False)
     stop_event: threading.Event = field(default_factory=threading.Event, init=False)
     thread: threading.Thread | None = field(default=None, init=False)
 
@@ -275,6 +279,10 @@ class HostCpuGuard:
                 record["host_cpu_percent"] = round(percent, 2)
             if reason is not None:
                 record["reason"] = reason
+            if self.incident_context:
+                record["context"] = dict(self.incident_context)
+            if self.last_incident_snapshot is not None:
+                record["incident_snapshot"] = dict(self.last_incident_snapshot)
             with self.log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, sort_keys=True) + "\n")
                 handle.flush()
@@ -282,8 +290,20 @@ class HostCpuGuard:
             raise CpuTelemetryError(f"host CPU guard log unavailable: {exc}") from exc
 
     def sample_once(self) -> float:
+        was_high = self.high_since is not None
         percent = self.sampler()
         reason = self.observe(percent, observed_monotonic=time.monotonic())
+        if (
+            not was_high
+            and self.high_since is not None
+            and self.incident_log_path is not None
+        ):
+            self.last_incident_snapshot = append_incident(
+                self.incident_log_path,
+                host_cpu_percent=percent,
+                max_host_cpu_percent=self.max_percent,
+                context=self.incident_context,
+            )
         state = "high" if self.high_since is not None else "ok"
         self._write_record(state=state, percent=percent, reason=reason)
         if reason is not None:
@@ -346,6 +366,23 @@ def run_cpu_guard_preflight(cpu_guard: HostCpuGuard) -> float:
             reason = f"{reason}; {log_exc}"
             _set_cpu_guard_trip(reason)
         raise CpuGuardTrip(reason) from exc
+
+
+def set_cpu_guard_context(
+    cpu_guard: HostCpuGuard,
+    *,
+    phase: str,
+    source: str | None = None,
+) -> None:
+    """Attach only structured stage identifiers to incident evidence."""
+    context: dict[str, Any] = {
+        "phase": phase,
+        "child_pid": os.getpid(),
+        "process_group": os.getpgrp(),
+    }
+    if source is not None:
+        context["source"] = source
+    cpu_guard.incident_context = context
 
 
 def checkpoint_sigterm_handler(_signum: int, _frame: Any) -> None:
@@ -4170,7 +4207,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_percent=args.max_host_cpu_percent,
         sustain_seconds=args.cpu_sustain_seconds,
         sample_seconds=args.cpu_sample_seconds,
+        incident_log_path=run_dir / "logs" / "cpu-incidents.jsonl",
     )
+    set_cpu_guard_context(cpu_guard, phase="preflight")
     _clear_cpu_guard_trip()
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, checkpoint_sigterm_handler)
@@ -4190,6 +4229,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "refusing to start source work"
                 )
             cpu_guard.start()
+            set_cpu_guard_context(cpu_guard, phase="healthcheck")
             health_log = run_dir / "logs" / "healthcheck.log"
             health_rc = run_command(
                 ["bash", str(REPO_ROOT / "scripts/firecrawl-ops/firecrawl_healthcheck.sh")],
@@ -4207,6 +4247,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if health_rc != 0:
                 raise GlobalStageError(f"Firecrawl healthcheck failed (rc={health_rc})")
 
+            set_cpu_guard_context(cpu_guard, phase="pre_validation")
             pre_validation = run_dir / "pre-validation.json"
             pre_validation_log = run_dir / "logs" / "pre-validation.log"
             recorded_pre_hash = manifest["preflight"].get("validation_sha256")
@@ -4243,6 +4284,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             record_scope_from_validation(manifest, pre_result)
             save_manifest(run_dir, manifest)
 
+            set_cpu_guard_context(
+                cpu_guard,
+                phase="collect",
+                source=sources[0] if len(sources) == 1 else None,
+            )
             source_failures = prepare_sources_cohort(
                 run_dir,
                 manifest,
@@ -4257,8 +4303,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise RefreshError(
                     "source checkpoints remain incomplete: " + ", ".join(source_failures)
                 )
+            set_cpu_guard_context(cpu_guard, phase="aggregate_gate")
             run_aggregate_gate(run_dir, manifest, args.env_file)
+            set_cpu_guard_context(cpu_guard, phase="ingest")
             ingest_admitted_sources(run_dir, manifest, args.env_file)
+            set_cpu_guard_context(cpu_guard, phase="readback")
             run_final_validation(run_dir, manifest, args.env_file)
             manifest["status"] = (
                 "selected_transaction_scope_complete"

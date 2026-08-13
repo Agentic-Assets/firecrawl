@@ -7,11 +7,10 @@ upstream Firecrawl package. Treat it as Agentic Assets local infrastructure.
 Use `CLAUDE.md` for compact agent routing. Use this README when you need a
 more detailed operator guide.
 
-> **Current runtime source, 2026-07-11:** The Mac mini has no active CRE
-> launchd job or healthy local Firecrawl runtime. Historical schedule and
-> count claims in this guide are not a deployment record. Use the
-> [operator runbook](../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md)
-> before any runtime, scheduler, database-write, or canary action.
+> **Verify before operating.** Runtime, scheduler, lock, and database state
+> are host-specific and change without a repository commit. Before a CRE run,
+> use `firecrawl_healthcheck.sh`, `cre_status.sh`, and the exact checkpoint
+> manifest. Historical schedules and row counts are not deployment proof.
 
 ## What Lives Here
 
@@ -61,6 +60,7 @@ and that the active Docker context is `orbstack`.
 | `firecrawl_mcp.sh` | MCP wrapper pinned to local API |
 | `firecrawl_request.py` | Stdlib HTTP helper for direct API calls, saved fields, and parse options |
 | `set_model_profile.sh` | Writes local model routing values into root `.env` |
+| `set_cre_resource_profile.sh` | Applies, shows, or restores the reversible local CRE resource profile |
 | `sync_agent_skills.sh` | Copies repo skills into user-level skill folders |
 | `sync_upstream_main.sh` | Creates an upstream-sync branch and merges `firecrawl/firecrawl:main` |
 | `install_git_hooks.sh` | Installs advisory local git hooks |
@@ -95,21 +95,22 @@ Read these before making claims or changing behavior:
 
 Historical validation and handoff detail lives in `archive/` (see `archive/README.md`).
 
-Common commands:
+For a supervised production refresh, use the CPU-safe checkpoint-series
+procedure in [`cre_collector/START_HERE.md`](cre_collector/START_HERE.md).
+The commands below are development probes only. They do not use the checkpoint
+CPU guard and do not write the listing database.
 
 ```bash
 npm run typecheck
 
 npx tsx collect.ts --source=svn --transaction=both --max-items=6 --out=/tmp/svn-probe.json
 python3 cre_ingest.py --in /tmp/svn-probe.json --dry-run
-
-npx tsx collect.ts --source=all --transaction=both --max-items=0 \
-  --page-cap=400 --concurrency=3 --out=out/full-run.json
-
-python3 cre_ingest.py --in out/full-run.json
-bash cre_daily_update.sh --no-mark-missing
 bash cre_status.sh               # run-health heartbeat (schedules, last runs, staleness)
 ```
+
+`cre_ingest.py` without `--dry-run` and `cre_daily_update.sh` can write the
+live listing database. They are not routine local commands and are not the
+supervised full-refresh path.
 
 Use `--mark-missing` only when every relevant source pass completed cleanly
 and staged enough rows for the per-broker guardrails. While Savills sale stays
@@ -303,6 +304,41 @@ env files.
 Plain scrape, map, search, and parse can work without model keys. AI-backed
 summary, JSON extraction, query, and extract flows require valid provider
 settings.
+
+## CRE Resource Safety Profile
+
+Before a resource-sensitive CRE collection, apply the local profile with a
+single Playwright page and one CPU each for the API and browser sidecar:
+
+```bash
+scripts/firecrawl-ops/set_cre_resource_profile.sh apply --with-pids
+scripts/firecrawl-ops/set_cre_resource_profile.sh show
+```
+
+`--with-pids` adds a 192-process Playwright backstop. It is optional because
+other local workflows may need a higher limit. The helper changes only
+`PLAYWRIGHT_MAX_CONCURRENT_PAGES`, `PLAYWRIGHT_CPUS`, `API_CPUS`, and, when
+requested, `PLAYWRIGHT_PIDS_LIMIT`; it neither prints nor copies secrets. It
+does not restart running containers. After reviewing `show`, explicitly apply
+the settings with:
+
+```bash
+docker compose up -d --force-recreate api playwright-service
+```
+
+After the CRE run, restore exactly the resource-key values that existed before
+the profile was applied:
+
+```bash
+scripts/firecrawl-ops/set_cre_resource_profile.sh restore
+```
+
+The small restore state is stored under ignored `tasks/tmp/`. Do not run
+`restore` without the state file: the helper intentionally refuses to guess.
+The checkpoint runner supplies the separate host-CPU watchdog; the profile
+limits container capacity but does not replace that guard. See
+[`cre_collector/START_HERE.md`](cre_collector/START_HERE.md) for the only
+supported high-volume CRE procedure.
 
 ## Local PDF OCR
 
