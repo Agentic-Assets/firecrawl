@@ -236,8 +236,9 @@ Profiles:
 
 - `budget`: OpenRouter `deepseek/deepseek-v4-flash`; primary cheap model for routine extraction and high-volume discovery. Local profile wiring verified on 2026-05-23.
 - `escalated`: OpenRouter `deepseek/deepseek-v4-pro`; smarter fallback for hard extraction, noisy pages, or budget failures.
-- `gateway`: Vercel AI Gateway `deepseek/deepseek-v4-flash`; requires a Vercel AI Gateway key.
-- `gateway-codex`: Vercel AI Gateway `openai/gpt-5.4-mini`; premium fallback.
+- `gateway`: Vercel AI Gateway `deepseek/deepseek-v4-flash-0731`; default model and requires a Vercel AI Gateway key.
+- `gateway-pro`: Vercel AI Gateway `deepseek/deepseek-v4-pro-0813`; stronger option for difficult extraction.
+- `gateway-codex`: Vercel AI Gateway `openai/gpt-5.4-mini`; retained for explicit legacy use.
 - `openai-direct`: OpenAI Platform `gpt-5.4-mini`; requires a Platform `sk-...` key with credits.
 
 After changing profiles:

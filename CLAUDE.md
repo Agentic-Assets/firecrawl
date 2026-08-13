@@ -86,7 +86,7 @@ Key scripts:
 - `firecrawl_cli.sh`
 - `firecrawl_request.py`
 - `firecrawl_mcp.sh`
-- `set_model_profile.sh budget|escalated|gateway|gateway-codex|openai-direct`
+- `set_model_profile.sh budget|escalated|gateway|gateway-pro|gateway-codex|openai-direct`
 - `sync_agent_skills.sh`
 - `sync_upstream_main.sh`
 

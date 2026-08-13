@@ -103,7 +103,8 @@ Profiles:
 ```bash
 scripts/firecrawl-ops/set_model_profile.sh budget        # OpenRouter DeepSeek V4 Flash
 scripts/firecrawl-ops/set_model_profile.sh escalated     # OpenRouter DeepSeek V4 Pro
-scripts/firecrawl-ops/set_model_profile.sh gateway       # Vercel AI Gateway DeepSeek V4 Flash
+scripts/firecrawl-ops/set_model_profile.sh gateway       # Vercel AI Gateway DeepSeek V4 Flash 0731 (default)
+scripts/firecrawl-ops/set_model_profile.sh gateway-pro   # Vercel AI Gateway DeepSeek V4 Pro 0813
 scripts/firecrawl-ops/set_model_profile.sh gateway-codex # Vercel AI Gateway OpenAI model
 scripts/firecrawl-ops/set_model_profile.sh openai-direct # OpenAI Platform
 ```

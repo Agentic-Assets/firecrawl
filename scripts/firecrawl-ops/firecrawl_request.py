@@ -19,7 +19,7 @@ from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
 DEFAULT_API_URL = "http://localhost:3002"
-MODEL_PROFILES = ["budget", "escalated", "gateway", "gateway-codex", "openai-direct"]
+MODEL_PROFILES = ["budget", "escalated", "gateway", "gateway-pro", "gateway-codex", "openai-direct"]
 QUEUE_STATUS_FIELDS = (
     "jobsInQueue",
     "activeJobsInQueue",

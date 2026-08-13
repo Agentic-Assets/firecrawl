@@ -119,10 +119,16 @@ set_kv RUNPOD_MU_POD_ID "$(value_or_existing RUNPOD_MU_POD_ID "")"
 
 case "$PROFILE" in
   gateway)
-    # Vercel AI Gateway → deepseek/deepseek-v4-flash.
+    # Vercel AI Gateway → default DeepSeek Flash snapshot.
     # Requires OPENAI_API_KEY=<vercel-ai-gateway-key> in .env.
     set_kv OPENAI_BASE_URL "https://ai-gateway.vercel.sh/v1"
-    set_kv MODEL_NAME "deepseek/deepseek-v4-flash"
+    set_kv MODEL_NAME "deepseek/deepseek-v4-flash-0731"
+    ;;
+  gateway-pro)
+    # Vercel AI Gateway → stronger DeepSeek Pro snapshot.
+    # Requires OPENAI_API_KEY=<vercel-ai-gateway-key> in .env.
+    set_kv OPENAI_BASE_URL "https://ai-gateway.vercel.sh/v1"
+    set_kv MODEL_NAME "deepseek/deepseek-v4-pro-0813"
     ;;
   gateway-codex)
     # Vercel AI Gateway → openai/gpt-5.4-mini (premium fallback).
@@ -149,7 +155,7 @@ case "$PROFILE" in
     ;;
   *)
     echo "Unknown profile: $PROFILE" >&2
-    echo "Use one of: gateway | gateway-codex | openai-direct | budget | escalated" >&2
+    echo "Use one of: gateway | gateway-pro | gateway-codex | openai-direct | budget | escalated" >&2
     exit 2
     ;;
 esac

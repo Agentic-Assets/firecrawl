@@ -104,7 +104,7 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
   - `pdf_ocr_benchmark.py` — repeatable local PDF parser/OCR matrix runner with preflight checks, page artifacts, QA reports, accept/reject/manual-review guidance, and per-PDF mode/profile recommendations
   - `firecrawl_mcp.sh` — wrapper for `npx firecrawl-mcp` pinned to `http://localhost:3002` for any MCP-capable agent
   - `sync_agent_skills.sh` — copy repo Firecrawl skills to `~/.agents/skills` and symlink them into user-level agent folders
-  - `set_model_profile.sh budget|escalated|gateway|gateway-codex|openai-direct` — rewrite `.env` model defaults; follow with `docker compose up -d --force-recreate api`
+  - `set_model_profile.sh budget|escalated|gateway|gateway-pro|gateway-codex|openai-direct` — rewrite `.env` model defaults; follow with `docker compose up -d --force-recreate api`
   - `sync_upstream_main.sh` — create an upstream-sync branch, merge `firecrawl/firecrawl:main`, and show protected fork path diffs
   - Optional older workflow examples: `artificialanalysis_snapshot.py`, `platform_access_probe.py`, `cre_access_matrix.py`, `bulk_triage_runner.py`, `crawl_swarm.py`, `firecrawl_swarm_pipeline.py`, `google_flights_scrape.py`, `parse_flight_deals.py`. Prefer `firecrawl_request.py` for new local-agent scripting.
 - Cross-agent integration:

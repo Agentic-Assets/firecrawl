@@ -62,6 +62,7 @@ The local stack reads root `.env`. Change model profiles with:
 scripts/firecrawl-ops/set_model_profile.sh budget
 scripts/firecrawl-ops/set_model_profile.sh escalated
 scripts/firecrawl-ops/set_model_profile.sh gateway
+scripts/firecrawl-ops/set_model_profile.sh gateway-pro
 scripts/firecrawl-ops/set_model_profile.sh gateway-codex
 scripts/firecrawl-ops/set_model_profile.sh openai-direct
 docker compose up -d --force-recreate api
@@ -80,12 +81,13 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 
 This changes the running Firecrawl API container's model env. It matters for AI-backed formats such as `summary`, `query`, JSON extraction, and `/v2/extract`; plain PDF markdown extraction does not use the LLM model.
 
-For OpenRouter and Vercel AI Gateway, put the provider key in `OPENAI_API_KEY`. The helper sets:
+For OpenRouter and Vercel AI Gateway, put the provider key in `OPENAI_API_KEY`. The profiles set:
 
-- `OPENAI_BASE_URL=https://openrouter.ai/api/v1`
-- `MODEL_NAME=deepseek/deepseek-v4-flash`
+- `budget` and `escalated`: `OPENAI_BASE_URL=https://openrouter.ai/api/v1`.
+- `gateway`: `OPENAI_BASE_URL=https://ai-gateway.vercel.sh/v1` with `MODEL_NAME=deepseek/deepseek-v4-flash-0731`.
+- `gateway-pro`: the same Vercel base with `MODEL_NAME=deepseek/deepseek-v4-pro-0813`.
 
-Use DeepSeek V4 Flash as the primary low-cost model. Escalate to `deepseek/deepseek-v4-pro` for noisy pages, low-confidence fields, or repeated malformed output. If LLM-backed calls fail, check API logs for provider/model errors before blaming the endpoint.
+Use DeepSeek V4 Flash as the primary low-cost model. Escalate to `deepseek/deepseek-v4-pro-0813` for noisy pages, low-confidence fields, or repeated malformed output. If LLM-backed calls fail, check API logs for provider/model errors before blaming the endpoint.
 
 ## CLI Patterns
 

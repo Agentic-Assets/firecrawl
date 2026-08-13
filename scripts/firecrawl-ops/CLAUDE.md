@@ -265,6 +265,7 @@ Switch model routing with:
 scripts/firecrawl-ops/set_model_profile.sh budget
 scripts/firecrawl-ops/set_model_profile.sh escalated
 scripts/firecrawl-ops/set_model_profile.sh gateway
+scripts/firecrawl-ops/set_model_profile.sh gateway-pro
 scripts/firecrawl-ops/set_model_profile.sh gateway-codex
 scripts/firecrawl-ops/set_model_profile.sh openai-direct
 docker compose up -d --force-recreate api

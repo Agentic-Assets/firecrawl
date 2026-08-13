@@ -21,7 +21,7 @@ usage() {
     '  --firecrawl-help                     Show this wrapper help.' \
     '' \
     'Profiles are handled by scripts/firecrawl-ops/set_model_profile.sh:' \
-    '  budget | escalated | gateway | gateway-codex | openai-direct' \
+    '  budget | escalated | gateway | gateway-pro | gateway-codex | openai-direct' \
     '' \
     'Model profiles affect Firecrawl AI-backed formats such as summary, query, JSON,' \
     'and extract. Plain PDF markdown parsing uses the local PDF parser path and does' \
