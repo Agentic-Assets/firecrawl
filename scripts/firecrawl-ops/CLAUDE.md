@@ -245,12 +245,16 @@ scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "Dallas office for sale" --limit 5 --json
 ```
 
-Use `firecrawl_request.py` when the CLI lacks a needed option, especially
-advanced `/v2/parse` PDF options or split saved artifacts.
+Use `firecrawl_request.py` when an agent needs bounded HTTP crawl polling,
+metrics-only output, advanced `/v2/parse` PDF options, or split saved
+artifacts. Do not use CLI `crawl --wait` for agent automation.
 
 ```bash
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html --pdf-mode ocr --max-pages 25 --out-dir ./out/report
+
+scripts/firecrawl-ops/firecrawl_request.py crawl https://example.com \
+  --limit 1 --scrape-formats markdown,links --wait --metrics-only
 ```
 
 ## Model Profiles

@@ -380,7 +380,7 @@ def check_optional_agent_create(ctx: SmokeContext) -> tuple[int, Any, str]:
         "/v2/agent",
         {"prompt": "Smoke probe only.", "urls": [ctx.crawl_url], "maxCredits": 1},
     )
-    if http_status >= 500 and "Agent beta is not enabled" in json_text(payload):
+    if http_status == 503 and "EXTRACT_V3_BETA_URL" in json_text(payload):
         return http_status, payload, "agent service not configured as expected"
     if http_status < 400:
         return http_status, payload, "agent service appears configured"

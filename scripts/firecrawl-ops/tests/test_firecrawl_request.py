@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import io
 import importlib.util
+import io
 import json
 import tempfile
 import unittest
@@ -20,7 +20,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
-
 
 HELPER_PATH = Path(__file__).resolve().parents[1] / "firecrawl_request.py"
 
@@ -54,6 +53,13 @@ class HelperParsingTests(unittest.TestCase):
         self.assertFalse(helper.parse_bool("off"))
         with self.assertRaises(argparse.ArgumentTypeError):
             helper.parse_bool("sometimes")
+
+    def test_positive_int_rejects_non_positive_page_caps(self) -> None:
+        self.assertEqual(helper.positive_int("2"), 2)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            helper.positive_int("0")
+        with self.assertRaises(argparse.ArgumentTypeError):
+            helper.positive_int("-1")
 
     def test_load_json_arg_and_file_validate_json(self) -> None:
         self.assertEqual(helper.load_json_arg('{"ok": true}', label="inline"), {"ok": True})
@@ -225,6 +231,34 @@ class ResponseAndOutputTests(unittest.TestCase):
             self.assertEqual(written, [field_dir / "response.bin"])
             self.assertEqual((field_dir / "response.bin").read_bytes(), b"raw-bytes")
 
+    def test_response_metrics_is_compact_and_avoids_source_bodies(self) -> None:
+        metrics = helper.response_metrics(
+            {
+                "success": True,
+                "id": "crawl-123",
+                "data": {
+                    "markdown": "secret source body",
+                    "links": ["https://example.com"],
+                    "metadata": {"numPages": 2, "totalPages": 4},
+                },
+            },
+            200,
+        )
+
+        self.assertEqual(
+            metrics,
+            {
+                "success": True,
+                "httpStatus": 200,
+                "id": "crawl-123",
+                "markdownChars": len("secret source body"),
+                "linksCount": 1,
+                "numPages": 2,
+                "totalPages": 4,
+            },
+        )
+        self.assertNotIn("markdown", metrics)
+
 
 class BodyBuilderTests(unittest.TestCase):
     def test_scrape_body_includes_optional_fields_and_schema_file(self) -> None:
@@ -258,6 +292,37 @@ class BodyBuilderTests(unittest.TestCase):
         self.assertEqual(body["headers"], {"X-Test": "yes"})
         self.assertTrue(body["onlyMainContent"])
 
+    def test_scrape_body_merges_user_agent_with_header_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            headers_file = Path(tmp) / "headers.json"
+            headers_file.write_text('{"X-Test":"yes"}', encoding="utf-8")
+            args = SimpleNamespace(
+                url="https://www.sec.gov/example",
+                formats="markdown",
+                schema=None,
+                schema_file=None,
+                prompt="Extract fields",
+                query=None,
+                summary=False,
+                only_main_content=None,
+                wait_for=None,
+                country=None,
+                languages=None,
+                proxy=None,
+                max_age=None,
+                headers_file=str(headers_file),
+                user_agent="Agentic Assets research contact@example.com",
+            )
+            body = helper.scrape_body(args)
+
+        self.assertEqual(
+            body["headers"],
+            {
+                "X-Test": "yes",
+                "User-Agent": "Agentic Assets research contact@example.com",
+            },
+        )
+
     def test_parse_options_covers_pdf_and_tag_controls(self) -> None:
         args = SimpleNamespace(
             formats="markdown,html",
@@ -279,6 +344,20 @@ class BodyBuilderTests(unittest.TestCase):
         self.assertEqual(options["includeTags"], ["main", "article"])
         self.assertEqual(options["excludeTags"], ["nav", "footer"])
         self.assertFalse(options["onlyMainContent"])
+
+    def test_parse_options_keeps_an_explicit_zero_for_api_validation(self) -> None:
+        args = SimpleNamespace(
+            formats="markdown",
+            no_pdf_parse=False,
+            pdf_mode=None,
+            max_pages=0,
+            fire_pdf_async=False,
+            only_main_content=None,
+            include_tags=None,
+            exclude_tags=None,
+            query=None,
+        )
+        self.assertEqual(helper.parse_options(args)["parsers"], [{"type": "pdf", "maxPages": 0}])
 
     def test_parse_options_can_disable_pdf_parsers(self) -> None:
         args = SimpleNamespace(
@@ -351,6 +430,168 @@ class CommandBoundaryTests(unittest.TestCase):
                 helper.cmd_post(args)
 
         self.assertEqual(calls[0], ("/v2/scrape", "POST", "/v2/scrape", {"from": "inline"}, "/v2/scrape"))
+
+    def test_crawl_body_and_id_use_v2_shape(self) -> None:
+        args = SimpleNamespace(
+            url="https://example.com",
+            limit=3,
+            max_concurrency=2,
+            include_paths="/news,/reports",
+            exclude_paths="/login",
+            scrape_formats="markdown,links",
+            headers_file=None,
+            user_agent="Agentic Assets research contact@example.com",
+        )
+
+        self.assertEqual(
+            helper.crawl_body(args),
+            {
+                "url": "https://example.com",
+                "limit": 3,
+                "maxConcurrency": 2,
+                "includePaths": ["/news", "/reports"],
+                "excludePaths": ["/login"],
+                "scrapeOptions": {
+                    "formats": ["markdown", "links"],
+                    "headers": {"User-Agent": "Agentic Assets research contact@example.com"},
+                },
+            },
+        )
+        self.assertEqual(helper.get_crawl_id({"id": "crawl-123"}), "crawl-123")
+        with self.assertRaises(SystemExit):
+            helper.get_crawl_id({"success": True})
+
+    def test_health_reports_queue_capacity_without_source_content(self) -> None:
+        responses = iter(
+            [
+                (200, b'{"message":"Firecrawl API"}'),
+                (200, b'{"success":true,"jobsInQueue":0,"activeJobsInQueue":0,"waitingJobsInQueue":0,"maxConcurrency":2}'),
+            ]
+        )
+        args = SimpleNamespace(
+            api_url="http://local",
+            api_key=None,
+            timeout=1,
+            out=None,
+            out_dir=None,
+            basename=None,
+            pretty=False,
+            save_fields=None,
+            quiet=True,
+            print_paths=False,
+            unwrap=False,
+            metrics_only=True,
+        )
+        captured: dict[str, object] = {}
+
+        def fake_write_response(_args, result, _raw, _status, _basename):
+            captured["result"] = result
+
+        with patch.object(helper, "request_json", lambda *_args: next(responses)), patch.object(
+            helper, "write_response", fake_write_response
+        ):
+            helper.cmd_health(args)
+
+        self.assertEqual(
+            captured["result"],
+            {
+                "success": True,
+                "apiHttpStatus": 200,
+                "queueHttpStatus": 200,
+                "jobsInQueue": 0,
+                "activeJobsInQueue": 0,
+                "waitingJobsInQueue": 0,
+                "maxConcurrency": 2,
+            },
+        )
+
+    def test_health_metrics_output_keeps_both_endpoint_statuses(self) -> None:
+        result = {
+            "success": True,
+            "apiHttpStatus": 200,
+            "queueHttpStatus": 503,
+            "maxConcurrency": 2,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "health.json"
+            args = SimpleNamespace(
+                out=str(out),
+                out_dir=None,
+                basename=None,
+                pretty=False,
+                save_fields=None,
+                quiet=True,
+                print_paths=False,
+                unwrap=False,
+                metrics_only=True,
+            )
+            helper.write_response(args, result, b"{}", 200, "health")
+            self.assertEqual(
+                json.loads(out.read_text(encoding="utf-8")),
+                {
+                    "success": True,
+                    "httpStatus": 200,
+                    "maxConcurrency": 2,
+                    "apiHttpStatus": 200,
+                    "queueHttpStatus": 503,
+                },
+            )
+
+    def test_poll_crawl_stops_only_at_terminal_status(self) -> None:
+        responses = iter(
+            [
+                (200, b'{"success":true,"status":"scraping","completed":0}'),
+                (200, b'{"success":true,"status":"completed","completed":1,"data":[{}]}'),
+            ]
+        )
+        args = SimpleNamespace(
+            api_url="http://local",
+            api_key=None,
+            timeout=1,
+            poll_timeout=5,
+            poll_interval=0,
+        )
+        with patch.object(helper, "request_json", lambda *_args: next(responses)), patch.object(helper.time, "sleep"):
+            status, result, raw = helper.poll_crawl(args, "crawl-123")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(result["status"], "completed")
+        self.assertIn(b'"completed":1', raw)
+
+    def test_crawl_status_exits_nonzero_for_failed_terminal_state(self) -> None:
+        args = SimpleNamespace(
+            api_url="http://local",
+            api_key=None,
+            timeout=1,
+            id="crawl-123",
+            wait=False,
+        )
+        with patch.object(helper, "run_and_write", return_value=(200, {"success": False, "status": "failed"})):
+            with self.assertRaises(SystemExit) as exc:
+                helper.cmd_crawl_status(args)
+        self.assertIn("status=failed", str(exc.exception))
+
+    def test_poll_crawl_writes_timeout_record(self) -> None:
+        args = SimpleNamespace(
+            api_url="http://local",
+            api_key=None,
+            timeout=1,
+            poll_timeout=0,
+            poll_interval=0,
+        )
+        captured: dict[str, object] = {}
+
+        def fake_write(_args, result, _raw, _status, _basename, _crawl_id=None):
+            captured["result"] = result
+
+        with patch.object(helper, "request_json", return_value=(200, b'{"success":true,"status":"scraping"}')), patch.object(
+            helper, "write_response", fake_write
+        ):
+            with self.assertRaises(SystemExit) as exc:
+                helper.poll_crawl(args, "crawl-123")
+        self.assertIn("Timed out", str(exc.exception))
+        self.assertEqual(captured["result"]["id"], "crawl-123")
+        self.assertFalse(captured["result"]["success"])
 
     def test_cmd_parse_sends_compact_options_and_file_stem_basename(self) -> None:
         captured: dict[str, object] = {}
@@ -448,14 +689,12 @@ class CommandBoundaryTests(unittest.TestCase):
 
 
 class NetworkBoundaryTests(unittest.TestCase):
-    def test_open_request_maps_http_and_url_errors_to_system_exit(self) -> None:
+    def test_open_request_returns_http_error_body_and_maps_url_errors_to_system_exit(self) -> None:
         req = Request("http://localhost:3002/v2/scrape")
-        http_error = HTTPError(req.full_url, 500, "boom", {}, None)
-        http_error.fp = io.BytesIO(b'{"error":"boom"}')
+        http_error = HTTPError(req.full_url, 500, "boom", {}, io.BytesIO(b'{"error":"boom"}'))
         with patch.object(helper, "urlopen", side_effect=http_error):
             with contextlib.redirect_stderr(io.StringIO()):
-                with self.assertRaises(SystemExit):
-                    helper.open_request(req, 1)
+                self.assertEqual(helper.open_request(req, 1), (500, b'{"error":"boom"}'))
         http_error.close()
 
         with patch.object(helper, "urlopen", side_effect=URLError("no route")):

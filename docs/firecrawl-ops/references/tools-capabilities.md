@@ -2,7 +2,7 @@
 
 ## Core endpoints (self-hosted API)
 
-Verified locally on 2026-05-23 after rebuilding the OrbStack Docker stack and testing the CLI wrapper.
+Verified locally on 2026-08-13 after rebuilding the OrbStack Docker stack and testing the API, CLI/MCP wrappers, and parser canaries.
 
 ### `POST /v2/scrape`
 - Best for: current typed scrape surface
@@ -19,6 +19,7 @@ Verified locally on 2026-05-23 after rebuilding the OrbStack Docker stack and te
 - Summary and JSON parse formats need valid model env
 - PDF parser options: `parsers:[{"type":"pdf","mode":"auto|fast|ocr","maxPages":25}]`
 - `PDF_RUST_EXTRACT_ENABLE=true` is the local default through compose; it improves simple text PDFs without credits
+- `maxPages` constrains returned fallback text as well as metadata. Use a public fixture or the parser canary when verifying a page-boundary-sensitive workflow.
 - Figure-heavy, table-heavy, scanned, or multi-column PDFs may still flatten on the default path
 - Stronger local OCR/layout output is available through the fork's Docling-backed Fire PDF adapter: `scripts/firecrawl-ops/local_firepdf_ocr.sh start`, `enable-firecrawl`, then parse with `mode:"ocr"`
 - Upstream page-level PDF markdown is intentionally not exposed by the local helper yet. It requires a Fire PDF `pages:[{page,markdown}]` response, while the local Docling adapter currently returns document-level markdown and QA metadata; requests fail explicitly rather than silently approximating page output.
@@ -54,7 +55,7 @@ The wrapper runs `npx -y firecrawl-cli@latest --api-url http://localhost:3002` a
 - `parse`
 - `map`
 - `search`
-- `crawl` submit + explicit status polling
+- `crawl` interactive submit and explicit status polling
 
 Use `FIRECRAWL_CLI_PACKAGE=firecrawl-cli@1.18.0` if future `latest` releases break local behavior.
 
@@ -63,7 +64,7 @@ Use `FIRECRAWL_CLI_PACKAGE=firecrawl-cli@1.18.0` if future `latest` releases bre
 The repo also includes a small dependency-free helper:
 
 ```bash
-scripts/firecrawl-ops/firecrawl_request.py <scrape|search|map|parse|post> ...
+scripts/firecrawl-ops/firecrawl_request.py <health|scrape|search|map|crawl|crawl-status|parse|post> ...
 ```
 
 Use it for local agent workflows, not app code. It fills gaps around predictable artifact saving and direct API options:
@@ -80,9 +81,14 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 # Optional content-safety filtering for exploratory search. Omit --safe for the API default.
 scripts/firecrawl-ops/firecrawl_request.py search "commercial real estate listings" \
   --limit 5 --safe true --scrape-formats markdown,links --out ./out/search.json
+
+# Bounded agent automation without source bodies in the log.
+scripts/firecrawl-ops/firecrawl_request.py health --metrics-only
+scripts/firecrawl-ops/firecrawl_request.py crawl https://example.com \
+  --limit 1 --scrape-formats markdown,links --wait --metrics-only
 ```
 
-Do not duplicate official SDK behavior in production code. Use JS/Python/Go/Ruby/Rust/PHP/etc. SDKs there. Use the helper when an agent needs a shell-stable way to call the local API from another codebase.
+Do not duplicate official SDK behavior in production code. Use JS/Python/Go/Ruby/Rust/PHP/etc. SDKs there. Use the helper when an agent needs a shell-stable way to call the local API from another codebase. It preserves API envelopes by default, exposes payload-only output with `--unwrap`, and prevents source-body output with `--metrics-only`. `parse --max-pages` accepts only a positive cap. `crawl-status` and bounded `crawl --wait` exit nonzero on failed, cancelled, or timed-out jobs and save their final state when an output target is supplied.
 
 `--safe` is deliberately opt-in. It is useful for exploratory agent searches but can reduce recall, so the governed CRE collector retains its source-specific acquisition paths and does not set it.
 
@@ -142,10 +148,10 @@ The benchmark now saves `fields/pages.jsonl`, `qa.json`, and `qa.md` per case wh
 ## Present but not configured locally
 
 - `POST /v2/browser`, `GET /v2/browser`, `POST /v2/browser/:sessionId/execute` need `BROWSER_SERVICE_URL`.
-- `POST /v2/agent` needs `EXTRACT_V3_BETA_URL`.
+- `POST /v2/agent` needs `EXTRACT_V3_BETA_URL`; an unconfigured local stack returns HTTP 503 with that explicit prerequisite.
 - `POST /v1/deep-research` starts locally, but it is slower and may keep processing for several minutes.
 - CLI `agent` and `interact` need the corresponding backend services/model configuration.
-- CLI `crawl --wait` may hang locally; submit then poll by job id.
+- CLI `crawl --wait` may hang locally. Use `firecrawl_request.py crawl --wait`, which polls `/v2/crawl/:id` with an explicit timeout.
 
 ## Upstream-only (not verified self-hosted)
 
@@ -154,11 +160,14 @@ The benchmark now saves `fields/pages.jsonl`, `qa.json`, and `qa.md` per case wh
 ## Practical selection guide
 
 - Need one page quickly -> `v2/scrape`
-- Need candidate URLs first -> `v2/map` or `v2/search`
-- Need many pages -> `v2/crawl`, then poll status
+- Need candidate URLs first -> `v2/map` or `v2/search`; map first for JS/news hubs
+- Need many pages -> `v2/crawl`, then poll status through an SDK or `firecrawl_request.py crawl --wait`
 - Need a local file parsed -> `v2/parse` or CLI `parse`
 - Need structured fields/entities from one page -> `v2/scrape` with `json`
 - Need async structured fields/entities from multiple pages -> `v2/extract`
+- Need RSS/Atom items -> native HTTP plus an XML feed parser, not generic scrape
+
+Search backend selection is Fire Engine when configured, then SearxNG when configured, then DuckDuckGo HTML. Search is discovery only: hit ranks can vary and must not be treated as reproducible source evidence. The CRE collector remains governed by its source-specific SDK/API contracts and does not use the generic helper as a collection path.
 
 ## Runtime stack (docker compose)
 
@@ -173,3 +182,4 @@ Health check baseline:
 - API reachable at `http://localhost:3002/`
 - smoke scrape returns `success: true`
 - Optional evidence mode writes to `tasks/tmp/firecrawl-healthcheck/`
+- Queue status is the authority for effective local concurrency. The upstream fallback is `maxConcurrency: 2`; do not raise it without a separate OrbStack resource proof.

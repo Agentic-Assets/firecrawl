@@ -126,7 +126,11 @@ export async function agentController(
   }
 
   if (!config.EXTRACT_V3_BETA_URL) {
-    throw new Error("Agent beta is not enabled.");
+    return res.status(503).json({
+      success: false,
+      error:
+        "Agent feature is not configured (EXTRACT_V3_BETA_URL is missing).",
+    });
   }
 
   // If maxCredits > 2500, skip free request consumption — this is always a paid request

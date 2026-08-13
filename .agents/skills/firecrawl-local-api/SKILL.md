@@ -25,7 +25,7 @@ Use this skill to call the local Firecrawl API directly or through the Firecrawl
 | `POST /v2/scrape` | works | Single URL to markdown/html/rawHtml/links/images/summary/json/attributes/query. |
 | `POST /v2/search` | works | Web search; `scrapeOptions` can enrich hits with markdown. |
 | `POST /v2/map` | works | URL discovery. |
-| `POST /v2/crawl` + `GET /v2/crawl/:id` | works | Async crawl with status polling. CLI `--wait` may hang locally; poll by id. |
+| `POST /v2/crawl` + `GET /v2/crawl/:id` | works | Async crawl with status polling. Use the helper's bounded `crawl --wait`, not CLI `--wait`. |
 | `POST /v2/batch/scrape` + `GET /v2/batch/scrape/:id` | works | Async scrape of many URLs. |
 | `POST /v2/parse` | works | Multipart upload for local HTML/PDF/DOCX/DOC/ODT/RTF/XLSX/XLS. PDF parser options include `mode` and `maxPages`. |
 | `POST /v2/extract` + `GET /v2/extract/:id` | works with schema | Async structured extraction. Provide an explicit schema. |
@@ -49,7 +49,7 @@ The smoke matrix writes JSON and Markdown under `tasks/tmp/local-api-smoke/`; th
 ## Not Configured Locally
 
 - `POST /v2/browser`, `GET /v2/browser`, and `POST /v2/browser/:sessionId/execute`: need `BROWSER_SERVICE_URL`.
-- `POST /v2/agent`: needs `EXTRACT_V3_BETA_URL`.
+- `POST /v2/agent`: needs `EXTRACT_V3_BETA_URL`; otherwise it returns an explicit HTTP 503 configuration gate.
 - Scrape `actions`, screenshot formats, and scrape-browser interaction: need Fire Engine or browser-service support.
 - Prompt-only extract/schema generation may fail on weaker budget models; provide an explicit schema.
 - Summary, JSON extraction, query, params-preview, and other AI formats fail until model env is configured.
@@ -116,7 +116,7 @@ scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile budget --firecr
 
 ## Agent HTTP Helper
 
-Use `firecrawl_request.py` when you need direct API control, predictable saved outputs, or PDF parser options that the CLI does not expose. It has no third-party Python dependency and works from any current directory:
+Use `firecrawl_request.py` when an agent needs direct API control, bounded crawl polling, predictable saved outputs, or PDF parser options that the CLI does not expose. It has no third-party Python dependency and works from any current directory:
 
 ```bash
 ~/.agents/skills/firecrawl-local-api/scripts/firecrawl_request.py scrape https://example.com \
@@ -126,12 +126,23 @@ Use `firecrawl_request.py` when you need direct API control, predictable saved o
 ~/.agents/skills/firecrawl-local-api/scripts/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html,images --pdf-mode auto --max-pages 25 \
   --out-dir ./out/firecrawl --save-fields ./out/report-fields --pretty --quiet
+
+# Agent-safe health and crawl output. These commands contain no scraped body.
+~/.agents/skills/firecrawl-local-api/scripts/firecrawl_request.py health --metrics-only
+~/.agents/skills/firecrawl-local-api/scripts/firecrawl_request.py crawl https://example.com \
+  --limit 1 --scrape-formats markdown,links --wait --metrics-only
+
+# Keep the API envelope by default; opt in to its payload-only data object.
+~/.agents/skills/firecrawl-local-api/scripts/firecrawl_request.py scrape https://example.com \
+  --formats markdown,links --unwrap --out ./out/example-payload.json --quiet
 ```
 
 Selection rule:
 
-- Use CLI for normal `scrape`, `parse`, `search`, `map`, `crawl`, config/setup, and anything listed in `firecrawl_cli.sh --help`.
+- Use CLI for normal interactive `scrape`, `parse`, `search`, `map`, config/setup, and anything listed in `firecrawl_cli.sh --help`.
+- Use `firecrawl_request.py crawl` or `crawl-status` for agent automation. `--wait` polls `/v2/crawl/:id` with explicit timeout and interval, so it does not inherit the upstream CLI wait behavior.
 - Use `firecrawl_request.py parse` for `--pdf-mode`, `--max-pages`, `--no-pdf-parse`, `--fire-pdf-async`, or split artifact saving.
+- Use `--metrics-only` for review/automation logs and `--unwrap` only when a payload-only JSON shape is deliberately required. The upstream CLI's JSON files are payload-shaped; direct API responses are `{success,data}`.
 - Use official SDKs in app code instead of shelling out.
 - Use raw `curl` when debugging exact wire payloads.
 
@@ -154,12 +165,19 @@ Cursor is only one optional adapter:
 
 Composer 2.5 is an agent runtime/model choice. It is not Firecrawl's internal LLM backend unless Cursor provides an OpenAI-compatible model endpoint. Cursor SDK local agents should pass the MCP server inline or opt into project settings with `local.settingSources`; cloud agents cannot reach this Mac's `localhost:3002` unless Firecrawl is exposed at a reachable URL.
 
-For crawl, avoid `--wait` locally:
+For a bounded agent crawl, use the helper rather than CLI `--wait`:
 
 ```bash
-ID=$(scripts/firecrawl-ops/firecrawl_cli.sh crawl https://example.com --limit 1 --pretty | jq -r '.data.jobId')
-scripts/firecrawl-ops/firecrawl_cli.sh crawl "$ID" --status --pretty
+scripts/firecrawl-ops/firecrawl_request.py crawl https://example.com \
+  --limit 1 --scrape-formats markdown,links --wait --metrics-only
 ```
+
+## Route Selection Rules
+
+- For a news or JS-heavy index page, run `map` first, then scrape selected article URLs. A rendered hub's markdown is not a reliable article inventory.
+- Treat search as URL discovery only. The local backend order is Fire Engine when configured, then SearxNG when configured, then DuckDuckGo HTML. External ranking and result order are not reproducible source evidence.
+- Do not scrape RSS or Atom as generic markdown. Fetch the feed with native HTTP and parse XML; use Firecrawl only for an HTML feed catalog or a selected article page.
+- The governed CRE collector has its own source contracts. Do not replace its SDK boundary or direct provider feeds with the local agent helper, CLI, map, search, or generic feed flow.
 
 ## Curl Patterns
 

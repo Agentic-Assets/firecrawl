@@ -11,22 +11,21 @@ RUN_HEALTHCHECK=0
 export NPM_CONFIG_LOGLEVEL="${NPM_CONFIG_LOGLEVEL:-error}"
 
 usage() {
-  cat <<'EOF'
-Usage: firecrawl_cli.sh [wrapper-options] <firecrawl-command> [args...]
-
-Wrapper options:
-  --firecrawl-model-profile <profile>  Apply a local model profile before running.
-  --firecrawl-no-recreate-api          Write the profile to .env but do not recreate api.
-  --firecrawl-healthcheck              Run local healthcheck after profile recreation.
-  --firecrawl-help                     Show this wrapper help.
-
-Profiles are handled by scripts/firecrawl-ops/set_model_profile.sh:
-  budget | escalated | gateway | gateway-codex | openai-direct
-
-Model profiles affect Firecrawl AI-backed formats such as summary, query, JSON,
-and extract. Plain PDF markdown parsing uses the local PDF parser path and does
-not call the LLM model.
-EOF
+  printf '%s\n' \
+    'Usage: firecrawl_cli.sh [wrapper-options] <firecrawl-command> [args...]' \
+    '' \
+    'Wrapper options:' \
+    '  --firecrawl-model-profile <profile>  Apply a local model profile before running.' \
+    '  --firecrawl-no-recreate-api          Write the profile to .env but do not recreate api.' \
+    '  --firecrawl-healthcheck              Run local healthcheck after profile recreation.' \
+    '  --firecrawl-help                     Show this wrapper help.' \
+    '' \
+    'Profiles are handled by scripts/firecrawl-ops/set_model_profile.sh:' \
+    '  budget | escalated | gateway | gateway-codex | openai-direct' \
+    '' \
+    'Model profiles affect Firecrawl AI-backed formats such as summary, query, JSON,' \
+    'and extract. Plain PDF markdown parsing uses the local PDF parser path and does' \
+    'not call the LLM model.'
 }
 
 resolve_fc_dir() {

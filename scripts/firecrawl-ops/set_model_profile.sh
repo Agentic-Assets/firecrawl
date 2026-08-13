@@ -41,38 +41,37 @@ FC_DIR="$(resolve_fc_dir)"
 ENV_PATH="${ENV_PATH:-$FC_DIR/.env}"
 
 if [[ ! -f "$ENV_PATH" ]]; then
-  cat > "$ENV_PATH" <<'EOF'
-# Local Firecrawl env. Gitignored; do not commit secrets.
-PORT=3002
-HOST=0.0.0.0
-USE_DB_AUTHENTICATION=false
-
-# CLI convenience for local agents.
-FIRECRAWL_API_URL=http://localhost:3002
-
-# For OpenRouter, Vercel AI Gateway, and OpenAI-compatible providers,
-# put the provider key in OPENAI_API_KEY and set OPENAI_BASE_URL/MODEL_NAME
-# with scripts/firecrawl-ops/set_model_profile.sh.
-OPENAI_API_KEY=
-OPENAI_BASE_URL=
-MODEL_NAME=
-MODEL_EMBEDDING_NAME=
-
-# Optional direct OpenRouter provider path. Most local flows use OPENAI_API_KEY
-# with OPENAI_BASE_URL=https://openrouter.ai/api/v1 instead.
-OPENROUTER_API_KEY=
-
-# Local PDF parser defaults. Rust extraction is local and does not use credits.
-PDF_RUST_EXTRACT_ENABLE=true
-PDF_SHADOW_COMPARISON_ENABLE=false
-MINERU_PERCENT=0
-FIRE_PDF_ENABLE=false
-FIRE_PDF_PERCENT=10
-FIRE_PDF_BASE_URL=
-FIRE_PDF_API_KEY=
-RUNPOD_MU_API_KEY=
-RUNPOD_MU_POD_ID=
-EOF
+  printf '%s\n' \
+    '# Local Firecrawl env. Gitignored; do not commit secrets.' \
+    'PORT=3002' \
+    'HOST=0.0.0.0' \
+    'USE_DB_AUTHENTICATION=false' \
+    '' \
+    '# CLI convenience for local agents.' \
+    'FIRECRAWL_API_URL=http://localhost:3002' \
+    '' \
+    '# For OpenRouter, Vercel AI Gateway, and OpenAI-compatible providers,' \
+    '# put the provider key in OPENAI_API_KEY and set OPENAI_BASE_URL/MODEL_NAME' \
+    '# with scripts/firecrawl-ops/set_model_profile.sh.' \
+    'OPENAI_API_KEY=' \
+    'OPENAI_BASE_URL=' \
+    'MODEL_NAME=' \
+    'MODEL_EMBEDDING_NAME=' \
+    '' \
+    '# Optional direct OpenRouter provider path. Most local flows use OPENAI_API_KEY' \
+    '# with OPENAI_BASE_URL=https://openrouter.ai/api/v1 instead.' \
+    'OPENROUTER_API_KEY=' \
+    '' \
+    '# Local PDF parser defaults. Rust extraction is local and does not use credits.' \
+    'PDF_RUST_EXTRACT_ENABLE=true' \
+    'PDF_SHADOW_COMPARISON_ENABLE=false' \
+    'MINERU_PERCENT=0' \
+    'FIRE_PDF_ENABLE=false' \
+    'FIRE_PDF_PERCENT=10' \
+    'FIRE_PDF_BASE_URL=' \
+    'FIRE_PDF_API_KEY=' \
+    'RUNPOD_MU_API_KEY=' \
+    'RUNPOD_MU_POD_ID=' > "$ENV_PATH"
   echo "Created local env file: $ENV_PATH"
 fi
 

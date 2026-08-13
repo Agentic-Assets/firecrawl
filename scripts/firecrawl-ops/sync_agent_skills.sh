@@ -45,23 +45,22 @@ DRY_RUN=0
 FORCE=0
 
 usage() {
-  cat <<'EOF'
-Usage: scripts/firecrawl-ops/sync_agent_skills.sh [--dry-run] [--force] [skill ...]
-
-Copies canonical repo Firecrawl skills into ~/.agents/skills, then symlinks them
-into user-level agent skill directories such as ~/.codex/skills, ~/.claude/skills,
-and ~/.cursor/skills.
-
-Env:
-  FIRECRAWL_USER_SKILLS_ROOT   Canonical copy destination (default: ~/.agents/skills)
-  FIRECRAWL_SKILL_LINK_ROOTS   Colon-separated symlink roots
-                               (default: ~/.codex/skills:~/.claude/skills:~/.cursor/skills)
-  FC_DIR                       Repo root override
-
-Notes:
-  - Repo skill symlinks are dereferenced during copy so ~/.agents/skills is standalone.
-  - Existing non-symlink destinations are skipped unless --force is passed.
-EOF
+  printf '%s\n' \
+    'Usage: scripts/firecrawl-ops/sync_agent_skills.sh [--dry-run] [--force] [skill ...]' \
+    '' \
+    'Copies canonical repo Firecrawl skills into ~/.agents/skills, then symlinks them' \
+    'into user-level agent skill directories such as ~/.codex/skills, ~/.claude/skills,' \
+    'and ~/.cursor/skills.' \
+    '' \
+    'Env:' \
+    '  FIRECRAWL_USER_SKILLS_ROOT   Canonical copy destination (default: ~/.agents/skills)' \
+    '  FIRECRAWL_SKILL_LINK_ROOTS   Colon-separated symlink roots' \
+    '                               (default: ~/.codex/skills:~/.claude/skills:~/.cursor/skills)' \
+    '  FC_DIR                       Repo root override' \
+    '' \
+    'Notes:' \
+    '  - Repo skill symlinks are dereferenced during copy so ~/.agents/skills is standalone.' \
+    '  - Existing non-symlink destinations are skipped unless --force is passed.'
 }
 
 while [[ $# -gt 0 ]]; do

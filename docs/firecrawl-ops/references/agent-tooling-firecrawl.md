@@ -12,7 +12,7 @@ This repo keeps the local Firecrawl tool layer separate from any one agent model
 2. **Portable tool interfaces**
    - HTTP API: direct calls to `/v2/scrape`, `/v2/search`, `/v2/map`, `/v2/crawl`, `/v2/batch/scrape`, `/v2/parse`, and `/v2/extract`.
    - CLI: `scripts/firecrawl-ops/firecrawl_cli.sh` runs the upstream Firecrawl CLI against the local API.
-   - Agent HTTP helper: `scripts/firecrawl-ops/firecrawl_request.py` for saved artifacts and direct API options the CLI does not expose yet.
+   - Agent HTTP helper: `scripts/firecrawl-ops/firecrawl_request.py` for bounded crawl polling, body-free metrics, saved artifacts, and direct API options the CLI does not expose.
    - MCP: `scripts/firecrawl-ops/firecrawl_mcp.sh`.
 
 3. **Agent adapters**
@@ -56,15 +56,18 @@ scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markd
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 ```
 
-Use the direct helper when an agent needs portable saved artifacts or advanced local API options:
+Use the direct helper when an agent needs portable saved artifacts, advanced local API options, or bounded crawl polling:
 
 ```bash
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html,images --pdf-mode auto --max-pages 25 \
   --out-dir ./out/firecrawl --save-fields ./out/report-fields --quiet
+
+scripts/firecrawl-ops/firecrawl_request.py crawl https://example.com \
+  --limit 1 --scrape-formats markdown,links --wait --metrics-only
 ```
 
-Use official SDKs for application integrations. The helper is intentionally fork-owned local tooling, so upstream app/API/SDK syncs stay simple.
+Use official SDKs for application integrations. The helper is intentionally fork-owned local tooling, so upstream app/API/SDK syncs stay simple. Its default output preserves the API envelope; use `--unwrap` only for a payload-only shape and `--metrics-only` to keep source bodies out of logs. PDF `--max-pages` must be positive. Bounded crawl polling saves a terminal or timeout record and exits nonzero for failed, cancelled, or timed-out crawls, so shell agents do not mistake those states for success.
 
 ## User-Level Skill Sync
 

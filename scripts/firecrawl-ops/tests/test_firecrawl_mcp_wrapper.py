@@ -130,8 +130,7 @@ capture.write_text(json.dumps({
 
 
 def mcp_frame(payload: dict[str, Any]) -> bytes:
-    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
+    return (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
 
 
 def read_mcp_message(proc: subprocess.Popen[bytes], timeout: float = 15.0) -> dict[str, Any]:
@@ -139,31 +138,20 @@ def read_mcp_message(proc: subprocess.Popen[bytes], timeout: float = 15.0) -> di
     import time
 
     deadline = time.time() + timeout
-    header = b""
-    while b"\r\n\r\n" not in header:
-        if time.time() > deadline:
-            raise TimeoutError("Timed out waiting for MCP response headers")
-        ready, _, _ = select.select([proc.stdout], [], [], 0.25)
+    assert proc.stdout is not None
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            raise TimeoutError("Timed out waiting for MCP JSONL response")
+        ready, _, _ = select.select([proc.stdout.fileno()], [], [], min(remaining, 0.25))
         if not ready:
             continue
-        chunk = proc.stdout.read(1)
-        if not chunk:
+        line = proc.stdout.readline()
+        if not line:
             raise RuntimeError("MCP process closed before response")
-        header += chunk
-    header_text, body_prefix = header.split(b"\r\n\r\n", 1)
-    content_length = None
-    for line in header_text.decode("ascii", errors="replace").split("\r\n"):
-        name, _, value = line.partition(":")
-        if name.lower() == "content-length":
-            content_length = int(value.strip())
-    if content_length is None:
-        raise RuntimeError("MCP response missing Content-Length")
-    body = body_prefix
-    while len(body) < content_length:
-        if time.time() > deadline:
-            raise TimeoutError("Timed out waiting for MCP response body")
-        body += proc.stdout.read(content_length - len(body))
-    return json.loads(body[:content_length].decode("utf-8"))
+        if line.strip():
+            break
+    return json.loads(line.decode("utf-8"))
 
 
 @unittest.skipUnless(os.getenv("FIRECRAWL_RUN_MCP_SMOKE") == "1", "set FIRECRAWL_RUN_MCP_SMOKE=1 to run")
@@ -177,6 +165,7 @@ class FirecrawlMcpOptInSmokeTests(unittest.TestCase):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            bufsize=0,
         )
         assert proc.stdin is not None
         try:
@@ -213,6 +202,13 @@ class FirecrawlMcpOptInSmokeTests(unittest.TestCase):
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait(timeout=5)
+            if proc.stdin:
+                proc.stdin.close()
+            if proc.stdout:
+                proc.stdout.close()
+            if proc.stderr:
+                proc.stderr.close()
 
 
 if __name__ == "__main__":

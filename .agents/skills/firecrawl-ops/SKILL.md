@@ -60,7 +60,7 @@ Core stack verified after syncing `firecrawl/firecrawl:main` and rebuilding with
 - The local Firecrawl CLI path works through `scripts/firecrawl-ops/firecrawl_cli.sh` or `FIRECRAWL_API_URL=http://localhost:3002 npx -y firecrawl-cli@latest ...`.
 - The upstream CLI is the default for broad command coverage. Use `scripts/firecrawl-ops/firecrawl_request.py` only when an agent needs dependency-free direct HTTP, advanced `/v2/parse` PDF parser options, or split saved artifacts such as markdown/html/metadata files.
 - User-level installed helper scripts also work from other repos at `~/.agents/skills/firecrawl-ops/scripts/`. Set `FC_DIR=/path/to/firecrawl` if the repo is not in the usual local checkout path.
-- The CLI `crawl --wait` can hang locally even after the API finishes. Prefer submit then status-poll by job id.
+- The CLI `crawl --wait` can hang locally even after the API finishes. For agent automation, use `firecrawl_request.py crawl --wait`, which polls the v2 status endpoint with an explicit bound.
 - PDF Rust extraction is enabled by default through compose when `PDF_RUST_EXTRACT_ENABLE` is unset. This improves simple text-based PDFs locally but does not turn scanned/table-heavy PDFs into full layout-aware output.
 
 Model routing:
@@ -105,11 +105,11 @@ Equivalent raw form:
 FIRECRAWL_API_URL=http://localhost:3002 npx -y firecrawl-cli@latest scrape https://example.com
 ```
 
-The CLI wrapper preserves the caller's current directory, so relative upload paths work for commands such as `parse ./report.pdf`. The CLI supports `scrape`, `crawl`, `map`, `parse`, `search`, `agent`, `interact`, `monitor`, setup/config commands, and output flags. For local crawl jobs, use:
+The CLI wrapper preserves the caller's current directory, so relative upload paths work for commands such as `parse ./report.pdf`. The CLI supports `scrape`, `crawl`, `map`, `parse`, `search`, `agent`, `interact`, `monitor`, setup/config commands, and output flags. For local crawl jobs, use the helper's bounded HTTP poll:
 
 ```bash
-ID=$(scripts/firecrawl-ops/firecrawl_cli.sh crawl https://example.com --limit 1 --pretty | jq -r '.data.jobId')
-scripts/firecrawl-ops/firecrawl_cli.sh crawl "$ID" --status --pretty
+scripts/firecrawl-ops/firecrawl_request.py crawl https://example.com \
+  --limit 1 --scrape-formats markdown,links --wait --metrics-only
 ```
 
 ## Agent HTTP Helper
@@ -128,9 +128,11 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown --query "What is this document about?" \
   --model-profile escalated --healthcheck --pretty
+
+scripts/firecrawl-ops/firecrawl_request.py health --metrics-only
 ```
 
-Do not use this helper to replace SDKs or the upstream CLI for normal app code. It exists for local agent workflows, repeatable saved artifacts, and API options the CLI does not expose yet.
+Do not use this helper to replace SDKs or the upstream CLI for normal app code. It exists for local agent workflows, repeatable saved artifacts, bounded crawl polling, and API options the CLI does not expose yet. Use `--metrics-only` for logs that must not retain source bodies; `--unwrap` deliberately writes only the API response's `data` object.
 
 Prefer `firecrawl_request.py` for new local-agent scripting because it uses only Python stdlib. Treat older domain workflow scripts as optional examples unless the user specifically asks for those workflows. Model profile flags affect AI-backed formats; plain PDF markdown parsing stays on the local PDF parser path.
 
@@ -169,6 +171,8 @@ Read `references/tools-capabilities.md` when choosing an endpoint. The short ver
 - One-page structured fields: `POST /v2/scrape` with a `json` format
 - Multi-page structured fields: `POST /v2/extract` with an explicit schema, then poll `GET /v2/extract/:id`
 - Runtime visibility: `GET /v2/team/queue-status`, `GET /v2/crawl/active`
+
+For a JS/news hub, map first and then scrape the selected articles. For RSS or Atom, use native HTTP plus an XML feed parser rather than generic scrape. Search is URL discovery only: local selection is Fire Engine when configured, then SearxNG when configured, then DuckDuckGo HTML; do not treat changing hit rank as source evidence. These generic routing rules never replace the CRE collector's source-specific API and SDK contracts.
 
 ## PDF Parse Notes
 

@@ -1,16 +1,16 @@
 # Local Firecrawl Capability Matrix
 
-Generated: `2026-08-11 00:17:56 EDT`
+Generated: `2026-08-13 07:10:53 EDT`
 Route source: `apps/api/src/routes/v2.ts`
 Reference source: `docs/firecrawl-ops/references/tools-capabilities.md`
-Smoke source: `tasks/tmp/local-api-smoke-20260811/20260811-001749-local-api-smoke.json`
+Smoke source: `tasks/tmp/20260813-final-validation/smoke-final/20260813-071038-local-api-smoke.json`
 
 | Method | Route | Local status | In ops docs | Notes |
 |---|---|---|---:|---|
 | `POST` | `/v2/agent` | `needs optional service` | `yes` | Skipped by default because it may enqueue an agent job when configured. |
 | `DELETE` | `/v2/agent/:jobId` | `needs optional service` | `no` | requires EXTRACT_V3_BETA_URL |
 | `GET` | `/v2/agent/:jobId` | `needs optional service` | `no` | requires EXTRACT_V3_BETA_URL |
-| `POST` | `/v2/batch/scrape` | `works locally` | `no` | job_id=019fef0a-1019-758b-aea9-2e3b8e268b8d |
+| `POST` | `/v2/batch/scrape` | `works locally` | `no` | job_id=019ffad0-bd3c-7232-bd1d-26e5c7988626 |
 | `DELETE` | `/v2/batch/scrape/:jobId` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
 | `GET` | `/v2/batch/scrape/:jobId` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
 | `GET` | `/v2/batch/scrape/:jobId/errors` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
@@ -22,7 +22,7 @@ Smoke source: `tasks/tmp/local-api-smoke-20260811/20260811-001749-local-api-smok
 | `GET` | `/v2/browser/:sessionId/replay/:pageId` | `needs optional service` | `no` | requires browser-service configuration |
 | `POST` | `/v2/browser/webhook/destroyed` | `needs optional service` | `no` | requires browser-service configuration |
 | `GET` | `/v2/concurrency-check` | `not tested` | `no` | diagnostic route registered but not in local smoke matrix |
-| `POST` | `/v2/crawl` | `works locally` | `yes` | job_id=019fef0a-3fd7-7478-9b7b-3cc6c0a9ec4b |
+| `POST` | `/v2/crawl` | `works locally` | `yes` | job_id=019ffad0-e8df-726a-9bb9-7403d9a7138d |
 | `DELETE` | `/v2/crawl/:jobId` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
 | `GET` | `/v2/crawl/:jobId` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |
 | `WS` | `/v2/crawl/:jobId` | `partly covered` | `no` | base async workflow is covered, this status/error/cancel variant is not directly probed |

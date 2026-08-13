@@ -18,7 +18,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
-
 DEFAULT_API_URL = "http://localhost:3002"
 MODEL_PROFILES = ["budget", "escalated", "gateway", "gateway-codex", "openai-direct"]
 
@@ -36,6 +35,16 @@ def parse_bool(value: str) -> bool:
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
     raise argparse.ArgumentTypeError(f"Expected a boolean, got {value!r}")
+
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Expected a positive integer, got {value!r}") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"Expected a positive integer, got {value!r}")
+    return parsed
 
 
 def load_json_arg(value: str | None, *, label: str) -> Any:
@@ -186,7 +195,7 @@ def open_request(req: Request, timeout_value: float) -> tuple[int, bytes]:
         sys.stderr.write(f"HTTP {exc.code} from {req.full_url}\n")
         if body:
             sys.stderr.write(body.decode("utf-8", errors="replace") + "\n")
-        raise SystemExit(1) from exc
+        return exc.code, body
     except URLError as exc:
         raise SystemExit(f"Could not reach {req.full_url}: {exc}") from exc
 
@@ -202,6 +211,49 @@ def response_payload(result: Any) -> Any:
     if isinstance(result, dict) and isinstance(result.get("data"), dict):
         return result["data"]
     return result
+
+
+def response_metrics(result: Any, http_status: int) -> dict[str, Any]:
+    """Return stable response facts without serializing scraped source content."""
+    root = result if isinstance(result, dict) else {}
+    payload = response_payload(result)
+    data = payload if isinstance(payload, dict) else {}
+    metrics: dict[str, Any] = {
+        "success": bool(root.get("success", http_status < 400)),
+        "httpStatus": http_status,
+    }
+    identifier = root.get("id") or root.get("jobId") or data.get("id") or data.get("jobId")
+    if isinstance(identifier, str):
+        metrics["id"] = identifier
+    for key in (
+        "status",
+        "total",
+        "completed",
+        "failed",
+        "creditsUsed",
+        "jobsInQueue",
+        "activeJobsInQueue",
+        "waitingJobsInQueue",
+        "maxConcurrency",
+        "apiHttpStatus",
+        "queueHttpStatus",
+    ):
+        value = root.get(key, data.get(key))
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            metrics[key] = value
+    if isinstance(data.get("markdown"), str):
+        metrics["markdownChars"] = len(data["markdown"])
+    for key, metric_key in (("links", "linksCount"), ("images", "imagesCount"), ("data", "dataCount")):
+        value = data.get(key, root.get(key))
+        if isinstance(value, list):
+            metrics[metric_key] = len(value)
+    metadata = data.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("numPages", "totalPages"):
+            value = metadata.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                metrics[key] = value
+    return metrics
 
 
 def write_outputs(
@@ -268,6 +320,36 @@ def write_outputs(
     return written
 
 
+def write_response(
+    args: argparse.Namespace,
+    result: Any,
+    raw: bytes,
+    status: int,
+    basename: str,
+    crawl_id: str | None = None,
+) -> None:
+    metrics_only = getattr(args, "metrics_only", False)
+    unwrap = getattr(args, "unwrap", False)
+    output_result = response_metrics(result, status) if metrics_only else result
+    if metrics_only and crawl_id:
+        output_result["id"] = crawl_id
+    if unwrap and not metrics_only:
+        output_result = response_payload(result)
+    written = write_outputs(
+        output_result,
+        raw,
+        out=args.out,
+        out_dir=args.out_dir,
+        basename=args.basename or basename,
+        pretty=args.pretty,
+        save_fields=args.save_fields,
+        quiet=args.quiet,
+    )
+    if args.print_paths:
+        for item in written:
+            print(item, file=sys.stderr)
+
+
 def format_result(result: Any, raw_body: bytes, *, pretty: bool) -> bytes:
     if isinstance(result, (dict, list)):
         if pretty:
@@ -297,6 +379,16 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--basename", help="Filename label to use with --out-dir.")
     parser.add_argument("--save-fields", help="Directory for extracted markdown/html/links/images/metadata fields.")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON responses.")
+    parser.add_argument(
+        "--unwrap",
+        action="store_true",
+        help="Write only a v2 response's data object when one is present.",
+    )
+    parser.add_argument(
+        "--metrics-only",
+        action="store_true",
+        help="Write compact response metrics without source bodies or extracted fields.",
+    )
     parser.add_argument("--quiet", action="store_true", help="Do not print the response body to stdout.")
     parser.add_argument("--print-paths", action="store_true", help="Print saved output paths to stderr.")
 
@@ -331,6 +423,8 @@ def scrape_body(args: argparse.Namespace) -> dict[str, Any]:
         body["maxAge"] = args.max_age
     if args.headers_file:
         body["headers"] = load_json_file(args.headers_file, label="--headers-file")
+    if getattr(args, "user_agent", None):
+        body.setdefault("headers", {})["User-Agent"] = args.user_agent
     return body
 
 
@@ -338,11 +432,11 @@ def parse_options(args: argparse.Namespace) -> dict[str, Any]:
     options: dict[str, Any] = {"formats": parse_csv(args.formats) or ["markdown"]}
     if args.no_pdf_parse:
         options["parsers"] = []
-    elif args.pdf_mode or args.max_pages or args.fire_pdf_async:
+    elif args.pdf_mode or args.max_pages is not None or args.fire_pdf_async:
         parser: dict[str, Any] = {"type": "pdf"}
         if args.pdf_mode:
             parser["mode"] = args.pdf_mode
-        if args.max_pages:
+        if args.max_pages is not None:
             parser["maxPages"] = args.max_pages
         if args.fire_pdf_async:
             parser["__firePdfAsync"] = True
@@ -358,24 +452,19 @@ def parse_options(args: argparse.Namespace) -> dict[str, Any]:
     return options
 
 
-def run_and_write(args: argparse.Namespace, method: str, path: str, body: Any | None, basename: str) -> None:
+def run_and_write(
+    args: argparse.Namespace,
+    method: str,
+    path: str,
+    body: Any | None,
+    basename: str,
+) -> tuple[int, Any]:
     status, raw = request_json(args.api_url, method, path, body, args.api_key, args.timeout)
     result = decode_json_or_bytes(raw)
-    written = write_outputs(
-        result,
-        raw,
-        out=args.out,
-        out_dir=args.out_dir,
-        basename=args.basename or basename,
-        pretty=args.pretty,
-        save_fields=args.save_fields,
-        quiet=args.quiet,
-    )
-    if args.print_paths:
-        for item in written:
-            print(item, file=sys.stderr)
+    write_response(args, result, raw, status, basename)
     if status >= 400:
         raise SystemExit(1)
+    return status, result
 
 
 def cmd_scrape(args: argparse.Namespace) -> None:
@@ -416,19 +505,7 @@ def cmd_parse(args: argparse.Namespace) -> None:
         args.timeout,
     )
     result = decode_json_or_bytes(raw)
-    written = write_outputs(
-        result,
-        raw,
-        out=args.out,
-        out_dir=args.out_dir,
-        basename=args.basename or Path(args.file).stem,
-        pretty=args.pretty,
-        save_fields=args.save_fields,
-        quiet=args.quiet,
-    )
-    if args.print_paths:
-        for item in written:
-            print(item, file=sys.stderr)
+    write_response(args, result, raw, status, Path(args.file).stem)
     if status >= 400:
         raise SystemExit(1)
 
@@ -441,6 +518,133 @@ def cmd_post(args: argparse.Namespace) -> None:
     run_and_write(args, args.method, args.path, body, args.basename or args.path)
 
 
+def cmd_health(args: argparse.Namespace) -> None:
+    root_status, root_raw = request_json(args.api_url, "GET", "/", None, args.api_key, args.timeout)
+    root = decode_json_or_bytes(root_raw)
+    if root_status >= 400:
+        write_response(args, root, root_raw, root_status, "health")
+        raise SystemExit(1)
+
+    queue_status, queue_raw = request_json(
+        args.api_url,
+        "GET",
+        "/v2/team/queue-status",
+        None,
+        args.api_key,
+        args.timeout,
+    )
+    queue = decode_json_or_bytes(queue_raw)
+    queue_data = queue if isinstance(queue, dict) else {}
+    health = {
+        "success": queue_status < 400 and root_status < 400,
+        "apiHttpStatus": root_status,
+        "queueHttpStatus": queue_status,
+        **{
+            key: queue_data[key]
+            for key in ("jobsInQueue", "activeJobsInQueue", "waitingJobsInQueue", "maxConcurrency")
+            if key in queue_data
+        },
+    }
+    health_raw = json.dumps(health, separators=(",", ":")).encode("utf-8")
+    write_response(args, health, health_raw, root_status, "health")
+    if queue_status >= 400:
+        raise SystemExit(1)
+
+
+def crawl_body(args: argparse.Namespace) -> dict[str, Any]:
+    body: dict[str, Any] = {"url": args.url}
+    for argument, key in (("limit", "limit"), ("max_concurrency", "maxConcurrency")):
+        value = getattr(args, argument, None)
+        if value is not None:
+            body[key] = value
+    for argument, key in (("include_paths", "includePaths"), ("exclude_paths", "excludePaths")):
+        values = parse_csv(getattr(args, argument, None))
+        if values:
+            body[key] = values
+    scrape_options: dict[str, Any] = {}
+    formats = parse_csv(getattr(args, "scrape_formats", None))
+    if formats:
+        scrape_options["formats"] = formats
+    headers_file = getattr(args, "headers_file", None)
+    if headers_file:
+        scrape_options["headers"] = load_json_file(headers_file, label="--headers-file")
+    if getattr(args, "user_agent", None):
+        scrape_options.setdefault("headers", {})["User-Agent"] = args.user_agent
+    if scrape_options:
+        body["scrapeOptions"] = scrape_options
+    return body
+
+
+def get_crawl_id(result: Any) -> str:
+    if not isinstance(result, dict):
+        raise SystemExit("Crawl submit did not return a JSON object with an id.")
+    identifier = result.get("id") or result.get("jobId")
+    if not isinstance(identifier, str) or not identifier:
+        raise SystemExit("Crawl submit did not return an id.")
+    return identifier
+
+
+def poll_crawl(
+    args: argparse.Namespace,
+    crawl_id: str,
+) -> tuple[int, Any, bytes]:
+    deadline = time.monotonic() + args.poll_timeout
+    last_status = "unknown"
+    while True:
+        status, raw = request_json(args.api_url, "GET", f"/v2/crawl/{crawl_id}", None, args.api_key, args.timeout)
+        result = decode_json_or_bytes(raw)
+        if status >= 400:
+            write_response(args, result, raw, status, crawl_id, crawl_id)
+            raise SystemExit(1)
+        if not isinstance(result, dict):
+            write_response(args, result, raw, status, crawl_id, crawl_id)
+            raise SystemExit(f"Crawl {crawl_id} returned a non-JSON status response.")
+        last_status = str(result.get("status", "unknown"))
+        if last_status in {"completed", "failed", "cancelled"}:
+            if last_status in {"failed", "cancelled"}:
+                write_response(args, result, raw, status, crawl_id, crawl_id)
+                raise SystemExit(f"Crawl {crawl_id} ended with status={last_status}.")
+            return status, result, raw
+        if time.monotonic() >= deadline:
+            message = (
+                f"Timed out waiting for crawl {crawl_id}; last status={last_status}. "
+                f"Poll it with: crawl-status {crawl_id}"
+            )
+            timeout_result = {
+                "success": False,
+                "id": crawl_id,
+                "status": last_status,
+                "error": message,
+            }
+            write_response(args, timeout_result, json.dumps(timeout_result).encode("utf-8"), status, crawl_id, crawl_id)
+            raise SystemExit(message)
+        time.sleep(args.poll_interval)
+
+
+def cmd_crawl(args: argparse.Namespace) -> None:
+    status, raw = request_json(args.api_url, "POST", "/v2/crawl", crawl_body(args), args.api_key, args.timeout)
+    result = decode_json_or_bytes(raw)
+    if status >= 400:
+        write_response(args, result, raw, status, args.url)
+        raise SystemExit(1)
+    if not args.wait:
+        write_response(args, result, raw, status, args.url)
+        return
+    crawl_id = get_crawl_id(result)
+    status, completed, raw = poll_crawl(args, crawl_id)
+    write_response(args, completed, raw, status, crawl_id, crawl_id)
+
+
+def cmd_crawl_status(args: argparse.Namespace) -> None:
+    if args.wait:
+        status, result, raw = poll_crawl(args, args.id)
+        write_response(args, result, raw, status, args.id, args.id)
+        return
+    _status, result = run_and_write(args, "GET", f"/v2/crawl/{args.id}", None, args.id)
+    if isinstance(result, dict) and result.get("status") in {"failed", "cancelled"}:
+        raise SystemExit(f"Crawl {args.id} ended with status={result['status']}.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -450,6 +654,10 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    health = subparsers.add_parser("health", help="Check the API root and queue-status endpoint.")
+    add_common(health)
+    health.set_defaults(func=cmd_health)
 
     scrape = subparsers.add_parser("scrape", help="POST /v2/scrape for one URL.")
     add_common(scrape)
@@ -467,6 +675,7 @@ def build_parser() -> argparse.ArgumentParser:
     scrape.add_argument("--proxy")
     scrape.add_argument("--max-age", type=int)
     scrape.add_argument("--headers-file")
+    scrape.add_argument("--user-agent", help="Set a descriptive User-Agent for this scrape.")
     scrape.set_defaults(func=cmd_scrape)
 
     search = subparsers.add_parser("search", help="POST /v2/search.")
@@ -490,12 +699,38 @@ def build_parser() -> argparse.ArgumentParser:
     map_cmd.add_argument("--include-subdomains", action="store_true")
     map_cmd.set_defaults(func=cmd_map)
 
+    crawl = subparsers.add_parser(
+        "crawl",
+        help="POST /v2/crawl; use --wait for bounded HTTP status polling.",
+    )
+    add_common(crawl)
+    crawl.add_argument("url")
+    crawl.add_argument("--limit", type=int)
+    crawl.add_argument("--max-concurrency", type=int)
+    crawl.add_argument("--include-paths", help="Comma-separated crawl path allowlist.")
+    crawl.add_argument("--exclude-paths", help="Comma-separated crawl path blocklist.")
+    crawl.add_argument("--scrape-formats", help="Comma-separated formats for each crawled page.")
+    crawl.add_argument("--headers-file", help="JSON file of page request headers.")
+    crawl.add_argument("--user-agent", help="Set a descriptive User-Agent for each crawled page.")
+    crawl.add_argument("--wait", action="store_true", help="Poll HTTP status until the crawl reaches a terminal state.")
+    crawl.add_argument("--poll-interval", type=float, default=1.0)
+    crawl.add_argument("--poll-timeout", type=float, default=180.0)
+    crawl.set_defaults(func=cmd_crawl)
+
+    crawl_status = subparsers.add_parser("crawl-status", help="GET /v2/crawl/:id.")
+    add_common(crawl_status)
+    crawl_status.add_argument("id")
+    crawl_status.add_argument("--wait", action="store_true", help="Poll until the crawl reaches a terminal state.")
+    crawl_status.add_argument("--poll-interval", type=float, default=1.0)
+    crawl_status.add_argument("--poll-timeout", type=float, default=180.0)
+    crawl_status.set_defaults(func=cmd_crawl_status)
+
     parse = subparsers.add_parser("parse", help="POST /v2/parse multipart upload.")
     add_common(parse)
     parse.add_argument("file")
     parse.add_argument("--formats", default="markdown")
     parse.add_argument("--pdf-mode", choices=["auto", "fast", "ocr"])
-    parse.add_argument("--max-pages", type=int)
+    parse.add_argument("--max-pages", type=positive_int, help="Positive PDF page cap.")
     parse.add_argument("--fire-pdf-async", action="store_true")
     parse.add_argument("--no-pdf-parse", action="store_true")
     parse.add_argument("--only-main-content", type=parse_bool)
