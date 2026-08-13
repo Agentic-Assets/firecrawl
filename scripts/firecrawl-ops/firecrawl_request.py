@@ -20,6 +20,14 @@ from urllib.request import Request, urlopen
 
 DEFAULT_API_URL = "http://localhost:3002"
 MODEL_PROFILES = ["budget", "escalated", "gateway", "gateway-codex", "openai-direct"]
+QUEUE_STATUS_FIELDS = (
+    "jobsInQueue",
+    "activeJobsInQueue",
+    "waitingJobsInQueue",
+    "maxConcurrency",
+)
+CRAWL_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+CRAWL_FAILURE_STATUSES = {"failed", "cancelled"}
 
 
 def parse_csv(value: str | None) -> list[str]:
@@ -330,11 +338,16 @@ def write_response(
 ) -> None:
     metrics_only = getattr(args, "metrics_only", False)
     unwrap = getattr(args, "unwrap", False)
-    output_result = response_metrics(result, status) if metrics_only else result
-    if metrics_only and crawl_id:
-        output_result["id"] = crawl_id
-    if unwrap and not metrics_only:
+
+    if metrics_only:
+        output_result = response_metrics(result, status)
+        if crawl_id:
+            output_result["id"] = crawl_id
+    elif unwrap:
         output_result = response_payload(result)
+    else:
+        output_result = result
+
     written = write_outputs(
         output_result,
         raw,
@@ -535,16 +548,14 @@ def cmd_health(args: argparse.Namespace) -> None:
     )
     queue = decode_json_or_bytes(queue_raw)
     queue_data = queue if isinstance(queue, dict) else {}
-    health = {
+    health: dict[str, Any] = {
         "success": queue_status < 400 and root_status < 400,
         "apiHttpStatus": root_status,
         "queueHttpStatus": queue_status,
-        **{
-            key: queue_data[key]
-            for key in ("jobsInQueue", "activeJobsInQueue", "waitingJobsInQueue", "maxConcurrency")
-            if key in queue_data
-        },
     }
+    for key in QUEUE_STATUS_FIELDS:
+        if key in queue_data:
+            health[key] = queue_data[key]
     health_raw = json.dumps(health, separators=(",", ":")).encode("utf-8")
     write_response(args, health, health_raw, root_status, "health")
     if queue_status >= 400:
@@ -584,6 +595,16 @@ def get_crawl_id(result: Any) -> str:
     return identifier
 
 
+def get_crawl_status(result: Any) -> str:
+    if not isinstance(result, dict):
+        return "unknown"
+    return str(result.get("status", "unknown"))
+
+
+def crawl_terminal_error(crawl_id: str, status: str) -> str:
+    return f"Crawl {crawl_id} ended with status={status}."
+
+
 def poll_crawl(
     args: argparse.Namespace,
     crawl_id: str,
@@ -599,11 +620,11 @@ def poll_crawl(
         if not isinstance(result, dict):
             write_response(args, result, raw, status, crawl_id, crawl_id)
             raise SystemExit(f"Crawl {crawl_id} returned a non-JSON status response.")
-        last_status = str(result.get("status", "unknown"))
-        if last_status in {"completed", "failed", "cancelled"}:
-            if last_status in {"failed", "cancelled"}:
+        last_status = get_crawl_status(result)
+        if last_status in CRAWL_TERMINAL_STATUSES:
+            if last_status in CRAWL_FAILURE_STATUSES:
                 write_response(args, result, raw, status, crawl_id, crawl_id)
-                raise SystemExit(f"Crawl {crawl_id} ended with status={last_status}.")
+                raise SystemExit(crawl_terminal_error(crawl_id, last_status))
             return status, result, raw
         if time.monotonic() >= deadline:
             message = (
@@ -641,8 +662,9 @@ def cmd_crawl_status(args: argparse.Namespace) -> None:
         write_response(args, result, raw, status, args.id, args.id)
         return
     _status, result = run_and_write(args, "GET", f"/v2/crawl/{args.id}", None, args.id)
-    if isinstance(result, dict) and result.get("status") in {"failed", "cancelled"}:
-        raise SystemExit(f"Crawl {args.id} ended with status={result['status']}.")
+    status = get_crawl_status(result)
+    if status in CRAWL_FAILURE_STATUSES:
+        raise SystemExit(crawl_terminal_error(args.id, status))
 
 
 def build_parser() -> argparse.ArgumentParser:

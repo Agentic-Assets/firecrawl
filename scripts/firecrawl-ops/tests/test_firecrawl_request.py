@@ -458,6 +458,9 @@ class CommandBoundaryTests(unittest.TestCase):
             },
         )
         self.assertEqual(helper.get_crawl_id({"id": "crawl-123"}), "crawl-123")
+        self.assertEqual(helper.get_crawl_status({"status": "scraping"}), "scraping")
+        self.assertEqual(helper.get_crawl_status({"status": "failed"}), "failed")
+        self.assertEqual(helper.get_crawl_status({}), "unknown")
         with self.assertRaises(SystemExit):
             helper.get_crawl_id({"success": True})
 
