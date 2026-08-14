@@ -12,14 +12,16 @@ The API's default model path uses OpenAI-compatible settings:
 - `MODEL_NAME`: provider model id
 - `MODEL_EMBEDDING_NAME`: optional embedding model id
 
-Use the helper from the repo root:
+The direct model helper is retired. Agents may request only this dry-run plan:
 
 ```bash
-scripts/firecrawl-ops/set_model_profile.sh budget
-docker compose up -d --force-recreate api
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway
 ```
 
-If `.env` is missing, the helper creates a minimal gitignored file. Add the provider key manually before running AI-backed summary/json/query/extract tasks.
+After a reviewed plan, a human operator may use the attested `--apply` path;
+agent surfaces must never apply it. If `.env` is missing, use the minimal
+human-owned root template in `LOCAL_DEVELOPMENT_GUIDE.md`; do not use
+`apps/api/.env.example` as a Docker Compose contract.
 
 ## Default routing policy
 
@@ -36,12 +38,18 @@ If `.env` is missing, the helper creates a minimal gitignored file. Add the prov
    - Use for harder extraction/reasoning/coding tasks, and all budget-pass failures.
 
 3. **Gateway pass**
-   - `deepseek/deepseek-v4-flash`
+   - `deepseek/deepseek-v4-flash-0731`
    - Profile: `gateway`
    - Base URL: `https://ai-gateway.vercel.sh/v1`
    - Use when the Vercel AI Gateway key is the available provider key.
 
-4. **OpenAI direct**
+4. **Gateway Pro pass**
+   - `deepseek/deepseek-v4-pro-0813`
+   - Profile: `gateway-pro`
+   - Base URL: `https://ai-gateway.vercel.sh/v1`
+   - Use for difficult extraction after the gateway Flash pass.
+
+5. **OpenAI direct**
    - `gpt-5.4-mini`
    - Profile: `openai-direct`
    - Base URL: `https://api.openai.com/v1`

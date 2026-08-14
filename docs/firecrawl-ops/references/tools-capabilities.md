@@ -21,7 +21,7 @@ Verified locally on 2026-08-13 after rebuilding the OrbStack Docker stack and te
 - `PDF_RUST_EXTRACT_ENABLE=true` is the local default through compose; it improves simple text PDFs without credits
 - `maxPages` constrains returned fallback text as well as metadata. Use a public fixture or the parser canary when verifying a page-boundary-sensitive workflow.
 - Figure-heavy, table-heavy, scanned, or multi-column PDFs may still flatten on the default path
-- Stronger local OCR/layout output is available through the fork's Docling-backed Fire PDF adapter: `scripts/firecrawl-ops/local_firepdf_ocr.sh start`, `enable-firecrawl`, then parse with `mode:"ocr"`
+- Stronger local OCR/layout output is available through the fork's guarded Docling-backed Fire PDF adapter. Agents may request an `ocr-adapter` dry-run plan, while only a human operator may execute the attested apply before parsing with `mode:"ocr"`.
 - Upstream page-level PDF markdown is intentionally not exposed by the local helper yet. It requires a Fire PDF `pages:[{page,markdown}]` response, while the local Docling adapter currently returns document-level markdown and QA metadata; requests fail explicitly rather than silently approximating page output.
 - External Fire PDF or RunPod MinerU env can also be used, but those may spend that provider's budget
 
@@ -50,14 +50,20 @@ From another repo or installed user-level skill, use:
 ~/.agents/skills/firecrawl-local-api/scripts/firecrawl_cli.sh <command> ...
 ```
 
-The wrapper runs `npx -y firecrawl-cli@latest --api-url http://localhost:3002` and preserves the caller's current directory, so `parse ./report.pdf` resolves relative to where the agent is working. Verified commands:
+The wrapper reads the checked-in compatibility manifest and normally runs `firecrawl-cli@1.20.0` against `http://localhost:3002`; it preserves the caller's current directory, so `parse ./report.pdf` resolves relative to where the agent is working. Verified commands:
 - `scrape`
 - `parse`
 - `map`
 - `search`
 - `crawl` interactive submit and explicit status polling
 
-Use `FIRECRAWL_CLI_PACKAGE=firecrawl-cli@1.18.0` if future `latest` releases break local behavior.
+`FIRECRAWL_CLI_PACKAGE` accepts an explicit exact semver only. Do not use a tag or range in an agent workflow. The static, body-free compatibility diagnostic reports the normal pins without resolving packages:
+
+```bash
+python3 scripts/firecrawl-ops/firecrawl_compatibility_doctor.py
+```
+
+`--run` is an explicit loopback-only operator check that probes map plus MCP JSONL initialize/tools-list without retaining source bodies. A `--upgrade-probe --acknowledge-human-upgrade-probe` run is visibly HUMAN-ONLY and never updates the normal pins itself.
 
 ## Agent HTTP helper
 
@@ -104,6 +110,29 @@ scripts/firecrawl-ops/pdf_parse_canary.py
 scripts/firecrawl-ops/check_pnpm_docker_config.py
 ```
 
+### Agent capability preflight
+
+Before an agent submits local work, use the read-only preflight:
+
+```bash
+scripts/firecrawl-ops/local_agent_preflight.py --require base_http
+```
+
+It emits one compact versioned JSON document for `base_http`, `async_jobs`,
+`cli`, `mcp`, `ai_formats`, and `pdf_ocr`. It reads static evidence and makes
+only loopback `GET` requests to the API root, queue status, and active-crawl
+status. It never starts a scrape, resolves a package, changes a model profile,
+or prints response bodies, headers, tokens, or `.env` values. A requested
+capability must be `ready`; `degraded`, `unknown`, `stale`, and `unavailable`
+fail closed. Use `--offline` to inspect static/evidence state without HTTP.
+
+Current smoke artifacts without a valid RFC3339 `observed_at` timestamp are
+reported as `unknown`, not fresh. Supply immutable package declarations only
+as evidence (for example, `--cli-package-spec firecrawl-cli@1.18.0`); the
+preflight never resolves them. Until a separately authorized, versioned,
+body-free smoke producer contract exists, even fresh local smoke leaves
+`async_jobs` `degraded`; a nonzero active-crawl count also fails closed.
+
 - `firecrawl_healthcheck.sh --evidence-dir` writes JSON and Markdown evidence with Docker status, API root response, scrape smoke output, image id, and pass/fail state.
 - `local_api_smoke_matrix.py` probes the core local routes and writes JSON/Markdown under `tasks/tmp/local-api-smoke/`.
 - `local_capability_matrix.py` compares `apps/api/src/routes/v2.ts`, this reference doc, and the latest smoke matrix to regenerate `local-capability-matrix.md`.
@@ -112,23 +141,35 @@ scripts/firecrawl-ops/check_pnpm_docker_config.py
 
 ## Local Docling OCR adapter
 
-For scanned/image-only PDFs or harder table/layout PDFs, use the local Fire PDF-compatible adapter:
+For scanned/image-only PDFs or harder table/layout PDFs, agents may request a
+dry-run plan for the local Fire PDF-compatible adapter:
 
 ```bash
-scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
+# Agent-safe planning only. A human performs any attested apply.
+scripts/firecrawl-ops/firecrawl_operator_handoff.py \
+  ocr-adapter --profile research-page-aware
 scripts/firecrawl-ops/local_firepdf_ocr.sh health
 scripts/firecrawl-ops/local_firepdf_ocr.sh doctor
-scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
-docker compose up -d --force-recreate api
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html --pdf-mode ocr --max-pages 10 --pretty
 ```
 
-The adapter listens on `127.0.0.1:31337`, Docling Serve listens on `127.0.0.1:5001`, and the Firecrawl API container calls the adapter through `http://host.docker.internal:31337`. This does not use Firecrawl cloud credits. Earlier local tests had scanned/image PDFs succeed through `ocr` with the `research-page-aware` profile, but agents should benchmark unfamiliar PDFs and trust 422 quality failures or QA reports over blanket success claims. Profiles in `scripts/firecrawl-ops/pdf_ocr_profiles.json` expose common OCR/layout choices: `default`, `research-page-aware`, `tables-accurate`, `tables-fast`, `scanned-english`, `qa-debug`, and `figure-enrichment-lab`. List them with `scripts/firecrawl-ops/local_firepdf_ocr.sh profiles`; apply one with `restart-adapter --profile <name>`.
+The adapter listens on `127.0.0.1:31337`, Docling Serve listens on
+`127.0.0.1:5001`, and the Firecrawl API container calls the adapter through
+`http://host.docker.internal:31337`. This does not use Firecrawl cloud credits.
+Earlier local tests had scanned/image PDFs succeed through `ocr` with the
+`research-page-aware` profile, but agents should benchmark unfamiliar PDFs and
+trust 422 quality failures or QA reports over blanket success claims. Profiles
+in `scripts/firecrawl-ops/pdf_ocr_profiles.json` expose common OCR/layout
+choices. List them with `local_firepdf_ocr.sh profiles`; propose a safe
+non-capture profile through `ocr-adapter`, never through a lifecycle alias.
 
 The local adapter returns explicit failure signals: `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429 when `LOCAL_FIREPDF_MAX_CONCURRENT_OCR` capacity is full, `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504 when Docling times out, and `SCRAPE_PDF_LOW_QUALITY` / HTTP 422 for mostly-empty or publisher-boilerplate OCR output. Successful Firecrawl parses can include `data.metadata.pdfOcr` with total chars, chars per page, empty-page ratio, and boilerplate ratios.
 
-Tune adapter env vars such as `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_MAX_CONCURRENT_OCR` (default 2), `LOCAL_FIREPDF_FAIL_LOW_QUALITY` (default true), `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, and `LOCAL_FIREPDF_DOCLING_TO_FORMATS`; run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the full settings surface, then `restart-adapter` to apply adapter changes. `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT` (default 900) applies when starting or recreating Docling Serve. Explicit env vars override the named profile. Raw Docling JSON capture is available with `--capture-json` or the `qa-debug` profile and writes full-document debug artifacts under `tasks/tmp`.
+`local_firepdf_ocr.sh settings` may display historical tuning information, but
+agent-facing helpers must not export it, apply it, or enable raw JSON capture.
+`qa-debug`, `--capture-json`, and arbitrary output paths are intentionally
+rejected at the guarded public boundary.
 
 Use `fast` for dense born-digital text PDFs when it succeeds; it can preserve more text than OCR and is much faster. Use `ocr` for scanned/image-only/slide-style PDFs. For unfamiliar document families, run the benchmark and read its `Recommended Mode` section.
 

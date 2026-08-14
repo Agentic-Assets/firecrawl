@@ -23,17 +23,18 @@ Small fork-level API changes are acceptable when they only surface local OCR err
 Implemented and smoke-tested on 2026-05-23:
 
 - `scripts/firecrawl-ops/local_firepdf_ocr_service.py` implements the FirePDF-compatible `POST /ocr` adapter and calls Docling Serve's current `/v1/convert/source` `sources` contract. It adds local concurrency backpressure, OCR quality metrics, and optional low-quality rejection for mostly empty or publisher-boilerplate output.
-- `scripts/firecrawl-ops/local_firepdf_ocr.sh` starts Docling Serve and the adapter in OrbStack/Docker. It also provides `doctor`, `smoke`, `settings`, `profiles`, `profile-env`, `restart-adapter`, and `benchmark` convenience commands. The default Docling Serve CPU image is pinned by digest for repeatability; override `LOCAL_FIREPDF_DOCLING_IMAGE` to intentionally test newer releases. New starts set `DOCLING_SERVE_MAX_SYNC_WAIT=900` by default for longer research papers.
+- `scripts/firecrawl-ops/local_firepdf_ocr.sh` now keeps only diagnostics on its public surface. Guarded Docling/adapter lifecycle changes go through `firecrawl_operator_handoff.py`; the fixed image and loopback binding are read back after an approved apply.
 - `scripts/firecrawl-ops/pdf_ocr_profiles.json` defines named OCR profiles for common agent workflows, including `default`, `research-page-aware`, `tables-accurate`, `tables-fast`, `scanned-english`, `qa-debug`, and `figure-enrichment-lab`.
 - `scripts/firecrawl-ops/pdf_ocr_benchmark.py` runs a saved `fast` / `auto` / `ocr` comparison matrix with metadata, adapter health, settings, preflight checks, per-mode/profile metrics, `fields/pages.jsonl`, `qa.json`, `qa.md`, recommended parser mode/profile, and optional `--strict` failure handling.
-- `set_model_profile.sh` preserves existing local OCR routing values when changing LLM profiles.
+- `set_model_profile.sh` is retired; guarded model/OCR transitions are dry-run first and human-attested on apply.
 - Verified: direct adapter `/ocr`, local Firecrawl `/v2/parse` with `mode:"ocr"`, local API healthcheck, CLI wrapper parse smoke, and a two-PDF benchmark matrix.
 
-Useful named-profile and dynamic Docling controls before `local_firepdf_ocr.sh start-adapter` or `start`:
+Current operator-control boundary for profiles and dynamic Docling settings:
 
 - `scripts/firecrawl-ops/local_firepdf_ocr.sh profiles` lists supported profiles.
-- `scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile research-page-aware` applies page-aware academic OCR.
-- `scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile qa-debug --capture-json` enables raw Docling JSON/settings capture under `tasks/tmp`.
+- Agents may request `firecrawl_operator_handoff.py ocr-adapter --profile research-page-aware` as a dry-run only.
+- A human operator may apply a reviewed, exactly attested `ocr-adapter` transition. Agents must never pass `--apply`.
+- `qa-debug`, raw capture, output paths, and arbitrary env/profile overrides are intentionally unavailable through agent-facing helpers.
 - `LOCAL_FIREPDF_TIMEOUT_SECONDS=600` by default; raise it for very large/image-heavy papers
 - `LOCAL_FIREPDF_DOCLING_OCR_PRESET=auto|easyocr|tesseract`
 - `LOCAL_FIREPDF_DOCLING_OCR_LANG=en[,de,...]`
@@ -45,7 +46,7 @@ Useful named-profile and dynamic Docling controls before `local_firepdf_ocr.sh s
 - `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT=900` controls the Docling container's sync wait budget on new starts
 - optional enrichment flags such as `LOCAL_FIREPDF_DOCLING_DO_CHART_EXTRACTION=true` or `LOCAL_FIREPDF_DOCLING_DO_PICTURE_DESCRIPTION=true`
 
-Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to print the current/default settings and copy-pasteable examples. Run `restart-adapter` after changing env vars or profiles. Explicit env vars override the named profile. Direct adapter experiments may include a `docling_options` object in `POST /ocr`; Firecrawl API calls use the process-level adapter profile/env.
+Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to inspect historical/default settings. Do not export them or use a legacy lifecycle alias to apply a change. Firecrawl API calls use only the profile selected through the guarded operator handoff.
 
 ## Local Firecrawl Fit
 
@@ -236,7 +237,7 @@ Added:
 
 Updated:
 
-- `scripts/firecrawl-ops/set_model_profile.sh` — preserve local OCR routing vars unless explicitly reset.
+- `scripts/firecrawl-ops/firecrawl_operator_handoff.py` — dry-run-first model/OCR transition control plane.
 - `.agents/skills/firecrawl-local-api/SKILL.md` — teach agents how to call local PDF OCR through `/v2/parse`, CLI, and helper flags.
 - `.agents/skills/firecrawl-ops/SKILL.md` — teach agents how to start/check/stop the local OCR services and explain limits.
 - `LOCAL_DEVELOPMENT_GUIDE.md` — document the local OCR setup for humans.
@@ -344,14 +345,14 @@ Create:
 scripts/firecrawl-ops/local_firepdf_ocr.sh
 ```
 
-Commands:
+Current public lifecycle contract:
 
 ```bash
-scripts/firecrawl-ops/local_firepdf_ocr.sh start-docling
-scripts/firecrawl-ops/local_firepdf_ocr.sh start-adapter
+# Agent-safe planning only. A human handles any attested apply.
+scripts/firecrawl-ops/firecrawl_operator_handoff.py \
+  ocr-lifecycle --action restart
 scripts/firecrawl-ops/local_firepdf_ocr.sh health
 scripts/firecrawl-ops/local_firepdf_ocr.sh env
-scripts/firecrawl-ops/local_firepdf_ocr.sh stop
 ```
 
 The helper should prefer OrbStack/Docker for Docling Serve. On this Mac, start with the CPU image because it has `linux/arm64` support and does not require CUDA:
@@ -424,25 +425,9 @@ Do not set `FIRE_PDF_API_KEY` unless the local adapter intentionally enforces on
 
 ### 4. Protect OCR env from model profile changes
 
-Review:
-
-```text
-scripts/firecrawl-ops/set_model_profile.sh
-```
-
-The model-profile switcher should not accidentally turn off a deliberately enabled local OCR setup. Adjust it so it either:
-
-- preserves existing `FIRE_PDF_ENABLE`, `FIRE_PDF_PERCENT`, and `FIRE_PDF_BASE_URL` values, or
-- accepts an explicit flag/profile for local OCR.
-
-Preferred behavior:
-
-```bash
-scripts/firecrawl-ops/set_model_profile.sh budget
-# keeps existing local OCR vars unless --reset-pdf-routing is passed
-```
-
-This matters because model profile changes are about Firecrawl's AI-backed extraction model (`OPENAI_BASE_URL`, `MODEL_NAME`, provider key). They should not silently disable local PDF OCR routing.
+The old direct model-profile switcher is retired. A guarded model transition
+changes only its allowlisted model values, while `ocr-routing` is a separate
+reviewed transition; neither can silently disable the other.
 
 ### 5. Add agent-facing CLI guidance
 
@@ -471,11 +456,12 @@ scripts/firecrawl-ops/sync_agent_skills.sh
 
 ### 6. Test the local OCR path
 
-Start local services:
+Request a current lifecycle plan:
 
 ```bash
-scripts/firecrawl-ops/local_firepdf_ocr.sh start-docling
-scripts/firecrawl-ops/local_firepdf_ocr.sh start-adapter
+# Agent-safe planning only. A human handles any attested apply.
+scripts/firecrawl-ops/firecrawl_operator_handoff.py \
+  ocr-lifecycle --action restart
 scripts/firecrawl-ops/local_firepdf_ocr.sh health
 ```
 
@@ -568,7 +554,7 @@ The local OCR setup is ready when:
 - Concurrent OCR overload returns explicit HTTP 429 backpressure, not a generic 500.
 - Low-quality OCR output is either rejected with HTTP 422 or explicitly allowed for diagnostics with `LOCAL_FIREPDF_FAIL_LOW_QUALITY=false`.
 - Skills and docs clearly explain local OCR costs, limits, startup, and model routing boundaries.
-- `set_model_profile.sh` no longer accidentally disables local OCR routing.
+- Separate guarded model and OCR-routing transitions preserve their explicit scope.
 - `scripts/firecrawl-ops/sync_agent_skills.sh` has been run after skill updates.
 
 ## Expected Limits

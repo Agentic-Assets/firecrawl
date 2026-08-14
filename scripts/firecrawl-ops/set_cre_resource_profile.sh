@@ -61,7 +61,7 @@ readonly RESOURCE_KEYS=(
 require_env_file() {
   if [[ ! -f "$ENV_PATH" ]]; then
     echo "Local env file not found: $ENV_PATH" >&2
-    echo "Create it from apps/api/.env.example or run set_model_profile.sh first." >&2
+    echo "Create the minimal root .env template in LOCAL_DEVELOPMENT_GUIDE.md before using this CRE-only resource profile." >&2
     exit 1
   fi
 }
