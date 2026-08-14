@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Unit tests for the local Firecrawl CLI wrapper.
 
 Run from the repo root:
@@ -16,7 +15,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 WRAPPER_PATH = Path(__file__).resolve().parents[1] / "firecrawl_cli.sh"
 
 
@@ -30,7 +28,9 @@ def read_json(path: Path) -> dict:
 
 
 class FirecrawlCliWrapperTests(unittest.TestCase):
-    def make_env(self, tmp: Path, capture_file: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
+    def make_env(
+        self, tmp: Path, capture_file: Path, extra: dict[str, str] | None = None
+    ) -> dict[str, str]:
         bin_dir = tmp / "bin"
         bin_dir.mkdir(exist_ok=True)
         write_executable(
@@ -97,9 +97,18 @@ capture.write_text(json.dumps({
             self.assertEqual(Path(data["cwd"]).resolve(), work.resolve())
             self.assertEqual(
                 data["argv"],
-                ["-y", "firecrawl-cli@latest", "--api-url", "http://localhost:3002", "parse", "./fixture.pdf", "--json"],
+                [
+                    "-y",
+                    "firecrawl-cli@1.20.0",
+                    "--api-url",
+                    "http://localhost:3002",
+                    "parse",
+                    "./fixture.pdf",
+                    "--json",
+                ],
             )
             self.assertEqual(data["env"]["NPM_CONFIG_LOGLEVEL"], "error")
+            self.assertNotIn("@latest", data["argv"])
 
     def test_package_and_api_url_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
@@ -115,7 +124,9 @@ capture.write_text(json.dumps({
                 },
             )
 
-            result = self.run_wrapper(["scrape", "https://example.com"], cwd=tmp, env=env)
+            result = self.run_wrapper(
+                ["scrape", "https://example.com"], cwd=tmp, env=env
+            )
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
@@ -130,7 +141,26 @@ capture.write_text(json.dumps({
                 ],
             )
 
-    def test_help_and_missing_profile_value_do_not_call_npx(self) -> None:
+    def test_latest_override_is_rejected_even_with_stale_human_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            capture = tmp / "capture.json"
+            env = self.make_env(
+                tmp,
+                capture,
+                {
+                    "FIRECRAWL_CLI_PACKAGE": "firecrawl-cli@latest",
+                    "FIRECRAWL_HUMAN_UPGRADE_PROBE": "1",
+                },
+            )
+
+            result = self.run_wrapper(["--version"], cwd=tmp, env=env)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("package_spec", result.stderr)
+            self.assertFalse(capture.exists())
+
+    def test_help_and_removed_mutation_options_do_not_call_npx(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
             capture = tmp / "capture.json"
@@ -141,94 +171,22 @@ capture.write_text(json.dumps({
             self.assertIn("Usage: firecrawl_cli.sh", help_result.stdout)
             self.assertFalse(capture.exists())
 
-            missing_profile = self.run_wrapper(["--firecrawl-model-profile"], cwd=tmp, env=env)
-            self.assertEqual(missing_profile.returncode, 2)
-            self.assertIn("requires a value", missing_profile.stderr)
-            self.assertFalse(capture.exists())
-
-    def test_model_profile_no_recreate_runs_profile_script_without_docker(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_str:
-            tmp = Path(tmp_str)
-            capture = tmp / "capture.json"
-            profile_capture = tmp / "profile.txt"
-            docker_capture = tmp / "docker.txt"
-            fc_root = tmp / "fc"
-            scripts = fc_root / "scripts" / "firecrawl-ops"
-            scripts.mkdir(parents=True)
-            (fc_root / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
-            write_executable(
-                scripts / "set_model_profile.sh",
-                f"#!/usr/bin/env bash\nprintf '%s\\n' \"$1\" > {profile_capture}\n",
-            )
-            write_executable(
-                scripts / "firecrawl_healthcheck.sh",
-                "#!/usr/bin/env bash\nexit 0\n",
-            )
-            env = self.make_env(
-                tmp,
-                capture,
-                {"FC_DIR": str(fc_root), "DOCKER_CAPTURE": str(docker_capture)},
-            )
-
-            result = self.run_wrapper(
-                ["--firecrawl-model-profile", "budget", "--firecrawl-no-recreate-api", "scrape", "https://example.com"],
-                cwd=tmp,
-                env=env,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(profile_capture.read_text(encoding="utf-8").strip(), "budget")
-            self.assertFalse(docker_capture.exists())
-            self.assertIn("running api was not recreated", result.stderr)
-            self.assertTrue(capture.exists())
-
-    def test_model_profile_recreate_runs_docker_and_healthcheck_before_npx(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_str:
-            tmp = Path(tmp_str)
-            capture = tmp / "capture.json"
-            call_log = tmp / "calls.log"
-            fc_root = tmp / "fc"
-            scripts = fc_root / "scripts" / "firecrawl-ops"
-            scripts.mkdir(parents=True)
-            (fc_root / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
-            write_executable(
-                scripts / "set_model_profile.sh",
-                f"#!/usr/bin/env bash\necho profile:$1 >> {call_log}\n",
-            )
-            write_executable(
-                scripts / "firecrawl_healthcheck.sh",
-                f"#!/usr/bin/env bash\necho healthcheck >> {call_log}\n",
-            )
-            bin_dir = tmp / "bin"
-            bin_dir.mkdir()
-            write_executable(
-                bin_dir / "docker",
-                f"#!/usr/bin/env bash\necho docker:$* >> {call_log}\n",
-            )
-            env = self.make_env(tmp, capture, {"FC_DIR": str(fc_root)})
-            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
-
-            result = self.run_wrapper(
+            for args in (
                 [
                     "--firecrawl-model-profile",
-                    "escalated",
-                    "--firecrawl-healthcheck",
-                    "search",
-                    "Firecrawl docs",
+                    "budget",
+                    "scrape",
+                    "https://example.com",
                 ],
-                cwd=tmp,
-                env=env,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            calls = call_log.read_text(encoding="utf-8").splitlines()
-            self.assertEqual(calls[0], "profile:escalated")
-            self.assertEqual(
-                calls[1],
-                f"docker:compose --project-directory {fc_root} up -d --force-recreate api",
-            )
-            self.assertEqual(calls[2], "healthcheck")
-            self.assertEqual(read_json(capture)["argv"][-2:], ["search", "Firecrawl docs"])
+                ["--firecrawl-model-profile=gateway", "scrape", "https://example.com"],
+                ["--firecrawl-no-recreate-api", "scrape", "https://example.com"],
+                ["--firecrawl-healthcheck", "scrape", "https://example.com"],
+            ):
+                with self.subTest(args=args):
+                    result = self.run_wrapper(args, cwd=tmp, env=env)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("operator_handoff", result.stderr)
+                    self.assertFalse(capture.exists())
 
 
 if __name__ == "__main__":

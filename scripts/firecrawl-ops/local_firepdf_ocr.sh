@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  echo "local_firepdf_ocr.sh is an executable read-only diagnostic surface and must not be sourced." >&2
+  return 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${LOCAL_FIREPDF_STATE_DIR:-${TMPDIR:-/tmp}/firecrawl-local-ocr}"
 ADAPTER_PORT="${LOCAL_FIREPDF_PORT:-31337}"
@@ -17,8 +22,6 @@ PROFILE="${LOCAL_FIREPDF_PROFILE:-default}"
 CAPTURE_JSON="${LOCAL_FIREPDF_CAPTURE_DOCLING_JSON:-}"
 CAPTURE_OUTPUT_DIR="${LOCAL_FIREPDF_OUTPUT_DIR:-}"
 REPLACE_ADAPTER=0
-
-mkdir -p "$STATE_DIR"
 
 resolve_fc_dir() {
   if [[ -n "${FC_DIR:-}" ]]; then
@@ -58,11 +61,11 @@ usage() {
 Usage: local_firepdf_ocr.sh <command>
 
 Commands:
-  start-docling      Start Docling Serve in OrbStack/Docker.
-  start-adapter      Build/start the local FirePDF-compatible adapter container on port $ADAPTER_PORT.
-  start              Start Docling Serve and the adapter.
-  restart-adapter    Rebuild/restart only the local adapter, applying current settings env.
-  restart            Stop/start Docling Serve and the adapter.
+  start-docling      Delegate a guarded fixed Docling ensure plan to the operator handoff.
+  start-adapter      Delegate a guarded fixed adapter plan to the operator handoff.
+  start              Delegate a guarded fixed stack restart plan to the operator handoff.
+  restart-adapter    Delegate a guarded fixed adapter restart plan to the operator handoff.
+  restart            Delegate a guarded fixed stack restart plan to the operator handoff.
   health             Check Docling Serve and the adapter.
   doctor             Run a fuller local OCR + Firecrawl readiness check.
                      Add --smoke-pdf <path> to prove Firecrawl API -> adapter -> Docling.
@@ -72,10 +75,10 @@ Commands:
   profile-env <name> Print export commands for a named OCR profile.
   env                Print .env entries needed by Firecrawl.
   settings           Print adapter/Docling tuning env vars.
-  enable-firecrawl   Write local OCR routing entries into repo-root .env.
-  stop-adapter       Stop the local adapter.
-  stop-docling       Stop the Docling Serve container.
-  stop               Stop adapter and Docling Serve.
+  enable-firecrawl   Refuse direct routing mutation; use firecrawl_operator_handoff.py.
+  stop-adapter       Delegate a guarded fixed stack-stop plan to the operator handoff.
+  stop-docling       Delegate a guarded fixed stack-stop plan to the operator handoff.
+  stop               Delegate a guarded fixed stack-stop plan to the operator handoff.
   logs               Tail adapter and Docling logs.
   status             Show process/container status.
 
@@ -94,12 +97,9 @@ Environment:
   LOCAL_FIREPDF_DOCLING_TABLE_MODE=accurate|fast
   LOCAL_FIREPDF_DOCLING_TO_FORMATS=md,json,html
 
-Common flags after commands that start/restart the adapter:
-  --profile <name>       Use a named profile from pdf_ocr_profiles.json.
-  --capture-json         Save raw Docling JSON/settings artifacts.
-  --no-capture-json      Disable raw Docling JSON capture for this run.
-  --output-dir <path>    Host directory for raw Docling JSON artifacts.
-  --replace              For start-adapter/start, replace an already-running adapter.
+Lifecycle aliases accept only firecrawl_operator_handoff.py options. They are
+dry-run by default; direct profile, capture, output, image, port, and replace
+flags are rejected. Use the explicit handoff operation for any guarded apply.
 EOF
 }
 
@@ -451,34 +451,17 @@ LOCAL_FIREPDF_DOCLING_LAYOUT_PRESET=${LOCAL_FIREPDF_DOCLING_LAYOUT_PRESET:-}
 EOF
 }
 
-set_kv() {
-  local env_path="$1"
-  local key="$2"
-  local val="$3"
-  if grep -q "^${key}=" "$env_path"; then
-    sed -i '' "s|^${key}=.*|${key}=${val}|" "$env_path"
-  else
-    printf "\n%s=%s\n" "$key" "$val" >> "$env_path"
-  fi
+enable_firecrawl() {
+  echo "Direct OCR routing mutation is disabled." >&2
+  echo "Use firecrawl_operator_handoff.py ocr-routing --mode local for a dry-run plan," >&2
+  echo "then an explicitly attested --apply transition after the queue is idle." >&2
+  exit 2
 }
 
-enable_firecrawl() {
-  local fc_dir env_path
-  fc_dir="$(resolve_fc_dir)"
-  env_path="${ENV_PATH:-$fc_dir/.env}"
-  if [[ ! -f "$env_path" ]]; then
-    "$SCRIPT_DIR/set_model_profile.sh" budget >/dev/null
-  fi
-  set_kv "$env_path" FIRE_PDF_ENABLE true
-  set_kv "$env_path" FIRE_PDF_PERCENT 100
-  set_kv "$env_path" FIRE_PDF_BASE_URL "http://host.docker.internal:${ADAPTER_PORT}"
-  set_kv "$env_path" FIRE_PDF_API_KEY ""
-  set_kv "$env_path" PDF_RUST_EXTRACT_ENABLE true
-  set_kv "$env_path" MINERU_PERCENT 0
-  set_kv "$env_path" RUNPOD_MU_API_KEY ""
-  set_kv "$env_path" RUNPOD_MU_POD_ID ""
-  echo "Enabled local OCR routing in $env_path"
-  echo "Next: cd \"$fc_dir\" && docker compose up -d --force-recreate api"
+refuse_mutable_operation() {
+  echo "Direct OCR lifecycle, profile, capture, and routing mutation is disabled." >&2
+  echo "Use firecrawl_operator_handoff.py for a dry-run plan, then an explicitly attested --apply transition." >&2
+  exit 2
 }
 
 health() {
@@ -582,32 +565,28 @@ benchmark() {
 case "${1:-}" in
   start-docling)
     shift || true
-    start_docling
+    exec python3 "$SCRIPT_DIR/firecrawl_operator_handoff.py" "$@" \
+      ocr-lifecycle --action ensure
     ;;
   start-adapter)
     shift || true
-    parse_adapter_flags "$@"
-    start_adapter
+    exec python3 "$SCRIPT_DIR/firecrawl_operator_handoff.py" "$@" \
+      ocr-adapter --profile default
     ;;
   start)
     shift || true
-    parse_adapter_flags "$@"
-    start_docling
-    start_adapter
+    exec python3 "$SCRIPT_DIR/firecrawl_operator_handoff.py" "$@" \
+      ocr-lifecycle --action restart
     ;;
   restart-adapter)
     shift || true
-    parse_adapter_flags "$@"
-    stop_adapter
-    start_adapter
+    exec python3 "$SCRIPT_DIR/firecrawl_operator_handoff.py" "$@" \
+      ocr-adapter --profile default
     ;;
   restart)
     shift || true
-    parse_adapter_flags "$@"
-    stop_adapter
-    stop_docling
-    start_docling
-    start_adapter
+    exec python3 "$SCRIPT_DIR/firecrawl_operator_handoff.py" "$@" \
+      ocr-lifecycle --action restart
     ;;
   health)
     health
@@ -641,14 +620,19 @@ case "${1:-}" in
     enable_firecrawl
     ;;
   stop-adapter)
-    stop_adapter
+    shift || true
+    exec python3 "$SCRIPT_DIR/firecrawl_operator_handoff.py" "$@" \
+      ocr-lifecycle --action stop
     ;;
   stop-docling)
-    stop_docling
+    shift || true
+    exec python3 "$SCRIPT_DIR/firecrawl_operator_handoff.py" "$@" \
+      ocr-lifecycle --action stop
     ;;
   stop)
-    stop_adapter
-    stop_docling
+    shift || true
+    exec python3 "$SCRIPT_DIR/firecrawl_operator_handoff.py" "$@" \
+      ocr-lifecycle --action stop
     ;;
   logs)
     echo "== adapter logs =="

@@ -97,7 +97,7 @@ Current profiles:
 | `tables-accurate` | Finance/academic papers with important tables | Accurate table mode, table cell matching on, JSON capture recommended |
 | `tables-fast` | Quicker table/layout pass for long papers | `table_mode=fast`, page breaks on, lower max pages during benchmark |
 | `scanned-english` | Scanned/image-only English PDFs | OCR preset/language explicit, force OCR on, page breaks on |
-| `qa-debug` | Investigation mode | Page breaks on, raw Docling JSON capture on, optional image placeholders/references |
+| `qa-debug` | Human-only investigation reference | Raw capture is intentionally unavailable through agent-facing helpers |
 | `figure-enrichment-lab` | Experiment for charts/figures | Chart extraction and picture description enabled only for benchmarks |
 
 Merge order:
@@ -168,13 +168,12 @@ LOCAL_FIREPDF_CAPTURE_DOCLING_JSON=false
 LOCAL_FIREPDF_OUTPUT_DIR=tasks/tmp/firecrawl-docling-debug
 ```
 
-Wrapper commands:
+Public operator-control contract:
 
-- `local_firepdf_ocr.sh profiles` lists profiles.
-- `local_firepdf_ocr.sh profile-env <profile>` prints export commands.
-- `local_firepdf_ocr.sh start --profile research-page-aware` starts the stack with a profile.
-- `local_firepdf_ocr.sh restart-adapter --profile qa-debug --capture-json` enables debug capture.
-- The chosen output directory is mounted into the adapter container when capture is enabled.
+- `local_firepdf_ocr.sh profiles` and `settings` are diagnostic only.
+- Agents may request `firecrawl_operator_handoff.py ocr-adapter --profile research-page-aware` as a dry-run plan.
+- A human operator may make a matching attested apply; agents must never pass `--apply`.
+- `qa-debug`, capture, output, and arbitrary profile/env overrides are intentionally rejected at the public boundary.
 
 Saved raw files should include enough context to connect them back to benchmark cases:
 
@@ -315,10 +314,12 @@ python3 -m py_compile \
 bash -n scripts/firecrawl-ops/local_firepdf_ocr.sh
 ```
 
-Runtime checks:
+Current lifecycle planning check:
 
 ```bash
-scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
+# Agent-safe planning only. A human handles any attested apply.
+scripts/firecrawl-ops/firecrawl_operator_handoff.py \
+  ocr-adapter --profile research-page-aware
 scripts/firecrawl-ops/local_firepdf_ocr.sh health
 scripts/firecrawl-ops/local_firepdf_ocr.sh smoke apps/test-site/public/example.pdf
 ```
@@ -329,7 +330,7 @@ Benchmark checks:
 scripts/firecrawl-ops/pdf_ocr_benchmark.py \
   apps/test-site/public/example.pdf \
   --modes fast,auto,ocr \
-  --profiles default,research-page-aware,qa-debug \
+  --profiles default,research-page-aware,tables-accurate \
   --max-pages 3 \
   --strict
 ```

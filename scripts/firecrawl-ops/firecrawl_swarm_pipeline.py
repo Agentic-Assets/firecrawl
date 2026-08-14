@@ -24,10 +24,8 @@ import argparse
 import json
 import os
 import re
-import subprocess
-import time
 import uuid
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -48,23 +46,6 @@ MODEL_BY_PROFILE = {
     "budget": "deepseek/deepseek-v4-flash",
     "escalated": "deepseek/deepseek-v4-pro",
 }
-
-
-def resolve_firecrawl_dir(value: str | None = None) -> Path:
-    candidates = [
-        value,
-        os.getenv("FC_DIR"),
-        str(Path.cwd()),
-        str(Path.home() / "Github" / "agentic-assets" / "firecrawl"),
-        str(Path.home() / "Documents" / "GitHub" / "agentic-assets" / "firecrawl"),
-    ]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        path = Path(candidate).expanduser()
-        if (path / "docker-compose.yaml").exists() and (path / "scripts" / "firecrawl-ops").is_dir():
-            return path
-    raise SystemExit("Could not find the Firecrawl repo. Pass --firecrawl-dir or set FC_DIR.")
 
 
 @dataclass
@@ -132,16 +113,9 @@ def confidence_score(markdown: str, min_len: int) -> float:
     return 0.4
 
 
-def run_profile_switch(profile: str, firecrawl_dir: Path) -> None:
-    script = Path.home() / ".agents" / "skills" / "firecrawl-ops" / "scripts" / "set_model_profile.sh"
-    if not script.exists():
-        script = firecrawl_dir / "scripts" / "firecrawl-ops" / "set_model_profile.sh"
-    subprocess.run([str(script), profile], check=True)
-    subprocess.run(["docker", "compose", "down"], cwd=str(firecrawl_dir), check=True)
-    subprocess.run(["docker", "compose", "up", "-d"], cwd=str(firecrawl_dir), check=True)
-
-
-def post_json(url: str, payload: Any, timeout: int = 180, headers: dict[str, str] | None = None) -> Any:
+def post_json(
+    url: str, payload: Any, timeout: int = 180, headers: dict[str, str] | None = None
+) -> Any:
     body = json.dumps(payload).encode()
     req = Request(
         url,
@@ -191,13 +165,17 @@ def supabase_post(url: str, key: str, table: str, payload: list[dict]) -> None:
         "Prefer": "return=minimal",
     }
     try:
-        post_json(f"{url.rstrip('/')}/rest/v1/{table}", payload, timeout=30, headers=headers)
+        post_json(
+            f"{url.rstrip('/')}/rest/v1/{table}", payload, timeout=30, headers=headers
+        )
     except HTTPError as e:
         body = e.read().decode(errors="replace")
         raise RuntimeError(f"HTTP {e.code}: {body}") from e
 
 
-def maybe_write_supabase(run_id: str, report: dict[str, Any]) -> tuple[bool, str | None]:
+def maybe_write_supabase(
+    run_id: str, report: dict[str, Any]
+) -> tuple[bool, str | None]:
     sb_url = os.getenv("SWARM_SUPABASE_URL")
     sb_key = os.getenv("SWARM_SUPABASE_KEY")
     if not sb_url or not sb_key:
@@ -239,7 +217,14 @@ def maybe_write_supabase(run_id: str, report: dict[str, Any]) -> tuple[bool, str
             supabase_post(sb_url, sb_key, items_table, item_rows[i : i + chunk])
 
         return True, None
-    except Exception as e:
+    except (
+        HTTPError,
+        URLError,
+        OSError,
+        ValueError,
+        TypeError,
+        json.JSONDecodeError,
+    ) as e:
         return False, str(e)
 
 
@@ -250,10 +235,16 @@ def main() -> None:
     ap.add_argument("--out", default="swarm_pipeline_report.json")
     ap.add_argument("--min-len", type=int, default=1200)
     ap.add_argument("--wide-retry-wait-ms", type=int, default=1500)
-    ap.add_argument("--restart-between-stages", action="store_true")
-    ap.add_argument("--firecrawl-dir", default=None)
+    ap.add_argument(
+        "--restart-between-stages",
+        action="store_true",
+        help="Disabled: profile changes must use firecrawl_operator_handoff.py outside this pipeline.",
+    )
     args = ap.parse_args()
-    firecrawl_dir = resolve_firecrawl_dir(args.firecrawl_dir) if args.restart_between_stages else None
+    if args.restart_between_stages:
+        ap.error(
+            "--restart-between-stages is disabled; use firecrawl_operator_handoff.py before a new run instead."
+        )
 
     urls = load_urls(Path(args.input))
     run_id = str(uuid.uuid4())
@@ -269,13 +260,9 @@ def main() -> None:
         only_main_content: bool | None = None,
         wait_for: int | None = None,
     ) -> list[ItemResult]:
-        effective_profile = profile
-        if args.restart_between_stages:
-            assert firecrawl_dir is not None
-            run_profile_switch(profile, firecrawl_dir)
-            time.sleep(2)
-        elif profile != "budget":
-            effective_profile = "budget"
+        # This legacy/example pipeline only does plain markdown scrapes. It
+        # never changes the shared local profile or restarts Docker.
+        effective_profile = "budget"
 
         out: list[ItemResult] = []
         for u in target_urls:
@@ -307,7 +294,7 @@ def main() -> None:
                         "timestamp": now_iso(),
                         "endpoint": "/scrape",
                         "requested_model_profile": profile,
-                        "model_switch_performed": args.restart_between_stages,
+                        "model_switch_performed": False,
                         "formats": formats or ["markdown"],
                         "onlyMainContent": only_main_content,
                         "waitFor": wait_for,
@@ -320,11 +307,12 @@ def main() -> None:
     s1 = stage_run("probe_budget", "budget", urls)
     all_items.extend(s1)
 
-    escalated_batch = sorted({x.url for x in s1 if x.quality in {"low_content", "error", "blocked"}})
+    escalated_batch = sorted(
+        {x.url for x in s1 if x.quality in {"low_content", "error", "blocked"}}
+    )
 
-    # Stage 2: retry weak pages with a broader scrape payload. The model only
-    # changes when --restart-between-stages is set because plain markdown scrape
-    # does not invoke the LLM.
+    # Stage 2 retries weak pages with broader plain scrape input. Profile
+    # changes are deliberately outside this pipeline.
     s2: list[ItemResult] = []
     if escalated_batch:
         s2 = stage_run(
@@ -349,9 +337,11 @@ def main() -> None:
         "final_low_content": sum(1 for x in final_items if x.quality == "low_content"),
         "final_blocked": sum(1 for x in final_items if x.quality == "blocked"),
         "final_error": sum(1 for x in final_items if x.quality == "error"),
-        "avg_confidence": round(sum(x.confidence for x in final_items) / max(len(final_items), 1), 4),
+        "avg_confidence": round(
+            sum(x.confidence for x in final_items) / max(len(final_items), 1), 4
+        ),
         "wide_retries": len(escalated_batch),
-        "deepseek_pro_escalations": len(escalated_batch) if args.restart_between_stages else 0,
+        "deepseek_pro_escalations": 0,
     }
 
     report = {
@@ -361,8 +351,8 @@ def main() -> None:
             "api": args.api,
             "min_len": args.min_len,
             "wide_retry_wait_ms": args.wide_retry_wait_ms,
-            "restart_between_stages": args.restart_between_stages,
-            "firecrawl_dir": str(firecrawl_dir) if firecrawl_dir else None,
+            "restart_between_stages": False,
+            "profile_switch": "disabled_operator_handoff_required",
             "profiles": MODEL_BY_PROFILE,
         },
         "summary": summary,

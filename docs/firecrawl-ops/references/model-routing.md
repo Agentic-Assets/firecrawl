@@ -20,7 +20,10 @@ scripts/firecrawl-ops/set_model_profile.sh
 docker compose up -d --force-recreate api
 ```
 
-If `.env` is missing, the helper creates a minimal gitignored file. Add the provider key manually before running AI-backed summary/json/query/extract tasks.
+After a reviewed plan, a human operator may use the attested `--apply` path;
+agent surfaces must never apply it. If `.env` is missing, use the minimal
+human-owned root template in `LOCAL_DEVELOPMENT_GUIDE.md`; do not use
+`apps/api/.env.example` as a Docker Compose contract.
 
 ## Default routing policy
 
@@ -48,9 +51,18 @@ If `.env` is missing, the helper creates a minimal gitignored file. Add the prov
 4. **Gateway Pro operator profile**
    - `deepseek/deepseek-v4-pro-0813`
    - Profile: `gateway-pro`
+3. **Gateway pass**
+   - `deepseek/deepseek-v4-flash-0731`
+   - Profile: `gateway`
    - Base URL: `https://ai-gateway.vercel.sh/v1`
    - Use only for an explicit, authorized stronger-model window. The profile
      has no automatic structured-output fallback of its own.
+
+4. **Gateway Pro pass**
+   - `deepseek/deepseek-v4-pro-0813`
+   - Profile: `gateway-pro`
+   - Base URL: `https://ai-gateway.vercel.sh/v1`
+   - Use for difficult extraction after the gateway Flash pass.
 
 5. **OpenAI direct**
    - `gpt-5.4-mini`

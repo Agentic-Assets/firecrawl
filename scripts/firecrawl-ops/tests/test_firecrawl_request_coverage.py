@@ -76,7 +76,7 @@ class FirecrawlRequestParserTests(unittest.TestCase):
             with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 parser.parse_args(argv)
 
-    def test_main_dispatches_after_profile_application(self) -> None:
+    def test_main_dispatches_without_a_profile_mutation_hook(self) -> None:
         calls: list[str] = []
 
         def command(args: SimpleNamespace) -> None:
@@ -88,9 +88,8 @@ class FirecrawlRequestParserTests(unittest.TestCase):
             def parse_args(self) -> SimpleNamespace:
                 return args
 
-        with patch.object(HELPER, "build_parser", return_value=Parser()), patch.object(HELPER, "apply_model_profile") as apply:
+        with patch.object(HELPER, "build_parser", return_value=Parser()):
             self.assertEqual(HELPER.main(), 0)
-        apply.assert_called_once_with(args)
         self.assertEqual(calls, ["health"])
 
 
@@ -174,20 +173,14 @@ class FirecrawlRequestCommandTests(unittest.TestCase):
         values.update(overrides)
         return SimpleNamespace(**values)
 
-    def test_apply_model_profile_supports_noop_and_no_recreate(self) -> None:
-        HELPER.apply_model_profile(SimpleNamespace(model_profile=None))
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            (root / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
-            scripts = root / "scripts" / "firecrawl-ops"
-            scripts.mkdir(parents=True)
-            (scripts / "set_model_profile.sh").write_text("", encoding="utf-8")
-            args = SimpleNamespace(model_profile="gateway", firecrawl_dir=str(root), no_recreate_api=True, healthcheck=False)
-            stderr = io.StringIO()
-            with patch.object(HELPER.subprocess, "run") as run, contextlib.redirect_stderr(stderr):
-                HELPER.apply_model_profile(args)
-        run.assert_called_once()
-        self.assertIn("not recreated", stderr.getvalue())
+    def test_parser_rejects_removed_profile_and_docker_mutation_flags(self) -> None:
+        parser = HELPER.build_parser()
+        for flag in ("--model-profile", "--firecrawl-dir", "--no-recreate-api", "--healthcheck"):
+            argv = ["scrape", "https://example.com", flag]
+            if flag in {"--model-profile", "--firecrawl-dir"}:
+                argv.append("gateway")
+            with self.subTest(flag=flag), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args(argv)
 
     def test_headers_file_array_exits_actionably_for_scrape_and_crawl_with_user_agent(self) -> None:
         parser = HELPER.build_parser()

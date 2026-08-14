@@ -71,7 +71,7 @@ scripts/firecrawl-ops/
   firecrawl_cli.sh             Firecrawl CLI pinned to local API
   firecrawl_request.py         Stdlib HTTP helper for saved artifacts and parse options
   firecrawl_mcp.sh             MCP wrapper pinned to local API
-  set_model_profile.sh         Writes model profile values into root .env
+  set_model_profile.sh         Retired direct writer; use operator handoff
   sync_agent_skills.sh         Copies repo skills into user-level skill folders
   sync_upstream_main.sh        Safe upstream merge helper on a branch
   install_git_hooks.sh         Installs advisory git hooks
@@ -265,31 +265,29 @@ scripts/firecrawl-ops/firecrawl_request.py crawl https://example.com \
 
 ## Model Profiles
 
-Switch model routing with:
+`set_model_profile.sh` and wrapper profile flags are retired. Agents may only
+request a dry-run plan and must never pass `--apply`:
 
 ```bash
-scripts/firecrawl-ops/set_model_profile.sh budget
-scripts/firecrawl-ops/set_model_profile.sh escalated
-scripts/firecrawl-ops/set_model_profile.sh gateway
-scripts/firecrawl-ops/set_model_profile.sh gateway-pro
-scripts/firecrawl-ops/set_model_profile.sh gateway-codex
-scripts/firecrawl-ops/set_model_profile.sh openai-direct
-docker compose up -d --force-recreate api
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway
 ```
 
-The script writes local `.env` values. Add provider keys manually and never
-commit them.
+After the dry-run is reviewed, a human operator may apply the matching
+attested transition. The gateway profile remains
+`deepseek/deepseek-v4-flash-0731`; `gateway-pro` remains
+`deepseek/deepseek-v4-pro-0813`.
 
 ## PDF OCR
 
 Use the local Docling adapter for scanned, image-only, slide-style, or
-layout-heavy PDFs:
+layout-heavy PDFs only through a guarded plan:
 
 ```bash
-scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
+# Agent-safe planning only; a human handles any attested apply.
+scripts/firecrawl-ops/firecrawl_operator_handoff.py \
+  ocr-adapter --profile research-page-aware
 scripts/firecrawl-ops/local_firepdf_ocr.sh health
 scripts/firecrawl-ops/local_firepdf_ocr.sh doctor --smoke-pdf ./report.pdf
-scripts/firecrawl-ops/local_firepdf_ocr.sh stop
 ```
 
 Use `fast` for born-digital text PDFs first, `ocr` for scanned or image-only

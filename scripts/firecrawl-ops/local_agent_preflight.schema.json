@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agenticassets.ai/schemas/local-agent-preflight-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "observed_at", "max_evidence_age_seconds", "evidence_digest", "capabilities", "host_observations", "declared_package_specs"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "max_evidence_age_seconds": {"type": "integer", "minimum": 0},
+    "evidence_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_http", "async_jobs", "cli", "mcp", "ai_formats", "pdf_ocr"],
+      "properties": {
+        "base_http": {"$ref": "#/$defs/capability"},
+        "async_jobs": {"$ref": "#/$defs/capability"},
+        "cli": {"$ref": "#/$defs/capability"},
+        "mcp": {"$ref": "#/$defs/capability"},
+        "ai_formats": {"$ref": "#/$defs/capability"},
+        "pdf_ocr": {"$ref": "#/$defs/capability"}
+      }
+    },
+    "host_observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["api_root", "queue_status", "crawl_active"],
+      "properties": {
+        "api_root": {"$ref": "#/$defs/host_observation"},
+        "queue_status": {"$ref": "#/$defs/host_observation"},
+        "crawl_active": {"$ref": "#/$defs/host_observation"}
+      }
+    },
+    "declared_package_specs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cli": {"type": "string", "pattern": "^firecrawl-cli@\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?$"},
+        "mcp": {"type": "string", "pattern": "^firecrawl-mcp@\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?$"}
+      }
+    }
+  },
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "evidence_kind", "checked_at", "route_class", "reason_code", "smoke_evidence_state", "optional_service_state", "model_capability_state"],
+      "properties": {
+        "state": {"type": "string", "enum": ["ready", "degraded", "unavailable", "stale", "unknown"]},
+        "evidence_kind": {"type": "string", "enum": ["static_route", "host_get", "smoke", "smoke_and_host_get", "declared_package_spec", "redacted_env"]},
+        "checked_at": {"type": "string", "format": "date-time"},
+        "route_class": {"type": "array", "items": {"type": "string"}},
+        "reason_code": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+        "smoke_evidence_state": {"type": "string", "enum": ["fresh", "stale", "unknown", "not_applicable"]},
+        "optional_service_state": {"type": "string", "enum": ["configured", "unconfigured", "unknown", "not_applicable"]},
+        "model_capability_state": {"type": "string", "enum": ["configured", "unconfigured", "unknown", "not_applicable"]}
+      }
+    },
+    "host_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checked_at", "result", "http_status", "safe_fields"],
+      "properties": {
+        "checked_at": {"type": "string", "format": "date-time"},
+        "result": {"type": "string", "enum": ["success", "http_error", "unreachable", "invalid_response", "not_checked"]},
+        "http_status": {"type": ["integer", "null"]},
+        "safe_fields": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "firecrawl_identity": {"type": "boolean"},
+            "jobs_in_queue": {"type": "integer", "minimum": 0},
+            "active_jobs_in_queue": {"type": "integer", "minimum": 0},
+            "waiting_jobs_in_queue": {"type": "integer", "minimum": 0},
+            "max_concurrency": {"type": "integer", "minimum": 0},
+            "active_crawl_count": {"type": "integer", "minimum": 0}
+          }
+        }
+      }
+    }
+  }
+}

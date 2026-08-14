@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Unit and opt-in smoke tests for the local Firecrawl MCP wrapper.
 
 Run wrapper unit tests from the repo root:
@@ -22,7 +21,6 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-
 WRAPPER_PATH = Path(__file__).resolve().parents[1] / "firecrawl_mcp.sh"
 
 
@@ -36,7 +34,9 @@ def read_json(path: Path) -> dict:
 
 
 class FirecrawlMcpWrapperTests(unittest.TestCase):
-    def make_env(self, tmp: Path, capture_file: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
+    def make_env(
+        self, tmp: Path, capture_file: Path, extra: dict[str, str] | None = None
+    ) -> dict[str, str]:
         bin_dir = tmp / "bin"
         bin_dir.mkdir(exist_ok=True)
         write_executable(
@@ -57,6 +57,7 @@ capture.write_text(json.dumps({
         "TEST_API_KEY": os.environ.get("TEST_API_KEY"),
         "API_URL": os.environ.get("API_URL"),
         "FIRECRAWL_MCP_PACKAGE": os.environ.get("FIRECRAWL_MCP_PACKAGE"),
+        "NPM_CONFIG_LOGLEVEL": os.environ.get("NPM_CONFIG_LOGLEVEL"),
     },
 }, indent=2))
 """,
@@ -68,7 +69,9 @@ capture.write_text(json.dumps({
             env.update(extra)
         return env
 
-    def run_wrapper(self, *, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    def run_wrapper(
+        self, *, cwd: Path, env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["bash", str(WRAPPER_PATH)],
             cwd=cwd,
@@ -88,9 +91,11 @@ capture.write_text(json.dumps({
 
             self.assertEqual(result.returncode, 0, result.stderr)
             data = read_json(capture)
-            self.assertEqual(data["argv"], ["-y", "firecrawl-mcp@latest"])
+            self.assertEqual(data["argv"], ["-y", "firecrawl-mcp@3.24.0"])
             self.assertEqual(data["env"]["FIRECRAWL_API_URL"], "http://localhost:3002")
             self.assertEqual(data["env"]["FIRECRAWL_API_KEY"], "local-dev")
+            self.assertEqual(data["env"]["NPM_CONFIG_LOGLEVEL"], "error")
+            self.assertNotIn("@latest", data["argv"])
 
     def test_mcp_wrapper_honors_api_url_package_and_key_precedence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
@@ -113,7 +118,9 @@ capture.write_text(json.dumps({
             self.assertEqual(result.returncode, 0, result.stderr)
             data = read_json(capture)
             self.assertEqual(data["argv"], ["-y", "firecrawl-mcp@1.0.0"])
-            self.assertEqual(data["env"]["FIRECRAWL_API_URL"], "http://firecrawl-api-env:3002")
+            self.assertEqual(
+                data["env"]["FIRECRAWL_API_URL"], "http://firecrawl-api-env:3002"
+            )
             self.assertEqual(data["env"]["FIRECRAWL_API_KEY"], "firecrawl-key")
 
     def test_mcp_wrapper_uses_test_api_key_when_firecrawl_key_is_absent(self) -> None:
@@ -128,12 +135,45 @@ capture.write_text(json.dumps({
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(read_json(capture)["env"]["FIRECRAWL_API_KEY"], "test-key")
 
+    def test_latest_override_is_rejected_even_with_stale_human_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            capture = tmp / "capture.json"
+            env = self.make_env(
+                tmp,
+                capture,
+                {
+                    "FIRECRAWL_MCP_PACKAGE": "firecrawl-mcp@latest",
+                    "FIRECRAWL_HUMAN_UPGRADE_PROBE": "1",
+                },
+            )
+
+            result = self.run_wrapper(cwd=tmp, env=env)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("package_spec", result.stderr)
+            self.assertFalse(capture.exists())
+
+    def test_mcp_wrapper_has_no_model_or_docker_mutation_surface(self) -> None:
+        source = WRAPPER_PATH.read_text(encoding="utf-8")
+        for forbidden in (
+            "set_model_profile.sh",
+            "docker compose",
+            "--model-profile",
+            "--firecrawl-model-profile",
+            "--healthcheck",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
+
 
 def mcp_frame(payload: dict[str, Any]) -> bytes:
     return (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
 
 
-def read_mcp_message(proc: subprocess.Popen[bytes], timeout: float = 15.0) -> dict[str, Any]:
+def read_mcp_message(
+    proc: subprocess.Popen[bytes], timeout: float = 15.0
+) -> dict[str, Any]:
     import select
     import time
 
@@ -143,7 +183,9 @@ def read_mcp_message(proc: subprocess.Popen[bytes], timeout: float = 15.0) -> di
         remaining = deadline - time.time()
         if remaining <= 0:
             raise TimeoutError("Timed out waiting for MCP JSONL response")
-        ready, _, _ = select.select([proc.stdout.fileno()], [], [], min(remaining, 0.25))
+        ready, _, _ = select.select(
+            [proc.stdout.fileno()], [], [], min(remaining, 0.25)
+        )
         if not ready:
             continue
         line = proc.stdout.readline()
@@ -154,7 +196,9 @@ def read_mcp_message(proc: subprocess.Popen[bytes], timeout: float = 15.0) -> di
     return json.loads(line.decode("utf-8"))
 
 
-@unittest.skipUnless(os.getenv("FIRECRAWL_RUN_MCP_SMOKE") == "1", "set FIRECRAWL_RUN_MCP_SMOKE=1 to run")
+@unittest.skipUnless(
+    os.getenv("FIRECRAWL_RUN_MCP_SMOKE") == "1", "set FIRECRAWL_RUN_MCP_SMOKE=1 to run"
+)
 class FirecrawlMcpOptInSmokeTests(unittest.TestCase):
     def test_mcp_initialize_and_tools_list(self) -> None:
         if shutil.which("npx") is None:
@@ -178,7 +222,10 @@ class FirecrawlMcpOptInSmokeTests(unittest.TestCase):
                         "params": {
                             "protocolVersion": "2024-11-05",
                             "capabilities": {},
-                            "clientInfo": {"name": "firecrawl-local-smoke", "version": "0.1.0"},
+                            "clientInfo": {
+                                "name": "firecrawl-local-smoke",
+                                "version": "0.1.0",
+                            },
                         },
                     }
                 )
@@ -188,14 +235,32 @@ class FirecrawlMcpOptInSmokeTests(unittest.TestCase):
             self.assertEqual(initialize.get("id"), 1)
             self.assertIn("capabilities", initialize.get("result", {}))
 
-            proc.stdin.write(mcp_frame({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}))
-            proc.stdin.write(mcp_frame({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}))
+            proc.stdin.write(
+                mcp_frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/initialized",
+                        "params": {},
+                    }
+                )
+            )
+            proc.stdin.write(
+                mcp_frame(
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+                )
+            )
             proc.stdin.flush()
             tools = read_mcp_message(proc)
             self.assertEqual(tools.get("id"), 2)
-            tool_names = {tool.get("name") for tool in tools.get("result", {}).get("tools", [])}
+            tool_names = {
+                tool.get("name") for tool in tools.get("result", {}).get("tools", [])
+            }
             self.assertIn("firecrawl_scrape", tool_names)
-            self.assertTrue(tool_names.intersection({"firecrawl_map", "firecrawl_search", "firecrawl_crawl"}))
+            self.assertTrue(
+                tool_names.intersection(
+                    {"firecrawl_map", "firecrawl_search", "firecrawl_crawl"}
+                )
+            )
         finally:
             proc.terminate()
             try:
