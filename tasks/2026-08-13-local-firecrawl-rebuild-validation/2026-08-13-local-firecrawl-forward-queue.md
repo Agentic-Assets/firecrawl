@@ -50,3 +50,17 @@ verify each item before starting it.
   (priority: medium, confidence: verified configuration gate).
   Browser, agent, AI extraction, and OCR should each gain a readiness probe,
   resource proof, rollback path, and a separate approval before being enabled.
+
+## Post-review process additions
+
+- **Add a root-context bridge contract check** (priority: medium, confidence:
+  verified regression risk).
+  Assert that root `CLAUDE.md` is exactly the two-line `AGENTS.md` pointer so
+  duplicate agent context cannot silently return while scoped CRE contracts
+  continue to live in their module guidance.
+
+- **Configure a narrow PR validation status check for the local ops suite**
+  (priority: medium, confidence: verified gap).
+  PR #30 had no configured GitHub check runs. A non-destructive workflow that
+  runs the wrapper suite and context-bridge check would turn the current local
+  proof into a visible merge gate without running collection or data writes.

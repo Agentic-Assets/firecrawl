@@ -66,3 +66,21 @@ the commercial-real-estate collection boundary.
   a substitute.
 - Review the draft PR and merge only with required human approval. Roll back
   with `git revert 81a1f8f32` and rebuild the API service.
+
+## Post-closeout hardening
+
+- Commit `1f131f099f1a53de0bf59b7441e0343786f35b6a` repaired four verified
+  `firecrawl_request.py` contracts: wall-clock-bounded crawl polling, finite
+  polling and HTTP timeouts, redacted HTTP error bodies for `--metrics-only`,
+  and JSON-object validation for `--headers-file` before User-Agent overlays.
+- The EQUIRE `subagent-code-review` workflow independently reviewed the API,
+  helper, and shell/ops deltas; verifiers retained only the helper issues.
+  Versioned Vercel DeepSeek Gateway IDs were checked and intentionally kept.
+- Post-commit verification: the local ops suite reported `98 passed, 1
+  skipped, 38 subtests passed`; focused helper coverage was 93%; and a fresh
+  2026-08-13 metrics-only health probe after that helper commit reported API
+  and queue HTTP 200, an empty queue, and `maxConcurrency: 2`.
+- Root agent context now follows the company `AGENTS.md` bridge policy: unique
+  shared rules are in `AGENTS.md`; root `CLAUDE.md` is the required two-line
+  pointer. Current CRE data and scheduler contracts remain in the scoped
+  `scripts/firecrawl-ops/` guidance and were not changed.
