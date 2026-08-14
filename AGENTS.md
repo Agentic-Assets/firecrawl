@@ -74,9 +74,12 @@ Useful `apps/api` scripts (see `apps/api/package.json` for the full list):
 - `pnpm dev` — tsx-based dev server via the harness
 - `pnpm format`, `pnpm knip` — formatting and dead-code checks
 
+Never bypass `knip` failures, including with `git commit --no-verify`; correct
+the reported unused exports or files before committing.
+
 ## Self-hosted ops layer (this fork)
 
-This fork adds a self-hosted operations layer on top of upstream Firecrawl. It is fork-only — do not push it upstream.
+This fork adds a self-hosted operations layer on top of upstream Firecrawl. It is fork-only — do not push it upstream. Keep local ops work out of upstream product, API, and SDK paths unless an explicit requirement makes that change necessary.
 
 **Agent skills** (canonical in `.agents/skills/`):
 - `firecrawl-ops` — runtime health, Docker, model routing, endpoint selection
@@ -104,7 +107,7 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
   - `pdf_ocr_benchmark.py` — repeatable local PDF parser/OCR matrix runner with preflight checks, page artifacts, QA reports, accept/reject/manual-review guidance, and per-PDF mode/profile recommendations
   - `firecrawl_mcp.sh` — wrapper for `npx firecrawl-mcp` pinned to `http://localhost:3002` for any MCP-capable agent
   - `sync_agent_skills.sh` — copy repo Firecrawl skills to `~/.agents/skills` and symlink them into user-level agent folders
-  - `set_model_profile.sh budget|escalated|gateway|gateway-codex|openai-direct` — rewrite `.env` model defaults; follow with `docker compose up -d --force-recreate api`
+  - `set_model_profile.sh budget|escalated|gateway|gateway-pro|gateway-codex|openai-direct` — rewrite `.env` model defaults; follow with `docker compose up -d --force-recreate api`
   - `sync_upstream_main.sh` — create an upstream-sync branch, merge `firecrawl/firecrawl:main`, and show protected fork path diffs
   - Optional older workflow examples: `artificialanalysis_snapshot.py`, `platform_access_probe.py`, `cre_access_matrix.py`, `bulk_triage_runner.py`, `crawl_swarm.py`, `firecrawl_swarm_pipeline.py`, `google_flights_scrape.py`, `parse_flight_deals.py`. Prefer `firecrawl_request.py` for new local-agent scripting.
 - Cross-agent integration:
@@ -115,6 +118,13 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
   - `.githooks/post-commit` and `.githooks/pre-push` — advisory reminders to rerun `sync_agent_skills.sh`; enable per clone with `scripts/firecrawl-ops/install_git_hooks.sh`.
 
 When the user asks about scraping workflows, model selection, runtime health, or self-hosted ops, prefer this skill over guessing — invoke it via the Skill tool (`firecrawl-ops`).
+
+For Python changes under `scripts/firecrawl-ops/`, use the relevant local
+Ruff skill, verify changed Python with `py_compile`, and read the
+`python-testing-patterns` skill before adding or changing tests. For listing
+intelligence work, read `scripts/firecrawl-ops/CLAUDE.md` and then the scoped
+`cre_collector/` guidance before acting; that current module contract owns
+runtime, scheduler, data-write, status-activation, and soft-delete gates.
 
 ## Architecture notes worth knowing up front
 

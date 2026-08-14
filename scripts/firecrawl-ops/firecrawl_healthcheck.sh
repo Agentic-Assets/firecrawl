@@ -5,12 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EVIDENCE_DIR="${FIRECRAWL_HEALTHCHECK_EVIDENCE_DIR:-}"
 
 usage() {
-  cat <<'EOF'
-Usage: firecrawl_healthcheck.sh [--evidence-dir DIR]
-
-Checks the local Firecrawl Docker/API stack. When --evidence-dir is provided,
-also writes timestamped JSON and Markdown evidence files.
-EOF
+  printf '%s\n' \
+    'Usage: firecrawl_healthcheck.sh [--evidence-dir DIR]' \
+    '' \
+    'Checks the local Firecrawl Docker/API stack. When --evidence-dir is provided,' \
+    'also writes timestamped JSON and Markdown evidence files.'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -70,6 +69,10 @@ resolve_fc_dir() {
 
 FC_DIR="$(resolve_fc_dir)"
 API_URL="${API_URL:-http://localhost:3002}"
+CURL_CONNECT_TIMEOUT="${FIRECRAWL_HEALTHCHECK_CONNECT_TIMEOUT:-10}"
+CURL_MAX_TIME="${FIRECRAWL_HEALTHCHECK_MAX_TIME:-90}"
+CURL_RETRIES="${FIRECRAWL_HEALTHCHECK_RETRIES:-12}"
+CURL_RETRY_DELAY="${FIRECRAWL_HEALTHCHECK_RETRY_DELAY:-2}"
 
 cd "$FC_DIR"
 
@@ -95,33 +98,43 @@ if [[ -z "$IMAGE_ID" ]]; then
 fi
 
 echo "[2/4] API root check"
-if ! ROOT_RESP="$(curl -fsS "$API_URL/" 2>&1)"; then
+ROOT_RESP=""
+ROOT_OK=0
+for ((attempt = 1; attempt <= CURL_RETRIES; attempt++)); do
+  if ROOT_RESP="$(curl -fsS --connect-timeout "$CURL_CONNECT_TIMEOUT" --max-time "$CURL_MAX_TIME" "$API_URL/" 2>&1)"; then
+    ROOT_OK=1
+    break
+  fi
+  if (( attempt < CURL_RETRIES )); then
+    sleep "$CURL_RETRY_DELAY"
+  fi
+done
+if [[ "$ROOT_OK" != "1" ]]; then
   echo "$ROOT_RESP"
-  mark_failure "API root check failed"
+  mark_failure "API root check failed after ${CURL_RETRIES} attempts"
 else
   printf '%s' "$ROOT_RESP" | head -c 200 && echo
 fi
 
 echo "[3/4] scrape smoke test"
-if ! RESP=$(curl -fsS -X POST "$API_URL/v2/scrape" \
+if ! RESP=$(curl -fsS --connect-timeout "$CURL_CONNECT_TIMEOUT" --max-time "$CURL_MAX_TIME" -X POST "$API_URL/v2/scrape" \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://example.com","formats":["markdown"]}' 2>&1); then
   echo "$RESP"
   SCRAPE_SUMMARY="{}"
   mark_failure "scrape smoke request failed"
 else
-  export RESP
+  if ! SCRAPE_SUMMARY="$(printf '%s' "$RESP" | python3 -c '
+import json
+import sys
 
-  if ! SCRAPE_SUMMARY="$(python3 - <<'PY' 2>&1
-import json, os
-j=json.loads(os.environ['RESP'])
-ok=bool(j.get('success'))
-md=(j.get('data') or {}).get('markdown','')
-print(json.dumps({'success': ok, 'markdown_len': len(md)}))
+j = json.load(sys.stdin)
+ok = bool(j.get("success"))
+md = (j.get("data") or {}).get("markdown", "")
+print(json.dumps({"success": ok, "markdown_len": len(md)}))
 if not ok:
     raise SystemExit(1)
-PY
-)"; then
+' 2>&1)"; then
     echo "$SCRAPE_SUMMARY"
     mark_failure "scrape smoke response validation failed"
   else
@@ -139,65 +152,7 @@ if [[ -n "$EVIDENCE_DIR" ]]; then
   export STATUS API_URL FC_DIR DOCKER_PS ROOT_RESP RESP SCRAPE_SUMMARY IMAGE_ID JSON_PATH MD_PATH
   ERRORS_JSON="$(printf '%s\n' "${ERRORS[@]}" | python3 -c 'import json,sys; print(json.dumps([line for line in sys.stdin.read().splitlines() if line]))')"
   export ERRORS_JSON
-  python3 - <<'PY'
-import json
-import os
-import time
-from pathlib import Path
-
-def parse_json(value):
-    try:
-        return json.loads(value)
-    except Exception:
-        return value
-
-payload = {
-    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    "status": os.environ["STATUS"],
-    "api_url": os.environ["API_URL"],
-    "firecrawl_dir": os.environ["FC_DIR"],
-    "image_id": os.environ.get("IMAGE_ID", ""),
-    "errors": json.loads(os.environ.get("ERRORS_JSON", "[]")),
-    "docker_compose_ps": os.environ.get("DOCKER_PS", ""),
-    "api_root_response": os.environ.get("ROOT_RESP", ""),
-    "scrape_response": parse_json(os.environ.get("RESP", "")),
-    "scrape_summary": parse_json(os.environ.get("SCRAPE_SUMMARY", "")),
-}
-
-json_path = Path(os.environ["JSON_PATH"])
-md_path = Path(os.environ["MD_PATH"])
-json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n")
-
-lines = [
-    "# Firecrawl Healthcheck Evidence",
-    "",
-    f"- Timestamp: `{payload['timestamp']}`",
-    f"- Status: `{payload['status']}`",
-    f"- API URL: `{payload['api_url']}`",
-    f"- Firecrawl dir: `{payload['firecrawl_dir']}`",
-    f"- Image id: `{payload['image_id']}`",
-    f"- Errors: `{len(payload['errors'])}`",
-    "",
-    "## Scrape Summary",
-    "",
-    "```json",
-    json.dumps(payload["scrape_summary"], indent=2, ensure_ascii=False),
-    "```",
-    "",
-    "## Docker Compose",
-    "",
-    "```text",
-    payload["docker_compose_ps"],
-    "```",
-    "",
-]
-if payload["errors"]:
-    lines.extend(["## Errors", ""])
-    for error in payload["errors"]:
-        lines.append(f"- {error}")
-    lines.append("")
-md_path.write_text("\n".join(lines), encoding="utf-8")
-PY
+  python3 "$SCRIPT_DIR/firecrawl_healthcheck_evidence.py"
   echo "wrote $JSON_PATH"
   echo "wrote $MD_PATH"
 fi

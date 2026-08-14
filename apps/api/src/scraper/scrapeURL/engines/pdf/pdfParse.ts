@@ -7,12 +7,16 @@ import type { PDFProcessorResult } from "./types";
 export async function scrapePDFWithParsePDF(
   meta: Meta,
   tempFilePath: string,
+  maxPages?: number,
 ): Promise<PDFProcessorResult> {
   meta.logger.debug("Processing PDF document with parse-pdf", { tempFilePath });
 
   try {
     const startedAt = Date.now();
-    const result = await PdfParse(await readFile(tempFilePath));
+    const result = await PdfParse(
+      await readFile(tempFilePath),
+      maxPages ? { max: maxPages } : undefined,
+    );
     const durationMs = Date.now() - startedAt;
     const escaped = escapeHtml(result.text);
 
@@ -20,6 +24,7 @@ export async function scrapePDFWithParsePDF(
       durationMs,
       markdownLength: escaped.length,
       numPages: result.numpages,
+      maxPages,
     });
 
     return {

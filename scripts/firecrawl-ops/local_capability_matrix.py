@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Any
 
 DEFAULT_ROUTE_FILE = Path("apps/api/src/routes/v2.ts")
 DEFAULT_DOC_FILE = Path("docs/firecrawl-ops/references/tools-capabilities.md")
-DEFAULT_SMOKE_DIR = Path("tasks/tmp/local-api-smoke")
+DEFAULT_SMOKE_DIR = Path("tasks/tmp")
 DEFAULT_OUT = Path("docs/firecrawl-ops/references/local-capability-matrix.md")
 
 SMOKE_ROUTE_MAP = {
@@ -62,8 +63,8 @@ def extract_routes(route_file: Path) -> list[Route]:
 def latest_smoke_file(smoke_dir: Path) -> Path | None:
     if not smoke_dir.is_dir():
         return None
-    files = sorted(smoke_dir.glob("*-local-api-smoke.json"))
-    return files[-1] if files else None
+    files = list(smoke_dir.rglob("*-local-api-smoke.json"))
+    return max(files, key=lambda path: path.stat().st_mtime) if files else None
 
 
 def load_smoke_status(smoke_path: Path | None) -> dict[tuple[str, str], dict[str, Any]]:
@@ -186,6 +187,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     smoke_path = args.smoke_file or latest_smoke_file(args.smoke_dir)
+    if smoke_path is None:
+        print(
+            "No local API smoke artifact found. Run local_api_smoke_matrix.py first "
+            "or pass --smoke-file PATH.",
+            file=sys.stderr,
+        )
+        return 2
     routes = extract_routes(args.route_file)
     doc_text = args.doc_file.read_text(encoding="utf-8") if args.doc_file.is_file() else ""
     smoke = load_smoke_status(smoke_path)

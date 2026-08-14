@@ -245,12 +245,22 @@ scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "Dallas office for sale" --limit 5 --json
 ```
 
-Use `firecrawl_request.py` when the CLI lacks a needed option, especially
-advanced `/v2/parse` PDF options or split saved artifacts.
+Use `firecrawl_request.py` when an agent needs bounded HTTP crawl polling,
+metrics-only output, advanced `/v2/parse` PDF options, or split saved
+artifacts. Do not use CLI `crawl --wait` for agent automation.
+
+Helper contract: `crawl --wait` and `crawl-status --wait` accept only finite
+poll controls and keep each status request and sleep within the remaining
+deadline. With `--metrics-only`, response and HTTP error bodies stay out of
+terminal output; `--headers-file` must contain a JSON object before a
+`--user-agent` overlay is applied.
 
 ```bash
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown,html --pdf-mode ocr --max-pages 25 --out-dir ./out/report
+
+scripts/firecrawl-ops/firecrawl_request.py crawl https://example.com \
+  --limit 1 --scrape-formats markdown,links --wait --metrics-only
 ```
 
 ## Model Profiles
@@ -261,6 +271,7 @@ Switch model routing with:
 scripts/firecrawl-ops/set_model_profile.sh budget
 scripts/firecrawl-ops/set_model_profile.sh escalated
 scripts/firecrawl-ops/set_model_profile.sh gateway
+scripts/firecrawl-ops/set_model_profile.sh gateway-pro
 scripts/firecrawl-ops/set_model_profile.sh gateway-codex
 scripts/firecrawl-ops/set_model_profile.sh openai-direct
 docker compose up -d --force-recreate api
