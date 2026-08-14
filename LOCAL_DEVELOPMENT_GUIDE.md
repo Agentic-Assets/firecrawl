@@ -20,8 +20,8 @@ cd firecrawl
 docker context show
 docker compose version
 
-# Create a gitignored local .env with sane local defaults.
-scripts/firecrawl-ops/set_model_profile.sh budget
+# Create a gitignored local .env with the default Vercel AI Gateway profile.
+scripts/firecrawl-ops/set_model_profile.sh
 
 # Optional but recommended for local agents and commit reminders.
 scripts/firecrawl-ops/install_git_hooks.sh
@@ -80,7 +80,7 @@ docker compose down
 Create or refresh local model defaults:
 
 ```bash
-scripts/firecrawl-ops/set_model_profile.sh budget
+scripts/firecrawl-ops/set_model_profile.sh
 docker compose up -d --force-recreate api
 ```
 
@@ -92,6 +92,7 @@ Important fork/local vars:
 | `OPENAI_API_KEY` | Provider key for OpenRouter, Vercel AI Gateway, or OpenAI-compatible providers |
 | `OPENAI_BASE_URL` | Provider base URL written by `set_model_profile.sh` |
 | `MODEL_NAME` | Firecrawl's internal LLM model id |
+| `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK` | Optional one-time retry model when a provider returns missing or schema-invalid JSON extraction or summary output |
 | `OPENROUTER_API_KEY` | Optional direct OpenRouter path; not the default local profile route |
 | `PDF_RUST_EXTRACT_ENABLE` | Local PDF text extraction; compose defaults it to `true` |
 | `FIRE_PDF_BASE_URL` / `FIRE_PDF_API_KEY` | Optional Fire PDF-compatible OCR/layout service. For the local Docling adapter, use `FIRE_PDF_BASE_URL=http://host.docker.internal:31337` and leave `FIRE_PDF_API_KEY` empty |
@@ -101,9 +102,10 @@ Important fork/local vars:
 Profiles:
 
 ```bash
-scripts/firecrawl-ops/set_model_profile.sh budget        # OpenRouter DeepSeek V4 Flash
-scripts/firecrawl-ops/set_model_profile.sh escalated     # OpenRouter DeepSeek V4 Pro
-scripts/firecrawl-ops/set_model_profile.sh gateway       # Vercel AI Gateway DeepSeek V4 Flash 0731 (default)
+scripts/firecrawl-ops/set_model_profile.sh               # Vercel AI Gateway Flash 0731 + Pro 0813 structured-output fallback (default)
+scripts/firecrawl-ops/set_model_profile.sh gateway       # Explicit form of the default Vercel AI Gateway profile
+scripts/firecrawl-ops/set_model_profile.sh budget        # OpenRouter DeepSeek V4 Flash, explicit single-model alternative
+scripts/firecrawl-ops/set_model_profile.sh escalated     # OpenRouter DeepSeek V4 Pro, explicit alternative
 scripts/firecrawl-ops/set_model_profile.sh gateway-pro   # Vercel AI Gateway DeepSeek V4 Pro 0813
 scripts/firecrawl-ops/set_model_profile.sh gateway-codex # Vercel AI Gateway OpenAI model
 scripts/firecrawl-ops/set_model_profile.sh openai-direct # OpenAI Platform
@@ -112,12 +114,12 @@ scripts/firecrawl-ops/set_model_profile.sh openai-direct # OpenAI Platform
 The local CLI/helper can apply those same profiles before an AI-backed call:
 
 ```bash
-scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile budget --firecrawl-healthcheck \
+scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile gateway --firecrawl-healthcheck \
   scrape https://example.com --format summary --json --pretty
 
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown --query "What is this document about?" \
-  --model-profile escalated --healthcheck --pretty
+  --model-profile gateway --healthcheck --pretty
 ```
 
 The wrapper profile flags update `.env` and recreate the API container by default. They matter for summary, query, JSON extraction, and `/v2/extract`. Plain PDF markdown extraction uses the local PDF parser and does not call the LLM model. Existing local OCR routing vars are preserved unless explicitly overwritten.
@@ -161,7 +163,7 @@ scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markd
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
 scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty -o ./out/example.json
-scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile budget --firecrawl-healthcheck \
+scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile gateway --firecrawl-healthcheck \
   scrape https://example.com --format summary --json --pretty
 ```
 

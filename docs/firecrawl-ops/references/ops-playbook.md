@@ -9,7 +9,7 @@ For a new Mac or business partner setup, follow:
 git clone git@github.com:Agentic-Assets/firecrawl.git
 cd firecrawl
 docker context show
-scripts/firecrawl-ops/set_model_profile.sh budget
+scripts/firecrawl-ops/set_model_profile.sh
 scripts/firecrawl-ops/install_git_hooks.sh
 scripts/firecrawl-ops/sync_agent_skills.sh
 docker compose build
@@ -63,7 +63,7 @@ scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markd
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
 scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty -o ./out/example.json
-scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile budget --firecrawl-healthcheck \
+scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile gateway --firecrawl-healthcheck \
   scrape https://example.com --format summary --json --pretty
 ```
 
@@ -100,7 +100,7 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown --query "What is this document about?" \
-  --model-profile escalated --healthcheck --pretty
+  --model-profile gateway --healthcheck --pretty
 ```
 
 Use the official SDKs in application code. This helper is for cross-agent local runs and advanced local API settings the CLI does not expose yet. Model-profile flags recreate the local API container and affect AI-backed formats; plain PDF markdown parsing remains local parser work.
@@ -153,14 +153,15 @@ Set in the repo-root `.env` so `docker-compose.yaml` picks them up:
 - `FIRECRAWL_API_URL=http://localhost:3002` — convenient for CLI/local agents
 - `OPENAI_API_KEY` — provider key for OpenRouter, Vercel AI Gateway, or OpenAI-compatible model calls
 - `OPENAI_BASE_URL` — provider base URL, rewritten by `scripts/firecrawl-ops/set_model_profile.sh`
-- `MODEL_NAME` — default LLM (rewritten by `scripts/firecrawl-ops/set_model_profile.sh`; default budget profile is `deepseek/deepseek-v4-flash`)
+- `MODEL_NAME` — default LLM (rewritten by `scripts/firecrawl-ops/set_model_profile.sh`; default gateway profile is `deepseek/deepseek-v4-flash-0731`)
+- `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK` — optional one-time retry model for missing or schema-invalid JSON extraction or summary output; `gateway` sets `deepseek/deepseek-v4-pro-0813`
 - `OPENROUTER_API_KEY` — optional direct OpenRouter provider path; not the default local profile route
 - `PDF_RUST_EXTRACT_ENABLE=true` — local Rust PDF text extraction; no cloud credits
 - `PDF_SHADOW_COMPARISON_ENABLE=false`, `MINERU_PERCENT=0`, `FIRE_PDF_PERCENT=10` — local PDF routing defaults
 - `FIRE_PDF_BASE_URL`, `FIRE_PDF_API_KEY`, `RUNPOD_MU_API_KEY`, `RUNPOD_MU_POD_ID` — optional OCR/layout services for harder PDFs; local Docling uses `FIRE_PDF_BASE_URL=http://host.docker.internal:31337` with an empty key
 - `SWARM_SUPABASE_URL`, `SWARM_SUPABASE_KEY` — optional, only if using `firecrawl_swarm_pipeline.py` telemetry
 
-Run `scripts/firecrawl-ops/set_model_profile.sh budget` to create a minimal gitignored `.env` if it is missing, then add the provider key manually and recreate the API container.
+Run `scripts/firecrawl-ops/set_model_profile.sh` to create a minimal gitignored `.env` with the default Vercel AI Gateway profile if it is missing, then add the provider key manually and recreate the API container. Use `budget` only as an explicit OpenRouter alternative.
 
 ## Local Docling OCR adapter
 Use this when scanned/image-only PDFs fail or when `--pdf-mode ocr` needs a local OCR/layout backend:

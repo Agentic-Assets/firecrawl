@@ -47,7 +47,7 @@ production OM-extraction writer.
 
 This Mac uses OrbStack, not Docker Desktop. If Docker commands fail, open OrbStack and confirm `docker context show` is `orbstack`. The expected local API is `http://localhost:3002`.
 
-For a fresh clone on another Mac, start with `LOCAL_DEVELOPMENT_GUIDE.md` or `references/partner-orbstack-onboarding.md`. The short path is: install/start OrbStack, confirm `docker context show`, run `scripts/firecrawl-ops/set_model_profile.sh budget`, optionally run `install_git_hooks.sh` and `sync_agent_skills.sh`, then `docker compose build`, `docker compose up -d`, and `firecrawl_healthcheck.sh`.
+For a fresh clone on another Mac, start with `LOCAL_DEVELOPMENT_GUIDE.md` or `references/partner-orbstack-onboarding.md`. The short path is: install/start OrbStack, confirm `docker context show`, run `scripts/firecrawl-ops/set_model_profile.sh` with no argument for the default Vercel AI Gateway profile (`deepseek/deepseek-v4-flash-0731` plus a one-time `deepseek/deepseek-v4-pro-0813` fallback only for missing or schema-invalid JSON extraction or summary output), optionally run `install_git_hooks.sh` and `sync_agent_skills.sh`, then `docker compose build`, `docker compose up -d`, and `firecrawl_healthcheck.sh`. Use `budget` only as an explicit OpenRouter alternative.
 
 ## Current Local Reality
 

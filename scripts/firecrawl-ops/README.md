@@ -289,9 +289,10 @@ code should use the product's SDK or API client.
 Switch profiles with:
 
 ```bash
-scripts/firecrawl-ops/set_model_profile.sh budget
-scripts/firecrawl-ops/set_model_profile.sh escalated
-scripts/firecrawl-ops/set_model_profile.sh gateway
+scripts/firecrawl-ops/set_model_profile.sh               # Default Vercel AI Gateway Flash 0731 + Pro 0813 structured-output fallback
+scripts/firecrawl-ops/set_model_profile.sh gateway       # Explicit form of the default
+scripts/firecrawl-ops/set_model_profile.sh budget        # Explicit OpenRouter Flash alternative, no automatic fallback
+scripts/firecrawl-ops/set_model_profile.sh escalated     # Explicit OpenRouter Pro alternative
 scripts/firecrawl-ops/set_model_profile.sh gateway-pro
 scripts/firecrawl-ops/set_model_profile.sh gateway-codex
 scripts/firecrawl-ops/set_model_profile.sh openai-direct
@@ -305,6 +306,11 @@ env files.
 Plain scrape, map, search, and parse can work without model keys. AI-backed
 summary, JSON extraction, query, and extract flows require valid provider
 settings.
+
+The `gateway` profile keeps `deepseek/deepseek-v4-flash-0731` as the primary
+model and sets `deepseek/deepseek-v4-pro-0813` only as a one-time JSON
+structured-output fallback. A schema-valid direct JSON provider response is
+kept without retry; missing or schema-invalid output can use Pro once.
 
 ## CRE Resource Safety Profile
 

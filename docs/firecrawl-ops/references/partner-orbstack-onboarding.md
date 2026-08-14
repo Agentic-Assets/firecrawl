@@ -28,7 +28,7 @@ cd firecrawl
 docker context show
 docker compose version
 
-scripts/firecrawl-ops/set_model_profile.sh budget
+scripts/firecrawl-ops/set_model_profile.sh
 scripts/firecrawl-ops/install_git_hooks.sh
 scripts/firecrawl-ops/sync_agent_skills.sh
 
@@ -53,7 +53,7 @@ docker context use orbstack
 
 The root `.env` is the only local env Docker Compose reads. It is gitignored and should never be committed.
 
-`scripts/firecrawl-ops/set_model_profile.sh budget` creates a minimal `.env` if one does not exist. Add `OPENAI_API_KEY` only if you need AI-backed calls such as summary, JSON extraction, query, or `/v2/extract`.
+`scripts/firecrawl-ops/set_model_profile.sh` creates a minimal `.env` with the default Vercel AI Gateway Flash 0731 profile and its one-time Pro 0813 structured-output fallback. Add `OPENAI_API_KEY` only if you need AI-backed calls such as summary, JSON extraction, query, or `/v2/extract`. Use `budget` only as an explicit OpenRouter alternative.
 
 Plain scrape, crawl, map, search, and basic PDF parsing can be tested without model-provider spend.
 

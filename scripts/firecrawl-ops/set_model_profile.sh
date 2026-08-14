@@ -66,6 +66,7 @@ if [[ ! -f "$ENV_PATH" ]]; then
     'OPENAI_API_KEY=' \
     'OPENAI_BASE_URL=' \
     'MODEL_NAME=' \
+    'MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK=' \
     'MODEL_EMBEDDING_NAME=' \
     '' \
     '# Optional direct OpenRouter provider path. Most local flows use OPENAI_API_KEY' \
@@ -133,35 +134,43 @@ case "$PROFILE" in
     # Requires OPENAI_API_KEY=<vercel-ai-gateway-key> in .env.
     set_kv OPENAI_BASE_URL "https://ai-gateway.vercel.sh/v1"
     set_kv MODEL_NAME "deepseek/deepseek-v4-flash-0731"
+    set_kv MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK "deepseek/deepseek-v4-pro-0813"
     ;;
   gateway-pro)
     # Vercel AI Gateway → stronger DeepSeek Pro snapshot.
     # Requires OPENAI_API_KEY=<vercel-ai-gateway-key> in .env.
     set_kv OPENAI_BASE_URL "https://ai-gateway.vercel.sh/v1"
     set_kv MODEL_NAME "deepseek/deepseek-v4-pro-0813"
+    set_kv MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK ""
     ;;
   gateway-codex)
     # Vercel AI Gateway → openai/gpt-5.4-mini (premium fallback).
     set_kv OPENAI_BASE_URL "https://ai-gateway.vercel.sh/v1"
     set_kv MODEL_NAME "openai/gpt-5.4-mini"
+    set_kv MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK ""
     ;;
   openai-direct)
     # OpenAI Platform key (separate ledger from ChatGPT subscription).
     # Requires OPENAI_API_KEY=sk-... already populated in .env.
     set_kv OPENAI_BASE_URL "https://api.openai.com/v1"
     set_kv MODEL_NAME "gpt-5.4-mini"
+    set_kv MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK ""
     ;;
   budget)
     # OpenRouter through the OpenAI-compatible API.
     # Requires OPENAI_API_KEY=<openrouter-key> in .env.
     set_kv OPENAI_BASE_URL "https://openrouter.ai/api/v1"
     set_kv MODEL_NAME "deepseek/deepseek-v4-flash"
+    # Keep budget as an explicit single-model alternative; do not inherit the
+    # Vercel Gateway structured-output fallback when profiles are switched.
+    set_kv MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK ""
     ;;
   escalated)
     # OpenRouter through the OpenAI-compatible API.
     # Requires OPENAI_API_KEY=<openrouter-key> in .env.
     set_kv OPENAI_BASE_URL "https://openrouter.ai/api/v1"
     set_kv MODEL_NAME "deepseek/deepseek-v4-pro"
+    set_kv MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK ""
     ;;
 esac
 

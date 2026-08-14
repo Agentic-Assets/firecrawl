@@ -4,16 +4,115 @@ import {
   generateCompletions,
   GenerateCompletionsOptions,
   generateSchemaFromPrompt,
+  normalizeJsonSchemaForModel,
 } from "../transformers/llmExtract";
 import { smartScrape } from "./smartScrape";
 import { parseMarkdown } from "../../../lib/html-to-markdown";
-import { getModel } from "../../../lib/generic-ai";
+import { getModel, getModelByName } from "../../../lib/generic-ai";
+import { config } from "../../../config";
 import { TokenUsage } from "../../../controllers/v1/types";
 import type { SmartScrapeResult } from "./smartScrape";
 import {
   CostLimitExceededError,
   CostTracking,
 } from "../../../lib/cost-tracking";
+import Ajv from "ajv";
+
+type ResolvedStructuredResult = {
+  extractedData: unknown;
+  wasDirectSchemaResult: boolean;
+};
+
+function isSmartScrapeEnvelope(value: unknown): value is {
+  extractedData: unknown;
+} {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Object.hasOwn(value, "extractedData")
+  );
+}
+
+function schemaValidatedValue(
+  value: unknown,
+  schema: unknown,
+): { value: unknown } | undefined {
+  if (schema === undefined) {
+    return undefined;
+  }
+
+  try {
+    // Providers sometimes include an unrequested sibling field even when the
+    // requested schema forbids it. Keep only schema-permitted output, then
+    // validate required fields and types before accepting the result.
+    const candidate =
+      value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+    const validate = new Ajv({
+      allErrors: false,
+      removeAdditional: "failing",
+      strict: false,
+    }).compile(schema as any);
+    return validate(candidate) ? { value: candidate } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Some OpenAI-compatible providers return the requested user schema directly
+ * instead of Firecrawl's SmartScrape envelope. Accept that response only when
+ * it validates against the original user schema; anything else remains a
+ * failed structured result and can use the configured fallback model.
+ */
+export function resolveStructuredResult(
+  value: unknown,
+  userSchema: unknown,
+): ResolvedStructuredResult | undefined {
+  // Some user schemas legitimately have an `extractedData` property at their
+  // root. Validate the complete value first so that provider output matching
+  // that schema is not mistaken for Firecrawl's internal envelope.
+  const validatedDirectValue = schemaValidatedValue(value, userSchema);
+  if (validatedDirectValue !== undefined) {
+    return {
+      extractedData: validatedDirectValue.value,
+      wasDirectSchemaResult: true,
+    };
+  }
+
+  if (isSmartScrapeEnvelope(value)) {
+    const shouldUseSmartscrape = (value as Record<string, unknown>)
+      .shouldUseSmartscrape;
+    if (
+      shouldUseSmartscrape !== undefined &&
+      typeof shouldUseSmartscrape !== "boolean"
+    ) {
+      return undefined;
+    }
+
+    const validatedExtractedData = schemaValidatedValue(
+      value.extractedData,
+      userSchema,
+    );
+    if (shouldUseSmartscrape === true && value.extractedData === null) {
+      return {
+        extractedData: value.extractedData,
+        wasDirectSchemaResult: false,
+      };
+    }
+
+    if (validatedExtractedData !== undefined) {
+      return {
+        extractedData: validatedExtractedData.value,
+        wasDirectSchemaResult: false,
+      };
+    }
+
+    return undefined;
+  }
+
+  return undefined;
+}
+
 const commonSmartScrapeProperties = {
   shouldUseSmartscrape: {
     type: "boolean",
@@ -336,6 +435,12 @@ export async function extractData({
   }
 
   const { schemaToUse } = prepareSmartScrapeSchema(schema, logger, isSingleUrl);
+  const effectiveUserSchema =
+    normalizeJsonSchemaForModel(schemaToUse)?.properties?.extractedData;
+  const fallbackSchema = useAgent ? schemaToUse : schema;
+  const fallbackResultSchema = useAgent
+    ? effectiveUserSchema
+    : normalizeJsonSchemaForModel(schema);
   const extractOptionsNewSchema = {
     ...extractOptions,
     options: { ...extractOptions.options, schema: schemaToUse },
@@ -350,22 +455,34 @@ export async function extractData({
     warning: string | undefined,
     totalUsage: TokenUsage | undefined;
 
+  const smartScrapeGenerationOptions = {
+    ...extractOptionsNewSchema,
+    costTrackingOptions: {
+      costTracking: extractOptions.costTrackingOptions.costTracking,
+      metadata: {
+        module: "scrapeURL",
+        method: "extractData",
+        description: "Check if using smartScrape is needed for this case",
+      },
+    },
+  };
+
   // checks if using smartScrape is needed for this case
+  const isStructuredOutputCompatibilityTransaction = Boolean(
+    config.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK,
+  );
+
   try {
     const {
       extract: e,
       warning: w,
       totalUsage: t,
     } = await generateCompletions({
-      ...extractOptionsNewSchema,
-      costTrackingOptions: {
-        costTracking: extractOptions.costTrackingOptions.costTracking,
-        metadata: {
-          module: "scrapeURL",
-          method: "extractData",
-          description: "Check if using smartScrape is needed for this case",
-        },
-      },
+      ...smartScrapeGenerationOptions,
+      // The explicit model fallback below is the only allowed retry for this
+      // compatibility transaction. Ordinary callers retain the upstream
+      // rate-limit retry behavior in generateCompletions.
+      disableInternalRateLimitRetry: isStructuredOutputCompatibilityTransaction,
     });
     extract = e;
     warning = w;
@@ -388,7 +505,80 @@ export async function extractData({
     warning = `JSON extraction failed: ${reason.slice(0, 300)}`;
   }
 
-  let extractedData = extract?.extractedData;
+  let resolvedStructuredResult = resolveStructuredResult(
+    extract,
+    effectiveUserSchema,
+  );
+  if (resolvedStructuredResult?.wasDirectSchemaResult) {
+    logger.info("Normalized direct structured-output response", {
+      providedExtractId: extractId,
+      scrapeId,
+    });
+  }
+
+  if (
+    resolvedStructuredResult === undefined &&
+    config.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK
+  ) {
+    const fallbackModelName = config.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK;
+    logger.warn("Structured output missing or invalid; retrying once", {
+      fallbackModelName,
+      providedExtractId: extractId,
+      scrapeId,
+    });
+
+    try {
+      const {
+        extract: fallbackExtract,
+        warning: fallbackWarning,
+        totalUsage: fallbackUsage,
+      } = await generateCompletions({
+        ...smartScrapeGenerationOptions,
+        // A normal JSON scrape has no SmartScrape execution path. Retrying it
+        // with the original user schema avoids asking a second provider to
+        // reproduce the internal envelope that the primary provider ignored.
+        options: { ...extractOptions.options, schema: fallbackSchema },
+        model: getModelByName(fallbackModelName, "openai"),
+        retryModel: undefined,
+        // A compatibility transaction is bounded to the primary request plus
+        // this single explicit fallback request, including on rate limits.
+        disableInternalRateLimitRetry: true,
+      });
+      const fallbackResult = resolveStructuredResult(
+        fallbackExtract,
+        fallbackResultSchema,
+      );
+
+      if (fallbackResult !== undefined) {
+        extract = fallbackExtract;
+        warning = fallbackWarning;
+        totalUsage = fallbackUsage;
+        resolvedStructuredResult = fallbackResult;
+        logger.info("Structured-output fallback succeeded", {
+          fallbackModelName,
+          wasDirectSchemaResult: fallbackResult.wasDirectSchemaResult,
+          providedExtractId: extractId,
+          scrapeId,
+        });
+      } else if (fallbackWarning) {
+        warning = [warning, fallbackWarning].filter(Boolean).join(" ");
+      }
+    } catch (error) {
+      if (error instanceof CostLimitExceededError) {
+        throw error;
+      }
+
+      const reason = error instanceof Error ? error.message : String(error);
+      warning = [
+        warning,
+        `JSON extraction fallback failed: ${reason.slice(0, 300)}`,
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
+  }
+
+  let extractedData: any = resolvedStructuredResult?.extractedData;
 
   // console.log("shouldUseSmartscrape", extract?.shouldUseSmartscrape);
   // console.log("smartscrape_reasoning", extract?.smartscrape_reasoning);

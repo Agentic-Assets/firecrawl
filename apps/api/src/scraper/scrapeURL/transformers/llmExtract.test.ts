@@ -12,7 +12,11 @@ vi.mock("../lib/extractSmartScrape", async importOriginal => {
     })),
   };
 });
-import { performLLMExtract, removeDefaultProperty } from "./llmExtract";
+import {
+  normalizeJsonSchemaForModel,
+  performLLMExtract,
+  removeDefaultProperty,
+} from "./llmExtract";
 import { trimToTokenLimit } from "./llmExtract";
 import { performSummary } from "./llmExtract";
 import { performCleanContent } from "./llmExtract";
@@ -60,6 +64,27 @@ describe("removeDefaultProperty", () => {
     expect(removeDefaultProperty(null)).toBeNull();
     expect(removeDefaultProperty("string")).toBe("string");
     expect(removeDefaultProperty(123)).toBe(123);
+  });
+});
+
+describe("normalizeJsonSchemaForModel", () => {
+  it("preserves the established top-level array item constraints", () => {
+    const schema = {
+      type: "array",
+      minItems: 2,
+      items: { type: "string", pattern: "^[A-Z]+$" },
+    };
+
+    expect(normalizeJsonSchemaForModel(schema)).toMatchObject({
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          minItems: 2,
+          items: { type: "string", pattern: "^[A-Z]+$" },
+        },
+      },
+    });
   });
 });
 
