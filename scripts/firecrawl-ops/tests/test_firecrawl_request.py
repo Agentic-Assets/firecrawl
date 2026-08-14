@@ -664,33 +664,6 @@ class CommandBoundaryTests(unittest.TestCase):
                     helper.run_and_write(args, "GET", "/broken", None, "broken")
             self.assertTrue(out.is_file())
 
-    def test_apply_model_profile_is_mocked_at_subprocess_boundary(self) -> None:
-        calls: list[list[str]] = []
-
-        def fake_run(cmd, check):
-            calls.append([str(part) for part in cmd])
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
-            scripts = root / "scripts" / "firecrawl-ops"
-            scripts.mkdir(parents=True)
-            (scripts / "set_model_profile.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-            (scripts / "firecrawl_healthcheck.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-            args = SimpleNamespace(
-                model_profile="budget",
-                firecrawl_dir=str(root),
-                no_recreate_api=False,
-                healthcheck=True,
-            )
-            with patch.object(helper.subprocess, "run", fake_run):
-                helper.apply_model_profile(args)
-
-        self.assertEqual(calls[0][-1], "budget")
-        self.assertEqual(calls[1][0:2], ["docker", "compose"])
-        self.assertTrue(calls[2][0].endswith("firecrawl_healthcheck.sh"))
-
-
 class NetworkBoundaryTests(unittest.TestCase):
     def test_open_request_returns_http_error_body_and_maps_url_errors_to_system_exit(self) -> None:
         req = Request("http://localhost:3002/v2/scrape")

@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "normal": {
+    "cli": {
+      "name": "firecrawl-cli",
+      "version": "1.20.0",
+      "spec": "firecrawl-cli@1.20.0",
+      "validated_on": "2026-08-13",
+      "probe": {
+        "command": [
+          "map",
+          "https://example.com",
+          "--limit",
+          "1",
+          "--json"
+        ],
+        "expected_json_fields": [
+          "success",
+          "data.links"
+        ]
+      }
+    },
+    "mcp": {
+      "name": "firecrawl-mcp",
+      "version": "3.24.0",
+      "spec": "firecrawl-mcp@3.24.0",
+      "validated_on": "2026-08-13",
+      "protocol": "jsonl",
+      "required_tools": [
+        "firecrawl_scrape"
+      ],
+      "required_any_tools": [
+        "firecrawl_map",
+        "firecrawl_search",
+        "firecrawl_crawl"
+      ]
+    }
+  },
+  "upgrade_probe": {
+    "label": "HUMAN-ONLY @latest upgrade probe",
+    "cli_spec": "firecrawl-cli@latest",
+    "mcp_spec": "firecrawl-mcp@latest"
+  }
+}
