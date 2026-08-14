@@ -18,10 +18,11 @@ roadmap. Verify each item against live Linear and the host runtime before work.
 
 ## Process and docs
 
-- **Create and deduplicate the Linear issue packets** (confidence: blocked
-  execution, P1) Restore the `agenticassets` credential first, then update
-  existing crawl/PDF issues when their current definition of done owns the
-  work. Do not create duplicates from the packet text alone.
+- **Run the P1 packets in interface-ladder order** (confidence: live-deduped
+  plan, P1) Start with AGENTIC-2277 preflight, then AGENTIC-2260 bounded waits,
+  AGENTIC-2278 package doctor, AGENTIC-2279 pilots, and AGENTIC-2280 handoff.
+  Reconfirm host runtime before each item; do not confuse a planning packet
+  with proof that the shared stack is healthy.
 - **Publish tested local-agent recipes** (confidence: strong opportunity, P1)
   Sync the selection ladder and bounded research, PDF, map-first, and SDK
   recipes after each has fixture or host-local evidence.

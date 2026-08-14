@@ -77,6 +77,27 @@ For any asynchronous task, save the job ID immediately. On uncertain
 submission, inspect status or active work before submitting again. Do not retry
 by creating duplicate work.
 
+## Execution aids: skills, plugins, and existing tools
+
+This is an execution map, not a claim that every plugin is callable in every
+agent session. The authoritative local entrypoints remain the checked-in
+wrappers and skills. The Linear desktop plugin did not expose a callable tool
+in the planning session; issue work uses the authenticated `linear` CLI with
+the `linear-cli` skill instead.
+
+| Work type | Skills or plugin guidance | Existing tools to reuse |
+| --- | --- | --- |
+| Local runtime and endpoint choice | `firecrawl-ops`, then `firecrawl-local-api` | `firecrawl_healthcheck.sh`, `local_api_smoke_matrix.py`, `local_capability_matrix.py`, `firecrawl_request.py` |
+| Agent-friendly command design | `cli-for-agents` | `firecrawl_cli.sh`, `firecrawl_mcp.sh`, explicit `FIRECRAWL_CLI_PACKAGE` and `FIRECRAWL_MCP_PACKAGE` pins |
+| Python helper changes | `ruff`, `pytest-patterns`, and `pytest-coverage` when a coverage target is agreed | `ruff`, `py_compile`, focused tests, monotonic-time and HTTP fixtures |
+| API or model-path changes | `firecrawl-local-api` and the API harness rules in `AGENTS.md` | `pnpm harness vitest run <pattern>`, AI-gated snips, Vercel AI Gateway provider configuration |
+| Security decision work | `codex-security:threat-model`, only after a founder-authorized repository-scoped decision | static allowlist/deny tests, Compose inspection, no live ingress or sandbox change |
+| Tracking and closeout | `linear-cli`, `branch-closeout`, and `adversarial-pr-review` before a non-trivial merge | authenticated `linear` CLI, Git branch/PR evidence, closeout and forward-queue artifacts |
+
+Use `sync_agent_skills.sh --dry-run` before an installed-skill pilot and again
+as a deliberate post-merge synchronization step. Do not treat skill sync as a
+runtime-health check or a profile change.
+
 ## Phased implementation plan
 
 ### Phase 0: establish a truthful local operating contract
@@ -206,15 +227,28 @@ saved split fields, advanced PDF options, or shell-stable bounded polling.
 
 ## Linear issue packets
 
-The user requested a separate issue for each idea. The Linear plugin has no
-callable tool in this session, and the local `linear` CLI cannot currently
-retrieve the `agenticassets` Keychain credential. These are issue-ready
-packets, not evidence that a current project inventory has been checked.
-Before creation, re-query the project and existing issues to deduplicate
-against AGENTIC-2253 and its children. Packets 2 and 8 are update-existing
-candidates, not automatically new issues.
+Live deduplication was performed on 2026-08-14 against Firecrawl Ops &
+Automation and AGENTIC-2253. The execution map below preserves the three
+existing issue identities that already own their domains and creates a distinct
+issue only where the plan adds a new independently reviewable outcome. Every
+issue uses the `Agentic-Assets/firecrawl` and `Local` labels. Decision-gated
+items also use `Needs Cayman` and `Human-Signoff`.
 
-### 1. local-agent: add read-only preflight capability contract
+| Plan item | Live Linear packet | Disposition |
+| --- | --- | --- |
+| Read-only preflight | [AGENTIC-2277](https://linear.app/agenticassets/issue/AGENTIC-2277/add-a-read-only-local-firecrawl-capability-preflight-for-agents) | new |
+| Bounded wait-job | [AGENTIC-2260](https://linear.app/agenticassets/issue/AGENTIC-2260/promote-metrics-only-local-api-helper-into-firecrawl-ops-crawl-poll) | updated existing helper packet |
+| CLI and MCP doctor | [AGENTIC-2278](https://linear.app/agenticassets/issue/AGENTIC-2278/pin-and-diagnose-local-firecrawl-cli-and-mcp-compatibility) | new |
+| Interface ladder and pilots | [AGENTIC-2279](https://linear.app/agenticassets/issue/AGENTIC-2279/publish-local-firecrawl-interface-ladder-and-bounded-agent-pilots) | new |
+| Model and OCR handoff | [AGENTIC-2280](https://linear.app/agenticassets/issue/AGENTIC-2280/document-a-queue-aware-model-and-ocr-capacity-handoff) | new |
+| Redacted receipts | [AGENTIC-2281](https://linear.app/agenticassets/issue/AGENTIC-2281/add-opt-in-redacted-local-firecrawl-run-receipts) | new |
+| Structured-output provenance | [AGENTIC-2282](https://linear.app/agenticassets/issue/AGENTIC-2282/add-structured-output-provenance-sidecar-for-a-named-workflow) | new, conditional and founder-gated |
+| PDF recommendation reader | [AGENTIC-188](https://linear.app/agenticassets/issue/AGENTIC-188/validate-full-pdf-text-extraction-pipeline-for-working-papers) | updated existing benchmark packet |
+| Validation-only crawl plans | [AGENTIC-195](https://linear.app/agenticassets/issue/AGENTIC-195/materialize-bounded-local-firecrawl-crawl-plans-without-auto-executing) | reframed existing swarm packet |
+| Sandbox decision | [AGENTIC-2283](https://linear.app/agenticassets/issue/AGENTIC-2283/decide-whether-to-build-an-isolated-local-firecrawl-agent-sandbox) | new and founder-gated |
+| Ingress decision | [AGENTIC-2284](https://linear.app/agenticassets/issue/AGENTIC-2284/decide-and-verify-local-firecrawl-ingress-posture) | new and founder-gated |
+
+### 1. local-agent: add read-only preflight capability contract — AGENTIC-2277
 
 - **Priority:** P1
 - **Objective:** Emit a versioned JSON decision surface for static route class,
@@ -224,8 +258,11 @@ candidates, not automatically new issues.
   redacted; unknown state is explicit.
 - **Out of scope:** Models, app code, optional service enablement, CRE paths,
   and a daemon.
+- **Execution aids:** `firecrawl-ops`, `firecrawl-local-api`, and
+  `cli-for-agents`; reuse capability-matrix inputs plus GET-only
+  `firecrawl_request.py health --metrics-only`.
 
-### 2. local-agent: generalize bounded waiting for crawl, batch scrape, and extract
+### 2. local-agent: generalize bounded waiting for crawl, batch scrape, and extract — AGENTIC-2260
 
 - **Priority:** P1
 - **Objective:** Add an allowlisted `wait-job` operation to the existing
@@ -234,10 +271,13 @@ candidates, not automatically new issues.
   mocked states pass for all three job shapes; terminal records omit bodies;
   healthy-host result matches the SDK terminal state.
 - **Disposition:** After live issue review, extend AGENTIC-2254 or AGENTIC-2260
-  if either still owns the missing job family. Create a new issue only when
-  neither definition of done covers it.
+  if either still owns the missing job family. **Live disposition:** update
+  AGENTIC-2260, which owns the helper, and preserve AGENTIC-2254's CLI-specific
+  scope.
+- **Execution aids:** `firecrawl-local-api`, `cli-for-agents`, `ruff`, and
+  `pytest-patterns`; reuse `firecrawl_request.py` rather than a new client.
 
-### 3. local-agent: pin and diagnose local Firecrawl CLI and MCP packages
+### 3. local-agent: pin and diagnose local Firecrawl CLI and MCP packages — AGENTIC-2278
 
 - **Priority:** P1
 - **Objective:** Verify named CLI and MCP package versions against the local
@@ -248,8 +288,10 @@ candidates, not automatically new issues.
 - **Guard:** Record explicit `FIRECRAWL_CLI_PACKAGE` and
   `FIRECRAWL_MCP_PACKAGE` versions for upgrade testing. Do not silently
   promote an untested `@latest` package.
+- **Execution aids:** `firecrawl-ops`, `firecrawl-local-api`, and
+  `cli-for-agents`; reuse `firecrawl_cli.sh` and `firecrawl_mcp.sh`.
 
-### 4. local-agent: publish the interface ladder and bounded agent pilots
+### 4. local-agent: publish the interface ladder and bounded agent pilots — AGENTIC-2279
 
 - **Priority:** P1
 - **Objective:** Keep Codex, Claude, Cursor, and shell agents on the right
@@ -258,8 +300,11 @@ candidates, not automatically new issues.
   artifacts, avoids CLI crawl wait, records package/profile provenance, and
   has fixture or host-local evidence.
 - **Out of scope:** Scheduler, cloud access, generic new client, and CRE work.
+- **Execution aids:** `firecrawl-ops`, `firecrawl-local-api`, and
+  `cli-for-agents`; use `sync_agent_skills.sh --dry-run`, the MCP wrapper,
+  Cursor adapter, and local agent skills without adding a runtime-specific API.
 
-### 5. local-agent: document exclusive model-profile and OCR-capacity handoff
+### 5. local-agent: document exclusive model-profile and OCR-capacity handoff — AGENTIC-2280
 
 - **Priority:** P1
 - **Objective:** Define a quiesce, change, recreate, health-check, canary, and
@@ -268,8 +313,11 @@ candidates, not automatically new issues.
   OCR 429/504/422 behavior; tests or dry-run checks prove profile actions are
   never taken automatically during active work.
 - **Out of scope:** New provider, automatic escalation, or OCR retry loop.
+- **Execution aids:** `firecrawl-ops` and existing `set_model_profile.sh`,
+  `local_firepdf_ocr.sh`, queue visibility, and host-local canaries. Vercel AI
+  Gateway remains the configured provider surface, not an agent-side switch.
 
-### 6. local-agent: add opt-in redacted run receipts
+### 6. local-agent: add opt-in redacted run receipts — AGENTIC-2281
 
 - **Priority:** P2
 - **Objective:** Write reproducible handoff evidence without copying content
@@ -278,8 +326,11 @@ candidates, not automatically new issues.
   body, headers, key, raw local path, or URL query/userinfo; success, error,
   and timeout results record body-retention as false.
 - **Gate:** Agree retention and cleanup before shared persistence.
+- **Execution aids:** `firecrawl-local-api`, `ruff`, `pytest-patterns`, and
+  `pytest-coverage` when a coverage target is agreed; reuse helper artifact
+  writers and `--metrics-only` rather than a telemetry service.
 
-### 7. local-agent: add a narrow structured-output provenance sidecar
+### 7. local-agent: add a narrow structured-output provenance sidecar — AGENTIC-2282
 
 - **Priority:** P2, conditional
 - **Objective:** Describe direct-valid, fallback-success, and failed-closed
@@ -291,8 +342,10 @@ candidates, not automatically new issues.
   fallback and a named consumer.
 - **Founder gate:** Apply Needs Cayman if the retention is product or research
   facing.
+- **Execution aids:** `firecrawl-local-api`, AI-gated API snips, the existing
+  Vercel AI Gateway profile, and `adversarial-pr-review` before adoption.
 
-### 8. local-agent: standardize consumption of PDF benchmark recommendations
+### 8. local-agent: standardize consumption of PDF benchmark recommendations — AGENTIC-188
 
 - **Priority:** P2
 - **Objective:** Define a versioned reader contract for existing benchmark
@@ -301,10 +354,13 @@ candidates, not automatically new issues.
   recommendation starts no OCR work and changes no profile.
 - **Dependency:** A named consumer and public or licensed canary corpus.
 - **Disposition:** After live issue review, update AGENTIC-2256 or AGENTIC-188
-  if either owns the quality contract. Create a new issue only for a distinct
-  consumer-facing reader contract.
+  if either owns the quality contract. **Live disposition:** update
+  AGENTIC-188, because it owns the working-paper benchmark contract; cross-link
+  AGENTIC-2256 without broadening its parser-structure scope.
+- **Execution aids:** `firecrawl-ops`, `firecrawl-local-api`, and
+  `pdf_ocr_benchmark.py`; use public or licensed fixtures only.
 
-### 9. local-agent: materialize bounded crawl plans without auto-executing them
+### 9. local-agent: materialize bounded crawl plans without auto-executing them — AGENTIC-195
 
 - **Priority:** P3
 - **Objective:** Validate natural-language params-preview output and require a
@@ -313,8 +369,11 @@ candidates, not automatically new issues.
   never posts a crawl; host proof uses preview followed by a distinct
   `limit: 1` crawl.
 - **Gate:** Preflight reports approved model capability and budget.
+- **Execution aids:** `firecrawl-local-api`, `cli-for-agents`, and the existing
+  `/v2/crawl/params-preview` route. The tool validates an explicit plan but
+  never executes it.
 
-### 10. security: decide whether a restricted local agent sandbox is justified
+### 10. security: decide whether a restricted local agent sandbox is justified — AGENTIC-2283
 
 - **Priority:** P3, decision-gated
 - **Objective:** Produce a threat model and go or no-go decision before any
@@ -324,8 +383,11 @@ candidates, not automatically new issues.
   proves no Docker, shared API, root environment, CRE, or database surface is
   reachable.
 - **Founder gate:** Needs Cayman plus Human-Signoff.
+- **Execution aids:** `codex-security:threat-model` only after approval, plus
+  `firecrawl-ops` static Compose evidence. No sandbox plugin, Docker socket,
+  or shared API access is granted by this issue.
 
-### 11. security: decide the local Firecrawl ingress posture
+### 11. security: decide the local Firecrawl ingress posture — AGENTIC-2284
 
 - **Priority:** P3, decision-gated
 - **Objective:** Decide whether host binding or firewall hardening is needed to
@@ -334,6 +396,9 @@ candidates, not automatically new issues.
   intended local clients; record a go or no-go decision, rollback, and proof.
 - **Founder gate:** Needs Cayman plus Human-Signoff. No binding or network
   change is authorized by this plan.
+- **Execution aids:** `codex-security:threat-model` and `firecrawl-ops`; use
+  read-only Compose, host-firewall, and reachability evidence before any
+  change proposal.
 
 ## Measures and release gates
 

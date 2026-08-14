@@ -42,20 +42,33 @@ and safer for local AI agents, with a strict commercial-real-estate boundary.
 - Preserve CRE collector, SQL, Supabase, scheduler, environment, and OM-facts
   isolation. No files in those surfaces changed.
 
+## 2026-08-14 tracking addendum
+
+- Cayman refreshed the host Keychain-backed Linear credential. A live project
+  and issue inventory then deduplicated the roadmap against AGENTIC-2253 and
+  its existing child work.
+- Created eight detailed local-only issue packets: AGENTIC-2277 through
+  AGENTIC-2284. Updated AGENTIC-2260 for multi-family bounded waiting,
+  AGENTIC-188 for the PDF recommendation reader contract, and AGENTIC-195 for
+  validation-only crawl planning. The roadmap now links all eleven live
+  packets and records per-packet skills, plugin guidance, and reuse tools.
+- All new or updated packets carry `Agentic-Assets/firecrawl`, `Local`,
+  `agent:local`, and `DoD:Set`. Conditional provenance, sandbox, and ingress
+  packets also carry `Needs Cayman` and `Human-Signoff`.
+- The Linear desktop plugin still has no callable tool in this session; the
+  authenticated host `linear` CLI and `linear-cli` skill are the evidenced
+  tracking path.
+
 ## Deferred and blocked
 
-- Actual Linear issue creation and deduplication are blocked by the missing
-  `agenticassets` credential in the local Linear CLI. The requested plugin has
-  no callable tool in this session. The roadmap contains issue-ready packets;
-  do not claim they were created until project readback succeeds.
 - Current local runtime health was not re-proved because the managed session
   cannot access the OrbStack Docker socket or `localhost:3002`.
 - No runtime, model, OCR, network, sandbox, or CRE change was attempted.
 
 ## Operator handoff
 
-1. Restore the Linear `agenticassets` credential, then re-query Firecrawl Ops
-   & Automation and AGENTIC-2253 before creating or updating the packets.
-2. Review draft PR #33. Merge remains a founder decision.
-3. Before implementing any roadmap item, run a host-local preflight and use
+1. Review the live packet map in
+   [`local-agent-adoption-plan.md`](../../docs/firecrawl-ops/references/local-agent-adoption-plan.md)
+   and choose a P1 packet. Merge of draft PR #33 remains a founder decision.
+2. Before implementing any roadmap item, run a host-local preflight and use
    public, authorized, or synthetic fixtures only.
