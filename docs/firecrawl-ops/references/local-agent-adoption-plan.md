@@ -51,6 +51,11 @@ implementation starts with a host-local, bounded preflight.
 - Agents do not autonomously change model or OCR profiles. Those are
   shared-runtime operations that can rewrite the root environment and recreate
   the API.
+- Agent-facing recipes must use an explicit agent-safe wrapper mode: it accepts
+  only named loopback API origins, rejects profile-changing flags before any
+  write or Docker call, and requires bounded crawl caps before POSTing. A
+  human-operated non-local or profile-changing path remains a distinct,
+  explicitly authorized operation.
 - Logs and receipts exclude source bodies, raw HTML, headers, cookies,
   credentials, URL query strings, deal data, and client documents.
 - A successful HTTP response is not automatically a high-quality document
@@ -64,12 +69,14 @@ a separate founder-gated item.
 ## Interface selection rules
 
 1. Use MCP for interactive discovery when the client has registered the local
-   wrapper.
-2. Use the upstream CLI for normal interactive scrape, map, parse, and search.
+   wrapper. Agent recipes enable the agent-safe mode rather than inheriting an
+   ambient endpoint.
+2. Use the upstream CLI wrapper for normal interactive scrape, map, parse, and
+   search. Its agent-safe mode must accept only the documented local origins.
 3. Use `firecrawl_request.py` for saved artifacts, advanced PDF controls,
    metrics-only output, or bounded polling. Never use CLI `crawl --wait` for
-   local agent automation.
-4. Use official SDKs for application code, with explicit API URL, timeout,
+   local agent automation. Agent-safe requests reject profile-changing flags.
+4. Use official SDKs for application code, with explicit local API URL, timeout,
    retry, job status, and cancellation lifecycle.
 5. Use direct HTTP only when debugging exact request or response behavior.
 
@@ -88,7 +95,7 @@ the `linear-cli` skill instead.
 | Work type | Skills or plugin guidance | Existing tools to reuse |
 | --- | --- | --- |
 | Local runtime and endpoint choice | `firecrawl-ops`, then `firecrawl-local-api` | `firecrawl_healthcheck.sh`, `local_api_smoke_matrix.py`, `local_capability_matrix.py`, `firecrawl_request.py` |
-| Agent-friendly command design | `cli-for-agents` | `firecrawl_cli.sh`, `firecrawl_mcp.sh`, explicit `FIRECRAWL_CLI_PACKAGE` and `FIRECRAWL_MCP_PACKAGE` pins |
+| Agent-friendly command design | `cli-for-agents` | `firecrawl_cli.sh`, `firecrawl_mcp.sh`, an exact checked-in CLI/MCP compatibility manifest, and an explicit human upgrade probe |
 | Python helper changes | `ruff`, `pytest-patterns`, and `pytest-coverage` when a coverage target is agreed | `ruff`, `py_compile`, focused tests, monotonic-time and HTTP fixtures |
 | API or model-path changes | `firecrawl-local-api` and the API harness rules in `AGENTS.md` | `pnpm harness vitest run <pattern>`, AI-gated snips, Vercel AI Gateway provider configuration |
 | Security decision work | `codex-security:threat-model`, only after a founder-authorized repository-scoped decision | static allowlist/deny tests, Compose inspection, no live ingress or sandbox change |
@@ -111,14 +118,19 @@ compact versioned JSON document with:
 - freshness of the most recent smoke evidence;
 - required versus absent optional services;
 - redacted model-capability status, never environment values;
-- resolved CLI and MCP package version when a bounded batch declares one.
+- a named capability result for `base_http`, `async_jobs`, `cli`, `mcp`,
+  `ai_formats`, and `pdf_ocr`, each with an evidence kind and checked time;
+- declared immutable CLI and MCP package specifications when a bounded batch
+  supplies them. Dynamic package resolution remains unknown in preflight.
 
 Also run `sync_agent_skills.sh --dry-run` before a pilot that depends on an
 installed skill, so the local agent sees the intended checked-in guidance.
 
 The preflight performs only static reads and local API GET checks. It makes no
 POST, scrape, model call, profile switch, or container mutation. Unknown must
-remain unknown.
+remain unknown. An optional read-only `--require <capability>` fails closed if
+the requested capability is unknown, stale, or unavailable; basic API
+reachability never proves an AI, OCR, browser, or agent capability.
 
 ### Phase 1: adopt three bounded pilots before adding infrastructure
 
@@ -127,42 +139,60 @@ and caller-selected task artifacts:
 
 First, run `firecrawl_healthcheck.sh --evidence-dir <task-local-dir>` and the
 smoke matrix against a bounded public fixture. Those are host-local validation
-steps, not preflight: they can perform scrape and other POST requests.
+steps, not preflight: they can perform scrape and other POST requests. The
+pilot runner gives the healthcheck a 45-second outer deadline and invokes it
+with conservative `FIRECRAWL_HEALTHCHECK_CONNECT_TIMEOUT`,
+`FIRECRAWL_HEALTHCHECK_MAX_TIME`, `FIRECRAWL_HEALTHCHECK_RETRIES`, and
+`FIRECRAWL_HEALTHCHECK_RETRY_DELAY` values. A host that cannot provide that
+outer deadline stops before the POST-capable pilot.
 
 1. **Public scrape and map:** one known public URL, explicit timeout, output
    directory, terminal status, and no source body in the transcript.
-2. **Helper crawl submit and poll:** one small public crawl, saved job ID,
-   explicit deadline, metrics-only terminal output, and nonzero failure
-   behavior.
+2. **Helper crawl submit and poll:** one public crawl with explicit domain and
+   path scope, `limit: 1`, `maxConcurrency: 1`, an output-size bound, saved job
+   ID, explicit deadline, metrics-only terminal output, and nonzero failure
+   behavior. The agent-safe submit path rejects omitted or over-threshold caps
+   before POSTing.
 3. **Born-digital PDF parse:** one public or authorized file, explicit
    `max-pages`, saved Markdown/metadata, and an accept, manual-review, or
    reject disposition.
 
 Until helper receipts are implemented, use one task-local manifest containing
 intent, input hash or redacted URL, package version, interface, limits, job ID,
-artifact path/checksum, terminal state, and evidence link. It is an execution
-artifact, not a durable queue. Linear and Git remain the durable decision and
-implementation records.
+an `artifact_ref` (opaque ID plus checksum and, when essential, a controlled
+task-relative name), terminal state, and evidence link. It must reject absolute
+paths and parent traversal; any local resolution map is not persisted with the
+manifest. The manifest is an execution artifact, not a durable queue. Linear
+and Git remain the durable decision and implementation records.
 
 ### Phase 2: close the demonstrated agent ergonomics gaps
 
 Prioritize only the following narrow changes:
 
-1. **Read-only capability preflight** for machine selection.
-2. **Bounded wait-job** for existing crawl, batch-scrape, and extract IDs.
-3. **Versioned CLI and MCP compatibility doctor** for verified CLI command
-   contracts plus MCP initialize and tools-list.
-4. **Interface-ladder recipes** in the local agent skill.
+1. **Read-only capability preflight** with a versioned per-capability contract
+   for machine selection.
+2. **Bounded wait-job** for existing crawl and batch-scrape IDs. New structured
+   work uses v2 scrape JSON; any deprecated extract compatibility requires a
+   named legacy consumer and a separate follow-on decision.
+3. **Versioned CLI and MCP compatibility doctor** that writes the exact tested
+   package specifications into the normal agent-wrapper path and reserves
+   `@latest` for an explicit human upgrade probe.
+4. **Interface-ladder recipes** in the local agent skill, including the
+   loopback-only, no-profile-mutation, bounded-crawl agent-safe wrapper mode.
 5. **Opt-in redacted receipts** when a pilot proves a recurring handoff need.
 
 Every polling request and sleep must stay within the remaining monotonic
 deadline. Every terminal failed, cancelled, or timed-out state must exit
-nonzero and preserve a body-free terminal record.
+nonzero and preserve a body-free terminal record. Crawl submission accepts a
+validated UUID idempotency key where available. Reuse of that key prevents a
+second job but does not recover an unknown job ID: a 409 still leaves the
+outcome unknown and never authorizes an automatic resubmission.
 
 ### Phase 3: apply model and OCR work only in an exclusive operator window
 
 AI-backed summary, JSON, query, preview, or OCR work is not a per-agent default.
-Before a model or OCR profile change:
+It begins only after the model/OCR handoff proves profile-changing flags are
+rejected from agent-safe command paths. Before a model or OCR profile change:
 
 1. Check the queue and active work.
 2. Quiesce or obtain an exclusive operator window.
@@ -190,7 +220,9 @@ representative evidence and human review.
   existing result.
 - **Validation-only crawl-plan materializer:** reuse params-preview only to
   produce a validated candidate payload. It never launches work and must
-  preserve or reduce user caps.
+  preserve or reduce user caps while also enforcing static maxima for page
+  count, depth, concurrency, timeout, artifact size, and permitted public host
+  classes. It rejects private, loopback, link-local, and metadata targets.
 - **Restricted agent sandbox:** make this a founder decision and threat-model
   first. It is not an early default. A future pilot would require a separate
   compose project and unprivileged identity with no repository mount, Docker
@@ -251,10 +283,16 @@ items also use `Needs Cayman` and `Human-Signoff`.
 ### 1. local-agent: add read-only preflight capability contract — AGENTIC-2277
 
 - **Priority:** P1
-- **Objective:** Emit a versioned JSON decision surface for static route class,
-  host-local API and queue observations, prerequisites, and smoke freshness.
-- **Definition of done:** Ready, degraded, unavailable, and stale-evidence
-  fixtures pass; no non-GET request or runtime mutation occurs; secrets are
+- **Objective:** Emit a versioned JSON decision surface for named capabilities,
+  static route class, host-local API and queue observations, prerequisites, and
+  smoke freshness.
+- **Definition of done:** The schema requires `schema_version`, `observed_at`,
+  `evidence_digest` or source, per-capability `state`, `evidence_kind`, and
+  `checked_at`. The state enum is `ready`, `degraded`, `unavailable`, `stale`,
+  or `unknown`; an invalid or absent timestamp is `unknown`, never fresh. A
+  caller-visible maximum evidence age and `--require <capability>` fixtures
+  pass for `base_http`, `async_jobs`, `cli`, `mcp`, `ai_formats`, and
+  `pdf_ocr`; no non-GET request or runtime mutation occurs; secrets are
   redacted; unknown state is explicit.
 - **Out of scope:** Models, app code, optional service enablement, CRE paths,
   and a daemon.
@@ -266,10 +304,17 @@ items also use `Needs Cayman` and `Human-Signoff`.
 
 - **Priority:** P1
 - **Objective:** Add an allowlisted `wait-job` operation to the existing
-  helper for known job IDs only.
-- **Definition of done:** Completed, failed, cancelled, timeout, and transient
-  mocked states pass for all three job shapes; terminal records omit bodies;
-  healthy-host result matches the SDK terminal state.
+  helper for known crawl and batch-scrape IDs only.
+- **Definition of done:** A route table names each initial status endpoint, ID
+  field, terminal and failure states, and body-free terminal projection.
+  Route-specific completed, failed, cancelled, timeout, transient, and unknown
+  status fixtures pass; unknown status fails closed; terminal records omit
+  bodies; a healthy-host result matches the SDK/API terminal state. Crawl
+  submit accepts a UUID `--idempotency-key`; reuse prevents a second job but a
+  duplicate 409 remains `outcome_unknown` rather than a recovered job ID.
+- **Compatibility boundary:** New structured work uses v2 scrape JSON. Add
+  deprecated v2 extract waiting only for a named legacy consumer in a separate
+  compatibility subtask.
 - **Disposition:** After live issue review, extend AGENTIC-2254 or AGENTIC-2260
   if either still owns the missing job family. **Live disposition:** update
   AGENTIC-2260, which owns the helper, and preserve AGENTIC-2254's CLI-specific
@@ -284,10 +329,13 @@ items also use `Needs Cayman` and `Human-Signoff`.
   API, including one supported CLI command and MCP initialize/tools-list.
 - **Definition of done:** Fake-stdio and healthy-host opt-in checks pass;
   package-resolution, API, CLI-contract, protocol, and inventory failures are
-  actionable; MCP protocol stdout stays clean.
+  actionable; MCP protocol stdout stays clean. A single checked-in
+  compatibility manifest supplies exact non-secret package defaults to ordinary
+  agent wrappers, and wrapper tests fail if that path resolves `@latest`.
 - **Guard:** Record explicit `FIRECRAWL_CLI_PACKAGE` and
-  `FIRECRAWL_MCP_PACKAGE` versions for upgrade testing. Do not silently
-  promote an untested `@latest` package.
+  `FIRECRAWL_MCP_PACKAGE` versions in the manifest and diagnostics. Do not
+  silently promote an untested `@latest` package; it is a visibly labelled,
+  human-run upgrade probe with rollback evidence only.
 - **Execution aids:** `firecrawl-ops`, `firecrawl-local-api`, and
   `cli-for-agents`; reuse `firecrawl_cli.sh` and `firecrawl_mcp.sh`.
 
@@ -298,7 +346,12 @@ items also use `Needs Cayman` and `Human-Signoff`.
   existing interface, then prove three bounded pilots.
 - **Definition of done:** Each recipe is noninteractive, names inputs and
   artifacts, avoids CLI crawl wait, records package/profile provenance, and
-  has fixture or host-local evidence.
+  has fixture or host-local evidence. Agent recipes use a wrapper mode that
+  rejects non-loopback API origins and profile-changing flags before any HTTP,
+  npm, Docker, or environment mutation. The crawl pilot requires explicit
+  domain/path scope, a positive page cap, bounded output, and low concurrency;
+  its first host proof uses `limit: 1` and `maxConcurrency: 1`. The healthcheck
+  runs within an agent-sized outer deadline with conservative retry settings.
 - **Out of scope:** Scheduler, cloud access, generic new client, and CRE work.
 - **Execution aids:** `firecrawl-ops`, `firecrawl-local-api`, and
   `cli-for-agents`; use `sync_agent_skills.sh --dry-run`, the MCP wrapper,
@@ -311,7 +364,14 @@ items also use `Needs Cayman` and `Human-Signoff`.
   handoff protocol for shared model and OCR profiles.
 - **Definition of done:** Queue-aware procedure covers provider approval and
   OCR 429/504/422 behavior; tests or dry-run checks prove profile actions are
-  never taken automatically during active work.
+  never taken automatically during active work. The only mutable path is an
+  operator-only entrypoint that performs bounded queue and active-work checks,
+  fails closed for active or unknown state, and records authorization before
+  touching `.env` or Compose. Rejection tests prove agent-safe wrapper flags
+  leave `.env` byte-identical and never invoke Docker. The exact non-secret
+  Gateway mapping is documented and static-tested against the profile setter:
+  Flash `deepseek/deepseek-v4-flash-0731` plus the bounded Pro
+  `deepseek/deepseek-v4-pro-0813` fallback.
 - **Out of scope:** New provider, automatic escalation, or OCR retry loop.
 - **Execution aids:** `firecrawl-ops` and existing `set_model_profile.sh`,
   `local_firepdf_ocr.sh`, queue visibility, and host-local canaries. Vercel AI
@@ -324,7 +384,10 @@ items also use `Needs Cayman` and `Human-Signoff`.
   into logs.
 - **Definition of done:** Secret-injection fixtures prove receipts contain no
   body, headers, key, raw local path, or URL query/userinfo; success, error,
-  and timeout results record body-retention as false.
+  and timeout results record body-retention as false. The receipt uses an
+  `artifact_ref` (opaque ID plus checksum and optional controlled relative
+  name), rejects absolute paths and parent traversal, and never persists its
+  local resolution map.
 - **Gate:** Agree retention and cleanup before shared persistence.
 - **Execution aids:** `firecrawl-local-api`, `ruff`, `pytest-patterns`, and
   `pytest-coverage` when a coverage target is agreed; reuse helper artifact
@@ -367,7 +430,10 @@ items also use `Needs Cayman` and `Human-Signoff`.
   separate explicit crawl action.
 - **Definition of done:** Unsafe or over-broad plans fail fixtures; the planner
   never posts a crawl; host proof uses preview followed by a distinct
-  `limit: 1` crawl.
+  `limit: 1` crawl. A static policy sets maxima for limit, depth, concurrency,
+  timeout, artifact size, and permitted public hosts; caller and generated
+  plans must both satisfy it and reject private, loopback, link-local, and
+  metadata targets.
 - **Gate:** Preflight reports approved model capability and budget.
 - **Execution aids:** `firecrawl-local-api`, `cli-for-agents`, and the existing
   `/v2/crawl/params-preview` route. The tool validates an explicit plan but
@@ -406,6 +472,20 @@ Track preflight accuracy, jobs with a saved ID, unknown-outcome and
 duplicate-submission rate, p95 duration, schema-validity rate, OCR 422/429/504
 rate, receipt completeness, reproducible rerun rate, and exact CLI/MCP package
 version.
+
+### P1 scorecard
+
+This scorecard reuses fixtures and host-proof artifacts. It is a decision aid,
+not a telemetry service. A packet does not advance merely because one happy
+path passed.
+
+| Packet | Denominator and pass rule | Body-free evidence | Next decision |
+| --- | --- | --- | --- |
+| AGENTIC-2277 | Every named capability fixture validates against the versioned schema; each `--require` case fails closed for unknown, stale, or unavailable capability. | JSON fixture summary and GET-only host observation | Permit only the capability-specific pilot it reports ready. |
+| AGENTIC-2260 | Every route-specific terminal, transient, timeout, and unknown-status fixture has the expected exit behavior; no body is emitted on non-success. | Fixture report plus one bounded public route result | Keep crawl/batch polling shell-stable or stop on contract mismatch. |
+| AGENTIC-2278 | Both unset-variable normal paths use the exact manifest pins; CLI and MCP doctor checks pass or report an actionable failure class. | Versioned doctor result with package specs | Promote only the tested pinned defaults; otherwise retain the prior pins. |
+| AGENTIC-2279 | Each of the three pilots has a bounded fixture or authorized host proof and an explicit accept, manual-review, or reject disposition. | Task-local manifest with `artifact_ref`, terminal state, and evidence link | Publish only recipes with an accepted or explicitly constrained outcome. |
+| AGENTIC-2280 | Agent-safe rejection fixtures show no `.env` or Docker mutation; authorized operator-window evidence shows queue check, canary, and handoff. | Static test result and body-free operator handoff record | Allow an AI or OCR canary only after the guard is proven. |
 
 No proof may create CRE collection, ingest, migration, status activation,
 scheduler, cache, or database activity. Use public, licensed, or synthetic

@@ -59,6 +59,26 @@ and safer for local AI agents, with a strict commercial-real-estate boundary.
   authenticated host `linear` CLI and `linear-cli` skill are the evidenced
   tracking path.
 
+## 2026-08-14 adversarial-review addendum
+
+- Four independent finder passes reviewed roadmap coherence, agent operations,
+  Linear packet quality, and user value. Separate skeptic passes confirmed only
+  the actionable findings. The report set and synthesis are in
+  [`adversarial-reviews/`](adversarial-reviews/).
+- Updated the plan, forward queue, root agent guidance, and model-routing
+  reference to require exact normal-path package pins, capability-specific
+  preflight states, loopback-only agent-safe wrapper behavior, bounded pilot
+  caps, an operator-only profile path, explicit Gateway snapshot IDs, and a
+  compact P1 scorecard.
+- Updated only the descriptions of AGENTIC-2253, 195, 2260, and 2277 through
+  2281. Live readback confirmed each remains Backlog and unassigned with its
+  prior priority and labels intact. No status, assignee, routing label, founder
+  gate, runtime, model, OCR, network, or CRE surface changed.
+- Skeptics deliberately rejected adding blocker relations merely to encode
+  sequence, reviving v2 extract waiting without a named legacy consumer,
+  expanding SDK recipe detail without a named consumer, or changing
+  sandbox/ingress decision gates.
+
 ## Deferred and blocked
 
 - Current local runtime health was not re-proved because the managed session

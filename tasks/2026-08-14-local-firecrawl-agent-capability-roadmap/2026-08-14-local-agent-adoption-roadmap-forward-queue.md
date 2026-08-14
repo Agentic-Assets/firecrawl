@@ -7,14 +7,19 @@ roadmap. Verify each item against live Linear and the host runtime before work.
 
 - **Create the read-only capability preflight** (confidence: verified gap, P1)
   Reuse static capability data and GET-only health visibility so agents can
-  distinguish unavailable, optional, stale, and unknown capability states
-  before they submit work.
+  distinguish base HTTP, async jobs, CLI/MCP, AI formats, and PDF OCR states
+  before they submit work. Require an explicit capability and fail closed on
+  unknown, stale, or unavailable evidence.
 - **Generalize bounded waiting by job ID** (confidence: verified gap, P1)
-  Extend the helper's crawl waiting contract to batch scrape and extract,
-  retaining metrics-only terminal records and nonzero failures.
+  Extend the helper's crawl waiting contract to batch scrape, retaining
+  route-specific terminal rules, metrics-only terminal records, nonzero
+  failures, and a crawl idempotency key. Do not expand new workflows around
+  deprecated v2 extract without a named legacy consumer.
 - **Verify named CLI and MCP versions** (confidence: verified gap, P1)
-  Replace unrecorded `@latest` batch dependence with explicit tested package
-  versions and a small doctor for CLI contract plus MCP initialize/tools-list.
+  Replace unrecorded `@latest` batch dependence with exact checked-in package
+  defaults and a small doctor for CLI contract plus MCP initialize/tools-list.
+  Treat `@latest` as a visibly labelled human upgrade probe with rollback
+  evidence.
 
 ## Process and docs
 
@@ -25,10 +30,14 @@ roadmap. Verify each item against live Linear and the host runtime before work.
   with proof that the shared stack is healthy.
 - **Publish tested local-agent recipes** (confidence: strong opportunity, P1)
   Sync the selection ladder and bounded research, PDF, map-first, and SDK
-  recipes after each has fixture or host-local evidence.
+  recipes after each has fixture or host-local evidence. Agent-safe wrapper
+  recipes reject remote endpoints and profile-changing flags before work, and
+  crawl pilots require explicit small caps.
 - **Document shared model/OCR handoff** (confidence: verified operational
   risk, P1) Require queue check, exclusive operator window, provider approval,
-  recreate/health check, one canary, and deliberate restore/handoff.
+  recreate/health check, one canary, and deliberate restore/handoff. It must
+  be an operator-only mutation path with tests proving agent flags cannot write
+  `.env` or recreate the API.
 
 ## Robustness
 

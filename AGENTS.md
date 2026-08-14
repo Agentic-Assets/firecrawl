@@ -85,7 +85,12 @@ This fork adds a self-hosted operations layer on top of upstream Firecrawl. It i
 - `firecrawl-ops` — runtime health, Docker, model routing, endpoint selection
 - `firecrawl-local-api` — calling the local API at `http://localhost:3002`
 
-Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/deepseek-v4-pro` (OpenRouter). Verified locally on 2026-05-23.
+Default model routing: Vercel AI Gateway `gateway` profile with
+`deepseek/deepseek-v4-flash-0731` and a one-time
+`deepseek/deepseek-v4-pro-0813` fallback only for missing or schema-invalid
+structured summary/JSON output. `budget` and `escalated` remain explicit
+OpenRouter alternatives; shared profile changes require the operator procedure
+in `docs/firecrawl-ops/references/model-routing.md`.
 - `docs/firecrawl-ops/references/` — durable reference docs:
   - `tools-capabilities.md` — endpoint-by-endpoint capability map
   - `local-pdf-ocr-plan.md` — chosen local Docling OCR adapter plan and alternatives
