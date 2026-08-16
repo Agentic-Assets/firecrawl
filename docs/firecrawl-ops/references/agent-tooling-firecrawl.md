@@ -10,7 +10,7 @@ This repo keeps the local Firecrawl tool layer separate from any one agent model
    - No Firecrawl cloud credits when agents call the local API.
 
 2. **Portable tool interfaces**
-   - HTTP API: direct calls to `/v2/scrape`, `/v2/search`, `/v2/map`, `/v2/crawl`, `/v2/batch/scrape`, `/v2/parse`, and `/v2/extract`.
+   - HTTP API: direct calls to `/v2/scrape`, `/v2/search`, `/v2/map`, `/v2/crawl`, `/v2/batch/scrape`, and `/v2/parse`. `/v2/extract` remains available for legacy schema jobs but is deprecated in favor of `/v2/scrape` with a `json` format object.
    - CLI: `scripts/firecrawl-ops/firecrawl_cli.sh` runs the upstream Firecrawl CLI against the local API.
    - Agent HTTP helper: `scripts/firecrawl-ops/firecrawl_request.py` for bounded crawl polling, body-free metrics, saved artifacts, and direct API options the CLI does not expose.
    - MCP: `scripts/firecrawl-ops/firecrawl_mcp.sh`.

@@ -148,6 +148,18 @@ class LocalApiSmokeMatrixTests(unittest.TestCase):
     def test_optional_service_gates_require_current_configuration_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             ctx = self.make_context(Path(tmp_dir))
+            with patch.object(
+                MODULE,
+                "request_json",
+                return_value=(
+                    503,
+                    {"error": "Browser feature is not configured (BROWSER_SERVICE_URL is missing)."},
+                ),
+            ):
+                self.assertEqual(
+                    MODULE.check_browser_list(ctx)[2],
+                    "browser service not configured as expected",
+                )
             with patch.object(MODULE, "request_json", return_value=(503, {"error": "EXTRACT_V3_BETA_URL missing"})):
                 self.assertEqual(MODULE.check_optional_agent_create(ctx)[2], "agent service not configured as expected")
             with patch.object(MODULE, "request_json", return_value=(503, {"error": "support_agent_unavailable"})):
@@ -157,6 +169,13 @@ class LocalApiSmokeMatrixTests(unittest.TestCase):
             with patch.object(MODULE, "request_json", return_value=(500, {"error": "Agent beta is not enabled"})):
                 with self.assertRaisesRegex(AssertionError, "unexpected agent"):
                     MODULE.check_optional_agent_create(ctx)
+            with patch.object(MODULE, "request_json", return_value=(500, {"error": "unexpected"})):
+                self.assertRaisesRegex(
+                    AssertionError,
+                    "unexpected browser list",
+                    MODULE.check_browser_list,
+                    ctx,
+                )
 
     def test_core_probe_contracts_cover_scrape_parse_async_and_queue_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -16,6 +16,19 @@ import unittest
 from pathlib import Path
 
 WRAPPER_PATH = Path(__file__).resolve().parents[1] / "firecrawl_cli.sh"
+REPO_ROOT = WRAPPER_PATH.parents[2]
+CLI_DOCUMENTATION = (
+    ".agents/skills/firecrawl-ops/SKILL.md",
+    ".agents/skills/firecrawl-local-api/SKILL.md",
+    "LOCAL_DEVELOPMENT_GUIDE.md",
+    "docs/firecrawl-ops/references/ops-playbook.md",
+    "scripts/firecrawl-ops/README.md",
+)
+SEARCH_PRETTY_EXAMPLE = r"firecrawl_cli\.sh search[^\n]*(?:--pretty|\\\n\s+--[^\n]*--pretty)"
+SWARM_PIPELINE_DOCUMENTATION = (
+    "LOCAL_DEVELOPMENT_GUIDE.md",
+    "docs/firecrawl-ops/references/cayman-use-cases-and-playbooks.md",
+)
 
 
 def write_executable(path: Path, text: str) -> None:
@@ -187,6 +200,18 @@ capture.write_text(json.dumps({
                     self.assertEqual(result.returncode, 2)
                     self.assertIn("operator_handoff", result.stderr)
                     self.assertFalse(capture.exists())
+
+    def test_cli_documentation_does_not_offer_unsupported_search_pretty_flag(self) -> None:
+        for relative_path in CLI_DOCUMENTATION:
+            with self.subTest(relative_path=relative_path):
+                source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertNotRegex(source, SEARCH_PRETTY_EXAMPLE)
+
+    def test_swarm_pipeline_documentation_does_not_offer_disabled_restart_flag(self) -> None:
+        for relative_path in SWARM_PIPELINE_DOCUMENTATION:
+            with self.subTest(relative_path=relative_path):
+                source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertNotIn("`--restart-between-stages`", source)
 
 
 if __name__ == "__main__":

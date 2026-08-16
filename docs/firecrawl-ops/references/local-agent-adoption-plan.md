@@ -369,13 +369,15 @@ items also use `Needs Cayman` and `Human-Signoff`.
   fails closed for active or unknown state, and records authorization before
   touching `.env` or Compose. Rejection tests prove agent-safe wrapper flags
   leave `.env` byte-identical and never invoke Docker. The exact non-secret
-  Gateway mapping is documented and static-tested against the profile setter:
-  Flash `deepseek/deepseek-v4-flash-0731` plus the bounded Pro
-  `deepseek/deepseek-v4-pro-0813` fallback.
+  Gateway mapping is documented and static-tested against the guarded handoff:
+  Flash `deepseek/deepseek-v4-flash-0731` and the separately selectable Pro
+  profile `deepseek/deepseek-v4-pro-0813`. The current API has no automatic
+  structured-output fallback.
 - **Out of scope:** New provider, automatic escalation, or OCR retry loop.
-- **Execution aids:** `firecrawl-ops` and existing `set_model_profile.sh`,
-  `local_firepdf_ocr.sh`, queue visibility, and host-local canaries. Vercel AI
-  Gateway remains the configured provider surface, not an agent-side switch.
+- **Execution aids:** `firecrawl-ops`,
+  `firecrawl_operator_handoff.py`, `local_firepdf_ocr.sh`, queue visibility,
+  and host-local canaries. Vercel AI Gateway remains the configured provider
+  surface, not an agent-side switch.
 
 ### 6. local-agent: add opt-in redacted run receipts — AGENTIC-2281
 

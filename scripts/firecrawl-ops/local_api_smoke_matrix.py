@@ -359,6 +359,10 @@ def check_active_crawls(ctx: SmokeContext) -> tuple[int, Any, str]:
 
 def check_browser_list(ctx: SmokeContext) -> tuple[int, Any, str]:
     http_status, payload = request_json(ctx, "GET", "/v2/browser")
+    if http_status == 503 and "BROWSER_SERVICE_URL" in json_text(payload):
+        return http_status, payload, "browser service not configured as expected"
+    if http_status >= 400:
+        raise AssertionError(f"unexpected browser list response HTTP {http_status}")
     expect_http_success(http_status, payload)
     sessions = payload.get("sessions") if isinstance(payload, dict) else None
     return http_status, payload, f"sessions={len(sessions or [])}"

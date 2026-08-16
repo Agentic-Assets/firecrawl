@@ -26,8 +26,10 @@ Verified locally on 2026-08-13 after rebuilding the OrbStack Docker stack and te
 - External Fire PDF or RunPod MinerU env can also be used, but those may spend that provider's budget
 
 ### `POST /v2/extract` + `GET /v2/extract/:id`
-- Best for: async structured extraction from URLs
-- Works locally with an explicit schema and a valid LLM profile
+- Legacy async structured extraction from URLs
+- Works locally with an explicit schema and a valid LLM profile, but the API
+  marks it deprecated and directs new callers to `/v2/scrape` with a `json`
+  format object
 - Prefer v2 scrape `json` format for one-page extraction when possible
 
 ### `POST /v2/crawl/params-preview`
@@ -115,7 +117,7 @@ scripts/firecrawl-ops/check_pnpm_docker_config.py
 Before an agent submits local work, use the read-only preflight:
 
 ```bash
-scripts/firecrawl-ops/local_agent_preflight.py --require base_http
+python3 scripts/firecrawl-ops/local_agent_preflight.py --require base_http
 ```
 
 It emits one compact versioned JSON document for `base_http`, `async_jobs`,
@@ -205,7 +207,9 @@ The benchmark now saves `fields/pages.jsonl`, `qa.json`, and `qa.md` per case wh
 - Need many pages -> `v2/crawl`, then poll status through an SDK or `firecrawl_request.py crawl --wait`
 - Need a local file parsed -> `v2/parse` or CLI `parse`
 - Need structured fields/entities from one page -> `v2/scrape` with `json`
-- Need async structured fields/entities from multiple pages -> `v2/extract`
+- Need async structured fields/entities from multiple pages -> legacy
+  `v2/extract` still works with a schema, but prefer the `/v2/scrape` JSON
+  format replacement when it meets the workflow
 - Need RSS/Atom items -> native HTTP plus an XML feed parser, not generic scrape
 
 Search backend selection is Fire Engine when configured, then SearxNG when configured, then DuckDuckGo HTML. Search is discovery only: hit ranks can vary and must not be treated as reproducible source evidence. The CRE collector remains governed by its source-specific SDK/API contracts and does not use the generic helper as a collection path.
