@@ -29,6 +29,17 @@ SWARM_PIPELINE_DOCUMENTATION = (
     "LOCAL_DEVELOPMENT_GUIDE.md",
     "docs/firecrawl-ops/references/cayman-use-cases-and-playbooks.md",
 )
+LOCAL_API_SKILL = ".agents/skills/firecrawl-local-api/SKILL.md"
+STATEFUL_CLI_COMMANDS = (
+    "config",
+    "setup",
+    "init",
+    "make",
+    "launch",
+    "env",
+    "login",
+    "logout",
+)
 
 
 def write_executable(path: Path, text: str) -> None:
@@ -212,6 +223,21 @@ capture.write_text(json.dumps({
             with self.subTest(relative_path=relative_path):
                 source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
                 self.assertNotIn("`--restart-between-stages`", source)
+
+    def test_local_api_skill_limits_cli_to_non_mutating_calls(self) -> None:
+        source = (REPO_ROOT / LOCAL_API_SKILL).read_text(encoding="utf-8")
+
+        self.assertIn("non-mutating local API calls", source)
+        self.assertNotIn("config/setup, and anything listed", source)
+        self.assertIn(
+            "~/.agents/skills/firecrawl-local-api/scripts/firecrawl_compatibility_doctor.py",
+            source,
+        )
+        self.assertIn("`success` and `data` envelope fields", source)
+        self.assertIn("`id` and `creditsUsed`", source)
+        for command in STATEFUL_CLI_COMMANDS:
+            with self.subTest(command=command):
+                self.assertIn(f"`{command}`", source)
 
 
 if __name__ == "__main__":
