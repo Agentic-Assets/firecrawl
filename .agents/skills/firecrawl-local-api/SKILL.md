@@ -28,7 +28,7 @@ Use this skill to call the local Firecrawl API directly or through the Firecrawl
 | `POST /v2/crawl` + `GET /v2/crawl/:id` | works | Async crawl with status polling. Use the helper's bounded `crawl --wait`, not CLI `--wait`. |
 | `POST /v2/batch/scrape` + `GET /v2/batch/scrape/:id` | works | Async scrape of many URLs. |
 | `POST /v2/parse` | works | Multipart upload for local HTML/PDF/DOCX/DOC/ODT/RTF/XLSX/XLS. PDF parser options include `mode` and `maxPages`. |
-| `POST /v2/extract` + `GET /v2/extract/:id` | works with schema | Async structured extraction. Provide an explicit schema. |
+| `POST /v2/extract` + `GET /v2/extract/:id` | legacy, works with schema | Async structured extraction. The API deprecates this route in favor of `/v2/scrape` with a `json` format object; do not start new workflows on it. |
 | `POST /v2/crawl/params-preview` | works | LLM-backed natural-language crawl options. |
 | `GET /v2/team/queue-status` | works | Local queue visibility. |
 | `GET /v2/crawl/active` | works | Active crawl listing. |
@@ -138,7 +138,7 @@ Selection rule:
 - Use CLI for normal interactive `scrape`, `parse`, `search`, `map`, config/setup, and anything listed in `firecrawl_cli.sh --help`.
 - Use `firecrawl_request.py crawl` or `crawl-status` for agent automation. `--wait` polls `/v2/crawl/:id` with explicit timeout and interval, so it does not inherit the upstream CLI wait behavior.
 - Use `firecrawl_request.py parse` for `--pdf-mode`, `--max-pages`, `--no-pdf-parse`, `--fire-pdf-async`, or split artifact saving.
-- Use `--metrics-only` for review/automation logs and `--unwrap` only when a payload-only JSON shape is deliberately required. The upstream CLI's JSON files are payload-shaped; direct API responses are `{success,data}`.
+- Use `--metrics-only` for review/automation logs and `--unwrap` only when a payload-only JSON shape is deliberately required. CLI JSON shape depends on the command and selected format: current scrape/parse JSON output is payload-shaped, while search and map retain the `{success,data}` envelope. Verify the shape before wiring a consumer.
 - Use official SDKs in app code instead of shelling out.
 - Use raw `curl` when debugging exact wire payloads.
 
@@ -266,7 +266,8 @@ scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
   --strict
 ```
 
-Async extract with schema:
+Legacy async extract with schema (the response warns that `/v2/scrape` with a
+`json` format object is the replacement):
 
 ```bash
 ID=$(curl -sS -X POST http://localhost:3002/v2/extract \
@@ -288,7 +289,7 @@ curl -sS -X POST http://localhost:3002/v2/search \
 
 - Need one page text: `v2/scrape` with `formats:["markdown"]`.
 - Need fields from one page: `v2/scrape` with a `json` format.
-- Need fields from multiple URLs: `v2/extract` with schema.
+- Need fields from multiple URLs: `/v2/extract` still works with a schema but is deprecated; prefer the documented `/v2/scrape` JSON-format replacement where it meets the workflow.
 - Need a PDF or Office file on disk: `v2/parse`.
 - Need a site inventory: `v2/map`.
 - Need many pages: `v2/crawl` or `v2/batch/scrape`.
