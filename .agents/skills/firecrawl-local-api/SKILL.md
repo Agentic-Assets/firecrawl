@@ -104,11 +104,14 @@ From another repo or an installed user-level skill, use:
 ~/.agents/skills/firecrawl-local-api/scripts/firecrawl_healthcheck.sh
 ```
 
-Set `FC_DIR=/path/to/firecrawl` for repo-dependent helper scripts when the repo is not in the usual location. The CLI wrapper preserves the caller's current directory, so relative file paths like `./report.pdf` resolve from wherever the agent ran the command. Its normal package comes from the checked-in compatibility manifest (`firecrawl-cli@1.20.0`). `FIRECRAWL_CLI_PACKAGE` may name only an explicit exact semver; tags and ranges are rejected. Use `python3 scripts/firecrawl-ops/firecrawl_compatibility_doctor.py` for a body-free static pin diagnostic. Its opt-in `--run` check is loopback-only and bounded; `@latest` is reserved for the visibly acknowledged HUMAN-ONLY upgrade probe.
+Set `FC_DIR=/path/to/firecrawl` for repo-dependent helper scripts when the repo is not in the usual location. The CLI wrapper preserves the caller's current directory, so relative file paths like `./report.pdf` resolve from wherever the agent ran the command. Its normal package comes from the checked-in compatibility manifest (`firecrawl-cli@1.20.0`). `FIRECRAWL_CLI_PACKAGE` may name only an explicit exact semver; tags and ranges are rejected. For a body-free static pin diagnostic, run `python3 scripts/firecrawl-ops/firecrawl_compatibility_doctor.py` from this repo or `python3 ~/.agents/skills/firecrawl-local-api/scripts/firecrawl_compatibility_doctor.py` from the installed skill. Its opt-in `--run` check is loopback-only and bounded; `@latest` is reserved for the visibly acknowledged HUMAN-ONLY upgrade probe.
 
 The CLI wrapper intentionally rejects model-profile, Docker, and healthcheck
-configuration flags. Use it only for API calls after a human has completed any
-required configuration transition.
+configuration flags. Use it only for non-mutating local API calls after a human
+has completed any required configuration transition. Do not invoke the
+upstream CLI's auth/configuration commands (`config`, `setup`, `init`, `make`,
+`launch`, `env`, `login`, or `logout`) through this wrapper: they can alter
+credentials, project files, or provider defaults.
 
 ## Agent HTTP Helper
 
@@ -135,10 +138,10 @@ Use `firecrawl_request.py` when an agent needs direct API control, bounded crawl
 
 Selection rule:
 
-- Use CLI for normal interactive `scrape`, `parse`, `search`, `map`, config/setup, and anything listed in `firecrawl_cli.sh --help`.
+- Use CLI for normal non-mutating interactive `scrape`, `parse`, `search`, `map`, and bounded crawl submission/status checks. Do not use the wrapper for auth, configuration, setup, initialization, environment-writing, launcher, or logout commands.
 - Use `firecrawl_request.py crawl` or `crawl-status` for agent automation. `--wait` polls `/v2/crawl/:id` with explicit timeout and interval, so it does not inherit the upstream CLI wait behavior.
 - Use `firecrawl_request.py parse` for `--pdf-mode`, `--max-pages`, `--no-pdf-parse`, `--fire-pdf-async`, or split artifact saving.
-- Use `--metrics-only` for review/automation logs and `--unwrap` only when a payload-only JSON shape is deliberately required. CLI JSON shape depends on the command and selected format: current scrape/parse JSON output is payload-shaped, while search and map retain the `{success,data}` envelope. Verify the shape before wiring a consumer.
+- Use `--metrics-only` for review/automation logs and `--unwrap` only when a payload-only JSON shape is deliberately required. CLI JSON shape depends on the command and selected format: current scrape/parse JSON output is payload-shaped, while search and map contain `success` and `data` envelope fields (search also currently includes `id` and `creditsUsed`). Verify the shape before wiring a consumer.
 - Use official SDKs in app code instead of shelling out.
 - Use raw `curl` when debugging exact wire payloads.
 
