@@ -4,6 +4,7 @@ import {
   generateCompletions,
   GenerateCompletionsOptions,
   generateSchemaFromPrompt,
+  isInvalidStructuredOutputError,
   normalizeJsonSchemaForModel,
 } from "../transformers/llmExtract";
 import { smartScrape } from "./smartScrape";
@@ -497,18 +498,31 @@ export async function extractData({
       throw error;
     }
 
-    primaryGenerationFailed = true;
-    logger.error("failed during extractSmartScrape.ts:generateCompletions", {
-      error,
-    });
+    const isRetryableStructuredOutputFailure =
+      isStructuredOutputCompatibilityTransaction &&
+      isInvalidStructuredOutputError(error);
+    primaryGenerationFailed = !isRetryableStructuredOutputFailure;
+
+    if (isRetryableStructuredOutputFailure) {
+      logger.warn(
+        "Structured JSON output was invalid; retrying with configured fallback model",
+      );
+    } else {
+      logger.error("failed during extractSmartScrape.ts:generateCompletions", {
+        error,
+      });
+    }
+
     // Surface the failure to the caller: swallowing it here made a failed
     // extraction indistinguishable from a successful-but-empty one — the
     // scrape returned 200 with the json field silently absent (and billed).
     // `warning` is provably undefined here (only assigned on the success
     // path of the try above), so assign directly — the caller merges any
     // pre-existing document warnings.
-    const reason = error instanceof Error ? error.message : String(error);
-    warning = `JSON extraction failed: ${reason.slice(0, 300)}`;
+    if (!isRetryableStructuredOutputFailure) {
+      const reason = error instanceof Error ? error.message : String(error);
+      warning = `JSON extraction failed: ${reason.slice(0, 300)}`;
+    }
   }
 
   let resolvedStructuredResult = resolveStructuredResult(

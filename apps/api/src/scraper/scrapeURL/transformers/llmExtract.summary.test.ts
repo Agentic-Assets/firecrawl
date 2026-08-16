@@ -1,3 +1,4 @@
+import { NoObjectGeneratedError } from "ai";
 import { vi } from "vitest";
 
 const {
@@ -39,6 +40,15 @@ function completion(object: unknown) {
     object,
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
   };
+}
+
+function invalidStructuredOutputError() {
+  return new NoObjectGeneratedError({
+    response: {} as any,
+    usage: {} as any,
+    finishReason: "stop" as any,
+    text: "{invalid JSON",
+  });
 }
 
 function summaryMeta() {
@@ -113,6 +123,31 @@ describe("performSummary structured-output compatibility", () => {
     expect(generateObjectMock.mock.calls[1][0].model).toMatchObject({
       modelId: "deepseek/deepseek-v4-pro-0813",
     });
+  });
+
+  it("retries an AI SDK schema-invalid primary result once with the configured fallback", async () => {
+    structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK =
+      "deepseek/deepseek-v4-pro-0813";
+    generateObjectMock
+      .mockRejectedValueOnce(invalidStructuredOutputError())
+      .mockResolvedValueOnce(
+        completion({
+          summary: "Example Domain is for documentation examples.",
+        }),
+      );
+
+    const result = await performSummary(summaryMeta(), {
+      markdown: "# Example Domain",
+    } as any);
+
+    expect(result.summary).toBe(
+      "Example Domain is for documentation examples.",
+    );
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect(getModelByNameMock).toHaveBeenCalledWith(
+      "deepseek/deepseek-v4-pro-0813",
+      "openai",
+    );
   });
 
   it("does not fabricate a summary when the fallback is also invalid", async () => {

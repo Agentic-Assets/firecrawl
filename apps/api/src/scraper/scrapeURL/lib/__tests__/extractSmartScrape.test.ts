@@ -1,3 +1,4 @@
+import { NoObjectGeneratedError } from "ai";
 import { vi } from "vitest";
 
 const { structuredOutputConfig, generateCompletionsMock, getModelByNameMock } =
@@ -41,6 +42,15 @@ function completion(extract: unknown, warning?: string) {
     warning,
     totalUsage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
   };
+}
+
+function invalidStructuredOutputError() {
+  return new NoObjectGeneratedError({
+    response: {} as any,
+    usage: {} as any,
+    finishReason: "stop" as any,
+    text: "{invalid JSON",
+  });
 }
 
 function extractOptions(optionsSchema: any = schema) {
@@ -181,6 +191,24 @@ describe("extractData structured-output compatibility", () => {
       disableInternalObjectRepair: true,
       options: { schema },
     });
+  });
+
+  it("retries once when the primary reports AI SDK schema-invalid output", async () => {
+    structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK =
+      "deepseek/deepseek-v4-pro-0813";
+    generateCompletionsMock
+      .mockRejectedValueOnce(invalidStructuredOutputError())
+      .mockResolvedValueOnce(completion(directResult));
+
+    const result = await runExtraction();
+
+    expect(result.extractedDataArray).toEqual([directResult]);
+    expect(result.warning).toBeUndefined();
+    expect(generateCompletionsMock).toHaveBeenCalledTimes(2);
+    expect(getModelByNameMock).toHaveBeenCalledWith(
+      "deepseek/deepseek-v4-pro-0813",
+      "openai",
+    );
   });
 
   it("uses the provider-normalized schema for a valid direct result", async () => {
