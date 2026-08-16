@@ -24,7 +24,7 @@ This repo keeps the local Firecrawl tool layer separate from any one agent model
 4. **Agent model runtime**
    - Cursor Composer 2.5 is an agent model choice.
    - It is separate from Firecrawl's internal AI model routing.
-   - Firecrawl-internal AI formats still use root `.env` values: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_NAME`, and the optional `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK` for structured JSON and summary recovery.
+   - Firecrawl-internal AI formats still use root `.env` values: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_NAME`, and the optional `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK` for one fallback after missing or schema-invalid structured JSON or summary output.
 
 ## Reusable MCP Server
 
@@ -34,18 +34,20 @@ Run from the repo root:
 scripts/firecrawl-ops/firecrawl_mcp.sh
 ```
 
-The wrapper starts the upstream-maintained `firecrawl-mcp` package with:
+The wrapper starts the upstream-maintained `firecrawl-mcp@3.24.0` package from the checked-in compatibility manifest with:
 
 - `FIRECRAWL_API_URL=http://localhost:3002`
 - `FIRECRAWL_API_KEY=local-dev`
 
 `local-dev` is only a placeholder for the auth-disabled local setup. If local auth is enabled later, set `FIRECRAWL_API_KEY` or `TEST_API_KEY` before launching the wrapper.
 
-Override the package version if needed:
+Normal CLI and MCP paths use the manifest pins (`firecrawl-cli@1.20.0` and `firecrawl-mcp@3.24.0`) when package override variables are unset. Overrides must be exact semver specs. Diagnose the static contract without package resolution or a host call:
 
 ```bash
-FIRECRAWL_MCP_PACKAGE=firecrawl-mcp@3.17.0 scripts/firecrawl-ops/firecrawl_mcp.sh
+python3 scripts/firecrawl-ops/firecrawl_compatibility_doctor.py
 ```
+
+The doctor `--run` form is opt-in, accepts only the local loopback API, disables proxies for its own preflight, and supplies child clients with a merged loopback `NO_PROXY` rule while preserving any package-resolution proxy. It uses a body-free bounded CLI map probe and verifies newline-delimited MCP initialize plus `tools/list`. `@latest` exists only in the explicitly acknowledged HUMAN-ONLY upgrade probe; a successful versioned result is evidence for a reviewed manifest update, not an automatic update.
 
 ## CLI And Direct Helper
 
@@ -68,6 +70,32 @@ scripts/firecrawl-ops/firecrawl_request.py crawl https://example.com \
 ```
 
 Use official SDKs for application integrations. The helper is intentionally fork-owned local tooling, so upstream app/API/SDK syncs stay simple. Its default output preserves the API envelope; use `--unwrap` only for a payload-only shape and `--metrics-only` to keep source bodies out of logs. PDF `--max-pages` must be positive. Bounded crawl polling saves a terminal or timeout record and exits nonzero for failed, cancelled, or timed-out crawls, so shell agents do not mistake those states for success.
+
+### Restricted agent-safe pilot
+
+`firecrawl_request.py --agent-safe` is a deliberately tiny, temporary helper
+surface, not a general client or a CRE acquisition interface. It permits only
+the exact public `https://example.com/` fixture or the tracked synthetic PDF,
+uses loopback HTTP with proxies disabled and redirects rejected, and accepts
+only fixed one-page/one-crawl bounds. `crawl-status`, raw output, AI/OCR,
+profiles, headers, and arbitrary `post` calls are unavailable in this mode.
+
+Agents never provide prerequisite artifacts. Before each safe POST the helper
+itself runs the checked-in, GET-only local preflight, requiring `base_http`
+ready and zero queue/active-crawl observations. Its internal compatibility
+step verifies the normal manifest-pinned CLI version, performs only a loopback
+root GET, and checks MCP JSONL initialize plus `tools/list`; it never invokes
+the CLI map probe or `@latest`. The full `firecrawl_compatibility_doctor.py
+--run` map probe remains an explicit operator diagnostic, not an automatic
+agent-safe prerequisite. The helper directly rechecks both read-only endpoints
+after compatibility and immediately before the one recipe POST, failing closed
+on a missing, false, malformed, or nonzero observation.
+
+The fixed `tasks/agentic-2279/evidence` directory receives only opaque
+body-free metrics and a manifest-last terminal receipt. Rejected input or a
+prerequisite failure writes no helper artifact; an allowed request writes one
+finite terminal result. Do not use this pilot while the shared CRE queue is
+active or as a substitute for the governed CRE collector.
 
 ## User-Level Skill Sync
 
@@ -99,9 +127,7 @@ Use this shape in MCP clients that support stdio command servers:
   "mcpServers": {
     "firecrawl-local": {
       "command": "bash",
-      "args": [
-        "scripts/firecrawl-ops/firecrawl_mcp.sh"
-      ]
+      "args": ["scripts/firecrawl-ops/firecrawl_mcp.sh"]
     }
   }
 }
@@ -170,15 +196,17 @@ Do not set Firecrawl's `OPENAI_BASE_URL` to Cursor unless Cursor provides an Ope
 
 ## Firecrawl Internal Model Routing
 
-For Firecrawl summary, JSON extraction, query, and prompt-backed extract:
+For Firecrawl summary, JSON extraction, query, and prompt-backed extract, the
+CLI, direct HTTP helper, and MCP wrapper never change model, OCR, Docker, or
+healthcheck state. An operator can first produce a guarded, read-only plan:
 
 ```bash
-scripts/firecrawl-ops/set_model_profile.sh budget
-scripts/firecrawl-ops/set_model_profile.sh gateway
-docker compose up -d --force-recreate api
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway
 ```
 
-Put the provider key in `OPENAI_API_KEY`. The `gateway` profile uses Vercel AI Gateway; `budget` and `escalated` use OpenRouter.
+An apply requires the explicit approvals and confirmations shown by that
+command. Put the provider key in `OPENAI_API_KEY`. The `gateway` profile uses
+Vercel AI Gateway; `budget` and `escalated` use OpenRouter.
 
 ## Good Agent Prompts
 

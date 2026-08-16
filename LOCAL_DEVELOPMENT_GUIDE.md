@@ -1,6 +1,6 @@
 # Firecrawl Local Development Guide
 
-This guide describes this fork's local self-hosted setup. It is intentionally focused on the current Mac workflow: OrbStack, Docker compose, the v2 API, local agent skills, and model-profile helpers.
+This guide describes this fork's local self-hosted setup. It is intentionally focused on the current Mac workflow: OrbStack, Docker compose, the v2 API, local agent skills, and guarded operator handoffs for model or OCR changes.
 
 ## Fresh Clone Quickstart
 
@@ -19,9 +19,6 @@ cd firecrawl
 # Confirm Docker is going through OrbStack.
 docker context show
 docker compose version
-
-# Create a gitignored local .env with the default Vercel AI Gateway profile.
-scripts/firecrawl-ops/set_model_profile.sh
 
 # Optional but recommended for local agents and commit reminders.
 scripts/firecrawl-ops/install_git_hooks.sh
@@ -44,7 +41,7 @@ If `docker context show` does not print `orbstack`, open OrbStack and run:
 docker context use orbstack
 ```
 
-The generated root `.env` is local-only and gitignored. Non-AI scrape, crawl, map, search, and basic PDF parse can work without model credits. Add a provider key to `.env` only when you need AI-backed summary, JSON extraction, query, or `/v2/extract`.
+The root `.env` is optional for the core stack, local-only, and gitignored. Non-AI scrape, crawl, map, search, and basic PDF parse can work without model credits. For AI-backed summary, JSON extraction, query, or `/v2/extract`, follow the guarded human-owned setup in the next section rather than using a retired profile helper.
 
 ## 1. Local Runtime
 
@@ -74,15 +71,25 @@ docker compose down
 ## 2. Env Files
 
 - `./.env` is the primary local env file read by Docker compose. It is gitignored; never commit secrets.
-- `apps/api/.env.example` is upstream's reference list of available variables.
+- `apps/api/.env.example` is upstream's reference list of available variables. It is not a drop-in Docker Compose contract.
 - `apps/api/.env.local` is tracked upstream scaffolding and is not the Docker compose env file.
 
-Create or refresh local model defaults:
+For an AI-backed local setup, a human operator creates a minimal root `.env` with the provider key from the approved secret workflow and the three reversible model keys below. Do not copy `apps/api/.env.example` wholesale and do not commit this file:
+
+```dotenv
+OPENAI_API_KEY=<provider key>
+OPENAI_BASE_URL=
+MODEL_NAME=
+MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK=
+```
+
+An agent may request the body-free dry-run plan after the API is healthy:
 
 ```bash
-scripts/firecrawl-ops/set_model_profile.sh
-docker compose up -d --force-recreate api
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway
 ```
+
+Only a human operator may perform the attested `--apply` step after reviewing that plan. The default Gateway profile sets Flash `deepseek/deepseek-v4-flash-0731` with one Pro `deepseek/deepseek-v4-pro-0813` fallback for missing or schema-invalid structured output.
 
 Important fork/local vars:
 
@@ -90,39 +97,37 @@ Important fork/local vars:
 | :--- | :--- |
 | `FIRECRAWL_API_URL` | Local helper/CLI target, normally `http://localhost:3002` |
 | `OPENAI_API_KEY` | Provider key for OpenRouter, Vercel AI Gateway, or OpenAI-compatible providers |
-| `OPENAI_BASE_URL` | Provider base URL written by `set_model_profile.sh` |
+| `OPENAI_BASE_URL` | Provider base URL written only by the guarded operator handoff |
 | `MODEL_NAME` | Firecrawl's internal LLM model id |
-| `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK` | Optional one-time retry model when a provider returns missing or schema-invalid JSON extraction or summary output |
 | `OPENROUTER_API_KEY` | Optional direct OpenRouter path; not the default local profile route |
 | `PDF_RUST_EXTRACT_ENABLE` | Local PDF text extraction; compose defaults it to `true` |
 | `FIRE_PDF_BASE_URL` / `FIRE_PDF_API_KEY` | Optional Fire PDF-compatible OCR/layout service. For the local Docling adapter, use `FIRE_PDF_BASE_URL=http://host.docker.internal:31337` and leave `FIRE_PDF_API_KEY` empty |
 | `RUNPOD_MU_API_KEY` / `RUNPOD_MU_POD_ID` | Optional external MinerU-style OCR/layout service |
 | `SWARM_SUPABASE_URL` / `SWARM_SUPABASE_KEY` | Optional swarm telemetry destination |
 
-Profiles:
+Available profiles for the guarded operator handoff:
 
 ```bash
-scripts/firecrawl-ops/set_model_profile.sh               # Vercel AI Gateway Flash 0731 + Pro 0813 structured-output fallback (default)
-scripts/firecrawl-ops/set_model_profile.sh gateway       # Explicit form of the default Vercel AI Gateway profile
-scripts/firecrawl-ops/set_model_profile.sh budget        # OpenRouter DeepSeek V4 Flash, explicit single-model alternative
-scripts/firecrawl-ops/set_model_profile.sh escalated     # OpenRouter DeepSeek V4 Pro, explicit alternative
-scripts/firecrawl-ops/set_model_profile.sh gateway-pro   # Vercel AI Gateway DeepSeek V4 Pro 0813
-scripts/firecrawl-ops/set_model_profile.sh gateway-codex # Vercel AI Gateway OpenAI model
-scripts/firecrawl-ops/set_model_profile.sh openai-direct # OpenAI Platform
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile budget        # OpenRouter DeepSeek V4 Flash
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile escalated     # OpenRouter DeepSeek V4 Pro
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway       # Vercel AI Gateway DeepSeek V4 Flash 0731 (default)
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway-pro   # Vercel AI Gateway DeepSeek V4 Pro 0813
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway-codex # Vercel AI Gateway OpenAI model
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile openai-direct # OpenAI Platform
 ```
 
-The local CLI/helper can apply those same profiles before an AI-backed call:
+Those commands are dry-run plans. The local CLI, MCP wrapper, request helper, and swarm intentionally reject model, Docker, and healthcheck mutation flags. Once a human has completed the attested transition, call AI-backed formats normally:
 
 ```bash
-scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile gateway --firecrawl-healthcheck \
-  scrape https://example.com --format summary --json --pretty
+scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com \
+  --format summary --json --pretty
 
 scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --formats markdown --query "What is this document about?" \
-  --model-profile gateway --healthcheck --pretty
+  --pretty
 ```
 
-The wrapper profile flags update `.env` and recreate the API container by default. They matter for summary, query, JSON extraction, and `/v2/extract`. Plain PDF markdown extraction uses the local PDF parser and does not call the LLM model. Existing local OCR routing vars are preserved unless explicitly overwritten.
+The provider settings matter for summary, query, JSON extraction, and `/v2/extract`. Plain PDF markdown extraction uses the local PDF parser and does not call the LLM model.
 
 ## 3. Local API Quick Use
 
@@ -163,8 +168,7 @@ scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markd
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 scripts/firecrawl-ops/firecrawl_cli.sh search "firecrawl docs" --limit 3 --json
 scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format markdown,links --json --pretty -o ./out/example.json
-scripts/firecrawl-ops/firecrawl_cli.sh --firecrawl-model-profile gateway --firecrawl-healthcheck \
-  scrape https://example.com --format summary --json --pretty
+scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com --format summary --json --pretty
 ```
 
 From another codebase, use the installed skill copy:
@@ -235,21 +239,23 @@ The fully local path is strongest for text PDFs. Tables, figures, scans, and com
 
 This fork can run a local Fire PDF-compatible adapter backed by Docling Serve. It is local and does not spend Firecrawl cloud credits.
 
-Start the OCR services. Use `research-page-aware` for academic papers when page chunks/citations matter:
+An agent may request these dry-run plans. A human operator performs any attested apply after reviewing its matching plan:
 
 ```bash
-scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
+scripts/firecrawl-ops/firecrawl_operator_handoff.py \
+  ocr-adapter --profile research-page-aware
+scripts/firecrawl-ops/firecrawl_operator_handoff.py \
+  ocr-lifecycle --action ensure
 scripts/firecrawl-ops/local_firepdf_ocr.sh health
 scripts/firecrawl-ops/local_firepdf_ocr.sh doctor
 scripts/firecrawl-ops/local_firepdf_ocr.sh doctor --smoke-pdf ./report.pdf
 ```
 
-Wire the running Firecrawl API to the adapter:
+For the corresponding local OCR routing change, use the same guarded handoff:
 
 ```bash
-scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
-docker compose up -d --force-recreate api
-bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
+scripts/firecrawl-ops/firecrawl_operator_handoff.py \
+  ocr-routing --mode local
 ```
 
 Use OCR mode for scanned/image-only PDFs:
@@ -262,25 +268,25 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 Operational notes:
 
 - Docling Serve runs in OrbStack/Docker on `127.0.0.1:5001`.
-- The helper pins the known-good Docling Serve CPU image by digest and sets `DOCLING_SERVE_MAX_SYNC_WAIT=900` on new starts. Override `LOCAL_FIREPDF_DOCLING_IMAGE` or `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT` only when intentionally testing runtime changes.
+- The guarded lifecycle pins the known-good Docling Serve CPU image by digest, fixes loopback bindings, and does not accept caller-provided image or runtime overrides.
 - The local Fire PDF adapter runs on `127.0.0.1:31337`.
 - Firecrawl's API container reaches the adapter with `FIRE_PDF_BASE_URL=http://host.docker.internal:31337`.
 - `--pdf-mode fast` avoids OCR; `--pdf-mode auto` uses Firecrawl's normal PDF decision path; `--pdf-mode ocr` forces the local Docling adapter when configured.
 - Mode choice is document-dependent. In a local 2026-05-23 stress test, a 40-page born-digital spec was much richer and faster in `fast`, while a 25-page encrypted slide-style market report benefited modestly from Docling OCR. Earlier scanned/image research tests succeeded through Docling OCR with `research-page-aware` page markers, but later paper batches exposed low-quality publisher-boilerplate cases. Use `fast` for dense born-digital text, `ocr` for scanned/image-only/slide-style PDFs, and benchmark unfamiliar document families.
 - Named profiles live in `scripts/firecrawl-ops/pdf_ocr_profiles.json`. List them with `scripts/firecrawl-ops/local_firepdf_ocr.sh profiles`.
-- Recommended profiles: `default`, `research-page-aware`, `tables-accurate`, `tables-fast`, `scanned-english`, `qa-debug`, and `figure-enrichment-lab`.
-- Apply a profile with `scripts/firecrawl-ops/local_firepdf_ocr.sh restart-adapter --profile tables-accurate`. Use `start --profile <name>` for first start.
-- Raw Docling JSON capture is off unless the profile enables it or you pass `--capture-json`; it writes sensitive full-document artifacts under `tasks/tmp/firecrawl-docling-debug` by default.
+- Candidate profiles for a reviewed operator handoff: `default`, `research-page-aware`, `tables-accurate`, `tables-fast`, `scanned-english`, and `figure-enrichment-lab`. `qa-debug` is deliberately excluded from agent-facing and guarded lifecycle paths because it enables raw-document diagnostics.
+- Request a profile plan with `scripts/firecrawl-ops/firecrawl_operator_handoff.py ocr-adapter --profile tables-accurate`; a human operator may apply the reviewed plan. The guarded lifecycle has fixed no-capture inputs.
+- Raw Docling JSON capture is disabled in the guarded local lifecycle; do not use legacy capture or output flags from agent-facing paths.
 - The adapter limits OCR concurrency with `LOCAL_FIREPDF_MAX_CONCURRENT_OCR` (default 2). Extra simultaneous calls return `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429 instead of overloading Docling.
 - Docling timeouts return `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504. Raise `LOCAL_FIREPDF_TIMEOUT_SECONDS` or `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT` only after checking adapter and Docling logs.
 - Low-quality OCR output with mostly empty pages or publisher/license boilerplate is rejected by default with `SCRAPE_PDF_LOW_QUALITY` / HTTP 422. Set `LOCAL_FIREPDF_FAIL_LOW_QUALITY=false` only when collecting diagnostics.
-- Dynamic adapter knobs are accepted as env overrides before `start-adapter` / `restart-adapter` / `start`: `LOCAL_FIREPDF_TIMEOUT_SECONDS` (default 600), `LOCAL_FIREPDF_MAX_CONCURRENT_OCR`, `LOCAL_FIREPDF_FAIL_LOW_QUALITY`, `LOCAL_FIREPDF_DOCLING_OCR_PRESET`, `LOCAL_FIREPDF_DOCLING_OCR_LANG`, `LOCAL_FIREPDF_DOCLING_PDF_BACKEND`, `LOCAL_FIREPDF_DOCLING_TABLE_MODE`, `LOCAL_FIREPDF_DOCLING_TO_FORMATS`, and optional enrichment flags. `LOCAL_FIREPDF_DOCLING_MAX_SYNC_WAIT` (default 900) applies when starting or recreating Docling Serve. Explicit env vars override the named profile.
+- OCR routing or lifecycle changes require an operator handoff. The legacy mutable aliases and caller-provided profile, capture, output, image, or runtime flags are intentionally unavailable to agents.
 - Print the full tunable settings surface with `scripts/firecrawl-ops/local_firepdf_ocr.sh settings`.
 - Quick OCR verification: `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf`.
 - Repeatable PDF checks can use `scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf --modes fast,auto,ocr --profiles default,research-page-aware,tables-accurate --max-pages 40 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict`. The saved `summary.md` includes accept/reject/manual-review guidance plus a recommended mode/profile per PDF, and each case saves `fields/pages.jsonl`, `qa.json`, and `qa.md` when output is available.
 - Successful local OCR responses expose stable `data.metadata.pdfOcr` fields: active profile, settings fingerprint, resolved Docling options, page-boundary source, compact per-page quality summaries, boilerplate families/scores, table/figure JSON signals, and low-quality gate settings. OCR-mode FirePDF cache is bypassed so profile/env changes cannot reuse stale OCR output.
 - Direct adapter tests may include a `docling_options` object in `POST /ocr`; Firecrawl API calls use the adapter container env.
-- Stop services with `scripts/firecrawl-ops/local_firepdf_ocr.sh stop`.
+- A human operator may plan a controlled shutdown with `scripts/firecrawl-ops/firecrawl_operator_handoff.py ocr-lifecycle --action stop`.
 
 ## 6. Cross-Agent Tooling
 

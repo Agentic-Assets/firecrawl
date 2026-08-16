@@ -178,6 +178,7 @@ describe("extractData structured-output compatibility", () => {
       model: { modelId: "deepseek/deepseek-v4-pro-0813" },
       retryModel: undefined,
       disableInternalRateLimitRetry: true,
+      disableInternalObjectRepair: true,
       options: { schema },
     });
   });
@@ -254,26 +255,26 @@ describe("extractData structured-output compatibility", () => {
     expect(generateCompletionsMock).toHaveBeenCalledTimes(2);
     expect(
       generateCompletionsMock.mock.calls.every(
-        ([options]) => options.disableInternalRateLimitRetry === true,
+        ([options]) =>
+          options.disableInternalRateLimitRetry === true &&
+          options.disableInternalObjectRepair === true,
       ),
     ).toBe(true);
   });
 
-  it("uses its one explicit fallback after a rate-limited primary attempt", async () => {
+  it("does not retry a failed provider request with the structured-output fallback", async () => {
     structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK =
       "deepseek/deepseek-v4-pro-0813";
-    generateCompletionsMock
-      .mockRejectedValueOnce(new Error("rate limit"))
-      .mockResolvedValueOnce(completion(directResult));
+    generateCompletionsMock.mockRejectedValueOnce(new Error("rate limit"));
 
     const result = await runExtraction();
 
-    expect(result.extractedDataArray).toEqual([directResult]);
-    expect(generateCompletionsMock).toHaveBeenCalledTimes(2);
-    expect(
-      generateCompletionsMock.mock.calls.every(
-        ([options]) => options.disableInternalRateLimitRetry === true,
-      ),
-    ).toBe(true);
+    expect(result.extractedDataArray).toEqual([undefined]);
+    expect(generateCompletionsMock).toHaveBeenCalledTimes(1);
+    expect(getModelByNameMock).not.toHaveBeenCalled();
+    expect(generateCompletionsMock.mock.calls[0][0]).toMatchObject({
+      disableInternalRateLimitRetry: true,
+      disableInternalObjectRepair: true,
+    });
   });
 });

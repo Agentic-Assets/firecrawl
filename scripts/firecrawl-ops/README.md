@@ -59,7 +59,7 @@ and that the active Docker context is `orbstack`.
 | `firecrawl_cli.sh` | Wrapper around upstream Firecrawl CLI pinned to local API |
 | `firecrawl_mcp.sh` | MCP wrapper pinned to local API |
 | `firecrawl_request.py` | Stdlib HTTP helper for direct API calls, saved fields, and parse options |
-| `set_model_profile.sh` | Writes local model routing values into root `.env` |
+| `set_model_profile.sh` | Retired direct writer; use the guarded operator handoff |
 | `set_cre_resource_profile.sh` | Applies, shows, or restores the reversible local CRE resource profile |
 | `sync_agent_skills.sh` | Copies repo skills into user-level skill folders |
 | `sync_upstream_main.sh` | Creates an upstream-sync branch and merges `firecrawl/firecrawl:main` |
@@ -286,31 +286,34 @@ code should use the product's SDK or API client.
 
 ## Model Routing
 
-Switch profiles with:
+`set_model_profile.sh` and wrapper profile flags are retired. Agent surfaces
+must not rewrite `.env`, recreate Docker, or use `--apply`. They may request a
+body-free dry-run plan:
 
 ```bash
-scripts/firecrawl-ops/set_model_profile.sh               # Default Vercel AI Gateway Flash 0731 + Pro 0813 structured-output fallback
-scripts/firecrawl-ops/set_model_profile.sh gateway       # Explicit form of the default
-scripts/firecrawl-ops/set_model_profile.sh budget        # Explicit OpenRouter Flash alternative, no automatic fallback
-scripts/firecrawl-ops/set_model_profile.sh escalated     # Explicit OpenRouter Pro alternative
-scripts/firecrawl-ops/set_model_profile.sh gateway-pro
-scripts/firecrawl-ops/set_model_profile.sh gateway-codex
-scripts/firecrawl-ops/set_model_profile.sh openai-direct
-docker compose up -d --force-recreate api
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway
 ```
 
-The script creates or updates root `.env`, which is gitignored and is what
-Docker Compose reads. Add provider keys manually. Never commit keys or local
-env files.
+After reviewing the matching plan, a human operator can apply it with the
+required exact attestation. Replace `AGENTIC-0000` with the approved record:
+
+```bash
+scripts/firecrawl-ops/firecrawl_operator_handoff.py \
+  --apply --operator cayman --approval-ref AGENTIC-0000 \
+  --approve-provider-cost --confirm "APPLY model gateway" \
+  --retain --handoff-ref AGENTIC-0000 \
+  --retain-confirm "RETAIN model gateway" \
+  model --profile gateway
+```
+
+The root `.env` is gitignored and is what Docker Compose reads when present.
+For AI-backed use, a human operator creates the minimal reversible template in
+`LOCAL_DEVELOPMENT_GUIDE.md`; do not use `apps/api/.env.example` as a Docker
+Compose contract or commit provider keys or local env files.
 
 Plain scrape, map, search, and parse can work without model keys. AI-backed
 summary, JSON extraction, query, and extract flows require valid provider
 settings.
-
-The `gateway` profile keeps `deepseek/deepseek-v4-flash-0731` as the primary
-model and sets `deepseek/deepseek-v4-pro-0813` only as a one-time JSON
-structured-output fallback. A schema-valid direct JSON provider response is
-kept without retry; missing or schema-invalid output can use Pro once.
 
 ## CRE Resource Safety Profile
 
@@ -350,11 +353,22 @@ supported high-volume CRE procedure.
 ## Local PDF OCR
 
 Default parse mode is enough for many born-digital PDFs. For scanned,
-image-only, table-heavy, slide-style, or layout-sensitive PDFs, start the
-local Docling adapter:
+image-only, table-heavy, slide-style, or layout-sensitive PDFs, agents may
+request this dry-run Docling adapter plan:
 
 ```bash
-scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
+# Agent-safe planning only. Do not add --apply from an agent surface.
+scripts/firecrawl-ops/firecrawl_operator_handoff.py \
+  ocr-adapter --profile research-page-aware
+
+# Human operator only after reviewing the matching plan.
+scripts/firecrawl-ops/firecrawl_operator_handoff.py \
+  --apply --operator cayman --approval-ref AGENTIC-0000 \
+  --approve-provider-cost --confirm "APPLY ocr-adapter research-page-aware" \
+  --retain --handoff-ref AGENTIC-0000 \
+  --retain-confirm "RETAIN ocr-adapter research-page-aware" \
+  ocr-adapter --profile research-page-aware
+
 scripts/firecrawl-ops/local_firepdf_ocr.sh health
 scripts/firecrawl-ops/local_firepdf_ocr.sh doctor --smoke-pdf ./report.pdf
 
@@ -363,8 +377,6 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
   --pdf-mode ocr \
   --max-pages 10 \
   --pretty
-
-scripts/firecrawl-ops/local_firepdf_ocr.sh stop
 ```
 
 Mode guidance:

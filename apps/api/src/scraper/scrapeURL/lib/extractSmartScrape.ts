@@ -467,10 +467,14 @@ export async function extractData({
     },
   };
 
+  const structuredOutputFallback =
+    config.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK?.trim();
+
   // checks if using smartScrape is needed for this case
   const isStructuredOutputCompatibilityTransaction = Boolean(
-    config.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK,
+    structuredOutputFallback && fallbackResultSchema,
   );
+  let primaryGenerationFailed = false;
 
   try {
     const {
@@ -481,8 +485,9 @@ export async function extractData({
       ...smartScrapeGenerationOptions,
       // The explicit model fallback below is the only allowed retry for this
       // compatibility transaction. Ordinary callers retain the upstream
-      // rate-limit retry behavior in generateCompletions.
+      // recovery behavior in generateCompletions.
       disableInternalRateLimitRetry: isStructuredOutputCompatibilityTransaction,
+      disableInternalObjectRepair: isStructuredOutputCompatibilityTransaction,
     });
     extract = e;
     warning = w;
@@ -492,6 +497,7 @@ export async function extractData({
       throw error;
     }
 
+    primaryGenerationFailed = true;
     logger.error("failed during extractSmartScrape.ts:generateCompletions", {
       error,
     });
@@ -517,10 +523,11 @@ export async function extractData({
   }
 
   if (
+    !primaryGenerationFailed &&
     resolvedStructuredResult === undefined &&
-    config.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK
+    structuredOutputFallback
   ) {
-    const fallbackModelName = config.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK;
+    const fallbackModelName = structuredOutputFallback;
     logger.warn("Structured output missing or invalid; retrying once", {
       fallbackModelName,
       providedExtractId: extractId,
@@ -541,8 +548,9 @@ export async function extractData({
         model: getModelByName(fallbackModelName, "openai"),
         retryModel: undefined,
         // A compatibility transaction is bounded to the primary request plus
-        // this single explicit fallback request, including on rate limits.
+        // this single explicit fallback request for invalid structured output.
         disableInternalRateLimitRetry: true,
+        disableInternalObjectRepair: true,
       });
       const fallbackResult = resolveStructuredResult(
         fallbackExtract,

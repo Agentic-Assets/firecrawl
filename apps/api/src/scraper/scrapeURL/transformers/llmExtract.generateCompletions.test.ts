@@ -22,7 +22,10 @@ import { generateCompletions } from "./llmExtract";
 const primaryModel = { modelId: "primary-model" };
 const retryModel = { modelId: "ordinary-retry-model" };
 
-function completionOptions(disableInternalRateLimitRetry: boolean) {
+function completionOptions(
+  disableInternalRateLimitRetry: boolean,
+  disableInternalObjectRepair = false,
+) {
   return {
     logger: {
       debug: vi.fn(),
@@ -41,6 +44,7 @@ function completionOptions(disableInternalRateLimitRetry: boolean) {
     model: primaryModel,
     retryModel,
     disableInternalRateLimitRetry,
+    disableInternalObjectRepair,
     costTrackingOptions: {
       costTracking: { addCall: vi.fn() },
       metadata: {},
@@ -79,5 +83,19 @@ describe("generateCompletions rate-limit retry control", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
     expect(generateObjectMock.mock.calls[0][0].model).toBe(primaryModel);
     expect(generateObjectMock.mock.calls[1][0].model).toBe(retryModel);
+  });
+
+  it("omits the AI SDK repair callback in a bounded compatibility transaction", async () => {
+    generateObjectMock.mockResolvedValueOnce({
+      object: { title: "Example Domain" },
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    });
+
+    await generateCompletions(completionOptions(true, true));
+
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect(
+      generateObjectMock.mock.calls[0][0].experimental_repairText,
+    ).toBeUndefined();
   });
 });

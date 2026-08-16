@@ -46,10 +46,10 @@ writes, market-data objects, or EQUIRE product views.
 
 ## Env files (which is which)
 
-- **`./.env`** — **primary.** This is the file `docker compose up -d` reads at the repo root and is what every local Firecrawl run depends on. Gitignored. Never commit it.
-- **`apps/api/.env.example`** — upstream's canonical variable reference. Read this to learn what knobs exist; copy to `./.env` for first-time bootstrap.
+- **`./.env`** — **primary when present.** This is the root file Docker Compose reads. It is gitignored and optional for non-AI local calls. Never commit it.
+- **`apps/api/.env.example`** — upstream's canonical variable reference, not a drop-in Docker Compose contract. Do not copy it wholesale to root `.env`.
 - **`apps/api/.env.local`** — tracked upstream artifact with empty values; **not** the file Docker reads despite its `.local` suffix. Ignore unless running `apps/api` directly outside Docker.
-- **Fork-specific vars** (`FIRECRAWL_API_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_NAME`, optional `OPENROUTER_API_KEY`, `PDF_RUST_EXTRACT_ENABLE`, optional local Docling/Fire PDF/RunPod OCR vars, `SWARM_SUPABASE_*`) — documented in `LOCAL_DEVELOPMENT_GUIDE.md` and rewritten by `scripts/firecrawl-ops/set_model_profile.sh` where applicable. They live in the root `./.env`.
+- **Fork-specific vars** (`FIRECRAWL_API_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_NAME`, optional `OPENROUTER_API_KEY`, `PDF_RUST_EXTRACT_ENABLE`, optional local Docling/Fire PDF/RunPod OCR vars, `SWARM_SUPABASE_*`) — documented in `LOCAL_DEVELOPMENT_GUIDE.md`. The retired `set_model_profile.sh` never writes them; only a human-reviewed `firecrawl_operator_handoff.py` transition may change its allowlisted model/OCR keys.
 
 ## Working in `apps/api`
 
@@ -85,7 +85,12 @@ This fork adds a self-hosted operations layer on top of upstream Firecrawl. It i
 - `firecrawl-ops` — runtime health, Docker, model routing, endpoint selection
 - `firecrawl-local-api` — calling the local API at `http://localhost:3002`
 
-Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/deepseek-v4-pro` (OpenRouter). Verified locally on 2026-05-23.
+Default model routing: Vercel AI Gateway `gateway` profile with
+`deepseek/deepseek-v4-flash-0731` and a one-time
+`deepseek/deepseek-v4-pro-0813` fallback only for missing or schema-invalid
+structured summary/JSON output. `budget` and `escalated` remain explicit
+OpenRouter alternatives; shared profile changes require the operator procedure
+in `docs/firecrawl-ops/references/model-routing.md`.
 - `docs/firecrawl-ops/references/` — durable reference docs:
   - `tools-capabilities.md` — endpoint-by-endpoint capability map
   - `local-pdf-ocr-plan.md` — chosen local Docling OCR adapter plan and alternatives
@@ -107,7 +112,8 @@ Default model routing: budget `deepseek/deepseek-v4-flash`, escalated `deepseek/
   - `pdf_ocr_benchmark.py` — repeatable local PDF parser/OCR matrix runner with preflight checks, page artifacts, QA reports, accept/reject/manual-review guidance, and per-PDF mode/profile recommendations
   - `firecrawl_mcp.sh` — wrapper for `npx firecrawl-mcp` pinned to `http://localhost:3002` for any MCP-capable agent
   - `sync_agent_skills.sh` — copy repo Firecrawl skills to `~/.agents/skills` and symlink them into user-level agent folders
-  - `set_model_profile.sh budget|escalated|gateway|gateway-pro|gateway-codex|openai-direct` — rewrite `.env` model defaults; follow with `docker compose up -d --force-recreate api`
+  - `firecrawl_operator_handoff.py` — dry-run-first, human-attested operator handoff for allowlisted model/OCR changes; agents must never pass `--apply`
+  - `set_model_profile.sh` — retired direct writer that always refuses; use the guarded operator handoff
   - `sync_upstream_main.sh` — create an upstream-sync branch, merge `firecrawl/firecrawl:main`, and show protected fork path diffs
   - Optional older workflow examples: `artificialanalysis_snapshot.py`, `platform_access_probe.py`, `cre_access_matrix.py`, `bulk_triage_runner.py`, `crawl_swarm.py`, `firecrawl_swarm_pipeline.py`, `google_flights_scrape.py`, `parse_flight_deals.py`. Prefer `firecrawl_request.py` for new local-agent scripting.
 - Cross-agent integration:

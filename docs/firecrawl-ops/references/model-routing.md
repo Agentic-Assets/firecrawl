@@ -1,6 +1,7 @@
 # Firecrawl Model Routing
 
 ## Target outcome
+
 Maximize throughput and value while preserving quality for hard tasks.
 
 ## Local configuration
@@ -10,46 +11,53 @@ The API's default model path uses OpenAI-compatible settings:
 - `OPENAI_API_KEY`: provider key for OpenRouter, Vercel AI Gateway, or OpenAI
 - `OPENAI_BASE_URL`: provider base URL
 - `MODEL_NAME`: provider model id
-- `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK`: optional, bounded retry model for
-  missing or schema-invalid JSON extraction or summary output
+- `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK`: optional fallback model for invalid
+  structured summary or JSON output
 - `MODEL_EMBEDDING_NAME`: optional embedding model id
 
-Use the helper from the repo root:
+Use the guarded operator handoff from the repo root to inspect the local default
+Vercel AI Gateway profile:
 
 ```bash
-scripts/firecrawl-ops/set_model_profile.sh
-docker compose up -d --force-recreate api
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway
 ```
 
-If `.env` is missing, the helper creates a minimal gitignored file. Add the provider key manually before running AI-backed summary/json/query/extract tasks.
+After reviewing the plan, only a human operator may use the attested `--apply`
+path. Agent surfaces must never apply it. If `.env` is missing, use the minimal
+human-owned root template in `LOCAL_DEVELOPMENT_GUIDE.md`; do not use
+`apps/api/.env.example` as a Docker Compose contract.
 
 ## Default routing policy
 
-1. **Gateway pass (default local profile)**
-   - Primary: `deepseek/deepseek-v4-flash-0731`
-   - Structured-output fallback: `deepseek/deepseek-v4-pro-0813`
-   - Profile: `gateway`
+1. **Gateway default**
+   - `deepseek/deepseek-v4-flash-0731`
+   - Profile: `gateway` (the no-argument default)
    - Base URL: `https://ai-gateway.vercel.sh/v1`
-   - Use when the Vercel AI Gateway key is the available provider key. Flash
-     handles normal work. For JSON extraction and summary, a missing or
-     schema-invalid result retries once with Pro; a schema-valid direct
-     provider response is accepted without retry.
+   - For structured summary/JSON output only, the configured one-time fallback
+     is `deepseek/deepseek-v4-pro-0813` when the Flash result is missing or
+     schema-invalid. It is not a general per-agent model switch.
 
-2. **Budget alternative**
+2. **Explicit OpenRouter budget alternative**
    - `deepseek/deepseek-v4-flash`
    - Profile: `budget`
    - Base URL: `https://openrouter.ai/api/v1`
-   - Use only with an OpenRouter key for repetitive/easy/high-volume tasks.
-     This explicit single-model profile has no automatic Pro fallback.
+   - Use for repetitive/easy/high-volume tasks.
 
-3. **Escalated alternative**
+3. **Explicit OpenRouter escalated alternative**
    - `deepseek/deepseek-v4-pro`
    - Profile: `escalated`
    - Base URL: `https://openrouter.ai/api/v1`
-   - Use only with an OpenRouter key for deliberately harder extraction or
-     reasoning tasks.
+   - Use only in an authorized operator window for harder extraction/reasoning
+     tasks. It is not an automatic retry for every budget-pass failure.
 
-4. **OpenAI direct**
+4. **Gateway Pro operator profile**
+   - `deepseek/deepseek-v4-pro-0813`
+   - Profile: `gateway-pro`
+   - Base URL: `https://ai-gateway.vercel.sh/v1`
+   - Use only for an explicit, authorized stronger-model window. This profile
+     has no automatic structured-output fallback of its own.
+
+5. **OpenAI direct**
    - `gpt-5.4-mini`
    - Profile: `openai-direct`
    - Base URL: `https://api.openai.com/v1`
@@ -57,18 +65,17 @@ If `.env` is missing, the helper creates a minimal gitignored file. Add the prov
 
 ## Escalation rules
 
-Escalate from DeepSeek V4 Flash -> DeepSeek V4 Pro when:
-- extraction confidence is low
-- malformed/partial output repeats
-- domain pages are noisy/complex
-- coding/terminal-style multi-step reasoning is required
+For the Gateway default, the API itself may make exactly one Pro retry only for
+missing or schema-invalid structured summary/JSON output. All other escalation
+decisions require the operator procedure: queue check, exclusive window,
+provider-cost approval, recreate, bounded canary, and deliberate handoff.
 
 ## Cost-control rules
 
-- Start with DeepSeek V4 Flash for bulk jobs.
-- Escalate only failed/low-confidence items to DeepSeek V4 Pro, not all items.
-- Keep `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK` empty for profiles where no
-  automatic structured-output escalation is wanted.
+- Use the Gateway Flash snapshot default when the Vercel provider key is the
+  configured local provider.
+- Keep OpenRouter budget/escalated profiles as explicit alternatives, never as
+  an ambient agent-side switch.
 - Batch work where possible.
 - Keep prompts minimal and field-specific for extraction.
 

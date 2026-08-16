@@ -10,7 +10,7 @@ This is the Agentic Assets Firecrawl fork. It keeps upstream Firecrawl product c
 - OrbStack/Docker Compose runtime
 - local CLI, direct HTTP helper, and MCP wrappers for agents
 - optional local Docling OCR adapter for harder PDFs
-- model-profile helpers for OpenRouter, Vercel AI Gateway, or OpenAI-compatible providers
+- guarded operator handoffs for OpenRouter, Vercel AI Gateway, or OpenAI-compatible providers
 
 ## Prerequisites
 
@@ -28,7 +28,6 @@ cd firecrawl
 docker context show
 docker compose version
 
-scripts/firecrawl-ops/set_model_profile.sh
 scripts/firecrawl-ops/install_git_hooks.sh
 scripts/firecrawl-ops/sync_agent_skills.sh
 
@@ -53,7 +52,13 @@ docker context use orbstack
 
 The root `.env` is the only local env Docker Compose reads. It is gitignored and should never be committed.
 
-`scripts/firecrawl-ops/set_model_profile.sh` creates a minimal `.env` with the default Vercel AI Gateway Flash 0731 profile and its one-time Pro 0813 structured-output fallback. Add `OPENAI_API_KEY` only if you need AI-backed calls such as summary, JSON extraction, query, or `/v2/extract`. Use `budget` only as an explicit OpenRouter alternative.
+For AI-backed calls, a human operator creates the minimal root `.env` template
+in `LOCAL_DEVELOPMENT_GUIDE.md` through the approved secret workflow. Do not
+use `apps/api/.env.example` as a Docker Compose contract. The retired
+`set_model_profile.sh` no longer creates or changes root `.env`. Agents may
+request a dry-run model plan with
+`scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway`;
+only a human operator may execute an attested apply after reviewing that plan.
 
 Plain scrape, crawl, map, search, and basic PDF parsing can be tested without model-provider spend.
 
@@ -79,9 +84,9 @@ scripts/firecrawl-ops/firecrawl_request.py scrape https://example.com --formats 
 Only start OCR when you need scanned/image-heavy PDF handling.
 
 ```bash
-scripts/firecrawl-ops/local_firepdf_ocr.sh start --profile research-page-aware
-scripts/firecrawl-ops/local_firepdf_ocr.sh enable-firecrawl
-docker compose up -d --force-recreate api
+# Agent-safe planning only. A human performs any attested apply.
+scripts/firecrawl-ops/firecrawl_operator_handoff.py \
+  ocr-adapter --profile research-page-aware
 scripts/firecrawl-ops/local_firepdf_ocr.sh doctor --smoke-pdf apps/test-site/public/example.pdf
 ```
 

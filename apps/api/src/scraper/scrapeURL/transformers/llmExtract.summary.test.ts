@@ -130,29 +130,18 @@ describe("performSummary structured-output compatibility", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
 
-  it("retries a rejected primary result once with the configured explicit fallback", async () => {
+  it("does not retry a failed provider request with the structured-output fallback", async () => {
     structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK =
       "deepseek/deepseek-v4-pro-0813";
-    generateObjectMock
-      .mockRejectedValueOnce(new Error("rate limit"))
-      .mockResolvedValueOnce(
-        completion({
-          summary: "Example Domain is for documentation examples.",
-        }),
-      );
 
-    const result = await performSummary(summaryMeta(), {
-      markdown: "# Example Domain",
-    } as any);
+    generateObjectMock.mockRejectedValueOnce(new Error("rate limit"));
 
-    expect(result.summary).toBe(
-      "Example Domain is for documentation examples.",
-    );
-    expect(generateObjectMock).toHaveBeenCalledTimes(2);
-    expect(getModelByNameMock).toHaveBeenCalledWith(
-      "deepseek/deepseek-v4-pro-0813",
-      "openai",
-    );
+    await expect(
+      performSummary(summaryMeta(), { markdown: "# Example Domain" } as any),
+    ).rejects.toThrow("rate limit");
+
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect(getModelByNameMock).not.toHaveBeenCalled();
   });
 
   it("propagates a configured fallback failure", async () => {

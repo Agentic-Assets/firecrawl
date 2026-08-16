@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Contract tests for the reversible local CRE resource profile.
 
 Run from the repo root:
@@ -13,7 +12,6 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "scripts" / "firecrawl-ops" / "set_cre_resource_profile.sh"
@@ -44,7 +42,9 @@ class CreResourceProfileTests(unittest.TestCase):
             env=env,
         )
 
-    def test_compose_has_independent_playwright_cap_and_optional_pid_limit(self) -> None:
+    def test_compose_has_independent_playwright_cap_and_optional_pid_limit(
+        self,
+    ) -> None:
         compose = COMPOSE.read_text(encoding="utf-8")
         self.assertIn(
             "MAX_CONCURRENT_PAGES: ${PLAYWRIGHT_MAX_CONCURRENT_PAGES:-${CRAWL_CONCURRENT_REQUESTS:-10}}",
@@ -52,7 +52,9 @@ class CreResourceProfileTests(unittest.TestCase):
         )
         self.assertIn("pids_limit: ${PLAYWRIGHT_PIDS_LIMIT:-0}", compose)
 
-    def test_apply_show_and_restore_preserve_unrelated_env_and_do_not_print_secret(self) -> None:
+    def test_apply_show_and_restore_preserve_unrelated_env_and_do_not_print_secret(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
             (tmp / "apps" / "api").mkdir(parents=True)
@@ -109,7 +111,26 @@ class CreResourceProfileTests(unittest.TestCase):
             result = self.run_script(tmp, env_file, state_file, "restore")
             self.assertEqual(result.returncode, 2)
             self.assertIn("refusing to guess", result.stderr)
-            self.assertEqual(env_file.read_text(encoding="utf-8"), "KEEP_ME=unchanged\n")
+            self.assertEqual(
+                env_file.read_text(encoding="utf-8"), "KEEP_ME=unchanged\n"
+            )
+
+    def test_missing_env_gives_template_bootstrap_without_model_profile_advice(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            (tmp / "apps" / "api").mkdir(parents=True)
+            (tmp / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            env_file = tmp / ".env"
+
+            result = self.run_script(tmp, env_file, tmp / "state", "apply")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("minimal root .env template", result.stderr)
+            self.assertIn("LOCAL_DEVELOPMENT_GUIDE.md", result.stderr)
+            self.assertNotIn("apps/api/.env.example", result.stderr)
+            self.assertNotIn("set_model_profile.sh", result.stderr)
 
 
 if __name__ == "__main__":
