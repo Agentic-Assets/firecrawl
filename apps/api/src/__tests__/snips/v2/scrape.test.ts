@@ -1619,6 +1619,39 @@ describe("Scrape tests", () => {
   describeIf(TEST_PRODUCTION || (HAS_AI && ALLOW_TEST_SUITE_WEBSITE))(
     "JSON format",
     () => {
+      itIf(
+        !process.env.TEST_SUITE_SELF_HOSTED ||
+          !!process.env.OPENAI_API_KEY ||
+          !!process.env.OLLAMA_BASE_URL,
+      )(
+        "returns the requested JSON key without an extraction warning",
+        async () => {
+          const response = await scrape(
+            {
+              url: base,
+              formats: [
+                {
+                  type: "json",
+                  schema: {
+                    type: "object",
+                    properties: {
+                      title: { type: "string" },
+                    },
+                    required: ["title"],
+                  },
+                },
+              ],
+            },
+            identity,
+          );
+
+          expect(response.json).toHaveProperty("title");
+          expect(typeof response.json.title).toBe("string");
+          expect(response.warning).toBeUndefined();
+        },
+        scrapeTimeout,
+      );
+
       it.concurrent(
         "works",
         async () => {
