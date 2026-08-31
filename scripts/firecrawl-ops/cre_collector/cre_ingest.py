@@ -40,6 +40,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional  # used in the "Optional[str]" string return annotations
 from urllib.parse import parse_qsl, quote, unquote_to_bytes, urlsplit, urlunsplit
@@ -70,6 +71,21 @@ PSQL_CANDIDATES = [
     "/opt/homebrew/opt/libpq/bin/psql",
     "/usr/local/opt/libpq/bin/psql",
 ]
+
+_RUN_UUID_NAMESPACE = uuid.UUID("c245ab8a-7397-5c20-920e-3bd852242c72")
+
+
+def artifact_run_identity(paths, *, lane="ingest"):
+    """Stable content identity used for replay-safe job and event rows."""
+    members = []
+    for path in sorted(paths):
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        members.append(digest.hexdigest())
+    key = f"{lane}:v1:" + hashlib.sha256("\n".join(members).encode()).hexdigest()
+    return key, str(uuid.uuid5(_RUN_UUID_NAMESPACE, key))
 
 # sourceKey -> (brokerage slug, external_id prefix)
 SOURCE_TO_BROKERAGE = {
@@ -2040,11 +2056,28 @@ def build_sql(
     history_guard=True,
     inventory_only_rows=(),
     inventory_only_scopes=(),
+    artifact_run_key=None,
 ):
     # Defense in depth for direct callers of this builder. Normal ingestion
     # reaches here through to_row(), which already drops `omFacts`, but this
     # prevents a manually constructed row from restoring the retired writer.
     rows = [{**row, "om_facts": []} for row in rows]
+    if artifact_run_key is None:
+        identity_payload = json.dumps(
+            {"rows": rows, "jobs": job_meta, "started_at": started_at},
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        artifact_run_key = "ingest:v1:" + hashlib.sha256(identity_payload.encode()).hexdigest()
+    job_meta = [
+        {
+            **jm,
+            "job_id": str(uuid.uuid5(_RUN_UUID_NAMESPACE, f"{artifact_run_key}:{jm['slug']}")),
+            "artifact_run_key": artifact_run_key,
+        }
+        for jm in job_meta
+    ]
     lines = []
     w = lines.append
     staged_source_key_sql = source_key_sql("s", "b")
@@ -2123,11 +2156,12 @@ CREATE TEMP TABLE _inventory_only_scope (
 
     w("""
 CREATE TEMP TABLE _jobmeta (
-    slug text, discovered integer, saved integer, errors integer, notes text
+    slug text, discovered integer, saved integer, errors integer, notes text,
+    job_id uuid, artifact_run_key text, started_at timestamptz
 ) ON COMMIT DROP;""")
-    w("COPY _jobmeta (slug, discovered, saved, errors, notes) FROM stdin;")
+    w("COPY _jobmeta (slug, discovered, saved, errors, notes, job_id, artifact_run_key, started_at) FROM stdin;")
     for jm in job_meta:
-        w("\t".join(copy_field(v) for v in (jm["slug"], jm["discovered"], jm["saved"], jm["errors"], jm["notes"])))
+        w("\t".join(copy_field(v) for v in (jm["slug"], jm["discovered"], jm["saved"], jm["errors"], jm["notes"], jm["job_id"], jm["artifact_run_key"], started_at)))
     w("\\.")
     w("SET LOCAL statement_timeout = '600s';")
 
@@ -2150,6 +2184,20 @@ BEGIN
         RAISE EXCEPTION 'unseeded brokerage slug(s): % (run sql/001_cre_brokerages.sql)', missing;
     END IF;
 END $$;
+
+-- Create stable per-brokerage jobs before lifecycle events reference them.
+-- Replaying the same immutable artifact resolves to the same job id/key.
+INSERT INTO credeals.cre_scrape_jobs
+    (id, brokerage_id, status, started_at, completed_at,
+     listings_discovered, listings_scraped, listings_saved, errors_count, notes,
+     artifact_run_key)
+SELECT jm.job_id, b.id,
+       CASE WHEN jm.errors > 0 THEN 'partial' ELSE 'completed' END,
+       jm.started_at, now(),
+       jm.discovered, jm.saved, jm.saved, jm.errors, jm.notes,
+       jm.artifact_run_key
+FROM _jobmeta jm JOIN credeals.cre_brokerages b ON b.slug = jm.slug
+ON CONFLICT DO NOTHING;
 
 -- Provider cards without a stable listing URL are enumeration evidence only.
 -- Keep them out of canonical cre_listings (no fake URL or stable-history
@@ -2418,9 +2466,23 @@ END $$;
 CREATE TEMP TABLE _prior_vals ON COMMIT DROP AS
 SELECT t.id, t.brokerage_id, t.external_id,
        t.sale_price_usd, t.sale_price_per_sf, t.lease_rate_min, t.lease_rate_max,
-       t.status, t.cap_rate
+       t.status, t.cap_rate, t.deleted_at
 FROM credeals.cre_listings t
 JOIN _src s ON s.brokerage_id = t.brokerage_id AND s.external_id = t.external_id;
+
+-- Serialize source-presence transitions with the observe-only monitor. New
+-- identities remain protected by the source-index unique key.
+SELECT si.id
+FROM credeals.cre_source_index si
+JOIN _src s ON s.brokerage_id = si.brokerage_id AND s.external_id = si.external_id
+FOR UPDATE;
+
+CREATE TEMP TABLE _prior_source_presence ON COMMIT DROP AS
+SELECT s.brokerage_id, s.external_id,
+       si.observation_present, COALESCE(si.presence_generation, 0) AS presence_generation
+FROM _src s
+LEFT JOIN credeals.cre_source_index si
+  ON si.brokerage_id = s.brokerage_id AND si.external_id = s.external_id;
 
 CREATE TEMP TABLE _up ON COMMIT DROP AS
 WITH ins AS (
@@ -2814,6 +2876,49 @@ DO $$ BEGIN
       AND t.external_id = s.external_id;
   END IF;
 END $$;
+
+""")
+
+    w(f"""
+-- Canonical full ingest synchronizes source observation and lifecycle mirror
+-- in the same transaction as the cre_listings upsert.
+INSERT INTO credeals.cre_source_index AS si
+    (brokerage_id, external_id, source_key, url, soft_deleted,
+     observed_status, observation_present, presence_generation,
+     presence_changed_at, first_seen, last_seen, last_enumerated_at)
+SELECT s.brokerage_id, s.external_id, {staged_source_key_sql}, s.source_url, false,
+       s.status, true, 0, s.scraped_at, s.scraped_at, s.scraped_at, s.scraped_at
+FROM _src s
+JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
+    source_key = COALESCE(EXCLUDED.source_key, si.source_key),
+    url = EXCLUDED.url,
+    soft_deleted = false,
+    observed_status = COALESCE(EXCLUDED.observed_status, si.observed_status),
+    presence_generation = CASE
+      WHEN si.observation_present IS DISTINCT FROM true
+      THEN si.presence_generation + 1 ELSE si.presence_generation END,
+    presence_changed_at = CASE
+      WHEN si.observation_present IS DISTINCT FROM true
+      THEN EXCLUDED.last_enumerated_at ELSE si.presence_changed_at END,
+    observation_present = true,
+    last_seen = EXCLUDED.last_seen,
+    last_enumerated_at = EXCLUDED.last_enumerated_at;
+
+INSERT INTO credeals.cre_listing_events
+    (listing_id, brokerage_id, scrape_job_id, event_type, source_value,
+     source_url, presence_generation, detected_at)
+SELECT u.id, u.brokerage_id, jm.job_id, 'reappeared', 'full_ingest_present',
+       s.source_url, si.presence_generation, s.scraped_at
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+JOIN _prior_source_presence p USING (brokerage_id, external_id)
+LEFT JOIN _prior_vals pv ON pv.id = u.id
+JOIN credeals.cre_source_index si USING (brokerage_id, external_id)
+JOIN credeals.cre_brokerages b ON b.id = u.brokerage_id
+JOIN _jobmeta jm ON jm.slug = b.slug
+WHERE p.observation_present = false OR pv.deleted_at IS NOT NULL
+ON CONFLICT DO NOTHING;
 
 -- Children: refresh wholesale only when the latest source row completed a
 -- detail pass. This protects previously good documents/images/contacts from
@@ -3261,20 +3366,6 @@ WHERE t.sale_price_usd    IS DISTINCT FROM p.sale_price_usd
    OR t.lease_rate_max    IS DISTINCT FROM p.lease_rate_max
    OR t.status            IS DISTINCT FROM p.status
    OR t.cap_rate          IS DISTINCT FROM p.cap_rate;"""
-    if history_guard:
-        w(f"""
--- (H4a) Append-only price/status history. Existence-guarded: no-op when the
--- table is not yet applied to prod. Only fires when a watched field changed.
-DO $$ BEGIN
-  IF to_regclass('credeals.cre_listing_price_history') IS NOT NULL THEN
-    {_history_insert_body}
-  END IF;
-END $$;""")
-    else:
-        w(f"""
--- (H4a) Append-only price/status history (unguarded for dry-run/offline tests).
-{_history_insert_body}""")
-
     if mark_missing_slugs:
         slug_list = ", ".join("'" + s.replace("'", "''") + "'" for s in sorted(mark_missing_slugs))
         # (M3) Capture the soon-to-be-retired listings BEFORE the UPDATE overwrites
@@ -3286,13 +3377,48 @@ END $$;""")
 -- event and the contact/document archive snapshot reference the same rows in
 -- this one transaction.
 CREATE TEMP TABLE _retired ON COMMIT DROP AS
-SELECT l.id, l.brokerage_id, l.status AS prior_status
+SELECT l.id, l.brokerage_id, l.external_id, l.source_url,
+       l.status AS prior_status, l.sale_price_usd, l.sale_price_per_sf,
+       l.lease_rate_min, l.lease_rate_max, l.cap_rate,
+       si.source_key, si.observed_status
 FROM credeals.cre_listings l
 JOIN credeals.cre_brokerages b ON l.brokerage_id = b.id
+LEFT JOIN credeals.cre_source_index si
+  ON si.brokerage_id = l.brokerage_id AND si.external_id = l.external_id
 WHERE b.slug IN ({slug_list})
   AND l.deleted_at IS NULL
   AND l.external_id IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM _up u WHERE u.id = l.id);
+
+-- Include retirement before-values in the same history diff used for present
+-- rows. History is appended only after every current-row mutation below.
+INSERT INTO _prior_vals
+    (id, brokerage_id, external_id, sale_price_usd, sale_price_per_sf,
+     lease_rate_min, lease_rate_max, status, cap_rate, deleted_at)
+SELECT id, brokerage_id, external_id, sale_price_usd, sale_price_per_sf,
+       lease_rate_min, lease_rate_max, prior_status, cap_rate, NULL
+FROM _retired;
+
+INSERT INTO credeals.cre_source_index AS si
+    (brokerage_id, external_id, source_key, url, soft_deleted,
+     observed_status, observation_present, presence_generation,
+     presence_changed_at, first_seen, last_seen, last_enumerated_at)
+SELECT r.brokerage_id, r.external_id, COALESCE(r.source_key, b.slug), r.source_url,
+       true, r.observed_status, false, 1,
+       {sql_lit(started_at)}::timestamptz, {sql_lit(started_at)}::timestamptz,
+       {sql_lit(started_at)}::timestamptz, {sql_lit(started_at)}::timestamptz
+FROM _retired r
+JOIN credeals.cre_brokerages b ON b.id = r.brokerage_id
+ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
+    soft_deleted = true,
+    presence_generation = CASE
+      WHEN si.observation_present IS DISTINCT FROM false
+      THEN si.presence_generation + 1 ELSE si.presence_generation END,
+    presence_changed_at = CASE
+      WHEN si.observation_present IS DISTINCT FROM false
+      THEN EXCLUDED.last_enumerated_at ELSE si.presence_changed_at END,
+    observation_present = false,
+    last_enumerated_at = EXCLUDED.last_enumerated_at;
 
 UPDATE credeals.cre_listings l
 SET deleted_at = now(), status = 'inactive', updated_at = now()
@@ -3302,13 +3428,16 @@ WHERE l.id = r.id
   AND b.slug IN ({slug_list});
 
 INSERT INTO credeals.cre_listing_events
-    (listing_id, brokerage_id, event_type, field, old_value, new_value,
-     source_value, detected_at)
-SELECT r.id, r.brokerage_id, 'disappeared', 'status', r.prior_status, 'inactive',
-       'mark_missing', now()
+    (listing_id, brokerage_id, scrape_job_id, event_type, field, old_value, new_value,
+     source_value, presence_generation, detected_at)
+SELECT r.id, r.brokerage_id, jm.job_id, 'disappeared', 'status', r.prior_status, 'inactive',
+       'mark_missing', si.presence_generation, {sql_lit(started_at)}::timestamptz
 FROM _retired r
-ON CONFLICT (listing_id, event_type, COALESCE(field, ''), COALESCE(new_value, ''), scrape_job_id)
-DO NOTHING;""")
+JOIN credeals.cre_source_index si
+  ON si.brokerage_id = r.brokerage_id AND si.external_id = r.external_id
+JOIN credeals.cre_brokerages b ON b.id = r.brokerage_id
+JOIN _jobmeta jm ON jm.slug = b.slug
+ON CONFLICT DO NOTHING;""")
         # (M2) Snapshot contacts and documents of the retired listings into the
         # append-only archives. Images are excluded (high volume, low historical
         # value). Guarded so a pre-apply ingest is a no-op. Column lists are
@@ -3393,16 +3522,21 @@ END $$;
 {_documents_insert}
 {_media_archive_insert}""")
 
-    w(f"""
-INSERT INTO credeals.cre_scrape_jobs
-    (brokerage_id, status, started_at, completed_at,
-     listings_discovered, listings_scraped, listings_saved, errors_count, notes)
-SELECT b.id,
-       CASE WHEN jm.errors > 0 THEN 'partial' ELSE 'completed' END,
-       {sql_lit(started_at)}::timestamptz, now(),
-       jm.discovered, jm.saved, jm.saved, jm.errors, jm.notes
-FROM _jobmeta jm JOIN credeals.cre_brokerages b ON b.slug = jm.slug;
+    if history_guard:
+        w(f"""
+-- (H4a) Final append-only history runs after present, revival, and retirement
+-- mutations so latest history always agrees with current cre_listings state.
+DO $$ BEGIN
+  IF to_regclass('credeals.cre_listing_price_history') IS NOT NULL THEN
+    {_history_insert_body}
+  END IF;
+END $$;""")
+    else:
+        w(f"""
+-- (H4a) Final append-only history (unguarded for dry-run/offline tests).
+{_history_insert_body}""")
 
+    w(f"""
 -- Enforce the severe child-loss predicate before COMMIT so a parser collapse
 -- rolls back listings, children, history, and the scrape-job row atomically.
 -- Compare the same pre-existing parents on both sides. Mark-missing may retire
@@ -4182,6 +4316,7 @@ def main():
         )
     ]
 
+    artifact_run_key, _ = artifact_run_identity(args.inputs)
     sql = build_sql(
         rows,
         job_meta,
@@ -4190,6 +4325,7 @@ def main():
         history_guard=not args.dry_run,
         inventory_only_rows=inventory_only_rows,
         inventory_only_scopes=inventory_only_scopes,
+        artifact_run_key=artifact_run_key,
     )
 
     print(
