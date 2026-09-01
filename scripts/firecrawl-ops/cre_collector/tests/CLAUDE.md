@@ -18,6 +18,7 @@ python3 -m pytest tests/ -q
 python3 -m pytest tests/test_enum_key_invariant.py -q
 python3 -m pytest tests/test_norm_status_canonical_and_guards.py -q   # portable CI signal (no out/)
 bash tests/run_om_facts_postgres_contract.sh  # opt-in disposable PostgreSQL 17 contract
+bash tests/run_listing_lifecycle_postgres_contract.sh  # opt-in local PostgreSQL 14+ contract
 ```
 
 Requires `pytest` on the host (not pinned in `package.json`). The suite includes
@@ -31,6 +32,9 @@ unexposed disposable PostgreSQL 17 container. It proves fresh-schema
 five-column-key creation, refusal of legacy alignment without its psql approval
 variable, and approved legacy idempotence. It requires Docker and always removes
 its container; it must never target Supabase or a collector database.
+The lifecycle contract runner creates and drops a uniquely named local test
+database, proves migration/event/locking invariants, and exits 78 when the local
+server is older than PostgreSQL 14. It never accepts a database URL.
 
 **Coverage push (2026-06-15):** a comprehensive unit-test pass lifted production
 coverage across the collector (measure with `pytest --cov=. --cov-report=term-missing
