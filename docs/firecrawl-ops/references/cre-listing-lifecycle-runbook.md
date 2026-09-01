@@ -70,7 +70,10 @@ WHERE conrelid = 'credeals.cre_listing_events'::regclass
 The lifecycle constraint must require `presence_generation` but not a non-null
 `scrape_job_id`; the job foreign key readback must remain `n` (`ON DELETE SET
 NULL`). The legacy idempotence index must exclude `disappeared` and
-`reappeared`, while the presence-transition index owns their generation key.
+`reappeared` and cover only rows whose `scrape_job_id IS NOT NULL`. Rows leave
+that index when job deletion nullifies the FK, so otherwise-identical events
+from different deleted jobs remain valid audit history. The presence-transition
+index owns the lifecycle generation key independently of job retention.
 
 ## Rollback posture
 
@@ -93,7 +96,11 @@ The evidence bundle must point to the actual successful full collector artifact
 using `source.evidence_path`. The planner hashes the artifact bytes, derives the
 listing identity from the artifact, binds `observed_at` to
 `runMeta.finishedAt`, and checks freshness against the host clock. Application
-revalidates the same bytes and timestamp.
+revalidates the same bytes, strict scope, and timestamp. The artifact itself
+must prove the unlimited full `sale` and `lease` contract: exact source-pass
+coverage, `supported=true`, no pass error or truncation, and collected counts
+that reconcile to the artifact listings and `totalListings`. Caller-supplied
+claims such as `source.complete` have no authority.
 
 Dry-run first. After review, the operator creates a JSON approval contract
 outside the repository, restricts it with `chmod 600`, and passes it with

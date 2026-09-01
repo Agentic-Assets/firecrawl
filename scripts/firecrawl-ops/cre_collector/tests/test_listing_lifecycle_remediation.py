@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 import subprocess
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -90,6 +91,17 @@ def test_ingest_owns_canonical_sync_events_and_final_history_order():
     assert "WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'" in sql
     assert "FOR UPDATE OF l" in sql
     assert "FOR UPDATE OF si" in sql
+    present_advisory = sql.index("-- Global lifecycle lock order")
+    present_source = sql.index("-- Lock present source-index rows", present_advisory)
+    present_listing = sql.index("-- Lock present canonical listing rows", present_source)
+    retired_advisory = sql.index(
+        "-- Follow the global advisory-then-source-index-then-listing lock order"
+    )
+    retired_source = sql.index("-- Lock retirement source-index rows", retired_advisory)
+    retired_listing = sql.index("-- Lock retirement canonical listing rows", retired_source)
+    assert present_advisory < present_source < present_listing
+    assert retired_advisory < retired_source < retired_listing
+    assert sql.count("pg_advisory_xact_lock") >= 2
     assert "si.last_enumerated_at < jm.finished_at" in sql
     assert "jm.finished_at, jm.finished_at" in sql
     assert "applied.presence_generation, jm.finished_at" in sql
@@ -115,7 +127,10 @@ def test_migration_adds_transition_contract_and_runner_order():
     assert "cre_listing_events_lifecycle_identity_required" in migration
     assert "OR presence_generation IS NOT NULL" in migration
     assert "presence_generation IS NOT NULL AND scrape_job_id IS NOT NULL" not in migration
-    assert "WHERE event_type NOT IN ('disappeared', 'reappeared')" in migration
+    assert (
+        "WHERE event_type NOT IN ('disappeared', 'reappeared')\n"
+        "      AND scrape_job_id IS NOT NULL"
+    ) in migration
     assert "artifact_run_key" in migration
     assert "reconciliation_provenance" in migration
     assert "evidence_observed_at" in migration
@@ -131,22 +146,34 @@ def test_migration_adds_transition_contract_and_runner_order():
 
 def _evidence(tmp_path, state="absent", **source_overrides):
     source = {
-        "state": state, "complete": True, "ambiguous": False,
+        "state": state, "complete": False, "ambiguous": False,
         "observed_at": OBSERVED, "source_key": "svn",
         "url": "https://example.test/x",
     }
     source.update(source_overrides)
+    finished = datetime.fromisoformat(source["observed_at"].replace("Z", "+00:00"))
+    started = (finished - timedelta(minutes=5)).isoformat()
     artifact = {
-        "runMeta": {"mode": "full", "finishedAt": source["observed_at"]},
+        "runMeta": {
+            "mode": "full", "transactions": ["sale", "lease"],
+            "maxItemsPerSource": None, "startedAt": started,
+            "finishedAt": source["observed_at"],
+        },
         "brokers": [],
-        "sources": [{
-            "sourceKey": source["source_key"], "transaction": "sale",
-            "listingsCollected": 1 if state == "present" else 0,
-            "error": None, "truncated": False,
-        }],
+        "sources": [
+            {
+                "sourceKey": source["source_key"], "transaction": transaction,
+                "supported": True,
+                "listingsCollected": 1 if state == "present" and transaction == "sale" else 0,
+                "error": None, "truncated": False,
+            }
+            for transaction in ("sale", "lease")
+        ],
         "listings": ([{
-            "sourceKey": source["source_key"], "id": "x", "url": source["url"],
+            "sourceKey": source["source_key"], "transactionMode": "sale",
+            "id": "x", "url": source["url"],
         }] if state == "present" else []),
+        "totalListings": 1 if state == "present" else 0,
     }
     artifact_path = tmp_path / "collector-artifact.json"
     artifact_bytes = (json.dumps(artifact, sort_keys=True) + "\n").encode()
@@ -270,6 +297,65 @@ def test_reconcile_rejects_arbitrary_or_mutated_evidence_bytes(tmp_path):
     assert mismatch["skipped"][0]["reason"] == "source_url_does_not_match_artifact"
 
 
+@pytest.mark.parametrize(
+    ("section", "index", "field", "value"),
+    [
+        ("runMeta", None, "transactions", ["sale"]),
+        ("runMeta", None, "maxItemsPerSource", 100),
+        ("sources", 1, "supported", False),
+        ("sources", 0, "error", "timeout"),
+        ("sources", 0, "truncated", True),
+        ("sources", 0, "listingsCollected", 1),
+        (None, None, "totalListings", 1),
+        (None, None, "totalListings", False),
+    ],
+)
+def test_reconcile_requires_strict_successful_full_source_contract(
+    tmp_path, section, index, field, value,
+):
+    evidence = _evidence(tmp_path)
+    source = evidence["rows"][0]["source"]
+    source["complete"] = True  # caller assertion must not rescue invalid bytes
+    artifact_path = tmp_path / source["evidence_path"]
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    target = artifact if section is None else artifact[section]
+    if index is not None:
+        target = target[index]
+    target[field] = value
+    artifact_bytes = (json.dumps(artifact, sort_keys=True) + "\n").encode()
+    artifact_path.write_bytes(artifact_bytes)
+    source["evidence_sha256"] = hashlib.sha256(artifact_bytes).hexdigest()
+
+    plan = _plan(evidence, tmp_path)
+
+    assert plan["actions"] == []
+    assert plan["skipped"][0]["reason"].startswith("source_evidence_scope_")
+
+
+def test_reconcile_requires_exact_source_pass_coverage(tmp_path):
+    evidence = _evidence(tmp_path)
+    source = evidence["rows"][0]["source"]
+    artifact_path = tmp_path / source["evidence_path"]
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    artifact["sources"].pop()
+    artifact_bytes = (json.dumps(artifact, sort_keys=True) + "\n").encode()
+    artifact_path.write_bytes(artifact_bytes)
+    source["evidence_sha256"] = hashlib.sha256(artifact_bytes).hexdigest()
+
+    plan = _plan(evidence, tmp_path)
+
+    assert plan["actions"] == []
+    assert plan["skipped"][0]["reason"] == (
+        "source_evidence_scope_source_pass_coverage_mismatch"
+    )
+
+
+def test_reconcile_ignores_caller_complete_flag_when_artifact_is_strict(tmp_path):
+    evidence = _evidence(tmp_path)
+    evidence["rows"][0]["source"]["complete"] = False
+    assert len(_plan(evidence, tmp_path)["actions"]) == 1
+
+
 def test_reconcile_present_preserves_terminal_status(tmp_path):
     evidence = _evidence(tmp_path, state="present")
     evidence["rows"][0].update({
@@ -383,7 +469,10 @@ def test_reconcile_apply_requires_operator_reference_and_exact_confirmation(tmp_
 def test_reconcile_sql_locks_hash_checks_drift_and_exact_replay(tmp_path):
     plan = _plan(_history_only_evidence(tmp_path), tmp_path)
     sql = reconcile.build_apply_sql(plan["actions"], plan["plan_hash"], "cayman", "AGENTIC-1")
-    assert "FOR UPDATE OF l, si" in sql
+    advisory = sql.index("pg_advisory_xact_lock")
+    source_lock = sql.index("FROM credeals.cre_source_index si", advisory)
+    listing_lock = sql.index("FROM credeals.cre_listings l", source_lock)
+    assert advisory < source_lock < listing_lock
     assert "FOR UPDATE;" in sql
     assert "evidence drifted" in sql
     assert "exact-plan replay: already applied, zero mutations" in sql

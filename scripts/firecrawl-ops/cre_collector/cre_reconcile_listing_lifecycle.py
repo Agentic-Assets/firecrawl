@@ -35,10 +35,12 @@ from pathlib import Path
 from cre_ingest import (
     assert_expected_database_target,
     find_psql,
+    lifecycle_advisory_lock_key_sql,
     load_db_url,
     psql_connection_args,
     psql_connection_env,
     sql_lit,
+    strict_full_source_scope,
     to_row,
 )
 
@@ -139,8 +141,10 @@ def _validate_bound_artifact(raw, source, *, evidence_base_dir, now, max_age_hou
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None, "invalid_source_evidence_artifact"
     run_meta = artifact.get("runMeta") if isinstance(artifact, dict) else None
-    if not isinstance(run_meta, dict) or run_meta.get("mode") != "full":
-        return None, "source_evidence_not_full_crawl"
+    try:
+        scope = strict_full_source_scope(artifact, source.get("source_key"))
+    except (AttributeError, ValueError) as exc:
+        return None, f"source_evidence_scope_{exc}"
     try:
         finished = _parse_time(run_meta.get("finishedAt"))
         claimed = _parse_time(source.get("observed_at"))
@@ -152,18 +156,9 @@ def _validate_bound_artifact(raw, source, *, evidence_base_dir, now, max_age_hou
     if age < 0 or age > max_age_hours:
         return None, "stale_source_evidence"
 
-    source_key = source.get("source_key")
-    passes = [
-        entry for entry in artifact.get("sources") or []
-        if isinstance(entry, dict) and entry.get("sourceKey") == source_key
-    ]
-    if not passes or any(entry.get("error") or entry.get("truncated") for entry in passes):
-        return None, "source_evidence_pass_incomplete"
     brokers_by_idx = {i: broker for i, broker in enumerate(artifact.get("brokers") or [])}
     identities = {}
-    for listing in artifact.get("listings") or []:
-        if not isinstance(listing, dict) or listing.get("sourceKey") != source_key:
-            continue
+    for listing in scope["listings"]:
         row = to_row(listing, brokers_by_idx, run_meta["finishedAt"])
         if row is not None:
             identities.setdefault(row["external_id"], []).append(row)
@@ -290,8 +285,6 @@ def build_plan(bundle, *, evidence_base_dir=".", max_age_hours=48):
             reason = "incomplete_identity"
         elif identity_counts[identity] > 1 or raw.get("ambiguous") or source.get("ambiguous"):
             reason = "ambiguous_identity_or_evidence"
-        elif source.get("complete") is not True:
-            reason = "incomplete_source_evidence"
         elif source.get("state") not in {"present", "absent"}:
             reason = "unsupported_source_state"
         elif not source.get("source_key") or not source.get("url"):
@@ -452,6 +445,12 @@ def build_apply_sql(actions, plan_hash, operator, approval_ref):
     """Build one bounded, lock-and-compare transaction."""
     if len(actions) > MAX_BATCH_SIZE:
         raise ValueError(f"batch exceeds {MAX_BATCH_SIZE} rows")
+    actions = sorted(
+        actions,
+        key=lambda action: (
+            action["brokerage_id"], action["external_id"], action["listing_id"],
+        ),
+    )
     lines = [
         "\\set ON_ERROR_STOP on", "BEGIN;", "SET LOCAL statement_timeout = '120s';",
         "CREATE TEMP TABLE _reconcile_apply (listing_id uuid PRIMARY KEY) ON COMMIT DROP;",
@@ -568,10 +567,16 @@ def build_apply_sql(actions, plan_hash, operator, approval_ref):
             f"-- reconcile {action['listing_id']} operations={','.join(action['operations'])} "
             f"before={action['before_hash']}",
             "DO $$ BEGIN",
+            "  PERFORM pg_advisory_xact_lock("
+            f"{lifecycle_advisory_lock_key_sql(brokerage_id + '::uuid', external_id)});",
+            "  PERFORM si.id FROM credeals.cre_source_index si "
+            f"WHERE si.brokerage_id={brokerage_id}::uuid "
+            f"AND si.external_id={external_id} FOR UPDATE;",
+            "  IF NOT FOUND THEN RAISE EXCEPTION 'lifecycle target missing'; END IF;",
             "  PERFORM l.id FROM credeals.cre_listings l "
-            "JOIN credeals.cre_source_index si "
-            "ON si.brokerage_id=l.brokerage_id AND si.external_id=l.external_id "
-            f"WHERE l.id={listing_id}::uuid FOR UPDATE OF l, si;",
+            f"WHERE l.id={listing_id}::uuid "
+            f"AND l.brokerage_id={brokerage_id}::uuid "
+            f"AND l.external_id={external_id} FOR UPDATE;",
             "  IF NOT FOUND THEN RAISE EXCEPTION 'lifecycle target missing'; END IF;",
             "  IF EXISTS (",
             "    SELECT 1 FROM credeals.cre_listings l "
@@ -760,9 +765,13 @@ def _revalidate_plan_evidence(plan, *, max_age_hours):
         try:
             with open(path, encoding="utf-8") as handle:
                 artifact = json.load(handle)
-            finished = _parse_time((artifact.get("runMeta") or {}).get("finishedAt"))
+            scope = strict_full_source_scope(artifact, action["source_key"])
+            finished = _parse_time(scope["observed_at"])
             observed = _parse_time(action["observed_at"])
-        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        except (
+            OSError, UnicodeError, json.JSONDecodeError,
+            AttributeError, KeyError, TypeError, ValueError,
+        ) as exc:
             raise ValueError("planned source evidence artifact is no longer valid") from exc
         age = (now - finished).total_seconds() / 3600
         if finished != observed or age < 0 or age > max_age_hours:

@@ -146,14 +146,15 @@ ALTER TABLE credeals.cre_listing_events
 -- Migration 007's original within-run key predates presence generations. If it
 -- continues to cover lifecycle rows, a later disappear/reappear cycle under the
 -- same deterministic artifact job conflicts with the first cycle and is
--- silently discarded. Preserve that exact dedupe contract for non-lifecycle
--- events only; lifecycle transitions use their generation key below.
+-- silently discarded. Preserve job-scoped dedupe for non-lifecycle events
+-- only. Rows whose job FK is later SET NULL leave this index, so deleting two
+-- jobs cannot make otherwise-identical audit events collide during FK action.
 DROP INDEX IF EXISTS credeals.cre_listing_events_idem_uq;
 CREATE UNIQUE INDEX cre_listing_events_idem_uq
     ON credeals.cre_listing_events
        (listing_id, event_type, COALESCE(field, ''), COALESCE(new_value, ''), scrape_job_id)
-       NULLS NOT DISTINCT
-    WHERE event_type NOT IN ('disappeared', 'reappeared');
+    WHERE event_type NOT IN ('disappeared', 'reappeared')
+      AND scrape_job_id IS NOT NULL;
 
 -- NULL generations on legacy lifecycle rows remain valid history. Every new
 -- writer in this change supplies a generation. The partial unique index makes
@@ -192,7 +193,8 @@ BEGIN
      AND i.indisunique;
   IF legacy_predicate IS NULL
      OR position('disappeared' IN legacy_predicate) = 0
-     OR position('reappeared' IN legacy_predicate) = 0 THEN
+     OR position('reappeared' IN legacy_predicate) = 0
+     OR position('scrape_job_id IS NOT NULL' IN legacy_predicate) = 0 THEN
     RAISE EXCEPTION 'migration 016 non-lifecycle idempotence readback failed: %', legacy_predicate;
   END IF;
 

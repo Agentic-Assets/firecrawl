@@ -75,6 +75,14 @@ PSQL_CANDIDATES = [
 _RUN_UUID_NAMESPACE = uuid.UUID("c245ab8a-7397-5c20-920e-3bd852242c72")
 
 
+def lifecycle_advisory_lock_key_sql(brokerage_expr, external_expr):
+    """Return the shared transaction-lock key for one lifecycle identity."""
+    return (
+        "hashtextextended(concat_ws(chr(31), "
+        f"({brokerage_expr})::text, ({external_expr})::text), 0)"
+    )
+
+
 def artifact_run_identity(paths, *, lane="ingest"):
     """Stable content identity used for replay-safe job and event rows."""
     members = []
@@ -725,17 +733,19 @@ def to_inventory_only_row(listing, observed_at):
     }
 
 
-def inventory_only_full_scopes(data):
-    """Return strictly complete inventory-only namespaces safe to reconcile.
+def strict_full_source_scope(data, source_key, *, required_transactions=("sale", "lease")):
+    """Validate one unlimited, exact, successful full-source enumeration.
 
-    A namespace is included only when the artifact proves an unlimited,
-    error-free sale+lease full enumeration.  This makes absence meaningful:
-    provisional rows missing from that exact run may be retired from
-    ``cre_source_index`` without making any claim about canonical listings.
+    This is the shared absence-authority contract for inventory-only cleanup,
+    canonical lifecycle reconciliation, and any future full-snapshot consumer.
+    It raises a stable ``ValueError`` reason instead of allowing each caller to
+    grow a weaker interpretation of a collector artifact.
     """
+    if not isinstance(data, dict):
+        raise ValueError("missing_run_metadata")
     run_meta = data.get("runMeta")
     if not isinstance(run_meta, dict):
-        return []
+        raise ValueError("missing_run_metadata")
     started_raw = run_meta.get("startedAt")
     finished_raw = run_meta.get("finishedAt")
     try:
@@ -745,78 +755,110 @@ def inventory_only_full_scopes(data):
         finished = datetime.fromisoformat(
             str(finished_raw).replace("Z", "+00:00")
         )
-    except (TypeError, ValueError):
-        return []
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid_run_timestamps") from exc
     if (
         started.tzinfo is None
         or finished.tzinfo is None
         or finished < started
     ):
-        return []
+        raise ValueError("invalid_run_timestamps")
+    expected_transactions = list(required_transactions)
     if (
         run_meta.get("mode") != "full"
-        or run_meta.get("transactions") != ["sale", "lease"]
+        or run_meta.get("transactions") != expected_transactions
         or run_meta.get("maxItemsPerSource") is not None
     ):
-        return []
+        raise ValueError("not_unlimited_full_required_transactions")
     entries = data.get("sources")
     listings = data.get("listings")
+    total_listings = data.get("totalListings")
     if (
         not isinstance(entries, list)
         or not isinstance(listings, list)
-        or data.get("totalListings") != len(listings)
+        or isinstance(total_listings, bool)
+        or not isinstance(total_listings, int)
+        or total_listings < 0
+        or total_listings != len(listings)
     ):
-        return []
+        raise ValueError("artifact_count_mismatch")
+
+    matching = [
+        entry
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("sourceKey") == source_key
+    ]
+    source_listings = [
+        listing
+        for listing in listings
+        if isinstance(listing, dict)
+        and listing.get("sourceKey") == source_key
+    ]
+    transactions = [entry.get("transaction") for entry in matching]
+    if len(matching) != len(expected_transactions) or sorted(transactions) != sorted(
+        expected_transactions
+    ):
+        raise ValueError("source_pass_coverage_mismatch")
+    if any(entry.get("supported") is not True for entry in matching):
+        raise ValueError("source_pass_unsupported")
+    if any(entry.get("error") is not None for entry in matching):
+        raise ValueError("source_pass_error")
+    if any(entry.get("truncated") is not False for entry in matching):
+        raise ValueError("source_pass_truncated")
+    if any(
+        isinstance(entry.get("listingsCollected"), bool)
+        or not isinstance(entry.get("listingsCollected"), int)
+        or entry["listingsCollected"] < 0
+        for entry in matching
+    ):
+        raise ValueError("source_pass_invalid_count")
+    if any(
+        listing.get("transactionMode") not in set(expected_transactions)
+        for listing in source_listings
+    ):
+        raise ValueError("source_listing_transaction_mismatch")
+    if any(
+        sum(
+            listing.get("transactionMode") == entry["transaction"]
+            for listing in source_listings
+        )
+        != entry["listingsCollected"]
+        for entry in matching
+    ):
+        raise ValueError("source_pass_count_mismatch")
+    return {
+        "observed_at": finished.astimezone(timezone.utc).isoformat(),
+        "entries": matching,
+        "listings": source_listings,
+    }
+
+
+def inventory_only_full_scopes(data):
+    """Return strictly complete inventory-only namespaces safe to reconcile.
+
+    A namespace is included only when the artifact proves an unlimited,
+    error-free sale+lease full enumeration.  This makes absence meaningful:
+    provisional rows missing from that exact run may be retired from
+    ``cre_source_index`` without making any claim about canonical listings.
+    """
 
     scopes = []
     for source_key, definition in INVENTORY_ONLY_SOURCE_DEFINITIONS.items():
-        matching = [
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("sourceKey") == source_key
-        ]
-        source_listings = [
-            listing
-            for listing in listings
-            if isinstance(listing, dict)
-            and listing.get("sourceKey") == source_key
-        ]
-        transactions = {entry.get("transaction") for entry in matching}
-        if (
-            len(matching) != 2
-            or transactions != {"sale", "lease"}
-            or any(entry.get("supported") is not True for entry in matching)
-            or any(entry.get("error") for entry in matching)
-            or any(entry.get("truncated") is not False for entry in matching)
-            or any(
-                not isinstance(entry.get("listingsCollected"), int)
-                or entry["listingsCollected"] < 0
-                for entry in matching
-            )
-            or any(
-                listing.get("transactionMode") not in {"sale", "lease"}
-                for listing in source_listings
-            )
-            or any(
-                sum(
-                    listing.get("transactionMode") == entry["transaction"]
-                    for listing in source_listings
-                )
-                != entry["listingsCollected"]
-                for entry in matching
-            )
-            or any(
-                listing.get("inventoryOnly") is not None
-                and to_inventory_only_row(listing, finished.isoformat()) is None
-                for listing in source_listings
-            )
+        try:
+            scope = strict_full_source_scope(data, source_key)
+        except ValueError:
+            continue
+        if any(
+            listing.get("inventoryOnly") is not None
+            and to_inventory_only_row(listing, scope["observed_at"]) is None
+            for listing in scope["listings"]
         ):
             continue
         scopes.append(
             {
                 **definition,
                 "source_key": source_key,
-                "observed_at": finished.isoformat(),
+                "observed_at": scope["observed_at"],
             }
         )
     return scopes
@@ -2492,24 +2534,51 @@ BEGIN
     END IF;
 END $$;
 
--- (H4a) Capture prior watched values BEFORE the upsert mutates them, so the
--- append-only price history records a row only on a REAL change. This reads
--- only cre_listings (always present) and is not guarded itself. New listings
--- have no row here and get no history entry (history starts at the first
--- change, which avoids bloat on the initial insert path).
+-- Global lifecycle lock order: identity advisory lock, source index, listing.
+-- The advisory lock also covers identities whose source-index row does not yet
+-- exist, so a present insert cannot invert table-lock order with retirement.
+DO $$
+DECLARE
+    lifecycle_identity record;
+BEGIN
+    FOR lifecycle_identity IN
+        SELECT DISTINCT s.brokerage_id, s.external_id
+        FROM _src s
+        ORDER BY s.brokerage_id, s.external_id
+    LOOP
+        PERFORM pg_advisory_xact_lock(
+            hashtextextended(concat_ws(chr(31),
+                lifecycle_identity.brokerage_id::text,
+                lifecycle_identity.external_id::text), 0)
+        );
+    END LOOP;
+END $$;
+
+-- Lock present source-index rows after all identity advisory locks.
+CREATE TEMP TABLE _present_source_locks ON COMMIT DROP AS
+SELECT si.id
+FROM credeals.cre_source_index si
+JOIN _src s ON s.brokerage_id = si.brokerage_id AND s.external_id = si.external_id
+ORDER BY si.id
+FOR UPDATE OF si;
+
+-- Lock present canonical listing rows after the corresponding source rows.
+CREATE TEMP TABLE _present_listing_locks ON COMMIT DROP AS
+SELECT t.id
+FROM credeals.cre_listings t
+JOIN _src s ON s.brokerage_id = t.brokerage_id AND s.external_id = t.external_id
+ORDER BY t.id
+FOR UPDATE OF t;
+
+-- (H4a) Capture prior watched values AFTER both lifecycle rows are locked but
+-- BEFORE the upsert mutates them, so history and presence snapshots cannot be
+-- stale relative to a concurrent retirement.
 CREATE TEMP TABLE _prior_vals ON COMMIT DROP AS
 SELECT t.id, t.brokerage_id, t.external_id,
        t.sale_price_usd, t.sale_price_per_sf, t.lease_rate_min, t.lease_rate_max,
        t.status, t.cap_rate, t.deleted_at
 FROM credeals.cre_listings t
 JOIN _src s ON s.brokerage_id = t.brokerage_id AND s.external_id = t.external_id;
-
--- Serialize source-presence transitions with the observe-only monitor. New
--- identities remain protected by the source-index unique key.
-SELECT si.id
-FROM credeals.cre_source_index si
-JOIN _src s ON s.brokerage_id = si.brokerage_id AND s.external_id = si.external_id
-FOR UPDATE;
 
 CREATE TEMP TABLE _prior_source_presence ON COMMIT DROP AS
 SELECT s.brokerage_id, s.external_id,
@@ -3419,17 +3488,28 @@ WHERE b.slug IN ({slug_list})
   AND l.external_id IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM _up u WHERE u.id = l.id);
 
--- Use a stable listing-then-source lock order. If a
+-- Follow the global advisory-then-source-index-then-listing lock order. If a
 -- concurrent present observation commits first, the post-lock timestamp
 -- predicate below excludes it. If retirement locks first, the present writer
 -- waits and can safely revive the row after this transaction commits.
-CREATE TEMP TABLE _retired_listing_locks ON COMMIT DROP AS
-SELECT l.id
-FROM credeals.cre_listings l
-JOIN _retired_candidates c ON c.id = l.id
-ORDER BY l.id
-FOR UPDATE OF l;
+DO $$
+DECLARE
+    lifecycle_identity record;
+BEGIN
+    FOR lifecycle_identity IN
+        SELECT DISTINCT c.brokerage_id, c.external_id
+        FROM _retired_candidates c
+        ORDER BY c.brokerage_id, c.external_id
+    LOOP
+        PERFORM pg_advisory_xact_lock(
+            hashtextextended(concat_ws(chr(31),
+                lifecycle_identity.brokerage_id::text,
+                lifecycle_identity.external_id::text), 0)
+        );
+    END LOOP;
+END $$;
 
+-- Lock retirement source-index rows after all identity advisory locks.
 CREATE TEMP TABLE _retired_source_locks ON COMMIT DROP AS
 SELECT si.id
 FROM credeals.cre_source_index si
@@ -3437,6 +3517,14 @@ JOIN _retired_candidates c
   ON c.brokerage_id = si.brokerage_id AND c.external_id = si.external_id
 ORDER BY si.id
 FOR UPDATE OF si;
+
+-- Lock retirement canonical listing rows after the corresponding source rows.
+CREATE TEMP TABLE _retired_listing_locks ON COMMIT DROP AS
+SELECT l.id
+FROM credeals.cre_listings l
+JOIN _retired_candidates c ON c.id = l.id
+ORDER BY l.id
+FOR UPDATE OF l;
 
 CREATE TEMP TABLE _retired ON COMMIT DROP AS
 SELECT l.id, l.brokerage_id, l.external_id, l.source_url,

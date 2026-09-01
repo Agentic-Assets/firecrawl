@@ -23,8 +23,8 @@ if ! pg_isready >/dev/null 2>&1; then
   exit 78
 fi
 server_version_num="$(psql -X -Atqc 'SHOW server_version_num' postgres)"
-if (( server_version_num < 150000 )); then
-  echo "PostgreSQL 15+ is required (NULLS NOT DISTINCT); found $server_version_num." >&2
+if (( server_version_num < 140000 )); then
+  echo "PostgreSQL 14+ is required; found $server_version_num." >&2
   exit 78
 fi
 
@@ -89,8 +89,7 @@ CREATE TABLE credeals.cre_listing_events (
 );
 CREATE UNIQUE INDEX cre_listing_events_idem_uq
   ON credeals.cre_listing_events
-     (listing_id, event_type, COALESCE(field, ''), COALESCE(new_value, ''), scrape_job_id)
-     NULLS NOT DISTINCT;
+     (listing_id, event_type, COALESCE(field, ''), COALESCE(new_value, ''), scrape_job_id);
 CREATE TABLE credeals.cre_listing_price_history (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   listing_id uuid NOT NULL REFERENCES credeals.cre_listings(id),
@@ -128,7 +127,13 @@ INSERT INTO credeals.cre_scrape_jobs
 VALUES
   ('30000000-0000-4000-8000-000000000001',
    '10000000-0000-4000-8000-000000000001', 'completed', now(), now(),
-   'contract-generation');
+   'contract-generation-one'),
+  ('30000000-0000-4000-8000-000000000002',
+   '10000000-0000-4000-8000-000000000001', 'completed', now(), now(),
+   'contract-generation-two'),
+  ('30000000-0000-4000-8000-000000000003',
+   '10000000-0000-4000-8000-000000000001', 'running', now(), NULL,
+   'contract-race');
 
 INSERT INTO credeals.cre_listing_events
   (listing_id, brokerage_id, scrape_job_id, event_type, field, new_value,
@@ -159,8 +164,19 @@ VALUES
    '10000000-0000-4000-8000-000000000001',
    '30000000-0000-4000-8000-000000000001', 'status_change', 'status', 'sold')
 ON CONFLICT DO NOTHING;
+
+-- The same non-lifecycle event under a different job is distinct provenance.
+-- Nullifying both job FKs must preserve both append-only rows without a unique
+-- collision during the FK action.
+INSERT INTO credeals.cre_listing_events
+  (listing_id, brokerage_id, scrape_job_id, event_type, field, new_value)
+VALUES
+  ('20000000-0000-4000-8000-000000000001',
+   '10000000-0000-4000-8000-000000000001',
+   '30000000-0000-4000-8000-000000000002', 'status_change', 'status', 'sold');
 DELETE FROM credeals.cre_scrape_jobs
-WHERE id = '30000000-0000-4000-8000-000000000001';
+WHERE id IN ('30000000-0000-4000-8000-000000000001',
+             '30000000-0000-4000-8000-000000000002');
 
 DO $$
 BEGIN
@@ -173,8 +189,12 @@ BEGIN
     RAISE EXCEPTION 'ON DELETE SET NULL lifecycle compatibility regressed';
   END IF;
   IF (SELECT count(*) FROM credeals.cre_listing_events
-      WHERE event_type = 'status_change') <> 1 THEN
-    RAISE EXCEPTION 'non-lifecycle idempotence regressed';
+      WHERE event_type = 'status_change') <> 2 THEN
+    RAISE EXCEPTION 'job-scoped non-lifecycle provenance or idempotence regressed';
+  END IF;
+  IF EXISTS (SELECT 1 FROM credeals.cre_listing_events
+             WHERE event_type = 'status_change' AND scrape_job_id IS NOT NULL) THEN
+    RAISE EXCEPTION 'two-job ON DELETE SET NULL compatibility regressed';
   END IF;
 END $$;
 
@@ -195,19 +215,51 @@ VALUES
    '2026-08-31T12:00:00Z', '2026-08-31T12:00:00Z');
 SQL
 
+# Execute the generated two-table present lock path. Pause after it takes the
+# source-index lock but before it takes the listing lock: the historical
+# listing-then-source retirement order deadlocks at this exact interleaving.
 (
-  psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" <<'SQL'
+python3 - "$COLLECTOR_DIR" <<'PY'
+from pathlib import Path
+import sys
+
+collector = Path(sys.argv[1])
+sys.path.insert(0, str(collector))
+import cre_ingest
+
+sql = cre_ingest.build_sql(
+    [], [], "2026-08-31T12:10:00Z", set(), history_guard=False,
+)
+start = sql.index("-- Global lifecycle lock order")
+listing_start = sql.index("-- Lock present canonical listing rows", start)
+end = sql.index("-- (H4a)", listing_start)
+print("""
 BEGIN;
+SET LOCAL lock_timeout = '5s';
+CREATE TEMP TABLE _src
+  (brokerage_id uuid, external_id text) ON COMMIT DROP;
+INSERT INTO _src VALUES
+  ('10000000-0000-4000-8000-000000000001', 'race-contract');
+""")
+print(sql[start:listing_start])
+print("SELECT pg_sleep(1);")
+print(sql[listing_start:end])
+print("""
+UPDATE credeals.cre_listings
+SET deleted_at = NULL, status = 'active', updated_at = '2026-08-31T12:10:00Z'
+WHERE brokerage_id = '10000000-0000-4000-8000-000000000001'
+  AND external_id = 'race-contract';
 UPDATE credeals.cre_source_index
 SET last_enumerated_at = '2026-08-31T12:10:00Z',
     last_seen = '2026-08-31T12:10:00Z',
     soft_deleted = false,
     observation_present = true
-WHERE external_id = 'race-contract';
-SELECT pg_sleep(1);
+WHERE brokerage_id = '10000000-0000-4000-8000-000000000001'
+  AND external_id = 'race-contract';
 COMMIT;
-SQL
-) >/dev/null &
+""")
+PY
+) | psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" >/dev/null &
 present_pid=$!
 sleep 0.2
 
@@ -231,11 +283,12 @@ end = sql.index("ON CONFLICT DO NOTHING;", event_start) + len("ON CONFLICT DO NO
 block = sql[start:end]
 print("""
 BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE TEMP TABLE _up (id uuid PRIMARY KEY) ON COMMIT DROP;
 CREATE TEMP TABLE _jobmeta
   (slug text, job_id uuid, finished_at timestamptz) ON COMMIT DROP;
 INSERT INTO _jobmeta VALUES
-  ('svn', '30000000-0000-4000-8000-000000000002', '2026-08-31T12:05:00Z');
+  ('svn', '30000000-0000-4000-8000-000000000003', '2026-08-31T12:05:00Z');
 CREATE TEMP TABLE _prior_vals (
   id uuid, brokerage_id uuid, external_id text,
   sale_price_usd numeric, sale_price_per_sf numeric,
