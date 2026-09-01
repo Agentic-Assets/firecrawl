@@ -36,6 +36,7 @@ from cre_ingest import (
     assert_expected_database_target,
     find_psql,
     lifecycle_advisory_lock_key_sql,
+    lifecycle_transaction_lock_sql,
     load_db_url,
     psql_connection_args,
     psql_connection_env,
@@ -453,6 +454,8 @@ def build_apply_sql(actions, plan_hash, operator, approval_ref):
     )
     lines = [
         "\\set ON_ERROR_STOP on", "BEGIN;", "SET LOCAL statement_timeout = '120s';",
+        "-- Intentionally serialize all generated lifecycle mutation transactions.",
+        lifecycle_transaction_lock_sql(),
         "CREATE TEMP TABLE _reconcile_apply (listing_id uuid PRIMARY KEY) ON COMMIT DROP;",
     ]
     for brokerage_id in sorted({action["brokerage_id"] for action in actions}):
@@ -717,8 +720,12 @@ def build_finalize_sql(actions, plan_hash, operator, approval_ref):
         "approved evidence-backed lifecycle reconciliation by " + operator
         + "; ref=" + approval_ref + "; plan=" + plan_hash
     )
+    transaction_lock = lifecycle_transaction_lock_sql()
     return f"""\\set ON_ERROR_STOP on
 BEGIN;
+SET LOCAL statement_timeout = '120s';
+-- Intentionally serialize all generated lifecycle mutation transactions.
+{transaction_lock}
 CREATE TEMP TABLE _expected_reconcile_jobs
     (job_id uuid PRIMARY KEY, run_key text NOT NULL, brokerage_id uuid NOT NULL)
     ON COMMIT DROP;

@@ -73,6 +73,15 @@ PSQL_CANDIDATES = [
 ]
 
 _RUN_UUID_NAMESPACE = uuid.UUID("c245ab8a-7397-5c20-920e-3bd852242c72")
+LIFECYCLE_TRANSACTION_LOCK_NAME = "credeals:listing-lifecycle:v1"
+
+
+def lifecycle_transaction_lock_sql():
+    """Serialize generated lifecycle transactions across all identity phases."""
+    return (
+        "SELECT pg_advisory_xact_lock(hashtextextended("
+        f"{sql_lit(LIFECYCLE_TRANSACTION_LOCK_NAME)}, 0));"
+    )
 
 
 def lifecycle_advisory_lock_key_sql(brokerage_expr, external_expr):
@@ -2133,6 +2142,8 @@ def build_sql(
     # connection. Bound the data load separately, then restore the tighter
     # mutation timeout after all four transaction-local COPY stages.
     w("SET LOCAL statement_timeout = '1800s';")
+    w("-- Intentionally serialize all generated lifecycle mutation transactions.")
+    w(lifecycle_transaction_lock_sql())
     # Pin standard_conforming_strings so sql_lit()'s quote-doubling is provably
     # sufficient regardless of the server/role default: with it ON, a backslash
     # inside a '...' literal is literal, so a doubled single quote is the only

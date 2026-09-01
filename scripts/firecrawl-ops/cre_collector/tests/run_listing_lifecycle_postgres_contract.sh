@@ -115,7 +115,8 @@ apply_migration
 
 psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" <<'SQL'
 INSERT INTO credeals.cre_brokerages VALUES
-  ('10000000-0000-4000-8000-000000000001', 'svn');
+  ('10000000-0000-4000-8000-000000000001', 'svn'),
+  ('10000000-0000-4000-8000-000000000002', 'race');
 INSERT INTO credeals.cre_listings
   (id, brokerage_id, external_id, source_url, status, updated_at)
 VALUES
@@ -202,93 +203,126 @@ INSERT INTO credeals.cre_listings
   (id, brokerage_id, external_id, source_url, status, updated_at)
 VALUES
   ('20000000-0000-4000-8000-000000000002',
-   '10000000-0000-4000-8000-000000000001', 'race-contract',
-   'https://example.test/race-contract', 'active', '2026-08-31T12:00:00Z');
+   '10000000-0000-4000-8000-000000000002', 'race-x',
+   'https://example.test/race-x', 'active', '2026-08-31T12:00:00Z'),
+  ('20000000-0000-4000-8000-000000000003',
+   '10000000-0000-4000-8000-000000000002', 'race-y',
+   'https://example.test/race-y', 'active', '2026-08-31T12:00:00Z');
 INSERT INTO credeals.cre_source_index
   (brokerage_id, external_id, source_key, url, soft_deleted,
    observation_present, presence_generation, presence_changed_at,
    first_seen, last_seen, last_enumerated_at)
 VALUES
-  ('10000000-0000-4000-8000-000000000001', 'race-contract', 'svn',
-   'https://example.test/race-contract', false, true, 0,
+  ('10000000-0000-4000-8000-000000000002', 'race-x', 'race',
+   'https://example.test/race-x', false, true, 0,
+   '2026-08-31T12:00:00Z', '2026-08-31T12:00:00Z',
+   '2026-08-31T12:00:00Z', '2026-08-31T12:00:00Z'),
+  ('10000000-0000-4000-8000-000000000002', 'race-y', 'race',
+   'https://example.test/race-y', false, true, 0,
    '2026-08-31T12:00:00Z', '2026-08-31T12:00:00Z',
    '2026-08-31T12:00:00Z', '2026-08-31T12:00:00Z');
+INSERT INTO credeals.cre_scrape_jobs
+  (id, brokerage_id, status, started_at, completed_at, artifact_run_key)
+VALUES
+  ('30000000-0000-4000-8000-000000000004',
+   '10000000-0000-4000-8000-000000000002', 'running', now(), NULL,
+   'contract-opposing-race-one'),
+  ('30000000-0000-4000-8000-000000000005',
+   '10000000-0000-4000-8000-000000000002', 'running', now(), NULL,
+   'contract-opposing-race-two');
 SQL
 
-# Execute the generated two-table present lock path. Pause after it takes the
-# source-index lock but before it takes the listing lock: the historical
-# listing-then-source retirement order deadlocks at this exact interleaving.
-(
-python3 - "$COLLECTOR_DIR" <<'PY'
+# Run two opposing phase sets: transaction one observes X and retires Y, while
+# transaction two observes Y and retires X. Without the shared transaction lock
+# each can retain its present identity lock and wait forever on the other's
+# retirement identity. Generated transaction, identity, source, listing, and
+# retirement lock fragments are executed against both real tables.
+run_opposing_lifecycle_transaction() {
+  local present_external="$1"
+  local present_listing_id="$2"
+  local job_id="$3"
+  local finished_at="$4"
+  local pause_seconds="$5"
+  python3 - "$COLLECTOR_DIR" "$present_external" "$present_listing_id" \
+    "$job_id" "$finished_at" "$pause_seconds" <<'PY' \
+    | PGAPPNAME="lifecycle-$present_external" \
+      psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" >/dev/null
 from pathlib import Path
 import sys
 
 collector = Path(sys.argv[1])
+present_external, present_listing_id, job_id, finished_at, pause_seconds = sys.argv[2:]
 sys.path.insert(0, str(collector))
 import cre_ingest
 
 sql = cre_ingest.build_sql(
-    [], [], "2026-08-31T12:10:00Z", set(), history_guard=False,
+    [], [{"slug": "race", "discovered": 1, "saved": 1, "errors": 0,
+          "notes": None}],
+    finished_at, {"race"}, history_guard=False, finished_at=finished_at,
 )
-start = sql.index("-- Global lifecycle lock order")
-listing_start = sql.index("-- Lock present canonical listing rows", start)
-end = sql.index("-- (H4a)", listing_start)
+transaction_start = sql.index(
+    "-- Intentionally serialize all generated lifecycle mutation transactions."
+)
+transaction_end = sql.index("SET LOCAL standard_conforming_strings", transaction_start)
+present_start = sql.index("-- Global lifecycle lock order")
+present_end = sql.index("-- (H4a)", present_start)
+retirement_start = sql.index("CREATE TEMP TABLE _retired_candidates")
+event_start = sql.index("INSERT INTO credeals.cre_listing_events", retirement_start)
+retirement_end = (
+    sql.index("ON CONFLICT DO NOTHING;", event_start) + len("ON CONFLICT DO NOTHING;")
+)
+bid = "10000000-0000-4000-8000-000000000002"
+external = cre_ingest.sql_lit(present_external)
+listing_id = cre_ingest.sql_lit(present_listing_id)
+job = cre_ingest.sql_lit(job_id)
+finished = cre_ingest.sql_lit(finished_at)
 print("""
 BEGIN;
 SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '20s';
+""")
+print(sql[transaction_start:transaction_end])
+print(f"""
 CREATE TEMP TABLE _src
   (brokerage_id uuid, external_id text) ON COMMIT DROP;
 INSERT INTO _src VALUES
-  ('10000000-0000-4000-8000-000000000001', 'race-contract');
+  ('{bid}', {external});
 """)
-print(sql[start:listing_start])
-print("SELECT pg_sleep(1);")
-print(sql[listing_start:end])
-print("""
+print(sql[present_start:present_end])
+print(f"""
+CREATE TEMP TABLE _race_present_before ON COMMIT DROP AS
+SELECT observation_present, presence_generation
+FROM credeals.cre_source_index
+WHERE brokerage_id = '{bid}' AND external_id = {external};
 UPDATE credeals.cre_listings
-SET deleted_at = NULL, status = 'active', updated_at = '2026-08-31T12:10:00Z'
-WHERE brokerage_id = '10000000-0000-4000-8000-000000000001'
-  AND external_id = 'race-contract';
+SET deleted_at = NULL, status = 'active', updated_at = {finished}::timestamptz
+WHERE brokerage_id = '{bid}' AND external_id = {external};
 UPDATE credeals.cre_source_index
-SET last_enumerated_at = '2026-08-31T12:10:00Z',
-    last_seen = '2026-08-31T12:10:00Z',
+SET presence_generation = CASE WHEN observation_present THEN presence_generation
+                               ELSE presence_generation + 1 END,
+    presence_changed_at = CASE WHEN observation_present THEN presence_changed_at
+                               ELSE {finished}::timestamptz END,
+    last_enumerated_at = {finished}::timestamptz,
+    last_seen = {finished}::timestamptz,
     soft_deleted = false,
     observation_present = true
-WHERE brokerage_id = '10000000-0000-4000-8000-000000000001'
-  AND external_id = 'race-contract';
-COMMIT;
-""")
-PY
-) | psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" >/dev/null &
-present_pid=$!
-sleep 0.2
-
-python3 - "$COLLECTOR_DIR" <<'PY' | psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" >/dev/null
-from pathlib import Path
-import sys
-
-collector = Path(sys.argv[1])
-sys.path.insert(0, str(collector))
-import cre_ingest
-
-sql = cre_ingest.build_sql(
-    [], [{"slug": "svn", "discovered": 0, "saved": 0, "errors": 0,
-          "notes": None}],
-    "2026-08-31T11:55:00Z", {"svn"}, history_guard=False,
-    finished_at="2026-08-31T12:05:00Z",
-)
-start = sql.index("CREATE TEMP TABLE _retired_candidates")
-event_start = sql.index("INSERT INTO credeals.cre_listing_events", start)
-end = sql.index("ON CONFLICT DO NOTHING;", event_start) + len("ON CONFLICT DO NOTHING;")
-block = sql[start:end]
-print("""
-BEGIN;
-SET LOCAL lock_timeout = '5s';
+WHERE brokerage_id = '{bid}' AND external_id = {external};
+INSERT INTO credeals.cre_listing_events
+  (listing_id, brokerage_id, scrape_job_id, event_type, source_value,
+   presence_generation, detected_at)
+SELECT {listing_id}::uuid, '{bid}'::uuid, {job}::uuid, 'reappeared',
+       'contract_present', si.presence_generation, {finished}::timestamptz
+FROM _race_present_before prior
+JOIN credeals.cre_source_index si
+  ON si.brokerage_id = '{bid}' AND si.external_id = {external}
+WHERE NOT prior.observation_present
+ON CONFLICT DO NOTHING;
+SELECT pg_sleep({pause_seconds});
 CREATE TEMP TABLE _up (id uuid PRIMARY KEY) ON COMMIT DROP;
+INSERT INTO _up VALUES ({listing_id}::uuid);
 CREATE TEMP TABLE _jobmeta
   (slug text, job_id uuid, finished_at timestamptz) ON COMMIT DROP;
-INSERT INTO _jobmeta VALUES
-  ('svn', '30000000-0000-4000-8000-000000000003', '2026-08-31T12:05:00Z');
+INSERT INTO _jobmeta VALUES ('race', {job}::uuid, {finished}::timestamptz);
 CREATE TEMP TABLE _prior_vals (
   id uuid, brokerage_id uuid, external_id text,
   sale_price_usd numeric, sale_price_per_sf numeric,
@@ -296,28 +330,94 @@ CREATE TEMP TABLE _prior_vals (
   cap_rate numeric, deleted_at timestamptz
 ) ON COMMIT DROP;
 """)
-print(block)
+print(sql[retirement_start:retirement_end])
 print("COMMIT;")
 PY
-wait "$present_pid"
+}
+
+run_opposing_lifecycle_transaction \
+  race-x 20000000-0000-4000-8000-000000000002 \
+  30000000-0000-4000-8000-000000000004 2026-08-31T12:05:00Z 1.0 &
+first_pid=$!
+first_holds_lock=0
+for _attempt in $(seq 1 50); do
+  if [[ "$(psql -X -Atqc \
+    "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND application_name='lifecycle-race-x' AND wait_event='PgSleep'" \
+    "$DB_NAME")" == "1" ]]; then
+    first_holds_lock=1
+    break
+  fi
+  sleep 0.05
+done
+if (( first_holds_lock != 1 )); then
+  wait "$first_pid" || true
+  echo "First opposing lifecycle transaction never reached its locked pause." >&2
+  exit 1
+fi
+run_opposing_lifecycle_transaction \
+  race-y 20000000-0000-4000-8000-000000000003 \
+  30000000-0000-4000-8000-000000000005 2026-08-31T12:10:00Z 0.2 &
+second_pid=$!
+second_waits_on_shared_lock=0
+for _attempt in $(seq 1 20); do
+  if [[ "$(psql -X -Atqc \
+    "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND application_name='lifecycle-race-y' AND wait_event_type='Lock' AND wait_event='advisory'" \
+    "$DB_NAME")" == "1" ]]; then
+    second_waits_on_shared_lock=1
+    break
+  fi
+  sleep 0.025
+done
+if (( second_waits_on_shared_lock != 1 )); then
+  wait "$first_pid" || true
+  wait "$second_pid" || true
+  echo "Opposing lifecycle transaction did not wait on the shared advisory lock." >&2
+  exit 1
+fi
+wait "$first_pid"
+wait "$second_pid"
 
 psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" <<'SQL'
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM credeals.cre_listings
-             WHERE external_id = 'race-contract' AND deleted_at IS NOT NULL) THEN
-    RAISE EXCEPTION 'concurrent newer present observation lost to retirement';
+  IF NOT EXISTS (
+    SELECT 1 FROM credeals.cre_listings
+    WHERE external_id = 'race-x' AND status = 'inactive'
+      AND deleted_at IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'opposing race did not retire X at the newer observation';
   END IF;
-  IF EXISTS (SELECT 1 FROM credeals.cre_source_index
-             WHERE external_id = 'race-contract'
-               AND (soft_deleted OR NOT observation_present OR
-                    last_enumerated_at <> '2026-08-31T12:10:00Z')) THEN
-    RAISE EXCEPTION 'source-index lifecycle became internally inconsistent';
+  IF NOT EXISTS (
+    SELECT 1 FROM credeals.cre_source_index
+    WHERE external_id = 'race-x' AND soft_deleted AND NOT observation_present
+      AND presence_generation = 1
+      AND last_enumerated_at = '2026-08-31T12:10:00Z'
+  ) THEN
+    RAISE EXCEPTION 'X source-index state is stale or inconsistent';
   END IF;
-  IF EXISTS (SELECT 1 FROM credeals.cre_listing_events e
-             JOIN credeals.cre_listings l ON l.id = e.listing_id
-             WHERE l.external_id = 'race-contract' AND e.event_type = 'disappeared') THEN
-    RAISE EXCEPTION 'race emitted a false disappeared event';
+  IF NOT EXISTS (
+    SELECT 1 FROM credeals.cre_listings
+    WHERE external_id = 'race-y' AND status = 'active' AND deleted_at IS NULL
+  ) OR NOT EXISTS (
+    SELECT 1 FROM credeals.cre_source_index
+    WHERE external_id = 'race-y' AND NOT soft_deleted AND observation_present
+      AND presence_generation = 2
+      AND last_enumerated_at = '2026-08-31T12:10:00Z'
+  ) THEN
+    RAISE EXCEPTION 'newer Y present transition was lost or internally inconsistent';
+  END IF;
+  IF (SELECT count(*) FROM credeals.cre_listing_events e
+      JOIN credeals.cre_listings l ON l.id = e.listing_id
+      WHERE l.external_id = 'race-x' AND e.event_type = 'disappeared'
+        AND e.presence_generation = 1) <> 1 THEN
+    RAISE EXCEPTION 'X disappearance transition is missing or duplicated';
+  END IF;
+  IF (SELECT count(*) FROM credeals.cre_listing_events e
+      JOIN credeals.cre_listings l ON l.id = e.listing_id
+      WHERE l.external_id = 'race-y'
+        AND (e.event_type, e.presence_generation) IN
+            (('disappeared', 1), ('reappeared', 2))) <> 2 THEN
+    RAISE EXCEPTION 'Y opposing transition sequence is stale or incomplete';
   END IF;
 END $$;
 SELECT 'listing lifecycle PostgreSQL contract passed' AS result;

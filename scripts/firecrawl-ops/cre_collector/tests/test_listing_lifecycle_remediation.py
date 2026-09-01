@@ -91,6 +91,7 @@ def test_ingest_owns_canonical_sync_events_and_final_history_order():
     assert "WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'" in sql
     assert "FOR UPDATE OF l" in sql
     assert "FOR UPDATE OF si" in sql
+    transaction_lock = sql.index(ingest.LIFECYCLE_TRANSACTION_LOCK_NAME)
     present_advisory = sql.index("-- Global lifecycle lock order")
     present_source = sql.index("-- Lock present source-index rows", present_advisory)
     present_listing = sql.index("-- Lock present canonical listing rows", present_source)
@@ -99,9 +100,10 @@ def test_ingest_owns_canonical_sync_events_and_final_history_order():
     )
     retired_source = sql.index("-- Lock retirement source-index rows", retired_advisory)
     retired_listing = sql.index("-- Lock retirement canonical listing rows", retired_source)
-    assert present_advisory < present_source < present_listing
+    assert transaction_lock < present_advisory < present_source < present_listing
     assert retired_advisory < retired_source < retired_listing
-    assert sql.count("pg_advisory_xact_lock") >= 2
+    assert sql.count(ingest.LIFECYCLE_TRANSACTION_LOCK_NAME) == 1
+    assert sql.count("pg_advisory_xact_lock") >= 3
     assert "si.last_enumerated_at < jm.finished_at" in sql
     assert "jm.finished_at, jm.finished_at" in sql
     assert "applied.presence_generation, jm.finished_at" in sql
@@ -469,10 +471,12 @@ def test_reconcile_apply_requires_operator_reference_and_exact_confirmation(tmp_
 def test_reconcile_sql_locks_hash_checks_drift_and_exact_replay(tmp_path):
     plan = _plan(_history_only_evidence(tmp_path), tmp_path)
     sql = reconcile.build_apply_sql(plan["actions"], plan["plan_hash"], "cayman", "AGENTIC-1")
-    advisory = sql.index("pg_advisory_xact_lock")
+    transaction_lock = sql.index(ingest.LIFECYCLE_TRANSACTION_LOCK_NAME)
+    advisory = sql.index("pg_advisory_xact_lock", transaction_lock + 1)
     source_lock = sql.index("FROM credeals.cre_source_index si", advisory)
     listing_lock = sql.index("FROM credeals.cre_listings l", source_lock)
-    assert advisory < source_lock < listing_lock
+    assert transaction_lock < advisory < source_lock < listing_lock
+    assert sql.count(ingest.LIFECYCLE_TRANSACTION_LOCK_NAME) == 1
     assert "FOR UPDATE;" in sql
     assert "evidence drifted" in sql
     assert "exact-plan replay: already applied, zero mutations" in sql
@@ -533,6 +537,7 @@ def test_multibatch_jobs_finalize_only_after_every_batch_succeeds(tmp_path, monk
     assert len(calls) == 3
     assert all("SET status = 'completed'" not in sql for sql in calls[:2])
     assert "SET status = 'completed'" in calls[2]
+    assert all(ingest.LIFECYCLE_TRANSACTION_LOCK_NAME in sql for sql in calls)
 
 
 def test_artifact_identity_is_content_and_order_stable(tmp_path):

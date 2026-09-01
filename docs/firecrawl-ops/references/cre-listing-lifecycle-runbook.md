@@ -127,3 +127,9 @@ APPLY cre-listing-lifecycle-reconciliation <plan-hash>
 Reconciliation jobs stay `running` while batches execute and become
 `completed` only in the final transaction after every batch succeeds. Preserve
 the JSON/CSV plan and the final database readback with the approval issue.
+
+Every generated ingest and reconciliation apply/finalize transaction takes the
+same transaction-scoped lifecycle advisory lock before any identity or table
+lock. This intentionally serializes canonical lifecycle mutations across all
+present and retirement phases. Do not remove or narrow the shared lock without
+a concurrency proof covering opposing multi-identity phase sets.
