@@ -112,9 +112,6 @@ CREATE SCHEMA IF NOT EXISTS credeals;
 \echo '=== 014_cre_geo_crosswalk.sql ==='
 \i 014_cre_geo_crosswalk.sql
 
-\echo '=== 016_cre_listing_lifecycle.sql ==='
-\i 016_cre_listing_lifecycle.sql
-
 \echo '=== 006_cre_contact_urls.sql ==='
 \i 006_cre_contact_urls.sql
 

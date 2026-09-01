@@ -7,6 +7,48 @@
 -- use cre_reconcile_listing_lifecycle.py with reviewed source evidence.
 -- =============================================================================
 
+\set ON_ERROR_STOP on
+
+\if :{?CRE_APPROVE_LISTING_LIFECYCLE}
+\else
+  \set CRE_APPROVE_LISTING_LIFECYCLE 0
+\endif
+\if :{?CRE_LISTING_LIFECYCLE_OPERATOR}
+\else
+  \set CRE_LISTING_LIFECYCLE_OPERATOR ''
+\endif
+\if :{?CRE_LISTING_LIFECYCLE_APPROVAL_REF}
+\else
+  \set CRE_LISTING_LIFECYCLE_APPROVAL_REF ''
+\endif
+\if :{?CRE_LISTING_LIFECYCLE_CONFIRM}
+\else
+  \set CRE_LISTING_LIFECYCLE_CONFIRM ''
+\endif
+
+SELECT (
+    :'CRE_APPROVE_LISTING_LIFECYCLE' = '1'
+    AND :'CRE_LISTING_LIFECYCLE_OPERATOR' IN ('cayman', 'stace')
+    AND :'CRE_LISTING_LIFECYCLE_APPROVAL_REF' ~ '^AGENTIC-[0-9]+$'
+    AND :'CRE_LISTING_LIFECYCLE_CONFIRM' = 'APPLY 016_cre_listing_lifecycle'
+) AS cre_listing_lifecycle_authorized \gset
+
+\if :cre_listing_lifecycle_authorized
+  \echo 'Approved migration 016 lifecycle contract requested'
+\else
+  \echo 'REFUSED: migration 016 requires a configured operator, AGENTIC approval reference, and exact confirmation'
+  DO $$
+  BEGIN
+    RAISE EXCEPTION
+      'migration 016 requires the documented approval-gated psql contract';
+  END
+  $$;
+\endif
+
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '5min';
+
 ALTER TABLE credeals.cre_source_index
     ADD COLUMN IF NOT EXISTS observation_present boolean;
 ALTER TABLE credeals.cre_source_index
@@ -92,20 +134,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS cre_listing_price_history_reconciliation_job_u
 
 -- NOT VALID preserves legacy rows, while PostgreSQL still enforces the check
 -- for every new/updated lifecycle event after this migration is applied.
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'cre_listing_events_lifecycle_identity_required'
-      AND conrelid = 'credeals.cre_listing_events'::regclass
-  ) THEN
-    ALTER TABLE credeals.cre_listing_events
-      ADD CONSTRAINT cre_listing_events_lifecycle_identity_required
-      CHECK (
-        event_type NOT IN ('disappeared', 'reappeared')
-        OR (presence_generation IS NOT NULL AND scrape_job_id IS NOT NULL)
-      ) NOT VALID;
-  END IF;
-END $$;
+ALTER TABLE credeals.cre_listing_events
+    DROP CONSTRAINT IF EXISTS cre_listing_events_lifecycle_identity_required;
+ALTER TABLE credeals.cre_listing_events
+    ADD CONSTRAINT cre_listing_events_lifecycle_identity_required
+    CHECK (
+      event_type NOT IN ('disappeared', 'reappeared')
+      OR presence_generation IS NOT NULL
+    ) NOT VALID;
+
+-- Migration 007's original within-run key predates presence generations. If it
+-- continues to cover lifecycle rows, a later disappear/reappear cycle under the
+-- same deterministic artifact job conflicts with the first cycle and is
+-- silently discarded. Preserve that exact dedupe contract for non-lifecycle
+-- events only; lifecycle transitions use their generation key below.
+DROP INDEX IF EXISTS credeals.cre_listing_events_idem_uq;
+CREATE UNIQUE INDEX cre_listing_events_idem_uq
+    ON credeals.cre_listing_events
+       (listing_id, event_type, COALESCE(field, ''), COALESCE(new_value, ''), scrape_job_id)
+       NULLS NOT DISTINCT
+    WHERE event_type NOT IN ('disappeared', 'reappeared');
 
 -- NULL generations on legacy lifecycle rows remain valid history. Every new
 -- writer in this change supplies a generation. The partial unique index makes
@@ -115,6 +163,64 @@ CREATE UNIQUE INDEX IF NOT EXISTS cre_listing_events_presence_transition_uidx
        (listing_id, event_type, presence_generation)
     WHERE event_type IN ('disappeared', 'reappeared')
       AND presence_generation IS NOT NULL;
+
+-- Transaction-local readback: abort before COMMIT if the resulting contract is
+-- not the one this migration is approved to install.
+DO $$
+DECLARE
+  lifecycle_check text;
+  legacy_predicate text;
+  lifecycle_predicate text;
+BEGIN
+  SELECT pg_get_constraintdef(oid)
+    INTO lifecycle_check
+    FROM pg_constraint
+   WHERE conrelid = 'credeals.cre_listing_events'::regclass
+     AND conname = 'cre_listing_events_lifecycle_identity_required';
+  IF lifecycle_check IS NULL
+     OR position('presence_generation IS NOT NULL' IN lifecycle_check) = 0
+     OR position('scrape_job_id IS NOT NULL' IN lifecycle_check) > 0 THEN
+    RAISE EXCEPTION 'migration 016 lifecycle constraint readback failed: %', lifecycle_check;
+  END IF;
+
+  SELECT pg_get_expr(i.indpred, i.indrelid)
+    INTO legacy_predicate
+    FROM pg_index i
+    JOIN pg_class idx ON idx.oid = i.indexrelid
+   WHERE i.indrelid = 'credeals.cre_listing_events'::regclass
+     AND idx.relname = 'cre_listing_events_idem_uq'
+     AND i.indisunique;
+  IF legacy_predicate IS NULL
+     OR position('disappeared' IN legacy_predicate) = 0
+     OR position('reappeared' IN legacy_predicate) = 0 THEN
+    RAISE EXCEPTION 'migration 016 non-lifecycle idempotence readback failed: %', legacy_predicate;
+  END IF;
+
+  SELECT pg_get_expr(i.indpred, i.indrelid)
+    INTO lifecycle_predicate
+    FROM pg_index i
+    JOIN pg_class idx ON idx.oid = i.indexrelid
+   WHERE i.indrelid = 'credeals.cre_listing_events'::regclass
+     AND idx.relname = 'cre_listing_events_presence_transition_uidx'
+     AND i.indisunique;
+  IF lifecycle_predicate IS NULL
+     OR position('disappeared' IN lifecycle_predicate) = 0
+     OR position('reappeared' IN lifecycle_predicate) = 0
+     OR position('presence_generation IS NOT NULL' IN lifecycle_predicate) = 0 THEN
+    RAISE EXCEPTION 'migration 016 lifecycle idempotence readback failed: %', lifecycle_predicate;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'credeals.cre_listing_events'::regclass
+      AND confrelid = 'credeals.cre_scrape_jobs'::regclass
+      AND contype = 'f'
+      AND confdeltype = 'n'
+  ) THEN
+    RAISE EXCEPTION 'migration 016 requires listing-event job deletion to remain SET NULL';
+  END IF;
+END $$;
 
 COMMENT ON COLUMN credeals.cre_source_index.observation_present IS
     'Latest complete-enumeration observation. Maintained by monitor and full ingest; never canonical listing lifecycle.';
@@ -144,3 +250,5 @@ COMMENT ON COLUMN credeals.cre_listing_price_history.observed_at_semantics IS
     'Machine-readable interpretation of observed_at; reconciliation uses source_evidence_observed_at.';
 COMMENT ON COLUMN credeals.cre_listing_price_history.reconciliation_evidence_sha256 IS
     'SHA-256 of the reviewed source-evidence artifact supporting a reconciliation snapshot.';
+
+COMMIT;

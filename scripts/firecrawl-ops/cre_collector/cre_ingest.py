@@ -2057,11 +2057,13 @@ def build_sql(
     inventory_only_rows=(),
     inventory_only_scopes=(),
     artifact_run_key=None,
+    finished_at=None,
 ):
     # Defense in depth for direct callers of this builder. Normal ingestion
     # reaches here through to_row(), which already drops `omFacts`, but this
     # prevents a manually constructed row from restoring the retired writer.
     rows = [{**row, "om_facts": []} for row in rows]
+    finished_at = finished_at or started_at
     if artifact_run_key is None:
         identity_payload = json.dumps(
             {"rows": rows, "jobs": job_meta, "started_at": started_at},
@@ -2157,11 +2159,16 @@ CREATE TEMP TABLE _inventory_only_scope (
     w("""
 CREATE TEMP TABLE _jobmeta (
     slug text, discovered integer, saved integer, errors integer, notes text,
-    job_id uuid, artifact_run_key text, started_at timestamptz
+    job_id uuid, artifact_run_key text, started_at timestamptz,
+    finished_at timestamptz
 ) ON COMMIT DROP;""")
-    w("COPY _jobmeta (slug, discovered, saved, errors, notes, job_id, artifact_run_key, started_at) FROM stdin;")
+    w("COPY _jobmeta (slug, discovered, saved, errors, notes, job_id, artifact_run_key, started_at, finished_at) FROM stdin;")
     for jm in job_meta:
-        w("\t".join(copy_field(v) for v in (jm["slug"], jm["discovered"], jm["saved"], jm["errors"], jm["notes"], jm["job_id"], jm["artifact_run_key"], started_at)))
+        w("\t".join(copy_field(v) for v in (
+            jm["slug"], jm["discovered"], jm["saved"], jm["errors"], jm["notes"],
+            jm["job_id"], jm["artifact_run_key"], started_at,
+            jm.get("finished_at") or finished_at,
+        )))
     w("\\.")
     w("SET LOCAL statement_timeout = '600s';")
 
@@ -2193,7 +2200,7 @@ INSERT INTO credeals.cre_scrape_jobs
      artifact_run_key)
 SELECT jm.job_id, b.id,
        CASE WHEN jm.errors > 0 THEN 'partial' ELSE 'completed' END,
-       jm.started_at, now(),
+       jm.started_at, jm.finished_at,
        jm.discovered, jm.saved, jm.saved, jm.errors, jm.notes,
        jm.artifact_run_key
 FROM _jobmeta jm JOIN credeals.cre_brokerages b ON b.slug = jm.slug
@@ -2231,10 +2238,12 @@ END $$;
 
 INSERT INTO credeals.cre_source_index AS si (
   brokerage_id, external_id, source_key, url, fingerprint,
-  soft_deleted, observed_status, first_seen, last_seen, last_enumerated_at
+  soft_deleted, observed_status, observation_present, presence_generation,
+  presence_changed_at, first_seen, last_seen, last_enumerated_at
 )
 SELECT b.id, i.external_id, i.source_key, i.url, i.fingerprint,
-       false, i.observed_status, i.observed_at, i.observed_at, i.observed_at
+       false, i.observed_status, true, 0, i.observed_at,
+       i.observed_at, i.observed_at, i.observed_at
 FROM _inventory_only i
 JOIN credeals.cre_brokerages b ON b.slug = i.slug
 ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
@@ -2243,15 +2252,29 @@ ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
   fingerprint = EXCLUDED.fingerprint,
   soft_deleted = false,
   observed_status = EXCLUDED.observed_status,
+  presence_generation = CASE
+    WHEN si.observation_present IS DISTINCT FROM true
+    THEN si.presence_generation + 1 ELSE si.presence_generation END,
+  presence_changed_at = CASE
+    WHEN si.observation_present IS DISTINCT FROM true
+    THEN EXCLUDED.last_enumerated_at ELSE si.presence_changed_at END,
+  observation_present = true,
   last_seen = EXCLUDED.last_seen,
   last_enumerated_at = EXCLUDED.last_enumerated_at
-WHERE EXCLUDED.last_enumerated_at >= si.last_enumerated_at;
+WHERE EXCLUDED.last_enumerated_at > si.last_enumerated_at;
 
 -- A strict full source enumeration makes absence meaningful for the
 -- provisional namespace. Retire vanished cards in the monitor index only;
 -- never infer a canonical listing disappearance from these mutable card IDs.
 UPDATE credeals.cre_source_index si
 SET soft_deleted = true,
+    presence_generation = CASE
+      WHEN si.observation_present IS DISTINCT FROM false
+      THEN si.presence_generation + 1 ELSE si.presence_generation END,
+    presence_changed_at = CASE
+      WHEN si.observation_present IS DISTINCT FROM false
+      THEN scope.observed_at ELSE si.presence_changed_at END,
+    observation_present = false,
     last_enumerated_at = scope.observed_at
 FROM _inventory_only_scope scope
 JOIN credeals.cre_brokerages b ON b.slug = scope.slug
@@ -2259,7 +2282,7 @@ WHERE si.brokerage_id = b.id
   AND si.source_key = scope.source_key
   AND si.external_id LIKE scope.external_id_like
   AND si.soft_deleted = false
-  AND si.last_enumerated_at <= scope.observed_at
+  AND si.last_enumerated_at < scope.observed_at
   AND NOT EXISTS (
     SELECT 1
     FROM _inventory_only current
@@ -2275,7 +2298,8 @@ WHERE si.brokerage_id = b.id
 -- so current inventory queries and monitor disappearance logic exclude it.
 INSERT INTO credeals.cre_source_index AS si (
   brokerage_id, external_id, source_key, url, fingerprint,
-  soft_deleted, observed_status, first_seen, last_seen, last_enumerated_at
+  soft_deleted, observed_status, observation_present, presence_generation,
+  presence_changed_at, first_seen, last_seen, last_enumerated_at
 )
 SELECT b.id,
        scope.watermark_external_id,
@@ -2284,6 +2308,9 @@ SELECT b.id,
        scope.watermark_fingerprint,
        true,
        NULL,
+       false,
+       0,
+       scope.observed_at,
        scope.observed_at,
        scope.observed_at,
        scope.observed_at
@@ -2295,9 +2322,16 @@ ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
   fingerprint = EXCLUDED.fingerprint,
   soft_deleted = true,
   observed_status = NULL,
+  presence_generation = CASE
+    WHEN si.observation_present IS DISTINCT FROM false
+    THEN si.presence_generation + 1 ELSE si.presence_generation END,
+  presence_changed_at = CASE
+    WHEN si.observation_present IS DISTINCT FROM false
+    THEN EXCLUDED.last_enumerated_at ELSE si.presence_changed_at END,
+  observation_present = false,
   last_seen = EXCLUDED.last_seen,
   last_enumerated_at = EXCLUDED.last_enumerated_at
-WHERE EXCLUDED.last_enumerated_at >= si.last_enumerated_at;
+WHERE EXCLUDED.last_enumerated_at > si.last_enumerated_at;
 
 -- CBRE Deal Flow may expose the same provider `pv` token under agreement,
 -- brochure, legacy landing, and modern landing paths. Reconcile by the
@@ -3376,19 +3410,47 @@ WHERE t.sale_price_usd    IS DISTINCT FROM p.sale_price_usd
 -- sees. Capture the retired set FIRST (with prior status) so the disappeared
 -- event and the contact/document archive snapshot reference the same rows in
 -- this one transaction.
+CREATE TEMP TABLE _retired_candidates ON COMMIT DROP AS
+SELECT l.id, l.brokerage_id, l.external_id
+FROM credeals.cre_listings l
+JOIN credeals.cre_brokerages b ON l.brokerage_id = b.id
+WHERE b.slug IN ({slug_list})
+  AND l.deleted_at IS NULL
+  AND l.external_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM _up u WHERE u.id = l.id);
+
+-- Use a stable listing-then-source lock order. If a
+-- concurrent present observation commits first, the post-lock timestamp
+-- predicate below excludes it. If retirement locks first, the present writer
+-- waits and can safely revive the row after this transaction commits.
+CREATE TEMP TABLE _retired_listing_locks ON COMMIT DROP AS
+SELECT l.id
+FROM credeals.cre_listings l
+JOIN _retired_candidates c ON c.id = l.id
+ORDER BY l.id
+FOR UPDATE OF l;
+
+CREATE TEMP TABLE _retired_source_locks ON COMMIT DROP AS
+SELECT si.id
+FROM credeals.cre_source_index si
+JOIN _retired_candidates c
+  ON c.brokerage_id = si.brokerage_id AND c.external_id = si.external_id
+ORDER BY si.id
+FOR UPDATE OF si;
+
 CREATE TEMP TABLE _retired ON COMMIT DROP AS
 SELECT l.id, l.brokerage_id, l.external_id, l.source_url,
        l.status AS prior_status, l.sale_price_usd, l.sale_price_per_sf,
        l.lease_rate_min, l.lease_rate_max, l.cap_rate,
        si.source_key, si.observed_status
-FROM credeals.cre_listings l
-JOIN credeals.cre_brokerages b ON l.brokerage_id = b.id
+FROM _retired_candidates c
+JOIN credeals.cre_listings l ON l.id = c.id
+JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+JOIN _jobmeta jm ON jm.slug = b.slug
 LEFT JOIN credeals.cre_source_index si
   ON si.brokerage_id = l.brokerage_id AND si.external_id = l.external_id
-WHERE b.slug IN ({slug_list})
-  AND l.deleted_at IS NULL
-  AND l.external_id IS NOT NULL
-  AND NOT EXISTS (SELECT 1 FROM _up u WHERE u.id = l.id);
+WHERE l.deleted_at IS NULL
+  AND (si.id IS NULL OR si.last_enumerated_at < jm.finished_at);
 
 -- Include retirement before-values in the same history diff used for present
 -- rows. History is appended only after every current-row mutation below.
@@ -3399,26 +3461,43 @@ SELECT id, brokerage_id, external_id, sale_price_usd, sale_price_per_sf,
        lease_rate_min, lease_rate_max, prior_status, cap_rate, NULL
 FROM _retired;
 
-INSERT INTO credeals.cre_source_index AS si
-    (brokerage_id, external_id, source_key, url, soft_deleted,
-     observed_status, observation_present, presence_generation,
-     presence_changed_at, first_seen, last_seen, last_enumerated_at)
-SELECT r.brokerage_id, r.external_id, COALESCE(r.source_key, b.slug), r.source_url,
-       true, r.observed_status, false, 1,
-       {sql_lit(started_at)}::timestamptz, {sql_lit(started_at)}::timestamptz,
-       {sql_lit(started_at)}::timestamptz, {sql_lit(started_at)}::timestamptz
-FROM _retired r
-JOIN credeals.cre_brokerages b ON b.id = r.brokerage_id
-ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
-    soft_deleted = true,
-    presence_generation = CASE
-      WHEN si.observation_present IS DISTINCT FROM false
-      THEN si.presence_generation + 1 ELSE si.presence_generation END,
-    presence_changed_at = CASE
-      WHEN si.observation_present IS DISTINCT FROM false
-      THEN EXCLUDED.last_enumerated_at ELSE si.presence_changed_at END,
-    observation_present = false,
-    last_enumerated_at = EXCLUDED.last_enumerated_at;
+CREATE TEMP TABLE _retired_applied ON COMMIT DROP AS
+WITH transitioned AS (
+  INSERT INTO credeals.cre_source_index AS si
+      (brokerage_id, external_id, source_key, url, soft_deleted,
+       observed_status, observation_present, presence_generation,
+       presence_changed_at, first_seen, last_seen, last_enumerated_at)
+  SELECT r.brokerage_id, r.external_id, COALESCE(r.source_key, b.slug), r.source_url,
+         true, r.observed_status, false, 1,
+         jm.finished_at, jm.finished_at, jm.finished_at, jm.finished_at
+  FROM _retired r
+  JOIN credeals.cre_brokerages b ON b.id = r.brokerage_id
+  JOIN _jobmeta jm ON jm.slug = b.slug
+  ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
+      soft_deleted = true,
+      presence_generation = CASE
+        WHEN si.observation_present IS DISTINCT FROM false
+        THEN si.presence_generation + 1 ELSE si.presence_generation END,
+      presence_changed_at = CASE
+        WHEN si.observation_present IS DISTINCT FROM false
+        THEN EXCLUDED.last_enumerated_at ELSE si.presence_changed_at END,
+      observation_present = false,
+      last_enumerated_at = EXCLUDED.last_enumerated_at
+  WHERE si.last_enumerated_at IS NULL
+     OR si.last_enumerated_at < EXCLUDED.last_enumerated_at
+  RETURNING brokerage_id, external_id, presence_generation
+)
+SELECT * FROM transitioned;
+
+-- A source-index insert can race only when the legacy row was missing and
+-- therefore had nothing to lock. Retire canonical rows and archive children
+-- only for source transitions that actually won the observation-time compare.
+DELETE FROM _retired r
+WHERE NOT EXISTS (
+  SELECT 1 FROM _retired_applied applied
+  WHERE applied.brokerage_id = r.brokerage_id
+    AND applied.external_id = r.external_id
+);
 
 UPDATE credeals.cre_listings l
 SET deleted_at = now(), status = 'inactive', updated_at = now()
@@ -3431,10 +3510,10 @@ INSERT INTO credeals.cre_listing_events
     (listing_id, brokerage_id, scrape_job_id, event_type, field, old_value, new_value,
      source_value, presence_generation, detected_at)
 SELECT r.id, r.brokerage_id, jm.job_id, 'disappeared', 'status', r.prior_status, 'inactive',
-       'mark_missing', si.presence_generation, {sql_lit(started_at)}::timestamptz
+       'mark_missing', applied.presence_generation, jm.finished_at
 FROM _retired r
-JOIN credeals.cre_source_index si
-  ON si.brokerage_id = r.brokerage_id AND si.external_id = r.external_id
+JOIN _retired_applied applied
+  ON applied.brokerage_id = r.brokerage_id AND applied.external_id = r.external_id
 JOIN credeals.cre_brokerages b ON b.id = r.brokerage_id
 JOIN _jobmeta jm ON jm.slug = b.slug
 ON CONFLICT DO NOTHING;""")
@@ -4120,6 +4199,8 @@ def main():
     per_source_counts = {}
     source_entries = []  # all sources[] entries across files
     started_at = None
+    finished_at = None
+    finished_at_by_slug = {}
 
     for path in args.inputs:
         with open(path) as f:
@@ -4144,9 +4225,41 @@ def main():
                 "expected runMeta.mode to be 'full' or 'enrich'"
             )
         started_at = started_at or run_meta.get("startedAt")
-        scraped_at = run_meta.get("finishedAt") or datetime.now(timezone.utc).isoformat()
+        artifact_finished_at = run_meta.get("finishedAt")
+        if args.mark_missing and not artifact_finished_at:
+            sys.exit(
+                "refusing --mark-missing artifact without runMeta.finishedAt; "
+                "absence transitions must use a completed crawl timestamp"
+            )
+        scraped_at = artifact_finished_at or datetime.now(timezone.utc).isoformat()
+        if artifact_finished_at and (
+            finished_at is None
+            or parse_strict_freshness_timestamp(
+                artifact_finished_at, field="runMeta.finishedAt"
+            ) > parse_strict_freshness_timestamp(
+                finished_at, field="runMeta.finishedAt"
+            )
+        ):
+            finished_at = artifact_finished_at
         brokers_by_idx = {i: b for i, b in enumerate(data.get("brokers") or [])}
-        source_entries.extend(data.get("sources") or [])
+        artifact_source_entries = data.get("sources") or []
+        source_entries.extend(artifact_source_entries)
+        if artifact_finished_at:
+            for entry in artifact_source_entries:
+                mapping = SOURCE_TO_BROKERAGE.get(entry.get("sourceKey"))
+                if not mapping:
+                    continue
+                slug = mapping[0]
+                prior_finished_at = finished_at_by_slug.get(slug)
+                if (
+                    prior_finished_at is None
+                    or parse_strict_freshness_timestamp(
+                        artifact_finished_at, field="runMeta.finishedAt"
+                    ) > parse_strict_freshness_timestamp(
+                        prior_finished_at, field="runMeta.finishedAt"
+                    )
+                ):
+                    finished_at_by_slug[slug] = artifact_finished_at
         artifact_scopes = inventory_only_full_scopes(data)
         artifact_scope_sources = {scope["source_key"] for scope in artifact_scopes}
         artifact_inventory_sources = {
@@ -4220,6 +4333,7 @@ def main():
     for r in rows:
         r.pop("_modes", None)
     started_at = started_at or datetime.now(timezone.utc).isoformat()
+    finished_at = finished_at or started_at
 
     # Phase-2 status activation is opt-in (default OFF). With it off, suppress
     # source-derived statuses so this ingest refreshes listing data without
@@ -4306,6 +4420,7 @@ def main():
             "saved": slug_saved.get(slug, 0),
             "errors": st["errors"],
             "notes": "; ".join(st["notes"]) or None,
+            "finished_at": finished_at_by_slug.get(slug, finished_at),
         }
         for slug, st in sorted(slug_stats.items())
         if (
@@ -4326,6 +4441,7 @@ def main():
         inventory_only_rows=inventory_only_rows,
         inventory_only_scopes=inventory_only_scopes,
         artifact_run_key=artifact_run_key,
+        finished_at=finished_at,
     )
 
     print(

@@ -896,6 +896,10 @@ images into Supabase storage for the bulk collector.
   (`cre_backfill_raw_data.py`, `om_classify_existing.py`, `cre_geo_backfill.py`)
   also ran `--apply`, all COALESCE-keep, board unchanged at 87,328 active. See
   the 2026-06-15 banner at the top of this file.
+- **Migration `016_cre_listing_lifecycle.sql` remains separately gated.** It is
+  excluded from `000_run_all.sql`; this repository contains no production
+  application proof. Use the approval, readback, and rollback contract in
+  `docs/firecrawl-ops/references/cre-listing-lifecycle-runbook.md`.
 - **Weekly mark-missing, status-activation go-live, and the consumer board-gate
   deploy remain GATED for explicit go-ahead.** Do not pass `--activate-status`,
   enable the `CRE_WEEKLY_MARK_MISSING=1` soft-delete escalation on the weekly

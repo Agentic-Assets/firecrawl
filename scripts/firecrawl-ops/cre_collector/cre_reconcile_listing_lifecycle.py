@@ -3,7 +3,9 @@
 
 Dry-run is the default. Input is an offline JSON evidence bundle with ``rows``;
 each row contains listing/index before-state plus ``source`` evidence. Source
-evidence must be complete, unambiguous, fresh at the caller-supplied ``--as-of``,
+evidence must name a collector artifact whose bytes match the supplied SHA-256,
+whose successful source pass proves the requested identity/state, and whose
+``runMeta.finishedAt`` is fresh against the applying host's current UTC clock,
 and state ``present`` or ``absent``. A missing lifecycle event is repaired only
 when ``event_repair`` explicitly identifies the absent event and acknowledges
 that the source observation is not the historical transition time. A history
@@ -11,8 +13,9 @@ mismatch is repaired only when the source supplies every tracked value and a
 named authority decision selects the resolution. Skipped rows remain visible
 in the plan.
 
-Apply requires all of: ``--apply``, a human name in ``--approved-by``, the exact
-plan hash, the literal approval token, and the expected DB-target fingerprint.
+Apply requires all of: ``--apply``, a private mode-0600 operator/reference
+contract bound to the plan hash, an exact plan-specific confirmation, and the
+expected DB-target fingerprint.
 Each bounded transaction locks rows and verifies the unchanged before-state hash
 before mutation. This script never infers truth from inconsistent DB rows alone.
 """
@@ -22,10 +25,12 @@ import csv
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from cre_ingest import (
     assert_expected_database_target,
@@ -34,10 +39,12 @@ from cre_ingest import (
     psql_connection_args,
     psql_connection_env,
     sql_lit,
+    to_row,
 )
 
-APPROVAL_TOKEN = "CRE_LISTING_LIFECYCLE_RECONCILIATION"
 MAX_BATCH_SIZE = 250
+ALLOWED_OPERATORS = {"cayman", "stace"}
+APPROVAL_REF_RE = re.compile(r"^AGENTIC-[0-9]+$")
 _UUID_NAMESPACE = uuid.UUID("c245ab8a-7397-5c20-920e-3bd852242c72")
 _EVENT_TIME_SEMANTICS = "source_state_observed_at_not_transition_time"
 _HISTORY_TIME_SEMANTICS = "source_evidence_observed_at"
@@ -102,6 +109,77 @@ def _valid_tracked_values(values):
         elif value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
             return False
     return True
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_bound_artifact(raw, source, *, evidence_base_dir, now, max_age_hours):
+    """Bind a claim to collector bytes and return normalized proof metadata."""
+    evidence_path = source.get("evidence_path")
+    expected_sha = source.get("evidence_sha256")
+    if not isinstance(evidence_path, str) or not evidence_path.strip():
+        return None, "missing_source_evidence_path"
+    candidate = Path(evidence_path)
+    if not candidate.is_absolute():
+        candidate = Path(evidence_base_dir) / candidate
+    if candidate.is_symlink() or not candidate.is_file():
+        return None, "missing_or_unsafe_source_evidence_artifact"
+    actual_sha = _sha256_file(candidate)
+    if actual_sha != expected_sha:
+        return None, "source_evidence_hash_mismatch"
+    try:
+        with open(candidate, encoding="utf-8") as handle:
+            artifact = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None, "invalid_source_evidence_artifact"
+    run_meta = artifact.get("runMeta") if isinstance(artifact, dict) else None
+    if not isinstance(run_meta, dict) or run_meta.get("mode") != "full":
+        return None, "source_evidence_not_full_crawl"
+    try:
+        finished = _parse_time(run_meta.get("finishedAt"))
+        claimed = _parse_time(source.get("observed_at"))
+    except (TypeError, ValueError):
+        return None, "missing_or_invalid_observed_at"
+    if finished != claimed:
+        return None, "source_observation_does_not_match_artifact_completion"
+    age = (now - finished).total_seconds() / 3600
+    if age < 0 or age > max_age_hours:
+        return None, "stale_source_evidence"
+
+    source_key = source.get("source_key")
+    passes = [
+        entry for entry in artifact.get("sources") or []
+        if isinstance(entry, dict) and entry.get("sourceKey") == source_key
+    ]
+    if not passes or any(entry.get("error") or entry.get("truncated") for entry in passes):
+        return None, "source_evidence_pass_incomplete"
+    brokers_by_idx = {i: broker for i, broker in enumerate(artifact.get("brokers") or [])}
+    identities = {}
+    for listing in artifact.get("listings") or []:
+        if not isinstance(listing, dict) or listing.get("sourceKey") != source_key:
+            continue
+        row = to_row(listing, brokers_by_idx, run_meta["finishedAt"])
+        if row is not None:
+            identities.setdefault(row["external_id"], []).append(row)
+    matches = identities.get(str(raw.get("external_id")), [])
+    if source.get("state") == "present":
+        if len(matches) != 1:
+            return None, "source_identity_not_uniquely_present_in_artifact"
+        if matches[0].get("source_url") != source.get("url"):
+            return None, "source_url_does_not_match_artifact"
+    elif matches:
+        return None, "source_identity_present_in_claimed_absent_artifact"
+    return {
+        "path": str(candidate.resolve()),
+        "sha256": actual_sha,
+        "finished_at": run_meta["finishedAt"],
+    }, None
 
 
 def _history_request(raw, source, desired_present):
@@ -192,9 +270,9 @@ def _event_request(raw, desired_present, desired_generation):
     }, None
 
 
-def build_plan(bundle, *, as_of, max_age_hours=48):
-    """Pure, deterministic planner. Ambiguous/incomplete/stale rows are skips."""
-    now = _parse_time(as_of)
+def build_plan(bundle, *, evidence_base_dir=".", max_age_hours=48):
+    """Deterministic planner whose freshness is anchored to the current clock."""
+    now = datetime.now(timezone.utc)
     actions = []
     skipped = []
     rows = bundle.get("rows") or []
@@ -224,14 +302,10 @@ def build_plan(bundle, *, as_of, max_age_hours=48):
         )):
             reason = "missing_or_invalid_source_evidence_hash"
         else:
-            try:
-                observed = _parse_time(source.get("observed_at"))
-            except (TypeError, ValueError):
-                reason = "missing_or_invalid_observed_at"
-            else:
-                age = (now - observed).total_seconds() / 3600
-                if age < 0 or age > max_age_hours:
-                    reason = "stale_source_evidence"
+            bound_artifact, reason = _validate_bound_artifact(
+                raw, source, evidence_base_dir=evidence_base_dir,
+                now=now, max_age_hours=max_age_hours,
+            )
         if reason:
             skipped.append(_skip(raw, reason))
             continue
@@ -294,6 +368,7 @@ def build_plan(bundle, *, as_of, max_age_hours=48):
             "source_key": source.get("source_key"),
             "source_url": source.get("url"),
             "source_evidence_sha256": source["evidence_sha256"],
+            "source_evidence_path": bound_artifact["path"],
             "observed_at": source["observed_at"],
             "operations": operations,
             "lifecycle_change": lifecycle_change,
@@ -306,7 +381,7 @@ def build_plan(bundle, *, as_of, max_age_hours=48):
             "before_hash": before_hash(raw),
         }
         actions.append(action)
-    core = {"schema_version": 2, "as_of": as_of, "actions": actions, "skipped": skipped}
+    core = {"schema_version": 3, "actions": actions, "skipped": skipped}
     core["plan_hash"] = hashlib.sha256(_canon(core).encode()).hexdigest()
     return core
 
@@ -321,7 +396,7 @@ def write_evidence(plan, prefix):
     fields = (
         "outcome", "reason", "listing_id", "brokerage_id", "external_id", "operations",
         "desired_present", "desired_status", "desired_generation", "observed_at",
-        "source_evidence_sha256",
+        "source_evidence_path", "source_evidence_sha256",
         "event_type", "event_provenance", "event_time_semantics", "history_resolution",
         "history_authority", "history_decided_by", "history_time_semantics", "before_hash",
     )
@@ -369,11 +444,11 @@ def _tracked_predicate(alias, values):
 
 
 def _job_identity(plan_hash, brokerage_id):
-    run_key = "reconcile:v2:" + plan_hash
+    run_key = "reconcile:v3:" + plan_hash
     return run_key, str(uuid.uuid5(_UUID_NAMESPACE, f"{run_key}:{brokerage_id}"))
 
 
-def build_apply_sql(actions, plan_hash, approved_by):
+def build_apply_sql(actions, plan_hash, operator, approval_ref):
     """Build one bounded, lock-and-compare transaction."""
     if len(actions) > MAX_BATCH_SIZE:
         raise ValueError(f"batch exceeds {MAX_BATCH_SIZE} rows")
@@ -387,8 +462,8 @@ def build_apply_sql(actions, plan_hash, approved_by):
             "INSERT INTO credeals.cre_scrape_jobs "
             "(id, brokerage_id, status, started_at, completed_at, notes, artifact_run_key) "
             f"VALUES ({sql_lit(job_id)}::uuid, {sql_lit(brokerage_id)}::uuid, "
-            f"'completed', now(), now(), "
-            f"{sql_lit('approved evidence-backed lifecycle reconciliation by ' + approved_by + '; plan=' + plan_hash)}, "
+            f"'running', now(), NULL, "
+            f"{sql_lit('approved evidence-backed lifecycle reconciliation by ' + operator + '; ref=' + approval_ref + '; plan=' + plan_hash)}, "
             f"{sql_lit(run_key)}) ON CONFLICT DO NOTHING;"
         )
     for action in actions:
@@ -613,55 +688,194 @@ def build_apply_sql(actions, plan_hash, approved_by):
                 f"FROM credeals.cre_listings l WHERE l.id={listing_id}::uuid "
                 "AND l.id IN (SELECT listing_id FROM _reconcile_apply) ON CONFLICT DO NOTHING;"
             )
-    lines.extend(["COMMIT;", f"-- approved-by: {approved_by}"])
+    lines.extend([
+        "COMMIT;",
+        f"-- operator: {operator}",
+        f"-- approval-reference: {approval_ref}",
+    ])
     return "\n".join(lines) + "\n"
 
 
-def apply_plan(plan, *, approved_by, approval_token, supplied_hash, env_file,
-               expected_db_target_sha256, batch_size):
-    if not approved_by.strip() or approval_token != APPROVAL_TOKEN:
-        raise ValueError("named approval and exact approval token are required")
-    if supplied_hash != plan["plan_hash"]:
+def build_finalize_sql(actions, plan_hash, operator, approval_ref):
+    """Complete shared reconciliation jobs only after every batch succeeded."""
+    jobs = [
+        (*_job_identity(plan_hash, brokerage_id), brokerage_id)
+        for brokerage_id in sorted({action["brokerage_id"] for action in actions})
+    ]
+    if not jobs:
+        return "\\set ON_ERROR_STOP on\n"
+    values = ",\n".join(
+        f"({sql_lit(job_id)}::uuid, {sql_lit(run_key)}, {sql_lit(brokerage_id)}::uuid)"
+        for run_key, job_id, brokerage_id in jobs
+    )
+    notes = (
+        "approved evidence-backed lifecycle reconciliation by " + operator
+        + "; ref=" + approval_ref + "; plan=" + plan_hash
+    )
+    return f"""\\set ON_ERROR_STOP on
+BEGIN;
+CREATE TEMP TABLE _expected_reconcile_jobs
+    (job_id uuid PRIMARY KEY, run_key text NOT NULL, brokerage_id uuid NOT NULL)
+    ON COMMIT DROP;
+INSERT INTO _expected_reconcile_jobs VALUES
+{values};
+SELECT j.id
+FROM credeals.cre_scrape_jobs j
+JOIN _expected_reconcile_jobs expected ON expected.job_id = j.id
+ORDER BY j.id
+FOR UPDATE OF j;
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM _expected_reconcile_jobs) <>
+     (SELECT count(*) FROM credeals.cre_scrape_jobs j
+      JOIN _expected_reconcile_jobs expected
+        ON expected.job_id = j.id
+       AND expected.run_key = j.artifact_run_key
+       AND expected.brokerage_id = j.brokerage_id
+      WHERE j.status IN ('running', 'completed')) THEN
+    RAISE EXCEPTION 'not all reconciliation batches produced the expected jobs';
+  END IF;
+END $$;
+UPDATE credeals.cre_scrape_jobs j
+SET status = 'completed', completed_at = now(), notes = {sql_lit(notes)}
+FROM _expected_reconcile_jobs expected
+WHERE expected.job_id = j.id AND j.status = 'running';
+COMMIT;
+"""
+
+
+def _revalidate_plan_evidence(plan, *, max_age_hours):
+    now = datetime.now(timezone.utc)
+    checked = set()
+    for action in plan["actions"]:
+        path = Path(action["source_evidence_path"])
+        key = (str(path), action["source_evidence_sha256"], action["observed_at"])
+        if key in checked:
+            continue
+        checked.add(key)
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("planned source evidence artifact is missing or unsafe")
+        if _sha256_file(path) != action["source_evidence_sha256"]:
+            raise ValueError("planned source evidence artifact bytes changed")
+        try:
+            with open(path, encoding="utf-8") as handle:
+                artifact = json.load(handle)
+            finished = _parse_time((artifact.get("runMeta") or {}).get("finishedAt"))
+            observed = _parse_time(action["observed_at"])
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ValueError("planned source evidence artifact is no longer valid") from exc
+        age = (now - finished).total_seconds() / 3600
+        if finished != observed or age < 0 or age > max_age_hours:
+            raise ValueError("planned source evidence artifact is stale or timestamp-drifted")
+
+
+def _run_psql_script(psql, db_url, sql):
+    with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as handle:
+        handle.write(sql)
+        sql_path = handle.name
+    try:
+        subprocess.run(
+            [psql, *psql_connection_args(db_url), "-q", "-v", "ON_ERROR_STOP=1", "-f", sql_path],
+            env=psql_connection_env(db_url), check=True,
+        )
+    finally:
+        os.unlink(sql_path)
+
+
+def _load_approval_contract(path, plan_hash):
+    if not path:
+        raise ValueError("a private approval contract is required")
+    contract_path = Path(path).expanduser()
+    if contract_path.is_symlink() or not contract_path.is_file():
+        raise ValueError("approval contract must be a regular non-symlink file")
+    if contract_path.stat().st_mode & 0o077:
+        raise ValueError("approval contract must be private (chmod 600)")
+    try:
+        with open(contract_path, encoding="utf-8") as handle:
+            contract = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("approval contract is not valid JSON") from exc
+    required = {
+        "schema_version", "operation", "operator", "approval_ref", "plan_hash",
+    }
+    if not isinstance(contract, dict) or set(contract) != required:
+        raise ValueError("approval contract has unexpected or missing fields")
+    operator = str(contract.get("operator") or "").strip().lower()
+    approval_ref = str(contract.get("approval_ref") or "").strip()
+    if contract.get("schema_version") != 1:
+        raise ValueError("unsupported approval contract schema")
+    if contract.get("operation") != "cre-listing-lifecycle-reconciliation":
+        raise ValueError("approval contract operation does not match")
+    if operator not in ALLOWED_OPERATORS:
+        raise ValueError("approval contract operator is not configured")
+    if not APPROVAL_REF_RE.fullmatch(approval_ref):
+        raise ValueError("approval contract reference must be an AGENTIC issue")
+    if contract.get("plan_hash") != plan_hash:
+        raise ValueError("approval contract is not bound to this plan hash")
+    return operator, approval_ref
+
+
+def apply_plan(plan, *, approval_contract_path, confirmation, supplied_hash, env_file,
+               expected_db_target_sha256, batch_size, max_age_hours=48):
+    plan_core = {key: value for key, value in plan.items() if key != "plan_hash"}
+    computed_hash = hashlib.sha256(_canon(plan_core).encode()).hexdigest()
+    if computed_hash != plan.get("plan_hash") or supplied_hash != plan.get("plan_hash"):
         raise ValueError("supplied plan hash does not match exact generated plan")
+    operator, approval_ref = _load_approval_contract(
+        approval_contract_path, plan["plan_hash"],
+    )
+    expected_confirmation = f"APPLY cre-listing-lifecycle-reconciliation {plan['plan_hash']}"
+    if confirmation != expected_confirmation:
+        raise ValueError("exact plan-specific confirmation is required")
+    for action in plan["actions"]:
+        history = action.get("history") or {}
+        decision = history.get("authority_decision") or {}
+        decided_by = str(decision.get("decided_by") or "").strip().lower()
+        if history and decided_by != operator:
+            raise ValueError("history authority decision must match the configured operator")
     if not expected_db_target_sha256:
         raise ValueError("--expected-db-target-sha256 is required for apply")
     if batch_size < 1 or batch_size > MAX_BATCH_SIZE:
         raise ValueError(f"batch size must be 1..{MAX_BATCH_SIZE}")
     db_url, _ = load_db_url(env_file)
     assert_expected_database_target(db_url, expected_db_target_sha256)
+    _revalidate_plan_evidence(plan, max_age_hours=max_age_hours)
     psql = find_psql()
     for offset in range(0, len(plan["actions"]), batch_size):
         batch = plan["actions"][offset:offset + batch_size]
-        sql = build_apply_sql(batch, plan["plan_hash"], approved_by)
-        with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as handle:
-            handle.write(sql)
-            sql_path = handle.name
-        try:
-            subprocess.run(
-                [psql, *psql_connection_args(db_url), "-q", "-v", "ON_ERROR_STOP=1", "-f", sql_path],
-                env=psql_connection_env(db_url), check=True,
-            )
-        finally:
-            os.unlink(sql_path)
+        _run_psql_script(
+            psql, db_url,
+            build_apply_sql(batch, plan["plan_hash"], operator, approval_ref),
+        )
+    _run_psql_script(
+        psql, db_url,
+        build_finalize_sql(plan["actions"], plan["plan_hash"], operator, approval_ref),
+    )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence", required=True)
-    parser.add_argument("--as-of", required=True, help="fixed ISO timestamp for deterministic freshness")
     parser.add_argument("--out-prefix", required=True)
     parser.add_argument("--max-age-hours", type=float, default=48)
     parser.add_argument("--apply", action="store_true")
-    parser.add_argument("--approved-by")
-    parser.add_argument("--approval-token")
+    parser.add_argument(
+        "--approval-contract",
+        help="private chmod-600 JSON contract bound to operator, AGENTIC reference, and plan hash",
+    )
+    parser.add_argument("--confirm")
     parser.add_argument("--plan-hash")
     parser.add_argument("--env-file")
     parser.add_argument("--expected-db-target-sha256")
     parser.add_argument("--batch-size", type=int, default=100)
     args = parser.parse_args()
-    with open(args.evidence, encoding="utf-8") as handle:
+    evidence_path = Path(args.evidence).resolve()
+    with open(evidence_path, encoding="utf-8") as handle:
         bundle = json.load(handle)
-    plan = build_plan(bundle, as_of=args.as_of, max_age_hours=args.max_age_hours)
+    plan = build_plan(
+        bundle, evidence_base_dir=evidence_path.parent,
+        max_age_hours=args.max_age_hours,
+    )
     json_path, csv_path = write_evidence(plan, args.out_prefix)
     print(json.dumps({
         "mode": "apply" if args.apply else "dry-run",
@@ -671,11 +885,12 @@ def main():
     }, sort_keys=True))
     if args.apply:
         apply_plan(
-            plan, approved_by=args.approved_by or "",
-            approval_token=args.approval_token, supplied_hash=args.plan_hash,
+            plan, approval_contract_path=args.approval_contract,
+            confirmation=args.confirm, supplied_hash=args.plan_hash,
             env_file=args.env_file,
             expected_db_target_sha256=args.expected_db_target_sha256,
             batch_size=args.batch_size,
+            max_age_hours=args.max_age_hours,
         )
 
 

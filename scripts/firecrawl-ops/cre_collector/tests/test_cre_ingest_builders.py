@@ -1769,8 +1769,11 @@ def test_inventory_only_sql_covers_appearance_disappearance_and_reappearance():
     assert "current.external_id = si.external_id" in sql
     assert "refusing stale inventory-only replay" in sql
     assert "prior.last_enumerated_at > scope.observed_at" in sql
-    assert "EXCLUDED.last_enumerated_at >= si.last_enumerated_at" in sql
-    assert "si.last_enumerated_at <= scope.observed_at" in sql
+    assert "EXCLUDED.last_enumerated_at > si.last_enumerated_at" in sql
+    assert "observation_present = true" in sql
+    assert "observation_present = false" in sql
+    assert "presence_changed_at = CASE" in sql
+    assert "si.last_enumerated_at < scope.observed_at" in sql
     assert "prior.external_id = scope.watermark_external_id" in sql
     assert "scope.watermark_external_id" in sql
     assert "scope.watermark_url" in sql

@@ -5,9 +5,12 @@
 **Idempotent `credeals` DDL only on Supabase `fhqycqubkkrdgzswccwd`.**
 Apply via `000_run_all.sql` in dependency order:
 `001`→`002`→`003`→`004`→`007`→`008`→`009`→`010`→`011`→`012`→`013`→`014`→`006`→`005`.
-Migration `015` is excluded from the generic runner. It is a legacy-only
+Migrations `015` and `016` are excluded from the generic runner. `015` is a legacy-only
 index rebuild and requires both schema-owner approval and the explicit psql
 variable `CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT=1`.
+`016` is the listing-lifecycle contract and requires its configured operator,
+AGENTIC approval reference, exact confirmation, readback, and rollback posture
+from `docs/firecrawl-ops/references/cre-listing-lifecycle-runbook.md`.
 **`001_cre_brokerages.sql` seed slugs must match
 `../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE`.** Never commit or
 print `DATABASE_URL`.
@@ -44,9 +47,20 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 000_run_all.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -v CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT=1 \
   -f 015_align_om_facts_conflict_key.sql
+
+# Listing lifecycle contract only through the separately recorded runbook gate.
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -v CRE_APPROVE_LISTING_LIFECYCLE=1 \
+  -v CRE_LISTING_LIFECYCLE_OPERATOR='<cayman-or-stace>' \
+  -v CRE_LISTING_LIFECYCLE_APPROVAL_REF='<AGENTIC-issue>' \
+  -v CRE_LISTING_LIFECYCLE_CONFIRM='APPLY 016_cre_listing_lifecycle' \
+  -f 016_cre_listing_lifecycle.sql
 ```
 
-Set `DATABASE_URL` from `~/.pgpass` or a local secrets source. Alternatives: Supabase SQL editor (paste in order) or MCP `apply_migration` per file (`project_id = fhqycqubkkrdgzswccwd`).
+Set `DATABASE_URL` from `~/.pgpass` or a local secrets source. For migrations
+other than `016`, alternatives are the Supabase SQL editor (paste in order) or
+MCP `apply_migration` per file (`project_id = fhqycqubkkrdgzswccwd`). Migration
+`016` is psql-only because its approval variables must fail closed.
 
 ## Naming Patterns
 
