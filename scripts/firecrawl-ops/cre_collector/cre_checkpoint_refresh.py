@@ -1217,16 +1217,16 @@ def validate_source_artifact(
                     listing_provenance.get("validatedAt"),
                 )
             )
-        for field, value in observation_fields:
+        for observation_field, value in observation_fields:
             if value is None:
                 continue
             observed = parse_iso8601(
                 value,
-                field=f"listings[{index}].{field}",
+                field=f"listings[{index}].{observation_field}",
             )
             if observed > latest_allowed:
                 raise ArtifactValidationError(
-                    f"listings[{index}].{field} exceeds "
+                    f"listings[{index}].{observation_field} exceeds "
                     "the 5-minute clock-skew allowance"
                 )
         if strict_freshness or property_detail_freshness:
@@ -3163,6 +3163,17 @@ def verify_validation_readback(
         for row in inventory_rows
         if isinstance(row, dict) and isinstance(row.get("source_key"), str)
     }
+    raw_queue_rows = (
+        queries.get("enrichment_queue_health")
+        if isinstance(queries, dict)
+        else None
+    )
+    queue_health_available = isinstance(raw_queue_rows, list)
+    queue_by_source = {
+        row.get("source_key"): row
+        for row in (raw_queue_rows or [])
+        if isinstance(row, dict) and isinstance(row.get("source_key"), str)
+    }
     failures: list[str] = []
     for source in manifest["config"]["sources"]:
         checkpoint = manifest["sources"][source]
@@ -3183,7 +3194,6 @@ def verify_validation_readback(
         generation_started = None
         observation_cutoff = None
         generation_row = None
-        latest = None
         latest_count = 0
         detail_latest_raw = None
         detail_count = None
@@ -3420,7 +3430,6 @@ def verify_validation_readback(
                 and earliest_detail < observation_cutoff
             ):
                 reason = "generation detail observation exceeds artifact freshness SLO"
-            latest = latest_inventory
             latest_count = generation_count
             detail_latest_raw = generation_row.get("latest_detail_observed_at")
             detail_count = persisted_detail
@@ -3581,6 +3590,20 @@ def verify_validation_readback(
             ),
             "expected_staged_unique": staged,
             "inventory_only": inventory_details,
+            "queue_health": (
+                queue_by_source.get(source)
+                or {
+                    "source_key": source,
+                    "backlog_count": "0",
+                    "retry_count": "0",
+                    "dead_letter_count": "0",
+                    "deterministic_failure_count": "0",
+                    "transient_failure_count": "0",
+                    "unclassified_failure_count": "0",
+                }
+                if queue_health_available
+                else None
+            ),
             "reason": reason,
         }
         if not ok:
@@ -3694,12 +3717,12 @@ def compare_validation_quality(
         new = _rows_by(after_queries.get(query), keys)
         for identity, row in new.items():
             prior = old.get(identity, {})
-            for field in fields:
-                old_value = _int_value(prior.get(field))
-                new_value = _int_value(row.get(field))
+            for metric_field in fields:
+                old_value = _int_value(prior.get(metric_field))
+                new_value = _int_value(row.get(metric_field))
                 if new_value > old_value:
                     failures.append(
-                        f"{query}/{identity}/{field} increased {old_value}->{new_value}"
+                        f"{query}/{identity}/{metric_field} increased {old_value}->{new_value}"
                     )
 
     old_children = _rows_by(
@@ -3814,10 +3837,10 @@ def verify_absolute_validation_quality(after: Mapping[str, Any]) -> dict[str, An
             failures.append(f"duplicates has unknown check_name: {check_name!r}")
             continue
         context = f"duplicates/{check_name}/{row.get('source_key') or 'all'}"
-        for field in ("groups", "rows"):
-            count = _absolute_count(row, field, context, failures)
+        for metric_field in ("groups", "rows"):
+            count = _absolute_count(row, metric_field, context, failures)
             if count:
-                failures.append(f"{context}/{field} is nonzero: {count}")
+                failures.append(f"{context}/{metric_field} is nonzero: {count}")
 
     bad_child_url_rows = _absolute_rows(queries, "bad_child_urls", failures)
     bad_child_url_checks = {
@@ -3870,13 +3893,13 @@ def verify_absolute_validation_quality(after: Mapping[str, Any]) -> dict[str, An
             and source_policy.get("canonical_claim")
             == "provisional_source_index_only"
         )
-        for field in ABSOLUTE_LISTING_QUALITY_FIELDS:
-            if is_inventory_only and field in canonical_url_fields:
+        for quality_field in ABSOLUTE_LISTING_QUALITY_FIELDS:
+            if is_inventory_only and quality_field in canonical_url_fields:
                 continue
             context = f"quality_by_source/{source_key}"
-            count = _absolute_count(row, field, context, failures)
+            count = _absolute_count(row, quality_field, context, failures)
             if count:
-                failures.append(f"{context}/{field} is nonzero: {count}")
+                failures.append(f"{context}/{quality_field} is nonzero: {count}")
 
     return {"ok": not failures, "failures": failures}
 

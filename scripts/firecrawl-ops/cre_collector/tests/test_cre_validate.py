@@ -43,6 +43,19 @@ def test_child_quality_queries_cover_media_and_links():
     assert "SELECT 'links'" in QUERIES["orphans"]
 
 
+def test_enrichment_queue_health_is_redaction_safe_and_classified():
+    sql = QUERIES["enrichment_queue_health"]
+    assert "source_key" in sql
+    assert "backlog_count" in sql
+    assert "retry_count" in sql
+    assert "dead_letter_count" in sql
+    assert "unclassified_failure_count" in sql
+    assert "url" not in sql
+    assert "last_error AS" not in sql
+    assert "attempts BETWEEN 1 AND 4" in sql
+    assert "attempts >= 5" in sql
+
+
 # ---------------------------------------------------------------------------
 # parse_tsv
 # ---------------------------------------------------------------------------
@@ -415,6 +428,7 @@ def test_render_markdown_all_query_labels_present():
         "source_counts": "Source Counts",
         "freshness_generations": "Freshness Generations",
         "inventory_only_index": "Inventory-Only Source Index",
+        "enrichment_queue_health": "Enrichment Queue Health",
         "quality_by_source": "Quality By Source",
         "duplicates": "Duplicate Checks",
         "child_counts": "Child Counts",
