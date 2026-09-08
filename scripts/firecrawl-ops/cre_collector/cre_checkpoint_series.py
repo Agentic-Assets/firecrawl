@@ -32,6 +32,7 @@ from cre_checkpoint_refresh import (
     git_identity,
     utc_now,
 )
+from cre_source_health import publish_series_health
 
 
 SCHEMA_VERSION = 1
@@ -130,6 +131,16 @@ def new_manifest(
 def save_manifest(series_dir: Path, manifest: dict[str, Any]) -> None:
     manifest["updated_at"] = utc_now()
     atomic_write_json(series_dir / "manifest.json", manifest)
+    try:
+        publish_series_health(series_dir, manifest)
+    except Exception as exc:
+        # This redaction-safe handoff is a sidecar, never write-admission state.
+        # Report only the exception class: messages can contain URLs or secrets.
+        print(
+            "warning: producer source-health publication failed "
+            f"({type(exc).__name__})",
+            file=sys.stderr,
+        )
 
 
 def load_resume_manifest(

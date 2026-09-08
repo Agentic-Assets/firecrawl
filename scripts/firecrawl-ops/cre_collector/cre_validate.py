@@ -379,6 +379,29 @@ LEFT JOIN summary ON summary.source_key = definitions.source_key
 LEFT JOIN watermark ON watermark.source_key = definitions.source_key
 ORDER BY definitions.source_key;
 """,
+    "enrichment_queue_health": """
+SELECT
+  source_key,
+  count(*)::text AS backlog_count,
+  count(*) FILTER (WHERE attempts < 5)::text AS retry_count,
+  count(*) FILTER (WHERE attempts >= 5)::text AS dead_letter_count,
+  count(*) FILTER (
+    WHERE attempts >= 5
+      AND last_error = 'claimed but absent from enriched artifact'
+  )::text AS deterministic_failure_count,
+  count(*) FILTER (
+    WHERE attempts BETWEEN 1 AND 4
+      AND last_error = 'claimed but absent from enriched artifact'
+  )::text AS transient_failure_count,
+  count(*) FILTER (
+    WHERE attempts > 0
+      AND last_error IS DISTINCT FROM 'claimed but absent from enriched artifact'
+  )::text AS unclassified_failure_count
+FROM credeals.cre_enrichment_queue
+WHERE done_at IS NULL
+GROUP BY source_key
+ORDER BY source_key;
+""",
     "quality_by_source": f"""
 WITH active AS (
   SELECT
@@ -749,6 +772,7 @@ def render_markdown(report):
         "source_counts": "Source Counts",
         "freshness_generations": "Freshness Generations",
         "inventory_only_index": "Inventory-Only Source Index",
+        "enrichment_queue_health": "Enrichment Queue Health",
         "quality_by_source": "Quality By Source",
         "duplicates": "Duplicate Checks",
         "child_counts": "Child Counts",

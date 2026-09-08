@@ -143,6 +143,29 @@ NAI_ENUMERATION_CONCURRENCY=1 \
 ```
 
 The series manifest and per-source runs live under `out/checkpoint-series/`.
+Every manifest save also writes `source-health.json` in that series and updates
+`out/checkpoint-series/producer-source-health.json`. The latter is the stable,
+redaction-safe `producer-freshness-v1` handoff for GetCREdata. Per source it
+separates `lastSuccessfulObservationAt`, `lastAttemptObservationAt`,
+`producerComputedAt`, and downstream `publishedAt`; `sourceVintage` is the UTC
+date of the last successful observation. A successful whole-source observation
+uses the oldest required inventory, detail, enumeration, or scope watermark,
+never the newest clock in a mixed run. The weekly cadence, three-day grace, and
+five-minute future-clock allowance are fixed policy.
+
+Source receipts classify `fresh`, `stale`, or `unknown`; GetCREdata adds
+`unavailable` when the handoff cannot be read or validated, yielding the public
+four-state contract. Backlog, retry, dead-letter, deterministic, transient, and
+unclassified counts come from the validator's existing single repeatable-read,
+read-only database snapshot. Failed or stopped attempts retain the last-good
+observation and completeness evidence. Partial attempts update attempt evidence
+but cannot replace the last complete inventory. Receipt publication is atomic
+and serialized; a receipt-output failure is recorded as degraded without
+aborting the already-authoritative checkpoint manifest.
+
+These receipts report state only. This change did not enable launchd, ingest,
+status activation, lifecycle deletion, a scheduler, or a production canary.
+
 Exit `0` means every selected source completed. Exit `2` means the series
 finished with recorded source-local failures. Exit `75` means the CPU guard
 stopped it; inspect the guard and incident evidence, let host pressure clear,
