@@ -13,6 +13,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -664,8 +665,11 @@ class CommandBoundaryTests(unittest.TestCase):
                     helper.run_and_write(args, "GET", "/broken", None, "broken")
             self.assertTrue(out.is_file())
 
+
 class NetworkBoundaryTests(unittest.TestCase):
-    def test_open_request_returns_http_error_body_and_maps_url_errors_to_system_exit(self) -> None:
+    def test_open_request_returns_http_error_body_and_raises_transport_error(
+        self,
+    ) -> None:
         req = Request("http://localhost:3002/v2/scrape")
         http_error = HTTPError(req.full_url, 500, "boom", {}, io.BytesIO(b'{"error":"boom"}'))
         with patch.object(helper, "urlopen", side_effect=http_error):
@@ -674,8 +678,78 @@ class NetworkBoundaryTests(unittest.TestCase):
         http_error.close()
 
         with patch.object(helper, "urlopen", side_effect=URLError("no route")):
-            with self.assertRaises(SystemExit):
+            with self.assertRaises(helper.TransportError):
                 helper.open_request(req, 1)
+
+    def test_main_transport_errors_are_compact_and_source_free(self) -> None:
+        for transport_error in (
+            URLError("server-secret"),
+            TimeoutError("server-secret"),
+            ConnectionResetError("server-secret"),
+        ):
+            with (
+                self.subTest(error=type(transport_error).__name__),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                out = Path(tmp) / "transport-error.json"
+                stderr = io.StringIO()
+                with (
+                    patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "firecrawl_request.py",
+                            "scrape",
+                            "https://secret.example/hidden",
+                            "--out",
+                            str(out),
+                            "--quiet",
+                        ],
+                    ),
+                    patch.object(helper, "urlopen", side_effect=transport_error),
+                    contextlib.redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as exc,
+                ):
+                    helper.main()
+
+                self.assertEqual(exc.exception.code, 1)
+                self.assertEqual(stderr.getvalue(), "Firecrawl transport error.\n")
+                self.assertEqual(
+                    json.loads(out.read_text(encoding="utf-8")),
+                    {"success": False, "error": "transport_error"},
+                )
+                self.assertNotIn("secret", stderr.getvalue() + out.read_text())
+
+    def test_main_transport_error_metrics_output_is_body_free(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "transport-metrics.json"
+            stderr = io.StringIO()
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "firecrawl_request.py",
+                        "scrape",
+                        "https://secret.example/hidden",
+                        "--metrics-only",
+                        "--out",
+                        str(out),
+                        "--quiet",
+                    ],
+                ),
+                patch.object(helper, "urlopen", side_effect=OSError("server-secret")),
+                contextlib.redirect_stderr(stderr),
+                self.assertRaises(SystemExit) as exc,
+            ):
+                helper.main()
+
+            self.assertEqual(exc.exception.code, 1)
+            self.assertEqual(stderr.getvalue(), "Firecrawl transport error.\n")
+            self.assertEqual(
+                json.loads(out.read_text(encoding="utf-8")),
+                {"success": False, "httpStatus": 0},
+            )
 
 
 if __name__ == "__main__":

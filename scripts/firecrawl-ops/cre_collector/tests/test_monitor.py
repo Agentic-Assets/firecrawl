@@ -816,7 +816,8 @@ class TestSQLSafety:
         assert "INSERT INTO credeals.cre_source_index AS si" in sql
         # (c) step-3b disappearance UPDATE targets cre_source_index (driven by marks)
         assert "UPDATE credeals.cre_source_index si" in sql
-        assert "SET soft_deleted = true" in sql
+        assert "SET observation_present = false" in sql
+        assert "SET soft_deleted = true" not in sql
         # Observe-only invariant preserved (same grep as the other build_write_sql tests).
         non_comment = "\n".join(
             line for line in sql.split("\n")

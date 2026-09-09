@@ -17,6 +17,7 @@ The API's default model path uses OpenAI-compatible settings:
 
 Use the guarded operator handoff from the repo root to inspect the local default
 Vercel AI Gateway profile:
+Agents may request a body-free plan from the repo root:
 
 ```bash
 scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway
@@ -26,16 +27,20 @@ After reviewing the plan, only a human operator may use the attested `--apply`
 path. Agent surfaces must never apply it. If `.env` is missing, use the minimal
 human-owned root template in `LOCAL_DEVELOPMENT_GUIDE.md`; do not use
 `apps/api/.env.example` as a Docker Compose contract.
+The plan does not change configuration. After review, only a human operator
+may use the attested `--apply` path. Agent surfaces must never apply it. If
+`.env` is missing, use the minimal human-owned root template in
+`LOCAL_DEVELOPMENT_GUIDE.md`; do not use `apps/api/.env.example` as a Docker
+Compose contract.
 
 ## Default routing policy
 
 1. **Gateway default**
    - `deepseek/deepseek-v4-flash-0731`
-   - Profile: `gateway` (the no-argument default)
+   - Profile: `gateway`
    - Base URL: `https://ai-gateway.vercel.sh/v1`
-   - For structured summary/JSON output only, the configured one-time fallback
-     is `deepseek/deepseek-v4-pro-0813` when the Flash result is missing or
-     schema-invalid. It is not a general per-agent model switch.
+   - The live API uses this model directly. It has no automatic structured
+     output retry or model fallback.
 
 2. **Explicit OpenRouter budget alternative**
    - `deepseek/deepseek-v4-flash`
@@ -56,6 +61,8 @@ human-owned root template in `LOCAL_DEVELOPMENT_GUIDE.md`; do not use
    - Base URL: `https://ai-gateway.vercel.sh/v1`
    - Use only for an explicit, authorized stronger-model window. This profile
      has no automatic structured-output fallback of its own.
+   - Use only through an explicit, authorized model handoff for difficult
+     extraction. It is not an automatic retry.
 
 5. **OpenAI direct**
    - `gpt-5.4-mini`
@@ -65,10 +72,11 @@ human-owned root template in `LOCAL_DEVELOPMENT_GUIDE.md`; do not use
 
 ## Escalation rules
 
-For the Gateway default, the API itself may make exactly one Pro retry only for
-missing or schema-invalid structured summary/JSON output. All other escalation
-decisions require the operator procedure: queue check, exclusive window,
-provider-cost approval, recreate, bounded canary, and deliberate handoff.
+The live API does not automatically retry a request with a stronger model. For
+noisy pages, malformed structured output, or low-confidence fields, inspect
+the provider and API logs first. A switch to `gateway-pro` or another profile
+requires the guarded operator procedure: queue check, exclusive window,
+provider-cost approval, bounded canary, and deliberate handoff.
 
 ## Cost-control rules
 
@@ -82,6 +90,6 @@ provider-cost approval, recreate, bounded canary, and deliberate handoff.
 ## Troubleshooting
 
 - If logs show `Failed to parse URL from /responses`, `OPENAI_BASE_URL` is missing or invalid.
-- If logs show auth/provider failures, verify `OPENAI_API_KEY` is set inside root `.env` and recreate the API container.
+- If logs show auth/provider failures, verify `OPENAI_API_KEY` is set inside root `.env` and use the reviewed operator handoff procedure.
 - If non-AI scrape/parse works but summary/json fails, fix model env before debugging the endpoint.
 - Use exact provider model ids; do not add an extra `openrouter/` prefix to OpenRouter model names.

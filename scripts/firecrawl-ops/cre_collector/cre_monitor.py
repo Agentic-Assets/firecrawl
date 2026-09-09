@@ -80,6 +80,20 @@ from cre_ingest import (  # noqa: E402
 # disappeared event is allowed, unless --force-disappear is passed. This stops a
 # gappy or partial run from inventing false disappearances.
 DISAPPEAR_COVERAGE_FRACTION = 0.7
+_RUN_UUID_NAMESPACE = uuid.UUID("c245ab8a-7397-5c20-920e-3bd852242c72")
+
+
+def artifact_run_identity(paths, *, lane="monitor"):
+    """Return a stable content key and UUID for an immutable artifact set."""
+    members = []
+    for path in sorted(paths):
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        members.append(digest.hexdigest())
+    run_key = f"{lane}:v1:" + hashlib.sha256("\n".join(members).encode()).hexdigest()
+    return run_key, str(uuid.uuid5(_RUN_UUID_NAMESPACE, run_key))
 
 
 def coverage_decision(*, in_baseline, errored, force_disappear, prior_live,
@@ -344,6 +358,7 @@ def _event(listing_id, brokerage_id, source_key, event_type, **kw):
         "lease_rate_text": None,
         "source_url": None,
         "content_hash": None,
+        "presence_generation": None,
     }
     e.update(kw)
     return e
@@ -351,19 +366,20 @@ def _event(listing_id, brokerage_id, source_key, event_type, **kw):
 
 def derive_events(current_records, prior_index, prior_listings, soft_deleted_canon,
                   run_source_keys, baseline_source_keys, coverage_ok_by_source, run_uuid):
-    """Pure diff producing the event ledger plus enqueue and soft-delete-mark
+    """Pure diff producing the event ledger plus enqueue and observation-mark
     work. OBSERVE-ONLY: never touches cre_listings.status or deleted_at.
 
     current_records: dict (brokerage_id, external_id) -> finalized group.
     prior_index:     dict (brokerage_id, external_id) -> {fingerprint,
-                     soft_deleted, observed_status, source_key, url}.
+                     observation_present, presence_generation,
+                     observed_status, source_key, url}.
     prior_listings:  dict (brokerage_id, external_id) -> {id, status, deleted}.
     soft_deleted_canon: dict (brokerage_id, canonical_key) -> [listing_id, ...].
     """
     events = []
     enqueue_new = {}      # (bid, source_key, eid) -> url
     enqueue_changed = {}  # (bid, source_key, eid) -> url
-    disappear_marks = []  # (bid, eid) to flag soft_deleted in cre_source_index
+    disappear_marks = []  # (bid, eid) to transition observation_present false
     counts = defaultdict(lambda: defaultdict(int))
 
     # NEW / REAPPEARED / STATUS / PRICE / POSSIBLE_RELIST over the enumeration.
@@ -409,18 +425,20 @@ def derive_events(current_records, prior_index, prior_listings, soft_deleted_can
             continue  # cannot satisfy the listing FK for any event
 
         # REAPPEARED: the monitor's OWN enumeration snapshot saw it gone and it is
-        # enumerated again. Gate strictly on cre_source_index.soft_deleted (which
-        # step 3 flips back to false this run) so the event fires exactly once on
+        # enumerated again. Gate strictly on observation_present (which step 3
+        # flips back to true this run) so the event fires exactly once on
         # the gone->present transition. We do NOT OR in cre_listings.deleted_at:
         # the observe-only monitor never clears deleted_at (only the full ingest
         # resurrects a row), so ORing it would re-emit 'reappeared' on every run for
         # a row that stays soft-deleted in cre_listings while being re-enumerated,
         # flooding the append-only ledger and v_cre_recent_changes.
-        if prior["soft_deleted"]:
+        prior_present = prior.get("observation_present", not prior.get("soft_deleted", False))
+        if not prior_present:
             events.append(_event(
                 listing["id"], bid, sk, "reappeared",
                 source_status_value=g["raw_status"],
                 source_url=g["url"], content_hash=g["fingerprint"],
+                presence_generation=prior.get("presence_generation", 0) + 1,
             ))
             counts[sk]["reappeared"] += 1
 
@@ -482,7 +500,8 @@ def derive_events(current_records, prior_index, prior_listings, soft_deleted_can
         sk = prior["source_key"] or ""
         if sk not in run_source_keys or sk in baseline_source_keys:
             continue
-        if prior["soft_deleted"]:
+        prior_present = prior.get("observation_present", not prior.get("soft_deleted", False))
+        if not prior_present:
             continue  # already recorded gone
         if (bid, eid) in current_keys:
             continue  # still enumerated
@@ -496,6 +515,7 @@ def derive_events(current_records, prior_index, prior_listings, soft_deleted_can
             source_value="enumeration_gone",
             source_status_value=prior["observed_status"] or None,
             source_url=prior["url"] or None, content_hash=prior["fingerprint"] or None,
+            presence_generation=prior.get("presence_generation", 0) + 1,
         ))
         counts[sk]["disappeared"] += 1
         disappear_marks.append((bid, eid))
@@ -541,7 +561,8 @@ def _sql_uuid(v):
 
 
 def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
-                    disappear_marks, run_uuid, started_at, notes, slugs):
+                    disappear_marks, run_uuid, started_at, notes, slugs,
+                    artifact_run_key=None):
     """Generate the full observe-only write transaction.
 
     Order matters for the FKs: the per-run cre_scrape_jobs row is inserted FIRST
@@ -549,6 +570,7 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     within-run idempotency index). Events reference already-existing cre_listings
     rows. Only neutral cre_listings columns are ever written.
     """
+    artifact_run_key = artifact_run_key or f"monitor:v1:{run_uuid}"
     lines = []
     w = lines.append
     w("\\set ON_ERROR_STOP on")
@@ -572,7 +594,8 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w("-- (1) per-run monitor job row, inserted FIRST so cre_listing_events.scrape_job_id resolves.")
     w("INSERT INTO credeals.cre_scrape_jobs")
     w("    (id, brokerage_id, status, started_at, completed_at,")
-    w("     listings_discovered, listings_scraped, listings_saved, errors_count, notes)")
+    w("     listings_discovered, listings_scraped, listings_saved, errors_count, notes,")
+    w("     artifact_run_key)")
     w("VALUES (")
     w(f"    {sql_lit(run_uuid)}::uuid,")
     w(f"    {brokerage_expr},")
@@ -580,8 +603,9 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w(f"    {sql_lit(started_at)}::timestamptz,")
     w("    now(),")
     w(f"    {len(finalized)}, 0, 0, 0,")
-    w(f"    {sql_lit(notes)}")
-    w(");")
+    w(f"    {sql_lit(notes)},")
+    w(f"    {sql_lit(artifact_run_key)}")
+    w(") ON CONFLICT DO NOTHING;")
 
     # Current enumeration staged by slug; brokerage resolved by join (so the
     # generated SQL is identical in dry-run and apply mode).
@@ -632,6 +656,49 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w("SELECT b.id AS brokerage_id, e.*")
     w("FROM _enum e JOIN credeals.cre_brokerages b ON b.slug = e.slug;")
 
+    lifecycle_events = [
+        event for event in events
+        if event["event_type"] in {"disappeared", "reappeared"}
+    ]
+    w("")
+    w("CREATE TEMP TABLE _disappear (brokerage_id uuid, external_id text) ON COMMIT DROP;")
+    w("COPY _disappear (brokerage_id, external_id) FROM stdin;")
+    for bid, eid in disappear_marks:
+        w("\t".join((copy_field(bid), copy_field(eid))))
+    w("\\.")
+    w("CREATE TEMP TABLE _lifecycle_events (")
+    w("  listing_id uuid, event_type text, presence_generation bigint")
+    w(") ON COMMIT DROP;")
+    w("COPY _lifecycle_events (listing_id, event_type, presence_generation) FROM stdin;")
+    for event in lifecycle_events:
+        w("\t".join(copy_field(value) for value in (
+            event["listing_id"], event["event_type"], event["presence_generation"],
+        )))
+    w("\\.")
+    w("")
+    w("-- Lock every existing observation row before validating Python's read snapshot.")
+    w("SELECT si.id FROM credeals.cre_source_index si")
+    w("WHERE EXISTS (SELECT 1 FROM _enum_b e WHERE e.brokerage_id=si.brokerage_id AND e.external_id=si.external_id)")
+    w("   OR EXISTS (SELECT 1 FROM _disappear d WHERE d.brokerage_id=si.brokerage_id AND d.external_id=si.external_id)")
+    w("FOR UPDATE;")
+    w("DO $$ BEGIN")
+    w("  IF EXISTS (")
+    w("    SELECT 1 FROM _lifecycle_events ev")
+    w("    JOIN credeals.cre_listings l ON l.id=ev.listing_id")
+    w("    JOIN credeals.cre_source_index si ON si.brokerage_id=l.brokerage_id AND si.external_id=l.external_id")
+    w("    WHERE NOT (")
+    w("      (ev.event_type='reappeared' AND ((NOT si.observation_present AND ev.presence_generation=si.presence_generation+1) OR (si.observation_present AND ev.presence_generation=si.presence_generation)))")
+    w("      OR (ev.event_type='disappeared' AND ((si.observation_present AND ev.presence_generation=si.presence_generation+1) OR (NOT si.observation_present AND ev.presence_generation=si.presence_generation)))")
+    w("    )")
+    w("  ) THEN RAISE EXCEPTION 'source presence changed after monitor diff; rerun'; END IF;")
+    w("  IF EXISTS (")
+    w("    SELECT 1 FROM _enum_b e JOIN credeals.cre_source_index si USING (brokerage_id, external_id)")
+    w("    JOIN credeals.cre_listings l USING (brokerage_id, external_id)")
+    w("    WHERE NOT si.observation_present AND NOT EXISTS (")
+    w("      SELECT 1 FROM _lifecycle_events ev WHERE ev.listing_id=l.id AND ev.event_type='reappeared' AND ev.presence_generation=si.presence_generation+1)")
+    w("  ) THEN RAISE EXCEPTION 'unplanned reappearance after monitor diff; rerun'; END IF;")
+    w("END $$;")
+
     # (2) append-only events (idempotent within the run).
     if events:
         w("")
@@ -639,7 +706,7 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
         w("INSERT INTO credeals.cre_listing_events")
         w("    (listing_id, brokerage_id, scrape_job_id, event_type, field, old_value,")
         w("     new_value, source_value, source_status_value, sale_price_text,")
-        w("     lease_rate_text, source_url, content_hash)")
+        w("     lease_rate_text, source_url, content_hash, presence_generation)")
         w("VALUES")
         value_rows = []
         for e in events:
@@ -659,11 +726,12 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
                     _sql_text(e["lease_rate_text"]),
                     _sql_text(e["source_url"]),
                     _sql_text(e["content_hash"]),
+                    "NULL" if e.get("presence_generation") is None else str(e["presence_generation"]),
                 ])
                 + ")"
             )
         w(",\n".join(value_rows))
-        w("ON CONFLICT (listing_id, event_type, COALESCE(field, ''), COALESCE(new_value, ''), scrape_job_id) DO NOTHING;")
+        w("ON CONFLICT DO NOTHING;")
 
     # (3) refresh cre_source_index from the enumeration (present rows).
     # H4b: prior_sale_price, prior_lease_rate, and prior_status store THIS run's
@@ -682,10 +750,11 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w("--     so the NEXT run reads them as the prior value for price_change old_value.")
     w("INSERT INTO credeals.cre_source_index AS si")
     w("    (brokerage_id, external_id, source_key, url, source_lastmod, fingerprint,")
-    w("     observed_status, soft_deleted, first_seen, last_seen, last_enumerated_at,")
+    w("     observed_status, observation_present, presence_generation,")
+    w("     presence_changed_at, first_seen, last_seen, last_enumerated_at,")
     w("     prior_sale_price, prior_lease_rate, prior_status)")
     w("SELECT brokerage_id, external_id, source_key, url, source_lastmod, fingerprint,")
-    w("       observed_status, false, now(), now(), now(),")
+    w("       observed_status, true, 0, now(), now(), now(), now(),")
     w("       cur_sale_price, cur_lease_rate, observed_status")
     w("FROM _enum_b")
     w("ON CONFLICT (brokerage_id, external_id) DO UPDATE SET")
@@ -696,7 +765,13 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     w("    source_lastmod     = COALESCE(EXCLUDED.source_lastmod, si.source_lastmod),")
     w("    url                = EXCLUDED.url,")
     w("    source_key         = COALESCE(EXCLUDED.source_key, si.source_key),")
-    w("    soft_deleted       = false,")
+    w("    presence_generation = CASE")
+    w("        WHEN si.observation_present IS DISTINCT FROM true")
+    w("        THEN si.presence_generation + 1 ELSE si.presence_generation END,")
+    w("    presence_changed_at = CASE")
+    w("        WHEN si.observation_present IS DISTINCT FROM true")
+    w("        THEN EXCLUDED.last_enumerated_at ELSE si.presence_changed_at END,")
+    w("    observation_present = true,")
     w("    prior_sale_price   = EXCLUDED.prior_sale_price,")
     w("    prior_lease_rate   = EXCLUDED.prior_lease_rate,")
     w("    prior_status       = EXCLUDED.prior_status;")
@@ -704,14 +779,15 @@ def build_write_sql(finalized, events, enqueue_new, enqueue_changed,
     # (3b) mark coverage-gated disappeared ids gone in the MONITOR index only.
     if disappear_marks:
         w("")
-        w("-- (3b) record disappearance in cre_source_index (monitor table only; never cre_listings).")
-        mark_rows = ", ".join(
-            f"({_sql_text(bid)}, {_sql_text(eid)})" for bid, eid in disappear_marks
-        )
+        w("-- (3b) record observed disappearance only; canonical soft_deleted is ingest-owned.")
         w("UPDATE credeals.cre_source_index si")
-        w("SET soft_deleted = true")
-        w(f"FROM (VALUES {mark_rows}) AS d(brokerage_id, external_id)")
-        w("WHERE si.brokerage_id = d.brokerage_id::uuid AND si.external_id = d.external_id;")
+        w("SET observation_present = false,")
+        w("    presence_generation = si.presence_generation + 1,")
+        w("    presence_changed_at = " + sql_lit(started_at) + "::timestamptz,")
+        w("    last_enumerated_at = " + sql_lit(started_at) + "::timestamptz")
+        w("FROM _disappear d")
+        w("WHERE si.brokerage_id = d.brokerage_id AND si.external_id = d.external_id")
+        w("  AND si.observation_present = true;")
 
     # (4) neutral cre_listings columns ONLY (never status, never deleted_at).
     # EQUIRE-neutrality: cre_listings has a BEFORE UPDATE trigger that bumps
@@ -853,13 +929,15 @@ def load_prior_state(db_url, slugs):
             "SELECT brokerage_id, external_id, COALESCE(fingerprint, ''), soft_deleted, "
             "COALESCE(observed_status, ''), COALESCE(source_key, ''), COALESCE(url, ''), "
             "COALESCE(prior_sale_price::text, ''), COALESCE(prior_lease_rate::text, ''), "
-            "COALESCE(prior_status, '') "
+            "COALESCE(prior_status, ''), observation_present, presence_generation "
             f"FROM credeals.cre_source_index WHERE brokerage_id IN {_in_list(brokerage_ids)};"
         )):
-            bid, eid, fp, soft, obs, sk, url, psp, plr, pst = row
+            bid, eid, fp, soft, obs, sk, url, psp, plr, pst, present, generation = row
             prior_index[(bid, eid)] = {
                 "fingerprint": fp or None,
                 "soft_deleted": soft == "t",
+                "observation_present": present == "t",
+                "presence_generation": int(generation),
                 "observed_status": obs or None,
                 "source_key": sk or None,
                 "url": url or None,
@@ -1002,7 +1080,7 @@ def main():
         if noop_sources is None or skipped_no_url or errored_source_keys:
             sys.exit("nothing to monitor (0 usable listings)")
         started_at = run_started_at or datetime.now(timezone.utc).isoformat()
-        run_uuid = str(uuid.uuid4())
+        _, run_uuid = artifact_run_identity(args.inputs)
         summary = build_summary(
             [],
             {sk: 0 for sk in noop_sources},
@@ -1038,7 +1116,7 @@ def main():
     run_source_keys = {g["source_key"] for g in finalized}
     slugs = sorted({g["slug"] for g in finalized})
     started_at = run_started_at or datetime.now(timezone.utc).isoformat()
-    run_uuid = str(uuid.uuid4())
+    artifact_run_key, run_uuid = artifact_run_identity(args.inputs)
     notes = ("monitor observe-only " + ", ".join(os.path.basename(p) for p in args.inputs))[:480]
 
     events = []
@@ -1070,7 +1148,7 @@ def main():
         for prior in prior_index.values():
             sk = prior["source_key"] or ""
             prior_count_by_source[sk] += 1
-            if not prior["soft_deleted"]:
+            if prior.get("observation_present", not prior.get("soft_deleted", False)):
                 prior_live_count_by_source[sk] += 1
         baseline_source_keys = {
             sk for sk in run_source_keys if prior_count_by_source.get(sk, 0) == 0
@@ -1130,6 +1208,7 @@ def main():
     sql = build_write_sql(
         finalized, events, enqueue_new, enqueue_changed,
         disappear_marks, run_uuid, started_at, notes, slugs,
+        artifact_run_key=artifact_run_key,
     )
 
     summary = build_summary(

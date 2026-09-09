@@ -106,6 +106,9 @@ interface BrowserListResponse {
   error?: string;
 }
 
+const BROWSER_SERVICE_NOT_CONFIGURED_ERROR =
+  "Browser feature is not configured (BROWSER_SERVICE_URL is missing).";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -226,8 +229,7 @@ export async function browserCreateController(
   if (!config.BROWSER_SERVICE_URL) {
     return res.status(503).json({
       success: false,
-      error:
-        "Browser feature is not configured (BROWSER_SERVICE_URL is missing).",
+      error: BROWSER_SERVICE_NOT_CONFIGURED_ERROR,
     });
   }
 
@@ -644,6 +646,13 @@ export async function browserListController(
   //       "Browser is currently in beta. Please contact support@firecrawl.com to request access.",
   //   });
   // }
+
+  if (!config.BROWSER_SERVICE_URL) {
+    return res.status(503).json({
+      success: false,
+      error: BROWSER_SERVICE_NOT_CONFIGURED_ERROR,
+    });
+  }
 
   const logger = _logger.child({
     teamId: req.auth.team_id,

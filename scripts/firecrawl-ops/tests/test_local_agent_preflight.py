@@ -412,7 +412,7 @@ v2Router.post(\"/parse\");
     ) -> None:
         smoke = self.write_smoke(
             "fresh-local-api-smoke.json",
-            "2026-08-14T11:59:30Z",
+            datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             ["v2_crawl", "v2_batch_scrape"],
         )
         for crawls, reason in (

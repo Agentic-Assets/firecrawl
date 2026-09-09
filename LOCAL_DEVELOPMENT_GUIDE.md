@@ -80,7 +80,6 @@ For an AI-backed local setup, a human operator creates a minimal root `.env` wit
 OPENAI_API_KEY=<provider key>
 OPENAI_BASE_URL=
 MODEL_NAME=
-MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK=
 ```
 
 An agent may request the body-free dry-run plan after the API is healthy:
@@ -89,7 +88,11 @@ An agent may request the body-free dry-run plan after the API is healthy:
 scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway
 ```
 
-Only a human operator may perform the attested `--apply` step after reviewing that plan. The default Gateway profile sets Flash `deepseek/deepseek-v4-flash-0731` with one Pro `deepseek/deepseek-v4-pro-0813` fallback for missing or schema-invalid structured output.
+Only a human operator may perform the attested `--apply` step after reviewing
+that plan. The default Gateway profile uses
+`deepseek/deepseek-v4-flash-0731`. `gateway-pro` is a separate human-selected
+profile using `deepseek/deepseek-v4-pro-0813`; the live API does not
+automatically fall back between them.
 
 Important fork/local vars:
 
@@ -204,10 +207,10 @@ python3 scripts/firecrawl-ops/firecrawl_swarm_pipeline.py \
 `crawl_swarm.py` normalizes v2 `/map` link objects and, by default, does a capped
 same-domain expansion pass from scraped page links, preferring profile/faculty
 style URLs inside the cap. Use `--prefer-link-regex` to tune that preference or
-`--no-expand-links` when you want only the direct `/map` results. `firecrawl_swarm_pipeline.py`
-retries weak pages with broader scrape options; it only switches model profiles
-when `--restart-between-stages` is set, because plain markdown scrape does not
-invoke the LLM.
+`--no-expand-links` when you want only the direct `/map` results.
+`firecrawl_swarm_pipeline.py` retries weak pages with broader scrape options.
+It never changes model profiles; arrange any approved model transition through
+the guarded operator handoff before starting a new run.
 
 For local crawls, avoid `--wait` if it hangs; submit and poll:
 

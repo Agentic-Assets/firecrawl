@@ -255,7 +255,7 @@ scripts/firecrawl-ops/firecrawl_cli.sh scrape https://example.com \
 scripts/firecrawl-ops/firecrawl_cli.sh parse ./report.pdf --json --pretty
 
 scripts/firecrawl-ops/firecrawl_cli.sh search "Dallas office for sale" \
-  --limit 5 --json --pretty
+  --limit 5 --json
 ```
 
 For crawl jobs, submit first and poll by job ID. Local `crawl --wait` can hang

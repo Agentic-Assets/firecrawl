@@ -15,6 +15,7 @@ import sys
 import time
 import uuid
 from datetime import UTC, datetime
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -93,6 +94,10 @@ TOOLING_MANIFEST_PATH = (
 
 class AgentSafeViolation(ValueError):
     """Raised before safe-mode commands can perform a side effect."""
+
+
+class TransportError(RuntimeError):
+    """A source-free failure to complete an HTTP transport request."""
 
 
 def parse_csv(value: str | None) -> list[str]:
@@ -658,10 +663,10 @@ def open_request(
         if not agent_safe:
             sys.stderr.write(f"HTTP {exc.code} from {req.full_url}\n")
         return exc.code, body
-    except URLError as exc:
+    except (URLError, OSError, HTTPException) as exc:
         if agent_safe:
             raise SystemExit("agent_safe_transport_error") from exc
-        raise SystemExit(f"Could not reach {req.full_url}: {exc}") from exc
+        raise TransportError from exc
 
 
 def decode_json_or_bytes(body: bytes) -> Any:
@@ -1926,6 +1931,16 @@ def main() -> int:
             parser.error(str(exc))
     try:
         args.func(args)
+    except TransportError:
+        write_response(
+            args,
+            {"success": False, "error": "transport_error"},
+            b"",
+            0,
+            args.command,
+        )
+        sys.stderr.write("Firecrawl transport error.\n")
+        raise SystemExit(1)
     except SystemExit as exc:
         if (
             getattr(args, "agent_safe", False)

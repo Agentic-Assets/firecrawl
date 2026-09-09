@@ -24,8 +24,6 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-import pytest
-
 from cre_ingest import build_sql
 
 # ---------------------------------------------------------------------------
@@ -215,9 +213,10 @@ class TestNoDisappearedEventWhenNoMarkMissingEligible:
             "SQL contained _retired table even though mark-missing was blocked.\n"
             f"SQL snippet:\n{sql[:3000]}"
         )
-        # No event INSERT either.
-        assert "INSERT INTO credeals.cre_listing_events" not in sql, (
-            "SQL contained cre_listing_events INSERT even though blocked."
+        # The always-on present/revive lifecycle sync has its own event INSERT,
+        # but the blocked mark-missing path must not emit a disappeared event.
+        assert "'disappeared'" not in sql, (
+            "SQL contained disappeared event even though mark-missing was blocked."
         )
 
 
