@@ -1,11 +1,11 @@
 """Focused LIST-001/002/003 lifecycle regression coverage (pure/offline)."""
 
-import json
 import hashlib
+import json
 import os
 import re
 import subprocess
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -16,8 +16,9 @@ import cre_reconcile_listing_lifecycle as reconcile
 RUN = "11111111-1111-5111-8111-111111111111"
 BID = "22222222-2222-4222-8222-222222222222"
 LID = "33333333-3333-4333-8333-333333333333"
-AT = "2026-08-31T12:00:00+00:00"
-OBSERVED = "2026-08-31T11:00:00Z"
+_TEST_NOW = datetime.now(timezone.utc).replace(microsecond=0)
+AT = _TEST_NOW.isoformat()
+OBSERVED = (_TEST_NOW - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
 
 
 def _group(eid="x"):

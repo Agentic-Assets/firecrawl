@@ -9,8 +9,9 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
-import cre_repair_cushman_identity as repair
 import pytest
+
+import cre_repair_cushman_identity as repair
 
 
 def minimal_state():
@@ -54,6 +55,8 @@ def minimal_artifact():
 
 
 def test_reviewed_artifact_loads_and_has_exact_geometry():
+    if not repair.DEFAULT_ARTIFACT.is_file():
+        pytest.skip("reviewed gitignored Cushman artifact is not present on this clone")
     rows = repair.load_artifact(repair.DEFAULT_ARTIFACT)
     assert len(rows) == repair.EXPECTED_ARTIFACT_ROWS
     assert len({row.target_id for row in rows}) == repair.EXPECTED_ARTIFACT_TARGETS

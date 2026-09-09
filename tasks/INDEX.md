@@ -2,6 +2,7 @@
 
 ## Active
 
+- `2026-09-08-cre-listing-full-refresh/` - supervised 51-source CRE listing refresh, Supabase ingest, and freshness certification.
 - `2026-05-09-cre-data-source-discovery-sprint/` - compact CRE data-source discovery sprint using the local Firecrawl stack.
 
 ## Recent closeouts
