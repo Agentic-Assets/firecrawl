@@ -53,16 +53,29 @@ const providerList: Record<Provider, any> = {
   }),
 };
 
-export function getModel(name: string, provider: Provider = defaultProvider) {
-  if (name === "gemini-2.5-pro") {
-    name = "gemini-2.5-pro";
-  }
-  const modelName = config.MODEL_NAME || name;
+function createModel(modelName: string, provider: Provider) {
   // o3-mini returns empty text via the Responses API — force Chat Completions
   if (provider === "openai" && modelName.startsWith("o3-mini")) {
     return providerList.openai.chat(modelName);
   }
   return providerList[provider](modelName);
+}
+
+export function getModel(name: string, provider: Provider = defaultProvider) {
+  return createModel(config.MODEL_NAME || name, provider);
+}
+
+/**
+ * Use an explicit model name without the process-wide MODEL_NAME override.
+ *
+ * Normal calls should use getModel so a self-hosted deployment keeps one
+ * predictable default. This is reserved for bounded compatibility fallbacks.
+ */
+export function getModelByName(
+  modelName: string,
+  provider: Provider = defaultProvider,
+) {
+  return createModel(modelName, provider);
 }
 
 export function getEmbeddingModel(

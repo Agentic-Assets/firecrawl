@@ -24,7 +24,7 @@ This repo keeps the local Firecrawl tool layer separate from any one agent model
 4. **Agent model runtime**
    - Cursor Composer 2.5 is an agent model choice.
    - It is separate from Firecrawl's internal AI model routing.
-   - Firecrawl-internal AI formats still use root `.env` values: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `MODEL_NAME`.
+   - Firecrawl-internal AI formats still use root `.env` values: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_NAME`, and the optional `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK` for one fallback after missing or schema-invalid structured JSON or summary output.
 
 ## Reusable MCP Server
 
@@ -127,9 +127,7 @@ Use this shape in MCP clients that support stdio command servers:
   "mcpServers": {
     "firecrawl-local": {
       "command": "bash",
-      "args": [
-        "scripts/firecrawl-ops/firecrawl_mcp.sh"
-      ]
+      "args": ["scripts/firecrawl-ops/firecrawl_mcp.sh"]
     }
   }
 }

@@ -1,6 +1,7 @@
 # Firecrawl Model Routing
 
 ## Target outcome
+
 Maximize throughput and value while preserving quality for hard tasks.
 
 ## Local configuration
@@ -10,14 +11,22 @@ The API's default model path uses OpenAI-compatible settings:
 - `OPENAI_API_KEY`: provider key for OpenRouter, Vercel AI Gateway, or OpenAI
 - `OPENAI_BASE_URL`: provider base URL
 - `MODEL_NAME`: provider model id
+- `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK`: optional fallback model for invalid
+  structured summary or JSON output
 - `MODEL_EMBEDDING_NAME`: optional embedding model id
 
+Use the guarded operator handoff from the repo root to inspect the local default
+Vercel AI Gateway profile:
 Agents may request a body-free plan from the repo root:
 
 ```bash
 scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway
 ```
 
+After reviewing the plan, only a human operator may use the attested `--apply`
+path. Agent surfaces must never apply it. If `.env` is missing, use the minimal
+human-owned root template in `LOCAL_DEVELOPMENT_GUIDE.md`; do not use
+`apps/api/.env.example` as a Docker Compose contract.
 The plan does not change configuration. After review, only a human operator
 may use the attested `--apply` path. Agent surfaces must never apply it. If
 `.env` is missing, use the minimal human-owned root template in
@@ -50,6 +59,8 @@ Compose contract.
    - `deepseek/deepseek-v4-pro-0813`
    - Profile: `gateway-pro`
    - Base URL: `https://ai-gateway.vercel.sh/v1`
+   - Use only for an explicit, authorized stronger-model window. This profile
+     has no automatic structured-output fallback of its own.
    - Use only through an explicit, authorized model handoff for difficult
      extraction. It is not an automatic retry.
 
