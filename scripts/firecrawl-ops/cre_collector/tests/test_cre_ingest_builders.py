@@ -801,6 +801,160 @@ def test_strict_detail_source_rejects_child_preservation():
         ci.validate_strict_artifact_freshness(payload)
 
 
+def test_strict_colliers_first_party_detail_allows_audited_contact_preservation():
+    payload = _strict_freshness_payload(
+        "colliers-main", detail_scope="first_party_detail_api"
+    )
+    listing = payload["listings"][0]
+    listing.update(
+        detailObservedAt="2026-07-29T12:00:01Z",
+        preserveContactCollections=True,
+        detailObservedWithContactPreservation=True,
+        colliersMain={"unresolvedExpertIds": ["3d072913f9fb4ec6bc739cf35e6b3120"]},
+    )
+
+    ci.validate_strict_artifact_freshness(payload)
+
+
+def _trusted_colliers_transition_payload():
+    observed = "2026-07-29T12:00:01Z"
+    listings = [
+        {
+            "sourceKey": "colliers-main",
+            "transactionMode": transaction,
+            "inventoryObservedAt": observed,
+            "detailObservedAt": observed,
+            "freshnessProvenance": {
+                "generationId": "colliers-transition-1",
+                "detailScope": "first_party_detail_api",
+                "cacheDisposition": "live",
+            },
+        }
+        for transaction in ("sale", "lease")
+    ]
+    return {
+        "runMeta": {
+            "mode": "full",
+            "startedAt": "2026-07-29T12:00:00Z",
+            "finishedAt": "2026-07-29T12:01:00Z",
+            "transactions": ["sale", "lease"],
+            "maxItemsPerSource": None,
+            "freshness": {
+                "generationId": "colliers-transition-1",
+                "generationStartedAt": "2026-07-29T12:00:00Z",
+                "requireFreshDetails": True,
+            },
+        },
+        "sources": [
+            {
+                "sourceKey": "colliers-main",
+                "transaction": transaction,
+                "supported": True,
+                "error": None,
+                "truncated": False,
+                "listingsCollected": 1,
+            }
+            for transaction in ("sale", "lease")
+        ],
+        "listings": listings,
+        "totalListings": len(listings),
+    }
+
+
+def test_colliers_first_party_transition_requires_explicit_strict_full_scope():
+    payload = _trusted_colliers_transition_payload()
+    now = datetime(2026, 7, 29, 12, 2, tzinfo=timezone.utc)
+
+    assert not ci.trusted_colliers_first_party_transition(
+        payload,
+        require_strict_freshness=False,
+        now=now,
+    )
+    assert ci.trusted_colliers_first_party_transition(
+        payload,
+        require_strict_freshness=True,
+        now=now,
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(
+            lambda payload: payload["runMeta"].update(maxItemsPerSource=1),
+            id="bounded-run",
+        ),
+        pytest.param(
+            lambda payload: payload["sources"].pop(),
+            id="missing-transaction-pass",
+        ),
+        pytest.param(
+            lambda payload: payload["sources"][0].update(truncated=True),
+            id="truncated-pass",
+        ),
+        pytest.param(
+            lambda payload: payload["listings"][0]["freshnessProvenance"].update(
+                detailScope="detail_page"
+            ),
+            id="mixed-detail-scope",
+        ),
+        pytest.param(
+            lambda payload: payload["listings"][0].update(
+                detailError="provider timeout"
+            ),
+            id="detail-error",
+        ),
+    ],
+)
+def test_colliers_first_party_transition_rejects_incomplete_or_mixed_scope(mutation):
+    payload = _trusted_colliers_transition_payload()
+    mutation(payload)
+
+    assert not ci.trusted_colliers_first_party_transition(
+        payload,
+        require_strict_freshness=True,
+        now=datetime(2026, 7, 29, 12, 2, tzinfo=timezone.utc),
+    )
+
+
+def test_colliers_first_party_transition_rejects_artifact_older_than_24_hours():
+    payload = _trusted_colliers_transition_payload()
+
+    assert not ci.trusted_colliers_first_party_transition(
+        payload,
+        require_strict_freshness=True,
+        now=datetime(2026, 7, 30, 12, 1, 1, tzinfo=timezone.utc),
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param({"sourceKey": "jll"}, id="wrong-source"),
+        pytest.param({"colliersMain": {"unresolvedExpertIds": []}}, id="no-unresolved-ids"),
+        pytest.param(
+            {"detailObservedWithContactPreservation": False},
+            id="missing-current-detail-marker",
+        ),
+    ],
+)
+def test_strict_contact_preservation_rejects_broader_or_unproved_use(mutation):
+    payload = _strict_freshness_payload(
+        "colliers-main", detail_scope="first_party_detail_api"
+    )
+    listing = payload["listings"][0]
+    listing.update(
+        detailObservedAt="2026-07-29T12:00:01Z",
+        preserveContactCollections=True,
+        detailObservedWithContactPreservation=True,
+        colliersMain={"unresolvedExpertIds": ["3d072913f9fb4ec6bc739cf35e6b3120"]},
+    )
+    listing.update(mutation)
+
+    with pytest.raises(ValueError, match="invalid contact preservation"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
 def test_strict_colliers_contract_excludes_explicit_provisional_cards():
     payload = _strict_freshness_payload("colliers")
     payload["listings"].append(
@@ -873,6 +1027,42 @@ def test_cushman_ingest_refuses_legacy_same_url_duplicate_growth():
 def test_fresh_detail_with_child_preservation_updates_listing_without_child_deletion():
     sql = ci.build_sql([], [], _SCRAPED_AT, set())
     assert "$.**.detailObservedWithChildPreservation" in sql
+
+
+def test_cbre_dealflow_detail_unavailable_preserves_existing_children_on_ingest():
+    row = _row(
+        {
+            "sourceKey": "cbre-dealflow",
+            "id": "public-card-token",
+            "url": (
+                "https://www.cbredealflow.com/handler/landing.aspx"
+                "?pv=public-card-token"
+            ),
+            "canonicalUrl": (
+                "https://www.cbredealflow.com/handler/landing.aspx"
+                "?pv=public-card-token"
+            ),
+            "name": "Current public card",
+            "preserveChildCollections": True,
+            "detailUnavailable": {
+                "reason": "detail_request_failed",
+                "publicCardObserved": True,
+            },
+        }
+    )
+
+    assert row is not None
+    assert row["external_id"] == "dealflow:public-card-token"
+    assert row["raw_data"]["preserveChildCollections"] is True
+    assert row["raw_data"]["detailUnavailable"]["reason"] == (
+        "detail_request_failed"
+    )
+    sql = ci.build_sql([row], [], _SCRAPED_AT, set())
+    assert (
+        '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+        in sql
+    )
+    assert "CREATE TEMP TABLE _child_additive" in sql
 
 
 def test_direct_detail_markdown_inserts_new_evidence_but_preserves_existing_richer_text():

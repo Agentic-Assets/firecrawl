@@ -8,6 +8,15 @@ import { getError } from './helpers/get_error';
 import { lookup } from 'dns/promises';
 import IPAddr from 'ipaddr.js';
 import { Server, RequestError } from 'proxy-chain';
+import {
+  BROWSER_BATCH_FETCH_MAX_RESPONSE_BYTES,
+  BROWSER_BATCH_FETCH_MAX_TOTAL_DURATION_MS,
+  BROWSER_BATCH_FETCH_MAX_TOTAL_RESPONSE_BYTES,
+  Semaphore,
+  cleanupBrowserBatchResources,
+  parseBrowserBatchFetchInput,
+  withBrowserBatchHardTimeout,
+} from './browser_batch_fetch';
 
 // Register stealth plugin before any launch call.
 stealthChromium.use(StealthPlugin());
@@ -17,6 +26,7 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3003;
 
+app.use('/browser-batch-fetch', express.json({ limit: '600kb' }));
 app.use(express.json());
 
 const BLOCK_MEDIA =
@@ -62,7 +72,10 @@ const isInternalHost = async (hostname: string): Promise<boolean> => {
   );
 };
 
-const assertSafeTargetUrl = async (urlString: string): Promise<void> => {
+const assertSafeTargetUrl = async (
+  urlString: string,
+  allowLocalWebhooks = ALLOW_LOCAL_WEBHOOKS,
+): Promise<void> => {
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(urlString);
@@ -75,7 +88,7 @@ const assertSafeTargetUrl = async (urlString: string): Promise<void> => {
       `unsupported protocol "${parsedUrl.protocol}"`,
     );
   }
-  if (!ALLOW_LOCAL_WEBHOOKS && (await isInternalHost(parsedUrl.hostname))) {
+  if (!allowLocalWebhooks && (await isInternalHost(parsedUrl.hostname))) {
     throw new InsecureConnectionError(
       urlString,
       'resolves to a private/internal address',
@@ -117,44 +130,6 @@ let ssrfProxyPort: number;
 type ContextSecurityState = {
   blockedNavigationRequestUrl: string | null;
 };
-class Semaphore {
-  private permits: number;
-  private queue: (() => void)[] = [];
-
-  constructor(permits: number) {
-    this.permits = permits;
-  }
-
-  async acquire(): Promise<void> {
-    if (this.permits > 0) {
-      this.permits--;
-      return Promise.resolve();
-    }
-
-    return new Promise<void>((resolve) => {
-      this.queue.push(resolve);
-    });
-  }
-
-  release(): void {
-    this.permits++;
-    if (this.queue.length > 0) {
-      const nextResolve = this.queue.shift();
-      if (nextResolve) {
-        this.permits--;
-        nextResolve();
-      }
-    }
-  }
-
-  getAvailablePermits(): number {
-    return this.permits;
-  }
-
-  getQueueLength(): number {
-    return this.queue.length;
-  }
-}
 const pageSemaphore = new Semaphore(MAX_CONCURRENT_PAGES);
 
 const AD_SERVING_DOMAINS = [
@@ -253,7 +228,11 @@ const STEALTH_INIT_SCRIPT = `
   })();
 `;
 
-const createContext = async (skipTlsVerification: boolean = false, userAgentOverride?: string): Promise<{ context: BrowserContext; securityState: ContextSecurityState }> => {
+const createContext = async (
+  skipTlsVerification: boolean = false,
+  userAgentOverride?: string,
+  allowLocalWebhooks = ALLOW_LOCAL_WEBHOOKS,
+): Promise<{ context: BrowserContext; securityState: ContextSecurityState }> => {
   const userAgent = userAgentOverride || new UserAgent({ deviceCategory: 'desktop' }).toString();
   const viewport = { width: 1280, height: 800 };
   const securityState: ContextSecurityState = {
@@ -293,7 +272,7 @@ const createContext = async (skipTlsVerification: boolean = false, userAgentOver
     async (route: Route, request: PlaywrightRequest) => {
       const requestUrlString = request.url();
       try {
-        await assertSafeTargetUrl(requestUrlString);
+        await assertSafeTargetUrl(requestUrlString, allowLocalWebhooks);
       } catch (error) {
         if (error instanceof InsecureConnectionError) {
           if (request.isNavigationRequest()) {
@@ -417,6 +396,191 @@ app.get('/health', async (req: Request, res: Response) => {
       status: 'unhealthy',
       error: error instanceof Error ? error.message : 'Unknown error occurred',
     });
+  }
+});
+
+app.post('/browser-batch-fetch', async (req: Request, res: Response) => {
+  const batchDeadlineAt = Date.now() + BROWSER_BATCH_FETCH_MAX_TOTAL_DURATION_MS;
+  let input;
+  try {
+    input = parseBrowserBatchFetchInput(req.body);
+    // The parser already requires every request to share the bootstrap origin,
+    // so resolve that one host once. This endpoint always rejects local/private
+    // destinations, even when legacy /scrape local-webhook support is enabled.
+    await withBrowserBatchHardTimeout(
+      assertSafeTargetUrl(input.bootstrapUrl, false),
+      Math.max(1, batchDeadlineAt - Date.now()),
+      'Browser batch target validation exceeded its hard deadline',
+    );
+  } catch (error) {
+    return res.status(400).json({
+      error: error instanceof Error ? error.message : 'Invalid browser batch request',
+    });
+  }
+
+  try {
+    if (!browser) {
+      await withBrowserBatchHardTimeout(
+        initializeBrowser(),
+        Math.max(1, batchDeadlineAt - Date.now()),
+        'Browser batch initialization exceeded its hard deadline',
+      );
+    }
+    await pageSemaphore.acquire(Math.max(1, batchDeadlineAt - Date.now()));
+  } catch (error) {
+    console.error('Browser batch admission error:', error);
+    return res.status(503).json({ error: 'Browser batch service is busy or unavailable' });
+  }
+
+  let requestContext: BrowserContext | null = null;
+  let page: Page | null = null;
+  try {
+    const contextBundle = await withBrowserBatchHardTimeout(
+      createContext(false, undefined, false),
+      Math.max(1, batchDeadlineAt - Date.now()),
+      'Browser batch context creation exceeded its hard deadline',
+      async (lateBundle) => {
+        await cleanupBrowserBatchResources(
+          null,
+          () => lateBundle.context.close(),
+          () => {},
+        );
+      },
+    );
+    requestContext = contextBundle.context;
+    page = await withBrowserBatchHardTimeout(
+      requestContext.newPage(),
+      Math.max(1, batchDeadlineAt - Date.now()),
+      'Browser batch page creation exceeded its hard deadline',
+    );
+    const bootstrapTimeoutMs = Math.min(
+      input.timeoutMs,
+      Math.max(1, batchDeadlineAt - Date.now()),
+    );
+    const bootstrapResponse = await withBrowserBatchHardTimeout(
+      page.goto(input.bootstrapUrl, {
+        waitUntil: 'load',
+        timeout: bootstrapTimeoutMs,
+      }),
+      Math.max(1, Math.min(batchDeadlineAt - Date.now(), bootstrapTimeoutMs + 5_000)),
+      'Browser batch bootstrap navigation exceeded its hard deadline',
+    );
+    const bootstrapStatus = bootstrapResponse?.status() ?? 0;
+    const requestedOrigin = new URL(input.bootstrapUrl).origin;
+    const finalOrigin = new URL(page.url()).origin;
+    if (finalOrigin !== requestedOrigin) {
+      return res.status(502).json({
+        error: 'Bootstrap redirected outside its requested origin',
+        bootstrapStatus,
+      });
+    }
+    if (input.waitAfterLoadMs > 0) {
+      await withBrowserBatchHardTimeout(
+        page.waitForTimeout(input.waitAfterLoadMs),
+        Math.max(1, Math.min(batchDeadlineAt - Date.now(), input.waitAfterLoadMs + 5_000)),
+        'Browser batch post-load wait exceeded its hard deadline',
+      );
+    }
+    if (bootstrapStatus < 200 || bootstrapStatus >= 400) {
+      return res.status(502).json({
+        error: `Bootstrap returned HTTP ${bootstrapStatus}`,
+        bootstrapStatus,
+      });
+    }
+
+    const responses: Array<{
+      status: number;
+      contentType: string | null;
+      body: string;
+    }> = [];
+    let totalResponseBytes = 0;
+    for (const request of input.requests) {
+      const remainingBatchMs = batchDeadlineAt - Date.now();
+      if (remainingBatchMs <= 0) {
+        throw new Error('Browser batch fetch exceeded its aggregate deadline');
+      }
+      const evaluateOperation = page.evaluate(
+        ({ request, timeoutMs, maxResponseBytes }) => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), timeoutMs);
+          return fetch(request.url, {
+            method: request.method,
+            headers: request.headers,
+            body: request.body,
+            credentials: 'same-origin',
+            cache: 'no-store',
+            redirect: 'manual',
+            signal: controller.signal,
+          }).then((fetched) => {
+            const declaredLength = Number(fetched.headers.get('content-length'));
+            if (Number.isFinite(declaredLength) && declaredLength > maxResponseBytes) {
+              throw new Error('Browser batch response exceeds the per-response byte limit');
+            }
+            if (!fetched.body) {
+              return {
+                status: fetched.status,
+                contentType: fetched.headers.get('content-type'),
+                body: '',
+              };
+            }
+            const reader = fetched.body.getReader();
+            const decoder = new TextDecoder();
+            let bytes = 0;
+            let body = '';
+            const readNext = (): Promise<{ status: number; contentType: string | null; body: string }> =>
+              reader.read().then((chunk) => {
+                if (chunk.done) {
+                  body += decoder.decode();
+                  return {
+                    status: fetched.status,
+                    contentType: fetched.headers.get('content-type'),
+                    body,
+                  };
+                }
+                bytes += chunk.value.byteLength;
+                if (bytes > maxResponseBytes) {
+                  return reader.cancel().then(() => {
+                    throw new Error('Browser batch response exceeds the per-response byte limit');
+                  });
+                }
+                body += decoder.decode(chunk.value, { stream: true });
+                return readNext();
+              });
+            return readNext();
+          }).finally(() => {
+            clearTimeout(timer);
+          });
+        },
+        {
+          request,
+          timeoutMs: Math.min(input.timeoutMs, remainingBatchMs),
+          maxResponseBytes: BROWSER_BATCH_FETCH_MAX_RESPONSE_BYTES,
+        },
+      );
+      const response = await withBrowserBatchHardTimeout(
+        evaluateOperation,
+        Math.max(1, Math.min(remainingBatchMs, input.timeoutMs + 5_000)),
+        'Browser batch page evaluation exceeded its hard deadline',
+      );
+      totalResponseBytes += Buffer.byteLength(response.body, 'utf8');
+      if (totalResponseBytes > BROWSER_BATCH_FETCH_MAX_TOTAL_RESPONSE_BYTES) {
+        throw new Error('Browser batch responses exceed the aggregate byte limit');
+      }
+      responses.push(response);
+    }
+    return res.json({ bootstrapStatus, responses });
+  } catch (error) {
+    if (error instanceof InsecureConnectionError) {
+      return res.status(403).json({ error: error.message });
+    }
+    console.error('Browser batch fetch error:', error);
+    return res.status(502).json({ error: 'Browser batch fetch failed' });
+  } finally {
+    await cleanupBrowserBatchResources(
+      page ? () => page!.close() : null,
+      requestContext ? () => requestContext!.close() : null,
+      () => pageSemaphore.release(),
+    );
   }
 });
 
@@ -600,9 +764,11 @@ app.post('/scrape', async (req: Request, res: Response) => {
       .status(500)
       .json({ error: 'An error occurred while fetching the page.' });
   } finally {
-    if (page) await page.close();
-    if (requestContext) await requestContext.close();
-    pageSemaphore.release();
+    await cleanupBrowserBatchResources(
+      page ? () => page!.close() : null,
+      requestContext ? () => requestContext!.close() : null,
+      () => pageSemaphore.release(),
+    );
   }
 });
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 import cre_checkpoint_refresh as refresh
-
 
 ATTEMPT = "2026-07-29T12:00:00+00:00"
 
@@ -77,6 +76,118 @@ def write_artifact(tmp_path, payload):
     path = tmp_path / "artifact.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+def lifecycle_schema_contract_validation(*, failed_item=None):
+    rows = [
+        {
+            "contract_item": item,
+            "status": "missing" if item == failed_item else "ok",
+        }
+        for item in refresh.LIFECYCLE_SCHEMA_CONTRACT_ITEMS
+    ]
+    return {"queries": {"lifecycle_schema_contract": rows}}
+
+
+def test_preflight_accepts_complete_migration_016_contract():
+    result = refresh.require_lifecycle_schema_contract(
+        lifecycle_schema_contract_validation()
+    )
+
+    assert result == {
+        "ok": True,
+        "contract": "016_cre_listing_lifecycle",
+        "items": list(refresh.LIFECYCLE_SCHEMA_CONTRACT_ITEMS),
+    }
+
+
+def test_preflight_rejects_missing_artifact_run_key_before_collection():
+    with pytest.raises(
+        refresh.GlobalStageError,
+        match="cre_scrape_jobs_artifact_run_key",
+    ):
+        refresh.require_lifecycle_schema_contract(
+            lifecycle_schema_contract_validation(
+                failed_item="cre_scrape_jobs_artifact_run_key"
+            )
+        )
+
+
+def test_main_checks_migration_016_before_starting_source_collection(
+    tmp_path, monkeypatch
+):
+    commands = []
+    collected = []
+    validation = lifecycle_schema_contract_validation(
+        failed_item="cre_scrape_jobs_artifact_run_key"
+    )
+
+    def run_command(argv, _log_path, **_kwargs):
+        commands.append(Path(argv[1]).name)
+        if Path(argv[1]).name == "cre_validate.py":
+            output = Path(argv[argv.index("--out") + 1])
+            output.write_text(json.dumps(validation), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(
+        refresh,
+        "database_target_fingerprint",
+        lambda _env_file: {"algorithm": "sha256", "value": "a" * 64},
+    )
+    monkeypatch.setattr(refresh, "git_identity", lambda: ("abc", False))
+    monkeypatch.setattr(
+        refresh, "checkpoint_lock_dir", lambda _override: tmp_path / ".cre.lock"
+    )
+    monkeypatch.setattr(refresh, "run_cpu_guard_preflight", lambda _guard: 1.0)
+    monkeypatch.setattr(refresh.HostCpuGuard, "start", lambda _guard: None)
+    monkeypatch.setattr(refresh.HostCpuGuard, "stop", lambda _guard: None)
+    monkeypatch.setattr(refresh, "run_command", run_command)
+    monkeypatch.setattr(
+        refresh,
+        "prepare_sources_cohort",
+        lambda *_args, **_kwargs: collected.append(True),
+    )
+
+    with pytest.raises(
+        refresh.GlobalStageError,
+        match="cre_scrape_jobs_artifact_run_key",
+    ):
+        refresh.main(
+            [
+                "--out-root",
+                str(tmp_path / "runs"),
+                "--sources",
+                "svn",
+            ]
+        )
+
+    assert commands == ["firecrawl_healthcheck.sh", "cre_validate.py"]
+    assert collected == []
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        None,
+        [],
+        [{"contract_item": "unexpected", "status": "ok"}],
+        [
+            {
+                "contract_item": "cre_scrape_jobs_artifact_run_key",
+                "status": "ok",
+            },
+            {
+                "contract_item": "cre_scrape_jobs_artifact_run_key",
+                "status": "ok",
+            },
+        ],
+    ],
+)
+def test_preflight_rejects_malformed_migration_016_contract(rows):
+    with pytest.raises(refresh.GlobalStageError, match="migration 016"):
+        refresh.require_lifecycle_schema_contract(
+            {"queries": {"lifecycle_schema_contract": rows}}
+        )
 
 
 def strict_artifact(
@@ -559,6 +670,7 @@ def test_every_buildout_source_gets_exact_fresh_cache_environment(tmp_path, sour
         ("jll-investor", "JLL_INVESTOR_SITEMAP_SCAN_LIMIT", "0"),
         ("avison-young", "AVISON_YOUNG_DETAIL_LIMIT", "1000000"),
         ("cushman-wakefield", "CUSHMAN_DETAIL_MODE", "base"),
+        ("colliers-main", "COLLIERS_MAIN_COVEO_ENABLE", "1"),
         ("colliers-main", "COLLIERS_MAIN_MAX_FETCHES_PER_RUN", "2500"),
         ("colliers-main", "COLLIERS_MAIN_DETAIL_CONCURRENCY", "1"),
     ],
@@ -566,6 +678,72 @@ def test_every_buildout_source_gets_exact_fresh_cache_environment(tmp_path, sour
 def test_fresh_env_source_profiles(tmp_path, source, key, value):
     env, _summary = refresh.fresh_source_env(source, tmp_path, {})
     assert value in env[key]
+
+
+@pytest.mark.parametrize(
+    "source,key",
+    [
+        ("jll", "JLL_DETAIL_CONCURRENCY"),
+        ("jll-investor", "JLL_INVESTOR_DETAIL_CONCURRENCY"),
+        ("cushman-wakefield", "CUSHMAN_DETAIL_CONCURRENCY"),
+        ("colliers-main", "COLLIERS_MAIN_DETAIL_START_INTERVAL_MS"),
+        ("colliers-main", "COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS"),
+        ("nai-global", "NAI_ENUMERATION_CONCURRENCY"),
+    ],
+)
+def test_fresh_env_records_allowlisted_runtime_tuning_without_secrets(
+    tmp_path, source, key
+):
+    env, summary = refresh.fresh_source_env(
+        source,
+        tmp_path,
+        {
+            key: "2",
+            "DATABASE_URL": "postgresql://must-not-appear",
+        },
+        collector_concurrency=2,
+    )
+    assert env[key] == "2"
+    assert summary[key] == "2"
+    assert "DATABASE_URL" not in summary
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    [
+        "postgresql://must-not-appear",
+        "٢",
+        "9" * 100,
+    ],
+)
+def test_fresh_env_redacts_invalid_allowlisted_runtime_tuning(
+    tmp_path, invalid_value
+):
+    env, summary = refresh.fresh_source_env(
+        "jll",
+        tmp_path,
+        {"JLL_DETAIL_CONCURRENCY": invalid_value},
+    )
+    assert env["JLL_DETAIL_CONCURRENCY"] == invalid_value
+    assert summary["JLL_DETAIL_CONCURRENCY"] == "<invalid>"
+
+
+def test_fresh_env_records_bounded_effective_runtime_tuning(tmp_path):
+    _env, summary = refresh.fresh_source_env(
+        "jll",
+        tmp_path,
+        {"JLL_DETAIL_CONCURRENCY": "999"},
+        collector_concurrency=2,
+    )
+    assert summary["JLL_DETAIL_CONCURRENCY"] == "10"
+
+    _env, summary = refresh.fresh_source_env(
+        "cushman-wakefield",
+        tmp_path,
+        {"CUSHMAN_DETAIL_CONCURRENCY": "999"},
+        collector_concurrency=2,
+    )
+    assert summary["CUSHMAN_DETAIL_CONCURRENCY"] == "2"
 
 
 @pytest.mark.parametrize("source", sorted(refresh.STRICT_FRESHNESS_SOURCE_KEYS))
@@ -813,6 +991,91 @@ def test_strict_buildout_artifact_accepts_current_authoritative_feed(tmp_path):
     path = write_artifact(tmp_path, strict_artifact())
     stats = refresh.validate_source_artifact(path, "svn", ATTEMPT)
     assert stats["staged_unique"] == 2
+
+
+def test_colliers_main_accepts_current_first_party_detail_api(tmp_path):
+    payload = strict_artifact(
+        source="colliers-main", detail_scope="first_party_detail_api"
+    )
+    path = write_artifact(tmp_path, payload)
+    stats = refresh.validate_source_artifact(
+        path,
+        "colliers-main",
+        ATTEMPT,
+        require_strict_freshness=True,
+        expected_generation_id="refresh-generation-1",
+        expected_generation_started_at="2026-07-29T12:00:00Z",
+    )
+    assert stats["staged_unique"] == 2
+
+
+def test_colliers_main_accepts_audited_contact_only_preservation(tmp_path):
+    payload = strict_artifact(
+        source="colliers-main", detail_scope="first_party_detail_api"
+    )
+    for row in payload["listings"]:
+        row.update(
+            preserveContactCollections=True,
+            detailObservedWithContactPreservation=True,
+            colliersMain={"unresolvedExpertIds": ["3d072913f9fb4ec6bc739cf35e6b3120"]},
+        )
+    path = write_artifact(tmp_path, payload)
+
+    stats = refresh.validate_source_artifact(
+        path,
+        "colliers-main",
+        ATTEMPT,
+        require_strict_freshness=True,
+        expected_generation_id="refresh-generation-1",
+        expected_generation_started_at="2026-07-29T12:00:00Z",
+    )
+
+    assert stats["staged_unique"] == 2
+
+
+def test_colliers_main_rejects_unproved_contact_preservation(tmp_path):
+    payload = strict_artifact(
+        source="colliers-main", detail_scope="first_party_detail_api"
+    )
+    payload["listings"][0]["preserveContactCollections"] = True
+    path = write_artifact(tmp_path, payload)
+
+    with pytest.raises(
+        refresh.ArtifactValidationError, match="invalid contact preservation"
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "colliers-main",
+            ATTEMPT,
+            require_strict_freshness=True,
+            expected_generation_id="refresh-generation-1",
+            expected_generation_started_at="2026-07-29T12:00:00Z",
+        )
+
+
+def test_other_strict_source_rejects_first_party_detail_api(tmp_path):
+    payload = strict_artifact(source="jll", detail_scope="first_party_detail_api")
+    path = write_artifact(tmp_path, payload)
+    with pytest.raises(
+        refresh.ArtifactValidationError, match="unaccepted strict-detail scope"
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "jll",
+            ATTEMPT,
+            require_strict_freshness=True,
+            expected_generation_id="refresh-generation-1",
+            expected_generation_started_at="2026-07-29T12:00:00Z",
+        )
+
+
+def test_first_party_detail_api_scope_override_is_colliers_main_only():
+    assert "first_party_detail_api" in refresh.accepted_detail_scopes(
+        "strict_detail", "colliers-main"
+    )
+    assert "first_party_detail_api" not in refresh.accepted_detail_scopes(
+        "strict_detail", "jll"
+    )
 
 
 def test_source_artifact_rejects_future_run_timestamp_beyond_clock_skew(tmp_path):
@@ -3950,6 +4213,46 @@ def test_validation_quality_rejects_new_defects_and_child_collapse():
     assert any("search_smoke" in failure for failure in result["failures"])
 
 
+def test_validation_quality_allows_missing_canonical_growth_for_authoritative_inventory():
+    before = absolute_quality_report(
+        source="cbre-dealflow", missing_canonical_url="222"
+    )
+    after = absolute_quality_report(
+        source="cbre-dealflow", missing_canonical_url="270"
+    )
+    assert refresh.compare_validation_quality(before, after) == {
+        "ok": True,
+        "failures": [],
+    }
+
+    after["queries"]["quality_by_source"][0]["bad_canonical_url"] = "1"
+    result = refresh.compare_validation_quality(before, after)
+    assert result["ok"] is False
+    assert result["failures"] == [
+        "quality_by_source/('cbre-dealflow',)/bad_canonical_url increased 0->1"
+    ]
+
+    canonical_before = absolute_quality_report(source="jll")
+    canonical_after = absolute_quality_report(
+        source="jll", missing_canonical_url="1"
+    )
+    result = refresh.compare_validation_quality(canonical_before, canonical_after)
+    assert result["ok"] is False
+    assert result["failures"] == [
+        "quality_by_source/('jll',)/missing_canonical_url increased 0->1"
+    ]
+
+    unknown_before = absolute_quality_report(source="unknown")
+    unknown_after = absolute_quality_report(
+        source="unknown", missing_canonical_url="1"
+    )
+    result = refresh.compare_validation_quality(unknown_before, unknown_after)
+    assert result["ok"] is False
+    assert result["failures"] == [
+        "quality_by_source/('unknown',)/missing_canonical_url increased 0->1"
+    ]
+
+
 def test_absolute_validation_quality_allows_sparse_coordinates_but_rejects_hard_defects():
     zero = absolute_quality_report()
     assert refresh.verify_absolute_validation_quality(zero) == {
@@ -3958,6 +4261,7 @@ def test_absolute_validation_quality_allows_sparse_coordinates_but_rejects_hard_
     }
 
     defects = absolute_quality_report(
+        source="jll",
         bad_source_url="1",
         missing_canonical_url="1",
         bad_canonical_url="1",
@@ -3992,16 +4296,17 @@ def test_absolute_validation_quality_allows_sparse_coordinates_but_rejects_hard_
         "bad_child_urls/image_bad_url/count",
         "primary_child_conflicts/images/listings",
         "orphans/images/orphan_rows",
-        "quality_by_source/svn/missing_canonical_url",
-        "quality_by_source/svn/lease_rate_max_flags",
+        "quality_by_source/jll/missing_canonical_url",
+        "quality_by_source/jll/lease_rate_max_flags",
     ):
         assert any(expected in failure for failure in result["failures"])
 
 
-def test_absolute_validation_quality_requires_mixed_source_canonical_url_coverage():
+def test_absolute_validation_quality_allows_missing_authoritative_inventory_canonical_url():
     result = refresh.verify_absolute_validation_quality(
         absolute_quality_report(
             source="cbre-dealflow",
+            bad_source_url="1",
             missing_canonical_url="1",
             bad_canonical_url="1",
         )
@@ -4009,10 +4314,29 @@ def test_absolute_validation_quality_requires_mixed_source_canonical_url_coverag
     assert result == {
         "ok": False,
         "failures": [
-            "quality_by_source/cbre-dealflow/missing_canonical_url is nonzero: 1",
+            "quality_by_source/cbre-dealflow/bad_source_url is nonzero: 1",
             "quality_by_source/cbre-dealflow/bad_canonical_url is nonzero: 1",
         ],
     }
+
+
+def test_absolute_validation_quality_requires_canonical_listing_url():
+    result = refresh.verify_absolute_validation_quality(
+        absolute_quality_report(source="jll", missing_canonical_url="1")
+    )
+    assert result == {
+        "ok": False,
+        "failures": [
+            "quality_by_source/jll/missing_canonical_url is nonzero: 1",
+        ],
+    }
+
+
+def test_unknown_or_malformed_policy_requires_canonical_url():
+    assert refresh._source_requires_canonical_url({}, "unknown") is True
+    assert refresh._source_requires_canonical_url(
+        {"unknown": {"canonical_claim": "novel_claim"}}, "unknown"
+    ) is True
 
 
 def test_final_validation_records_preexisting_absolute_defect_without_blocking_refresh(
@@ -4020,13 +4344,13 @@ def test_final_validation_records_preexisting_absolute_defect_without_blocking_r
 ):
     run_dir = tmp_path / "run"
     (run_dir / "logs").mkdir(parents=True)
-    report = absolute_quality_report(missing_canonical_url="1")
+    report = absolute_quality_report(source="jll", missing_canonical_url="1")
     (run_dir / "pre-validation.json").write_text(json.dumps(report), encoding="utf-8")
     manifest = refresh.new_manifest(
         run_dir,
         git_sha="abc",
         git_dirty=False,
-        sources=("svn",),
+        sources=("jll",),
         page_cap=400,
         concurrency=3,
     )

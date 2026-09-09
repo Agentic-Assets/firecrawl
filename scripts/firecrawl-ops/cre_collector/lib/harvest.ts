@@ -207,7 +207,7 @@ const DOC_EXT = /\.(?:pdf|docx?|xlsx?|pptx?)(?:[?#]|$)/i;
 // document. A document requires either a recognized document extension OR a
 // documentary keyword in the url path / anchor text (mirrors colliers-main
 // looksDoc heuristic). Keyword classification is ordered most-specific first.
-function classifyDoc(url: string, title?: string | null): DocItem | null {
+export function classifyDocument(url: string, title?: string | null): DocItem | null {
   const hay = `${lc(url)} ${lc(title)}`;
   const hasExt = DOC_EXT.test(url);
 
@@ -513,7 +513,7 @@ export function harvestDetail(doc: ScrapedDoc, ctx: HarvestCtx = {}): HarvestRes
       addMedia(m);
       return;
     }
-    const doc2 = classifyDoc(u, opts.title);
+    const doc2 = classifyDocument(u, opts.title);
     if (doc2) {
       if (!documents.has(urlKey(doc2.url))) documents.set(urlKey(doc2.url), doc2);
       return;
@@ -600,7 +600,7 @@ export function harvestDetail(doc: ScrapedDoc, ctx: HarvestCtx = {}): HarvestRes
       // default-typed 'other'. classifyDoc would otherwise reject a keyword-less,
       // extension-less url.
       if (u) {
-        const dd = classifyDoc(u) ?? { url: u, title: null, docType: "other" as const };
+        const dd = classifyDocument(u) ?? { url: u, title: null, docType: "other" as const };
         if (!documents.has(urlKey(dd.url))) documents.set(urlKey(dd.url), dd);
       }
     } else {

@@ -1,11 +1,11 @@
 """Focused LIST-001/002/003 lifecycle regression coverage (pure/offline)."""
 
-import json
 import hashlib
+import json
 import os
 import re
 import subprocess
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -16,8 +16,9 @@ import cre_reconcile_listing_lifecycle as reconcile
 RUN = "11111111-1111-5111-8111-111111111111"
 BID = "22222222-2222-4222-8222-222222222222"
 LID = "33333333-3333-4333-8333-333333333333"
-AT = "2026-08-31T12:00:00+00:00"
-OBSERVED = "2026-08-31T11:00:00Z"
+_TEST_NOW = datetime.now(timezone.utc).replace(microsecond=0)
+AT = _TEST_NOW.isoformat()
+OBSERVED = (_TEST_NOW - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
 
 
 def _group(eid="x"):
@@ -92,18 +93,15 @@ def test_ingest_owns_canonical_sync_events_and_final_history_order():
     assert "FOR UPDATE OF l" in sql
     assert "FOR UPDATE OF si" in sql
     transaction_lock = sql.index(ingest.LIFECYCLE_TRANSACTION_LOCK_NAME)
-    present_advisory = sql.index("-- Global lifecycle lock order")
-    present_source = sql.index("-- Lock present source-index rows", present_advisory)
+    present_source = sql.index("-- Lock present source-index rows", transaction_lock)
     present_listing = sql.index("-- Lock present canonical listing rows", present_source)
-    retired_advisory = sql.index(
-        "-- Follow the global advisory-then-source-index-then-listing lock order"
-    )
-    retired_source = sql.index("-- Lock retirement source-index rows", retired_advisory)
+    retired_source = sql.index("Lock retirement source-index rows", present_listing)
     retired_listing = sql.index("-- Lock retirement canonical listing rows", retired_source)
-    assert transaction_lock < present_advisory < present_source < present_listing
-    assert retired_advisory < retired_source < retired_listing
+    assert transaction_lock < present_source < present_listing
+    assert present_listing < retired_source < retired_listing
     assert sql.count(ingest.LIFECYCLE_TRANSACTION_LOCK_NAME) == 1
-    assert sql.count("pg_advisory_xact_lock") >= 3
+    assert sql.count("pg_advisory_xact_lock") == 1
+    assert "FOR lifecycle_identity IN" not in sql
     assert "si.last_enumerated_at < jm.finished_at" in sql
     assert "jm.finished_at, jm.finished_at" in sql
     assert "applied.presence_generation, jm.finished_at" in sql

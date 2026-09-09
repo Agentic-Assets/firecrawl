@@ -42,15 +42,16 @@ from cre_ingest import (
     SOURCE_TO_BROKERAGE,
     STRICT_FRESHNESS_SOURCE_KEYS,
     child_count_regressed,
+    colliers_contact_preservation_is_valid,
     database_target_fingerprint_from_url,
     load_db_url,
     merge_rows,
     to_inventory_only_row,
     to_row,
 )
-from cre_source_policy import load_source_policy
 from cre_runtime_observability import append_incident
-
+from cre_source_policy import load_source_policy
+from cre_validate import LIFECYCLE_SCHEMA_CONTRACT_ITEMS
 
 COLLECTOR_DIR = Path(__file__).resolve().parent
 REPO_ROOT = COLLECTOR_DIR.parents[2]
@@ -770,6 +771,7 @@ def fresh_source_env(
     base: Mapping[str, str] | None = None,
     generation_started_at: str | None = None,
     attempt_number: int = 1,
+    collector_concurrency: int | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Return subprocess env plus a nonsecret manifest summary of overrides."""
     env = safe_process_env(base)
@@ -782,6 +784,16 @@ def fresh_source_env(
     def clear(name: str) -> None:
         env.pop(name, None)
         overrides[name] = "<unset>"
+
+    def record_inherited(name: str, minimum: int, maximum: int) -> None:
+        """Record an allowlisted knob's bounded effective value without changing it."""
+        value = env.get(name)
+        if value is not None:
+            normalized = value.strip()
+            if not re.fullmatch(r"[0-9]{1,10}", normalized):
+                overrides[name] = "<invalid>"
+                return
+            overrides[name] = str(max(minimum, min(maximum, int(normalized))))
 
     set_value("CRE_REFRESH_GENERATION", run_dir.name)
     if generation_started_at:
@@ -809,18 +821,28 @@ def fresh_source_env(
             clear("BUILDOUT_REFRESH_PAGE_CACHE")
         set_value("BUILDOUT_CACHE_DIR", str(run_dir / "cache" / "buildout"))
     if source == "jll":
+        record_inherited("JLL_DETAIL_CONCURRENCY", 1, 10)
         set_value("JLL_DETAIL_CACHE_DIR", str(run_dir / "cache" / "jll-detail"))
         if generation_started_at:
             set_value("JLL_DETAIL_CACHE_MIN_CACHED_AT", generation_started_at)
     if source == "jll-investor":
+        record_inherited("JLL_INVESTOR_DETAIL_CONCURRENCY", 1, 8)
         set_value("JLL_INVESTOR_SITEMAP_SCAN_LIMIT", "0")
     if source == "avison-young":
         set_value("AVISON_YOUNG_DETAIL_LIMIT", "1000000")
         set_value("AVISON_YOUNG_DETAIL_TRANSPORT", "direct")
     if source == "cushman-wakefield":
+        if collector_concurrency is not None:
+            record_inherited(
+                "CUSHMAN_DETAIL_CONCURRENCY", 1, collector_concurrency
+            )
         clear("CUSHMAN_QUERY")
         set_value("CUSHMAN_DETAIL_MODE", "base")
     if source == "colliers-main":
+        # The supervised checkpoint path pins the production-rehearsed
+        # first-party API transport. Recording this override in each attempt
+        # prevents a resume from silently falling back to the legacy renderer.
+        set_value("COLLIERS_MAIN_COVEO_ENABLE", "1")
         set_value(
             "COLLIERS_MAIN_DETAIL_CACHE_PATH",
             str(run_dir / "cache" / "colliers-main" / "detail-cache.jsonl"),
@@ -836,7 +858,11 @@ def fresh_source_env(
             "COLLIERS_MAIN_DETAIL_CONCURRENCY",
             str(COLLIERS_MAIN_DETAIL_CONCURRENCY),
         )
+        record_inherited("COLLIERS_MAIN_DETAIL_START_INTERVAL_MS", 0, 30000)
+        record_inherited("COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS", 0, 180000)
         set_value("NODE_OPTIONS", "--max-old-space-size=6144")
+    if source == "nai-global":
+        record_inherited("NAI_ENUMERATION_CONCURRENCY", 1, 3)
     return env, overrides
 
 
@@ -1267,6 +1293,7 @@ def validate_source_artifact(
                     f"listings[{index}] cannot satisfy property-detail freshness"
                 )
             preserves_children = listing.get("preserveChildCollections") is True
+            preserves_contacts = listing.get("preserveContactCollections") is True
             if property_detail_freshness:
                 preserves_with_detail = (
                     listing.get("detailObservedWithChildPreservation") is True
@@ -1328,6 +1355,19 @@ def validate_source_artifact(
                 if preserves_children:
                     raise ArtifactValidationError(
                         f"listings[{index}] must not preserve child collections"
+                    )
+                if (
+                    preserves_contacts
+                    and not colliers_contact_preservation_is_valid(listing)
+                ):
+                    raise ArtifactValidationError(
+                        f"listings[{index}] has invalid contact preservation"
+                    )
+                if provenance.get("detailScope") not in accepted_detail_scopes(
+                    "strict_detail", expected_source
+                ):
+                    raise ArtifactValidationError(
+                        f"listings[{index}] has an unaccepted strict-detail scope"
                     )
                 detail_value = listing.get("detailObservedAt")
                 if (
@@ -1472,6 +1512,7 @@ def run_cohort_collection_worker(
         run_dir,
         generation_started_at=generation_started_at,
         attempt_number=attempt_number,
+        collector_concurrency=concurrency,
     )
     if source == "colliers-main":
         rc, _error = collect_colliers_main_chunks(
@@ -1602,6 +1643,8 @@ def _cohort_attempt(
     run_dir: Path,
     manifest: dict[str, Any],
     source: str,
+    *,
+    collector_concurrency: int,
 ) -> tuple[dict[str, Any], Path, Path, str] | None:
     """Durably create one coordinator-owned source collection attempt."""
     checkpoint = manifest["sources"][source]
@@ -1635,6 +1678,7 @@ def _cohort_attempt(
                 run_dir,
                 generation_started_at=manifest["started_at"],
                 attempt_number=attempt_number,
+                collector_concurrency=collector_concurrency,
             )[1].items()
         },
         "rejected_artifact": None,
@@ -1658,7 +1702,12 @@ def _start_cohort_collection(
     concurrency: int,
 ) -> CohortCollectionProcess | None:
     """Start one source collection in its own process group."""
-    created = _cohort_attempt(run_dir, manifest, source)
+    created = _cohort_attempt(
+        run_dir,
+        manifest,
+        source,
+        collector_concurrency=concurrency,
+    )
     if created is None:
         return None
     attempt, tmp_artifact, attempt_log, attempt_started = created
@@ -2242,6 +2291,7 @@ def collect_source(
             run_dir,
             generation_started_at=manifest["started_at"],
             attempt_number=attempt_number,
+            collector_concurrency=concurrency,
         )
         attempt = {
             "number": attempt_number,
@@ -3086,6 +3136,17 @@ FRESHNESS_EVIDENCE_CONTRACT = {
 }
 
 
+def accepted_detail_scopes(evidence_class: str, source: str) -> set[str]:
+    """Return evidence scopes admitted for one source, including narrow overrides."""
+    contract = FRESHNESS_EVIDENCE_CONTRACT.get(evidence_class)
+    if contract is None:
+        return set()
+    accepted = set(contract["detail_scopes"])
+    if source == "colliers-main" and evidence_class == "strict_detail":
+        accepted.add("first_party_detail_api")
+    return accepted
+
+
 def _generation_expectation(
     manifest: Mapping[str, Any], artifact: Mapping[str, Any], source: str
 ) -> tuple[str, datetime]:
@@ -3317,12 +3378,13 @@ def verify_validation_readback(
             detail_scopes = _generation_evidence_values(
                 generation_row, "detail_scopes"
             )
+            accepted_scopes = accepted_detail_scopes(evidence_class, source)
             cache_dispositions = _generation_evidence_values(
                 generation_row, "cache_dispositions"
             )
             if (
                 detail_scopes is None
-                or not detail_scopes <= contract["detail_scopes"]
+                or not detail_scopes <= accepted_scopes
             ):
                 checkpoint["readback"] = {
                     "ok": False,
@@ -3731,6 +3793,7 @@ def compare_validation_quality(
     """Reject newly introduced hard defects or severe child-data loss."""
     before_queries = before.get("queries") if isinstance(before.get("queries"), dict) else {}
     after_queries = after.get("queries") if isinstance(after.get("queries"), dict) else {}
+    policy = load_source_policy()
     failures: list[str] = []
 
     count_specs = (
@@ -3762,6 +3825,12 @@ def compare_validation_quality(
         for identity, row in new.items():
             prior = old.get(identity, {})
             for metric_field in fields:
+                if (
+                    query == "quality_by_source"
+                    and metric_field == "missing_canonical_url"
+                    and not _source_requires_canonical_url(policy, identity[0])
+                ):
+                    continue
                 old_value = _int_value(prior.get(metric_field))
                 new_value = _int_value(row.get(metric_field))
                 if new_value > old_value:
@@ -3814,6 +3883,22 @@ ABSOLUTE_BAD_CHILD_URL_CHECKS = {
 ABSOLUTE_ORPHAN_CHILD_TYPES = {"contacts", "documents", "images", "media", "links"}
 
 
+def _source_requires_canonical_url(
+    policy: Mapping[str, Any], source_key: str
+) -> bool:
+    """Return whether the governed source claims a canonical property page.
+
+    Authoritative inventory feeds can expose a stable, valid source URL without
+    exposing a canonical property landing page for every row. Unknown or
+    malformed policy entries fail closed by continuing to require one.
+    """
+    source_policy = policy.get(source_key)
+    return not (
+        isinstance(source_policy, dict)
+        and source_policy.get("canonical_claim") == "authoritative_inventory"
+    )
+
+
 def _absolute_count(
     row: Mapping[str, Any], field: str, context: str, failures: list[str]
 ) -> int | None:
@@ -3860,11 +3945,13 @@ def verify_absolute_validation_quality(after: Mapping[str, Any]) -> dict[str, An
             "failures": ["validation report is missing queries object"],
         }
 
-    # The policy loader validates the complete source registry.  Inventory-only
-    # namespaces do not create canonical listing rows, so canonical URL fields
-    # are not imposed on those namespaces should a legacy row be present.
+    # The policy loader validates the complete source registry. Authoritative
+    # inventory feeds must always retain a valid source URL, but some provider
+    # rows expose only a brochure/agreement endpoint rather than a canonical
+    # property landing page. Missing canonical URLs are therefore enforced only
+    # for sources whose governed claim is `canonical_listing`; malformed
+    # canonical URLs remain defects for every source.
     policy = load_source_policy()
-    canonical_url_fields = {"missing_canonical_url", "bad_canonical_url"}
 
     duplicate_rows = _absolute_rows(queries, "duplicates", failures)
     duplicate_checks = {
@@ -3931,14 +4018,11 @@ def verify_absolute_validation_quality(after: Mapping[str, Any]) -> dict[str, An
         if not isinstance(source_key, str) or not source_key:
             failures.append(f"quality_by_source has invalid source_key: {source_key!r}")
             continue
-        source_policy = policy.get(source_key)
-        is_inventory_only = (
-            isinstance(source_policy, dict)
-            and source_policy.get("canonical_claim")
-            == "provisional_source_index_only"
-        )
         for quality_field in ABSOLUTE_LISTING_QUALITY_FIELDS:
-            if is_inventory_only and quality_field in canonical_url_fields:
+            if (
+                quality_field == "missing_canonical_url"
+                and not _source_requires_canonical_url(policy, source_key)
+            ):
                 continue
             context = f"quality_by_source/{source_key}"
             count = _absolute_count(row, quality_field, context, failures)
@@ -3959,6 +4043,59 @@ def record_scope_from_validation(
         if isinstance(row, dict) and row.get("source_key") not in supported
     )
     manifest["scope"]["unsupported_active_rows_before"] = unsupported
+
+
+def require_lifecycle_schema_contract(
+    validation: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fail closed unless the read-only snapshot proves migration 016."""
+    rows = (validation.get("queries") or {}).get("lifecycle_schema_contract")
+    if not isinstance(rows, list):
+        raise GlobalStageError(
+            "database migration 016 lifecycle contract evidence is missing"
+        )
+
+    observed: dict[str, str] = {}
+    malformed = False
+    for row in rows:
+        if not isinstance(row, Mapping):
+            malformed = True
+            continue
+        item = row.get("contract_item")
+        status = row.get("status")
+        if (
+            not isinstance(item, str)
+            or not isinstance(status, str)
+            or item in observed
+        ):
+            malformed = True
+            continue
+        observed[item] = status
+
+    expected = set(LIFECYCLE_SCHEMA_CONTRACT_ITEMS)
+    failures = sorted(
+        (expected - set(observed))
+        | {item for item in expected if observed.get(item) != "ok"}
+    )
+    unexpected = sorted(set(observed) - expected)
+    if malformed or failures or unexpected:
+        detail = []
+        if failures:
+            detail.append("missing or invalid: " + ", ".join(failures))
+        if unexpected:
+            detail.append("unexpected: " + ", ".join(unexpected))
+        if malformed:
+            detail.append("malformed or duplicate rows")
+        raise GlobalStageError(
+            "database migration 016 lifecycle contract is incomplete ("
+            + "; ".join(detail)
+            + ")"
+        )
+    return {
+        "ok": True,
+        "contract": "016_cre_listing_lifecycle",
+        "items": list(LIFECYCLE_SCHEMA_CONTRACT_ITEMS),
+    }
 
 
 def render_report(manifest: Mapping[str, Any]) -> str:
@@ -4348,6 +4485,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "validation_sha256": sha256_file(pre_validation),
                     }
                 )
+            manifest["preflight"]["lifecycle_schema_contract"] = (
+                require_lifecycle_schema_contract(pre_result)
+            )
             record_scope_from_validation(manifest, pre_result)
             save_manifest(run_dir, manifest)
 

@@ -172,6 +172,108 @@ def test_certificate_accepts_exact_51_source_union_and_reports_policy_evidence(t
     assert evidence["colliers"] == "strict_detail"
 
 
+def test_certificate_accepts_colliers_main_first_party_detail_api_only(tmp_path):
+    def use_coveo_scope(manifest, artifact_path):
+        artifact = json.loads(artifact_path.read_text())
+        artifact["listings"][0]["freshnessProvenance"]["detailScope"] = (
+            "first_party_detail_api"
+        )
+        artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+        manifest["sources"]["colliers-main"]["artifact"].update(
+            sha256=_sha(artifact_path), bytes=artifact_path.stat().st_size
+        )
+
+    runs = [
+        _run(tmp_path, source_key, mutate=use_coveo_scope if source_key == "colliers-main" else None)
+        for source_key in certificate.SOURCE_KEYS
+    ]
+    result = certificate.build_freshness_certificate(
+        runs, max_source_age_hours=2, now=NOW
+    )
+    assert result["status"] == "valid"
+
+
+def test_certificate_accepts_colliers_contact_only_preservation(tmp_path):
+    def use_contact_preservation(manifest, artifact_path):
+        artifact = json.loads(artifact_path.read_text())
+        listing = artifact["listings"][0]
+        listing["freshnessProvenance"]["detailScope"] = "first_party_detail_api"
+        listing["preserveContactCollections"] = True
+        listing["detailObservedWithContactPreservation"] = True
+        listing["colliersMain"] = {
+            "unresolvedExpertIds": ["3d072913f9fb4ec6bc739cf35e6b3120"]
+        }
+        artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+        manifest["sources"]["colliers-main"]["artifact"].update(
+            sha256=_sha(artifact_path), bytes=artifact_path.stat().st_size
+        )
+
+    runs = [
+        _run(
+            tmp_path,
+            source_key,
+            mutate=use_contact_preservation
+            if source_key == "colliers-main"
+            else None,
+        )
+        for source_key in certificate.SOURCE_KEYS
+    ]
+
+    result = certificate.build_freshness_certificate(
+        runs, max_source_age_hours=2, now=NOW
+    )
+
+    assert result["status"] == "valid"
+
+
+def test_certificate_rejects_unproved_contact_preservation(tmp_path):
+    def misuse_contact_preservation(manifest, artifact_path):
+        artifact = json.loads(artifact_path.read_text())
+        artifact["listings"][0]["preserveContactCollections"] = True
+        artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+        manifest["sources"]["jll"]["artifact"].update(
+            sha256=_sha(artifact_path), bytes=artifact_path.stat().st_size
+        )
+
+    runs = [
+        _run(
+            tmp_path,
+            source_key,
+            mutate=misuse_contact_preservation if source_key == "jll" else None,
+        )
+        for source_key in certificate.SOURCE_KEYS
+    ]
+
+    result = certificate.build_freshness_certificate(
+        runs, max_source_age_hours=2, now=NOW
+    )
+
+    assert result["status"] == "invalid"
+    assert "artifact_evidence" in _codes(result)
+
+
+def test_certificate_rejects_first_party_detail_api_for_other_sources(tmp_path):
+    def misuse_scope(manifest, artifact_path):
+        artifact = json.loads(artifact_path.read_text())
+        artifact["listings"][0]["freshnessProvenance"]["detailScope"] = (
+            "first_party_detail_api"
+        )
+        artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+        manifest["sources"]["jll"]["artifact"].update(
+            sha256=_sha(artifact_path), bytes=artifact_path.stat().st_size
+        )
+
+    runs = [
+        _run(tmp_path, source_key, mutate=misuse_scope if source_key == "jll" else None)
+        for source_key in certificate.SOURCE_KEYS
+    ]
+    result = certificate.build_freshness_certificate(
+        runs, max_source_age_hours=2, now=NOW
+    )
+    assert result["status"] == "invalid"
+    assert "artifact_evidence" in _codes(result)
+
+
 def test_certificate_rejects_subset_union(tmp_path):
     result = certificate.build_freshness_certificate(
         [_run(tmp_path, "jll")], max_source_age_hours=2, now=NOW

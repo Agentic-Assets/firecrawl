@@ -282,7 +282,37 @@ STRICT_FRESHNESS_SOURCE_KEYS = {
     "nai-talcor",
     "nai-dominion",
 }
+
+
+def colliers_contact_preservation_is_valid(listing):
+    """Admit only the audited Colliers missing-expert contact exception."""
+    if listing.get("preserveContactCollections") is not True:
+        return False
+    if listing.get("sourceKey") != "colliers-main":
+        return False
+    provenance = listing.get("freshnessProvenance")
+    if not isinstance(provenance, dict):
+        return False
+    if provenance.get("detailScope") != "first_party_detail_api":
+        return False
+    if listing.get("detailObservedWithContactPreservation") is not True:
+        return False
+    colliers = listing.get("colliersMain")
+    if not isinstance(colliers, dict):
+        return False
+    unresolved = colliers.get("unresolvedExpertIds")
+    return (
+        isinstance(unresolved, list)
+        and bool(unresolved)
+        and len(unresolved) == len(set(unresolved))
+        and all(
+            isinstance(expert_id, str)
+            and re.fullmatch(r"[a-z0-9]+", expert_id) is not None
+            for expert_id in unresolved
+        )
+    )
 MAX_FUTURE_CLOCK_SKEW = timedelta(minutes=5)
+COLLIERS_TRANSITION_MAX_AGE = timedelta(hours=24)
 CHILD_COUNT_MIN_BASE = 10
 CHILD_COUNT_RETAIN_NUMERATOR = 7
 CHILD_COUNT_RETAIN_DENOMINATOR = 10
@@ -842,6 +872,53 @@ def strict_full_source_scope(data, source_key, *, required_transactions=("sale",
     }
 
 
+def trusted_colliers_first_party_transition(
+    data,
+    *,
+    require_strict_freshness,
+    now=None,
+):
+    """Return true only for a validated-shape, exact full Colliers transition."""
+    if not require_strict_freshness:
+        return False
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    try:
+        # Keep this predicate self-contained: callers must not be able to
+        # activate destructive replacement/clearing semantics merely by
+        # passing a truthy CLI flag and a full-looking source summary.
+        validate_strict_artifact_freshness(
+            data,
+            require_strict_freshness=True,
+            now=current,
+        )
+        scope = strict_full_source_scope(data, "colliers-main")
+    except ValueError:
+        return False
+    finished = parse_strict_freshness_timestamp(
+        scope["observed_at"],
+        field="runMeta.finishedAt",
+    )
+    if current - finished > COLLIERS_TRANSITION_MAX_AGE:
+        return False
+    observation_cutoff = finished - COLLIERS_TRANSITION_MAX_AGE
+    listings = scope["listings"]
+    return bool(listings) and all(
+        not listing.get("detailError")
+        and isinstance(listing.get("freshnessProvenance"), dict)
+        and listing["freshnessProvenance"].get("detailScope")
+        == "first_party_detail_api"
+        and parse_strict_freshness_timestamp(
+            listing.get("inventoryObservedAt"),
+            field="listing.inventoryObservedAt",
+        ) >= observation_cutoff
+        and parse_strict_freshness_timestamp(
+            listing.get("detailObservedAt"),
+            field="listing.detailObservedAt",
+        ) >= observation_cutoff
+        for listing in listings
+    )
+
+
 def inventory_only_full_scopes(data):
     """Return strictly complete inventory-only namespaces safe to reconcile.
 
@@ -1320,6 +1397,7 @@ def validate_strict_artifact_freshness(
             )
         source_key = listing.get("sourceKey")
         preserves_children = listing.get("preserveChildCollections") is True
+        preserves_contacts = listing.get("preserveContactCollections") is True
         if source_key in AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS:
             if provenance.get("detailScope") != "authoritative_inventory_feed":
                 raise ValueError(
@@ -1338,6 +1416,10 @@ def validate_strict_artifact_freshness(
         if preserves_children:
             raise ValueError(
                 f"strict freshness listings[{index}] must not preserve child collections"
+            )
+        if preserves_contacts and not colliers_contact_preservation_is_valid(listing):
+            raise ValueError(
+                f"strict freshness listings[{index}] has invalid contact preservation"
             )
         detail_value = listing.get("detailObservedAt")
         if provenance.get("cacheDisposition") == "source_revision_cache":
@@ -2109,6 +2191,7 @@ def build_sql(
     inventory_only_scopes=(),
     artifact_run_key=None,
     finished_at=None,
+    colliers_first_party_transition=False,
 ):
     # Defense in depth for direct callers of this builder. Normal ingestion
     # reaches here through to_row(), which already drops `omFacts`, but this
@@ -2135,6 +2218,20 @@ def build_sql(
     w = lines.append
     staged_source_key_sql = source_key_sql("s", "b")
     live_source_key_sql = source_key_sql("l", "b")
+    colliers_transition_sql = (
+        "true" if colliers_first_party_transition else "false"
+    )
+    colliers_transition_row_sql = f"""(
+      {colliers_transition_sql}
+      AND jsonb_path_exists(
+        EXCLUDED.raw_data,
+        '$.**.sourceKey ? (@ == "colliers-main")'
+      )
+      AND jsonb_path_exists(
+        EXCLUDED.raw_data,
+        '$.**.freshnessProvenance.detailScope ? (@ == "first_party_detail_api")'
+      )
+    )"""
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
     # Large complete-source artifacts (CBRE is ~80 MB of inline COPY data) can
@@ -2489,6 +2586,20 @@ FROM _active_child_scope_before a
 LEFT JOIN credeals.cre_listing_images i ON i.listing_id = a.listing_id
 GROUP BY a.listing_id, a.source_key;
 
+-- Colliers' legacy renderer captured image size variants, malformed entity
+-- suffixes, and recommendation-carousel images on unrelated parents. Preserve
+-- the distinct underlying asset baseline before any child replacement so the
+-- one reviewed first-party transition can reject real asset loss without
+-- protecting known row-multiplication defects.
+CREATE TEMP TABLE _colliers_semantic_images_before ON COMMIT DROP AS
+SELECT count(DISTINCT regexp_replace(
+         regexp_replace(lower(i.url), '&quot;+$', ''),
+         '-(?:w|672-404)$', ''
+       ))::bigint AS semantic_count
+FROM _active_child_scope_before a
+JOIN credeals.cre_listing_images i ON i.listing_id = a.listing_id
+WHERE a.source_key = 'colliers-main';
+
 DO $$ BEGIN
   IF EXISTS (
     SELECT 1
@@ -2545,27 +2656,12 @@ BEGIN
     END IF;
 END $$;
 
--- Global lifecycle lock order: identity advisory lock, source index, listing.
--- The advisory lock also covers identities whose source-index row does not yet
--- exist, so a present insert cannot invert table-lock order with retirement.
-DO $$
-DECLARE
-    lifecycle_identity record;
-BEGIN
-    FOR lifecycle_identity IN
-        SELECT DISTINCT s.brokerage_id, s.external_id
-        FROM _src s
-        ORDER BY s.brokerage_id, s.external_id
-    LOOP
-        PERFORM pg_advisory_xact_lock(
-            hashtextextended(concat_ws(chr(31),
-                lifecycle_identity.brokerage_id::text,
-                lifecycle_identity.external_id::text), 0)
-        );
-    END LOOP;
-END $$;
-
--- Lock present source-index rows after all identity advisory locks.
+-- The transaction-wide lifecycle advisory lock acquired above serializes all
+-- generated ingest/reconciliation writers.  Do not additionally allocate one
+-- advisory lock per identity: complete-source artifacts can contain tens of
+-- thousands of listings and would exhaust PostgreSQL's shared lock table.
+-- Keep the existing deterministic row-lock order for the rows that exist.
+-- Lock present source-index rows before their canonical listing rows.
 CREATE TEMP TABLE _present_source_locks ON COMMIT DROP AS
 SELECT si.id
 FROM credeals.cre_source_index si
@@ -2702,18 +2798,29 @@ WITH ins AS (
         lat               = COALESCE(EXCLUDED.lat, t.lat),
         lng               = COALESCE(EXCLUDED.lng, t.lng),
         size_sf           = CASE
+                              WHEN {colliers_transition_row_sql} THEN EXCLUDED.size_sf
                               WHEN t.size_sf > 1000000000 THEN EXCLUDED.size_sf
                               ELSE COALESCE(EXCLUDED.size_sf, t.size_sf)
                             END,
         market            = COALESCE(EXCLUDED.market, t.market),
         submarket         = COALESCE(EXCLUDED.submarket, t.submarket),
-        lot_size_sf       = COALESCE(EXCLUDED.lot_size_sf, t.lot_size_sf),
-        available_sf      = COALESCE(EXCLUDED.available_sf, t.available_sf),
-        min_divisible_sf  = COALESCE(EXCLUDED.min_divisible_sf, t.min_divisible_sf),
-        max_divisible_sf  = COALESCE(EXCLUDED.max_divisible_sf, t.max_divisible_sf),
+        lot_size_sf       = CASE WHEN {colliers_transition_row_sql}
+                                 THEN EXCLUDED.lot_size_sf
+                                 ELSE COALESCE(EXCLUDED.lot_size_sf, t.lot_size_sf) END,
+        available_sf      = CASE WHEN {colliers_transition_row_sql}
+                                 THEN EXCLUDED.available_sf
+                                 ELSE COALESCE(EXCLUDED.available_sf, t.available_sf) END,
+        min_divisible_sf  = CASE WHEN {colliers_transition_row_sql}
+                                 THEN EXCLUDED.min_divisible_sf
+                                 ELSE COALESCE(EXCLUDED.min_divisible_sf, t.min_divisible_sf) END,
+        max_divisible_sf  = CASE WHEN {colliers_transition_row_sql}
+                                 THEN EXCLUDED.max_divisible_sf
+                                 ELSE COALESCE(EXCLUDED.max_divisible_sf, t.max_divisible_sf) END,
         floors            = COALESCE(EXCLUDED.floors, t.floors),
         year_built        = COALESCE(EXCLUDED.year_built, t.year_built),
-        units             = COALESCE(EXCLUDED.units, t.units),
+        units             = CASE WHEN {colliers_transition_row_sql}
+                                 THEN EXCLUDED.units
+                                 ELSE COALESCE(EXCLUDED.units, t.units) END,
         parking_spaces    = COALESCE(EXCLUDED.parking_spaces, t.parking_spaces),
         parking_ratio     = COALESCE(EXCLUDED.parking_ratio, t.parking_ratio),
         -- (L1) COALESCE-keep: a transient parse miss (regex miss, "Call for offer")
@@ -2723,15 +2830,25 @@ WITH ins AS (
         -- and other neighbors that already use COALESCE-keep. The lifted structured
         -- columns (noi/gross_revenue/occupancy_rate/divisible/term/parking/...) follow
         -- the same rule so a sparse detail pass never clobbers a fuller prior capture.
-        sale_price_usd    = COALESCE(EXCLUDED.sale_price_usd, t.sale_price_usd),
-        sale_price_per_sf = COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf),
+        sale_price_usd    = CASE WHEN {colliers_transition_row_sql}
+                                 THEN NULL
+                                 ELSE COALESCE(EXCLUDED.sale_price_usd, t.sale_price_usd) END,
+        sale_price_per_sf = CASE WHEN {colliers_transition_row_sql}
+                                 THEN NULL
+                                 ELSE COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf) END,
         cap_rate          = COALESCE(EXCLUDED.cap_rate, t.cap_rate),
         noi               = COALESCE(EXCLUDED.noi, t.noi),
         gross_revenue     = COALESCE(EXCLUDED.gross_revenue, t.gross_revenue),
         occupancy_rate    = COALESCE(EXCLUDED.occupancy_rate, t.occupancy_rate),
-        lease_rate_min    = COALESCE(EXCLUDED.lease_rate_min, t.lease_rate_min),
-        lease_rate_max    = COALESCE(EXCLUDED.lease_rate_max, t.lease_rate_max),
-        lease_rate_type   = COALESCE(EXCLUDED.lease_rate_type, t.lease_rate_type),
+        lease_rate_min    = CASE WHEN {colliers_transition_row_sql}
+                                 THEN NULL
+                                 ELSE COALESCE(EXCLUDED.lease_rate_min, t.lease_rate_min) END,
+        lease_rate_max    = CASE WHEN {colliers_transition_row_sql}
+                                 THEN NULL
+                                 ELSE COALESCE(EXCLUDED.lease_rate_max, t.lease_rate_max) END,
+        lease_rate_type   = CASE WHEN {colliers_transition_row_sql}
+                                 THEN NULL
+                                 ELSE COALESCE(EXCLUDED.lease_rate_type, t.lease_rate_type) END,
         term_min_months   = COALESCE(EXCLUDED.term_min_months, t.term_min_months),
         term_max_months   = COALESCE(EXCLUDED.term_max_months, t.term_max_months),
         zoning            = COALESCE(EXCLUDED.zoning, t.zoning),
@@ -2991,7 +3108,7 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-""")
+""".replace("{colliers_transition_row_sql}", colliers_transition_row_sql))
 
     w(f"""
 -- Canonical full ingest synchronizes source observation and lifecycle mirror
@@ -3025,10 +3142,13 @@ INSERT INTO credeals.cre_listing_events
 SELECT u.id, u.brokerage_id, jm.job_id, 'reappeared', 'full_ingest_present',
        s.source_url, si.presence_generation, s.scraped_at
 FROM _up u
-JOIN _src s USING (brokerage_id, external_id)
-JOIN _prior_source_presence p USING (brokerage_id, external_id)
+JOIN _src s
+  ON s.brokerage_id = u.brokerage_id AND s.external_id = u.external_id
+JOIN _prior_source_presence p
+  ON p.brokerage_id = u.brokerage_id AND p.external_id = u.external_id
 LEFT JOIN _prior_vals pv ON pv.id = u.id
-JOIN credeals.cre_source_index si USING (brokerage_id, external_id)
+JOIN credeals.cre_source_index si
+  ON si.brokerage_id = u.brokerage_id AND si.external_id = u.external_id
 JOIN credeals.cre_brokerages b ON b.id = u.brokerage_id
 JOIN _jobmeta jm ON jm.slug = b.slug
 WHERE p.observation_present = false OR pv.deleted_at IS NOT NULL
@@ -3072,7 +3192,45 @@ WHERE jsonb_path_exists(s.raw_data, '$.**.detailError')
         '$.**.preserveChildCollections ? (@ == true || @ == "true")'
       );
 
-DELETE FROM credeals.cre_listing_contacts  WHERE listing_id IN (SELECT id FROM _child_refresh);
+-- Colliers' first-party property record can reference an expert whose public
+-- expert profile is no longer returned. Preserve only the prior contacts for
+-- those explicitly marked rows. Documents, images, media, and links still use
+-- the normal wholesale detail refresh, avoiding legacy carousel contamination.
+CREATE TEMP TABLE _contact_preserve ON COMMIT DROP AS
+SELECT DISTINCT u.id
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+WHERE {colliers_transition_sql}
+  AND {staged_source_key_sql} = 'colliers-main'
+  AND jsonb_path_exists(
+    s.raw_data,
+    '$.**.freshnessProvenance.detailScope ? (@ == "first_party_detail_api")'
+  )
+  AND jsonb_path_exists(
+    s.raw_data,
+    '$.**.detailObservedWithContactPreservation ? (@ == true || @ == "true")'
+  )
+  AND jsonb_path_exists(
+    s.raw_data,
+    '$.**.preserveContactCollections ? (@ == true || @ == "true")'
+  )
+  AND jsonb_path_exists(
+    s.raw_data,
+    '$.**.colliersMain.unresolvedExpertIds[*] ? (@ != "")'
+  );
+
+CREATE TEMP TABLE _contact_refresh ON COMMIT DROP AS
+SELECT id FROM _child_refresh
+EXCEPT
+SELECT id FROM _contact_preserve;
+
+CREATE TEMP TABLE _contact_additive ON COMMIT DROP AS
+SELECT id FROM _child_additive
+UNION
+SELECT id FROM _contact_preserve;
+
+DELETE FROM credeals.cre_listing_contacts  WHERE listing_id IN (SELECT id FROM _contact_refresh);
 DELETE FROM credeals.cre_listing_documents WHERE listing_id IN (SELECT id FROM _child_refresh);
 DELETE FROM credeals.cre_listing_images    WHERE listing_id IN (SELECT id FROM _child_refresh);
 
@@ -3096,7 +3254,7 @@ DO $$ BEGIN
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
-    WHERE u.id IN (SELECT id FROM _child_refresh)
+    WHERE u.id IN (SELECT id FROM _contact_refresh)
       AND jsonb_typeof(s.contacts) = 'array';
   ELSE
     INSERT INTO credeals.cre_listing_contacts (
@@ -3109,7 +3267,7 @@ DO $$ BEGIN
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
-    WHERE u.id IN (SELECT id FROM _child_refresh)
+    WHERE u.id IN (SELECT id FROM _contact_refresh)
       AND jsonb_typeof(s.contacts) = 'array';
   END IF;
 END $$;
@@ -3141,7 +3299,7 @@ SET is_primary = false
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
-WHERE u.id IN (SELECT id FROM _child_additive)
+WHERE u.id IN (SELECT id FROM _contact_additive)
   AND c.listing_id = u.id
   AND jsonb_typeof(s.contacts) = 'array'
   AND COALESCE((x->>'isPrimary')::boolean, false);
@@ -3153,11 +3311,15 @@ DO $$ BEGIN
       AND column_name = 'license'
   ) THEN
     WITH incoming AS (
-      SELECT u.id AS listing_id, x
+      SELECT u.id AS listing_id, x,
+             jsonb_path_exists(
+               s.raw_data,
+               '$.**.preserveContactCollections ? (@ == true || @ == "true")'
+             ) AS preserve_contact
       FROM _up u
       JOIN _src s USING (brokerage_id, external_id)
       CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
-      WHERE u.id IN (SELECT id FROM _child_additive)
+      WHERE u.id IN (SELECT id FROM _contact_additive)
         AND jsonb_typeof(s.contacts) = 'array'
     )
     UPDATE credeals.cre_listing_contacts c SET
@@ -3180,6 +3342,12 @@ DO $$ BEGIN
         (NULLIF(lower(i.x->>'name'), '') IS NOT NULL
          AND lower(c.name) = lower(i.x->>'name')
          AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', ''))
+        OR
+        (i.preserve_contact
+         AND NULLIF(lower(i.x->>'email'), '') IS NULL
+         AND NULLIF(i.x->>'phone', '') IS NULL
+         AND NULLIF(lower(i.x->>'name'), '') IS NOT NULL
+         AND lower(c.name) = lower(i.x->>'name'))
       );
 
     INSERT INTO credeals.cre_listing_contacts (
@@ -3192,7 +3360,7 @@ DO $$ BEGIN
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
-    WHERE u.id IN (SELECT id FROM _child_additive)
+    WHERE u.id IN (SELECT id FROM _contact_additive)
       AND jsonb_typeof(s.contacts) = 'array'
       AND NOT EXISTS (
         SELECT 1 FROM credeals.cre_listing_contacts c
@@ -3204,15 +3372,28 @@ DO $$ BEGIN
             (NULLIF(lower(x->>'name'), '') IS NOT NULL
              AND lower(c.name) = lower(x->>'name')
              AND COALESCE(c.phone, '') = COALESCE(x->>'phone', ''))
+            OR
+            (jsonb_path_exists(
+               s.raw_data,
+               '$.**.preserveContactCollections ? (@ == true || @ == "true")'
+             )
+             AND NULLIF(lower(x->>'email'), '') IS NULL
+             AND NULLIF(x->>'phone', '') IS NULL
+             AND NULLIF(lower(x->>'name'), '') IS NOT NULL
+             AND lower(c.name) = lower(x->>'name'))
           )
       );
   ELSE
     WITH incoming AS (
-      SELECT u.id AS listing_id, x
+      SELECT u.id AS listing_id, x,
+             jsonb_path_exists(
+               s.raw_data,
+               '$.**.preserveContactCollections ? (@ == true || @ == "true")'
+             ) AS preserve_contact
       FROM _up u
       JOIN _src s USING (brokerage_id, external_id)
       CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
-      WHERE u.id IN (SELECT id FROM _child_additive)
+      WHERE u.id IN (SELECT id FROM _contact_additive)
         AND jsonb_typeof(s.contacts) = 'array'
     )
     UPDATE credeals.cre_listing_contacts c SET
@@ -3234,6 +3415,12 @@ DO $$ BEGIN
         (NULLIF(lower(i.x->>'name'), '') IS NOT NULL
          AND lower(c.name) = lower(i.x->>'name')
          AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', ''))
+        OR
+        (i.preserve_contact
+         AND NULLIF(lower(i.x->>'email'), '') IS NULL
+         AND NULLIF(i.x->>'phone', '') IS NULL
+         AND NULLIF(lower(i.x->>'name'), '') IS NOT NULL
+         AND lower(c.name) = lower(i.x->>'name'))
       );
 
     INSERT INTO credeals.cre_listing_contacts (
@@ -3246,7 +3433,7 @@ DO $$ BEGIN
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
-    WHERE u.id IN (SELECT id FROM _child_additive)
+    WHERE u.id IN (SELECT id FROM _contact_additive)
       AND jsonb_typeof(s.contacts) = 'array'
       AND NOT EXISTS (
         SELECT 1 FROM credeals.cre_listing_contacts c
@@ -3258,6 +3445,15 @@ DO $$ BEGIN
             (NULLIF(lower(x->>'name'), '') IS NOT NULL
              AND lower(c.name) = lower(x->>'name')
              AND COALESCE(c.phone, '') = COALESCE(x->>'phone', ''))
+            OR
+            (jsonb_path_exists(
+               s.raw_data,
+               '$.**.preserveContactCollections ? (@ == true || @ == "true")'
+             )
+             AND NULLIF(lower(x->>'email'), '') IS NULL
+             AND NULLIF(x->>'phone', '') IS NULL
+             AND NULLIF(lower(x->>'name'), '') IS NOT NULL
+             AND lower(c.name) = lower(x->>'name'))
           )
       );
   END IF;
@@ -3499,28 +3695,9 @@ WHERE b.slug IN ({slug_list})
   AND l.external_id IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM _up u WHERE u.id = l.id);
 
--- Follow the global advisory-then-source-index-then-listing lock order. If a
--- concurrent present observation commits first, the post-lock timestamp
--- predicate below excludes it. If retirement locks first, the present writer
--- waits and can safely revive the row after this transaction commits.
-DO $$
-DECLARE
-    lifecycle_identity record;
-BEGIN
-    FOR lifecycle_identity IN
-        SELECT DISTINCT c.brokerage_id, c.external_id
-        FROM _retired_candidates c
-        ORDER BY c.brokerage_id, c.external_id
-    LOOP
-        PERFORM pg_advisory_xact_lock(
-            hashtextextended(concat_ws(chr(31),
-                lifecycle_identity.brokerage_id::text,
-                lifecycle_identity.external_id::text), 0)
-        );
-    END LOOP;
-END $$;
-
--- Lock retirement source-index rows after all identity advisory locks.
+-- The transaction-wide lifecycle lock also serializes retirement against
+-- generated present lifecycle mutations. Lock retirement source-index rows
+-- before canonical listing rows, matching the present-row order above.
 CREATE TEMP TABLE _retired_source_locks ON COMMIT DROP AS
 SELECT si.id
 FROM credeals.cre_source_index si
@@ -3787,7 +3964,11 @@ DO $$ BEGIN
 END $$;
 
 DO $$
-DECLARE regressions text;
+DECLARE
+  regressions text;
+  colliers_coveo_image_transition boolean := {colliers_transition_sql};
+  colliers_images_before bigint := 0;
+  colliers_images_after bigint := 0;
 BEGIN
   SELECT string_agg(
     format(
@@ -3804,6 +3985,11 @@ BEGIN
   LEFT JOIN _child_counts_after current_counts
     USING (source_key, child_type)
   WHERE prior_counts.child_count >= {CHILD_COUNT_MIN_BASE}
+    AND NOT (
+      colliers_coveo_image_transition
+      AND prior_counts.source_key = 'colliers-main'
+      AND prior_counts.child_type = 'images'
+    )
     AND COALESCE(current_counts.child_count, 0)
       < (
         prior_counts.child_count * {CHILD_COUNT_RETAIN_NUMERATOR}
@@ -3814,6 +4000,56 @@ BEGIN
     RAISE EXCEPTION
       'checkpoint child quality regression before commit: %',
       regressions;
+  END IF;
+
+  -- The retired rendered-page parser attached recommendation-carousel images,
+  -- size variants, and malformed &quot; suffixes to unrelated Colliers parents.
+  -- A fully reconciled first-party record transition therefore compares unique
+  -- underlying assets, not contaminated parent/image row multiplicity. This is
+  -- deliberately source- and evidence-scope-specific; every current staged
+  -- property must still retain at least one exact first-party image.
+  IF colliers_coveo_image_transition THEN
+    SELECT count(DISTINCT regexp_replace(
+             regexp_replace(lower(i.url), '&quot;+$', ''),
+             '-(?:w|672-404)$', ''
+           ))
+    INTO colliers_images_after
+    FROM _retained_child_scope_after a
+    JOIN credeals.cre_listing_images i ON i.listing_id = a.listing_id
+    WHERE a.source_key = 'colliers-main';
+
+    -- Reconstruct the pre-mutation semantic count from the immutable snapshot.
+    -- _child_counts_by_listing_before intentionally stores only cardinality, so
+    -- use the still-transactional archive of preexisting rows captured before
+    -- replacement through a dedicated temp table created below.
+    SELECT semantic_count INTO colliers_images_before
+    FROM _colliers_semantic_images_before;
+
+    IF colliers_images_before >= {CHILD_COUNT_MIN_BASE}
+       AND colliers_images_after
+         < (colliers_images_before * {CHILD_COUNT_RETAIN_NUMERATOR}
+            / {CHILD_COUNT_RETAIN_DENOMINATOR}) THEN
+      RAISE EXCEPTION
+        'checkpoint Colliers semantic image regression before commit: %->%',
+        colliers_images_before,
+        colliers_images_after;
+    END IF;
+
+    IF EXISTS (
+      SELECT 1
+      FROM _src s
+      JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+      JOIN credeals.cre_listings l
+        ON l.brokerage_id = s.brokerage_id
+       AND l.external_id = s.external_id
+      LEFT JOIN credeals.cre_listing_images i ON i.listing_id = l.id
+      WHERE {staged_source_key_sql} = 'colliers-main'
+      GROUP BY l.id
+      HAVING count(i.id) = 0
+    ) THEN
+      RAISE EXCEPTION
+        'checkpoint Colliers first-party image transition left a current property without an image';
+    END IF;
   END IF;
 END $$;
 
@@ -4300,6 +4536,7 @@ def main():
     started_at = None
     finished_at = None
     finished_at_by_slug = {}
+    colliers_transition_inputs = []
 
     for path in args.inputs:
         with open(path) as f:
@@ -4317,6 +4554,21 @@ def main():
             )
         except ValueError as exc:
             sys.exit(f"refusing strict freshness artifact: {exc}")
+        has_colliers_main = any(
+            isinstance(entry, dict) and entry.get("sourceKey") == "colliers-main"
+            for entry in (data.get("sources") or [])
+        ) or any(
+            isinstance(listing, dict)
+            and listing.get("sourceKey") == "colliers-main"
+            for listing in (data.get("listings") or [])
+        )
+        if has_colliers_main:
+            colliers_transition_inputs.append(
+                trusted_colliers_first_party_transition(
+                    data,
+                    require_strict_freshness=args.require_strict_freshness,
+                )
+            )
         mode = run_meta.get("mode")
         if not args.dry_run and mode not in {"full", "enrich"}:
             sys.exit(
@@ -4531,6 +4783,14 @@ def main():
     ]
 
     artifact_run_key, _ = artifact_run_identity(args.inputs)
+    colliers_first_party_transition = (
+        bool(colliers_transition_inputs) and all(colliers_transition_inputs)
+    )
+    print(
+        "Colliers first-party canonical transition: "
+        f"{'ENABLED' if colliers_first_party_transition else 'OFF'}",
+        file=sys.stderr,
+    )
     sql = build_sql(
         rows,
         job_meta,
@@ -4541,6 +4801,7 @@ def main():
         inventory_only_scopes=inventory_only_scopes,
         artifact_run_key=artifact_run_key,
         finished_at=finished_at,
+        colliers_first_party_transition=colliers_first_party_transition,
     )
 
     print(
