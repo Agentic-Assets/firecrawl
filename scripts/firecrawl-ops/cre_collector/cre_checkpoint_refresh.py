@@ -3718,6 +3718,7 @@ def compare_validation_quality(
     """Reject newly introduced hard defects or severe child-data loss."""
     before_queries = before.get("queries") if isinstance(before.get("queries"), dict) else {}
     after_queries = after.get("queries") if isinstance(after.get("queries"), dict) else {}
+    policy = load_source_policy()
     failures: list[str] = []
 
     count_specs = (
@@ -3749,6 +3750,12 @@ def compare_validation_quality(
         for identity, row in new.items():
             prior = old.get(identity, {})
             for metric_field in fields:
+                if (
+                    query == "quality_by_source"
+                    and metric_field == "missing_canonical_url"
+                    and not _source_requires_canonical_url(policy, identity[0])
+                ):
+                    continue
                 old_value = _int_value(prior.get(metric_field))
                 new_value = _int_value(row.get(metric_field))
                 if new_value > old_value:
@@ -3801,6 +3808,22 @@ ABSOLUTE_BAD_CHILD_URL_CHECKS = {
 ABSOLUTE_ORPHAN_CHILD_TYPES = {"contacts", "documents", "images", "media", "links"}
 
 
+def _source_requires_canonical_url(
+    policy: Mapping[str, Any], source_key: str
+) -> bool:
+    """Return whether the governed source claims a canonical property page.
+
+    Authoritative inventory feeds can expose a stable, valid source URL without
+    exposing a canonical property landing page for every row. Unknown or
+    malformed policy entries fail closed by continuing to require one.
+    """
+    source_policy = policy.get(source_key)
+    return not (
+        isinstance(source_policy, dict)
+        and source_policy.get("canonical_claim") == "authoritative_inventory"
+    )
+
+
 def _absolute_count(
     row: Mapping[str, Any], field: str, context: str, failures: list[str]
 ) -> int | None:
@@ -3847,11 +3870,13 @@ def verify_absolute_validation_quality(after: Mapping[str, Any]) -> dict[str, An
             "failures": ["validation report is missing queries object"],
         }
 
-    # The policy loader validates the complete source registry.  Inventory-only
-    # namespaces do not create canonical listing rows, so canonical URL fields
-    # are not imposed on those namespaces should a legacy row be present.
+    # The policy loader validates the complete source registry. Authoritative
+    # inventory feeds must always retain a valid source URL, but some provider
+    # rows expose only a brochure/agreement endpoint rather than a canonical
+    # property landing page. Missing canonical URLs are therefore enforced only
+    # for sources whose governed claim is `canonical_listing`; malformed
+    # canonical URLs remain defects for every source.
     policy = load_source_policy()
-    canonical_url_fields = {"missing_canonical_url", "bad_canonical_url"}
 
     duplicate_rows = _absolute_rows(queries, "duplicates", failures)
     duplicate_checks = {
@@ -3918,14 +3943,11 @@ def verify_absolute_validation_quality(after: Mapping[str, Any]) -> dict[str, An
         if not isinstance(source_key, str) or not source_key:
             failures.append(f"quality_by_source has invalid source_key: {source_key!r}")
             continue
-        source_policy = policy.get(source_key)
-        is_inventory_only = (
-            isinstance(source_policy, dict)
-            and source_policy.get("canonical_claim")
-            == "provisional_source_index_only"
-        )
         for quality_field in ABSOLUTE_LISTING_QUALITY_FIELDS:
-            if is_inventory_only and quality_field in canonical_url_fields:
+            if (
+                quality_field == "missing_canonical_url"
+                and not _source_requires_canonical_url(policy, source_key)
+            ):
                 continue
             context = f"quality_by_source/{source_key}"
             count = _absolute_count(row, quality_field, context, failures)

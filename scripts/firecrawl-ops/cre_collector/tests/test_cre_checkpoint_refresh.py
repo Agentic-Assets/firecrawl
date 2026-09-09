@@ -4104,6 +4104,46 @@ def test_validation_quality_rejects_new_defects_and_child_collapse():
     assert any("search_smoke" in failure for failure in result["failures"])
 
 
+def test_validation_quality_allows_missing_canonical_growth_for_authoritative_inventory():
+    before = absolute_quality_report(
+        source="cbre-dealflow", missing_canonical_url="222"
+    )
+    after = absolute_quality_report(
+        source="cbre-dealflow", missing_canonical_url="270"
+    )
+    assert refresh.compare_validation_quality(before, after) == {
+        "ok": True,
+        "failures": [],
+    }
+
+    after["queries"]["quality_by_source"][0]["bad_canonical_url"] = "1"
+    result = refresh.compare_validation_quality(before, after)
+    assert result["ok"] is False
+    assert result["failures"] == [
+        "quality_by_source/('cbre-dealflow',)/bad_canonical_url increased 0->1"
+    ]
+
+    canonical_before = absolute_quality_report(source="jll")
+    canonical_after = absolute_quality_report(
+        source="jll", missing_canonical_url="1"
+    )
+    result = refresh.compare_validation_quality(canonical_before, canonical_after)
+    assert result["ok"] is False
+    assert result["failures"] == [
+        "quality_by_source/('jll',)/missing_canonical_url increased 0->1"
+    ]
+
+    unknown_before = absolute_quality_report(source="unknown")
+    unknown_after = absolute_quality_report(
+        source="unknown", missing_canonical_url="1"
+    )
+    result = refresh.compare_validation_quality(unknown_before, unknown_after)
+    assert result["ok"] is False
+    assert result["failures"] == [
+        "quality_by_source/('unknown',)/missing_canonical_url increased 0->1"
+    ]
+
+
 def test_absolute_validation_quality_allows_sparse_coordinates_but_rejects_hard_defects():
     zero = absolute_quality_report()
     assert refresh.verify_absolute_validation_quality(zero) == {
@@ -4112,6 +4152,7 @@ def test_absolute_validation_quality_allows_sparse_coordinates_but_rejects_hard_
     }
 
     defects = absolute_quality_report(
+        source="jll",
         bad_source_url="1",
         missing_canonical_url="1",
         bad_canonical_url="1",
@@ -4146,16 +4187,17 @@ def test_absolute_validation_quality_allows_sparse_coordinates_but_rejects_hard_
         "bad_child_urls/image_bad_url/count",
         "primary_child_conflicts/images/listings",
         "orphans/images/orphan_rows",
-        "quality_by_source/svn/missing_canonical_url",
-        "quality_by_source/svn/lease_rate_max_flags",
+        "quality_by_source/jll/missing_canonical_url",
+        "quality_by_source/jll/lease_rate_max_flags",
     ):
         assert any(expected in failure for failure in result["failures"])
 
 
-def test_absolute_validation_quality_requires_mixed_source_canonical_url_coverage():
+def test_absolute_validation_quality_allows_missing_authoritative_inventory_canonical_url():
     result = refresh.verify_absolute_validation_quality(
         absolute_quality_report(
             source="cbre-dealflow",
+            bad_source_url="1",
             missing_canonical_url="1",
             bad_canonical_url="1",
         )
@@ -4163,10 +4205,29 @@ def test_absolute_validation_quality_requires_mixed_source_canonical_url_coverag
     assert result == {
         "ok": False,
         "failures": [
-            "quality_by_source/cbre-dealflow/missing_canonical_url is nonzero: 1",
+            "quality_by_source/cbre-dealflow/bad_source_url is nonzero: 1",
             "quality_by_source/cbre-dealflow/bad_canonical_url is nonzero: 1",
         ],
     }
+
+
+def test_absolute_validation_quality_requires_canonical_listing_url():
+    result = refresh.verify_absolute_validation_quality(
+        absolute_quality_report(source="jll", missing_canonical_url="1")
+    )
+    assert result == {
+        "ok": False,
+        "failures": [
+            "quality_by_source/jll/missing_canonical_url is nonzero: 1",
+        ],
+    }
+
+
+def test_unknown_or_malformed_policy_requires_canonical_url():
+    assert refresh._source_requires_canonical_url({}, "unknown") is True
+    assert refresh._source_requires_canonical_url(
+        {"unknown": {"canonical_claim": "novel_claim"}}, "unknown"
+    ) is True
 
 
 def test_final_validation_records_preexisting_absolute_defect_without_blocking_refresh(
@@ -4174,13 +4235,13 @@ def test_final_validation_records_preexisting_absolute_defect_without_blocking_r
 ):
     run_dir = tmp_path / "run"
     (run_dir / "logs").mkdir(parents=True)
-    report = absolute_quality_report(missing_canonical_url="1")
+    report = absolute_quality_report(source="jll", missing_canonical_url="1")
     (run_dir / "pre-validation.json").write_text(json.dumps(report), encoding="utf-8")
     manifest = refresh.new_manifest(
         run_dir,
         git_sha="abc",
         git_dirty=False,
-        sources=("svn",),
+        sources=("jll",),
         page_cap=400,
         concurrency=3,
     )
