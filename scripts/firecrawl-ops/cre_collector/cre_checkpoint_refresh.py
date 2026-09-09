@@ -771,6 +771,7 @@ def fresh_source_env(
     base: Mapping[str, str] | None = None,
     generation_started_at: str | None = None,
     attempt_number: int = 1,
+    collector_concurrency: int | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Return subprocess env plus a nonsecret manifest summary of overrides."""
     env = safe_process_env(base)
@@ -783,6 +784,16 @@ def fresh_source_env(
     def clear(name: str) -> None:
         env.pop(name, None)
         overrides[name] = "<unset>"
+
+    def record_inherited(name: str, minimum: int, maximum: int) -> None:
+        """Record an allowlisted knob's bounded effective value without changing it."""
+        value = env.get(name)
+        if value is not None:
+            normalized = value.strip()
+            if not re.fullmatch(r"[0-9]{1,10}", normalized):
+                overrides[name] = "<invalid>"
+                return
+            overrides[name] = str(max(minimum, min(maximum, int(normalized))))
 
     set_value("CRE_REFRESH_GENERATION", run_dir.name)
     if generation_started_at:
@@ -810,15 +821,21 @@ def fresh_source_env(
             clear("BUILDOUT_REFRESH_PAGE_CACHE")
         set_value("BUILDOUT_CACHE_DIR", str(run_dir / "cache" / "buildout"))
     if source == "jll":
+        record_inherited("JLL_DETAIL_CONCURRENCY", 1, 10)
         set_value("JLL_DETAIL_CACHE_DIR", str(run_dir / "cache" / "jll-detail"))
         if generation_started_at:
             set_value("JLL_DETAIL_CACHE_MIN_CACHED_AT", generation_started_at)
     if source == "jll-investor":
+        record_inherited("JLL_INVESTOR_DETAIL_CONCURRENCY", 1, 8)
         set_value("JLL_INVESTOR_SITEMAP_SCAN_LIMIT", "0")
     if source == "avison-young":
         set_value("AVISON_YOUNG_DETAIL_LIMIT", "1000000")
         set_value("AVISON_YOUNG_DETAIL_TRANSPORT", "direct")
     if source == "cushman-wakefield":
+        if collector_concurrency is not None:
+            record_inherited(
+                "CUSHMAN_DETAIL_CONCURRENCY", 1, collector_concurrency
+            )
         clear("CUSHMAN_QUERY")
         set_value("CUSHMAN_DETAIL_MODE", "base")
     if source == "colliers-main":
@@ -841,7 +858,11 @@ def fresh_source_env(
             "COLLIERS_MAIN_DETAIL_CONCURRENCY",
             str(COLLIERS_MAIN_DETAIL_CONCURRENCY),
         )
+        record_inherited("COLLIERS_MAIN_DETAIL_START_INTERVAL_MS", 0, 30000)
+        record_inherited("COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS", 0, 180000)
         set_value("NODE_OPTIONS", "--max-old-space-size=6144")
+    if source == "nai-global":
+        record_inherited("NAI_ENUMERATION_CONCURRENCY", 1, 3)
     return env, overrides
 
 
@@ -1491,6 +1512,7 @@ def run_cohort_collection_worker(
         run_dir,
         generation_started_at=generation_started_at,
         attempt_number=attempt_number,
+        collector_concurrency=concurrency,
     )
     if source == "colliers-main":
         rc, _error = collect_colliers_main_chunks(
@@ -1621,6 +1643,8 @@ def _cohort_attempt(
     run_dir: Path,
     manifest: dict[str, Any],
     source: str,
+    *,
+    collector_concurrency: int,
 ) -> tuple[dict[str, Any], Path, Path, str] | None:
     """Durably create one coordinator-owned source collection attempt."""
     checkpoint = manifest["sources"][source]
@@ -1654,6 +1678,7 @@ def _cohort_attempt(
                 run_dir,
                 generation_started_at=manifest["started_at"],
                 attempt_number=attempt_number,
+                collector_concurrency=collector_concurrency,
             )[1].items()
         },
         "rejected_artifact": None,
@@ -1677,7 +1702,12 @@ def _start_cohort_collection(
     concurrency: int,
 ) -> CohortCollectionProcess | None:
     """Start one source collection in its own process group."""
-    created = _cohort_attempt(run_dir, manifest, source)
+    created = _cohort_attempt(
+        run_dir,
+        manifest,
+        source,
+        collector_concurrency=concurrency,
+    )
     if created is None:
         return None
     attempt, tmp_artifact, attempt_log, attempt_started = created
@@ -2261,6 +2291,7 @@ def collect_source(
             run_dir,
             generation_started_at=manifest["started_at"],
             attempt_number=attempt_number,
+            collector_concurrency=concurrency,
         )
         attempt = {
             "number": attempt_number,

@@ -680,6 +680,72 @@ def test_fresh_env_source_profiles(tmp_path, source, key, value):
     assert value in env[key]
 
 
+@pytest.mark.parametrize(
+    "source,key",
+    [
+        ("jll", "JLL_DETAIL_CONCURRENCY"),
+        ("jll-investor", "JLL_INVESTOR_DETAIL_CONCURRENCY"),
+        ("cushman-wakefield", "CUSHMAN_DETAIL_CONCURRENCY"),
+        ("colliers-main", "COLLIERS_MAIN_DETAIL_START_INTERVAL_MS"),
+        ("colliers-main", "COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS"),
+        ("nai-global", "NAI_ENUMERATION_CONCURRENCY"),
+    ],
+)
+def test_fresh_env_records_allowlisted_runtime_tuning_without_secrets(
+    tmp_path, source, key
+):
+    env, summary = refresh.fresh_source_env(
+        source,
+        tmp_path,
+        {
+            key: "2",
+            "DATABASE_URL": "postgresql://must-not-appear",
+        },
+        collector_concurrency=2,
+    )
+    assert env[key] == "2"
+    assert summary[key] == "2"
+    assert "DATABASE_URL" not in summary
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    [
+        "postgresql://must-not-appear",
+        "٢",
+        "9" * 100,
+    ],
+)
+def test_fresh_env_redacts_invalid_allowlisted_runtime_tuning(
+    tmp_path, invalid_value
+):
+    env, summary = refresh.fresh_source_env(
+        "jll",
+        tmp_path,
+        {"JLL_DETAIL_CONCURRENCY": invalid_value},
+    )
+    assert env["JLL_DETAIL_CONCURRENCY"] == invalid_value
+    assert summary["JLL_DETAIL_CONCURRENCY"] == "<invalid>"
+
+
+def test_fresh_env_records_bounded_effective_runtime_tuning(tmp_path):
+    _env, summary = refresh.fresh_source_env(
+        "jll",
+        tmp_path,
+        {"JLL_DETAIL_CONCURRENCY": "999"},
+        collector_concurrency=2,
+    )
+    assert summary["JLL_DETAIL_CONCURRENCY"] == "10"
+
+    _env, summary = refresh.fresh_source_env(
+        "cushman-wakefield",
+        tmp_path,
+        {"CUSHMAN_DETAIL_CONCURRENCY": "999"},
+        collector_concurrency=2,
+    )
+    assert summary["CUSHMAN_DETAIL_CONCURRENCY"] == "2"
+
+
 @pytest.mark.parametrize("source", sorted(refresh.STRICT_FRESHNESS_SOURCE_KEYS))
 def test_fresh_env_requires_provenance_for_strict_sources(tmp_path, source):
     env, _summary = refresh.fresh_source_env(source, tmp_path, {})

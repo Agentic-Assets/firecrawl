@@ -143,6 +143,55 @@ NAI_ENUMERATION_CONCURRENCY=1 \
   --env-file "$HOME/.config/cre/equire.env"
 ```
 
+### Supervised accelerated profile
+
+The conservative profile above remains the default. On 2026-09-09, supervised
+production observations plus Cayman's tuning authorization established the
+following evidence and decision record:
+
+| Setting | Observed result | Operational use |
+| --- | --- | --- |
+| CBRE API page size 200, serial | Complete pages, but the public inventory changed faster than two full passes could finish | Superseded for strict unlimited CBRE snapshots |
+| CBRE API page size 500, snapshot concurrency 2, no render wait | Live lease proof reconciled 15,044 unique IDs and URLs across two complete passes with an exact 44-row terminal page and empty sentinel; full TypeScript suite passed | Current strict unlimited CBRE profile |
+| CBRE API page size 1,000 or 2,000 | High-offset requests stalled or failed transport | Rejected; do not use |
+| JLL detail concurrency 1 | Exact and stable; observed cache-write interarrival mean 3.846 seconds and median 3.704 seconds over 230 current rows | Conservative fallback |
+| Direct JLL HTML | Exact structured property and broker payload in one sample, about 6x faster, but not yet equivalent for rendered Markdown, links, images, and attributes | Not admitted for production |
+| Host CPU ceiling 55% for 10 seconds | Correctly interrupted once when unrelated local application builds sustained 65-81% total host CPU | Conservative shared-host profile |
+| Host CPU ceiling 75% for 10 seconds | Cayman-authorized supervised calibration target; the guard, serial source checkpoints, and fail-closed telemetry remain enabled | Use only with live operator supervision and the constrained container profile |
+
+The accelerated profile changes request scheduling and throughput while the
+source cardinality, identity, freshness, artifact, SQL dry-run, ingest, and
+readback gates remain unchanged. Provider reliability still has to be observed
+through the source checkpoint. Sources remain serial, Colliers Main stays at
+concurrency 1 because of its provider challenge behavior, and NAI enumeration
+stays at concurrency 1. Start a new series when changing the global concurrency
+or CPU ceiling; never resume an existing series with a different recorded
+configuration.
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+JLL_DETAIL_CONCURRENCY=2 \
+JLL_INVESTOR_DETAIL_CONCURRENCY=2 \
+CUSHMAN_DETAIL_CONCURRENCY=2 \
+COLLIERS_MAIN_COVEO_ENABLE=1 \
+COLLIERS_MAIN_DETAIL_CONCURRENCY=1 \
+COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000 \
+COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000 \
+NAI_ENUMERATION_CONCURRENCY=1 \
+/usr/bin/nice -n 15 python3 cre_checkpoint_series.py \
+  --sources all \
+  --concurrency 2 \
+  --nice 15 \
+  --max-host-cpu-percent 75 \
+  --cpu-sustain-seconds 10 \
+  --cpu-sample-seconds 2 \
+  --env-file "$HOME/.config/cre/equire.env"
+```
+
+Each source attempt records the applicable allowlisted concurrency and pacing
+variables in its manifest. Database URLs and all other credentials remain
+excluded from that summary.
+
 The series manifest and per-source runs live under `out/checkpoint-series/`.
 Every manifest save also writes `source-health.json` in that series and updates
 `out/checkpoint-series/producer-source-health.json`. The latter is the stable,
