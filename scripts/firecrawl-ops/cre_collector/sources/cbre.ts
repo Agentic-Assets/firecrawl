@@ -181,7 +181,11 @@ export type CbreSnapshotOptions = {
 
 type CbrePageFetcher = (page: number, pass: number) => Promise<any>;
 
-const CBRE_PAGE_SIZE = 200;
+// The public API accepts 500-row pages, including exact short terminal pages
+// and an empty sentinel. The smaller request count keeps two membership passes
+// inside a realistic quiet window for this actively changing inventory.
+const CBRE_PAGE_SIZE = 500;
+const CBRE_SNAPSHOT_CONCURRENCY = 2;
 const CBRE_MAX_SNAPSHOT_PAGES = 1200;
 
 function cbreCacheVariant(
@@ -713,7 +717,6 @@ export async function srcCbre(
   const aspect = cbreAspect(tx);
   const opts = {
     proxy: "stealth" as const,
-    waitFor: 4000,
     timeout: 120000,
     ...(strict ? { maxAge: 0 } : {}),
   };
@@ -724,11 +727,13 @@ export async function srcCbre(
   let note: string | undefined;
   if (strict && !Number.isFinite(max)) {
     const cacheSeed = `${refreshGenerationId()}:${Date.now()}:${randomUUID()}`;
-    const snapshot = await fetchCbreSnapshot((page, pass) =>
-      scrapeJson(
-        cbreInventoryUrl(aspect, page, CBRE_PAGE_SIZE, cacheSeed, pass),
-        opts,
-      ),
+    const snapshot = await fetchCbreSnapshot(
+      (page, pass) =>
+        scrapeJson(
+          cbreInventoryUrl(aspect, page, CBRE_PAGE_SIZE, cacheSeed, pass),
+          opts,
+        ),
+      { concurrency: CBRE_SNAPSHOT_CONCURRENCY },
     );
     total = snapshot.total;
     collectedDocs = snapshot.documents;
@@ -778,7 +783,7 @@ export async function srcCbre(
       docsArr.push(...rest);
     }
     collectedDocs = docsArr.flat();
-    assertCbreAggregate(collectedDocs, total, pages, strict);
+    assertCbreAggregate(collectedDocs, total, pages, strict, CBRE_PAGE_SIZE);
     truncated = cbreResultTruncated(max, total, collectedDocs.length);
   }
   const want = Math.min(max, total);

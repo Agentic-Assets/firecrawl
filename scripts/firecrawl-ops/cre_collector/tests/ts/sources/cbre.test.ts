@@ -678,12 +678,54 @@ test("strict finite CBRE caps retain the one-pass truncated probe behavior", asy
   assert.equal(result.truncated, true);
 });
 
+test("strict finite CBRE probes reconcile multiple 500-row pages", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const calls: string[] = [];
+  const rows = Array.from({ length: 501 }, (_, index) =>
+    cbreRow(`CBRE-${index + 1}`),
+  );
+  (firecrawl as any).scrape = async (url: string) => {
+    calls.push(url);
+    const parsed = new URL(url);
+    const page = Number(parsed.searchParams.get("Page"));
+    const pageSize = Number(parsed.searchParams.get("PageSize"));
+    return {
+      rawHtml: JSON.stringify({
+        DocumentCount: rows.length,
+        Documents: rows.slice((page - 1) * pageSize, page * pageSize),
+      }),
+    };
+  };
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "cbre-finite-multipage-test";
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+    if (originalStrict === undefined)
+      delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalStrict;
+    if (originalGeneration === undefined)
+      delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+
+  const result = await srcCbre("sale", 501, false);
+  assert.equal(result.totalAvailable, 501);
+  assert.equal(result.listings.length, 501);
+  assert.equal(result.truncated, false);
+  assert.equal(calls.length, 2);
+  assert.ok(
+    calls.every((url) => new URL(url).searchParams.get("PageSize") === "500"),
+  );
+});
+
 test("strict CBRE fetches every page uncached and stamps authoritative provenance", async (t) => {
   const originalScrape = firecrawl.scrape;
   const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
   const originalGeneration = process.env.CRE_REFRESH_GENERATION;
   const calls: any[] = [];
-  const rows = Array.from({ length: 201 }, (_, index) => ({
+  const rows = Array.from({ length: 501 }, (_, index) => ({
     "Common.PrimaryKey": `CBRE-${index + 1}`,
     "Common.ActualAddress": {
       "Common.Line1": `Property ${index + 1}`,
@@ -697,12 +739,13 @@ test("strict CBRE fetches every page uncached and stamps authoritative provenanc
   }));
   (firecrawl as any).scrape = async (url: string, options: any) => {
     calls.push({ url, options });
-    const page = Number(new URL(url).searchParams.get("Page"));
+    const parsed = new URL(url);
+    const page = Number(parsed.searchParams.get("Page"));
+    const pageSize = Number(parsed.searchParams.get("PageSize"));
     return {
       rawHtml: JSON.stringify({
         DocumentCount: rows.length,
-        Documents:
-          page === 1 ? rows.slice(0, 200) : page === 2 ? rows.slice(200) : [],
+        Documents: rows.slice((page - 1) * pageSize, page * pageSize),
       }),
     };
   };
@@ -719,10 +762,11 @@ test("strict CBRE fetches every page uncached and stamps authoritative provenanc
   });
 
   const result = await srcCbre("sale", Number.POSITIVE_INFINITY, false);
-  assert.equal(result.listings.length, 201);
-  assert.equal(result.totalAvailable, 201);
+  assert.equal(result.listings.length, 501);
+  assert.equal(result.totalAvailable, 501);
   assert.equal(calls.length, 6);
   assert.ok(calls.every(({ options }) => options.maxAge === 0));
+  assert.ok(calls.every(({ options }) => options.waitFor === undefined));
   const pageOneCalls = calls.filter(
     ({ url }) => new URL(url).searchParams.get("Page") === "1",
   );
@@ -735,7 +779,7 @@ test("strict CBRE fetches every page uncached and stamps authoritative provenanc
     const parsed = new URL(url);
     assert.equal(parsed.searchParams.get("site"), "us-comm");
     assert.equal(parsed.searchParams.get("Common.Aspects"), "isSale");
-    assert.equal(parsed.searchParams.get("PageSize"), "200");
+    assert.equal(parsed.searchParams.get("PageSize"), "500");
     assert.deepEqual(
       [...parsed.searchParams.keys()].sort(),
       ["Common.Aspects", "Page", "PageSize", "site"].sort(),
