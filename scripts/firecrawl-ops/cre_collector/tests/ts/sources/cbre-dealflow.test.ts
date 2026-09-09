@@ -336,7 +336,7 @@ test("CBRE Deal Flow classifies agreement and unlinked cards without a failing d
   const base = {
     id: "card-id",
     url: "https://www.cbredealflow.com/",
-    listingPv: null,
+    listingPv: "card-id",
     name: "Current card",
     transactionType: "Investment Sale",
     assetType: "Office",
@@ -354,7 +354,10 @@ test("CBRE Deal Flow classifies agreement and unlinked cards without a failing d
     { ...base, urlKind: "agreement", url: "https://www.cbredealflow.com/buyer/agreement?pv=card-id" },
     "sale"
   );
-  const unlinked = await enrichCbreDealflowCard({ ...base, urlKind: "unlinked", url: null }, "sale");
+  const unlinked = await enrichCbreDealflowCard(
+    { ...base, id: "card:fixture", listingPv: null, urlKind: "unlinked", url: null },
+    "sale"
+  );
   const brochure = await enrichCbreDealflowCard(
     {
       ...base,
@@ -365,11 +368,16 @@ test("CBRE Deal Flow classifies agreement and unlinked cards without a failing d
     "sale"
   );
   assert.equal(agreement.detailUnavailable.reason, "gated_agreement");
+  assert.equal(agreement.id, "card:pv:card-id");
+  assert.equal(agreement.inventoryOnly.reason, "no_public_property_page");
+  assert.equal(agreement.inventoryOnly.indexUrl, "https://www.cbredealflow.com/");
   assert.equal(unlinked.detailUnavailable.reason, "card_not_linked");
   assert.equal(unlinked.provisionalIdentity.historyContinuity, "not_guaranteed");
   assert.equal(unlinked.inventoryOnly.reason, "no_provider_id_or_listing_url");
   assert.equal(unlinked.inventoryOnly.indexUrl, "https://www.cbredealflow.com/");
   assert.equal(brochure.detailUnavailable.reason, "public_brochure_only");
+  assert.equal(brochure.id, "card:pv:card-id");
+  assert.equal(brochure.inventoryOnly.reason, "no_public_property_page");
   assert.equal(brochure.brochures.length, 1);
   assert.equal(agreement.detailUnavailable.publicCardObserved, true);
   assert.equal(agreement.detailUnavailable.publicPageObserved, undefined);

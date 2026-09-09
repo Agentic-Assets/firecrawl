@@ -19,6 +19,7 @@ import {
   assertCbrePage,
   assertCbreAggregate,
   cbreResultTruncated,
+  cbrePageUrl,
   srcCbre,
 } from "../../../sources/cbre.js";
 import { firecrawl } from "../../../lib/scrape.js";
@@ -38,6 +39,20 @@ function loadFixture(): Array<{ _comment?: string; external_id: string; sourceKe
 test("cbreAspect maps transaction to API aspect", () => {
   assert.equal(cbreAspect("sale"), "isSale");
   assert.equal(cbreAspect("lease"), "isLetting");
+});
+
+test("CBRE cache isolation rotates only documented query parameters", () => {
+  const first = new URL(cbrePageUrl("isSale", 1, 1, false));
+  const final = new URL(cbrePageUrl("isSale", 1, 1, true));
+  const retry = new URL(cbrePageUrl("isSale", 1, 2, false));
+  const expected = ["Common.Aspects", "Page", "PageSize", "site"];
+  for (const url of [first, final, retry]) {
+    assert.deepEqual([...url.searchParams.keys()].sort(), expected);
+    assert.equal(url.searchParams.get("Common.Aspects"), "isSale");
+    assert.equal(url.searchParams.get("Page"), "1");
+  }
+  assert.notEqual(first.search, final.search);
+  assert.notEqual(first.search, retry.search);
 });
 
 test("CBRE finite caps report truncation against DocumentCount", () => {
@@ -349,8 +364,10 @@ test("strict CBRE fetches every page uncached and stamps authoritative provenanc
 
   const result = await srcCbre("sale", Number.POSITIVE_INFINITY, false);
   assert.equal(result.listings.length, 201);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.ok(calls.every(({ options }) => options.maxAge === 0));
+  assert.ok(calls.every(({ url }) => [...new URL(url).searchParams.keys()].length === 4));
+  assert.notEqual(new URL(calls[0].url).search, new URL(calls[2].url).search);
   for (const listing of result.listings) {
     assert.equal(listing.detailObservedAt, listing.inventoryObservedAt);
     assert.equal(listing.freshnessProvenance.generationId, "cbre-strict-test");
@@ -360,4 +377,56 @@ test("strict CBRE fetches every page uncached and stamps authoritative provenanc
     );
     assert.equal(listing.freshnessProvenance.cacheDisposition, "live");
   }
+});
+
+test("strict CBRE restarts the complete generation when the provider count moves", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const rows = Array.from({ length: 202 }, (_, index) => ({
+    "Common.PrimaryKey": `CBRE-${index + 1}`,
+    "Common.ActualAddress": {
+      "Common.Line1": `Property ${index + 1}`,
+      "Common.Line2": `${index + 1} Main Street`,
+      "Common.Locallity": "Dallas",
+      "Common.Region": "TX",
+      "Common.PostCode": "75201",
+      "Common.Country": "US",
+    },
+    "Common.Aspects": ["isSale"],
+  }));
+  const calls: string[] = [];
+  let firstGenerationOrder: string | null = null;
+  (firecrawl as any).scrape = async (url: string) => {
+    calls.push(url);
+    const parsed = new URL(url);
+    const page = Number(parsed.searchParams.get("Page"));
+    const order = [...parsed.searchParams.keys()].join(",");
+    firstGenerationOrder ??= order;
+    const firstAttempt = order === firstGenerationOrder;
+    const total = firstAttempt && page === 1 ? 201 : 202;
+    return {
+      rawHtml: JSON.stringify({
+        DocumentCount: total,
+        Documents: page === 1 ? rows.slice(0, 200) : rows.slice(200),
+      }),
+    };
+  };
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "cbre-moving-generation-test";
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+    if (originalStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalStrict;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+
+  const result = await srcCbre("sale", Number.POSITIVE_INFINITY, false);
+  assert.equal(result.listings.length, 202);
+  assert.equal(calls.length, 5);
+  assert.equal(
+    new Set(calls.map((url) => [...new URL(url).searchParams.keys()].join(","))).size,
+    3
+  );
 });

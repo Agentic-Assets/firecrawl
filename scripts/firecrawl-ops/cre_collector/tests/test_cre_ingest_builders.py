@@ -1423,6 +1423,26 @@ def test_inventory_only_card_never_becomes_canonical_listing():
     assert inventory["source_key"] == "cbre-dealflow"
 
 
+def test_inventory_only_agreement_preserves_supporting_url_without_canonical_listing():
+    agreement_url = "https://www.cbredealflow.com/buyer/agreement?pv=provider-token"
+    listing = {
+        "sourceKey": "cbre-dealflow",
+        "id": "card:pv:provider-token",
+        "url": agreement_url,
+        "name": "Agreement-only Deal",
+        "inventoryOnly": {
+            "reason": "no_public_property_page",
+            "indexUrl": "https://www.cbredealflow.com/",
+        },
+    }
+
+    assert _row(listing) is None
+    inventory = ci.to_inventory_only_row(listing, _SCRAPED_AT)
+    assert inventory is not None
+    assert inventory["external_id"] == "dealflow:card:pv:provider-token"
+    assert inventory["url"] == agreement_url
+
+
 def test_inventory_only_reconciliation_requires_strict_full_enumeration():
     payload = {
         "runMeta": {
