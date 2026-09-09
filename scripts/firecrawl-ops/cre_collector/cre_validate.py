@@ -9,6 +9,7 @@ transactions and only inspect the `credeals` listing tables/views.
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -99,6 +100,17 @@ def persisted_freshness_provenance(raw_data):
 
 def _sql_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
+
+
+def artifact_run_jobs_query(artifact_run_key):
+    """Build the exact read-only job-footprint probe used by recovery."""
+    if not re.fullmatch(r"ingest:v1:[0-9a-f]{64}", artifact_run_key or ""):
+        raise ValueError("expected artifact run key is malformed")
+    return f"""
+SELECT count(*)::text AS matching_jobs
+FROM credeals.cre_scrape_jobs
+WHERE artifact_run_key = {_sql_literal(artifact_run_key)};
+"""
 
 
 def _raw_json_object(alias, path):
@@ -827,8 +839,9 @@ def render_markdown(report):
         "primary_child_conflicts": "Primary Child Conflicts",
         "orphans": "Child Orphans",
         "search_smoke": "Search Smoke",
+        "artifact_run_jobs": "Artifact Run Jobs",
     }
-    for key in QUERIES:
+    for key in report["queries"]:
         parts.extend([f"## {labels[key]}", "", markdown_table(report["queries"][key]), ""])
     return "\n".join(parts)
 
@@ -838,6 +851,11 @@ def main():
     parser.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
     parser.add_argument(
         "--expected-db-target-sha256",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--expected-artifact-run-key",
         default=None,
         help=argparse.SUPPRESS,
     )
@@ -855,7 +873,15 @@ def main():
         "queries": {},
         "psql_warnings": [],
     }
-    report["queries"], stderr = run_queries(psql, db_url, QUERIES)
+    queries = dict(QUERIES)
+    if args.expected_artifact_run_key:
+        try:
+            queries["artifact_run_jobs"] = artifact_run_jobs_query(
+                args.expected_artifact_run_key
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+    report["queries"], stderr = run_queries(psql, db_url, queries)
     warning = normalize_warning(stderr)
     if warning:
         report["psql_warnings"].append(warning)

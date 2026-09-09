@@ -523,10 +523,14 @@ truncated.
 
 The manifest records `ingesting` before launching a live write. If execution
 stops in that window, resume performs a generation-exact database readback and
-never automatically replays an ambiguous ingest. A successful live readback
-requires the expected generation ID, exact active canonical count, exact
-inventory-only scope count, and observation timestamps no earlier than the
-generation start.
+never automatically replays an ambiguous ingest. Recovery distinguishes an
+exact committed generation from an exact rollback: rollback requires both zero
+rows for the expected generation and zero scrape jobs for the immutable
+artifact run key, then returns the checkpoint to `dry_run_passed` for a reviewed
+resume. Any partial, conflicting, or missing probe remains
+`ingest_recovery_required`. A successful live readback requires the expected
+generation ID, exact active canonical count, exact inventory-only scope count,
+and observation timestamps no earlier than the generation start.
 
 **Colliers SalesTracker identity safety (2026-07-29).** The list endpoint emits
 one HTML card per project, while the map endpoint emits one row per map pin.

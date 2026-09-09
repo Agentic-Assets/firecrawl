@@ -234,9 +234,9 @@ SQL
 
 # Run two opposing phase sets: transaction one observes X and retires Y, while
 # transaction two observes Y and retires X. Without the shared transaction lock
-# each can retain its present identity lock and wait forever on the other's
-# retirement identity. Generated transaction, identity, source, listing, and
-# retirement lock fragments are executed against both real tables.
+# each can retain its present row lock and wait forever on the other's
+# retirement row. Generated transaction, source-index, listing, and retirement
+# lock fragments are executed against both real tables.
 run_opposing_lifecycle_transaction() {
   local present_external="$1"
   local present_listing_id="$2"
@@ -264,7 +264,7 @@ transaction_start = sql.index(
     "-- Intentionally serialize all generated lifecycle mutation transactions."
 )
 transaction_end = sql.index("SET LOCAL standard_conforming_strings", transaction_start)
-present_start = sql.index("-- Global lifecycle lock order")
+present_start = sql.index("-- The transaction-wide lifecycle advisory lock above")
 present_end = sql.index("-- (H4a)", present_start)
 retirement_start = sql.index("CREATE TEMP TABLE _retired_candidates")
 event_start = sql.index("INSERT INTO credeals.cre_listing_events", retirement_start)

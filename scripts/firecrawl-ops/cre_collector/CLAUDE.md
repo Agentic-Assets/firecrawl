@@ -189,6 +189,13 @@ Key behavior:
   contacts/documents/images **unless**
   `jsonb_path_exists(raw_data, '$.**.detailError')` (preserves children on
   transient detail failures).
+- **Bulk lifecycle locking:** every generated ingest transaction takes exactly
+  one transaction-wide lifecycle advisory lock, then locks existing source-index
+  rows before listing rows in deterministic order. Never add one transaction
+  advisory lock per listing identity: high-volume sources exhaust PostgreSQL's
+  shared lock table before mutation. The global lock also serializes the bounded
+  reviewed reconciliation path; unique identity constraints serialize new-row
+  conflicts.
 - **Status activation is OPT-IN and default-OFF.** Source-derived statuses are
   suppressed unless `--activate-status` is passed on the CLI or
   `CRE_ACTIVATE_STATUS=1` is set in the environment. New helpers:

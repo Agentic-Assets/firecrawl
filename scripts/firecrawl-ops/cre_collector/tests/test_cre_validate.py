@@ -24,6 +24,7 @@ import cre_validate
 from cre_validate import (
     QUERIES,
     SOURCE_KEY_SQL,
+    artifact_run_jobs_query,
     markdown_table,
     normalize_warning,
     parse_query_batch,
@@ -32,6 +33,15 @@ from cre_validate import (
     run_query,
     run_queries,
 )
+
+
+def test_artifact_run_jobs_query_is_exact_and_rejects_malformed_keys():
+    key = f"ingest:v1:{'a' * 64}"
+    sql = artifact_run_jobs_query(key)
+    assert "count(*)::text AS matching_jobs" in sql
+    assert f"artifact_run_key = '{key}'" in sql
+    with pytest.raises(ValueError, match="malformed"):
+        artifact_run_jobs_query("not-an-artifact-key")
 
 
 def test_child_quality_queries_cover_media_and_links():
