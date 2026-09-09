@@ -90,6 +90,8 @@ services:
       # Keep this separate from API crawl concurrency so resource-sensitive
       # local workflows can constrain the browser sidecar independently.
       MAX_CONCURRENT_PAGES: ${PLAYWRIGHT_MAX_CONCURRENT_PAGES:-${CRAWL_CONCURRENT_REQUESTS:-10}}
+    ports:
+      - "127.0.0.1:${PLAYWRIGHT_HOST_PORT:-3003}:3000"
     networks:
       - backend
     security_opt:

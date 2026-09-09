@@ -42,6 +42,7 @@ from cre_ingest import (
     SOURCE_TO_BROKERAGE,
     STRICT_FRESHNESS_SOURCE_KEYS,
     child_count_regressed,
+    colliers_contact_preservation_is_valid,
     database_target_fingerprint_from_url,
     load_db_url,
     merge_rows,
@@ -821,6 +822,10 @@ def fresh_source_env(
         clear("CUSHMAN_QUERY")
         set_value("CUSHMAN_DETAIL_MODE", "base")
     if source == "colliers-main":
+        # The supervised checkpoint path pins the production-rehearsed
+        # first-party API transport. Recording this override in each attempt
+        # prevents a resume from silently falling back to the legacy renderer.
+        set_value("COLLIERS_MAIN_COVEO_ENABLE", "1")
         set_value(
             "COLLIERS_MAIN_DETAIL_CACHE_PATH",
             str(run_dir / "cache" / "colliers-main" / "detail-cache.jsonl"),
@@ -1267,6 +1272,7 @@ def validate_source_artifact(
                     f"listings[{index}] cannot satisfy property-detail freshness"
                 )
             preserves_children = listing.get("preserveChildCollections") is True
+            preserves_contacts = listing.get("preserveContactCollections") is True
             if property_detail_freshness:
                 preserves_with_detail = (
                     listing.get("detailObservedWithChildPreservation") is True
@@ -1328,6 +1334,19 @@ def validate_source_artifact(
                 if preserves_children:
                     raise ArtifactValidationError(
                         f"listings[{index}] must not preserve child collections"
+                    )
+                if (
+                    preserves_contacts
+                    and not colliers_contact_preservation_is_valid(listing)
+                ):
+                    raise ArtifactValidationError(
+                        f"listings[{index}] has invalid contact preservation"
+                    )
+                if provenance.get("detailScope") not in accepted_detail_scopes(
+                    "strict_detail", expected_source
+                ):
+                    raise ArtifactValidationError(
+                        f"listings[{index}] has an unaccepted strict-detail scope"
                     )
                 detail_value = listing.get("detailObservedAt")
                 if (
@@ -3086,6 +3105,17 @@ FRESHNESS_EVIDENCE_CONTRACT = {
 }
 
 
+def accepted_detail_scopes(evidence_class: str, source: str) -> set[str]:
+    """Return evidence scopes admitted for one source, including narrow overrides."""
+    contract = FRESHNESS_EVIDENCE_CONTRACT.get(evidence_class)
+    if contract is None:
+        return set()
+    accepted = set(contract["detail_scopes"])
+    if source == "colliers-main" and evidence_class == "strict_detail":
+        accepted.add("first_party_detail_api")
+    return accepted
+
+
 def _generation_expectation(
     manifest: Mapping[str, Any], artifact: Mapping[str, Any], source: str
 ) -> tuple[str, datetime]:
@@ -3306,12 +3336,13 @@ def verify_validation_readback(
             detail_scopes = _generation_evidence_values(
                 generation_row, "detail_scopes"
             )
+            accepted_scopes = accepted_detail_scopes(evidence_class, source)
             cache_dispositions = _generation_evidence_values(
                 generation_row, "cache_dispositions"
             )
             if (
                 detail_scopes is None
-                or not detail_scopes <= contract["detail_scopes"]
+                or not detail_scopes <= accepted_scopes
             ):
                 checkpoint["readback"] = {
                     "ok": False,

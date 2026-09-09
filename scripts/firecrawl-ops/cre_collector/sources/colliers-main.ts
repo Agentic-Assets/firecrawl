@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, dedupeStrings, extractSitemapUrlEntries } from "../lib/html.js";
-import { harvestDetail } from "../lib/harvest.js";
+import { classifyDocument, harvestDetail } from "../lib/harvest.js";
 import { scrapeDoc, scrapeRaw } from "../lib/scrape.js";
 import { ScrapeOpts, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { parseLeaseRate } from "../lib/parse.js";
@@ -24,11 +24,14 @@ import {
 // usa####### detail URL with lastmod. Detail pages render with a
 // RealEstateListing JSON-LD block plus clean markdown. This folds into the
 // `colliers` brokerage as `colliers-main` (main: id prefix), leaving the
-// SalesTracker `colliers` source untouched. No Coveo POST, auth, or gated path.
+// SalesTracker `colliers` source untouched. The renderer remains a fallback;
+// the supervised checkpoint pins the exact-ID, anonymous first-party Coveo
+// transport implemented below. Neither path accepts auth or visitor tokens.
 // See cre_scrapers/brokers/colliers/COLLIERS_MAIN_SITEMAP_UNLOCK_2026-06-12.md.
 
 export const COLLIERS_MAIN_HOST = "https://www.colliers.com";
 export const COLLIERS_MAIN_SITEMAP_INDEX = `${COLLIERS_MAIN_HOST}/sitemap`;
+export const COLLIERS_MAIN_PROPERTIES_SITEMAP = `${COLLIERS_MAIN_HOST}/en/sitemap?type=properties`;
 export const COLLIERS_MAIN_SOURCE_URL = `${COLLIERS_MAIN_HOST}/en/properties`;
 export const COLLIERS_MAIN_DETAIL_CONCURRENCY = boundedInt(
   process.env.COLLIERS_MAIN_DETAIL_CONCURRENCY,
@@ -128,6 +131,599 @@ export type ColliersMainEntry = {
 export let colliersMainSitemapCache: ColliersMainEntry[] | null = null;
 export let colliersMainEnrichedMemo: any[] | null = null;
 export let colliersMainEnrichedStats = { errors: 0, deferred: 0 };
+
+export const COLLIERS_MAIN_COVEO_BATCH_URL =
+  process.env.COLLIERS_MAIN_COVEO_BATCH_URL ?? "http://localhost:3003/browser-batch-fetch";
+export const COLLIERS_MAIN_COVEO_SEARCH_URL =
+  `${COLLIERS_MAIN_HOST}/coveo/rest/search/v2?sitecoreItemUri=` +
+  encodeURIComponent("sitecore://web/{FA041AD7-243D-4265-A0C4-522EF012F8FC}?lang=en&amp;ver=2") +
+  "&siteName=Colliers";
+export const COLLIERS_MAIN_COVEO_BATCH_SIZE = 250;
+export const COLLIERS_MAIN_COVEO_REQUESTS_PER_SESSION = 16;
+const COLLIERS_PROPERTY_TEMPLATE = "534C0EB71D32434FBE0F62A2AB174F16";
+const COLLIERS_US_COUNTRY = "8B63F0071EE64C2ABFB925D1466E7738";
+const COLLIERS_COVEO_SOURCE = "Coveo_web_index - COLLIERS-AZ-102-PROD";
+const COLLIERS_COVEO_CLICK_ORIGINS = new Set([
+  COLLIERS_MAIN_HOST,
+  "https://cmimport.colliers.com",
+]);
+
+export function colliersMainCoveoEnabled(): boolean {
+  return ["1", "true", "yes", "on"].includes((process.env.COLLIERS_MAIN_COVEO_ENABLE ?? "").toLowerCase());
+}
+
+const COLLIERS_MAIN_COVEO_PROPERTY_FIELDS = [
+  "propertyz32xid", "propertyz32xtitle", "propertyz32xfullz32xaddress", "urllink",
+  "forz32xsale", "forz32xlease", "propertyforsaleorleasecomputed", "propertyz32xstatus",
+  "primarypropertytype", "propertytypescomputed", "city", "statez32xprovince", "latitude", "longitude",
+  "fsalez32xpricez32xmin16556", "fsalez32xpricez32xmaz120x16556",
+  "fleasez32xpricez32xmin16556", "fleasez32xpricez32xmaz120x16556", "currency",
+  "hidez32xsalez32xprice", "hidez32xleasez32xprice", "salez32xtype", "leasez32xtype",
+  "leasez32xratez32xtype", "propertysortpricecomputed",
+  "buildingz32xsiz122xe", "buildingz32xsiz122xez32xunit",
+  "propertysiz122xecomputed", "siz122xeunitcomputed", "siz122xez32xunit",
+  "flotz32xsiz122xe16556", "lotz32xsiz122xez32xunit", "propertylotsiz122xesqmcomputed",
+  "propertybuildingsiz122xesqmcomputed",
+  "fminz32xarea16556", "fmaz120xz32xarea16556", "floorz32xareaz32xunit",
+  "description", "propertyz32ximages", "relatedz32xdocuments", "relatedz32xlinks",
+  "relatedz32xez120xperts", "relatedez120xpertsfullnamecomputed", "propertyz32xfeatures",
+  "specifications", "z95xupdated", "lastz32xupdatedz32xdate",
+];
+
+const COLLIERS_MAIN_COVEO_EXPERT_FIELDS = [
+  "z95xid", "z95xname", "displayname", "title", "email", "officez32xphone", "mobilez32xphone",
+  "ez120xpertofficenamecomputed", "profilez32xpicture", "urllink", "licensez32xnumber",
+];
+
+function chunks<T>(values: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let i = 0; i < values.length; i += size) result.push(values.slice(i, i + size));
+  return result;
+}
+
+export function colliersMainCoveoQueryBody(ids: string[], kind: "property" | "expert"): string {
+  if (!ids.length || ids.length > COLLIERS_MAIN_COVEO_BATCH_SIZE) throw new Error("invalid Colliers Coveo batch size");
+  const normalized = ids.map((id) => id.replace(/[^a-z0-9]/gi, "").toUpperCase());
+  if (normalized.some((id) => !id)) throw new Error("invalid Colliers Coveo identifier");
+  const idField = kind === "property" ? "ftitle16556" : "z95xid";
+  const identity = `(${normalized.map((id) => `@${idField}==${id}`).join(" OR ")})`;
+  const aq = kind === "property"
+    ? `(@z95xtemplate==${COLLIERS_PROPERTY_TEMPLATE} @country=${COLLIERS_US_COUNTRY}) ${identity}`
+    : identity;
+  return new URLSearchParams({
+    aq,
+    cq: `(@z95xlanguage==en) (@z95xlatestversion==1) (@source==\"${COLLIERS_COVEO_SOURCE}\")`,
+    searchHub: "Properties",
+    locale: "en",
+    maximumAge: "0",
+    firstResult: "0",
+    numberOfResults: String(ids.length),
+    fieldsToInclude: JSON.stringify(
+      kind === "property" ? COLLIERS_MAIN_COVEO_PROPERTY_FIELDS : COLLIERS_MAIN_COVEO_EXPERT_FIELDS
+    ),
+    allowQueriesWithoutKeywords: "true",
+  }).toString();
+}
+
+type CoveoResult = { title?: string; clickUri?: string; raw?: Record<string, any> };
+
+function normalizeCoveoId(value: unknown): string | null {
+  const normalized = clean(value)?.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  return normalized || null;
+}
+
+export function reconcileColliersMainCoveoExperts(
+  expectedIds: string[],
+  results: CoveoResult[],
+  allowMissing = false
+): Map<string, CoveoResult> {
+  const expected = new Set(expectedIds.map(normalizeCoveoId).filter((id): id is string => Boolean(id)));
+  if (expected.size !== expectedIds.length) {
+    throw new Error("Colliers Coveo expert inventory contains an invalid or duplicate identifier");
+  }
+  const actual = new Map<string, CoveoResult>();
+  for (const result of results) {
+    const id = normalizeCoveoId(result.raw?.z95xid);
+    if (!id) throw new Error("Colliers Coveo expert result lacks a native identifier");
+    if (actual.has(id)) throw new Error(`Colliers Coveo returned duplicate expert ${id}`);
+    if (!expected.has(id)) throw new Error(`Colliers Coveo returned unexpected expert ${id}`);
+    actual.set(id, result);
+  }
+  const missing = [...expected].filter((id) => !actual.has(id));
+  if (missing.length && !allowMissing) {
+    throw new Error(
+      `Colliers Coveo missing ${missing.length} expert id(s): ${missing.slice(0, 5).join(", ")}`
+    );
+  }
+  return actual;
+}
+
+export function reconcileColliersMainCoveoResults(
+  entries: ColliersMainEntry[],
+  results: CoveoResult[]
+): Map<string, CoveoResult> {
+  const expected = new Map(entries.map((entry) => [entry.id.toLowerCase(), entry]));
+  const actual = new Map<string, CoveoResult>();
+  for (const result of results) {
+    const id = clean(result.raw?.propertyz32xid ?? result.raw?.ftitle16556 ?? result.title)?.toLowerCase();
+    if (!id || !/^usa\d{5,}$/.test(id)) throw new Error("Colliers Coveo result lacks a native usa identifier");
+    if (actual.has(id)) throw new Error(`Colliers Coveo returned duplicate ${id}`);
+    const entry = expected.get(id);
+    if (!entry) throw new Error(`Colliers Coveo returned unexpected ${id}`);
+    if (!result.clickUri) throw new Error(`Colliers Coveo ${id} lacks clickUri`);
+    const resultUrl = new URL(result.clickUri);
+    const entryUrl = new URL(entry.url);
+    if (
+      !COLLIERS_COVEO_CLICK_ORIGINS.has(resultUrl.origin)
+      || resultUrl.pathname.toLowerCase() !== entryUrl.pathname.toLowerCase()
+    ) {
+      throw new Error(`Colliers Coveo ${id} click identity does not match sitemap`);
+    }
+    actual.set(id, result);
+  }
+  const missing = [...expected.keys()].filter((id) => !actual.has(id));
+  if (missing.length) throw new Error(`Colliers Coveo missing ${missing.length} sitemap id(s): ${missing.slice(0, 5).join(", ")}`);
+  return actual;
+}
+
+function parseCoveoJsonList(value: unknown, field: string): any[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error(`Colliers Coveo ${field} is malformed JSON`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`Colliers Coveo ${field} is not an array`);
+  }
+  return parsed;
+}
+
+function parseCoveoStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map(clean).filter((item): item is string => Boolean(item));
+  }
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed.map(clean).filter((item): item is string => Boolean(item));
+    }
+  } catch {
+    // The live index also emits semicolon-delimited scalar lists.
+  }
+  return value.split(";").map(clean).filter((item): item is string => Boolean(item));
+}
+
+function textFromHtml(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return clean(cheerio.load(value).text());
+}
+
+function coveoFlag(value: unknown): boolean {
+  return ["1", "true", "yes", "on"].includes(String(value ?? "").trim().toLowerCase());
+}
+
+const COLLIERS_LEASE_RATE_UNIT: Record<string, string> = {
+  "247f7ab813234d33a9e042c0b5f13652": "/ SF",
+  "a5845526c5a64d55aff14aa673e82a22": "/ RSF",
+  "5457035acd674c0eb235732dd242d93b": "/ month",
+  "ca824d6179d74708a72d88b9e2fe925e": "/ acre",
+  "d1e6e3f63c5b4229a67bf21c8e5c3488": "/ year",
+};
+
+const COLLIERS_SIZE_UNIT: Record<string, "sf" | "ac" | "units"> = {
+  "40409737aa8c4b10b53be81940c7b2ed": "sf",
+  "708623336f6542cab69b28fe1eee7322": "ac",
+  "89d325e537db494cb9016e8a71d7eca3": "units",
+};
+const MAX_UNCORROBORATED_LISTING_ACRES = 100;
+
+function colliersCoveoUnit(value: unknown): "sf" | "ac" | "units" | null {
+  const scalar = Array.isArray(value) ? value[0] : value;
+  const normalized = normalizeCoveoId(scalar);
+  if (!normalized) return null;
+  if (normalized === "sf" || normalized === "sqft" || normalized === "squarefeet") return "sf";
+  if (normalized === "ac" || normalized === "acre" || normalized === "acres") return "ac";
+  if (normalized === "unit" || normalized === "units") return "units";
+  return COLLIERS_SIZE_UNIT[normalized] ?? null;
+}
+
+function colliersCoveoAcreEvidenceText(raw: Record<string, any>): string {
+  const structured = [
+    ...parseCoveoJsonList(raw.propertyz32xfeatures, "property features"),
+    ...parseCoveoJsonList(raw.specifications, "specifications"),
+  ].flatMap((value) => {
+    if (typeof value === "string") return [value];
+    if (!value || typeof value !== "object") return [];
+    return [value.Name, value.Label, value.Value, value.Text]
+      .map(clean)
+      .filter((text): text is string => Boolean(text));
+  });
+  return [
+    clean(raw.propertyz32xtitle),
+    textFromHtml(raw.description),
+    ...structured,
+  ].filter((text): text is string => Boolean(text)).join(" ");
+}
+
+function colliersMainCoveoAcreEvidenceValues(raw: Record<string, any>): number[] {
+  const evidence = colliersCoveoAcreEvidenceText(raw);
+  const acrePattern = /(?:±|\+\/-|~)?\s*((?:[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)|(?:\.[0-9]+))\s*(?:±|\+\/-|~|-)?\s*(?:acres?\b|ac\b)(?!\s*units?\b)/gi;
+  return [...evidence.matchAll(acrePattern)]
+    .map((match) => Number(match[1].replaceAll(",", "")))
+    .filter(Number.isFinite);
+}
+
+export function colliersMainCoveoAcreageIsCorroborated(
+  raw: Record<string, any>,
+  acres: number
+): boolean {
+  const tolerance = Math.max(0.001, Math.abs(acres) * 0.005);
+  return colliersMainCoveoAcreEvidenceValues(raw).some(
+    (observed) => Math.abs(observed - acres) <= tolerance
+  );
+}
+
+export function colliersMainCoveoAcreageIsAdmissible(
+  raw: Record<string, any>,
+  acres: number
+): boolean {
+  const evidenceValues = colliersMainCoveoAcreEvidenceValues(raw);
+  if (colliersMainCoveoAcreageIsCorroborated(raw, acres)) return true;
+  // The current first-party index contains decimal-shift errors even below one
+  // acre. If the public copy states any acreage, a mismatch is affirmative
+  // evidence that the coded value is unsafe. A small coded value with no text
+  // evidence remains usable; larger values require direct corroboration.
+  return acres <= MAX_UNCORROBORATED_LISTING_ACRES && evidenceValues.length === 0;
+}
+
+export function colliersMainCoveoMeasurements(raw: Record<string, any>): {
+  buildingSizeSqft?: number;
+  lotSizeAcres?: number;
+  availableSf?: number;
+  minDivisibleSf?: number;
+  maxDivisibleSf?: number;
+  units?: number;
+} {
+  const result: {
+    buildingSizeSqft?: number;
+    lotSizeAcres?: number;
+    availableSf?: number;
+    minDivisibleSf?: number;
+    maxDivisibleSf?: number;
+    units?: number;
+  } = {};
+  const building = num(Number(raw.buildingz32xsiz122xe));
+  const buildingUnit = colliersCoveoUnit(raw.buildingz32xsiz122xez32xunit);
+  if (building && buildingUnit === "sf") result.buildingSizeSqft = building;
+  if (building && buildingUnit === "units" && Number.isInteger(building)) result.units = building;
+
+  const floorUnit = colliersCoveoUnit(raw.floorz32xareaz32xunit);
+  const floorMin = num(Number(raw.fminz32xarea16556));
+  const floorMax = num(Number(raw.fmaz120xz32xarea16556));
+  if (floorUnit === "sf" && (floorMin || floorMax)) {
+    result.minDivisibleSf = floorMin ?? floorMax ?? undefined;
+    result.maxDivisibleSf = floorMax ?? floorMin ?? undefined;
+    result.availableSf = floorMax ?? floorMin ?? undefined;
+  } else {
+    const propertySize = num(Number(raw.propertysiz122xecomputed));
+    if (propertySize && colliersCoveoUnit(raw.siz122xeunitcomputed) === "sf") {
+      result.availableSf = propertySize;
+    }
+  }
+
+  const lotRaw = num(Number(raw.flotz32xsiz122xe16556));
+  const lotUnit = colliersCoveoUnit(raw.lotz32xsiz122xez32xunit);
+  const propertySize = num(Number(raw.propertysiz122xecomputed));
+  const propertyUnit = colliersCoveoUnit(raw.siz122xeunitcomputed);
+  const lotValue = lotRaw ?? (propertyUnit === "ac" ? propertySize : null);
+  const effectiveLotUnit = lotRaw ? lotUnit : propertyUnit;
+  if (lotValue && effectiveLotUnit === "sf") {
+    result.lotSizeAcres = lotValue / 43_560;
+  } else if (
+    lotValue
+    && effectiveLotUnit === "ac"
+    && colliersMainCoveoAcreageIsAdmissible(raw, lotValue)
+  ) {
+    result.lotSizeAcres = lotValue;
+  }
+  return result;
+}
+
+function isPrivateOrLocalHostname(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true;
+  if (host === "::1" || host === "0:0:0:0:0:0:0:1" || /^f[cd][0-9a-f:]*$/i.test(host) || /^fe[89ab][0-9a-f:]*$/i.test(host)) {
+    return true;
+  }
+  const parts = host.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  return parts[0] === 10 || parts[0] === 127 || parts[0] === 0 ||
+    (parts[0] === 169 && parts[1] === 254) ||
+    (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+    (parts[0] === 192 && parts[1] === 168);
+}
+
+export function colliersMainPublicUrl(value: unknown): string | null {
+  const text = clean(value);
+  if (!text || text.startsWith("#")) return null;
+  try {
+    const parsed = new URL(decodeHtmlEntities(text), COLLIERS_MAIN_HOST);
+    if (!["http:", "https:"].includes(parsed.protocol)) return null;
+    if (parsed.username || parsed.password || !parsed.hostname || isPrivateOrLocalHostname(parsed.hostname)) return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function uniqueUrlObjects<T extends { url: string }>(values: T[]): T[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    if (seen.has(value.url)) return false;
+    seen.add(value.url);
+    return true;
+  });
+}
+
+export function mapColliersMainCoveoListing(
+  entry: ColliersMainEntry,
+  result: CoveoResult,
+  experts: Map<string, CoveoResult> = new Map()
+): any {
+  const raw = result.raw ?? {};
+  const addr = parseColliersMainAddress(clean(raw.propertyz32xfullz32xaddress));
+  const sale = String(raw.forz32xsale) === "1";
+  const lease = String(raw.forz32xlease) === "1";
+  if (!sale && !lease) throw new Error(`Colliers Coveo ${entry.id} lacks transaction flags`);
+  const transactionType = sale && lease ? "Sale/Lease" : sale ? "Sale" : "Lease";
+  // Coveo exposes numeric sale bounds but no reliable unit discriminator. The
+  // same sale-type ID carries both apparent absolute prices and values such as
+  // 1, 20, and 405. Keep the exact fields under rawPricing, but never promote
+  // an unproved unit into the canonical USD columns.
+  const salePrice = null;
+  const leaseMin = num(Number(raw.fleasez32xpricez32xmin16556));
+  const leaseMax = num(Number(raw.fleasez32xpricez32xmaz120x16556));
+  const leaseRateUnit = COLLIERS_LEASE_RATE_UNIT[normalizeCoveoId(raw.leasez32xratez32xtype) ?? ""];
+  const leaseRateVisible = !coveoFlag(raw.hidez32xleasez32xprice) && Boolean(leaseMin || leaseMax);
+  const measurements = colliersMainCoveoMeasurements(raw);
+  const photos = dedupeStrings(
+    String(raw.propertyz32ximages ?? "")
+      .split("|")
+      .map(colliersMainPublicUrl)
+      .filter((url): url is string => Boolean(url))
+  );
+  const brochures = uniqueUrlObjects(parseCoveoJsonList(raw.relatedz32xdocuments, "related documents").flatMap((doc) => {
+    const url = colliersMainPublicUrl(doc?.DocumentLink);
+    if (!url) return [];
+    const title = clean(doc?.DocumentName ?? doc?.FileName);
+    const classified = classifyDocument(url, title);
+    return [{ name: title, url, docType: classified?.docType ?? "other" }];
+  }));
+  const links = uniqueUrlObjects(parseCoveoJsonList(raw.relatedz32xlinks, "related links").flatMap((link) => {
+    const url = colliersMainPublicUrl(link?.Value);
+    return url ? [{ url, rel: null, linkType: "other" }] : [];
+  }));
+  const rawExpertIds = Array.isArray(raw.relatedz32xez120xperts)
+    ? raw.relatedz32xez120xperts
+    : String(raw.relatedz32xez120xperts ?? "").split(";");
+  const expertIds = [...new Set(rawExpertIds.map(normalizeCoveoId).filter((id): id is string => Boolean(id)))];
+  const unresolvedExpertIds = expertIds.filter((id) => !experts.has(id));
+  const expertNames = parseCoveoStringList(raw.relatedez120xpertsfullnamecomputed);
+  type ColliersCoveoContact = {
+    name: string | null;
+    company: string;
+    title?: string | null;
+    office?: string | null;
+    phone?: string | null;
+    email?: string | null;
+    profileUrl?: string | null;
+    avatarUrl?: string | null;
+    license?: string | null;
+  };
+  const contactsDetailed = expertIds.map<ColliersCoveoContact | null>((id, index) => {
+    const expert = experts.get(id);
+    if (!expert) {
+      const name = expertNames[index];
+      return name ? { name, company: "Colliers" } : null;
+    }
+    const e = expert!.raw ?? {};
+    const contact = prune({
+      name: clean(e.z95xname ?? e.displayname), title: clean(e.title),
+      office: clean(Array.isArray(e.ez120xpertofficenamecomputed) ? e.ez120xpertofficenamecomputed[0] : e.ez120xpertofficenamecomputed),
+      phone: clean(e.officez32xphone ?? e.mobilez32xphone), email: clean(e.email), company: "Colliers",
+      profileUrl: colliersMainPublicUrl(e.urllink ?? expert!.clickUri),
+      avatarUrl: colliersMainPublicUrl(e.profilez32xpicture),
+      license: clean(e.licensez32xnumber),
+    });
+    if (!contact.name && !contact.email && !contact.phone && !contact.profileUrl) {
+      throw new Error(`Colliers Coveo ${entry.id} resolved an unusable expert record`);
+    }
+    return contact;
+  }).filter((contact): contact is ColliersCoveoContact => Boolean(contact));
+  const facts = [
+    ...parseCoveoJsonList(raw.propertyz32xfeatures, "property features"),
+    ...parseCoveoJsonList(raw.specifications, "specifications"),
+  ]
+    .map((v) => typeof v === "string" ? v : `${v?.Name ?? ""} ${v?.Value ?? ""}`);
+  const zoning = clean(facts.find((v) => /^zoning\s*:/i.test(v))?.replace(/^zoning\s*:\s*/i, ""));
+  const yearBuilt = Number(facts.join(" ").match(/Year Built\s*:\s*((?:18|19|20)\d{2})/i)?.[1] ?? 0) || null;
+  const observedAt = new Date().toISOString();
+  const listing = prune({
+    id: entry.id, name: clean(raw.propertyz32xtitle) ?? entry.id, headline: clean(raw.propertyz32xtitle),
+    transactionType, assetType: clean(raw.primarypropertytype ?? raw.propertytypescomputed?.[0]),
+    description: textFromHtml(raw.description), street: addr.street, city: addr.city, state: addr.state,
+    postalCode: addr.postalCode, country: addr.country ?? "US", latitude: num(Number(raw.latitude)),
+    longitude: num(Number(raw.longitude)), salePriceUsd: salePrice, salePriceText: salePrice ? `$${salePrice}` : null,
+    // The Coveo rate type omits cadence for /SF and /RSF. Preserve the exact
+    // visible values below, but do not misstate a monthly rate as annual.
+    leaseRateText: null, leaseRateMin: null, leaseRateMax: null,
+    sizeText: measurements.buildingSizeSqft
+      ? `Building Size: ${measurements.buildingSizeSqft.toLocaleString("en-US")} SF`
+      : null,
+    ...measurements,
+    yearBuilt, zoning, canonicalUrl: entry.url, statusBadge: clean(raw.propertyz32xstatus),
+    contactsDetailed: contactsDetailed.length ? contactsDetailed : undefined,
+    brokerIds: contactsDetailed.length
+      ? contactsDetailed.map((contact) => brokerRef(contact)).filter((id): id is number => id !== null)
+      : undefined,
+    brochures, photos, links: links.length ? links : undefined, url: entry.url,
+    // A property can continue to reference an expert whose profile has fallen
+    // out of the public expert index. Preserve only its previously verified
+    // contacts while every other child collection refreshes wholesale.
+    preserveContactCollections: unresolvedExpertIds.length ? true : undefined,
+    detailObservedWithContactPreservation: unresolvedExpertIds.length ? true : undefined,
+    lastUpdated: entry.lastmod ? entry.lastmod.slice(0, 10) : null,
+    inventoryObservedAt: entry.inventoryObservedAt, detailObservedAt: observedAt,
+    freshnessProvenance: { detailScope: "first_party_detail_api", generationId: refreshGenerationId(),
+      method: "colliers_main_coveo", cacheDisposition: "live", sourceRevision: entry.lastmod },
+    colliersMain: {
+      propertyStatus: clean(raw.propertyz32xstatus),
+      detailTemplate: "coveo_property_record",
+      docCount: brochures.length,
+      photoCount: photos.length,
+      contactCount: contactsDetailed.length,
+      unresolvedExpertIds,
+    },
+  });
+  // Preserve source values exactly, including false/zero/null. The generic
+  // prune helper intentionally removes false/null and therefore must not own
+  // this provenance-only sub-object.
+  listing.colliersMain.rawPricing = {
+    hideSalePrice: raw.hidez32xsalez32xprice ?? null,
+    hideLeasePrice: raw.hidez32xleasez32xprice ?? null,
+    saleType: raw.salez32xtype ?? null,
+    leaseType: raw.leasez32xtype ?? null,
+    leaseRateType: raw.leasez32xratez32xtype ?? null,
+    salePriceMin: raw.fsalez32xpricez32xmin16556 ?? null,
+    salePriceMax: raw.fsalez32xpricez32xmaz120x16556 ?? null,
+    leasePriceMin: raw.fleasez32xpricez32xmin16556 ?? null,
+    leasePriceMax: raw.fleasez32xpricez32xmaz120x16556 ?? null,
+    currency: raw.currency ?? null,
+    sortPrice: raw.propertysortpricecomputed ?? null,
+    visibleLeaseRateUnit: leaseRateVisible ? leaseRateUnit ?? null : null,
+  };
+  listing.colliersMain.rawSizing = {
+    buildingSize: raw.buildingz32xsiz122xe ?? null,
+    buildingSizeUnit: raw.buildingz32xsiz122xez32xunit ?? null,
+    propertySize: raw.propertysiz122xecomputed ?? null,
+    propertySizeUnit: raw.siz122xeunitcomputed ?? raw.siz122xez32xunit ?? null,
+    lotSize: raw.flotz32xsiz122xe16556 ?? null,
+    lotSizeUnit: raw.lotz32xsiz122xez32xunit ?? null,
+    lotSizeSquareMeters: raw.propertylotsiz122xesqmcomputed ?? null,
+    buildingSizeSquareMeters: raw.propertybuildingsiz122xesqmcomputed ?? null,
+    floorAreaMin: raw.fminz32xarea16556 ?? null,
+    floorAreaMax: raw.fmaz120xz32xarea16556 ?? null,
+    floorAreaUnit: raw.floorz32xareaz32xunit ?? null,
+  };
+  return listing;
+}
+
+export async function postColliersMainBrowserBatch(
+  requestBodies: string[],
+  wait: Sleep = sleep
+): Promise<any[]> {
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let retryable = false;
+    try {
+      const response = await fetch(COLLIERS_MAIN_COVEO_BATCH_URL, {
+        method: "POST", headers: { "content-type": "application/json", accept: "application/json" },
+        signal: AbortSignal.timeout(270_000),
+        body: JSON.stringify({ bootstrapUrl: COLLIERS_MAIN_SOURCE_URL, waitAfterLoadMs: 2000, timeoutMs: 60000,
+          requests: requestBodies.map((body) => ({ url: COLLIERS_MAIN_COVEO_SEARCH_URL, method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded; charset=UTF-8", accept: "application/json" }, body })) }),
+      });
+      const responseText = await response.text();
+      if (!response.ok) {
+        retryable = response.status === 429 || response.status >= 500 ||
+          /(?:HTTP|bootstrapStatus)[^\d]*429/i.test(responseText);
+        throw new Error(
+          `Colliers browser batch transport returned HTTP ${response.status}: ${responseText.slice(0, 300)}`
+        );
+      }
+      let payload: any;
+      try { payload = JSON.parse(responseText); } catch {
+        throw new Error("Colliers browser batch transport returned malformed JSON");
+      }
+      if (!Array.isArray(payload?.responses) || payload.responses.length !== requestBodies.length) {
+        throw new Error("Colliers browser batch transport returned malformed response accounting");
+      }
+      const innerFailure = payload.responses.find((item: any) => item?.status !== 200 || typeof item?.body !== "string");
+      if (innerFailure) {
+        retryable = innerFailure.status === 0 || innerFailure.status === 429 || innerFailure.status >= 500;
+        throw new Error(`Colliers Coveo inner request returned HTTP ${String(innerFailure.status)}`);
+      }
+      return payload.responses.map((item: any, index: number) => {
+        let parsed: any;
+        try { parsed = JSON.parse(item.body); } catch {
+          throw new Error(`Colliers Coveo batch ${index} was not JSON`);
+        }
+        if (!Array.isArray(parsed?.results)) throw new Error(`Colliers Coveo batch ${index} lacks results`);
+        return parsed;
+      });
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      // A rejected local fetch has no response status, so retry it as a bounded
+      // transport failure. Deterministic validation and 4xx failures remain terminal.
+      if (
+        !retryable &&
+        /fetch failed|ECONN|socket|timed?\s*out|was not JSON|lacks results/i.test(lastError.message)
+      ) retryable = true;
+      if (!retryable || attempt === 3) throw lastError;
+      const delayMs = 15_000 * (2 ** (attempt - 1));
+      console.error(`  colliers-main: browser batch transient failure; retrying in ${delayMs}ms (${attempt}/3)`);
+      await wait(delayMs);
+    }
+  }
+  throw lastError ?? new Error("Colliers browser batch transport returned no payload");
+}
+
+export async function colliersMainCoveoEnrichAll(entries: ColliersMainEntry[]): Promise<any[]> {
+  const resultSets: CoveoResult[] = [];
+  for (const group of chunks(chunks(entries, COLLIERS_MAIN_COVEO_BATCH_SIZE), COLLIERS_MAIN_COVEO_REQUESTS_PER_SESSION)) {
+    const payloads = await postColliersMainBrowserBatch(group.map((batch) => colliersMainCoveoQueryBody(batch.map((e) => e.id), "property")));
+    payloads.forEach((payload, index) => {
+      if (payload.totalCount !== group[index].length || payload.results.length !== group[index].length) {
+        throw new Error(`Colliers Coveo property batch count mismatch`);
+      }
+      resultSets.push(...payload.results);
+    });
+  }
+  const reconciled = reconcileColliersMainCoveoResults(entries, resultSets);
+  const expertIds = [...new Set(resultSets.flatMap((result) => {
+    const value = result.raw?.relatedz32xez120xperts;
+    return (Array.isArray(value) ? value : String(value ?? "").split(";"))
+      .map(normalizeCoveoId)
+      .filter((id): id is string => Boolean(id));
+  }))];
+  const expertResults: CoveoResult[] = [];
+  for (const group of chunks(chunks(expertIds, COLLIERS_MAIN_COVEO_BATCH_SIZE), COLLIERS_MAIN_COVEO_REQUESTS_PER_SESSION)) {
+    const payloads = await postColliersMainBrowserBatch(group.map((batch) => colliersMainCoveoQueryBody(batch, "expert")));
+    payloads.forEach((payload, index) => {
+      if (
+        !Number.isInteger(payload.totalCount) ||
+        payload.totalCount < 0 ||
+        payload.totalCount > group[index].length ||
+        payload.results.length !== payload.totalCount
+      ) {
+        throw new Error(
+          `Colliers Coveo expert batch accounting mismatch: expected at most ${group[index].length}, ` +
+          `provider total ${String(payload.totalCount)}, returned ${payload.results.length}; ` +
+          `first ids ${group[index].slice(0, 5).join(", ")}`
+        );
+      }
+      expertResults.push(...payload.results);
+    });
+  }
+  const expertMap = reconcileColliersMainCoveoExperts(expertIds, expertResults, true);
+  return entries.map((entry) =>
+    mapColliersMainCoveoListing(entry, reconciled.get(entry.id.toLowerCase())!, expertMap)
+  );
+}
 
 /** Test hook for a discovery cache that must never cross test cases. */
 export function resetColliersMainSitemapCacheForTest(): void {
@@ -259,13 +855,7 @@ export async function assertColliersMainDetailRuntimeReady(
 }
 
 export function colliersMainAbs(href: string | null | undefined): string | null {
-  const h = clean(href);
-  if (!h || /^(javascript:|mailto:|tel:|#)/i.test(h)) return null;
-  try {
-    return new URL(decodeHtmlEntities(h), COLLIERS_MAIN_HOST).toString();
-  } catch {
-    return null;
-  }
+  return colliersMainPublicUrl(href);
 }
 
 export function colliersMainIdFromUrl(url: string): string | null {
@@ -293,19 +883,36 @@ export async function fetchColliersMainEntries(
       // transport retry correctly returns it but cannot prove this source's
       // sitemap contract. Retry the complete index -> child sequence instead
       // of treating a transient semantic failure as empty inventory.
-      const indexXml = await raw(COLLIERS_MAIN_SITEMAP_INDEX, scrapeOpts);
-      const childLocs = extractSitemapLocs(indexXml);
-      const propsSitemap = childLocs.find((l) => /\/en\/sitemap\?type=properties\b/i.test(l));
-      if (!propsSitemap) {
-        throw new Error("Colliers main: en ?type=properties sitemap not found in sitemap index");
+      let propsSitemap = COLLIERS_MAIN_PROPERTIES_SITEMAP;
+      if (!colliersMainCoveoEnabled()) {
+        const indexXml = await raw(COLLIERS_MAIN_SITEMAP_INDEX, scrapeOpts);
+        const childLocs = extractSitemapLocs(indexXml);
+        const discovered = childLocs.find((l) => /\/en\/sitemap\?type=properties\b/i.test(l));
+        if (!discovered) {
+          throw new Error("Colliers main: en ?type=properties sitemap not found in sitemap index");
+        }
+        propsSitemap = discovered;
       }
       const propsXml = await raw(propsSitemap, scrapeOpts);
       const seen = new Set<string>();
       const entries: ColliersMainEntry[] = [];
       const inventoryObservedAt = new Date().toISOString();
-      for (const e of extractSitemapUrlEntries(propsXml)) {
+      const sitemapEntries = extractSitemapUrlEntries(propsXml);
+      if (!sitemapEntries.length) {
+        throw new Error("Colliers main: ?type=properties sitemap had no URL rows");
+      }
+      for (const e of sitemapEntries) {
         const id = colliersMainIdFromUrl(e.loc);
-        if (!id || seen.has(id)) continue;
+        if (!id) {
+          throw new Error(`Colliers main: sitemap URL lacks a usa identifier: ${e.loc.slice(0, 180)}`);
+        }
+        const parsed = new URL(e.loc);
+        if (parsed.origin !== COLLIERS_MAIN_HOST || !parsed.pathname.toLowerCase().startsWith("/en/properties/")) {
+          throw new Error(`Colliers main: sitemap URL is outside the canonical property scope: ${e.loc.slice(0, 180)}`);
+        }
+        if (seen.has(id)) {
+          throw new Error(`Colliers main: sitemap returned duplicate property id ${id}`);
+        }
         seen.add(id);
         entries.push({ url: e.loc, lastmod: e.lastmod, id, inventoryObservedAt });
       }
@@ -747,6 +1354,12 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
   const entries = await fetchColliersMainEntries();
   const want = max && max > 0 ? Math.min(max, entries.length) : entries.length;
   const selected = entries.slice(0, want);
+  if (colliersMainCoveoEnabled()) {
+    const listings = await colliersMainCoveoEnrichAll(selected);
+    colliersMainEnrichedStats = { errors: 0, deferred: 0 };
+    colliersMainEnrichedMemo = listings;
+    return listings;
+  }
   const cachePath = colliersMainDetailCachePath();
   const cached = readColliersMainCache(cachePath);
   if (cached.size) {
@@ -904,8 +1517,9 @@ export async function srcColliersMain(tx: Tx, max: number, monitor: boolean): Pr
   return {
     company: "Colliers",
     sourceUrl: COLLIERS_MAIN_SOURCE_URL,
-    method:
-      "Public colliers.com XML sitemap discovery (/sitemap -> en ?type=properties) plus per-listing detail render through local Firecrawl; RealEstateListing JSON-LD + markdown parse",
+    method: colliersMainCoveoEnabled()
+      ? "Public colliers.com XML sitemap discovery exactly reconciled to same-origin first-party Coveo property and expert records through the local browser sidecar"
+      : "Public colliers.com XML sitemap discovery (/sitemap -> en ?type=properties) plus per-listing detail render through local Firecrawl; RealEstateListing JSON-LD + markdown parse",
     totalAvailable: colliersMainSitemapCache ? colliersMainSitemapCache.length : null,
     listings,
     truncated: colliersMainResultTruncated(
@@ -917,6 +1531,8 @@ export async function srcColliersMain(tx: Tx, max: number, monitor: boolean): Pr
       `Main colliers.com folded into the colliers brokerage as colliers-main with main: id prefix; SalesTracker rows untouched. ` +
       `${ok.length} live detail-enriched listing(s) of ${all.length} sitemap URL(s) scanned, ${notFound} expired/not-found and ${noData} no-structured-data (tombstoned), ${errored} detail error(s). ` +
       `Sale pass returns Sale + Sale/Lease; lease pass returns Lease + Sale/Lease. ` +
-      "Documents and images are URL-only; no Coveo POST, auth, or gated document path is used.",
+      (colliersMainCoveoEnabled()
+        ? "Documents, images, and contacts come from public first-party Coveo records; no authentication, consent token, visitor token, or gated document path is used."
+        : "Documents and images are URL-only; no Coveo POST, auth, or gated document path is used."),
   };
 }

@@ -801,6 +801,160 @@ def test_strict_detail_source_rejects_child_preservation():
         ci.validate_strict_artifact_freshness(payload)
 
 
+def test_strict_colliers_first_party_detail_allows_audited_contact_preservation():
+    payload = _strict_freshness_payload(
+        "colliers-main", detail_scope="first_party_detail_api"
+    )
+    listing = payload["listings"][0]
+    listing.update(
+        detailObservedAt="2026-07-29T12:00:01Z",
+        preserveContactCollections=True,
+        detailObservedWithContactPreservation=True,
+        colliersMain={"unresolvedExpertIds": ["3d072913f9fb4ec6bc739cf35e6b3120"]},
+    )
+
+    ci.validate_strict_artifact_freshness(payload)
+
+
+def _trusted_colliers_transition_payload():
+    observed = "2026-07-29T12:00:01Z"
+    listings = [
+        {
+            "sourceKey": "colliers-main",
+            "transactionMode": transaction,
+            "inventoryObservedAt": observed,
+            "detailObservedAt": observed,
+            "freshnessProvenance": {
+                "generationId": "colliers-transition-1",
+                "detailScope": "first_party_detail_api",
+                "cacheDisposition": "live",
+            },
+        }
+        for transaction in ("sale", "lease")
+    ]
+    return {
+        "runMeta": {
+            "mode": "full",
+            "startedAt": "2026-07-29T12:00:00Z",
+            "finishedAt": "2026-07-29T12:01:00Z",
+            "transactions": ["sale", "lease"],
+            "maxItemsPerSource": None,
+            "freshness": {
+                "generationId": "colliers-transition-1",
+                "generationStartedAt": "2026-07-29T12:00:00Z",
+                "requireFreshDetails": True,
+            },
+        },
+        "sources": [
+            {
+                "sourceKey": "colliers-main",
+                "transaction": transaction,
+                "supported": True,
+                "error": None,
+                "truncated": False,
+                "listingsCollected": 1,
+            }
+            for transaction in ("sale", "lease")
+        ],
+        "listings": listings,
+        "totalListings": len(listings),
+    }
+
+
+def test_colliers_first_party_transition_requires_explicit_strict_full_scope():
+    payload = _trusted_colliers_transition_payload()
+    now = datetime(2026, 7, 29, 12, 2, tzinfo=timezone.utc)
+
+    assert not ci.trusted_colliers_first_party_transition(
+        payload,
+        require_strict_freshness=False,
+        now=now,
+    )
+    assert ci.trusted_colliers_first_party_transition(
+        payload,
+        require_strict_freshness=True,
+        now=now,
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(
+            lambda payload: payload["runMeta"].update(maxItemsPerSource=1),
+            id="bounded-run",
+        ),
+        pytest.param(
+            lambda payload: payload["sources"].pop(),
+            id="missing-transaction-pass",
+        ),
+        pytest.param(
+            lambda payload: payload["sources"][0].update(truncated=True),
+            id="truncated-pass",
+        ),
+        pytest.param(
+            lambda payload: payload["listings"][0]["freshnessProvenance"].update(
+                detailScope="detail_page"
+            ),
+            id="mixed-detail-scope",
+        ),
+        pytest.param(
+            lambda payload: payload["listings"][0].update(
+                detailError="provider timeout"
+            ),
+            id="detail-error",
+        ),
+    ],
+)
+def test_colliers_first_party_transition_rejects_incomplete_or_mixed_scope(mutation):
+    payload = _trusted_colliers_transition_payload()
+    mutation(payload)
+
+    assert not ci.trusted_colliers_first_party_transition(
+        payload,
+        require_strict_freshness=True,
+        now=datetime(2026, 7, 29, 12, 2, tzinfo=timezone.utc),
+    )
+
+
+def test_colliers_first_party_transition_rejects_artifact_older_than_24_hours():
+    payload = _trusted_colliers_transition_payload()
+
+    assert not ci.trusted_colliers_first_party_transition(
+        payload,
+        require_strict_freshness=True,
+        now=datetime(2026, 7, 30, 12, 1, 1, tzinfo=timezone.utc),
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param({"sourceKey": "jll"}, id="wrong-source"),
+        pytest.param({"colliersMain": {"unresolvedExpertIds": []}}, id="no-unresolved-ids"),
+        pytest.param(
+            {"detailObservedWithContactPreservation": False},
+            id="missing-current-detail-marker",
+        ),
+    ],
+)
+def test_strict_contact_preservation_rejects_broader_or_unproved_use(mutation):
+    payload = _strict_freshness_payload(
+        "colliers-main", detail_scope="first_party_detail_api"
+    )
+    listing = payload["listings"][0]
+    listing.update(
+        detailObservedAt="2026-07-29T12:00:01Z",
+        preserveContactCollections=True,
+        detailObservedWithContactPreservation=True,
+        colliersMain={"unresolvedExpertIds": ["3d072913f9fb4ec6bc739cf35e6b3120"]},
+    )
+    listing.update(mutation)
+
+    with pytest.raises(ValueError, match="invalid contact preservation"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
 def test_strict_colliers_contract_excludes_explicit_provisional_cards():
     payload = _strict_freshness_payload("colliers")
     payload["listings"].append(

@@ -670,6 +670,7 @@ def test_every_buildout_source_gets_exact_fresh_cache_environment(tmp_path, sour
         ("jll-investor", "JLL_INVESTOR_SITEMAP_SCAN_LIMIT", "0"),
         ("avison-young", "AVISON_YOUNG_DETAIL_LIMIT", "1000000"),
         ("cushman-wakefield", "CUSHMAN_DETAIL_MODE", "base"),
+        ("colliers-main", "COLLIERS_MAIN_COVEO_ENABLE", "1"),
         ("colliers-main", "COLLIERS_MAIN_MAX_FETCHES_PER_RUN", "2500"),
         ("colliers-main", "COLLIERS_MAIN_DETAIL_CONCURRENCY", "1"),
     ],
@@ -924,6 +925,91 @@ def test_strict_buildout_artifact_accepts_current_authoritative_feed(tmp_path):
     path = write_artifact(tmp_path, strict_artifact())
     stats = refresh.validate_source_artifact(path, "svn", ATTEMPT)
     assert stats["staged_unique"] == 2
+
+
+def test_colliers_main_accepts_current_first_party_detail_api(tmp_path):
+    payload = strict_artifact(
+        source="colliers-main", detail_scope="first_party_detail_api"
+    )
+    path = write_artifact(tmp_path, payload)
+    stats = refresh.validate_source_artifact(
+        path,
+        "colliers-main",
+        ATTEMPT,
+        require_strict_freshness=True,
+        expected_generation_id="refresh-generation-1",
+        expected_generation_started_at="2026-07-29T12:00:00Z",
+    )
+    assert stats["staged_unique"] == 2
+
+
+def test_colliers_main_accepts_audited_contact_only_preservation(tmp_path):
+    payload = strict_artifact(
+        source="colliers-main", detail_scope="first_party_detail_api"
+    )
+    for row in payload["listings"]:
+        row.update(
+            preserveContactCollections=True,
+            detailObservedWithContactPreservation=True,
+            colliersMain={"unresolvedExpertIds": ["3d072913f9fb4ec6bc739cf35e6b3120"]},
+        )
+    path = write_artifact(tmp_path, payload)
+
+    stats = refresh.validate_source_artifact(
+        path,
+        "colliers-main",
+        ATTEMPT,
+        require_strict_freshness=True,
+        expected_generation_id="refresh-generation-1",
+        expected_generation_started_at="2026-07-29T12:00:00Z",
+    )
+
+    assert stats["staged_unique"] == 2
+
+
+def test_colliers_main_rejects_unproved_contact_preservation(tmp_path):
+    payload = strict_artifact(
+        source="colliers-main", detail_scope="first_party_detail_api"
+    )
+    payload["listings"][0]["preserveContactCollections"] = True
+    path = write_artifact(tmp_path, payload)
+
+    with pytest.raises(
+        refresh.ArtifactValidationError, match="invalid contact preservation"
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "colliers-main",
+            ATTEMPT,
+            require_strict_freshness=True,
+            expected_generation_id="refresh-generation-1",
+            expected_generation_started_at="2026-07-29T12:00:00Z",
+        )
+
+
+def test_other_strict_source_rejects_first_party_detail_api(tmp_path):
+    payload = strict_artifact(source="jll", detail_scope="first_party_detail_api")
+    path = write_artifact(tmp_path, payload)
+    with pytest.raises(
+        refresh.ArtifactValidationError, match="unaccepted strict-detail scope"
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "jll",
+            ATTEMPT,
+            require_strict_freshness=True,
+            expected_generation_id="refresh-generation-1",
+            expected_generation_started_at="2026-07-29T12:00:00Z",
+        )
+
+
+def test_first_party_detail_api_scope_override_is_colliers_main_only():
+    assert "first_party_detail_api" in refresh.accepted_detail_scopes(
+        "strict_detail", "colliers-main"
+    )
+    assert "first_party_detail_api" not in refresh.accepted_detail_scopes(
+        "strict_detail", "jll"
+    )
 
 
 def test_source_artifact_rejects_future_run_timestamp_beyond_clock_skew(tmp_path):

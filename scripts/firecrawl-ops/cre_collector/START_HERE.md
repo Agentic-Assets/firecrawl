@@ -128,6 +128,7 @@ cd scripts/firecrawl-ops/cre_collector
 JLL_DETAIL_CONCURRENCY=1 \
 JLL_INVESTOR_DETAIL_CONCURRENCY=1 \
 CUSHMAN_DETAIL_CONCURRENCY=1 \
+COLLIERS_MAIN_COVEO_ENABLE=1 \
 COLLIERS_MAIN_DETAIL_CONCURRENCY=1 \
 COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000 \
 COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000 \
@@ -175,6 +176,7 @@ then resume the exact series:
 JLL_DETAIL_CONCURRENCY=1 \
 JLL_INVESTOR_DETAIL_CONCURRENCY=1 \
 CUSHMAN_DETAIL_CONCURRENCY=1 \
+COLLIERS_MAIN_COVEO_ENABLE=1 \
 COLLIERS_MAIN_DETAIL_CONCURRENCY=1 \
 COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000 \
 COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000 \
@@ -278,12 +280,42 @@ architecture; do not ingest or claim a full fresh sweep at C1/C2 speed.
 The 2026-07-31 C2 and C3 evidence is retained under `out/calibration/`.
 Both samples were transport-clean, but C2 reached 8.916 rows/minute and C3
 reached 9.560 rows/minute. C3 projects to about 27.5 hours for the observed
-15,776-detail sitemap, so the present per-page renderer is rejected for a
-24-hour all-detail baseline. A public first-party Coveo card surface is not an
-approved replacement: its reported inventory was incomplete relative to the
-sitemap and it did not prove detail-field parity. Treat any Coveo probe as an
-approval-gated, default-disabled, no-write investigation until coverage,
-terms, and field-level parity are independently proven.
+15,776-detail sitemap, so the per-page renderer remains the default fallback
+but is rejected for a 24-hour all-detail baseline.
+
+On 2026-09-09, a newly validated, default-disabled Coveo path exactly joined
+15,944 unique public US sitemap IDs to 15,944 public first-party property
+records in 32 read-only batches: zero missing, extra, duplicate, or canonical
+path mismatches. The public endpoint requires an anonymous same-origin browser
+context because direct host requests receive Cloudflare 403 responses. Set
+`COLLIERS_MAIN_COVEO_ENABLE=1` for the operator-reviewed supervised refresh;
+the collector then uses the loopback-only Playwright batch service, accepts no
+authentication or visitor tokens, and reports `first_party_detail_api`
+provenance. Property records reconcile exactly. Expert responses reject
+duplicate or extra IDs; referenced profiles absent from the current public
+expert index are recorded as unique unresolved IDs and trigger the narrowly
+validated contact-only preservation path. Documents, images, media, and links
+still refresh wholesale. The mapper also rejects sitemap path drift, unsafe
+child URLs, malformed structured child payloads, and hidden sale prices while
+retaining raw price, rate, unit, currency, and sizing fields for audit. Acre
+values above 100 enter canonical fields only when matching acreage appears in
+the current title, description, features, or specifications; an explicit
+numeric mismatch suppresses canonical acreage at every magnitude. The full
+strict artifact
+`out/calibration/2026-09-09T105034Z-colliers-coveo-full-final-strict.json`
+(`sha256:610c4bf8300744d99fe9e114f2f42df76574e45aa9acbbde7031429ebb70cd09`)
+reconciled
+all 15,944 current properties and carried 32,359 contacts, 12,611 classified
+documents, 66,056 images, and 4,661 links; every current property had an image.
+It recorded 60 unique unavailable expert IDs across 147 properties and used no
+broad child-preservation marker. Its strict ingest dry run and a real
+production-schema transaction ending in an explicit `ROLLBACK` passed with
+zero canonical-price/rate, child-count, or contact-contract violations. The
+source-specific image transition guard compares
+normalized underlying assets because the legacy 234,284 image rows include
+malformed URL entities, rendition suffixes, and cross-listing carousel images.
+This proof admits the opt-in path for a supervised additive refresh only; it
+does not authorize scheduling, status activation, or mark-missing.
 
 For strict sources, it binds every source artifact and listing observation to
 one immutable generation and bypasses Firecrawl response caches with
@@ -873,7 +905,13 @@ images into Supabase storage for the bulk collector.
 - Cushman & Wakefield was current for the named June snapshot from `out/cushman_full_2026-06-12_022841.json`: 11,318 active rows, 18,343 document URL rows, 24,278 image URL rows, 21,110 contact rows, 21,110 profile URLs, and 20,301 VCard URLs. Source-scoped `--mark-missing` soft-deleted 24 old probe rows.
 - CBRE Deal Flow has been ingested from the public RCM endpoint. Do not use its reported 2,042 sale total as collected count; the public card pagination exposed 1,809 sale cards in the full run. A narrow cleanup soft-deleted 21 stale `dealflow:url:<sha1>` rows that duplicated newer enriched Deal Flow IDs.
 - Do not store source PDF or image binaries in Supabase. Store URLs only.
-- Colliers now has two folded sources under the `colliers` brokerage. SalesTracker (`colliers`, 1,172 investment-sale rows) via public RCM GET. Main site (`colliers-main`, COMPLETE 2026-06-14: 15,829 active rows) via the public XML sitemap (`/sitemap` -> `en/sitemap?type=properties`, ~15,883 detail URLs) fetched through local Firecrawl plus detail-render JSON-LD parse; ids prefixed `main:`. The Coveo POST search is still not used and not needed. Full run converged via `run_colliers_main_full.sh` (chunked, resumable cache) and was ingested additively (status OFF); colliers brokerage total 17,001 active.
+- Colliers has two folded sources under the `colliers` brokerage. SalesTracker
+  (`colliers`) uses the public RCM GET path. Main site (`colliers-main`) retains
+  `main:` identities from the public property sitemap. The June 2026 baseline
+  used per-page JSON-LD rendering; the current supervised refresh uses the
+  explicit `COLLIERS_MAIN_COVEO_ENABLE=1` first-party path and exact sitemap/API
+  reconciliation described above. Historical June counts are not current
+  freshness evidence.
 - Do not ingest NAI Global's unbounded Infabode feed as active inventory. Use only rows whose public `publicPost.listingStatus` contains `FOR_SALE_ON_MARKET`. The 2026-06-12 active artifact `out/nai_active_only_from_full_2026-06-12_044310.json` was live-ingested with source-scoped `--mark-missing`; 19 old rendered-card probe rows were soft-deleted.
 - Transwestern was current for the named June snapshot from `out/transwestern_full_2026-06-12_121302_cleaned.json`: 2,021 active rows, 3,054 document URL rows, 4,838 image URL rows, 3,746 contact/profile/VCard URL rows, and 0 bad descriptions or bad asset URLs. The live DB needed the existing `sql/001_cre_brokerages.sql` Transwestern seed inserted before ingest.
 - Marcus & Millichap was current for the named June snapshot from `out/marcus_full_2026-06-12_130035.json`: 3,124 active public sale rows, 16,771 image URL rows, 7,915 contact/profile URL rows, 0 document rows, and 0 final detail errors. Gated deal-room URLs stay in raw metadata only. Public lease remains unsupported.
@@ -919,10 +957,15 @@ images into Supabase storage for the bulk collector.
   (`cre_backfill_raw_data.py`, `om_classify_existing.py`, `cre_geo_backfill.py`)
   also ran `--apply`, all COALESCE-keep, board unchanged at 87,328 active. See
   the 2026-06-15 banner at the top of this file.
-- **Migration `016_cre_listing_lifecycle.sql` remains separately gated.** It is
-  excluded from `000_run_all.sql`; this repository contains no production
-  application proof. Use the approval, readback, and rollback contract in
-  `docs/firecrawl-ops/references/cre-listing-lifecycle-runbook.md`.
+- **Migration `016_cre_listing_lifecycle.sql` was applied on 2026-09-09 under
+  Cayman's AGENTIC-1229 approval.** It remains excluded from `000_run_all.sql`.
+  The exact SQL SHA-256 was
+  `112e7acc30245fa90cdaffbc8b5dfa219f6ca1af07379ecd84ba4785cfba9e7e`;
+  the single production transaction initialized 105,050 source-index rows and
+  the runbook's 11/11 lifecycle readback checks passed. This application does
+  not authorize status activation, mark-missing, or scheduling. Use
+  `docs/firecrawl-ops/references/cre-listing-lifecycle-runbook.md` for the
+  contract and rollback procedure.
 - **Weekly mark-missing, status-activation go-live, and the consumer board-gate
   deploy remain GATED for explicit go-ahead.** Do not pass `--activate-status`,
   enable the `CRE_WEEKLY_MARK_MISSING=1` soft-delete escalation on the weekly
