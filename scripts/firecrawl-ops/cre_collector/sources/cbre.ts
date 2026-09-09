@@ -169,6 +169,7 @@ export type CbreSnapshot = {
   documents: any[];
   reportedTotals: number[];
   observedAt: string;
+  contentDifference?: string;
 };
 
 export type CbreSnapshotOptions = {
@@ -410,13 +411,75 @@ export function cbreSnapshotFingerprint(documents: any[]): string {
     .digest("hex");
 }
 
+export function cbreIdentityFingerprint(documents: any[]): string {
+  const identities = documents
+    .map((document) => clean(document?.["Common.PrimaryKey"]) ?? "<missing>")
+    .sort();
+  return createHash("sha256").update(JSON.stringify(identities)).digest("hex");
+}
+
+export function cbreSnapshotDifference(left: any[], right: any[]): string {
+  const byId = (documents: any[]) =>
+    new Map(
+      documents.map((document) => [
+        clean(document?.["Common.PrimaryKey"]) ?? "<missing>",
+        document,
+      ]),
+    );
+  const leftById = byId(left);
+  const rightById = byId(right);
+  const removed = [...leftById.keys()].filter((id) => !rightById.has(id));
+  const added = [...rightById.keys()].filter((id) => !leftById.has(id));
+  let changedRows = 0;
+  const changedFields = new Map<string, number>();
+  for (const [id, leftDocument] of leftById) {
+    const rightDocument = rightById.get(id);
+    if (!rightDocument) continue;
+    if (
+      cbreSnapshotFingerprint([leftDocument]) ===
+      cbreSnapshotFingerprint([rightDocument])
+    ) {
+      continue;
+    }
+    changedRows++;
+    for (const field of new Set([
+      ...Object.keys(leftDocument ?? {}),
+      ...Object.keys(rightDocument ?? {}),
+    ])) {
+      if (
+        JSON.stringify(stableCbreJsonValue(leftDocument?.[field])) !==
+        JSON.stringify(stableCbreJsonValue(rightDocument?.[field]))
+      ) {
+        changedFields.set(field, (changedFields.get(field) ?? 0) + 1);
+      }
+    }
+  }
+  const leftOrder = [...leftById.keys()];
+  const rightOrder = [...rightById.keys()];
+  const sameOrder =
+    leftOrder.length === rightOrder.length &&
+    leftOrder.every((id, index) => id === rightOrder[index]);
+  const fieldSummary = [...changedFields.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 8)
+    .map(([field, count]) => `${field}:${count}`)
+    .join(",");
+  return (
+    `added=${added.length},removed=${removed.length},changed_rows=${changedRows},` +
+    `same_order=${sameOrder}` +
+    (fieldSummary ? `,changed_fields=${fieldSummary}` : "")
+  );
+}
+
 async function fetchCbreSnapshotPass(
   fetchPage: CbrePageFetcher,
   pass: number,
   pageSize: number,
   maxPages: number,
   concurrency: number,
-): Promise<CbreSnapshot & { fingerprint: string }> {
+): Promise<
+  CbreSnapshot & { fingerprint: string; identityFingerprint: string }
+> {
   const pages = new Map<number, CbreValidatedPage>();
   const first = assertCbrePage(
     await fetchPage(1, pass),
@@ -524,10 +587,12 @@ async function fetchCbreSnapshotPass(
       `CBRE listings API snapshot expected ${documents.length} unique documents, received ${seen.size}`,
     );
   }
-  if (!reportedTotals.includes(documents.length)) {
+  if (
+    reportedTotals.some((reportedTotal) => reportedTotal !== documents.length)
+  ) {
     throw new Error(
       `CBRE listings API snapshot collected ${documents.length} unique documents, ` +
-        `which matches none of its reported totals (${[...new Set(reportedTotals)].join(",")})`,
+        `but its pages did not all report that total (${[...new Set(reportedTotals)].join(",")})`,
     );
   }
   console.error(
@@ -540,6 +605,7 @@ async function fetchCbreSnapshotPass(
     reportedTotals,
     observedAt: new Date().toISOString(),
     fingerprint: cbreSnapshotFingerprint(documents),
+    identityFingerprint: cbreIdentityFingerprint(documents),
   };
 }
 
@@ -590,18 +656,27 @@ export async function fetchCbreSnapshot(
     if (
       previous &&
       current.total === previous.total &&
-      current.fingerprint === previous.fingerprint
+      current.identityFingerprint === previous.identityFingerprint
     ) {
+      const contentDifference =
+        current.fingerprint === previous.fingerprint
+          ? undefined
+          : cbreSnapshotDifference(previous.documents, current.documents);
       return {
         total: current.total,
         documents: current.documents,
         reportedTotals: current.reportedTotals,
         observedAt: current.observedAt,
+        ...(contentDifference ? { contentDifference } : {}),
       };
     }
     if (previous) {
+      const difference = cbreSnapshotDifference(
+        previous.documents,
+        current.documents,
+      );
       failures.push(
-        `pass ${pass}: inventory changed (${previous.total} -> ${current.total})`,
+        `pass ${pass}: inventory membership changed (${previous.total} -> ${current.total}; ${difference})`,
       );
     }
     previous = current;
@@ -659,14 +734,13 @@ export async function srcCbre(
     collectedDocs = snapshot.documents;
     truncated = false;
     snapshotObservedAt = snapshot.observedAt;
-    const distinctTotals = [...new Set(snapshot.reportedTotals)];
-    if (distinctTotals.length > 1) {
+    if (snapshot.contentDifference) {
       note =
-        `converged ${total}-record inventory despite provider DocumentCount drift ` +
-        `(${Math.min(...distinctTotals)}-${Math.max(...distinctTotals)})`;
+        `membership-converged with later-pass content churn ` +
+        `(${snapshot.contentDifference})`;
     }
     console.error(
-      `  cbre/${tx}: converged ${total} unique records across two complete passes`,
+      `  cbre/${tx}: membership-converged ${total} unique records across two complete passes`,
     );
   } else {
     // Finite probes and non-strict development runs retain the existing

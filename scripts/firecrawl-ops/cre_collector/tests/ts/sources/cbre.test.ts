@@ -17,6 +17,8 @@ import {
   cbreDocTypeFromName,
   cbreNewFieldsFromRawData,
   cbreInventoryUrl,
+  cbreIdentityFingerprint,
+  cbreSnapshotDifference,
   cbreSnapshotFingerprint,
   assertCbrePage,
   assertCbreAggregate,
@@ -103,6 +105,26 @@ test("CBRE snapshot fingerprint ignores object-key ordering but detects field ch
     cbreSnapshotFingerprint(original),
     cbreSnapshotFingerprint(changed),
   );
+});
+
+test("CBRE identity fingerprint ignores order and content but detects membership", () => {
+  assert.equal(
+    cbreIdentityFingerprint([cbreRow("A", { value: 1 }), cbreRow("B")]),
+    cbreIdentityFingerprint([cbreRow("B"), cbreRow("A", { value: 2 })]),
+  );
+  assert.notEqual(
+    cbreIdentityFingerprint([cbreRow("A"), cbreRow("B")]),
+    cbreIdentityFingerprint([cbreRow("A"), cbreRow("C")]),
+  );
+});
+
+test("CBRE snapshot differences distinguish identity, field, and order churn", () => {
+  const difference = cbreSnapshotDifference(
+    [cbreRow("A", { stable: 1 }), cbreRow("B", { changing: "old" })],
+    [cbreRow("B", { changing: "new" }), cbreRow("C", { stable: 1 })],
+  );
+  assert.match(difference, /added=1,removed=1,changed_rows=1,same_order=false/);
+  assert.match(difference, /changed_fields=changing:1/);
 });
 
 test("CBRE finite caps report truncation against DocumentCount", () => {
@@ -405,7 +427,7 @@ test("strict CBRE aggregate reconciliation rejects duplicate or missing provider
   assert.doesNotThrow(() => assertCbreAggregate(rows.slice(0, 2), 3, 2, false));
 });
 
-test("CBRE full snapshots converge across repeatable DocumentCount drift", async () => {
+test("CBRE full snapshots reject internally drifting DocumentCount passes", async () => {
   const drifted = {
     1: {
       DocumentCount: 5,
@@ -415,15 +437,15 @@ test("CBRE full snapshots converge across repeatable DocumentCount drift", async
     3: { DocumentCount: 4, Documents: [] },
   };
   const calls: Array<{ page: number; pass: number }> = [];
-  const snapshot = await fetchCbreSnapshot(
-    cbrePassFetcher([drifted, drifted], calls),
-    { pageSize: 3, maxPasses: 2, maxPages: 5, concurrency: 1 },
-  );
-  assert.equal(snapshot.total, 4);
-  assert.deepEqual(snapshot.reportedTotals, [5, 4, 4]);
-  assert.deepEqual(
-    snapshot.documents.map((row) => row["Common.PrimaryKey"]),
-    ["A", "B", "C", "D"],
+  await assert.rejects(
+    () =>
+      fetchCbreSnapshot(cbrePassFetcher([drifted, drifted], calls), {
+        pageSize: 3,
+        maxPasses: 2,
+        maxPages: 5,
+        concurrency: 1,
+      }),
+    /did not converge[\s\S]*pages did not all report that total/,
   );
   assert.deepEqual(calls, [
     { page: 1, pass: 1 },
@@ -433,6 +455,40 @@ test("CBRE full snapshots converge across repeatable DocumentCount drift", async
     { page: 2, pass: 2 },
     { page: 3, pass: 2 },
   ]);
+});
+
+test("CBRE membership convergence emits the later pass during content and order churn", async () => {
+  const earlier = {
+    1: {
+      DocumentCount: 3,
+      Documents: [cbreRow("A"), cbreRow("B", { "Common.Brochures": ["old"] })],
+    },
+    2: { DocumentCount: 3, Documents: [cbreRow("C")] },
+    3: { DocumentCount: 3, Documents: [] },
+  };
+  const later = {
+    1: {
+      DocumentCount: 3,
+      Documents: [cbreRow("B", { "Common.Brochures": ["new"] }), cbreRow("A")],
+    },
+    2: { DocumentCount: 3, Documents: [cbreRow("C")] },
+    3: { DocumentCount: 3, Documents: [] },
+  };
+  const snapshot = await fetchCbreSnapshot(cbrePassFetcher([earlier, later]), {
+    pageSize: 2,
+    maxPasses: 2,
+    maxPages: 5,
+    concurrency: 1,
+  });
+  assert.deepEqual(
+    snapshot.documents.map((row) => row["Common.PrimaryKey"]),
+    ["B", "A", "C"],
+  );
+  assert.match(
+    snapshot.contentDifference ?? "",
+    /added=0,removed=0,changed_rows=1,same_order=false/,
+  );
+  assert.match(snapshot.contentDifference ?? "", /Common\.Brochures:1/);
 });
 
 test("CBRE convergence replaces a deletion-shifted pass instead of accepting its count", async () => {
@@ -468,13 +524,19 @@ test("CBRE snapshot extends pagination when growth reaches the planned sentinel"
     4: { DocumentCount: 5, Documents: [] },
   };
   const calls: Array<{ page: number; pass: number }> = [];
+  const stable = {
+    1: { DocumentCount: 5, Documents: [cbreRow("A"), cbreRow("B")] },
+    2: { DocumentCount: 5, Documents: [cbreRow("C"), cbreRow("D")] },
+    3: { DocumentCount: 5, Documents: [cbreRow("E")] },
+    4: { DocumentCount: 5, Documents: [] },
+  };
   const snapshot = await fetchCbreSnapshot(
-    cbrePassFetcher([grown, grown], calls),
-    { pageSize: 2, maxPasses: 2, maxPages: 5, concurrency: 1 },
+    cbrePassFetcher([grown, stable, stable], calls),
+    { pageSize: 2, maxPasses: 3, maxPages: 5, concurrency: 1 },
   );
   assert.equal(snapshot.total, 5);
-  assert.equal(calls.filter(({ page }) => page === 4).length, 2);
-  assert.deepEqual(snapshot.reportedTotals, [4, 5, 5, 5]);
+  assert.equal(calls.filter(({ page }) => page === 4).length, 3);
+  assert.deepEqual(snapshot.reportedTotals, [5, 5, 5, 5]);
 });
 
 test("CBRE snapshot never deduplicates cross-page duplicate identities", async () => {
