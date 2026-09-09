@@ -15,6 +15,53 @@ import {
 
 // --- CBRE: internal listings JSON API, paginated, behind Cloudflare (stealth) ---
 
+export const CBRE_GENERATION_ATTEMPTS = 3;
+
+export class CbreGenerationChangedError extends Error {
+  constructor(
+    expectedTotal: number,
+    actualTotal: number,
+    page: number,
+    detail?: string
+  ) {
+    super(
+      detail ??
+        `CBRE listings API DocumentCount changed from ${expectedTotal} to ${actualTotal} on page ${page}`
+    );
+    this.name = "CbreGenerationChangedError";
+  }
+}
+
+const CBRE_QUERY_ORDERS = [
+  ["site", "Common.Aspects", "PageSize", "Page"],
+  ["Page", "site", "Common.Aspects", "PageSize"],
+  ["Common.Aspects", "PageSize", "Page", "site"],
+  ["PageSize", "Page", "site", "Common.Aspects"],
+  ["site", "PageSize", "Common.Aspects", "Page"],
+  ["Common.Aspects", "site", "Page", "PageSize"],
+] as const;
+
+export function cbrePageUrl(
+  aspect: string,
+  page: number,
+  generationAttempt = 1,
+  finalProbe = false
+): string {
+  const values: Record<(typeof CBRE_QUERY_ORDERS)[number][number], string> = {
+    site: "us-comm",
+    "Common.Aspects": aspect,
+    PageSize: "200",
+    Page: String(page),
+  };
+  const orderIndex = Math.min(
+    CBRE_QUERY_ORDERS.length - 1,
+    Math.max(0, ((generationAttempt - 1) * 2) + (finalProbe ? 1 : 0))
+  );
+  const query = new URLSearchParams();
+  for (const key of CBRE_QUERY_ORDERS[orderIndex]) query.set(key, values[key]);
+  return `https://www.cbre.com/listings-api/propertylistings/query?${query.toString()}`;
+}
+
 export function cbreAspect(tx: Tx): string {
   return tx === "sale" ? "isSale" : "isLetting";
 }
@@ -174,9 +221,7 @@ export function assertCbrePage(
     );
   }
   if (strict && expectedTotal !== null && total !== expectedTotal) {
-    throw new Error(
-      `CBRE listings API DocumentCount changed from ${expectedTotal} to ${total} on page ${page}`
-    );
+    throw new CbreGenerationChangedError(expectedTotal, total, page);
   }
   if (strict) {
     const providerPage = [
@@ -303,42 +348,87 @@ export async function srcCbre(tx: Tx, max: number, _monitor: boolean): Promise<S
     timeout: 120000,
     ...(strict ? { maxAge: 0 } : {}),
   };
-  const base = `https://www.cbre.com/listings-api/propertylistings/query?site=us-comm&Common.Aspects=${aspect}&PageSize=200`;
-  const first = assertCbrePage(
-    await scrapeJson(`${base}&Page=1`, opts),
-    1,
-    200,
-    null,
-    strict
-  );
-  const total = first.total;
-  const want = Math.min(max, total);
-  const pages = Math.ceil(want / 200);
-  console.error(`  cbre/${tx}: ${total} total, fetching ${pages} page(s)`);
-  const docsArr: any[][] = [first.documents];
-  if (pages > 1) {
-    const pageNums = Array.from({ length: pages - 1 }, (_, i) => i + 2);
-    const rest = await pmap(pageNums, CONCURRENCY, async (p) => {
-      const raw = await scrapeJson(`${base}&Page=${p}`, opts);
-      if (!strict && !Array.isArray(raw?.Documents)) {
-        console.error(`  cbre/${tx}: page ${p}/${pages} returned no Documents array`);
-        return [];
-      }
-      const page = assertCbrePage(raw, p, 200, total, strict);
-      console.error(
-        `  cbre/${tx}: page ${p}/${pages} (${page.documents.length} docs)`
+  let first: CbreValidatedPage | null = null;
+  let total = 0;
+  let want = 0;
+  let pages = 0;
+  let collectedDocs: any[] = [];
+  const attempts = strict ? CBRE_GENERATION_ATTEMPTS : 1;
+  for (let generationAttempt = 1; generationAttempt <= attempts; generationAttempt++) {
+    // CBRE treats an unknown query parameter as a filter and returns an empty
+    // inventory. Rotate only the four documented parameters between complete
+    // attempts and the final probe. This gives intermediary caches a different
+    // request key without changing the provider's API semantics.
+    const pageUrl = (page: number, finalProbe = false) =>
+      cbrePageUrl(aspect, page, generationAttempt, finalProbe);
+    try {
+      first = assertCbrePage(
+        await scrapeJson(pageUrl(1), opts),
+        1,
+        200,
+        null,
+        strict
       );
-      return page.documents;
-    });
-    docsArr.push(...rest);
+      total = first.total;
+      want = Math.min(max, total);
+      pages = Math.ceil(want / 200);
+      console.error(
+        `  cbre/${tx}: ${total} total, fetching ${pages} page(s), generation attempt ${generationAttempt}/${attempts}`
+      );
+      const docsArr: any[][] = [first.documents];
+      if (pages > 1) {
+        const pageNums = Array.from({ length: pages - 1 }, (_, i) => i + 2);
+        const rest = await pmap(pageNums, CONCURRENCY, async (p) => {
+          const raw = await scrapeJson(pageUrl(p), opts);
+          if (!strict && !Array.isArray(raw?.Documents)) {
+            console.error(`  cbre/${tx}: page ${p}/${pages} returned no Documents array`);
+            return [];
+          }
+          const page = assertCbrePage(raw, p, 200, total, strict);
+          console.error(
+            `  cbre/${tx}: page ${p}/${pages} (${page.documents.length} docs)`
+          );
+          return page.documents;
+        });
+        docsArr.push(...rest);
+      }
+      collectedDocs = docsArr.flat();
+      assertCbreAggregate(collectedDocs, total, pages, strict);
+      if (strict) {
+        const finalPage = assertCbrePage(
+          await scrapeJson(pageUrl(1, true), opts),
+          1,
+          200,
+          total,
+          true
+        );
+        const firstIds = first.documents.map((row: any) => row["Common.PrimaryKey"]);
+        const finalIds = finalPage.documents.map((row: any) => row["Common.PrimaryKey"]);
+        if (JSON.stringify(firstIds) !== JSON.stringify(finalIds)) {
+          throw new CbreGenerationChangedError(
+            total,
+            finalPage.total,
+            1,
+            "CBRE listings API first-page identities changed during pagination"
+          );
+        }
+      }
+      break;
+    } catch (error) {
+      if (!(error instanceof CbreGenerationChangedError) || generationAttempt === attempts) {
+        throw error;
+      }
+      console.error(
+        `  cbre/${tx}: provider generation moved during pagination; restarting from page 1 (${generationAttempt}/${attempts})`
+      );
+    }
   }
+  if (!first) throw new Error(`CBRE ${tx} generation produced no first page`);
   // Only page 1 is structurally validated; a later page that returns parseable
   // JSON without a Documents array silently contributes []. If the total
   // collected falls short of `want` (= min(max, DocumentCount)), an empty/short
   // later page truncated this pass. This excludes --max-items (folded into
   // `want`) and natural exhaustion (a complete run reaches `want`).
-  const collectedDocs = docsArr.flat();
-  assertCbreAggregate(collectedDocs, total, pages, strict);
   const truncated = cbreResultTruncated(max, total, collectedDocs.length);
   const docs = collectedDocs.slice(0, want);
   const observed = detailObservation(

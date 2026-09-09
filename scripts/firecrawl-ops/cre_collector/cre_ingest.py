@@ -743,11 +743,14 @@ def to_inventory_only_row(listing, observed_at):
     fingerprint = hashlib.sha256(
         json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str).encode()
     ).hexdigest()
+    supporting_url = http_url_or_none(listing.get("url"))
     return {
         "slug": slug,
         "external_id": external_id,
         "source_key": source_key,
-        "url": index_url,
+        # Preserve a provider-supplied agreement or brochure URL as supporting
+        # inventory evidence. It is not promoted to cre_listings.canonical_url.
+        "url": supporting_url or index_url,
         "fingerprint": fingerprint,
         "observed_status": clean_text(
             listing.get("status") or listing.get("statusBadge"), 128

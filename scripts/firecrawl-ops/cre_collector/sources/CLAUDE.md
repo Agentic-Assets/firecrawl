@@ -119,7 +119,10 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
   `inventoryObservedAt`. Existing detail children remain; current card contacts
   and images are applied additively, and new listings insert card children.
 - CBRE Deal Flow includes public cards whose only link is a gated agreement or
-  public brochure, plus cards with no link at all. All remain inventory and use
+  public brochure, plus cards with no link at all. They remain source-index
+  inventory evidence and never become canonical comparable listings. Their
+  provider-supplied agreement or brochure URL remains supporting evidence in
+  `cre_source_index.url`. They use
   `gated_agreement`, `public_brochure_only`, or `card_not_linked`
   detail-unavailable reasons. Unlinked
   cards receive a deterministic provisional `card:` identity from their

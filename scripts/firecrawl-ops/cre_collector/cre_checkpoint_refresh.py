@@ -1368,7 +1368,7 @@ def validate_source_artifact(
             f"{stats['detail_errors']} listing(s) contain detailError"
         )
     if (
-        expected_source in {"colliers", "newmark"}
+        expected_source in {"cbre-dealflow", "colliers", "newmark"}
         and stats["flat_listings"]
         != stats["staged_unique"] + stats["inventory_only"]
     ):
