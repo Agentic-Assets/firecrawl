@@ -155,6 +155,7 @@ following evidence and decision record:
 | CBRE API page size 500, snapshot concurrency 2, no render wait | Live lease proof reconciled 15,044 unique IDs and URLs across two complete passes with an exact 44-row terminal page and empty sentinel; full TypeScript suite passed | Current strict unlimited CBRE profile |
 | CBRE API page size 1,000 or 2,000 | High-offset requests stalled or failed transport | Rejected; do not use |
 | JLL detail concurrency 1 | Exact and stable; observed cache-write interarrival mean 3.846 seconds and median 3.704 seconds over 230 current rows | Conservative fallback |
+| JLL detail concurrency 4 | Bounded no-database proof completed 200/200 fresh sale details in 496.69 seconds, including enumeration, with zero detail errors and zero duplicate or missing IDs, URLs, or canonical URLs | Current supervised accelerated profile; fall back to 2, then 1, on provider errors or resource pressure |
 | Direct JLL HTML | Exact structured property and broker payload in one sample, about 6x faster, but not yet equivalent for rendered Markdown, links, images, and attributes | Not admitted for production |
 | Host CPU ceiling 55% for 10 seconds | Correctly interrupted once when unrelated local application builds sustained 65-81% total host CPU | Conservative shared-host profile |
 | Host CPU ceiling 75% for 10 seconds | Cayman-authorized supervised calibration target; the guard, serial source checkpoints, and fail-closed telemetry remain enabled | Use only with live operator supervision and the constrained container profile |
@@ -170,7 +171,7 @@ configuration.
 
 ```bash
 cd scripts/firecrawl-ops/cre_collector
-JLL_DETAIL_CONCURRENCY=2 \
+JLL_DETAIL_CONCURRENCY=4 \
 JLL_INVESTOR_DETAIL_CONCURRENCY=2 \
 CUSHMAN_DETAIL_CONCURRENCY=2 \
 COLLIERS_MAIN_COVEO_ENABLE=1 \
