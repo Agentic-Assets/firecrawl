@@ -11,6 +11,9 @@ import cre_inventory_generation as generation
 OBSERVED_AT = "2026-09-09T11:45:00+00:00"
 UPDATED_AT = "2026-09-09T11:50:00+00:00"
 COMPUTED_AT = "2026-09-09T12:00:00+00:00"
+GETCREDATA_CONTRACT_VECTOR_DIGEST = (
+    "44f8f0cd9e3962207f8c90edc8a19ebdb185f8b28c33a19ac3e84fcb6e7bea15"
+)
 
 
 def _complete_series(series_dir: Path) -> dict:
@@ -116,6 +119,34 @@ def test_idempotent_retry_reuses_generation_and_mutation_changes_it(tmp_path):
     assert (
         changed["inventoryGeneration"]["generationId"]
         != first["inventoryGeneration"]["generationId"]
+    )
+
+
+def test_prior_v2_rejects_a_non_content_addressed_generation_id(tmp_path):
+    receipt = generation.build_inventory_generation_receipt(
+        tmp_path, _complete_series(tmp_path)
+    )
+    receipt["inventoryGeneration"]["generationId"] = "inventory-generation:arbitrary"
+
+    assert generation._valid_prior_v2(receipt) is False
+
+
+def test_getcredata_cross_repo_canonical_generation_vector():
+    fingerprints = {
+        "cbre": {
+            "sourceId": "cbre",
+            "rowCount": 1,
+            "maxRowUpdatedAt": "2026-09-09T11:50:00+00:00",
+            "maxObservationAt": "2026-09-09T11:45:00+00:00",
+            "publicationStatus": "complete",
+        }
+    }
+
+    digest = generation._canonical_digest(fingerprints)
+
+    assert digest == GETCREDATA_CONTRACT_VECTOR_DIGEST
+    assert f"inventory-generation:{digest}" == (
+        "inventory-generation:" + GETCREDATA_CONTRACT_VECTOR_DIGEST
     )
 
 
