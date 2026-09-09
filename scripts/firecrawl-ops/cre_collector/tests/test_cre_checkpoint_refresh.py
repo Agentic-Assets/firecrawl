@@ -3415,6 +3415,49 @@ def test_strict_readback_accepts_observations_within_artifact_freshness_slo(
     assert readback["latest_detail_batch_active"] == 2
 
 
+def test_strict_readback_captures_post_ingest_inventory_fingerprint(tmp_path):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["svn"]["artifact"] = strict_artifact_info()
+    validation = {
+        "queries": {
+            "freshness_generations": [freshness_generation_row()],
+            "inventory_only_index": [],
+            "inventory_generation_fingerprints": [
+                {
+                    "source_key": "svn",
+                    "row_count": "17",
+                    "max_row_updated_at": "2026-07-29 12:02:00Z",
+                    "max_observation_at": "2026-07-29 12:01:00Z",
+                }
+            ],
+        }
+    }
+
+    result = refresh.verify_validation_readback(
+        run_dir,
+        manifest,
+        validation,
+        now=datetime(2026, 7, 29, 12, 3, tzinfo=timezone.utc),
+    )
+
+    assert result == {"ok": True, "failed_sources": []}
+    assert manifest["sources"]["svn"]["readback"]["inventory_fingerprint"] == {
+        "sourceId": "svn",
+        "rowCount": 17,
+        "maxRowUpdatedAt": "2026-07-29T12:02:00+00:00",
+        "maxObservationAt": "2026-07-29T12:01:00+00:00",
+        "publicationStatus": "complete",
+    }
+
+
 def test_strict_readback_rejects_observations_older_than_artifact_freshness_slo(
     tmp_path,
 ):

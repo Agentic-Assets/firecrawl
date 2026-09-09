@@ -249,6 +249,16 @@ def test_source_counts_separates_inventory_and_detail_observation():
     assert "detail_unavailable" in sql
 
 
+def test_inventory_generation_fingerprint_matches_consumer_readback_tuple():
+    sql = QUERIES["inventory_generation_fingerprints"]
+    assert "count(live_inventory.source_id)" in sql
+    assert "max(live_inventory.row_updated_at)" in sql
+    assert "max(live_inventory.observation_at)" in sql
+    assert "coalesce(source_identity.last_enumerated_at, l.last_seen_at)" in sql
+    assert "ORDER BY si.last_enumerated_at DESC NULLS LAST, si.id DESC" in sql
+    assert "WHERE l.deleted_at IS NULL" in sql
+
+
 def test_source_key_inference_covers_preserved_and_merged_payloads():
     assert "latestInventoryObservation,sourceKey" in SOURCE_KEY_SQL
     assert "latestInventoryObservation,primary,sourceKey" in SOURCE_KEY_SQL

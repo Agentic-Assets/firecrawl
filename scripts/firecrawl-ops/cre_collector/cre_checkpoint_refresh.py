@@ -3174,6 +3174,17 @@ def verify_validation_readback(
         for row in (raw_queue_rows or [])
         if isinstance(row, dict) and isinstance(row.get("source_key"), str)
     }
+    raw_fingerprint_rows = (
+        queries.get("inventory_generation_fingerprints")
+        if isinstance(queries, dict)
+        else None
+    )
+    fingerprint_rows_available = isinstance(raw_fingerprint_rows, list)
+    fingerprint_by_source = {
+        row.get("source_key"): row
+        for row in (raw_fingerprint_rows or [])
+        if isinstance(row, dict) and isinstance(row.get("source_key"), str)
+    }
     failures: list[str] = []
     for source in manifest["config"]["sources"]:
         checkpoint = manifest["sources"][source]
@@ -3543,6 +3554,38 @@ def verify_validation_readback(
         ok = ok and inventory_ok
         if reason is None and inventory_reason is not None:
             reason = inventory_reason
+        inventory_fingerprint = None
+        if fingerprint_rows_available:
+            fingerprint_row = fingerprint_by_source.get(source)
+            try:
+                if fingerprint_row is None:
+                    raise ValueError("missing fingerprint row")
+                fingerprint_count = int(fingerprint_row["row_count"])
+                if fingerprint_count < 0:
+                    raise ValueError("negative fingerprint count")
+                fingerprint_updated = _timestamp_second(
+                    fingerprint_row["max_row_updated_at"]
+                )
+                fingerprint_observed = _timestamp_second(
+                    fingerprint_row["max_observation_at"]
+                )
+                if (
+                    fingerprint_updated > latest_allowed
+                    or fingerprint_observed > latest_allowed
+                ):
+                    raise ValueError("fingerprint clock exceeds skew allowance")
+            except (KeyError, TypeError, ValueError, ArtifactValidationError):
+                ok = False
+                if reason is None:
+                    reason = "inventory generation fingerprint is invalid"
+            else:
+                inventory_fingerprint = {
+                    "sourceId": source,
+                    "rowCount": fingerprint_count,
+                    "maxRowUpdatedAt": fingerprint_updated.isoformat(),
+                    "maxObservationAt": fingerprint_observed.isoformat(),
+                    "publicationStatus": "complete",
+                }
         checkpoint["readback"] = {
             "ok": ok,
             "generation_id": generation_id,
@@ -3590,6 +3633,7 @@ def verify_validation_readback(
             ),
             "expected_staged_unique": staged,
             "inventory_only": inventory_details,
+            "inventory_fingerprint": inventory_fingerprint,
             "queue_health": (
                 queue_by_source.get(source)
                 or {
