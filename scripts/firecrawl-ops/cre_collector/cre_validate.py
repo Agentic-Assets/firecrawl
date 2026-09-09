@@ -26,7 +26,6 @@ from cre_ingest import (
 )
 from cre_source_policy import load_source_policy
 
-
 SOURCE_KEY_SQL = source_key_sql()
 
 # Raw payloads may be stored flat, as a merged sale/lease pass, or beneath the
@@ -146,7 +145,199 @@ INVENTORY_ONLY_DEFINITIONS_SQL = ",\n".join(
 )
 
 
+LIFECYCLE_SCHEMA_CONTRACT_ITEMS = (
+    "cre_source_index_presence_columns",
+    "cre_scrape_jobs_artifact_run_key",
+    "cre_scrape_jobs_artifact_run_key_uidx",
+    "cre_listing_events_lifecycle_columns",
+    "cre_listing_events_lifecycle_identity_constraint",
+    "cre_listing_events_non_lifecycle_uidx",
+    "cre_listing_events_presence_transition_uidx",
+    "cre_listing_events_scrape_job_fk_on_delete_set_null",
+    "cre_listing_price_history_reconciliation_columns",
+    "cre_listing_price_history_reconciliation_job_fk",
+    "cre_listing_price_history_reconciliation_job_uidx",
+)
+
+
 QUERIES = {
+    "lifecycle_schema_contract": """
+WITH contract (contract_item, ok) AS (
+  VALUES
+    (
+      'cre_source_index_presence_columns',
+      EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'credeals' AND table_name = 'cre_source_index'
+          AND column_name = 'observation_present' AND data_type = 'boolean'
+          AND is_nullable = 'NO'
+          AND column_default IN ('true', 'true::boolean')
+      ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'credeals' AND table_name = 'cre_source_index'
+          AND column_name = 'presence_generation' AND data_type = 'bigint'
+          AND is_nullable = 'NO'
+          AND column_default IN ('0', '0::bigint')
+      ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'credeals' AND table_name = 'cre_source_index'
+          AND column_name = 'presence_changed_at'
+          AND data_type = 'timestamp with time zone'
+      ) AND EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = to_regclass('credeals.cre_source_index')
+          AND conname = 'cre_source_index_presence_generation_nonnegative'
+          AND pg_get_constraintdef(oid) LIKE '%presence_generation >= 0%'
+      )
+    ),
+    (
+      'cre_scrape_jobs_artifact_run_key',
+      EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'credeals' AND table_name = 'cre_scrape_jobs'
+          AND column_name = 'artifact_run_key' AND data_type = 'text'
+      )
+    ),
+    (
+      'cre_scrape_jobs_artifact_run_key_uidx',
+      EXISTS (
+        SELECT 1
+        FROM pg_index i
+        JOIN pg_class idx ON idx.oid = i.indexrelid
+        WHERE i.indrelid = to_regclass('credeals.cre_scrape_jobs')
+          AND idx.relname = 'cre_scrape_jobs_artifact_run_key_uidx'
+          AND i.indisunique
+          AND pg_get_indexdef(i.indexrelid) LIKE '%(brokerage_id, artifact_run_key)%'
+          AND pg_get_expr(i.indpred, i.indrelid) LIKE '%artifact_run_key IS NOT NULL%'
+      )
+    ),
+    (
+      'cre_listing_events_lifecycle_columns',
+      EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'credeals' AND table_name = 'cre_listing_events'
+          AND column_name = 'presence_generation' AND data_type = 'bigint'
+      ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'credeals' AND table_name = 'cre_listing_events'
+          AND column_name = 'reconciliation_provenance' AND data_type = 'text'
+      ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'credeals' AND table_name = 'cre_listing_events'
+          AND column_name = 'evidence_observed_at'
+          AND data_type = 'timestamp with time zone'
+      ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'credeals' AND table_name = 'cre_listing_events'
+          AND column_name = 'evidence_time_semantics' AND data_type = 'text'
+      ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'credeals' AND table_name = 'cre_listing_events'
+          AND column_name = 'reconciliation_evidence_sha256' AND data_type = 'text'
+      )
+    ),
+    (
+      'cre_listing_events_lifecycle_identity_constraint',
+      EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = to_regclass('credeals.cre_listing_events')
+          AND conname = 'cre_listing_events_lifecycle_identity_required'
+          AND pg_get_constraintdef(oid) LIKE '%presence_generation IS NOT NULL%'
+          AND pg_get_constraintdef(oid) NOT LIKE '%scrape_job_id IS NOT NULL%'
+      )
+    ),
+    (
+      'cre_listing_events_non_lifecycle_uidx',
+      EXISTS (
+        SELECT 1
+        FROM pg_index i
+        JOIN pg_class idx ON idx.oid = i.indexrelid
+        WHERE i.indrelid = to_regclass('credeals.cre_listing_events')
+          AND idx.relname = 'cre_listing_events_idem_uq'
+          AND i.indisunique
+          AND pg_get_indexdef(i.indexrelid) LIKE '%scrape_job_id%'
+          AND pg_get_expr(i.indpred, i.indrelid) LIKE '%disappeared%'
+          AND pg_get_expr(i.indpred, i.indrelid) LIKE '%reappeared%'
+          AND pg_get_expr(i.indpred, i.indrelid) LIKE '%scrape_job_id IS NOT NULL%'
+      )
+    ),
+    (
+      'cre_listing_events_presence_transition_uidx',
+      EXISTS (
+        SELECT 1
+        FROM pg_index i
+        JOIN pg_class idx ON idx.oid = i.indexrelid
+        WHERE i.indrelid = to_regclass('credeals.cre_listing_events')
+          AND idx.relname = 'cre_listing_events_presence_transition_uidx'
+          AND i.indisunique
+          AND pg_get_indexdef(i.indexrelid) LIKE '%(listing_id, event_type, presence_generation)%'
+          AND pg_get_expr(i.indpred, i.indrelid) LIKE '%disappeared%'
+          AND pg_get_expr(i.indpred, i.indrelid) LIKE '%reappeared%'
+          AND pg_get_expr(i.indpred, i.indrelid) LIKE '%presence_generation IS NOT NULL%'
+      )
+    ),
+    (
+      'cre_listing_events_scrape_job_fk_on_delete_set_null',
+      EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = to_regclass('credeals.cre_listing_events')
+          AND confrelid = to_regclass('credeals.cre_scrape_jobs')
+          AND contype = 'f' AND confdeltype = 'n'
+          AND pg_get_constraintdef(oid) LIKE '%FOREIGN KEY (scrape_job_id)%'
+      )
+    ),
+    (
+      'cre_listing_price_history_reconciliation_columns',
+      EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'credeals'
+          AND table_name = 'cre_listing_price_history'
+          AND column_name = 'reconciliation_job_id' AND data_type = 'uuid'
+      ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'credeals'
+          AND table_name = 'cre_listing_price_history'
+          AND column_name = 'reconciliation_provenance' AND data_type = 'text'
+      ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'credeals'
+          AND table_name = 'cre_listing_price_history'
+          AND column_name = 'observed_at_semantics' AND data_type = 'text'
+      ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'credeals'
+          AND table_name = 'cre_listing_price_history'
+          AND column_name = 'reconciliation_evidence_sha256' AND data_type = 'text'
+      )
+    ),
+    (
+      'cre_listing_price_history_reconciliation_job_fk',
+      EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = to_regclass('credeals.cre_listing_price_history')
+          AND confrelid = to_regclass('credeals.cre_scrape_jobs')
+          AND contype = 'f' AND confdeltype = 'n'
+          AND pg_get_constraintdef(oid) LIKE '%FOREIGN KEY (reconciliation_job_id)%'
+      )
+    ),
+    (
+      'cre_listing_price_history_reconciliation_job_uidx',
+      EXISTS (
+        SELECT 1
+        FROM pg_index i
+        JOIN pg_class idx ON idx.oid = i.indexrelid
+        WHERE i.indrelid = to_regclass('credeals.cre_listing_price_history')
+          AND idx.relname = 'cre_listing_price_history_reconciliation_job_uidx'
+          AND i.indisunique
+          AND pg_get_indexdef(i.indexrelid) LIKE '%(listing_id, reconciliation_job_id)%'
+          AND pg_get_expr(i.indpred, i.indrelid) LIKE '%reconciliation_job_id IS NOT NULL%'
+      )
+    )
+)
+SELECT contract_item, CASE WHEN ok THEN 'ok' ELSE 'missing' END AS status
+FROM contract
+ORDER BY contract_item;
+""",
     "totals": """
 SELECT 'cre_listings_active' AS metric, count(*)::text AS value
 FROM credeals.cre_listings WHERE deleted_at IS NULL
@@ -768,6 +959,7 @@ def render_markdown(report):
         parts.append("")
 
     labels = {
+        "lifecycle_schema_contract": "Lifecycle Schema Contract",
         "totals": "Totals",
         "source_counts": "Source Counts",
         "freshness_generations": "Freshness Generations",

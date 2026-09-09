@@ -875,6 +875,42 @@ def test_fresh_detail_with_child_preservation_updates_listing_without_child_dele
     assert "$.**.detailObservedWithChildPreservation" in sql
 
 
+def test_cbre_dealflow_detail_unavailable_preserves_existing_children_on_ingest():
+    row = _row(
+        {
+            "sourceKey": "cbre-dealflow",
+            "id": "public-card-token",
+            "url": (
+                "https://www.cbredealflow.com/handler/landing.aspx"
+                "?pv=public-card-token"
+            ),
+            "canonicalUrl": (
+                "https://www.cbredealflow.com/handler/landing.aspx"
+                "?pv=public-card-token"
+            ),
+            "name": "Current public card",
+            "preserveChildCollections": True,
+            "detailUnavailable": {
+                "reason": "detail_request_failed",
+                "publicCardObserved": True,
+            },
+        }
+    )
+
+    assert row is not None
+    assert row["external_id"] == "dealflow:public-card-token"
+    assert row["raw_data"]["preserveChildCollections"] is True
+    assert row["raw_data"]["detailUnavailable"]["reason"] == (
+        "detail_request_failed"
+    )
+    sql = ci.build_sql([row], [], _SCRAPED_AT, set())
+    assert (
+        '$.**.preserveChildCollections ? (@ == true || @ == "true")'
+        in sql
+    )
+    assert "CREATE TEMP TABLE _child_additive" in sql
+
+
 def test_direct_detail_markdown_inserts_new_evidence_but_preserves_existing_richer_text():
     sql = ci.build_sql([], [], _SCRAPED_AT, set())
     assert "$.**.preserveExistingMarkdown" in sql

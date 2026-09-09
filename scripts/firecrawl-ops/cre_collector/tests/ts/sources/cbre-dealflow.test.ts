@@ -121,6 +121,162 @@ test("CBRE Deal Flow detail reads retry transient transport failures", async () 
   }
 });
 
+test("CBRE Deal Flow exhausted linked-detail requests preserve canonical inventory", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    throw new Error("provider detail unavailable");
+  }) as typeof fetch;
+  try {
+    const listing = await enrichCbreDealflowCard(
+      {
+        id: "public-card-token",
+        url: "https://www.cbredealflow.com/handler/landing.aspx?pv=public-card-token",
+        urlKind: "detail",
+        listingPv: "public-card-token",
+        name: "Current public card",
+        transactionType: "Investment Sale",
+        assetType: "Office",
+        description: "Fresh inventory description",
+        city: "Dallas",
+        state: "TX",
+        country: "United States",
+        sizeText: "10,000 sf",
+        status: "Available",
+        brokerIds: [],
+        contactsDetailed: [{ name: "Current Broker" }],
+        brochures: [],
+        photos: [],
+        cbreDealflowCard: { projectType: "Investment Sale" },
+      },
+      "sale"
+    );
+    assert.equal(calls, CBRE_DEALFLOW_DETAIL_ATTEMPTS);
+    assert.equal(listing.id, "public-card-token");
+    assert.equal(
+      listing.canonicalUrl,
+      "https://www.cbredealflow.com/handler/landing.aspx?pv=public-card-token"
+    );
+    assert.equal(listing.detailUnavailable.reason, "detail_request_failed");
+    assert.equal(listing.detailUnavailable.publicCardObserved, true);
+    assert.equal(listing.detailUnavailable.publicPageObserved, undefined);
+    assert.equal(listing.preserveChildCollections, true);
+    assert.equal(listing.detailError, undefined);
+    assert.equal(listing.name, "Current public card");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("CBRE Deal Flow unparseable linked detail remains inventory-backed", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response("<html><body>unexpected provider detail shell</body></html>", {
+      status: 200,
+    })) as typeof fetch;
+  try {
+    const listing = await enrichCbreDealflowCard(
+      {
+        id: "public-card-token",
+        url: "https://www.cbredealflow.com/handler/landing.aspx?pv=public-card-token",
+        urlKind: "detail",
+        listingPv: "public-card-token",
+        name: "Current public card",
+        transactionType: "Investment Sale",
+        assetType: "Office",
+        description: null,
+        city: "Dallas",
+        state: "TX",
+        country: "United States",
+        sizeText: null,
+        status: "Available",
+        brokerIds: [],
+        contactsDetailed: [],
+        brochures: [],
+        photos: [],
+        cbreDealflowCard: { projectType: "Investment Sale" },
+      },
+      "sale"
+    );
+    assert.equal(listing.detailUnavailable.reason, "detail_request_failed");
+    assert.equal(listing.preserveChildCollections, true);
+    assert.equal(listing.detailError, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("CBRE Deal Flow malformed linked identity still fails closed", async () => {
+  await assert.rejects(
+    () =>
+      enrichCbreDealflowCard(
+        {
+          id: "public-card-token",
+          url: null,
+          urlKind: "detail",
+          listingPv: "public-card-token",
+          name: "Malformed linked card",
+          transactionType: "Investment Sale",
+          assetType: "Office",
+          description: null,
+          city: "Dallas",
+          state: "TX",
+          country: "United States",
+          sizeText: null,
+          status: "Available",
+          brokerIds: [],
+          contactsDetailed: [],
+          brochures: [],
+          photos: [],
+          cbreDealflowCard: { projectType: "Investment Sale" },
+        },
+        "sale"
+      ),
+    /linked card is missing its public URL/
+  );
+});
+
+test("CBRE Deal Flow structured-detail mapping failures still fail closed", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      '<html><script>var data = {"sections":1}</script></html>',
+      { status: 200 }
+    )) as typeof fetch;
+  try {
+    await assert.rejects(
+      () =>
+        enrichCbreDealflowCard(
+          {
+            id: "public-card-token",
+            url: "https://www.cbredealflow.com/handler/landing.aspx?pv=public-card-token",
+            urlKind: "detail",
+            listingPv: "public-card-token",
+            name: "Current public card",
+            transactionType: "Investment Sale",
+            assetType: "Office",
+            description: null,
+            city: "Dallas",
+            state: "TX",
+            country: "United States",
+            sizeText: null,
+            status: "Available",
+            brokerIds: [],
+            contactsDetailed: [],
+            brochures: [],
+            photos: [],
+            cbreDealflowCard: { projectType: "Investment Sale" },
+          },
+          "sale"
+        ),
+      /detail mapping failed/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("CBRE Deal Flow recognizes a current card with no configured public landing detail", () => {
   const html = `
     <div>

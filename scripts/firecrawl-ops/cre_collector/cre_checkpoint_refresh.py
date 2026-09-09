@@ -48,9 +48,9 @@ from cre_ingest import (
     to_inventory_only_row,
     to_row,
 )
-from cre_source_policy import load_source_policy
 from cre_runtime_observability import append_incident
-
+from cre_source_policy import load_source_policy
+from cre_validate import LIFECYCLE_SCHEMA_CONTRACT_ITEMS
 
 COLLECTOR_DIR = Path(__file__).resolve().parent
 REPO_ROOT = COLLECTOR_DIR.parents[2]
@@ -3917,6 +3917,59 @@ def record_scope_from_validation(
     manifest["scope"]["unsupported_active_rows_before"] = unsupported
 
 
+def require_lifecycle_schema_contract(
+    validation: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fail closed unless the read-only snapshot proves migration 016."""
+    rows = (validation.get("queries") or {}).get("lifecycle_schema_contract")
+    if not isinstance(rows, list):
+        raise GlobalStageError(
+            "database migration 016 lifecycle contract evidence is missing"
+        )
+
+    observed: dict[str, str] = {}
+    malformed = False
+    for row in rows:
+        if not isinstance(row, Mapping):
+            malformed = True
+            continue
+        item = row.get("contract_item")
+        status = row.get("status")
+        if (
+            not isinstance(item, str)
+            or not isinstance(status, str)
+            or item in observed
+        ):
+            malformed = True
+            continue
+        observed[item] = status
+
+    expected = set(LIFECYCLE_SCHEMA_CONTRACT_ITEMS)
+    failures = sorted(
+        (expected - set(observed))
+        | {item for item in expected if observed.get(item) != "ok"}
+    )
+    unexpected = sorted(set(observed) - expected)
+    if malformed or failures or unexpected:
+        detail = []
+        if failures:
+            detail.append("missing or invalid: " + ", ".join(failures))
+        if unexpected:
+            detail.append("unexpected: " + ", ".join(unexpected))
+        if malformed:
+            detail.append("malformed or duplicate rows")
+        raise GlobalStageError(
+            "database migration 016 lifecycle contract is incomplete ("
+            + "; ".join(detail)
+            + ")"
+        )
+    return {
+        "ok": True,
+        "contract": "016_cre_listing_lifecycle",
+        "items": list(LIFECYCLE_SCHEMA_CONTRACT_ITEMS),
+    }
+
+
 def render_report(manifest: Mapping[str, Any]) -> str:
     lines = [
         "# CRE checkpoint refresh report",
@@ -4304,6 +4357,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "validation_sha256": sha256_file(pre_validation),
                     }
                 )
+            manifest["preflight"]["lifecycle_schema_contract"] = (
+                require_lifecycle_schema_contract(pre_result)
+            )
             record_scope_from_validation(manifest, pre_result)
             save_manifest(run_dir, manifest)
 

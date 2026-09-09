@@ -576,16 +576,22 @@ export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Pr
   if (!card.url) {
     throw new Error("CBRE Deal Flow linked card is missing its public URL");
   }
+  let html: string;
   try {
-    const html = await cbreDealflowGetText(card.url, CBRE_DEALFLOW_DETAIL_ATTEMPTS);
-    const data = parseCbreDealflowDetailData(html);
-    if (!data) {
-      const unavailableReason = cbreDealflowDetailUnavailableReason(html, card.name);
-      if (unavailableReason) {
-        return cbreDealflowUnavailableCard(card, unavailableReason);
-      }
-      throw new Error("detail page had no parseable public data object");
-    }
+    html = await cbreDealflowGetText(card.url, CBRE_DEALFLOW_DETAIL_ATTEMPTS);
+  } catch (err) {
+    console.error(`  cbre-dealflow/${tx}: detail unavailable for ${card.url}: ${err}`);
+    return cbreDealflowUnavailableCard(card, "detail_request_failed");
+  }
+  const data = parseCbreDealflowDetailData(html);
+  if (!data) {
+    const unavailableReason = cbreDealflowDetailUnavailableReason(html, card.name);
+    return cbreDealflowUnavailableCard(
+      card,
+      unavailableReason ?? "detail_request_failed"
+    );
+  }
+  try {
     const addr = data.addresses ?? {};
     const fields = data.projectfields ?? {};
     const detailContacts = cbreDealflowContacts(data);
@@ -689,11 +695,10 @@ export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Pr
       },
     });
   } catch (err) {
-    console.error(`  cbre-dealflow/${tx}: detail failed for ${card.url}: ${err}`);
-    return prune({
-      ...card,
-      detailError: String(err),
-    });
+    // Once a structured detail payload exists, mapping failures are contract
+    // defects rather than provider-detail unavailability. Fail closed so a
+    // parser regression cannot be mislabeled as a healthy inventory-only row.
+    throw new Error(`CBRE Deal Flow detail mapping failed for ${card.url}: ${err}`);
   }
 }
 

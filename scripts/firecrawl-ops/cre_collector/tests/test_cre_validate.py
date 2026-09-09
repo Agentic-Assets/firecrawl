@@ -22,6 +22,7 @@ import pytest
 # conftest.py already puts cre_collector/ on sys.path.
 import cre_validate
 from cre_validate import (
+    LIFECYCLE_SCHEMA_CONTRACT_ITEMS,
     QUERIES,
     SOURCE_KEY_SQL,
     markdown_table,
@@ -29,8 +30,8 @@ from cre_validate import (
     parse_query_batch,
     parse_tsv,
     render_markdown,
-    run_query,
     run_queries,
+    run_query,
 )
 
 
@@ -54,6 +55,32 @@ def test_enrichment_queue_health_is_redaction_safe_and_classified():
     assert "last_error AS" not in sql
     assert "attempts BETWEEN 1 AND 4" in sql
     assert "attempts >= 5" in sql
+
+
+def test_lifecycle_schema_contract_query_covers_migration_016():
+    sql = QUERIES["lifecycle_schema_contract"]
+
+    assert set(LIFECYCLE_SCHEMA_CONTRACT_ITEMS) == {
+        "cre_source_index_presence_columns",
+        "cre_scrape_jobs_artifact_run_key",
+        "cre_scrape_jobs_artifact_run_key_uidx",
+        "cre_listing_events_lifecycle_columns",
+        "cre_listing_events_lifecycle_identity_constraint",
+        "cre_listing_events_non_lifecycle_uidx",
+        "cre_listing_events_presence_transition_uidx",
+        "cre_listing_events_scrape_job_fk_on_delete_set_null",
+        "cre_listing_price_history_reconciliation_columns",
+        "cre_listing_price_history_reconciliation_job_fk",
+        "cre_listing_price_history_reconciliation_job_uidx",
+    }
+    for contract_item in LIFECYCLE_SCHEMA_CONTRACT_ITEMS:
+        assert contract_item in sql
+    assert "artifact_run_key" in sql
+    assert "observation_present" in sql
+    assert "presence_generation" in sql
+    assert "reconciliation_job_id" in sql
+    assert "pg_get_constraintdef" in sql
+    assert "pg_get_indexdef" in sql
 
 
 # ---------------------------------------------------------------------------

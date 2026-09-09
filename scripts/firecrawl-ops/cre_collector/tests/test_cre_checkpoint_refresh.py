@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 import cre_checkpoint_refresh as refresh
-
 
 ATTEMPT = "2026-07-29T12:00:00+00:00"
 
@@ -77,6 +76,118 @@ def write_artifact(tmp_path, payload):
     path = tmp_path / "artifact.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+def lifecycle_schema_contract_validation(*, failed_item=None):
+    rows = [
+        {
+            "contract_item": item,
+            "status": "missing" if item == failed_item else "ok",
+        }
+        for item in refresh.LIFECYCLE_SCHEMA_CONTRACT_ITEMS
+    ]
+    return {"queries": {"lifecycle_schema_contract": rows}}
+
+
+def test_preflight_accepts_complete_migration_016_contract():
+    result = refresh.require_lifecycle_schema_contract(
+        lifecycle_schema_contract_validation()
+    )
+
+    assert result == {
+        "ok": True,
+        "contract": "016_cre_listing_lifecycle",
+        "items": list(refresh.LIFECYCLE_SCHEMA_CONTRACT_ITEMS),
+    }
+
+
+def test_preflight_rejects_missing_artifact_run_key_before_collection():
+    with pytest.raises(
+        refresh.GlobalStageError,
+        match="cre_scrape_jobs_artifact_run_key",
+    ):
+        refresh.require_lifecycle_schema_contract(
+            lifecycle_schema_contract_validation(
+                failed_item="cre_scrape_jobs_artifact_run_key"
+            )
+        )
+
+
+def test_main_checks_migration_016_before_starting_source_collection(
+    tmp_path, monkeypatch
+):
+    commands = []
+    collected = []
+    validation = lifecycle_schema_contract_validation(
+        failed_item="cre_scrape_jobs_artifact_run_key"
+    )
+
+    def run_command(argv, _log_path, **_kwargs):
+        commands.append(Path(argv[1]).name)
+        if Path(argv[1]).name == "cre_validate.py":
+            output = Path(argv[argv.index("--out") + 1])
+            output.write_text(json.dumps(validation), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(
+        refresh,
+        "database_target_fingerprint",
+        lambda _env_file: {"algorithm": "sha256", "value": "a" * 64},
+    )
+    monkeypatch.setattr(refresh, "git_identity", lambda: ("abc", False))
+    monkeypatch.setattr(
+        refresh, "checkpoint_lock_dir", lambda _override: tmp_path / ".cre.lock"
+    )
+    monkeypatch.setattr(refresh, "run_cpu_guard_preflight", lambda _guard: 1.0)
+    monkeypatch.setattr(refresh.HostCpuGuard, "start", lambda _guard: None)
+    monkeypatch.setattr(refresh.HostCpuGuard, "stop", lambda _guard: None)
+    monkeypatch.setattr(refresh, "run_command", run_command)
+    monkeypatch.setattr(
+        refresh,
+        "prepare_sources_cohort",
+        lambda *_args, **_kwargs: collected.append(True),
+    )
+
+    with pytest.raises(
+        refresh.GlobalStageError,
+        match="cre_scrape_jobs_artifact_run_key",
+    ):
+        refresh.main(
+            [
+                "--out-root",
+                str(tmp_path / "runs"),
+                "--sources",
+                "svn",
+            ]
+        )
+
+    assert commands == ["firecrawl_healthcheck.sh", "cre_validate.py"]
+    assert collected == []
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        None,
+        [],
+        [{"contract_item": "unexpected", "status": "ok"}],
+        [
+            {
+                "contract_item": "cre_scrape_jobs_artifact_run_key",
+                "status": "ok",
+            },
+            {
+                "contract_item": "cre_scrape_jobs_artifact_run_key",
+                "status": "ok",
+            },
+        ],
+    ],
+)
+def test_preflight_rejects_malformed_migration_016_contract(rows):
+    with pytest.raises(refresh.GlobalStageError, match="migration 016"):
+        refresh.require_lifecycle_schema_contract(
+            {"queries": {"lifecycle_schema_contract": rows}}
+        )
 
 
 def strict_artifact(
