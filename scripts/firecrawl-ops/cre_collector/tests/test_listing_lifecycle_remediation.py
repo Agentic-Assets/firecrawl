@@ -101,9 +101,24 @@ def test_ingest_owns_canonical_sync_events_and_final_history_order():
     assert sql.count(ingest.LIFECYCLE_TRANSACTION_LOCK_NAME) == 1
     assert sql.count("pg_advisory_xact_lock") == 1
     assert "complete high-volume source" in sql
+    reappearance = sql[sql.index("SELECT u.id, u.brokerage_id, jm.job_id, 'reappeared'") :]
+    reappearance = reappearance[: reappearance.index("ON CONFLICT DO NOTHING;")]
+    assert "LEFT JOIN _prior_vals pv ON pv.id = u.id" in reappearance
+    assert "JOIN credeals.cre_source_index si\n  ON si.brokerage_id = u.brokerage_id" in reappearance
+    assert "JOIN credeals.cre_source_index si USING" not in reappearance
     assert "si.last_enumerated_at < jm.finished_at" in sql
     assert "jm.finished_at, jm.finished_at" in sql
     assert "applied.presence_generation, jm.finished_at" in sql
+
+
+def test_reappearance_source_index_join_is_not_ambiguous():
+    sql = ingest.build_sql([], [], AT, set(), history_guard=False)
+    reappearance = sql[sql.index("SELECT u.id, u.brokerage_id, jm.job_id, 'reappeared'") :]
+    reappearance = reappearance[: reappearance.index("ON CONFLICT DO NOTHING;")]
+
+    assert "LEFT JOIN _prior_vals pv ON pv.id = u.id" in reappearance
+    assert "JOIN credeals.cre_source_index si\n  ON si.brokerage_id = u.brokerage_id" in reappearance
+    assert "JOIN credeals.cre_source_index si USING" not in reappearance
 
 
 def test_inventory_only_updates_all_lifecycle_columns_atomically():

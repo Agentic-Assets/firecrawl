@@ -3028,7 +3028,11 @@ FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 JOIN _prior_source_presence p USING (brokerage_id, external_id)
 LEFT JOIN _prior_vals pv ON pv.id = u.id
-JOIN credeals.cre_source_index si USING (brokerage_id, external_id)
+-- Keep this join explicit. The preceding LEFT JOIN adds pv.brokerage_id and
+-- pv.external_id to the joined row, so another USING clause sees duplicate
+-- names on its left side and PostgreSQL rejects the statement as ambiguous.
+JOIN credeals.cre_source_index si
+  ON si.brokerage_id = u.brokerage_id AND si.external_id = u.external_id
 JOIN credeals.cre_brokerages b ON b.id = u.brokerage_id
 JOIN _jobmeta jm ON jm.slug = b.slug
 WHERE p.observation_present = false OR pv.deleted_at IS NOT NULL

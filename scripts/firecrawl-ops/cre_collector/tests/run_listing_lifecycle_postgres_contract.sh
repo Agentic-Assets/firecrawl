@@ -221,6 +221,44 @@ VALUES
    'https://example.test/race-y', false, true, 0,
    '2026-08-31T12:00:00Z', '2026-08-31T12:00:00Z',
    '2026-08-31T12:00:00Z', '2026-08-31T12:00:00Z');
+
+-- Exercise the generated reappearance join after the prior-value LEFT JOIN.
+-- A trailing USING clause is ambiguous because pv exposes another copy of the
+-- lifecycle identity columns; the explicit source-index predicate must retain
+-- every row at a production-shaped bulk cardinality.
+CREATE TEMP TABLE _bulk_up AS
+SELECT gen_random_uuid() AS id,
+       '10000000-0000-4000-8000-000000000002'::uuid AS brokerage_id,
+       'bulk-' || n::text AS external_id
+FROM generate_series(1, 1000) AS n;
+CREATE TEMP TABLE _bulk_src AS SELECT * FROM _bulk_up;
+CREATE TEMP TABLE _bulk_prior_presence AS
+SELECT brokerage_id, external_id, false AS observation_present
+FROM _bulk_up;
+CREATE TEMP TABLE _bulk_prior_vals AS
+SELECT id, brokerage_id, external_id, NULL::timestamptz AS deleted_at
+FROM _bulk_up;
+INSERT INTO credeals.cre_source_index
+  (brokerage_id, external_id, source_key, observation_present,
+   presence_generation, first_seen, last_seen, last_enumerated_at)
+SELECT brokerage_id, external_id, 'race', true, 1, now(), now(), now()
+FROM _bulk_up;
+CREATE TEMP TABLE _bulk_reappearance_probe AS
+SELECT u.id, u.brokerage_id, si.presence_generation
+FROM _bulk_up u
+JOIN _bulk_src s USING (brokerage_id, external_id)
+JOIN _bulk_prior_presence p USING (brokerage_id, external_id)
+LEFT JOIN _bulk_prior_vals pv ON pv.id = u.id
+JOIN credeals.cre_source_index si
+  ON si.brokerage_id = u.brokerage_id AND si.external_id = u.external_id
+WHERE p.observation_present = false OR pv.deleted_at IS NOT NULL;
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM _bulk_reappearance_probe) <> 1000 THEN
+    RAISE EXCEPTION 'bulk reappearance join lost rows';
+  END IF;
+END $$;
+
 INSERT INTO credeals.cre_scrape_jobs
   (id, brokerage_id, status, started_at, completed_at, artifact_run_key)
 VALUES
