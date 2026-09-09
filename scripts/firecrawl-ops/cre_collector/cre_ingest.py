@@ -92,6 +92,21 @@ def lifecycle_advisory_lock_key_sql(brokerage_expr, external_expr):
     )
 
 
+def artifact_run_identity_from_digests(member_digests, *, lane="ingest"):
+    """Stable content identity from canonically ordered artifact digests."""
+    members = list(member_digests)
+    if not members or any(
+        not isinstance(digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        for digest in members
+    ):
+        raise ValueError("artifact identity requires lowercase SHA-256 digests")
+    key = f"{lane}:v1:" + hashlib.sha256(
+        "\n".join(members).encode()
+    ).hexdigest()
+    return key, str(uuid.uuid5(_RUN_UUID_NAMESPACE, key))
+
+
 def artifact_run_identity(paths, *, lane="ingest"):
     """Stable content identity used for replay-safe job and event rows."""
     members = []
@@ -101,8 +116,7 @@ def artifact_run_identity(paths, *, lane="ingest"):
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
         members.append(digest.hexdigest())
-    key = f"{lane}:v1:" + hashlib.sha256("\n".join(members).encode()).hexdigest()
-    return key, str(uuid.uuid5(_RUN_UUID_NAMESPACE, key))
+    return artifact_run_identity_from_digests(members, lane=lane)
 
 # sourceKey -> (brokerage slug, external_id prefix)
 SOURCE_TO_BROKERAGE = {
@@ -2545,27 +2559,13 @@ BEGIN
     END IF;
 END $$;
 
--- Global lifecycle lock order: identity advisory lock, source index, listing.
--- The advisory lock also covers identities whose source-index row does not yet
--- exist, so a present insert cannot invert table-lock order with retirement.
-DO $$
-DECLARE
-    lifecycle_identity record;
-BEGIN
-    FOR lifecycle_identity IN
-        SELECT DISTINCT s.brokerage_id, s.external_id
-        FROM _src s
-        ORDER BY s.brokerage_id, s.external_id
-    LOOP
-        PERFORM pg_advisory_xact_lock(
-            hashtextextended(concat_ws(chr(31),
-                lifecycle_identity.brokerage_id::text,
-                lifecycle_identity.external_id::text), 0)
-        );
-    END LOOP;
-END $$;
-
--- Lock present source-index rows after all identity advisory locks.
+-- The transaction-wide lifecycle advisory lock above serializes every generated
+-- bulk ingest and reviewed reconciliation. Do not also retain one advisory lock
+-- per identity: a complete high-volume source can exceed PostgreSQL's shared
+-- lock table before reaching the upsert. Lock existing lifecycle rows in the
+-- canonical source-index-then-listing order; the unique identity constraints
+-- serialize new-row conflicts.
+-- Lock present source-index rows after the transaction-wide lifecycle lock.
 CREATE TEMP TABLE _present_source_locks ON COMMIT DROP AS
 SELECT si.id
 FROM credeals.cre_source_index si
@@ -3028,7 +3028,11 @@ FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 JOIN _prior_source_presence p USING (brokerage_id, external_id)
 LEFT JOIN _prior_vals pv ON pv.id = u.id
-JOIN credeals.cre_source_index si USING (brokerage_id, external_id)
+-- Keep this join explicit. The preceding LEFT JOIN adds pv.brokerage_id and
+-- pv.external_id to the joined row, so another USING clause sees duplicate
+-- names on its left side and PostgreSQL rejects the statement as ambiguous.
+JOIN credeals.cre_source_index si
+  ON si.brokerage_id = u.brokerage_id AND si.external_id = u.external_id
 JOIN credeals.cre_brokerages b ON b.id = u.brokerage_id
 JOIN _jobmeta jm ON jm.slug = b.slug
 WHERE p.observation_present = false OR pv.deleted_at IS NOT NULL
@@ -3499,28 +3503,10 @@ WHERE b.slug IN ({slug_list})
   AND l.external_id IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM _up u WHERE u.id = l.id);
 
--- Follow the global advisory-then-source-index-then-listing lock order. If a
--- concurrent present observation commits first, the post-lock timestamp
--- predicate below excludes it. If retirement locks first, the present writer
--- waits and can safely revive the row after this transaction commits.
-DO $$
-DECLARE
-    lifecycle_identity record;
-BEGIN
-    FOR lifecycle_identity IN
-        SELECT DISTINCT c.brokerage_id, c.external_id
-        FROM _retired_candidates c
-        ORDER BY c.brokerage_id, c.external_id
-    LOOP
-        PERFORM pg_advisory_xact_lock(
-            hashtextextended(concat_ws(chr(31),
-                lifecycle_identity.brokerage_id::text,
-                lifecycle_identity.external_id::text), 0)
-        );
-    END LOOP;
-END $$;
-
--- Lock retirement source-index rows after all identity advisory locks.
+-- The transaction-wide lifecycle advisory lock serializes retirement against
+-- every generated ingest and reviewed reconciliation. Lock retirement rows in
+-- the same source-index-then-listing order used by present observations.
+-- Lock retirement source-index rows after the transaction-wide lifecycle lock.
 CREATE TEMP TABLE _retired_source_locks ON COMMIT DROP AS
 SELECT si.id
 FROM credeals.cre_source_index si

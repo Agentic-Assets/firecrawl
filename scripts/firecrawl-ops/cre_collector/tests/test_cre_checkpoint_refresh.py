@@ -169,6 +169,7 @@ def avison_property_detail_artifact():
 
 def strict_artifact_info(staged=2):
     return {
+        "sha256": "a" * 64,
         "finished_at": "2026-07-29T12:01:00+00:00",
         "staged_unique": staged,
         "inventory_only": 0,
@@ -413,10 +414,14 @@ def test_database_child_argv_carries_expected_target_fingerprint(tmp_path):
         tmp_path / "validation.json",
         "/tmp/equire.env",
         expected_db_target_sha256=expected,
+        expected_artifact_run_key=f"ingest:v1:{'b' * 64}",
     )
 
     for argv in (ingest, gate, validate):
         assert argv[argv.index("--expected-db-target-sha256") + 1] == expected
+    assert validate[validate.index("--expected-artifact-run-key") + 1] == (
+        f"ingest:v1:{'b' * 64}"
+    )
 
 
 def test_strict_ingest_argv_passes_explicit_freshness_requirement(tmp_path):
@@ -3314,6 +3319,89 @@ def test_recover_interrupted_ingest_never_replays_on_mismatch(
             ],
             "freshness_generations": [freshness_generation_row(active=1)],
             "inventory_only_index": [],
+        }
+    }
+
+    def fake_run(argv, _log, **_kwargs):
+        output = Path(argv[argv.index("--out") + 1])
+        refresh.atomic_write_json(output, validation)
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    with pytest.raises(refresh.GlobalStageError, match="manual recovery"):
+        refresh.recover_interrupted_ingest(run_dir, manifest, "svn", None)
+    assert manifest["sources"]["svn"]["state"] == "ingest_recovery_required"
+
+
+def test_recover_interrupted_ingest_marks_exact_rollback_replayable(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["svn"].update(
+        {
+            "artifact": strict_artifact_info(),
+            "ingest": {"rc": 1},
+            "state": "ingesting",
+        }
+    )
+    validation = {
+        "queries": {
+            "source_counts": [],
+            "freshness_generations": [],
+            "inventory_only_index": [],
+            "artifact_run_jobs": [{"matching_jobs": "0"}],
+        }
+    }
+
+    def fake_run(argv, _log, **_kwargs):
+        assert "--expected-artifact-run-key" in argv
+        output = Path(argv[argv.index("--out") + 1])
+        refresh.atomic_write_json(output, validation)
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    with pytest.raises(refresh.GlobalStageError, match="fully rolled back"):
+        refresh.recover_interrupted_ingest(run_dir, manifest, "svn", None)
+
+    checkpoint = manifest["sources"]["svn"]
+    assert checkpoint["state"] == "dry_run_passed"
+    assert checkpoint["ingest_recovery"]["outcome"] == "exact_rollback"
+    assert checkpoint["ingest_recovery"]["replay_safe"] is True
+
+
+def test_recover_interrupted_ingest_blocks_partial_job_footprint(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+    )
+    manifest["sources"]["svn"].update(
+        {
+            "artifact": strict_artifact_info(),
+            "ingest": {"rc": 1},
+            "state": "ingesting",
+        }
+    )
+    validation = {
+        "queries": {
+            "source_counts": [],
+            "freshness_generations": [],
+            "inventory_only_index": [],
+            "artifact_run_jobs": [{"matching_jobs": "1"}],
         }
     }
 

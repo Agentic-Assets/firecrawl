@@ -92,21 +92,33 @@ def test_ingest_owns_canonical_sync_events_and_final_history_order():
     assert "FOR UPDATE OF l" in sql
     assert "FOR UPDATE OF si" in sql
     transaction_lock = sql.index(ingest.LIFECYCLE_TRANSACTION_LOCK_NAME)
-    present_advisory = sql.index("-- Global lifecycle lock order")
-    present_source = sql.index("-- Lock present source-index rows", present_advisory)
+    present_source = sql.index("-- Lock present source-index rows", transaction_lock)
     present_listing = sql.index("-- Lock present canonical listing rows", present_source)
-    retired_advisory = sql.index(
-        "-- Follow the global advisory-then-source-index-then-listing lock order"
-    )
-    retired_source = sql.index("-- Lock retirement source-index rows", retired_advisory)
+    retired_source = sql.index("-- Lock retirement source-index rows", present_listing)
     retired_listing = sql.index("-- Lock retirement canonical listing rows", retired_source)
-    assert transaction_lock < present_advisory < present_source < present_listing
-    assert retired_advisory < retired_source < retired_listing
+    assert transaction_lock < present_source < present_listing
+    assert present_listing < retired_source < retired_listing
     assert sql.count(ingest.LIFECYCLE_TRANSACTION_LOCK_NAME) == 1
-    assert sql.count("pg_advisory_xact_lock") >= 3
+    assert sql.count("pg_advisory_xact_lock") == 1
+    assert "complete high-volume source" in sql
+    reappearance = sql[sql.index("SELECT u.id, u.brokerage_id, jm.job_id, 'reappeared'") :]
+    reappearance = reappearance[: reappearance.index("ON CONFLICT DO NOTHING;")]
+    assert "LEFT JOIN _prior_vals pv ON pv.id = u.id" in reappearance
+    assert "JOIN credeals.cre_source_index si\n  ON si.brokerage_id = u.brokerage_id" in reappearance
+    assert "JOIN credeals.cre_source_index si USING" not in reappearance
     assert "si.last_enumerated_at < jm.finished_at" in sql
     assert "jm.finished_at, jm.finished_at" in sql
     assert "applied.presence_generation, jm.finished_at" in sql
+
+
+def test_reappearance_source_index_join_is_not_ambiguous():
+    sql = ingest.build_sql([], [], AT, set(), history_guard=False)
+    reappearance = sql[sql.index("SELECT u.id, u.brokerage_id, jm.job_id, 'reappeared'") :]
+    reappearance = reappearance[: reappearance.index("ON CONFLICT DO NOTHING;")]
+
+    assert "LEFT JOIN _prior_vals pv ON pv.id = u.id" in reappearance
+    assert "JOIN credeals.cre_source_index si\n  ON si.brokerage_id = u.brokerage_id" in reappearance
+    assert "JOIN credeals.cre_source_index si USING" not in reappearance
 
 
 def test_inventory_only_updates_all_lifecycle_columns_atomically():
