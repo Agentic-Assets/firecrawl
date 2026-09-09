@@ -322,6 +322,15 @@ admission proof. `cre_refresh_report.py --since <run-start>` is the broader
 scope report; neither that report nor a fresh `scraped_at` proves that an old
 detail cache was refreshed.
 
+The checkpoint-series publisher advances
+`out/checkpoint-series/producer-source-health.json` only after a complete
+all-source series. Its `producer-freshness-v2` inventory generation binds each
+required source to the post-ingest readback of active row count, maximum
+`cre_listings.updated_at`, maximum observation/enumeration clock, and complete
+publication status. Partial, failed, running, and interrupted series never
+replace the last-good receipt. The generation ID is derived from the canonical
+fingerprint digest, so an exact retry reuses it and any changed tuple does not.
+
 ## Adding a source
 
 1. Implement `srcNewSource(tx, max, monitor)` in `sources/<name>.ts` returning

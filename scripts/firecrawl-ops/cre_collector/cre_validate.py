@@ -132,6 +132,10 @@ SOURCE_POLICY_SQL = ",\n".join(
     for source_key, entry in SOURCE_POLICY.items()
 )
 
+REQUIRED_SOURCE_IDS_SQL = ",\n".join(
+    f"    ({_sql_literal(source_key)})" for source_key in SOURCE_POLICY
+)
+
 
 INVENTORY_ONLY_DEFINITIONS_SQL = ",\n".join(
     "    ({source_key}, {slug}, {external_id_like}, {watermark_external_id})".format(
@@ -213,6 +217,48 @@ JOIN latest ON latest.source_key = a.source_key
 LEFT JOIN soft_deleted ON soft_deleted.source_key = a.source_key
 GROUP BY a.source_key, latest.latest_scraped_at, latest.latest_inventory_observed_at
 ORDER BY a.source_key;
+""",
+    # This is deliberately the same live-inventory tuple recomputed by
+    # GetCREdata's producer-freshness-v2 gate. It is read only after ingest so
+    # a receipt cannot authorize inventory mutated after its database readback.
+    "inventory_generation_fingerprints": f"""
+WITH required_sources(source_id) AS (
+  VALUES
+{REQUIRED_SOURCE_IDS_SQL}
+),
+live_inventory AS (
+  SELECT
+    coalesce(nullif(source_identity.source_key, ''), l.brokerage_id::text)
+      AS source_id,
+    l.updated_at AS row_updated_at,
+    coalesce(source_identity.last_enumerated_at, l.last_seen_at)
+      AS observation_at
+  FROM credeals.cre_listings l
+  LEFT JOIN LATERAL (
+    SELECT si.source_key, si.last_enumerated_at
+    FROM credeals.cre_source_index si
+    WHERE si.brokerage_id = l.brokerage_id
+      AND si.external_id = l.external_id
+    ORDER BY si.last_enumerated_at DESC NULLS LAST, si.id DESC
+    LIMIT 1
+  ) source_identity ON true
+  WHERE l.deleted_at IS NULL
+)
+SELECT
+  required_sources.source_id AS source_key,
+  count(live_inventory.source_id)::text AS row_count,
+  to_char(
+    max(live_inventory.row_updated_at) AT TIME ZONE 'UTC',
+    'YYYY-MM-DD HH24:MI:SS"Z"'
+  ) AS max_row_updated_at,
+  to_char(
+    max(live_inventory.observation_at) AT TIME ZONE 'UTC',
+    'YYYY-MM-DD HH24:MI:SS"Z"'
+  ) AS max_observation_at
+FROM required_sources
+LEFT JOIN live_inventory USING (source_id)
+GROUP BY required_sources.source_id
+ORDER BY required_sources.source_id;
 """,
     "freshness_generations": f"""
 WITH source_policy (source_key, evidence_class, detail_claim) AS (
@@ -770,6 +816,7 @@ def render_markdown(report):
     labels = {
         "totals": "Totals",
         "source_counts": "Source Counts",
+        "inventory_generation_fingerprints": "Inventory Generation Fingerprints",
         "freshness_generations": "Freshness Generations",
         "inventory_only_index": "Inventory-Only Source Index",
         "enrichment_queue_health": "Enrichment Queue Health",
