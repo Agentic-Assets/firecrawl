@@ -829,7 +829,18 @@ function parseJllInvestorListing(
     )
     .filter((id: number | null): id is number => id !== null);
   const documentUrls = jllInvestorDocumentUrls(listing);
-  const teaserDocs = documentUrls.map((url) => ({ name: titleFromFilename(url), url }));
+  const searchTeaserUrl = clean(base?.jllInvestorSearchRow?.rcm?.teaser);
+  const teaserDocs = dedupeStrings([
+    ...documentUrls,
+    ...(searchTeaserUrl && /^https?:\/\//i.test(searchTeaserUrl)
+      ? [searchTeaserUrl]
+      : []),
+  ]).map((url) => ({
+    name: url === searchTeaserUrl ? "Teaser" : titleFromFilename(url),
+    url,
+    docType: "brochure",
+  }));
+  const searchDataRoomUrl = clean(base?.jllInvestorSearchRow?.rcm?.dataRoom);
   const photos = jllInvestorImageUrls(listing, base.photos ?? []);
   // Capture-everything harvest: unify the full detail page (markdown / links /
   // images / video+iframe attributes) with the stranded native fields promoted
@@ -844,6 +855,16 @@ function parseJllInvestorListing(
   const harvested = harvestDetail(harvestDoc, {
     baseUrl: base.url,
     extraMedia: jllInvestorStrandedMedia(listing),
+    extraLinks:
+      searchDataRoomUrl && /^https?:\/\//i.test(searchDataRoomUrl)
+        ? [
+            {
+              url: searchDataRoomUrl,
+              rel: null,
+              linkType: "external_listing",
+            },
+          ]
+        : [],
     extraDocs: jllInvestorStrandedDocs(listing),
     extraImages: photos,
   });
@@ -854,6 +875,8 @@ function parseJllInvestorListing(
   // for investor listings. Use base.url (already normalized by srcJllInvestor).
   const canonicalUrl = clean(base.url) ?? undefined;
   const observation = doc.detailObservation;
+  const structuredChildScope =
+    observation?.method === "jll_investor_next_data_detail";
   return prune({
     ...base,
     id: exactId,
@@ -892,6 +915,12 @@ function parseJllInvestorListing(
     media: harvested.media,
     links: harvested.links,
     photos: dedupeStrings([...photos, ...harvested.images]),
+    // Structured Next.js JSON is authoritative for native listing children but
+    // intentionally omits the rendered page's open-ended link surface. Preserve
+    // prior children and add current native rows idempotently until a per-parent
+    // legacy-noise cleanup has independent proof.
+    preserveChildCollections: structuredChildScope ? true : undefined,
+    detailObservedWithChildPreservation: structuredChildScope ? true : undefined,
     markdown: doc.markdown || base.markdown,
     lastUpdated:
       clean(listing.dateModified ?? listing.datePublished) ??

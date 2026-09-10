@@ -630,6 +630,12 @@ test("structured JLL Investor detail validates Salesforce id and exact alias", (
     url: "https://invest.jll.com/us/en/listings/industrial-logistics/morgan-lakes",
     inventoryObservedAt: "2026-07-30T08:00:00.000Z",
     photos: [],
+    jllInvestorSearchRow: {
+      rcm: {
+        dataRoom: "https://my.rcm1.com/buyer/agreement?pv=current-room",
+        teaser: "https://indd.adobe.com/view/current-teaser",
+      },
+    },
   };
   const payload = {
     pageProps: {
@@ -653,8 +659,22 @@ test("structured JLL Investor detail validates Salesforce id and exact alias", (
   );
   assert.equal(parsed.id, base.id);
   assert.equal(parsed.country, "US");
-  assert.equal(parsed.preserveChildCollections, undefined);
+  assert.equal(parsed.preserveChildCollections, true);
+  assert.equal(parsed.detailObservedWithChildPreservation, true);
   assert.equal(parsed.freshnessProvenance.method, "jll_investor_next_data_detail");
+  assert.deepEqual(parsed.links, [
+    {
+      url: "https://my.rcm1.com/buyer/agreement?pv=current-room",
+      linkType: "external_listing",
+    },
+  ]);
+  assert.deepEqual(parsed.brochures, [
+    {
+      name: "Teaser",
+      url: "https://indd.adobe.com/view/current-teaser",
+      docType: "brochure",
+    },
+  ]);
 
   const aliasMismatch = parseJllInvestorStructuredDetail(
     base,
