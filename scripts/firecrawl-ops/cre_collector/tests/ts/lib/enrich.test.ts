@@ -115,7 +115,7 @@ test("jllInvestorEnricher omits an independently confirmed provider tombstone", 
       "https://invest.jll.com/us/en/listings/office/provider-tombstone"
     ) {
       return {
-        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { error: { statusCode: 404 } } } })}</script>`,
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ buildId: "_enrich-test", props: { pageProps: { error: { statusCode: 404 } } } })}</script>`,
       };
     }
     return {

@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import {
   JLL_INVESTOR_HOST,
   JLL_INVESTOR_HOME_URL,
+  JLL_INVESTOR_SEARCH_URL,
   jllInvestorNextData,
   jllInvestorBuildId,
   jllInvestorStructuredListing,
@@ -18,7 +19,11 @@ import {
   jllInvestorUrlFromAlias,
   jllInvestorSitemapUrls,
   jllInvestorSitemapCandidateLimit,
+  jllInvestorSearchPageUrl,
+  parseJllInvestorSearchPage,
+  jllInvestorSearchSnapshotFingerprint,
   jllInvestorStatus,
+  jllInvestorSearchCountryClassification,
   jllInvestorDetailCountryClassification,
   jllInvestorSearchListing,
   jllInvestorDocumentUrls,
@@ -102,11 +107,19 @@ test("JLL Investor build id and structured detail helpers fail closed", () => {
     false
   );
   assert.equal(jllInvestorStructuredNotFound({}), false);
-  const public404 = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { error: { statusCode: 404 } } } })}</script>`;
-  assert.equal(jllInvestorPublicPageNotFound(public404), true);
+  const public404 = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ buildId: "_current-build", props: { pageProps: { error: { statusCode: 404 } } } })}</script>`;
+  assert.equal(
+    jllInvestorPublicPageNotFound(public404, "_current-build"),
+    true
+  );
+  assert.equal(
+    jllInvestorPublicPageNotFound(public404, "_obsolete-build"),
+    false
+  );
   assert.equal(
     jllInvestorPublicPageNotFound(
-      `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { error: { statusCode: 500 } } } })}</script>`
+      `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ buildId: "_current-build", props: { pageProps: { error: { statusCode: 500 } } } })}</script>`,
+      "_current-build"
     ),
     false
   );
@@ -192,6 +205,134 @@ test("jllInvestorSitemapCandidateLimit applies max heuristics when scan limit is
   assert.equal(jllInvestorSitemapCandidateLimit(Number.POSITIVE_INFINITY, 200), 200);
 });
 
+test("JLL Investor search pages require exact United States filter, pagination, and identities", () => {
+  const rows = [
+    {
+      id: "006P500000f2tXYIAY",
+      alias: "office/known-us",
+      country: "United States",
+      location: "US - Dallas, Americas",
+      region: "Americas",
+    },
+    {
+      id: "006080000100J8bAAE",
+      alias: "office/filter-proven-us",
+      country: null,
+      location: "PR - Cayey,Guayama",
+      region: null,
+    },
+  ];
+  const html = (overrides: Record<string, unknown> = {}) => `
+    <script id="__NEXT_DATA__" type="application/json">
+      ${JSON.stringify({
+        props: {
+          pageProps: {
+            initialState: {
+              advancedSearch: {
+                filters: [{ key: "location", value: "United States", label: "United States", type: "collection" }],
+                count: 2,
+                searchPage: 1,
+                listings: rows,
+                ...overrides,
+              },
+            },
+          },
+        },
+      })}
+    </script>
+  `;
+
+  assert.equal(jllInvestorSearchPageUrl(1), JLL_INVESTOR_SEARCH_URL);
+  assert.equal(jllInvestorSearchPageUrl(2), `${JLL_INVESTOR_SEARCH_URL}&page=2`);
+  assert.throws(() => jllInvestorSearchPageUrl(0), /invalid/i);
+  const parsed = parseJllInvestorSearchPage(html(), 1);
+  assert.equal(parsed.count, 2);
+  assert.deepEqual(parsed.rows.map((row) => row.id), rows.map((row) => row.id));
+  assert.equal(
+    jllInvestorSearchSnapshotFingerprint([...rows].reverse()),
+    jllInvestorSearchSnapshotFingerprint(rows)
+  );
+  assert.notEqual(
+    jllInvestorSearchSnapshotFingerprint(rows),
+    jllInvestorSearchSnapshotFingerprint([
+      { ...rows[0], name: "Changed provider title" },
+      rows[1],
+    ])
+  );
+  assert.equal(
+    jllInvestorSearchSnapshotFingerprint(rows),
+    jllInvestorSearchSnapshotFingerprint(
+      rows.map((row) =>
+        Object.fromEntries(Object.entries(row).reverse())
+      )
+    )
+  );
+  assert.throws(
+    () => parseJllInvestorSearchPage(html({ filters: [] }), 1),
+    /filter state/i
+  );
+  assert.throws(
+    () => parseJllInvestorSearchPage(html({ searchPage: 2 }), 1),
+    /page mismatch/i
+  );
+  assert.throws(
+    () => parseJllInvestorSearchPage(html({ listings: [rows[0], rows[0]] }), 1),
+    /duplicate identity/i
+  );
+  assert.equal(
+    parseJllInvestorSearchPage(
+      html({ listings: [{ ...rows[0], country: "Canada" }, rows[1]] }),
+      1
+    ).rows.length,
+    2
+  );
+  assert.equal(jllInvestorSearchCountryClassification(rows[0]), "us");
+  assert.equal(
+    jllInvestorSearchCountryClassification({ country: "Puerto Rico" }),
+    "us"
+  );
+  assert.equal(
+    jllInvestorSearchCountryClassification({
+      country: "United Kingdom",
+      region: "EMEA",
+    }),
+    "non_us"
+  );
+  assert.equal(
+    jllInvestorSearchCountryClassification({
+      country: "United States",
+      region: "EMEA",
+    }),
+    "non_us"
+  );
+  assert.equal(
+    jllInvestorSearchCountryClassification({
+      country: "Various",
+      region: "EMEA",
+    }),
+    "non_us"
+  );
+  assert.equal(
+    jllInvestorSearchCountryClassification({ country: null, region: "EMEA" }),
+    "non_us"
+  );
+  assert.equal(
+    jllInvestorSearchCountryClassification({
+      country: null,
+      region: null,
+      location: "CA - Los Angeles",
+    }),
+    "unknown"
+  );
+  assert.equal(
+    jllInvestorSearchCountryClassification({
+      country: "United States",
+      region: "America",
+    }),
+    "us"
+  );
+});
+
 test("JLL Investor detail country classification uses exact provider country-region tokens only when country is absent", () => {
   assert.equal(
     jllInvestorDetailCountryClassification({
@@ -231,6 +372,27 @@ test("JLL Investor detail country classification uses exact provider country-reg
   assert.equal(
     jllInvestorDetailCountryClassification({
       country: null,
+      fullLocation: "Example, ZZ, EMEA",
+    }),
+    "non_us"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: "United States",
+      fullLocation: "Example, US, EMEA",
+    }),
+    "non_us"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: "United States",
+      portfolio: [{ subMarketCountry: "Canada" }],
+    }),
+    "non_us"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
       fullLocation: "Los Angeles, CA",
     }),
     "unknown"
@@ -256,6 +418,10 @@ test("JLL Investor detail country classification uses exact provider country-reg
   assert.equal(
     jllInvestorDetailCountryClassification({ country: "Various" }),
     "unknown"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({ country: "Puerto Rico" }),
+    "us"
   );
 });
 
@@ -291,7 +457,7 @@ test("JLL Investor detail country classification admits only unanimous explicit 
         { subMarketCountry: "Canada" },
       ],
     }),
-    "unknown"
+    "non_us"
   );
   assert.equal(
     jllInvestorDetailCountryClassification({
@@ -324,7 +490,7 @@ test("JLL Investor detail country classification admits only unanimous explicit 
         { subMarketCountry: "United States", country: "United States" },
       ],
     }),
-    "unknown"
+    "non_us"
   );
 });
 
@@ -341,7 +507,7 @@ test("JLL Investor enrichment requires live current-build JSON and public-page 4
     }
     if (url === "https://invest.jll.com/us/en/listings/office/tombstone") {
       return {
-        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { error: { statusCode: 404 } } } })}</script>`,
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ buildId: "_fresh-build", props: { pageProps: { error: { statusCode: 404 } } } })}</script>`,
       };
     }
     return {
@@ -395,7 +561,7 @@ test("JLL Investor tombstone proof discards an obsolete build 404", async () => 
       "https://invest.jll.com/us/en/listings/office/rotated-tombstone"
     ) {
       return {
-        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { error: { statusCode: 404 } } } })}</script>`,
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ buildId: "_current-build", props: { pageProps: { error: { statusCode: 404 } } } })}</script>`,
       };
     }
     return {
@@ -581,6 +747,7 @@ test("strict JLL Investor collection preserves unresolved candidates and bypasse
   const calls: Array<{ url: string; options: any }> = [];
   let secondCountry: string | undefined;
   let secondId = "006080000100J8bAAE";
+  let includeTombstone = true;
   const homepageHtml = `
     <script id="__NEXT_DATA__" type="application/json">
       ${JSON.stringify({ buildId: "_strict-build" })}
@@ -591,6 +758,49 @@ test("strict JLL Investor collection preserves unresolved candidates and bypasse
   });
   (firecrawl as any).scrape = async (url: string, options: any) => {
     calls.push({ url, options });
+    if (url === JLL_INVESTOR_SEARCH_URL) {
+      const listings = [
+        {
+          id: "006P500000f2tXYIAY",
+          alias: "office/known-us",
+          country: "United States",
+          location: "US - Dallas, Americas",
+          region: "Americas",
+        },
+        {
+          id: "006080000100J8bAAE",
+          alias: "office/unknown-country",
+          country: null,
+          location: "US - Dallas",
+          region: null,
+        },
+        ...(includeTombstone
+          ? [{
+              id: "006P500000t0mbsIAA",
+              alias: "office/provider-tombstone",
+              country: "United States",
+              location: "US - Dallas, Americas",
+              region: "Americas",
+            }]
+          : []),
+      ];
+      return {
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
+          props: {
+            pageProps: {
+              initialState: {
+                advancedSearch: {
+                  filters: [{ key: "location", value: "United States", label: "United States", type: "collection" }],
+                  count: listings.length,
+                  searchPage: 1,
+                  listings,
+                },
+              },
+            },
+          },
+        })}</script>`,
+      };
+    }
     if (url.endsWith("/sitemap_index.xml")) {
       return { rawHtml: `<loc>https://invest.jll.com/us/sitemap-us.xml</loc>` };
     }
@@ -600,7 +810,7 @@ test("strict JLL Investor collection preserves unresolved candidates and bypasse
           <urlset>
             <url><loc>https://invest.jll.com/us/en/listings/office/known-us</loc></url>
             <url><loc>https://invest.jll.com/us/en/listings/office/unknown-country</loc></url>
-            <url><loc>https://invest.jll.com/us/en/listings/office/provider-tombstone</loc></url>
+            ${includeTombstone ? "<url><loc>https://invest.jll.com/us/en/listings/office/provider-tombstone</loc></url>" : ""}
             <url><loc>https://invest.jll.com/us/en/listings/office/known-us</loc></url>
           </urlset>
         `,
@@ -629,7 +839,7 @@ test("strict JLL Investor collection preserves unresolved candidates and bypasse
       "https://invest.jll.com/us/en/listings/office/provider-tombstone"
     ) {
       return {
-        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { error: { statusCode: 404 } } } })}</script>`,
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ buildId: "_strict-build", props: { pageProps: { error: { statusCode: 404 } } } })}</script>`,
       };
     }
     return {
@@ -657,24 +867,44 @@ test("strict JLL Investor collection preserves unresolved candidates and bypasse
     assert.equal(accepted.freshnessProvenance.generationId, "jll-investor-strict-test");
     assert.equal(accepted.freshnessProvenance.detailScope, "detail_page");
     assert.equal(accepted.freshnessProvenance.cacheDisposition, "live");
-    const unresolved = result.listings.find((row) => row.detailError);
-    assert.match(unresolved.detailError, /country/i);
-    assert.equal(unresolved.preserveChildCollections, true);
+    const filterProven = result.listings.find((row) => row.id === "006080000100J8bAAE");
+    assert.equal(filterProven.country, "US");
+    assert.equal(filterProven.detailError, undefined);
+    assert.match(result.note ?? "", /stabilized at 3 unique provider identities/i);
     assert.equal(
       calls.filter(({ url }) => url.includes("/known-us.json")).length,
       1
     );
+    assert.equal(calls.filter(({ url }) => url === JLL_INVESTOR_SEARCH_URL).length, 2);
+    assert.ok(calls.every(({ options }) => options.maxAge === 0));
+
+    calls.length = 0;
+    resetJllInvestorBuildIdForTests();
+    includeTombstone = false;
+    const complete = await srcJllInvestor("sale", Number.POSITIVE_INFINITY, false);
+    assert.equal(complete.truncated, false);
+    assert.deepEqual(complete.listings.map((row) => row.id), [
+      "006P500000f2tXYIAY",
+      "006080000100J8bAAE",
+    ]);
     assert.ok(calls.every(({ options }) => options.maxAge === 0));
 
     calls.length = 0;
     resetJllInvestorBuildIdForTests();
     secondCountry = "Canada";
-    const complete = await srcJllInvestor("sale", Number.POSITIVE_INFINITY, false);
-    assert.equal(complete.truncated, false);
-    assert.deepEqual(complete.listings.map((row) => row.id), ["006P500000f2tXYIAY"]);
-    assert.ok(calls.every(({ options }) => options.maxAge === 0));
+    const countryConflict = await srcJllInvestor(
+      "sale",
+      Number.POSITIVE_INFINITY,
+      false
+    );
+    assert.equal(countryConflict.truncated, true);
+    assert.match(
+      countryConflict.listings.find((row) => row.detailError)?.detailError ?? "",
+      /search membership conflicts/i
+    );
 
     resetJllInvestorBuildIdForTests();
+    secondCountry = undefined;
     secondId = "006P500000f2tXYIAY";
     const duplicateIdentity = await srcJllInvestor(
       "sale",
