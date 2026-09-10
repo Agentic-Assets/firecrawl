@@ -53,6 +53,14 @@ Fetched upstream `4d9847872f3c8e89ff7080e48778c778c04b3fb3` (September 9). Merge
 
 There is no new upstream Playwright lifecycle implementation. Useful separate candidates are asynchronous native PDF extraction (`e33e1f6c15c6e4fc6df67dd6711743084f9a14bd`) plus its semaphore (`92e16a2bfb1662f73d2fe4b5cf7a7970b3c9c636`), per-request fetch cookie isolation (`656bffcc2883f1af5befe38766b1ff5f0469993a`), and Redis completion-write recovery (`e4ac89b025685270754afc7c970adb36224539ad`). They need their own compatibility tests and are not represented as CRE browser speed fixes. The broad merge intersects local OCR, parsing, deployment workflows, and SDK behavior and is deferred from this running refresh.
 
+## Local runtime recovery
+
+At 2026-09-10 01:49 UTC the patched image `sha256:43d49d17aeec695cedd3e68fdd65b1147052073b19767410c4b90846eb663257` was verified healthy on the live local sidecar: four pages, four CPUs, 4 GiB, 512 PIDs, and 500 ms start spacing. The API and queue services were not recreated. API root and end-to-end scrape smoke passed. The disposable benchmark container was stopped and removed without volumes or listing data.
+
+At 01:50 UTC the original immutable collector generation resumed with JLL detail concurrency four, the existing two-source request setting, and the 75% host watchdog. This is a local runtime recovery, not an upstream merge or a collector-generation upgrade. The direct JLL path remains off for this generation. At the initial readback the process was alive, enumeration advanced, and sampled host CPU was about 18%. Sustained production detail recovery remains under observation.
+
+The ignored override is `tasks/tmp/cre-speed-2026-09-09/runtime-override.yaml`. To roll back after checkpointing the owned collector and draining its queue, run `docker compose up -d --no-deps --no-build --force-recreate playwright-service` from the original checkout, then verify health before resuming. This restores the untouched original image tag and root configuration. Do not restart the API or alter the database for this rollback.
+
 ## Evidence location
 
 The MacBook's ignored `tasks/tmp/cre-speed-2026-09-09/` folder in `Agentic-Assets/firecrawl` contains benchmark JSON, bodyless pinned-helper metrics, paired asset audit, health receipts, and public HTML snapshots. These are local-only and unavailable to other devices/cloud agents. Do not commit source bodies or credentials. This report records the portable conclusions and their proof limits.
