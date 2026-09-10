@@ -3,7 +3,7 @@ import * as cheerio from "cheerio";
 import { brokerRef, brokers } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { harvestDetail } from "../lib/harvest.js";
-import { decodeHtmlEntities, dedupeStrings, extractSitemapUrlEntries, stripHtmlText, titleFromFilename } from "../lib/html.js";
+import { decodeHtmlEntities, dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { scrapeJson, scrapeRaw } from "../lib/scrape.js";
 import { DocItem, MediaItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, num, pmap, prune } from "../lib/util.js";
@@ -44,6 +44,60 @@ export const JLL_INVESTOR_SITEMAP_SCAN_LIMIT = boundedInt(
   0,
   10000
 );
+export const JLL_INVESTOR_SEARCH_PAGE_CONCURRENCY = boundedInt(
+  process.env.JLL_INVESTOR_SEARCH_PAGE_CONCURRENCY,
+  Math.min(CONCURRENCY, 2),
+  1,
+  4
+);
+export const JLL_INVESTOR_SEARCH_PAGE_SIZE = 50;
+export const JLL_INVESTOR_SEARCH_MAX_PASSES = 3;
+
+const JLL_INVESTOR_ISO_ALPHA_2_CODES = new Set(
+  "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW".split(" ")
+);
+const JLL_INVESTOR_COUNTRY_DISPLAY_NAMES = new Intl.DisplayNames(["en"], {
+  type: "region",
+});
+
+function jllInvestorCountryNameKey(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[^a-z0-9]+/gi, " ")
+    .trim()
+    .toLowerCase();
+}
+
+const JLL_INVESTOR_COUNTRY_NAME_TO_CODE = new Map<string, string>(
+  [...JLL_INVESTOR_ISO_ALPHA_2_CODES].flatMap((code) => {
+    const displayName = JLL_INVESTOR_COUNTRY_DISPLAY_NAMES.of(code);
+    return displayName && displayName !== code
+      ? [[jllInvestorCountryNameKey(displayName), code] as const]
+      : [];
+  })
+);
+JLL_INVESTOR_COUNTRY_NAME_TO_CODE.set("united states of america", "US");
+const JLL_INVESTOR_US_TERRITORY_CODES = new Set([
+  "AS",
+  "GU",
+  "MP",
+  "PR",
+  "UM",
+  "VI",
+]);
+
+function jllInvestorCountryCode(value: unknown): string | null {
+  const country = clean(value);
+  if (!country) return null;
+  if (/^USA$/i.test(country)) return "US";
+  const upper = country.toUpperCase();
+  return JLL_INVESTOR_ISO_ALPHA_2_CODES.has(upper)
+    ? upper
+    : JLL_INVESTOR_COUNTRY_NAME_TO_CODE.get(
+        jllInvestorCountryNameKey(country)
+      ) ?? null;
+}
 
 export function jllInvestorNextData(rawHtml: string): any | null {
   const $ = cheerio.load(rawHtml);
@@ -64,6 +118,27 @@ export function jllInvestorBuildId(rawHtml: string): string | null {
 export function jllInvestorStructuredListing(payload: any): any | null {
   const listing = payload?.pageProps?.initialState?.pdp?.listing;
   return listing && typeof listing === "object" ? listing : null;
+}
+
+export function jllInvestorStructuredNotFound(payload: any): boolean {
+  return (
+    !jllInvestorStructuredListing(payload) &&
+    payload?.pageProps?.error?.statusCode === 404
+  );
+}
+
+export function jllInvestorPublicPageNotFound(
+  rawHtml: string,
+  expectedBuildId: string
+): boolean {
+  const next = jllInvestorNextData(rawHtml);
+  const pageProps = next?.props?.pageProps;
+  const listing = pageProps?.initialState?.pdp?.listing;
+  return (
+    next?.buildId === expectedBuildId &&
+    !(listing && typeof listing === "object") &&
+    pageProps?.error?.statusCode === 404
+  );
 }
 
 export function jllInvestorDetailRoute(
@@ -139,19 +214,58 @@ export function jllInvestorDetailRoute(
 export function jllInvestorDetailCountryClassification(
   listing: any
 ): "us" | "non_us" | "unknown" {
+  const signals: Array<"us" | "non_us"> = [];
   const explicit = jllInvestorCountryClassification(listing?.country);
-  if (explicit !== "unknown") return explicit;
+  if (explicit !== "unknown") signals.push(explicit);
   const fullLocation = clean(listing?.fullLocation);
+  const parts = fullLocation?.split(",").map((part) => part.trim()) ?? [];
+  const region = parts.at(-1);
+  const countryCode = parts.at(-2);
+  if (region === "EMEA" || region === "APAC") signals.push("non_us");
+  // JLL emits a two-letter country token immediately before its exact region
+  // suffix. Require both pieces so a state-only location such as
+  // "Los Angeles, CA" cannot be mistaken for Canada.
   if (
-    fullLocation &&
-    fullLocation
-      .split(",")
-      .map((part) => part.trim())
-      .includes("US")
+    /^(?:Americas|EMEA|APAC)$/.test(region ?? "") &&
+    /^[A-Z]{2}$/.test(countryCode ?? "")
   ) {
-    return "us";
+    const locationClassification =
+      jllInvestorCountryClassification(countryCode);
+    if (locationClassification !== "unknown") {
+      signals.push(locationClassification);
+    }
   }
-  return "unknown";
+
+  // Portfolio records often omit the parent country and use a generic parent
+  // location such as "Various locations", while every child property carries
+  // an explicit provider country in subMarketCountry. Admit that evidence only
+  // when the portfolio is non-empty, every child has an explicit country, and
+  // every child agrees. Missing or mixed child evidence remains unknown so a
+  // multinational portfolio can never be silently assigned to the US feed.
+  const portfolio = Array.isArray(listing?.portfolio) ? listing.portfolio : [];
+  if (portfolio.length > 0) {
+    const classifications: Array<"us" | "non_us" | "unknown"> = portfolio.map(
+      (row: any) => {
+        const countryFields = [row?.subMarketCountry, row?.country]
+          .map(clean)
+          .filter((value): value is string => Boolean(value));
+        if (countryFields.length === 0) return "unknown";
+        const fieldClassifications = countryFields.map(
+          jllInvestorCountryClassification
+        );
+        if (fieldClassifications.includes("non_us")) return "non_us";
+        return fieldClassifications.every((classification) => classification === "us")
+          ? "us"
+          : "unknown";
+      }
+    );
+    if (classifications.includes("non_us")) signals.push("non_us");
+    else if (classifications.every((classification) => classification === "us")) {
+      signals.push("us");
+    }
+  }
+  if (signals.includes("non_us")) return "non_us";
+  return signals.includes("us") ? "us" : "unknown";
 }
 
 export function jllInvestorUrlFromAlias(alias: string | null): string | null {
@@ -189,10 +303,21 @@ export function jllInvestorCountryClassification(
   const country = clean(value);
   if (!country) return "unknown";
   if (/^(?:unknown|n\/?a|not available|-)$/i.test(country)) return "unknown";
-  if (/^(?:US|USA|United States|United States of America)$/i.test(country)) {
-    return "us";
-  }
-  return "non_us";
+  const code = jllInvestorCountryCode(country);
+  if (!code) return "unknown";
+  return code === "US" || JLL_INVESTOR_US_TERRITORY_CODES.has(code)
+    ? "us"
+    : "non_us";
+}
+
+export function jllInvestorSearchCountryClassification(
+  row: any
+): "us" | "non_us" | "unknown" {
+  const country = clean(row?.country);
+  const countryClassification = jllInvestorCountryClassification(country);
+  const region = clean(row?.region);
+  if (region === "EMEA" || region === "APAC") return "non_us";
+  return countryClassification;
 }
 
 function jllInvestorDetailError(base: any, message: string, id?: string | null): any {
@@ -265,6 +390,174 @@ export function jllInvestorSearchFallback(rawHtml: string, max: number): any[] {
     );
   });
   return listings;
+}
+
+export type JllInvestorSearchPage = {
+  count: number;
+  page: number;
+  rows: any[];
+};
+
+export type JllInvestorSearchSnapshot = {
+  count: number;
+  observedAt: string;
+  pages: number;
+  rows: any[];
+};
+
+export function jllInvestorSearchPageUrl(page: number): string {
+  if (!Number.isInteger(page) || page < 1) {
+    throw new Error("invalid JLL Investor search page");
+  }
+  return page === 1 ? JLL_INVESTOR_SEARCH_URL : `${JLL_INVESTOR_SEARCH_URL}&page=${page}`;
+}
+
+export function parseJllInvestorSearchPage(
+  rawHtml: string,
+  expectedPage: number
+): JllInvestorSearchPage {
+  const next = jllInvestorNextData(rawHtml);
+  const search = next?.props?.pageProps?.initialState?.advancedSearch;
+  const filters = Array.isArray(search?.filters) ? search.filters : [];
+  if (
+    filters.length !== 1 ||
+    clean(filters[0]?.key) !== "location" ||
+    clean(filters[0]?.value) !== "United States" ||
+    clean(filters[0]?.label) !== "United States" ||
+    clean(filters[0]?.type) !== "collection"
+  ) {
+    throw new Error("JLL Investor search page lacks the exact United States filter state");
+  }
+  const count = search?.count;
+  const page = search?.searchPage;
+  const rows = search?.listings;
+  if (!Number.isInteger(count) || count <= 0) {
+    throw new Error("JLL Investor search page lacks a positive integer count");
+  }
+  if (!Number.isInteger(page) || page !== expectedPage) {
+    throw new Error(
+      `JLL Investor search page mismatch: expected ${expectedPage}, received ${String(page)}`
+    );
+  }
+  if (!Array.isArray(rows)) {
+    throw new Error("JLL Investor search page lacks a listings array");
+  }
+  const pageCount = Math.ceil(count / JLL_INVESTOR_SEARCH_PAGE_SIZE);
+  if (expectedPage > pageCount) {
+    throw new Error("JLL Investor search page exceeds the declared page count");
+  }
+  const expectedRows =
+    expectedPage < pageCount
+      ? JLL_INVESTOR_SEARCH_PAGE_SIZE
+      : count - JLL_INVESTOR_SEARCH_PAGE_SIZE * (pageCount - 1);
+  if (rows.length !== expectedRows) {
+    throw new Error(
+      `JLL Investor search page ${expectedPage} returned ${rows.length}/${expectedRows} rows`
+    );
+  }
+  const ids = new Set<string>();
+  const urls = new Set<string>();
+  for (const row of rows) {
+    const id = clean(row?.id);
+    const url = jllInvestorUrlFromAlias(row?.alias);
+    if (!id || !/^006[A-Za-z0-9]{15}$/.test(id)) {
+      throw new Error(`JLL Investor search page ${expectedPage} has an invalid listing id`);
+    }
+    if (!url) {
+      throw new Error(`JLL Investor search page ${expectedPage} has a missing listing URL`);
+    }
+    jllInvestorDetailRoute("search-proof", url);
+    if (ids.has(id) || urls.has(url)) {
+      throw new Error(`JLL Investor search page ${expectedPage} has a duplicate identity`);
+    }
+    ids.add(id);
+    urls.add(url);
+
+  }
+  return { count, page, rows };
+}
+
+export function jllInvestorSearchSnapshotFingerprint(rows: any[]): string {
+  const canonicalize = (value: any): any => {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.keys(value)
+          .sort()
+          .map((key) => [key, canonicalize(value[key])])
+      );
+    }
+    return value;
+  };
+  return rows
+    .map((row) => JSON.stringify(canonicalize(row)))
+    .sort()
+    .join("\n");
+}
+
+async function collectJllInvestorSearchPass(): Promise<JllInvestorSearchSnapshot> {
+  const scrapePage = async (page: number): Promise<JllInvestorSearchPage> => {
+    const rawHtml = await scrapeRaw(jllInvestorSearchPageUrl(page), {
+      waitFor: JLL_INVESTOR_DETAIL_WAIT_MS,
+      timeout: 60000,
+      maxAge: 0,
+    });
+    return parseJllInvestorSearchPage(rawHtml, page);
+  };
+  const first = await scrapePage(1);
+  const pages = Math.ceil(first.count / JLL_INVESTOR_SEARCH_PAGE_SIZE);
+  const rest = await pmap(
+    Array.from({ length: Math.max(0, pages - 1) }, (_, index) => index + 2),
+    JLL_INVESTOR_SEARCH_PAGE_CONCURRENCY,
+    scrapePage
+  );
+  const allPages = [first, ...rest];
+  if (allPages.some((result) => result.count !== first.count)) {
+    throw new Error("JLL Investor search count changed during pagination");
+  }
+  const rows = allPages.flatMap((result) => result.rows);
+  if (rows.length !== first.count) {
+    throw new Error(`JLL Investor search recovered ${rows.length}/${first.count} rows`);
+  }
+  const ids = new Set<string>();
+  const urls = new Set<string>();
+  for (const row of rows) {
+    const id = clean(row?.id)!;
+    const url = jllInvestorUrlFromAlias(row?.alias)!;
+    if (ids.has(id) || urls.has(url)) {
+      throw new Error("JLL Investor search pagination has a duplicate identity");
+    }
+    ids.add(id);
+    urls.add(url);
+  }
+  return {
+    count: first.count,
+    observedAt: new Date().toISOString(),
+    pages,
+    rows,
+  };
+}
+
+export async function collectJllInvestorSearchSnapshot(): Promise<JllInvestorSearchSnapshot> {
+  let prior: JllInvestorSearchSnapshot | null = null;
+  let priorFingerprint: string | null = null;
+  for (let pass = 1; pass <= JLL_INVESTOR_SEARCH_MAX_PASSES; pass++) {
+    const current = await collectJllInvestorSearchPass();
+    const fingerprint = jllInvestorSearchSnapshotFingerprint(current.rows);
+    console.error(
+      `  jll-investor: search snapshot pass ${pass} recovered ${current.count} rows across ${current.pages} pages`
+    );
+    if (
+      prior &&
+      prior.count === current.count &&
+      priorFingerprint === fingerprint
+    ) {
+      return current;
+    }
+    prior = current;
+    priorFingerprint = fingerprint;
+  }
+  throw new Error("JLL Investor search inventory did not stabilize across consecutive passes");
 }
 
 export function jllInvestorDocumentUrls(listing: any): string[] {
@@ -504,7 +797,17 @@ function parseJllInvestorListing(
       );
     }
   }
-  const countryClassification = jllInvestorDetailCountryClassification(listing);
+  let countryClassification = jllInvestorDetailCountryClassification(listing);
+  if (base?.jllInvestorUsSearchMembership === true) {
+    if (countryClassification === "non_us") {
+      return jllInvestorDetailError(
+        base,
+        "United States search membership conflicts with non-US detail evidence",
+        exactId
+      );
+    }
+    if (countryClassification === "unknown") countryClassification = "us";
+  }
   if (countryClassification === "unknown") {
     return jllInvestorDetailError(
       base,
@@ -526,7 +829,18 @@ function parseJllInvestorListing(
     )
     .filter((id: number | null): id is number => id !== null);
   const documentUrls = jllInvestorDocumentUrls(listing);
-  const teaserDocs = documentUrls.map((url) => ({ name: titleFromFilename(url), url }));
+  const searchTeaserUrl = clean(base?.jllInvestorSearchRow?.rcm?.teaser);
+  const teaserDocs = dedupeStrings([
+    ...documentUrls,
+    ...(searchTeaserUrl && /^https?:\/\//i.test(searchTeaserUrl)
+      ? [searchTeaserUrl]
+      : []),
+  ]).map((url) => ({
+    name: url === searchTeaserUrl ? "Teaser" : titleFromFilename(url),
+    url,
+    docType: "brochure",
+  }));
+  const searchDataRoomUrl = clean(base?.jllInvestorSearchRow?.rcm?.dataRoom);
   const photos = jllInvestorImageUrls(listing, base.photos ?? []);
   // Capture-everything harvest: unify the full detail page (markdown / links /
   // images / video+iframe attributes) with the stranded native fields promoted
@@ -541,6 +855,16 @@ function parseJllInvestorListing(
   const harvested = harvestDetail(harvestDoc, {
     baseUrl: base.url,
     extraMedia: jllInvestorStrandedMedia(listing),
+    extraLinks:
+      searchDataRoomUrl && /^https?:\/\//i.test(searchDataRoomUrl)
+        ? [
+            {
+              url: searchDataRoomUrl,
+              rel: null,
+              linkType: "external_listing",
+            },
+          ]
+        : [],
     extraDocs: jllInvestorStrandedDocs(listing),
     extraImages: photos,
   });
@@ -551,6 +875,8 @@ function parseJllInvestorListing(
   // for investor listings. Use base.url (already normalized by srcJllInvestor).
   const canonicalUrl = clean(base.url) ?? undefined;
   const observation = doc.detailObservation;
+  const structuredChildScope =
+    observation?.method === "jll_investor_next_data_detail";
   return prune({
     ...base,
     id: exactId,
@@ -589,6 +915,12 @@ function parseJllInvestorListing(
     media: harvested.media,
     links: harvested.links,
     photos: dedupeStrings([...photos, ...harvested.images]),
+    // Structured Next.js JSON is authoritative for native listing children but
+    // intentionally omits the rendered page's open-ended link surface. Preserve
+    // prior children and add current native rows idempotently until a per-parent
+    // legacy-noise cleanup has independent proof.
+    preserveChildCollections: structuredChildScope ? true : undefined,
+    detailObservedWithChildPreservation: structuredChildScope ? true : undefined,
     markdown: doc.markdown || base.markdown,
     lastUpdated:
       clean(listing.dateModified ?? listing.datePublished) ??
@@ -662,8 +994,9 @@ export function resetJllInvestorBuildIdForTests(): void {
   jllInvestorBuildIdRequest = null;
 }
 
-async function loadJllInvestorBuildId(): Promise<string> {
-  const strictScrapeOpts = requireFreshDetails() ? { maxAge: 0 } : {};
+async function loadJllInvestorBuildId(forceFresh = false): Promise<string> {
+  const strictScrapeOpts =
+    forceFresh || requireFreshDetails() ? { maxAge: 0 } : {};
   const rawHtml = await scrapeRaw(JLL_INVESTOR_HOME_URL, {
     waitFor: JLL_INVESTOR_DETAIL_WAIT_MS,
     timeout: 60000,
@@ -696,7 +1029,7 @@ export async function getJllInvestorBuildId(options: {
     return cachedJllInvestorBuildId;
   }
   if (jllInvestorBuildIdRequest) return jllInvestorBuildIdRequest;
-  const request = loadJllInvestorBuildId()
+  const request = loadJllInvestorBuildId(force)
     .then((buildId) => {
       cachedJllInvestorBuildId = buildId;
       return buildId;
@@ -717,15 +1050,63 @@ export async function enrichJllInvestorListing(
   if (!base.url) return base;
   let buildId = initialBuildId ?? await getJllInvestorBuildId();
   let lastErr: unknown = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const route = jllInvestorDetailRoute(buildId, base.url);
       const payload = await scrapeJson(route.url, {
         waitFor: JLL_INVESTOR_DETAIL_WAIT_MS,
         timeout: JLL_INVESTOR_DETAIL_TIMEOUT_MS,
         jsonAttempts: 1,
-        ...(requireFreshDetails() ? { maxAge: 0 } : {}),
+        // A cached structured 404 must never retire a live queue candidate.
+        // JLL's small JSON route is always read live, even in targeted mode.
+        maxAge: 0,
       });
+      if (jllInvestorStructuredNotFound(payload)) {
+        lastErr = new Error("structured Next.js detail returned provider 404");
+        const observedBuildId: string = buildId;
+        try {
+          // Prove which build is current using an uncached homepage read. A
+          // 404 from an obsolete JSON route is never a tombstone signal.
+          buildId = await getJllInvestorBuildId({
+            force: true,
+            staleBuildId: buildId,
+          });
+        } catch (refreshErr) {
+          lastErr = refreshErr;
+          break;
+        }
+        if (buildId !== observedBuildId) {
+          if (attempt === 3) break;
+          continue;
+        }
+        try {
+          // Require a second live signal from the public listing route. This is
+          // intentionally a different endpoint and representation than the
+          // structured JSON route, so a stale CDN/homepage build alone cannot
+          // exclude a live listing.
+          const publicHtml = await scrapeRaw(base.url, {
+            waitFor: JLL_INVESTOR_DETAIL_WAIT_MS,
+            timeout: JLL_INVESTOR_DETAIL_TIMEOUT_MS,
+            maxAge: 0,
+          });
+          if (!jllInvestorPublicPageNotFound(publicHtml, buildId)) {
+            throw new Error(
+              "structured provider 404 was not confirmed by the live public page"
+            );
+          }
+          return prune({
+            ...base,
+            skip: "not_found",
+            jllInvestorTombstone: {
+              statusCode: 404,
+              confirmation: "live_current_build_json_and_public_page",
+            },
+          });
+        } catch (publicErr) {
+          lastErr = publicErr;
+          break;
+        }
+      }
       if (!jllInvestorStructuredListing(payload)) {
         throw new Error("structured Next.js detail payload lacks pdp listing");
       }
@@ -780,52 +1161,32 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
       note: "Monitor mode emits no rows for jll-investor: its external id is the detail-page Salesforce listing.id and cannot be derived from the sitemap URL slug. Refresh this source via the full (non-monitor) collection path.",
     };
   }
-  const strictScrapeOpts = requireFreshDetails() ? { maxAge: 0 } : {};
-  const indexHtml = await scrapeRaw(JLL_INVESTOR_SITEMAP_INDEX_URL, {
-    waitFor: 1000,
-    timeout: 60000,
-    ...strictScrapeOpts,
-  });
-  const sitemapUrls = jllInvestorSitemapUrls(indexHtml);
-  const sitemapIndexValidated = sitemapUrls.includes(JLL_INVESTOR_US_SITEMAP_URL);
-  const sitemapUrl =
-    sitemapUrls.find((url) => url === JLL_INVESTOR_US_SITEMAP_URL) ??
-    JLL_INVESTOR_US_SITEMAP_URL;
-  const sitemapHtml = await scrapeRaw(sitemapUrl, {
-    waitFor: 1000,
-    timeout: 60000,
-    ...strictScrapeOpts,
-  });
-  const inventoryObservedAt = new Date().toISOString();
-  const seenDetailUrls = new Set<string>();
-  const detailEntries = extractSitemapUrlEntries(sitemapHtml)
-    .filter((e) => /^https:\/\/invest\.jll\.com\/us\/en\/listings\//i.test(e.loc))
-    .map((e) => ({ loc: e.loc.replace(/\/$/, ""), lastmod: e.lastmod }))
-    .filter((e) => {
-      if (seenDetailUrls.has(e.loc)) return false;
-      seenDetailUrls.add(e.loc);
-      return true;
+  const searchSnapshot = await collectJllInvestorSearchSnapshot();
+  const nonUsSearchRows = searchSnapshot.rows.filter(
+    (row) => jllInvestorSearchCountryClassification(row) === "non_us"
+  );
+  const searchInventory = searchSnapshot.rows
+    .filter((row) => jllInvestorSearchCountryClassification(row) !== "non_us")
+    .map((row) => {
+      const listing = jllInvestorSearchListing(row);
+      const url = clean(listing?.url);
+      if (!url) throw new Error("JLL Investor search row lacks a safe listing URL");
+      return {
+        ...listing,
+        inventoryObservedAt: searchSnapshot.observedAt,
+        jllInvestorUsSearchMembership: true,
+      };
     });
-  if (!detailEntries.length) throw new Error("no listing URLs found in JLL Investor Center US sitemap");
-
-  const candidateLimit = jllInvestorSitemapCandidateLimit(max, detailEntries.length);
-  const candidates = detailEntries.slice(0, candidateLimit);
+  const candidateLimit = Math.min(max, searchInventory.length);
+  const candidates = searchInventory.slice(0, candidateLimit);
   const buildId = await getJllInvestorBuildId({ force: true });
   console.error(
-    `  jll-investor: ${detailEntries.length} sitemap detail URL(s), scanning ${candidates.length}`
+    `  jll-investor: ${searchInventory.length} stable United States search row(s), enriching ${candidates.length}`
   );
   let enrichedCount = 0;
-  const enriched = await pmap(candidates, JLL_INVESTOR_DETAIL_CONCURRENCY, async (entry) => {
+  const enriched = await pmap(candidates, JLL_INVESTOR_DETAIL_CONCURRENCY, async (base) => {
     const row = await enrichJllInvestorListing(
-      {
-        id: entry.loc.split("/").filter(Boolean).slice(-1)[0] ?? null,
-        transactionType: "Sale (investment)",
-        brokerIds: [],
-        photos: [],
-        url: entry.loc,
-        lastmod: entry.lastmod,
-        inventoryObservedAt,
-      },
+      base,
       buildId
     );
     enrichedCount++;
@@ -835,9 +1196,12 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
     return row;
   });
 
+  const notFoundRows = enriched.filter((row) => row?.skip === "not_found");
   const unresolvedRows = enriched.filter((row) => row?.detailError);
   const detailErrors = unresolvedRows.length;
-  const resolvedRows = enriched.filter((row) => !row?.detailError);
+  const resolvedRows = enriched.filter(
+    (row) => !row?.detailError && row?.skip !== "not_found"
+  );
   const exactIds = new Set<string>();
   let duplicateExactIdentities = 0;
   for (const row of resolvedRows) {
@@ -845,31 +1209,29 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
     if (!id || exactIds.has(id)) duplicateExactIdentities++;
     if (id) exactIds.add(id);
   }
-  const usRows = enriched.filter((row) => row?.country === "US");
-  const requestedUsRows = usRows.slice(0, Math.min(max, usRows.length));
-  const listings = [...requestedUsRows, ...unresolvedRows];
-  const nonUsRows = enriched.length - usRows.length - detailErrors;
-  const incompleteEnumeration = candidates.length !== detailEntries.length;
-  const requestedLimitApplied = requestedUsRows.length !== usRows.length;
+  const requestedRows = resolvedRows.slice(0, Math.min(max, resolvedRows.length));
+  const listings = [...requestedRows, ...unresolvedRows];
+  const incompleteEnumeration = candidates.length !== searchInventory.length;
+  const requestedLimitApplied = requestedRows.length !== resolvedRows.length;
   const truncated =
-    !sitemapIndexValidated ||
     incompleteEnumeration ||
     requestedLimitApplied ||
     detailErrors > 0 ||
+    notFoundRows.length > 0 ||
     duplicateExactIdentities > 0;
   if (!listings.length) {
     throw new Error(
-      "no United States listing details or unresolved sitemap candidates found in JLL Investor Center"
+      "no United States listing details or unresolved search candidates found in JLL Investor Center"
     );
   }
   return {
     company: "JLL Investor Center",
-    sourceUrl: sitemapUrl,
-    method: "Public XML sitemap detail discovery plus public structured Next.js detail JSON and exact United States country filtering",
-    totalAvailable: detailEntries.length,
+    sourceUrl: JLL_INVESTOR_SEARCH_URL,
+    method: "Two consecutive exact United States search snapshots plus exact-identity structured Next.js detail JSON",
+    totalAvailable: searchInventory.length,
     listings,
     truncated,
     note:
-      `Sitemap contains global inventory on the US locale path, so resolved rows are retained only when the structured detail has an explicit United States country or an exact US token in fullLocation when country is absent. Scanned ${candidates.length}/${detailEntries.length} detail URL(s), kept ${requestedUsRows.length} U.S. row(s), skipped ${nonUsRows} classified non-U.S. row(s), retained ${detailErrors} unresolved candidate(s), and detected ${duplicateExactIdentities} duplicate exact provider identity/identities. Structured detail enrichment retains native teaser, document, image/media, and broker-contact URL metadata through the existing child-classification contract; no document or image binaries are fetched.`,
+      `The exact United States search filter stabilized at ${searchSnapshot.count} unique provider identities across ${searchSnapshot.pages} pages in two consecutive complete passes. Excluded ${nonUsSearchRows.length} row(s) carrying explicit non-U.S. country or recognized non-U.S. region evidence before enrichment. The search snapshot is authoritative because JLL's sitemap can lag newly published search inventory; every retained row must instead pass exact Salesforce ID and alias reconciliation against live structured detail. Enriched ${candidates.length}/${searchInventory.length} U.S.-compatible search row(s), excluded ${notFoundRows.length} provider 404 tombstone(s) independently confirmed by live current-build JSON and public-page observations, retained ${detailErrors} unresolved candidate(s), and detected ${duplicateExactIdentities} duplicate exact provider identity/identities. Detail country evidence must not conflict with the United States search membership. Structured detail enrichment retains native teaser, document, image/media, and broker-contact URL metadata through the existing child-classification contract; no document or image binaries are fetched.`,
   };
 }

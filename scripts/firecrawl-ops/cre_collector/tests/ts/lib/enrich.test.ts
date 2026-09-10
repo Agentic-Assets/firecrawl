@@ -11,6 +11,7 @@ import {
   resolveEnricher,
   runEnrichGroups,
   parseGenericJsonLd,
+  jllInvestorEnricher,
   type EnrichItem,
   type SourceEnricher,
 } from "../../../lib/enrich.js";
@@ -20,6 +21,11 @@ import {
   type ColliersMainEntry,
 } from "../../../sources/colliers-main.js";
 import type { ScrapedDoc } from "../../../types.js";
+import { firecrawl } from "../../../lib/scrape.js";
+import {
+  JLL_INVESTOR_HOME_URL,
+  resetJllInvestorBuildIdForTests,
+} from "../../../sources/jll-investor.js";
 
 // ---------------------------------------------------------------------------
 // Enricher registry: the sources with a proven targeted source path use that
@@ -94,6 +100,42 @@ test("groupEnrichItems groups by sourceKey and drops items missing key or url", 
   assert.deepEqual([...groups.keys()].sort(), ["colliers-main", "jll-investor"]);
   assert.equal(groups.get("colliers-main")!.length, 2); // the url-less item dropped
   assert.equal(groups.get("jll-investor")!.length, 1);
+});
+
+test("jllInvestorEnricher omits an independently confirmed provider tombstone", async () => {
+  const oldScrape = firecrawl.scrape;
+  (firecrawl as any).scrape = async (url: string) => {
+    if (url === JLL_INVESTOR_HOME_URL) {
+      return {
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ buildId: "_enrich-test" })}</script>`,
+      };
+    }
+    if (
+      url ===
+      "https://invest.jll.com/us/en/listings/office/provider-tombstone"
+    ) {
+      return {
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ buildId: "_enrich-test", props: { pageProps: { error: { statusCode: 404 } } } })}</script>`,
+      };
+    }
+    return {
+      rawHtml: JSON.stringify({ pageProps: { error: { statusCode: 404 } } }),
+    };
+  };
+  try {
+    resetJllInvestorBuildIdForTests();
+    const rows = await jllInvestorEnricher.enrich([
+      {
+        sourceKey: "jll-investor",
+        externalId: "investor:006P500000f2tXYIAY",
+        url: "https://invest.jll.com/us/en/listings/office/provider-tombstone",
+      },
+    ]);
+    assert.deepEqual(rows, []);
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    resetJllInvestorBuildIdForTests();
+  }
 });
 
 test("runEnrichGroups produces the enrich artifact shape; every listing echoes its input url", async () => {
