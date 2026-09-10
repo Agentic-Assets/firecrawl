@@ -3,7 +3,7 @@ import * as cheerio from "cheerio";
 import { brokerRef, brokers } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { harvestDetail } from "../lib/harvest.js";
-import { decodeHtmlEntities, dedupeStrings, extractSitemapUrlEntries, stripHtmlText, titleFromFilename } from "../lib/html.js";
+import { decodeHtmlEntities, dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { scrapeJson, scrapeRaw } from "../lib/scrape.js";
 import { DocItem, MediaItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, num, pmap, prune } from "../lib/util.js";
@@ -1132,37 +1132,7 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
       note: "Monitor mode emits no rows for jll-investor: its external id is the detail-page Salesforce listing.id and cannot be derived from the sitemap URL slug. Refresh this source via the full (non-monitor) collection path.",
     };
   }
-  const strictScrapeOpts = requireFreshDetails() ? { maxAge: 0 } : {};
-  const indexHtml = await scrapeRaw(JLL_INVESTOR_SITEMAP_INDEX_URL, {
-    waitFor: 1000,
-    timeout: 60000,
-    ...strictScrapeOpts,
-  });
-  const sitemapUrls = jllInvestorSitemapUrls(indexHtml);
-  const sitemapIndexValidated = sitemapUrls.includes(JLL_INVESTOR_US_SITEMAP_URL);
-  const sitemapUrl =
-    sitemapUrls.find((url) => url === JLL_INVESTOR_US_SITEMAP_URL) ??
-    JLL_INVESTOR_US_SITEMAP_URL;
-  const sitemapHtml = await scrapeRaw(sitemapUrl, {
-    waitFor: 1000,
-    timeout: 60000,
-    ...strictScrapeOpts,
-  });
-  const seenDetailUrls = new Set<string>();
-  const detailEntries = extractSitemapUrlEntries(sitemapHtml)
-    .filter((e) => /^https:\/\/invest\.jll\.com\/us\/en\/listings\//i.test(e.loc))
-    .map((e) => ({ loc: e.loc.replace(/\/$/, ""), lastmod: e.lastmod }))
-    .filter((e) => {
-      if (seenDetailUrls.has(e.loc)) return false;
-      seenDetailUrls.add(e.loc);
-      return true;
-    });
-  if (!detailEntries.length) throw new Error("no listing URLs found in JLL Investor Center US sitemap");
-
   const searchSnapshot = await collectJllInvestorSearchSnapshot();
-  const sitemapLastmod = new Map(
-    detailEntries.map((entry) => [entry.loc, entry.lastmod] as const)
-  );
   const nonUsSearchRows = searchSnapshot.rows.filter(
     (row) => jllInvestorSearchCountryClassification(row) === "non_us"
   );
@@ -1171,14 +1141,9 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
     .map((row) => {
       const listing = jllInvestorSearchListing(row);
       const url = clean(listing?.url);
-      if (!url || !sitemapLastmod.has(url)) {
-        throw new Error(
-          `JLL Investor United States search identity is absent from the current sitemap: ${url ?? "missing URL"}`
-        );
-      }
+      if (!url) throw new Error("JLL Investor search row lacks a safe listing URL");
       return {
         ...listing,
-        lastmod: sitemapLastmod.get(url),
         inventoryObservedAt: searchSnapshot.observedAt,
         jllInvestorUsSearchMembership: true,
       };
@@ -1220,7 +1185,6 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
   const incompleteEnumeration = candidates.length !== searchInventory.length;
   const requestedLimitApplied = requestedRows.length !== resolvedRows.length;
   const truncated =
-    !sitemapIndexValidated ||
     incompleteEnumeration ||
     requestedLimitApplied ||
     detailErrors > 0 ||
@@ -1234,11 +1198,11 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
   return {
     company: "JLL Investor Center",
     sourceUrl: JLL_INVESTOR_SEARCH_URL,
-    method: "Two consecutive exact United States search snapshots joined to the public XML sitemap plus structured Next.js detail JSON",
+    method: "Two consecutive exact United States search snapshots plus exact-identity structured Next.js detail JSON",
     totalAvailable: searchInventory.length,
     listings,
     truncated,
     note:
-      `The exact United States search filter stabilized at ${searchSnapshot.count} unique provider identities across ${searchSnapshot.pages} pages in two consecutive complete passes. Excluded ${nonUsSearchRows.length} row(s) carrying explicit non-U.S. country or region evidence before enrichment, and every selected URL matched the current global sitemap. Enriched ${candidates.length}/${searchInventory.length} U.S.-compatible search row(s), excluded ${notFoundRows.length} provider 404 tombstone(s) independently confirmed by live current-build JSON and public-page observations, retained ${detailErrors} unresolved candidate(s), and detected ${duplicateExactIdentities} duplicate exact provider identity/identities. Detail country evidence must not conflict with the United States search membership. Structured detail enrichment retains native teaser, document, image/media, and broker-contact URL metadata through the existing child-classification contract; no document or image binaries are fetched.`,
+      `The exact United States search filter stabilized at ${searchSnapshot.count} unique provider identities across ${searchSnapshot.pages} pages in two consecutive complete passes. Excluded ${nonUsSearchRows.length} row(s) carrying explicit non-U.S. country or recognized non-U.S. region evidence before enrichment. The search snapshot is authoritative because JLL's sitemap can lag newly published search inventory; every retained row must instead pass exact Salesforce ID and alias reconciliation against live structured detail. Enriched ${candidates.length}/${searchInventory.length} U.S.-compatible search row(s), excluded ${notFoundRows.length} provider 404 tombstone(s) independently confirmed by live current-build JSON and public-page observations, retained ${detailErrors} unresolved candidate(s), and detected ${duplicateExactIdentities} duplicate exact provider identity/identities. Detail country evidence must not conflict with the United States search membership. Structured detail enrichment retains native teaser, document, image/media, and broker-contact URL metadata through the existing child-classification contract; no document or image binaries are fetched.`,
   };
 }

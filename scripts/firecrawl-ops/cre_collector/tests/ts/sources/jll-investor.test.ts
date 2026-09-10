@@ -802,19 +802,10 @@ test("strict JLL Investor collection preserves unresolved candidates and bypasse
       };
     }
     if (url.endsWith("/sitemap_index.xml")) {
-      return { rawHtml: `<loc>https://invest.jll.com/us/sitemap-us.xml</loc>` };
+      throw new Error("authoritative search collection must not depend on the lagging sitemap index");
     }
     if (url.endsWith("/us/sitemap-us.xml")) {
-      return {
-        rawHtml: `
-          <urlset>
-            <url><loc>https://invest.jll.com/us/en/listings/office/known-us</loc></url>
-            <url><loc>https://invest.jll.com/us/en/listings/office/unknown-country</loc></url>
-            ${includeTombstone ? "<url><loc>https://invest.jll.com/us/en/listings/office/provider-tombstone</loc></url>" : ""}
-            <url><loc>https://invest.jll.com/us/en/listings/office/known-us</loc></url>
-          </urlset>
-        `,
-      };
+      throw new Error("authoritative search collection must not depend on a lagging sitemap");
     }
     if (url === JLL_INVESTOR_HOME_URL) {
       return { rawHtml: homepageHtml };
@@ -887,6 +878,8 @@ test("strict JLL Investor collection preserves unresolved candidates and bypasse
       "006P500000f2tXYIAY",
       "006080000100J8bAAE",
     ]);
+    assert.match(complete.note ?? "", /sitemap can lag newly published search inventory/i);
+    assert.equal(calls.some(({ url }) => url.includes("sitemap")), false);
     assert.ok(calls.every(({ options }) => options.maxAge === 0));
 
     calls.length = 0;
