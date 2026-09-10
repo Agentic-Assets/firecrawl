@@ -45,3 +45,13 @@ curl -X POST http://localhost:3000/scrape \
 ## USING WITH FIRECRAWL
 
 Add `PLAYWRIGHT_MICROSERVICE_URL=http://localhost:3003/scrape` to `/apps/api/.env` to configure the API to use this Playwright microservice for scraping operations.
+
+## Optional scrape pacing
+
+Set `SCRAPE_START_INTERVAL_MS` on this service to an integer from `0` to `5000`
+to space regular `/scrape` starts globally. The default `0` leaves starts
+unpaced. Pacing occurs after acquiring a browser-page permit and before
+allocating a context. Its waiting time consumes the existing request timeout;
+an expired request releases its permit without starting a browser context.
+The batch endpoint is unaffected. Choose any nonzero interval from measured
+provider behavior and resource limits before deploying it.

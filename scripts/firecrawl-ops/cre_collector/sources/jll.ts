@@ -9,6 +9,7 @@ import { harvestDetail } from "../lib/harvest.js";
 import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { normBuildingClass } from "../lib/parse.js";
 import { scrapeDoc } from "../lib/scrape.js";
+import { fetchJllDirectDoc } from "./jll-direct.js";
 import { DocItem, MediaItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
 import {
@@ -596,6 +597,8 @@ export function readJllDetailCache(url: string): ScrapedDoc | null {
     if (typeof cached.rawHtml !== "string") return null;
     if (!jllCachedAtMeetsBoundary(cached.cachedAt)) return null;
     if (!generationMatches(cached.generationId)) return null;
+    // An unadmitted direct cache must not change the default browser transport.
+    if (cached.metadata?.transport === "direct_http" && process.env.JLL_DETAIL_TRANSPORT !== "direct") return null;
     const observedAt =
       typeof cached.detailObservedAt === "string" ? cached.detailObservedAt : cached.cachedAt;
     return {
@@ -606,7 +609,7 @@ export function readJllDetailCache(url: string): ScrapedDoc | null {
       attributes: Array.isArray(cached.attributes) ? cached.attributes : undefined,
       metadata: cached.metadata,
       detailObservation: detailObservation(
-        "jll_detail",
+        cached.metadata?.transport === "direct_http" ? "jll_direct_detail" : "jll_detail",
         "generation_cache",
         observedAt,
         { generationId: cached.generationId ?? null }
@@ -646,10 +649,33 @@ export function writeJllDetailCache(url: string, doc: ScrapedDoc): void {
 
 export async function scrapeJllDetailDoc(
   url: string,
-  opts: { refresh?: boolean; waitFor?: number } = {}
+  opts: {
+    refresh?: boolean;
+    waitFor?: number;
+    expectedId?: string;
+    directFetch?: (url: string) => Promise<ScrapedDoc>;
+  } = {}
 ): Promise<ScrapedDoc> {
   const cached = opts.refresh ? null : readJllDetailCache(url);
   if (cached) return cached;
+  // One bounded direct attempt before the existing SDK retry/fallback path.
+  // Identity is required before direct HTML can enter the shared detail cache.
+  if (!opts.refresh && opts.expectedId && process.env.JLL_DETAIL_TRANSPORT === "direct") {
+    try {
+      const direct = await (opts.directFetch ?? fetchJllDirectDoc)(url);
+      assertJllDetailIdentity(jllNextData(direct.rawHtml)?.props?.pageProps, { id: opts.expectedId, url });
+      const doc: ScrapedDoc = {
+        ...direct,
+        detailObservation: detailObservation("jll_direct_detail", "live"),
+      };
+      writeJllDetailCache(url, doc);
+      return doc;
+    } catch {
+      // A shell, changed identity, transport failure, or deadline is not listing
+      // evidence. Let the normal browser path retry the exact inventory URL.
+      console.error("  jll: direct detail unavailable; using browser fallback");
+    }
+  }
   const scraped = await scrapeDoc(url, {
     waitFor: opts.waitFor ?? JLL_DETAIL_WAIT_MS,
     timeout: 120000,
@@ -971,10 +997,29 @@ export function jllStrandedStructured(property: any): Record<string, any> {
   );
 }
 
-export async function enrichJllListing(base: any): Promise<any> {
+export function assertJllDetailIdentity(pageProps: any, base: any): void {
+  const property = pageProps?.property;
+  if (!property) throw new Error("missing property in __NEXT_DATA__");
+  const detailId = clean(property.id);
+  const detailUrlRaw = clean(property.pageUrl) ?? clean(pageProps?.relativeUrl);
+  if (!detailId || detailId !== clean(base.id)) {
+    throw new Error(
+      `JLL detail provider id mismatch: expected ${clean(base.id) ?? "missing"}, ` +
+        `received ${detailId ?? "missing"}`
+    );
+  }
+  if (!detailUrlRaw || normalizedJllListingUrl(detailUrlRaw) !== normalizedJllListingUrl(base.url)) {
+    throw new Error("JLL detail listing URL does not match enumerated inventory URL");
+  }
+}
+
+export async function enrichJllListing(
+  base: any,
+  options: { directFetch?: (url: string) => Promise<ScrapedDoc> } = {}
+): Promise<any> {
   if (!base.url) return base;
   try {
-    let doc = await scrapeJllDetailDoc(base.url);
+    let doc = await scrapeJllDetailDoc(base.url, { expectedId: clean(base.id) ?? undefined, ...options });
     let next = jllNextData(doc.rawHtml);
     let pageProps = next?.props?.pageProps;
     let property = pageProps?.property;
@@ -986,20 +1031,7 @@ export async function enrichJllListing(base: any): Promise<any> {
     }
     if (!property) return prune({ ...base, detailError: "missing property in __NEXT_DATA__" });
 
-    const detailId = clean(property.id);
-    const detailUrlRaw = clean(property.pageUrl) ?? clean(pageProps?.relativeUrl);
-    if (!detailId || detailId !== clean(base.id)) {
-      throw new Error(
-        `JLL detail provider id mismatch: expected ${clean(base.id) ?? "missing"}, ` +
-          `received ${detailId ?? "missing"}`
-      );
-    }
-    if (
-      !detailUrlRaw ||
-      normalizedJllListingUrl(detailUrlRaw) !== normalizedJllListingUrl(base.url)
-    ) {
-      throw new Error("JLL detail listing URL does not match enumerated inventory URL");
-    }
+    assertJllDetailIdentity(pageProps, base);
 
     const contactsDetailed = jllContacts(Array.isArray(pageProps?.brokers) ? pageProps.brokers : property?.brokers);
     const brokerIds = contactsDetailed
@@ -1087,6 +1119,7 @@ export async function enrichJllListing(base: any): Promise<any> {
       links: harvested.links,
       photos,
       markdown: doc.markdown || base.markdown,
+      preserveExistingMarkdown: doc.metadata?.transport === "direct_http" ? true : undefined,
       url,
       lastUpdated: base.lastUpdated,
       jllDetail: {
@@ -1114,6 +1147,8 @@ export async function enrichJllListing(base: any): Promise<any> {
         brochureCount: documentChannels.brochures.length,
         imageCount: images.length,
         scrape: {
+          transport: doc.metadata?.transport === "direct_http" ? "direct_http" : "firecrawl",
+          markdownDisposition: doc.metadata?.transport === "direct_http" ? "preserve_existing_or_insert" : "replace",
           markdownLength: doc.markdown.length,
           rawHtmlLength: doc.rawHtml.length,
           linkCount: doc.links.length,
