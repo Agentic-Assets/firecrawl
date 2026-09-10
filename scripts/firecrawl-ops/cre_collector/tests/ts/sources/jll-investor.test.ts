@@ -12,6 +12,8 @@ import {
   jllInvestorNextData,
   jllInvestorBuildId,
   jllInvestorStructuredListing,
+  jllInvestorStructuredNotFound,
+  jllInvestorPublicPageNotFound,
   jllInvestorDetailRoute,
   jllInvestorUrlFromAlias,
   jllInvestorSitemapUrls,
@@ -87,6 +89,27 @@ test("JLL Investor build id and structured detail helpers fail closed", () => {
   };
   assert.equal(jllInvestorStructuredListing(payload)?.id, "006P500000f2tXYIAY");
   assert.equal(jllInvestorStructuredListing({}), null);
+  assert.equal(
+    jllInvestorStructuredNotFound({ pageProps: { error: { statusCode: 404 } } }),
+    true
+  );
+  assert.equal(
+    jllInvestorStructuredNotFound({ pageProps: { error: { statusCode: "404" } } }),
+    false
+  );
+  assert.equal(
+    jllInvestorStructuredNotFound({ pageProps: { error: { statusCode: 500 } } }),
+    false
+  );
+  assert.equal(jllInvestorStructuredNotFound({}), false);
+  const public404 = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { error: { statusCode: 404 } } } })}</script>`;
+  assert.equal(jllInvestorPublicPageNotFound(public404), true);
+  assert.equal(
+    jllInvestorPublicPageNotFound(
+      `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { error: { statusCode: 500 } } } })}</script>`
+    ),
+    false
+  );
 });
 
 test("jllInvestorDetailRoute builds an encoded public Next-data route and rejects unsafe paths", () => {
@@ -169,13 +192,34 @@ test("jllInvestorSitemapCandidateLimit applies max heuristics when scan limit is
   assert.equal(jllInvestorSitemapCandidateLimit(Number.POSITIVE_INFINITY, 200), 200);
 });
 
-test("JLL Investor detail country classification uses exact fullLocation US token only when country is absent", () => {
+test("JLL Investor detail country classification uses exact provider country-region tokens only when country is absent", () => {
   assert.equal(
     jllInvestorDetailCountryClassification({
       country: null,
       fullLocation: "Pooler, GA, US, Americas",
     }),
     "us"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
+      fullLocation: "Winnipeg, MB, CA, Americas",
+    }),
+    "non_us"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
+      fullLocation: "Strängnäs, Sodermanland Laen, SE, EMEA",
+    }),
+    "non_us"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
+      fullLocation: "Los Angeles, CA",
+    }),
+    "unknown"
   );
   assert.equal(
     jllInvestorDetailCountryClassification({
@@ -191,6 +235,136 @@ test("JLL Investor detail country classification uses exact fullLocation US toke
     }),
     "non_us"
   );
+});
+
+test("JLL Investor enrichment requires live current-build JSON and public-page 404s", async () => {
+  const oldScrape = firecrawl.scrape;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const calls: Array<{ url: string; options: any }> = [];
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    calls.push({ url, options });
+    if (url === JLL_INVESTOR_HOME_URL) {
+      return {
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ buildId: "_fresh-build" })}</script>`,
+      };
+    }
+    if (url === "https://invest.jll.com/us/en/listings/office/tombstone") {
+      return {
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { error: { statusCode: 404 } } } })}</script>`,
+      };
+    }
+    return {
+      rawHtml: JSON.stringify({ pageProps: { error: { statusCode: 404 } } }),
+    };
+  };
+  try {
+    resetJllInvestorBuildIdForTests();
+    delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    const row = await enrichJllInvestorListing({
+      id: "tombstone",
+      url: "https://invest.jll.com/us/en/listings/office/tombstone",
+      photos: [],
+    });
+    assert.equal(row.skip, "not_found");
+    assert.equal(row.detailError, undefined);
+    assert.equal(row.jllInvestorTombstone.statusCode, 404);
+    const details = calls.filter(({ url }) => url.includes("/tombstone.json"));
+    const homepages = calls.filter(({ url }) => url === JLL_INVESTOR_HOME_URL);
+    assert.equal(details.length, 1);
+    assert.ok(details.every(({ options }) => options.maxAge === 0));
+    assert.equal(homepages.length, 2);
+    assert.equal(homepages.at(-1)?.options.maxAge, 0);
+    assert.equal(
+      calls.filter(
+        ({ url }) =>
+          url === "https://invest.jll.com/us/en/listings/office/tombstone"
+      ).length,
+      1
+    );
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    resetJllInvestorBuildIdForTests();
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
+  }
+});
+
+test("JLL Investor tombstone proof discards an obsolete build 404", async () => {
+  const oldScrape = firecrawl.scrape;
+  const calls: Array<{ url: string; options: any }> = [];
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    calls.push({ url, options });
+    if (url === JLL_INVESTOR_HOME_URL) {
+      return {
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ buildId: "_current-build" })}</script>`,
+      };
+    }
+    if (
+      url ===
+      "https://invest.jll.com/us/en/listings/office/rotated-tombstone"
+    ) {
+      return {
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { error: { statusCode: 404 } } } })}</script>`,
+      };
+    }
+    return {
+      rawHtml: JSON.stringify({ pageProps: { error: { statusCode: 404 } } }),
+    };
+  };
+  try {
+    resetJllInvestorBuildIdForTests();
+    const row = await enrichJllInvestorListing(
+      {
+        id: "rotated-tombstone",
+        url: "https://invest.jll.com/us/en/listings/office/rotated-tombstone",
+        photos: [],
+      },
+      "_obsolete-build"
+    );
+    assert.equal(row.skip, "not_found");
+    assert.equal(
+      calls.filter(({ url }) => url.includes("/_obsolete-build/")).length,
+      1
+    );
+    assert.equal(
+      calls.filter(({ url }) => url.includes("/_current-build/")).length,
+      1
+    );
+    assert.ok(calls.every(({ options }) => options.maxAge === 0));
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    resetJllInvestorBuildIdForTests();
+  }
+});
+
+test("JLL Investor enrichment keeps an inconsistent 404 sequence as an error", async () => {
+  const oldScrape = firecrawl.scrape;
+  let detailCalls = 0;
+  (firecrawl as any).scrape = async (url: string) => {
+    if (url === JLL_INVESTOR_HOME_URL) {
+      return {
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ buildId: "_fresh-build" })}</script>`,
+      };
+    }
+    detailCalls++;
+    return detailCalls === 1
+      ? { rawHtml: JSON.stringify({ pageProps: { error: { statusCode: 404 } } }) }
+      : { rawHtml: JSON.stringify({ pageProps: { initialState: {} } }) };
+  };
+  try {
+    resetJllInvestorBuildIdForTests();
+    const row = await enrichJllInvestorListing({
+      id: "inconsistent",
+      url: "https://invest.jll.com/us/en/listings/office/inconsistent",
+      photos: [],
+    });
+    assert.equal(row.skip, undefined);
+    assert.match(row.detailError, /not confirmed by the live public page/i);
+    assert.equal(detailCalls, 2);
+  } finally {
+    (firecrawl as any).scrape = oldScrape;
+    resetJllInvestorBuildIdForTests();
+  }
 });
 
 test("structured JLL Investor detail validates Salesforce id and exact alias", () => {
@@ -335,6 +509,7 @@ test("strict JLL Investor collection preserves unresolved candidates and bypasse
           <urlset>
             <url><loc>https://invest.jll.com/us/en/listings/office/known-us</loc></url>
             <url><loc>https://invest.jll.com/us/en/listings/office/unknown-country</loc></url>
+            <url><loc>https://invest.jll.com/us/en/listings/office/provider-tombstone</loc></url>
             <url><loc>https://invest.jll.com/us/en/listings/office/known-us</loc></url>
           </urlset>
         `,
@@ -351,6 +526,19 @@ test("strict JLL Investor collection preserves unresolved candidates and bypasse
           name: "Known US",
           country: "United States",
         })),
+      };
+    }
+    if (url.includes("/provider-tombstone.json")) {
+      return {
+        rawHtml: JSON.stringify({ pageProps: { error: { statusCode: 404 } } }),
+      };
+    }
+    if (
+      url ===
+      "https://invest.jll.com/us/en/listings/office/provider-tombstone"
+    ) {
+      return {
+        rawHtml: `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { error: { statusCode: 404 } } } })}</script>`,
       };
     }
     return {

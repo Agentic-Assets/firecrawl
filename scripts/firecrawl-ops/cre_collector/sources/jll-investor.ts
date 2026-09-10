@@ -66,6 +66,22 @@ export function jllInvestorStructuredListing(payload: any): any | null {
   return listing && typeof listing === "object" ? listing : null;
 }
 
+export function jllInvestorStructuredNotFound(payload: any): boolean {
+  return (
+    !jllInvestorStructuredListing(payload) &&
+    payload?.pageProps?.error?.statusCode === 404
+  );
+}
+
+export function jllInvestorPublicPageNotFound(rawHtml: string): boolean {
+  const pageProps = jllInvestorNextData(rawHtml)?.props?.pageProps;
+  const listing = pageProps?.initialState?.pdp?.listing;
+  return (
+    !(listing && typeof listing === "object") &&
+    pageProps?.error?.statusCode === 404
+  );
+}
+
 export function jllInvestorDetailRoute(
   buildId: string,
   publicUrl: string
@@ -142,14 +158,18 @@ export function jllInvestorDetailCountryClassification(
   const explicit = jllInvestorCountryClassification(listing?.country);
   if (explicit !== "unknown") return explicit;
   const fullLocation = clean(listing?.fullLocation);
+  if (!fullLocation) return "unknown";
+  const parts = fullLocation.split(",").map((part) => part.trim());
+  const region = parts.at(-1);
+  const countryCode = parts.at(-2);
+  // JLL emits a two-letter country token immediately before its exact region
+  // suffix. Require both pieces so a state-only location such as
+  // "Los Angeles, CA" cannot be mistaken for Canada.
   if (
-    fullLocation &&
-    fullLocation
-      .split(",")
-      .map((part) => part.trim())
-      .includes("US")
+    /^(?:Americas|EMEA)$/.test(region ?? "") &&
+    /^[A-Z]{2}$/.test(countryCode ?? "")
   ) {
-    return "us";
+    return countryCode === "US" ? "us" : "non_us";
   }
   return "unknown";
 }
@@ -662,8 +682,9 @@ export function resetJllInvestorBuildIdForTests(): void {
   jllInvestorBuildIdRequest = null;
 }
 
-async function loadJllInvestorBuildId(): Promise<string> {
-  const strictScrapeOpts = requireFreshDetails() ? { maxAge: 0 } : {};
+async function loadJllInvestorBuildId(forceFresh = false): Promise<string> {
+  const strictScrapeOpts =
+    forceFresh || requireFreshDetails() ? { maxAge: 0 } : {};
   const rawHtml = await scrapeRaw(JLL_INVESTOR_HOME_URL, {
     waitFor: JLL_INVESTOR_DETAIL_WAIT_MS,
     timeout: 60000,
@@ -696,7 +717,7 @@ export async function getJllInvestorBuildId(options: {
     return cachedJllInvestorBuildId;
   }
   if (jllInvestorBuildIdRequest) return jllInvestorBuildIdRequest;
-  const request = loadJllInvestorBuildId()
+  const request = loadJllInvestorBuildId(force)
     .then((buildId) => {
       cachedJllInvestorBuildId = buildId;
       return buildId;
@@ -717,15 +738,63 @@ export async function enrichJllInvestorListing(
   if (!base.url) return base;
   let buildId = initialBuildId ?? await getJllInvestorBuildId();
   let lastErr: unknown = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const route = jllInvestorDetailRoute(buildId, base.url);
       const payload = await scrapeJson(route.url, {
         waitFor: JLL_INVESTOR_DETAIL_WAIT_MS,
         timeout: JLL_INVESTOR_DETAIL_TIMEOUT_MS,
         jsonAttempts: 1,
-        ...(requireFreshDetails() ? { maxAge: 0 } : {}),
+        // A cached structured 404 must never retire a live queue candidate.
+        // JLL's small JSON route is always read live, even in targeted mode.
+        maxAge: 0,
       });
+      if (jllInvestorStructuredNotFound(payload)) {
+        lastErr = new Error("structured Next.js detail returned provider 404");
+        const observedBuildId: string = buildId;
+        try {
+          // Prove which build is current using an uncached homepage read. A
+          // 404 from an obsolete JSON route is never a tombstone signal.
+          buildId = await getJllInvestorBuildId({
+            force: true,
+            staleBuildId: buildId,
+          });
+        } catch (refreshErr) {
+          lastErr = refreshErr;
+          break;
+        }
+        if (buildId !== observedBuildId) {
+          if (attempt === 3) break;
+          continue;
+        }
+        try {
+          // Require a second live signal from the public listing route. This is
+          // intentionally a different endpoint and representation than the
+          // structured JSON route, so a stale CDN/homepage build alone cannot
+          // exclude a live listing.
+          const publicHtml = await scrapeRaw(base.url, {
+            waitFor: JLL_INVESTOR_DETAIL_WAIT_MS,
+            timeout: JLL_INVESTOR_DETAIL_TIMEOUT_MS,
+            maxAge: 0,
+          });
+          if (!jllInvestorPublicPageNotFound(publicHtml)) {
+            throw new Error(
+              "structured provider 404 was not confirmed by the live public page"
+            );
+          }
+          return prune({
+            ...base,
+            skip: "not_found",
+            jllInvestorTombstone: {
+              statusCode: 404,
+              confirmation: "live_current_build_json_and_public_page",
+            },
+          });
+        } catch (publicErr) {
+          lastErr = publicErr;
+          break;
+        }
+      }
       if (!jllInvestorStructuredListing(payload)) {
         throw new Error("structured Next.js detail payload lacks pdp listing");
       }
@@ -835,9 +904,12 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
     return row;
   });
 
+  const notFoundRows = enriched.filter((row) => row?.skip === "not_found");
   const unresolvedRows = enriched.filter((row) => row?.detailError);
   const detailErrors = unresolvedRows.length;
-  const resolvedRows = enriched.filter((row) => !row?.detailError);
+  const resolvedRows = enriched.filter(
+    (row) => !row?.detailError && row?.skip !== "not_found"
+  );
   const exactIds = new Set<string>();
   let duplicateExactIdentities = 0;
   for (const row of resolvedRows) {
@@ -845,10 +917,10 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
     if (!id || exactIds.has(id)) duplicateExactIdentities++;
     if (id) exactIds.add(id);
   }
-  const usRows = enriched.filter((row) => row?.country === "US");
+  const usRows = resolvedRows.filter((row) => row?.country === "US");
   const requestedUsRows = usRows.slice(0, Math.min(max, usRows.length));
   const listings = [...requestedUsRows, ...unresolvedRows];
-  const nonUsRows = enriched.length - usRows.length - detailErrors;
+  const nonUsRows = resolvedRows.length - usRows.length;
   const incompleteEnumeration = candidates.length !== detailEntries.length;
   const requestedLimitApplied = requestedUsRows.length !== usRows.length;
   const truncated =
@@ -870,6 +942,6 @@ export async function srcJllInvestor(tx: Tx, max: number, monitor: boolean): Pro
     listings,
     truncated,
     note:
-      `Sitemap contains global inventory on the US locale path, so resolved rows are retained only when the structured detail has an explicit United States country or an exact US token in fullLocation when country is absent. Scanned ${candidates.length}/${detailEntries.length} detail URL(s), kept ${requestedUsRows.length} U.S. row(s), skipped ${nonUsRows} classified non-U.S. row(s), retained ${detailErrors} unresolved candidate(s), and detected ${duplicateExactIdentities} duplicate exact provider identity/identities. Structured detail enrichment retains native teaser, document, image/media, and broker-contact URL metadata through the existing child-classification contract; no document or image binaries are fetched.`,
+      `Sitemap contains global inventory on the US locale path, so resolved rows are retained only when the structured detail has an explicit United States country or an exact provider country token before a recognized region suffix when country is absent. Scanned ${candidates.length}/${detailEntries.length} detail URL(s), kept ${requestedUsRows.length} U.S. row(s), skipped ${nonUsRows} classified non-U.S. row(s), excluded ${notFoundRows.length} provider 404 tombstone(s) independently confirmed by live current-build JSON and public-page observations, retained ${detailErrors} unresolved candidate(s), and detected ${duplicateExactIdentities} duplicate exact provider identity/identities. Structured detail enrichment retains native teaser, document, image/media, and broker-contact URL metadata through the existing child-classification contract; no document or image binaries are fetched.`,
   };
 }

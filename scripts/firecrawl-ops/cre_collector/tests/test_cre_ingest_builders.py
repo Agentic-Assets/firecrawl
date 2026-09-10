@@ -1421,6 +1421,29 @@ def test_to_row_price_per_sf_computed_from_price_and_size():
     assert r["sale_price_per_sf"] == 200.0
 
 
+def test_to_row_rejects_impossible_derived_price_per_sf():
+    r = _row({"sourceKey": "colliers", "url": "https://sales.colliers.com/h", "id": "1",
+              "salePriceUsd": 16000000, "buildingSizeSqft": 857})
+    assert r["sale_price_usd"] == 16000000.0
+    assert r["size_sf"] == 857.0
+    assert r["sale_price_per_sf"] is None
+
+
+def test_to_row_accepts_derived_price_per_sf_at_upper_bound():
+    # The derivation intentionally requires size_sf > 100, so exercise the
+    # exact $10,000/SF boundary with a slightly larger denominator.
+    r = _row({"sourceKey": "cbre", "url": "https://cbre.com/h", "id": "1",
+              "salePriceUsd": 1010000, "buildingSizeSqft": 101})
+    assert r["sale_price_per_sf"] == 10000.0
+
+
+def test_to_row_prefers_explicit_price_per_sf_over_derivation():
+    r = _row({"sourceKey": "cbre", "url": "https://cbre.com/h", "id": "1",
+              "salePriceUsd": 1000000, "salePricePerSf": 225,
+              "buildingSizeSqft": 5000})
+    assert r["sale_price_per_sf"] == 225.0
+
+
 def test_to_row_per_sf_sale_text_suppresses_absolute_price():
     r = _row({"sourceKey": "lee-associates",
               "url": "https://buildout.com/x?propertyId=5",

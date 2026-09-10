@@ -1405,15 +1405,21 @@ def test_source_error_is_rejected(tmp_path):
         refresh.validate_source_artifact(path, "svn", ATTEMPT)
 
 
-@pytest.mark.parametrize("truncated", [True, None])
-def test_truncated_or_implicit_coverage_is_rejected(tmp_path, truncated):
+@pytest.mark.parametrize(
+    "truncated,expected",
+    [
+        (True, "reported truncated=true"),
+        (None, "missing explicit truncated=false"),
+    ],
+)
+def test_truncated_or_implicit_coverage_is_rejected(tmp_path, truncated, expected):
     payload = artifact()
     if truncated is None:
         payload["sources"][0].pop("truncated")
     else:
         payload["sources"][0]["truncated"] = truncated
     path = write_artifact(tmp_path, payload)
-    with pytest.raises(refresh.ArtifactValidationError, match="truncated=false"):
+    with pytest.raises(refresh.ArtifactValidationError, match=expected):
         refresh.validate_source_artifact(path, "svn", ATTEMPT)
 
 

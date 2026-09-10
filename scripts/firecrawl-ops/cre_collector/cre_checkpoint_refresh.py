@@ -1138,9 +1138,14 @@ def validate_source_artifact(
             raise ArtifactValidationError(f"{expected_source}/{tx} is not supported")
         if entry.get("error"):
             raise ArtifactValidationError(f"{expected_source}/{tx} reported an error")
-        if entry.get("truncated") is not False:
+        truncated = entry.get("truncated")
+        if truncated is True:
             raise ArtifactValidationError(
-                f"{expected_source}/{tx} must explicitly report truncated=false"
+                f"{expected_source}/{tx} reported truncated=true"
+            )
+        if truncated is not False:
+            raise ArtifactValidationError(
+                f"{expected_source}/{tx} is missing explicit truncated=false"
             )
         count = entry.get("listingsCollected")
         if not isinstance(count, int) or count < 0:

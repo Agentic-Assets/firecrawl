@@ -530,6 +530,45 @@ python3 cre_repair_newmark_nim.py \
   --apply --preimage "$PWD/out/repair/newmark-nim/<run-id>/preimage.json"
 ```
 
+### Colliers derived-price-per-SF repair
+
+`cre_repair_colliers_derived_psf.py` is a one-row repair bound to Colliers
+external ID `152946` and generation `2026-09-10T043500Z`. The provider exposed
+an ambiguous generic size of 857 and a $16,000,000 asking price; the old
+ingestor manufactured $18,669.78/SF from those fields. The repair preserves the
+provider price, size, raw payload, identity, status, and child rows, and clears
+only `sale_price_per_sf`. The table's existing trigger also advances
+`updated_at`; do not disable it.
+
+The default preflight and rollback-only transaction both acquire the canonical
+host lock. The transaction also acquires the same database lifecycle advisory
+lock as normal ingestion. Persistent apply reserves and fsyncs an owner-only
+preimage, pending postimage, and standalone guarded rollback SQL before the
+database can commit, then atomically replaces the postimage after readback.
+
+```bash
+ENV_FILE="$HOME/.config/cre/equire.env"
+EVIDENCE_DIR="$PWD/out/repair/colliers-derived-psf/<run-id>"
+
+python3 cre_repair_colliers_derived_psf.py --env-file "$ENV_FILE"
+python3 cre_repair_colliers_derived_psf.py \
+  --env-file "$ENV_FILE" --verify-apply-rollback
+python3 cre_repair_colliers_derived_psf.py \
+  --env-file "$ENV_FILE" --apply \
+  --preimage "$EVIDENCE_DIR/preimage.json"
+```
+
+Retain the printed SHA-256 values for `preimage.json`, `postimage.json`, and
+`rollback.sql`. The generated rollback SQL is exact-row and exact-raw-data
+guarded. The CLI rollback additionally requires the preimage SHA-256:
+
+```bash
+python3 cre_repair_colliers_derived_psf.py \
+  --env-file "$ENV_FILE" \
+  --rollback-preimage "$EVIDENCE_DIR/preimage.json" \
+  --expected-preimage-sha256 <printed-sha256>
+```
+
 ### SVN missing-detail shell recovery
 
 `cre_repair_buildout_detail_shells.py` is a one-time, SVN-only correction for

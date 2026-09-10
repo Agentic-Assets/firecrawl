@@ -1604,8 +1604,15 @@ def to_row(listing, brokers_by_idx, scraped_at):
         # the absolute sale price must NOT be read; route it to sale_price_per_sf.
         price_per_sf = price_per_sf or num_or_none(parse_money(sale_price_text), lo=0, hi=10000)
         sale_price = None
-    if sale_price and size_sf and size_sf > 100:
-        price_per_sf = round(sale_price / size_sf, 2)
+    if price_per_sf is None and sale_price and size_sf and size_sf > 100:
+        # Apply the same economic bound to a derived value that we apply to an
+        # explicit provider value above. Some feeds expose unit counts or other
+        # measures under a generic "Size" label; dividing an asking price by
+        # that value can otherwise manufacture an impossible $/SF value and
+        # overwrite a correctly rejected explicit value.
+        price_per_sf = num_or_none(
+            round(sale_price / size_sf, 2), lo=0, hi=10000
+        )
 
     # (DQ guard 3) AY $5000/SF/YR anomaly + the >500 $/SF/yr cap live in
     # cre_parse.parse_lease_rate, so parse_lease_rates returns (None, None) for them.

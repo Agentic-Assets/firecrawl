@@ -81,8 +81,12 @@ export const colliersMainEnricher: SourceEnricher = {
 // jll-investor: strip the "investor:" fold prefix to rebuild the native
 // Salesforce listing.id, then reuse enrichJllInvestorListing directly (it already
 // echoes base.url through unchanged and degrades a __NEXT_DATA__ miss to a
-// detailError row, which the worker leaves queued). The native id is overwritten
-// from the detail listing.id on success; it equals nativeId for an enriched row.
+// detailError row, which the worker leaves queued). Provider 404 tombstones
+// confirmed independently by the live current-build JSON and public page are
+// also omitted so targeted enrichment cannot re-ingest a thin row or falsely
+// complete a queue item. The weekly full source sweep owns tombstone observation.
+// The native id is overwritten from the detail listing.id on success; it equals
+// nativeId for an enriched row.
 export const jllInvestorEnricher: SourceEnricher = {
   async enrich(items: EnrichItem[]): Promise<any[]> {
     const rows = await pmap(items, CONCURRENCY, async (item) => {
@@ -94,9 +98,10 @@ export const jllInvestorEnricher: SourceEnricher = {
         brokerIds: [],
         photos: [],
       });
-      // A detailError row carries no fresh detail; omit it so the claim stays
-      // queued rather than re-ingesting an empty row.
-      if (!row || row.detailError) return null;
+      // A detailError or independently confirmed tombstone row carries no fresh
+      // listing detail; omit it so the claim stays queued rather than
+      // re-ingesting or falsely completing an empty row.
+      if (!row || row.detailError || row.skip) return null;
       return row;
     });
     return rows.filter(Boolean);
