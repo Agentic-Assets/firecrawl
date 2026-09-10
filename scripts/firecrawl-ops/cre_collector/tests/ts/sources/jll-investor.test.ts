@@ -217,6 +217,20 @@ test("JLL Investor detail country classification uses exact provider country-reg
   assert.equal(
     jllInvestorDetailCountryClassification({
       country: null,
+      fullLocation: "Sydney, NSW, AU, APAC",
+    }),
+    "non_us"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
+      fullLocation: "Nowhere, XX, ZZ, Americas",
+    }),
+    "unknown"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
       fullLocation: "Los Angeles, CA",
     }),
     "unknown"
@@ -234,6 +248,83 @@ test("JLL Investor detail country classification uses exact provider country-reg
       fullLocation: "Toronto, ON, US, Americas",
     }),
     "non_us"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({ country: "Americas" }),
+    "unknown"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({ country: "Various" }),
+    "unknown"
+  );
+});
+
+test("JLL Investor detail country classification admits only unanimous explicit portfolio countries", () => {
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
+      fullLocation: "Various locations",
+      portfolio: [
+        { subMarketCountry: "United States", fullLocation: "Moscow, ID, US" },
+        { subMarketCountry: "United States", fullLocation: "Minot, ND, US" },
+      ],
+    }),
+    "us"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
+      fullLocation: "Various locations",
+      portfolio: [
+        { subMarketCountry: "Canada" },
+        { subMarketCountry: "Canada" },
+      ],
+    }),
+    "non_us"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
+      fullLocation: "Various locations",
+      portfolio: [
+        { subMarketCountry: "United States" },
+        { subMarketCountry: "Canada" },
+      ],
+    }),
+    "unknown"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
+      fullLocation: "Various locations",
+      portfolio: [
+        { subMarketCountry: "United States" },
+        { subMarketCountry: null },
+      ],
+    }),
+    "unknown"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
+      fullLocation: "Various locations",
+      portfolio: [
+        { subMarketCountry: "Americas" },
+        { subMarketCountry: "Americas" },
+      ],
+    }),
+    "unknown"
+  );
+  assert.equal(
+    jllInvestorDetailCountryClassification({
+      country: null,
+      fullLocation: "Various locations",
+      portfolio: [
+        { subMarketCountry: "United States", country: "Canada" },
+        { subMarketCountry: "United States", country: "United States" },
+      ],
+    }),
+    "unknown"
   );
 });
 

@@ -45,6 +45,32 @@ export const JLL_INVESTOR_SITEMAP_SCAN_LIMIT = boundedInt(
   10000
 );
 
+const JLL_INVESTOR_ISO_ALPHA_2_CODES = new Set(
+  "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW".split(" ")
+);
+const JLL_INVESTOR_COUNTRY_DISPLAY_NAMES = new Intl.DisplayNames(["en"], {
+  type: "region",
+});
+
+function jllInvestorCountryNameKey(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[^a-z0-9]+/gi, " ")
+    .trim()
+    .toLowerCase();
+}
+
+const JLL_INVESTOR_COUNTRY_NAME_TO_CODE = new Map<string, string>(
+  [...JLL_INVESTOR_ISO_ALPHA_2_CODES].flatMap((code) => {
+    const displayName = JLL_INVESTOR_COUNTRY_DISPLAY_NAMES.of(code);
+    return displayName && displayName !== code
+      ? [[jllInvestorCountryNameKey(displayName), code] as const]
+      : [];
+  })
+);
+JLL_INVESTOR_COUNTRY_NAME_TO_CODE.set("united states of america", "US");
+
 export function jllInvestorNextData(rawHtml: string): any | null {
   const $ = cheerio.load(rawHtml);
   const text = $("#__NEXT_DATA__").first().text();
@@ -166,10 +192,47 @@ export function jllInvestorDetailCountryClassification(
   // suffix. Require both pieces so a state-only location such as
   // "Los Angeles, CA" cannot be mistaken for Canada.
   if (
-    /^(?:Americas|EMEA)$/.test(region ?? "") &&
+    /^(?:Americas|EMEA|APAC)$/.test(region ?? "") &&
     /^[A-Z]{2}$/.test(countryCode ?? "")
   ) {
-    return countryCode === "US" ? "us" : "non_us";
+    const locationClassification =
+      jllInvestorCountryClassification(countryCode);
+    if (locationClassification !== "unknown") return locationClassification;
+  }
+
+  // Portfolio records often omit the parent country and use a generic parent
+  // location such as "Various locations", while every child property carries
+  // an explicit provider country in subMarketCountry. Admit that evidence only
+  // when the portfolio is non-empty, every child has an explicit country, and
+  // every child agrees. Missing or mixed child evidence remains unknown so a
+  // multinational portfolio can never be silently assigned to the US feed.
+  const portfolio = Array.isArray(listing?.portfolio) ? listing.portfolio : [];
+  if (portfolio.length > 0) {
+    const classifications: Array<"us" | "non_us" | "unknown"> = portfolio.map(
+      (row: any) => {
+        const countryFields = [row?.subMarketCountry, row?.country]
+          .map(clean)
+          .filter((value): value is string => Boolean(value));
+        if (countryFields.length === 0) return "unknown";
+        const fieldClassifications = countryFields.map(
+          jllInvestorCountryClassification
+        );
+        const firstField = fieldClassifications[0];
+        return firstField !== "unknown" &&
+          fieldClassifications.every(
+            (classification) => classification === firstField
+          )
+          ? firstField
+          : "unknown";
+      }
+    );
+    const first = classifications[0];
+    if (
+      first !== "unknown" &&
+      classifications.every((classification) => classification === first)
+    ) {
+      return first;
+    }
   }
   return "unknown";
 }
@@ -209,10 +272,15 @@ export function jllInvestorCountryClassification(
   const country = clean(value);
   if (!country) return "unknown";
   if (/^(?:unknown|n\/?a|not available|-)$/i.test(country)) return "unknown";
-  if (/^(?:US|USA|United States|United States of America)$/i.test(country)) {
-    return "us";
-  }
-  return "non_us";
+  if (/^USA$/i.test(country)) return "us";
+  const upper = country.toUpperCase();
+  const code = JLL_INVESTOR_ISO_ALPHA_2_CODES.has(upper)
+    ? upper
+    : JLL_INVESTOR_COUNTRY_NAME_TO_CODE.get(
+        jllInvestorCountryNameKey(country)
+      );
+  if (!code) return "unknown";
+  return code === "US" ? "us" : "non_us";
 }
 
 function jllInvestorDetailError(base: any, message: string, id?: string | null): any {
