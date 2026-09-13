@@ -597,6 +597,18 @@ def test_safe_process_env_clears_status_activation():
     assert env["PATH"] == "/bin"
 
 
+def test_safe_process_env_maps_collector_endpoint_to_healthcheck_alias():
+    env = refresh.safe_process_env(
+        {
+            "FIRECRAWL_API_URL": "http://localhost:3102",
+            "API_URL": "http://localhost:3002",
+        }
+    )
+
+    assert env["FIRECRAWL_API_URL"] == "http://localhost:3102"
+    assert env["API_URL"] == "http://localhost:3102"
+
+
 def test_run_command_interrupt_terminates_its_process_group(tmp_path, monkeypatch):
     spawned = {}
     signals = []

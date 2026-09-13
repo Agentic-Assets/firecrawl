@@ -2,6 +2,13 @@
 import Firecrawl from "@mendable/firecrawl-js";
 import { API_URL } from "./config.js";
 import { ScrapeOpts, ScrapedDoc } from "../types.js";
+import {
+  createClientRequestDeadlineError,
+  recordClientAttemptCompleted,
+  recordClientAttemptStarted,
+  recordLogicalScrapeCall,
+  recordRetry,
+} from "./performance.js";
 
 export type CollectorScrapeOpts = ScrapeOpts & {
   /**
@@ -27,7 +34,7 @@ export async function withRequestDeadline<T>(request: Promise<T>, timeoutMs: num
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`Firecrawl scrape request timed out after ${timeoutMs}ms`)),
+      () => reject(createClientRequestDeadlineError(timeoutMs)),
       timeoutMs
     );
   });
@@ -39,8 +46,12 @@ export async function withRequestDeadline<T>(request: Promise<T>, timeoutMs: num
 }
 
 export async function scrapeRaw(url: string, opts: CollectorScrapeOpts = {}): Promise<string> {
+  recordLogicalScrapeCall("raw");
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
+    const performanceAttempt = recordClientAttemptStarted({
+      freshRequested: opts.maxAge === 0,
+    });
     try {
       const timeout = opts.timeout ?? 90000;
       const doc = await withRequestDeadline(firecrawl.scrape(url, {
@@ -52,19 +63,27 @@ export async function scrapeRaw(url: string, opts: CollectorScrapeOpts = {}): Pr
       } as any), timeout);
       const body = (doc as any).rawHtml ?? "";
       if (!body) throw new Error("empty response body");
+      recordClientAttemptCompleted(performanceAttempt, { outcome: "succeeded" });
       return body;
     } catch (err) {
+      recordClientAttemptCompleted(performanceAttempt, { outcome: "failed", error: err });
       lastErr = err;
       console.error(`scrape attempt ${attempt} failed for ${url}: ${err}`);
-      await new Promise((r) => setTimeout(r, 2500 * attempt));
+      const delayMs = 2500 * attempt;
+      recordRetry("http_helper", delayMs, attempt < 3);
+      await new Promise((r) => setTimeout(r, delayMs));
     }
   }
   throw lastErr;
 }
 
 export async function scrapeDoc(url: string, opts: CollectorScrapeOpts = {}): Promise<ScrapedDoc> {
+  recordLogicalScrapeCall("doc");
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
+    const performanceAttempt = recordClientAttemptStarted({
+      freshRequested: opts.maxAge === 0,
+    });
     try {
       const timeout = opts.timeout ?? 90000;
       const doc = await withRequestDeadline(firecrawl.scrape(url, {
@@ -108,11 +127,15 @@ export async function scrapeDoc(url: string, opts: CollectorScrapeOpts = {}): Pr
       const images = Array.isArray(data.images) ? data.images : undefined;
       const attributes = Array.isArray(data.attributes) ? data.attributes : undefined;
       if (!rawHtml && !markdown) throw new Error("empty scraped document");
+      recordClientAttemptCompleted(performanceAttempt, { outcome: "succeeded" });
       return { rawHtml, markdown, links, images, attributes, metadata: data.metadata };
     } catch (err) {
+      recordClientAttemptCompleted(performanceAttempt, { outcome: "failed", error: err });
       lastErr = err;
       console.error(`scrape-doc attempt ${attempt} failed for ${url}: ${err}`);
-      await new Promise((r) => setTimeout(r, 2500 * attempt));
+      const delayMs = 2500 * attempt;
+      recordRetry("http_helper", delayMs, attempt < 3);
+      await new Promise((r) => setTimeout(r, delayMs));
     }
   }
   throw lastErr;
@@ -187,6 +210,7 @@ export function repairUnescapedJsonStringQuotes(body: string): string {
 }
 
 export async function scrapeJson(url: string, opts: CollectorScrapeOpts = {}): Promise<any> {
+  recordLogicalScrapeCall("json");
   // A successful scrape can still return a non-JSON body (rate-limit or
   // challenge interstitial, e.g. Buildout under sustained paging). Retry the
   // whole scrape with growing backoff before giving up.
@@ -197,7 +221,9 @@ export async function scrapeJson(url: string, opts: CollectorScrapeOpts = {}): P
     const parsed = parseJsonBody(body);
     if (parsed !== null) return parsed;
     console.error(`non-JSON body from ${url} (attempt ${attempt}); backing off`);
-    await new Promise((r) => setTimeout(r, backoffMs * attempt));
+    const delayMs = backoffMs * attempt;
+    recordRetry("json_parse", delayMs, attempt < attempts);
+    await new Promise((r) => setTimeout(r, delayMs));
   }
   throw new Error(`response from ${url} contained no parseable JSON object`);
 }

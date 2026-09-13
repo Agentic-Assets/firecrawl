@@ -43,6 +43,12 @@ import {
   requireFreshPropertyDetails,
   summarizeListingFreshness,
 } from "./lib/freshness.js";
+import {
+  flushPerformance,
+  recordSourceCompleted,
+  recordSourceStarted,
+  withPerformanceSource,
+} from "./lib/performance.js";
 
 
 // ---------- CLI ----------
@@ -178,8 +184,11 @@ async function main() {
       console.error(
         `collecting ${key}/${tx} (max ${Number.isFinite(MAX_ITEMS) ? MAX_ITEMS : "unlimited"})...`
       );
+      recordSourceStarted(key, tx);
       try {
-        const res = await runSource(key, tx, MAX_ITEMS, MONITOR);
+        const res = await withPerformanceSource(key, tx, () =>
+          runSource(key, tx, MAX_ITEMS, MONITOR)
+        );
         const freshness = summarizeListingFreshness(res.listings);
         sources.push({
           sourceKey: key,
@@ -202,7 +211,12 @@ async function main() {
         console.error(
           `  ${key}/${tx}: ${res.listings.length} listings (source total: ${res.totalAvailable ?? "unknown"})`
         );
+        recordSourceCompleted(key, tx, {
+          outcome: "succeeded",
+          listingsEmitted: res.listings.length,
+        });
       } catch (err) {
+        recordSourceCompleted(key, tx, { outcome: "failed" });
         console.error(`  ${key}/${tx} FAILED: ${err}`);
         sources.push({
           sourceKey: key,
@@ -352,11 +366,16 @@ async function enrichMain(claimPath: string): Promise<void> {
 }
 
 async function dispatch(): Promise<void> {
-  const enrichInput = flags["enrich-input"];
-  if (enrichInput) {
-    await enrichMain(enrichInput);
-  } else {
-    await main();
+  flushPerformance({ terminal: false });
+  try {
+    const enrichInput = flags["enrich-input"];
+    if (enrichInput) {
+      await enrichMain(enrichInput);
+    } else {
+      await main();
+    }
+  } finally {
+    flushPerformance({ terminal: true });
   }
 }
 

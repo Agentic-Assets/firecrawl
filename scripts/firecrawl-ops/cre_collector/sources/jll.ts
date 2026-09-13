@@ -8,6 +8,7 @@ import { CONCURRENCY, PAGE_CAP } from "../lib/config.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { normBuildingClass } from "../lib/parse.js";
+import { recordJllDetailCache } from "../lib/performance.js";
 import { scrapeDoc } from "../lib/scrape.js";
 import { DocItem, MediaItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
@@ -648,7 +649,14 @@ export async function scrapeJllDetailDoc(
   url: string,
   opts: { refresh?: boolean; waitFor?: number } = {}
 ): Promise<ScrapedDoc> {
-  const cached = opts.refresh ? null : readJllDetailCache(url);
+  let cached: ScrapedDoc | null;
+  if (opts.refresh) {
+    recordJllDetailCache("refresh_bypass");
+    cached = null;
+  } else {
+    cached = readJllDetailCache(url);
+    recordJllDetailCache(cached ? "hit" : "miss");
+  }
   if (cached) return cached;
   const scraped = await scrapeDoc(url, {
     waitFor: opts.waitFor ?? JLL_DETAIL_WAIT_MS,
