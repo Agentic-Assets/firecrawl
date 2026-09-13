@@ -324,6 +324,7 @@ def test_inventory_generation_fingerprint_matches_consumer_readback_tuple():
         ({}, "colliers", "main:42", "colliers-main"),
         ({}, "unique-properties", "legacy-4", "unique-properties"),
         ({"sourceKey": "svn"}, "svn", None, "svn"),
+        ({"sourceKey": " svn "}, "svn", "legacy-5", " svn "),
     ],
 )
 def test_canonical_source_identity_handles_legacy_rows_without_source_index(

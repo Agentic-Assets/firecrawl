@@ -369,8 +369,8 @@ def source_key_from_values(raw_data, brokerage_slug, external_id):
                 value = None
                 break
             value = value.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+        if isinstance(value, str) and value != "":
+            return value
     return brokerage_slug
 
 
