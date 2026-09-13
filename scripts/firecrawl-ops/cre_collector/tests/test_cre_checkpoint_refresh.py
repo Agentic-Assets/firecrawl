@@ -522,6 +522,7 @@ def test_ingest_argv_is_additive_and_status_neutral(tmp_path):
         "cre_ingest.py",
         "--in",
         str(tmp_path / "source.json"),
+        "--skip-post-commit-summary",
         "--env-file",
         "/tmp/equire.env",
     ]
@@ -550,6 +551,9 @@ def test_database_child_argv_carries_expected_target_fingerprint(tmp_path):
 
     for argv in (ingest, gate, validate):
         assert argv[argv.index("--expected-db-target-sha256") + 1] == expected
+    assert "--skip-post-commit-summary" in ingest
+    assert "--skip-post-commit-summary" not in gate
+    assert "--skip-post-commit-summary" not in validate
     assert validate[validate.index("--expected-artifact-run-key") + 1] == (
         f"ingest:v1:{'b' * 64}"
     )
@@ -570,6 +574,7 @@ def test_dry_run_argv_builds_sql_without_live_flags(tmp_path):
     )
     assert "--dry-run" in argv
     assert "--keep-artifacts" in argv
+    assert "--skip-post-commit-summary" in argv
     assert not refresh.FORBIDDEN_INGEST_FLAGS.intersection(argv)
 
 
@@ -580,6 +585,26 @@ def test_strict_dry_run_argv_passes_explicit_freshness_requirement(tmp_path):
         require_strict_freshness=True,
     )
     assert "--require-strict-freshness" in argv
+    assert argv.count("--skip-post-commit-summary") == 1
+
+
+def test_checkpoint_live_and_dry_run_share_summary_suppression(tmp_path):
+    artifact = tmp_path / "source.json"
+    live = refresh.build_ingest_argv(
+        artifact,
+        None,
+        require_strict_freshness=True,
+    )
+    dry_run = refresh.build_ingest_dry_run_argv(
+        artifact,
+        tmp_path / "sql",
+        require_strict_freshness=True,
+    )
+
+    assert live.count("--skip-post-commit-summary") == 1
+    assert dry_run.count("--skip-post-commit-summary") == 1
+    assert "--require-strict-freshness" in live
+    assert "--require-strict-freshness" in dry_run
 
 
 def test_gate_reads_live_baseline_strictly_without_updating_it(tmp_path):
@@ -1981,12 +2006,15 @@ def test_checkpoint_sigterm_handler_uses_interrupt_cleanup_path():
 
 
 def test_host_cpu_guard_requires_sustained_saturation(tmp_path):
-    guard = refresh.HostCpuGuard(
-        log_path=tmp_path / "cpu-guard.jsonl",
-        max_percent=80.0,
-        sustain_seconds=30.0,
-        sample_seconds=5.0,
-    )
+    guard = refresh.HostCpuGuard(log_path=tmp_path / "cpu-guard.jsonl")
+
+    assert guard.config() == {
+        "max_host_cpu_percent": 90.0,
+        "sustain_seconds": 30.0,
+        "sample_seconds": 2.0,
+        "action": "interrupt_and_checkpoint",
+        "telemetry_failure_action": "interrupt_and_checkpoint",
+    }
 
     assert guard.observe(95.0, observed_monotonic=100.0) is None
     assert guard.observe(99.0, observed_monotonic=129.9) is None
@@ -1994,7 +2022,7 @@ def test_host_cpu_guard_requires_sustained_saturation(tmp_path):
 
     assert reason is not None
     assert "30.0 seconds" in reason
-    assert "80.0%" in reason
+    assert "90.0%" in reason
 
 
 def test_host_cpu_guard_captures_one_sanitized_snapshot_per_high_window(tmp_path, monkeypatch):
@@ -2010,7 +2038,6 @@ def test_host_cpu_guard_captures_one_sanitized_snapshot_per_high_window(tmp_path
         log_path=tmp_path / "cpu-guard.jsonl",
         incident_log_path=tmp_path / "cpu-incidents.jsonl",
         incident_context={"phase": "collect", "source": "jll", "child_pid": 42},
-        max_percent=80.0,
         sampler=lambda: next(samples),
     )
 
@@ -2057,17 +2084,12 @@ def test_cpu_percent_from_ticks_rejects_zero_delta():
 
 
 def test_host_cpu_guard_recovery_resets_saturation_window(tmp_path):
-    guard = refresh.HostCpuGuard(
-        log_path=tmp_path / "cpu-guard.jsonl",
-        max_percent=80.0,
-        sustain_seconds=30.0,
-        sample_seconds=5.0,
-    )
+    guard = refresh.HostCpuGuard(log_path=tmp_path / "cpu-guard.jsonl")
 
-    assert guard.observe(90.0, observed_monotonic=100.0) is None
+    assert guard.observe(95.0, observed_monotonic=100.0) is None
     assert guard.observe(20.0, observed_monotonic=120.0) is None
-    assert guard.observe(90.0, observed_monotonic=140.0) is None
-    assert guard.observe(90.0, observed_monotonic=169.0) is None
+    assert guard.observe(95.0, observed_monotonic=140.0) is None
+    assert guard.observe(95.0, observed_monotonic=169.9) is None
     assert guard.observe(90.0, observed_monotonic=170.0) is not None
 
 
@@ -2088,8 +2110,6 @@ def test_host_cpu_guard_telemetry_failure_trips_fail_closed(tmp_path, monkeypatc
 
     guard = refresh.HostCpuGuard(
         log_path=tmp_path / "cpu-guard.jsonl",
-        max_percent=80.0,
-        sustain_seconds=30.0,
         sample_seconds=0.01,
         sampler=broken_sampler,
         coordinator_pid=4321,
@@ -2111,6 +2131,33 @@ def test_host_cpu_guard_telemetry_failure_trips_fail_closed(tmp_path, monkeypatc
     ]
     assert records[-1]["state"] == "tripped"
     assert "top output unavailable" in records[-1]["reason"]
+
+
+@pytest.mark.parametrize(
+    "invalid_sample",
+    [None, "90", True, float("nan"), float("inf"), -0.1, 100.1],
+)
+def test_host_cpu_guard_invalid_sample_trips_fail_closed(
+    tmp_path, monkeypatch, invalid_sample
+):
+    signals = []
+    guard = refresh.HostCpuGuard(
+        log_path=tmp_path / "cpu-guard.jsonl",
+        sample_seconds=0.01,
+        sampler=lambda: invalid_sample,
+        coordinator_pid=4321,
+    )
+    monkeypatch.setattr(
+        refresh.os, "kill", lambda pid, sig: signals.append((pid, sig))
+    )
+
+    guard.start()
+    guard.thread.join(timeout=1)
+    guard.stop()
+
+    assert signals == [(4321, refresh.signal.SIGTERM)]
+    assert "invalid host CPU percentage" in refresh._peek_cpu_guard_trip()
+    refresh._clear_cpu_guard_trip()
 
 
 def test_host_cpu_guard_log_failure_still_signals(tmp_path, monkeypatch):
@@ -2822,6 +2869,7 @@ def test_nonzero_ingest_result_is_accepted_only_after_exact_readback(
             ],
             "freshness_generations": [freshness_generation_row()],
             "inventory_only_index": [],
+            "artifact_run_jobs": [{"matching_jobs": "1"}],
         }
     }
     calls = []
@@ -3133,7 +3181,12 @@ def test_resume_accepts_legacy_serial_manifest_without_source_workers(tmp_path):
         concurrency=3,
         source_workers=1,
     )
-    assert "source_workers" not in loaded["config"]
+    assert loaded["config"]["source_workers"] == 1
+    assert "source_workers" not in json.loads(path.read_text())["config"]
+
+    refresh.save_manifest(run_dir, loaded)
+
+    assert json.loads(path.read_text())["config"]["source_workers"] == 1
 
 
 def test_legacy_resume_missing_cpu_guard_uses_fixed_safe_defaults(tmp_path):
@@ -3150,12 +3203,29 @@ def test_legacy_resume_missing_cpu_guard_uses_fixed_safe_defaults(tmp_path):
     path = run_dir / "manifest.json"
     refresh.atomic_write_json(path, manifest)
 
-    refresh.load_resume_manifest(
+    loaded = refresh.load_resume_manifest(
         path,
         git_sha="abc",
         sources=("svn",),
         page_cap=400,
         concurrency=3,
+        max_host_cpu_percent=refresh.LEGACY_MAX_HOST_CPU_PERCENT,
+        cpu_sustain_seconds=refresh.LEGACY_CPU_SUSTAIN_SECONDS,
+        cpu_sample_seconds=refresh.LEGACY_CPU_SAMPLE_SECONDS,
+    )
+    assert loaded["config"]["host_cpu_guard"] == {
+        "max_host_cpu_percent": 80.0,
+        "sustain_seconds": 30.0,
+        "sample_seconds": 5.0,
+        "action": "interrupt_and_checkpoint",
+        "telemetry_failure_action": "interrupt_and_checkpoint",
+    }
+    assert "host_cpu_guard" not in json.loads(path.read_text())["config"]
+
+    refresh.save_manifest(run_dir, loaded)
+
+    assert json.loads(path.read_text())["config"]["host_cpu_guard"] == (
+        loaded["config"]["host_cpu_guard"]
     )
     with pytest.raises(refresh.RefreshError, match="configuration differs"):
         refresh.load_resume_manifest(
@@ -3164,9 +3234,56 @@ def test_legacy_resume_missing_cpu_guard_uses_fixed_safe_defaults(tmp_path):
             sources=("svn",),
             page_cap=400,
             concurrency=3,
-            max_host_cpu_percent=99.9,
-            cpu_sustain_seconds=999.0,
         )
+
+
+@pytest.mark.parametrize(
+    ("max_percent", "sustain_seconds", "sample_seconds"),
+    [(55.0, 10.0, 2.0), (75.0, 10.0, 2.0)],
+)
+def test_resume_preserves_explicit_historical_cpu_guard_profile(
+    tmp_path,
+    max_percent,
+    sustain_seconds,
+    sample_seconds,
+):
+    run_dir = tmp_path / "run"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+        max_host_cpu_percent=max_percent,
+        cpu_sustain_seconds=sustain_seconds,
+        cpu_sample_seconds=sample_seconds,
+    )
+    path = run_dir / "manifest.json"
+    refresh.atomic_write_json(path, manifest)
+
+    with pytest.raises(refresh.RefreshError, match="configuration differs"):
+        refresh.load_resume_manifest(
+            path,
+            git_sha="abc",
+            sources=("svn",),
+            page_cap=400,
+            concurrency=3,
+        )
+
+    loaded = refresh.load_resume_manifest(
+        path,
+        git_sha="abc",
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+        max_host_cpu_percent=max_percent,
+        cpu_sustain_seconds=sustain_seconds,
+        cpu_sample_seconds=sample_seconds,
+    )
+    assert loaded["config"]["host_cpu_guard"] == (
+        manifest["config"]["host_cpu_guard"]
+    )
 
 
 def test_cohort_prepares_all_artifacts_before_any_gate_or_dry_run(
@@ -3607,6 +3724,7 @@ def test_recover_interrupted_ingest_accepts_only_exact_readback(
             ],
             "freshness_generations": [freshness_generation_row()],
             "inventory_only_index": [],
+            "artifact_run_jobs": [{"matching_jobs": "1"}],
         }
     }
 
@@ -3748,6 +3866,207 @@ def test_recover_interrupted_ingest_blocks_partial_job_footprint(
     with pytest.raises(refresh.GlobalStageError, match="manual recovery"):
         refresh.recover_interrupted_ingest(run_dir, manifest, "svn", None)
     assert manifest["sources"]["svn"]["state"] == "ingest_recovery_required"
+
+
+def _identity_bound_recovery_manifest(run_dir):
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn", "jll"),
+        page_cap=400,
+        concurrency=3,
+        database_target={"algorithm": "sha256", "value": "a" * 64},
+    )
+    manifest["sources"]["svn"].update(
+        {
+            "artifact": strict_artifact_info(),
+            "ingest": {"rc": None},
+            "state": "ingesting",
+        }
+    )
+    return manifest
+
+
+def _recovery_validation(active=2):
+    return {
+        "queries": {
+            "source_counts": [
+                {
+                    "source_key": "svn",
+                    "latest_inventory_observed_at": "2026-07-29 12:01:00Z",
+                    "latest_inventory_batch_active": str(active),
+                    "latest_scraped_at": "2026-07-29 12:01:00Z",
+                    "latest_batch_active": str(active),
+                    "detail_unavailable": "0",
+                }
+            ],
+            "freshness_generations": [
+                freshness_generation_row(active=active)
+            ],
+            "inventory_only_index": [],
+            "artifact_run_jobs": [{"matching_jobs": "1"}],
+        }
+    }
+
+
+def _capture_manifest_saves(monkeypatch):
+    real_save_manifest = refresh.save_manifest
+    saved = []
+
+    def capture(run_dir, candidate):
+        saved.append(json.loads(json.dumps(candidate)))
+        real_save_manifest(run_dir, candidate)
+
+    monkeypatch.setattr(refresh, "save_manifest", capture)
+    return saved
+
+
+def _assert_all_saves_keep_canonical_identity(saved, manifest):
+    assert saved
+    for candidate in saved:
+        assert candidate["schema_version"] == refresh.SCHEMA_VERSION
+        assert candidate["run_id"] == manifest["run_id"]
+        assert candidate["collector_git_sha"] == manifest["collector_git_sha"]
+        assert candidate["config"] == manifest["config"]
+        assert candidate["preflight"]["database_target"] == (
+            manifest["preflight"]["database_target"]
+        )
+        assert set(candidate["sources"]) == set(manifest["config"]["sources"])
+
+
+def test_recovery_success_never_saves_single_source_projection(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = _identity_bound_recovery_manifest(run_dir)
+    validation = _recovery_validation()
+
+    def fake_run(argv, _log, **_kwargs):
+        Path(argv[argv.index("--out") + 1]).write_text(
+            json.dumps(validation), encoding="utf-8"
+        )
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    saved = _capture_manifest_saves(monkeypatch)
+    refresh.recover_interrupted_ingest(run_dir, manifest, "svn", None)
+
+    assert len(saved) == 1
+    _assert_all_saves_keep_canonical_identity(saved, manifest)
+    assert json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))[
+        "run_id"
+    ] == manifest["run_id"]
+
+
+def test_recovery_mismatch_saves_only_canonical_failure_state(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = _identity_bound_recovery_manifest(run_dir)
+    validation = _recovery_validation(active=1)
+
+    def fake_run(argv, _log, **_kwargs):
+        Path(argv[argv.index("--out") + 1]).write_text(
+            json.dumps(validation), encoding="utf-8"
+        )
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    saved = _capture_manifest_saves(monkeypatch)
+    with pytest.raises(refresh.GlobalStageError, match="manual recovery"):
+        refresh.recover_interrupted_ingest(run_dir, manifest, "svn", None)
+
+    assert len(saved) == 1
+    _assert_all_saves_keep_canonical_identity(saved, manifest)
+    assert saved[0]["sources"]["svn"]["state"] == "ingest_recovery_required"
+
+
+@pytest.mark.parametrize(
+    "artifact_run_jobs",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param([{"matching_jobs": "one"}], id="malformed"),
+        pytest.param([{"matching_jobs": "0"}], id="zero-match"),
+        pytest.param([{"matching_jobs": "2"}], id="duplicate-match"),
+    ],
+)
+def test_recovery_positive_readback_requires_exact_artifact_job_identity(
+    tmp_path, monkeypatch, artifact_run_jobs
+):
+    run_dir = tmp_path / "run"
+    manifest = _identity_bound_recovery_manifest(run_dir)
+    validation = _recovery_validation()
+    if artifact_run_jobs is None:
+        del validation["queries"]["artifact_run_jobs"]
+    else:
+        validation["queries"]["artifact_run_jobs"] = artifact_run_jobs
+
+    def fake_run(argv, _log, **_kwargs):
+        Path(argv[argv.index("--out") + 1]).write_text(
+            json.dumps(validation), encoding="utf-8"
+        )
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    saved = _capture_manifest_saves(monkeypatch)
+
+    with pytest.raises(refresh.GlobalStageError, match="manual recovery"):
+        refresh.recover_interrupted_ingest(run_dir, manifest, "svn", None)
+
+    assert len(saved) == 1
+    _assert_all_saves_keep_canonical_identity(saved, manifest)
+    recovery = saved[0]["sources"]["svn"]["ingest_recovery"]
+    assert recovery["readback_ok"] is False
+    assert recovery["artifact_run_job_match_ok"] is False
+    assert saved[0]["sources"]["svn"]["state"] == "ingest_recovery_required"
+
+
+def test_recovery_evaluator_exception_saves_only_canonical_failure_state(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    manifest = _identity_bound_recovery_manifest(run_dir)
+
+    def fake_run(argv, _log, **_kwargs):
+        Path(argv[argv.index("--out") + 1]).write_text(
+            json.dumps(_recovery_validation()), encoding="utf-8"
+        )
+        return 0
+
+    def raise_during_evaluation(*_args, **_kwargs):
+        raise RuntimeError("diagnostic evaluation failed")
+
+    monkeypatch.setattr(refresh, "run_command", fake_run)
+    monkeypatch.setattr(
+        refresh,
+        "verify_validation_readback",
+        raise_during_evaluation,
+    )
+    saved = _capture_manifest_saves(monkeypatch)
+    with pytest.raises(refresh.GlobalStageError, match="manual recovery"):
+        refresh.recover_interrupted_ingest(run_dir, manifest, "svn", None)
+
+    assert len(saved) == 1
+    _assert_all_saves_keep_canonical_identity(saved, manifest)
+    assert saved[0]["sources"]["svn"]["ingest_recovery"]["readback_error"] == (
+        "diagnostic evaluation failed"
+    )
+
+
+def test_save_manifest_rejects_diagnostic_projection_before_write(tmp_path):
+    probe_manifest = {
+        "config": {"sources": ["svn"]},
+        "sources": {"svn": {"artifact": strict_artifact_info()}},
+    }
+
+    with pytest.raises(
+        refresh.GlobalStageError,
+        match="incomplete checkpoint manifest identity",
+    ):
+        refresh.save_manifest(tmp_path / "run", probe_manifest)
+
+    assert not (tmp_path / "run" / "manifest.json").exists()
 
 
 def test_validation_readback_requires_exact_staged_count(tmp_path):
@@ -4623,6 +4942,52 @@ def test_final_validation_still_blocks_a_new_quality_regression(tmp_path, monkey
         refresh.run_final_validation(run_dir, manifest, None)
     assert manifest["validation"]["quality_no_regression"] is False
     assert manifest["validation"]["absolute_quality_ok"] is False
+
+
+def test_final_validation_persists_canonical_manifest_and_readbacks(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    (run_dir / "logs").mkdir(parents=True)
+    report = absolute_quality_report()
+    report["queries"].update(_recovery_validation()["queries"])
+    (run_dir / "pre-validation.json").write_text(
+        json.dumps(report), encoding="utf-8"
+    )
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("svn",),
+        page_cap=400,
+        concurrency=3,
+        database_target={"algorithm": "sha256", "value": "a" * 64},
+    )
+    manifest["preflight"]["validation_path"] = "pre-validation.json"
+    manifest["sources"]["svn"]["artifact"] = strict_artifact_info()
+
+    def write_final_validation(argv, _log, env):
+        assert "CRE_ACTIVATE_STATUS" not in env
+        Path(argv[argv.index("--out") + 1]).write_text(
+            json.dumps(report), encoding="utf-8"
+        )
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", write_final_validation)
+    saved = _capture_manifest_saves(monkeypatch)
+
+    refresh.run_final_validation(run_dir, manifest, None)
+
+    assert len(saved) == 2
+    _assert_all_saves_keep_canonical_identity(saved, manifest)
+    assert saved[0]["sources"]["svn"]["readback"]["ok"] is True
+    assert saved[1]["validation"]["readback_ok"] is True
+    persisted = json.loads(
+        (run_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert persisted["run_id"] == manifest["run_id"]
+    assert persisted["sources"]["svn"]["readback"]["ok"] is True
+    assert persisted["validation"]["readback_ok"] is True
 
 
 def test_scope_readback_counts_unsupported_active_rows(tmp_path):

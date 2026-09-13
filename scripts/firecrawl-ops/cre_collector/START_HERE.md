@@ -81,7 +81,7 @@ dry-run failure prevents aggregate admission and every database write.
 ### CPU safety and evidence
 
 Every checkpoint run has a fail-closed Darwin host-CPU watchdog. The code
-defaults are 80% for 30 seconds, sampled every 5 seconds. It rejects a start
+defaults are 90% for 30 seconds, sampled every 2 seconds. It rejects a start
 already at the ceiling and, on sustained pressure or telemetry failure,
 terminates its owned collector process group, releases the canonical lock,
 writes `resource_guard_interrupted`, and exits `75`.
@@ -138,8 +138,8 @@ NAI_ENUMERATION_CONCURRENCY=1 \
   --sources all \
   --concurrency 1 \
   --nice 15 \
-  --max-host-cpu-percent 55 \
-  --cpu-sustain-seconds 10 \
+  --max-host-cpu-percent 90 \
+  --cpu-sustain-seconds 30 \
   --cpu-sample-seconds 2 \
   --env-file "$HOME/.config/cre/equire.env"
 ```
@@ -163,6 +163,11 @@ following evidence and decision record:
 | Direct JLL HTML | Exact structured property and broker payload in one sample, about 6x faster, but not yet equivalent for rendered Markdown, links, images, and attributes | Not admitted for production |
 | Host CPU ceiling 55% for 10 seconds | Correctly interrupted once when unrelated local application builds sustained 65-81% total host CPU | Conservative shared-host profile |
 | Host CPU ceiling 75% for 10 seconds | Cayman-authorized supervised calibration target; the guard, serial source checkpoints, and fail-closed telemetry remain enabled | Use only with live operator supervision and the constrained container profile |
+
+The 55% and 75% rows are historical, stricter calibration profiles. New
+series use the current 90%/30-second/2-second guard shown in the commands.
+Resume an older series only with its exact recorded guard configuration; never
+reinterpret or hand-edit an existing manifest to adopt the new default.
 
 The accelerated profile changes request scheduling and throughput while the
 source cardinality, identity, freshness, artifact, SQL dry-run, ingest, and
@@ -221,8 +226,8 @@ NAI_ENUMERATION_CONCURRENCY=1 \
   --sources all \
   --concurrency 2 \
   --nice 15 \
-  --max-host-cpu-percent 75 \
-  --cpu-sustain-seconds 10 \
+  --max-host-cpu-percent 90 \
+  --cpu-sustain-seconds 30 \
   --cpu-sample-seconds 2 \
   --env-file "$HOME/.config/cre/equire.env"
 ```
@@ -286,7 +291,7 @@ Definitions, saved file names, retention and interpretation:
 
 ### Bounded resource recovery
 
-On a new clean, pushed immutable series, the supervised 75% CPU profile may opt
+On a new clean, pushed immutable series, the supervised 90% CPU profile may opt
 into bounded foreground recovery with these additional flags:
 
 ```text
@@ -299,7 +304,7 @@ into bounded foreground recovery with these additional flags:
 ```
 
 The default recovery count is zero. Opt-in recovery preserves the existing
-75%/10-second watchdog; it does not raise or disable it. Only typed CPU pressure
+90%/30-second watchdog; it does not raise or disable it. Only typed CPU pressure
 in preflight or actual source collection can enter recovery. Source gates,
 SQL dry runs, ingestion, readback, ambiguous writes, invalid telemetry and
 failed required evidence are not automatic CPU retries.
@@ -374,8 +379,8 @@ NAI_ENUMERATION_CONCURRENCY=1 \
   --sources all \
   --concurrency 1 \
   --nice 15 \
-  --max-host-cpu-percent 55 \
-  --cpu-sustain-seconds 10 \
+  --max-host-cpu-percent 90 \
+  --cpu-sustain-seconds 30 \
   --cpu-sample-seconds 2 \
   --env-file "$HOME/.config/cre/equire.env"
 ```
