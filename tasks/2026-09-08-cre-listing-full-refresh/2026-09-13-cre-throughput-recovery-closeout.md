@@ -139,3 +139,36 @@ provider responses. Brochure/media rows store URLs, not downloaded contents.
 Address-based research remains a separately evaluated, provenance-linked layer;
 no enrichment search, new schema, OM write or canonical overwrite was added.
 The old full run and automation gates remain as described above.
+
+## 2026-09-13 checkpoint completion hardening
+
+PR [#49](https://github.com/Agentic-Assets/firecrawl/pull/49) is review-ready
+from `fix/cre-ingest-skip-post-commit-summary`. The code implementation is
+commit `c2b6c3ba8e48ad2945edc4932aecfb57975fe1ef`, based on
+`16bc05609943a463a3945616bf495f61f5c5ae90`.
+
+The checkpoint path now omits only the informational full-registry count query
+after `COMMIT`; standalone ingestion retains the report by default. Recovery
+readback evaluates its single-source probe without persisting that projection,
+the canonical save path rejects incomplete manifest identity, and a recovered
+commit requires exactly one matching artifact-run job. Missing, malformed,
+zero, or duplicate job proof remains a manual-recovery stop. New series use a
+90% CPU ceiling for a sustained 30 seconds with 2-second samples. Missing
+legacy guard blocks preserve the base 80/30/5 interpretation, while explicit
+55/10/2 and 75/10/2 series remain exact-config resumes only.
+
+Implementation verification passed 2,546 Python tests with 19 skips,
+TypeScript typecheck, and 829 TypeScript unit tests. Root independently reran
+the exact code head with 2,547 Python tests passing and 18 skips; the difference
+was one additional unavailable gitignored historical fixture in the
+implementation worktree. An independent exact-head adversarial review passed
+30 focused tests with 303 deselected, repeated the four-fixture base-versus-head
+SQL comparison, and reported no remaining actionable finding. The strict PR
+body gate passed both offline and against PR #49.
+
+This block made no collector, database, provider, paid-model, container,
+environment, automation, or live-artifact change. AGENTIC-2902 and parent
+AGENTIC-2895 contain the branch, SHA, PR, review, verification, rollback, and
+deferred production gates. PR #49 was not merged at this capture; the parent
+task owns the final remote review intake, merge, clean-main synchronization,
+and new immutable all-source series.

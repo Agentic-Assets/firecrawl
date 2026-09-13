@@ -88,3 +88,22 @@ menu, not another scheduler or work ledger. Implementation proof is in the
   cache and sampled Node resources, not direct-provider requests, queue wait or
   browser/API usage. Keep future measurement out of the critical CPU-guard
   sampling loop and avoid a separate persistent telemetry service.
+
+## 2026-09-13 PR #49 release handoff
+
+- **Merge exact reviewed code and documentation** (P1, parent-task owner;
+  AGENTIC-2902). PR [#49](https://github.com/Agentic-Assets/firecrawl/pull/49)
+  carries code commit `c2b6c3ba8e48ad2945edc4932aecfb57975fe1ef` with an
+  exact-head adversarial PASS. Recheck the final PR head, remote review intake,
+  mergeability, and required checks before merge. Do not substitute a later
+  unreviewed head for the reviewed code SHA.
+- **Start a new immutable 90/30/2 series** (P1, production acceptance;
+  AGENTIC-2902). Do not resume or hand-edit the stopped series under a different
+  guard profile or collector SHA. Bind the new series to the exact database
+  target, preserve additive-only serial ingest, and retain every source-local
+  artifact, gate, SQL dry run, artifact-job proof, and final readback.
+- **Keep completion claims gated** (P1, unchanged acceptance). The two sources
+  committed by the stopped series remain valid historical database proof, but
+  the new series must refresh all 51 sources. Merge, launch, partial source
+  success, or a clean post-commit return does not establish whole-registry
+  freshness without every required readback and the certificate.
