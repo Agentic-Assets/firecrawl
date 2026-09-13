@@ -118,6 +118,31 @@ artifact directory for later comparison; they are not uploaded or committed.
 Older runs without instrumentation remain unknown. No historical timings are
 fabricated from output line counts.
 
+### CBRE Deal Flow inventory retry
+
+`GetFilters` and `GetListingsHtml` are the only direct CBRE provider reads that
+may make one additional idempotent POST attempt. The retry is limited to a
+transport/body-read failure or HTTP 429, 500, 502, 503, or 504. It does not
+retry malformed JSON, a semantic `success:false` response, 401/403, other
+client failures, or any inventory-quality/identity gate. Existing page, total,
+freshness, identity, and child-preservation checks are unchanged.
+
+When a retry is scheduled, the collector records it through the existing
+`http_helper` retry counters. The provider-facing log includes only the
+endpoint label, HTTP/transport category, attempt, and delay. Saved telemetry
+contains aggregate `http_helper` retry/backoff counters only. Neither surface
+contains a query token or provider body. `Retry-After` is honored for a local
+delay of at most 30 seconds and only while the helper's 250-second deadline
+remains. A longer provider instruction fails closed. This is a helper-local
+boundary: the outer whole-source/checkpoint runner can still make a separately
+governed future source run, so it is not a global provider embargo.
+
+The 2026-09-13 incident context included about 282 seconds of duplicate work
+in a repeated Dealflow sale pass after a transient inventory failure. That is
+not a benchmark and no future time saving has been measured. Compare later
+runs from the saved retry counters and source artifacts before making an
+optimization claim.
+
 ## Verification on 2026-09-13
 
 Before publication, the full Python collector/resource-profile suite passed

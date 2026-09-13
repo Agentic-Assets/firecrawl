@@ -11,7 +11,11 @@ import {
   CBRE_DEALFLOW_FALLBACK_ENGINE_KEY,
   CBRE_DEALFLOW_DETAIL_ATTEMPTS,
   CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS,
+  CBRE_DEALFLOW_INVENTORY_MAX_ATTEMPTS,
+  CBRE_DEALFLOW_INVENTORY_RETRY_AFTER_MAX_MS,
   cbreDealflowGetText,
+  cbreDealflowPostJson,
+  cbreDealflowRetryAfterMs,
   cbreDealflowHarvestHtml,
   cbreDealflowStrandedStructured,
   cbreDealflowNewFieldsFromRawData,
@@ -26,6 +30,11 @@ import {
   cbreDealflowCanonicalUrl,
 } from "../../../sources/cbre-dealflow.js";
 import { harvestDetail } from "../../../lib/harvest.js";
+import {
+  createPerformanceRecorder,
+  resetPerformanceRecorderForTests,
+  setPerformanceRecorderForTests,
+} from "../../../lib/performance.js";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -93,6 +102,471 @@ test("CBRE Deal Flow inventory timeout admits slow complete provider pages", () 
     CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS >= 75000,
     "inventory deadline must exceed the observed 74-second complete-page latency"
   );
+});
+
+test("CBRE Deal Flow inventory retries one transient transport failure with an unchanged request", async () => {
+  const body = new URLSearchParams({ Start: "1", PageSize: "200", FilterProjectType: "Investment Sale" });
+  const expectedBody = body.toString();
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const retries: any[] = [];
+  let attempt = 0;
+  const result = await cbreDealflowPostJson(
+    "/api/AjaxEngine/GetListingsHtml?&pv=opaque-provider-token",
+    body,
+    {
+      request: async (url, init) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        attempt++;
+        if (attempt === 1) {
+          body.set("PageSize", "mutated-after-first-attempt");
+          throw new Error("socket timed out");
+        }
+        return new Response(JSON.stringify({ success: true, total: 1, html: "<ul></ul>" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      sleep: async (ms) => assert.equal(ms, 0),
+      retryBackoffMs: 0,
+      logRetry: (event) => retries.push(event),
+    }
+  );
+
+  assert.deepEqual(result, { success: true, total: 1, html: "<ul></ul>" });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map((call) => call.url), [
+    "https://www.cbredealflow.com/api/AjaxEngine/GetListingsHtml?&pv=opaque-provider-token",
+    "https://www.cbredealflow.com/api/AjaxEngine/GetListingsHtml?&pv=opaque-provider-token",
+  ]);
+  assert.ok(calls.every((call) => call.init.method === "POST" && call.init.body === expectedBody));
+  assert.ok(calls.every((call) => call.init.signal instanceof AbortSignal));
+  assert.deepEqual(retries, [
+    { endpoint: "listings", status: 0, attempt: 1, delayMs: 0, reason: "transport" },
+  ]);
+  assert.equal(CBRE_DEALFLOW_INVENTORY_MAX_ATTEMPTS, 2);
+});
+
+test("CBRE Deal Flow inventory keeps recovery independent from a retry telemetry failure", async () => {
+  let calls = 0;
+  const result = await cbreDealflowPostJson(
+    "/api/Handler/ListingEngine/GetFilters?pv=opaque-provider-token",
+    new URLSearchParams({ Start: "1" }),
+    {
+      request: async () => {
+        calls++;
+        if (calls === 1) throw new Error("timeout");
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      },
+      sleep: async () => undefined,
+      logRetry: () => { throw new Error("logging unavailable"); },
+    }
+  );
+  assert.deepEqual(result, { success: true });
+  assert.equal(calls, 2);
+});
+
+test("CBRE Deal Flow inventory saves recovered retry scheduling in existing performance telemetry", async () => {
+  const files = new Map<string, string>();
+  const path = "/diagnostics/cbre-retry.json";
+  const recorder = createPerformanceRecorder({
+    path,
+    runId: "2026-09-13T120000Z-abcdef123456",
+    commandId: "0123456789abcdef0123456789abcdef",
+    processId: 321,
+    fs: {
+      kind: (candidate) => files.has(candidate) ? "regular" : "missing",
+      openExclusive: (candidate) => {
+        if (files.has(candidate)) throw new Error("duplicate temporary telemetry path");
+        files.set(candidate, "");
+        return candidate;
+      },
+      writeOpened: (handle, contents) => files.set(String(handle), contents),
+      closeOpened: () => undefined,
+      rename: (from, to) => {
+        const contents = files.get(from);
+        if (contents === undefined) throw new Error("missing temporary telemetry path");
+        files.set(to, contents);
+        files.delete(from);
+      },
+      unlink: (candidate) => { files.delete(candidate); },
+    },
+    randomHex: () => "a".repeat(32),
+  });
+  assert.ok(recorder);
+  setPerformanceRecorderForTests(recorder);
+  let calls = 0;
+  try {
+    await cbreDealflowPostJson(
+      "/api/Handler/ListingEngine/GetFilters?pv=opaque-provider-token",
+      new URLSearchParams({ Start: "1" }),
+      {
+        request: async () => {
+          calls++;
+          return calls === 1
+            ? new Response("transient", { status: 503 })
+            : new Response(JSON.stringify({ success: true }), { status: 200 });
+        },
+        sleep: async () => undefined,
+      }
+    );
+    recorder.flush(true);
+    const snapshot = JSON.parse(files.get(path) ?? "");
+    assert.deepEqual(snapshot.metrics.requests.retry.http_helper, {
+      retry_attempts: 1,
+      backoff_ms: 1000,
+      terminal_backoff_ms: 0,
+    });
+  } finally {
+    resetPerformanceRecorderForTests();
+  }
+  assert.equal(calls, 2);
+});
+
+test("CBRE Deal Flow inventory honors bounded 429 Retry-After without exposing query data", async () => {
+  const delays: number[] = [];
+  const retries: any[] = [];
+  let calls = 0;
+  const result = await cbreDealflowPostJson(
+    "/api/Handler/ListingEngine/GetFilters?pv=opaque-provider-token",
+    new URLSearchParams({ Start: "1", PageSize: "1" }),
+    {
+      request: async () => {
+        calls++;
+        if (calls === 1) {
+          return new Response("retry later", {
+            status: 429,
+            headers: { "retry-after": "7" },
+          });
+        }
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      sleep: async (ms) => { delays.push(ms); },
+      logRetry: (event) => retries.push(event),
+    }
+  );
+
+  assert.deepEqual(result, { success: true });
+  assert.equal(calls, 2);
+  assert.deepEqual(delays, [7000]);
+  assert.deepEqual(retries, [
+    { endpoint: "filters", status: 429, attempt: 1, delayMs: 7000, reason: "http" },
+  ]);
+  assert.equal(cbreDealflowRetryAfterMs("7", 1), 7000);
+  assert.equal(cbreDealflowRetryAfterMs("1.5", 1), null);
+  assert.equal(cbreDealflowRetryAfterMs("-1", 1), null);
+  assert.equal(cbreDealflowRetryAfterMs("invalid", 1), null);
+});
+
+test("CBRE Deal Flow inventory accepts each HTTP-date Retry-After wire format as UTC", () => {
+  const at = Date.UTC(2030, 10, 6, 8, 49, 37);
+  const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+  for (const value of [
+    "Wed, 06 Nov 2030 08:49:37 GMT",
+    "Wednesday, 06-Nov-30 08:49:37 GMT",
+    "Wed Nov  6 08:49:37 2030",
+  ]) {
+    assert.equal(cbreDealflowRetryAfterMs(value, now), at - now);
+  }
+  assert.equal(cbreDealflowRetryAfterMs("datejunk", now), null);
+});
+
+test("CBRE Deal Flow inventory honors an HTTP-date Retry-After for every retryable provider status", async () => {
+  for (const status of [500, 502, 503, 504]) {
+    let calls = 0;
+    const delays: number[] = [];
+    const retryAfter = status === 503 ? new Date(6_000).toUTCString() : null;
+    const result = await cbreDealflowPostJson(
+      "/api/AjaxEngine/GetListingsHtml?&pv=opaque-provider-token",
+      new URLSearchParams({ Start: "1" }),
+      {
+        request: async () => {
+          calls++;
+          if (calls === 1) {
+            return new Response("transient", {
+              status,
+              headers: retryAfter ? { "retry-after": retryAfter } : undefined,
+            });
+          }
+          return new Response(JSON.stringify({ success: true, status }), { status: 200 });
+        },
+        sleep: async (ms) => { delays.push(ms); },
+        wallNow: () => 1_000,
+      }
+    );
+    assert.deepEqual(result, { success: true, status });
+    assert.equal(calls, 2);
+    assert.deepEqual(delays, [status === 503 ? 5_000 : 1_000]);
+  }
+});
+
+test("CBRE Deal Flow inventory fails closed when a provider embargo exceeds the retry bound", async () => {
+  let calls = 0;
+  await assert.rejects(
+    () => cbreDealflowPostJson(
+      "/api/Handler/ListingEngine/GetFilters?pv=opaque-provider-token",
+      new URLSearchParams({ Start: "1" }),
+      {
+        request: async () => {
+          calls++;
+          return new Response("retry later", {
+            status: 429,
+            headers: { "retry-after": String(CBRE_DEALFLOW_INVENTORY_RETRY_AFTER_MAX_MS / 1000 + 1) },
+          });
+        },
+        sleep: async () => { throw new Error("must not sleep past provider embargo"); },
+      }
+    ),
+    /filters HTTP 429 exceeded Retry-After bound/
+  );
+  assert.equal(calls, 1);
+});
+
+test("CBRE Deal Flow inventory exhausts only transient server failures with body-free errors", async () => {
+  let calls = 0;
+  const retries: any[] = [];
+  await assert.rejects(
+    () => cbreDealflowPostJson(
+      "/api/AjaxEngine/GetListingsHtml?&pv=opaque-provider-token",
+      new URLSearchParams({ Start: "1" }),
+      {
+        request: async () => {
+          calls++;
+          return new Response("provider body must not escape", { status: 503 });
+        },
+        sleep: async () => undefined,
+        logRetry: (event) => retries.push(event),
+      }
+    ),
+    (error: Error) => {
+      assert.match(error.message, /listings HTTP 503 exhausted retries after 2 attempt\(s\)/);
+      assert.doesNotMatch(error.message, /opaque-provider-token|provider body/);
+      return true;
+    }
+  );
+  assert.equal(calls, 2);
+  assert.deepEqual(retries, [
+    { endpoint: "listings", status: 503, attempt: 1, delayMs: 1000, reason: "http" },
+  ]);
+});
+
+test("CBRE Deal Flow inventory retries a failed successful-response body read", async () => {
+  let calls = 0;
+  const result = await cbreDealflowPostJson(
+    "/api/Handler/ListingEngine/GetFilters?pv=opaque-provider-token",
+    new URLSearchParams({ Start: "1" }),
+    {
+      request: async () => {
+        calls++;
+        if (calls === 1) {
+          return new Response(new ReadableStream({
+            start(controller) {
+              controller.error(new Error("provider body read failed"));
+            },
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      },
+      sleep: async () => undefined,
+    }
+  );
+  assert.deepEqual(result, { success: true });
+  assert.equal(calls, 2);
+});
+
+test("CBRE Deal Flow inventory reports terminal successful-response body transport without provider data", async () => {
+  await assert.rejects(
+    () => cbreDealflowPostJson(
+      "/api/Handler/ListingEngine/GetFilters?pv=opaque-provider-token",
+      new URLSearchParams({ Start: "1" }),
+      {
+        request: async () => new Response(new ReadableStream({
+          start(controller) {
+            controller.error(new Error("provider body must not escape"));
+          },
+        }), { status: 200 }),
+        sleep: async () => undefined,
+      }
+    ),
+    (error: Error) => {
+      assert.match(error.message, /filters HTTP 200 body transport exhausted retries after 2 attempt\(s\)/);
+      assert.doesNotMatch(error.message, /opaque-provider-token|provider body/);
+      return true;
+    }
+  );
+});
+
+test("CBRE Deal Flow inventory recalculates request timeout from its monotonic deadline", async () => {
+  const originalTimeout = AbortSignal.timeout;
+  const requestTimeouts: number[] = [];
+  let now = 0;
+  let calls = 0;
+  AbortSignal.timeout = ((ms: number) => {
+    requestTimeouts.push(ms);
+    return originalTimeout(ms);
+  }) as typeof AbortSignal.timeout;
+  try {
+    await cbreDealflowPostJson(
+      "/api/Handler/ListingEngine/GetFilters?pv=opaque-provider-token",
+      new URLSearchParams({ Start: "1" }),
+      {
+        request: async () => {
+          calls++;
+          return calls === 1
+            ? new Response("transient", { status: 503 })
+            : new Response(JSON.stringify({ success: true }), { status: 200 });
+        },
+        sleep: async (ms) => { now += ms; },
+        monotonicNow: () => now,
+        timeoutMs: 10_000,
+        deadlineMs: 15_000,
+        retryBackoffMs: 8_000,
+      }
+    );
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+  }
+  assert.equal(calls, 2);
+  assert.deepEqual(requestTimeouts, [10_000, 7_000]);
+});
+
+test("CBRE Deal Flow inventory prevents another request after elapsed retry time exceeds its deadline", async () => {
+  let now = 0;
+  let calls = 0;
+  await assert.rejects(
+    () => cbreDealflowPostJson(
+      "/api/Handler/ListingEngine/GetFilters?pv=opaque-provider-token",
+      new URLSearchParams({ Start: "1" }),
+      {
+        request: async () => {
+          calls++;
+          return new Response("transient", { status: 503 });
+        },
+        sleep: async () => { now = 1_500; },
+        monotonicNow: () => now,
+        timeoutMs: 1_000,
+        deadlineMs: 1_500,
+        retryBackoffMs: 1_000,
+      }
+    ),
+    /filters transport exceeded retry deadline after 1 attempt\(s\)/
+  );
+  assert.equal(calls, 1);
+});
+
+test("CBRE Deal Flow inventory cancels transient response bodies without waiting on cleanup", async () => {
+  let cancelled = 0;
+  let calls = 0;
+  const result = await cbreDealflowPostJson(
+    "/api/AjaxEngine/GetListingsHtml?pv=opaque-provider-token",
+    new URLSearchParams({ Start: "1" }),
+    {
+      request: async () => {
+        calls++;
+        if (calls === 1) {
+          return new Response(new ReadableStream({
+            cancel() {
+              cancelled++;
+              return new Promise<void>(() => undefined);
+            },
+          }), { status: 503 });
+        }
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      },
+      sleep: async () => undefined,
+      retryBackoffMs: 0,
+    }
+  );
+  assert.deepEqual(result, { success: true });
+  assert.equal(calls, 2);
+  assert.equal(cancelled, 1);
+});
+
+test("CBRE Deal Flow inventory enforces its local retry deadline and finite option ceilings", async () => {
+  let calls = 0;
+  let slept = false;
+  await assert.rejects(
+    () => cbreDealflowPostJson(
+      "/api/Handler/ListingEngine/GetFilters?pv=opaque-provider-token",
+      new URLSearchParams({ Start: "1" }),
+      {
+        request: async () => {
+          calls++;
+          return new Response("transient", { status: 503 });
+        },
+        sleep: async () => { slept = true; },
+        monotonicNow: () => 0,
+        timeoutMs: 10,
+        deadlineMs: 10,
+        retryBackoffMs: 1000,
+      }
+    ),
+    /filters HTTP 503 exceeded retry deadline/
+  );
+  assert.equal(calls, 1);
+  assert.equal(slept, false);
+
+  calls = 0;
+  const delays: number[] = [];
+  await assert.rejects(
+    () => cbreDealflowPostJson(
+      "/api/Handler/ListingEngine/GetFilters?pv=opaque-provider-token",
+      new URLSearchParams({ Start: "1" }),
+      {
+        request: async () => {
+          calls++;
+          return new Response("transient", { status: 503 });
+        },
+        sleep: async (ms) => { delays.push(ms); },
+        maxAttempts: Infinity,
+        retryBackoffMs: Infinity,
+        retryAfterMaxMs: Infinity,
+        deadlineMs: Number.NaN,
+      }
+    )
+  );
+  assert.equal(calls, CBRE_DEALFLOW_INVENTORY_MAX_ATTEMPTS);
+  assert.deepEqual(delays, [1000]);
+});
+
+test("CBRE Deal Flow inventory does not retry malformed, semantic, non-transient, or unallowlisted calls", async () => {
+  const cases = [
+    () => new Response("not json", { status: 200 }),
+    () => new Response(JSON.stringify({ success: false }), { status: 200 }),
+    () => new Response("bad request", { status: 400 }),
+    () => new Response("unauthorized", { status: 401 }),
+    () => new Response("forbidden", { status: 403 }),
+  ];
+  for (const makeResponse of cases) {
+    let calls = 0;
+    await assert.rejects(
+      () => cbreDealflowPostJson(
+        "/api/Handler/ListingEngine/GetFilters?pv=opaque-provider-token",
+        new URLSearchParams({ Start: "1" }),
+        {
+          request: async () => {
+            calls++;
+            return makeResponse();
+          },
+          sleep: async () => { throw new Error("must not retry semantic or client failures"); },
+        }
+      )
+    );
+    assert.equal(calls, 1);
+  }
+
+  let calls = 0;
+  await assert.rejects(
+    () => cbreDealflowPostJson(
+      "/api/AjaxEngine/Unexpected?pv=opaque-provider-token",
+      new URLSearchParams({ Start: "1" }),
+      { request: async () => { calls++; return new Response("{}", { status: 200 }); } }
+    ),
+    /non-allowlisted inventory endpoint/
+  );
+  assert.equal(calls, 0);
 });
 
 test("CBRE Deal Flow detail reads retry transient transport failures", async () => {

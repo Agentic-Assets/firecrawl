@@ -6,6 +6,7 @@ import { CONCURRENCY, PAGE_CAP } from "../lib/config.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { dedupeStrings, titleFromFilename } from "../lib/html.js";
 import { refreshGenerationId } from "../lib/freshness.js";
+import { recordRetry } from "../lib/performance.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { clean, num, pmap, prune } from "../lib/util.js";
 
@@ -21,12 +22,51 @@ export const CBRE_DEALFLOW_PAGE_SIZE = 200;
 // page, so the former 30-second deadline rejected healthy inventory. Keep this
 // bounded independently from the 30-second per-listing detail deadline.
 export const CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS = 120000;
+// Inventory calls are idempotent public reads. Keep one narrowly scoped retry
+// available for transient provider failures without turning one failed page
+// into an unbounded source restart.
+export const CBRE_DEALFLOW_INVENTORY_MAX_ATTEMPTS = 2;
+export const CBRE_DEALFLOW_INVENTORY_RETRY_BACKOFF_MS = 1000;
+export const CBRE_DEALFLOW_INVENTORY_RETRY_AFTER_MAX_MS = 30_000;
+export const CBRE_DEALFLOW_INVENTORY_RETRY_DEADLINE_MS = 250_000;
 export const CBRE_DEALFLOW_DETAIL_ATTEMPTS = 3;
 export const CBRE_DEALFLOW_DETAIL_RETRY_BACKOFF_MS = 1000;
 export const CBRE_DEALFLOW_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
 export const CBRE_DEALFLOW_PROJECT_TYPE_BY_TX: Record<Tx, string> = {
   sale: "Investment Sale",
   lease: "Leasing",
+};
+
+const CBRE_DEALFLOW_RETRYABLE_INVENTORY_STATUSES = new Set([429, 500, 502, 503, 504]);
+const CBRE_DEALFLOW_IMF_FIXDATE = /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+const CBRE_DEALFLOW_RFC850_DATE = /^([A-Z][a-z]+), (\d{2})-([A-Z][a-z]{2})-(\d{2}) (\d{2}:\d{2}:\d{2}) GMT$/;
+const CBRE_DEALFLOW_ASCTIME_DATE = /^[A-Z][a-z]{2} [A-Z][a-z]{2} (?: [1-9]|[12]\d|3[01]) \d{2}:\d{2}:\d{2} \d{4}$/;
+const CBRE_DEALFLOW_INVENTORY_ENDPOINTS = new Map<string, CbreDealflowInventoryEndpoint>([
+  ["/api/Handler/ListingEngine/GetFilters", "filters"],
+  ["/api/AjaxEngine/GetListingsHtml", "listings"],
+]);
+
+export type CbreDealflowInventoryEndpoint = "filters" | "listings";
+
+export type CbreDealflowInventoryRetryEvent = {
+  endpoint: CbreDealflowInventoryEndpoint;
+  status: number;
+  attempt: number;
+  delayMs: number;
+  reason: "http" | "transport";
+};
+
+export type CbreDealflowInventoryPostOptions = {
+  request?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+  monotonicNow?: () => number;
+  wallNow?: () => number;
+  timeoutMs?: number;
+  maxAttempts?: number;
+  retryBackoffMs?: number;
+  retryAfterMaxMs?: number;
+  deadlineMs?: number;
+  logRetry?: (event: CbreDealflowInventoryRetryEvent) => void;
 };
 
 export type CbreDealflowCard = {
@@ -95,28 +135,215 @@ export async function cbreDealflowGetText(
   throw lastError;
 }
 
-export async function cbreDealflowPostJson(path: string, body: URLSearchParams): Promise<any> {
-  const url = `${CBRE_DEALFLOW_BASE}${path}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      ...cbreDealflowHeaders(),
-      "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-    },
-    body,
-    signal: AbortSignal.timeout(CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS),
-  });
-  const text = await res.text();
-  let parsed: any = null;
+export function cbreDealflowInventoryEndpoint(path: string): {
+  endpoint: CbreDealflowInventoryEndpoint;
+  url: string;
+} {
+  let url: URL;
   try {
-    parsed = JSON.parse(text);
+    url = new URL(path, CBRE_DEALFLOW_BASE);
   } catch {
-    throw new Error(`CBRE Deal Flow ${path} returned non-JSON HTTP ${res.status}`);
+    throw new Error("CBRE Deal Flow refuses an invalid inventory endpoint");
   }
-  if (!res.ok || parsed?.success === false) {
-    throw new Error(`CBRE Deal Flow ${path} HTTP ${res.status}`);
+  const endpoint = url.origin === CBRE_DEALFLOW_BASE
+    ? CBRE_DEALFLOW_INVENTORY_ENDPOINTS.get(url.pathname)
+    : undefined;
+  if (!endpoint) {
+    throw new Error("CBRE Deal Flow refuses a non-allowlisted inventory endpoint");
   }
-  return parsed;
+  return { endpoint, url: url.toString() };
+}
+
+export function cbreDealflowRetryAfterMs(
+  retryAfterHeader: string | null,
+  nowMs: number
+): number | null {
+  const value = retryAfterHeader?.trim();
+  if (!value) return null;
+  if (/^\d+$/.test(value)) return Number(value) * 1000;
+  let candidate: string;
+  if (CBRE_DEALFLOW_IMF_FIXDATE.test(value)) {
+    candidate = value;
+  } else if (CBRE_DEALFLOW_ASCTIME_DATE.test(value)) {
+    // asctime dates do not carry a zone; HTTP-date defines them as UTC.
+    candidate = `${value} GMT`;
+  } else {
+    const legacy = value.match(CBRE_DEALFLOW_RFC850_DATE);
+    if (!legacy) return null;
+    const currentYear = new Date(nowMs).getUTCFullYear();
+    let year = Math.floor(currentYear / 100) * 100 + Number(legacy[4]);
+    if (year > currentYear + 50) year -= 100;
+    candidate = `${legacy[2]} ${legacy[3]} ${year} ${legacy[5]} GMT`;
+  }
+  const at = Date.parse(candidate);
+  return Number.isFinite(at) ? Math.max(0, at - nowMs) : null;
+}
+
+function cbreDealflowInventoryStatus(
+  status: number,
+  reason: CbreDealflowInventoryRetryEvent["reason"] = "http"
+): string {
+  if (status === 0) return "transport";
+  return reason === "transport" ? `HTTP ${status} body transport` : `HTTP ${status}`;
+}
+
+function cbreDealflowInventoryRetryLog(event: CbreDealflowInventoryRetryEvent): void {
+  const status = cbreDealflowInventoryStatus(event.status, event.reason);
+  console.error(
+    `  cbre-dealflow: ${event.endpoint} inventory retry ${event.attempt + 1}/${CBRE_DEALFLOW_INVENTORY_MAX_ATTEMPTS} after ${status}; waiting ${event.delayMs}ms`
+  );
+}
+
+function cbreDealflowInventoryError(
+  endpoint: CbreDealflowInventoryEndpoint,
+  status: number,
+  attempt: number,
+  detail: string,
+  reason: CbreDealflowInventoryRetryEvent["reason"] = "http"
+): Error {
+  const statusText = cbreDealflowInventoryStatus(status, reason);
+  return new Error(
+    `CBRE Deal Flow inventory ${endpoint} ${statusText} ${detail} after ${attempt} attempt(s)`
+  );
+}
+
+function cbreDealflowBoundedInteger(
+  value: number | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.trunc(value)));
+}
+
+export async function cbreDealflowPostJson(
+  path: string,
+  body: URLSearchParams,
+  options: CbreDealflowInventoryPostOptions = {}
+): Promise<any> {
+  const { endpoint, url } = cbreDealflowInventoryEndpoint(path);
+  const request = options.request ?? fetch;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const monotonicNow = options.monotonicNow ?? performance.now.bind(performance);
+  const wallNow = options.wallNow ?? Date.now;
+  const timeoutMs = cbreDealflowBoundedInteger(
+    options.timeoutMs,
+    CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS,
+    1,
+    CBRE_DEALFLOW_INVENTORY_TIMEOUT_MS
+  );
+  const maxAttempts = cbreDealflowBoundedInteger(
+    options.maxAttempts,
+    CBRE_DEALFLOW_INVENTORY_MAX_ATTEMPTS,
+    1,
+    CBRE_DEALFLOW_INVENTORY_MAX_ATTEMPTS
+  );
+  const retryBackoffMs = cbreDealflowBoundedInteger(
+    options.retryBackoffMs,
+    CBRE_DEALFLOW_INVENTORY_RETRY_BACKOFF_MS,
+    0,
+    CBRE_DEALFLOW_INVENTORY_RETRY_AFTER_MAX_MS
+  );
+  const retryAfterMaxMs = cbreDealflowBoundedInteger(
+    options.retryAfterMaxMs,
+    CBRE_DEALFLOW_INVENTORY_RETRY_AFTER_MAX_MS,
+    0,
+    CBRE_DEALFLOW_INVENTORY_RETRY_AFTER_MAX_MS
+  );
+  const deadlineMs = Math.max(timeoutMs, cbreDealflowBoundedInteger(
+    options.deadlineMs,
+    CBRE_DEALFLOW_INVENTORY_RETRY_DEADLINE_MS,
+    1,
+    CBRE_DEALFLOW_INVENTORY_RETRY_DEADLINE_MS
+  ));
+  const logRetry = options.logRetry ?? cbreDealflowInventoryRetryLog;
+  const requestBody = body.toString();
+  const startedAt = monotonicNow();
+
+  const retry = async (
+    status: number,
+    attempt: number,
+    reason: CbreDealflowInventoryRetryEvent["reason"],
+    retryAfterHeader: string | null = null
+  ): Promise<void> => {
+    if (attempt >= maxAttempts) {
+      throw cbreDealflowInventoryError(endpoint, status, attempt, "exhausted retries", reason);
+    }
+    const retryAfterMs = cbreDealflowRetryAfterMs(retryAfterHeader, wallNow());
+    if (retryAfterMs !== null && retryAfterMs > retryAfterMaxMs) {
+      throw cbreDealflowInventoryError(endpoint, status, attempt, "exceeded Retry-After bound", reason);
+    }
+    const delayMs = retryAfterMs ?? Math.min(retryBackoffMs * 2 ** (attempt - 1), retryAfterMaxMs);
+    const remainingMs = deadlineMs - (monotonicNow() - startedAt);
+    if (delayMs >= remainingMs) {
+      throw cbreDealflowInventoryError(endpoint, status, attempt, "exceeded retry deadline", reason);
+    }
+    try {
+      logRetry({ endpoint, status, attempt, delayMs, reason });
+    } catch {
+      // Retry telemetry is diagnostic-only. It must not change a provider
+      // recovery decision when a caller's logger is unavailable.
+    }
+    // Use the existing optional recorder so recovered direct-provider backoff
+    // appears with the other HTTP helper retries. Diagnostics stay best-effort.
+    try {
+      recordRetry("http_helper", delayMs, true);
+    } catch {
+      // The recorder itself is defensive, but an unavailable diagnostic must
+      // never alter this narrowly scoped provider recovery.
+    }
+    if (delayMs > 0) await sleep(delayMs);
+  };
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const remainingMs = deadlineMs - (monotonicNow() - startedAt);
+    if (remainingMs <= 0) {
+      throw cbreDealflowInventoryError(endpoint, 0, attempt - 1, "exceeded retry deadline");
+    }
+    let response: Response;
+    try {
+      response = await request(url, {
+        method: "POST",
+        headers: {
+          ...cbreDealflowHeaders(),
+          "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+        },
+        body: requestBody,
+        signal: AbortSignal.timeout(Math.max(1, Math.floor(Math.min(timeoutMs, remainingMs)))),
+      });
+    } catch {
+      await retry(0, attempt, "transport");
+      continue;
+    }
+    if (CBRE_DEALFLOW_RETRYABLE_INVENTORY_STATUSES.has(response.status)) {
+      void response.body?.cancel().catch(() => undefined);
+      await retry(response.status, attempt, "http", response.headers.get("retry-after"));
+      continue;
+    }
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => undefined);
+      throw cbreDealflowInventoryError(endpoint, response.status, attempt, "failed without retry");
+    }
+    let text: string;
+    try {
+      text = await response.text();
+    } catch {
+      await retry(response.status, attempt, "transport");
+      continue;
+    }
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error(`CBRE Deal Flow inventory ${endpoint} returned non-JSON HTTP ${response.status}`);
+    }
+    if (parsed?.success === false) {
+      throw new Error(`CBRE Deal Flow inventory ${endpoint} reported semantic failure HTTP ${response.status}`);
+    }
+    return parsed;
+  }
+  throw new Error(`CBRE Deal Flow inventory ${endpoint} exhausted without a response`);
 }
 
 export function extractCbreDealflowEngineKey(html: string): string {
