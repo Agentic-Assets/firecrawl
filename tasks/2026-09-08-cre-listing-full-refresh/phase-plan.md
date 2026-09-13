@@ -26,4 +26,3 @@ produce current freshness and integrity proof.
 5. Diagnose and repair source failures, then rerun the affected proof path.
 6. Revalidate Supabase counts, freshness, queue health, and child integrity;
    restore the local runtime profile and record remaining external gates.
-
