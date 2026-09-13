@@ -93,3 +93,49 @@ on this project without a worktree and contact the root task if issues arise.
 Automation activation is not a substitute for the full refresh acceptance proof.
 
 See the [forward menu](2026-09-13-cre-throughput-recovery-forward-queue.md).
+
+## 2026-09-13 optimization telemetry extension
+
+Committed and pushed `a2eac761d6dcd5ac97a40bb39334a82960e528df` to
+`codex/cre-throughput-recovery` / [PR48](https://github.com/Agentic-Assets/firecrawl/pull/48).
+The PR remains the review surface, not proof of merge or full data freshness.
+
+The checkpoint runner now saves per-command start/end/interruption journals,
+per-invocation bounded scraper snapshots and initial runtime resource settings.
+The one-shot `cre_performance_report.py` shows slowest measured phases and
+structured requests/retries/cache/latency/resource/quality signals. It reads
+only local bound evidence, never the database. Source payloads, formats,
+retry/backoff values, freshness and production-write gates are unchanged.
+
+Repeated after that implementation commit: 2,549 Python tests passed, one
+existing Cushman artifact-dependent skip, four subtests passed. TypeScript
+typecheck and full suite passed before commit; implementation-lane total 829.
+New command/runtime and report statement coverage is 87% and 85% respectively
+(86% combined). Root Ruff, Python compilation, shell syntax and diff checks
+passed. Normal knip commit hook passed, without bypass.
+
+Independent telemetry review passed 104 Python and 74 focused TypeScript tests
+and two actual TypeScript-writer/Python-reader integrations. Confirmed issues
+were fixed: temporary symlink/FIFO hazards, cleanup after partial writes, and
+nonfinite measurements incorrectly becoming zeros. Missing readings remain
+null/degraded. No remaining confirmed P0/P1/P2 in the reviewed telemetry slice.
+
+Measured optional logging cost: median batch mean 0.333 ms per command across
+500 offline no-op commands; 0.810 microseconds per simulated scrape attempt
+across 50,000 events with real atomic snapshots. Final snapshots were about
+1.9 KiB; the narrow runtime inspect took 260 ms. These are microbenchmarks,
+not pipeline-speedup or all-source capacity proof.
+
+Definitions and limitations are in
+[the telemetry runbook](../../docs/firecrawl-ops/references/cre-performance-telemetry.md).
+Docker's 64 KiB inspect limit applies after buffering, not as a hard capture
+memory bound. Initial configuration is not current or resumed usage. Request
+throughput and emitted fields are not correctness/completeness certificates.
+
+Cayman's accuracy-first clarification is recorded in
+[AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902/prove-improved-cre-refresh-throughput-and-complete-all-source#comment-28a6711c).
+`raw_data` preserves normalized/pruned collector rows, not uniform original
+provider responses. Brochure/media rows store URLs, not downloaded contents.
+Address-based research remains a separately evaluated, provenance-linked layer;
+no enrichment search, new schema, OM write or canonical overwrite was added.
+The old full run and automation gates remain as described above.

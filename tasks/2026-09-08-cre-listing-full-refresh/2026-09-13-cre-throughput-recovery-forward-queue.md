@@ -54,3 +54,37 @@ menu, not another scheduler or work ledger. Implementation proof is in the
   the human-reviewed operator handoff for a model transition; a second ordered
   backup needs explicit implementation and tests, not a comment. Keep separate
   from the non-LLM full listing run and shared API stability.
+
+## 2026-09-13 accuracy and retained-evidence follow-ups
+
+- **Define raw-evidence retention precisely** (P1, verified code gap;
+  AGENTIC-2902). `raw_data` is a normalized/pruned listing; source caches and
+  selected nested payloads do not provide a universal original-response archive.
+  Inventory exact source evidence, sizes, retention and business relevance before
+  expanding storage. Keep original literals and extraction provenance without
+  duplicating credentials or irrelevant page chrome into consumer facts.
+- **Distinguish missing from explicitly false** (P1, verified code behavior;
+  AGENTIC-2902). `lib/util.ts:prune` drops false/null/empty values, so emitted
+  absence is ambiguous. Do not change that generic helper blindly: SQL existence
+  checks treat flags such as `detailError` by presence. Evaluate field-specific
+  preservation with complete source/ingest fixtures before altering payloads.
+- **Measure field yield without inventing completeness** (P2, evaluation;
+  AGENTIC-2902). Start from retained artifacts, segment exact source/transaction/
+  mode/generation, and label counts `emitted_nonempty` with missing/pruned unknown.
+  Source-native expected fields and applicability need their own reviewed
+  contract. The new performance reporter exposes known detail-error and
+  inventory-only counts but does not establish field completeness.
+- **Source-stated address candidates before internet fan-out** (P2, verified
+  extraction gap plus proposed design; AGENTIC-2902). Generic JSON-LD enrichment
+  does not extract PostalAddress. Test exact listing-bound address candidates,
+  per-component provenance, conflict preservation and country/state/ZIP
+  consistency before admission. Stated country/county/address2/listing_date are
+  not all staged by current ingest; review both live consumers before changes.
+  Keep Census-derived geography distinct. Internet/geocoder enrichment should
+  then be evaluated on a bounded sample with identity precision and incremental
+  valid field yield, never silently overwrite authoritative brokerage facts.
+- **Broaden resource/request measurement only when useful** (P3, coverage gap;
+  AGENTIC-2900). Current snapshots cover shared Firecrawl helpers, JLL detail
+  cache and sampled Node resources, not direct-provider requests, queue wait or
+  browser/API usage. Keep future measurement out of the critical CPU-guard
+  sampling loop and avoid a separate persistent telemetry service.
