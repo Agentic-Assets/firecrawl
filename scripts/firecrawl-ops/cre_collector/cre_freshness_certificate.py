@@ -23,9 +23,13 @@ from cre_checkpoint_refresh import (
     TRANSACTIONS,
     parse_iso8601,
 )
-from cre_ingest import SOURCE_TO_BROKERAGE
+from cre_ingest import (
+    CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS,
+    SOURCE_TO_BROKERAGE,
+    colliers_contact_preservation_is_valid,
+    jll_structured_child_preservation_is_valid,
+)
 from cre_source_policy import SourcePolicyValidationError, load_source_policy
-
 
 CERTIFICATE_VERSION = 2
 SOURCE_KEYS = tuple(SOURCE_TO_BROKERAGE)
@@ -195,7 +199,11 @@ def _validate_artifact_evidence(
                 _failure(failures, "artifact_evidence", "inventory-feed child contract conflicts with policy", run_path=run_path, source_key=source_key)
                 return
         elif evidence_class in {"strict_detail", "property_detail"}:
-            if provenance.get("detailScope") != "detail_page" or not row.get("detailObservedAt"):
+            detail_scope = provenance.get("detailScope")
+            allowed_detail_scope = detail_scope == "detail_page" or (
+                source_key == "colliers-main" and detail_scope == "first_party_detail_api"
+            )
+            if not allowed_detail_scope or not row.get("detailObservedAt"):
                 _failure(failures, "artifact_evidence", "detail listing lacks current detail proof", run_path=run_path, source_key=source_key)
                 return
             try:
@@ -228,8 +236,19 @@ def _validate_artifact_evidence(
             ):
                 _failure(failures, "observation_age", "canonical detail observation exceeds certificate freshness SLO", run_path=run_path, source_key=source_key)
                 return
-            if evidence_class == "strict_detail" and row.get("preserveChildCollections") is True:
-                _failure(failures, "artifact_evidence", "strict-detail listing cannot preserve child collections", run_path=run_path, source_key=source_key)
+            if evidence_class == "strict_detail":
+                if source_key in CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS:
+                    if not jll_structured_child_preservation_is_valid(row):
+                        _failure(failures, "artifact_evidence", "strict-detail listing lacks its required child-preservation proof", run_path=run_path, source_key=source_key)
+                        return
+                elif row.get("preserveChildCollections") is True:
+                    _failure(failures, "artifact_evidence", "strict-detail listing cannot preserve child collections", run_path=run_path, source_key=source_key)
+                    return
+            if (
+                row.get("preserveContactCollections") is True
+                and not colliers_contact_preservation_is_valid(row)
+            ):
+                _failure(failures, "artifact_evidence", "strict-detail listing has invalid contact preservation", run_path=run_path, source_key=source_key)
                 return
             if row.get("preserveChildCollections") is True and row.get("detailObservedWithChildPreservation") is not True:
                 _failure(failures, "artifact_evidence", "preserved property-detail listing lacks current-detail preservation proof", run_path=run_path, source_key=source_key)

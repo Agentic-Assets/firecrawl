@@ -10,12 +10,14 @@ WORKDIR /usr/src/app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
-COPY . .
-
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/share/playwright
 
-# Install Playwright dependencies
+# Browser binaries and OS packages depend on the lockfile, not application
+# source. Keep this layer ahead of COPY so a collector-side edit does not
+# redownload Chromium during an operator recovery.
 RUN pnpm exec playwright install chromium --with-deps
+
+COPY . .
 
 RUN pnpm run build
 

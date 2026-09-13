@@ -32,25 +32,25 @@ def _sql():
 
 
 def test_sale_price_usd_coalesce_present():
-    assert "sale_price_usd    = COALESCE(EXCLUDED.sale_price_usd, t.sale_price_usd)" in _sql(), (
+    assert "ELSE COALESCE(EXCLUDED.sale_price_usd, t.sale_price_usd) END" in _sql(), (
         "Expected COALESCE-keep for sale_price_usd in DO UPDATE SET block."
     )
 
 
 def test_sale_price_per_sf_coalesce_present():
-    assert "sale_price_per_sf = COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf)" in _sql(), (
+    assert "ELSE COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf) END" in _sql(), (
         "Expected COALESCE-keep for sale_price_per_sf in DO UPDATE SET block."
     )
 
 
 def test_lease_rate_min_coalesce_present():
-    assert "lease_rate_min    = COALESCE(EXCLUDED.lease_rate_min, t.lease_rate_min)" in _sql(), (
+    assert "ELSE COALESCE(EXCLUDED.lease_rate_min, t.lease_rate_min) END" in _sql(), (
         "Expected COALESCE-keep for lease_rate_min in DO UPDATE SET block."
     )
 
 
 def test_lease_rate_max_coalesce_present():
-    assert "lease_rate_max    = COALESCE(EXCLUDED.lease_rate_max, t.lease_rate_max)" in _sql(), (
+    assert "ELSE COALESCE(EXCLUDED.lease_rate_max, t.lease_rate_max) END" in _sql(), (
         "Expected COALESCE-keep for lease_rate_max in DO UPDATE SET block."
     )
 

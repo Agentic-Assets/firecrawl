@@ -129,7 +129,11 @@ Reconciliation jobs stay `running` while batches execute and become
 the JSON/CSV plan and the final database readback with the approval issue.
 
 Every generated ingest and reconciliation apply/finalize transaction takes the
-same transaction-scoped lifecycle advisory lock before any identity or table
-lock. This intentionally serializes canonical lifecycle mutations across all
-present and retirement phases. Do not remove or narrow the shared lock without
-a concurrency proof covering opposing multi-identity phase sets.
+same transaction-scoped lifecycle advisory lock before row locks. This
+intentionally serializes canonical lifecycle mutations across all present and
+retirement phases. Ingest then locks source-index rows before listing rows and
+does not allocate per-identity advisory locks, so complete-source artifacts do
+not exhaust PostgreSQL's shared lock table. Reconciliation retains its bounded
+per-identity locks for batches capped at 250. Do not remove or narrow the shared
+transaction lock without a concurrency proof covering opposing multi-identity
+phase sets.

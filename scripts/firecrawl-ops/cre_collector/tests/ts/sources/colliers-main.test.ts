@@ -29,6 +29,15 @@ import {
   acquireColliersMainDetailStart,
   coolDownColliersMainDetailStarts,
   resetColliersMainDetailPacerForTest,
+  colliersMainCoveoQueryBody,
+  reconcileColliersMainCoveoResults,
+  reconcileColliersMainCoveoExperts,
+  colliersMainPublicUrl,
+  mapColliersMainCoveoListing,
+  colliersMainCoveoAcreageIsAdmissible,
+  colliersMainCoveoAcreageIsCorroborated,
+  colliersMainCoveoMeasurements,
+  postColliersMainBrowserBatch,
 } from "../../../sources/colliers-main.js";
 import type { ScrapedDoc } from "../../../types.js";
 import { firecrawl } from "../../../lib/scrape.js";
@@ -194,6 +203,366 @@ test("colliersMainJsonLd extracts RealEstateListing JSON-LD from HTML", () => {
   assert.equal(ld?.["@type"], "RealEstateListing");
   assert.match(ld?.name, /Dallas, TX/);
   assert.equal(colliersMainJsonLd("<html><body>no json-ld</body></html>"), null);
+});
+
+test("Colliers Coveo query uses exact public ids without visitor or auth state", () => {
+  const query = new URLSearchParams(colliersMainCoveoQueryBody(["usa1168531", "USA1159083"], "property"));
+  assert.match(query.get("aq") ?? "", /@ftitle16556==USA1168531/);
+  assert.match(query.get("aq") ?? "", /@z95xtemplate==534C0EB71D32434FBE0F62A2AB174F16/);
+  assert.equal(query.get("numberOfResults"), "2");
+  assert.equal(query.get("maximumAge"), "0");
+  assert.equal(query.has("visitorId"), false);
+  assert.equal(query.has("analytics"), false);
+  assert.equal(query.has("accessToken"), false);
+});
+
+test("Colliers Coveo reconciliation admits known first-party click hosts and rejects identity drift", () => {
+  const entries = [
+    entry("usa1168531", "https://www.colliers.com/en/properties/a/usa1168531"),
+    entry("usa1159083", "https://www.colliers.com/en/properties/b/usa1159083"),
+  ];
+  const a = { clickUri: entries[0].url, raw: { propertyz32xid: "USA1168531" } };
+  const b = { clickUri: entries[1].url, raw: { propertyz32xid: "USA1159083" } };
+  assert.equal(reconcileColliersMainCoveoResults(entries, [a, b]).size, 2);
+  assert.equal(reconcileColliersMainCoveoResults(entries, [
+    { ...a, clickUri: "https://cmimport.colliers.com/en/properties/a/usa1168531" },
+    b,
+  ]).size, 2);
+  assert.throws(() => reconcileColliersMainCoveoResults(entries, [a]), /missing 1/);
+  assert.throws(() => reconcileColliersMainCoveoResults(entries, [a, a]), /duplicate/);
+  assert.throws(() => reconcileColliersMainCoveoResults(entries, [a, { ...b, raw: { propertyz32xid: "USA9999999" } }]), /unexpected/);
+  assert.throws(() => reconcileColliersMainCoveoResults(entries, [a, { ...b, clickUri: "https://www.colliers.com/en/properties/wrong/usa1159083" }]), /click identity does not match/);
+  assert.throws(
+    () => reconcileColliersMainCoveoResults(entries, [
+      a,
+      { ...b, clickUri: "https://attacker.example/en/properties/b/usa1159083" },
+    ]),
+    /click identity does not match/,
+    "an identical path on another origin is not first-party reconciliation evidence"
+  );
+});
+
+test("Colliers Coveo expert reconciliation fails closed on missing, duplicate, and extra ids", () => {
+  const a = { raw: { z95xid: "{ABC-123}" } };
+  const b = { raw: { z95xid: "DEF456" } };
+  assert.equal(reconcileColliersMainCoveoExperts(["abc123", "def456"], [a, b]).size, 2);
+  assert.throws(() => reconcileColliersMainCoveoExperts(["abc123", "def456"], [a]), /missing 1 expert/);
+  assert.throws(() => reconcileColliersMainCoveoExperts(["abc123", "def456"], [a, a]), /duplicate expert/);
+  assert.throws(() => reconcileColliersMainCoveoExperts(["abc123"], [b]), /unexpected expert/);
+  assert.equal(
+    reconcileColliersMainCoveoExperts(["abc123", "def456"], [a], true).size,
+    1,
+    "the property record may reference a deleted expert profile"
+  );
+});
+
+test("Colliers Coveo child URLs normalize public HTTP paths and reject unsafe values", () => {
+  assert.equal(
+    colliersMainPublicUrl("/content/dam/colliers/brochure.pdf"),
+    "https://www.colliers.com/content/dam/colliers/brochure.pdf"
+  );
+  assert.equal(colliersMainPublicUrl("https://user:pass@example.com/private"), null);
+  assert.equal(colliersMainPublicUrl("javascript:alert(1)"), null);
+  assert.equal(colliersMainPublicUrl("data:text/plain,secret"), null);
+  assert.equal(colliersMainPublicUrl("http://127.0.0.1/private"), null);
+  assert.equal(colliersMainPublicUrl("http://169.254.169.254/latest/meta-data"), null);
+  assert.equal(colliersMainPublicUrl("http://service.local/private"), null);
+});
+
+test("Colliers Coveo mapper preserves scalar, document, image, and resolved expert evidence", () => {
+  const e = entry("usa1168531", "https://www.colliers.com/en/properties/a/usa1168531");
+  e.inventoryObservedAt = "2026-09-09T08:00:00.000Z";
+  e.lastmod = "2026-09-09T01:35:25+00:00";
+  const experts = new Map<string, any>([["abc123", { clickUri: "https://www.colliers.com/en/experts/jane", raw: {
+    z95xid: "abc123", z95xname: "Jane Broker", title: "Vice President", officez32xphone: "+1 555 0100",
+    ez120xpertofficenamecomputed: ["Honolulu"], urllink: "/en/experts/jane", profilez32xpicture: "https://example.com/jane.png",
+  } }]]);
+  const mapped = mapColliersMainCoveoListing(e, { clickUri: e.url, raw: {
+    propertyz32xid: "USA1168531", propertyz32xtitle: "Waterfront Plaza",
+    propertyz32xfullz32xaddress: "500 Ala Moana Blvd, Honolulu, HI 96813, USA",
+    forz32xsale: "0", forz32xlease: "1", primarypropertytype: "Office",
+    description: "<p>Premier mixed-use property.</p>", latitude: 21.3, longitude: -157.86,
+    buildingz32xsiz122xe: 14211,
+    buildingz32xsiz122xez32xunit: "40409737aa8c4b10b53be81940c7b2ed",
+    propertyz32xstatus: "Available",
+    propertyz32ximages: "https://example.com/1-w|javascript:alert(1)|https://example.com/2-w|https://example.com/1-w",
+    relatedz32xdocuments: JSON.stringify([
+      { DocumentName: "Brochure", DocumentLink: "/brochure" },
+      { DocumentName: "Property Flyer", DocumentLink: "/property-flyer.pdf" },
+      { DocumentName: "Duplicate", DocumentLink: "/brochure" },
+      { DocumentName: "Unsafe", DocumentLink: "data:text/plain,bad" },
+    ]),
+    relatedz32xlinks: JSON.stringify([
+      { Name: "Tour", Value: "https://example.com/tour" },
+      { Name: "Unsafe", Value: "mailto:broker@example.com" },
+    ]),
+    relatedz32xez120xperts: ["abc123"], propertyz32xfeatures: JSON.stringify(["Zoning: C-2", "Year Built: 1999"]),
+  } }, experts);
+  assert.equal(mapped.transactionType, "Lease");
+  assert.equal(mapped.street, "500 Ala Moana Blvd");
+  assert.equal(mapped.buildingSizeSqft, 14211);
+  assert.equal(mapped.description, "Premier mixed-use property.");
+  assert.equal(mapped.zoning, "C-2");
+  assert.equal(mapped.yearBuilt, 1999);
+  assert.equal(mapped.photos.length, 2);
+  assert.equal(mapped.brochures[0].name, "Brochure");
+  assert.equal(mapped.brochures[0].url, "https://www.colliers.com/brochure");
+  assert.equal(mapped.brochures[1].docType, "flyer");
+  assert.equal(mapped.links.length, 1);
+  assert.equal(mapped.contactsDetailed[0].name, "Jane Broker");
+  assert.equal(mapped.preserveContactCollections, undefined);
+  assert.equal(mapped.freshnessProvenance.detailScope, "first_party_detail_api");
+  assert.equal(mapped.freshnessProvenance.cacheDisposition, "live");
+});
+
+test("Colliers Coveo mapper rejects malformed and non-array structured child fields", () => {
+  const e = entry("usa1168531", "https://www.colliers.com/en/properties/a/usa1168531");
+  const baseRaw = {
+    propertyz32xtitle: "Waterfront Plaza",
+    propertyz32xfullz32xaddress: "500 Ala Moana Blvd, Honolulu, HI 96813, USA",
+    forz32xsale: "1",
+  };
+
+  assert.throws(
+    () => mapColliersMainCoveoListing(e, {
+      raw: { ...baseRaw, relatedz32xdocuments: "[{broken" },
+    }),
+    /related documents is malformed JSON/
+  );
+  assert.throws(
+    () => mapColliersMainCoveoListing(e, {
+      raw: { ...baseRaw, relatedz32xlinks: JSON.stringify({ Value: "/tour" }) },
+    }),
+    /related links is not an array/
+  );
+});
+
+test("Colliers Coveo mapper preserves a current name-only fallback for a deleted expert profile", () => {
+  const e = entry("usa1168531", "https://www.colliers.com/en/properties/a/usa1168531");
+  const mapped = mapColliersMainCoveoListing(e, { raw: {
+      propertyz32xtitle: "Waterfront Plaza",
+      propertyz32xfullz32xaddress: "500 Ala Moana Blvd, Honolulu, HI 96813, USA",
+      forz32xsale: "1",
+      relatedz32xez120xperts: ["abc123"],
+      relatedez120xpertsfullnamecomputed: ["Jane Broker"],
+    } });
+  assert.deepEqual(mapped.contactsDetailed, [{ name: "Jane Broker", company: "Colliers" }]);
+  assert.deepEqual(mapped.colliersMain.unresolvedExpertIds, ["abc123"]);
+  assert.equal(mapped.preserveContactCollections, true);
+  assert.equal(mapped.detailObservedWithContactPreservation, true);
+});
+
+test("Colliers Coveo mapper preserves prior contacts when a referenced expert has no live fallback", () => {
+  const e = entry("usa1024939", "https://www.colliers.com/en/properties/a/usa1024939");
+  const mapped = mapColliersMainCoveoListing(e, { raw: {
+    propertyz32xtitle: "Legacy Broker Assignment",
+    propertyz32xfullz32xaddress: "1 Main St, Phoenix, AZ 85001, USA",
+    forz32xsale: "1",
+    relatedz32xez120xperts: ["3d072913-f9fb-4ec6-bc73-9cf35e6b3120"],
+  } });
+
+  assert.equal(mapped.contactsDetailed, undefined);
+  assert.deepEqual(mapped.colliersMain.unresolvedExpertIds, [
+    "3d072913f9fb4ec6bc739cf35e6b3120",
+  ]);
+  assert.equal(mapped.preserveContactCollections, true);
+  assert.equal(mapped.detailObservedWithContactPreservation, true);
+});
+
+test("Colliers Coveo mapper suppresses hidden price normalization and preserves raw pricing", () => {
+  const e = entry("usa1162565", "https://www.colliers.com/en/properties/a/usa1162565");
+  const mapped = mapColliersMainCoveoListing(e, { raw: {
+    propertyz32xtitle: "Stratford Nimitz Business Center",
+    propertyz32xfullz32xaddress: "1753 Addison Way, Hayward, CA 94544, USA",
+    forz32xsale: "1",
+    hidez32xsalez32xprice: "1",
+    hidez32xleasez32xprice: "0",
+    salez32xtype: "sale-type-guid",
+    fsalez32xpricez32xmin16556: 200,
+    fsalez32xpricez32xmaz120x16556: 200,
+    currency: "USD",
+  } });
+  assert.equal(mapped.salePriceUsd, undefined);
+  assert.equal(mapped.salePriceText, undefined);
+  assert.deepEqual(mapped.colliersMain.rawPricing, {
+    hideSalePrice: "1",
+    hideLeasePrice: "0",
+    saleType: "sale-type-guid",
+    leaseType: null,
+    leaseRateType: null,
+    salePriceMin: 200,
+    salePriceMax: 200,
+    leasePriceMin: null,
+    leasePriceMax: null,
+    currency: "USD",
+    sortPrice: null,
+    visibleLeaseRateUnit: null,
+  });
+});
+
+test("Colliers Coveo mapper keeps visible sale bounds raw when their unit is unproved", () => {
+  const e = entry("usa1166257", "https://www.colliers.com/en/properties/a/usa1166257");
+  const mapped = mapColliersMainCoveoListing(e, { raw: {
+    propertyz32xtitle: "Industrial Property",
+    propertyz32xfullz32xaddress: "1 Main St, Phoenix, AZ 85001, USA",
+    forz32xsalez32xprice: "1",
+    forz32xsale: "1",
+    hidez32xsalez32xprice: "0",
+    salez32xtype: "0e92390674564994aa637eadc7f11364",
+    fsalez32xpricez32xmin16556: 405,
+    fsalez32xpricez32xmaz120x16556: 405,
+    currency: "USD",
+  } });
+
+  assert.equal(mapped.salePriceUsd, undefined);
+  assert.equal(mapped.salePriceText, undefined);
+  assert.equal(mapped.colliersMain.rawPricing.salePriceMin, 405);
+  assert.equal(mapped.colliersMain.rawPricing.salePriceMax, 405);
+});
+
+test("Colliers Coveo mapper keeps visible lease rates raw when cadence is unproved", () => {
+  const e = entry("usa1151255", "https://www.colliers.com/en/properties/a/usa1151255");
+  const perSf = mapColliersMainCoveoListing(e, { raw: {
+    propertyz32xtitle: "Warehouse",
+    propertyz32xfullz32xaddress: "8626 Wilbur Ave, Northridge, CA 91324, USA",
+    forz32xsale: "0",
+    forz32xlease: "1",
+    hidez32xleasez32xprice: "0",
+    fleasez32xpricez32xmin16556: 0.99,
+    leasez32xratez32xtype: "247f7ab813234d33a9e042c0b5f13652",
+    currency: "USD",
+  } });
+  assert.equal(perSf.leaseRateText, undefined);
+  assert.equal(perSf.leaseRateMin, undefined);
+  assert.equal(perSf.leaseRateMax, undefined);
+  assert.equal(perSf.colliersMain.rawPricing.leasePriceMin, 0.99);
+  assert.equal(perSf.colliersMain.rawPricing.visibleLeaseRateUnit, "/ SF");
+
+  const annualAbsolute = mapColliersMainCoveoListing(e, { raw: {
+    propertyz32xtitle: "Ground Lease",
+    propertyz32xfullz32xaddress: "1 Main St, Phoenix, AZ 85001, USA",
+    forz32xsale: "0",
+    forz32xlease: "1",
+    hidez32xleasez32xprice: "0",
+    fleasez32xpricez32xmin16556: 110000,
+    leasez32xratez32xtype: "d1e6e3f63c5b4229a67bf21c8e5c3488",
+    currency: "USD",
+  } });
+  assert.equal(annualAbsolute.leaseRateText, undefined);
+  assert.equal(annualAbsolute.leaseRateMin, undefined);
+  assert.equal(annualAbsolute.leaseRateMax, undefined);
+  assert.equal(annualAbsolute.colliersMain.rawPricing.visibleLeaseRateUnit, "/ year");
+});
+
+test("Colliers Coveo measurements honor explicit units and reject implausible acreage", () => {
+  assert.deepEqual(colliersMainCoveoMeasurements({
+    buildingz32xsiz122xe: 122850,
+    buildingz32xsiz122xez32xunit: "40409737aa8c4b10b53be81940c7b2ed",
+    flotz32xsiz122xe16556: 1.18,
+    lotz32xsiz122xez32xunit: "708623336f6542cab69b28fe1eee7322",
+    fminz32xarea16556: 555,
+    fmaz120xz32xarea16556: 780,
+    floorz32xareaz32xunit: "40409737aa8c4b10b53be81940c7b2ed",
+  }), {
+    buildingSizeSqft: 122850,
+    lotSizeAcres: 1.18,
+    availableSf: 780,
+    minDivisibleSf: 555,
+    maxDivisibleSf: 780,
+  });
+  assert.deepEqual(colliersMainCoveoMeasurements({
+    buildingz32xsiz122xe: 72,
+    buildingz32xsiz122xez32xunit: "89d325e537db494cb9016e8a71d7eca3",
+    flotz32xsiz122xe16556: 25265,
+    lotz32xsiz122xez32xunit: "40409737aa8c4b10b53be81940c7b2ed",
+  }), {
+    units: 72,
+    lotSizeAcres: 25265 / 43560,
+  });
+  assert.deepEqual(colliersMainCoveoMeasurements({
+    propertysiz122xecomputed: 178385.2,
+    siz122xeunitcomputed: ["ac"],
+    flotz32xsiz122xe16556: 178385.2,
+    lotz32xsiz122xez32xunit: "708623336f6542cab69b28fe1eee7322",
+  }), {});
+});
+
+test("Colliers Coveo requires source-text corroboration above 100 acres", () => {
+  const acreUnit = "708623336f6542cab69b28fe1eee7322";
+  const supported = {
+    propertyz32xtitle: "Land for Sale in Northern Arizona",
+    description: "<p>A rare opportunity to acquire &plusmn;3,765.65 acres.</p>",
+    flotz32xsiz122xe16556: 3765.65,
+    lotz32xsiz122xez32xunit: acreUnit,
+  };
+  assert.equal(colliersMainCoveoAcreageIsCorroborated(supported, 3765.65), true);
+  assert.equal(colliersMainCoveoMeasurements(supported).lotSizeAcres, 3765.65);
+
+  const contradicted = {
+    propertyz32xtitle: "22-Property Portfolio | South Chicago",
+    description: "<p>311 units across 22 properties.</p>",
+    flotz32xsiz122xe16556: 9600,
+    lotz32xsiz122xez32xunit: acreUnit,
+  };
+  assert.equal(colliersMainCoveoAcreageIsCorroborated(contradicted, 9600), false);
+  assert.deepEqual(colliersMainCoveoMeasurements(contradicted), {});
+
+  const decimalShift = {
+    description: "<p>Approximately 1.29 acres.</p>",
+    flotz32xsiz122xe16556: 129,
+    lotz32xsiz122xez32xunit: acreUnit,
+  };
+  assert.equal(colliersMainCoveoAcreageIsCorroborated(decimalShift, 129), false);
+  assert.deepEqual(colliersMainCoveoMeasurements(decimalShift), {});
+
+  const smallDecimalShift = {
+    description: "<p>Approximately .369 acre.</p>",
+    flotz32xsiz122xe16556: 0.0369,
+    lotz32xsiz122xez32xunit: acreUnit,
+  };
+  assert.equal(colliersMainCoveoAcreageIsCorroborated(smallDecimalShift, 0.0369), false);
+  assert.equal(colliersMainCoveoAcreageIsAdmissible(smallDecimalShift, 0.0369), false);
+  assert.deepEqual(colliersMainCoveoMeasurements(smallDecimalShift), {});
+
+  const smallWithoutText = {
+    description: "<p>Land parcel offered for sale.</p>",
+    flotz32xsiz122xe16556: 0.4,
+    lotz32xsiz122xez32xunit: acreUnit,
+  };
+  assert.equal(colliersMainCoveoAcreageIsAdmissible(smallWithoutText, 0.4), true);
+  assert.equal(colliersMainCoveoMeasurements(smallWithoutText).lotSizeAcres, 0.4);
+
+  const trailingApproximationMismatch = {
+    description: "<p>The site contains 0.86± acre.</p>",
+    flotz32xsiz122xe16556: 0.086,
+    lotz32xsiz122xez32xunit: acreUnit,
+  };
+  assert.equal(
+    colliersMainCoveoAcreageIsAdmissible(trailingApproximationMismatch, 0.086),
+    false,
+  );
+  assert.deepEqual(colliersMainCoveoMeasurements(trailingApproximationMismatch), {});
+});
+
+test("Colliers Coveo browser batching retries outer and inner transient failures", async () => {
+  const oldFetch = globalThis.fetch;
+  const waits: number[] = [];
+  const responses = [
+    new Response(JSON.stringify({ error: "Bootstrap returned HTTP 429", bootstrapStatus: 429 }), { status: 502 }),
+    new Response(JSON.stringify({ responses: [{ status: 429, body: "" }] }), { status: 200 }),
+    new Response(JSON.stringify({ responses: [{ status: 200, body: JSON.stringify({ results: [] }) }] }), { status: 200 }),
+  ];
+  globalThis.fetch = async () => responses.shift()!;
+  try {
+    const payloads = await postColliersMainBrowserBatch(["q=office"], async (milliseconds) => {
+      waits.push(milliseconds);
+    });
+    assert.equal(payloads.length, 1);
+    assert.deepEqual(payloads[0].results, []);
+    assert.deepEqual(waits, [15_000, 30_000]);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
 });
 
 test("strict Colliers retries unknown HTTP 200 pages without property JSON-LD", () => {
@@ -417,6 +786,24 @@ test("Colliers retries a semantic sitemap failure before accepting inventory", a
   } finally {
     resetColliersMainSitemapCacheForTest();
   }
+});
+
+test("Colliers sitemap fails closed on malformed or duplicate property identities", async () => {
+  const index = "<sitemapindex><sitemap><loc>https://www.colliers.com/en/sitemap?type=properties</loc></sitemap></sitemapindex>";
+  for (const properties of [
+    "<urlset><url><loc>https://www.colliers.com/en/properties/no-native-id</loc></url></urlset>",
+    "<urlset><url><loc>https://www.colliers.com/en/properties/a/usa12345</loc></url><url><loc>https://www.colliers.com/en/properties/b/usa12345</loc></url></urlset>",
+  ]) {
+    resetColliersMainSitemapCacheForTest();
+    await assert.rejects(
+      fetchColliersMainEntries(
+        async (url) => url.endsWith("/sitemap") ? index : properties,
+        async () => undefined
+      ),
+      /sitemap (?:URL lacks a usa identifier|returned duplicate property id)/
+    );
+  }
+  resetColliersMainSitemapCacheForTest();
 });
 
 test("strict Colliers sitemap and detail Firecrawl calls bypass cached responses", async () => {

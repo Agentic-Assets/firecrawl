@@ -763,12 +763,140 @@ export function jllStrandedMedia(property: any): (MediaItem | string)[] {
   return out;
 }
 
-// Promote JLL floor-plan urls as classified floor_plan DocItems (they otherwise
-// fold anonymously into the brochures channel). The brochures list already
-// includes floorPlans for backward compatibility; harvest dedups by url so a
-// floor plan is not double-counted, but is now correctly typed.
+function jllFloorPlanUrl(value: unknown, field: string): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  const url = clean(value);
+  if (!url) {
+    throw new Error(`JLL ${field} must be an absolute HTTP(S) URL`);
+  }
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error();
+  } catch {
+    throw new Error(`JLL ${field} must be an absolute HTTP(S) URL`);
+  }
+  return url;
+}
+
+function jllFloorPlanUrlKey(url: string): string {
+  const parsed = new URL(url);
+  const path = parsed.pathname.replace(/\/+$/, "") || "/";
+  return `${parsed.protocol.toLowerCase()}//${parsed.host.toLowerCase()}${path}${parsed.search}`;
+}
+
+export function jllReconcileDocumentChannels(
+  brochureUrls: string[],
+  harvestedDocuments: DocItem[],
+  floorPlanDocuments: DocItem[]
+): { brochures: string[]; documents: DocItem[] } {
+  const floorPlansByKey = new Map(
+    floorPlanDocuments.map((document) => [jllFloorPlanUrlKey(document.url), document])
+  );
+  const brochuresByKey = new Map<string, string>();
+  for (const url of brochureUrls) {
+    const key = jllFloorPlanUrlKey(url);
+    if (!floorPlansByKey.has(key) && !brochuresByKey.has(key)) {
+      brochuresByKey.set(key, url);
+    }
+  }
+
+  const documentsByKey = new Map<string, DocItem>();
+  for (const document of harvestedDocuments) {
+    const key = jllFloorPlanUrlKey(document.url);
+    if (!brochuresByKey.has(key) && !documentsByKey.has(key)) {
+      documentsByKey.set(key, document);
+    }
+  }
+  // Native floor-plan metadata is authoritative over heuristic page-link
+  // classification, while Map#set preserves the original document position.
+  for (const [key, document] of floorPlansByKey) {
+    documentsByKey.set(key, document);
+  }
+  return {
+    brochures: [...brochuresByKey.values()],
+    documents: [...documentsByKey.values()],
+  };
+}
+
+function jllFloorPlanEntryUrls(value: unknown, field: string): string[] {
+  if (value === null || value === undefined) return [];
+  if (typeof value === "string") {
+    const url = jllFloorPlanUrl(value, field);
+    return url ? [url] : [];
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`JLL ${field} has an unsupported floor-plan entry shape`);
+  }
+
+  const entry = value as Record<string, unknown>;
+  const unknownFields = Object.entries(entry)
+    .filter(([key, item]) => !["url", "image", "type"].includes(key) && item != null)
+    .map(([key]) => key);
+  if (unknownFields.length) {
+    throw new Error(`JLL ${field} has unsupported field(s): ${unknownFields.join(", ")}`);
+  }
+  const urls = [
+    jllFloorPlanUrl(entry.url, `${field}.url`),
+    jllFloorPlanUrl(entry.image, `${field}.image`),
+  ].filter((url): url is string => url !== null);
+  if (!urls.length) {
+    throw new Error(`JLL ${field} has no URL or image`);
+  }
+  return urls;
+}
+
+/**
+ * Promote every native JLL floor-plan URL as an explicitly typed floor_plan
+ * document, including image floor plans. JLL has emitted both a legacy array
+ * and the current `{ images, files }` object; an unknown non-null shape throws
+ * so enrichJllListing surfaces detailError instead of silently losing assets.
+ */
 export function jllStrandedDocs(property: any): DocItem[] {
-  return jllStringUrls(property?.floorPlans).map((url) => ({
+  const floorPlans = property?.floorPlans;
+  if (floorPlans === null || floorPlans === undefined) return [];
+
+  let urls: string[];
+  if (Array.isArray(floorPlans)) {
+    urls = floorPlans.flatMap((value, index) =>
+      jllFloorPlanEntryUrls(value, `floorPlans[${index}]`)
+    );
+  } else if (typeof floorPlans === "object") {
+    const value = floorPlans as Record<string, unknown>;
+    const unknownFields = Object.entries(value)
+      .filter(([key, item]) => !["images", "files"].includes(key) && item != null)
+      .map(([key]) => key);
+    if (unknownFields.length) {
+      throw new Error(`JLL floorPlans has unsupported field(s): ${unknownFields.join(", ")}`);
+    }
+    if (!("images" in value) && !("files" in value)) {
+      throw new Error("JLL floorPlans has an unsupported object shape");
+    }
+    for (const key of ["images", "files"] as const) {
+      if (value[key] != null && !Array.isArray(value[key])) {
+        throw new Error(`JLL floorPlans.${key} must be an array`);
+      }
+    }
+    const images = (value.images as unknown[] | null | undefined) ?? [];
+    const files = (value.files as unknown[] | null | undefined) ?? [];
+    urls = [
+      ...images.flatMap((item, index) =>
+        jllFloorPlanEntryUrls(item, `floorPlans.images[${index}]`)
+      ),
+      ...files.flatMap((item, index) =>
+        jllFloorPlanEntryUrls(item, `floorPlans.files[${index}]`)
+      ),
+    ];
+  } else {
+    throw new Error("JLL floorPlans has an unsupported shape");
+  }
+
+  const seen = new Set<string>();
+  return urls.filter((url) => {
+    const key = jllFloorPlanUrlKey(url);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map((url) => ({
     url,
     title: titleFromFilename(url),
     docType: "floor_plan" as const,
@@ -890,10 +1018,10 @@ export async function enrichJllListing(base: any): Promise<any> {
     // documents channel (floor_plan) via jllStrandedDocs so they are not
     // double-inserted (cre_listing_documents has no (listing_id,url) unique key,
     // so a url present in BOTH brochures and documents would insert twice).
-    const brochures = jllStringUrls(property.brochures);
+    const rawBrochures = jllStringUrls(property.brochures);
     const images = jllStringUrls(property.images);
     const url = normalizedJllListingUrl(base.url);
-    const brochureDocs = brochures.map((docUrl) => ({ name: titleFromFilename(docUrl), url: docUrl }));
+    const floorPlanDocuments = jllStrandedDocs(property);
 
     // Capture-everything harvest: unify the full detail page (markdown / links /
     // images / video+iframe attributes) with the stranded native fields promoted
@@ -906,13 +1034,22 @@ export async function enrichJllListing(base: any): Promise<any> {
     const harvested = harvestDetail(harvestDoc, {
       baseUrl: url,
       extraMedia: jllStrandedMedia(property),
-      extraDocs: jllStrandedDocs(property),
+      extraDocs: floorPlanDocuments,
       extraImages: images,
     });
-    // Exclude any harvested doc whose url is already on the brochures channel, so
-    // the same url is never inserted into cre_listing_documents twice.
-    const brochureUrlSet = new Set(brochures.map((u) => u.toLowerCase()));
-    const documents = harvested.documents.filter((d) => !brochureUrlSet.has(d.url.toLowerCase()));
+    // A native floor-plan classification wins over both a brochure overlap and
+    // heuristic page-link classification. All channels share the same normalized
+    // URL identity so equivalent spellings cannot create duplicate child rows.
+    const documentChannels = jllReconcileDocumentChannels(
+      rawBrochures,
+      harvested.documents,
+      floorPlanDocuments
+    );
+    const brochureDocs = documentChannels.brochures.map((docUrl) => ({
+      name: titleFromFilename(docUrl),
+      url: docUrl,
+    }));
+    const documents = documentChannels.documents;
     const photos = dedupeStrings([...(images.length ? images : base.photos ?? []), ...harvested.images]);
     const lifted = jllStrandedStructured(property);
 
@@ -971,8 +1108,10 @@ export async function enrichJllListing(base: any): Promise<any> {
         videos: property.videos,
         virtualTours: property.virtualTours,
         view360URLs: property.view360URLs,
+        floorPlans: property.floorPlans,
+        floorPlanAssetCount: floorPlanDocuments.length,
         brokerCount: contactsDetailed.length,
-        brochureCount: brochures.length,
+        brochureCount: documentChannels.brochures.length,
         imageCount: images.length,
         scrape: {
           markdownLength: doc.markdown.length,

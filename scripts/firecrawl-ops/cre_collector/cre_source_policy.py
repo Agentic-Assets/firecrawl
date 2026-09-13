@@ -14,11 +14,11 @@ from typing import Final
 from cre_ingest import (
     AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS,
     CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS,
+    CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS,
     INVENTORY_ONLY_SOURCE_DEFINITIONS,
     SOURCE_TO_BROKERAGE,
     STRICT_FRESHNESS_SOURCE_KEYS,
 )
-
 
 POLICY_PATH: Final = Path(__file__).resolve().parent / "data" / "cre-source-policy.json"
 MIXED_CANONICAL_INVENTORY_SOURCE_KEYS: Final = frozenset(
@@ -121,7 +121,11 @@ def _validate_entry(path: Path, source_key: str, entry: object) -> dict[str, obj
             "evidence_class": "strict_detail",
             "canonical_claim": "canonical_listing",
             "detail_claim": "current_strict_detail",
-            "child_contract": "replace_from_fresh_detail",
+            "child_contract": (
+                "preserve_existing_children"
+                if source_key in CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS
+                else "replace_from_fresh_detail"
+            ),
             "inventory_only_namespace": None,
             "lifecycle_reconciliation_eligible": True,
         }
