@@ -948,6 +948,7 @@ def test_colliers_main_chunks_fail_closed_when_partial_artifact_stalls(
 def test_collect_source_routes_colliers_main_through_chunk_protocol(tmp_path, monkeypatch):
     run_dir = tmp_path / "checkpoint"
     monkeypatch.setattr(refresh, "utc_now", lambda: "2026-07-29T12:00:00+00:00")
+    monkeypatch.setattr(refresh, "collector_runtime_dependency_error", lambda: None)
     manifest = refresh.new_manifest(
         run_dir,
         git_sha="abc",

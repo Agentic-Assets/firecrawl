@@ -13,11 +13,3 @@ This is a bounded follow-up list, not publication authorization.
 - Build and validate the exact inventory generation, publish a receipt only
   after all 51 sources pass, then run the separately approved GetCREdata refresh
   and post-publication readback.
-
-## Separate baseline issue
-
-- Triage
-  `test_collect_source_routes_colliers_main_through_chunk_protocol`, which fails
-  on `origin/main` at `3daa1746622607c3421ceb28c284bf7742efa2fe`.
-  Keep that repair out of PR #45 unless review proves a direct identity-contract
-  dependency.

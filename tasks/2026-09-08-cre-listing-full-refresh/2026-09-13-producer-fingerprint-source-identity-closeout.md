@@ -27,8 +27,9 @@ observation or freshness receipt was created.
 ## Verification
 
 - Focused collector suite on current main: 277 passed.
-- Full collector suite: 2,207 passed and 18 skipped. One Colliers checkpoint
-  test failed identically on untouched `origin/main`; it is outside this diff.
+- Full collector suite: 2,208 passed and 18 skipped. The previously failing
+  Colliers routing test now models a successful dependency preflight before its
+  mocked chunk runner; the separate fail-closed preflight test remains intact.
 - Python compilation, import-order Ruff, and diff checks passed.
 - Full Ruff comparison found 19 existing findings on this branch versus 20 on
   `origin/main`; the change introduced no new finding.
