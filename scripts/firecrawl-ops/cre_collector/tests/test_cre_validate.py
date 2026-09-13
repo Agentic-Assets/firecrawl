@@ -17,10 +17,10 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 # conftest.py already puts cre_collector/ on sys.path.
 import cre_validate
+import pytest
+from cre_ingest import source_key_from_values
 from cre_validate import (
     QUERIES,
     SOURCE_KEY_SQL,
@@ -30,8 +30,8 @@ from cre_validate import (
     parse_query_batch,
     parse_tsv,
     render_markdown,
-    run_query,
     run_queries,
+    run_query,
 )
 
 
@@ -264,9 +264,53 @@ def test_inventory_generation_fingerprint_matches_consumer_readback_tuple():
     assert "count(live_inventory.source_id)" in sql
     assert "max(live_inventory.row_updated_at)" in sql
     assert "max(live_inventory.observation_at)" in sql
-    assert "coalesce(source_identity.last_enumerated_at, l.last_seen_at)" in sql
+    assert SOURCE_KEY_SQL in sql
+    assert "JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id" in sql
+    assert (
+        "coalesce(source_identity.last_enumerated_at, canonical.last_seen_at)" in sql
+    )
+    assert "si.source_key = canonical.source_id" in sql
     assert "ORDER BY si.last_enumerated_at DESC NULLS LAST, si.id DESC" in sql
     assert "WHERE l.deleted_at IS NULL" in sql
+    assert "l.brokerage_id::text" not in sql
+    assert "source_identity.source_key" not in sql
+
+
+@pytest.mark.parametrize(
+    ("raw_data", "brokerage_slug", "external_id", "expected"),
+    [
+        ({"sourceKey": "33-realty"}, "33-realty", "legacy-1", "33-realty"),
+        (
+            {"latestInventoryObservation": {"sourceKey": "svn"}},
+            "svn",
+            "legacy-2",
+            "svn",
+        ),
+        (
+            {"latestInventoryObservation": {"primary": {"sourceKey": "jll"}}},
+            "jll",
+            "legacy-3",
+            "jll",
+        ),
+        ({"sourceKey": "cbre"}, "cbre", "dealflow:card:42", "cbre-dealflow"),
+        ({"sourceKey": "jll"}, "jll", "investor:42", "jll-investor"),
+        ({}, "colliers", "main:42", "colliers-main"),
+        ({}, "unique-properties", "legacy-4", "unique-properties"),
+        ({"sourceKey": "svn"}, "svn", None, "svn"),
+    ],
+)
+def test_canonical_source_identity_handles_legacy_rows_without_source_index(
+    raw_data, brokerage_slug, external_id, expected
+):
+    assert source_key_from_values(raw_data, brokerage_slug, external_id) == expected
+
+
+def test_fingerprint_ignores_a_stale_source_index_identity():
+    sql = QUERIES["inventory_generation_fingerprints"]
+    assert "si.source_key = canonical.source_id" in sql
+    assert source_key_from_values(
+        {"sourceKey": "cbre"}, "cbre", "dealflow:card:42"
+    ) == "cbre-dealflow"
 
 
 def test_source_key_inference_covers_preserved_and_merged_payloads():

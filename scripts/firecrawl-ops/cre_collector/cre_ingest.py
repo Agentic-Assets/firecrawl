@@ -306,38 +306,69 @@ for _source_key, (_slug, _prefix) in SOURCE_TO_BROKERAGE.items():
     SOURCE_KEYS_BY_SLUG.setdefault(_slug, set()).add(_source_key)
 
 
+FOLDED_SOURCE_PREFIXES = (
+    ("cbre", "dealflow:", "cbre-dealflow"),
+    ("jll", "investor:", "jll-investor"),
+    ("colliers", "main:", "colliers-main"),
+)
+SOURCE_KEY_JSON_PATHS = (
+    ("latestInventoryObservation", "sourceKey"),
+    ("latestInventoryObservation", "primary", "sourceKey"),
+    ("latestInventoryObservation", "secondary_pass", "sourceKey"),
+    ("sourceKey",),
+    ("primary", "sourceKey"),
+    ("secondary_pass", "sourceKey"),
+)
+
+
+def source_key_from_values(raw_data, brokerage_slug, external_id):
+    """Resolve the canonical source key for fixtures and non-SQL callers."""
+    for slug, prefix, source_key in FOLDED_SOURCE_PREFIXES:
+        if (
+            brokerage_slug == slug
+            and isinstance(external_id, str)
+            and external_id.startswith(prefix)
+        ):
+            return source_key
+
+    for path in SOURCE_KEY_JSON_PATHS:
+        value = raw_data
+        for key in path:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return brokerage_slug
+
+
+def _json_text_sql(listing_alias, path):
+    if len(path) == 1:
+        return f"{listing_alias}.raw_data->>'{path[0]}'"
+    return f"{listing_alias}.raw_data #>> '{{{','.join(path)}}}'"
+
+
 def source_key_sql(listing_alias="l", brokerage_alias="b"):
     """Return the canonical source-key expression shared by ingest validation."""
-    return f"""
-CASE
-  WHEN {brokerage_alias}.slug = 'cbre'
-    AND {listing_alias}.external_id LIKE 'dealflow:%' THEN 'cbre-dealflow'
-  WHEN {brokerage_alias}.slug = 'jll'
-    AND {listing_alias}.external_id LIKE 'investor:%' THEN 'jll-investor'
-  WHEN {brokerage_alias}.slug = 'colliers'
-    AND {listing_alias}.external_id LIKE 'main:%' THEN 'colliers-main'
-  ELSE COALESCE(
-    NULLIF(
-      {listing_alias}.raw_data #>> '{{latestInventoryObservation,sourceKey}}',
-      ''
-    ),
-    NULLIF(
-      {listing_alias}.raw_data
-        #>> '{{latestInventoryObservation,primary,sourceKey}}',
-      ''
-    ),
-    NULLIF(
-      {listing_alias}.raw_data
-        #>> '{{latestInventoryObservation,secondary_pass,sourceKey}}',
-      ''
-    ),
-    NULLIF({listing_alias}.raw_data->>'sourceKey', ''),
-    NULLIF({listing_alias}.raw_data #>> '{{primary,sourceKey}}', ''),
-    NULLIF({listing_alias}.raw_data #>> '{{secondary_pass,sourceKey}}', ''),
-    {brokerage_alias}.slug
-  )
-END
-"""
+    folded = "\n".join(
+        f"  WHEN {brokerage_alias}.slug = '{slug}'\n"
+        f"    AND {listing_alias}.external_id LIKE '{prefix}%' THEN '{source_key}'"
+        for slug, prefix, source_key in FOLDED_SOURCE_PREFIXES
+    )
+    raw_paths = ",\n    ".join(
+        f"NULLIF({_json_text_sql(listing_alias, path)}, '')"
+        for path in SOURCE_KEY_JSON_PATHS
+    )
+    return (
+        "\nCASE\n"
+        f"{folded}\n"
+        "  ELSE COALESCE(\n"
+        f"    {raw_paths},\n"
+        f"    {brokerage_alias}.slug\n"
+        "  )\n"
+        "END\n"
+    )
 
 
 def child_count_regressed(before, after):

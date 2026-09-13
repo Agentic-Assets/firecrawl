@@ -27,7 +27,6 @@ from cre_ingest import (
 )
 from cre_source_policy import load_source_policy
 
-
 SOURCE_KEY_SQL = source_key_sql()
 
 # Raw payloads may be stored flat, as a merged sale/lease pass, or beneath the
@@ -240,21 +239,30 @@ WITH required_sources(source_id) AS (
 ),
 live_inventory AS (
   SELECT
-    coalesce(nullif(source_identity.source_key, ''), l.brokerage_id::text)
-      AS source_id,
-    l.updated_at AS row_updated_at,
-    coalesce(source_identity.last_enumerated_at, l.last_seen_at)
+    canonical.source_id,
+    canonical.row_updated_at,
+    coalesce(source_identity.last_enumerated_at, canonical.last_seen_at)
       AS observation_at
-  FROM credeals.cre_listings l
+  FROM (
+    SELECT
+      l.brokerage_id,
+      l.external_id,
+      l.updated_at AS row_updated_at,
+      l.last_seen_at,
+      {SOURCE_KEY_SQL} AS source_id
+    FROM credeals.cre_listings l
+    JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+    WHERE l.deleted_at IS NULL
+  ) canonical
   LEFT JOIN LATERAL (
-    SELECT si.source_key, si.last_enumerated_at
+    SELECT si.last_enumerated_at
     FROM credeals.cre_source_index si
-    WHERE si.brokerage_id = l.brokerage_id
-      AND si.external_id = l.external_id
+    WHERE si.brokerage_id = canonical.brokerage_id
+      AND si.external_id = canonical.external_id
+      AND si.source_key = canonical.source_id
     ORDER BY si.last_enumerated_at DESC NULLS LAST, si.id DESC
     LIMIT 1
   ) source_identity ON true
-  WHERE l.deleted_at IS NULL
 )
 SELECT
   required_sources.source_id AS source_key,
