@@ -194,10 +194,28 @@ variables in its manifest. Database URLs and all other credentials remain
 excluded from that summary.
 
 The series manifest and per-source runs live under `out/checkpoint-series/`.
-Every manifest save also writes `source-health.json` in that series and updates
-`out/checkpoint-series/producer-source-health.json`. The latter is the stable,
-redaction-safe `producer-freshness-v2` handoff for GetCREdata. It advances only
-after a complete all-source series and its generation-exact database readback.
+Follow the newest series in a second terminal with the read-only dashboard:
+
+```bash
+cd scripts/firecrawl-ops/cre_collector
+python3 cre_series_status.py --watch 5
+```
+
+Pass an explicit series directory to pin the display to one immutable run, or
+use `--json` for a one-shot machine-readable snapshot. The dashboard reads only
+the atomic parent manifest and links its exact outer-attempt log. It does not
+infer process liveness, scan unbound child runs, call the database, or alter the
+running series. For item-level detail, follow the collection log named by the
+active child checkpoint only after confirming that child belongs to the current
+outer attempt.
+
+Every manifest save updates `source-health-publication.json` with the attempted
+publication state. While a series is incomplete it records `not_advanced` and
+leaves the last-good receipt unchanged. A complete all-source series with a
+generation-exact database readback also writes `source-health.json` in that
+series and advances `out/checkpoint-series/producer-source-health.json`. The
+latter is the stable, redaction-safe `producer-freshness-v2` handoff for
+GetCREdata.
 Each source binds its active row count, maximum row-update clock, maximum
 observation/enumeration clock, and complete publication status. The aggregate
 SHA-256 covers the canonical key-sorted fingerprint map, so an idempotent replay

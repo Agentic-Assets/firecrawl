@@ -49,7 +49,7 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -gt 0 ] || { echo "--expected-sha requires a commit" >&2; exit 2; }
       EXPECTED_SHA="$1"
       ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$DIR/cre_status.sh"; exit 0 ;;
     *) echo "unknown argument: $1 (try --full-health or --expected-sha SHA)" >&2; exit 2 ;;
   esac
   shift

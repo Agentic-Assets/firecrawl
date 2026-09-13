@@ -768,6 +768,13 @@ def build_validate_argv(
 def safe_process_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ if base is None else base)
     env.pop("CRE_ACTIVATE_STATUS", None)
+    # Collector operators use FIRECRAWL_API_URL, while the shared healthcheck
+    # predates that name and reads API_URL. Keep every child on the same
+    # explicitly selected endpoint so a healthy isolated Firecrawl instance is
+    # not mistaken for an unrelated service on the legacy port.
+    firecrawl_api_url = env.get("FIRECRAWL_API_URL")
+    if firecrawl_api_url:
+        env["API_URL"] = firecrawl_api_url
     return env
 
 
