@@ -1,13 +1,29 @@
-import express, { Request, Response } from 'express';
-import { chromium as stealthChromium } from 'playwright-extra';
-import { Browser, BrowserContext, Route, Request as PlaywrightRequest, Page } from 'playwright';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-import dotenv from 'dotenv';
-import UserAgent from 'user-agents';
-import { getError } from './helpers/get_error';
-import { lookup } from 'dns/promises';
-import IPAddr from 'ipaddr.js';
-import { Server, RequestError } from 'proxy-chain';
+import express, { Request, Response } from "express";
+import { chromium as stealthChromium } from "playwright-extra";
+import {
+  Browser,
+  BrowserContext,
+  Route,
+  Request as PlaywrightRequest,
+  Page,
+} from "playwright";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import dotenv from "dotenv";
+import UserAgent from "user-agents";
+import { getError } from "./helpers/get_error";
+import { lookup } from "dns/promises";
+import IPAddr from "ipaddr.js";
+import { Server, RequestError } from "proxy-chain";
+import {
+  BROWSER_BATCH_FETCH_MAX_RESPONSE_BYTES,
+  BROWSER_BATCH_FETCH_MAX_TOTAL_DURATION_MS,
+  BROWSER_BATCH_FETCH_MAX_TOTAL_RESPONSE_BYTES,
+  BrowserBatchHardTimeoutError,
+  Semaphore,
+  cleanupBrowserBatchResources,
+  parseBrowserBatchFetchInput,
+  withBrowserBatchHardTimeout,
+} from "./browser_batch_fetch";
 
 // Register stealth plugin before any launch call.
 stealthChromium.use(StealthPlugin());
@@ -17,16 +33,21 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3003;
 
+app.use("/browser-batch-fetch", express.json({ limit: "600kb" }));
 app.use(express.json());
 
 const BLOCK_MEDIA =
-  (process.env.BLOCK_MEDIA || 'False').toUpperCase() === 'TRUE';
+  (process.env.BLOCK_MEDIA || "False").toUpperCase() === "TRUE";
 const MAX_CONCURRENT_PAGES = Math.max(
   1,
-  Number.parseInt(process.env.MAX_CONCURRENT_PAGES ?? '10', 10) || 10,
+  Number.parseInt(process.env.MAX_CONCURRENT_PAGES ?? "10", 10) || 10,
+);
+const MAX_CONCURRENT_BROWSER_BATCHES = Math.max(
+  1,
+  Number.parseInt(process.env.MAX_CONCURRENT_BROWSER_BATCHES ?? "1", 10) || 1,
 );
 const ALLOW_LOCAL_WEBHOOKS =
-  (process.env.ALLOW_LOCAL_WEBHOOKS || 'False').toUpperCase() === 'TRUE';
+  (process.env.ALLOW_LOCAL_WEBHOOKS || "False").toUpperCase() === "TRUE";
 
 const PROXY_SERVER = process.env.PROXY_SERVER || null;
 const PROXY_USERNAME = process.env.PROXY_USERNAME || null;
@@ -38,12 +59,12 @@ class InsecureConnectionError extends Error {
     reason: string,
   ) {
     super(`Blocked insecure target URL "${blockedUrl}": ${reason}`);
-    this.name = 'InsecureConnectionError';
+    this.name = "InsecureConnectionError";
   }
 }
 
 const isInternalHost = async (hostname: string): Promise<boolean> => {
-  const host = hostname.toLowerCase().replace(/\.$/, '');
+  const host = hostname.toLowerCase().replace(/\.$/, "");
   if (!host) return true;
 
   let addresses: string[];
@@ -58,34 +79,37 @@ const isInternalHost = async (hostname: string): Promise<boolean> => {
   }
   return (
     addresses.length === 0 ||
-    addresses.some((a) => IPAddr.parse(a).range() !== 'unicast')
+    addresses.some((a) => IPAddr.parse(a).range() !== "unicast")
   );
 };
 
-const assertSafeTargetUrl = async (urlString: string): Promise<void> => {
+const assertSafeTargetUrl = async (
+  urlString: string,
+  allowLocalWebhooks = ALLOW_LOCAL_WEBHOOKS,
+): Promise<void> => {
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(urlString);
   } catch {
-    throw new InsecureConnectionError(urlString, 'URL is invalid');
+    throw new InsecureConnectionError(urlString, "URL is invalid");
   }
-  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
     throw new InsecureConnectionError(
       urlString,
       `unsupported protocol "${parsedUrl.protocol}"`,
     );
   }
-  if (!ALLOW_LOCAL_WEBHOOKS && (await isInternalHost(parsedUrl.hostname))) {
+  if (!allowLocalWebhooks && (await isInternalHost(parsedUrl.hostname))) {
     throw new InsecureConnectionError(
       urlString,
-      'resolves to a private/internal address',
+      "resolves to a private/internal address",
     );
   }
 };
 
 const buildUpstreamProxyUrl = (): string | undefined => {
   if (!PROXY_SERVER) return undefined;
-  const server = PROXY_SERVER.includes('://')
+  const server = PROXY_SERVER.includes("://")
     ? PROXY_SERVER
     : `http://${PROXY_SERVER}`;
   const url = new URL(server);
@@ -97,11 +121,11 @@ const buildUpstreamProxyUrl = (): string | undefined => {
 const startSSRFProxy = async (): Promise<number> => {
   const server = new Server({
     port: 0,
-    host: '127.0.0.1',
+    host: "127.0.0.1",
     prepareRequestFunction: async ({ hostname }) => {
       if (!ALLOW_LOCAL_WEBHOOKS && (await isInternalHost(hostname))) {
         throw new RequestError(
-          'Blocked: target resolves to a private/internal address',
+          "Blocked: target resolves to a private/internal address",
           403,
         );
       }
@@ -117,60 +141,25 @@ let ssrfProxyPort: number;
 type ContextSecurityState = {
   blockedNavigationRequestUrl: string | null;
 };
-class Semaphore {
-  private permits: number;
-  private queue: (() => void)[] = [];
-
-  constructor(permits: number) {
-    this.permits = permits;
-  }
-
-  async acquire(): Promise<void> {
-    if (this.permits > 0) {
-      this.permits--;
-      return Promise.resolve();
-    }
-
-    return new Promise<void>((resolve) => {
-      this.queue.push(resolve);
-    });
-  }
-
-  release(): void {
-    this.permits++;
-    if (this.queue.length > 0) {
-      const nextResolve = this.queue.shift();
-      if (nextResolve) {
-        this.permits--;
-        nextResolve();
-      }
-    }
-  }
-
-  getAvailablePermits(): number {
-    return this.permits;
-  }
-
-  getQueueLength(): number {
-    return this.queue.length;
-  }
-}
 const pageSemaphore = new Semaphore(MAX_CONCURRENT_PAGES);
+const browserBatchSemaphore = new Semaphore(
+  Math.min(MAX_CONCURRENT_BROWSER_BATCHES, MAX_CONCURRENT_PAGES),
+);
 
 const AD_SERVING_DOMAINS = [
-  'doubleclick.net',
-  'adservice.google.com',
-  'googlesyndication.com',
-  'googletagservices.com',
-  'googletagmanager.com',
-  'google-analytics.com',
-  'adsystem.com',
-  'adservice.com',
-  'adnxs.com',
-  'ads-twitter.com',
-  'facebook.net',
-  'fbcdn.net',
-  'amazon-adsystem.com',
+  "doubleclick.net",
+  "adservice.google.com",
+  "googlesyndication.com",
+  "googletagservices.com",
+  "googletagmanager.com",
+  "google-analytics.com",
+  "adsystem.com",
+  "adservice.com",
+  "adnxs.com",
+  "ads-twitter.com",
+  "facebook.net",
+  "fbcdn.net",
+  "amazon-adsystem.com",
 ];
 
 interface UrlModel {
@@ -188,20 +177,20 @@ const initializeBrowser = async () => {
   browser = await (stealthChromium.launch({
     headless: true,
     args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--no-first-run',
-      '--no-zygote',
-      '--disable-gpu',
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--no-first-run",
+      "--no-zygote",
+      "--disable-gpu",
       // Hide automation indicators
-      '--disable-blink-features=AutomationControlled',
-      '--disable-features=IsolateOrigins,site-per-process',
-      '--disable-site-isolation-trials',
+      "--disable-blink-features=AutomationControlled",
+      "--disable-features=IsolateOrigins,site-per-process",
+      "--disable-site-isolation-trials",
       // More realistic fingerprint
-      '--enable-features=NetworkService,NetworkServiceLogging',
-      '--lang=en-US,en',
-    ]
+      "--enable-features=NetworkService,NetworkServiceLogging",
+      "--lang=en-US,en",
+    ],
   }) as unknown as Promise<Browser>);
 };
 
@@ -253,8 +242,17 @@ const STEALTH_INIT_SCRIPT = `
   })();
 `;
 
-const createContext = async (skipTlsVerification: boolean = false, userAgentOverride?: string): Promise<{ context: BrowserContext; securityState: ContextSecurityState }> => {
-  const userAgent = userAgentOverride || new UserAgent({ deviceCategory: 'desktop' }).toString();
+const createContext = async (
+  skipTlsVerification: boolean = false,
+  userAgentOverride?: string,
+  allowLocalWebhooks = ALLOW_LOCAL_WEBHOOKS,
+): Promise<{
+  context: BrowserContext;
+  securityState: ContextSecurityState;
+}> => {
+  const userAgent =
+    userAgentOverride ||
+    new UserAgent({ deviceCategory: "desktop" }).toString();
   const viewport = { width: 1280, height: 800 };
   const securityState: ContextSecurityState = {
     blockedNavigationRequestUrl: null,
@@ -264,9 +262,9 @@ const createContext = async (skipTlsVerification: boolean = false, userAgentOver
     userAgent,
     viewport,
     ignoreHTTPSErrors: skipTlsVerification,
-    serviceWorkers: 'block',
-    locale: 'en-US',
-    timezoneId: 'America/New_York',
+    serviceWorkers: "block",
+    locale: "en-US",
+    timezoneId: "America/New_York",
   };
 
   contextOptions.proxy = {
@@ -280,7 +278,7 @@ const createContext = async (skipTlsVerification: boolean = false, userAgentOver
 
   if (BLOCK_MEDIA) {
     await newContext.route(
-      '**/*.{png,jpg,jpeg,gif,svg,mp3,mp4,avi,flac,ogg,wav,webm}',
+      "**/*.{png,jpg,jpeg,gif,svg,mp3,mp4,avi,flac,ogg,wav,webm}",
       async (route: Route, request: PlaywrightRequest) => {
         await route.abort();
       },
@@ -289,18 +287,18 @@ const createContext = async (skipTlsVerification: boolean = false, userAgentOver
 
   // Intercept all requests to avoid loading ads
   await newContext.route(
-    '**/*',
+    "**/*",
     async (route: Route, request: PlaywrightRequest) => {
       const requestUrlString = request.url();
       try {
-        await assertSafeTargetUrl(requestUrlString);
+        await assertSafeTargetUrl(requestUrlString, allowLocalWebhooks);
       } catch (error) {
         if (error instanceof InsecureConnectionError) {
           if (request.isNavigationRequest()) {
             securityState.blockedNavigationRequestUrl = requestUrlString;
           }
           console.warn(`Blocked request: ${requestUrlString}`);
-          return route.abort('blockedbyclient');
+          return route.abort("blockedbyclient");
         }
         throw error;
       }
@@ -336,7 +334,7 @@ const isValidUrl = (urlString: string): boolean => {
 const scrapePage = async (
   page: Page,
   url: string,
-  waitUntil: 'load' | 'networkidle',
+  waitUntil: "load" | "networkidle",
   waitAfterLoad: number,
   timeout: number,
   checkSelector: string | undefined,
@@ -352,7 +350,7 @@ const scrapePage = async (
     if (securityState.blockedNavigationRequestUrl) {
       throw new InsecureConnectionError(
         securityState.blockedNavigationRequestUrl,
-        'navigation to private/internal resource is not allowed',
+        "navigation to private/internal resource is not allowed",
       );
     }
     throw error;
@@ -366,7 +364,7 @@ const scrapePage = async (
     try {
       await page.waitForSelector(checkSelector, { timeout });
     } catch (error) {
-      throw new Error('Required selector not found');
+      throw new Error("Required selector not found");
     }
   }
 
@@ -376,14 +374,14 @@ const scrapePage = async (
   if (response) {
     headers = await response.allHeaders();
     ct = Object.entries(headers).find(
-      ([key]) => key.toLowerCase() === 'content-type',
+      ([key]) => key.toLowerCase() === "content-type",
     )?.[1];
     if (
       ct &&
-      (ct.toLowerCase().includes('application/json') ||
-        ct.toLowerCase().includes('text/plain'))
+      (ct.toLowerCase().includes("application/json") ||
+        ct.toLowerCase().includes("text/plain"))
     ) {
-      content = (await response.body()).toString('utf8'); // TODO: determine real encoding
+      content = (await response.body()).toString("utf8"); // TODO: determine real encoding
     }
   }
 
@@ -395,7 +393,7 @@ const scrapePage = async (
   };
 };
 
-app.get('/health', async (req: Request, res: Response) => {
+app.get("/health", async (req: Request, res: Response) => {
   try {
     if (!browser) {
       await initializeBrowser();
@@ -407,20 +405,265 @@ app.get('/health', async (req: Request, res: Response) => {
     await testContext.close();
 
     res.status(200).json({
-      status: 'healthy',
+      status: "healthy",
       maxConcurrentPages: MAX_CONCURRENT_PAGES,
       activePages: MAX_CONCURRENT_PAGES - pageSemaphore.getAvailablePermits(),
     });
   } catch (error) {
-    console.error('Health check failed:', error);
+    console.error("Health check failed:", error);
     res.status(503).json({
-      status: 'unhealthy',
-      error: error instanceof Error ? error.message : 'Unknown error occurred',
+      status: "unhealthy",
+      error: error instanceof Error ? error.message : "Unknown error occurred",
     });
   }
 });
 
-app.post('/scrape', async (req: Request, res: Response) => {
+app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
+  const batchDeadlineAt =
+    Date.now() + BROWSER_BATCH_FETCH_MAX_TOTAL_DURATION_MS;
+  let input;
+  let batchPermitAcquired = false;
+  let pagePermitAcquired = false;
+  try {
+    input = parseBrowserBatchFetchInput(req.body);
+    // The parser already requires every request to share the bootstrap origin,
+    // so resolve that one host once. This endpoint always rejects local/private
+    // destinations, even when legacy /scrape local-webhook support is enabled.
+    await withBrowserBatchHardTimeout(
+      assertSafeTargetUrl(input.bootstrapUrl, false),
+      Math.max(1, batchDeadlineAt - Date.now()),
+      "Browser batch target validation exceeded its hard deadline",
+    );
+  } catch (error) {
+    return res.status(400).json({
+      error:
+        error instanceof Error
+          ? error.message
+          : "Invalid browser batch request",
+    });
+  }
+
+  try {
+    if (!browser) {
+      await withBrowserBatchHardTimeout(
+        initializeBrowser(),
+        Math.max(1, batchDeadlineAt - Date.now()),
+        "Browser batch initialization exceeded its hard deadline",
+      );
+    }
+    await browserBatchSemaphore.acquire(
+      Math.max(1, batchDeadlineAt - Date.now()),
+    );
+    batchPermitAcquired = true;
+    await pageSemaphore.acquire(Math.max(1, batchDeadlineAt - Date.now()));
+    pagePermitAcquired = true;
+  } catch (error) {
+    if (batchPermitAcquired && !pagePermitAcquired) {
+      browserBatchSemaphore.release();
+    }
+    console.error("Browser batch admission error:", error);
+    return res
+      .status(503)
+      .json({ error: "Browser batch service is busy or unavailable" });
+  }
+
+  let requestContext: BrowserContext | null = null;
+  let page: Page | null = null;
+  let lateContextOwnsPermit = false;
+  let permitsReleased = false;
+  const releaseBatchPermits = (): void => {
+    if (permitsReleased) return;
+    permitsReleased = true;
+    pageSemaphore.release();
+    browserBatchSemaphore.release();
+  };
+  try {
+    let contextBundle;
+    try {
+      contextBundle = await withBrowserBatchHardTimeout(
+        createContext(false, undefined, false),
+        Math.max(1, batchDeadlineAt - Date.now()),
+        "Browser batch context creation exceeded its hard deadline",
+        async (lateBundle) => {
+          await cleanupBrowserBatchResources(
+            null,
+            () => lateBundle.context.close(),
+            releaseBatchPermits,
+          );
+        },
+      );
+    } catch (error) {
+      if (error instanceof BrowserBatchHardTimeoutError) {
+        // The context may still arrive. Its late cleanup owns the permits; if
+        // it never arrives or cannot close, capacity remains quarantined until
+        // the service is restarted.
+        lateContextOwnsPermit = true;
+      }
+      throw error;
+    }
+    requestContext = contextBundle.context;
+    page = await withBrowserBatchHardTimeout(
+      requestContext.newPage(),
+      Math.max(1, batchDeadlineAt - Date.now()),
+      "Browser batch page creation exceeded its hard deadline",
+    );
+    const bootstrapTimeoutMs = Math.min(
+      input.timeoutMs,
+      Math.max(1, batchDeadlineAt - Date.now()),
+    );
+    const bootstrapResponse = await withBrowserBatchHardTimeout(
+      page.goto(input.bootstrapUrl, {
+        waitUntil: "load",
+        timeout: bootstrapTimeoutMs,
+      }),
+      Math.max(
+        1,
+        Math.min(batchDeadlineAt - Date.now(), bootstrapTimeoutMs + 5_000),
+      ),
+      "Browser batch bootstrap navigation exceeded its hard deadline",
+    );
+    const bootstrapStatus = bootstrapResponse?.status() ?? 0;
+    const requestedOrigin = new URL(input.bootstrapUrl).origin;
+    const finalOrigin = new URL(page.url()).origin;
+    if (finalOrigin !== requestedOrigin) {
+      return res.status(502).json({
+        error: "Bootstrap redirected outside its requested origin",
+        bootstrapStatus,
+      });
+    }
+    if (input.waitAfterLoadMs > 0) {
+      await withBrowserBatchHardTimeout(
+        page.waitForTimeout(input.waitAfterLoadMs),
+        Math.max(
+          1,
+          Math.min(batchDeadlineAt - Date.now(), input.waitAfterLoadMs + 5_000),
+        ),
+        "Browser batch post-load wait exceeded its hard deadline",
+      );
+    }
+    if (bootstrapStatus < 200 || bootstrapStatus >= 400) {
+      return res.status(502).json({
+        error: `Bootstrap returned HTTP ${bootstrapStatus}`,
+        bootstrapStatus,
+      });
+    }
+
+    const responses: Array<{
+      status: number;
+      contentType: string | null;
+      body: string;
+    }> = [];
+    let totalResponseBytes = 0;
+    for (const request of input.requests) {
+      const remainingBatchMs = batchDeadlineAt - Date.now();
+      if (remainingBatchMs <= 0) {
+        throw new Error("Browser batch fetch exceeded its aggregate deadline");
+      }
+      const evaluateOperation = page.evaluate(
+        ({ request, timeoutMs, maxResponseBytes }) => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), timeoutMs);
+          return fetch(request.url, {
+            method: request.method,
+            headers: request.headers,
+            body: request.body,
+            credentials: "same-origin",
+            cache: "no-store",
+            redirect: "manual",
+            signal: controller.signal,
+          })
+            .then((fetched) => {
+              const declaredLength = Number(
+                fetched.headers.get("content-length"),
+              );
+              if (
+                Number.isFinite(declaredLength) &&
+                declaredLength > maxResponseBytes
+              ) {
+                throw new Error(
+                  "Browser batch response exceeds the per-response byte limit",
+                );
+              }
+              if (!fetched.body) {
+                return {
+                  status: fetched.status,
+                  contentType: fetched.headers.get("content-type"),
+                  body: "",
+                };
+              }
+              const reader = fetched.body.getReader();
+              const decoder = new TextDecoder();
+              let bytes = 0;
+              let body = "";
+              const readNext = (): Promise<{
+                status: number;
+                contentType: string | null;
+                body: string;
+              }> =>
+                reader.read().then((chunk) => {
+                  if (chunk.done) {
+                    body += decoder.decode();
+                    return {
+                      status: fetched.status,
+                      contentType: fetched.headers.get("content-type"),
+                      body,
+                    };
+                  }
+                  bytes += chunk.value.byteLength;
+                  if (bytes > maxResponseBytes) {
+                    return reader.cancel().then(() => {
+                      throw new Error(
+                        "Browser batch response exceeds the per-response byte limit",
+                      );
+                    });
+                  }
+                  body += decoder.decode(chunk.value, { stream: true });
+                  return readNext();
+                });
+              return readNext();
+            })
+            .finally(() => {
+              clearTimeout(timer);
+            });
+        },
+        {
+          request,
+          timeoutMs: Math.min(input.timeoutMs, remainingBatchMs),
+          maxResponseBytes: BROWSER_BATCH_FETCH_MAX_RESPONSE_BYTES,
+        },
+      );
+      const response = await withBrowserBatchHardTimeout(
+        evaluateOperation,
+        Math.max(1, Math.min(remainingBatchMs, input.timeoutMs + 5_000)),
+        "Browser batch page evaluation exceeded its hard deadline",
+      );
+      totalResponseBytes += Buffer.byteLength(response.body, "utf8");
+      if (totalResponseBytes > BROWSER_BATCH_FETCH_MAX_TOTAL_RESPONSE_BYTES) {
+        throw new Error(
+          "Browser batch responses exceed the aggregate byte limit",
+        );
+      }
+      responses.push(response);
+    }
+    return res.json({ bootstrapStatus, responses });
+  } catch (error) {
+    if (error instanceof InsecureConnectionError) {
+      return res.status(403).json({ error: error.message });
+    }
+    console.error("Browser batch fetch error:", error);
+    return res.status(502).json({ error: "Browser batch fetch failed" });
+  } finally {
+    if (!lateContextOwnsPermit) {
+      await cleanupBrowserBatchResources(
+        page ? () => page!.close() : null,
+        requestContext ? () => requestContext!.close() : null,
+        releaseBatchPermits,
+      );
+    }
+  }
+});
+
+app.post("/scrape", async (req: Request, res: Response) => {
   const {
     url,
     wait_after_load = 0,
@@ -434,17 +677,17 @@ app.post('/scrape', async (req: Request, res: Response) => {
   console.log(`URL: ${url}`);
   console.log(`Wait After Load: ${wait_after_load}`);
   console.log(`Timeout: ${timeout}`);
-  console.log(`Headers: ${headers ? JSON.stringify(headers) : 'None'}`);
-  console.log(`Check Selector: ${check_selector ? check_selector : 'None'}`);
+  console.log(`Headers: ${headers ? JSON.stringify(headers) : "None"}`);
+  console.log(`Check Selector: ${check_selector ? check_selector : "None"}`);
   console.log(`Skip TLS Verification: ${skip_tls_verification}`);
   console.log(`==================================================`);
 
   if (!url) {
-    return res.status(400).json({ error: 'URL is required' });
+    return res.status(400).json({ error: "URL is required" });
   }
 
   if (!isValidUrl(url)) {
-    return res.status(400).json({ error: 'Invalid URL' });
+    return res.status(400).json({ error: "Invalid URL" });
   }
 
   try {
@@ -452,7 +695,7 @@ app.post('/scrape', async (req: Request, res: Response) => {
   } catch (error) {
     if (error instanceof InsecureConnectionError) {
       return res.json({
-        content: '',
+        content: "",
         pageStatusCode: 403,
         pageError: error.message,
       });
@@ -462,7 +705,7 @@ app.post('/scrape', async (req: Request, res: Response) => {
 
   if (!PROXY_SERVER) {
     console.warn(
-      '⚠️ WARNING: No proxy server provided. Your IP address may be blocked.',
+      "⚠️ WARNING: No proxy server provided. Your IP address may be blocked.",
     );
   }
 
@@ -479,7 +722,7 @@ app.post('/scrape', async (req: Request, res: Response) => {
   try {
     const userAgentOverride = headers
       ? Object.entries(headers).find(
-          ([k]) => k.toLowerCase() === 'user-agent',
+          ([k]) => k.toLowerCase() === "user-agent",
         )?.[1]
       : undefined;
 
@@ -500,7 +743,7 @@ app.post('/scrape', async (req: Request, res: Response) => {
       // it on every request, including redirects — matching what a raw HTTP
       // client does.
       const cookieHeader = Object.entries(headers).find(
-        ([k]) => k.toLowerCase() === 'cookie',
+        ([k]) => k.toLowerCase() === "cookie",
       )?.[1];
       if (cookieHeader) {
         // Scope cookies to the registrable domain (e.g. ".example.com"), not
@@ -513,8 +756,8 @@ app.post('/scrape', async (req: Request, res: Response) => {
         let cookieDomain: string | undefined;
         try {
           const host = new URL(url).hostname;
-          const labels = host.split('.');
-          cookieDomain = labels.length > 2 ? labels.slice(-2).join('.') : host;
+          const labels = host.split(".");
+          cookieDomain = labels.length > 2 ? labels.slice(-2).join(".") : host;
         } catch {
           cookieDomain = undefined;
         }
@@ -526,16 +769,16 @@ app.post('/scrape', async (req: Request, res: Response) => {
           path?: string;
         };
         const cookies = cookieHeader
-          .split(';')
+          .split(";")
           .map((pair) => pair.trim())
           .filter(Boolean)
           .map((pair): SeedCookie | null => {
-            const eq = pair.indexOf('=');
+            const eq = pair.indexOf("=");
             if (eq === -1) return null;
             const name = pair.slice(0, eq).trim();
             const value = pair.slice(eq + 1).trim();
             return cookieDomain
-              ? { name, value, domain: `.${cookieDomain}`, path: '/' }
+              ? { name, value, domain: `.${cookieDomain}`, path: "/" }
               : { name, value, url };
           })
           .filter((c): c is SeedCookie => c !== null);
@@ -543,7 +786,7 @@ app.post('/scrape', async (req: Request, res: Response) => {
           try {
             await requestContext.addCookies(cookies);
           } catch (error) {
-            console.warn('Failed to seed cookies from Cookie header:', error);
+            console.warn("Failed to seed cookies from Cookie header:", error);
           }
         }
       }
@@ -553,7 +796,7 @@ app.post('/scrape', async (req: Request, res: Response) => {
       const filteredHeaders = Object.fromEntries(
         Object.entries(headers).filter(([k]) => {
           const lower = k.toLowerCase();
-          return lower !== 'user-agent' && lower !== 'cookie';
+          return lower !== "user-agent" && lower !== "cookie";
         }),
       );
       if (Object.keys(filteredHeaders).length > 0) {
@@ -564,7 +807,7 @@ app.post('/scrape', async (req: Request, res: Response) => {
     const result = await scrapePage(
       page,
       url,
-      'load',
+      "load",
       wait_after_load,
       timeout,
       check_selector,
@@ -590,19 +833,21 @@ app.post('/scrape', async (req: Request, res: Response) => {
   } catch (error) {
     if (error instanceof InsecureConnectionError) {
       return res.json({
-        content: '',
+        content: "",
         pageStatusCode: 403,
         pageError: error.message,
       });
     }
-    console.error('Scrape error:', error);
+    console.error("Scrape error:", error);
     res
       .status(500)
-      .json({ error: 'An error occurred while fetching the page.' });
+      .json({ error: "An error occurred while fetching the page." });
   } finally {
-    if (page) await page.close();
-    if (requestContext) await requestContext.close();
-    pageSemaphore.release();
+    await cleanupBrowserBatchResources(
+      page ? () => page!.close() : null,
+      requestContext ? () => requestContext!.close() : null,
+      () => pageSemaphore.release(),
+    );
   }
 });
 
@@ -614,14 +859,14 @@ const start = async () => {
   });
 };
 start().catch((error) => {
-  console.error('Failed to start server:', error);
+  console.error("Failed to start server:", error);
   process.exit(1);
 });
 
 if (require.main === module) {
-  process.on('SIGINT', () => {
+  process.on("SIGINT", () => {
     shutdownBrowser().then(() => {
-      console.log('Browser closed');
+      console.log("Browser closed");
       process.exit(0);
     });
   });

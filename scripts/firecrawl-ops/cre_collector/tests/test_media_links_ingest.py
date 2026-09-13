@@ -667,7 +667,7 @@ def test_build_sql_numeric_structured_coalesce_keep():
     sql = _sql()
     assert "noi               = COALESCE(EXCLUDED.noi, t.noi)" in sql
     assert "occupancy_rate    = COALESCE(EXCLUDED.occupancy_rate, t.occupancy_rate)" in sql
-    assert "units             = COALESCE(EXCLUDED.units, t.units)" in sql
+    assert "ELSE COALESCE(EXCLUDED.units, t.units) END" in sql
     # arrays COALESCE-keep too
     assert "highlights        = COALESCE(EXCLUDED.highlights, t.highlights)" in sql
     assert "amenities         = COALESCE(EXCLUDED.amenities, t.amenities)" in sql

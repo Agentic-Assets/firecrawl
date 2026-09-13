@@ -26,6 +26,7 @@ import {
   jllCachedAtMeetsBoundary,
   jllStrandedMedia,
   jllStrandedDocs,
+  jllReconcileDocumentChannels,
   jllStrandedStructured,
   fetchJllSearchPage,
   jllGraphqlItemToListing,
@@ -520,6 +521,73 @@ test("JLL detail enrichment fails closed when provider id or URL differs from in
   }
 });
 
+test("JLL enrichment preserves raw floor plans and authoritative child typing", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-floor-plan-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const base = {
+    id: "101",
+    url: "https://property.jll.com/listings/floor-plan-proof",
+    name: "Floor Plan Proof",
+  };
+  const floorPlans = {
+    images: ["https://cdn.jll.com/assets/preview.jpg"],
+    files: [
+      {
+        url: "https://CDN.JLL.COM/assets/opaque.pdf/",
+        image: "https://cdn.jll.com/assets/preview.jpg",
+        type: "floorplan",
+      },
+    ],
+  };
+  try {
+    const nextData = {
+      props: {
+        pageProps: {
+          property: {
+            id: "101",
+            pageUrl: "/listings/floor-plan-proof",
+            floorPlans,
+            brochures: [
+              "https://cdn.jll.com/assets/opaque.pdf",
+              "https://cdn.jll.com/assets/brochure.pdf",
+            ],
+          },
+          brokers: [],
+        },
+      },
+    };
+    writeJllDetailCache(base.url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify(nextData) +
+        "</script>",
+      markdown: "",
+      links: ["https://cdn.jll.com/assets/opaque.pdf"],
+      images: [],
+    });
+
+    const enriched = await enrichJllListing(base);
+    assert.equal(enriched.detailError, undefined);
+    assert.deepEqual(enriched.jllDetail.floorPlans, floorPlans);
+    assert.equal(enriched.jllDetail.floorPlanAssetCount, 2);
+    assert.deepEqual(enriched.brochures, [
+      { name: "brochure", url: "https://cdn.jll.com/assets/brochure.pdf" },
+    ]);
+    assert.deepEqual(
+      enriched.documents.map(({ url, docType }: any) => ({ url, docType })),
+      [
+        { url: "https://CDN.JLL.COM/assets/opaque.pdf/", docType: "floor_plan" },
+        { url: "https://cdn.jll.com/assets/preview.jpg", docType: "floor_plan" },
+      ]
+    );
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
 test("jll detail cache round-trips through temp dir", () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "jll-detail-cache-"));
   const prev = process.env.JLL_DETAIL_CACHE_DIR;
@@ -825,11 +893,133 @@ test("jllStrandedMedia: videos as bare strings (provider-classified), tours/360 
   assert.equal(out.media.filter((m) => m.mediaType === "matterport").length, 0);
 });
 
-test("jllStrandedDocs classifies floor plans as floor_plan DocItems", () => {
-  const docs = jllStrandedDocs({ floorPlans: ["https://cdn.jll.com/fp/level-1.pdf"] });
-  assert.equal(docs.length, 1);
-  assert.equal(docs[0].docType, "floor_plan");
-  assert.equal(docs[0].url, "https://cdn.jll.com/fp/level-1.pdf");
+test("jllStrandedDocs classifies and dedupes legacy floor-plan arrays", () => {
+  const docs = jllStrandedDocs({
+    floorPlans: [
+      "https://cdn.jll.com/fp/level-1.pdf",
+      "https://cdn.jll.com/fp/level-1-image.jpg",
+      "https://CDN.JLL.COM/fp/level-1.pdf",
+    ],
+  });
+  assert.deepEqual(
+    docs.map(({ url, docType }) => ({ url, docType })),
+    [
+      { url: "https://cdn.jll.com/fp/level-1.pdf", docType: "floor_plan" },
+      { url: "https://cdn.jll.com/fp/level-1-image.jpg", docType: "floor_plan" },
+    ]
+  );
+});
+
+test("jllStrandedDocs captures live object images and file URL/image forms", () => {
+  const docs = jllStrandedDocs({
+    floorPlans: {
+      images: [
+        "https://cdn.jll.com/fp/site-plan.jpg",
+        "https://cdn.jll.com/fp/shared-preview.png",
+      ],
+      files: [
+        {
+          url: "https://cdn.jll.com/fp/level-2.pdf",
+          image: "https://cdn.jll.com/fp/level-2-preview.jpg",
+          type: "floorplan",
+        },
+        {
+          url: "https://cdn.jll.com/fp/level-2.pdf",
+          image: "https://cdn.jll.com/fp/shared-preview.png",
+          type: "floorplan",
+        },
+      ],
+    },
+  });
+  assert.deepEqual(
+    docs.map(({ url, docType }) => ({ url, docType })),
+    [
+      { url: "https://cdn.jll.com/fp/site-plan.jpg", docType: "floor_plan" },
+      { url: "https://cdn.jll.com/fp/shared-preview.png", docType: "floor_plan" },
+      { url: "https://cdn.jll.com/fp/level-2.pdf", docType: "floor_plan" },
+      { url: "https://cdn.jll.com/fp/level-2-preview.jpg", docType: "floor_plan" },
+    ]
+  );
+  const harvested = harvestDetail(
+    { rawHtml: "", markdown: "", links: [], images: [] } as any,
+    { extraDocs: docs }
+  );
+  assert.deepEqual(
+    harvested.documents.map(({ url, docType }) => ({ url, docType })),
+    docs.map(({ url, docType }) => ({ url, docType }))
+  );
+  assert.deepEqual(harvested.images, []);
+});
+
+test("JLL document reconciliation makes native floor-plan typing authoritative", () => {
+  const floorPlanDocuments = jllStrandedDocs({
+    floorPlans: {
+      images: [],
+      files: [{ url: "https://CDN.JLL.COM/assets/opaque.pdf/", type: "floorplan" }],
+    },
+  });
+  const harvested = harvestDetail(
+    {
+      rawHtml: "",
+      markdown: "",
+      links: [
+        "https://cdn.jll.com/assets/opaque.pdf",
+        "https://cdn.jll.com/assets/other.pdf",
+      ],
+      images: [],
+    } as any,
+    { extraDocs: floorPlanDocuments }
+  );
+  const reconciled = jllReconcileDocumentChannels(
+    [
+      "https://cdn.jll.com/assets/opaque.pdf#page=2",
+      "https://cdn.jll.com/assets/brochure.pdf",
+      "https://CDN.JLL.COM/assets/brochure.pdf/",
+    ],
+    harvested.documents,
+    floorPlanDocuments
+  );
+
+  assert.deepEqual(reconciled.brochures, ["https://cdn.jll.com/assets/brochure.pdf"]);
+  assert.deepEqual(
+    reconciled.documents.map(({ url, docType }) => ({ url, docType })),
+    [
+      { url: "https://CDN.JLL.COM/assets/opaque.pdf/", docType: "floor_plan" },
+      { url: "https://cdn.jll.com/assets/other.pdf", docType: "other" },
+    ]
+  );
+});
+
+test("jllStrandedDocs surfaces unknown non-null floor-plan shapes", () => {
+  assert.deepEqual(jllStrandedDocs({}), []);
+  assert.deepEqual(jllStrandedDocs({ floorPlans: null }), []);
+  assert.throws(
+    () => jllStrandedDocs({ floorPlans: "https://cdn.jll.com/fp/not-an-array.pdf" }),
+    /unsupported shape/
+  );
+  assert.throws(
+    () => jllStrandedDocs({ floorPlans: { images: "not-an-array", files: [] } }),
+    /floorPlans\.images must be an array/
+  );
+  assert.throws(
+    () =>
+      jllStrandedDocs({
+        floorPlans: { images: [], files: [{ download: "https://cdn.jll.com/fp/new-shape.pdf" }] },
+      }),
+    /unsupported field\(s\): download/
+  );
+  assert.throws(
+    () => jllStrandedDocs({ floorPlans: { images: [], files: [{ type: "floorplan" }] } }),
+    /has no URL or image/
+  );
+  assert.throws(
+    () => jllStrandedDocs({ floorPlans: { images: ["/relative-plan.jpg"], files: [] } }),
+    /must be an absolute HTTP\(S\) URL/
+  );
+  assert.throws(
+    () => jllStrandedDocs({ floorPlans: { images: [], files: [], futureAssets: [] } }),
+    /unsupported field\(s\): futureAssets/
+  );
 });
 
 test("jllStrandedStructured lifts submarket/year/floors/units/amenities/highlights; empty for sparse", () => {

@@ -1,5 +1,42 @@
 # Handoff: Colliers Main Site Collector - 2026-06-13
 
+> **UPDATE 2026-09-09: production-rehearsed first-party detail API path.** The
+> current detail template no longer reliably exposes the legacy
+> `RealEstateListing` JSON-LD contract. A public, no-auth Coveo search endpoint
+> was therefore reconciled by exact native ID against the live US properties
+> sitemap: 15,944 sitemap rows and 15,944 results, with zero missing, extra,
+> duplicate, or path-mismatched records. Direct host requests receive
+> Cloudflare 403; anonymous same-origin POSTs work through the loopback-only
+> Playwright batch sidecar. `COLLIERS_MAIN_COVEO_ENABLE=1` opts into this route;
+> the HTML renderer remains the default fallback. Property responses reconcile
+> exactly; expert responses reject duplicates and extras while recording public
+> profiles that are currently absent as unique unresolved IDs. Those rows enter
+> a narrowly validated contact-only preservation path; all other child types
+> still refresh wholesale. The mapper rejects invalid child URLs and malformed
+> structured child payloads, suppresses unproved canonical pricing, and admits
+> acreage above 100 only when current source text corroborates it; any explicit
+> numeric acreage mismatch suppresses canonical acreage. Exact raw pricing and
+> sizing remain available for audit. The path records honest
+> `first_party_detail_api` provenance admitted only for `colliers-main`. The
+> full strict artifact
+> `out/calibration/2026-09-09T105034Z-colliers-coveo-full-final-strict.json`
+> (`sha256:610c4bf8300744d99fe9e114f2f42df76574e45aa9acbbde7031429ebb70cd09`)
+> contains
+> all 15,944 current properties (17,158 sale/lease rows), 32,359 contacts,
+> 12,611 classified documents, 66,056 images, and 4,661 links. Every current
+> property has an image; canonical price/rate fields and unsafe child URLs both
+> reconcile to zero. Sixty unavailable public expert IDs affected 147 properties
+> and invoked contact-only preservation, never broad child preservation. A
+> strict ingest dry run and production-schema transaction ending in an explicit
+> `ROLLBACK` both passed with zero child-count or contact-contract violations.
+> The Colliers-only transition guard compares
+> normalized underlying image assets instead of inflated legacy URL variants and
+> cross-listing carousel attachments. Keep the path explicit opt-in for the
+> supervised refresh; this proof does not authorize a scheduler.
+
+The remainder of this handoff describes the superseded June 2026 renderer
+implementation. The dated update above is the current refresh path.
+
 > **UPDATE 2026-06-14: full run COMPLETE.** This handoff was written mid-run
 > ("full run in progress"). The full ~15,883-URL sitemap detail run has since
 > converged (0 errors) and was ingested additively with status activation OFF:
@@ -38,7 +75,8 @@ which Cloudflare 403s. The working path is the bare `/sitemap` fetched
    rate, size, coordinates from the map link, photos on `listingsprod.blob`,
    named PDF docs, broker contacts via `.expert-card` selectors).
 
-No Coveo POST, no auth, no gated documents. Documents/images are URL-only.
+The June path used no Coveo POST, auth, or gated documents. Documents/images
+were URL-only.
 
 ## Code (this branch)
 

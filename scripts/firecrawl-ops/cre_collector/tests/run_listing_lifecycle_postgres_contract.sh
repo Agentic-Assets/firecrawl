@@ -302,7 +302,7 @@ transaction_start = sql.index(
     "-- Intentionally serialize all generated lifecycle mutation transactions."
 )
 transaction_end = sql.index("SET LOCAL standard_conforming_strings", transaction_start)
-present_start = sql.index("-- The transaction-wide lifecycle advisory lock above")
+present_start = sql.index("CREATE TEMP TABLE _present_source_locks")
 present_end = sql.index("-- (H4a)", present_start)
 retirement_start = sql.index("CREATE TEMP TABLE _retired_candidates")
 event_start = sql.index("INSERT INTO credeals.cre_listing_events", retirement_start)

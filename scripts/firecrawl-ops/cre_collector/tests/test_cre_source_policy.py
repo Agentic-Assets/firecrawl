@@ -8,7 +8,6 @@ from pathlib import Path
 
 import cre_ingest
 
-
 COLLECTOR = Path(__file__).resolve().parent.parent
 POLICY_PATH = COLLECTOR / "data" / "cre-source-policy.json"
 FIELDS = {
@@ -81,7 +80,11 @@ def _expected_policy(source_key: str) -> dict[str, object]:
         "evidence_class": "strict_detail",
         "canonical_claim": "canonical_listing",
         "detail_claim": "current_strict_detail",
-        "child_contract": "replace_from_fresh_detail",
+        "child_contract": (
+            "preserve_existing_children"
+            if source_key in cre_ingest.CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS
+            else "replace_from_fresh_detail"
+        ),
         "inventory_only_namespace": None,
         "lifecycle_reconciliation_eligible": True,
     }
