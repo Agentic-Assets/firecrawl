@@ -2326,6 +2326,7 @@ def build_sql(
     artifact_run_key=None,
     finished_at=None,
     colliers_first_party_transition=False,
+    skip_post_commit_summary=False,
 ):
     # Defense in depth for direct callers of this builder. Normal ingestion
     # reaches here through to_row(), which already drops `omFacts`, but this
@@ -4193,8 +4194,9 @@ BEGIN
 END $$;
 
 COMMIT;
-
-\\echo ''
+""")
+    if not skip_post_commit_summary:
+        w("""\\echo ''
 \\echo '=== credeals.cre_listings after ingest ==='
 SELECT b.slug,
        count(*) FILTER (WHERE l.deleted_at IS NULL)                                   AS active,
@@ -4664,6 +4666,14 @@ def main():
                          "the EQUIRE consumer board-gate is deployed, or non-active rows "
                          "silently drop off the 'active'-only board")
     ap.add_argument("--keep-artifacts", default=None, help="dir to keep the generated SQL in")
+    ap.add_argument(
+        "--skip-post-commit-summary",
+        action="store_true",
+        help=(
+            "omit the informational full-registry listing-count query after COMMIT; "
+            "the guarded write transaction is unchanged"
+        ),
+    )
     args = ap.parse_args()
 
     merged = {}          # (slug, external_id) -> row
@@ -4941,6 +4951,7 @@ def main():
         artifact_run_key=artifact_run_key,
         finished_at=finished_at,
         colliers_first_party_transition=colliers_first_party_transition,
+        skip_post_commit_summary=args.skip_post_commit_summary,
     )
 
     print(

@@ -16,9 +16,9 @@ def config(sources=("cbre", "jll")):
         concurrency=3,
         attempts_per_source=3,
         max_resume_age_hours=24.0,
-        max_host_cpu_percent=80.0,
+        max_host_cpu_percent=90.0,
         cpu_sustain_seconds=30.0,
-        cpu_sample_seconds=5.0,
+        cpu_sample_seconds=2.0,
         nice=10,
     )
 
@@ -43,9 +43,9 @@ def test_build_checkpoint_argv_is_serial_nice_and_cpu_guarded(tmp_path):
     assert argv[:4] == ["/usr/bin/nice", "-n", "10", series.sys.executable]
     assert argv[argv.index("--sources") + 1] == "cbre"
     assert argv[argv.index("--source-workers") + 1] == "1"
-    assert argv[argv.index("--max-host-cpu-percent") + 1] == "80.0"
+    assert argv[argv.index("--max-host-cpu-percent") + 1] == "90.0"
     assert argv[argv.index("--cpu-sustain-seconds") + 1] == "30.0"
-    assert argv[argv.index("--cpu-sample-seconds") + 1] == "5.0"
+    assert argv[argv.index("--cpu-sample-seconds") + 1] == "2.0"
     assert argv[-2:] == ["--env-file", "/private/equire.env"]
 
 

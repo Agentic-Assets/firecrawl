@@ -63,9 +63,15 @@ REPO_ROOT = COLLECTOR_DIR.parents[2]
 DEFAULT_OUT_ROOT = COLLECTOR_DIR / "out" / "checkpoint-refresh"
 SCHEMA_VERSION = 2
 DEFAULT_MAX_RESUME_AGE_HOURS = 24.0
-DEFAULT_MAX_HOST_CPU_PERCENT = 80.0
+# Version-2 manifests written before the guard block was persisted were
+# interpreted with this exact profile by the base release. Keep that resume
+# identity stable when the current defaults change.
+LEGACY_MAX_HOST_CPU_PERCENT = 80.0
+LEGACY_CPU_SUSTAIN_SECONDS = 30.0
+LEGACY_CPU_SAMPLE_SECONDS = 5.0
+DEFAULT_MAX_HOST_CPU_PERCENT = 90.0
 DEFAULT_CPU_SUSTAIN_SECONDS = 30.0
-DEFAULT_CPU_SAMPLE_SECONDS = 5.0
+DEFAULT_CPU_SAMPLE_SECONDS = 2.0
 # Outer owners must leave enough time for a nested worker to stop its own
 # separately-sessioned collector before the worker can be force-killed.
 COMMAND_INTERRUPT_GRACE_SECONDS = 15
@@ -295,7 +301,15 @@ class HostCpuGuard:
         }
 
     def observe(self, percent: float, *, observed_monotonic: float) -> str | None:
-        if not math.isfinite(percent) or not 0.0 <= percent <= 100.0:
+        try:
+            valid = (
+                not isinstance(percent, bool)
+                and math.isfinite(percent)
+                and 0.0 <= percent <= 100.0
+            )
+        except (TypeError, ValueError, OverflowError):
+            valid = False
+        if not valid:
             raise CpuTelemetryError(f"invalid host CPU percentage: {percent!r}")
         if percent < self.max_percent:
             self.high_since = None
@@ -855,6 +869,7 @@ def build_ingest_dry_run_argv(
         "--dry-run",
         "--keep-artifacts",
         str(sql_dir),
+        "--skip-post-commit-summary",
     ]
     if require_strict_freshness:
         argv.append("--require-strict-freshness")
@@ -868,7 +883,13 @@ def build_ingest_argv(
     require_strict_freshness: bool = False,
     expected_db_target_sha256: str | None = None,
 ) -> list[str]:
-    argv = [sys.executable, "cre_ingest.py", "--in", str(artifact)]
+    argv = [
+        sys.executable,
+        "cre_ingest.py",
+        "--in",
+        str(artifact),
+        "--skip-post-commit-summary",
+    ]
     if require_strict_freshness:
         argv.append("--require-strict-freshness")
     if env_file:
@@ -2300,23 +2321,26 @@ def load_resume_manifest(
         "admit_baseline_hold_additively": admit_baseline_hold_additively,
     }
     recorded_config = dict(value.get("config") or {})
-    # Checkpoints created before the opt-in cohort pool retain the exact
-    # serial contract.  Normalize only for comparison, leaving their durable
-    # manifest byte-for-byte untouched until the coordinator writes a later
-    # state transition.
+    # Checkpoints created before these config blocks retain their exact prior
+    # contracts. Normalize in memory for comparison and for the next canonical
+    # save; the durable file remains untouched until a later state transition.
     recorded_config.setdefault("source_workers", 1)
     recorded_config.setdefault(
         "host_cpu_guard",
         {
-            "max_host_cpu_percent": DEFAULT_MAX_HOST_CPU_PERCENT,
-            "sustain_seconds": DEFAULT_CPU_SUSTAIN_SECONDS,
-            "sample_seconds": DEFAULT_CPU_SAMPLE_SECONDS,
+            # Checkpoints old enough to omit this block ran under the last
+            # fixed guard profile. Preserve that identity instead of silently
+            # reinterpreting them with today's defaults.
+            "max_host_cpu_percent": LEGACY_MAX_HOST_CPU_PERCENT,
+            "sustain_seconds": LEGACY_CPU_SUSTAIN_SECONDS,
+            "sample_seconds": LEGACY_CPU_SAMPLE_SECONDS,
             "action": "interrupt_and_checkpoint",
             "telemetry_failure_action": "interrupt_and_checkpoint",
         },
     )
     if recorded_config != expected:
         raise RefreshError("resume configuration differs from the manifest")
+    value["config"] = recorded_config
     if database_target is not None:
         recorded_target = (value.get("preflight") or {}).get("database_target")
         if recorded_target != dict(database_target):
@@ -2344,7 +2368,53 @@ def load_resume_manifest(
     return value
 
 
+def _require_canonical_manifest_identity(
+    run_dir: Path,
+    manifest: Mapping[str, Any],
+) -> None:
+    """Refuse to replace a checkpoint with a partial diagnostic projection."""
+    config = manifest.get("config")
+    config_sources = config.get("sources") if isinstance(config, dict) else None
+    sources = manifest.get("sources")
+    preflight = manifest.get("preflight")
+    required_config_keys = {
+        "sources",
+        "transactions",
+        "max_items",
+        "page_cap",
+        "concurrency",
+        "source_workers",
+        "host_cpu_guard",
+        "additive",
+        "status_activation",
+        "mark_missing",
+        "admit_baseline_hold_additively",
+    }
+    identity_complete = (
+        manifest.get("schema_version") == SCHEMA_VERSION
+        and manifest.get("run_id") == run_dir.name
+        and isinstance(manifest.get("collector_git_sha"), str)
+        and bool(manifest["collector_git_sha"])
+        and isinstance(config, dict)
+        and required_config_keys.issubset(config)
+        and isinstance(config_sources, list)
+        and bool(config_sources)
+        and all(isinstance(source, str) and source for source in config_sources)
+        and len(config_sources) == len(set(config_sources))
+        and isinstance(sources, dict)
+        and set(sources) == set(config_sources)
+        and len(sources) == len(config_sources)
+        and isinstance(preflight, dict)
+        and "database_target" in preflight
+    )
+    if not identity_complete:
+        raise GlobalStageError(
+            "refusing to save incomplete checkpoint manifest identity"
+        )
+
+
 def save_manifest(run_dir: Path, manifest: dict[str, Any]) -> None:
+    _require_canonical_manifest_identity(run_dir, manifest)
     manifest["updated_at"] = utc_now()
     atomic_write_json(run_dir / "manifest.json", manifest)
 
@@ -3366,6 +3436,31 @@ def ingest_admitted_sources(
         ingest_source(run_dir, manifest, source, artifact, env_file)
 
 
+def _artifact_run_job_probe_is_exact(
+    validation: Mapping[str, Any],
+    *,
+    expected_matching_jobs: int,
+) -> bool:
+    queries = validation.get("queries")
+    rows = queries.get("artifact_run_jobs") if isinstance(queries, dict) else None
+    if (
+        not isinstance(rows, list)
+        or len(rows) != 1
+        or not isinstance(rows[0], dict)
+    ):
+        return False
+    raw_count = rows[0].get("matching_jobs")
+    if isinstance(raw_count, bool):
+        return False
+    if isinstance(raw_count, int):
+        count = raw_count
+    elif isinstance(raw_count, str) and raw_count.isdecimal():
+        count = int(raw_count)
+    else:
+        return False
+    return count == expected_matching_jobs
+
+
 def recover_interrupted_ingest(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -3421,7 +3516,12 @@ def recover_interrupted_ingest(
                 }
             },
         }
-        readback = verify_validation_readback(run_dir, probe_manifest, validation)
+        readback = verify_validation_readback(
+            run_dir,
+            probe_manifest,
+            validation,
+            persist_manifest=False,
+        )
     except Exception as exc:
         checkpoint["state"] = "ingest_recovery_required"
         recovery["readback_error"] = str(exc)
@@ -3431,8 +3531,13 @@ def recover_interrupted_ingest(
             "manual recovery is required before replay"
         ) from exc
     checkpoint["readback"] = probe_manifest["sources"][source].get("readback")
-    recovery["readback_ok"] = readback["ok"]
-    if not readback["ok"]:
+    committed_job_exact = _artifact_run_job_probe_is_exact(
+        validation,
+        expected_matching_jobs=1,
+    )
+    recovery["artifact_run_job_match_ok"] = committed_job_exact
+    recovery["readback_ok"] = readback["ok"] and committed_job_exact
+    if not recovery["readback_ok"]:
         generation_id, _generation_started = _generation_expectation(
             probe_manifest, artifact_info, source
         )
@@ -3445,13 +3550,11 @@ def recover_interrupted_ingest(
             and row.get("source_key") == source
             and row.get("generation_id") == generation_id
         ]
-        artifact_job_rows = queries.get("artifact_run_jobs") or []
-        exact_job_probe = (
-            len(artifact_job_rows) == 1
-            and isinstance(artifact_job_rows[0], dict)
-            and _int_value(artifact_job_rows[0].get("matching_jobs")) == 0
+        exact_rollback_job_probe = _artifact_run_job_probe_is_exact(
+            validation,
+            expected_matching_jobs=0,
         )
-        if not generation_matches and exact_job_probe:
+        if not generation_matches and exact_rollback_job_probe:
             recovery.update(
                 {
                     "outcome": "exact_rollback",
@@ -3564,7 +3667,14 @@ def verify_validation_readback(
     validation: Mapping[str, Any],
     *,
     now: datetime | None = None,
+    persist_manifest: bool = True,
 ) -> dict[str, Any]:
+    """Evaluate generation-exact readback and optionally persist its manifest.
+
+    Recovery probes pass a single-source projection and must disable
+    persistence so only the canonical full checkpoint can replace
+    ``manifest.json``. Full final validation keeps the default persistence.
+    """
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     latest_allowed = current + MAX_FUTURE_CLOCK_SKEW
     queries = validation.get("queries")
@@ -4130,7 +4240,8 @@ def verify_validation_readback(
         }
         if not ok:
             failures.append(source)
-    save_manifest(run_dir, manifest)
+    if persist_manifest:
+        save_manifest(run_dir, manifest)
     return {"ok": not failures, "failed_sources": failures}
 
 
