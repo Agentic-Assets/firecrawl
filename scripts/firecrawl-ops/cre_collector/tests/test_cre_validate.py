@@ -17,9 +17,10 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 # conftest.py already puts cre_collector/ on sys.path.
 import cre_validate
-import pytest
 from cre_ingest import source_key_from_values
 from cre_validate import (
     LIFECYCLE_SCHEMA_CONTRACT_ITEMS,
@@ -28,10 +29,13 @@ from cre_validate import (
     artifact_run_jobs_query,
     markdown_table,
     normalize_warning,
+    parse_native_timing,
     parse_query_batch,
+    parse_query_timings,
     parse_tsv,
     render_markdown,
     run_queries,
+    run_queries_with_timings,
     run_query,
 )
 
@@ -124,20 +128,20 @@ def test_parse_tsv_row_keys_match_header():
     assert set(rows[0].keys()) == {"a", "b", "c"}
 
 
-def test_parse_tsv_ragged_row_truncates():
-    """A row with fewer values than headers is silently truncated (zip stops short)."""
-    tsv = "a\tb\tc\n1\t2\n"   # only two values for three-column header
-    rows = parse_tsv(tsv)
-    assert len(rows) == 1
-    assert rows[0] == {"a": "1", "b": "2"}   # 'c' key absent (truncated)
-    assert "c" not in rows[0]
+def test_parse_tsv_ragged_row_fails_closed():
+    with pytest.raises(SystemExit, match="malformed TSV row"):
+        parse_tsv("a\tb\tc\n1\t2\n")
 
 
-def test_parse_tsv_extra_values_are_truncated():
-    """A row with MORE values than headers: extra values are dropped (zip behavior)."""
-    tsv = "a\tb\n1\t2\t3\t4\n"
-    rows = parse_tsv(tsv)
-    assert rows == [{"a": "1", "b": "2"}]
+def test_parse_tsv_extra_values_fail_closed():
+    with pytest.raises(SystemExit, match="malformed TSV row"):
+        parse_tsv("a\tb\n1\t2\t3\t4\n")
+
+
+@pytest.mark.parametrize("header", ["a\ta", "\ta", "a\t"])
+def test_parse_tsv_invalid_headers_fail_closed(header):
+    with pytest.raises(SystemExit, match="invalid TSV headers"):
+        parse_tsv(f"{header}\n1\t2\n")
 
 
 def test_parse_tsv_single_column():
@@ -260,7 +264,7 @@ def test_markdown_table_pipe_delimited():
 # ---------------------------------------------------------------------------
 
 
-def _minimal_report(psql_warnings=None, query_rows=None):
+def _minimal_report(psql_warnings=None, query_rows=None, query_timings=None):
     """Build a minimal valid report dict."""
     if query_rows is None:
         query_rows = {k: [] for k in QUERIES}
@@ -268,6 +272,7 @@ def _minimal_report(psql_warnings=None, query_rows=None):
         "generated_at": "2026-06-15T00:00:00+00:00",
         "env_file": "/fake/.env.local",
         "queries": query_rows,
+        "query_timings": query_timings or {},
         "psql_warnings": psql_warnings if psql_warnings is not None else [],
     }
 
@@ -276,6 +281,23 @@ def test_render_markdown_contains_generated_at():
     report = _minimal_report()
     md = render_markdown(report)
     assert "2026-06-15T00:00:00+00:00" in md
+
+
+def test_render_markdown_labels_psql_client_timing_scope():
+    report = _minimal_report(
+        query_timings={
+            "totals": {
+                "ordinal": 0,
+                "scope": "psql_client_elapsed",
+                "status": "available",
+                "elapsed_ms": 12.345,
+            }
+        }
+    )
+    md = render_markdown(report)
+    assert "## Query Timings" in md
+    assert "psql client timings, not pure server execution times" in md
+    assert "| totals | 0 | psql_client_elapsed | available | 12.345 |  |" in md
 
 
 def test_source_counts_separates_inventory_and_detail_observation():
@@ -727,14 +749,26 @@ def test_run_query_db_url_passed_only_in_child_environment(monkeypatch):
     assert captured["env"]["PGPASSWORD"] == "SENTINEL_URL"
 
 
-def test_parse_query_batch_splits_marked_result_sets():
+def _result_frame(ordinal, name, body):
+    return (
+        f"__CRE_VALIDATION_QUERY_BEGIN__:{ordinal:03d}:{name}\n"
+        f"{body.rstrip()}\n"
+        f"__CRE_VALIDATION_QUERY_END__:{ordinal:03d}:{name}\n"
+    )
+
+
+def _timing_frame(ordinal, name, body):
+    return (
+        f"__CRE_VALIDATION_TIMING_BEGIN__:{ordinal:03d}:{name}\n"
+        f"{body.rstrip()}\n"
+        f"__CRE_VALIDATION_TIMING_END__:{ordinal:03d}:{name}\n"
+    )
+
+
+def test_parse_query_batch_splits_strictly_framed_result_sets():
     output = (
-        "__CRE_VALIDATION_QUERY__:first\n"
-        "metric\tvalue\n"
-        "a\t1\n"
-        "__CRE_VALIDATION_QUERY__:second\n"
-        "name\tcount\n"
-        "b\t2\n"
+        _result_frame(0, "first", "metric\tvalue\na\t1")
+        + _result_frame(1, "second", "name\tcount\nb\t2")
     )
 
     parsed = parse_query_batch(output, ("first", "second"))
@@ -745,15 +779,124 @@ def test_parse_query_batch_splits_marked_result_sets():
     }
 
 
+def test_parse_query_batch_preserves_result_like_timing_string():
+    output = _result_frame(
+        0,
+        "first",
+        "value\nTime: 1234.567 ms (00:01.235)",
+    )
+    assert parse_query_batch(output, ("first",)) == {
+        "first": [{"value": "Time: 1234.567 ms (00:01.235)"}]
+    }
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        _result_frame(1, "first", "value\n1"),
+        _result_frame(0, "unknown", "value\n1"),
+        (
+            "__CRE_VALIDATION_QUERY_BEGIN__:000:first\n"
+            "value\n1\n"
+            "__CRE_VALIDATION_QUERY_BEGIN__:000:first\n"
+        ),
+        "stray\n" + _result_frame(0, "first", "value\n1"),
+        "__CRE_VALIDATION_QUERY_BEGIN__:000:first\nvalue\n1\n",
+    ],
+)
+def test_parse_query_batch_bad_framing_fails_closed(output):
+    with pytest.raises(SystemExit):
+        parse_query_batch(output, ("first",))
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("Time: 0.729 ms", 0.729),
+        ("Time: 1104.067 ms (00:01.104)", 1104.067),
+        ("Time: 60000.000 ms (00:60.000)", 60000.0),
+        ("Time: 61001.123 ms (01:01.001)", 61001.123),
+        ("Time: 3661001.123 ms (01:01:01.001)", 3661001.123),
+        ("Time: 90061001.123 ms (1 d 01:01:01.001)", 90061001.123),
+    ],
+)
+def test_parse_native_timing_accepts_postgresql_18_grammar(line, expected):
+    assert parse_native_timing(line) == expected
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Time: NaN ms",
+        "Time: inf ms",
+        "Time: -1.000 ms",
+        "Time: 1000.000 ms",
+        "Time: 10.000 ms (00:00.010)",
+        "Time: 60999.000 ms (00:60.999)",
+        "Time: 61001.123 ms (99:01.001)",
+        "Time: 90061001.123 ms (1 days 01:01:01.001)",
+        "Time: 1104.067 ms (00:09.999)",
+    ],
+)
+def test_parse_native_timing_rejects_non_native_or_inconsistent_values(line):
+    assert parse_native_timing(line) is None
+
+
+def test_parse_query_timings_records_available_and_missing_independently():
+    output = _timing_frame(0, "first", "Time: 0.729 ms") + _timing_frame(
+        1, "second", ""
+    )
+    timings = parse_query_timings(output, ("first", "second"))
+    assert timings["first"] == {
+        "ordinal": 0,
+        "scope": "psql_client_elapsed",
+        "status": "available",
+        "elapsed_ms": 0.729,
+    }
+    assert timings["second"]["status"] == "unavailable"
+    assert timings["second"]["unavailable_code"] == "timing_missing"
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        ("Time: 1.000 ms\nTime: 2.000 ms", "timing_duplicate"),
+        ("Time: NaN ms", "timing_nonfinite"),
+        ("Time: provider-secret-value ms", "timing_malformed"),
+    ],
+)
+def test_parse_query_timings_degrades_bad_payload_without_retaining_body(body, code):
+    serialized = json.dumps(parse_query_timings(_timing_frame(0, "first", body), ("first",)))
+    assert code in serialized
+    assert "provider-secret-value" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("output", "code"),
+    [
+        (_timing_frame(0, "unknown", "Time: 1.000 ms"), "timing_marker_unknown"),
+        ("secret outside timing frame\n", "timing_output_unexpected"),
+        (
+            "__CRE_VALIDATION_TIMING_BEGIN__:000:first\nTime: 1.000 ms\n",
+            "timing_frames_incomplete",
+        ),
+    ],
+)
+def test_parse_query_timings_structural_errors_are_bounded_and_body_free(output, code):
+    serialized = json.dumps(parse_query_timings(output, ("first",)))
+    assert code in serialized
+    assert "secret outside timing frame" not in serialized
+
+
 def test_run_queries_uses_one_repeatable_read_snapshot(monkeypatch):
     captured = {}
-    output = (
-        "__CRE_VALIDATION_QUERY__:first\n"
-        "metric\tvalue\n"
-        "a\t1\n"
-        "__CRE_VALIDATION_QUERY__:second\n"
-        "metric\tvalue\n"
-        "b\t2\n"
+    result_output = (
+        _result_frame(0, "first", "metric\tvalue\na\t1")
+        + _result_frame(1, "second", "metric\tvalue\nb\t2")
+    )
+    timing_output = (
+        _timing_frame(0, "first", "Time: 0.729 ms")
+        + _timing_frame(1, "second", "Time: 1104.067 ms (00:01.104)")
     )
 
     def fake_run(argv, **kwargs):
@@ -761,10 +904,17 @@ def test_run_queries_uses_one_repeatable_read_snapshot(monkeypatch):
         captured["kwargs"] = kwargs
         captured["script_path"] = Path(argv[argv.index("-f") + 1])
         captured["script"] = captured["script_path"].read_text()
-        return _FakeProc(returncode=0, stdout=output, stderr="warning")
+        result_arg = next(
+            value
+            for value in argv
+            if value.startswith("CRE_VALIDATION_RESULTS=")
+        )
+        captured["result_path"] = Path(result_arg.split("=", 1)[1])
+        captured["result_path"].write_text(result_output, encoding="utf-8")
+        return _FakeProc(returncode=0, stdout=timing_output, stderr="warning")
 
     monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
-    rows, stderr = run_queries(
+    rows, timings, stderr = run_queries_with_timings(
         "psql",
         "postgres://SENTINEL",
         {"first": "SELECT 1;", "second": "SELECT 2;"},
@@ -772,18 +922,128 @@ def test_run_queries_uses_one_repeatable_read_snapshot(monkeypatch):
 
     assert rows["first"] == [{"metric": "a", "value": "1"}]
     assert rows["second"] == [{"metric": "b", "value": "2"}]
+    assert timings["first"]["elapsed_ms"] == 0.729
+    assert timings["second"]["elapsed_ms"] == 1104.067
     assert stderr == "warning"
     assert captured["script"].count("BEGIN TRANSACTION") == 1
+    assert captured["script"].count("ROLLBACK;") == 1
     assert (
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;"
         in captured["script"]
     )
-    assert captured["script"].strip().endswith("ROLLBACK;")
+    assert captured["script"].strip().endswith(r"\o")
+    assert captured["script"].count("SELECT 1;") == 1
+    assert captured["script"].count("SELECT 2;") == 1
+    assert r"\o :CRE_VALIDATION_RESULTS" in captured["script"]
+    assert r"\qecho __CRE_VALIDATION_QUERY_BEGIN__:000:first" in captured["script"]
     assert "input" not in captured["kwargs"]
     assert "stdin" not in captured["kwargs"]
     assert not captured["script_path"].exists()
+    assert not captured["result_path"].exists()
     assert "postgres://SENTINEL" not in captured["argv"]
     assert captured["kwargs"]["env"]["PGHOST"] == "sentinel"
+    assert captured["kwargs"]["env"]["LC_ALL"] == "C"
+    assert captured["kwargs"]["env"]["LC_MESSAGES"] == "C"
+    assert captured["kwargs"]["env"]["LC_NUMERIC"] == "C"
+    assert "-X" in captured["argv"]
+
+
+def test_run_queries_compatibility_wrapper_preserves_return_shape(monkeypatch):
+    expected_rows = {"first": [{"metric": "a", "value": "1"}]}
+    monkeypatch.setattr(
+        cre_validate,
+        "run_queries_with_timings",
+        lambda *_args: (
+            expected_rows,
+            {"first": {"status": "available", "elapsed_ms": 1.0}},
+            "warning",
+        ),
+    )
+    assert run_queries("psql", "postgres://SENTINEL", {"first": "SELECT 1;"}) == (
+        expected_rows,
+        "warning",
+    )
+
+
+def test_run_queries_keeps_valid_rows_when_isolated_timing_is_malformed(monkeypatch):
+    expected_rows = {"first": [{"value": "Time: 9.000 ms"}]}
+
+    def fake_run(argv, **_kwargs):
+        result_arg = next(
+            value for value in argv if value.startswith("CRE_VALIDATION_RESULTS=")
+        )
+        Path(result_arg.split("=", 1)[1]).write_text(
+            _result_frame(0, "first", "value\nTime: 9.000 ms"),
+            encoding="utf-8",
+        )
+        return _FakeProc(
+            stdout=_timing_frame(0, "first", "Time: secret-value ms")
+        )
+
+    monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
+    rows, timings, _stderr = run_queries_with_timings(
+        "psql", "postgres://SENTINEL", {"first": "SELECT 1;"}
+    )
+    assert rows == expected_rows
+    assert timings["first"]["status"] == "unavailable"
+    assert timings["first"]["unavailable_code"] == "timing_malformed"
+    assert "secret-value" not in json.dumps(timings)
+
+
+def test_run_queries_preserves_every_query_sql_byte_for_byte(monkeypatch):
+    captured = {}
+    result_output = "".join(
+        _result_frame(ordinal, name, "value")
+        for ordinal, name in enumerate(QUERIES)
+    )
+    timing_output = "".join(
+        _timing_frame(ordinal, name, "Time: 1.000 ms")
+        for ordinal, name in enumerate(QUERIES)
+    )
+
+    def fake_run(argv, **_kwargs):
+        captured["script"] = Path(argv[argv.index("-f") + 1]).read_text()
+        result_arg = next(
+            value
+            for value in argv
+            if value.startswith("CRE_VALIDATION_RESULTS=")
+        )
+        Path(result_arg.split("=", 1)[1]).write_text(result_output, encoding="utf-8")
+        return _FakeProc(stdout=timing_output)
+
+    monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
+    rows, timings, _stderr = run_queries_with_timings(
+        "psql", "postgres://SENTINEL", QUERIES
+    )
+
+    assert rows == {name: [] for name in QUERIES}
+    assert list(timings) == list(QUERIES)
+    for sql in QUERIES.values():
+        assert captured["script"].count(sql) == 1
+    assert captured["script"].count("BEGIN TRANSACTION") == 1
+    assert captured["script"].count("ROLLBACK;") == 1
+
+
+def test_run_queries_failed_psql_cleans_script_and_result_tempfiles(monkeypatch):
+    captured = {}
+
+    def fake_run(argv, **_kwargs):
+        captured["script_path"] = Path(argv[argv.index("-f") + 1])
+        result_arg = next(
+            value
+            for value in argv
+            if value.startswith("CRE_VALIDATION_RESULTS=")
+        )
+        captured["result_path"] = Path(result_arg.split("=", 1)[1])
+        return _FakeProc(returncode=3, stderr="failed query")
+
+    monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
+    with pytest.raises(SystemExit, match="psql exited 3"):
+        run_queries_with_timings(
+            "psql", "postgres://SENTINEL", {"first": "SELECT 1;"}
+        )
+    assert not captured["script_path"].exists()
+    assert not captured["result_path"].exists()
 
 
 # ---------------------------------------------------------------------------
@@ -799,9 +1059,18 @@ def _patch_main(monkeypatch):
     monkeypatch.setattr(cre_validate, "find_psql", lambda: "psql")
     monkeypatch.setattr(
         cre_validate,
-        "run_queries",
+        "run_queries_with_timings",
         lambda psql, url, queries: (
             {name: _DUMMY_ROWS for name in queries},
+            {
+                name: {
+                    "ordinal": ordinal,
+                    "scope": "psql_client_elapsed",
+                    "status": "available",
+                    "elapsed_ms": 1.0,
+                }
+                for ordinal, name in enumerate(queries)
+            },
             "",
         ),
     )
@@ -860,6 +1129,7 @@ def test_main_json_format_produces_valid_json(monkeypatch, capsys):
     out = capsys.readouterr().out
     parsed = json.loads(out)
     assert "queries" in parsed
+    assert "query_timings" in parsed
     assert "generated_at" in parsed
 
 
@@ -904,6 +1174,7 @@ def test_main_out_flag_json_writes_file(monkeypatch, tmp_path):
     assert out_file.exists()
     parsed = json.loads(out_file.read_text())
     assert "queries" in parsed
+    assert "query_timings" in parsed
 
 
 def test_main_out_creates_parent_dirs(monkeypatch, tmp_path):
@@ -920,9 +1191,18 @@ def test_main_collects_warnings(monkeypatch, capsys):
     monkeypatch.setattr(cre_validate, "find_psql", lambda: "psql")
     monkeypatch.setattr(
         cre_validate,
-        "run_queries",
+        "run_queries_with_timings",
         lambda psql, url, queries: (
             {name: _DUMMY_ROWS for name in queries},
+            {
+                name: {
+                    "ordinal": ordinal,
+                    "scope": "psql_client_elapsed",
+                    "status": "available",
+                    "elapsed_ms": 1.0,
+                }
+                for ordinal, name in enumerate(queries)
+            },
             "collation version mismatch WARNING",
         ),
     )
@@ -938,9 +1218,18 @@ def test_main_warnings_deduped(monkeypatch, capsys):
     monkeypatch.setattr(cre_validate, "find_psql", lambda: "psql")
     monkeypatch.setattr(
         cre_validate,
-        "run_queries",
+        "run_queries_with_timings",
         lambda psql, url, queries: (
             {name: _DUMMY_ROWS for name in queries},
+            {
+                name: {
+                    "ordinal": ordinal,
+                    "scope": "psql_client_elapsed",
+                    "status": "available",
+                    "elapsed_ms": 1.0,
+                }
+                for ordinal, name in enumerate(queries)
+            },
             "collation version mismatch alert",
         ),
     )
