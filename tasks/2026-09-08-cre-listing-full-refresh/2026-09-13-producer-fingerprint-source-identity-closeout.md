@@ -8,6 +8,8 @@
 
 **Integration commit:** `d3675018806e7b6152549f00a462558b88f7b8ca`
 
+**Verified code head:** `42965abfc6cad48dbcd33fc7310fddce81092808`
+
 **Review:** [PR #45](https://github.com/Agentic-Assets/firecrawl/pull/45)
 **State:** Code and read-only inventory validation complete. No new source
 observation or freshness receipt was created.
@@ -46,3 +48,24 @@ observation or freshness receipt was created.
 - Runtime readback requires Python 3, `psql`, and the approved read-only database
   credential path. Production collection retains its separate runtime and
   approval requirements.
+
+## Exact supervised-series write surface
+
+At the verified code head, the conservative 51-source checkpoint command does
+not pass `--mark-missing`, `--activate-status`, or `--update-baseline`. Its
+database write surface is `cre_scrape_jobs`, `cre_source_index`, `cre_listings`,
+`cre_listing_events`, `cre_listing_contacts`, `cre_listing_documents`,
+`cre_listing_images`, and, when installed, `cre_listing_media`,
+`cre_listing_links`, and `cre_listing_price_history`. The jobs and event/history
+tables are append-only; child detail rows may be delete/reinserted; listings and
+source-index rows are upserted, including inventory-only provisional rows and
+watermarks. Canonical mark-missing is off, but inventory-only reconciliation may
+soft-delete superseded provisional rows.
+
+`cre_listing_om_facts` is not in the actual write set: `build_sql` force-stages
+an empty OM-fact array and GetCREdata remains its sole writer. Archive tables,
+`cre_source_baseline`, and `cre_brokerages` are also non-targets. There is no
+separate database generation-receipt table: the artifact receipt is
+`cre_scrape_jobs.artifact_run_key`, while listing generation provenance is in
+`cre_listings.raw_data`. The source-derived backup scope and bounded recovery
+rules are in the accompanying forward queue.
