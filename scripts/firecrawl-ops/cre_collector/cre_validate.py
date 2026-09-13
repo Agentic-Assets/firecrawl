@@ -421,9 +421,9 @@ LEFT JOIN soft_deleted ON soft_deleted.source_key = a.source_key
 GROUP BY a.source_key, latest.latest_scraped_at, latest.latest_inventory_observed_at
 ORDER BY a.source_key;
 """,
-    # This is deliberately the same live-inventory tuple recomputed by
-    # GetCREdata's producer-freshness-v2 gate. It is read only after ingest so
-    # a receipt cannot authorize inventory mutated after its database readback.
+    # This is deliberately the same coverage and freshness-watermark tuple
+    # recomputed by GetCREdata's producer-freshness-v2 gate. It detects changes
+    # to the bound counts or maximum clocks; it is not a per-field content digest.
     "inventory_generation_fingerprints": f"""
 WITH required_sources(source_id) AS (
   VALUES

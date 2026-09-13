@@ -3,8 +3,9 @@
 
 The checkpoint-series manifest remains authoritative. This sidecar advances
 only after the complete required-source series and each child's database
-readback prove the exact live inventory fingerprint. Failed, partial, running,
-or interrupted series never replace the last-good canonical receipt.
+readback prove the complete source-coverage and freshness-watermark fingerprint.
+Failed, partial, running, or interrupted series never replace the last-good
+canonical receipt.
 """
 
 from __future__ import annotations
