@@ -201,7 +201,9 @@ after a complete all-source series and its generation-exact database readback.
 Each source binds its active row count, maximum row-update clock, maximum
 observation/enumeration clock, and complete publication status. The aggregate
 SHA-256 covers the canonical key-sorted fingerprint map, so an idempotent replay
-reuses the generation ID while any inventory mutation creates a new generation.
+reuses the generation ID while any change to the bound coverage or maximum
+freshness-watermark tuple creates a new generation. This receipt is a
+publication-freshness gate, not a content digest of every listing field.
 Failed, partial, running, or interrupted series leave the last-good canonical
 receipt unchanged. Per source the accompanying health projection
 separates `lastSuccessfulObservationAt`, `lastAttemptObservationAt`,
