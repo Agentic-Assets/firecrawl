@@ -224,6 +224,74 @@ def test_cre_status_rejects_an_unreachable_firecrawl_api(tmp_path):
     assert result.returncode != 0
 
 
+def _run_full_firecrawl_health(tmp_path, response):
+    status = STATUS.read_text(encoding="utf-8")
+    readiness = _extract_function("firecrawl_api_ready", status)
+    stack_check = _extract_function("check_firecrawl_stack", status)
+    fake_curl = tmp_path / "curl"
+    fake_curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s' \"${FAKE_CURL_RESPONSE:-}\"\n",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+    healthcheck = tmp_path / "scripts" / "firecrawl-ops" / "firecrawl_healthcheck.sh"
+    healthcheck.parent.mkdir(parents=True)
+    healthcheck.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s' \"${API_URL:-}\" >\"${HEALTHCHECK_CAPTURE:?}\"\n",
+        encoding="utf-8",
+    )
+    healthcheck.chmod(0o755)
+    capture = tmp_path / "healthcheck-api-url.txt"
+    script = (
+        "set -uo pipefail\n"
+        "PROBLEMS=0\n"
+        "ok() { printf 'OK %s\\n' \"$1\"; }\n"
+        "bad() { printf 'BAD %s\\n' \"$1\"; PROBLEMS=$((PROBLEMS+1)); }\n"
+        f"FC_DIR={str(tmp_path)!r}\n"
+        "API_URL=http://localhost:3102\n"
+        "FULL_HEALTH=1\n"
+        f"{readiness}\n{stack_check}\n"
+        "check_firecrawl_stack\n"
+        "printf 'PROBLEMS=%s\\n' \"$PROBLEMS\"\n"
+    )
+    result = subprocess.run(
+        ["/bin/bash", "-c", script],
+        check=True,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "FAKE_CURL_RESPONSE": response,
+            "HEALTHCHECK_CAPTURE": str(capture),
+        },
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout, capture
+
+
+def test_cre_status_full_health_rejects_wrong_service_before_delegating(tmp_path):
+    stdout, capture = _run_full_firecrawl_health(
+        tmp_path, "<!doctype html><html><body>Corbis</body></html>"
+    )
+
+    assert "BAD Firecrawl API readiness failed" in stdout
+    assert "PROBLEMS=1" in stdout
+    assert not capture.exists()
+
+
+def test_cre_status_full_health_propagates_verified_firecrawl_url(tmp_path):
+    stdout, capture = _run_full_firecrawl_health(
+        tmp_path,
+        '{"message":"Firecrawl API","documentation_url":"https://docs.firecrawl.dev"}',
+    )
+
+    assert "OK full healthcheck passed" in stdout
+    assert "PROBLEMS=0" in stdout
+    assert capture.read_text(encoding="utf-8") == "http://localhost:3102"
+
+
 def test_cre_status_flags_empty_or_malformed_markers():
     text = STATUS.read_text(encoding="utf-8")
     assert "marker_problem" in text

@@ -303,17 +303,23 @@ if payload.get("documentation_url") != "https://docs.firecrawl.dev":
 ' >/dev/null 2>&1
 }
 
-if [ "$FULL_HEALTH" -eq 1 ]; then
-  if API_URL="$API_URL" bash "$FC_DIR/scripts/firecrawl-ops/firecrawl_healthcheck.sh" >/dev/null 2>&1; then
-    ok "full healthcheck passed (docker + API + scrape smoke)"
-  else
-    bad "full healthcheck FAILED (collect/monitor cannot run until the stack is up)"
+check_firecrawl_stack() {
+  if ! firecrawl_api_ready; then
+    bad "Firecrawl API readiness failed at $API_URL (wrong service or unavailable; check the configured port and Docker stack)"
+    return
   fi
-elif firecrawl_api_ready; then
-  ok "Firecrawl API ready at $API_URL (use --full-health for the full scrape smoke test)"
-else
-  bad "Firecrawl API readiness failed at $API_URL (wrong service or unavailable; check the configured port and Docker stack)"
-fi
+  if [ "$FULL_HEALTH" -eq 1 ]; then
+    if API_URL="$API_URL" bash "$FC_DIR/scripts/firecrawl-ops/firecrawl_healthcheck.sh" >/dev/null 2>&1; then
+      ok "full healthcheck passed (docker + API + scrape smoke)"
+    else
+      bad "full healthcheck FAILED (collect/monitor cannot run until the stack is up)"
+    fi
+  else
+    ok "Firecrawl API ready at $API_URL (use --full-health for the full scrape smoke test)"
+  fi
+}
+
+check_firecrawl_stack
 
 # ---------------------------------------------------------------------------
 section "environment"
