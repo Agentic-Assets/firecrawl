@@ -25,6 +25,7 @@ browser dashboard, tracing vendor, database connection or scheduler is added.
 | Evidence | Location within each checkpoint | What it measures |
 |---|---|---|
 | Command journal | `logs/COMMAND.performance.jsonl` | Start, terminal outcome and monotonic duration of collection, health, validation, gate and ingest subprocesses. Each invocation has a distinct ID, including repeated uses of the same log during resume. |
+| Validation query timings | `pre-validation.json` and `validation.json` under top-level `query_timings` | Per-query psql client elapsed milliseconds, keyed by the existing validation query name. This includes client-side result handling and is not pure server execution time. |
 | Scrape snapshot | `logs/COMMAND.INVOCATION.scrape-performance.json` | Logical helper calls, client attempts, retry/backoff, latency histogram, locally awaited concurrency, JLL detail cache, source outcomes and sampled Node resources. |
 | Initial runtime configuration | `runtime-performance.json` | Known API/browser container IDs, image IDs and configured CPU/memory/PID/shared-memory/port limits, plus available host CPU/RAM configuration. One narrow read before the guard starts; not current usage. |
 | Host guard | `logs/host-cpu-guard.jsonl` | Existing sampled host CPU and guard decisions, including unrelated applications. |
@@ -56,6 +57,13 @@ not a valid-property, field-accuracy, ingestion or freshness count. JSON parsing
 can fail after a successful HTTP/helper attempt. Retries scheduled to make
 another attempt and the existing final-attempt sleep are recorded separately.
 Backoff is scheduled delay, not an assertion that an interrupted sleep finished.
+
+Validator query results and timings use separate psql output channels inside the
+same repeatable-read, read-only transaction. Result framing and TSV shape remain
+fail-closed. Missing, malformed, duplicated, or structurally invalid optional
+timing output becomes a bounded `unavailable_code` and does not invalidate an
+otherwise complete result frame. Timing metadata never stores SQL, raw psql
+output, credentials, connection strings, or provider bodies.
 
 Request latency excludes backoff. Histogram percentiles are approximate upper
 bounds; overflow has no finite upper bound and is unknown in the summary.

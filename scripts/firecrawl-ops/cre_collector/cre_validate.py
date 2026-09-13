@@ -9,6 +9,7 @@ transactions and only inspect the `credeals` listing tables/views.
 
 import argparse
 import json
+import math
 import re
 import subprocess
 import sys
@@ -898,14 +899,18 @@ def parse_tsv(output):
     if not lines:
         return []
     headers = lines[0].split("\t")
+    if any(not header for header in headers) or len(set(headers)) != len(headers):
+        raise SystemExit("validation query output has invalid TSV headers")
     rows = []
     for line in lines[1:]:
         values = line.split("\t")
+        if len(values) != len(headers):
+            raise SystemExit("validation query output has malformed TSV row")
         rows.append(dict(zip(headers, values)))
     return rows
 
 
-def _run_psql_script(psql, db_url, script):
+def _run_psql_script(psql, db_url, script, *, variables=None):
     """Run a closed SQL script without a parent-to-psql stdin pipe."""
     script_path = None
     try:
@@ -919,13 +924,20 @@ def _run_psql_script(psql, db_url, script):
         ) as script_file:
             script_file.write(script)
             script_path = Path(script_file.name)
-        return subprocess.run(
-            [
-                psql,
-                *psql_connection_args(db_url),
-                "-q",
-                "-v",
-                "ON_ERROR_STOP=1",
+        argv = [
+            psql,
+            *psql_connection_args(db_url),
+            "-X",
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+        ]
+        for name, value in (variables or {}).items():
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+                raise ValueError("invalid psql variable name")
+            argv.extend(("-v", f"{name}={value}"))
+        argv.extend(
+            (
                 "-P",
                 "pager=off",
                 "-P",
@@ -935,10 +947,22 @@ def _run_psql_script(psql, db_url, script):
                 "-A",
                 "-f",
                 str(script_path),
-            ],
-            env=psql_connection_env(db_url),
+            )
+        )
+        child_env = dict(psql_connection_env(db_url))
+        child_env.update(
+            {
+                "LC_ALL": "C",
+                "LC_MESSAGES": "C",
+                "LC_NUMERIC": "C",
+            }
+        )
+        return subprocess.run(
+            argv,
+            env=child_env,
             text=True,
             capture_output=True,
+            check=False,
         )
     finally:
         if script_path is not None:
@@ -958,38 +982,270 @@ def run_query(psql, db_url, sql):
     return parse_tsv(proc.stdout), proc.stderr.strip()
 
 
-QUERY_MARKER_PREFIX = "__CRE_VALIDATION_QUERY__:"
+QUERY_RESULT_BEGIN_PREFIX = "__CRE_VALIDATION_QUERY_BEGIN__:"
+QUERY_RESULT_END_PREFIX = "__CRE_VALIDATION_QUERY_END__:"
+QUERY_TIMING_BEGIN_PREFIX = "__CRE_VALIDATION_TIMING_BEGIN__:"
+QUERY_TIMING_END_PREFIX = "__CRE_VALIDATION_TIMING_END__:"
+QUERY_NAME_PATTERN = re.compile(r"[a-z0-9_]+")
+NATIVE_TIMING_PATTERN = re.compile(
+    r"Time: (?P<elapsed>[0-9]{1,20}\.[0-9]{3}) ms"
+    r"(?: \((?P<display>[^\r\n()]{1,40})\))?"
+)
+MINUTE_TIMING_SUFFIX_PATTERN = re.compile(
+    r"(?P<minutes>[0-5][0-9]):"
+    r"(?P<seconds>(?:[0-5][0-9]\.[0-9]{3}|60\.000))"
+)
+HOUR_TIMING_SUFFIX_PATTERN = re.compile(
+    r"(?P<hours>(?:[01][0-9]|2[0-3])):"
+    r"(?P<minutes>[0-5][0-9]):"
+    r"(?P<seconds>(?:[0-5][0-9]\.[0-9]{3}|60\.000))"
+)
+DAY_TIMING_SUFFIX_PATTERN = re.compile(
+    r"(?P<days>[0-9]{1,10}) d "
+    r"(?P<hours>(?:[01][0-9]|2[0-3])):"
+    r"(?P<minutes>[0-5][0-9]):"
+    r"(?P<seconds>(?:[0-5][0-9]\.[0-9]{3}|60\.000))"
+)
+
+
+def _query_frame_id(ordinal, name):
+    if ordinal < 0 or ordinal > 999 or QUERY_NAME_PATTERN.fullmatch(name) is None:
+        raise ValueError("validation query name cannot be framed safely")
+    return f"{ordinal:03d}:{name}"
+
+
+def _parse_frame_id(line, prefix):
+    if not line.startswith(prefix):
+        return None
+    payload = line.removeprefix(prefix)
+    match = re.fullmatch(r"([0-9]{3}):([a-z0-9_]+)", payload)
+    if match is None:
+        raise ValueError("malformed frame marker")
+    return int(match.group(1)), match.group(2)
 
 
 def parse_query_batch(output, query_names):
     """Split one psql session's marked result sets without mixing snapshots."""
     expected = list(query_names)
-    chunks = {name: [] for name in expected}
-    current = None
+    chunks = {}
+    current_name = None
+    current_lines = []
+    next_ordinal = 0
     for line in output.splitlines():
-        if line.startswith(QUERY_MARKER_PREFIX):
-            name = line.removeprefix(QUERY_MARKER_PREFIX)
-            if name not in chunks:
-                raise SystemExit(f"unexpected validation query marker: {name!r}")
-            if current == name or chunks[name]:
-                raise SystemExit(f"duplicate validation query marker: {name!r}")
-            current = name
+        try:
+            begin = _parse_frame_id(line, QUERY_RESULT_BEGIN_PREFIX)
+            end = _parse_frame_id(line, QUERY_RESULT_END_PREFIX)
+        except ValueError as exc:
+            raise SystemExit("validation query result framing is malformed") from exc
+        if begin is not None:
+            if current_name is not None or next_ordinal >= len(expected):
+                raise SystemExit("validation query result framing is out of order")
+            ordinal, name = begin
+            if ordinal != next_ordinal or name != expected[next_ordinal]:
+                raise SystemExit("validation query result framing is out of order")
+            current_name = name
+            current_lines = []
             continue
-        if current is None:
+        if end is not None:
+            if current_name is None:
+                raise SystemExit("validation query result framing is out of order")
+            ordinal, name = end
+            if ordinal != next_ordinal or name != current_name:
+                raise SystemExit("validation query result framing is out of order")
+            if not any(item.strip() for item in current_lines):
+                raise SystemExit("validation query result frame is empty")
+            chunks[current_name] = parse_tsv("\n".join(current_lines))
+            current_name = None
+            current_lines = []
+            next_ordinal += 1
+            continue
+        if current_name is None:
             if line.strip():
-                raise SystemExit("unexpected psql output before validation query marker")
+                raise SystemExit("unexpected psql query-result output outside frame")
             continue
-        chunks[current].append(line)
-    missing = [name for name in expected if not chunks[name]]
-    if missing:
-        raise SystemExit(
-            "validation query output is missing marked result(s): "
-            + ", ".join(missing)
-        )
+        current_lines.append(line)
+    if current_name is not None or next_ordinal != len(expected):
+        raise SystemExit("validation query result framing is incomplete")
+    return {name: chunks[name] for name in expected}
+
+
+def _timing_unavailable(query_names, code):
     return {
-        name: parse_tsv("\n".join(chunks[name]))
-        for name in expected
+        name: {
+            "ordinal": ordinal,
+            "scope": "psql_client_elapsed",
+            "status": "unavailable",
+            "unavailable_code": code,
+        }
+        for ordinal, name in enumerate(query_names)
     }
+
+
+def _timing_suffix_milliseconds(display):
+    for pattern, multipliers in (
+        (MINUTE_TIMING_SUFFIX_PATTERN, (60_000.0, 1_000.0)),
+        (HOUR_TIMING_SUFFIX_PATTERN, (3_600_000.0, 60_000.0, 1_000.0)),
+        (
+            DAY_TIMING_SUFFIX_PATTERN,
+            (86_400_000.0, 3_600_000.0, 60_000.0, 1_000.0),
+        ),
+    ):
+        match = pattern.fullmatch(display)
+        if match is None:
+            continue
+        values = [float(value) for value in match.groups()]
+        return sum(
+            value * multiplier for value, multiplier in zip(values, multipliers)
+        )
+    return None
+
+
+def parse_native_timing(line):
+    """Parse PostgreSQL 18 PrintTiming output into finite client milliseconds."""
+    match = NATIVE_TIMING_PATTERN.fullmatch(line)
+    if match is None:
+        return None
+    elapsed_ms = float(match.group("elapsed"))
+    if not math.isfinite(elapsed_ms) or elapsed_ms < 0:
+        return None
+    display = match.group("display")
+    if elapsed_ms < 1000.0:
+        return elapsed_ms if display is None else None
+    if display is None:
+        return None
+    display_ms = _timing_suffix_milliseconds(display)
+    if display_ms is None or abs(display_ms - elapsed_ms) > 0.501:
+        return None
+    return elapsed_ms
+
+
+def parse_query_timings(output, query_names):
+    """Parse optional, separately framed psql client timing telemetry.
+
+    Timing corruption never changes whether query results are valid. Structural
+    defects degrade the complete timing map to a bounded unavailable code; a
+    safely framed bad duration degrades only that query.
+    """
+    expected = list(query_names)
+    frames = {}
+    current_name = None
+    current_lines = []
+    next_ordinal = 0
+    for line in output.splitlines():
+        try:
+            begin = _parse_frame_id(line, QUERY_TIMING_BEGIN_PREFIX)
+            end = _parse_frame_id(line, QUERY_TIMING_END_PREFIX)
+        except ValueError:
+            return _timing_unavailable(expected, "timing_marker_malformed")
+        if begin is not None:
+            if current_name is not None or next_ordinal >= len(expected):
+                return _timing_unavailable(expected, "timing_marker_out_of_order")
+            ordinal, name = begin
+            if ordinal != next_ordinal or name != expected[next_ordinal]:
+                return _timing_unavailable(expected, "timing_marker_unknown")
+            current_name = name
+            current_lines = []
+            continue
+        if end is not None:
+            if current_name is None:
+                return _timing_unavailable(expected, "timing_marker_out_of_order")
+            ordinal, name = end
+            if ordinal != next_ordinal or name != current_name:
+                return _timing_unavailable(expected, "timing_marker_out_of_order")
+            frames[current_name] = [item for item in current_lines if item.strip()]
+            current_name = None
+            current_lines = []
+            next_ordinal += 1
+            continue
+        if current_name is None:
+            if line.strip():
+                return _timing_unavailable(expected, "timing_output_unexpected")
+            continue
+        current_lines.append(line)
+    if current_name is not None or next_ordinal != len(expected):
+        return _timing_unavailable(expected, "timing_frames_incomplete")
+
+    timings = {}
+    for ordinal, name in enumerate(expected):
+        lines = frames[name]
+        base = {"ordinal": ordinal, "scope": "psql_client_elapsed"}
+        if not lines:
+            timings[name] = {
+                **base,
+                "status": "unavailable",
+                "unavailable_code": "timing_missing",
+            }
+            continue
+        if len(lines) != 1:
+            timings[name] = {
+                **base,
+                "status": "unavailable",
+                "unavailable_code": "timing_duplicate",
+            }
+            continue
+        elapsed_ms = parse_native_timing(lines[0])
+        if elapsed_ms is None:
+            lowered = lines[0].lower()
+            code = (
+                "timing_nonfinite"
+                if lowered.startswith("time:")
+                and any(token in lowered for token in ("nan", "inf"))
+                else "timing_malformed"
+            )
+            timings[name] = {
+                **base,
+                "status": "unavailable",
+                "unavailable_code": code,
+            }
+            continue
+        timings[name] = {
+            **base,
+            "status": "available",
+            "elapsed_ms": elapsed_ms,
+        }
+    return timings
+
+
+def _build_query_batch_script(queries):
+    statements = [
+        r"\o :CRE_VALIDATION_RESULTS",
+        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;",
+    ]
+    for ordinal, (name, sql) in enumerate(queries.items()):
+        frame_id = _query_frame_id(ordinal, name)
+        statements.extend(
+            (
+                f"\\echo {QUERY_TIMING_BEGIN_PREFIX}{frame_id}",
+                f"\\qecho {QUERY_RESULT_BEGIN_PREFIX}{frame_id}",
+                r"\timing on",
+                sql,
+                r"\timing off",
+                f"\\qecho {QUERY_RESULT_END_PREFIX}{frame_id}",
+                f"\\echo {QUERY_TIMING_END_PREFIX}{frame_id}",
+            )
+        )
+    statements.extend(("ROLLBACK;", r"\o"))
+    return "\n".join(statements) + "\n"
+
+
+def run_queries_with_timings(psql, db_url, queries):
+    """Run one read-only snapshot with isolated result and timing channels."""
+    with tempfile.TemporaryDirectory(prefix="cre-validate-results-") as temp_dir:
+        result_path = Path(temp_dir) / "query-results.tsv"
+        result_path.touch(mode=0o600)
+        proc = _run_psql_script(
+            psql,
+            db_url,
+            _build_query_batch_script(queries),
+            variables={"CRE_VALIDATION_RESULTS": str(result_path)},
+        )
+        if proc.returncode != 0:
+            sys.stderr.write(proc.stderr)
+            raise SystemExit(f"psql exited {proc.returncode}")
+        result_output = result_path.read_text(encoding="utf-8")
+    rows = parse_query_batch(result_output, queries)
+    timings = parse_query_timings(proc.stdout, queries)
+    return rows, timings, proc.stderr.strip()
 
 
 def run_queries(psql, db_url, queries):
@@ -1001,17 +1257,8 @@ def run_queries(psql, db_url, queries):
     pipe with an early result set.  A file lets psql read independently while
     Python drains stdout through ``communicate``.
     """
-    statements = [
-        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;"
-    ]
-    for name, sql in queries.items():
-        statements.extend((f"\\echo {QUERY_MARKER_PREFIX}{name}", sql))
-    statements.append("ROLLBACK;")
-    proc = _run_psql_script(psql, db_url, "\n".join(statements) + "\n")
-    if proc.returncode != 0:
-        sys.stderr.write(proc.stderr)
-        raise SystemExit(f"psql exited {proc.returncode}")
-    return parse_query_batch(proc.stdout, queries), proc.stderr.strip()
+    rows, _timings, stderr = run_queries_with_timings(psql, db_url, queries)
+    return rows, stderr
 
 
 def normalize_warning(stderr):
@@ -1032,7 +1279,11 @@ def markdown_table(rows):
     out = ["| " + " | ".join(headers) + " |"]
     out.append("|" + "|".join("---" for _ in headers) + "|")
     for row in rows:
-        out.append("| " + " | ".join(str(row.get(h, "") or "") for h in headers) + " |")
+        values = (
+            "" if row.get(header) is None else str(row.get(header))
+            for header in headers
+        )
+        out.append("| " + " | ".join(values) + " |")
     return "\n".join(out) + "\n"
 
 
@@ -1051,6 +1302,30 @@ def render_markdown(report):
         for warning in report["psql_warnings"]:
             parts.append(f"- {warning}")
         parts.append("")
+
+    if report.get("query_timings"):
+        timing_rows = []
+        for query_name, timing in report["query_timings"].items():
+            timing_rows.append(
+                {
+                    "query": query_name,
+                    "ordinal": timing["ordinal"],
+                    "scope": timing["scope"],
+                    "status": timing["status"],
+                    "elapsed_ms": timing.get("elapsed_ms"),
+                    "unavailable_code": timing.get("unavailable_code"),
+                }
+            )
+        parts.extend(
+            [
+                "## Query Timings",
+                "",
+                "Elapsed values are psql client timings, not pure server execution times.",
+                "",
+                markdown_table(timing_rows),
+                "",
+            ]
+        )
 
     labels = {
         "lifecycle_schema_contract": "Lifecycle Schema Contract",
@@ -1099,6 +1374,7 @@ def main():
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "env_file": env_path,
         "queries": {},
+        "query_timings": {},
         "psql_warnings": [],
     }
     queries = dict(QUERIES)
@@ -1109,7 +1385,9 @@ def main():
             )
         except ValueError as exc:
             parser.error(str(exc))
-    report["queries"], stderr = run_queries(psql, db_url, queries)
+    report["queries"], report["query_timings"], stderr = run_queries_with_timings(
+        psql, db_url, queries
+    )
     warning = normalize_warning(stderr)
     if warning:
         report["psql_warnings"].append(warning)
