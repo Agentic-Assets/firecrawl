@@ -3302,6 +3302,37 @@ def verify_validation_readback(
         for row in (raw_fingerprint_rows or [])
         if isinstance(row, dict) and isinstance(row.get("source_key"), str)
     }
+    inventory_coverage_error = None
+    if fingerprint_rows_available:
+        try:
+            if (
+                len(raw_fingerprint_rows) != len(SOURCE_KEYS)
+                or set(fingerprint_by_source) != set(SOURCE_KEYS)
+            ):
+                raise ValueError("fingerprint source coverage is incomplete")
+            coverage = {
+                (
+                    int(row["active_row_count"]),
+                    int(row["classified_row_count"]),
+                    int(row["unclassified_row_count"]),
+                )
+                for row in raw_fingerprint_rows
+            }
+            if len(coverage) != 1:
+                raise ValueError("fingerprint coverage totals disagree")
+            active_rows, classified_rows, unclassified_rows = coverage.pop()
+            fingerprint_rows = sum(int(row["row_count"]) for row in raw_fingerprint_rows)
+            if (
+                min(active_rows, classified_rows, unclassified_rows) < 0
+                or active_rows != classified_rows + unclassified_rows
+                or unclassified_rows != 0
+                or fingerprint_rows != classified_rows
+            ):
+                raise ValueError("active inventory is not fully classified")
+        except (KeyError, TypeError, ValueError):
+            inventory_coverage_error = (
+                "inventory generation does not cover every active listing"
+            )
     failures: list[str] = []
     for source in manifest["config"]["sources"]:
         checkpoint = manifest["sources"][source]
@@ -3676,6 +3707,8 @@ def verify_validation_readback(
         if fingerprint_rows_available:
             fingerprint_row = fingerprint_by_source.get(source)
             try:
+                if inventory_coverage_error is not None:
+                    raise ValueError(inventory_coverage_error)
                 if fingerprint_row is None:
                     raise ValueError("missing fingerprint row")
                 fingerprint_count = int(fingerprint_row["row_count"])
@@ -3695,7 +3728,10 @@ def verify_validation_readback(
             except (KeyError, TypeError, ValueError, ArtifactValidationError):
                 ok = False
                 if reason is None:
-                    reason = "inventory generation fingerprint is invalid"
+                    reason = (
+                        inventory_coverage_error
+                        or "inventory generation fingerprint is invalid"
+                    )
             else:
                 inventory_fingerprint = {
                     "sourceId": source,

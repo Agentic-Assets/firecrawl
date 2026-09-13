@@ -289,6 +289,9 @@ def test_source_counts_separates_inventory_and_detail_observation():
 def test_inventory_generation_fingerprint_matches_consumer_readback_tuple():
     sql = QUERIES["inventory_generation_fingerprints"]
     assert "count(live_inventory.source_id)" in sql
+    assert "inventory_coverage.active_row_count" in sql
+    assert "inventory_coverage.classified_row_count" in sql
+    assert "inventory_coverage.unclassified_row_count" in sql
     assert "max(live_inventory.row_updated_at)" in sql
     assert "max(live_inventory.observation_at)" in sql
     assert SOURCE_KEY_SQL in sql
@@ -324,7 +327,10 @@ def test_inventory_generation_fingerprint_matches_consumer_readback_tuple():
         ({}, "colliers", "main:42", "colliers-main"),
         ({}, "unique-properties", "legacy-4", "unique-properties"),
         ({"sourceKey": "svn"}, "svn", None, "svn"),
-        ({"sourceKey": " svn "}, "svn", "legacy-5", " svn "),
+        ({"sourceKey": " svn "}, "svn", "legacy-5", "svn"),
+        ({"sourceKey": "unknown"}, "svn", "legacy-6", "svn"),
+        ({"sourceKey": "jll"}, "svn", "legacy-7", "svn"),
+        ({"sourceKey": "unknown"}, "unknown", "legacy-8", None),
     ],
 )
 def test_canonical_source_identity_handles_legacy_rows_without_source_index(
@@ -347,6 +353,8 @@ def test_source_key_inference_covers_preserved_and_merged_payloads():
     assert "latestInventoryObservation,secondary_pass,sourceKey" in SOURCE_KEY_SQL
     assert "primary,sourceKey" in SOURCE_KEY_SQL
     assert "secondary_pass,sourceKey" in SOURCE_KEY_SQL
+    assert "btrim(candidate.source_key)" in SOURCE_KEY_SQL
+    assert "THEN b.slug END" in SOURCE_KEY_SQL
     assert SOURCE_KEY_SQL.index("external_id LIKE 'investor:%'") < SOURCE_KEY_SQL.index(
         "latestInventoryObservation,sourceKey"
     )

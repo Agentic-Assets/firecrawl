@@ -455,10 +455,32 @@ live_inventory AS (
     ORDER BY si.last_enumerated_at DESC NULLS LAST, si.id DESC
     LIMIT 1
   ) source_identity ON true
+),
+inventory_coverage AS (
+  SELECT
+    count(*) AS active_row_count,
+    count(*) FILTER (
+      WHERE EXISTS (
+        SELECT 1
+        FROM required_sources
+        WHERE required_sources.source_id = live_inventory.source_id
+      )
+    ) AS classified_row_count,
+    count(*) FILTER (
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM required_sources
+        WHERE required_sources.source_id = live_inventory.source_id
+      )
+    ) AS unclassified_row_count
+  FROM live_inventory
 )
 SELECT
   required_sources.source_id AS source_key,
   count(live_inventory.source_id)::text AS row_count,
+  inventory_coverage.active_row_count::text AS active_row_count,
+  inventory_coverage.classified_row_count::text AS classified_row_count,
+  inventory_coverage.unclassified_row_count::text AS unclassified_row_count,
   to_char(
     max(live_inventory.row_updated_at) AT TIME ZONE 'UTC',
     'YYYY-MM-DD HH24:MI:SS"Z"'
@@ -469,7 +491,12 @@ SELECT
   ) AS max_observation_at
 FROM required_sources
 LEFT JOIN live_inventory USING (source_id)
-GROUP BY required_sources.source_id
+CROSS JOIN inventory_coverage
+GROUP BY
+  required_sources.source_id,
+  inventory_coverage.active_row_count,
+  inventory_coverage.classified_row_count,
+  inventory_coverage.unclassified_row_count
 ORDER BY required_sources.source_id;
 """,
     "freshness_generations": f"""

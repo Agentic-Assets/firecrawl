@@ -354,9 +354,12 @@ SOURCE_KEY_JSON_PATHS = (
 
 def source_key_from_values(raw_data, brokerage_slug, external_id):
     """Resolve the canonical source key for fixtures and non-SQL callers."""
+    normalized_slug = (
+        brokerage_slug.strip() if isinstance(brokerage_slug, str) else None
+    )
     for slug, prefix, source_key in FOLDED_SOURCE_PREFIXES:
         if (
-            brokerage_slug == slug
+            normalized_slug == slug
             and isinstance(external_id, str)
             and external_id.startswith(prefix)
         ):
@@ -369,9 +372,13 @@ def source_key_from_values(raw_data, brokerage_slug, external_id):
                 value = None
                 break
             value = value.get(key)
-        if isinstance(value, str) and value != "":
-            return value
-    return brokerage_slug
+        if isinstance(value, str):
+            candidate = value.strip()
+            mapping = SOURCE_TO_BROKERAGE.get(candidate)
+            if candidate and mapping is not None and mapping[0] == normalized_slug:
+                return candidate
+    fallback = SOURCE_TO_BROKERAGE.get(normalized_slug)
+    return normalized_slug if fallback is not None and fallback[0] == normalized_slug else None
 
 
 def _json_text_sql(listing_alias, path):
@@ -387,16 +394,38 @@ def source_key_sql(listing_alias="l", brokerage_alias="b"):
         f"    AND {listing_alias}.external_id LIKE '{prefix}%' THEN '{source_key}'"
         for slug, prefix, source_key in FOLDED_SOURCE_PREFIXES
     )
-    raw_paths = ",\n    ".join(
-        f"NULLIF({_json_text_sql(listing_alias, path)}, '')"
-        for path in SOURCE_KEY_JSON_PATHS
+    governed_slugs = sorted({slug for slug, _prefix in SOURCE_TO_BROKERAGE.values()})
+    governed_slugs_sql = ", ".join(f"'{slug}'" for slug in governed_slugs)
+    folded_pairs = "\n".join(
+        f"          OR ({brokerage_alias}.slug = '{slug}' "
+        f"AND btrim(candidate.source_key) = '{source_key}')"
+        for slug, _prefix, source_key in FOLDED_SOURCE_PREFIXES
+    )
+    raw_candidates = ",\n".join(
+        f"         ({priority}, {_json_text_sql(listing_alias, path)})"
+        for priority, path in enumerate(SOURCE_KEY_JSON_PATHS, start=1)
+    )
+    raw_source = (
+        "(SELECT btrim(candidate.source_key)\n"
+        "       FROM (VALUES\n"
+        f"{raw_candidates}\n"
+        "       ) AS candidate(priority, source_key)\n"
+        "       WHERE NULLIF(btrim(candidate.source_key), '') IS NOT NULL\n"
+        f"         AND {brokerage_alias}.slug IN ({governed_slugs_sql})\n"
+        "         AND (\n"
+        f"          btrim(candidate.source_key) = {brokerage_alias}.slug\n"
+        f"{folded_pairs}\n"
+        "         )\n"
+        "       ORDER BY candidate.priority\n"
+        "       LIMIT 1)"
     )
     return (
         "\nCASE\n"
         f"{folded}\n"
         "  ELSE COALESCE(\n"
-        f"    {raw_paths},\n"
-        f"    {brokerage_alias}.slug\n"
+        f"    {raw_source},\n"
+        f"    CASE WHEN {brokerage_alias}.slug IN ({governed_slugs_sql}) "
+        f"THEN {brokerage_alias}.slug END\n"
         "  )\n"
         "END\n"
     )
