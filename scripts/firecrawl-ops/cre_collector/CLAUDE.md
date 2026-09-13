@@ -190,6 +190,13 @@ Key behavior:
   contacts/documents/images **unless**
   `jsonb_path_exists(raw_data, '$.**.detailError')` (preserves children on
   transient detail failures).
+- **Bulk lifecycle locking:** every generated ingest transaction takes exactly
+  one transaction-wide lifecycle advisory lock, then locks existing source-index
+  rows before listing rows in deterministic order. Never add one transaction
+  advisory lock per listing identity: high-volume sources exhaust PostgreSQL's
+  shared lock table before mutation. The global lock also serializes the bounded
+  reviewed reconciliation path; unique identity constraints serialize new-row
+  conflicts.
 - **Status activation is OPT-IN and default-OFF.** Source-derived statuses are
   suppressed unless `--activate-status` is passed on the CLI or
   `CRE_ACTIVATE_STATUS=1` is set in the environment. New helpers:
@@ -322,6 +329,15 @@ Use the checkpoint runner's generation-exact database readback as the write
 admission proof. `cre_refresh_report.py --since <run-start>` is the broader
 scope report; neither that report nor a fresh `scraped_at` proves that an old
 detail cache was refreshed.
+
+The checkpoint-series publisher advances
+`out/checkpoint-series/producer-source-health.json` only after a complete
+all-source series. Its `producer-freshness-v2` inventory generation binds each
+required source to the post-ingest readback of active row count, maximum
+`cre_listings.updated_at`, maximum observation/enumeration clock, and complete
+publication status. Partial, failed, running, and interrupted series never
+replace the last-good receipt. The generation ID is derived from the canonical
+fingerprint digest, so an exact retry reuses it and any changed tuple does not.
 
 ## Adding a source
 

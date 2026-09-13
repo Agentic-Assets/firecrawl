@@ -24,6 +24,7 @@ import re
 import stat
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -51,6 +52,17 @@ EXPECTED_SIZE = 857
 EXPECTED_PSF = 18_669.78
 ADVISORY_LOCK_KEY = 734_251_907_300_731_003
 MAX_PREIMAGE_BYTES = 4 * 1024 * 1024
+EVIDENCE_OBSERVED_AT = "2026-09-10T04:35:00Z"
+RECONCILIATION_PROVENANCE = "approved_exact_row_derived_psf_repair"
+VERIFICATION_EVIDENCE_SHA256 = hashlib.sha256(
+    b"colliers-derived-psf-v1-transaction-verification"
+).hexdigest()
+REPAIR_JOB_ID = str(
+    uuid.uuid5(uuid.NAMESPACE_URL, "agentic-assets:colliers-derived-psf-v1:apply")
+)
+ROLLBACK_JOB_ID = str(
+    uuid.uuid5(uuid.NAMESPACE_URL, "agentic-assets:colliers-derived-psf-v1:rollback")
+)
 
 
 def generation_expr(alias: str) -> str:
@@ -69,7 +81,7 @@ SELECT jsonb_build_object(
   'row', to_jsonb(l),
   'brokerage_slug', b.slug,
   'source_key', l.raw_data->>'sourceKey',
-  'generation', {generation_expr('l')}
+  'generation', {generation_expr("l")}
 )::text
 FROM credeals.cre_listings l
 JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id
@@ -111,9 +123,7 @@ def validate_state(state: dict, *, repaired: bool) -> None:
             raise ValueError("repair target price per SF drifted")
 
 
-def row_guard(
-    state: dict, *, repaired: bool, guard_updated_at: bool = True
-) -> str:
+def row_guard(state: dict, *, repaired: bool, guard_updated_at: bool = True) -> str:
     row = state["row"]
     psf_guard = (
         "l.sale_price_per_sf IS NULL"
@@ -139,7 +149,7 @@ def row_guard(
     {updated_at_guard}
     AND l.raw_data={sql_lit(raw_data)}::jsonb
     AND l.raw_data->>'sourceKey'='colliers'
-    AND {generation_expr('l')}={sql_lit(EXPECTED_GENERATION)}
+    AND {generation_expr("l")}={sql_lit(EXPECTED_GENERATION)}
     AND EXISTS (
       SELECT 1 FROM credeals.cre_brokerages b
       WHERE b.id=l.brokerage_id AND b.slug='colliers'
@@ -153,8 +163,11 @@ def mutation_sql(
     commit: bool,
     rollback: bool = False,
     guard_updated_at: bool = True,
+    evidence_sha256: str = VERIFICATION_EVIDENCE_SHA256,
 ) -> str:
     validate_state(state, repaired=rollback)
+    if not re.fullmatch(r"[0-9a-f]{64}", evidence_sha256):
+        raise ValueError("repair evidence SHA-256 must be lowercase hexadecimal")
     assignment = (
         f"sale_price_per_sf={EXPECTED_PSF}::numeric"
         if rollback
@@ -165,7 +178,16 @@ def mutation_sql(
         if rollback
         else "l.sale_price_per_sf IS NULL"
     )
-    mode = "rollback_applied" if rollback else ("applied" if commit else "verified_rollback")
+    mode = (
+        "rollback_applied"
+        if rollback
+        else ("applied" if commit else "verified_rollback")
+    )
+    job_id = ROLLBACK_JOB_ID if rollback else REPAIR_JOB_ID
+    run_key = "repair:colliers-derived-psf-v1:" + ("rollback" if rollback else "apply")
+    provenance = RECONCILIATION_PROVENANCE + ("_rollback" if rollback else "")
+    old_value = "NULL" if rollback else sql_lit(str(EXPECTED_PSF))
+    new_value = sql_lit(str(EXPECTED_PSF)) if rollback else "NULL"
     finish = "COMMIT;" if commit else "ROLLBACK;"
     return f"""
 BEGIN ISOLATION LEVEL SERIALIZABLE;
@@ -175,6 +197,28 @@ SET LOCAL statement_timeout='30s';
 {lifecycle_transaction_lock_sql()}
 -- Then serialize this exact repair independently of the broader lifecycle lock.
 SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY});
+INSERT INTO credeals.cre_scrape_jobs (
+  id, brokerage_id, status, started_at, completed_at, notes, artifact_run_key
+)
+VALUES (
+  {sql_lit(job_id)}::uuid, {sql_lit(EXPECTED_BROKERAGE_ID)}::uuid,
+  'running', now(), NULL,
+  {sql_lit("approved exact-row Colliers derived PSF repair; ref=AGENTIC-1229")},
+  {sql_lit(run_key)}
+)
+ON CONFLICT DO NOTHING;
+DO $job$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM credeals.cre_scrape_jobs
+    WHERE id={sql_lit(job_id)}::uuid
+      AND brokerage_id={sql_lit(EXPECTED_BROKERAGE_ID)}::uuid
+      AND artifact_run_key={sql_lit(run_key)}
+  ) THEN
+    RAISE EXCEPTION 'Colliers PSF repair job identity drifted';
+  END IF;
+END
+$job$;
 CREATE TEMP TABLE _colliers_psf_changed(id uuid PRIMARY KEY) ON COMMIT DROP;
 WITH changed AS (
   UPDATE credeals.cre_listings l
@@ -183,6 +227,35 @@ WITH changed AS (
   RETURNING l.id
 )
 INSERT INTO _colliers_psf_changed SELECT id FROM changed;
+INSERT INTO credeals.cre_listing_price_history (
+  listing_id, observed_at, sale_price_usd, sale_price_per_sf,
+  lease_rate_min, lease_rate_max, status, cap_rate, source_lastmod,
+  transaction_type, reconciliation_job_id, reconciliation_provenance, observed_at_semantics,
+  reconciliation_evidence_sha256
+)
+SELECT l.id, {sql_lit(EVIDENCE_OBSERVED_AT)}::timestamptz,
+       l.sale_price_usd, l.sale_price_per_sf,
+       l.lease_rate_min, l.lease_rate_max, l.status, l.cap_rate,
+       l.source_lastmod, l.transaction_type,
+       {sql_lit(job_id)}::uuid, {sql_lit(provenance)},
+       'source_evidence_observed_at', {sql_lit(evidence_sha256)}
+FROM credeals.cre_listings l
+JOIN _colliers_psf_changed changed ON changed.id=l.id;
+INSERT INTO credeals.cre_listing_events (
+  listing_id, brokerage_id, scrape_job_id, event_type, field,
+  old_value, new_value, source_value, source_url, detected_at,
+  reconciliation_provenance, evidence_observed_at,
+  evidence_time_semantics, reconciliation_evidence_sha256
+)
+SELECT l.id, l.brokerage_id, {sql_lit(job_id)}::uuid,
+       'price_change', 'sale_price_per_sf', {old_value}, {new_value},
+       'approved_history_reconciliation:derived_psf_correction',
+       l.source_url, now(), {sql_lit(provenance)},
+       {sql_lit(EVIDENCE_OBSERVED_AT)}::timestamptz,
+       'source_evidence_observed_at', {sql_lit(evidence_sha256)}
+FROM credeals.cre_listings l
+JOIN _colliers_psf_changed changed ON changed.id=l.id
+ON CONFLICT DO NOTHING;
 DO $check$
 DECLARE changed_count integer; bad_count integer;
 BEGIN
@@ -199,9 +272,9 @@ BEGIN
       AND l.sale_price_usd={EXPECTED_PRICE}::numeric
       AND l.size_sf={EXPECTED_SIZE}::numeric
       AND {expected_post}
-      AND l.raw_data={sql_lit(json.dumps(state['row']['raw_data'], sort_keys=True, separators=(',', ':')))}::jsonb
+      AND l.raw_data={sql_lit(json.dumps(state["row"]["raw_data"], sort_keys=True, separators=(",", ":")))}::jsonb
       AND l.raw_data->>'sourceKey'='colliers'
-      AND {generation_expr('l')}={sql_lit(EXPECTED_GENERATION)}
+      AND {generation_expr("l")}={sql_lit(EXPECTED_GENERATION)}
     );
   IF changed_count <> 1 OR bad_count <> 0 THEN
     RAISE EXCEPTION 'Colliers PSF repair failed closed: changed %, bad %',
@@ -209,14 +282,18 @@ BEGIN
   END IF;
 END
 $check$;
+UPDATE credeals.cre_scrape_jobs
+SET status='completed', completed_at=now()
+WHERE id={sql_lit(job_id)}::uuid;
 SELECT jsonb_build_object(
   'ok', true,
   'mode', {sql_lit(mode)},
   'changed', (SELECT count(*) FROM _colliers_psf_changed),
   'id', {sql_lit(EXPECTED_ID)},
   'field', 'sale_price_per_sf',
-  'new_value', {'to_jsonb(' + str(EXPECTED_PSF) + '::numeric)' if rollback else 'NULL::numeric'},
-  'updated_at_disposition', 'advanced_by_table_trigger'
+  'new_value', {"to_jsonb(" + str(EXPECTED_PSF) + "::numeric)" if rollback else "NULL::numeric"},
+  'updated_at_disposition', 'advanced_by_table_trigger',
+  'reconciliation_job_id', {sql_lit(job_id)}
 )::text;
 {finish}
 """
@@ -313,7 +390,11 @@ def replace_private_bytes(path: Path, data: bytes) -> str:
     """Atomically replace one already-reserved owner-only evidence file."""
     _reject_symlink_components(path)
     info = path.stat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.getuid()
+        or info.st_mode & 0o077
+    ):
         raise ValueError("reserved evidence must be an owner-only regular file")
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     write_private_bytes(tmp, data)
@@ -335,10 +416,17 @@ def read_private_preimage(path: Path, expected_sha256: str) -> dict:
         raise ValueError("rollback requires an absolute path and lowercase SHA-256")
     _reject_symlink_components(path)
     info = path.stat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.getuid()
+        or info.st_mode & 0o077
+    ):
         raise ValueError("rollback preimage must be an owner-only regular file")
     data = path.read_bytes()
-    if len(data) > MAX_PREIMAGE_BYTES or hashlib.sha256(data).hexdigest() != expected_sha256:
+    if (
+        len(data) > MAX_PREIMAGE_BYTES
+        or hashlib.sha256(data).hexdigest() != expected_sha256
+    ):
         raise ValueError("rollback preimage size or SHA-256 does not match")
     payload = json.loads(data)
     if payload.get("db_target_sha256") != EXPECTED_DB_TARGET_SHA256:
@@ -370,7 +458,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rollback-preimage", type=Path)
     parser.add_argument("--expected-preimage-sha256")
     args = parser.parse_args(argv)
-    if sum(bool(x) for x in (args.apply, args.verify_apply_rollback, args.rollback_preimage)) > 1:
+    if (
+        sum(
+            bool(x)
+            for x in (args.apply, args.verify_apply_rollback, args.rollback_preimage)
+        )
+        > 1
+    ):
         parser.error("mutation modes are mutually exclusive")
     if args.apply != bool(args.preimage):
         parser.error("--apply and --preimage are required together")
@@ -382,13 +476,17 @@ def main(argv: list[str] | None = None) -> int:
     with SharedLock(canonical_shared_lock_dir()):
         if args.rollback_preimage:
             rollback_preimage = cli_private_path(args.rollback_preimage)
-            read_private_preimage(
-                rollback_preimage, args.expected_preimage_sha256
-            )
+            read_private_preimage(rollback_preimage, args.expected_preimage_sha256)
             current = run_psql(db_url, state_sql())
             validate_state(current, repaired=True)
             result = run_psql(
-                db_url, mutation_sql(current, commit=True, rollback=True)
+                db_url,
+                mutation_sql(
+                    current,
+                    commit=True,
+                    rollback=True,
+                    evidence_sha256=args.expected_preimage_sha256,
+                ),
             )
             print(json.dumps(result, sort_keys=True))
             return 0
@@ -448,7 +546,10 @@ def main(argv: list[str] | None = None) -> int:
         # commit. A host crash after COMMIT must still leave the preimage,
         # rollback SQL, and pending marker discoverable.
         fsync_directory(preimage_path.parent)
-        result = run_psql(db_url, mutation_sql(before, commit=True))
+        result = run_psql(
+            db_url,
+            mutation_sql(before, commit=True, evidence_sha256=sha256),
+        )
         after = run_psql(db_url, state_sql())
         validate_state(after, repaired=True)
         postimage = {

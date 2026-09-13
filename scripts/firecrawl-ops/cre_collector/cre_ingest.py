@@ -92,6 +92,21 @@ def lifecycle_advisory_lock_key_sql(brokerage_expr, external_expr):
     )
 
 
+def artifact_run_identity_from_digests(member_digests, *, lane="ingest"):
+    """Stable content identity from canonically ordered artifact digests."""
+    members = list(member_digests)
+    if not members or any(
+        not isinstance(digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        for digest in members
+    ):
+        raise ValueError("artifact identity requires lowercase SHA-256 digests")
+    key = f"{lane}:v1:" + hashlib.sha256(
+        "\n".join(members).encode()
+    ).hexdigest()
+    return key, str(uuid.uuid5(_RUN_UUID_NAMESPACE, key))
+
+
 def artifact_run_identity(paths, *, lane="ingest"):
     """Stable content identity used for replay-safe job and event rows."""
     members = []
@@ -101,8 +116,7 @@ def artifact_run_identity(paths, *, lane="ingest"):
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
         members.append(digest.hexdigest())
-    key = f"{lane}:v1:" + hashlib.sha256("\n".join(members).encode()).hexdigest()
-    return key, str(uuid.uuid5(_RUN_UUID_NAMESPACE, key))
+    return artifact_run_identity_from_digests(members, lane=lane)
 
 # sourceKey -> (brokerage slug, external_id prefix)
 SOURCE_TO_BROKERAGE = {
@@ -760,11 +774,14 @@ def to_inventory_only_row(listing, observed_at):
     fingerprint = hashlib.sha256(
         json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str).encode()
     ).hexdigest()
+    supporting_url = http_url_or_none(listing.get("url"))
     return {
         "slug": slug,
         "external_id": external_id,
         "source_key": source_key,
-        "url": index_url,
+        # Preserve a provider-supplied agreement or brochure URL as supporting
+        # inventory evidence. It is not promoted to cre_listings.canonical_url.
+        "url": supporting_url or index_url,
         "fingerprint": fingerprint,
         "observed_status": clean_text(
             listing.get("status") or listing.get("statusBadge"), 128
@@ -2713,12 +2730,13 @@ BEGIN
     END IF;
 END $$;
 
--- The transaction-wide lifecycle advisory lock acquired above serializes all
--- generated ingest/reconciliation writers.  Do not additionally allocate one
--- advisory lock per identity: complete-source artifacts can contain tens of
--- thousands of listings and would exhaust PostgreSQL's shared lock table.
--- Keep the existing deterministic row-lock order for the rows that exist.
--- Lock present source-index rows before their canonical listing rows.
+-- The transaction-wide lifecycle advisory lock above serializes every generated
+-- bulk ingest and reviewed reconciliation. Do not also retain one advisory lock
+-- per identity: a complete high-volume source can exceed PostgreSQL's shared
+-- lock table before reaching the upsert. Lock existing lifecycle rows in the
+-- canonical source-index-then-listing order; the unique identity constraints
+-- serialize new-row conflicts.
+-- Lock present source-index rows after the transaction-wide lifecycle lock.
 CREATE TEMP TABLE _present_source_locks ON COMMIT DROP AS
 SELECT si.id
 FROM credeals.cre_source_index si
@@ -3204,6 +3222,9 @@ JOIN _src s
 JOIN _prior_source_presence p
   ON p.brokerage_id = u.brokerage_id AND p.external_id = u.external_id
 LEFT JOIN _prior_vals pv ON pv.id = u.id
+-- Keep this join explicit. The preceding LEFT JOIN adds pv.brokerage_id and
+-- pv.external_id to the joined row, so another USING clause sees duplicate
+-- names on its left side and PostgreSQL rejects the statement as ambiguous.
 JOIN credeals.cre_source_index si
   ON si.brokerage_id = u.brokerage_id AND si.external_id = u.external_id
 JOIN credeals.cre_brokerages b ON b.id = u.brokerage_id
@@ -3752,9 +3773,10 @@ WHERE b.slug IN ({slug_list})
   AND l.external_id IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM _up u WHERE u.id = l.id);
 
--- The transaction-wide lifecycle lock also serializes retirement against
--- generated present lifecycle mutations. Lock retirement source-index rows
--- before canonical listing rows, matching the present-row order above.
+-- The transaction-wide lifecycle advisory lock serializes retirement against
+-- every generated ingest and reviewed reconciliation. Lock retirement rows in
+-- the same source-index-then-listing order used by present observations.
+-- Lock retirement source-index rows after the transaction-wide lifecycle lock.
 CREATE TEMP TABLE _retired_source_locks ON COMMIT DROP AS
 SELECT si.id
 FROM credeals.cre_source_index si

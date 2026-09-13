@@ -196,7 +196,14 @@ excluded from that summary.
 The series manifest and per-source runs live under `out/checkpoint-series/`.
 Every manifest save also writes `source-health.json` in that series and updates
 `out/checkpoint-series/producer-source-health.json`. The latter is the stable,
-redaction-safe `producer-freshness-v1` handoff for GetCREdata. Per source it
+redaction-safe `producer-freshness-v2` handoff for GetCREdata. It advances only
+after a complete all-source series and its generation-exact database readback.
+Each source binds its active row count, maximum row-update clock, maximum
+observation/enumeration clock, and complete publication status. The aggregate
+SHA-256 covers the canonical key-sorted fingerprint map, so an idempotent replay
+reuses the generation ID while any inventory mutation creates a new generation.
+Failed, partial, running, or interrupted series leave the last-good canonical
+receipt unchanged. Per source the accompanying health projection
 separates `lastSuccessfulObservationAt`, `lastAttemptObservationAt`,
 `producerComputedAt`, and downstream `publishedAt`; `sourceVintage` is the UTC
 date of the last successful observation. A successful whole-source observation
@@ -637,10 +644,14 @@ truncated.
 
 The manifest records `ingesting` before launching a live write. If execution
 stops in that window, resume performs a generation-exact database readback and
-never automatically replays an ambiguous ingest. A successful live readback
-requires the expected generation ID, exact active canonical count, exact
-inventory-only scope count, and observation timestamps no earlier than the
-generation start.
+never automatically replays an ambiguous ingest. Recovery distinguishes an
+exact committed generation from an exact rollback: rollback requires both zero
+rows for the expected generation and zero scrape jobs for the immutable
+artifact run key, then returns the checkpoint to `dry_run_passed` for a reviewed
+resume. Any partial, conflicting, or missing probe remains
+`ingest_recovery_required`. A successful live readback requires the expected
+generation ID, exact active canonical count, exact inventory-only scope count,
+and observation timestamps no earlier than the generation start.
 
 **Colliers SalesTracker identity safety (2026-07-29).** The list endpoint emits
 one HTML card per project, while the map endpoint emits one row per map pin.

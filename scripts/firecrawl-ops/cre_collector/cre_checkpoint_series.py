@@ -32,7 +32,7 @@ from cre_checkpoint_refresh import (
     git_identity,
     utc_now,
 )
-from cre_source_health import publish_series_health
+from cre_inventory_generation import publish_series_health
 
 
 SCHEMA_VERSION = 1

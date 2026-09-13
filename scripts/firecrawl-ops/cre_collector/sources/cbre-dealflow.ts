@@ -385,12 +385,21 @@ export function cbreDealflowUnavailableCard(
   reason: string
 ): any {
   const projectType = clean(card.cbreDealflowCard?.projectType) ?? undefined;
+  const inventoryOnly = card.urlKind !== "detail";
+  const inventoryId = card.id?.startsWith("card:")
+    ? card.id
+    : card.listingPv
+      ? `card:pv:${card.listingPv}`
+      : card.id
+        ? `card:source:${card.id}`
+        : null;
   return prune({
     ...card,
-    // A linked provider PV is the canonical public landing URL even when its
-    // detail payload is unavailable. Unlinked cards deliberately remain
-    // provisional and therefore do not receive a canonical URL claim.
+    // Only a public property detail page is canonical. Agreement, brochure,
+    // and unlinked cards remain inventory evidence and do not receive a
+    // canonical URL claim.
     canonicalUrl: card.urlKind === "detail" ? card.url : undefined,
+    id: inventoryOnly ? inventoryId : card.id,
     statusBadge: clean(card.status) ?? undefined,
     extraFacts: projectType ? { project_type: projectType } : undefined,
     preserveChildCollections: true,
@@ -402,9 +411,12 @@ export function cbreDealflowUnavailableCard(
           }
         : undefined,
     inventoryOnly:
-      card.urlKind === "unlinked"
+      inventoryOnly
         ? {
-            reason: "no_provider_id_or_listing_url",
+            reason:
+              card.urlKind === "unlinked"
+                ? "no_provider_id_or_listing_url"
+                : "no_public_property_page",
             indexUrl: CBRE_DEALFLOW_SOURCE_URL,
           }
         : undefined,

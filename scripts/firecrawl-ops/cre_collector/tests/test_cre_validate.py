@@ -25,6 +25,7 @@ from cre_validate import (
     LIFECYCLE_SCHEMA_CONTRACT_ITEMS,
     QUERIES,
     SOURCE_KEY_SQL,
+    artifact_run_jobs_query,
     markdown_table,
     normalize_warning,
     parse_query_batch,
@@ -33,6 +34,15 @@ from cre_validate import (
     run_queries,
     run_query,
 )
+
+
+def test_artifact_run_jobs_query_is_exact_and_rejects_malformed_keys():
+    key = f"ingest:v1:{'a' * 64}"
+    sql = artifact_run_jobs_query(key)
+    assert "count(*)::text AS matching_jobs" in sql
+    assert f"artifact_run_key = '{key}'" in sql
+    with pytest.raises(ValueError, match="malformed"):
+        artifact_run_jobs_query("not-an-artifact-key")
 
 
 def test_child_quality_queries_cover_media_and_links():
@@ -274,6 +284,16 @@ def test_source_counts_separates_inventory_and_detail_observation():
     assert "latest_inventory_observed_at" in sql
     assert "latest_inventory_batch_active" in sql
     assert "detail_unavailable" in sql
+
+
+def test_inventory_generation_fingerprint_matches_consumer_readback_tuple():
+    sql = QUERIES["inventory_generation_fingerprints"]
+    assert "count(live_inventory.source_id)" in sql
+    assert "max(live_inventory.row_updated_at)" in sql
+    assert "max(live_inventory.observation_at)" in sql
+    assert "coalesce(source_identity.last_enumerated_at, l.last_seen_at)" in sql
+    assert "ORDER BY si.last_enumerated_at DESC NULLS LAST, si.id DESC" in sql
+    assert "WHERE l.deleted_at IS NULL" in sql
 
 
 def test_source_key_inference_covers_preserved_and_merged_payloads():

@@ -42,6 +42,7 @@ from cre_ingest import (
     INVENTORY_ONLY_SOURCE_DEFINITIONS,
     SOURCE_TO_BROKERAGE,
     STRICT_FRESHNESS_SOURCE_KEYS,
+    artifact_run_identity_from_digests,
     child_count_regressed,
     colliers_contact_preservation_is_valid,
     database_target_fingerprint_from_url,
@@ -743,6 +744,7 @@ def build_validate_argv(
     env_file: str | None,
     *,
     expected_db_target_sha256: str | None = None,
+    expected_artifact_run_key: str | None = None,
 ) -> list[str]:
     argv = [
         sys.executable,
@@ -758,6 +760,8 @@ def build_validate_argv(
         argv.extend(
             ["--expected-db-target-sha256", expected_db_target_sha256]
         )
+    if expected_artifact_run_key:
+        argv.extend(["--expected-artifact-run-key", expected_artifact_run_key])
     return argv
 
 
@@ -1416,7 +1420,7 @@ def validate_source_artifact(
             f"{stats['detail_errors']} listing(s) contain detailError"
         )
     if (
-        expected_source in {"colliers", "newmark"}
+        expected_source in {"cbre-dealflow", "colliers", "newmark"}
         and stats["flat_listings"]
         != stats["staged_unique"] + stats["inventory_only"]
     ):
@@ -3046,6 +3050,10 @@ def recover_interrupted_ingest(
 ) -> None:
     """Resolve an interrupted live-ingest window without replaying writes."""
     checkpoint = manifest["sources"][source]
+    artifact_info = checkpoint.get("artifact") or {}
+    artifact_run_key, _artifact_run_uuid = artifact_run_identity_from_digests(
+        [str(artifact_info.get("sha256") or "")]
+    )
     output = run_dir / "recovery" / f"{source}-validation.json"
     log = run_dir / "logs" / f"{source}-ingest-recovery.log"
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -3054,6 +3062,7 @@ def recover_interrupted_ingest(
             output,
             env_file,
             expected_db_target_sha256=manifest_database_target_sha256(manifest),
+            expected_artifact_run_key=artifact_run_key,
         ),
         log,
         env=safe_process_env(),
@@ -3100,6 +3109,41 @@ def recover_interrupted_ingest(
     checkpoint["readback"] = probe_manifest["sources"][source].get("readback")
     recovery["readback_ok"] = readback["ok"]
     if not readback["ok"]:
+        generation_id, _generation_started = _generation_expectation(
+            probe_manifest, artifact_info, source
+        )
+        queries = validation.get("queries") or {}
+        generation_rows = queries.get("freshness_generations") or []
+        generation_matches = [
+            row
+            for row in generation_rows
+            if isinstance(row, dict)
+            and row.get("source_key") == source
+            and row.get("generation_id") == generation_id
+        ]
+        artifact_job_rows = queries.get("artifact_run_jobs") or []
+        exact_job_probe = (
+            len(artifact_job_rows) == 1
+            and isinstance(artifact_job_rows[0], dict)
+            and _int_value(artifact_job_rows[0].get("matching_jobs")) == 0
+        )
+        if not generation_matches and exact_job_probe:
+            recovery.update(
+                {
+                    "outcome": "exact_rollback",
+                    "replay_safe": True,
+                    "artifact_run_key_sha256": hashlib.sha256(
+                        artifact_run_key.encode("utf-8")
+                    ).hexdigest(),
+                    "generation_id": generation_id,
+                }
+            )
+            checkpoint["state"] = "dry_run_passed"
+            save_manifest(run_dir, manifest)
+            raise GlobalStageError(
+                f"interrupted ingest fully rolled back for {source}; "
+                "the immutable artifact is safe to replay on reviewed resume"
+            )
         checkpoint["state"] = "ingest_recovery_required"
         save_manifest(run_dir, manifest)
         raise GlobalStageError(
@@ -3245,6 +3289,17 @@ def verify_validation_readback(
     queue_by_source = {
         row.get("source_key"): row
         for row in (raw_queue_rows or [])
+        if isinstance(row, dict) and isinstance(row.get("source_key"), str)
+    }
+    raw_fingerprint_rows = (
+        queries.get("inventory_generation_fingerprints")
+        if isinstance(queries, dict)
+        else None
+    )
+    fingerprint_rows_available = isinstance(raw_fingerprint_rows, list)
+    fingerprint_by_source = {
+        row.get("source_key"): row
+        for row in (raw_fingerprint_rows or [])
         if isinstance(row, dict) and isinstance(row.get("source_key"), str)
     }
     failures: list[str] = []
@@ -3617,6 +3672,38 @@ def verify_validation_readback(
         ok = ok and inventory_ok
         if reason is None and inventory_reason is not None:
             reason = inventory_reason
+        inventory_fingerprint = None
+        if fingerprint_rows_available:
+            fingerprint_row = fingerprint_by_source.get(source)
+            try:
+                if fingerprint_row is None:
+                    raise ValueError("missing fingerprint row")
+                fingerprint_count = int(fingerprint_row["row_count"])
+                if fingerprint_count < 0:
+                    raise ValueError("negative fingerprint count")
+                fingerprint_updated = _timestamp_second(
+                    fingerprint_row["max_row_updated_at"]
+                )
+                fingerprint_observed = _timestamp_second(
+                    fingerprint_row["max_observation_at"]
+                )
+                if (
+                    fingerprint_updated > latest_allowed
+                    or fingerprint_observed > latest_allowed
+                ):
+                    raise ValueError("fingerprint clock exceeds skew allowance")
+            except (KeyError, TypeError, ValueError, ArtifactValidationError):
+                ok = False
+                if reason is None:
+                    reason = "inventory generation fingerprint is invalid"
+            else:
+                inventory_fingerprint = {
+                    "sourceId": source,
+                    "rowCount": fingerprint_count,
+                    "maxRowUpdatedAt": fingerprint_updated.isoformat(),
+                    "maxObservationAt": fingerprint_observed.isoformat(),
+                    "publicationStatus": "complete",
+                }
         checkpoint["readback"] = {
             "ok": ok,
             "generation_id": generation_id,
@@ -3664,6 +3751,7 @@ def verify_validation_readback(
             ),
             "expected_staged_unique": staged,
             "inventory_only": inventory_details,
+            "inventory_fingerprint": inventory_fingerprint,
             "queue_health": (
                 queue_by_source.get(source)
                 or {

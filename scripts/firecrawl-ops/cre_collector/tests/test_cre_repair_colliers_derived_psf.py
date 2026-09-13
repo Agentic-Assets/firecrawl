@@ -43,8 +43,14 @@ def test_apply_sql_changes_only_derived_psf_and_is_exactly_guarded():
     sql = repair.mutation_sql(state(), commit=True)
     assert "hashtextextended('credeals:listing-lifecycle:v1', 0)" in sql
     assert "SET sale_price_per_sf=NULL" in sql
-    assert "status=" not in sql.split("SET sale_price_per_sf=NULL", 1)[1].split("WHERE", 1)[0]
-    assert "deleted_at=" not in sql.split("SET sale_price_per_sf=NULL", 1)[1].split("WHERE", 1)[0]
+    assert (
+        "status="
+        not in sql.split("SET sale_price_per_sf=NULL", 1)[1].split("WHERE", 1)[0]
+    )
+    assert (
+        "deleted_at="
+        not in sql.split("SET sale_price_per_sf=NULL", 1)[1].split("WHERE", 1)[0]
+    )
     assert f"l.sale_price_usd={repair.EXPECTED_PRICE}::numeric" in sql
     assert f"l.size_sf={repair.EXPECTED_SIZE}::numeric" in sql
     assert f"l.sale_price_per_sf={repair.EXPECTED_PSF}::numeric" in sql
@@ -52,6 +58,13 @@ def test_apply_sql_changes_only_derived_psf_and_is_exactly_guarded():
     assert "l.deleted_at IS NULL" in sql
     assert "l.raw_data->>'sourceKey'='colliers'" in sql
     assert "l.raw_data=" in sql
+    assert "INSERT INTO credeals.cre_listing_price_history" in sql
+    assert "INSERT INTO credeals.cre_listing_events" in sql
+    assert "INSERT INTO credeals.cre_scrape_jobs" in sql
+    assert repair.REPAIR_JOB_ID in sql
+    assert "approved_exact_row_derived_psf_repair" in sql
+    assert "source_evidence_observed_at" in sql
+    assert repair.VERIFICATION_EVIDENCE_SHA256 in sql
     assert "COMMIT;" in sql
 
 
@@ -72,6 +85,13 @@ def test_rollback_sql_requires_repaired_precondition_and_restores_only_psf():
     )
     assert "AND l.updated_at=" not in standalone
     assert "l.raw_data=" in standalone
+    assert "approved_exact_row_derived_psf_repair_rollback" in standalone
+    assert repair.ROLLBACK_JOB_ID in standalone
+
+
+def test_mutation_sql_rejects_invalid_evidence_digest():
+    with pytest.raises(ValueError, match="evidence SHA-256"):
+        repair.mutation_sql(state(), commit=True, evidence_sha256="not-a-digest")
 
 
 def test_private_preimage_bytes_are_bounded():
