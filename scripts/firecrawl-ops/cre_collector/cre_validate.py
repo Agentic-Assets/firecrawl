@@ -421,9 +421,9 @@ LEFT JOIN soft_deleted ON soft_deleted.source_key = a.source_key
 GROUP BY a.source_key, latest.latest_scraped_at, latest.latest_inventory_observed_at
 ORDER BY a.source_key;
 """,
-    # This is deliberately the same live-inventory tuple recomputed by
-    # GetCREdata's producer-freshness-v2 gate. It is read only after ingest so
-    # a receipt cannot authorize inventory mutated after its database readback.
+    # This is deliberately the same coverage and freshness-watermark tuple
+    # recomputed by GetCREdata's producer-freshness-v2 gate. It detects changes
+    # to the bound counts or maximum clocks; it is not a per-field content digest.
     "inventory_generation_fingerprints": f"""
 WITH required_sources(source_id) AS (
   VALUES
@@ -431,25 +431,56 @@ WITH required_sources(source_id) AS (
 ),
 live_inventory AS (
   SELECT
-    coalesce(nullif(source_identity.source_key, ''), l.brokerage_id::text)
-      AS source_id,
-    l.updated_at AS row_updated_at,
-    coalesce(source_identity.last_enumerated_at, l.last_seen_at)
+    canonical.source_id,
+    canonical.row_updated_at,
+    coalesce(source_identity.last_enumerated_at, canonical.last_seen_at)
       AS observation_at
-  FROM credeals.cre_listings l
+  FROM (
+    SELECT
+      l.brokerage_id,
+      l.external_id,
+      l.updated_at AS row_updated_at,
+      l.last_seen_at,
+      {SOURCE_KEY_SQL} AS source_id
+    FROM credeals.cre_listings l
+    JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+    WHERE l.deleted_at IS NULL
+  ) canonical
   LEFT JOIN LATERAL (
-    SELECT si.source_key, si.last_enumerated_at
+    SELECT si.last_enumerated_at
     FROM credeals.cre_source_index si
-    WHERE si.brokerage_id = l.brokerage_id
-      AND si.external_id = l.external_id
+    WHERE si.brokerage_id = canonical.brokerage_id
+      AND si.external_id = canonical.external_id
+      AND si.source_key = canonical.source_id
     ORDER BY si.last_enumerated_at DESC NULLS LAST, si.id DESC
     LIMIT 1
   ) source_identity ON true
-  WHERE l.deleted_at IS NULL
+),
+inventory_coverage AS (
+  SELECT
+    count(*) AS active_row_count,
+    count(*) FILTER (
+      WHERE EXISTS (
+        SELECT 1
+        FROM required_sources
+        WHERE required_sources.source_id = live_inventory.source_id
+      )
+    ) AS classified_row_count,
+    count(*) FILTER (
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM required_sources
+        WHERE required_sources.source_id = live_inventory.source_id
+      )
+    ) AS unclassified_row_count
+  FROM live_inventory
 )
 SELECT
   required_sources.source_id AS source_key,
   count(live_inventory.source_id)::text AS row_count,
+  inventory_coverage.active_row_count::text AS active_row_count,
+  inventory_coverage.classified_row_count::text AS classified_row_count,
+  inventory_coverage.unclassified_row_count::text AS unclassified_row_count,
   to_char(
     max(live_inventory.row_updated_at) AT TIME ZONE 'UTC',
     'YYYY-MM-DD HH24:MI:SS"Z"'
@@ -460,7 +491,12 @@ SELECT
   ) AS max_observation_at
 FROM required_sources
 LEFT JOIN live_inventory USING (source_id)
-GROUP BY required_sources.source_id
+CROSS JOIN inventory_coverage
+GROUP BY
+  required_sources.source_id,
+  inventory_coverage.active_row_count,
+  inventory_coverage.classified_row_count,
+  inventory_coverage.unclassified_row_count
 ORDER BY required_sources.source_id;
 """,
     "freshness_generations": f"""
