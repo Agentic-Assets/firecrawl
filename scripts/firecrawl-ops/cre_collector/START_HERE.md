@@ -266,6 +266,24 @@ process liveness, scans unbound child runs, prints raw provider errors, calls
 the database or alters the running series. Recorded state and manifest age
 remain visible so a stopped viewer cannot imply that a process is alive.
 
+For optimization data, the checkpoint runner also saves body-free command
+journals and per-invocation scraper snapshots automatically. Read their
+performance report without calling the database or the scraper:
+
+```bash
+python3 cre_performance_report.py
+python3 cre_performance_report.py out/checkpoint-series/SERIES_ID --json
+```
+
+The compact Terminal report shows staged rows and the slowest measured command
+phase. JSON adds invocation identity, retry/backoff, approximate request latency,
+locally awaited concurrency, accepted JLL cache hits, sampled Node resources,
+and bounded host-CPU evidence. Unmeasured or stale evidence is explicit, not zero.
+Old runs do not gain historical timings retroactively. Request success and field
+presence are not proof of accurate, complete listings or successful ingestion.
+Definitions, saved file names, retention and interpretation:
+`../../../docs/firecrawl-ops/references/cre-performance-telemetry.md`.
+
 ### Bounded resource recovery
 
 On a new clean, pushed immutable series, the supervised 75% CPU profile may opt

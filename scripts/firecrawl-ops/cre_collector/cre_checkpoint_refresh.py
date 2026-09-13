@@ -53,6 +53,7 @@ from cre_ingest import (
     to_inventory_only_row,
     to_row,
 )
+from cre_performance import capture_runtime_configuration, run_observed_command
 from cre_runtime_observability import append_incident
 from cre_source_policy import load_source_policy
 from cre_validate import LIFECYCLE_SCHEMA_CONTRACT_ITEMS
@@ -1625,6 +1626,15 @@ def _mark_cpu_interrupt_evidence_failed(*, reaped: bool) -> None:
 
 
 def run_command(
+    argv: Sequence[str],
+    log_path: Path,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> int:
+    return run_observed_command(argv, log_path, env=env, runner=_run_logged_command)
+
+
+def _run_logged_command(
     argv: Sequence[str],
     log_path: Path,
     *,
@@ -4889,6 +4899,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, checkpoint_sigterm_handler)
     try:
         with lock:
+            if not args.resume:
+                capture_runtime_configuration(run_dir)
             initial_host_cpu_percent = run_cpu_guard_preflight(cpu_guard)
             manifest["preflight"]["host_cpu_guard"] = {
                 **cpu_guard.config(),
