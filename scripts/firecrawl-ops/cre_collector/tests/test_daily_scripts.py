@@ -124,6 +124,106 @@ def test_cre_status_reports_daily_while_legacy_tier_is_live():
     assert "ai.agentic.cre-daily.plist" in text
 
 
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ({}, "http://localhost:3002"),
+        ({"API_URL": "http://localhost:3102"}, "http://localhost:3102"),
+        (
+            {"FIRECRAWL_API_URL": "http://localhost:3103"},
+            "http://localhost:3103",
+        ),
+        (
+            {
+                "API_URL": "http://localhost:3102",
+                "FIRECRAWL_API_URL": "http://localhost:3103",
+            },
+            "http://localhost:3103",
+        ),
+    ],
+)
+def test_cre_status_honors_firecrawl_and_legacy_api_url(configured, expected):
+    status = STATUS.read_text(encoding="utf-8")
+    assert 'if API_URL="$API_URL" bash' in status
+    assignment = next(
+        line for line in status.splitlines() if line.startswith('API_URL="${')
+    )
+    env = os.environ.copy()
+    env.pop("API_URL", None)
+    env.pop("FIRECRAWL_API_URL", None)
+    env.update(configured)
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", f"{assignment}\nprintf '%s' \"$API_URL\""],
+        check=True,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.stdout == expected
+
+
+def _run_firecrawl_readiness(tmp_path, response, *, curl_rc=0):
+    status = STATUS.read_text(encoding="utf-8")
+    readiness = _extract_function("firecrawl_api_ready", status)
+    fake_curl = tmp_path / "curl"
+    fake_curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s' \"${FAKE_CURL_RESPONSE:-}\"\n"
+        "exit \"${FAKE_CURL_RC:-0}\"\n",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "FAKE_CURL_RESPONSE": response,
+        "FAKE_CURL_RC": str(curl_rc),
+    }
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            f"set -uo pipefail\nAPI_URL=http://localhost:3102\n{readiness}\nfirecrawl_api_ready",
+        ],
+        check=False,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+
+def test_cre_status_accepts_the_firecrawl_root_contract(tmp_path):
+    result = _run_firecrawl_readiness(
+        tmp_path,
+        '{"message":"Firecrawl API","documentation_url":"https://docs.firecrawl.dev"}',
+    )
+
+    assert result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "<!doctype html><html><body>Corbis</body></html>",
+        '{"message":"healthy"}',
+        '{"message":"Firecrawl API","documentation_url":"https://example.invalid"}',
+        "not-json",
+    ],
+)
+def test_cre_status_rejects_non_firecrawl_root_responses(tmp_path, response):
+    result = _run_firecrawl_readiness(tmp_path, response)
+
+    assert result.returncode != 0
+
+
+def test_cre_status_rejects_an_unreachable_firecrawl_api(tmp_path):
+    result = _run_firecrawl_readiness(tmp_path, "", curl_rc=7)
+
+    assert result.returncode != 0
+
+
 def test_cre_status_flags_empty_or_malformed_markers():
     text = STATUS.read_text(encoding="utf-8")
     assert "marker_problem" in text

@@ -35,7 +35,9 @@ OUT_DAILY="$DIR/out/daily"
 OUT_MONITOR="$DIR/out/monitor"
 OUT_ENRICH="$DIR/out/enrich"
 FC_DIR="${FC_DIR:-$DIR/../../..}"
-API_URL="${API_URL:-http://localhost:3002}"
+# Collector commands document FIRECRAWL_API_URL; the older health scripts use
+# API_URL. Honor both, with the collector-specific setting taking precedence.
+API_URL="${FIRECRAWL_API_URL:-${API_URL:-http://localhost:3002}}"
 
 FULL_HEALTH=0
 EXPECTED_SHA="${CRE_EXPECTED_SHA:-}"
@@ -280,16 +282,37 @@ fi
 # ---------------------------------------------------------------------------
 section "Firecrawl stack"
 # ---------------------------------------------------------------------------
+firecrawl_api_ready() {
+  local response
+  response="$(curl -fsS --connect-timeout 2 --max-time 5 "$API_URL/" 2>/dev/null)" || return 1
+  printf '%s' "$response" | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except (json.JSONDecodeError, UnicodeDecodeError):
+    raise SystemExit(1)
+
+if not isinstance(payload, dict):
+    raise SystemExit(1)
+if payload.get("message") != "Firecrawl API":
+    raise SystemExit(1)
+if payload.get("documentation_url") != "https://docs.firecrawl.dev":
+    raise SystemExit(1)
+' >/dev/null 2>&1
+}
+
 if [ "$FULL_HEALTH" -eq 1 ]; then
-  if bash "$FC_DIR/scripts/firecrawl-ops/firecrawl_healthcheck.sh" >/dev/null 2>&1; then
+  if API_URL="$API_URL" bash "$FC_DIR/scripts/firecrawl-ops/firecrawl_healthcheck.sh" >/dev/null 2>&1; then
     ok "full healthcheck passed (docker + API + scrape smoke)"
   else
     bad "full healthcheck FAILED (collect/monitor cannot run until the stack is up)"
   fi
-elif curl -fsS --max-time 5 "$API_URL/" >/dev/null 2>&1; then
-  ok "API reachable at $API_URL (use --full-health for the full scrape smoke test)"
+elif firecrawl_api_ready; then
+  ok "Firecrawl API ready at $API_URL (use --full-health for the full scrape smoke test)"
 else
-  bad "API not reachable at $API_URL (is the Docker stack up? cd \"$FC_DIR\" && docker compose up -d)"
+  bad "Firecrawl API readiness failed at $API_URL (wrong service or unavailable; check the configured port and Docker stack)"
 fi
 
 # ---------------------------------------------------------------------------
