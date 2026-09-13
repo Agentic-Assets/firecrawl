@@ -117,8 +117,9 @@ Do not bypass the guard with a dirty checkout or an alternate runner.
 For the complete registry, use `cre_checkpoint_series.py`. It gives every
 source its own checkpoint generation, so a slow provider does not age other
 sources' observation windows. Source-local collection or coverage failures are
-recorded and the series continues. CPU, database, validation, infrastructure,
-or operator failures stop the series. Earlier sources may already have
+recorded and the series continues. CPU stops are terminal by default, with the
+bounded opt-in recovery described below. Database, validation, infrastructure,
+telemetry, evidence and operator failures still stop the series. Earlier sources may already have
 completed additive ingests, so this is not an all-registry atomic transaction.
 
 Use this conservative supervised command after applying the resource profile:
@@ -145,6 +146,9 @@ NAI_ENUMERATION_CONCURRENCY=1 \
 
 ### Supervised accelerated profile
 
+The 2026-09-13 browser-only calibration below supersedes the one-page browser
+capacity for supervised JLL runs; conservative defaults remain available.
+
 The conservative profile above remains the default. On 2026-09-09, supervised
 production observations plus Cayman's tuning authorization established the
 following evidence and decision record:
@@ -168,6 +172,40 @@ concurrency 1 because of its provider challenge behavior, and NAI enumeration
 stays at concurrency 1. Start a new series when changing the global concurrency
 or CPU ceiling; never resume an existing series with a different recorded
 configuration.
+
+#### Measured browser capacity, 2026-09-13
+
+With four browser pages, a two-CPU browser cap and PID limit 384, a fresh
+32-page JLL sample completed 3.26 times as fast at four clients as at one.
+An isolated four-client replication completed in 27.528 seconds with 32/32
+valid responses, p95 4.588 seconds, no CPU guard trip, and an idle queue after
+thirty seconds of trailing monitoring. Required native assets and document
+channels were preserved. Supplemental rendered link/image differences from
+historic cache remain unclassified; no full harvested-field parity is claimed.
+Eight clients were not admitted because of the latency/resource tradeoff.
+Full evidence and limitations are in the linked evaluation document below.
+
+The opt-in resource helper changes only three browser keys, leaving `API_CPUS`,
+models, credentials and ports untouched. It saves their previous values and
+never restarts a container. Use a separate explicit state path when a previous
+conservative profile already has saved rollback state; do not overwrite it.
+
+```bash
+# From the repository root. Keep this same state path for show and restore.
+export CRE_RESOURCE_PROFILE_STATE="$PWD/tasks/tmp/firecrawl-cre-resource-profile/cre-browser-balanced-2026-09-13.state"
+bash scripts/firecrawl-ops/set_cre_resource_profile.sh apply --profile browser-balanced
+bash scripts/firecrawl-ops/set_cre_resource_profile.sh show
+# Roll back only these browser resource keys when needed:
+# bash scripts/firecrawl-ops/set_cre_resource_profile.sh restore
+```
+
+An existing state file makes `apply` refuse; it is not a reason to delete saved
+state. Inspect `show` and the running sidecar first. Container recreation is a
+separate operation: preserve the observed port, image, shared-memory size,
+security and proxy configuration, and recreate **only** `playwright-service`
+with `--no-deps --no-build --pull never`. On the evaluated host its port is 3103,
+not Compose's default 3003. Do not recreate `api` to apply browser capacity:
+that would also apply any pending model/environment transition.
 
 ```bash
 cd scripts/firecrawl-ops/cre_collector
@@ -202,12 +240,67 @@ python3 cre_series_status.py --watch 5
 ```
 
 Pass an explicit series directory to pin the display to one immutable run, or
-use `--json` for a one-shot machine-readable snapshot. The dashboard reads only
-the atomic parent manifest and links its exact outer-attempt log. It does not
-infer process liveness, scan unbound child runs, call the database, or alter the
-running series. For item-level detail, follow the collection log named by the
-active child checkpoint only after confirming that child belongs to the current
-outer attempt.
+use `--json` for a one-shot machine-readable snapshot. Without an explicit path,
+the dashboard selects the newest series once and keeps that same run in view;
+restart it to follow a newly started series. `Complete` counts sources that
+passed their refresh and readback; `Handled` includes both complete sources and
+recorded source-local failures, not a claim that failed sources are current.
+The watch interval accepts 0.5-3600 seconds and cannot be combined with JSON.
+The dashboard reads the atomic parent manifest and, when present, its exact
+generation/SHA-bound child manifest. A fresh child receives a validated,
+collision-resistant run ID that
+the parent records before process launch; terminal handling reads only that
+reserved manifest path. If startup is interrupted before that manifest becomes
+readable, the next invocation fails closed for operator review instead of
+assuming a fresh run or automatic replay. It reports source phase and the last
+JLL detail-pass counter, with its attempt number, from up to eight recent linked
+collection logs (at most 64 KiB per log, 512 KiB total). A detail-pass counter
+includes processed outcomes, including cache reuse and errors; it is not a
+successful-enrichment or overall listing-completion percentage. The main
+percentage counts completed sources, which have very different sizes.
+
+During bounded CPU recovery the display shows `cooling_down`, the measured CPU,
+the continuous low-CPU window, remaining recovery budgets and preserved cache
+detail count. Cooling down is not counted as a failed source. It never infers
+process liveness, scans unbound child runs, prints raw provider errors, calls
+the database or alters the running series. Recorded state and manifest age
+remain visible so a stopped viewer cannot imply that a process is alive.
+
+### Bounded resource recovery
+
+On a new clean, pushed immutable series, the supervised 75% CPU profile may opt
+into bounded foreground recovery with these additional flags:
+
+```text
+--max-resource-recoveries-per-source 3
+--recovery-low-cpu-percent 60
+--recovery-low-cpu-seconds 30
+--recovery-cpu-sample-seconds 2
+--max-recovery-cooldown-seconds 600
+--max-series-recovery-seconds 1800
+```
+
+The default recovery count is zero. Opt-in recovery preserves the existing
+75%/10-second watchdog; it does not raise or disable it. Only typed CPU pressure
+in preflight or actual source collection can enter recovery. Source gates,
+SQL dry runs, ingestion, readback, ambiguous writes, invalid telemetry and
+failed required evidence are not automatic CPU retries.
+
+The foreground parent retains exclusive ownership of its series while waiting
+but releases the child-owned CRE lifecycle lock. CPU must remain strictly below
+60% for 30 seconds. Each cooldown is limited to ten minutes, with at most three
+recoveries per source and thirty minutes of total series cooldown. Consumed
+counts and wait budgets survive manual resume. Original observation times,
+generation age, exact SHA/configuration and database-target checks still apply.
+Cancellation cannot silently restart a child. No daemon or scheduler is added.
+
+`manifest.json` retains the authoritative recovery state and effective settings;
+`resource-recovery-progress.json` provides a redaction-safe current projection.
+Outer attempts have separate logs, and child runs retain collection, gate,
+dry-run, ingest, readback and host-guard artifacts. Keep these run directories
+for diagnosis; do not publish scraped bodies, credentials or unrestricted logs.
+Recorded experiments and rejected settings are summarized in
+[`cre-throughput-recovery-2026-09-13.md`](../../../docs/firecrawl-ops/references/cre-throughput-recovery-2026-09-13.md).
 
 Every manifest save updates `source-health-publication.json` with the attempted
 publication state. While a series is incomplete it records `not_advanced` and

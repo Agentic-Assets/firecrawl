@@ -13,14 +13,14 @@
 #     cre_run_tier.sh) plus the success sentinel in the newest run log.
 # Plus: last-ingest row counts (offline, from the newest daily log), Firecrawl
 # stack reachability, the ~/Documents TCC blocker, env-file discoverability
-# (path only, never the URL), and the tail of the newest launchd stderr log.
+# (path only, never the URL), and the presence of launchd stderr evidence.
 #
 # Read-only and secret-free: no DB connection, no launchctl mutation, no
 # POSTGRES_URL ever printed. Exits nonzero if any problem is detected, so it
 # can double as a lightweight watchdog.
 #
 # Usage:
-#   bash cre_status.sh                 # offline status (default)
+#   bash cre_status.sh                 # local artifacts + API readiness GET
 #   bash cre_status.sh --full-health   # also run the full firecrawl healthcheck
 #   bash cre_status.sh --expected-sha <commit>  # require exact clean checkout
 #
@@ -49,7 +49,10 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -gt 0 ] || { echo "--expected-sha requires a commit" >&2; exit 2; }
       EXPECTED_SHA="$1"
       ;;
-    -h|--help) sed -n '2,30p' "$DIR/cre_status.sh"; exit 0 ;;
+    -h|--help)
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$DIR/cre_status.sh"
+      exit 0
+      ;;
     *) echo "unknown argument: $1 (try --full-health or --expected-sha SHA)" >&2; exit 2 ;;
   esac
   shift
@@ -425,19 +428,20 @@ for tier in monitor enrich weekly daily; do
 done
 
 # ---------------------------------------------------------------------------
-section "recent launchd stderr (newest tail)"
+section "recent launchd stderr (redacted summary)"
 # ---------------------------------------------------------------------------
 shown=0
 for tier in monitor enrich daily weekly; do
   errlog="$OUT_DAILY/cre-$tier.err.log"
   [ -s "$errlog" ] || continue
   shown=1
-  tailout="$(tail -3 "$errlog" 2>/dev/null)"
-  if printf '%s' "$tailout" | grep -q 'Operation not permitted'; then
+  if tail -3 "$errlog" 2>/dev/null | grep -q 'Operation not permitted'; then
     warn "cre-$tier.err.log shows 'Operation not permitted' (TCC-126 signature)"
   fi
-  printf '  --- cre-%s.err.log (last 3 lines) ---\n' "$tier"
-  printf '%s\n' "$tailout" | sed 's/^/        /'
+  # Provider exceptions can contain credentials or response bodies. Report a
+  # known signature and an artifact pointer, never arbitrary stderr contents.
+  printf '        cre-%s.err.log: non-empty; raw contents withheld\n' "$tier"
+  printf '        artifact: %s\n' "$errlog"
 done
 [ "$shown" -eq 0 ] && note "no non-empty launchd stderr logs"
 

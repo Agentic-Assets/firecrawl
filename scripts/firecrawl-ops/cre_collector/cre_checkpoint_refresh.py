@@ -29,10 +29,11 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Self
 
 from cre_ingest import (
     AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS,
@@ -64,6 +65,10 @@ DEFAULT_MAX_RESUME_AGE_HOURS = 24.0
 DEFAULT_MAX_HOST_CPU_PERCENT = 80.0
 DEFAULT_CPU_SUSTAIN_SECONDS = 30.0
 DEFAULT_CPU_SAMPLE_SECONDS = 5.0
+# Outer owners must leave enough time for a nested worker to stop its own
+# separately-sessioned collector before the worker can be force-killed.
+COMMAND_INTERRUPT_GRACE_SECONDS = 15
+COHORT_INTERRUPT_GRACE_SECONDS = 30
 # A source artifact is only admissible when every canonical observation is
 # still within this bound at the *end of collection*.  Generation membership
 # alone is not a freshness guarantee: a long serial detail sweep could observe
@@ -117,17 +122,51 @@ class CpuGuardTrip(KeyboardInterrupt):
     """The host CPU guard interrupted the refresh before sustained saturation."""
 
 
+@dataclass(frozen=True)
+class CpuGuardTripDetails:
+    """Typed, redaction-safe reason captured before the coordinator signal."""
+
+    reason_code: str
+    reason: str
+    telemetry_valid: bool
+    evidence_valid: bool
+    host_cpu_percent: float | None
+    occurred_at: str
+    context: dict[str, Any]
+    owned_processes_reaped: bool = True
+
+
 _CPU_GUARD_TRIP_REASON: str | None = None
+_CPU_GUARD_TRIP_DETAILS: CpuGuardTripDetails | None = None
 _CPU_GUARD_TRIP_LOCK = threading.Lock()
 _HOST_CPU_LOAD_INFO = 3
 _HOST_CPU_LOAD_INFO_COUNT = 4
 _CPU_STATE_MAX = 4
 
 
-def _set_cpu_guard_trip(reason: str) -> None:
-    global _CPU_GUARD_TRIP_REASON
+def _set_cpu_guard_trip(
+    reason: str,
+    *,
+    reason_code: str = "host_cpu_sustained",
+    telemetry_valid: bool = True,
+    evidence_valid: bool = True,
+    host_cpu_percent: float | None = None,
+    context: Mapping[str, Any] | None = None,
+    owned_processes_reaped: bool = True,
+) -> None:
+    global _CPU_GUARD_TRIP_DETAILS, _CPU_GUARD_TRIP_REASON
     with _CPU_GUARD_TRIP_LOCK:
         _CPU_GUARD_TRIP_REASON = reason
+        _CPU_GUARD_TRIP_DETAILS = CpuGuardTripDetails(
+            reason_code=reason_code,
+            reason=reason,
+            telemetry_valid=telemetry_valid,
+            evidence_valid=evidence_valid,
+            host_cpu_percent=host_cpu_percent,
+            occurred_at=utc_now(),
+            context=dict(context or {}),
+            owned_processes_reaped=owned_processes_reaped,
+        )
 
 
 def _peek_cpu_guard_trip() -> str | None:
@@ -135,10 +174,16 @@ def _peek_cpu_guard_trip() -> str | None:
         return _CPU_GUARD_TRIP_REASON
 
 
+def _peek_cpu_guard_trip_details() -> CpuGuardTripDetails | None:
+    with _CPU_GUARD_TRIP_LOCK:
+        return _CPU_GUARD_TRIP_DETAILS
+
+
 def _clear_cpu_guard_trip() -> None:
-    global _CPU_GUARD_TRIP_REASON
+    global _CPU_GUARD_TRIP_DETAILS, _CPU_GUARD_TRIP_REASON
     with _CPU_GUARD_TRIP_LOCK:
         _CPU_GUARD_TRIP_REASON = None
+        _CPU_GUARD_TRIP_DETAILS = None
 
 
 class _HostCpuLoadInfo(ctypes.Structure):
@@ -314,13 +359,33 @@ class HostCpuGuard:
             self._trip(reason, percent=percent)
         return percent
 
-    def _trip(self, reason: str, *, percent: float | None = None) -> None:
-        _set_cpu_guard_trip(reason)
+    def _trip(
+        self,
+        reason: str,
+        *,
+        percent: float | None = None,
+        reason_code: str = "host_cpu_sustained",
+        telemetry_valid: bool = True,
+    ) -> None:
+        _set_cpu_guard_trip(
+            reason,
+            reason_code=reason_code,
+            telemetry_valid=telemetry_valid,
+            host_cpu_percent=percent,
+            context=self.incident_context,
+        )
         try:
             self._write_record(state="tripped", percent=percent, reason=reason)
         except CpuTelemetryError as exc:
             reason = f"{reason}; {exc}"
-            _set_cpu_guard_trip(reason)
+            _set_cpu_guard_trip(
+                reason,
+                reason_code="host_cpu_evidence_failed",
+                telemetry_valid=telemetry_valid,
+                evidence_valid=False,
+                host_cpu_percent=percent,
+                context=self.incident_context,
+            )
         finally:
             # Termination is unconditional. Evidence writes can fail under the
             # same disk-pressure conditions in which fail-closed behavior is
@@ -335,7 +400,11 @@ class HostCpuGuard:
             try:
                 self.sample_once()
             except CpuTelemetryError as exc:
-                self._trip(f"host CPU telemetry failed closed: {exc}")
+                self._trip(
+                    f"host CPU telemetry failed closed: {exc}",
+                    reason_code="host_cpu_telemetry_failed",
+                    telemetry_valid=False,
+                )
                 return
             if _peek_cpu_guard_trip() is not None:
                 return
@@ -363,12 +432,23 @@ def run_cpu_guard_preflight(cpu_guard: HostCpuGuard) -> float:
         return cpu_guard.sample_once()
     except CpuTelemetryError as exc:
         reason = f"host CPU guard preflight failed closed: {exc}"
-        _set_cpu_guard_trip(reason)
+        _set_cpu_guard_trip(
+            reason,
+            reason_code="host_cpu_telemetry_failed",
+            telemetry_valid=False,
+            context=cpu_guard.incident_context,
+        )
         try:
             cpu_guard._write_record(state="tripped", reason=reason)
         except CpuTelemetryError as log_exc:
             reason = f"{reason}; {log_exc}"
-            _set_cpu_guard_trip(reason)
+            _set_cpu_guard_trip(
+                reason,
+                reason_code="host_cpu_evidence_failed",
+                telemetry_valid=False,
+                evidence_valid=False,
+                context=cpu_guard.incident_context,
+            )
         raise CpuGuardTrip(reason) from exc
 
 
@@ -377,16 +457,78 @@ def set_cpu_guard_context(
     *,
     phase: str,
     source: str | None = None,
+    active_operation: str | None = None,
 ) -> None:
     """Attach only structured stage identifiers to incident evidence."""
     context: dict[str, Any] = {
         "phase": phase,
+        "active_operation": active_operation or phase,
         "child_pid": os.getpid(),
         "process_group": os.getpgrp(),
     }
     if source is not None:
         context["source"] = source
     cpu_guard.incident_context = context
+
+
+def _resource_stop_phase(
+    manifest: Mapping[str, Any],
+    context: Mapping[str, Any],
+) -> tuple[str, str, str | None]:
+    """Resolve the actual active boundary without treating `collect` broadly."""
+    raw_phase = str(context.get("phase") or "unknown")
+    source = context.get("source")
+    source_value = source if isinstance(source, str) and source else None
+    configured = (manifest.get("config") or {}).get("sources") or []
+    if source_value is None and len(configured) == 1 and isinstance(configured[0], str):
+        source_value = configured[0]
+    if raw_phase in {"preflight", "healthcheck", "pre_validation"}:
+        return "preflight", str(context.get("active_operation") or raw_phase), source_value
+    if raw_phase != "collect":
+        return raw_phase, str(context.get("active_operation") or raw_phase), source_value
+
+    sources = manifest.get("sources")
+    checkpoint = (
+        sources.get(source_value)
+        if isinstance(sources, Mapping) and source_value is not None
+        else None
+    )
+    state = checkpoint.get("state") if isinstance(checkpoint, Mapping) else None
+    if state == "collecting":
+        return "collection", "source_collection", source_value
+    if state == "validated":
+        return "gate", "source_gate", source_value
+    if state == "gated":
+        return "dry_run", "source_dry_run", source_value
+    return "preflight", "source_collection_preflight", source_value
+
+
+def resource_stop_record(
+    manifest: Mapping[str, Any],
+    details: CpuGuardTripDetails,
+) -> dict[str, Any]:
+    """Build the child-to-series typed stop contract after owned cleanup."""
+    phase, active_operation, source = _resource_stop_phase(
+        manifest, details.context
+    )
+    return {
+        "schema_version": 1,
+        "reason_code": details.reason_code,
+        "phase": phase,
+        "active_operation": active_operation,
+        "source": source,
+        "generation_id": manifest.get("run_id"),
+        "telemetry_valid": details.telemetry_valid,
+        "evidence_valid": details.evidence_valid,
+        "host_cpu_percent": (
+            round(details.host_cpu_percent, 2)
+            if details.host_cpu_percent is not None
+            else None
+        ),
+        "occurred_at": details.occurred_at,
+        "recorded_at": utc_now(),
+        "owned_processes_reaped": details.owned_processes_reaped,
+    }
 
 
 def checkpoint_sigterm_handler(_signum: int, _frame: Any) -> None:
@@ -583,7 +725,7 @@ class SharedLock:
         self.held = False
         self.lease_token = None
 
-    def __enter__(self) -> "SharedLock":
+    def __enter__(self) -> Self:
         self.acquire()
         return self
 
@@ -1463,6 +1605,25 @@ def validate_source_artifact(
     }
 
 
+def _mark_cpu_interrupt_evidence_failed(*, reaped: bool) -> None:
+    details = _peek_cpu_guard_trip_details()
+    _set_cpu_guard_trip(
+        (
+            details.reason
+            if details is not None
+            else "host CPU guard interruption evidence failed"
+        ),
+        reason_code="host_cpu_evidence_failed",
+        telemetry_valid=(details.telemetry_valid if details is not None else False),
+        evidence_valid=False,
+        host_cpu_percent=(
+            details.host_cpu_percent if details is not None else None
+        ),
+        context=(details.context if details is not None else None),
+        owned_processes_reaped=reaped,
+    )
+
+
 def run_command(
     argv: Sequence[str],
     log_path: Path,
@@ -1470,7 +1631,9 @@ def run_command(
     env: Mapping[str, str] | None = None,
 ) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as log:
+    log = log_path.open("a", encoding="utf-8")
+    reaped_after_interrupt = False
+    try:
         log.write(f"[{utc_now()}] command: {' '.join(argv)}\n")
         log.flush()
         # The checkpoint runner owns the child lifetime. Put the command in a
@@ -1488,26 +1651,72 @@ def run_command(
         )
         try:
             rc = proc.wait()
-        except KeyboardInterrupt:
-            log.write(f"[{utc_now()}] interrupt: terminating process group {proc.pid}\n")
-            log.flush()
+        except KeyboardInterrupt as interrupted:
+            cleanup_errors: list[Exception] = []
+
+            def record_interrupt(message: str) -> None:
+                try:
+                    log.write(message)
+                    log.flush()
+                except (OSError, ValueError) as exc:
+                    cleanup_errors.append(exc)
+
+            record_interrupt(
+                f"[{utc_now()}] interrupt: terminating process group {proc.pid}\n"
+            )
             try:
                 os.killpg(proc.pid, signal.SIGINT)
             except ProcessLookupError:
                 pass
+            except OSError as exc:
+                cleanup_errors.append(exc)
             try:
-                proc.wait(timeout=15)
+                proc.wait(timeout=COMMAND_INTERRUPT_GRACE_SECONDS)
+                reaped_after_interrupt = True
             except subprocess.TimeoutExpired:
-                log.write(f"[{utc_now()}] interrupt: killing process group {proc.pid}\n")
-                log.flush()
+                record_interrupt(
+                    f"[{utc_now()}] interrupt: killing process group {proc.pid}\n"
+                )
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-                proc.wait()
+                except OSError as exc:
+                    cleanup_errors.append(exc)
+                try:
+                    proc.wait()
+                    reaped_after_interrupt = True
+                except (ChildProcessError, OSError) as exc:
+                    cleanup_errors.append(exc)
+            except (ChildProcessError, OSError) as exc:
+                cleanup_errors.append(exc)
+            if cleanup_errors:
+                if isinstance(interrupted, CpuGuardTrip):
+                    _mark_cpu_interrupt_evidence_failed(
+                        reaped=reaped_after_interrupt
+                    )
+                else:
+                    raise RefreshError(
+                        "interrupt cleanup or required evidence failed"
+                    ) from cleanup_errors[0]
             raise
         log.write(f"[{utc_now()}] rc={rc}\n")
-    return rc
+        return rc
+    finally:
+        active_error = sys.exception()
+        try:
+            log.close()
+        except (OSError, ValueError) as close_exc:
+            if isinstance(active_error, CpuGuardTrip):
+                _mark_cpu_interrupt_evidence_failed(
+                    reaped=reaped_after_interrupt
+                )
+                raise active_error from close_exc
+            if isinstance(active_error, KeyboardInterrupt):
+                raise RefreshError(
+                    "interrupt cleanup or required evidence failed"
+                ) from close_exc
+            raise
 
 
 def run_cohort_collection_worker(
@@ -1608,14 +1817,21 @@ def select_cohort_sources(
     """
     if source_workers < 1:
         raise ValueError("source_workers must be positive")
-    if len(active) >= source_workers or set(active) & COHORT_EXCLUSIVE_SOURCE_KEYS:
+    active_sources = set(active)
+    if len(active_sources) != len(active):
+        raise ValueError("active cohort sources must be unique")
+    if len(active) >= source_workers or active_sources & COHORT_EXCLUSIVE_SOURCE_KEYS:
         return []
     active_lanes = set().union(*(source_worker_lanes(item) for item in active))
     selected: list[str] = []
+    seen = set(active_sources)
     selected_lanes: set[str] = set()
     for source in pending:
         if len(active) + len(selected) >= source_workers:
             break
+        if source in seen:
+            continue
+        seen.add(source)
         if source in COHORT_EXCLUSIVE_SOURCE_KEYS:
             if active or selected:
                 continue
@@ -1631,35 +1847,71 @@ def select_cohort_sources(
 def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> None:
     """Terminate every active source process group before releasing the lock."""
     processes = list(active)
+    # A broken process adapter or evidence sink must not prevent reaping the
+    # remaining children, so these cleanup boundaries are intentionally broad.
+    cleanup_errors: list[Exception] = []
+
+    def record_log(item: CohortCollectionProcess, message: str) -> None:
+        try:
+            item.log_handle.write(message)
+            item.log_handle.flush()
+        except Exception as exc:  # noqa: BLE001
+            cleanup_errors.append(exc)
+
+    def process_is_running(item: CohortCollectionProcess) -> bool:
+        try:
+            return item.process.poll() is None
+        except Exception as exc:  # noqa: BLE001
+            cleanup_errors.append(exc)
+            return True
+
     for item in processes:
-        if item.process.poll() is not None:
+        if not process_is_running(item):
             continue
-        item.log_handle.write(
+        record_log(
+            item,
             f"[{utc_now()}] interrupt: terminating process group {item.process.pid}\n"
         )
-        item.log_handle.flush()
         try:
             os.killpg(item.process.pid, signal.SIGINT)
         except ProcessLookupError:
             pass
+        except Exception as exc:  # noqa: BLE001
+            cleanup_errors.append(exc)
     for item in processes:
-        if item.process.poll() is not None:
-            item.log_handle.close()
-            continue
         try:
-            item.process.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            item.log_handle.write(
-                f"[{utc_now()}] interrupt: killing process group {item.process.pid}\n"
-            )
-            item.log_handle.flush()
-            try:
-                os.killpg(item.process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            item.process.wait()
+            if process_is_running(item):
+                try:
+                    item.process.wait(timeout=COHORT_INTERRUPT_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    record_log(
+                        item,
+                        f"[{utc_now()}] interrupt: killing process group "
+                        f"{item.process.pid}\n",
+                    )
+                    try:
+                        os.killpg(item.process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        cleanup_errors.append(exc)
+                    try:
+                        item.process.wait()
+                    except Exception as exc:  # noqa: BLE001
+                        cleanup_errors.append(exc)
+                except Exception as exc:  # noqa: BLE001
+                    cleanup_errors.append(exc)
         finally:
-            item.log_handle.close()
+            try:
+                item.log_handle.close()
+            except Exception as exc:  # noqa: BLE001
+                cleanup_errors.append(exc)
+    if cleanup_errors:
+        first_error = cleanup_errors[0]
+        raise RefreshError(
+            "cohort cleanup completed with failed process or log evidence: "
+            f"{first_error}"
+        ) from first_error
 
 
 def _cohort_attempt(
@@ -1685,7 +1937,9 @@ def _cohort_attempt(
     attempt_number = len(checkpoint["attempts"]) + 1
     attempt_started = utc_now()
     attempt_log = run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
-    tmp_artifact = run_dir / "sources" / f"{source}.json.tmp"
+    tmp_artifact = (
+        run_dir / "sources" / f"{source}.attempt-{attempt_number}.json.tmp"
+    )
     tmp_artifact.parent.mkdir(parents=True, exist_ok=True)
     tmp_artifact.unlink(missing_ok=True)
     attempt = {
@@ -1694,6 +1948,7 @@ def _cohort_attempt(
         "finished_at": None,
         "rc": None,
         "log": _relative_to_run(attempt_log, run_dir),
+        "temporary_artifact": _relative_to_run(tmp_artifact, run_dir),
         "freshness_overrides": {
             key: ("<run-local-path>" if str(run_dir) in value else value)
             for key, value in fresh_source_env(
@@ -1788,6 +2043,26 @@ def _finalize_cohort_collection(
     rc = item.process.poll()
     if rc is None:
         raise RuntimeError("cannot finalize a running cohort source worker")
+    recorded_attempts = checkpoint.get("attempts") or []
+    recorded_attempt = recorded_attempts[-1] if recorded_attempts else None
+    owns_completion = (
+        checkpoint.get("state") == "collecting"
+        and recorded_attempt is item.attempt
+        and recorded_attempt.get("number") == item.attempt.get("number")
+        and recorded_attempt.get("started_at") == item.attempt_started_at
+        and recorded_attempt.get("finished_at") is None
+        and recorded_attempt.get("temporary_artifact")
+        == _relative_to_run(item.tmp_artifact, run_dir)
+    )
+    if not owns_completion:
+        item.log_handle.write(
+            f"[{utc_now()}] coordinator rejected stale or unowned completion\n"
+        )
+        item.log_handle.close()
+        raise RefreshError(
+            "cohort completion does not own the current source attempt: "
+            f"{item.source} attempt {item.attempt.get('number')}"
+        )
     item.log_handle.write(f"[{utc_now()}] coordinator observed rc={rc}\n")
     item.log_handle.close()
     item.attempt["rc"] = rc
@@ -1968,6 +2243,7 @@ def new_manifest(
         },
         "aggregate_gate": None,
         "validation": None,
+        "resource_stop": None,
         "error": None,
     }
 
@@ -2269,8 +2545,8 @@ def collect_colliers_main_chunks(
             )
     return (
         75,
-        "colliers-main remained incomplete after "
-        f"{COLLIERS_MAIN_MAX_CHUNKS_PER_ATTEMPT} bounded collection chunks",
+        ("colliers-main remained incomplete after "
+         f"{COLLIERS_MAIN_MAX_CHUNKS_PER_ATTEMPT} bounded collection chunks"),
     )
 
 
@@ -2339,8 +2615,8 @@ def collect_source(
         save_manifest(run_dir, manifest)
         collection_error = None
         if source == "colliers-main":
-            def record_chunk(chunk: dict[str, Any]) -> None:
-                attempt["chunks"].append(chunk)
+            def record_chunk(chunk: dict[str, Any], *, attempt_record: dict[str, Any] = attempt) -> None:
+                attempt_record["chunks"].append(chunk)
                 save_manifest(run_dir, manifest)
 
             rc, collection_error = collect_colliers_main_chunks(
@@ -2726,9 +3002,7 @@ def advance_source(
         )
         save_manifest(run_dir, manifest)
         return False
-    if not dry_run_source(run_dir, manifest, source, artifact):
-        return False
-    return True
+    return bool(dry_run_source(run_dir, manifest, source, artifact))
 
 
 def prepare_sources(
@@ -2761,14 +3035,20 @@ def _cohort_needs_collection(
     manifest: Mapping[str, Any],
     source: str,
     *,
+    attempts_before: int,
     attempts_this_run: int,
 ) -> bool:
     checkpoint = manifest["sources"][source]
     if _manifest_checkpoint_artifact_valid(run_dir, manifest, source):
         return False
-    if checkpoint.get("state") == "collect_infrastructure_failed":
+    if checkpoint.get("state") in {
+        "collect_infrastructure_failed",
+        "ingesting",
+        "ingest_recovery_required",
+    }:
         return False
-    return len(checkpoint.get("attempts") or []) < attempts_this_run
+    attempts_used = len(checkpoint.get("attempts") or []) - attempts_before
+    return attempts_used < attempts_this_run
 
 
 def prepare_sources_cohort(
@@ -2789,6 +3069,8 @@ def prepare_sources_cohort(
     dry-run before the existing aggregate gate may authorize serial additive
     ingestion.
     """
+    if len(sources) != len(set(sources)):
+        raise ValueError("cohort sources must be unique")
     if source_workers <= 1:
         return prepare_sources(
             run_dir,
@@ -2800,16 +3082,46 @@ def prepare_sources_cohort(
             env_file=env_file,
         )
 
+    # Resolve every interrupted write window before any collection worker can
+    # launch. This preserves advance_source's exact-readback and fail-closed
+    # behavior for both valid and missing artifacts across the whole cohort.
+    for source in sources:
+        if manifest["sources"][source].get("state") in {
+            "ingesting",
+            "ingest_recovery_required",
+        }:
+            advance_source(
+                run_dir,
+                manifest,
+                source,
+                page_cap=page_cap,
+                concurrency=concurrency,
+                attempts_this_run=attempts_this_run,
+                env_file=env_file,
+            )
+
     active: list[CohortCollectionProcess] = []
+    attempts_before = {
+        source: len(manifest["sources"][source].get("attempts") or [])
+        for source in sources
+    }
     try:
         while True:
+            completed = [item for item in active if item.process.poll() is not None]
+            for item in completed:
+                _finalize_cohort_collection(run_dir, manifest, item)
+                active.remove(item)
+
+            active_sources = {item.source for item in active}
             pending = [
                 source
                 for source in sources
-                if _cohort_needs_collection(
+                if source not in active_sources
+                and _cohort_needs_collection(
                     run_dir,
                     manifest,
                     source,
+                    attempts_before=attempts_before[source],
                     attempts_this_run=attempts_this_run,
                 )
             ]
@@ -2827,11 +3139,6 @@ def prepare_sources_cohort(
                 )
                 if started is not None:
                     active.append(started)
-
-            completed = [item for item in active if item.process.poll() is not None]
-            for item in completed:
-                active.remove(item)
-                _finalize_cohort_collection(run_dir, manifest, item)
 
             if active:
                 # Keep the coordinator responsive to operator interrupt while
@@ -4255,8 +4562,8 @@ def render_report(manifest: Mapping[str, Any]) -> str:
             f"- Validation query execution: `{validation.get('query_execution_ok')}`",
             f"- Validation quality regression check: `{validation.get('quality_no_regression')}`",
             f"- Per-source ingest readback: `{validation.get('readback_ok')}`",
-            f"- Unsupported active rows outside this run: "
-            f"`{(manifest.get('scope') or {}).get('unsupported_active_rows_before')}`",
+            ("- Unsupported active rows outside this run: "
+             f"`{(manifest.get('scope') or {}).get('unsupported_active_rows_before')}`"),
             "",
         ]
     )
@@ -4284,13 +4591,54 @@ def parse_transactions(raw: str) -> tuple[str, ...]:
     raise ValueError("invalid transaction selection; use sale, lease, or both")
 
 
+_RUN_ID_PATTERN = re.compile(
+    r"(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{6}Z)(?:-[0-9a-f]{12})?\Z"
+)
+
+
+def validate_run_id(value: str) -> str:
+    """Return one canonical, path-safe checkpoint generation identifier."""
+    match = _RUN_ID_PATTERN.fullmatch(value)
+    if match is None:
+        raise ValueError(
+            "run-id must be a UTC second timestamp with an optional 12-character "
+            "lowercase hexadecimal suffix"
+        )
+    try:
+        datetime.strptime(match.group("timestamp"), "%Y-%m-%dT%H%M%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError as exc:
+        raise ValueError("run-id contains an invalid UTC timestamp") from exc
+    return value
+
+
 def _run_id() -> str:
+    """Preserve the standalone checkpoint runner's historical identifier."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+
+
+def allocate_run_id() -> str:
+    """Allocate a collision-resistant fresh identifier for a parent series."""
+    return f"{_run_id()}-{secrets.token_hex(6)}"
+
+
+def create_fresh_run_dir(out_root: Path, *, run_id: str | None = None) -> Path:
+    """Atomically create one fresh run directory without following aliases."""
+    selected_run_id = validate_run_id(run_id if run_id is not None else _run_id())
+    root = out_root.expanduser().resolve()
+    run_dir = root / selected_run_id
+    try:
+        run_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        raise RefreshError(f"run directory already exists: {run_dir}") from exc
+    return run_dir
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resume", default=None, help="existing run directory or manifest.json")
+    parser.add_argument("--run-id", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--sources", default="all")
@@ -4386,6 +4734,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--allow-dirty", action="store_true")
     args = parser.parse_args(argv)
 
+    internal_worker_requested = any(
+        value is not None
+        for value in (
+            args._cohort_collect_source,
+            args._cohort_run_dir,
+            args._cohort_output,
+            args._cohort_attempt_log,
+            args._cohort_attempt_number,
+            args._cohort_generation_started_at,
+        )
+    )
+    if args.run_id is not None and args.resume:
+        parser.error("--run-id cannot be combined with --resume")
+    if args.run_id is not None and internal_worker_requested:
+        parser.error("--run-id cannot be combined with internal cohort worker arguments")
+    if args.run_id is not None:
+        try:
+            validate_run_id(args.run_id)
+        except ValueError as exc:
+            parser.error(str(exc))
+
     if args._cohort_collect_source is not None:
         if (
             args._cohort_run_dir is None
@@ -4480,13 +4849,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_age_hours=args.max_resume_age_hours,
         )
         manifest["status"] = "running"
+        manifest["resource_stop"] = None
         manifest["error"] = None
         manifest["finished_at"] = None
     else:
-        run_dir = Path(args.out_root).expanduser().resolve() / _run_id()
-        if run_dir.exists():
-            raise RefreshError(f"run directory already exists: {run_dir}")
-        run_dir.mkdir(parents=True)
+        run_dir = create_fresh_run_dir(Path(args.out_root), run_id=args.run_id)
         manifest = new_manifest(
             run_dir,
             git_sha=git_sha,
@@ -4512,7 +4879,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         sample_seconds=args.cpu_sample_seconds,
         incident_log_path=run_dir / "logs" / "cpu-incidents.jsonl",
     )
-    set_cpu_guard_context(cpu_guard, phase="preflight")
+    set_cpu_guard_context(
+        cpu_guard,
+        phase="preflight",
+        active_operation="host_cpu_admission",
+    )
     _clear_cpu_guard_trip()
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, checkpoint_sigterm_handler)
@@ -4527,12 +4898,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             save_manifest(run_dir, manifest)
             if initial_host_cpu_percent >= args.max_host_cpu_percent:
-                raise GlobalStageError(
+                reason = (
                     "host CPU is already at or above the guarded ceiling; "
                     "refusing to start source work"
                 )
+                _set_cpu_guard_trip(
+                    reason,
+                    reason_code="host_cpu_start_blocked",
+                    telemetry_valid=True,
+                    host_cpu_percent=initial_host_cpu_percent,
+                    context=cpu_guard.incident_context,
+                )
+                try:
+                    cpu_guard._write_record(
+                        state="tripped",
+                        percent=initial_host_cpu_percent,
+                        reason=reason,
+                    )
+                except CpuTelemetryError:
+                    _set_cpu_guard_trip(
+                        reason,
+                        reason_code="host_cpu_evidence_failed",
+                        telemetry_valid=True,
+                        evidence_valid=False,
+                        host_cpu_percent=initial_host_cpu_percent,
+                        context=cpu_guard.incident_context,
+                    )
+                raise CpuGuardTrip(reason)
             cpu_guard.start()
-            set_cpu_guard_context(cpu_guard, phase="healthcheck")
+            set_cpu_guard_context(
+                cpu_guard,
+                phase="healthcheck",
+                active_operation="healthcheck",
+            )
             health_log = run_dir / "logs" / "healthcheck.log"
             health_rc = run_command(
                 ["bash", str(REPO_ROOT / "scripts/firecrawl-ops/firecrawl_healthcheck.sh")],
@@ -4550,7 +4948,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if health_rc != 0:
                 raise GlobalStageError(f"Firecrawl healthcheck failed (rc={health_rc})")
 
-            set_cpu_guard_context(cpu_guard, phase="pre_validation")
+            set_cpu_guard_context(
+                cpu_guard,
+                phase="pre_validation",
+                active_operation="pre_validation",
+            )
             pre_validation = run_dir / "pre-validation.json"
             pre_validation_log = run_dir / "logs" / "pre-validation.log"
             recorded_pre_hash = manifest["preflight"].get("validation_sha256")
@@ -4594,6 +4996,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 cpu_guard,
                 phase="collect",
                 source=sources[0] if len(sources) == 1 else None,
+                active_operation="source_collection_preflight",
             )
             source_failures = prepare_sources_cohort(
                 run_dir,
@@ -4609,11 +5012,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise RefreshError(
                     "source checkpoints remain incomplete: " + ", ".join(source_failures)
                 )
-            set_cpu_guard_context(cpu_guard, phase="aggregate_gate")
+            set_cpu_guard_context(
+                cpu_guard,
+                phase="aggregate_gate",
+                active_operation="aggregate_gate",
+            )
             run_aggregate_gate(run_dir, manifest, args.env_file)
-            set_cpu_guard_context(cpu_guard, phase="ingest")
+            set_cpu_guard_context(
+                cpu_guard,
+                phase="ingest",
+                active_operation="serial_additive_ingest",
+            )
             ingest_admitted_sources(run_dir, manifest, args.env_file)
-            set_cpu_guard_context(cpu_guard, phase="readback")
+            set_cpu_guard_context(
+                cpu_guard,
+                phase="readback",
+                active_operation="generation_exact_readback",
+            )
             run_final_validation(run_dir, manifest, args.env_file)
             manifest["status"] = (
                 "selected_transaction_scope_complete"
@@ -4627,26 +5042,41 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             manifest["finished_at"] = utc_now()
+            manifest["resource_stop"] = None
             manifest["error"] = None
             save_manifest(run_dir, manifest)
             atomic_write_text(run_dir / "report.md", render_report(manifest))
             print(run_dir)
             return 0
     except CpuGuardTrip as exc:
+        details = _peek_cpu_guard_trip_details()
+        if details is None:
+            details = CpuGuardTripDetails(
+                reason_code="host_cpu_telemetry_failed",
+                reason=str(exc),
+                telemetry_valid=False,
+                evidence_valid=False,
+                host_cpu_percent=None,
+                occurred_at=utc_now(),
+                context=dict(cpu_guard.incident_context),
+            )
         manifest["status"] = "resource_guard_interrupted"
-        manifest["error"] = f"host CPU guard: {exc}"
+        manifest["resource_stop"] = resource_stop_record(manifest, details)
+        manifest["error"] = "host CPU guard stopped the checkpoint run"
         manifest["finished_at"] = utc_now()
         save_manifest(run_dir, manifest)
         atomic_write_text(run_dir / "report.md", render_report(manifest))
         return 75
     except KeyboardInterrupt:
         manifest["status"] = "interrupted"
+        manifest["resource_stop"] = None
         manifest["error"] = "operator interruption"
         save_manifest(run_dir, manifest)
         atomic_write_text(run_dir / "report.md", render_report(manifest))
         return 130
     except Exception as exc:
         manifest["status"] = "failed"
+        manifest["resource_stop"] = None
         manifest["error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
         save_manifest(run_dir, manifest)
         atomic_write_text(run_dir / "report.md", render_report(manifest))
