@@ -159,12 +159,13 @@ legacy guard blocks preserve the base 80/30/5 interpretation, while explicit
 
 Implementation verification passed 2,546 Python tests with 19 skips,
 TypeScript typecheck, and 829 TypeScript unit tests. Root independently reran
-the exact code head with 2,547 Python tests passing and 18 skips; the difference
-was one additional unavailable gitignored historical fixture in the
-implementation worktree. An independent exact-head adversarial review passed
-30 focused tests with 303 deselected, repeated the four-fixture base-versus-head
-SQL comparison, and reported no remaining actionable finding. The strict PR
-body gate passed both offline and against PR #49.
+the exact code head with 2,547 Python tests passing and 18 unavailable
+historical-fixture skips. The separate runs recorded different skip counts; no
+cause for that difference was established in this work block. An independent
+exact-head adversarial review passed 30 focused tests with 303 deselected,
+repeated the four-fixture base-versus-head SQL comparison, and reported no
+remaining actionable finding. The strict PR body gate passed both offline and
+against PR #49.
 
 This block made no collector, database, provider, paid-model, container,
 environment, automation, or live-artifact change. AGENTIC-2902 and parent
