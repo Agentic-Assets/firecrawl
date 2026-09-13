@@ -38,12 +38,14 @@ from cre_ingest import (
     AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS,
     BUILDOUT_SOURCE_KEYS,
     CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS,
+    CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS,
     INVENTORY_ONLY_SOURCE_DEFINITIONS,
     SOURCE_TO_BROKERAGE,
     STRICT_FRESHNESS_SOURCE_KEYS,
     child_count_regressed,
     colliers_contact_preservation_is_valid,
     database_target_fingerprint_from_url,
+    jll_structured_child_preservation_is_valid,
     load_db_url,
     merge_rows,
     to_inventory_only_row,
@@ -1189,9 +1191,9 @@ def validate_source_artifact(
                     raise ArtifactValidationError(
                         f"{expected_source}/{tx} incorrectly claims authoritative inventory detail"
                     )
-            elif (
-                expected_source
-                in CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
+            elif expected_source in (
+                CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
+                | CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS
             ):
                 if child_preservation_rows != canonical_count:
                     raise ArtifactValidationError(
@@ -1357,7 +1359,12 @@ def validate_source_artifact(
                         f"listings[{index}] must not preserve child collections"
                     )
             else:
-                if preserves_children:
+                if expected_source in CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS:
+                    if not jll_structured_child_preservation_is_valid(listing):
+                        raise ArtifactValidationError(
+                            f"listings[{index}] must preserve child collections"
+                        )
+                elif preserves_children:
                     raise ArtifactValidationError(
                         f"listings[{index}] must not preserve child collections"
                     )

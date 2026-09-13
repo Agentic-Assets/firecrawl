@@ -225,6 +225,7 @@ CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS = BUILDOUT_SOURCE_KEYS | {
     "newmark",
     "interra-realty",
 }
+CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS = {"jll-investor"}
 AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS = (
     BUILDOUT_SOURCE_KEYS
     | CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
@@ -1413,7 +1414,12 @@ def validate_strict_artifact_freshness(
                     f"strict freshness listings[{index}] must not preserve child collections"
                 )
             continue
-        if preserves_children:
+        if source_key in CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS:
+            if not jll_structured_child_preservation_is_valid(listing):
+                raise ValueError(
+                    f"strict freshness listings[{index}] must preserve child collections"
+                )
+        elif preserves_children:
             raise ValueError(
                 f"strict freshness listings[{index}] must not preserve child collections"
             )
@@ -1441,6 +1447,50 @@ def validate_strict_artifact_freshness(
                 f"strict freshness listings[{index}] detail observation "
                 "exceeds the 5-minute clock-skew allowance"
             )
+
+
+def jll_structured_child_preservation_is_valid(listing):
+    """Validate the narrow live JLL structured-detail preservation contract."""
+    if not isinstance(listing, dict):
+        return False
+    if listing.get("sourceKey") != "jll-investor":
+        return False
+    if listing.get("preserveChildCollections") is not True:
+        return False
+    if listing.get("detailObservedWithChildPreservation") is not True:
+        return False
+    provenance = listing.get("freshnessProvenance")
+    detail = listing.get("jllInvestorDetail")
+    scrape = detail.get("scrape") if isinstance(detail, dict) else None
+    photos = listing.get("photos")
+    external_id = listing.get("id")
+    if photos is None:
+        photos = []
+    elif not isinstance(photos, list):
+        return False
+    for url in photos:
+        if not isinstance(url, str):
+            return False
+        try:
+            parsed = urlsplit(url)
+            if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+                return False
+        except ValueError:
+            return False
+    return (
+        isinstance(provenance, dict)
+        and provenance.get("detailScope") == "detail_page"
+        and provenance.get("method") == "jll_investor_next_data_detail"
+        and provenance.get("cacheDisposition") == "live"
+        and isinstance(detail, dict)
+        and detail.get("id") == external_id
+        and isinstance(external_id, str)
+        and re.fullmatch(r"006[A-Za-z0-9]{15}", external_id) is not None
+        and isinstance(scrape, dict)
+        and scrape.get("rawHtmlLength") == 0
+        and scrape.get("markdownLength") == 0
+        and scrape.get("linkCount") == 0
+    )
 
 
 def group_source_lastmod(flat_listings):

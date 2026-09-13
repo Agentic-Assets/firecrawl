@@ -668,9 +668,9 @@ test("structured JLL Investor detail validates Salesforce id and exact alias", (
       linkType: "external_listing",
     },
   ]);
-  assert.deepEqual(parsed.brochures, [
+  assert.deepEqual(parsed.documents, [
     {
-      name: "Teaser",
+      title: "Teaser",
       url: "https://indd.adobe.com/view/current-teaser",
       docType: "brochure",
     },
@@ -700,6 +700,71 @@ test("structured JLL Investor detail validates Salesforce id and exact alias", (
     "industrial-logistics/morgan-lakes"
   );
   assert.match(invalidId.detailError, /Salesforce Opportunity id/i);
+});
+
+test("structured JLL Investor detail drops malformed teaser and empty gallery", () => {
+  const id = "00608000010RMQHAA4";
+  const parsed = parseJllInvestorStructuredDetail(
+    {
+      id,
+      url: "https://invest.jll.com/us/en/listings/industrial-logistics/morgan-lakes",
+      photos: [],
+      jllInvestorSearchRow: { rcm: { teaser: "https://" } },
+    },
+    {
+      pageProps: {
+        initialState: {
+          pdp: {
+            listing: {
+              id,
+              alias: "industrial-logistics/morgan-lakes",
+              name: "Morgan Lakes",
+              fullLocation: "Pooler, GA, US, Americas",
+              documents: {},
+              multimedia: { images: [] },
+            },
+          },
+        },
+      },
+    },
+    "industrial-logistics/morgan-lakes"
+  );
+
+  assert.equal(parsed.documents, undefined);
+  assert.equal(parsed.photos, undefined);
+});
+
+test("structured JLL Investor detail emits duplicate native and search teaser once", () => {
+  const id = "00608000010RMQHAA4";
+  const teaser = "https://cdn.example/teaser.pdf";
+  const parsed = parseJllInvestorStructuredDetail(
+    {
+      id,
+      url: "https://invest.jll.com/us/en/listings/industrial-logistics/morgan-lakes",
+      jllInvestorSearchRow: { rcm: { teaser } },
+    },
+    {
+      pageProps: {
+        initialState: {
+          pdp: {
+            listing: {
+              id,
+              alias: "industrial-logistics/morgan-lakes",
+              name: "Morgan Lakes",
+              fullLocation: "Pooler, GA, US, Americas",
+              documents: { teaser: { url: teaser } },
+            },
+          },
+        },
+      },
+    },
+    "industrial-logistics/morgan-lakes"
+  );
+
+  assert.deepEqual(parsed.brochures, [
+    { name: "teaser", url: teaser, docType: "brochure" },
+  ]);
+  assert.equal(parsed.documents, undefined);
 });
 
 test("JLL Investor structured enrichment refreshes build id once after rotation", async () => {
@@ -996,6 +1061,16 @@ test("jllInvestorImageUrls merges primary, multimedia, and fallback images", () 
     "https://cdn.example/gallery-1.jpg",
     "https://cdn.example/fallback.jpg",
   ]);
+});
+
+test("jllInvestorImageUrls accepts uppercase HTTPS and rejects malformed URLs", () => {
+  assert.deepEqual(
+    jllInvestorImageUrls(
+      { image: "HTTPS://cdn.example/hero.jpg" },
+      ["https://", "javascript:alert(1)"]
+    ),
+    ["HTTPS://cdn.example/hero.jpg"]
+  );
 });
 
 test("jllInvestorContacts maps brokers and dedupes by email", () => {

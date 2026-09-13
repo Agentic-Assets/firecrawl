@@ -560,13 +560,28 @@ export async function collectJllInvestorSearchSnapshot(): Promise<JllInvestorSea
   throw new Error("JLL Investor search inventory did not stabilize across consecutive passes");
 }
 
+function absoluteHttpUrl(value: any): string | null {
+  const text = clean(value);
+  if (!text) return null;
+  try {
+    const parsed = new URL(text);
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname) {
+      return null;
+    }
+    return text;
+  } catch {
+    return null;
+  }
+}
+
 export function jllInvestorDocumentUrls(listing: any): string[] {
   const docs = listing?.documents;
   const candidates: string[] = [];
   const visit = (value: any) => {
     if (!value) return;
     if (typeof value === "string") {
-      if (/^https?:\/\//i.test(value)) candidates.push(value);
+      const url = absoluteHttpUrl(value);
+      if (url) candidates.push(url);
       return;
     }
     if (Array.isArray(value)) {
@@ -588,7 +603,9 @@ export function jllInvestorImageUrls(listing: any, fallback: string[] = []): str
     ...(Array.isArray(listing?.multimedia?.images) ? listing.multimedia.images.map(clean) : []),
     ...fallback,
   ];
-  return dedupeStrings(images).filter((url) => /^https?:\/\//i.test(url));
+  return dedupeStrings(images)
+    .map(absoluteHttpUrl)
+    .filter((url): url is string => url !== null);
 }
 
 /**
@@ -830,13 +847,8 @@ function parseJllInvestorListing(
     .filter((id: number | null): id is number => id !== null);
   const documentUrls = jllInvestorDocumentUrls(listing);
   const searchTeaserUrl = clean(base?.jllInvestorSearchRow?.rcm?.teaser);
-  const teaserDocs = dedupeStrings([
-    ...documentUrls,
-    ...(searchTeaserUrl && /^https?:\/\//i.test(searchTeaserUrl)
-      ? [searchTeaserUrl]
-      : []),
-  ]).map((url) => ({
-    name: url === searchTeaserUrl ? "Teaser" : titleFromFilename(url),
+  const teaserDocs = documentUrls.map((url) => ({
+    name: titleFromFilename(url),
     url,
     docType: "brochure",
   }));
@@ -845,18 +857,26 @@ function parseJllInvestorListing(
   // Capture-everything harvest: unify the full detail page (markdown / links /
   // images / video+iframe attributes) with the stranded native fields promoted
   // via ctx.extra* (multimedia videos/tours, CA/gated documents, image gallery).
-  // Public teaser documents stay on the existing `brochures` channel; they are
-  // NOT promoted into extraDocs (cre_listing_documents has no (listing_id,url)
-  // unique key, so a url in BOTH channels would double-insert). harvested.documents
-  // is filtered to exclude any url already on the brochures channel. When the doc
-  // carries no structured `images` (e.g. a saved fixture), fall back to the native
-  // gallery for the image channel rather than the rawHtml <img> regex.
+  // Native `documents` remain on the historical brochures channel. The search
+  // teaser flows through harvestDetail so malformed URLs are rejected, then the
+  // harvested document channel is filtered against the historical set to avoid
+  // duplicate child inserts. When the doc carries no structured `images` (e.g. a
+  // saved fixture), fall back to the native gallery for the image channel rather
+  // than the rawHtml <img> regex.
   const harvestDoc: ScrapedDoc = Array.isArray(doc.images) ? doc : { ...doc, images: photos };
+  const extraDocs = jllInvestorStrandedDocs(listing);
+  if (searchTeaserUrl) {
+    extraDocs.push({
+      url: searchTeaserUrl,
+      title: "Teaser",
+      docType: "brochure",
+    });
+  }
   const harvested = harvestDetail(harvestDoc, {
     baseUrl: base.url,
     extraMedia: jllInvestorStrandedMedia(listing),
     extraLinks:
-      searchDataRoomUrl && /^https?:\/\//i.test(searchDataRoomUrl)
+      searchDataRoomUrl
         ? [
             {
               url: searchDataRoomUrl,
@@ -865,7 +885,7 @@ function parseJllInvestorListing(
             },
           ]
         : [],
-    extraDocs: jllInvestorStrandedDocs(listing),
+    extraDocs,
     extraImages: photos,
   });
   const teaserUrlSet = new Set(documentUrls.map((u) => u.toLowerCase()));
@@ -914,7 +934,7 @@ function parseJllInvestorListing(
     documents,
     media: harvested.media,
     links: harvested.links,
-    photos: dedupeStrings([...photos, ...harvested.images]),
+    photos: harvested.images,
     // Structured Next.js JSON is authoritative for native listing children but
     // intentionally omits the rendered page's open-ended link surface. Preserve
     // prior children and add current native rows idempotently until a per-parent

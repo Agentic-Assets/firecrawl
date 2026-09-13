@@ -649,6 +649,25 @@ def _strict_freshness_payload(
         listing["detailObservedAt"] = observed
     if preserve_children:
         listing["preserveChildCollections"] = True
+    if source == "jll-investor" and preserve_children:
+        listing.update(
+            {
+                "id": "00608000010RMQHAA4",
+                "detailObservedWithChildPreservation": True,
+                "jllInvestorDetail": {
+                    "id": "00608000010RMQHAA4",
+                    "scrape": {
+                        "rawHtmlLength": 0,
+                        "markdownLength": 0,
+                        "linkCount": 0,
+                    },
+                },
+                "photos": ["https://cdn.example/listing.jpg"],
+            }
+        )
+        listing["freshnessProvenance"]["method"] = (
+            "jll_investor_next_data_detail"
+        )
     return {
         "runMeta": {
             "freshness": {
@@ -798,6 +817,41 @@ def test_strict_child_preserving_feed_requires_preservation_marker(source):
 def test_strict_detail_source_rejects_child_preservation():
     payload = _strict_freshness_payload("jll", preserve_children=True)
     with pytest.raises(ValueError, match="must not preserve child collections"):
+        ci.validate_strict_artifact_freshness(payload)
+
+
+def test_strict_jll_structured_detail_requires_valid_child_preservation_proof():
+    ci.validate_strict_artifact_freshness(
+        _strict_freshness_payload("jll-investor", preserve_children=True)
+    )
+
+
+def test_strict_jll_structured_detail_accepts_pruned_empty_gallery():
+    payload = _strict_freshness_payload("jll-investor", preserve_children=True)
+    payload["listings"][0].pop("photos")
+    ci.validate_strict_artifact_freshness(payload)
+
+
+def test_strict_jll_structured_detail_accepts_uppercase_https_photo_scheme():
+    payload = _strict_freshness_payload("jll-investor", preserve_children=True)
+    payload["listings"][0]["photos"] = ["HTTPS://cdn.example/listing.jpg"]
+    ci.validate_strict_artifact_freshness(payload)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda row: row.pop("detailObservedWithChildPreservation"),
+        lambda row: row.pop("preserveChildCollections"),
+        lambda row: row["freshnessProvenance"].update(method="rendered_html"),
+        lambda row: row.update(photos=["https://"]),
+        lambda row: row["jllInvestorDetail"]["scrape"].update(rawHtmlLength=1),
+    ],
+)
+def test_strict_jll_structured_detail_rejects_invalid_preservation_proof(mutation):
+    payload = _strict_freshness_payload("jll-investor", preserve_children=True)
+    mutation(payload["listings"][0])
+    with pytest.raises(ValueError, match="must preserve child collections"):
         ci.validate_strict_artifact_freshness(payload)
 
 

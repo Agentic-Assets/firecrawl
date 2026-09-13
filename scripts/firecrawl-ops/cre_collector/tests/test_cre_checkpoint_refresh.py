@@ -201,6 +201,7 @@ def strict_artifact(
     if preserve_children is None:
         preserve_children = (
             source in refresh.CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
+            or source in refresh.CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS
         )
     payload = artifact(source=source)
     observed = "2026-07-29T12:00:30+00:00"
@@ -221,6 +222,25 @@ def strict_artifact(
             row["detailObservedAt"] = observed
         if preserve_children:
             row["preserveChildCollections"] = True
+        if source == "jll-investor" and preserve_children:
+            row.update(
+                {
+                    "id": f"00608000010RMQ{row['transactionMode'][0].upper()}AA4",
+                    "detailObservedWithChildPreservation": True,
+                    "jllInvestorDetail": {
+                        "id": f"00608000010RMQ{row['transactionMode'][0].upper()}AA4",
+                        "scrape": {
+                            "rawHtmlLength": 0,
+                            "markdownLength": 0,
+                            "linkCount": 0,
+                        },
+                    },
+                    "photos": ["https://cdn.example/listing.jpg"],
+                }
+            )
+            row["freshnessProvenance"]["method"] = (
+                "jll_investor_next_data_detail"
+            )
     for entry in payload["sources"]:
         count = entry["listingsCollected"]
         entry["freshness"] = {
@@ -1298,6 +1318,38 @@ def test_strict_detail_source_rejects_preservation_rows(tmp_path):
         refresh.validate_source_artifact(
             path,
             "jll",
+            ATTEMPT,
+            require_strict_freshness=True,
+        )
+
+
+def test_strict_jll_structured_detail_preservation_is_accepted(tmp_path):
+    path = write_artifact(
+        tmp_path,
+        strict_artifact("jll-investor", "detail_page", preserve_children=True),
+    )
+    stats = refresh.validate_source_artifact(
+        path,
+        "jll-investor",
+        ATTEMPT,
+        require_strict_freshness=True,
+    )
+    assert stats["staged_unique"] == 2
+
+
+def test_strict_jll_structured_detail_rejects_partial_preservation(tmp_path):
+    payload = strict_artifact(
+        "jll-investor", "detail_page", preserve_children=True
+    )
+    payload["listings"][0].pop("detailObservedWithChildPreservation")
+    path = write_artifact(tmp_path, payload)
+    with pytest.raises(
+        refresh.ArtifactValidationError,
+        match="must preserve child collections",
+    ):
+        refresh.validate_source_artifact(
+            path,
+            "jll-investor",
             ATTEMPT,
             require_strict_freshness=True,
         )

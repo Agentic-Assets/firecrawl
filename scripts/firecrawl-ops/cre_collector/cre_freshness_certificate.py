@@ -23,9 +23,13 @@ from cre_checkpoint_refresh import (
     TRANSACTIONS,
     parse_iso8601,
 )
-from cre_ingest import SOURCE_TO_BROKERAGE, colliers_contact_preservation_is_valid
+from cre_ingest import (
+    CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS,
+    SOURCE_TO_BROKERAGE,
+    colliers_contact_preservation_is_valid,
+    jll_structured_child_preservation_is_valid,
+)
 from cre_source_policy import SourcePolicyValidationError, load_source_policy
-
 
 CERTIFICATE_VERSION = 2
 SOURCE_KEYS = tuple(SOURCE_TO_BROKERAGE)
@@ -232,9 +236,14 @@ def _validate_artifact_evidence(
             ):
                 _failure(failures, "observation_age", "canonical detail observation exceeds certificate freshness SLO", run_path=run_path, source_key=source_key)
                 return
-            if evidence_class == "strict_detail" and row.get("preserveChildCollections") is True:
-                _failure(failures, "artifact_evidence", "strict-detail listing cannot preserve child collections", run_path=run_path, source_key=source_key)
-                return
+            if evidence_class == "strict_detail":
+                if source_key in CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS:
+                    if not jll_structured_child_preservation_is_valid(row):
+                        _failure(failures, "artifact_evidence", "strict-detail listing lacks its required child-preservation proof", run_path=run_path, source_key=source_key)
+                        return
+                elif row.get("preserveChildCollections") is True:
+                    _failure(failures, "artifact_evidence", "strict-detail listing cannot preserve child collections", run_path=run_path, source_key=source_key)
+                    return
             if (
                 row.get("preserveContactCollections") is True
                 and not colliers_contact_preservation_is_valid(row)

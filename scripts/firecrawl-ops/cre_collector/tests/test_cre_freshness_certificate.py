@@ -6,10 +6,10 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
-import cre_freshness_certificate as certificate
-import cre_source_policy as source_policy
 import pytest
 
+import cre_freshness_certificate as certificate
+import cre_source_policy as source_policy
 
 NOW = datetime(2026, 7, 31, 12, tzinfo=timezone.utc)
 
@@ -58,6 +58,25 @@ def _run(
         listing["detailObservedAt"] = (NOW - timedelta(hours=1)).isoformat()
     if preserve_children:
         listing["preserveChildCollections"] = True
+    if source_key == "jll-investor":
+        listing.update(
+            {
+                "id": "00608000010RMQHAA4",
+                "preserveChildCollections": True,
+                "detailObservedWithChildPreservation": True,
+                "jllInvestorDetail": {
+                    "id": "00608000010RMQHAA4",
+                    "scrape": {
+                        "rawHtmlLength": 0,
+                        "markdownLength": 0,
+                        "linkCount": 0,
+                    },
+                },
+            }
+        )
+        listing["freshnessProvenance"]["method"] = (
+            "jll_investor_next_data_detail"
+        )
     if evidence_class == "property_detail":
         # Avison may preserve existing contacts when its supplemental team feed
         # is unavailable, but only with an admitted current detail observation.
@@ -244,6 +263,35 @@ def test_certificate_rejects_unproved_contact_preservation(tmp_path):
         for source_key in certificate.SOURCE_KEYS
     ]
 
+    result = certificate.build_freshness_certificate(
+        runs, max_source_age_hours=2, now=NOW
+    )
+
+    assert result["status"] == "invalid"
+    assert "artifact_evidence" in _codes(result)
+
+
+def test_certificate_rejects_missing_jll_child_preservation_proof(tmp_path):
+    def remove_preservation_proof(manifest, artifact_path):
+        artifact = json.loads(artifact_path.read_text())
+        artifact["listings"][0].pop("detailObservedWithChildPreservation")
+        artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+        manifest["sources"]["jll-investor"]["artifact"].update(
+            sha256=_sha(artifact_path), bytes=artifact_path.stat().st_size
+        )
+
+    runs = [
+        _run(
+            tmp_path,
+            source_key,
+            mutate=(
+                remove_preservation_proof
+                if source_key == "jll-investor"
+                else None
+            ),
+        )
+        for source_key in certificate.SOURCE_KEYS
+    ]
     result = certificate.build_freshness_certificate(
         runs, max_source_age_hours=2, now=NOW
     )
