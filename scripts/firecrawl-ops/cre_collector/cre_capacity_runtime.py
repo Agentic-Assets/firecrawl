@@ -20,6 +20,7 @@ import signal
 import stat
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
@@ -43,6 +44,8 @@ ADMISSION_KIND = "cre_capacity_runtime_admission"
 APPROVAL_KIND = "cre_capacity_review_approval"
 BENCHMARK_GRANT_KIND = "cre_capacity_review_benchmark_grant"
 RECEIPT_MAX_AGE_SECONDS = 600
+RUNTIME_ENDPOINT_ATTEMPTS = 6
+RUNTIME_ENDPOINT_RETRY_SECONDS = 2
 API_CONTAINER = "firecrawl-api-1"
 BROWSER_CONTAINER = "firecrawl-playwright-service-1"
 RABBIT_CONTAINER = "firecrawl-rabbitmq-1"
@@ -513,14 +516,19 @@ def _queue_json(url: str) -> dict[str, Any]:
 
 
 def _http_status(url: str) -> int:
-    try:
-        with urllib.request.urlopen(url, timeout=10) as response:
-            response.read(1)
-            return response.status
-    except urllib.error.HTTPError as exc:
-        return exc.code
-    except (OSError, TimeoutError, urllib.error.URLError) as exc:
-        raise RuntimeAdmissionError("loopback runtime endpoint unavailable") from exc
+    last_error: BaseException | None = None
+    for attempt in range(RUNTIME_ENDPOINT_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(url, timeout=10) as response:
+                response.read(1)
+                return response.status
+        except urllib.error.HTTPError as exc:
+            return exc.code
+        except (OSError, TimeoutError, urllib.error.URLError) as exc:
+            last_error = exc
+            if attempt + 1 < RUNTIME_ENDPOINT_ATTEMPTS:
+                time.sleep(RUNTIME_ENDPOINT_RETRY_SECONDS)
+    raise RuntimeAdmissionError("loopback runtime endpoint unavailable") from last_error
 
 
 def _queue_counts(payload: Mapping[str, Any]) -> tuple[int, int, int]:
