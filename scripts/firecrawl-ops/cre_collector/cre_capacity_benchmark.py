@@ -27,6 +27,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import median
@@ -34,14 +35,22 @@ from typing import Any
 
 import cre_capacity_experiment as experiment
 import cre_capacity_runtime as capacity_runtime
+from cre_checkpoint_refresh import (
+    BENCHMARK_QUARANTINE_MARKER,
+    LockHeldError,
+    SharedLock,
+    canonical_shared_lock_dir,
+)
 
 SCHEMA_VERSION = 1
 SAMPLE_KIND = "cre_jll_capacity_sample"
 ADMISSION_KIND = "cre_capacity_runtime_admission"
 RESULT_KIND = "cre_jll_capacity_benchmark"
+SUPPORTED_BASELINE_ADMISSION_AVAILABLE = False
 MAX_SAMPLE_BYTES = 8 * 1024 * 1024
 MAX_CACHE_RECORD_BYTES = 4 * 1024 * 1024
 MAX_WORKER_OUTPUT_BYTES = 512 * 1024 * 1024
+ROOT_BENCHMARK_GRANT_MAX_BYTES = 64 * 1024
 NEXT_DATA = re.compile(
     r"<script[^>]+id=[\"']__NEXT_DATA__[\"'][^>]*>(.*?)</script>",
     re.IGNORECASE | re.DOTALL,
@@ -50,6 +59,91 @@ WORKER_ENV_ALLOWLIST = frozenset(
     {"PATH", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE", "TZ"}
 )
 ALLOWED_API_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+SETTLEMENT_TIMEOUT_SECONDS = 60
+SETTLEMENT_POLL_SECONDS = 2
+EXPECTED_FRESHNESS_POLICY = {
+    "require_fresh_details": True,
+    "require_fresh_property_details": True,
+    "detail_cache_minimum": "replicate_start",
+    "firecrawl_max_age": 0,
+}
+IMPLEMENTATION_PATHS = (
+    "scripts/firecrawl-ops/cre_collector/cre_capacity_benchmark.py",
+    "scripts/firecrawl-ops/cre_collector/cre_capacity_experiment.py",
+    "scripts/firecrawl-ops/cre_collector/cre_capacity_runtime.py",
+    "scripts/firecrawl-ops/cre_collector/cre_checkpoint_refresh.py",
+    "scripts/firecrawl-ops/cre_collector/sources/jll.ts",
+    "scripts/firecrawl-ops/cre_collector/lib/broker.ts",
+    "scripts/firecrawl-ops/cre_collector/lib/config.ts",
+    "scripts/firecrawl-ops/cre_collector/lib/freshness.ts",
+    "scripts/firecrawl-ops/cre_collector/lib/harvest.ts",
+    "scripts/firecrawl-ops/cre_collector/lib/html.ts",
+    "scripts/firecrawl-ops/cre_collector/lib/parse.ts",
+    "scripts/firecrawl-ops/cre_collector/lib/performance.ts",
+    "scripts/firecrawl-ops/cre_collector/lib/scrape.ts",
+    "scripts/firecrawl-ops/cre_collector/lib/util.ts",
+    "scripts/firecrawl-ops/cre_collector/types.ts",
+    "scripts/firecrawl-ops/cre_collector/package.json",
+    "scripts/firecrawl-ops/cre_collector/package-lock.json",
+    "scripts/firecrawl-ops/cre_collector/tsconfig.json",
+)
+ROOT_BENCHMARK_GRANT_CONSUMER = r"""
+import json
+import os
+import re
+import secrets
+import stat
+import sys
+
+path = os.path.abspath(sys.argv[1])
+parent = os.path.dirname(path)
+name = os.path.basename(path)
+if not re.fullmatch(r"\.cre-capacity-benchmark-grant-[0-9a-f]{64}\.json", name):
+    raise SystemExit("grant path is invalid")
+file_stat = os.lstat(path)
+parent_stat = os.lstat(parent)
+if (not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1
+        or file_stat.st_uid != 0 or stat.S_IMODE(file_stat.st_mode) != 0o600):
+    raise SystemExit("grant is not a singly linked root-owned mode 0600 file")
+if (not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != 0
+        or stat.S_IMODE(parent_stat.st_mode) != 0o700):
+    raise SystemExit("grant parent is not root-owned mode 0700")
+consumed = os.path.join(
+    parent,
+    "." + name + ".consumed-" + secrets.token_hex(16),
+)
+os.rename(path, consumed)
+try:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(consumed, flags)
+    try:
+        opened = os.fstat(fd)
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                or opened.st_uid != 0 or stat.S_IMODE(opened.st_mode) != 0o600):
+            raise SystemExit("consumed grant ownership changed")
+        chunks = []
+        remaining = 65537
+        while remaining:
+            chunk = os.read(fd, min(remaining, 8192))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > 65536:
+            raise SystemExit("grant is too large")
+    finally:
+        os.close(fd)
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise SystemExit("grant JSON is invalid")
+    if not isinstance(value, dict):
+        raise SystemExit("grant JSON root is invalid")
+    sys.stdout.buffer.write(raw)
+finally:
+    os.unlink(consumed)
+"""
 
 
 class BenchmarkError(ValueError):
@@ -70,12 +164,252 @@ def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _is_source_sha(value: Any) -> bool:
+    return (
+        isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40,64}", value) is not None
+    )
+
+
+def _same_typed_value(observed: Any, expected: Any) -> bool:
+    if isinstance(expected, Mapping):
+        return bool(
+            isinstance(observed, Mapping)
+            and set(observed) == set(expected)
+            and all(_same_typed_value(observed[key], expected[key]) for key in expected)
+        )
+    if isinstance(expected, list):
+        return bool(
+            isinstance(observed, list)
+            and len(observed) == len(expected)
+            and all(
+                _same_typed_value(left, right)
+                for left, right in zip(observed, expected, strict=True)
+            )
+        )
+    return type(observed) is type(expected) and observed == expected
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _implementation_manifest(repo_root: Path) -> dict[str, Any]:
+    """Hash only executable benchmark inputs, independent of Git/config state."""
+    files: dict[str, str] = {}
+    for relative in IMPLEMENTATION_PATHS:
+        path = repo_root / relative
+        if path.is_symlink() or not path.is_file():
+            raise BenchmarkError(
+                f"benchmark implementation input is unavailable: {relative}"
+            )
+        files[relative] = _file_sha256(path)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "cre_capacity_benchmark_implementation",
+        "files": files,
+        "sha256": _sha256(_canonical(files)),
+    }
+
+
+def _require_clean_git(repo_root: Path) -> str:
+    """Require a clean index and worktree, including untracked files."""
+    try:
+        completed = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise BenchmarkError("cannot verify clean benchmark source") from exc
+    if completed.returncode != 0:
+        raise BenchmarkError("cannot verify clean benchmark source")
+    if completed.stdout:
+        raise BenchmarkError("benchmark requires a clean Git index and worktree")
+    return _git_head(repo_root)
+
+
+def _verify_implementation_manifest(
+    repo_root: Path, expected: Mapping[str, Any]
+) -> dict[str, Any]:
+    _require_clean_git(repo_root)
+    observed = _implementation_manifest(repo_root)
+    if observed != expected:
+        raise BenchmarkError("benchmark implementation changed between replicates")
+    return observed
+
+
+def _validate_root_grant_freshness(
+    grant: Mapping[str, Any], *, now: datetime | None = None
+) -> None:
+    """Enforce the root-bound clock, never a renewed local admission timestamp."""
+    created_value = grant.get("root_approval_created_at")
+    expiry = grant.get("expires_after_seconds")
+    if (
+        not isinstance(created_value, str)
+        or type(expiry) is not int
+        or expiry != capacity_runtime.RECEIPT_MAX_AGE_SECONDS
+    ):
+        raise BenchmarkError("root benchmark grant expiry contract is invalid")
+    try:
+        created = datetime.fromisoformat(created_value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise BenchmarkError("root benchmark grant timestamp is invalid") from exc
+    if created.tzinfo is None:
+        raise BenchmarkError("root benchmark grant timestamp is invalid")
+    age = ((now or datetime.now(UTC)) - created.astimezone(UTC)).total_seconds()
+    if age < 0 or age > expiry:
+        raise BenchmarkError("root benchmark grant is stale")
+
+
+def _consume_admission(
+    admission_path: Path,
+    admission: Mapping[str, Any],
+    *,
+    canonical_lock_path: Path | None = None,
+) -> Path:
+    """Consume the root grant, then retain a non-authoritative local audit."""
+    candidate = admission_path.expanduser()
+    if candidate.is_symlink():
+        raise BenchmarkError("technical admission path is not a regular file")
+    resolved = candidate.resolve()
+    if not resolved.is_file() or stat.S_IMODE(resolved.stat().st_mode) & 0o077:
+        raise BenchmarkError("technical admission path is not a regular file")
+    if _canonical(_read_json(resolved)) != _canonical(admission):
+        raise BenchmarkError("technical admission changed after validation")
+    nonce_sha256 = admission.get("root_approval_nonce_sha256")
+    if not _is_sha256(nonce_sha256):
+        raise BenchmarkError("technical admission root approval binding is invalid")
+    grant_value = admission.get("root_benchmark_grant_path")
+    if not isinstance(grant_value, str):
+        raise BenchmarkError("root benchmark grant path is missing")
+    grant_path = Path(grant_value)
+    expected_name = f".cre-capacity-benchmark-grant-{nonce_sha256}.json"
+    if (
+        not grant_path.is_absolute()
+        or grant_path.name != expected_name
+        or grant_path.parent == grant_path
+    ):
+        raise BenchmarkError("root benchmark grant path is invalid")
+    try:
+        completed = subprocess.run(
+            [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/bin/python3",
+                "-c",
+                ROOT_BENCHMARK_GRANT_CONSUMER,
+                str(grant_path),
+            ],
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise BenchmarkError("root benchmark grant consumer is unavailable") from exc
+    if completed.returncode != 0:
+        raise BenchmarkError(
+            "root benchmark grant consumption requires current sudo authorization"
+        )
+    raw = completed.stdout
+    if (
+        not isinstance(raw, bytes)
+        or not raw
+        or len(raw) > ROOT_BENCHMARK_GRANT_MAX_BYTES
+    ):
+        raise BenchmarkError("root benchmark grant response is invalid")
+    try:
+        grant = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BenchmarkError("root benchmark grant response is invalid") from exc
+    expected_grant = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": capacity_runtime.BENCHMARK_GRANT_KIND,
+        "profile": admission.get("profile"),
+        "config_sha256": admission.get("config_sha256"),
+        "transition_receipt_sha256": admission.get("transition_receipt_sha256"),
+        "source_git_sha": admission.get("source_git_sha"),
+        "root_approval_nonce_sha256": nonce_sha256,
+        "root_approval_created_at": admission.get("root_approval_created_at"),
+        "expires_after_seconds": admission.get("expires_after_seconds"),
+        "approved": True,
+    }
+    if not _same_typed_value(grant, expected_grant):
+        raise BenchmarkError("root benchmark grant does not bind this admission")
+    _validate_root_grant_freshness(grant)
+    admission_sha256 = _sha256(_canonical(admission))
+    grant_sha256 = _sha256(_canonical(grant))
+    if canonical_lock_path is None:
+        try:
+            lock_path = canonical_shared_lock_dir(Path(__file__).resolve().parents[3])
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise BenchmarkError(
+                "canonical admission consumption path is unavailable"
+            ) from exc
+    else:
+        lock_path = canonical_lock_path
+    lock_path = lock_path.resolve()
+    if lock_path.name != ".cre.lock" or lock_path.parent.name != "daily":
+        raise BenchmarkError("canonical admission consumption path is invalid")
+    consumption_root = lock_path.parent.parent / ".capacity-admission-consumption"
+    consumption_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if (
+        consumption_root.is_symlink()
+        or not consumption_root.is_dir()
+        or stat.S_IMODE(consumption_root.stat().st_mode) & 0o077
+    ):
+        raise BenchmarkError("canonical admission consumption directory is unsafe")
+    marker = consumption_root / f"{nonce_sha256}.json"
+    payload = (
+        _canonical(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "kind": "cre_capacity_admission_consumption",
+                "admission_sha256": admission_sha256,
+                "root_benchmark_grant_sha256": grant_sha256,
+                "root_approval_nonce_sha256": nonce_sha256,
+                "root_approval_created_at": grant["root_approval_created_at"],
+                "expires_after_seconds": grant["expires_after_seconds"],
+                "consumed_at": _now(),
+                "pid": os.getpid(),
+            }
+        )
+        + b"\n"
+    )
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(marker, flags, 0o600)
+    except FileExistsError as exc:
+        raise BenchmarkError(
+            "technical admission was already consumed; a fresh operator admission is required"
+        ) from exc
+    except OSError as exc:
+        raise BenchmarkError(
+            "technical admission consumption could not be recorded"
+        ) from exc
+    try:
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise BenchmarkError("technical admission consumption write was short")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return marker
 
 
 def _atomic_private_json(path: Path, value: Any) -> None:
@@ -94,9 +428,15 @@ def _atomic_private_json(path: Path, value: Any) -> None:
             if written <= 0:
                 raise BenchmarkError(f"short write for {path}")
             remaining = remaining[written:]
+        os.fsync(descriptor)
         os.close(descriptor)
         descriptor = -1
         os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -130,6 +470,64 @@ def _read_json(path: Path, maximum: int = MAX_SAMPLE_BYTES) -> Any:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise BenchmarkError(f"invalid JSON in {path}") from exc
+
+
+def _experiment_contract() -> dict[str, Any]:
+    """Load both treatments and the workload from the one central JSON file."""
+    document = _read_json(experiment.DEFAULT_CONFIG, experiment.MAX_CONFIG_BYTES)
+    if (
+        not isinstance(document, Mapping)
+        or type(document.get("schema_version")) is not int
+        or document["schema_version"] != experiment.SCHEMA_VERSION
+        or not isinstance(document.get("profiles"), Mapping)
+    ):
+        raise BenchmarkError("central experiment configuration is invalid")
+    profiles = document["profiles"]
+    baseline_name = document.get("default_profile")
+    candidate_names = [
+        name
+        for name, value in profiles.items()
+        if isinstance(name, str)
+        and isinstance(value, Mapping)
+        and value.get("kind") == "experiment"
+    ]
+    if (
+        not isinstance(baseline_name, str)
+        or not isinstance(profiles.get(baseline_name), Mapping)
+        or profiles[baseline_name].get("kind") != "baseline"
+        or len(candidate_names) != 1
+    ):
+        raise BenchmarkError("central experiment treatments are ambiguous")
+    candidate_name = candidate_names[0]
+    try:
+        baseline, baseline_digest = experiment.load_profile(
+            experiment.DEFAULT_CONFIG, baseline_name
+        )
+        candidate, candidate_digest = experiment.load_profile(
+            experiment.DEFAULT_CONFIG, candidate_name
+        )
+    except experiment.ProfileError as exc:
+        raise BenchmarkError("central experiment configuration is invalid") from exc
+    workload = candidate.get("workload")
+    if baseline_digest != candidate_digest or not isinstance(workload, dict):
+        raise BenchmarkError("central experiment configuration is inconsistent")
+    return {
+        "config_sha256": candidate_digest,
+        "workload": dict(workload),
+        "profiles": {"baseline": baseline_name, "candidate": candidate_name},
+        "requested": {
+            "baseline": dict(baseline["requested"]),
+            "candidate": dict(candidate["requested"]),
+        },
+    }
+
+
+def _transaction_type(transaction_class: Any) -> str:
+    if transaction_class in {"sale", "sale_or_lease"}:
+        return "Sale"
+    if transaction_class == "lease":
+        return "Lease"
+    raise BenchmarkError("sample transaction class is invalid")
 
 
 def _string_urls(value: Any) -> list[str]:
@@ -178,6 +576,95 @@ def _floor_plan_urls(value: Any) -> list[str]:
         elif isinstance(row, dict):
             urls.update(_string_urls([row.get("url"), row.get("image")]))
     return sorted(urls)
+
+
+def _present(value: Any) -> bool:
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, (list, dict, tuple, set)):
+        return bool(value)
+    return False
+
+
+def _structural_fidelity(fields: Mapping[str, Mapping[str, bool]]) -> dict[str, Any]:
+    normalized = {
+        channel: {key: value is True for key, value in sorted(channel_fields.items())}
+        for channel, channel_fields in sorted(fields.items())
+    }
+    channels = {
+        channel: any(channel_fields.values())
+        for channel, channel_fields in normalized.items()
+    }
+    return {
+        "fields": normalized,
+        "channels": channels,
+        "supported_fields": sorted(
+            f"{channel}.{key}"
+            for channel, channel_fields in normalized.items()
+            for key, present in channel_fields.items()
+            if present
+        ),
+        "supported_channels": sorted(
+            channel for channel, present in channels.items() if present
+        ),
+        "shape_sha256": _sha256(_canonical(normalized)),
+    }
+
+
+def _historic_fidelity(
+    property_value: Mapping[str, Any],
+    page_props: Mapping[str, Any],
+    record: Mapping[str, Any],
+) -> dict[str, Any]:
+    brokers = page_props.get("brokers") or property_value.get("brokers")
+    return _structural_fidelity(
+        {
+            "address": {
+                "street": _present(property_value.get("address")),
+                "city": _present(property_value.get("city")),
+                "state": _present(property_value.get("state")),
+                "postal_code": _present(property_value.get("postcode")),
+            },
+            "price_rate": {
+                "sale": _present(property_value.get("salePrice")),
+                "lease": _present(property_value.get("rentPrice")),
+            },
+            "size": {"surface_area": _present(property_value.get("surfaceArea"))},
+            "brokers_contacts": {"contacts": _present(brokers)},
+            "documents": {
+                "brochures": bool(_string_urls(property_value.get("brochures"))),
+                "floor_plans": bool(_floor_plan_urls(property_value.get("floorPlans"))),
+            },
+            "images": {"photos": bool(_string_urls(property_value.get("images")))},
+            "media": {
+                "videos": bool(_string_urls(property_value.get("videos"))),
+                "tours_360": bool(
+                    _string_urls(
+                        property_value.get("virtualTours")
+                        if isinstance(property_value.get("virtualTours"), list)
+                        else [property_value.get("virtualTours")]
+                    )
+                    or _string_urls(
+                        property_value.get("view360URLs")
+                        if isinstance(property_value.get("view360URLs"), list)
+                        else [property_value.get("view360URLs")]
+                    )
+                ),
+                "other": bool(
+                    _string_urls(
+                        property_value.get("media")
+                        if isinstance(property_value.get("media"), list)
+                        else [property_value.get("media")]
+                    )
+                ),
+            },
+            "markdown": {"body": _present(record.get("markdown"))},
+        }
+    )
 
 
 def _native_evidence(property_value: Mapping[str, Any]) -> dict[str, Any]:
@@ -273,6 +760,7 @@ def _cache_candidate(path: Path) -> dict[str, Any] | None:
             "cached_at": record.get("cachedAt"),
             "detail_observed_at": record.get("detailObservedAt"),
             "native": native,
+            "fidelity": _historic_fidelity(property_value, page_props, record),
         },
     }
 
@@ -385,8 +873,34 @@ def build_sample(cache_dir: Path, details: int = 128) -> dict[str, Any]:
     }
 
 
+def _valid_structural_fidelity(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    fields = value.get("fields")
+    channels = value.get("channels")
+    if (
+        not isinstance(fields, dict)
+        or not isinstance(channels, dict)
+        or set(fields) != set(channels)
+        or not all(
+            isinstance(channel_fields, dict)
+            and channel_fields
+            and all(type(item) is bool for item in channel_fields.values())
+            for channel_fields in fields.values()
+        )
+    ):
+        return False
+    expected = _structural_fidelity(fields)
+    return value == expected
+
+
 def validate_sample(value: Any, expected_details: int = 128) -> dict[str, Any]:
-    if not isinstance(value, dict) or value.get("kind") != SAMPLE_KIND:
+    if (
+        not isinstance(value, dict)
+        or type(value.get("schema_version")) is not int
+        or value["schema_version"] != SCHEMA_VERSION
+        or value.get("kind") != SAMPLE_KIND
+    ):
         raise BenchmarkError("sample manifest kind is invalid")
     if value.get("source") != "jll":
         raise BenchmarkError("benchmark sample must be JLL, never JLL Investor")
@@ -444,6 +958,7 @@ def validate_sample(value: Any, expected_details: int = 128) -> dict[str, Any]:
         fingerprints = native.get("fingerprints") if isinstance(native, dict) else None
         counts = native.get("counts") if isinstance(native, dict) else None
         shape = native.get("shape") if isinstance(native, dict) else None
+        fidelity = historic.get("fidelity") if isinstance(historic, dict) else None
         cache_file = historic.get("cache_file") if isinstance(historic, dict) else None
         if (
             not isinstance(cache_file, str)
@@ -462,6 +977,7 @@ def validate_sample(value: Any, expected_details: int = 128) -> dict[str, Any]:
             or not all(type(item) is int and item >= 0 for item in counts.values())
             or not isinstance(shape, list)
             or shape != sorted(key for key, count in counts.items() if count)
+            or not _valid_structural_fidelity(fidelity)
         ):
             raise BenchmarkError("sample historic provenance is invalid")
         ids.add(row["id"])
@@ -573,23 +1089,53 @@ def validate_admission(
 ) -> dict[str, Any]:
     if (
         not isinstance(value, dict)
-        or value.get("schema_version") != SCHEMA_VERSION
+        or type(value.get("schema_version")) is not int
+        or value["schema_version"] != SCHEMA_VERSION
         or value.get("kind") != ADMISSION_KIND
     ):
         raise BenchmarkError("technical admission receipt kind is invalid")
+    contract = _experiment_contract()
+    if (
+        profile_name != contract["profiles"]["candidate"]
+        or config_sha256 != contract["config_sha256"]
+        or profile.get("requested") != contract["requested"]["candidate"]
+        or profile.get("workload") != contract["workload"]
+    ):
+        raise BenchmarkError("technical admission is not the central experiment")
     if value.get("admitted") is not True:
         raise BenchmarkError("technical admission has not admitted execution")
     if (
         value.get("profile") != profile_name
+        or not _is_sha256(value.get("config_sha256"))
         or value.get("config_sha256") != config_sha256
     ):
         raise BenchmarkError("technical admission is not bound to this profile/config")
-    if value.get("source_git_sha") != source_git_sha:
+    if (
+        not _is_source_sha(value.get("source_git_sha"))
+        or value.get("source_git_sha") != source_git_sha
+    ):
         raise BenchmarkError("technical admission source SHA does not match HEAD")
     if value.get("writes") != "forbidden":
         raise BenchmarkError("technical admission does not forbid writes")
+    if not _is_sha256(value.get("transition_receipt_sha256")):
+        raise BenchmarkError(
+            "technical admission transition receipt binding is invalid"
+        )
+    if not _is_sha256(value.get("root_approval_nonce_sha256")):
+        raise BenchmarkError("technical admission root approval binding is invalid")
+    grant_path = value.get("root_benchmark_grant_path")
+    expected_grant_name = (
+        f".cre-capacity-benchmark-grant-{value['root_approval_nonce_sha256']}.json"
+    )
+    if (
+        not isinstance(grant_path, str)
+        or not Path(grant_path).is_absolute()
+        or Path(grant_path).name != expected_grant_name
+    ):
+        raise BenchmarkError("technical admission root benchmark grant is invalid")
     if value.get("expires_after_seconds") != capacity_runtime.RECEIPT_MAX_AGE_SECONDS:
         raise BenchmarkError("technical admission expiry contract is invalid")
+    _validate_root_grant_freshness(value, now=now)
     try:
         created = datetime.fromisoformat(
             str(value.get("created_at")).replace("Z", "+00:00")
@@ -622,6 +1168,7 @@ def validate_admission(
     repo = effective.get("repo")
     if (
         not isinstance(repo, dict)
+        or not _is_source_sha(repo.get("git_sha"))
         or repo.get("git_sha") != source_git_sha
         or repo.get("dirty") is not False
     ):
@@ -699,6 +1246,178 @@ def _other_collector_process_active() -> bool:
     )
 
 
+def _effective_runtime_evidence(
+    public: Mapping[str, Any], requested: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Select treatment and stable identity fields from a live runtime capture."""
+    try:
+        api = public["api"]
+        browser = public["browser"]
+        host = public["host"]
+        repo = public["repo"]
+        api_env = api["env"]
+        browser_env = browser["env"]
+        browser_nano = browser["nano_cpus"]
+        api_nano = api["nano_cpus"]
+        page_slots = browser["page_slots"]
+        if (
+            type(browser_nano) is not int
+            or browser_nano % 1_000_000_000
+            or type(api_nano) is not int
+            or api_nano % 1_000_000_000
+            or not isinstance(page_slots, str)
+            or not page_slots.isdigit()
+        ):
+            raise KeyError("runtime treatment")
+        treatment = dict(requested)
+        treatment.update(
+            {
+                "browser_cpus": browser_nano // 1_000_000_000,
+                "global_pages": int(page_slots),
+                "browser_pids": browser["pids_limit"],
+                "api_cpus": api_nano // 1_000_000_000,
+            }
+        )
+        identity = {
+            "api": {
+                "image": api["image"],
+                "environment_keys_sha256": api_env["keys_sha256"],
+                "environment_values_sha256": api_env["values_sha256"],
+                "network_mode": api["network_mode"],
+                "port_bindings": api["port_bindings"],
+                "mounts_sha256": api["mounts_sha256"],
+                "security_opt": api["security_opt"],
+                "cap_drop": api["cap_drop"],
+            },
+            "browser": {
+                "image": browser["image"],
+                "environment_keys_sha256": browser_env["keys_sha256"],
+                "environment_except_pages_sha256": browser_env[
+                    "excluding_pages_sha256"
+                ],
+                "network_mode": browser["network_mode"],
+                "port_bindings": browser["port_bindings"],
+                "mounts_sha256": browser["mounts_sha256"],
+                "security_opt": browser["security_opt"],
+                "cap_drop": browser["cap_drop"],
+            },
+            "topology": {
+                "docker_context": host["docker_context"],
+                "compose_sha256": repo["compose_sha256"],
+                "override_sha256": repo["override_sha256"],
+                "execution_inputs_sha256": repo["execution_inputs_sha256"],
+            },
+        }
+    except (KeyError, TypeError) as exc:
+        raise BenchmarkError("effective runtime identity is incomplete") from exc
+    return {"treatment": treatment, "identity": identity}
+
+
+def _valid_effective_runtime(value: Any, expected_requested: Mapping[str, Any]) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {"treatment", "identity"}:
+        return False
+    if not _same_typed_value(value.get("treatment"), expected_requested):
+        return False
+    identity = value.get("identity")
+    if not isinstance(identity, Mapping) or set(identity) != {
+        "api",
+        "browser",
+        "topology",
+    }:
+        return False
+    required = {
+        "api": {
+            "image",
+            "environment_keys_sha256",
+            "environment_values_sha256",
+            "network_mode",
+            "port_bindings",
+            "mounts_sha256",
+            "security_opt",
+            "cap_drop",
+        },
+        "browser": {
+            "image",
+            "environment_keys_sha256",
+            "environment_except_pages_sha256",
+            "network_mode",
+            "port_bindings",
+            "mounts_sha256",
+            "security_opt",
+            "cap_drop",
+        },
+    }
+    for label, keys in required.items():
+        container = identity.get(label)
+        if (
+            not isinstance(container, Mapping)
+            or set(container) != keys
+            or not isinstance(container.get("image"), str)
+            or not container["image"]
+            or not isinstance(container.get("network_mode"), str)
+            or not container["network_mode"]
+            or not isinstance(container.get("port_bindings"), Mapping)
+            or any(
+                not _is_sha256(container.get(key))
+                for key in keys
+                if key.endswith("_sha256")
+            )
+        ):
+            return False
+    topology = identity.get("topology")
+    inputs = (
+        topology.get("execution_inputs_sha256")
+        if isinstance(topology, Mapping)
+        else None
+    )
+    return bool(
+        isinstance(topology, Mapping)
+        and set(topology)
+        == {
+            "docker_context",
+            "compose_sha256",
+            "override_sha256",
+            "execution_inputs_sha256",
+        }
+        and topology.get("docker_context") == "orbstack"
+        and _is_sha256(topology.get("compose_sha256"))
+        and _is_sha256(topology.get("override_sha256"))
+        and isinstance(inputs, Mapping)
+        and set(inputs) == set(capacity_runtime.EXECUTION_INPUTS)
+        and all(_is_sha256(digest) for digest in inputs.values())
+    )
+
+
+def _valid_live_admission(
+    value: Any,
+    *,
+    effective_runtime: Any,
+    expected_requested: Mapping[str, Any],
+) -> bool:
+    required = {
+        "observed_at",
+        "snapshot_sha256",
+        "transition_sha256",
+        "checks",
+        "other_collector_process_active",
+        "effective_runtime",
+    }
+    checks = value.get("checks") if isinstance(value, Mapping) else None
+    return bool(
+        isinstance(value, Mapping)
+        and set(value) == required
+        and isinstance(value.get("observed_at"), str)
+        and _is_sha256(value.get("snapshot_sha256"))
+        and _is_sha256(value.get("transition_sha256"))
+        and isinstance(checks, Mapping)
+        and bool(checks)
+        and all(item is True for item in checks.values())
+        and value.get("other_collector_process_active") is False
+        and value.get("effective_runtime") == effective_runtime
+        and _valid_effective_runtime(effective_runtime, expected_requested)
+    )
+
+
 def verify_live_admission(
     admission: Mapping[str, Any], profile: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -744,6 +1463,7 @@ def verify_live_admission(
         "transition_sha256": public["transition_sha256"],
         "checks": checks,
         "other_collector_process_active": False,
+        "effective_runtime": _effective_runtime_evidence(public, profile["requested"]),
     }
 
 
@@ -802,6 +1522,94 @@ def _http_json(url: str, maximum: int = 64 * 1024) -> dict[str, Any]:
     return value
 
 
+def _settlement_backends(api_url: str) -> dict[str, Any]:
+    active = _http_json(f"{api_url}/v2/crawl/active")
+    crawls = active.get("crawls")
+    if crawls is None and isinstance(active.get("data"), Mapping):
+        crawls = active["data"].get("crawls")
+    if not isinstance(crawls, list):
+        raise BenchmarkError("active crawl settlement is invalid")
+
+    def command(argv: list[str]) -> list[str]:
+        try:
+            completed = subprocess.run(
+                argv,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise BenchmarkError("backend settlement telemetry is unavailable") from exc
+        if completed.returncode != 0 or len(completed.stdout) > 128 * 1024:
+            raise BenchmarkError("backend settlement telemetry is unavailable")
+        return completed.stdout.splitlines()
+
+    rabbit_rows = command(
+        [
+            "docker",
+            "exec",
+            capacity_runtime.RABBIT_CONTAINER,
+            "rabbitmqctl",
+            "list_queues",
+            "name",
+            "messages_ready",
+            "messages_unacknowledged",
+            "--quiet",
+        ]
+    )
+    rabbit_counts: list[tuple[int, int]] = []
+    for row in rabbit_rows:
+        parts = row.split()
+        if len(parts) < 3 or not parts[-2].isdigit() or not parts[-1].isdigit():
+            raise BenchmarkError("RabbitMQ settlement telemetry is invalid")
+        rabbit_counts.append((int(parts[-2]), int(parts[-1])))
+    if not rabbit_counts:
+        raise BenchmarkError("RabbitMQ settlement telemetry is empty")
+
+    nuq_rows = command(
+        [
+            "docker",
+            "exec",
+            capacity_runtime.NUQ_CONTAINER,
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "postgres",
+            "-At",
+            "-F",
+            "|",
+            "-c",
+            (
+                "select 'queue_scrape_total', count(*) from nuq.queue_scrape union all "
+                "select 'queue_scrape_backlog_total', count(*) from nuq.queue_scrape_backlog union all "
+                "select 'queue_crawl_finished_total', count(*) from nuq.queue_crawl_finished order by 1;"
+            ),
+        ]
+    )
+    nuq: dict[str, int] = {}
+    for row in nuq_rows:
+        parts = row.split("|")
+        if len(parts) != 2 or not parts[1].isdigit():
+            raise BenchmarkError("NuQ settlement telemetry is invalid")
+        nuq[parts[0]] = int(parts[1])
+    expected_nuq = {
+        "queue_scrape_total",
+        "queue_scrape_backlog_total",
+        "queue_crawl_finished_total",
+    }
+    if set(nuq) != expected_nuq:
+        raise BenchmarkError("NuQ settlement telemetry is incomplete")
+    return {
+        "active_crawls": len(crawls),
+        "rabbitmq_queue_count": len(rabbit_counts),
+        "rabbitmq_ready": sum(item[0] for item in rabbit_counts),
+        "rabbitmq_unacknowledged": sum(item[1] for item in rabbit_counts),
+        "nuq": nuq,
+    }
+
+
 def _settlement_snapshot(api_url: str, browser_url: str) -> dict[str, Any]:
     queue = _http_json(f"{api_url}/v2/team/queue-status")
     browser = _http_json(browser_url)
@@ -812,12 +1620,62 @@ def _settlement_snapshot(api_url: str, browser_url: str) -> dict[str, Any]:
     values = [active, waiting, total, browser_active]
     if any(isinstance(item, bool) or not isinstance(item, int) for item in values):
         raise BenchmarkError("queue/browser settlement counters are invalid")
+    backends = _settlement_backends(api_url)
+    backend_idle = (
+        backends["active_crawls"] == 0
+        and backends["rabbitmq_queue_count"] > 0
+        and backends["rabbitmq_ready"] == 0
+        and backends["rabbitmq_unacknowledged"] == 0
+        and all(value == 0 for value in backends["nuq"].values())
+    )
     return {
         "queue": {"active": active, "waiting": waiting, "total": total},
         "browser_active_pages": browser_active,
-        "idle": active == waiting == total == browser_active == 0,
+        **backends,
+        "idle": active == waiting == total == browser_active == 0 and backend_idle,
         "observed_at": _now(),
     }
+
+
+def _await_idle_settlement(
+    api_url: str,
+    browser_url: str,
+    *,
+    timeout_seconds: int = SETTLEMENT_TIMEOUT_SECONDS,
+    poll_seconds: int = SETTLEMENT_POLL_SECONDS,
+) -> dict[str, Any]:
+    """Poll bounded loopback evidence until all observed work is idle."""
+    deadline = time.monotonic() + timeout_seconds
+    observations: list[dict[str, Any]] = []
+    while True:
+        try:
+            snapshot = _settlement_snapshot(api_url, browser_url)
+            observations.append(snapshot)
+            if snapshot["idle"]:
+                return {
+                    **snapshot,
+                    "state": "idle",
+                    "polls": len(observations),
+                    "observations": observations,
+                }
+        except BenchmarkError:
+            observations.append(
+                {
+                    "idle": False,
+                    "observed_at": _now(),
+                    "error": "settlement_telemetry_unavailable",
+                }
+            )
+        if time.monotonic() >= deadline:
+            return {
+                "idle": False,
+                "state": "unknown",
+                "polls": len(observations),
+                "observed_at": _now(),
+                "observations": observations,
+                "error": "bounded_idle_settlement_not_proven",
+            }
+        time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
 
 
 def _cgroup_text(container: str, name: str) -> str:
@@ -914,6 +1772,22 @@ WORKER_SCHEDULER_JS = r"""async function pmap(values, width, callback, shouldSto
 }"""
 
 
+def _worker_contract(expected_details: int, concurrency: int) -> dict[str, Any]:
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "cre_jll_capacity_worker_contract",
+        "source": "jll",
+        "details": expected_details,
+        "concurrency": concurrency,
+        "transaction_type_mapping": {
+            "sale": "Sale",
+            "sale_or_lease": "Sale",
+            "lease": "Lease",
+        },
+    }
+    return {**payload, "sha256": _sha256(_canonical(payload))}
+
+
 WORKER_TEMPLATE = r"""import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
@@ -929,6 +1803,7 @@ const samplePath = process.env.CRE_BENCHMARK_SAMPLE;
 const outputPath = process.env.CRE_BENCHMARK_OUTPUT;
 const expectedDetails = __EXPECTED_DETAILS__;
 const expectedConcurrency = __EXPECTED_CONCURRENCY__;
+const workerContractSha256 = __WORKER_CONTRACT_SHA256__;
 const concurrency = Number(process.env.JLL_DETAIL_CONCURRENCY);
 if (!samplePath || !outputPath || !Number.isInteger(concurrency) || concurrency !== expectedConcurrency) {
   throw new Error("invalid benchmark worker configuration");
@@ -940,6 +1815,33 @@ if (sample.kind !== "cre_jll_capacity_sample" || sample.source !== "jll" || samp
 const fingerprint = (values) => createHash("sha256").update([...new Set(values)].sort().join("\n")).digest("hex");
 const urls = (value) => Array.isArray(value) ? value.filter((item) => typeof item === "string" && /^https?:\/\//.test(item)) : [];
 const itemUrls = (value) => Array.isArray(value) ? value.flatMap((item) => typeof item === "string" ? [item] : item && typeof item.url === "string" ? [item.url] : []) : [];
+const present = (value) => typeof value === "number" || (typeof value === "string" && value.trim().length > 0) || (Array.isArray(value) && value.length > 0) || (!!value && typeof value === "object" && Object.keys(value).length > 0);
+function transactionTypeFor(value) {
+  if (value === "sale" || value === "sale_or_lease") return "Sale";
+  if (value === "lease") return "Lease";
+  throw new Error("invalid JLL benchmark transaction class");
+}
+function structuralEvidence(fields) {
+  const ordered = Object.fromEntries(Object.entries(fields).sort().map(([channel, entries]) => [channel, Object.fromEntries(Object.entries(entries).sort().map(([key, value]) => [key, value === true]))]));
+  const channels = Object.fromEntries(Object.entries(ordered).map(([channel, entries]) => [channel, Object.values(entries).some(Boolean)]));
+  const supportedFields = Object.entries(ordered).flatMap(([channel, entries]) => Object.entries(entries).filter(([, value]) => value).map(([key]) => `${channel}.${key}`)).sort();
+  const supportedChannels = Object.entries(channels).filter(([, value]) => value).map(([channel]) => channel).sort();
+  return { fields: ordered, channels, supported_fields: supportedFields, supported_channels: supportedChannels, shape_sha256: createHash("sha256").update(JSON.stringify(ordered)).digest("hex") };
+}
+function normalizedEvidence(normalized) {
+  const documents = Array.isArray(normalized?.documents) ? normalized.documents : [];
+  const media = Array.isArray(normalized?.media) ? normalized.media : [];
+  return structuralEvidence({
+    address: { street: present(normalized?.street), city: present(normalized?.city), state: present(normalized?.state), postal_code: present(normalized?.postalCode) },
+    price_rate: { sale: present(normalized?.salePriceText) || present(normalized?.salePriceUsd), lease: present(normalized?.leaseRateText) },
+    size: { surface_area: present(normalized?.sizeText) || present(normalized?.buildingSizeSqft) },
+    brokers_contacts: { contacts: present(normalized?.contactsDetailed) || present(normalized?.brokerIds) },
+    documents: { brochures: present(normalized?.brochures), floor_plans: documents.some((item) => String(item?.docType ?? item?.documentType ?? item?.type ?? "").toLowerCase().includes("floor")) },
+    images: { photos: present(normalized?.photos) },
+    media: { videos: media.some((item) => item?.mediaType === "video"), tours_360: media.some((item) => item?.mediaType === "virtual_tour" || item?.mediaType === "matterport"), other: media.some((item) => item?.mediaType === "other") },
+    markdown: { body: present(normalized?.markdown) },
+  });
+}
 function nativeEvidence(row) {
   const cached = JSON.parse(readFileSync(jllDetailCachePath(row.url), "utf8"));
   const property = jllNextData(cached.rawHtml)?.props?.pageProps?.property;
@@ -983,19 +1885,20 @@ let rows;
 try {
   rows = await withPerformanceSource("jll", "sale", () => pmap(sample.details, concurrency, async (item, index) => {
     const started = performance.now();
-    const base = { id: item.id, url: item.url, transactionType: item.transaction_class, assetType: item.property_types.join(", ") };
+    const expectedTransactionType = transactionTypeFor(item.transaction_class);
+    const base = { id: item.id, url: item.url, transactionType: expectedTransactionType, assetType: item.property_types.join(", ") };
     const normalized = await enrichJllListing(base);
     const signal = providerSignal(normalized, item);
     if (signal && !providerStop) providerStop = { signal, sample_index: index, sample_id: item.sample_id };
     const native = normalized?.detailError ? null : nativeEvidence(item);
-    return { sample_index: index, sample_id: item.sample_id, latency_ms: Number((performance.now() - started).toFixed(3)), normalized, native };
+    return { sample_index: index, sample_id: item.sample_id, transaction_type: expectedTransactionType, latency_ms: Number((performance.now() - started).toFixed(3)), normalized, native, fidelity: normalizedEvidence(normalized) };
   }, () => providerStop !== null));
   recordSourceCompleted("jll", "sale", { outcome: providerStop ? "failed" : "succeeded", listingsEmitted: rows.length });
 } catch (error) {
   recordSourceCompleted("jll", "sale", { outcome: "failed" }); flushPerformance({ terminal: true }); throw error;
 }
 flushPerformance({ terminal: true });
-writeFileSync(outputPath, JSON.stringify({ schema_version: 1, kind: "cre_jll_capacity_worker", generation, started_at: startedAt, finished_at: new Date().toISOString(), provider_stop: providerStop, rows }));
+writeFileSync(outputPath, JSON.stringify({ schema_version: 1, kind: "cre_jll_capacity_worker", worker_contract_sha256: workerContractSha256, generation, started_at: startedAt, finished_at: new Date().toISOString(), provider_stop: providerStop, rows }));
 """
 
 
@@ -1006,12 +1909,14 @@ def _worker_source(
     performance_module = (
         repo_root / "scripts/firecrawl-ops/cre_collector/lib/performance.ts"
     ).as_uri()
+    contract = _worker_contract(expected_details, concurrency)
     return (
         WORKER_TEMPLATE.replace("__JLL_IMPORT__", json.dumps(jll))
         .replace("__PERFORMANCE_IMPORT__", json.dumps(performance_module))
         .replace("__WORKER_SCHEDULER__", WORKER_SCHEDULER_JS)
         .replace("__EXPECTED_DETAILS__", str(expected_details))
         .replace("__EXPECTED_CONCURRENCY__", str(concurrency))
+        .replace("__WORKER_CONTRACT_SHA256__", json.dumps(contract["sha256"]))
     )
 
 
@@ -1035,6 +1940,28 @@ def _terminate(process: subprocess.Popen[bytes]) -> None:
             raise BenchmarkError("benchmark worker could not be terminated") from exc
 
 
+def _signal_as_interrupt(signum: int, _frame: object) -> None:
+    raise KeyboardInterrupt(f"benchmark interrupted by signal {signum}")
+
+
+@contextmanager
+def _benchmark_signal_handlers():
+    previous: dict[int, Any] = {}
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, _signal_as_interrupt)
+    except ValueError as exc:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        raise BenchmarkError("benchmark must run in the main process thread") from exc
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 def _run_worker(
     *,
     repo_root: Path,
@@ -1044,6 +1971,7 @@ def _run_worker(
     api_url: str,
     timeout_seconds: int,
     expected_details: int,
+    root_grant: Mapping[str, Any] | None = None,
 ) -> tuple[int, list[dict[str, Any]], str | None]:
     replicate_dir.mkdir(mode=0o700)
     worker_path = replicate_dir / "worker.ts"
@@ -1068,6 +1996,10 @@ def _run_worker(
             "FIRECRAWL_API_KEY": "local-self-hosted",
             "NO_PROXY": "127.0.0.1,localhost,::1",
             "JLL_DETAIL_CONCURRENCY": str(requested["jll_detail_concurrency"]),
+            "CRE_SCRAPE_MAX_ATTEMPTS": "1",
+            "JLL_GRAPHQL_RETRIES": "1",
+            "JLL_DETAIL_WAIT_MS": "1000",
+            "JLL_DETAIL_FALLBACK_WAIT_MS": "1000",
             "JLL_DETAIL_CACHE_DIR": str(cache_dir),
             "JLL_DETAIL_CACHE_MIN_CACHED_AT": _now(),
             "CRE_REQUIRE_FRESH_DETAILS": "1",
@@ -1095,7 +2027,10 @@ def _run_worker(
     sample_seconds = requested["host_cpu_sample_seconds"]
     monitor_error: str | None = None
     process: subprocess.Popen[bytes] | None = None
+    pending_exception: BaseException | None = None
     try:
+        if root_grant is not None:
+            _validate_root_grant_freshness(root_grant)
         process = subprocess.Popen(
             ["/usr/bin/nice", "-n", "15", str(tsx), str(worker_path)],
             cwd=repo_root / "scripts/firecrawl-ops/cre_collector",
@@ -1130,11 +2065,25 @@ def _run_worker(
                     termination_reason = "replicate_deadline"
                     _terminate(process)
                     break
-    except (BenchmarkError, OSError, KeyboardInterrupt) as exc:
+    except KeyboardInterrupt as exc:
+        if process is None:
+            raise
+        termination_reason = "operator_interrupt"
+        monitor_error = type(exc).__name__
+        pending_exception = exc
+        _terminate(process)
+    except (BenchmarkError, OSError) as exc:
         if process is None:
             raise BenchmarkError("benchmark worker could not be started") from exc
         termination_reason = "monitor_telemetry_failure"
         monitor_error = type(exc).__name__
+        _terminate(process)
+    except BaseException as exc:
+        if process is None:
+            raise
+        termination_reason = "worker_monitor_unexpected_failure"
+        monitor_error = type(exc).__name__
+        pending_exception = exc
         _terminate(process)
     finally:
         os.close(stderr_descriptor)
@@ -1155,6 +2104,8 @@ def _run_worker(
             "worker_source_sha256": _sha256(worker_source.encode()),
         },
     )
+    if pending_exception is not None:
+        raise pending_exception
     return (
         process.returncode if process.returncode is not None else -1,
         samples,
@@ -1172,11 +2123,151 @@ def _percentile(values: Sequence[float], percentile: float) -> float | None:
     return round(ordered[index], 3)
 
 
+def _missing_structural_fields(
+    historic: Mapping[str, Any], current: Mapping[str, Any]
+) -> list[str]:
+    missing: list[str] = []
+    historic_fields = historic.get("fields")
+    current_fields = current.get("fields")
+    if not isinstance(historic_fields, Mapping) or not isinstance(
+        current_fields, Mapping
+    ):
+        return ["structural_evidence"]
+    for channel, fields in historic_fields.items():
+        observed = current_fields.get(channel)
+        if not isinstance(fields, Mapping) or not isinstance(observed, Mapping):
+            missing.append(str(channel))
+            continue
+        missing.extend(
+            f"{channel}.{key}"
+            for key, present in fields.items()
+            if present is True and observed.get(key) is not True
+        )
+    return sorted(missing)
+
+
+def _performance_telemetry_complete(
+    value: Any, *, expected_details: int, concurrency: int
+) -> bool:
+    if (
+        not isinstance(value, Mapping)
+        or type(value.get("schema_version")) is not int
+        or value["schema_version"] != SCHEMA_VERSION
+        or value.get("kind") != "cre_scrape_performance"
+        or value.get("terminal") is not True
+        or value.get("degraded") is not False
+    ):
+        return False
+    metrics = value.get("metrics")
+    requests = metrics.get("requests") if isinstance(metrics, Mapping) else None
+    if not isinstance(requests, Mapping):
+        return False
+    logical = metrics.get("logical_scrape_calls")
+    retry = requests.get("retry")
+    errors = requests.get("error_categories")
+    by_source = requests.get("by_source_transaction")
+    exact_source = {
+        "source": "jll",
+        "transaction": "sale",
+        "attempts_started": expected_details,
+        "attempts_completed": expected_details,
+        "succeeded": expected_details,
+        "failed": 0,
+        "fresh_requested": expected_details,
+    }
+    exact_errors = {
+        "timeout": 0,
+        "http_4xx": 0,
+        "http_5xx": 0,
+        "transport": 0,
+        "empty_response": 0,
+        "unknown": 0,
+    }
+    request_count_keys = (
+        "attempts_started",
+        "attempts_completed",
+        "succeeded",
+        "failed",
+        "fresh_requested",
+        "active_locally_awaited",
+        "max_active_locally_awaited",
+        "timed_out_remote_settlement_unknown",
+        "other_valid_statuses",
+    )
+    retry_counts_are_ints = isinstance(retry, Mapping) and all(
+        isinstance(counts, Mapping)
+        and all(type(count) is int for count in counts.values())
+        for counts in retry.values()
+    )
+    source_counts_are_ints = (
+        isinstance(by_source, list)
+        and len(by_source) == 1
+        and isinstance(by_source[0], Mapping)
+        and all(
+            type(by_source[0].get(key)) is int
+            for key in (
+                "attempts_started",
+                "attempts_completed",
+                "succeeded",
+                "failed",
+                "fresh_requested",
+            )
+        )
+    )
+    return (
+        _same_typed_value(logical, {"raw": 0, "doc": expected_details, "json": 0})
+        and all(type(requests.get(key)) is int for key in request_count_keys)
+        and requests.get("attempts_started") == expected_details
+        and requests.get("attempts_completed") == expected_details
+        and requests.get("succeeded") == expected_details
+        and requests.get("failed") == 0
+        and requests.get("fresh_requested") == expected_details
+        and requests.get("active_locally_awaited") == 0
+        and type(requests.get("max_active_locally_awaited")) is int
+        and 1 <= requests["max_active_locally_awaited"] <= concurrency
+        and requests.get("timed_out_remote_settlement_unknown") == 0
+        and requests.get("status_counts") == {}
+        and requests.get("other_valid_statuses") == 0
+        and retry
+        == {
+            "http_helper": {
+                "retry_attempts": 0,
+                "backoff_ms": 0,
+                "terminal_backoff_ms": 0,
+            },
+            "json_parse": {
+                "retry_attempts": 0,
+                "backoff_ms": 0,
+                "terminal_backoff_ms": 0,
+            },
+        }
+        and retry_counts_are_ints
+        and _same_typed_value(errors, exact_errors)
+        and source_counts_are_ints
+        and _same_typed_value(by_source, [exact_source])
+    )
+
+
 def summarize_replicate(
-    replicate_dir: Path, sample: Mapping[str, Any], wall_seconds: float
+    replicate_dir: Path,
+    sample: Mapping[str, Any],
+    wall_seconds: float,
+    *,
+    sample_canonical_sha256: str,
+    worker_contract: Mapping[str, Any],
 ) -> dict[str, Any]:
-    worker = _read_json(replicate_dir / "worker-output.json", MAX_WORKER_OUTPUT_BYTES)
+    worker_path = replicate_dir / "worker-output.json"
+    worker = _read_json(worker_path, MAX_WORKER_OUTPUT_BYTES)
     performance = _read_json(replicate_dir / "performance.json")
+    if (
+        not isinstance(worker, dict)
+        or type(worker.get("schema_version")) is not int
+        or worker["schema_version"] != SCHEMA_VERSION
+        or worker.get("kind") != "cre_jll_capacity_worker"
+        or worker.get("worker_contract_sha256") != worker_contract.get("sha256")
+        or not _is_sha256(sample_canonical_sha256)
+    ):
+        raise BenchmarkError("worker output contract is invalid")
     rows = worker.get("rows") if isinstance(worker, dict) else None
     if not isinstance(rows, list):
         raise BenchmarkError("worker output has no rows")
@@ -1192,7 +2283,11 @@ def summarize_replicate(
     latencies: list[float] = []
     identities: set[tuple[str, str]] = set()
     native_matches = 0
+    native_value_matches = 0
+    fidelity_matches = 0
+    fidelity_drops: list[dict[str, Any]] = []
     freshness_matches = 0
+    record_evidence: list[dict[str, Any]] = []
     actual_by_index = {
         actual.get("sample_index"): actual
         for actual in rows
@@ -1217,8 +2312,23 @@ def summarize_replicate(
             latencies.append(float(latency))
         identity = (str(normalized.get("id", "")), str(normalized.get("url", "")))
         identities.add(identity)
-        if identity != (expected["id"], expected["url"]):
+        identity_match = identity == (expected["id"], expected["url"])
+        if not identity_match:
             errors.append({"sample_id": expected["sample_id"], "kind": "identity"})
+        expected_transaction_type = _transaction_type(expected["transaction_class"])
+        transaction_type = normalized.get("transactionType")
+        transaction_match = (
+            actual.get("transaction_type") == expected_transaction_type
+            and transaction_type == expected_transaction_type
+        )
+        if not transaction_match:
+            errors.append(
+                {
+                    "sample_id": expected["sample_id"],
+                    "kind": "transaction_type",
+                    "expected": expected_transaction_type,
+                }
+            )
         if normalized.get("detailError"):
             errors.append({"sample_id": expected["sample_id"], "kind": "detail_error"})
         provenance = normalized.get("freshnessProvenance", {})
@@ -1231,29 +2341,102 @@ def summarize_replicate(
             )
         except ValueError:
             observed_ms = None
-        if (
+        freshness_match = (
             provenance.get("cacheDisposition") == "live"
             and provenance.get("generationId") == worker_generation
             and observed_ms is not None
             and worker_started_ms is not None
             and observed_ms >= worker_started_ms
-        ):
+        )
+        if freshness_match:
             freshness_matches += 1
         else:
             errors.append({"sample_id": expected["sample_id"], "kind": "freshness"})
         current_native = actual.get("native") if isinstance(actual, dict) else None
         historic_native = expected.get("historic", {}).get("native")
-        if isinstance(current_native, dict) and (
-            current_native.get("fingerprints") == historic_native.get("fingerprints")
-        ):
+        native_missing = []
+        native_shape_valid = False
+        if isinstance(current_native, dict) and isinstance(historic_native, dict):
+            current_counts = current_native.get("counts")
+            historic_counts = historic_native.get("counts")
+            if isinstance(current_counts, dict) and isinstance(historic_counts, dict):
+                native_shape_valid = True
+                native_missing = sorted(
+                    channel
+                    for channel, count in historic_counts.items()
+                    if type(count) is int
+                    and count > 0
+                    and not (
+                        type(current_counts.get(channel)) is int
+                        and current_counts[channel] > 0
+                    )
+                )
+        native_complete = native_shape_valid and not native_missing
+        if native_complete:
             native_matches += 1
         else:
             errors.append(
-                {"sample_id": expected["sample_id"], "kind": "native_asset_delta"}
+                {
+                    "sample_id": expected["sample_id"],
+                    "kind": "native_asset_channel_drop",
+                    "fields": native_missing or ["native_evidence"],
+                }
             )
+        if (
+            isinstance(current_native, dict)
+            and isinstance(historic_native, dict)
+            and (
+                current_native.get("fingerprints")
+                == historic_native.get("fingerprints")
+            )
+        ):
+            native_value_matches += 1
+        current_fidelity = actual.get("fidelity")
+        historic_fidelity = expected.get("historic", {}).get("fidelity")
+        missing_fields = (
+            _missing_structural_fields(historic_fidelity, current_fidelity)
+            if isinstance(historic_fidelity, Mapping)
+            and isinstance(current_fidelity, Mapping)
+            and _valid_structural_fidelity(current_fidelity)
+            else ["structural_evidence"]
+        )
+        structural_complete = not missing_fields
+        if not structural_complete:
+            fidelity_drops.append(
+                {"sample_id": expected["sample_id"], "fields": missing_fields}
+            )
+            errors.append(
+                {
+                    "sample_id": expected["sample_id"],
+                    "kind": "normalized_supported_field_drop",
+                    "fields": missing_fields,
+                }
+            )
+        else:
+            fidelity_matches += 1
+        record_evidence.append(
+            {
+                "sample_index": index,
+                "sample_id": expected["sample_id"],
+                "identity_match": identity_match,
+                "identity_sha256": _sha256(_canonical(identity)),
+                "freshness_match": freshness_match,
+                "native_complete": native_complete,
+                "native_evidence_sha256": _sha256(_canonical(current_native)),
+                "structural_complete": structural_complete,
+                "structural_evidence_sha256": _sha256(_canonical(current_fidelity)),
+                "transaction_type": transaction_type,
+                "transaction_type_match": transaction_match,
+            }
+        )
     requests = performance.get("metrics", {}).get("requests", {})
+    telemetry_complete = _performance_telemetry_complete(
+        performance,
+        expected_details=len(expected_rows),
+        concurrency=int(worker_contract["concurrency"]),
+    )
     remote_unknown = requests.get("timed_out_remote_settlement_unknown")
-    if not isinstance(remote_unknown, int):
+    if type(remote_unknown) is not int:
         remote_unknown = None
     status_counts = requests.get("status_counts", {})
     provider_signals: list[str] = []
@@ -1269,6 +2452,9 @@ def summarize_replicate(
             provider_signals.append("detail_error_429_or_challenge")
             break
     qualified = len(rows) if not errors and len(identities) == len(rows) else 0
+    sample_ids = [entry["sample_id"] for entry in record_evidence]
+    records_sha256 = _sha256(_canonical(record_evidence))
+    worker_output_sha256 = _file_sha256(worker_path)
     return {
         "wall_seconds": round(wall_seconds, 3),
         "rows": len(rows),
@@ -1285,38 +2471,360 @@ def summarize_replicate(
         "freshness_matches": freshness_matches,
         "historic_native_asset_matches": native_matches,
         "native_asset_deltas": len(rows) - native_matches,
+        "historic_native_value_matches": native_value_matches,
+        "normalized_structural_matches": fidelity_matches,
+        "normalized_structural_drops": fidelity_drops,
         "quality_errors": errors,
         "performance": performance,
+        "performance_telemetry_complete": telemetry_complete,
+        "worker_contract_sha256": worker_contract["sha256"],
+        "worker_output_sha256": worker_output_sha256,
+        "record_evidence": record_evidence,
+        "record_evidence_manifest": {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "cre_jll_capacity_record_evidence",
+            "sample_canonical_sha256": sample_canonical_sha256,
+            "worker_output_sha256": worker_output_sha256,
+            "record_count": len(record_evidence),
+            "sample_ids_sha256": _sha256(_canonical(sample_ids)),
+            "records_sha256": records_sha256,
+        },
         "remote_settlement_unknown": remote_unknown,
         "provider_cooldown": {
             "required": bool(provider_signals),
             "signals": sorted(set(provider_signals)),
             "resume": "fresh_operator_admission_required",
         },
-        "comparison_state": "measured" if not errors else "quality_failed",
+        "comparison_state": (
+            "measured"
+            if not errors and telemetry_complete
+            else "quality_failed"
+            if errors
+            else "inconclusive"
+        ),
     }
 
 
+def _valid_settlement(value: Any, *, final: bool) -> bool:
+    if not isinstance(value, Mapping) or value.get("idle") is not True:
+        return False
+    expected_keys = {
+        "queue",
+        "browser_active_pages",
+        "active_crawls",
+        "rabbitmq_queue_count",
+        "rabbitmq_ready",
+        "rabbitmq_unacknowledged",
+        "nuq",
+        "idle",
+        "observed_at",
+    }
+    if final:
+        expected_keys.update({"state", "polls", "observations"})
+    if set(value) != expected_keys:
+        return False
+    queue = value.get("queue")
+    nuq = value.get("nuq")
+    if (
+        not isinstance(queue, Mapping)
+        or set(queue) != {"active", "waiting", "total"}
+        or any(type(queue.get(key)) is not int or queue[key] != 0 for key in queue)
+        or type(value.get("browser_active_pages")) is not int
+        or value["browser_active_pages"] != 0
+        or type(value.get("active_crawls")) is not int
+        or value["active_crawls"] != 0
+        or type(value.get("rabbitmq_queue_count")) is not int
+        or value["rabbitmq_queue_count"] <= 0
+        or type(value.get("rabbitmq_ready")) is not int
+        or value["rabbitmq_ready"] != 0
+        or type(value.get("rabbitmq_unacknowledged")) is not int
+        or value["rabbitmq_unacknowledged"] != 0
+        or not isinstance(nuq, Mapping)
+        or set(nuq)
+        != {
+            "queue_scrape_total",
+            "queue_scrape_backlog_total",
+            "queue_crawl_finished_total",
+        }
+        or any(type(count) is not int or count != 0 for count in nuq.values())
+        or not isinstance(value.get("observed_at"), str)
+    ):
+        return False
+    if final:
+        observations = value.get("observations")
+        return (
+            value.get("state") == "idle"
+            and type(value.get("polls")) is int
+            and value["polls"] >= 1
+            and isinstance(observations, list)
+            and len(observations) == value["polls"]
+            and bool(observations)
+            and _valid_settlement(observations[-1], final=False)
+        )
+    return True
+
+
+def _valid_resource_snapshot(value: Any) -> bool:
+    if (
+        not isinstance(value, Mapping)
+        or value.get("complete") is not True
+        or not isinstance(value.get("observed_at"), str)
+    ):
+        return False
+    required_values = {
+        "memory_current",
+        "memory_peak",
+        "pids_current",
+        "pids_peak",
+        "pids_max",
+        "memory_events",
+        "pids_events",
+        "cpu_stat",
+    }
+    for label in ("api", "browser"):
+        current = value.get(label)
+        if not isinstance(current, Mapping) or set(current) != required_values:
+            return False
+        for key in ("memory_current", "memory_peak", "pids_current", "pids_peak"):
+            if type(current.get(key)) is not int or current[key] < 0:
+                return False
+        if (
+            type(current.get("pids_max")) is not int
+            and current.get("pids_max") != "max"
+        ):
+            return False
+        for key in ("memory_events", "pids_events", "cpu_stat"):
+            counters = current.get(key)
+            if (
+                not isinstance(counters, Mapping)
+                or not counters
+                or any(
+                    not isinstance(name, str) or type(count) is not int or count < 0
+                    for name, count in counters.items()
+                )
+            ):
+                return False
+    return True
+
+
+def _valid_host_samples(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(
+            isinstance(item, Mapping)
+            and set(item) == {"observed_at", "host_cpu_percent"}
+            and isinstance(item.get("observed_at"), str)
+            and type(item.get("host_cpu_percent")) in {int, float}
+            and 0 <= item["host_cpu_percent"] <= 100
+            for item in value
+        )
+    )
+
+
+def _valid_guard_telemetry(
+    value: Any,
+    *,
+    host_samples: Any,
+    worker_source_sha256: Any,
+) -> bool:
+    required = {
+        "samples",
+        "triggered",
+        "termination_reason",
+        "monitor_error_type",
+        "worker_exit_code",
+        "stderr_sha256",
+        "stderr_bytes",
+        "stderr_file",
+        "worker_source_sha256",
+    }
+    return bool(
+        isinstance(value, Mapping)
+        and set(value) == required
+        and value.get("triggered") is False
+        and value.get("termination_reason") is None
+        and value.get("monitor_error_type") is None
+        and value.get("worker_exit_code") == 0
+        and value.get("samples") == host_samples
+        and _valid_host_samples(value.get("samples"))
+        and _is_sha256(value.get("stderr_sha256"))
+        and type(value.get("stderr_bytes")) is int
+        and value["stderr_bytes"] >= 0
+        and isinstance(value.get("stderr_file"), str)
+        and bool(value["stderr_file"])
+        and value.get("worker_source_sha256") == worker_source_sha256
+        and _is_sha256(worker_source_sha256)
+    )
+
+
+def _valid_implementation_manifest(value: Any) -> bool:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"schema_version", "kind", "files", "sha256"}
+        or type(value.get("schema_version")) is not int
+        or value["schema_version"] != SCHEMA_VERSION
+        or value.get("kind") != "cre_capacity_benchmark_implementation"
+    ):
+        return False
+    files = value.get("files")
+    return (
+        isinstance(files, Mapping)
+        and set(files) == set(IMPLEMENTATION_PATHS)
+        and all(
+            isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)
+            for digest in files.values()
+        )
+        and value.get("sha256") == _sha256(_canonical(files))
+    )
+
+
+def _valid_worker_contract(
+    value: Any, *, expected_details: int, expected_concurrency: int
+) -> bool:
+    return bool(
+        isinstance(value, Mapping)
+        and type(value.get("schema_version")) is int
+        and value["schema_version"] == SCHEMA_VERSION
+        and type(value.get("details")) is int
+        and type(value.get("concurrency")) is int
+        and _same_typed_value(
+            value, _worker_contract(expected_details, expected_concurrency)
+        )
+    )
+
+
+def _valid_record_evidence(
+    replicate: Mapping[str, Any],
+    *,
+    details: int,
+    sample_canonical_sha256: str,
+    worker_contract_sha256: str,
+) -> bool:
+    records = replicate.get("record_evidence")
+    manifest = replicate.get("record_evidence_manifest")
+    if (
+        not isinstance(records, list)
+        or len(records) != details
+        or not isinstance(manifest, Mapping)
+        or set(manifest)
+        != {
+            "schema_version",
+            "kind",
+            "sample_canonical_sha256",
+            "worker_output_sha256",
+            "record_count",
+            "sample_ids_sha256",
+            "records_sha256",
+        }
+        or type(manifest.get("schema_version")) is not int
+        or manifest["schema_version"] != SCHEMA_VERSION
+        or manifest.get("kind") != "cre_jll_capacity_record_evidence"
+        or manifest.get("sample_canonical_sha256") != sample_canonical_sha256
+        or manifest.get("record_count") != details
+        or not _is_sha256(replicate.get("worker_output_sha256"))
+        or manifest.get("worker_output_sha256") != replicate.get("worker_output_sha256")
+        or replicate.get("worker_contract_sha256") != worker_contract_sha256
+    ):
+        return False
+    sample_ids: list[str] = []
+    required = {
+        "sample_index",
+        "sample_id",
+        "identity_match",
+        "identity_sha256",
+        "freshness_match",
+        "native_complete",
+        "native_evidence_sha256",
+        "structural_complete",
+        "structural_evidence_sha256",
+        "transaction_type",
+        "transaction_type_match",
+    }
+    for index, record in enumerate(records):
+        if (
+            not isinstance(record, Mapping)
+            or set(record) != required
+            or type(record.get("sample_index")) is not int
+            or record.get("sample_index") != index
+            or not isinstance(record.get("sample_id"), str)
+            or not re.fullmatch(r"[0-9a-f]{24}", record["sample_id"])
+            or any(
+                record.get(key) is not True
+                for key in (
+                    "identity_match",
+                    "freshness_match",
+                    "native_complete",
+                    "structural_complete",
+                    "transaction_type_match",
+                )
+            )
+            or record.get("transaction_type") not in {"Sale", "Lease"}
+            or any(
+                not _is_sha256(record.get(key))
+                for key in (
+                    "identity_sha256",
+                    "native_evidence_sha256",
+                    "structural_evidence_sha256",
+                )
+            )
+        ):
+            return False
+        sample_ids.append(record["sample_id"])
+    return bool(
+        len(set(sample_ids)) == details
+        and manifest.get("sample_ids_sha256") == _sha256(_canonical(sample_ids))
+        and manifest.get("records_sha256") == _sha256(_canonical(records))
+    )
+
+
 def _comparison_evidence(
-    value: Any, label: str
+    value: Any, label: str, contract: Mapping[str, Any]
 ) -> tuple[dict[str, Any] | None, list[str]]:
     reasons: list[str] = []
     if not isinstance(value, dict):
         return None, [f"{label}_result_not_object"]
-    if value.get("kind") != RESULT_KIND or value.get("mode") != "run":
+    if (
+        type(value.get("schema_version")) is not int
+        or value["schema_version"] != SCHEMA_VERSION
+        or value.get("kind") != RESULT_KIND
+        or value.get("mode") != "run"
+    ):
         reasons.append(f"{label}_result_kind")
     if (
         value.get("completed") is not True
         or value.get("comparison_state") != "complete"
     ):
         reasons.append(f"{label}_not_complete")
-    workload = value.get("workload")
-    details = workload.get("details") if isinstance(workload, dict) else None
-    replicate_count = workload.get("replicates") if isinstance(workload, dict) else None
-    if type(details) is not int or details <= 0 or replicate_count != 3:
+    workload = contract["workload"]
+    details = int(workload["details"])
+    replicate_count = int(workload["replicates"])
+    if not _same_typed_value(value.get("workload"), workload):
         reasons.append(f"{label}_workload")
+    if value.get("profile") != contract["profiles"][label]:
+        reasons.append(f"{label}_profile")
+    requested = contract["requested"][label]
+    if not _same_typed_value(value.get("requested"), requested):
+        reasons.append(f"{label}_requested")
+    if value.get("config_sha256") != contract["config_sha256"]:
+        reasons.append(f"{label}_config")
+    expected_worker = _worker_contract(details, requested["jll_detail_concurrency"])
+    if not _valid_worker_contract(
+        value.get("worker_contract"),
+        expected_details=details,
+        expected_concurrency=requested["jll_detail_concurrency"],
+    ):
+        reasons.append(f"{label}_worker_contract")
+    if not _valid_effective_runtime(value.get("effective_runtime"), requested):
+        reasons.append(f"{label}_effective_runtime")
+    if not _valid_live_admission(
+        value.get("live_admission"),
+        effective_runtime=value.get("effective_runtime"),
+        expected_requested=requested,
+    ):
+        reasons.append(f"{label}_live_admission")
     replicates = value.get("replicates")
-    if not isinstance(replicates, list) or len(replicates) != 3:
+    if not isinstance(replicates, list) or len(replicates) != replicate_count:
         reasons.append(f"{label}_replicate_count")
         return None, reasons
     throughput: list[float] = []
@@ -1324,6 +2832,7 @@ def _comparison_evidence(
     qualified_rows: list[int] = []
     freshness_rows: list[int] = []
     native_matches: list[int] = []
+    structural_matches: list[int] = []
     for index, replicate in enumerate(replicates, 1):
         prefix = f"{label}_replicate_{index}"
         if not isinstance(replicate, dict):
@@ -1340,7 +2849,10 @@ def _comparison_evidence(
             or replicate.get("freshness_matches") != details
             or replicate.get("historic_native_asset_matches") != details
             or replicate.get("native_asset_deltas") != 0
+            or replicate.get("normalized_structural_matches") != details
+            or replicate.get("normalized_structural_drops") != []
             or replicate.get("quality_errors") != []
+            or replicate.get("performance_telemetry_complete") is not True
         ):
             reasons.append(f"{prefix}_quality")
         if type(replicate.get("qualified_fresh_unique_rows")) is int:
@@ -1349,12 +2861,19 @@ def _comparison_evidence(
             freshness_rows.append(replicate["freshness_matches"])
         if type(replicate.get("historic_native_asset_matches")) is int:
             native_matches.append(replicate["historic_native_asset_matches"])
-        if replicate.get("resource_verdict", {}).get("state") != "measured":
+        if type(replicate.get("normalized_structural_matches")) is int:
+            structural_matches.append(replicate["normalized_structural_matches"])
+        if (
+            replicate.get("resource_verdict", {}).get("state") != "measured"
+            or not _valid_resource_snapshot(replicate.get("resources_before"))
+            or not _valid_resource_snapshot(replicate.get("resources_after"))
+        ):
             reasons.append(f"{prefix}_resources")
         if (
             replicate.get("source_owned_settlement") != "locally_awaited_terminal"
-            or replicate.get("settlement_after", {}).get("idle") is not True
-            or replicate.get("remote_settlement_unknown") not in {0, None}
+            or not _valid_settlement(replicate.get("settlement_before"), final=False)
+            or not _valid_settlement(replicate.get("settlement_after"), final=True)
+            or replicate.get("remote_settlement_unknown") != 0
         ):
             reasons.append(f"{prefix}_settlement")
         if replicate.get("provider_cooldown", {}).get("required") is not False:
@@ -1365,6 +2884,27 @@ def _comparison_evidence(
             or replicate.get("worker_exit_code") != 0
         ):
             reasons.append(f"{prefix}_execution")
+        if not _valid_host_samples(replicate.get("host_samples")):
+            reasons.append(f"{prefix}_host_telemetry")
+        if not _valid_guard_telemetry(
+            replicate.get("guard_telemetry"),
+            host_samples=replicate.get("host_samples"),
+            worker_source_sha256=value.get("worker_source_sha256"),
+        ):
+            reasons.append(f"{prefix}_guard_telemetry")
+        if not _performance_telemetry_complete(
+            replicate.get("performance"),
+            expected_details=details,
+            concurrency=requested["jll_detail_concurrency"],
+        ):
+            reasons.append(f"{prefix}_performance_telemetry")
+        if not _valid_record_evidence(
+            replicate,
+            details=details,
+            sample_canonical_sha256=value.get("sample_canonical_sha256", ""),
+            worker_contract_sha256=expected_worker["sha256"],
+        ):
+            reasons.append(f"{prefix}_record_evidence")
         latency_value = replicate.get("latency_ms")
         if not isinstance(latency_value, dict) or any(
             type(latency_value.get(key)) not in {int, float}
@@ -1373,23 +2913,40 @@ def _comparison_evidence(
             reasons.append(f"{prefix}_latency")
         else:
             latency.append(latency_value)
-    required_strings = (
+    required_sha256 = (
         "sample_inventory_sha256",
         "sample_manifest_sha256",
-        "source_git_sha",
+        "sample_canonical_sha256",
         "worker_source_sha256",
+        "config_sha256",
+        "admission_sha256",
+        "root_approval_nonce_sha256",
+        "admission_consumption_sha256",
+        "root_benchmark_grant_sha256",
     )
     if any(
-        not isinstance(value.get(key), str)
-        or not re.fullmatch(r"[0-9a-f]{40,64}", value[key])
-        for key in required_strings
-    ):
+        not _is_sha256(value.get(key)) for key in required_sha256
+    ) or not _is_source_sha(value.get("source_git_sha")):
         reasons.append(f"{label}_provenance")
-    if not isinstance(value.get("freshness_policy"), dict):
+    if not _same_typed_value(value.get("freshness_policy"), EXPECTED_FRESHNESS_POLICY):
         reasons.append(f"{label}_freshness_policy")
+    if not _valid_implementation_manifest(value.get("implementation_manifest")):
+        reasons.append(f"{label}_implementation_manifest")
+    if value.get("shared_lock", {}).get("canonical") is not True:
+        reasons.append(f"{label}_shared_lock")
+    if not _valid_settlement(value.get("final_settlement"), final=True):
+        reasons.append(f"{label}_final_settlement")
     if (
         value.get("safety", {}).get("database_writes") != 0
         or value.get("safety", {}).get("canonical_cache_writes") != 0
+        or value.get("safety", {}).get("provider_retry_policy")
+        != {
+            "jll_graphql_attempts": 1,
+            "jll_detail_fallback": "disabled",
+            "shared_scrape_helper_attempts": 1,
+        }
+        or value.get("safety", {}).get("cancellation_limitation")
+        != "no_supported_scrape_job_cancel_endpoint_or_job_ids; idle_settlement_required_before_lock_release"
     ):
         reasons.append(f"{label}_write_boundary")
     if reasons:
@@ -1406,6 +2963,7 @@ def _comparison_evidence(
             "qualified_fresh_unique_rows_per_replicate": qualified_rows,
             "freshness_matches_per_replicate": freshness_rows,
             "historic_native_asset_matches_per_replicate": native_matches,
+            "normalized_structural_matches_per_replicate": structural_matches,
             "native_asset_deltas_per_replicate": [0, 0, 0],
             "all_quality_gates_passed": True,
         },
@@ -1413,13 +2971,31 @@ def _comparison_evidence(
 
 
 def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
-    baseline_summary, baseline_reasons = _comparison_evidence(baseline, "baseline")
-    candidate_summary, candidate_reasons = _comparison_evidence(candidate, "candidate")
+    try:
+        contract = _experiment_contract()
+    except BenchmarkError:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "cre_jll_capacity_comparison",
+            "state": "inconclusive",
+            "decision": "no_adoption_decision",
+            "reasons": ["central_experiment_configuration_unavailable"],
+        }
+    baseline_summary, baseline_reasons = _comparison_evidence(
+        baseline, "baseline", contract
+    )
+    candidate_summary, candidate_reasons = _comparison_evidence(
+        candidate, "candidate", contract
+    )
     reasons = baseline_reasons + candidate_reasons
+    if not SUPPORTED_BASELINE_ADMISSION_AVAILABLE:
+        reasons.append("supported_baseline_admission_unavailable")
     match_fields = (
         "sample_inventory_sha256",
         "sample_manifest_sha256",
-        "source_git_sha",
+        "sample_canonical_sha256",
+        "implementation_manifest",
+        "config_sha256",
         "freshness_policy",
         "workload",
     )
@@ -1429,6 +3005,32 @@ def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
             for key in match_fields
             if baseline.get(key) != candidate.get(key)
         )
+        baseline_runtime = baseline.get("effective_runtime")
+        candidate_runtime = candidate.get("effective_runtime")
+        baseline_identity = (
+            baseline_runtime.get("identity")
+            if isinstance(baseline_runtime, Mapping)
+            else None
+        )
+        candidate_identity = (
+            candidate_runtime.get("identity")
+            if isinstance(candidate_runtime, Mapping)
+            else None
+        )
+        if baseline_identity != candidate_identity:
+            reasons.append("mismatch_effective_runtime_identity")
+        baseline_ids = [
+            row.get("record_evidence_manifest", {}).get("sample_ids_sha256")
+            for row in baseline.get("replicates", [])
+            if isinstance(row, Mapping)
+        ]
+        candidate_ids = [
+            row.get("record_evidence_manifest", {}).get("sample_ids_sha256")
+            for row in candidate.get("replicates", [])
+            if isinstance(row, Mapping)
+        ]
+        if baseline_ids != candidate_ids:
+            reasons.append("mismatch_record_sample_ids")
     if reasons or baseline_summary is None or candidate_summary is None:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -1503,6 +3105,82 @@ def plan(
     }
 
 
+def _replicate_state(entry: Mapping[str, Any], details: int) -> str:
+    failed = (
+        entry.get("worker_exit_code") != 0
+        or entry.get("termination_reason") is not None
+        or entry.get("guard_triggered") is not False
+        or entry.get("provider_cooldown", {}).get("required") is True
+        or entry.get("comparison_state") == "quality_failed"
+        or entry.get("resource_verdict", {}).get("state") == "failed"
+        or entry.get("settlement_after", {}).get("state") == "unknown"
+    )
+    if failed:
+        return "failed"
+    measured = (
+        entry.get("qualified_fresh_unique_rows") == details
+        and entry.get("freshness_matches") == details
+        and entry.get("historic_native_asset_matches") == details
+        and entry.get("normalized_structural_matches") == details
+        and entry.get("quality_errors") == []
+        and entry.get("normalized_structural_drops") == []
+        and entry.get("comparison_state") == "measured"
+        and entry.get("performance_telemetry_complete") is True
+        and _valid_host_samples(entry.get("host_samples"))
+        and _valid_resource_snapshot(entry.get("resources_before"))
+        and _valid_resource_snapshot(entry.get("resources_after"))
+        and entry.get("resource_verdict", {}).get("state") == "measured"
+        and _valid_settlement(entry.get("settlement_before"), final=False)
+        and _valid_settlement(entry.get("settlement_after"), final=True)
+        and entry.get("remote_settlement_unknown") == 0
+        and entry.get("source_owned_settlement") == "locally_awaited_terminal"
+    )
+    return "measured" if measured else "inconclusive"
+
+
+def _quarantine_shared_lock(
+    lock: SharedLock,
+    *,
+    artifact_result_path: Path,
+    admission_sha256: str,
+    root_approval_nonce_sha256: str,
+) -> dict[str, Any]:
+    """Make an unknown-settlement lock non-reclaimable until operator recovery."""
+    lock_path = lock.path
+    if not lock.held or lock.lease_token is None or not lock_path.is_dir():
+        raise BenchmarkError("canonical shared lock cannot be quarantined")
+    evidence_path = lock_path / BENCHMARK_QUARANTINE_MARKER
+    evidence = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "cre_capacity_benchmark_lock_quarantine",
+        "state": "quarantined",
+        "reason": "bounded_idle_settlement_not_proven",
+        "quarantined_at": _now(),
+        "admission_sha256": admission_sha256,
+        "root_approval_nonce_sha256": root_approval_nonce_sha256,
+        "result_path": str(artifact_result_path),
+        "lock_path": str(lock_path),
+        "recovery": {
+            "automatic_reclaim": "disabled_missing_pid_and_lease",
+            "required_evidence": "all_loopback_queue_browser_rabbitmq_nuq_and_active_crawl_counters_idle",
+            "required_action": "operator_review_then_remove_this_exact_canonical_lock_directory",
+        },
+    }
+    try:
+        (lock_path / "pid").unlink()
+        (lock_path / "lease").unlink()
+        lock_path.chmod(0o700)
+        _atomic_private_json(evidence_path, evidence)
+    except (OSError, BenchmarkError) as exc:
+        raise BenchmarkError("canonical shared lock quarantine failed") from exc
+    return {
+        "state": "quarantined",
+        "evidence_path": str(evidence_path),
+        "evidence_sha256": _file_sha256(evidence_path),
+        "recovery": evidence["recovery"],
+    }
+
+
 def run_benchmark(
     *,
     repo_root: Path,
@@ -1513,137 +3191,304 @@ def run_benchmark(
     profile_name: str,
     config_sha256: str,
     admission: Mapping[str, Any],
+    admission_path: Path,
     timeout_seconds: int,
 ) -> dict[str, Any]:
     replicates = int(profile["workload"]["replicates"])
-    sample_provenance = verify_sample_provenance(sample)
-    live_admission = verify_live_admission(admission, profile)
-    result: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
-        "kind": RESULT_KIND,
-        "mode": "run",
-        "profile": profile_name,
-        "config_sha256": config_sha256,
-        "source_git_sha": admission["source_git_sha"],
-        "worker_source_sha256": _sha256(
-            _worker_source(
-                repo_root,
-                expected_details=int(profile["workload"]["details"]),
-                concurrency=int(profile["requested"]["jll_detail_concurrency"]),
-            ).encode()
-        ),
-        "freshness_policy": {
-            "require_fresh_details": True,
-            "require_fresh_property_details": True,
-            "detail_cache_minimum": "replicate_start",
-            "firecrawl_max_age": 0,
-        },
-        "workload": profile["workload"],
-        "requested": profile["requested"],
-        "sample_inventory_sha256": sample["inventory_sha256"],
-        "sample_manifest_sha256": _file_sha256(sample_path),
-        "sample_provenance": sample_provenance,
-        "admission_sha256": _sha256(_canonical(admission)),
-        "live_admission": live_admission,
-        "started_at": _now(),
-        "replicates": [],
-        "safety": {
-            "database_writes": 0,
-            "canonical_cache_writes": 0,
-            "raw_bodies": "retained_in_private_replicate_cache",
-        },
-    }
+    implementation = _implementation_manifest(repo_root)
     endpoints = admission["endpoints"]
-    for number in range(1, replicates + 1):
-        replicate_dir = artifact_root / f"replicate-{number}"
-        before = _settlement_snapshot(
-            endpoints["api_url"], endpoints["browser_health_url"]
-        )
-        if not before["idle"]:
-            raise BenchmarkError("runtime was not idle before the replicate")
-        resources_before = _resource_snapshot()
-        started = time.monotonic()
-        code, host_samples, termination_reason = _run_worker(
-            repo_root=repo_root,
-            sample_path=sample_path,
-            replicate_dir=replicate_dir,
-            requested=profile["requested"],
-            api_url=endpoints["api_url"],
-            timeout_seconds=timeout_seconds,
-            expected_details=int(profile["workload"]["details"]),
-        )
-        wall = time.monotonic() - started
-        settlement_error: str | None = None
-        try:
-            after = _settlement_snapshot(
-                endpoints["api_url"], endpoints["browser_health_url"]
+    lock_path = canonical_shared_lock_dir(repo_root)
+    try:
+        with SharedLock(lock_path) as shared_lock:
+            _verify_implementation_manifest(repo_root, implementation)
+            locked_sample = validate_sample(
+                _read_json(sample_path), int(profile["workload"]["details"])
             )
-        except BenchmarkError as exc:
-            settlement_error = type(exc).__name__
-            after = {
-                "idle": False,
-                "observed_at": _now(),
-                "error": "post_worker_settlement_unavailable",
+            if _canonical(locked_sample) != _canonical(sample):
+                raise BenchmarkError("benchmark sample changed before lock acquisition")
+            sample_provenance = verify_sample_provenance(locked_sample)
+            sample_manifest_sha256 = _file_sha256(sample_path)
+            sample_canonical_sha256 = _sha256(_canonical(locked_sample))
+            live_admission = verify_live_admission(admission, profile)
+            marker = _consume_admission(
+                admission_path, admission, canonical_lock_path=lock_path
+            )
+            authorized_grant_timing = {
+                "root_approval_created_at": admission["root_approval_created_at"],
+                "expires_after_seconds": admission["expires_after_seconds"],
             }
-        resources_after = _resource_snapshot()
-        resource_verdict = _resource_verdict(
-            resources_before, resources_after, profile["requested"]
-        )
-        entry: dict[str, Any] = {
-            "replicate": number,
-            "worker_exit_code": code,
-            "guard_triggered": termination_reason == "host_cpu_guard",
-            "termination_reason": termination_reason,
-            "host_samples": host_samples,
-            "settlement_before": before,
-            "settlement_after": after,
-            "settlement_error_type": settlement_error,
-            "resources_before": resources_before,
-            "resources_after": resources_after,
-            "resource_verdict": resource_verdict,
-            "source_owned_settlement": "unknown"
-            if code != 0
-            or termination_reason is not None
-            or settlement_error is not None
-            else "locally_awaited_terminal",
-        }
-        if code == 0 and termination_reason is None and settlement_error is None:
-            summary = summarize_replicate(replicate_dir, sample, wall)
-            entry.update(summary)
-            if summary["remote_settlement_unknown"] not in {0, None}:
-                entry["source_owned_settlement"] = "unknown"
-        result["replicates"].append(entry)
-        _atomic_private_json(artifact_root / "result.in-progress.json", result)
-        if (
-            code != 0
-            or termination_reason is not None
-            or not after["idle"]
-            or resource_verdict["state"] != "measured"
-            or entry["source_owned_settlement"] == "unknown"
-            or entry.get("comparison_state") != "measured"
-            or entry.get("provider_cooldown", {}).get("required") is True
-        ):
-            result["stop_reason"] = (
-                "provider_cooldown_required"
-                if entry.get("provider_cooldown", {}).get("required") is True
-                else "replicate_failed_or_unsettled"
+            audit = _read_json(marker)
+            worker_contract = _worker_contract(
+                int(profile["workload"]["details"]),
+                int(profile["requested"]["jll_detail_concurrency"]),
             )
-            break
-    result["finished_at"] = _now()
-    result["completed"] = len(result["replicates"]) == replicates and all(
-        row.get("qualified_fresh_unique_rows") == int(profile["workload"]["details"])
-        for row in result["replicates"]
-    )
-    result["comparison_state"] = (
-        "complete" if result["completed"] else "inconclusive_or_failed"
-    )
-    _atomic_private_json(artifact_root / "result.json", result)
-    return result
+            result: dict[str, Any] = {
+                "schema_version": SCHEMA_VERSION,
+                "kind": RESULT_KIND,
+                "mode": "run",
+                "profile": profile_name,
+                "config_sha256": config_sha256,
+                "source_git_sha": admission["source_git_sha"],
+                "implementation_manifest": implementation,
+                "worker_source_sha256": _sha256(
+                    _worker_source(
+                        repo_root,
+                        expected_details=int(profile["workload"]["details"]),
+                        concurrency=int(profile["requested"]["jll_detail_concurrency"]),
+                    ).encode()
+                ),
+                "worker_contract": worker_contract,
+                "freshness_policy": EXPECTED_FRESHNESS_POLICY,
+                "workload": profile["workload"],
+                "requested": profile["requested"],
+                "sample_inventory_sha256": sample["inventory_sha256"],
+                "sample_manifest_sha256": sample_manifest_sha256,
+                "sample_canonical_sha256": sample_canonical_sha256,
+                "sample_provenance": sample_provenance,
+                "admission_sha256": _sha256(_canonical(admission)),
+                "root_approval_nonce_sha256": admission["root_approval_nonce_sha256"],
+                "admission_consumption_sha256": _file_sha256(marker),
+                "root_benchmark_grant_sha256": audit["root_benchmark_grant_sha256"],
+                "live_admission": live_admission,
+                "effective_runtime": live_admission["effective_runtime"],
+                "shared_lock": {"canonical": True, "path": str(lock_path)},
+                "started_at": _now(),
+                "replicates": [],
+                "safety": {
+                    "database_writes": 0,
+                    "canonical_cache_writes": 0,
+                    "raw_bodies": "retained_in_private_replicate_cache",
+                    "admission": "single_use",
+                    "root_grant": "sudo_n_atomic_rename_read_delete",
+                    "provider_retry_policy": {
+                        "jll_graphql_attempts": 1,
+                        "jll_detail_fallback": "disabled",
+                        "shared_scrape_helper_attempts": 1,
+                    },
+                    "cancellation_limitation": "no_supported_scrape_job_cancel_endpoint_or_job_ids; idle_settlement_required_before_lock_release",
+                },
+            }
+            details = int(profile["workload"]["details"])
+            worker_may_have_launched = False
+            interlock_armed = False
+            pending_error: BaseException | None = None
+            try:
+                with _benchmark_signal_handlers():
+                    for number in range(1, replicates + 1):
+                        _verify_implementation_manifest(repo_root, implementation)
+                        if _file_sha256(sample_path) != sample_manifest_sha256:
+                            raise BenchmarkError(
+                                "benchmark sample changed between replicates"
+                            )
+                        replicate_dir = artifact_root / f"replicate-{number}"
+                        before = _settlement_snapshot(
+                            endpoints["api_url"], endpoints["browser_health_url"]
+                        )
+                        if not before["idle"]:
+                            raise BenchmarkError(
+                                "runtime was not idle before the replicate"
+                            )
+                        resources_before = _resource_snapshot()
+                        started = time.monotonic()
+                        if not interlock_armed:
+                            _validate_root_grant_freshness(authorized_grant_timing)
+                            shared_lock.arm_benchmark(
+                                {
+                                    "schema_version": SCHEMA_VERSION,
+                                    "kind": "cre_capacity_benchmark_active",
+                                    "state": "active",
+                                    "armed_at": _now(),
+                                    "pid": os.getpid(),
+                                    "admission_sha256": result["admission_sha256"],
+                                    "root_approval_nonce_sha256": result[
+                                        "root_approval_nonce_sha256"
+                                    ],
+                                    "result_path": str(artifact_root / "result.json"),
+                                }
+                            )
+                            interlock_armed = True
+                        worker_may_have_launched = True
+                        try:
+                            code, host_samples, termination_reason = _run_worker(
+                                repo_root=repo_root,
+                                sample_path=sample_path,
+                                replicate_dir=replicate_dir,
+                                requested=profile["requested"],
+                                api_url=endpoints["api_url"],
+                                timeout_seconds=timeout_seconds,
+                                expected_details=details,
+                                root_grant=authorized_grant_timing
+                                if number == 1
+                                else None,
+                            )
+                        except BenchmarkError:
+                            code, host_samples, termination_reason = (
+                                -1,
+                                [],
+                                "worker_execution_failure",
+                            )
+                        wall = time.monotonic() - started
+                        after = _await_idle_settlement(
+                            endpoints["api_url"], endpoints["browser_health_url"]
+                        )
+                        resources_after = _resource_snapshot()
+                        resource_verdict = _resource_verdict(
+                            resources_before, resources_after, profile["requested"]
+                        )
+                        guard_path = replicate_dir / "guard.json"
+                        try:
+                            guard_telemetry = (
+                                _read_json(guard_path) if guard_path.is_file() else None
+                            )
+                        except BenchmarkError:
+                            guard_telemetry = None
+                        entry: dict[str, Any] = {
+                            "replicate": number,
+                            "worker_exit_code": code,
+                            "guard_triggered": termination_reason == "host_cpu_guard",
+                            "termination_reason": termination_reason,
+                            "host_samples": host_samples,
+                            "guard_telemetry": guard_telemetry,
+                            "settlement_before": before,
+                            "settlement_after": after,
+                            "settlement_error_type": after.get("error"),
+                            "resources_before": resources_before,
+                            "resources_after": resources_after,
+                            "resource_verdict": resource_verdict,
+                            "source_owned_settlement": "locally_awaited_terminal"
+                            if after.get("state") == "idle"
+                            else "unknown",
+                        }
+                        if code == 0 and termination_reason is None:
+                            try:
+                                summary = summarize_replicate(
+                                    replicate_dir,
+                                    locked_sample,
+                                    wall,
+                                    sample_canonical_sha256=sample_canonical_sha256,
+                                    worker_contract=worker_contract,
+                                )
+                            except (BenchmarkError, KeyError, TypeError, ValueError):
+                                summary = {
+                                    "comparison_state": "inconclusive",
+                                    "performance_telemetry_complete": False,
+                                    "provider_cooldown": {
+                                        "required": False,
+                                        "signals": [],
+                                        "resume": "fresh_operator_admission_required",
+                                    },
+                                }
+                            entry.update(summary)
+                            if summary.get("remote_settlement_unknown") != 0:
+                                entry["source_owned_settlement"] = "unknown"
+                        entry["execution_state"] = _replicate_state(entry, details)
+                        result["replicates"].append(entry)
+                        _atomic_private_json(
+                            artifact_root / "result.in-progress.json", result
+                        )
+                        if entry["execution_state"] != "measured":
+                            result["stop_reason"] = (
+                                "provider_cooldown_required"
+                                if entry.get("provider_cooldown", {}).get("required")
+                                is True
+                                else "replicate_failed"
+                                if entry["execution_state"] == "failed"
+                                else "replicate_inconclusive"
+                            )
+                            break
+            except BaseException as exc:  # noqa: BLE001 - cleanup must cover signals/exits
+                pending_error = exc
+                result["stop_reason"] = "interrupted_or_unexpected_failure"
+                result["interruption_type"] = type(exc).__name__
+            finally:
+                if worker_may_have_launched:
+                    try:
+                        with _benchmark_signal_handlers():
+                            final_settlement = _await_idle_settlement(
+                                endpoints["api_url"],
+                                endpoints["browser_health_url"],
+                            )
+                    except BaseException as cleanup_exc:  # noqa: BLE001 - persist unknown
+                        final_settlement = {
+                            "idle": False,
+                            "state": "unknown",
+                            "polls": 0,
+                            "observed_at": _now(),
+                            "observations": [],
+                            "error": "final_settlement_cleanup_interrupted_or_failed",
+                            "error_type": type(cleanup_exc).__name__,
+                        }
+                        if pending_error is None:
+                            pending_error = cleanup_exc
+                    result["final_settlement"] = final_settlement
+                else:
+                    result["final_settlement"] = {
+                        "idle": False,
+                        "state": "not_started",
+                        "polls": 0,
+                        "observed_at": _now(),
+                        "observations": [],
+                    }
+                if result["final_settlement"].get("state") != "idle":
+                    result["stop_reason"] = "final_settlement_unknown"
+                states = [
+                    row["execution_state"]
+                    for row in result["replicates"]
+                    if isinstance(row, Mapping) and "execution_state" in row
+                ]
+                result["finished_at"] = _now()
+                result["completed"] = (
+                    pending_error is None
+                    and len(states) == replicates
+                    and all(state == "measured" for state in states)
+                    and result["final_settlement"].get("state") == "idle"
+                )
+                result["comparison_state"] = (
+                    "complete"
+                    if result["completed"]
+                    else "failed"
+                    if pending_error is not None
+                    or "failed" in states
+                    or result["final_settlement"].get("state") == "unknown"
+                    else "inconclusive"
+                )
+                if (
+                    worker_may_have_launched
+                    and result["final_settlement"].get("state") != "idle"
+                ):
+                    try:
+                        result["lock_quarantine"] = _quarantine_shared_lock(
+                            shared_lock,
+                            artifact_result_path=artifact_root / "result.json",
+                            admission_sha256=result["admission_sha256"],
+                            root_approval_nonce_sha256=result[
+                                "root_approval_nonce_sha256"
+                            ],
+                        )
+                    except BenchmarkError as quarantine_exc:
+                        result["lock_quarantine"] = {
+                            "state": "quarantine_evidence_unknown",
+                            "error_type": type(quarantine_exc).__name__,
+                        }
+                        if pending_error is None:
+                            pending_error = quarantine_exc
+                _atomic_private_json(artifact_root / "result.json", result)
+                if (
+                    interlock_armed
+                    and pending_error is None
+                    and result["final_settlement"].get("state") == "idle"
+                ):
+                    shared_lock.disarm_benchmark()
+            if pending_error is not None:
+                raise pending_error
+            return result
+    except LockHeldError as exc:
+        raise BenchmarkError("canonical CRE shared lock is already held") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", default="bold-jll-128")
+    parser.add_argument("--profile")
     parser.add_argument("--config", type=Path, default=experiment.DEFAULT_CONFIG)
     parser.add_argument("--artifact-root", type=Path)
     parser.add_argument("--sample", type=Path)
@@ -1683,8 +3528,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not args.artifact_root:
             raise BenchmarkError("--artifact-root is required outside compare mode")
+        contract = _experiment_contract()
+        if args.config.resolve() != experiment.DEFAULT_CONFIG.resolve():
+            raise BenchmarkError("benchmark configuration must be the central JSON")
+        profile_name = args.profile or contract["profiles"]["candidate"]
         artifact_root = _private_artifact_root(args.artifact_root, repo_root)
-        profile, digest = experiment.load_profile(args.config, args.profile)
+        profile, digest = experiment.load_profile(args.config, profile_name)
         if args.prepare_sample:
             sample = build_sample(args.prepare_sample)
             target = artifact_root / "jll-128-sample.json"
@@ -1696,7 +3545,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         sample_value = _read_json(args.sample) if args.sample else None
-        dry_plan = plan(profile, args.profile, digest, sample_value)
+        dry_plan = plan(profile, profile_name, digest, sample_value)
         _atomic_private_json(artifact_root / "plan.json", dry_plan)
         if not args.run:
             print(json.dumps(dry_plan, sort_keys=True, indent=2))
@@ -1706,7 +3555,7 @@ def main(argv: list[str] | None = None) -> int:
         admission = validate_admission(
             _read_json(args.admission),
             profile,
-            args.profile,
+            profile_name,
             digest,
             source_git_sha=_git_head(repo_root),
         )
@@ -1716,9 +3565,10 @@ def main(argv: list[str] | None = None) -> int:
             sample_path=args.sample.resolve(),
             sample=validate_sample(sample_value, int(profile["workload"]["details"])),
             profile=profile,
-            profile_name=args.profile,
+            profile_name=profile_name,
             config_sha256=digest,
             admission=admission,
+            admission_path=args.admission,
             timeout_seconds=args.replicate_timeout_seconds,
         )
         print(json.dumps(result, sort_keys=True, indent=2))

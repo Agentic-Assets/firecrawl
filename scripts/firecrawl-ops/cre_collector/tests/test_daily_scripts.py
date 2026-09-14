@@ -79,6 +79,68 @@ def _run_keep_newest(target_dir, pattern, keep):
     )
 
 
+def _attempt_tier_lock(lock_dir):
+    text = RUN_TIER.read_text(encoding="utf-8")
+    functions = "\n".join(
+        _extract_function(name, text)
+        for name in ("_lock_interlocked", "acquire_lock")
+    )
+    script = (
+        'set -uo pipefail\nLOCKDIR="$1"\nLOCK_HELD=0\n'
+        "ts() { printf 'test'; }\n"
+        "_write_lock_owner() { printf '%s 0\\n' \"$$\" >\"${LOCKDIR}/pid\"; }\n"
+        "_lock_owner_pid() { [ -f \"${LOCKDIR}/pid\" ] && cut -d' ' -f1 \"${LOCKDIR}/pid\" || true; }\n"
+        f"{functions}\nacquire_lock\n"
+    )
+    return subprocess.run(
+        ["bash", "-c", script, "bash", str(lock_dir)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "marker",
+    ("capacity-benchmark-active.json", "capacity-benchmark-quarantine.json"),
+)
+def test_tier_lock_never_reclaims_benchmark_interlock(tmp_path, marker):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.mkdir()
+    (lock_dir / "pid").write_text("999999 0\n", encoding="utf-8")
+    (lock_dir / marker).write_text("{}\n", encoding="utf-8")
+
+    result = _attempt_tier_lock(lock_dir)
+
+    assert result.returncode != 0
+    assert (lock_dir / marker).exists()
+    assert (lock_dir / "pid").read_text(encoding="utf-8") == "999999 0\n"
+
+
+def test_tier_lock_treats_dangling_benchmark_marker_as_interlock(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.mkdir()
+    (lock_dir / "pid").write_text("999999 0\n", encoding="utf-8")
+    marker = lock_dir / "capacity-benchmark-active.json"
+    marker.symlink_to(lock_dir / "missing-evidence")
+
+    result = _attempt_tier_lock(lock_dir)
+
+    assert result.returncode != 0
+    assert marker.is_symlink()
+
+
+def test_tier_lock_still_reclaims_an_ordinary_dead_owner(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.mkdir()
+    (lock_dir / "pid").write_text("999999 0\n", encoding="utf-8")
+
+    result = _attempt_tier_lock(lock_dir)
+
+    assert result.returncode == 0
+    assert (lock_dir / "pid").read_text(encoding="utf-8").split()[0] != "999999"
+
+
 def test_prune_keep_retains_newest_n_and_spares_markers(tmp_path):
     _mk_files(tmp_path, [f"run_2026-06-14_00{n:02d}.json" for n in range(20)])
     for tier in ("monitor", "daily", "weekly"):

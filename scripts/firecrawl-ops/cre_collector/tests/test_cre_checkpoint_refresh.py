@@ -2000,6 +2000,146 @@ def test_lock_reclaims_dead_owner(tmp_path):
     assert not lock_dir.exists()
 
 
+@pytest.mark.parametrize("marker", [refresh.BENCHMARK_ACTIVE_MARKER, refresh.BENCHMARK_QUARANTINE_MARKER])
+@pytest.mark.parametrize("entry_type", ["malformed", "symlink", "directory"])
+def test_lock_interlock_blocks_dead_owner_reclamation(tmp_path, marker, entry_type):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.mkdir()
+    (lock_dir / "pid").write_text("99999999 1\n")
+    entry = lock_dir / marker
+    if entry_type == "symlink":
+        entry.symlink_to(tmp_path / "missing")
+    elif entry_type == "directory":
+        entry.mkdir()
+    else:
+        entry.write_text("invalid JSON")
+    with pytest.raises(refresh.LockHeldError, match="interlock"):
+        refresh.SharedLock(lock_dir).acquire()
+    assert lock_dir.is_dir()
+    assert entry.lstat()
+
+
+def test_lock_reclaim_rechecks_interlock_under_reclaim_guard(tmp_path, monkeypatch):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.mkdir()
+    (lock_dir / "pid").write_text("99999999 1\n")
+    owner = refresh._lock_owner
+    calls = 0
+
+    def racing_owner(path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            (path / refresh.BENCHMARK_ACTIVE_MARKER).write_text("{}")
+        return owner(path)
+
+    monkeypatch.setattr(refresh, "_lock_owner", racing_owner)
+    with pytest.raises(refresh.LockHeldError, match="interlocked"):
+        refresh.SharedLock(lock_dir).acquire()
+    assert (lock_dir / refresh.BENCHMARK_ACTIVE_MARKER).is_file()
+
+
+def test_lock_reclaim_refuses_replaced_directory(tmp_path, monkeypatch):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.mkdir()
+    (lock_dir / "pid").write_text("99999999 1\n")
+    owner = refresh._lock_owner
+    calls = 0
+
+    def racing_owner(path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            path.rename(tmp_path / "old-lock")
+            path.mkdir()
+            (path / "pid").write_text("99999999 1\n")
+        return owner(path)
+
+    monkeypatch.setattr(refresh, "_lock_owner", racing_owner)
+    with pytest.raises(refresh.LockHeldError, match="changed"):
+        refresh.SharedLock(lock_dir).acquire()
+    assert (lock_dir / "pid").read_text() == "99999999 1\n"
+
+
+def test_lock_benchmark_arm_is_durable_and_release_preserves_marker(
+    tmp_path, monkeypatch
+):
+    lock = refresh.SharedLock(tmp_path / ".cre.lock")
+    lock.acquire()
+    syncs = []
+    real_fsync = refresh.os.fsync
+
+    def fsync(fd):
+        syncs.append(refresh.stat.S_ISDIR(refresh.os.fstat(fd).st_mode))
+        real_fsync(fd)
+
+    monkeypatch.setattr(refresh.os, "fsync", fsync)
+    lock.arm_benchmark({"state": "active"})
+    assert syncs == [False, True, True]
+    marker = lock.path / refresh.BENCHMARK_ACTIVE_MARKER
+    assert marker.stat().st_mode & 0o077 == 0
+    lock.release()
+    assert marker.is_file()
+    with pytest.raises(refresh.LockHeldError):
+        refresh.SharedLock(lock.path).acquire()
+
+
+def test_lock_benchmark_disarm_allows_normal_release(tmp_path):
+    lock = refresh.SharedLock(tmp_path / ".cre.lock")
+    lock.acquire()
+    lock.arm_benchmark({"state": "active"})
+    lock.disarm_benchmark()
+    lock.release()
+    assert not lock.path.exists()
+
+
+@pytest.mark.parametrize("operation", ["arm", "disarm"])
+def test_lock_benchmark_fsync_failure_preserves_interlock(
+    tmp_path, monkeypatch, operation
+):
+    lock = refresh.SharedLock(tmp_path / ".cre.lock")
+    lock.acquire()
+    if operation == "disarm":
+        lock.arm_benchmark({"state": "active"})
+    monkeypatch.setattr(
+        refresh.os, "fsync", lambda _fd: (_ for _ in ()).throw(OSError("sync failed"))
+    )
+    with pytest.raises(OSError, match="sync failed"):
+        if operation == "arm":
+            lock.arm_benchmark({"state": "active"})
+        else:
+            lock.disarm_benchmark()
+    lock.release()
+    assert (lock.path / refresh.BENCHMARK_ACTIVE_MARKER).is_file()
+    with pytest.raises(refresh.LockHeldError):
+        refresh.SharedLock(lock.path).acquire()
+
+
+def test_lock_benchmark_abrupt_process_death_stays_interlocked(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    script = """
+import os
+import sys
+from pathlib import Path
+import cre_checkpoint_refresh as refresh
+with refresh.SharedLock(Path(sys.argv[1])) as lock:
+    lock.arm_benchmark({"state": "active"})
+    os._exit(23)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(lock_dir)],
+        cwd=Path(refresh.__file__).parent,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode == 23, result.stderr
+    assert not refresh._pid_alive(refresh._lock_owner(lock_dir))
+    with pytest.raises(refresh.LockHeldError, match="interlock"):
+        refresh.SharedLock(lock_dir).acquire()
+
+
 def test_checkpoint_sigterm_handler_uses_interrupt_cleanup_path():
     with pytest.raises(KeyboardInterrupt):
         refresh.checkpoint_sigterm_handler(refresh.signal.SIGTERM, None)

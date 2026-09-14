@@ -19,11 +19,43 @@ export type CollectorScrapeOpts = ScrapeOpts & {
   maxAge?: number;
 };
 
-// Self-hosted with USE_DB_AUTHENTICATION=false accepts any non-empty key.
-export const firecrawl = new Firecrawl({
-  apiKey: process.env.FIRECRAWL_API_KEY || "local-self-hosted",
-  apiUrl: API_URL,
-});
+const DEFAULT_SCRAPE_MAX_ATTEMPTS = 3;
+
+/** Resolve the benchmark-only retry reduction without changing normal runs. */
+export function configuredScrapeMaxAttempts(
+  environment: NodeJS.ProcessEnv = process.env
+): number {
+  const configured = environment.CRE_SCRAPE_MAX_ATTEMPTS;
+  if (configured === undefined || configured === "") {
+    return DEFAULT_SCRAPE_MAX_ATTEMPTS;
+  }
+  if (!/^[1-3]$/.test(configured)) {
+    throw new Error("CRE_SCRAPE_MAX_ATTEMPTS must be an integer from 1 through 3");
+  }
+  return Number(configured);
+}
+
+/** Return a delay only when another scrape attempt will actually run. */
+export function scrapeRetryDelayMs(
+  attempt: number,
+  maxAttempts: number
+): number | null {
+  return attempt < maxAttempts ? 2500 * attempt : null;
+}
+
+export function createScrapeClient(
+  environment: NodeJS.ProcessEnv = process.env
+): Firecrawl {
+  return new Firecrawl({
+    // Self-hosted with USE_DB_AUTHENTICATION=false accepts any non-empty key.
+    apiKey: environment.FIRECRAWL_API_KEY || "local-self-hosted",
+    apiUrl: API_URL,
+    // The pinned SDK calls this maxRetries, but it counts total HTTP attempts.
+    maxRetries: configuredScrapeMaxAttempts(environment),
+  });
+}
+
+export const firecrawl = createScrapeClient();
 
 /**
  * The API's scrape `timeout` is a server-side budget, not a guarantee that the
@@ -48,7 +80,8 @@ export async function withRequestDeadline<T>(request: Promise<T>, timeoutMs: num
 export async function scrapeRaw(url: string, opts: CollectorScrapeOpts = {}): Promise<string> {
   recordLogicalScrapeCall("raw");
   let lastErr: unknown = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  const maxAttempts = configuredScrapeMaxAttempts();
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const performanceAttempt = recordClientAttemptStarted({
       freshRequested: opts.maxAge === 0,
     });
@@ -69,9 +102,11 @@ export async function scrapeRaw(url: string, opts: CollectorScrapeOpts = {}): Pr
       recordClientAttemptCompleted(performanceAttempt, { outcome: "failed", error: err });
       lastErr = err;
       console.error(`scrape attempt ${attempt} failed for ${url}: ${err}`);
-      const delayMs = 2500 * attempt;
-      recordRetry("http_helper", delayMs, attempt < 3);
-      await new Promise((r) => setTimeout(r, delayMs));
+      const delayMs = scrapeRetryDelayMs(attempt, maxAttempts);
+      if (delayMs !== null) {
+        recordRetry("http_helper", delayMs, true);
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
     }
   }
   throw lastErr;
@@ -80,7 +115,8 @@ export async function scrapeRaw(url: string, opts: CollectorScrapeOpts = {}): Pr
 export async function scrapeDoc(url: string, opts: CollectorScrapeOpts = {}): Promise<ScrapedDoc> {
   recordLogicalScrapeCall("doc");
   let lastErr: unknown = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  const maxAttempts = configuredScrapeMaxAttempts();
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const performanceAttempt = recordClientAttemptStarted({
       freshRequested: opts.maxAge === 0,
     });
@@ -133,9 +169,11 @@ export async function scrapeDoc(url: string, opts: CollectorScrapeOpts = {}): Pr
       recordClientAttemptCompleted(performanceAttempt, { outcome: "failed", error: err });
       lastErr = err;
       console.error(`scrape-doc attempt ${attempt} failed for ${url}: ${err}`);
-      const delayMs = 2500 * attempt;
-      recordRetry("http_helper", delayMs, attempt < 3);
-      await new Promise((r) => setTimeout(r, delayMs));
+      const delayMs = scrapeRetryDelayMs(attempt, maxAttempts);
+      if (delayMs !== null) {
+        recordRetry("http_helper", delayMs, true);
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
     }
   }
   throw lastErr;

@@ -24,6 +24,7 @@ import re
 import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -652,6 +653,30 @@ def _lock_lease(lock_dir: Path) -> str | None:
     return token or None
 
 
+BENCHMARK_ACTIVE_MARKER = "capacity-benchmark-active.json"
+BENCHMARK_QUARANTINE_MARKER = "capacity-benchmark-quarantine.json"
+
+
+def _lock_interlocked(lock_dir: Path) -> bool:
+    """Any marker entry or inspection error conservatively prevents removal."""
+    for name in (BENCHMARK_ACTIVE_MARKER, BENCHMARK_QUARANTINE_MARKER):
+        try:
+            (lock_dir / name).lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+        return True
+    return False
+
+
+def _lock_directory_identity(lock_dir: Path) -> tuple[int, int]:
+    observed = lock_dir.lstat()
+    if not stat.S_ISDIR(observed.st_mode):
+        raise LockHeldError("CRE lock is not a real directory")
+    return observed.st_dev, observed.st_ino
+
+
 def canonical_shared_lock_dir(repo_root: Path = REPO_ROOT) -> Path:
     """Resolve the primary checkout's CRE lock, including from a worktree."""
     common_git_dir = subprocess.run(
@@ -692,25 +717,46 @@ class SharedLock:
     path: Path
     held: bool = False
     lease_token: str | None = field(default=None, init=False)
+    directory_identity: tuple[int, int] | None = field(default=None, init=False)
+    benchmark_marker_identity: tuple[int, int] | None = field(default=None, init=False)
 
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if _lock_interlocked(self.path):
+            raise LockHeldError(
+                f"CRE benchmark interlock requires operator recovery: {self.path}"
+            )
         try:
             self.path.mkdir()
         except FileExistsError:
+            original_identity = _lock_directory_identity(self.path)
             owner = _lock_owner(self.path)
             if owner is None or _pid_alive(owner):
-                detail = "owner is starting" if owner is None else f"live owner pid {owner}"
+                detail = (
+                    "owner is starting" if owner is None else f"live owner pid {owner}"
+                )
                 raise LockHeldError(f"CRE lock is held ({detail}): {self.path}")
             reclaim = Path(f"{self.path}.reclaim")
             try:
                 reclaim.mkdir()
             except FileExistsError as exc:
-                raise LockHeldError(f"CRE lock reclamation is already in progress: {self.path}") from exc
+                raise LockHeldError(
+                    f"CRE lock reclamation is already in progress: {self.path}"
+                ) from exc
             try:
                 current = _lock_owner(self.path)
-                if current is not None and _pid_alive(current):
-                    raise LockHeldError(f"CRE lock became live during reclaim (pid {current})")
+                if (
+                    _lock_interlocked(self.path)
+                    or _lock_directory_identity(self.path) != original_identity
+                    or current is None
+                ):
+                    raise LockHeldError(
+                        "CRE lock changed or became interlocked during reclaim"
+                    )
+                if _pid_alive(current):
+                    raise LockHeldError(
+                        f"CRE lock became live during reclaim (pid {current})"
+                    )
                 shutil.rmtree(self.path, ignore_errors=True)
                 self.path.mkdir()
             finally:
@@ -723,11 +769,120 @@ class SharedLock:
                 f"{os.getpid()} {int(datetime.now(timezone.utc).timestamp())}\n",
             )
         except Exception:
-            if _lock_lease(self.path) == lease_token:
+            if _lock_lease(self.path) == lease_token and not _lock_interlocked(
+                self.path
+            ):
                 shutil.rmtree(self.path, ignore_errors=True)
             raise
         self.lease_token = lease_token
+        self.directory_identity = _lock_directory_identity(self.path)
         self.held = True
+
+    def _owned_directory_fd(self) -> int:
+        if (
+            not self.held
+            or self.lease_token is None
+            or _lock_owner(self.path) != os.getpid()
+            or _lock_lease(self.path) != self.lease_token
+        ):
+            raise LockHeldError(
+                "CRE lock ownership changed before benchmark interlock update"
+            )
+        fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        opened = os.fstat(fd)
+        try:
+            if (
+                opened.st_dev,
+                opened.st_ino,
+            ) != self.directory_identity or _lock_directory_identity(
+                self.path
+            ) != self.directory_identity:
+                raise LockHeldError(
+                    "CRE lock directory changed before benchmark interlock update"
+                )
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def arm_benchmark(self, evidence: Mapping[str, Any]) -> None:
+        """Durably block reclamation before a worker can possibly start."""
+        directory_fd = self._owned_directory_fd()
+        try:
+            marker_fd = os.open(
+                BENCHMARK_ACTIVE_MARKER,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_fd,
+            )
+            try:
+                os.fchmod(marker_fd, 0o600)
+                opened = os.fstat(marker_fd)
+                self.benchmark_marker_identity = (opened.st_dev, opened.st_ino)
+                payload = (
+                    json.dumps(dict(evidence), sort_keys=True, allow_nan=False) + "\n"
+                ).encode()
+                remaining = memoryview(payload)
+                while remaining:
+                    written = os.write(marker_fd, remaining)
+                    if written <= 0:
+                        raise OSError("benchmark interlock write was short")
+                    remaining = remaining[written:]
+                os.fsync(marker_fd)
+            finally:
+                os.close(marker_fd)
+            os.fsync(directory_fd)
+            parent_fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+            if _lock_directory_identity(self.path) != self.directory_identity:
+                raise LockHeldError("CRE lock directory changed while arming benchmark")
+        finally:
+            os.close(directory_fd)
+
+    def disarm_benchmark(self) -> None:
+        """Clear only this owner's active marker after durable idle evidence."""
+        directory_fd = self._owned_directory_fd()
+        try:
+            try:
+                os.stat(
+                    BENCHMARK_QUARANTINE_MARKER,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                raise LockHeldError(
+                    "CRE benchmark quarantine requires operator recovery"
+                )
+            observed = os.stat(
+                BENCHMARK_ACTIVE_MARKER, dir_fd=directory_fd, follow_symlinks=False
+            )
+            if (
+                self.benchmark_marker_identity != (observed.st_dev, observed.st_ino)
+                or not stat.S_ISREG(observed.st_mode)
+                or observed.st_nlink != 1
+            ):
+                raise LockHeldError("CRE benchmark interlock changed before disarm")
+            os.unlink(BENCHMARK_ACTIVE_MARKER, dir_fd=directory_fd)
+            try:
+                os.fsync(directory_fd)
+            except BaseException:
+                # A failed durability acknowledgement must leave a visible stop.
+                marker_fd = os.open(
+                    BENCHMARK_ACTIVE_MARKER,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+                os.close(marker_fd)
+                raise
+            self.benchmark_marker_identity = None
+        finally:
+            os.close(directory_fd)
 
     def release(self) -> None:
         if (
@@ -735,10 +890,13 @@ class SharedLock:
             and self.lease_token is not None
             and _lock_owner(self.path) == os.getpid()
             and _lock_lease(self.path) == self.lease_token
+            and not _lock_interlocked(self.path)
+            and self.benchmark_marker_identity is None
         ):
             shutil.rmtree(self.path, ignore_errors=True)
         self.held = False
         self.lease_token = None
+        self.directory_identity = None
 
     def __enter__(self) -> Self:
         self.acquire()

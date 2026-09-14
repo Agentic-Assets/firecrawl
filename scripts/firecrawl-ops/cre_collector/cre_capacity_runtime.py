@@ -2,34 +2,46 @@
 
 Preflight observations and verification are read-only; preflight writes only a
 private receipt. Apply and rollback are dry-run by default. Candidate mutation
-requires ``--execute``, a fresh machine receipt, and a separate root-review
-attestation. No command reads the repository ``.env`` file.
+requires ``--execute``, a fresh machine receipt, and a one-use, externally
+created root-owned approval file. No command reads the repository ``.env``
+file.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
 import re
+import secrets
+import signal
 import stat
 import subprocess
 import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import cre_capacity_experiment as experiment
+import cre_checkpoint_refresh as checkpoint_refresh
+from cre_checkpoint_refresh import (
+    LockHeldError,
+    SharedLock,
+    canonical_shared_lock_dir,
+)
 
 SCHEMA_VERSION = 1
 RECEIPT_KIND = "cre_capacity_runtime_transition"
 ADMISSION_KIND = "cre_capacity_runtime_admission"
 APPROVAL_KIND = "cre_capacity_root_approval"
+BENCHMARK_GRANT_KIND = "cre_capacity_root_benchmark_grant"
 RECEIPT_MAX_AGE_SECONDS = 600
 API_CONTAINER = "firecrawl-api-1"
 BROWSER_CONTAINER = "firecrawl-playwright-service-1"
@@ -44,9 +56,252 @@ EXECUTION_INPUTS = {
     "profile_config": experiment.DEFAULT_CONFIG.resolve(),
     "compose": COMPOSE_PATH,
     "candidate_override": OVERRIDE_PATH,
+    "shared_lock": Path(checkpoint_refresh.__file__).resolve(),
 }
 PRIVATE_PAGE_KEY = "MAX_CONCURRENT_PAGES"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40,64}\Z")
+NONCE_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+ROOT_APPROVAL_MAX_BYTES = 64 * 1024
+ROOT_APPROVAL_CONSUMER = r"""
+import hashlib
+import json
+import os
+import re
+import secrets
+import signal
+import stat
+import sys
+from datetime import datetime, timezone
+
+path = os.path.abspath(sys.argv[1])
+parent = os.path.dirname(path)
+recovery_path = os.path.abspath(sys.argv[2])
+if (os.path.dirname(recovery_path) != parent or not re.fullmatch(
+        r"\.cre-capacity-consumption-[0-9a-f]{64}\.json",
+        os.path.basename(recovery_path))):
+    raise SystemExit("consumption recovery path is invalid")
+def interrupted(signum, frame):
+    raise KeyboardInterrupt("approval consumption interrupted")
+for signum in (signal.SIGINT, signal.SIGTERM):
+    signal.signal(signum, interrupted)
+grant_path = None
+grant_created = False
+file_stat = os.lstat(path)
+parent_stat = os.lstat(parent)
+if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
+    raise SystemExit("approval is not a singly linked regular file")
+if file_stat.st_uid != 0 or stat.S_IMODE(file_stat.st_mode) != 0o600:
+    raise SystemExit("approval is not root-owned mode 0600")
+if (not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != 0
+        or stat.S_IMODE(parent_stat.st_mode) != 0o700):
+    raise SystemExit("approval parent is not root-owned mode 0700")
+consumed = os.path.join(
+    parent,
+    "." + os.path.basename(path) + ".consumed-" + secrets.token_hex(16),
+)
+os.rename(path, consumed)
+try:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(consumed, flags)
+    try:
+        opened = os.fstat(fd)
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != 0
+                or stat.S_IMODE(opened.st_mode) != 0o600
+                or opened.st_nlink != 1):
+            raise SystemExit("consumed approval ownership changed")
+        chunks = []
+        remaining = 65537
+        while remaining:
+            chunk = os.read(fd, min(remaining, 8192))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > 65536:
+            raise SystemExit("approval is too large")
+    finally:
+        os.close(fd)
+    try:
+        approval = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise SystemExit("approval JSON is invalid")
+    sha = re.compile(r"[0-9a-f]{64}\Z")
+    source_sha = re.compile(r"[0-9a-f]{40,64}\Z")
+    if (not isinstance(approval, dict)
+            or approval.get("schema_version") != 1
+            or approval.get("kind") != "cre_capacity_root_approval"
+            or not isinstance(approval.get("profile"), str)
+            or not approval.get("profile")
+            or not sha.fullmatch(str(approval.get("config_sha256")))
+            or not sha.fullmatch(str(approval.get("transition_receipt_sha256")))
+            or not source_sha.fullmatch(str(approval.get("source_git_sha")))
+            or not sha.fullmatch(str(approval.get("nonce")))
+            or not isinstance(approval.get("created_at"), str)
+            or type(approval.get("expires_after_seconds")) is not int
+            or approval.get("expires_after_seconds") != 600
+            or approval.get("approved") is not True):
+        raise SystemExit("approval bindings are invalid")
+    try:
+        created = datetime.fromisoformat(approval["created_at"].replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            raise ValueError("naive approval timestamp")
+        age = (datetime.now(timezone.utc) - created).total_seconds()
+        if age < 0 or age > 600:
+            raise ValueError("stale approval")
+    except (TypeError, ValueError):
+        raise SystemExit("approval timestamp is invalid or stale")
+    nonce_hash = hashlib.sha256(
+        json.dumps(
+            approval["nonce"], sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    grant = {
+        "schema_version": 1,
+        "kind": "cre_capacity_root_benchmark_grant",
+        "profile": approval["profile"],
+        "config_sha256": approval["config_sha256"],
+        "transition_receipt_sha256": approval["transition_receipt_sha256"],
+        "source_git_sha": approval["source_git_sha"],
+        "root_approval_nonce_sha256": nonce_hash,
+        "root_approval_created_at": approval["created_at"],
+        "expires_after_seconds": 600,
+        "approved": True,
+    }
+    grant_path = os.path.join(
+        parent, ".cre-capacity-benchmark-grant-" + nonce_hash + ".json"
+    )
+    grant_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(
+        os, "O_NOFOLLOW", 0
+    )
+    if os.path.lexists(grant_path):
+        raise SystemExit("grant already exists")
+    recovery_fd = os.open(recovery_path, grant_flags, 0o600)
+    try:
+        os.fchmod(recovery_fd, 0o600)
+        recovery = json.dumps({"grant_name": os.path.basename(grant_path)}).encode()
+        offset = 0
+        while offset < len(recovery):
+            offset += os.write(recovery_fd, recovery[offset:])
+        os.fsync(recovery_fd)
+    finally:
+        os.close(recovery_fd)
+    try:
+        grant_fd = os.open(grant_path, grant_flags, 0o600)
+        grant_created = True
+        try:
+            os.fchmod(grant_fd, 0o600)
+            encoded = (
+                json.dumps(grant, sort_keys=True, separators=(",", ":")).encode()
+                + b"\n"
+            )
+            written = 0
+            while written < len(encoded):
+                written += os.write(grant_fd, encoded[written:])
+            os.fsync(grant_fd)
+        finally:
+            os.close(grant_fd)
+    except BaseException:
+        if grant_created:
+            try:
+                os.unlink(grant_path)
+            except FileNotFoundError:
+                pass
+        raise
+    try:
+        sys.stdout.buffer.write(raw)
+        sys.stdout.buffer.flush()
+    except BaseException:
+        try:
+            os.unlink(grant_path)
+        except FileNotFoundError:
+            pass
+        raise
+except BaseException:
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, signal.SIG_IGN)
+    if grant_created:
+        try:
+            os.unlink(grant_path)
+        except FileNotFoundError:
+            pass
+    raise
+finally:
+    try:
+        os.unlink(consumed)
+    except BaseException:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(signum, signal.SIG_IGN)
+        if grant_created:
+            try:
+                os.unlink(grant_path)
+            except FileNotFoundError:
+                pass
+        raise
+"""
+ROOT_GRANT_DESTROYER = r"""
+import os
+import re
+import stat
+import sys
+
+path = os.path.abspath(sys.argv[1])
+parent = os.path.dirname(path)
+name = os.path.basename(path)
+if not re.fullmatch(r"\.cre-capacity-benchmark-grant-[0-9a-f]{64}\.json", name):
+    raise SystemExit("grant path is invalid")
+try:
+    file_stat = os.lstat(path)
+except FileNotFoundError:
+    raise SystemExit(0)
+parent_stat = os.lstat(parent)
+if (not stat.S_ISREG(file_stat.st_mode) or file_stat.st_uid != 0
+        or stat.S_IMODE(file_stat.st_mode) != 0o600 or file_stat.st_nlink != 1):
+    raise SystemExit("grant file ownership is invalid")
+if (not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != 0
+        or stat.S_IMODE(parent_stat.st_mode) != 0o700):
+    raise SystemExit("grant parent ownership is invalid")
+os.unlink(path)
+"""
+ROOT_CONSUMPTION_RECOVERY = r"""
+import json
+import os
+import re
+import stat
+import sys
+
+path = os.path.abspath(sys.argv[1])
+discard = sys.argv[2] == "discard"
+parent = os.path.dirname(path)
+if not re.fullmatch(r"\.cre-capacity-consumption-[0-9a-f]{64}\.json", os.path.basename(path)):
+    raise SystemExit("consumption recovery path is invalid")
+def validate(target, directory=False):
+    value = os.lstat(target)
+    if (value.st_uid != 0 or stat.S_IMODE(value.st_mode) != (0o700 if directory else 0o600)
+            or not (stat.S_ISDIR(value.st_mode) if directory else stat.S_ISREG(value.st_mode))
+            or (not directory and value.st_nlink != 1)):
+        raise SystemExit("consumption recovery ownership is invalid")
+validate(parent, True)
+try:
+    validate(path)
+except FileNotFoundError:
+    raise SystemExit(0)
+with open(path, "rb") as handle:
+    record = json.loads(handle.read(1024))
+name = record.get("grant_name") if isinstance(record, dict) else None
+if (set(record) != {"grant_name"} or not isinstance(name, str)
+        or not re.fullmatch(r"\.cre-capacity-benchmark-grant-[0-9a-f]{64}\.json", name)):
+    raise SystemExit("consumption recovery record is invalid")
+if discard:
+    grant = os.path.join(parent, name)
+    try:
+        validate(grant)
+    except FileNotFoundError:
+        pass
+    else:
+        os.unlink(grant)
+os.unlink(path)
+"""
 
 
 class RuntimeAdmissionError(RuntimeError):
@@ -55,6 +310,18 @@ class RuntimeAdmissionError(RuntimeError):
 
 class RuntimeMutationError(RuntimeAdmissionError):
     """A runtime mutation command was issued but did not complete cleanly."""
+
+
+class RuntimeOverlayCleanupError(RuntimeMutationError):
+    """A resource command completed but its private overlay did not clean up."""
+
+
+class RuntimeCompensationError(RuntimeAdmissionError):
+    """Best-effort compensation finished with one or more uncertain steps."""
+
+    def __init__(self, message: str, *, baseline_verified: bool) -> None:
+        super().__init__(message)
+        self.baseline_verified = baseline_verified
 
 
 @dataclass(frozen=True)
@@ -338,6 +605,20 @@ def _settlement(runner: CommandRunner) -> dict[str, Any]:
     }
 
 
+def _capture_source_state(runner: CommandRunner) -> dict[str, Any]:
+    return {
+        "git_sha": _run(runner, ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT).strip(),
+        "dirty": bool(
+            _run(runner, ["git", "status", "--porcelain"], cwd=REPO_ROOT).strip()
+        ),
+        "compose_sha256": _file_hash(COMPOSE_PATH),
+        "override_sha256": _file_hash(OVERRIDE_PATH),
+        "execution_inputs_sha256": {
+            key: _file_hash(path) for key, path in EXECUTION_INPUTS.items()
+        },
+    }
+
+
 def capture_runtime(runner: CommandRunner = _default_runner) -> RuntimeCapture:
     inspected = _json_output(
         runner, ["docker", "inspect", API_CONTAINER, BROWSER_CONTAINER]
@@ -376,18 +657,8 @@ def capture_runtime(runner: CommandRunner = _default_runner) -> RuntimeCapture:
         )
     except ValueError as exc:
         raise RuntimeAdmissionError("runtime memory capacity is invalid") from exc
-    git_sha = _run(runner, ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT).strip()
-    dirty = bool(_run(runner, ["git", "status", "--porcelain"], cwd=REPO_ROOT).strip())
     public = {
-        "repo": {
-            "git_sha": git_sha,
-            "dirty": dirty,
-            "compose_sha256": _file_hash(COMPOSE_PATH),
-            "override_sha256": _file_hash(OVERRIDE_PATH),
-            "execution_inputs_sha256": {
-                key: _file_hash(path) for key, path in EXECUTION_INPUTS.items()
-            },
-        },
+        "repo": _capture_source_state(runner),
         "host": {
             "orb_status": _run(runner, ["orb", "status"]).strip(),
             "orbstack_memory_mib": orb_memory,
@@ -400,6 +671,55 @@ def capture_runtime(runner: CommandRunner = _default_runner) -> RuntimeCapture:
     }
     public["transition_sha256"] = transition_fingerprint(public)
     public["snapshot_sha256"] = snapshot_fingerprint(public)
+    return RuntimeCapture(public, browser_env, api_env)
+
+
+def _capture_recovery_state(
+    before: RuntimeCapture, runner: CommandRunner
+) -> RuntimeCapture:
+    """Inspect identity/config without requiring a recreated browser to run.
+
+    Only an in-flight candidate attempt may use its retained pre-mutation
+    browser environment when Compose has removed that exact service. API
+    identity, existing browser configuration, source inputs, and host identity
+    are still checked live. This is never a successful verification snapshot.
+    """
+    names = _run(runner, ["docker", "ps", "-a", "--format", "{{.Names}}"])
+    present = set(names.splitlines())
+    if API_CONTAINER not in present:
+        raise RuntimeAdmissionError("recovery cannot identify the preserved API")
+    containers = [API_CONTAINER]
+    if BROWSER_CONTAINER in present:
+        containers.append(BROWSER_CONTAINER)
+    inspected = _json_output(runner, ["docker", "inspect", *containers])
+    if not isinstance(inspected, list) or len(inspected) != len(containers):
+        raise RuntimeAdmissionError("recovery container inspection is incomplete")
+    observed = {
+        str(item.get("Name", "")).lstrip("/"): item
+        for item in inspected
+        if isinstance(item, Mapping)
+    }
+    if set(observed) != set(containers):
+        raise RuntimeAdmissionError("recovery container identities are invalid")
+    public = copy.deepcopy(before.public)
+    api_env = _env_map(observed[API_CONTAINER])
+    public["api"] = _container_public(observed[API_CONTAINER], api_env)
+    browser_env = dict(before.browser_env)
+    if BROWSER_CONTAINER in observed:
+        browser_env = _env_map(observed[BROWSER_CONTAINER])
+        public["browser"] = _container_public(observed[BROWSER_CONTAINER], browser_env)
+    public["repo"] = _capture_source_state(runner)
+    try:
+        orb_memory = int(_run(runner, ["orb", "config", "get", "memory_mib"]).strip())
+    except ValueError as exc:
+        raise RuntimeAdmissionError("recovery host memory identity is invalid") from exc
+    public["host"].update(
+        {
+            "orb_status": _run(runner, ["orb", "status"]).strip(),
+            "orbstack_memory_mib": orb_memory,
+            "docker_context": _run(runner, ["docker", "context", "show"]).strip(),
+        }
+    )
     return RuntimeCapture(public, browser_env, api_env)
 
 
@@ -752,20 +1072,199 @@ def load_fresh_receipt(
     return receipt, profile, digest
 
 
-def load_root_approval(
-    path: Path,
+def _validate_root_authority(path: Path) -> None:
+    """Require a real root boundary, rather than trusting JSON authorship."""
+    try:
+        file_stat = path.lstat()
+        parent_stat = path.parent.lstat()
+    except OSError as exc:
+        raise RuntimeAdmissionError("root approval path is unavailable") from exc
+    if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
+        raise RuntimeAdmissionError("root approval must be a regular private file")
+    if file_stat.st_uid != 0 or stat.S_IMODE(file_stat.st_mode) != 0o600:
+        raise RuntimeAdmissionError("root approval file must be root-owned mode 0600")
+    if (
+        not stat.S_ISDIR(parent_stat.st_mode)
+        or parent_stat.st_uid != 0
+        or stat.S_IMODE(parent_stat.st_mode) != 0o700
+    ):
+        raise RuntimeAdmissionError(
+            "root approval directory must be root-owned mode 0700"
+        )
+
+
+def _benchmark_grant_payload(approval: Mapping[str, Any]) -> dict[str, Any]:
+    required = {
+        "profile",
+        "config_sha256",
+        "transition_receipt_sha256",
+        "source_git_sha",
+        "nonce",
+        "created_at",
+        "expires_after_seconds",
+    }
+    if (
+        approval.get("schema_version") != SCHEMA_VERSION
+        or approval.get("kind") != APPROVAL_KIND
+        or approval.get("approved") is not True
+        or any(key not in approval for key in required)
+        or not isinstance(approval.get("profile"), str)
+        or not approval.get("profile")
+        or not NONCE_PATTERN.fullmatch(str(approval.get("config_sha256")))
+        or not NONCE_PATTERN.fullmatch(str(approval.get("transition_receipt_sha256")))
+        or not SHA_PATTERN.fullmatch(str(approval.get("source_git_sha")))
+        or not NONCE_PATTERN.fullmatch(str(approval.get("nonce")))
+        or type(approval.get("expires_after_seconds")) is not int
+        or approval.get("expires_after_seconds") != RECEIPT_MAX_AGE_SECONDS
+    ):
+        raise RuntimeAdmissionError("root approval grant bindings are invalid")
+    _parse_time(approval.get("created_at"))
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": BENCHMARK_GRANT_KIND,
+        "profile": approval["profile"],
+        "config_sha256": approval["config_sha256"],
+        "transition_receipt_sha256": approval["transition_receipt_sha256"],
+        "source_git_sha": approval["source_git_sha"],
+        "root_approval_nonce_sha256": _hash(approval["nonce"]),
+        "root_approval_created_at": approval["created_at"],
+        "expires_after_seconds": approval["expires_after_seconds"],
+        "approved": True,
+    }
+
+
+def _benchmark_grant_path(parent: Path, approval: Mapping[str, Any]) -> Path:
+    grant = _benchmark_grant_payload(approval)
+    return parent / (
+        f".cre-capacity-benchmark-grant-{grant['root_approval_nonce_sha256']}.json"
+    )
+
+
+def _write_root_benchmark_grant(parent: Path, approval: Mapping[str, Any]) -> Path:
+    grant = _benchmark_grant_payload(approval)
+    path = _benchmark_grant_path(parent, approval)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise RuntimeAdmissionError(
+            "root benchmark grant could not be created exclusively"
+        ) from exc
+    try:
+        os.fchmod(fd, 0o600)
+        encoded = _canonical(grant) + b"\n"
+        offset = 0
+        while offset < len(encoded):
+            offset += os.write(fd, encoded[offset:])
+        os.fsync(fd)
+    except BaseException:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        os.close(fd)
+    return path
+
+
+def _consume_root_approval_bytes(path: Path, recovery_path: Path) -> bytes:
+    """Read-and-destroy approval through root without changing Docker identity."""
+    prefix = [] if os.geteuid() == 0 else ["/usr/bin/sudo", "-n"]
+    try:
+        result = subprocess.run(
+            [
+                *prefix,
+                "/usr/bin/python3",
+                "-c",
+                ROOT_APPROVAL_CONSUMER,
+                str(path),
+                str(recovery_path),
+            ],
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeAdmissionError("root approval consumer is unavailable") from exc
+    if result.returncode != 0:
+        raise RuntimeAdmissionError(
+            "root approval consumption requires a current sudo authorization"
+        )
+    return result.stdout
+
+
+def _recover_root_consumption(path: Path, *, discard: bool) -> None:
+    """Recover an exact helper transaction even if its response was lost."""
+    prefix = [] if os.geteuid() == 0 else ["/usr/bin/sudo", "-n"]
+    try:
+        result = subprocess.run(
+            [
+                *prefix,
+                "/usr/bin/python3",
+                "-c",
+                ROOT_CONSUMPTION_RECOVERY,
+                str(path),
+                "discard" if discard else "release",
+            ],
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeAdmissionError("root consumption recovery is unavailable") from exc
+    if result.returncode != 0:
+        raise RuntimeAdmissionError("root consumption recovery failed")
+
+
+def _destroy_root_benchmark_grant(path: Path) -> None:
+    """Destroy an unused root grant without exposing or reading its payload."""
+    if os.geteuid() == 0:
+        if not re.fullmatch(
+            r"\.cre-capacity-benchmark-grant-[0-9a-f]{64}\.json", path.name
+        ):
+            raise RuntimeAdmissionError("root benchmark grant path is invalid")
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return
+        _validate_root_authority(path)
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise RuntimeAdmissionError(
+                "root benchmark grant could not be destroyed"
+            ) from exc
+        return
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/bin/python3",
+                "-c",
+                ROOT_GRANT_DESTROYER,
+                str(path),
+            ],
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeAdmissionError(
+            "root benchmark grant destroyer is unavailable"
+        ) from exc
+    if result.returncode != 0:
+        raise RuntimeAdmissionError("root benchmark grant could not be destroyed")
+
+
+def _validate_approval_payload(
+    approval: Mapping[str, Any],
     receipt: Mapping[str, Any],
     profile_name: str,
     config_sha256: str,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    if path.is_symlink() or not path.is_file():
-        raise RuntimeAdmissionError("root approval must be a regular private file")
-    if stat.S_IMODE(path.stat().st_mode) != 0o600:
-        raise RuntimeAdmissionError("root approval file must have mode 0600")
-    if stat.S_IMODE(path.parent.stat().st_mode) & 0o077:
-        raise RuntimeAdmissionError("root approval directory must be private")
-    approval = experiment._read_json(path)
     required = {
         "schema_version",
         "kind",
@@ -777,6 +1276,7 @@ def load_root_approval(
         "approved",
         "created_at",
         "expires_after_seconds",
+        "nonce",
     }
     if (
         set(approval) != required
@@ -790,6 +1290,7 @@ def load_root_approval(
         or approval.get("approved_by") != "root-review"
         or approval.get("approved") is not True
         or approval.get("expires_after_seconds") != RECEIPT_MAX_AGE_SECONDS
+        or not NONCE_PATTERN.fullmatch(str(approval.get("nonce")))
     ):
         raise RuntimeAdmissionError(
             "root approval does not bind the admitted transition"
@@ -798,7 +1299,55 @@ def load_root_approval(
     age = (current - _parse_time(approval.get("created_at"))).total_seconds()
     if age < 0 or age > RECEIPT_MAX_AGE_SECONDS:
         raise RuntimeAdmissionError("root approval is stale")
-    return approval
+    return dict(approval)
+
+
+def consume_root_approval(
+    path: Path,
+    receipt: Mapping[str, Any],
+    profile_name: str,
+    config_sha256: str,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any], Path]:
+    """Atomically consume one root-owned approval before issuing a mutation."""
+    path = Path(os.path.abspath(path))
+    recovery_path = path.parent / (
+        f".cre-capacity-consumption-{secrets.token_hex(32)}.json"
+    )
+    grant_path: Path | None = None
+    try:
+        try:
+            approval = json.loads(_consume_root_approval_bytes(path, recovery_path))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise RuntimeAdmissionError("root approval contains invalid JSON") from exc
+        if not isinstance(approval, Mapping):
+            raise RuntimeAdmissionError("root approval contains invalid JSON")
+        grant_path = _benchmark_grant_path(path.parent, approval)
+        validated = _validate_approval_payload(
+            approval, receipt, profile_name, config_sha256, now
+        )
+        _recover_root_consumption(recovery_path, discard=False)
+        return validated, grant_path
+    except BaseException as primary_error:
+        cleanup_errors: list[BaseException] = []
+        with _defer_transition_signals():
+            try:
+                _recover_root_consumption(recovery_path, discard=True)
+            except BaseException as exc:  # noqa: BLE001 - always attempt known grant cleanup
+                cleanup_errors.append(exc)
+            if grant_path is not None:
+                try:
+                    _destroy_root_benchmark_grant(grant_path)
+                except BaseException as exc:  # noqa: BLE001 - retain both cleanup failures
+                    cleanup_errors.append(exc)
+        if cleanup_errors:
+            error = RuntimeAdmissionError(
+                "root approval failed and grant cleanup failed"
+            )
+            for cleanup_error in cleanup_errors:
+                error.add_note(str(cleanup_error))
+            raise error from primary_error
+        raise
 
 
 def preservation_checks(
@@ -870,6 +1419,7 @@ def _compose_recreate(
     runner: CommandRunner,
     *,
     execute: bool = True,
+    mutation_observer: Callable[[], None] | None = None,
 ) -> None:
     parent = Path(
         tempfile.mkdtemp(
@@ -879,6 +1429,8 @@ def _compose_recreate(
     os.chmod(parent, 0o700)
     overlay = parent / "runtime-overlay.json"
     compose_env = parent / "compose.env"
+    mutation_issued = False
+    primary_error: BaseException | None = None
     try:
         write_private(
             overlay, _private_overlay(capture, profile, state), refuse_existing=True
@@ -982,42 +1534,73 @@ def _compose_recreate(
                 "--force-recreate",
                 "playwright-service",
             ]
+            mutation_issued = True
+            if mutation_observer is not None:
+                mutation_observer()
             try:
                 _run(runner, argv, cwd=REPO_ROOT, env=command_env)
             except RuntimeAdmissionError as exc:
                 raise RuntimeMutationError(
                     "browser recreation failed after mutation request"
                 ) from exc
+    except BaseException as exc:  # noqa: BLE001 - preserve interrupts through cleanup
+        primary_error = exc
     finally:
-        overlay.unlink(missing_ok=True)
-        compose_env.unlink(missing_ok=True)
+        cleanup_errors: list[OSError] = []
+        for path in (overlay, compose_env):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                cleanup_errors.append(exc)
         try:
             parent.rmdir()
         except OSError as exc:
-            raise RuntimeAdmissionError(
+            cleanup_errors.append(exc)
+        if primary_error is not None:
+            for cleanup_error in cleanup_errors:
+                primary_error.add_note(
+                    f"private runtime overlay cleanup also failed: {cleanup_error}"
+                )
+            raise primary_error
+        if cleanup_errors:
+            error_type = (
+                RuntimeOverlayCleanupError if mutation_issued else RuntimeAdmissionError
+            )
+            raise error_type(
                 "private runtime overlay cleanup failed"
-            ) from exc
+            ) from cleanup_errors[0]
 
 
-def _api_update(profile: Mapping[str, Any], state: str, runner: CommandRunner) -> None:
+def _api_update(
+    profile: Mapping[str, Any],
+    state: str,
+    runner: CommandRunner,
+    *,
+    mutation_observer: Callable[[], None] | None = None,
+) -> None:
     runtime, requested = profile["runtime_baseline"], profile["requested"]
     cpus = runtime["api_cpus"] if state == "baseline" else requested["api_cpus"]
     memory = runtime["api_memory_bytes"]
-    _run(
-        runner,
-        [
-            "docker",
-            "update",
-            "--cpus",
-            str(cpus),
-            "--memory",
-            str(memory),
-            "--memory-swap",
-            str(memory),
-            API_CONTAINER,
-        ],
-        cwd=REPO_ROOT,
-    )
+    if mutation_observer is not None:
+        mutation_observer()
+    try:
+        _run(
+            runner,
+            [
+                "docker",
+                "update",
+                "--cpus",
+                str(cpus),
+                "--memory",
+                str(memory),
+                "--memory-swap",
+                str(memory),
+                API_CONTAINER,
+            ],
+            cwd=REPO_ROOT,
+        )
+    except RuntimeAdmissionError as exc:
+        raise RuntimeMutationError("API update failed after mutation request") from exc
 
 
 def verify_capture(
@@ -1028,7 +1611,218 @@ def verify_capture(
 ) -> dict[str, bool]:
     checks = evaluate_state(capture.public, profile, state)
     checks.update(preservation_checks(capture, receipt["baseline"], state))
+    checks["source_inputs_unchanged"] = _repo_transition_invariants(
+        capture.public["repo"]
+    ) == _repo_transition_invariants(receipt["baseline"]["repo"])
+    checks["host_identity_unchanged"] = all(
+        capture.public["host"].get(key) == receipt["baseline"]["host"].get(key)
+        for key in ("orb_status", "orbstack_memory_mib", "docker_context")
+    )
     return checks
+
+
+def _repo_transition_invariants(repo: Mapping[str, Any]) -> dict[str, Any]:
+    """Return execution-relevant repo state; dirt is diagnostic by contract."""
+    return {key: value for key, value in repo.items() if key != "dirty"}
+
+
+def _component_states(
+    current: RuntimeCapture,
+    receipt: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> tuple[str, str]:
+    """Classify only exact baseline/candidate component states.
+
+    Shared topology, source inputs, host capacity, endpoints, and idle queues
+    must remain admitted. Any third configuration is unrelated drift.
+    """
+    baseline = receipt["baseline"]
+    common = evaluate_state(current.public, profile, "candidate")
+    for key in ("browser_cpu", "browser_pages", "browser_pids", "api_cpu"):
+        common.pop(key)
+    preserved = preservation_checks(current, baseline, "candidate")
+    exact_repo = _repo_transition_invariants(
+        current.public["repo"]
+    ) == _repo_transition_invariants(baseline["repo"])
+    exact_host = all(
+        current.public["host"].get(key) == baseline["host"].get(key)
+        for key in ("orb_status", "orbstack_memory_mib", "docker_context")
+    )
+    if not (
+        all(common.values()) and all(preserved.values()) and exact_repo and exact_host
+    ):
+        raise RuntimeAdmissionError(
+            "runtime contains unrelated drift; rollback refused"
+        )
+
+    baseline_checks = evaluate_state(current.public, profile, "baseline")
+    candidate_checks = evaluate_state(current.public, profile, "candidate")
+    browser_keys = ("browser_cpu", "browser_pages", "browser_pids")
+    browser_baseline = all(baseline_checks[key] for key in browser_keys)
+    browser_candidate = all(candidate_checks[key] for key in browser_keys)
+    api_baseline = baseline_checks["api_cpu"]
+    api_candidate = candidate_checks["api_cpu"]
+    if browser_baseline == browser_candidate or api_baseline == api_candidate:
+        raise RuntimeAdmissionError(
+            "runtime components are neither exact baseline nor exact candidate"
+        )
+    return (
+        "baseline" if browser_baseline else "candidate",
+        "baseline" if api_baseline else "candidate",
+    )
+
+
+def _canonical_transition_lock() -> Path:
+    try:
+        path = canonical_shared_lock_dir(REPO_ROOT).resolve()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeAdmissionError("canonical CRE lock path is unavailable") from exc
+    if path.name != ".cre.lock":
+        raise RuntimeAdmissionError("canonical CRE lock path is invalid")
+    return path
+
+
+def _signal_as_interrupt(signum: int, _frame: object) -> None:
+    raise KeyboardInterrupt(f"runtime transition interrupted by signal {signum}")
+
+
+@contextmanager
+def _transition_signal_handlers():
+    previous: dict[int, Any] = {}
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, _signal_as_interrupt)
+    except ValueError as exc:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        raise RuntimeAdmissionError(
+            "runtime execution must run in the main process thread"
+        ) from exc
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+@contextmanager
+def _delay_transition_signals():
+    """Deliver cancellation after ownership has crossed a helper boundary."""
+    previous: dict[int, Any] = {}
+    pending: list[int] = []
+
+    def record(signum: int, _frame: object) -> None:
+        pending.append(signum)
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, record)
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+    if pending:
+        _signal_as_interrupt(pending[0], None)
+
+
+@contextmanager
+def _defer_transition_signals():
+    previous: dict[int, Any] = {}
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, signal.SIG_IGN)
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def _restore_baseline(
+    current: RuntimeCapture,
+    receipt: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    runner: CommandRunner,
+) -> RuntimeCapture:
+    """Resume a safe rollback from baseline, candidate, or a mixed state."""
+    browser_state, api_state = _component_states(current, receipt, profile)
+    cleanup_error: RuntimeOverlayCleanupError | None = None
+    if browser_state == "candidate":
+        try:
+            _compose_recreate(current, profile, "baseline", runner)
+        except RuntimeOverlayCleanupError as exc:
+            cleanup_error = exc
+        current = capture_runtime(runner)
+        observed_browser, observed_api = _component_states(current, receipt, profile)
+        if observed_browser != "baseline" or observed_api != api_state:
+            raise RuntimeAdmissionError(
+                "browser rollback did not preserve the API component"
+            )
+    if api_state == "candidate":
+        _api_update(profile, "baseline", runner)
+        current = capture_runtime(runner)
+    final_browser, final_api = _component_states(current, receipt, profile)
+    checks = verify_capture(current, receipt, profile, "baseline")
+    if (final_browser, final_api) != ("baseline", "baseline") or not all(
+        checks.values()
+    ):
+        raise RuntimeAdmissionError("rollback verification failed")
+    if cleanup_error is not None:
+        raise cleanup_error
+    return current
+
+
+def _compensate_candidate_attempt(
+    current: RuntimeCapture,
+    receipt: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    runner: CommandRunner,
+) -> RuntimeCapture:
+    """Reverse an issued candidate attempt even when its resources are partial."""
+    baseline = receipt["baseline"]
+    preserved = preservation_checks(current, baseline, "candidate")
+    exact_repo = _repo_transition_invariants(
+        current.public["repo"]
+    ) == _repo_transition_invariants(baseline["repo"])
+    exact_host = all(
+        current.public["host"].get(key) == baseline["host"].get(key)
+        for key in ("orb_status", "orbstack_memory_mib", "docker_context")
+    )
+    if not all(preserved.values()) or not exact_repo or not exact_host:
+        raise RuntimeAdmissionError(
+            "automatic rollback refused after unrelated runtime drift"
+        )
+    failures: list[BaseException] = []
+    try:
+        _compose_recreate(current, profile, "baseline", runner)
+    except BaseException as exc:  # noqa: BLE001 - compensation must continue
+        failures.append(exc)
+    try:
+        _api_update(profile, "baseline", runner)
+    except BaseException as exc:  # noqa: BLE001 - verification still must run
+        failures.append(exc)
+    baseline_verified = False
+    restored: RuntimeCapture | None = None
+    try:
+        restored = capture_runtime(runner)
+        checks = verify_capture(restored, receipt, profile, "baseline")
+        baseline_verified = all(checks.values())
+    except BaseException as exc:  # noqa: BLE001 - preserve command failures
+        failures.append(exc)
+    if failures or not baseline_verified:
+        outcome = (
+            "baseline verified, but rollback commands reported uncertainty"
+            if baseline_verified
+            else "baseline could not be verified after both rollback attempts"
+        )
+        error = RuntimeCompensationError(outcome, baseline_verified=baseline_verified)
+        for failure in failures[1:]:
+            error.add_note(f"additional compensation failure: {failure}")
+        raise error from (failures[0] if failures else None)
+    assert restored is not None
+    return restored
 
 
 def transition(
@@ -1056,85 +1850,184 @@ def transition(
             raise RuntimeAdmissionError(
                 "candidate execution requires a root-review approval file"
             )
-        load_root_approval(approval_path, receipt, profile_name, digest)
-    current = capture_runtime(runner)
-    baseline = receipt["baseline"]
-    if state == "candidate":
-        current_checks = verify_capture(current, receipt, profile, "baseline")
-        if current.public["transition_sha256"] != baseline[
-            "transition_sha256"
-        ] or not all(current_checks.values()):
-            raise RuntimeAdmissionError("runtime drifted after preflight")
-    else:
-        candidate_checks = verify_capture(current, receipt, profile, "candidate")
-        if not all(candidate_checks.values()):
-            raise RuntimeAdmissionError(
-                "rollback requires the exact admitted candidate state"
-            )
+    lock_path = _canonical_transition_lock()
     plan = {
         "profile": profile_name,
         "state": state,
         "execute": execute,
         "root_approval_required": state == "candidate",
+        "canonical_lock": str(lock_path),
         "commands": receipt["apply_plan"]
         if state == "candidate"
         else receipt["rollback_plan"],
     }
     if not execute:
-        _compose_recreate(current, profile, state, runner, execute=False)
-        return plan
-    mutation_started = False
-    try:
-        _compose_recreate(current, profile, state, runner)
-        mutation_started = True
-        _api_update(profile, state, runner)
-        after = capture_runtime(runner)
-        checks = verify_capture(after, receipt, profile, state)
-        if not all(checks.values()):
-            raise RuntimeAdmissionError(f"{state} verification failed")
-    except Exception as exc:
+        current = capture_runtime(runner)
+        baseline = receipt["baseline"]
+        try:
+            browser_state, api_state = _component_states(current, receipt, profile)
+        except RuntimeAdmissionError as exc:
+            if state == "candidate":
+                raise RuntimeAdmissionError("runtime drifted after preflight") from exc
+            raise
         if state == "candidate" and (
-            mutation_started or isinstance(exc, RuntimeMutationError)
+            current.public["transition_sha256"] != baseline["transition_sha256"]
+            or (browser_state, api_state) != ("baseline", "baseline")
         ):
-            rollback_capture = capture_runtime(runner)
-            preserve = preservation_checks(rollback_capture, baseline, "candidate")
-            if not preserve["browser_environment_except_pages"]:
-                raise RuntimeAdmissionError(
-                    "automatic rollback refused after unrelated environment drift"
+            raise RuntimeAdmissionError("runtime drifted after preflight")
+        _compose_recreate(current, profile, state, runner, execute=False)
+        if state == "baseline":
+            plan["commands"] = {
+                component: receipt["rollback_plan"][component]
+                for component, observed in (
+                    ("browser", browser_state),
+                    ("api", api_state),
                 )
-            _api_update(profile, "baseline", runner)
-            _compose_recreate(rollback_capture, profile, "baseline", runner)
-            restored = capture_runtime(runner)
-            rollback_checks = verify_capture(restored, receipt, profile, "baseline")
-            if not all(rollback_checks.values()):
-                raise RuntimeAdmissionError(
-                    "automatic rollback verification failed"
-                ) from exc
-        raise
-    result = {
-        "profile": profile_name,
-        "state": state,
-        "checks": checks,
-        "verified": True,
-    }
-    if state == "candidate" and admission_out is not None:
-        admission = {
-            "schema_version": SCHEMA_VERSION,
-            "kind": ADMISSION_KIND,
-            "profile": profile_name,
-            "config_sha256": digest,
-            "source_git_sha": after.public["repo"]["git_sha"],
-            "transition_receipt_sha256": receipt["receipt_sha256"],
-            "created_at": utc_now(),
-            "expires_after_seconds": RECEIPT_MAX_AGE_SECONDS,
-            "admitted": True,
-            "writes": "forbidden",
-            "checks": checks,
-            "effective": after.public,
+                if observed == "candidate"
+            }
+        plan["observed_components"] = {
+            "browser": browser_state,
+            "api": api_state,
         }
-        write_private(admission_out, admission, refuse_existing=True)
-        result["admission_path"] = str(admission_out)
-    return result
+        return plan
+
+    mutation_issued = False
+    root_grant_path: Path | None = None
+
+    def mark_mutation() -> None:
+        nonlocal mutation_issued
+        mutation_issued = True
+
+    with _transition_signal_handlers():
+        try:
+            lock = SharedLock(lock_path)
+            with _defer_transition_signals():
+                lock.acquire()
+        except LockHeldError as exc:
+            raise RuntimeAdmissionError(str(exc)) from exc
+        try:
+            current = capture_runtime(runner)
+            baseline = receipt["baseline"]
+            try:
+                browser_state, api_state = _component_states(current, receipt, profile)
+            except RuntimeAdmissionError as exc:
+                if state == "candidate":
+                    raise RuntimeAdmissionError(
+                        "runtime drifted after preflight"
+                    ) from exc
+                raise
+            if state == "candidate":
+                if current.public["transition_sha256"] != baseline[
+                    "transition_sha256"
+                ] or (browser_state, api_state) != ("baseline", "baseline"):
+                    raise RuntimeAdmissionError("runtime drifted after preflight")
+                assert approval_path is not None
+                with _delay_transition_signals():
+                    approval, root_grant_path = consume_root_approval(
+                        approval_path, receipt, profile_name, digest
+                    )
+                _compose_recreate(
+                    current,
+                    profile,
+                    "candidate",
+                    runner,
+                    mutation_observer=mark_mutation,
+                )
+                mutation_issued = True
+                _api_update(
+                    profile,
+                    "candidate",
+                    runner,
+                    mutation_observer=mark_mutation,
+                )
+                after = capture_runtime(runner)
+                checks = verify_capture(after, receipt, profile, "candidate")
+                if not all(checks.values()):
+                    raise RuntimeAdmissionError("candidate verification failed")
+            else:
+                after = _restore_baseline(current, receipt, profile, runner)
+                checks = verify_capture(after, receipt, profile, "baseline")
+
+            result = {
+                "profile": profile_name,
+                "state": state,
+                "checks": checks,
+                "verified": True,
+            }
+            if state == "candidate" and admission_out is not None:
+                admission = {
+                    "schema_version": SCHEMA_VERSION,
+                    "kind": ADMISSION_KIND,
+                    "profile": profile_name,
+                    "config_sha256": digest,
+                    "source_git_sha": after.public["repo"]["git_sha"],
+                    "transition_receipt_sha256": receipt["receipt_sha256"],
+                    "root_approval_nonce_sha256": _hash(approval["nonce"]),
+                    "root_approval_created_at": approval["created_at"],
+                    "root_benchmark_grant_path": str(root_grant_path),
+                    "created_at": utc_now(),
+                    "expires_after_seconds": RECEIPT_MAX_AGE_SECONDS,
+                    "admitted": True,
+                    "writes": "forbidden",
+                    "checks": checks,
+                    "effective": after.public,
+                }
+                write_private(admission_out, admission, refuse_existing=True)
+                result["admission_path"] = str(admission_out)
+            return result
+        except BaseException:
+            grant_cleanup_error: BaseException | None = None
+            if state == "candidate" and root_grant_path is not None:
+                try:
+                    with _defer_transition_signals():
+                        _destroy_root_benchmark_grant(root_grant_path)
+                except BaseException as cleanup_exc:  # noqa: BLE001 - keep compensating
+                    grant_cleanup_error = cleanup_exc
+            compensation_error: BaseException | None = None
+            if state == "candidate" and mutation_issued:
+                try:
+                    with _defer_transition_signals():
+                        admission_cleanup_error: OSError | None = None
+                        if admission_out is not None:
+                            try:
+                                admission_out.unlink(missing_ok=True)
+                            except OSError as exc:
+                                admission_cleanup_error = exc
+                        try:
+                            rollback_capture = capture_runtime(runner)
+                        except (RuntimeAdmissionError, OSError):
+                            rollback_capture = _capture_recovery_state(current, runner)
+                        _compensate_candidate_attempt(
+                            rollback_capture, receipt, profile, runner
+                        )
+                        if admission_cleanup_error is not None:
+                            raise RuntimeAdmissionError(
+                                "baseline restored but admission cleanup failed"
+                            ) from admission_cleanup_error
+                except BaseException as rollback_exc:  # noqa: BLE001 - report both
+                    compensation_error = rollback_exc
+            if compensation_error is not None or grant_cleanup_error is not None:
+                if isinstance(compensation_error, RuntimeCompensationError):
+                    detail = f"automatic rollback failed: {compensation_error}"
+                elif isinstance(compensation_error, RuntimeOverlayCleanupError):
+                    detail = (
+                        "automatic rollback restored resources but private "
+                        "cleanup failed"
+                    )
+                elif compensation_error is not None:
+                    detail = "automatic rollback verification failed"
+                else:
+                    detail = "unused root benchmark grant cleanup failed"
+                failure = RuntimeAdmissionError(detail)
+                if grant_cleanup_error is not None and compensation_error is not None:
+                    failure.add_note(
+                        f"root grant cleanup also failed: {grant_cleanup_error}"
+                    )
+                raise failure from (compensation_error or grant_cleanup_error)
+            raise
+        finally:
+            with _defer_transition_signals():
+                lock.release()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
