@@ -453,9 +453,12 @@ def test_settlement_backends_requires_complete_rabbit_and_nuq_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(benchmark, "_http_json", lambda _url: {"data": {"crawls": []}})
+    rabbitmq = (
+        Path(__file__).with_name("fixtures") / "rabbitmq-3.13.7-idle.txt"
+    ).read_text(encoding="utf-8")
     outputs = iter(
         [
-            "scrape_queue 0 0\n",
+            rabbitmq,
             (
                 "queue_crawl_finished_total|0\n"
                 "queue_scrape_backlog_total|0\n"
@@ -472,8 +475,38 @@ def test_settlement_backends_requires_complete_rabbit_and_nuq_evidence(
     result = benchmark._settlement_backends("http://127.0.0.1:3102")
 
     assert result["active_crawls"] == 0
-    assert result["rabbitmq_queue_count"] == 1
+    assert result["rabbitmq_queue_count"] == 4
     assert result["nuq"]["queue_scrape_total"] == 0
+
+
+def test_settlement_backends_rejects_duplicate_rabbitmq_queue_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark, "_http_json", lambda _url: {"data": {"crawls": []}})
+    outputs = iter(
+        [
+            (
+                "name\tmessages_ready\tmessages_unacknowledged\n"
+                "extract.jobs\t0\t0\n"
+                "extract.jobs\t0\t0\n"
+            ),
+            (
+                "queue_crawl_finished_total|0\n"
+                "queue_scrape_backlog_total|0\n"
+                "queue_scrape_total|0\n"
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        benchmark.subprocess,
+        "run",
+        lambda *_args, **_kwargs: benchmark.subprocess.CompletedProcess(
+            [], 0, next(outputs), ""
+        ),
+    )
+
+    with pytest.raises(benchmark.BenchmarkError, match="RabbitMQ"):
+        benchmark._settlement_backends("http://127.0.0.1:3102")
 
 
 def test_settlement_poll_propagates_interrupt(
