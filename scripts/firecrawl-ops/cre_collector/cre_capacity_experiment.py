@@ -94,6 +94,11 @@ def load_profile(path: Path, profile_name: str) -> tuple[dict[str, Any], str]:
     if document.get("schema_version") != SCHEMA_VERSION:
         raise ProfileError("unsupported experiment profile schema")
     profiles = _object(document.get("profiles"), "profiles")
+    if (
+        not isinstance(document.get("default_profile"), str)
+        or document["default_profile"] not in profiles
+    ):
+        raise ProfileError("default_profile must name a configured profile")
     raw = profiles.get(profile_name)
     profile = dict(_object(raw, f"profile {profile_name}"))
     if profile.get("kind") not in {"baseline", "experiment"}:
@@ -140,6 +145,17 @@ def load_profile(path: Path, profile_name: str) -> tuple[dict[str, Any], str]:
         ):
             raise ProfileError("later provider split must equal the global page budget")
     planned = _object(profile.get("planned"), "planned")
+    if profile["kind"] == "experiment" and (
+        _object(profile.get("workload"), "workload")
+        != {"source": "jll", "details": 128, "replicates": 3, "writes": "forbidden"}
+        or planned
+        != {
+            "source_parallelism": "unimplemented",
+            "full_path_no_write_adapter": "unimplemented",
+            "provider_429_challenge_cooldown": "required-at-execution",
+        }
+    ):
+        raise ProfileError("bold experiment contract has an unexpected value")
     if (
         profile["kind"] == "experiment"
         and planned.get("full_path_no_write_adapter") != "unimplemented"
@@ -162,7 +178,7 @@ def _compare_effective(
     drift = [
         {"field": key, "expected": expected[key], "actual": supplied[key]}
         for key in sorted(set(expected) & set(supplied))
-        if supplied[key] != expected[key]
+        if isinstance(supplied[key], bool) or supplied[key] != expected[key]
     ]
     return {
         "state": "match" if not missing and not drift else "drift",
@@ -328,6 +344,10 @@ def main(argv: list[str] | None = None) -> int:
         if inspection is not None:
             result["runtime_inspection"] = inspection
         if args.write_plan:
+            if result["runtime_baseline_check"]["state"] != "match":
+                raise ProfileError(
+                    "refusing an admissible settings record without matching runtime evidence"
+                )
             _write_json(args.write_plan, result)
         print(json.dumps(result, sort_keys=True, indent=2))
     except ProfileError as exc:
