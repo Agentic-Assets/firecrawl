@@ -196,7 +196,9 @@ def resolve(
             "writes": "forbidden",
             "technical_admission_required": profile["kind"] == "experiment",
             "startable": False,
-            "blockers": ["effective_runtime_drift"]
+            "blockers": ["runtime_evidence_unverified"]
+            if runtime["state"] == "unverified"
+            else ["effective_runtime_drift"]
             if runtime["state"] == "drift"
             else ["full_path_no_write_adapter_unimplemented"]
             if profile["kind"] == "experiment"
@@ -306,7 +308,7 @@ def inspect_runtime() -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", default="bold-jll-128")
+    parser.add_argument("--profile", default="production-current")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--effective-settings", type=Path)
     parser.add_argument("--write-plan", type=Path)

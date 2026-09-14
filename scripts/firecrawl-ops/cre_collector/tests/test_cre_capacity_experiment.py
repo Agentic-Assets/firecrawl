@@ -19,7 +19,7 @@ def test_bold_profile_resolves_global_budget_and_unimplemented_adapter() -> None
     assert plan["workload"]["source"] == "jll"
     assert plan["provider_budget"]["later_two_provider_split"] == [6, 4]
     assert plan["execution"]["startable"] is False
-    assert plan["execution"]["blockers"] == ["full_path_no_write_adapter_unimplemented"]
+    assert plan["execution"]["blockers"] == ["runtime_evidence_unverified"]
 
 
 def test_effective_runtime_match_is_distinguished_from_proposed_cpu_settings() -> None:
