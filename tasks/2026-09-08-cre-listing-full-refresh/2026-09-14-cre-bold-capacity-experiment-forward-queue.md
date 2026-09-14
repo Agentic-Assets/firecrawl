@@ -13,10 +13,12 @@ Verify each item before acting.
   verified operational gap). Replace manual lock-directory removal with an
   operator command that proves every local settlement counter idle, displays
   the retained evidence, and clears only the exact canonical interlock.
-- **Exercise the full TypeScript suite in a dependency-complete checkout**
-  (priority: medium; confidence: verified verification limit). Run the changed
-  retry tests and typecheck against pinned dependencies without changing the
-  published SHA or installing dependencies into this worktree implicitly.
+- **Upgrade vulnerable pinned HTTP dependencies in a separate PR** (priority:
+  high; confidence: verified dependency debt). The 2026-09-14 collector audit
+  reported three existing production dependency advisories: one moderate and
+  two high, affecting `axios`, `undici`, and the pinned Firecrawl SDK dependency
+  chain. Keep that dependency upgrade and its regression testing isolated from
+  this operational benchmark change.
 
 ## Robustness and simplification
 

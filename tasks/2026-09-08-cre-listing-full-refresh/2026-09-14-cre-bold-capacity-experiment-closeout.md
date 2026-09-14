@@ -1,8 +1,11 @@
 # CRE bold capacity experiment closeout (2026-09-14)
 
-**Branch:** `feat/cre-bold-experiment-profile`  
-**Base:** `origin/main` at `2befd1705b14a173d39fe4bb24d7d9e1a925feb6`  
-**Reviewed implementation:** `a10743bfc1644f72153b91da0f0f482aeb63b3ee`  
+**Branch:** `feat/cre-bold-experiment-profile`
+
+**Base:** `origin/main` at `2befd1705b14a173d39fe4bb24d7d9e1a925feb6`
+
+**Reviewed implementation:** `a10743bfc1644f72153b91da0f0f482aeb63b3ee`
+
 **State:** draft PR [#52](https://github.com/Agentic-Assets/firecrawl/pull/52), published and unmerged
 
 ## Goal
@@ -27,7 +30,7 @@ fidelity, and artifact proof.
 
 ## Verification
 
-- Full CRE collector Python suite: `2,738 passed, 19 skipped`.
+- Full CRE collector Python suite: `2,739 passed, 18 skipped`.
 - Focused capacity, checkpoint, and shell suite: `510 passed`.
 - Ruff, capacity-file format checks, `py_compile`, shell syntax, Bun
   transpilation, and `git diff --check`: passed.
@@ -39,9 +42,10 @@ fidelity, and artifact proof.
 - Multi-lens adversarial review found and drove fixes for authorization,
   compensation, retry, evidence, baseline, and crash-lock defects. Final
   skeptical review reported no remaining confirmed finding.
-- Full TypeScript unit/typecheck was not run because this worktree has no
-  collector `node_modules`. Both changed TypeScript files transpiled, and the
-  exact pinned SDK retry loop was exercised offline through a mocked transport.
+- Collector TypeScript verification against the pinned dependency tree:
+  typecheck passed and all 848 tests passed. The retry telemetry test now
+  explicitly proves that backoff is recorded only before real retries, never
+  after the terminal attempt.
 - GitHub has no reported CI check rollup on the draft PR as of closeout.
 
 ## Decisions
