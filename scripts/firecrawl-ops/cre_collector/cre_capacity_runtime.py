@@ -1358,6 +1358,20 @@ def consume_review_approval(
         raise
 
 
+def _fsync_directory(path: Path) -> None:
+    """Persist directory-entry changes or fail closed."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise RuntimeAdmissionError(
+            "review approval consumption directory could not be made durable"
+        ) from exc
+
+
 def _record_review_approval_consumption(
     lock_path: Path,
     approval: Mapping[str, Any],
@@ -1385,6 +1399,7 @@ def _record_review_approval_consumption(
         raise RuntimeAdmissionError(
             "canonical approval consumption directory is unsafe"
         )
+    _fsync_directory(consumption_root.parent)
     nonce_sha256 = _hash(approval["nonce"])
     marker = consumption_root / f"{nonce_sha256}.json"
     payload = (
@@ -1444,12 +1459,8 @@ def _record_review_approval_consumption(
     finally:
         os.close(descriptor)
     try:
-        directory_descriptor = os.open(consumption_root, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
-    except OSError as exc:
+        _fsync_directory(consumption_root)
+    except RuntimeAdmissionError as exc:
         try:
             marker.unlink()
         except FileNotFoundError:

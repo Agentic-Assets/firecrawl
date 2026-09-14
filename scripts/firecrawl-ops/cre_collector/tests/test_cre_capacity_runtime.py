@@ -563,6 +563,13 @@ def test_apply_executes_and_writes_bound_admission(
     calls: list[tuple[str, str]] = []
     events: list[str] = []
     mock_transition_authority(monkeypatch, tmp_path, events)
+    original_fsync_directory = runtime._fsync_directory
+
+    def fsync_directory_with_event(path: Path) -> None:
+        events.append(f"fsync-{path.name}")
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(runtime, "_fsync_directory", fsync_directory_with_event)
 
     def capture_with_event(runner: object) -> runtime.RuntimeCapture:
         events.append("capture")
@@ -633,6 +640,8 @@ def test_apply_executes_and_writes_bound_admission(
     assert events == [
         "lock-acquire",
         "capture",
+        "fsync-out",
+        "fsync-.capacity-review-consumption",
         "browser",
         "api",
         "capture",
