@@ -2036,7 +2036,10 @@ def _run_worker(
     review_grant: Mapping[str, Any] | None = None,
 ) -> tuple[int, list[dict[str, Any]], str | None]:
     replicate_dir.mkdir(mode=0o700)
-    worker_path = replicate_dir / "worker.ts"
+    # Replicate artifacts live outside the collector package boundary.  Use an
+    # explicit ESM TypeScript extension so tsx does not infer CommonJS and
+    # reject the worker's top-level await.
+    worker_path = replicate_dir / "worker.mts"
     worker_source = _worker_source(
         repo_root,
         expected_details=expected_details,
