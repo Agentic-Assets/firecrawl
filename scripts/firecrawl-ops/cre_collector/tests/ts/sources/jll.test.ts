@@ -616,6 +616,7 @@ test("JLL detail enrichment preserves list and detail hidden-price controls", as
       const base = {
         id: hiddenAt,
         url,
+        salePriceUsd: 1000000,
         salePriceText: "$1,000,000",
         leaseRateText: "$20/feet",
         jllSearchResult: { hidePrice: hiddenAt === "list" },
@@ -639,6 +640,7 @@ test("JLL detail enrichment preserves list and detail hidden-price controls", as
 
       const enriched = await enrichJllListing(base);
       assert.equal(enriched.detailError, undefined);
+      assert.equal(enriched.salePriceUsd, undefined);
       assert.equal(enriched.salePriceText, undefined);
       assert.equal(enriched.leaseRateText, undefined);
     }

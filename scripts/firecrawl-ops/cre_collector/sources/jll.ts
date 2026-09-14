@@ -1088,6 +1088,7 @@ export async function enrichJllListing(base: any): Promise<any> {
       postalCode: clean(property.postcode) ?? base.postalCode,
       latitude: num(property.latitude) ?? base.latitude,
       longitude: num(property.longitude) ?? base.longitude,
+      salePriceUsd: hiddenPrice ? null : base.salePriceUsd,
       salePriceText: hiddenPrice
         ? null
         : jllDetailPriceText(property.salePrice) ?? base.salePriceText,
