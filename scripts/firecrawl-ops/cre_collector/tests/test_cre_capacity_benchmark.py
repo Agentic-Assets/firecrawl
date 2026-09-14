@@ -589,6 +589,45 @@ def test_worker_source_is_hashable_and_imports_real_jll_adapter(tmp_path: Path) 
     assert len(hashlib.sha256(source.encode()).hexdigest()) == 64
 
 
+def test_darwin_cpu_percent_uses_recorded_user_system_idle_nice_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark.sys, "platform", "darwin")
+    before = (118_993_452, 45_731_497, 387_741_893, 0)
+    after = (118_993_706, 45_731_643, 387_745_097, 0)
+
+    assert benchmark._cpu_percent(before, after) == pytest.approx(
+        100 * (254 + 146) / (254 + 146 + 3_204)
+    )
+
+
+def test_linux_cpu_percent_includes_idle_and_iowait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark.sys, "platform", "linux")
+
+    assert benchmark._cpu_percent((0, 0, 0, 0, 0), (100, 10, 20, 700, 170)) == 13
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "message"),
+    [
+        ((1, 2, 3, 4), (1, 2, 3, 4), "did not advance"),
+        ((10, 20, 30, 40), (11, 21, 29, 41), "moved backwards"),
+    ],
+)
+def test_linux_cpu_percent_rejects_zero_delta_or_counter_reset(
+    before: tuple[int, ...],
+    after: tuple[int, ...],
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark.sys, "platform", "linux")
+
+    with pytest.raises(benchmark.BenchmarkError, match=message):
+        benchmark._cpu_percent(before, after)
+
+
 def test_worker_scheduler_stops_before_pulling_queued_items() -> None:
     script = (
         benchmark.WORKER_SCHEDULER_JS
