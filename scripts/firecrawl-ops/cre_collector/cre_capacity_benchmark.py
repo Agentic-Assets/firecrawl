@@ -36,6 +36,7 @@ from typing import Any
 import cre_capacity_experiment as experiment
 import cre_capacity_runtime as capacity_runtime
 import cre_capacity_telemetry as capacity_telemetry
+import cre_checkpoint_refresh as checkpoint_refresh
 from cre_checkpoint_refresh import (
     BENCHMARK_QUARANTINE_MARKER,
     LockHeldError,
@@ -1570,7 +1571,14 @@ def _cpu_ticks() -> tuple[int, ...]:
 def _cpu_percent(before: tuple[int, ...], after: tuple[int, ...]) -> float:
     if len(before) != len(after) or len(before) < 4:
         raise BenchmarkError("host CPU telemetry shape changed")
-    delta = [max(0, right - left) for left, right in zip(before, after, strict=True)]
+    if sys.platform == "darwin":
+        try:
+            return checkpoint_refresh.cpu_percent_from_ticks(before, after)
+        except checkpoint_refresh.CpuTelemetryError as exc:
+            raise BenchmarkError(str(exc)) from exc
+    if any(right < left for left, right in zip(before, after, strict=True)):
+        raise BenchmarkError("host CPU tick counter moved backwards")
+    delta = [right - left for left, right in zip(before, after, strict=True)]
     total = sum(delta)
     if total <= 0:
         raise BenchmarkError("host CPU clock did not advance")
