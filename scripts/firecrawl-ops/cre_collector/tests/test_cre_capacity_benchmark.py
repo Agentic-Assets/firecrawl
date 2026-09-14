@@ -12,10 +12,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
+import pytest
 
 
 def _cache_record(index: int) -> dict[str, object]:
@@ -628,8 +627,8 @@ def test_worker_artifact_uses_explicit_esm_extension_outside_package_scope(
         requested={
             "jll_detail_concurrency": 10,
             "host_cpu_sample_seconds": 2,
-            "host_cpu_sustained_seconds": 30,
-            "host_cpu_limit_percent": 90,
+            "host_cpu_guard_seconds": 30,
+            "host_cpu_guard_percent": 90,
         },
         api_url="http://127.0.0.1:3002",
         timeout_seconds=10,
