@@ -48,7 +48,10 @@ SCHEMA_VERSION = 1
 SAMPLE_KIND = "cre_jll_capacity_sample"
 ADMISSION_KIND = "cre_capacity_runtime_admission"
 RESULT_KIND = "cre_jll_capacity_benchmark"
-SUPPORTED_BASELINE_ADMISSION_AVAILABLE = False
+# A baseline run now has the same workload, one-use admission, and worker
+# evidence contract as the candidate.  Comparison remains fail-closed unless
+# both independently produced result artifacts satisfy that contract.
+SUPPORTED_BASELINE_ADMISSION_AVAILABLE = True
 MAX_SAMPLE_BYTES = 8 * 1024 * 1024
 MAX_CACHE_RECORD_BYTES = 4 * 1024 * 1024
 MAX_WORKER_OUTPUT_BYTES = 512 * 1024 * 1024
@@ -1174,11 +1177,20 @@ def validate_admission(
     ):
         raise BenchmarkError("technical admission receipt kind is invalid")
     contract = _experiment_contract()
+    variant = (
+        "baseline"
+        if profile_name == contract["profiles"]["baseline"]
+        else "candidate"
+        if profile_name == contract["profiles"]["candidate"]
+        else None
+    )
     if (
-        profile_name != contract["profiles"]["candidate"]
+        variant is None
         or config_sha256 != contract["config_sha256"]
-        or profile.get("requested") != contract["requested"]["candidate"]
+        or profile.get("requested") != contract["requested"][variant]
         or profile.get("workload") != contract["workload"]
+        or profile.get("kind")
+        != ("baseline" if variant == "baseline" else "experiment")
     ):
         raise BenchmarkError("technical admission is not the central experiment")
     if value.get("admitted") is not True:
@@ -1253,7 +1265,7 @@ def validate_admission(
     ):
         raise BenchmarkError("technical admission repository state is invalid")
     try:
-        state_checks = capacity_runtime.evaluate_state(effective, profile, "candidate")
+        state_checks = capacity_runtime.evaluate_state(effective, profile, variant)
     except (KeyError, TypeError, capacity_runtime.RuntimeAdmissionError) as exc:
         raise BenchmarkError(
             "technical admission effective state is malformed"
@@ -1495,7 +1507,8 @@ def _valid_live_admission(
 def verify_live_admission(
     admission: Mapping[str, Any], profile: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Re-observe the candidate immediately before any workload starts."""
+    """Re-observe the admitted treatment immediately before workload starts."""
+    state = "baseline" if profile.get("kind") == "baseline" else "candidate"
     try:
         capture = capacity_runtime.capture_runtime()
     except capacity_runtime.RuntimeAdmissionError as exc:
@@ -1523,7 +1536,7 @@ def verify_live_admission(
     adjusted["settlement"] = dict(settlement)
     adjusted["settlement"]["cre_process_active"] = False
     try:
-        checks = capacity_runtime.evaluate_state(adjusted, profile, "candidate")
+        checks = capacity_runtime.evaluate_state(adjusted, profile, state)
     except (KeyError, TypeError, capacity_runtime.RuntimeAdmissionError) as exc:
         raise BenchmarkError("live technical admission state is malformed") from exc
     if not checks or not all(checks.values()):
@@ -1875,6 +1888,7 @@ if (sample.kind !== "cre_jll_capacity_sample" || sample.source !== "jll" || samp
   throw new Error("invalid exact JLL benchmark sample");
 }
 const fingerprint = (values) => createHash("sha256").update([...new Set(values)].sort().join("\n")).digest("hex");
+const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const urls = (value) => Array.isArray(value) ? value.filter((item) => typeof item === "string" && /^https?:\/\//.test(item)) : [];
 const itemUrls = (value) => Array.isArray(value) ? value.flatMap((item) => typeof item === "string" ? [item] : item && typeof item.url === "string" ? [item.url] : []) : [];
 const present = (value) => typeof value === "number" || (typeof value === "string" && value.trim().length > 0) || (Array.isArray(value) && value.length > 0) || (!!value && typeof value === "object" && Object.keys(value).length > 0);
@@ -1921,6 +1935,62 @@ function nativeEvidence(row) {
     raw_cache_file: jllDetailCachePath(row.url), raw_cache_sha256: createHash("sha256").update(readFileSync(jllDetailCachePath(row.url))).digest("hex"),
   };
 }
+function cacheObservation(item) {
+  const cachePath = jllDetailCachePath(item.url);
+  try {
+    const rawCache = readFileSync(cachePath);
+    const cached = JSON.parse(rawCache.toString("utf8"));
+    const rawHtml = typeof cached?.rawHtml === "string" ? cached.rawHtml : null;
+    const next = rawHtml === null ? null : jllNextData(rawHtml);
+    const pageProps = next && typeof next === "object" && !Array.isArray(next)
+      && next.props && typeof next.props === "object" && !Array.isArray(next.props)
+      && next.props.pageProps && typeof next.props.pageProps === "object" && !Array.isArray(next.props.pageProps)
+      ? next.props.pageProps : null;
+    const property = pageProps?.property;
+    const hasProperty = !!property && typeof property === "object" && !Array.isArray(property);
+    const error = pageProps?.error;
+    const explicitNotFound = !hasProperty && (
+      pageProps?.notFound === true ||
+      (error && typeof error === "object" && !Array.isArray(error) && (
+        error.statusCode === 404 || error.code === "NOT_FOUND" ||
+        (typeof error.message === "string" && /\bnot\s+found\b/i.test(error.message))
+      ))
+    );
+    const candidateStatus = cached?.metadata?.statusCode;
+    const httpStatus = typeof candidateStatus === "number" && Number.isInteger(candidateStatus)
+      && candidateStatus >= 100 && candidateStatus <= 599 ? candidateStatus : null;
+    const rawLower = rawHtml?.toLowerCase() ?? "";
+    return {
+      cache_readable: true,
+      cache_url: typeof cached?.url === "string" ? cached.url : null,
+      cache_sha256: sha256(rawCache),
+      raw_html_sha256: rawHtml === null ? null : sha256(rawHtml),
+      cached_at: typeof cached?.cachedAt === "string" ? cached.cachedAt : null,
+      detail_observed_at: typeof cached?.detailObservedAt === "string" ? cached.detailObservedAt : null,
+      generation_id: typeof cached?.generationId === "string" ? cached.generationId : null,
+      http_status: httpStatus,
+      next_data_valid: !!next && typeof next === "object" && !Array.isArray(next),
+      explicit_not_found: explicitNotFound,
+      no_property: !hasProperty,
+      provider_challenge: /cf-chl-|challenge-platform|just a moment/.test(rawLower),
+    };
+  } catch {
+    return {
+      cache_readable: false,
+      cache_url: null,
+      cache_sha256: null,
+      raw_html_sha256: null,
+      cached_at: null,
+      detail_observed_at: null,
+      generation_id: null,
+      http_status: null,
+      next_data_valid: false,
+      explicit_not_found: false,
+      no_property: false,
+      provider_challenge: false,
+    };
+  }
+}
 __WORKER_SCHEDULER__
 const startedAt = new Date().toISOString();
 const generation = process.env.CRE_REFRESH_GENERATION;
@@ -1932,10 +2002,12 @@ function performanceHas429() {
   const value = JSON.parse(readFileSync(performancePath, "utf8"));
   return Number(value?.metrics?.requests?.status_counts?.["429"] ?? 0) > 0;
 }
-function providerSignal(normalized, item) {
+function providerSignal(normalized, item, observation) {
   const error = String(normalized?.detailError ?? "").toLowerCase();
   if (/\b429\b/.test(error)) return "detail_error_http_429";
   if (error.includes("challenge")) return "detail_error_challenge";
+  if (observation?.http_status === 429) return "detail_http_429";
+  if (observation?.provider_challenge === true) return "raw_provider_challenge";
   try {
     const body = readFileSync(jllDetailCachePath(item.url), "utf8").toLowerCase();
     if (body.includes("cf-chl-") || body.includes("challenge-platform") || body.includes("just a moment")) return "raw_provider_challenge";
@@ -1950,10 +2022,11 @@ try {
     const expectedTransactionType = transactionTypeFor(item.transaction_class);
     const base = { id: item.id, url: item.url, transactionType: expectedTransactionType, assetType: item.property_types.join(", ") };
     const normalized = await enrichJllListing(base);
-    const signal = providerSignal(normalized, item);
+    const observation = cacheObservation(item);
+    const signal = providerSignal(normalized, item, observation);
     if (signal && !providerStop) providerStop = { signal, sample_index: index, sample_id: item.sample_id };
     const native = normalized?.detailError ? null : nativeEvidence(item);
-    return { sample_index: index, sample_id: item.sample_id, transaction_type: expectedTransactionType, latency_ms: Number((performance.now() - started).toFixed(3)), normalized, native, fidelity: normalizedEvidence(normalized) };
+    return { sample_index: index, sample_id: item.sample_id, transaction_type: expectedTransactionType, latency_ms: Number((performance.now() - started).toFixed(3)), normalized, observation, native, fidelity: normalizedEvidence(normalized) };
   }, () => providerStop !== null));
   recordSourceCompleted("jll", "sale", { outcome: providerStop ? "failed" : "succeeded", listingsEmitted: rows.length });
 } catch (error) {
@@ -2313,6 +2386,97 @@ def _performance_telemetry_complete(
     )
 
 
+_ATTRITION_OBSERVATION_KEYS = frozenset(
+    {
+        "cache_readable",
+        "cache_url",
+        "cache_sha256",
+        "raw_html_sha256",
+        "cached_at",
+        "detail_observed_at",
+        "generation_id",
+        "http_status",
+        "next_data_valid",
+        "explicit_not_found",
+        "no_property",
+        "provider_challenge",
+    }
+)
+
+
+def _timestamp_at_or_after(value: Any, lower_bound: float | None) -> bool:
+    if not isinstance(value, str) or lower_bound is None:
+        return False
+    try:
+        observed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return observed.tzinfo is not None and observed.timestamp() >= lower_bound
+
+
+def _confirmed_attrition_evidence(
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    *,
+    worker_generation: Any,
+    worker_started_ms: float | None,
+) -> dict[str, Any] | None:
+    """Return only a fully evidenced current JLL 404 tombstone.
+
+    A ``detailError`` is never a tombstone by itself.  This admits exactly an
+    HTTP 404 cache record with a parseable JLL ``__NEXT_DATA__`` error payload,
+    no property object, and generation-local URL/hash/timestamp provenance.
+    Every missing or ambiguous element remains an extraction defect.
+    """
+    observation = actual.get("observation")
+    if (
+        not isinstance(observation, Mapping)
+        or set(observation) != _ATTRITION_OBSERVATION_KEYS
+    ):
+        return None
+    if (
+        observation.get("cache_readable") is not True
+        or observation.get("cache_url") != expected.get("url")
+        or not _is_sha256(observation.get("cache_sha256"))
+        or not _is_sha256(observation.get("raw_html_sha256"))
+        or observation.get("generation_id") != worker_generation
+        or observation.get("http_status") != 404
+        or observation.get("next_data_valid") is not True
+        or observation.get("explicit_not_found") is not True
+        or observation.get("no_property") is not True
+        or observation.get("provider_challenge") is not False
+        or not _timestamp_at_or_after(observation.get("cached_at"), worker_started_ms)
+        or not _timestamp_at_or_after(
+            observation.get("detail_observed_at"), worker_started_ms
+        )
+    ):
+        return None
+    return {
+        "cache_url": observation["cache_url"],
+        "cache_sha256": observation["cache_sha256"],
+        "raw_html_sha256": observation["raw_html_sha256"],
+        "cached_at": observation["cached_at"],
+        "detail_observed_at": observation["detail_observed_at"],
+        "generation_id": observation["generation_id"],
+        "http_status": 404,
+    }
+
+
+def _detail_failure_classification(actual: Mapping[str, Any]) -> str:
+    """Classify an unconfirmed failed detail without turning it into attrition."""
+    observation = actual.get("observation")
+    if not isinstance(observation, Mapping):
+        return "transport_failure"
+    status = observation.get("http_status")
+    if observation.get("provider_challenge") is True or status == 429:
+        return "transport_failure"
+    if type(status) is not int:
+        return "transport_failure"
+    if status == 200 or status == 404:
+        return "parser_failure"
+    return "transport_failure"
+
+
 def summarize_replicate(
     replicate_dir: Path,
     sample: Mapping[str, Any],
@@ -2353,6 +2517,11 @@ def summarize_replicate(
     fidelity_drops: list[dict[str, Any]] = []
     freshness_matches = 0
     record_evidence: list[dict[str, Any]] = []
+    current_active_successes = 0
+    confirmed_attrition = 0
+    parser_failures = 0
+    transport_failures = 0
+    fidelity_failures = 0
     actual_by_index = {
         actual.get("sample_index"): actual
         for actual in rows
@@ -2366,15 +2535,19 @@ def summarize_replicate(
         actual = actual_by_index.get(index)
         if not isinstance(actual, dict):
             errors.append({"sample_id": expected["sample_id"], "kind": "missing_row"})
+            transport_failures += 1
             continue
+        normalized = actual.get("normalized")
+        if not isinstance(normalized, Mapping):
+            normalized = {}
+        latency = actual.get("latency_ms")
+        if isinstance(latency, (int, float)) and not isinstance(latency, bool):
+            latencies.append(float(latency))
+        row_error_start = len(errors)
         if actual.get("sample_id") != expected["sample_id"]:
             errors.append(
                 {"sample_id": expected["sample_id"], "kind": "sample_binding"}
             )
-        normalized = actual.get("normalized", {})
-        latency = actual.get("latency_ms")
-        if isinstance(latency, (int, float)) and not isinstance(latency, bool):
-            latencies.append(float(latency))
         identity = (str(normalized.get("id", "")), str(normalized.get("url", "")))
         identities.add(identity)
         identity_match = identity == (expected["id"], expected["url"])
@@ -2394,37 +2567,92 @@ def summarize_replicate(
                     "expected": expected_transaction_type,
                 }
             )
-        if normalized.get("detailError"):
-            errors.append({"sample_id": expected["sample_id"], "kind": "detail_error"})
-        provenance = normalized.get("freshnessProvenance", {})
-        observed_at = normalized.get("detailObservedAt")
-        try:
-            observed_ms = (
-                datetime.fromisoformat(observed_at.replace("Z", "+00:00")).timestamp()
-                if isinstance(observed_at, str)
-                else None
+        detail_error = bool(normalized.get("detailError"))
+        attrition = (
+            _confirmed_attrition_evidence(
+                expected,
+                actual,
+                worker_generation=worker_generation,
+                worker_started_ms=worker_started_ms,
             )
-        except ValueError:
-            observed_ms = None
-        freshness_match = (
+            if detail_error and identity_match and transaction_match
+            else None
+        )
+        if attrition is not None:
+            confirmed_attrition += 1
+            record_evidence.append(
+                {
+                    "sample_index": index,
+                    "sample_id": expected["sample_id"],
+                    "identity_match": True,
+                    "identity_sha256": _sha256(_canonical(identity)),
+                    "freshness_match": None,
+                    "native_complete": None,
+                    "native_evidence_sha256": _sha256(_canonical(None)),
+                    "structural_complete": None,
+                    "structural_evidence_sha256": _sha256(_canonical(None)),
+                    "transaction_type": transaction_type,
+                    "transaction_type_match": True,
+                    "classification": "confirmed_attrition",
+                    "attrition": attrition,
+                }
+            )
+            continue
+        if detail_error:
+            classification = _detail_failure_classification(actual)
+            if classification == "parser_failure":
+                parser_failures += 1
+            else:
+                transport_failures += 1
+            errors.append(
+                {
+                    "sample_id": expected["sample_id"],
+                    "kind": classification,
+                }
+            )
+            record_evidence.append(
+                {
+                    "sample_index": index,
+                    "sample_id": expected["sample_id"],
+                    "identity_match": identity_match,
+                    "identity_sha256": _sha256(_canonical(identity)),
+                    "freshness_match": None,
+                    "native_complete": None,
+                    "native_evidence_sha256": _sha256(_canonical(None)),
+                    "structural_complete": None,
+                    "structural_evidence_sha256": _sha256(_canonical(None)),
+                    "transaction_type": transaction_type,
+                    "transaction_type_match": transaction_match,
+                    "classification": classification,
+                    "attrition": None,
+                }
+            )
+            continue
+        provenance = normalized.get("freshnessProvenance", {})
+        if not isinstance(provenance, Mapping):
+            provenance = {}
+        observed_at = normalized.get("detailObservedAt")
+        freshness_match = _timestamp_at_or_after(observed_at, worker_started_ms) and (
             provenance.get("cacheDisposition") == "live"
             and provenance.get("generationId") == worker_generation
-            and observed_ms is not None
-            and worker_started_ms is not None
-            and observed_ms >= worker_started_ms
         )
         if freshness_match:
             freshness_matches += 1
         else:
             errors.append({"sample_id": expected["sample_id"], "kind": "freshness"})
-        current_native = actual.get("native") if isinstance(actual, dict) else None
-        historic_native = expected.get("historic", {}).get("native")
+        current_native = actual.get("native")
+        historic = expected.get("historic")
+        historic_native = (
+            historic.get("native") if isinstance(historic, Mapping) else None
+        )
         native_missing = []
         native_shape_valid = False
-        if isinstance(current_native, dict) and isinstance(historic_native, dict):
+        if isinstance(current_native, Mapping) and isinstance(historic_native, Mapping):
             current_counts = current_native.get("counts")
             historic_counts = historic_native.get("counts")
-            if isinstance(current_counts, dict) and isinstance(historic_counts, dict):
+            if isinstance(current_counts, Mapping) and isinstance(
+                historic_counts, Mapping
+            ):
                 native_shape_valid = True
                 native_missing = sorted(
                     channel
@@ -2448,16 +2676,16 @@ def summarize_replicate(
                 }
             )
         if (
-            isinstance(current_native, dict)
-            and isinstance(historic_native, dict)
-            and (
-                current_native.get("fingerprints")
-                == historic_native.get("fingerprints")
-            )
+            isinstance(current_native, Mapping)
+            and isinstance(historic_native, Mapping)
+            and current_native.get("fingerprints")
+            == historic_native.get("fingerprints")
         ):
             native_value_matches += 1
         current_fidelity = actual.get("fidelity")
-        historic_fidelity = expected.get("historic", {}).get("fidelity")
+        historic_fidelity = (
+            historic.get("fidelity") if isinstance(historic, Mapping) else None
+        )
         missing_fields = (
             _missing_structural_fields(historic_fidelity, current_fidelity)
             if isinstance(historic_fidelity, Mapping)
@@ -2479,6 +2707,12 @@ def summarize_replicate(
             )
         else:
             fidelity_matches += 1
+        row_errors = errors[row_error_start:]
+        classification = "active_success" if not row_errors else "fidelity_failure"
+        if classification == "active_success":
+            current_active_successes += 1
+        else:
+            fidelity_failures += 1
         record_evidence.append(
             {
                 "sample_index": index,
@@ -2492,6 +2726,8 @@ def summarize_replicate(
                 "structural_evidence_sha256": _sha256(_canonical(current_fidelity)),
                 "transaction_type": transaction_type,
                 "transaction_type_match": transaction_match,
+                "classification": classification,
+                "attrition": None,
             }
         )
     requests = performance.get("metrics", {}).get("requests", {})
@@ -2516,8 +2752,30 @@ def summarize_replicate(
         if "challenge" in detail_error or re.search(r"\b429\b", detail_error):
             provider_signals.append("detail_error_429_or_challenge")
             break
-    qualified = len(rows) if not errors and len(identities) == len(rows) else 0
+        observation = actual.get("observation") if isinstance(actual, dict) else None
+        if isinstance(observation, Mapping) and (
+            observation.get("http_status") == 429
+            or observation.get("provider_challenge") is True
+        ):
+            provider_signals.append("detail_http_429_or_challenge")
+            break
+    qualified = current_active_successes
+    # The 128-row cohort is immutable.  A confirmed provider tombstone is
+    # retained in its original slot and reported, but is not a current listing
+    # eligible for per-row extraction throughput.
+    eligible_rows = current_active_successes
+    predeclared_cohort_denominator = len(expected_rows)
     sample_ids = [entry["sample_id"] for entry in record_evidence]
+    eligible_sample_ids = [
+        entry["sample_id"]
+        for entry in record_evidence
+        if entry.get("classification") == "active_success"
+    ]
+    attrition_sample_ids = [
+        entry["sample_id"]
+        for entry in record_evidence
+        if entry.get("classification") == "confirmed_attrition"
+    ]
     records_sha256 = _sha256(_canonical(record_evidence))
     worker_output_sha256 = _file_sha256(worker_path)
     return {
@@ -2528,6 +2786,53 @@ def summarize_replicate(
         "qualified_fresh_unique_per_minute": round(qualified * 60 / wall_seconds, 3)
         if wall_seconds > 0
         else None,
+        "current_active_successes": current_active_successes,
+        "confirmed_attrition": confirmed_attrition,
+        "individually_qualified_rows": qualified,
+        "parser_failures": parser_failures,
+        "transport_failures": transport_failures,
+        "fidelity_failures": fidelity_failures,
+        "predeclared_cohort_denominator": predeclared_cohort_denominator,
+        "predeclared_eligible_denominator": predeclared_cohort_denominator,
+        "eligible_denominator": eligible_rows,
+        "eligible_rows": eligible_rows,
+        "cohort_rates": {
+            "current_active_successes": round(
+                current_active_successes / predeclared_cohort_denominator, 6
+            ),
+            "confirmed_attrition": round(
+                confirmed_attrition / predeclared_cohort_denominator, 6
+            ),
+            "individually_qualified_rows": round(
+                qualified / predeclared_cohort_denominator, 6
+            ),
+            "parser_failures": round(
+                parser_failures / predeclared_cohort_denominator, 6
+            ),
+            "transport_failures": round(
+                transport_failures / predeclared_cohort_denominator, 6
+            ),
+            "fidelity_failures": round(
+                fidelity_failures / predeclared_cohort_denominator, 6
+            ),
+            "eligible_rows": round(eligible_rows / predeclared_cohort_denominator, 6),
+        },
+        "cohort_throughput_per_minute": {
+            "current_active_successes": round(
+                current_active_successes * 60 / wall_seconds, 3
+            )
+            if wall_seconds > 0
+            else None,
+            "confirmed_attrition": round(confirmed_attrition * 60 / wall_seconds, 3)
+            if wall_seconds > 0
+            else None,
+            "individually_qualified_rows": round(qualified * 60 / wall_seconds, 3)
+            if wall_seconds > 0
+            else None,
+            "eligible_rows": round(eligible_rows * 60 / wall_seconds, 3)
+            if wall_seconds > 0
+            else None,
+        },
         "latency_ms": {
             "p50": _percentile(latencies, 0.50),
             "p95": _percentile(latencies, 0.95),
@@ -2552,6 +2857,10 @@ def summarize_replicate(
             "worker_output_sha256": worker_output_sha256,
             "record_count": len(record_evidence),
             "sample_ids_sha256": _sha256(_canonical(sample_ids)),
+            "predeclared_cohort_denominator": predeclared_cohort_denominator,
+            "eligible_denominator": eligible_rows,
+            "eligible_sample_ids_sha256": _sha256(_canonical(eligible_sample_ids)),
+            "attrition_sample_ids_sha256": _sha256(_canonical(attrition_sample_ids)),
             "records_sha256": records_sha256,
         },
         "remote_settlement_unknown": remote_unknown,
@@ -2562,7 +2871,12 @@ def summarize_replicate(
         },
         "comparison_state": (
             "measured"
-            if not errors and telemetry_complete
+            if (
+                not errors
+                and current_active_successes + confirmed_attrition
+                == predeclared_cohort_denominator
+                and telemetry_complete
+            )
             else "quality_failed"
             if errors
             else "inconclusive"
@@ -2780,6 +3094,10 @@ def _valid_record_evidence(
             "worker_output_sha256",
             "record_count",
             "sample_ids_sha256",
+            "predeclared_cohort_denominator",
+            "eligible_denominator",
+            "eligible_sample_ids_sha256",
+            "attrition_sample_ids_sha256",
             "records_sha256",
         }
         or type(manifest.get("schema_version")) is not int
@@ -2787,12 +3105,15 @@ def _valid_record_evidence(
         or manifest.get("kind") != "cre_jll_capacity_record_evidence"
         or manifest.get("sample_canonical_sha256") != sample_canonical_sha256
         or manifest.get("record_count") != details
+        or manifest.get("predeclared_cohort_denominator") != details
         or not _is_sha256(replicate.get("worker_output_sha256"))
         or manifest.get("worker_output_sha256") != replicate.get("worker_output_sha256")
         or replicate.get("worker_contract_sha256") != worker_contract_sha256
     ):
         return False
     sample_ids: list[str] = []
+    eligible_sample_ids: list[str] = []
+    attrition_sample_ids: list[str] = []
     required = {
         "sample_index",
         "sample_id",
@@ -2805,6 +3126,8 @@ def _valid_record_evidence(
         "structural_evidence_sha256",
         "transaction_type",
         "transaction_type_match",
+        "classification",
+        "attrition",
     }
     for index, record in enumerate(records):
         if (
@@ -2814,16 +3137,6 @@ def _valid_record_evidence(
             or record.get("sample_index") != index
             or not isinstance(record.get("sample_id"), str)
             or not re.fullmatch(r"[0-9a-f]{24}", record["sample_id"])
-            or any(
-                record.get(key) is not True
-                for key in (
-                    "identity_match",
-                    "freshness_match",
-                    "native_complete",
-                    "structural_complete",
-                    "transaction_type_match",
-                )
-            )
             or record.get("transaction_type") not in {"Sale", "Lease"}
             or any(
                 not _is_sha256(record.get(key))
@@ -2835,10 +3148,65 @@ def _valid_record_evidence(
             )
         ):
             return False
+        classification = record.get("classification")
+        if classification == "active_success":
+            if record.get("attrition") is not None or any(
+                record.get(key) is not True
+                for key in (
+                    "identity_match",
+                    "freshness_match",
+                    "native_complete",
+                    "structural_complete",
+                    "transaction_type_match",
+                )
+            ):
+                return False
+            eligible_sample_ids.append(record["sample_id"])
+        elif classification == "confirmed_attrition":
+            attrition = record.get("attrition")
+            if (
+                record.get("identity_match") is not True
+                or record.get("transaction_type_match") is not True
+                or any(
+                    record.get(key) is not None
+                    for key in (
+                        "freshness_match",
+                        "native_complete",
+                        "structural_complete",
+                    )
+                )
+                or not isinstance(attrition, Mapping)
+                or set(attrition)
+                != {
+                    "cache_url",
+                    "cache_sha256",
+                    "raw_html_sha256",
+                    "cached_at",
+                    "detail_observed_at",
+                    "generation_id",
+                    "http_status",
+                }
+                or not isinstance(attrition.get("cache_url"), str)
+                or not _is_sha256(attrition.get("cache_sha256"))
+                or not _is_sha256(attrition.get("raw_html_sha256"))
+                or not isinstance(attrition.get("cached_at"), str)
+                or not isinstance(attrition.get("detail_observed_at"), str)
+                or not isinstance(attrition.get("generation_id"), str)
+                or attrition.get("http_status") != 404
+            ):
+                return False
+            attrition_sample_ids.append(record["sample_id"])
+        else:
+            return False
         sample_ids.append(record["sample_id"])
     return bool(
         len(set(sample_ids)) == details
         and manifest.get("sample_ids_sha256") == _sha256(_canonical(sample_ids))
+        and manifest.get("eligible_denominator") == len(eligible_sample_ids)
+        and manifest.get("eligible_sample_ids_sha256")
+        == _sha256(_canonical(eligible_sample_ids))
+        and manifest.get("attrition_sample_ids_sha256")
+        == _sha256(_canonical(attrition_sample_ids))
         and manifest.get("records_sha256") == _sha256(_canonical(records))
     )
 
@@ -2895,6 +3263,9 @@ def _comparison_evidence(
     throughput: list[float] = []
     latency: list[dict[str, Any]] = []
     qualified_rows: list[int] = []
+    active_successes: list[int] = []
+    attrition_rows: list[int] = []
+    eligible_rows: list[int] = []
     freshness_rows: list[int] = []
     native_matches: list[int] = []
     structural_matches: list[int] = []
@@ -2903,25 +3274,51 @@ def _comparison_evidence(
         if not isinstance(replicate, dict):
             reasons.append(f"{prefix}_invalid")
             continue
-        rate = replicate.get("qualified_fresh_unique_per_minute")
+        rate = replicate.get("cohort_throughput_per_minute", {}).get("eligible_rows")
         if type(rate) not in {int, float} or rate <= 0:
             reasons.append(f"{prefix}_throughput")
         else:
             throughput.append(float(rate))
         if (
             replicate.get("comparison_state") != "measured"
-            or replicate.get("qualified_fresh_unique_rows") != details
-            or replicate.get("freshness_matches") != details
-            or replicate.get("historic_native_asset_matches") != details
+            or replicate.get("predeclared_cohort_denominator") != details
+            or replicate.get("predeclared_eligible_denominator") != details
+            or type(replicate.get("current_active_successes")) is not int
+            or type(replicate.get("confirmed_attrition")) is not int
+            or replicate.get("current_active_successes")
+            + replicate.get("confirmed_attrition")
+            != details
+            or replicate.get("eligible_denominator")
+            != replicate.get("current_active_successes")
+            or replicate.get("eligible_rows")
+            != replicate.get("current_active_successes")
+            or replicate.get("individually_qualified_rows")
+            != replicate.get("current_active_successes")
+            or replicate.get("qualified_fresh_unique_rows")
+            != replicate.get("current_active_successes")
+            or replicate.get("freshness_matches")
+            != replicate.get("current_active_successes")
+            or replicate.get("historic_native_asset_matches")
+            != replicate.get("current_active_successes")
             or replicate.get("native_asset_deltas") != 0
-            or replicate.get("normalized_structural_matches") != details
+            or replicate.get("normalized_structural_matches")
+            != replicate.get("current_active_successes")
             or replicate.get("normalized_structural_drops") != []
+            or replicate.get("parser_failures") != 0
+            or replicate.get("transport_failures") != 0
+            or replicate.get("fidelity_failures") != 0
             or replicate.get("quality_errors") != []
             or replicate.get("performance_telemetry_complete") is not True
         ):
             reasons.append(f"{prefix}_quality")
         if type(replicate.get("qualified_fresh_unique_rows")) is int:
             qualified_rows.append(replicate["qualified_fresh_unique_rows"])
+        if type(replicate.get("current_active_successes")) is int:
+            active_successes.append(replicate["current_active_successes"])
+        if type(replicate.get("confirmed_attrition")) is int:
+            attrition_rows.append(replicate["confirmed_attrition"])
+        if type(replicate.get("eligible_rows")) is int:
+            eligible_rows.append(replicate["eligible_rows"])
         if type(replicate.get("freshness_matches")) is int:
             freshness_rows.append(replicate["freshness_matches"])
         if type(replicate.get("historic_native_asset_matches")) is int:
@@ -3017,7 +3414,7 @@ def _comparison_evidence(
     if reasons:
         return None, sorted(set(reasons))
     return {
-        "median_qualified_fresh_unique_per_minute": round(median(throughput), 3),
+        "median_eligible_current_active_rows_per_minute": round(median(throughput), 3),
         "latency_ms": {
             key: round(median(float(item[key]) for item in latency), 3)
             for key in ("p50", "p95", "p99")
@@ -3026,6 +3423,11 @@ def _comparison_evidence(
         "replicates": replicate_count,
         "completeness_fidelity": {
             "qualified_fresh_unique_rows_per_replicate": qualified_rows,
+            "current_active_successes_per_replicate": active_successes,
+            "confirmed_attrition_per_replicate": attrition_rows,
+            "eligible_rows_per_replicate": eligible_rows,
+            "predeclared_eligible_denominator": details,
+            "predeclared_cohort_denominator": details,
             "freshness_matches_per_replicate": freshness_rows,
             "historic_native_asset_matches_per_replicate": native_matches,
             "normalized_structural_matches_per_replicate": structural_matches,
@@ -3064,6 +3466,11 @@ def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
         "freshness_policy",
         "workload",
     )
+    cohort_matching = {
+        "state": "matched",
+        "confidence": "full",
+        "basis": "exact_predeclared_cohort_and_per_replicate_eligible_ids",
+    }
     if isinstance(baseline, dict) and isinstance(candidate, dict):
         reasons.extend(
             f"mismatch_{key}"
@@ -3085,17 +3492,35 @@ def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
         if baseline_identity != candidate_identity:
             reasons.append("mismatch_effective_runtime_identity")
         baseline_ids = [
-            row.get("record_evidence_manifest", {}).get("sample_ids_sha256")
+            row.get("record_evidence_manifest", {}).get("eligible_sample_ids_sha256")
             for row in baseline.get("replicates", [])
             if isinstance(row, Mapping)
         ]
         candidate_ids = [
-            row.get("record_evidence_manifest", {}).get("sample_ids_sha256")
+            row.get("record_evidence_manifest", {}).get("eligible_sample_ids_sha256")
+            for row in candidate.get("replicates", [])
+            if isinstance(row, Mapping)
+        ]
+        baseline_attrition = [
+            row.get("record_evidence_manifest", {}).get("attrition_sample_ids_sha256")
+            for row in baseline.get("replicates", [])
+            if isinstance(row, Mapping)
+        ]
+        candidate_attrition = [
+            row.get("record_evidence_manifest", {}).get("attrition_sample_ids_sha256")
             for row in candidate.get("replicates", [])
             if isinstance(row, Mapping)
         ]
         if baseline_ids != candidate_ids:
-            reasons.append("mismatch_record_sample_ids")
+            cohort_matching = {
+                "state": "asymmetric_confirmed_attrition",
+                "confidence": "reduced",
+                "basis": "exact_predeclared_cohort_retained_but_eligible_ids_differ",
+                "baseline_eligible_sample_ids_sha256": baseline_ids,
+                "candidate_eligible_sample_ids_sha256": candidate_ids,
+                "baseline_attrition_sample_ids_sha256": baseline_attrition,
+                "candidate_attrition_sample_ids_sha256": candidate_attrition,
+            }
     if reasons or baseline_summary is None or candidate_summary is None:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -3104,16 +3529,22 @@ def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
             "decision": "no_adoption_decision",
             "reasons": sorted(set(reasons or ["missing_comparable_evidence"])),
         }
-    baseline_rate = baseline_summary["median_qualified_fresh_unique_per_minute"]
-    candidate_rate = candidate_summary["median_qualified_fresh_unique_per_minute"]
+    baseline_rate = baseline_summary["median_eligible_current_active_rows_per_minute"]
+    candidate_rate = candidate_summary["median_eligible_current_active_rows_per_minute"]
     gain = round((candidate_rate - baseline_rate) * 100 / baseline_rate, 3)
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": "cre_jll_capacity_comparison",
         "state": "measured",
-        "decision": "adoptable" if gain >= 15 else "do_not_adopt",
+        "decision": (
+            "adoptable"
+            if gain >= 15 and cohort_matching["state"] == "matched"
+            else "do_not_adopt"
+        ),
         "criterion_percent": 15,
         "gain_percent": gain,
+        "throughput_metric": "eligible_current_active_rows_per_minute",
+        "cohort_matching": cohort_matching,
         "baseline": baseline_summary,
         "candidate": candidate_summary,
         "matched": {key: baseline[key] for key in match_fields},
@@ -3182,11 +3613,24 @@ def _replicate_state(entry: Mapping[str, Any], details: int) -> str:
     )
     if failed:
         return "failed"
+    active_successes = entry.get("current_active_successes")
+    confirmed_attrition = entry.get("confirmed_attrition")
     measured = (
-        entry.get("qualified_fresh_unique_rows") == details
-        and entry.get("freshness_matches") == details
-        and entry.get("historic_native_asset_matches") == details
-        and entry.get("normalized_structural_matches") == details
+        type(active_successes) is int
+        and type(confirmed_attrition) is int
+        and entry.get("predeclared_cohort_denominator") == details
+        and entry.get("predeclared_eligible_denominator") == details
+        and entry.get("eligible_denominator") == active_successes
+        and entry.get("eligible_rows") == active_successes
+        and active_successes + confirmed_attrition == details
+        and entry.get("individually_qualified_rows") == active_successes
+        and entry.get("qualified_fresh_unique_rows") == active_successes
+        and entry.get("freshness_matches") == active_successes
+        and entry.get("historic_native_asset_matches") == active_successes
+        and entry.get("normalized_structural_matches") == active_successes
+        and entry.get("parser_failures") == 0
+        and entry.get("transport_failures") == 0
+        and entry.get("fidelity_failures") == 0
         and entry.get("quality_errors") == []
         and entry.get("normalized_structural_drops") == []
         and entry.get("comparison_state") == "measured"

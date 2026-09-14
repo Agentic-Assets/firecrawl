@@ -12,9 +12,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
-import pytest
 
 
 def _cache_record(index: int) -> dict[str, object]:
@@ -329,6 +330,29 @@ def test_validate_admission_requires_exact_profile_and_idle_loopback() -> None:
             source_git_sha=source_sha,
             now=benchmark.datetime(2026, 9, 13, 1, 5, tzinfo=benchmark.UTC),
         )
+
+
+def test_validate_admission_accepts_the_matched_baseline_profile() -> None:
+    profile, digest = experiment.load_profile(
+        experiment.DEFAULT_CONFIG, "production-current"
+    )
+    source_sha = "a" * 40
+    receipt = _admission(Path("/private/review-grants"), source_sha=source_sha)
+    receipt["profile"] = "production-current"
+    receipt["config_sha256"] = digest
+    receipt["effective"] = _runtime_public(source_sha, "baseline")
+    receipt["source_git_sha"] = source_sha
+
+    validated = benchmark.validate_admission(
+        receipt,
+        profile,
+        "production-current",
+        digest,
+        source_git_sha=source_sha,
+        now=benchmark.datetime(2026, 9, 13, 1, 5, tzinfo=benchmark.UTC),
+    )
+
+    assert validated == receipt
 
 
 @pytest.mark.parametrize(
@@ -1089,6 +1113,8 @@ def _comparison_result(rate: float, variant: str = "baseline") -> dict[str, obje
             "structural_evidence_sha256": "c" * 64,
             "transaction_type": "Sale" if index % 2 == 0 else "Lease",
             "transaction_type_match": True,
+            "classification": "active_success",
+            "attrition": None,
         }
         for index in range(128)
     ]
@@ -1102,6 +1128,14 @@ def _comparison_result(rate: float, variant: str = "baseline") -> dict[str, obje
         "sample_ids_sha256": hashlib.sha256(
             benchmark._canonical(sample_ids)
         ).hexdigest(),
+        "predeclared_cohort_denominator": 128,
+        "eligible_denominator": 128,
+        "eligible_sample_ids_sha256": hashlib.sha256(
+            benchmark._canonical(sample_ids)
+        ).hexdigest(),
+        "attrition_sample_ids_sha256": hashlib.sha256(
+            benchmark._canonical([])
+        ).hexdigest(),
         "records_sha256": hashlib.sha256(benchmark._canonical(records)).hexdigest(),
     }
     replicates = []
@@ -1114,6 +1148,31 @@ def _comparison_result(rate: float, variant: str = "baseline") -> dict[str, obje
                 "termination_reason": None,
                 "qualified_fresh_unique_rows": 128,
                 "qualified_fresh_unique_per_minute": rate,
+                "current_active_successes": 128,
+                "confirmed_attrition": 0,
+                "individually_qualified_rows": 128,
+                "parser_failures": 0,
+                "transport_failures": 0,
+                "fidelity_failures": 0,
+                "predeclared_cohort_denominator": 128,
+                "predeclared_eligible_denominator": 128,
+                "eligible_denominator": 128,
+                "eligible_rows": 128,
+                "cohort_rates": {
+                    "current_active_successes": 1,
+                    "confirmed_attrition": 0,
+                    "individually_qualified_rows": 1,
+                    "parser_failures": 0,
+                    "transport_failures": 0,
+                    "fidelity_failures": 0,
+                    "eligible_rows": 1,
+                },
+                "cohort_throughput_per_minute": {
+                    "current_active_successes": rate,
+                    "confirmed_attrition": 0,
+                    "individually_qualified_rows": rate,
+                    "eligible_rows": rate,
+                },
                 "freshness_matches": 128,
                 "historic_native_asset_matches": 128,
                 "native_asset_deltas": 0,
@@ -1392,6 +1451,108 @@ def test_compare_results_safe_negative_and_mismatch_are_nonfatal(
     assert "mismatch_sample_manifest_sha256" in comparison["reasons"]
 
 
+def _mark_confirmed_attrition(result: dict[str, object], sample_index: int) -> None:
+    """Convert a fixture row into a provenance-bound attrition tombstone."""
+    for replicate in result["replicates"]:
+        record = replicate["record_evidence"][sample_index]
+        record.update(
+            {
+                "classification": "confirmed_attrition",
+                "freshness_match": None,
+                "native_complete": None,
+                "structural_complete": None,
+                "attrition": {
+                    "cache_url": "https://www.us.jll.com/en/property/removed",
+                    "cache_sha256": "d" * 64,
+                    "raw_html_sha256": "e" * 64,
+                    "cached_at": "2026-09-13T01:00:00Z",
+                    "detail_observed_at": "2026-09-13T01:00:00Z",
+                    "generation_id": "2026-09-13T010000Z-fixture",
+                    "http_status": 404,
+                },
+            }
+        )
+        records = replicate["record_evidence"]
+        eligible_ids = [
+            row["sample_id"]
+            for row in records
+            if row["classification"] == "active_success"
+        ]
+        attrition_ids = [
+            row["sample_id"]
+            for row in records
+            if row["classification"] == "confirmed_attrition"
+        ]
+        manifest = replicate["record_evidence_manifest"]
+        manifest.update(
+            {
+                "eligible_denominator": len(eligible_ids),
+                "eligible_sample_ids_sha256": hashlib.sha256(
+                    benchmark._canonical(eligible_ids)
+                ).hexdigest(),
+                "attrition_sample_ids_sha256": hashlib.sha256(
+                    benchmark._canonical(attrition_ids)
+                ).hexdigest(),
+                "records_sha256": hashlib.sha256(
+                    benchmark._canonical(records)
+                ).hexdigest(),
+            }
+        )
+        replicate.update(
+            {
+                "current_active_successes": len(eligible_ids),
+                "confirmed_attrition": len(attrition_ids),
+                "individually_qualified_rows": len(eligible_ids),
+                "qualified_fresh_unique_rows": len(eligible_ids),
+                "freshness_matches": len(eligible_ids),
+                "historic_native_asset_matches": len(eligible_ids),
+                "normalized_structural_matches": len(eligible_ids),
+                "eligible_denominator": len(eligible_ids),
+                "eligible_rows": len(eligible_ids),
+                "cohort_rates": {
+                    "current_active_successes": len(eligible_ids) / 128,
+                    "confirmed_attrition": len(attrition_ids) / 128,
+                    "individually_qualified_rows": len(eligible_ids) / 128,
+                    "parser_failures": 0,
+                    "transport_failures": 0,
+                    "fidelity_failures": 0,
+                    "eligible_rows": len(eligible_ids) / 128,
+                },
+            }
+        )
+
+
+def test_replicate_state_keeps_confirmed_attrition_measured_for_later_replicates() -> (
+    None
+):
+    result = _comparison_result(100)
+    _mark_confirmed_attrition(result, 0)
+
+    assert benchmark._replicate_state(result["replicates"][0], 128) == "measured"
+
+
+def test_compare_excludes_asymmetric_attrition_without_replacing_cohort_rows() -> None:
+    baseline = _comparison_result(100)
+    candidate = _comparison_result(120, "candidate")
+    _mark_confirmed_attrition(baseline, 0)
+
+    comparison = benchmark.compare_results(baseline, candidate)
+
+    assert comparison["state"] == "measured"
+    assert comparison["decision"] == "do_not_adopt"
+    assert comparison["cohort_matching"]["state"] == "asymmetric_confirmed_attrition"
+    assert comparison["cohort_matching"]["confidence"] == "reduced"
+    assert (
+        comparison["baseline"]["completeness_fidelity"][
+            "predeclared_cohort_denominator"
+        ]
+        == 128
+    )
+    assert comparison["baseline"]["completeness_fidelity"][
+        "eligible_rows_per_replicate"
+    ] == [127, 127, 127]
+
+
 def test_compare_cli_is_read_only_and_needs_no_artifact_root(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1413,8 +1574,7 @@ def test_compare_cli_is_read_only_and_needs_no_artifact_root(
 
     assert code == 0
     comparison = json.loads(capsys.readouterr().out)
-    assert comparison["decision"] == "no_adoption_decision"
-    assert "supported_baseline_admission_unavailable" in comparison["reasons"]
+    assert comparison["decision"] == "do_not_adopt"
 
 
 def test_summarize_replicate_fails_closed_on_native_delta_and_remote_timeout(
@@ -2529,6 +2689,220 @@ def test_summarize_accepts_value_changes_but_rejects_supported_channel_drops(
         sample_canonical_sha256=sample_sha256,
         worker_contract=contract,
     )
-    assert failed["qualified_fresh_unique_rows"] == 0
+    assert failed["qualified_fresh_unique_rows"] == 127
     assert failed["normalized_structural_matches"] == 127
+    assert failed["fidelity_failures"] == 1
     assert failed["comparison_state"] == "quality_failed"
+
+
+def _benchmark_success_rows(
+    sample: dict[str, object], generation: str
+) -> list[dict[str, object]]:
+    """Build a fully qualified exact-cohort worker result without a live scrape."""
+    rows: list[dict[str, object]] = []
+    for row in sample["details"]:
+        rows.append(
+            {
+                "sample_index": row["sample_index"],
+                "sample_id": row["sample_id"],
+                "latency_ms": 10,
+                "transaction_type": benchmark._transaction_type(
+                    row["transaction_class"]
+                ),
+                "normalized": {
+                    "id": row["id"],
+                    "url": row["url"],
+                    "transactionType": benchmark._transaction_type(
+                        row["transaction_class"]
+                    ),
+                    "detailObservedAt": "2026-09-13T01:00:00Z",
+                    "freshnessProvenance": {
+                        "cacheDisposition": "live",
+                        "generationId": generation,
+                    },
+                },
+                "native": json.loads(json.dumps(row["historic"]["native"])),
+                "fidelity": json.loads(json.dumps(row["historic"]["fidelity"])),
+            }
+        )
+    return rows
+
+
+def _attrition_observation(
+    row: dict[str, object],
+    generation: str,
+    *,
+    http_status: int | None = 404,
+    next_data_valid: bool = True,
+    explicit_not_found: bool = True,
+    no_property: bool = True,
+    challenge: bool = False,
+) -> dict[str, object]:
+    return {
+        "cache_readable": True,
+        "cache_url": row["url"],
+        "cache_sha256": "a" * 64,
+        "raw_html_sha256": "b" * 64,
+        "cached_at": "2026-09-13T01:00:00Z",
+        "detail_observed_at": "2026-09-13T01:00:00Z",
+        "generation_id": generation,
+        "http_status": http_status,
+        "next_data_valid": next_data_valid,
+        "explicit_not_found": explicit_not_found,
+        "no_property": no_property,
+        "provider_challenge": challenge,
+    }
+
+
+def _write_worker_result(
+    replicate: Path,
+    contract: dict[str, object],
+    generation: str,
+    rows: list[dict[str, object]],
+) -> None:
+    (replicate / "worker-output.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "cre_jll_capacity_worker",
+                "worker_contract_sha256": contract["sha256"],
+                "generation": generation,
+                "started_at": "2026-09-13T00:59:00Z",
+                "rows": rows,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (replicate / "performance.json").write_text(
+        json.dumps(_performance()), encoding="utf-8"
+    )
+
+
+def test_summarize_counts_confirmed_jll_404_attrition_without_failing_cohort(
+    tmp_path: Path,
+) -> None:
+    sample = _sample(tmp_path)
+    contract = benchmark._worker_contract(128, 10)
+    sample_sha256 = hashlib.sha256(benchmark._canonical(sample)).hexdigest()
+    replicate = tmp_path / "replicate"
+    replicate.mkdir()
+    generation = "2026-09-13T010000Z-abcdefabcdef"
+    rows = _benchmark_success_rows(sample, generation)
+    rows[0] = {
+        "sample_index": rows[0]["sample_index"],
+        "sample_id": rows[0]["sample_id"],
+        "latency_ms": 10,
+        "transaction_type": rows[0]["transaction_type"],
+        "normalized": {
+            "id": sample["details"][0]["id"],
+            "url": sample["details"][0]["url"],
+            "transactionType": rows[0]["transaction_type"],
+            "detailError": "missing property in __NEXT_DATA__",
+        },
+        "observation": _attrition_observation(sample["details"][0], generation),
+    }
+    _write_worker_result(replicate, contract, generation, rows)
+
+    summary = benchmark.summarize_replicate(
+        replicate,
+        sample,
+        60,
+        sample_canonical_sha256=sample_sha256,
+        worker_contract=contract,
+    )
+
+    assert summary["current_active_successes"] == 127
+    assert summary["confirmed_attrition"] == 1
+    assert summary["individually_qualified_rows"] == 127
+    assert summary["parser_failures"] == 0
+    assert summary["transport_failures"] == 0
+    assert summary["fidelity_failures"] == 0
+    assert summary["predeclared_eligible_denominator"] == 128
+    assert summary["predeclared_cohort_denominator"] == 128
+    assert summary["eligible_rows"] == 127
+    assert summary["comparison_state"] == "measured"
+    assert summary["record_evidence"][0]["classification"] == "confirmed_attrition"
+
+
+@pytest.mark.parametrize(
+    ("observation", "expected_field"),
+    [
+        (
+            {
+                "http_status": 404,
+                "next_data_valid": False,
+                "explicit_not_found": True,
+                "no_property": True,
+            },
+            "parser_failures",
+        ),
+        (
+            {
+                "http_status": 200,
+                "next_data_valid": True,
+                "explicit_not_found": True,
+                "no_property": True,
+            },
+            "parser_failures",
+        ),
+        (
+            {
+                "http_status": 429,
+                "next_data_valid": True,
+                "explicit_not_found": True,
+                "no_property": True,
+            },
+            "transport_failures",
+        ),
+        (
+            {
+                "http_status": None,
+                "next_data_valid": True,
+                "explicit_not_found": True,
+                "no_property": True,
+            },
+            "transport_failures",
+        ),
+    ],
+)
+def test_summarize_never_misclassifies_ambiguous_detail_as_attrition(
+    tmp_path: Path,
+    observation: dict[str, object],
+    expected_field: str,
+) -> None:
+    sample = _sample(tmp_path)
+    contract = benchmark._worker_contract(128, 10)
+    sample_sha256 = hashlib.sha256(benchmark._canonical(sample)).hexdigest()
+    replicate = tmp_path / "replicate"
+    replicate.mkdir()
+    generation = "2026-09-13T010000Z-abcdefabcdef"
+    rows = _benchmark_success_rows(sample, generation)
+    rows[0] = {
+        "sample_index": rows[0]["sample_index"],
+        "sample_id": rows[0]["sample_id"],
+        "latency_ms": 10,
+        "transaction_type": rows[0]["transaction_type"],
+        "normalized": {
+            "id": sample["details"][0]["id"],
+            "url": sample["details"][0]["url"],
+            "transactionType": rows[0]["transaction_type"],
+            "detailError": "missing property in __NEXT_DATA__",
+        },
+        "observation": _attrition_observation(
+            sample["details"][0], generation, **observation
+        ),
+    }
+    _write_worker_result(replicate, contract, generation, rows)
+
+    summary = benchmark.summarize_replicate(
+        replicate,
+        sample,
+        60,
+        sample_canonical_sha256=sample_sha256,
+        worker_contract=contract,
+    )
+
+    assert summary["confirmed_attrition"] == 0
+    assert summary[expected_field] == 1
+    assert summary["eligible_rows"] == 127
+    assert summary["comparison_state"] == "quality_failed"

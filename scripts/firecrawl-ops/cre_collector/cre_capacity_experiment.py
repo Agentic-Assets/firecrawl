@@ -48,6 +48,12 @@ REQUESTED_LIMITS = {
     "host_cpu_guard_seconds": (2, 600),
     "host_cpu_sample_seconds": (1, 60),
 }
+JLL_BENCHMARK_WORKLOAD = {
+    "source": "jll",
+    "details": 128,
+    "replicates": 3,
+    "writes": "forbidden",
+}
 
 
 class ProfileError(ValueError):
@@ -154,9 +160,9 @@ def load_profile(path: Path, profile_name: str) -> tuple[dict[str, Any], str]:
         ):
             raise ProfileError("later provider split must equal the global page budget")
     planned = _object(profile.get("planned"), "planned")
+    workload = profile.get("workload")
     if profile["kind"] == "experiment" and (
-        _object(profile.get("workload"), "workload")
-        != {"source": "jll", "details": 128, "replicates": 3, "writes": "forbidden"}
+        _object(workload, "workload") != JLL_BENCHMARK_WORKLOAD
         or planned
         != {
             "source_parallelism": "unimplemented",
@@ -165,6 +171,16 @@ def load_profile(path: Path, profile_name: str) -> tuple[dict[str, Any], str]:
         }
     ):
         raise ProfileError("bold experiment contract has an unexpected value")
+    if profile["kind"] == "baseline" and (
+        _object(workload, "workload") != JLL_BENCHMARK_WORKLOAD
+        or planned
+        != {
+            "source_parallelism": "serial",
+            "full_path_no_write_adapter": "cre_capacity_benchmark",
+            "provider_429_challenge_cooldown": "required-at-execution",
+        }
+    ):
+        raise ProfileError("baseline benchmark contract has an unexpected value")
     profile["runtime_baseline"] = dict(runtime)
     profile["requested"] = normalized_requested
     return profile, hashlib.sha256(_canonical(document)).hexdigest()
@@ -214,15 +230,16 @@ def resolve(
         "execution": {
             "dry_run_only": True,
             "writes": "forbidden",
-            "technical_admission_required": profile["kind"] == "experiment",
+            # Both treatment arms issue the same external, no-write workload.
+            # A baseline result is admissible only when it has the same fresh,
+            # bound admission evidence as the candidate result.
+            "technical_admission_required": True,
             "startable": False,
             "blockers": ["runtime_evidence_unverified"]
             if runtime["state"] == "unverified"
             else ["effective_runtime_drift"]
             if runtime["state"] == "drift"
-            else ["technical_admission_required"]
-            if profile["kind"] == "experiment"
-            else [],
+            else ["technical_admission_required"],
         },
     }
 

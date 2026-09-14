@@ -13,9 +13,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Self
 
+import pytest
+
 import cre_capacity_experiment as experiment
 import cre_capacity_runtime as runtime
-import pytest
 
 
 def profile() -> tuple[dict[str, object], str]:
@@ -143,11 +144,17 @@ def capture(state: str = "baseline") -> runtime.RuntimeCapture:
     )
 
 
-def write_approval(path: Path, receipt: dict[str, object], digest: str) -> Path:
+def write_approval(
+    path: Path,
+    receipt: dict[str, object],
+    digest: str,
+    *,
+    profile_name: str = "bold-jll-128",
+) -> Path:
     approval = {
         "schema_version": runtime.SCHEMA_VERSION,
         "kind": runtime.APPROVAL_KIND,
-        "profile": "bold-jll-128",
+        "profile": profile_name,
         "config_sha256": digest,
         "transition_receipt_sha256": receipt["receipt_sha256"],
         "source_git_sha": receipt["baseline"]["repo"]["git_sha"],  # type: ignore[index]
@@ -790,6 +797,76 @@ def test_apply_executes_and_writes_bound_admission(
         "admission",
         "lock-release",
     ]
+
+
+def test_baseline_admission_produces_a_bound_no_write_receipt_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _baseline_profile, digest = experiment.load_profile(
+        experiment.DEFAULT_CONFIG, "production-current"
+    )
+    baseline = capture()
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    controlled = tmp_path / "tasks" / "tmp" / "cre-capacity-transition-baseline-test"
+    controlled.mkdir(parents=True, mode=0o700)
+    controlled.chmod(0o700)
+    receipt_path = controlled / "receipt.json"
+    admission_path = controlled / "baseline-admission.json"
+    events: list[str] = []
+    mock_transition_authority(monkeypatch, tmp_path, events)
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _runner: baseline)
+    receipt = runtime.preflight(
+        "production-current",
+        receipt_path,
+        runner=lambda _argv, _cwd, _env: runtime.CommandResult(0, ""),
+    )
+    assert receipt["profile"] == "production-current"
+    assert receipt["admitted"] is True
+    monkeypatch.setattr(
+        runtime,
+        "_record_review_approval_consumption",
+        lambda *_args: pytest.fail(
+            "baseline admission must not record mutation consumption"
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_compose_recreate",
+        lambda *_args, **_kwargs: pytest.fail(
+            "baseline admission must not recreate containers"
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_api_update",
+        lambda *_args, **_kwargs: pytest.fail(
+            "baseline admission must not update API resources"
+        ),
+    )
+    approval_path = write_approval(
+        controlled / "review" / "approval.json",
+        receipt,
+        digest,
+        profile_name="production-current",
+    )
+
+    result = runtime.admit_baseline(
+        receipt_path,
+        "production-current",
+        admission_out=admission_path,
+        approval_path=approval_path,
+        runner=lambda _argv, _cwd, _env: runtime.CommandResult(0, ""),
+    )
+
+    admission = json.loads(admission_path.read_text())
+    assert result["verified"] is True
+    assert result["state"] == "baseline"
+    assert admission["profile"] == "production-current"
+    assert admission["writes"] == "forbidden"
+    assert admission["effective"] == baseline.public
+    assert Path(admission["review_benchmark_grant_path"]).is_file()
+    assert events == ["lock-acquire", "lock-release"]
+    assert not approval_path.exists()
 
 
 def test_candidate_execute_requires_admission_path_before_mutation(
