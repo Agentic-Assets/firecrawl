@@ -294,6 +294,11 @@ members or infers a database inactive state. Any transport, challenge, 429,
 unknown-status, malformed-content, parser, or fidelity failure remains
 fail-closed.
 
+The separate [multisource-v1 cohort contract](cre-multisource-capacity-v1.md)
+is prevalidation-only until every listed provider has a reviewed execution
+adapter and explicit current not-found classifier. It must not be substituted
+for this controlled JLL paired lane.
+
 ## 2026-09-14 execution record
 
 The reviewed candidate at Git commit
