@@ -77,6 +77,13 @@ _JLL_PROPERTY_TYPES = {
     "mixed use": "mixed_use",
     "special purpose": "special_purpose",
 }
+_JLL_GRAPHQL_PATH = "/api/graphql"
+_JLL_PAGE_TAKE = 50
+_JLL_GRAPHQL_ORDER_BY = {
+    "field": "dateModified",
+    "direction": "desc",
+    "imagePriority": True,
+}
 # This is a versioned prevalidation lane, not a generic registry projection.
 # Keep the review matrix adjacent to its verifier so a config edit cannot point
 # an admitted cohort at a stale proxy/search host by accident.
@@ -480,19 +487,32 @@ def _enumeration_binding(
     ):
         raise MultisourceError("enumeration receipt hash drifted")
     document = _read_json(enum_path, MAX_RAW_RECEIPT_BYTES)
-    required = {
-        "observed_at",
-        "total",
-        "complete",
-        "truncated",
-        "provider_ids",
-        "body",
-        "request_url",
-        "final_url",
-        "http_status",
-        "content_type",
-        "timing_ms",
-    }
+    jll_aggregate = source["key"] == "jll"
+    required = (
+        {
+            "kind",
+            "observed_at",
+            "total",
+            "complete",
+            "truncated",
+            "provider_ids",
+            "page_receipts",
+        }
+        if jll_aggregate
+        else {
+            "observed_at",
+            "total",
+            "complete",
+            "truncated",
+            "provider_ids",
+            "body",
+            "request_url",
+            "final_url",
+            "http_status",
+            "content_type",
+            "timing_ms",
+        }
+    )
     if not isinstance(document, dict) or set(document) != required:
         raise MultisourceError("enumeration receipt is malformed")
     observed_at = _observed_at(
@@ -516,17 +536,35 @@ def _enumeration_binding(
         or receipt.get("provider_id") not in document["provider_ids"]
         or len(document["provider_ids"]) != total
         or len(set(document["provider_ids"])) != total
-        or not isinstance(document["body"], str)
-        or _public_url(document["request_url"], source) != document["request_url"]
-        or _public_url(document["final_url"], source) != document["final_url"]
-        or type(document["http_status"]) is not int
-        or document["http_status"] != 200
-        or not isinstance(document["content_type"], str)
-        or not document["content_type"]
-        or not _finite_positive_timing(document["timing_ms"])
+        or (
+            jll_aggregate
+            and (
+                document["kind"] != "jll_graphql_enumeration_aggregate_v1"
+                or not isinstance(document["page_receipts"], list)
+                or not document["page_receipts"]
+            )
+        )
+        or (
+            not jll_aggregate
+            and (
+                not isinstance(document["body"], str)
+                or _public_url(document["request_url"], source)
+                != document["request_url"]
+                or _public_url(document["final_url"], source) != document["final_url"]
+                or type(document["http_status"]) is not int
+                or document["http_status"] != 200
+                or not isinstance(document["content_type"], str)
+                or not document["content_type"]
+                or not _finite_positive_timing(document["timing_ms"])
+            )
+        )
     ):
         raise MultisourceError("enumeration completeness proof is invalid")
-    body_hash = _sha256(document["body"].encode())
+    body_hash = (
+        _sha256(_canonical(document["page_receipts"]))
+        if jll_aggregate
+        else _sha256(document["body"].encode())
+    )
     if body_hash != _hex_digest(
         receipt.get("enumeration_body_sha256"), label="enumeration body"
     ):
@@ -547,11 +585,15 @@ def _enumeration_binding(
     # wrapper can prove capture integrity, but it cannot establish population
     # size or workload until the provider response itself agrees exactly.
     population_verified = False
-    if source["key"] == "jll":
+    if jll_aggregate:
         population_verified = _verified_jll_enumeration_population(
-            document["body"],
+            document,
             provider_ids=document["provider_ids"],
             total=total,
+            root=root,
+            source=source,
+            now_utc=now_utc,
+            maximum_age=maximum_age,
         )
         if not population_verified:
             raise MultisourceError("JLL enumeration completeness proof is invalid")
@@ -559,46 +601,189 @@ def _enumeration_binding(
 
 
 def _verified_jll_enumeration_population(
-    body: str, *, provider_ids: list[str], total: int
+    aggregate: Mapping[str, Any],
+    *,
+    provider_ids: list[str],
+    total: int,
+    root: Path,
+    source: Mapping[str, Any],
+    now_utc: datetime,
+    maximum_age: int,
 ) -> bool:
-    """Bind JLL's GraphQL count and complete item IDs to the sealed wrapper."""
-    try:
-        payload = json.loads(body)
-    except (TypeError, json.JSONDecodeError):
+    """Validate every native JLL GraphQL page sealed by the aggregate receipt."""
+    page_receipts = aggregate.get("page_receipts")
+    if not isinstance(page_receipts, list) or not page_receipts:
         return False
-    if not isinstance(payload, Mapping) or isinstance(payload, list):
-        return False
-    if "errors" in payload and (
-        not isinstance(payload["errors"], list) or payload["errors"]
-    ):
-        return False
-    data = payload.get("data")
-    if not isinstance(data, Mapping):
-        return False
-    properties = data.get("properties")
-    if not isinstance(properties, Mapping):
-        return False
-    count = properties.get("count")
-    items = properties.get("items")
-    if (
-        type(count) is not int
-        or count < 0
-        or count != total
-        or not isinstance(items, list)
-    ):
-        return False
-    body_ids = [item.get("id") for item in items if isinstance(item, Mapping)]
-    if (
-        len(body_ids) != len(items)
-        or not all(
-            isinstance(identifier, str) and identifier.strip()
-            for identifier in body_ids
+    pages_by_filter: dict[tuple[str, str], list[tuple[int, int, list[str]]]] = {}
+    all_ids: list[str] = []
+    seen_artifacts: set[tuple[str, str]] = set()
+    for manifest in page_receipts:
+        if not isinstance(manifest, Mapping) or set(manifest) != {"path", "sha256"}:
+            return False
+        path_value = manifest.get("path")
+        if not isinstance(path_value, str):
+            return False
+        try:
+            page_path = _private_regular(
+                Path(path_value), MAX_RAW_RECEIPT_BYTES, root=root
+            )
+            page_hash = _hex_digest(manifest.get("sha256"), label="JLL page receipt")
+        except MultisourceError:
+            return False
+        artifact_identity = (str(page_path), page_hash)
+        if artifact_identity in seen_artifacts or _file_sha256(page_path) != page_hash:
+            return False
+        seen_artifacts.add(artifact_identity)
+        try:
+            page_receipt = _read_json(page_path, MAX_RAW_RECEIPT_BYTES)
+        except MultisourceError:
+            return False
+        required = {
+            "kind",
+            "request_url",
+            "final_url",
+            "http_status",
+            "content_type",
+            "observed_at",
+            "timing_ms",
+            "operation_name",
+            "variables",
+            "request_body",
+            "body",
+        }
+        if not isinstance(page_receipt, Mapping) or set(page_receipt) != required:
+            return False
+        if (
+            page_receipt["kind"] != "jll_graphql_page_receipt_v1"
+            or page_receipt["operation_name"] != "SearchResults"
+            or not _valid_jll_graphql_url(page_receipt["request_url"], source)
+            or page_receipt["final_url"] != page_receipt["request_url"]
+            or type(page_receipt["http_status"]) is not int
+            or page_receipt["http_status"] != 200
+            or not isinstance(page_receipt["content_type"], str)
+            or "application/json" not in page_receipt["content_type"].casefold()
+            or not _finite_positive_timing(page_receipt["timing_ms"])
+            or not isinstance(page_receipt["request_body"], str)
+            or not isinstance(page_receipt["body"], str)
+        ):
+            return False
+        try:
+            _observed_at(
+                page_receipt["observed_at"],
+                now_utc=now_utc,
+                maximum_age=maximum_age,
+            )
+            request_payload = json.loads(page_receipt["request_body"])
+            payload = json.loads(page_receipt["body"])
+        except (MultisourceError, TypeError, json.JSONDecodeError):
+            return False
+        variables = page_receipt["variables"]
+        if (
+            not isinstance(request_payload, Mapping)
+            or set(request_payload) != {"query", "variables", "operationName"}
+            or not isinstance(request_payload["query"], str)
+            or not request_payload["query"].strip()
+            or request_payload["operationName"] != page_receipt["operation_name"]
+            or request_payload["variables"] != variables
+        ):
+            return False
+        if not isinstance(variables, Mapping) or set(variables) != {
+            "market",
+            "language",
+            "propertyTypes",
+            "tenureTypes",
+            "skip",
+            "take",
+            "orderBy",
+        }:
+            return False
+        property_types = variables["propertyTypes"]
+        tenure_types = variables["tenureTypes"]
+        skip = variables["skip"]
+        if (
+            variables["market"] != "us"
+            or variables["language"] != "en"
+            or not isinstance(property_types, list)
+            or len(property_types) != 1
+            or not isinstance(property_types[0], str)
+            or not property_types[0].strip()
+            or not isinstance(tenure_types, list)
+            or len(tenure_types) != 1
+            or tenure_types[0] not in {"sale", "rent"}
+            or type(skip) is not int
+            or skip < 0
+            or skip % _JLL_PAGE_TAKE != 0
+            or variables["take"] != _JLL_PAGE_TAKE
+            or variables["orderBy"] != _JLL_GRAPHQL_ORDER_BY
+        ):
+            return False
+        if not isinstance(payload, Mapping) or isinstance(payload, list):
+            return False
+        if "errors" in payload and (
+            not isinstance(payload["errors"], list) or payload["errors"]
+        ):
+            return False
+        data = payload.get("data")
+        properties = data.get("properties") if isinstance(data, Mapping) else None
+        if not isinstance(properties, Mapping):
+            return False
+        count = properties.get("count")
+        items = properties.get("items")
+        if type(count) is not int or count < 0 or not isinstance(items, list):
+            return False
+        ids = [item.get("id") for item in items if isinstance(item, Mapping)]
+        if len(ids) != len(items) or not all(
+            isinstance(identifier, str) and identifier.strip() for identifier in ids
+        ):
+            return False
+        pages_by_filter.setdefault((property_types[0], tenure_types[0]), []).append(
+            (skip, count, ids)
         )
-        or len(items) != total
-        or len(set(body_ids)) != total
-    ):
+        all_ids.extend(ids)
+    for pages in pages_by_filter.values():
+        counts = {count for _, count, _ in pages}
+        if len(counts) != 1:
+            return False
+        count = next(iter(counts))
+        expected_skips = list(range(0, count, _JLL_PAGE_TAKE)) or [0]
+        actual_skips = sorted(skip for skip, _, _ in pages)
+        if actual_skips != expected_skips:
+            return False
+        filter_ids: list[str] = []
+        for skip, _, ids in pages:
+            expected_items = min(_JLL_PAGE_TAKE, max(0, count - skip))
+            if len(ids) != expected_items:
+                return False
+            filter_ids.extend(ids)
+        if len(filter_ids) != count or len(set(filter_ids)) != count:
+            return False
+    unique_ids = set(all_ids)
+    return (
+        len(unique_ids) == total
+        and len(provider_ids) == total
+        and set(provider_ids) == unique_ids
+    )
+
+
+def _valid_jll_graphql_url(value: Any, source: Mapping[str, Any]) -> bool:
+    """Accept only JLL's origin-bound, non-redirected GraphQL endpoint."""
+    if not isinstance(value, str):
         return False
-    return set(body_ids) == set(provider_ids)
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return False
+    return (
+        _public_url(value, source) == value
+        and parsed.scheme == "https"
+        and parsed.hostname == "property.jll.com"
+        and parsed.path == _JLL_GRAPHQL_PATH
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.port is None
+    )
 
 
 def _extractor_receipt_binding(

@@ -24,11 +24,39 @@ or its full eligible census when smaller. Selection is deterministic, seeded,
 and round-robins the declared transaction class, property type, and page-weight
 strata. It rehashes the private 0700-root, 0600-file enumeration receipt, raw
 receipt, normalized artifact, field-locator artifact, and asset evidence for
-every row. The enumeration receipt records its UTC observation time, total
-population, completion/non-truncation proof, provider IDs, and body digest;
-each row is bound to that receipt, the source-contract digest, and the cohort
-configuration digest. The review output exposes only safe IDs, strata, hashes,
-and aggregates: never restricted paths, raw URLs, or headers.
+every row. Each row is bound to its enumeration receipt, the source-contract
+digest, and the cohort configuration digest. The review output exposes only safe
+IDs, strata, hashes, and aggregates: never restricted paths, raw URLs, or
+headers.
+
+## JLL aggregate-enumeration receipt schema
+
+JLL is the only source with a native population verifier in v1. Its private
+aggregate must be exactly `jll_graphql_enumeration_aggregate_v1`, with
+`observed_at`, `total`, `complete`, `truncated`, `provider_ids`, and a nonempty
+`page_receipts` list. Every page manifest is exactly a private `path` plus its
+SHA-256. The aggregate is itself rehashed, and the row's
+`enumeration_body_sha256` is the canonical digest of that sealed page-manifest
+list, not an unverified synthetic response body.
+
+Each referenced page must be exactly `jll_graphql_page_receipt_v1` and retain
+the origin-bound `/api/graphql` request/final URL, HTTP 200 JSON transport,
+fresh UTC observation time, positive timing, `SearchResults` operation, raw
+GraphQL request body, request variables, and raw JSON response. The request
+body must bind the operation and variables below. Variables must retain the
+public JLL `us`/`en` market and language, one property-type filter, one
+sale-or-rent tenure
+filter, `take: 50`, a zero-based `skip` divisible by 50, and the pinned
+`dateModified desc` ordering. For every property-type/tenure filter, page
+counts must agree, skips must be the complete sequence without gaps or repeats,
+and each page must contain exactly its expected number of unique IDs. IDs may
+overlap across filters, but the reconciled unique union must exactly equal both
+the aggregate provider-ID set and its total. A former single synthetic response
+cannot satisfy this schema.
+
+All other sources remain screening-only until they receive reviewed native
+enumeration verifiers. Their asserted wrapper total never populates a page band,
+core target, ready state, or workload-weighted metric.
 
 Readiness requires all twenty fixed sources and both plane floors (12
 strict-detail and 8 authoritative-inventory); anything less is explicitly
