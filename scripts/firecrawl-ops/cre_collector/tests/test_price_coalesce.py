@@ -38,9 +38,9 @@ def test_sale_price_usd_coalesce_present():
 
 
 def test_sale_price_per_sf_coalesce_present():
-    assert "ELSE COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf) END" in _sql(), (
-        "Expected COALESCE-keep for sale_price_per_sf in DO UPDATE SET block."
-    )
+    assert (
+        "ELSE COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf) END" in _sql()
+    ), "Expected COALESCE-keep for sale_price_per_sf in DO UPDATE SET block."
 
 
 def test_lease_rate_min_coalesce_present():
@@ -57,10 +57,7 @@ def test_lease_rate_max_coalesce_present():
 
 def test_jll_withheld_visibility_clears_previously_visible_price_columns():
     sql = _sql()
-    guard = (
-        "EXCLUDED.raw_data->>'sourceKey' = 'jll'\n"
-        "      AND EXCLUDED.raw_data#>>'{jllDetail,pricing,visibility}' = 'withheld'"
-    )
+    guard = "EXCLUDED.raw_data->>'jllPriceWithheld' = 'true'"
     assert guard in sql
     for column in (
         "sale_price_usd",
@@ -70,7 +67,9 @@ def test_jll_withheld_visibility_clears_previously_visible_price_columns():
         "lease_rate_type",
     ):
         assert f"{column}" in sql
-    assert sql.count("WHEN (\n      EXCLUDED.raw_data->>'sourceKey' = 'jll'") >= 5
+    assert (
+        sql.count("WHEN (\n      EXCLUDED.raw_data->>'jllPriceWithheld' = 'true'") >= 5
+    )
 
 
 # ---------------------------------------------------------------------------

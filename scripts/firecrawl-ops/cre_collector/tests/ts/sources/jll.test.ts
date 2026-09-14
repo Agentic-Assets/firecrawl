@@ -128,6 +128,9 @@ test("jllHasUsableBrochure requires a public URL for native and typed brochure e
   );
   assert.equal(jllHasUsableBrochure({ documents: [{ docType: "brochure" }] }), false);
   assert.equal(jllHasUsableBrochure({ documents: [{ docType: "brochure", url: "/om.pdf" }] }), false);
+  assert.equal(jllHasUsableBrochure({ brochures: ["https://"] }), false);
+  assert.equal(jllHasUsableBrochure({ brochures: ["https:///relative.pdf"] }), false);
+  assert.equal(jllHasUsableBrochure({ brochures: ["http://?x"] }), false);
   assert.equal(jllHasUsableBrochure({ documents: [{ docType: "floor_plan", url: "https://cdn.example/floor.pdf" }] }), false);
 });
 
@@ -843,6 +846,49 @@ test("JLL detail enrichment never throws for malformed price shapes", async () =
   }
 });
 
+test("JLL keeps public foreign lease provenance but never stages a currency-free rate", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-foreign-lease-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const url = "https://property.jll.com/listings/foreign-lease";
+  try {
+    writeJllDetailCache(url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify({
+          props: {
+            pageProps: {
+              property: {
+                id: "foreign-lease",
+                pageUrl: "/listings/foreign-lease",
+                rentPrice: { amount: 32, currency: "CAD", unit: "sf" },
+              },
+              brokers: [],
+            },
+          },
+        }) +
+        "</script>",
+      markdown: "",
+      links: [],
+      images: [],
+    });
+    const enriched = await enrichJllListing({ id: "foreign-lease", url });
+    assert.equal(enriched.leaseRateText, undefined);
+    assert.deepEqual(enriched.jllDetail.pricing.lease, {
+      sourceShape: "structured",
+      normalization: "available",
+      normalizedText: "CAD 32/sf",
+      normalizedAmount: 32,
+      currency: "CAD",
+      unit: "sf",
+    });
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
 test("JLL detail enrichment preserves list and detail hidden-price controls", async () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "jll-hidden-price-cache-"));
   const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
@@ -916,6 +962,19 @@ test("JLL rejects unsupported price units and redacts hidden prices on detail-sh
   assert.equal(sale.salePriceUsd, undefined);
   assert.equal(lease.leaseRateText, undefined);
   assert.equal(sale.jllSearchResult.priceWithholdingControl, "visible");
+  const foreignLease = jllGraphqlItemToListing(
+    {
+      id: "foreign-lease",
+      pageUrl: "/listings/foreign-lease",
+      rentPrice: { amount: 32, currency: "CAD", unit: "sf" },
+      hidePrice: false,
+    },
+    "lease",
+    "office",
+    1,
+    1
+  );
+  assert.equal(foreignLease.leaseRateText, undefined);
 
   const cacheDir = mkdtempSync(join(tmpdir(), "jll-hidden-detail-error-cache-"));
   const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
@@ -950,6 +1009,9 @@ test("JLL rejects unsupported price units and redacts hidden prices on detail-sh
       salePriceUsd: 3250000,
       salePriceText: "$3,250,000",
       askingPrice: "$3.25m",
+      markdown: "Confidential asking consideration: $3,250,000.",
+      currentTenants: [{ name: "Acme Holdings" }],
+      financials: { amount: 3250000, occupancy: 0.95 },
       jllSearchResult: { hidePrice: false },
       jllDetail: { salePrice: { amount: 3250000 } },
     });
@@ -958,6 +1020,9 @@ test("JLL rejects unsupported price units and redacts hidden prices on detail-sh
     assert.equal(enriched.salePriceText, undefined);
     assert.equal(enriched.askingPrice, undefined);
     assert.equal(enriched.jllDetail.salePrice, undefined);
+    assert.equal(enriched.markdown, "Confidential asking consideration: [redacted].");
+    assert.deepEqual(enriched.currentTenants, [{ name: "Acme Holdings" }]);
+    assert.deepEqual(enriched.financials, { occupancy: 0.95 });
     assert.deepEqual(enriched.jllDetail.pricing, {
       visibility: "withheld",
       searchWithholdingControl: "visible",

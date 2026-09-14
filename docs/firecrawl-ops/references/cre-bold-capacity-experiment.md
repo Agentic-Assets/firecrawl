@@ -249,6 +249,26 @@ candidate arm requires its existing runtime receipt and is rolled back to the
 baseline in `finally` before the arm is recorded. Do not batch admissions or
 hold an approval across the allowed pair gap.
 
+Worker status fields are not comparison authority. The comparator derives each
+row's URL, hashes, HTTP status, challenge signal, and JLL tombstone semantics
+again from its rehashed private raw receipt. A confirmed tombstone requires a
+JLL HTTP 404, valid `__NEXT_DATA__`, explicit `notFound`, an error status 404,
+and no property object. A worker claim that disagrees with its receipt is a
+fidelity failure. Production comparison also rehashes the current clean
+checkout's implementation manifest and every generated `worker.mts`; arm
+results must be below the paired plan root. A `sealed_offline_fixture` plan is
+valid only for test evidence and always reports `fixture_only_not_adoptable`.
+
+When JLL reports a withheld or unknown price control, raw-data retention keeps
+only the control and redacted pricing provenance. It removes known price schema
+paths, legacy `financials.amount`, and monetary disclosures in stored markdown,
+description, highlights, and summary text; it preserves unrelated provenance
+such as `currentTenants`. A merged sale/lease row carries a non-sensitive
+`jllPriceWithheld` marker so the SQL upsert clears a previously visible sale or
+lease price without inferring state from nested provider JSON. Foreign-currency
+lease amounts remain public normalized provenance only and never enter the
+currency-free lease columns.
+
 ```bash
 python3 cre_capacity_benchmark.py --artifact-root /restricted/pair-001 \
   --sample /restricted/jll-128-sample.json --create-counterbalanced-pair

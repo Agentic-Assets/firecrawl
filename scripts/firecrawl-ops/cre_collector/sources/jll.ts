@@ -413,8 +413,15 @@ function jllPriceUsd(price: JllNormalizedPrice): number | null {
     : null;
 }
 
+const JLL_BASE_CURRENCY = "USD";
+
 function jllLeasePriceText(price: JllNormalizedPrice): string | null {
   if (price.text === null) return null;
+  // cre_listings lease-rate columns have no currency dimension.  Retain a
+  // public foreign-currency value in jllDetail.pricing provenance, but never
+  // route it through leaseRateText where the currency-free parser could stage
+  // it as a USD rate.
+  if (price.currency !== null && price.currency !== JLL_BASE_CURRENCY) return null;
   const unit = price.unit?.trim().toLowerCase().replace(/\s+/g, " ") ?? null;
   // A bare legacy display string is the established JLL lease representation.
   // Once a unit is provided, admit only explicit area/time lease-rate units.
@@ -467,21 +474,63 @@ function jllPriceWithheld(...controls: JllWithholdingControl[]): boolean {
 }
 
 const JLL_PRICE_CONTROL_KEYS = new Set(["hideprice", "pricewithholdingcontrol"]);
+const JLL_DIRECT_PRICE_KEYS = new Set([
+  "askingprice",
+  "leaseratemax",
+  "leaseratemin",
+  "leaseratetext",
+  "leaseratetype",
+  "price",
+  "priceperacre",
+  "priceperunit",
+  "pricing",
+  "saleprice",
+  "salepricepersf",
+  "salepricetext",
+  "salepriceusd",
+]);
+const JLL_FREE_TEXT_KEYS = new Set(["description", "highlights", "markdown", "summary"]);
+const JLL_MONEY_AMOUNT = String.raw`(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?`;
+const JLL_MONEY_TOKEN = new RegExp(
+  String.raw`(?:\b(?:usd|us\$)\s*)?\$\s*${JLL_MONEY_AMOUNT}(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?`,
+  "gi"
+);
+const JLL_LABELLED_PRICE = new RegExp(
+  String.raw`(\b(?:asking|list|sale|lease|rental)\s*(?:price|rate|rent|consideration)\s*[:\-]?\s*)(?:\$?\s*${JLL_MONEY_AMOUNT}(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?)`,
+  "gi"
+);
 
-/** Remove sensitive price/rate material while retaining harmless provenance. */
-function jllRedactSensitivePriceFields(value: unknown): any {
-  if (Array.isArray(value)) return value.map(jllRedactSensitivePriceFields);
+function jllRedactPriceDisclosure(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  return value
+    .replace(JLL_LABELLED_PRICE, "$1[redacted]")
+    .replace(JLL_MONEY_TOKEN, "[redacted]");
+}
+
+/** Apply the narrow JLL withheld-price raw-retention contract.
+ *
+ * Exact schema paths are removed rather than substring-matching field names,
+ * preserving unrelated provenance such as currentTenants.  A legacy
+ * financials.amount is expressly a price payload, and known prose fields keep
+ * their non-price text while monetary disclosures are redacted.
+ */
+function jllRedactSensitivePriceFields(value: unknown, parentKey?: string): any {
+  if (Array.isArray(value)) return value.map((item) => jllRedactSensitivePriceFields(item, parentKey));
   if (value === null || typeof value !== "object") return value;
   const output: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
     const normalizedKey = key.toLowerCase();
-    if (
-      !JLL_PRICE_CONTROL_KEYS.has(normalizedKey) &&
-      /(price|rate|rent)/i.test(key)
-    ) {
+    if (!JLL_PRICE_CONTROL_KEYS.has(normalizedKey) && JLL_DIRECT_PRICE_KEYS.has(normalizedKey)) {
       continue;
     }
-    output[key] = jllRedactSensitivePriceFields(child);
+    if (parentKey === "financials" && normalizedKey === "amount") {
+      continue;
+    }
+    if (JLL_FREE_TEXT_KEYS.has(normalizedKey)) {
+      output[key] = jllRedactPriceDisclosure(child);
+      continue;
+    }
+    output[key] = jllRedactSensitivePriceFields(child, normalizedKey);
   }
   return output;
 }
@@ -877,8 +926,19 @@ export function jllHasUsableBrochure(normalized: unknown): boolean {
     return false;
   }
   const record = normalized as Record<string, unknown>;
-  const usableUrl = (value: unknown): boolean =>
-    typeof value === "string" && /^https?:\/\//i.test(value);
+  const usableUrl = (value: unknown): boolean => {
+    if (typeof value !== "string") return false;
+    try {
+      const url = new URL(value);
+      return (
+        (url.protocol === "http:" || url.protocol === "https:") &&
+        url.hostname.length > 0 &&
+        url.pathname.length > 1
+      );
+    } catch {
+      return false;
+    }
+  };
   const brochures = record.brochures;
   if (
     Array.isArray(brochures) &&

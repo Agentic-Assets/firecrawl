@@ -12,10 +12,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
+import pytest
 
 
 def _cache_record(index: int) -> dict[str, object]:
@@ -1288,7 +1287,9 @@ def _write_comparison_artifact(
     assert isinstance(requested, dict)
     contract = benchmark._worker_contract(128, requested["jll_detail_concurrency"])
     result["sample_inventory_sha256"] = sample["inventory_sha256"]
-    result["sample_manifest_sha256"] = hashlib.sha256(sample_path.read_bytes()).hexdigest()
+    result["sample_manifest_sha256"] = hashlib.sha256(
+        sample_path.read_bytes()
+    ).hexdigest()
     result["sample_canonical_sha256"] = hashlib.sha256(
         benchmark._canonical(sample)
     ).hexdigest()
@@ -1307,6 +1308,14 @@ def _write_comparison_artifact(
         raw_cache.mkdir(parents=True, mode=0o700)
         replicate_dir.chmod(0o700)
         raw_cache.chmod(0o700)
+        (replicate_dir / "worker.mts").write_text(
+            benchmark._worker_source(
+                Path(__file__).resolve().parents[4],
+                expected_details=128,
+                concurrency=int(requested["jll_detail_concurrency"]),
+            ),
+            encoding="utf-8",
+        )
         rows = _benchmark_success_rows(sample, generation)
         for index, row in enumerate(rows):
             detail = sample["details"][index]
@@ -1320,7 +1329,10 @@ def _write_comparison_artifact(
                             "props": {
                                 "pageProps": {
                                     "notFound": True,
-                                    "error": {"statusCode": 404, "message": "Not Found"},
+                                    "error": {
+                                        "statusCode": 404,
+                                        "message": "Not Found",
+                                    },
                                 }
                             }
                         }
@@ -1332,7 +1344,9 @@ def _write_comparison_artifact(
                     "cachedAt": "2026-09-14T01:00:01Z",
                     "detailObservedAt": "2026-09-14T01:00:01Z",
                     "generationId": generation,
-                    "metadata": {"statusCode": 404 if attrition and index == 0 else 200},
+                    "metadata": {
+                        "statusCode": 404 if attrition and index == 0 else 200
+                    },
                 }
             )
             cache_path = raw_cache / f"{index:03}.json"
@@ -1636,6 +1650,51 @@ def test_compare_results_safe_negative_and_mismatch_are_nonfatal(
     assert "mismatch_sample_manifest_sha256" in comparison["reasons"]
 
 
+def test_comparison_rederives_raw_receipt_before_accepting_worker_attrition(
+    tmp_path: Path,
+) -> None:
+    sample = _sample(tmp_path)
+    result, _result_path = _write_comparison_artifact(
+        tmp_path, sample, 100, "baseline", attrition=True
+    )
+    artifact_root = Path(result["artifact_evidence"]["artifact_root"])
+    replicate_dir = artifact_root / "replicate-1"
+    cache_path = replicate_dir / "raw-cache" / "000.json"
+    cache = json.loads(cache_path.read_text())
+    historic_path = (
+        Path(sample["population"]["cache_directory"])
+        / sample["details"][0]["historic"]["cache_file"]
+    )
+    historic = json.loads(historic_path.read_text())
+    cache["rawHtml"] = historic["rawHtml"]
+    cache["metadata"] = {"statusCode": 200}
+    cache_path.write_bytes(benchmark._canonical(cache))
+
+    worker_path = replicate_dir / "worker-output.json"
+    worker = json.loads(worker_path.read_text())
+    derived = benchmark._derived_jll_cache_observation(cache, cache_path.read_bytes())
+    worker["rows"][0]["observation"] = {
+        **derived,
+        "http_status": 404,
+        "explicit_not_found": True,
+        "no_property": True,
+    }
+    worker_path.write_bytes(benchmark._canonical(worker))
+
+    assert not benchmark._valid_worker_raw_cache_evidence(worker, sample, replicate_dir)
+    summary = benchmark.summarize_replicate(
+        replicate_dir,
+        sample,
+        result["replicates"][0]["wall_seconds"],
+        sample_canonical_sha256=result["sample_canonical_sha256"],
+        worker_contract=result["worker_contract"],
+        require_raw_receipts=True,
+    )
+    assert summary["confirmed_attrition"] == 0
+    assert summary["parser_failures"] == 1
+    assert summary["comparison_state"] == "quality_failed"
+
+
 def _mark_confirmed_attrition(result: dict[str, object], sample_index: int) -> None:
     """Convert a fixture row into a provenance-bound attrition tombstone."""
     for replicate in result["replicates"]:
@@ -1752,9 +1811,7 @@ def test_compare_cli_is_read_only_and_needs_no_artifact_root(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     sample = _sample(tmp_path)
-    _baseline, baseline = _write_comparison_artifact(
-        tmp_path, sample, 100, "baseline"
-    )
+    _baseline, baseline = _write_comparison_artifact(tmp_path, sample, 100, "baseline")
     _candidate, candidate = _write_comparison_artifact(
         tmp_path, sample, 114, "candidate"
     )
@@ -1783,7 +1840,9 @@ def test_counterbalanced_pair_comparison_rehashes_real_ab_ba_ab_artifacts(
     pair_root.mkdir(mode=0o700)
     pair_root.chmod(0o700)
     plan = benchmark.create_counterbalanced_pair_plan(
-        artifact_root=pair_root, sample_path=sample_path
+        artifact_root=pair_root,
+        sample_path=sample_path,
+        evidence_mode="sealed_offline_fixture",
     )
     plan_path = pair_root / "counterbalanced-pair-plan.json"
     plan_sha256 = hashlib.sha256(plan_path.read_bytes()).hexdigest()
@@ -1832,12 +1891,67 @@ def test_counterbalanced_pair_comparison_rehashes_real_ab_ba_ab_artifacts(
     comparison = benchmark.compare_counterbalanced_pair(plan_path)
 
     assert comparison["state"] == "measured"
-    assert comparison["decision"] == "adoptable"
-    assert comparison["sequence"] == ["baseline", "candidate", "candidate", "baseline", "baseline", "candidate"]
+    assert comparison["decision"] == "fixture_only_not_adoptable"
+    assert comparison["reasons"] == ["sealed_offline_fixture_not_production_authority"]
+    assert comparison["sequence"] == [
+        "baseline",
+        "candidate",
+        "candidate",
+        "baseline",
+        "baseline",
+        "candidate",
+    ]
 
     arms[1]["result_sha256"] = "0" * 64
     Path(plan["state_path"]).write_bytes(benchmark._canonical(state))
-    assert benchmark.compare_counterbalanced_pair(plan_path)["decision"] == "no_adoption_decision"
+    assert (
+        benchmark.compare_counterbalanced_pair(plan_path)["decision"]
+        == "no_adoption_decision"
+    )
+
+
+def test_production_pair_refuses_external_arm_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample = _sample(tmp_path)
+    sample_path = tmp_path / "immutable-sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    pair_root = tmp_path / "pair"
+    pair_root.mkdir(mode=0o700)
+    pair_root.chmod(0o700)
+    plan = benchmark.create_counterbalanced_pair_plan(
+        artifact_root=pair_root, sample_path=sample_path
+    )
+    plan_path = pair_root / "counterbalanced-pair-plan.json"
+    external_root = tmp_path / "external"
+    external_root.mkdir()
+    _result, external_result = _write_comparison_artifact(
+        external_root, sample, 100, "baseline"
+    )
+    monkeypatch.setattr(benchmark, "_require_clean_git", lambda _root: "c" * 40)
+    state = {
+        "schema_version": 1,
+        "kind": "cre_capacity_counterbalanced_pair_state",
+        "pair_id": plan["pair_id"],
+        "pair_plan_sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+        "arms": [
+            {
+                "arm_order": order,
+                "variant": variant,
+                "result_path": str(external_result),
+                "result_sha256": hashlib.sha256(
+                    external_result.read_bytes()
+                ).hexdigest(),
+            }
+            for order, variant in enumerate(plan["sequence"], 1)
+        ],
+    }
+    Path(plan["state_path"]).write_bytes(benchmark._canonical(state))
+
+    comparison = benchmark.compare_counterbalanced_pair(plan_path)
+
+    assert comparison["decision"] == "no_adoption_decision"
+    assert "pair_arm_1_artifact" in comparison["reasons"]
 
 
 def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_offline(
@@ -1856,7 +1970,9 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
     admissions: list[str] = []
     rollbacks: list[tuple[Path, str, str, bool]] = []
 
-    monkeypatch.setattr(benchmark, "validate_admission", lambda value, *_args, **_kwargs: value)
+    monkeypatch.setattr(
+        benchmark, "validate_admission", lambda value, *_args, **_kwargs: value
+    )
 
     def fake_run_benchmark(**kwargs):
         admissions.append(kwargs["profile_name"])
@@ -3017,9 +3133,7 @@ def test_summarize_accepts_value_changes_but_rejects_supported_channel_drops(
     assert failed["comparison_state"] == "quality_failed"
 
 
-def test_worker_uses_executed_brochure_url_classifier_without_double_counting() -> (
-    None
-):
+def test_worker_uses_executed_brochure_url_classifier_without_double_counting() -> None:
     source = benchmark._worker_source(Path(__file__).resolve().parents[4])
 
     assert "jllHasUsableBrochure" in source

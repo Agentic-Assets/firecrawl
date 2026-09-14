@@ -58,7 +58,14 @@ MAX_CACHE_RECORD_BYTES = 4 * 1024 * 1024
 MAX_WORKER_OUTPUT_BYTES = 512 * 1024 * 1024
 REVIEW_BENCHMARK_GRANT_MAX_BYTES = 64 * 1024
 COMPARISON_RESULT_MAX_BYTES = 64 * 1024 * 1024
-PAIR_SEQUENCE = ("baseline", "candidate", "candidate", "baseline", "baseline", "candidate")
+PAIR_SEQUENCE = (
+    "baseline",
+    "candidate",
+    "candidate",
+    "baseline",
+    "baseline",
+    "candidate",
+)
 PAIR_MAX_GAP_SECONDS = 4 * 60 * 60
 PAIR_MIN_GAP_SECONDS = 1
 NEXT_DATA = re.compile(
@@ -599,7 +606,9 @@ def _experiment_contract() -> dict[str, Any]:
     if baseline_digest != candidate_digest or not isinstance(workload, dict):
         raise BenchmarkError("central experiment configuration is inconsistent")
     controls = document.get("benchmark_controls")
-    pair = controls.get("counterbalanced_pair") if isinstance(controls, Mapping) else None
+    pair = (
+        controls.get("counterbalanced_pair") if isinstance(controls, Mapping) else None
+    )
     if (
         not isinstance(pair, Mapping)
         or set(pair) != {"sequence", "max_gap_seconds", "min_gap_seconds"}
@@ -1966,13 +1975,13 @@ function cacheObservation(item) {
     const property = pageProps?.property;
     const hasProperty = !!property && typeof property === "object" && !Array.isArray(property);
     const error = pageProps?.error;
-    const explicitNotFound = !hasProperty && (
-      pageProps?.notFound === true ||
-      (error && typeof error === "object" && !Array.isArray(error) && (
-        error.statusCode === 404 || error.code === "NOT_FOUND" ||
-        (typeof error.message === "string" && /\bnot\s+found\b/i.test(error.message))
-      ))
-    );
+    // Current JLL attrition is intentionally stricter than an arbitrary error
+    // page: a valid __NEXT_DATA__ payload must explicitly say notFound, carry
+    // no property object, and expose a 404 error status.  Python comparison
+    // independently re-derives these same fields from the raw receipt.
+    const explicitNotFound = !hasProperty && pageProps?.notFound === true &&
+      !!error && typeof error === "object" && !Array.isArray(error) &&
+      error.statusCode === 404;
     const candidateStatus = cached?.metadata?.statusCode;
     const httpStatus = typeof candidateStatus === "number" && Number.isInteger(candidateStatus)
       && candidateStatus >= 100 && candidateStatus <= 599 ? candidateStatus : null;
@@ -2431,6 +2440,102 @@ def _timestamp_at_or_after(value: Any, lower_bound: float | None) -> bool:
     return observed.tzinfo is not None and observed.timestamp() >= lower_bound
 
 
+def _derived_jll_cache_observation(
+    cache: Mapping[str, Any], raw: bytes
+) -> dict[str, Any]:
+    """Re-derive the worker observation from a rehashed private cache receipt.
+
+    Comparison never treats worker-authored HTTP status or tombstone booleans as
+    authority.  The cache receipt is the bound source for all of these facts.
+    """
+    raw_html = cache.get("rawHtml")
+    next_data: Any = None
+    if isinstance(raw_html, str):
+        match = NEXT_DATA.search(raw_html)
+        if match is not None:
+            try:
+                candidate = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                candidate = None
+            if isinstance(candidate, Mapping):
+                next_data = candidate
+    props = next_data.get("props") if isinstance(next_data, Mapping) else None
+    page_props = props.get("pageProps") if isinstance(props, Mapping) else None
+    if not isinstance(page_props, Mapping):
+        page_props = None
+    property_value = page_props.get("property") if page_props is not None else None
+    has_property = isinstance(property_value, Mapping)
+    error = page_props.get("error") if page_props is not None else None
+    metadata = cache.get("metadata")
+    http_status = metadata.get("statusCode") if isinstance(metadata, Mapping) else None
+    if type(http_status) is not int or not 100 <= http_status <= 599:
+        http_status = None
+    # This is deliberately narrower than a generic website error: a JLL
+    # current-attrition receipt is valid only for a real __NEXT_DATA__ payload,
+    # HTTP 404, explicit notFound, no property object, and an error status 404.
+    explicit_not_found = bool(
+        page_props is not None
+        and not has_property
+        and page_props.get("notFound") is True
+        and isinstance(error, Mapping)
+        and error.get("statusCode") == 404
+    )
+    raw_lower = raw_html.lower() if isinstance(raw_html, str) else ""
+    return {
+        "cache_readable": True,
+        "cache_url": cache.get("url") if isinstance(cache.get("url"), str) else None,
+        "cache_sha256": _sha256(raw),
+        "raw_html_sha256": _sha256(raw_html.encode())
+        if isinstance(raw_html, str)
+        else None,
+        "cached_at": cache.get("cachedAt")
+        if isinstance(cache.get("cachedAt"), str)
+        else None,
+        "detail_observed_at": cache.get("detailObservedAt")
+        if isinstance(cache.get("detailObservedAt"), str)
+        else None,
+        "generation_id": cache.get("generationId")
+        if isinstance(cache.get("generationId"), str)
+        else None,
+        "http_status": http_status,
+        "next_data_valid": next_data is not None,
+        "explicit_not_found": explicit_not_found,
+        "no_property": not has_property,
+        "provider_challenge": bool(
+            re.search(r"cf-chl-|challenge-platform|just a moment", raw_lower)
+        ),
+    }
+
+
+def _rehashed_raw_cache_observations(
+    replicate_dir: Path, expected_rows: Sequence[Mapping[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Require exactly one rehashed private receipt for every immutable URL."""
+    cache_root = _bound_artifact_directory(replicate_dir / "raw-cache")
+    expected_urls = {
+        item.get("url") for item in expected_rows if isinstance(item.get("url"), str)
+    }
+    if len(expected_urls) != len(expected_rows):
+        raise BenchmarkError("sample cache identity is invalid")
+    observations: dict[str, dict[str, Any]] = {}
+    paths = list(cache_root.iterdir())
+    if len(paths) != len(expected_rows):
+        raise BenchmarkError("raw cache receipt count is invalid")
+    for candidate in paths:
+        bounded = _bound_regular_file(
+            candidate, maximum=MAX_CACHE_RECORD_BYTES, root=cache_root
+        )
+        raw = bounded.read_bytes()
+        cache = _cache_payload_for_comparison(bounded)
+        url = cache.get("url") if isinstance(cache, Mapping) else None
+        if not isinstance(url, str) or url not in expected_urls or url in observations:
+            raise BenchmarkError("raw cache receipt URL is not an immutable sample URL")
+        observations[url] = _derived_jll_cache_observation(cache, raw)
+    if set(observations) != expected_urls:
+        raise BenchmarkError("raw cache receipts do not cover the immutable sample")
+    return observations
+
+
 def _confirmed_attrition_evidence(
     expected: Mapping[str, Any],
     actual: Mapping[str, Any],
@@ -2501,6 +2606,7 @@ def summarize_replicate(
     *,
     sample_canonical_sha256: str,
     worker_contract: Mapping[str, Any],
+    require_raw_receipts: bool = False,
 ) -> dict[str, Any]:
     worker_path = replicate_dir / "worker-output.json"
     worker = _read_json(worker_path, MAX_WORKER_OUTPUT_BYTES)
@@ -2518,6 +2624,17 @@ def summarize_replicate(
     if not isinstance(rows, list):
         raise BenchmarkError("worker output has no rows")
     expected_rows = sample["details"]
+    if not isinstance(expected_rows, list):
+        raise BenchmarkError("sample details are invalid")
+    raw_observations: dict[str, dict[str, Any]] = {}
+    raw_cache_path = replicate_dir / "raw-cache"
+    if raw_cache_path.exists() or require_raw_receipts:
+        raw_observations = _rehashed_raw_cache_observations(
+            replicate_dir,
+            [item for item in expected_rows if isinstance(item, Mapping)],
+        )
+        if len(raw_observations) != len(expected_rows):
+            raise BenchmarkError("raw cache receipt evidence is incomplete")
     worker_generation = worker.get("generation")
     worker_started_at = worker.get("started_at")
     worker_started_ms = (
@@ -2585,14 +2702,32 @@ def summarize_replicate(
                 }
             )
         detail_error = bool(normalized.get("detailError"))
+        derived_observation = raw_observations.get(expected["url"])
+        observation_for_classification = (
+            derived_observation
+            if derived_observation is not None
+            else actual.get("observation")
+        )
+        if derived_observation is not None and not _same_typed_value(
+            actual.get("observation"), derived_observation
+        ):
+            errors.append({"sample_id": expected["sample_id"], "kind": "raw_receipt"})
         attrition = (
             _confirmed_attrition_evidence(
                 expected,
-                actual,
+                {"observation": observation_for_classification},
                 worker_generation=worker_generation,
                 worker_started_ms=worker_started_ms,
             )
-            if detail_error and identity_match and transaction_match
+            if (
+                detail_error
+                and identity_match
+                and transaction_match
+                and (
+                    derived_observation is None
+                    or _same_typed_value(actual.get("observation"), derived_observation)
+                )
+            )
             else None
         )
         if attrition is not None:
@@ -2616,7 +2751,9 @@ def summarize_replicate(
             )
             continue
         if detail_error:
-            classification = _detail_failure_classification(actual)
+            classification = _detail_failure_classification(
+                {"observation": observation_for_classification}
+            )
             if classification == "parser_failure":
                 parser_failures += 1
             else:
@@ -3350,7 +3487,7 @@ def _valid_worker_raw_cache_evidence(
             matches = cache_by_hash.get(cache_sha256, [])
             if len(matches) != 1:
                 return False
-            _cache_path, cache = matches[0]
+            cache_path, cache = matches[0]
         else:
             native = row.get("native")
             if not isinstance(native, Mapping) or not isinstance(
@@ -3368,9 +3505,14 @@ def _valid_worker_raw_cache_evidence(
             if native.get("raw_cache_sha256") != _file_sha256(cache_path):
                 return False
             cache = _cache_payload_for_comparison(cache_path)
+        try:
+            derived = _derived_jll_cache_observation(cache, cache_path.read_bytes())
+        except OSError:
+            return False
         raw_html = cache.get("rawHtml")
         if (
-            cache.get("url") != item.get("url")
+            not _same_typed_value(observation, derived)
+            or cache.get("url") != item.get("url")
             or observation.get("cache_url") != item.get("url")
             or observation.get("cache_sha256") not in cache_by_hash
             or not isinstance(raw_html, str)
@@ -3387,6 +3529,7 @@ def _valid_comparison_artifacts(
     result_path: Path | None,
     details: int,
     worker_contract: Mapping[str, Any],
+    repo_root: Path | None = None,
 ) -> list[str]:
     """Bind a comparison result to rehashed private evidence on disk."""
     if result_path is None:
@@ -3398,7 +3541,9 @@ def _valid_comparison_artifacts(
         disk_result = _read_json(bounded_result, COMPARISON_RESULT_MAX_BYTES)
     except BenchmarkError:
         return [f"{label}_result_artifact"]
-    if not isinstance(disk_result, Mapping) or not _same_typed_value(disk_result, value):
+    if not isinstance(disk_result, Mapping) or not _same_typed_value(
+        disk_result, value
+    ):
         return [f"{label}_result_artifact_binding"]
     evidence = value.get("artifact_evidence")
     expected_evidence = {
@@ -3430,9 +3575,9 @@ def _valid_comparison_artifacts(
             Path(evidence["admission_path"]), maximum=MAX_SAMPLE_BYTES
         )
         admission = _read_json(admission_path)
-        if not isinstance(admission, Mapping) or value.get("admission_sha256") != _sha256(
-            _canonical(admission)
-        ):
+        if not isinstance(admission, Mapping) or value.get(
+            "admission_sha256"
+        ) != _sha256(_canonical(admission)):
             raise BenchmarkError("admission evidence is not bound to the result")
         if any(
             admission.get(key) != value.get(key)
@@ -3469,7 +3614,9 @@ def _valid_comparison_artifacts(
         for index, replicate in enumerate(replicates, 1):
             if not isinstance(replicate, Mapping):
                 raise BenchmarkError("replicate is malformed")
-            replicate_dir = _bound_artifact_directory(artifact_root / f"replicate-{index}")
+            replicate_dir = _bound_artifact_directory(
+                artifact_root / f"replicate-{index}"
+            )
             worker_path = _bound_regular_file(
                 replicate_dir / "worker-output.json",
                 maximum=MAX_WORKER_OUTPUT_BYTES,
@@ -3482,6 +3629,23 @@ def _valid_comparison_artifacts(
                 or not _valid_worker_raw_cache_evidence(worker, sample, replicate_dir)
             ):
                 raise BenchmarkError("worker or raw cache evidence is not bound")
+            if repo_root is not None:
+                worker_source_path = _bound_regular_file(
+                    replicate_dir / "worker.mts",
+                    maximum=MAX_WORKER_OUTPUT_BYTES,
+                    root=replicate_dir,
+                )
+                expected_worker_source = _worker_source(
+                    repo_root,
+                    expected_details=details,
+                    concurrency=int(worker_contract["concurrency"]),
+                ).encode()
+                if (
+                    _file_sha256(worker_source_path)
+                    != value.get("worker_source_sha256")
+                    or worker_source_path.read_bytes() != expected_worker_source
+                ):
+                    raise BenchmarkError("worker source is not bound to this checkout")
             performance_path = _bound_regular_file(
                 replicate_dir / "performance.json",
                 maximum=MAX_WORKER_OUTPUT_BYTES,
@@ -3499,6 +3663,7 @@ def _valid_comparison_artifacts(
                 float(wall_seconds),
                 sample_canonical_sha256=value["sample_canonical_sha256"],
                 worker_contract=worker_contract,
+                require_raw_receipts=True,
             )
             if any(
                 not _same_typed_value(replicate.get(key), expected)
@@ -3516,6 +3681,8 @@ def _comparison_evidence(
     contract: Mapping[str, Any],
     *,
     result_path: Path | None,
+    current_checkout: Mapping[str, Any] | None = None,
+    repo_root: Path | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     reasons: list[str] = []
     if not isinstance(value, dict):
@@ -3558,6 +3725,7 @@ def _comparison_evidence(
             result_path=result_path,
             details=details,
             worker_contract=expected_worker,
+            repo_root=repo_root,
         )
     )
     if not _valid_effective_runtime(value.get("effective_runtime"), requested):
@@ -3706,6 +3874,14 @@ def _comparison_evidence(
         reasons.append(f"{label}_freshness_policy")
     if not _valid_implementation_manifest(value.get("implementation_manifest")):
         reasons.append(f"{label}_implementation_manifest")
+    if current_checkout is not None and (
+        value.get("source_git_sha") != current_checkout.get("source_git_sha")
+        or not _same_typed_value(
+            value.get("implementation_manifest"),
+            current_checkout.get("implementation_manifest"),
+        )
+    ):
+        reasons.append(f"{label}_checkout_binding")
     if value.get("shared_lock", {}).get("canonical") is not True:
         reasons.append(f"{label}_shared_lock")
     if not _valid_settlement(value.get("final_settlement"), final=True):
@@ -3899,6 +4075,24 @@ def compare_counterbalanced_pair(pair_plan_path: Path) -> dict[str, Any]:
             "decision": "no_adoption_decision",
             "reasons": ["counterbalanced_pair_artifact_invalid"],
         }
+    production = plan["evidence_mode"] == "production"
+    checkout: dict[str, Any] | None = None
+    repo_root: Path | None = None
+    if production:
+        try:
+            repo_root = _benchmark_repo_root()
+            checkout = {
+                "source_git_sha": _require_clean_git(repo_root),
+                "implementation_manifest": _implementation_manifest(repo_root),
+            }
+        except BenchmarkError:
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "kind": "cre_capacity_counterbalanced_comparison",
+                "state": "inconclusive",
+                "decision": "no_adoption_decision",
+                "reasons": ["production_checkout_rehash_required"],
+            }
     arms = state["arms"]
     if len(arms) != len(PAIR_SEQUENCE):
         return {
@@ -3912,7 +4106,9 @@ def compare_counterbalanced_pair(pair_plan_path: Path) -> dict[str, Any]:
     summaries: dict[str, list[dict[str, Any]]] = {"baseline": [], "candidate": []}
     values: list[Mapping[str, Any]] = []
     prior_finished: datetime | None = None
-    for order, (arm, expected_variant) in enumerate(zip(arms, PAIR_SEQUENCE, strict=True), 1):
+    for order, (arm, expected_variant) in enumerate(
+        zip(arms, PAIR_SEQUENCE, strict=True), 1
+    ):
         if (
             not isinstance(arm, Mapping)
             or arm.get("arm_order") != order
@@ -3923,7 +4119,16 @@ def compare_counterbalanced_pair(pair_plan_path: Path) -> dict[str, Any]:
             reasons.append(f"pair_arm_{order}_state")
             continue
         try:
-            path = _bound_regular_file(Path(arm["result_path"]), maximum=COMPARISON_RESULT_MAX_BYTES)
+            path = _bound_regular_file(
+                Path(arm["result_path"]), maximum=COMPARISON_RESULT_MAX_BYTES
+            )
+            if production:
+                root = _bound_artifact_directory(Path(plan["artifact_root"]))
+                expected_arm_root = root / f"arm-{order:02d}-{expected_variant}"
+                if path != expected_arm_root / "result.json":
+                    raise BenchmarkError(
+                        "production arm result escapes the paired root"
+                    )
             if _file_sha256(path) != arm["result_sha256"]:
                 raise BenchmarkError("pair result hash drift")
             value = _read_json(path, COMPARISON_RESULT_MAX_BYTES)
@@ -3932,6 +4137,8 @@ def compare_counterbalanced_pair(pair_plan_path: Path) -> dict[str, Any]:
                 expected_variant,
                 contract,
                 result_path=path,
+                current_checkout=checkout,
+                repo_root=repo_root,
             )
             pairing = value.get("pairing") if isinstance(value, Mapping) else None
             expected_pairing = {
@@ -3942,7 +4149,9 @@ def compare_counterbalanced_pair(pair_plan_path: Path) -> dict[str, Any]:
                 "max_gap_seconds": plan["max_gap_seconds"],
                 "min_gap_seconds": plan["min_gap_seconds"],
             }
-            if not isinstance(pairing, Mapping) or not _same_typed_value(pairing, expected_pairing):
+            if not isinstance(pairing, Mapping) or not _same_typed_value(
+                pairing, expected_pairing
+            ):
                 evidence_reasons.append(f"pair_arm_{order}_binding")
             started = _parse_bound_timestamp(value.get("started_at"))
             finished = _parse_bound_timestamp(value.get("finished_at"))
@@ -3966,10 +4175,20 @@ def compare_counterbalanced_pair(pair_plan_path: Path) -> dict[str, Any]:
             "kind": "cre_capacity_counterbalanced_comparison",
             "state": "inconclusive",
             "decision": "no_adoption_decision",
-            "reasons": sorted(set(reasons or ["counterbalanced_pair_evidence_missing"])),
+            "reasons": sorted(
+                set(reasons or ["counterbalanced_pair_evidence_missing"])
+            ),
         }
-    match_keys = ("sample_inventory_sha256", "sample_manifest_sha256", "sample_canonical_sha256", "config_sha256")
-    if any(any(value.get(key) != values[0].get(key) for key in match_keys) for value in values[1:]):
+    match_keys = (
+        "sample_inventory_sha256",
+        "sample_manifest_sha256",
+        "sample_canonical_sha256",
+        "config_sha256",
+    )
+    if any(
+        any(value.get(key) != values[0].get(key) for key in match_keys)
+        for value in values[1:]
+    ):
         return {
             "schema_version": SCHEMA_VERSION,
             "kind": "cre_capacity_counterbalanced_comparison",
@@ -3977,14 +4196,22 @@ def compare_counterbalanced_pair(pair_plan_path: Path) -> dict[str, Any]:
             "decision": "no_adoption_decision",
             "reasons": ["counterbalanced_pair_cohort_mismatch"],
         }
-    baseline_rates = [item["median_eligible_current_active_rows_per_minute"] for item in summaries["baseline"]]
-    candidate_rates = [item["median_eligible_current_active_rows_per_minute"] for item in summaries["candidate"]]
+    baseline_rates = [
+        item["median_eligible_current_active_rows_per_minute"]
+        for item in summaries["baseline"]
+    ]
+    candidate_rates = [
+        item["median_eligible_current_active_rows_per_minute"]
+        for item in summaries["candidate"]
+    ]
     baseline_rate = round(median(baseline_rates), 3)
     candidate_rate = round(median(candidate_rates), 3)
     gain = round((candidate_rate - baseline_rate) * 100 / baseline_rate, 3)
     attrition_signatures = [
         [
-            replicate.get("record_evidence_manifest", {}).get("attrition_sample_ids_sha256")
+            replicate.get("record_evidence_manifest", {}).get(
+                "attrition_sample_ids_sha256"
+            )
             for replicate in value.get("replicates", [])
             if isinstance(replicate, Mapping)
         ]
@@ -3994,11 +4221,21 @@ def compare_counterbalanced_pair(pair_plan_path: Path) -> dict[str, Any]:
         attrition_signatures[index] == attrition_signatures[index + 1]
         for index in range(0, len(attrition_signatures), 2)
     )
+    fixture_only = not production
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": "cre_capacity_counterbalanced_comparison",
         "state": "measured",
-        "decision": "adoptable" if gain >= 15 and symmetric else "do_not_adopt",
+        "decision": (
+            "fixture_only_not_adoptable"
+            if fixture_only
+            else "adoptable"
+            if gain >= 15 and symmetric
+            else "do_not_adopt"
+        ),
+        "reasons": ["sealed_offline_fixture_not_production_authority"]
+        if fixture_only
+        else [],
         "criterion_percent": 15,
         "gain_percent": gain,
         "pair_id": plan["pair_id"],
@@ -4461,10 +4698,18 @@ def run_benchmark(
 
 PAIR_PLAN_KIND = "cre_capacity_counterbalanced_pair_plan"
 PAIR_STATE_KIND = "cre_capacity_counterbalanced_pair_state"
+PAIR_EVIDENCE_MODES = frozenset({"production", "sealed_offline_fixture"})
+
+
+def _benchmark_repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
 
 
 def create_counterbalanced_pair_plan(
-    *, artifact_root: Path, sample_path: Path
+    *,
+    artifact_root: Path,
+    sample_path: Path,
+    evidence_mode: str = "production",
 ) -> dict[str, Any]:
     """Create a private AB/BA/AB plan; it does not touch runtime or providers."""
     contract = _experiment_contract()
@@ -4473,6 +4718,8 @@ def create_counterbalanced_pair_plan(
     sample = validate_sample(_read_json(bounded_sample), details)
     pair = contract["counterbalanced_pair"]
     root = _bound_artifact_directory(artifact_root)
+    if evidence_mode not in PAIR_EVIDENCE_MODES:
+        raise BenchmarkError("counterbalanced pair evidence mode is invalid")
     plan = {
         "schema_version": SCHEMA_VERSION,
         "kind": PAIR_PLAN_KIND,
@@ -4484,6 +4731,7 @@ def create_counterbalanced_pair_plan(
         "sample_canonical_sha256": _sha256(_canonical(sample)),
         "sample_inventory_sha256": sample["inventory_sha256"],
         "config_sha256": contract["config_sha256"],
+        "evidence_mode": evidence_mode,
         "sequence": list(pair["sequence"]),
         "max_gap_seconds": pair["max_gap_seconds"],
         "min_gap_seconds": pair["min_gap_seconds"],
@@ -4516,6 +4764,7 @@ def _load_counterbalanced_pair_plan(path: Path) -> tuple[dict[str, Any], str]:
         or value.get("min_gap_seconds")
         != contract["counterbalanced_pair"]["min_gap_seconds"]
         or value.get("config_sha256") != contract["config_sha256"]
+        or value.get("evidence_mode") not in PAIR_EVIDENCE_MODES
     ):
         raise BenchmarkError("counterbalanced pair plan is invalid")
     root = _bound_artifact_directory(Path(value.get("artifact_root", "")))
@@ -4524,7 +4773,9 @@ def _load_counterbalanced_pair_plan(path: Path) -> tuple[dict[str, Any], str]:
     sample_path = _bound_regular_file(
         Path(value.get("sample_path", "")), maximum=MAX_SAMPLE_BYTES
     )
-    sample = validate_sample(_read_json(sample_path), int(contract["workload"]["details"]))
+    sample = validate_sample(
+        _read_json(sample_path), int(contract["workload"]["details"])
+    )
     if (
         value.get("sample_manifest_sha256") != _file_sha256(sample_path)
         or value.get("sample_canonical_sha256") != _sha256(_canonical(sample))
@@ -4537,7 +4788,9 @@ def _load_counterbalanced_pair_plan(path: Path) -> tuple[dict[str, Any], str]:
     return value, _file_sha256(bounded)
 
 
-def _load_counterbalanced_pair_state(plan: Mapping[str, Any], plan_sha256: str) -> dict[str, Any]:
+def _load_counterbalanced_pair_state(
+    plan: Mapping[str, Any], plan_sha256: str
+) -> dict[str, Any]:
     path = Path(plan["state_path"])
     if not path.exists():
         return {
@@ -4576,6 +4829,10 @@ def run_counterbalanced_pair_step(
     gap, while still producing a supported AB/BA/AB result chain.
     """
     plan, plan_sha256 = _load_counterbalanced_pair_plan(pair_plan_path)
+    if plan["evidence_mode"] != "production":
+        raise BenchmarkError(
+            "sealed offline fixture plans cannot execute a runtime arm"
+        )
     state = _load_counterbalanced_pair_state(plan, plan_sha256)
     order = len(state["arms"]) + 1
     sequence = plan["sequence"]
@@ -4611,7 +4868,8 @@ def run_counterbalanced_pair_step(
             artifact_root=arm_root,
             sample_path=Path(plan["sample_path"]),
             sample=validate_sample(
-                _read_json(Path(plan["sample_path"])), int(profile["workload"]["details"])
+                _read_json(Path(plan["sample_path"])),
+                int(profile["workload"]["details"]),
             ),
             profile=profile,
             profile_name=profile_name,
@@ -4624,7 +4882,9 @@ def run_counterbalanced_pair_step(
     finally:
         if variant == "candidate":
             if candidate_receipt_path is None:
-                raise BenchmarkError("candidate pair step requires its rollback receipt")
+                raise BenchmarkError(
+                    "candidate pair step requires its rollback receipt"
+                )
             capacity_runtime.transition(
                 candidate_receipt_path,
                 profile_name,

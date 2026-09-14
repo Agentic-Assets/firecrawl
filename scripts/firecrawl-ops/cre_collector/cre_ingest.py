@@ -96,14 +96,11 @@ def artifact_run_identity_from_digests(member_digests, *, lane="ingest"):
     """Stable content identity from canonically ordered artifact digests."""
     members = list(member_digests)
     if not members or any(
-        not isinstance(digest, str)
-        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
         for digest in members
     ):
         raise ValueError("artifact identity requires lowercase SHA-256 digests")
-    key = f"{lane}:v1:" + hashlib.sha256(
-        "\n".join(members).encode()
-    ).hexdigest()
+    key = f"{lane}:v1:" + hashlib.sha256("\n".join(members).encode()).hexdigest()
     return key, str(uuid.uuid5(_RUN_UUID_NAMESPACE, key))
 
 
@@ -117,6 +114,7 @@ def artifact_run_identity(paths, *, lane="ingest"):
                 digest.update(chunk)
         members.append(digest.hexdigest())
     return artifact_run_identity_from_digests(members, lane=lane)
+
 
 # sourceKey -> (brokerage slug, external_id prefix)
 SOURCE_TO_BROKERAGE = {
@@ -241,9 +239,7 @@ CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS = BUILDOUT_SOURCE_KEYS | {
 }
 CHILD_PRESERVING_STRICT_DETAIL_SOURCE_KEYS = {"jll-investor"}
 AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS = (
-    BUILDOUT_SOURCE_KEYS
-    | CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
-    | {"cbre"}
+    BUILDOUT_SOURCE_KEYS | CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS | {"cbre"}
 )
 STRICT_FRESHNESS_SOURCE_KEYS = {
     "cbre",
@@ -326,6 +322,8 @@ def colliers_contact_preservation_is_valid(listing):
             for expert_id in unresolved
         )
     )
+
+
 MAX_FUTURE_CLOCK_SKEW = timedelta(minutes=5)
 COLLIERS_TRANSITION_MAX_AGE = timedelta(hours=24)
 CHILD_COUNT_MIN_BASE = 10
@@ -378,7 +376,11 @@ def source_key_from_values(raw_data, brokerage_slug, external_id):
             if candidate and mapping is not None and mapping[0] == normalized_slug:
                 return candidate
     fallback = SOURCE_TO_BROKERAGE.get(normalized_slug)
-    return normalized_slug if fallback is not None and fallback[0] == normalized_slug else None
+    return (
+        normalized_slug
+        if fallback is not None and fallback[0] == normalized_slug
+        else None
+    )
 
 
 def _json_text_sql(listing_alias, path):
@@ -436,10 +438,7 @@ def child_count_regressed(before, after):
     retained_threshold = (
         before * CHILD_COUNT_RETAIN_NUMERATOR // CHILD_COUNT_RETAIN_DENOMINATOR
     )
-    return (
-        before >= CHILD_COUNT_MIN_BASE
-        and after < retained_threshold
-    )
+    return before >= CHILD_COUNT_MIN_BASE and after < retained_threshold
 
 
 # Ordered keyword -> property_type enum. First match wins.
@@ -486,21 +485,58 @@ PROPERTY_TYPE_RULES = [
 ]
 
 US_STATES = {
-    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
-    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
-    "florida": "FL", "georgia": "GA", "hawaii": "HI", "idaho": "ID",
-    "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
-    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
-    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN",
-    "mississippi": "MS", "missouri": "MO", "montana": "MT", "nebraska": "NE",
-    "nevada": "NV", "new hampshire": "NH", "new jersey": "NJ",
-    "new mexico": "NM", "new york": "NY", "north carolina": "NC",
-    "north dakota": "ND", "ohio": "OH", "oklahoma": "OK", "oregon": "OR",
-    "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC",
-    "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT",
-    "vermont": "VT", "virginia": "VA", "washington": "WA",
-    "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
-    "district of columbia": "DC", "puerto rico": "PR",
+    "alabama": "AL",
+    "alaska": "AK",
+    "arizona": "AZ",
+    "arkansas": "AR",
+    "california": "CA",
+    "colorado": "CO",
+    "connecticut": "CT",
+    "delaware": "DE",
+    "florida": "FL",
+    "georgia": "GA",
+    "hawaii": "HI",
+    "idaho": "ID",
+    "illinois": "IL",
+    "indiana": "IN",
+    "iowa": "IA",
+    "kansas": "KS",
+    "kentucky": "KY",
+    "louisiana": "LA",
+    "maine": "ME",
+    "maryland": "MD",
+    "massachusetts": "MA",
+    "michigan": "MI",
+    "minnesota": "MN",
+    "mississippi": "MS",
+    "missouri": "MO",
+    "montana": "MT",
+    "nebraska": "NE",
+    "nevada": "NV",
+    "new hampshire": "NH",
+    "new jersey": "NJ",
+    "new mexico": "NM",
+    "new york": "NY",
+    "north carolina": "NC",
+    "north dakota": "ND",
+    "ohio": "OH",
+    "oklahoma": "OK",
+    "oregon": "OR",
+    "pennsylvania": "PA",
+    "rhode island": "RI",
+    "south carolina": "SC",
+    "south dakota": "SD",
+    "tennessee": "TN",
+    "texas": "TX",
+    "utah": "UT",
+    "vermont": "VT",
+    "virginia": "VA",
+    "washington": "WA",
+    "west virginia": "WV",
+    "wisconsin": "WI",
+    "wyoming": "WY",
+    "district of columbia": "DC",
+    "puerto rico": "PR",
 }
 STATE_CODES = set(US_STATES.values())
 
@@ -653,7 +689,12 @@ def norm_lease_rate_type(v):
     # Order matters: check the more specific variants before the bare "gross".
     if "modified gross" in low or "mod gross" in low or "modified_gross" in low:
         return "modified_gross"
-    if "full service" in low or "full-service" in low or "fsg" in low or "full_service" in low:
+    if (
+        "full service" in low
+        or "full-service" in low
+        or "fsg" in low
+        or "full_service" in low
+    ):
         return "full_service"
     if "nnn" in low or "triple net" in low or "triple-net" in low:
         return "nnn"
@@ -747,11 +788,15 @@ def om_facts_rows(v):
         if not isinstance(f, dict):
             continue
         fact_key = clean_text(f.get("factKey") or f.get("fact_key"), 128)
-        source_doc_url = http_url_or_none(f.get("sourceDocUrl") or f.get("source_doc_url"))
-        parser_version = clean_text(f.get("parserVersion") or f.get("parser_version"), 64)
+        source_doc_url = http_url_or_none(
+            f.get("sourceDocUrl") or f.get("source_doc_url")
+        )
+        parser_version = clean_text(
+            f.get("parserVersion") or f.get("parser_version"), 64
+        )
         if not fact_key or not source_doc_url or not parser_version:
             continue  # provenance is required on every OM-derived row
-        group = (f.get("factGroup") or f.get("fact_group") or "scalar")
+        group = f.get("factGroup") or f.get("fact_group") or "scalar"
         group = group if group in _OM_FACT_GROUPS else "scalar"
         conf = num_or_none(f.get("confidence"), lo=-0.0001, hi=1)
         if conf is not None and not (0 <= conf <= 1):
@@ -760,10 +805,15 @@ def om_facts_rows(v):
             {
                 "factGroup": group,
                 "factKey": fact_key,
-                "factValueText": clean_text(f.get("factValueText") or f.get("fact_value_text"), 2000),
-                "factValueNum": num_or_none(f.get("factValueNum") or f.get("fact_value_num"),
-                                            lo=-1e15, hi=1e15),
-                "unitCount": int_or_none(f.get("unitCount") or f.get("unit_count"), lo=-1, hi=1e6),
+                "factValueText": clean_text(
+                    f.get("factValueText") or f.get("fact_value_text"), 2000
+                ),
+                "factValueNum": num_or_none(
+                    f.get("factValueNum") or f.get("fact_value_num"), lo=-1e15, hi=1e15
+                ),
+                "unitCount": int_or_none(
+                    f.get("unitCount") or f.get("unit_count"), lo=-1, hi=1e6
+                ),
                 "sourceDocUrl": source_doc_url,
                 "parserVersion": parser_version,
                 "confidence": conf,
@@ -783,15 +833,14 @@ def is_retired_om_parse_listing(listing):
     never carry ``omFacts`` and therefore remain unaffected.
     """
     return (
-        isinstance(listing, dict)
-        and "externalId" in listing
-        and "omFacts" in listing
+        isinstance(listing, dict) and "externalId" in listing and "omFacts" in listing
     )
 
 
 # ---------------------------------------------------------------------------
 # Listing transformation
 # ---------------------------------------------------------------------------
+
 
 def to_inventory_only_row(listing, observed_at):
     """Map a current provider card that lacks a canonical listing URL.
@@ -832,7 +881,9 @@ def to_inventory_only_row(listing, observed_at):
         "provisionalIdentity": listing.get("provisionalIdentity"),
     }
     fingerprint = hashlib.sha256(
-        json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str).encode()
+        json.dumps(
+            evidence, sort_keys=True, separators=(",", ":"), default=str
+        ).encode()
     ).hexdigest()
     supporting_url = http_url_or_none(listing.get("url"))
     return {
@@ -850,7 +901,9 @@ def to_inventory_only_row(listing, observed_at):
     }
 
 
-def strict_full_source_scope(data, source_key, *, required_transactions=("sale", "lease")):
+def strict_full_source_scope(
+    data, source_key, *, required_transactions=("sale", "lease")
+):
     """Validate one unlimited, exact, successful full-source enumeration.
 
     This is the shared absence-authority contract for inventory-only cleanup,
@@ -866,19 +919,11 @@ def strict_full_source_scope(data, source_key, *, required_transactions=("sale",
     started_raw = run_meta.get("startedAt")
     finished_raw = run_meta.get("finishedAt")
     try:
-        started = datetime.fromisoformat(
-            str(started_raw).replace("Z", "+00:00")
-        )
-        finished = datetime.fromisoformat(
-            str(finished_raw).replace("Z", "+00:00")
-        )
+        started = datetime.fromisoformat(str(started_raw).replace("Z", "+00:00"))
+        finished = datetime.fromisoformat(str(finished_raw).replace("Z", "+00:00"))
     except (TypeError, ValueError) as exc:
         raise ValueError("invalid_run_timestamps") from exc
-    if (
-        started.tzinfo is None
-        or finished.tzinfo is None
-        or finished < started
-    ):
+    if started.tzinfo is None or finished.tzinfo is None or finished < started:
         raise ValueError("invalid_run_timestamps")
     expected_transactions = list(required_transactions)
     if (
@@ -908,8 +953,7 @@ def strict_full_source_scope(data, source_key, *, required_transactions=("sale",
     source_listings = [
         listing
         for listing in listings
-        if isinstance(listing, dict)
-        and listing.get("sourceKey") == source_key
+        if isinstance(listing, dict) and listing.get("sourceKey") == source_key
     ]
     transactions = [entry.get("transaction") for entry in matching]
     if len(matching) != len(expected_transactions) or sorted(transactions) != sorted(
@@ -988,11 +1032,13 @@ def trusted_colliers_first_party_transition(
         and parse_strict_freshness_timestamp(
             listing.get("inventoryObservedAt"),
             field="listing.inventoryObservedAt",
-        ) >= observation_cutoff
+        )
+        >= observation_cutoff
         and parse_strict_freshness_timestamp(
             listing.get("detailObservedAt"),
             field="listing.detailObservedAt",
-        ) >= observation_cutoff
+        )
+        >= observation_cutoff
         for listing in listings
     )
 
@@ -1067,7 +1113,10 @@ def transaction_type_of(listing):
 #   sold, under_contract, pending, leased, off_market.
 STATUS_RULES = [
     (re.compile(r"\b(?:sold|closed)\b", re.I), "sold"),
-    (re.compile(r"\b(?:under\s+contract|in\s+contract|under\s+offer)\b", re.I), "under_contract"),
+    (
+        re.compile(r"\b(?:under\s+contract|in\s+contract|under\s+offer)\b", re.I),
+        "under_contract",
+    ),
     (re.compile(r"\b(?:sale\s+pending|pending)\b", re.I), "pending"),
     (re.compile(r"\bleased\b", re.I), "leased"),
     (re.compile(r"\b(?:withdrawn|off\s+market)\b", re.I), "off_market"),
@@ -1087,7 +1136,11 @@ _TERMINAL_STATUSES = {"sold", "under_contract", "pending", "leased", "off_market
 # ~19k rows, which emit no status field).
 STATUS_SOURCE_PATHS = {
     # Status-transition tier (native signal present in raw_data).
-    "jll-investor": ["status", "jllInvestorSearchRow.status", "jllInvestorDetail.stageName"],
+    "jll-investor": [
+        "status",
+        "jllInvestorSearchRow.status",
+        "jllInvestorDetail.stageName",
+    ],
     "nai-global": ["listingStatus"],
     "svn": ["closed", "underContract"],
     "lee-associates": ["closed", "underContract"],
@@ -1346,7 +1399,9 @@ def parse_source_lastmod(value):
     if m:
         cand = m.group(0).replace(" ", "T")
         try:
-            datetime.fromisoformat(cand)  # reject out-of-range month/day/hour (e.g. 2024-13-45)
+            datetime.fromisoformat(
+                cand
+            )  # reject out-of-range month/day/hour (e.g. 2024-13-45)
             return cand
         except ValueError:
             return None
@@ -1384,8 +1439,7 @@ def validate_strict_artifact_freshness(
     run_meta = data.get("runMeta")
     freshness = run_meta.get("freshness") if isinstance(run_meta, dict) else None
     artifact_is_strict = (
-        isinstance(freshness, dict)
-        and freshness.get("requireFreshDetails") is True
+        isinstance(freshness, dict) and freshness.get("requireFreshDetails") is True
     )
     if require_strict_freshness and not artifact_is_strict:
         raise ValueError(
@@ -1459,9 +1513,13 @@ def validate_strict_artifact_freshness(
         if not isinstance(provenance, dict):
             raise ValueError(f"strict freshness listings[{index}] lacks provenance")
         if provenance.get("generationId") != generation_id:
-            raise ValueError(f"strict freshness listings[{index}] has the wrong generation")
+            raise ValueError(
+                f"strict freshness listings[{index}] has the wrong generation"
+            )
         if listing.get("detailError"):
-            raise ValueError(f"strict freshness listings[{index}] has incomplete detail")
+            raise ValueError(
+                f"strict freshness listings[{index}] has incomplete detail"
+            )
         inventory_observed = parse_strict_freshness_timestamp(
             listing.get("inventoryObservedAt"),
             field=f"listings[{index}].inventoryObservedAt",
@@ -1654,6 +1712,38 @@ _JLL_PRICE_SOURCE_SHAPES = {
     "structured",
     "unsupported",
 }
+_JLL_WITHHELD_MARKER = "jllPriceWithheld"
+_JLL_SAFE_CONTROL_KEYS = frozenset(
+    {"hidePrice", "priceWithholdingControl", _JLL_WITHHELD_MARKER}
+)
+_JLL_DIRECT_PRICE_KEYS = frozenset(
+    {
+        "askingPrice",
+        "leaseRateMax",
+        "leaseRateMin",
+        "leaseRateText",
+        "leaseRateType",
+        "price",
+        "pricePerAcre",
+        "pricePerUnit",
+        "pricing",
+        "salePrice",
+        "salePricePerSf",
+        "salePriceText",
+        "salePriceUsd",
+    }
+)
+_JLL_FREE_TEXT_KEYS = frozenset({"description", "highlights", "markdown", "summary"})
+_JLL_MONEY_AMOUNT = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+_JLL_MONEY_TOKEN = re.compile(
+    rf"(?i)(?:\b(?:usd|us\$)\s*)?\$\s*{_JLL_MONEY_AMOUNT}"
+    r"(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?"
+)
+_JLL_LABELLED_PRICE = re.compile(
+    r"(?i)(\b(?:asking|list|sale|lease|rental)\s*"
+    r"(?:price|rate|rent|consideration)\s*[:\-]?\s*)"
+    rf"(?:\$?\s*{_JLL_MONEY_AMOUNT}(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?)"
+)
 
 
 def _safe_jll_pricing(value):
@@ -1712,22 +1802,54 @@ def _safe_jll_pricing(value):
     return safe
 
 
-def _redact_jll_price_values(value):
-    """Recursively remove price/rate payloads while keeping control provenance."""
+def _redact_jll_free_text(value):
+    """Keep prose but remove explicit monetary and labelled price disclosures."""
+    if not isinstance(value, str):
+        return value
+    value = _JLL_LABELLED_PRICE.sub(r"\1[redacted]", value)
+    return _JLL_MONEY_TOKEN.sub("[redacted]", value)
+
+
+def _redact_jll_price_values(value, *, parent_key=None):
+    """Apply the narrow JLL withheld-price raw-retention contract.
+
+    Withholding removes known price schema fields and money disclosures in the
+    documented prose fields.  It deliberately does not use substring matching:
+    a field such as ``currentTenants`` is unrelated provenance and must survive.
+    ``financials.amount`` is explicitly treated as a price payload because that
+    shape is emitted by legacy JLL detail records.
+    """
     if isinstance(value, list):
-        return [_redact_jll_price_values(item) for item in value]
+        return [_redact_jll_price_values(item, parent_key=parent_key) for item in value]
     if not isinstance(value, dict):
         return value
-    safe_controls = {"hideprice", "pricewithholdingcontrol"}
     redacted = {}
     for key, item in value.items():
-        lowered = str(key).lower()
-        if lowered not in safe_controls and any(
-            token in lowered for token in ("price", "rate", "rent")
-        ):
+        if not isinstance(key, str):
             continue
-        redacted[key] = _redact_jll_price_values(item)
+        if key in _JLL_DIRECT_PRICE_KEYS and key not in _JLL_SAFE_CONTROL_KEYS:
+            continue
+        if parent_key == "financials" and key == "amount":
+            continue
+        if key in _JLL_FREE_TEXT_KEYS:
+            redacted[key] = _redact_jll_free_text(item)
+            continue
+        redacted[key] = _redact_jll_price_values(item, parent_key=key)
     return redacted
+
+
+def _jll_raw_payload_withheld(value):
+    """Find the safe withheld marker in direct or merged JLL raw payloads."""
+    if not isinstance(value, dict):
+        return False
+    if value.get(_JLL_WITHHELD_MARKER) is True:
+        return True
+    if value.get("sourceKey") == "jll" and _jll_pricing_is_withheld(value):
+        return True
+    return any(
+        _jll_raw_payload_withheld(value.get(key))
+        for key in ("primary", "secondary_pass")
+    )
 
 
 def _safe_jll_raw_data(listing):
@@ -1762,6 +1884,10 @@ def _safe_jll_raw_data(listing):
             "leaseRateType",
         ):
             raw.pop(key, None)
+    if must_redact:
+        # This non-sensitive marker survives the sale/lease merge and is the
+        # only upsert authority to clear a previously public price.
+        raw[_JLL_WITHHELD_MARKER] = True
     return raw
 
 
@@ -1771,8 +1897,10 @@ def _jll_pricing_is_withheld(listing):
     detail = listing.get("jllDetail")
     pricing = detail.get("pricing") if isinstance(detail, dict) else None
     safe = _safe_jll_pricing(pricing)
-    if isinstance(detail, dict) and "pricing" in detail and (
-        safe is None or safe["visibility"] == "withheld"
+    if (
+        isinstance(detail, dict)
+        and "pricing" in detail
+        and (safe is None or safe["visibility"] == "withheld")
     ):
         return True
     search = listing.get("jllSearchResult")
@@ -1784,11 +1912,37 @@ def _jll_pricing_is_withheld(listing):
             isinstance(control, str) and control in {"withheld", "unknown"}
         ):
             return True
-        if control is not None and control is not False and not (
-            isinstance(control, str) and control in {"absent", "visible"}
+        if (
+            control is not None
+            and control is not False
+            and not (isinstance(control, str) and control in {"absent", "visible"})
         ):
             return True
     return False
+
+
+def _jll_pricing_has_foreign_lease_currency(listing):
+    """Fail closed before staging a currency-free JLL lease column.
+
+    The public JLL provenance envelope deliberately retains a non-USD currency
+    label for auditability.  The relational lease columns have no currency
+    dimension, though, so accepting the accompanying numeric value would
+    falsely label CAD/EUR (or another currency) as USD.  Legacy records with no
+    validated pricing envelope retain their normal parsing path; this guard is
+    only authority when the normalized JLL detail explicitly says otherwise.
+    """
+    if not isinstance(listing, dict) or listing.get("sourceKey") != "jll":
+        return False
+    detail = listing.get("jllDetail")
+    pricing = detail.get("pricing") if isinstance(detail, dict) else None
+    safe = _safe_jll_pricing(pricing)
+    if not isinstance(safe, dict) or safe.get("visibility") != "visible":
+        return False
+    lease = safe.get("lease")
+    if not isinstance(lease, dict) or lease.get("normalization") != "available":
+        return False
+    currency = lease.get("currency")
+    return isinstance(currency, str) and currency.upper() != "USD"
 
 
 def to_row(listing, brokers_by_idx, scraped_at):
@@ -1825,6 +1979,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
         )
     slug, prefix = mapping
     jll_pricing_withheld = _jll_pricing_is_withheld(listing)
+    jll_foreign_lease_currency = _jll_pricing_has_foreign_lease_currency(listing)
 
     url = listing.get("url")
     if not url or not isinstance(url, str) or not url.startswith("http"):
@@ -1869,9 +2024,15 @@ def to_row(listing, brokers_by_idx, scraped_at):
     # currency LABEL (RAW_DATA_GAP doc). When salePriceUsd is absent/zero but the
     # text carries a stripped currency label, recover the numeric as USD. Scoped
     # to nai-global and only used as a fallback so a clean numeric is never altered.
-    if sale_price is None and source_key == "nai-global" and isinstance(sale_price_text, str):
+    if (
+        sale_price is None
+        and source_key == "nai-global"
+        and isinstance(sale_price_text, str)
+    ):
         sale_price = num_or_none(
-            cre_parse.parse_amount_ignoring_currency_label(sale_price_text), lo=100, hi=1e11
+            cre_parse.parse_amount_ignoring_currency_label(sale_price_text),
+            lo=100,
+            hi=1e11,
         )
     # (DQ guard 6) Newmark 'Subject to Offer' / non-numeric price: num_or_none
     # already drops a non-numeric salePriceUsd, and parse_money only matches a real
@@ -1880,7 +2041,9 @@ def to_row(listing, brokers_by_idx, scraped_at):
     if is_sale_psf_text(sale_price_text):
         # (DQ guard 2) Lee salePriceUsd per-SF conflation: a per-SF sale text means
         # the absolute sale price must NOT be read; route it to sale_price_per_sf.
-        price_per_sf = price_per_sf or num_or_none(parse_money(sale_price_text), lo=0, hi=10000)
+        price_per_sf = price_per_sf or num_or_none(
+            parse_money(sale_price_text), lo=0, hi=10000
+        )
         sale_price = None
     if price_per_sf is None and sale_price and size_sf and size_sf > 100:
         # Apply the same economic bound to a derived value that we apply to an
@@ -1888,22 +2051,24 @@ def to_row(listing, brokers_by_idx, scraped_at):
         # measures under a generic "Size" label; dividing an asking price by
         # that value can otherwise manufacture an impossible $/SF value and
         # overwrite a correctly rejected explicit value.
-        price_per_sf = num_or_none(
-            round(sale_price / size_sf, 2), lo=0, hi=10000
-        )
+        price_per_sf = num_or_none(round(sale_price / size_sf, 2), lo=0, hi=10000)
 
     # (DQ guard 3) AY $5000/SF/YR anomaly + the >500 $/SF/yr cap live in
     # cre_parse.parse_lease_rate, so parse_lease_rates returns (None, None) for them.
     lease_min, lease_max = parse_lease_rates(listing.get("leaseRateText"))
     # An adapter may pre-parse a cleaner lease rate than leaseRateText; prefer the
     # explicit leaseRateMin/Max when present (contract B), COALESCE-style.
-    lease_min = lease_min if lease_min is not None else num_or_none(
-        listing.get("leaseRateMin"), lo=0, hi=500
+    lease_min = (
+        lease_min
+        if lease_min is not None
+        else num_or_none(listing.get("leaseRateMin"), lo=0, hi=500)
     )
-    lease_max = lease_max if lease_max is not None else num_or_none(
-        listing.get("leaseRateMax"), lo=0, hi=500
+    lease_max = (
+        lease_max
+        if lease_max is not None
+        else num_or_none(listing.get("leaseRateMax"), lo=0, hi=500)
     )
-    if jll_pricing_withheld:
+    if jll_pricing_withheld or jll_foreign_lease_currency:
         lease_min = None
         lease_max = None
 
@@ -1962,7 +2127,11 @@ def to_row(listing, brokers_by_idx, scraped_at):
             doc_url = http_url_or_none(d.get("url"))
             if doc_url:
                 documents.append(
-                    {"title": d.get("name"), "url": doc_url, "docType": d.get("docType") or "brochure"}
+                    {
+                        "title": d.get("name"),
+                        "url": doc_url,
+                        "docType": d.get("docType") or "brochure",
+                    }
                 )
     # Harvested DocItems (lib/harvest.ts classified docs) ride the same documents
     # channel; honor the per-doc docType (default 'brochure'), http-url filtered.
@@ -1975,7 +2144,11 @@ def to_row(listing, brokers_by_idx, scraped_at):
             doc_url = http_url_or_none(d.get("url"))
             if doc_url:
                 documents.append(
-                    {"title": d.get("title"), "url": doc_url, "docType": d.get("docType") or "brochure"}
+                    {
+                        "title": d.get("title"),
+                        "url": doc_url,
+                        "docType": d.get("docType") or "brochure",
+                    }
                 )
 
     images = []
@@ -1992,17 +2165,25 @@ def to_row(listing, brokers_by_idx, scraped_at):
             mu = http_url_or_none(m)
             if mu:
                 media.append(
-                    {"mediaType": "other", "provider": None, "url": mu,
-                     "embedUrl": None, "title": None}
+                    {
+                        "mediaType": "other",
+                        "provider": None,
+                        "url": mu,
+                        "embedUrl": None,
+                        "title": None,
+                    }
                 )
         elif isinstance(m, dict):
             mu = http_url_or_none(m.get("url"))
             if mu:
                 media.append(
-                    {"mediaType": m.get("mediaType") or "other",
-                     "provider": m.get("provider"), "url": mu,
-                     "embedUrl": http_url_or_none(m.get("embedUrl")),
-                     "title": m.get("title")}
+                    {
+                        "mediaType": m.get("mediaType") or "other",
+                        "provider": m.get("provider"),
+                        "url": mu,
+                        "embedUrl": http_url_or_none(m.get("embedUrl")),
+                        "title": m.get("title"),
+                    }
                 )
 
     links = []
@@ -2014,8 +2195,13 @@ def to_row(listing, brokers_by_idx, scraped_at):
         elif isinstance(ln, dict):
             lu = http_url_or_none(ln.get("url"))
             if lu:
-                links.append({"url": lu, "rel": ln.get("rel"),
-                              "linkType": ln.get("linkType") or "other"})
+                links.append(
+                    {
+                        "url": lu,
+                        "rel": ln.get("rel"),
+                        "linkType": ln.get("linkType") or "other",
+                    }
+                )
 
     # GetCREdata is the sole production OM writer. Ignore an `omFacts` payload
     # in every Firecrawl collector artifact so a legacy or manually supplied
@@ -2036,14 +2222,17 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "address": listing.get("street"),
         "city": listing.get("city"),
         "state": norm_state(listing.get("state")),
-        "zip": str(listing.get("postalCode"))[:12] if listing.get("postalCode") else None,
+        "zip": str(listing.get("postalCode"))[:12]
+        if listing.get("postalCode")
+        else None,
         "lat": num_or_none(listing.get("latitude"), lo=-90, hi=90),
         "lng": num_or_none(listing.get("longitude"), lo=-180, hi=180),
         "size_sf": size_sf,
         "lot_size_sf": lot_size_sf,
         "year_built": (
             int(listing["yearBuilt"])
-            if isinstance(listing.get("yearBuilt"), (int, float)) and 1700 < listing["yearBuilt"] < 2100
+            if isinstance(listing.get("yearBuilt"), (int, float))
+            and 1700 < listing["yearBuilt"] < 2100
             else None
         ),
         "sale_price_usd": sale_price,
@@ -2074,7 +2263,9 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "apn": clean_text(listing.get("apn"), 64),
         "tenant_name": clean_text(listing.get("tenantName"), 256),
         "guarantor": clean_text(listing.get("guarantor"), 256),
-        "lease_years_remaining": num_or_none(listing.get("leaseYearsRemaining"), lo=0, hi=99),
+        "lease_years_remaining": num_or_none(
+            listing.get("leaseYearsRemaining"), lo=0, hi=99
+        ),
         "price_per_unit": num_or_none(listing.get("pricePerUnit"), lo=0, hi=1e9),
         "grm": num_or_none(listing.get("grm"), lo=0, hi=100),
         "price_per_acre": num_or_none(listing.get("pricePerAcre"), lo=0, hi=1e9),
@@ -2234,20 +2425,63 @@ def merge_rows(a, b):
     elif b["transaction_type"] == "sale_or_lease":
         a["transaction_type"] = "sale_or_lease"
     for k in (
-        "property_type", "title", "address", "city", "state", "zip", "lat", "lng",
-        "size_sf", "lot_size_sf", "year_built", "sale_price_usd", "sale_price_per_sf",
-        "cap_rate", "noi", "gross_revenue", "occupancy_rate", "units", "floors",
-        "parking_spaces", "parking_ratio", "available_sf", "min_divisible_sf",
-        "max_divisible_sf", "term_min_months", "term_max_months",
-        "lease_rate_min", "lease_rate_max", "lease_rate_type", "zoning",
-        "market", "submarket", "highlights", "amenities", "description",
-        "updated_date", "source_lastmod", "canonical_key", "canonical_url",
+        "property_type",
+        "title",
+        "address",
+        "city",
+        "state",
+        "zip",
+        "lat",
+        "lng",
+        "size_sf",
+        "lot_size_sf",
+        "year_built",
+        "sale_price_usd",
+        "sale_price_per_sf",
+        "cap_rate",
+        "noi",
+        "gross_revenue",
+        "occupancy_rate",
+        "units",
+        "floors",
+        "parking_spaces",
+        "parking_ratio",
+        "available_sf",
+        "min_divisible_sf",
+        "max_divisible_sf",
+        "term_min_months",
+        "term_max_months",
+        "lease_rate_min",
+        "lease_rate_max",
+        "lease_rate_type",
+        "zoning",
+        "market",
+        "submarket",
+        "highlights",
+        "amenities",
+        "description",
+        "updated_date",
+        "source_lastmod",
+        "canonical_key",
+        "canonical_url",
         # Phase-2 data-lift institutional fields: first non-None wins across the
         # sale+lease passes (a sparse pass never blanks a fuller capture).
-        "building_class", "property_subtype", "apn", "tenant_name", "guarantor",
-        "lease_years_remaining", "price_per_unit", "grm", "price_per_acre",
-        "num_rooms", "revpar", "clear_height_ft", "dock_doors", "drive_in_doors",
-        "power_service", "rail_served",
+        "building_class",
+        "property_subtype",
+        "apn",
+        "tenant_name",
+        "guarantor",
+        "lease_years_remaining",
+        "price_per_unit",
+        "grm",
+        "price_per_acre",
+        "num_rooms",
+        "revpar",
+        "clear_height_ft",
+        "dock_doors",
+        "drive_in_doors",
+        "power_service",
+        "rail_served",
     ):
         if a[k] is None and b[k] is not None:
             a[k] = b[k]
@@ -2276,9 +2510,16 @@ def merge_rows(a, b):
         a["status"] = sb
     elif sa is None:
         a["status"] = sb
-    # keep both raw payloads when the passes differ
+    # Keep both raw payloads when the passes differ.  The top-level marker is
+    # deliberately carried outside that wrapper so SQL does not need to infer
+    # a price-withholding state from nested, malformed, or legacy provider data.
+    jll_price_withheld = _jll_raw_payload_withheld(
+        a["raw_data"]
+    ) or _jll_raw_payload_withheld(b["raw_data"])
     if b["raw_data"] is not a["raw_data"]:
         a["raw_data"] = {"primary": a["raw_data"], "secondary_pass": b["raw_data"]}
+    if jll_price_withheld and isinstance(a["raw_data"], dict):
+        a["raw_data"][_JLL_WITHHELD_MARKER] = True
     return a
 
 
@@ -2292,6 +2533,7 @@ def validate_duplicate_identity_before_merge(a, b):
     existing sale/lease merge behavior because their adapters intentionally
     normalize dual-mode rows to one external ID.
     """
+
     def contains_source(payload, source_key):
         if not isinstance(payload, dict):
             return False
@@ -2323,19 +2565,12 @@ def validate_duplicate_identity_before_merge(a, b):
         value_b = b.get(field)
         if value_a and value_b and value_a != value_b:
             conflicts.append(field)
-    detail = (
-        f": incompatible {', '.join(conflicts)}"
-        if conflicts
-        else ""
-    )
+    detail = f": incompatible {', '.join(conflicts)}" if conflicts else ""
     identity_label = (
-        "canonical ProjectId"
-        if source_name == "Colliers"
-        else "canonical identity"
+        "canonical ProjectId" if source_name == "Colliers" else "canonical identity"
     )
     raise ValueError(
-        f"duplicate {source_name} {identity_label} "
-        f"{a.get('external_id')!r}{detail}"
+        f"duplicate {source_name} {identity_label} {a.get('external_id')!r}{detail}"
     )
 
 
@@ -2364,24 +2599,78 @@ def copy_field(v):
 
 
 STAGE_COLS = [
-    "slug", "external_id", "source_url", "transaction_type", "property_type",
-    "title", "address", "city", "state", "zip", "lat", "lng", "size_sf",
-    "lot_size_sf", "year_built", "sale_price_usd", "sale_price_per_sf",
-    "cap_rate", "noi", "gross_revenue", "occupancy_rate", "units", "floors",
-    "parking_spaces", "parking_ratio", "available_sf", "min_divisible_sf",
-    "max_divisible_sf", "term_min_months", "term_max_months",
-    "lease_rate_min", "lease_rate_max", "lease_rate_type", "zoning",
-    "market", "submarket", "highlights", "amenities", "description", "markdown",
-    "updated_date", "scraped_at", "raw_data", "contacts", "documents", "images",
-    "media", "links",
-    "status", "source_lastmod", "canonical_key",
+    "slug",
+    "external_id",
+    "source_url",
+    "transaction_type",
+    "property_type",
+    "title",
+    "address",
+    "city",
+    "state",
+    "zip",
+    "lat",
+    "lng",
+    "size_sf",
+    "lot_size_sf",
+    "year_built",
+    "sale_price_usd",
+    "sale_price_per_sf",
+    "cap_rate",
+    "noi",
+    "gross_revenue",
+    "occupancy_rate",
+    "units",
+    "floors",
+    "parking_spaces",
+    "parking_ratio",
+    "available_sf",
+    "min_divisible_sf",
+    "max_divisible_sf",
+    "term_min_months",
+    "term_max_months",
+    "lease_rate_min",
+    "lease_rate_max",
+    "lease_rate_type",
+    "zoning",
+    "market",
+    "submarket",
+    "highlights",
+    "amenities",
+    "description",
+    "markdown",
+    "updated_date",
+    "scraped_at",
+    "raw_data",
+    "contacts",
+    "documents",
+    "images",
+    "media",
+    "links",
+    "status",
+    "source_lastmod",
+    "canonical_key",
     # Phase-2 data-lift (sql/012): canonical_url + discrete institutional columns
     # + extra_facts jsonb. om_facts is staged as a jsonb array (sql/013 child).
     "canonical_url",
-    "building_class", "property_subtype", "apn", "tenant_name", "guarantor",
-    "lease_years_remaining", "price_per_unit", "grm", "price_per_acre",
-    "num_rooms", "revpar", "clear_height_ft", "dock_doors", "drive_in_doors",
-    "power_service", "rail_served", "extra_facts", "om_facts",
+    "building_class",
+    "property_subtype",
+    "apn",
+    "tenant_name",
+    "guarantor",
+    "lease_years_remaining",
+    "price_per_unit",
+    "grm",
+    "price_per_acre",
+    "num_rooms",
+    "revpar",
+    "clear_height_ft",
+    "dock_doors",
+    "drive_in_doors",
+    "power_service",
+    "rail_served",
+    "extra_facts",
+    "om_facts",
 ]
 
 INVENTORY_ONLY_COLS = [
@@ -2446,7 +2735,12 @@ def _status_activation_enabled(cli_flag=False):
     """
     if cli_flag:
         return True
-    return os.environ.get("CRE_ACTIVATE_STATUS", "").strip().lower() in {"1", "true", "yes", "on"}
+    return os.environ.get("CRE_ACTIVATE_STATUS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def apply_status_activation_gate(rows, activate_status):
@@ -2494,11 +2788,15 @@ def build_sql(
             separators=(",", ":"),
             default=str,
         )
-        artifact_run_key = "ingest:v1:" + hashlib.sha256(identity_payload.encode()).hexdigest()
+        artifact_run_key = (
+            "ingest:v1:" + hashlib.sha256(identity_payload.encode()).hexdigest()
+        )
     job_meta = [
         {
             **jm,
-            "job_id": str(uuid.uuid5(_RUN_UUID_NAMESPACE, f"{artifact_run_key}:{jm['slug']}")),
+            "job_id": str(
+                uuid.uuid5(_RUN_UUID_NAMESPACE, f"{artifact_run_key}:{jm['slug']}")
+            ),
             "artifact_run_key": artifact_run_key,
         }
         for jm in job_meta
@@ -2507,9 +2805,7 @@ def build_sql(
     w = lines.append
     staged_source_key_sql = source_key_sql("s", "b")
     live_source_key_sql = source_key_sql("l", "b")
-    colliers_transition_sql = (
-        "true" if colliers_first_party_transition else "false"
-    )
+    colliers_transition_sql = "true" if colliers_first_party_transition else "false"
     colliers_transition_row_sql = f"""(
       {colliers_transition_sql}
       AND jsonb_path_exists(
@@ -2522,12 +2818,12 @@ def build_sql(
       )
     )"""
     # Price visibility is an explicit provider fact, unlike a sparse ordinary
-    # update.  When JLL now withholds the price, clear previously visible
-    # columns rather than allowing the ordinary COALESCE-keep policy to retain
-    # stale values.
+    # update.  ``jllPriceWithheld`` is staged by _safe_jll_raw_data and carried
+    # above a dual sale/lease raw wrapper by merge_rows.  Do not rediscover this
+    # from arbitrary nested provider JSON: malformed and legacy pricing data
+    # is already classified fail-closed before it can reach this upsert.
     jll_price_withheld_row_sql = """(
-      EXCLUDED.raw_data->>'sourceKey' = 'jll'
-      AND EXCLUDED.raw_data#>>'{jllDetail,pricing,visibility}' = 'withheld'
+      EXCLUDED.raw_data->>'jllPriceWithheld' = 'true'
     )"""
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
@@ -2609,13 +2905,26 @@ CREATE TEMP TABLE _jobmeta (
     job_id uuid, artifact_run_key text, started_at timestamptz,
     finished_at timestamptz
 ) ON COMMIT DROP;""")
-    w("COPY _jobmeta (slug, discovered, saved, errors, notes, job_id, artifact_run_key, started_at, finished_at) FROM stdin;")
+    w(
+        "COPY _jobmeta (slug, discovered, saved, errors, notes, job_id, artifact_run_key, started_at, finished_at) FROM stdin;"
+    )
     for jm in job_meta:
-        w("\t".join(copy_field(v) for v in (
-            jm["slug"], jm["discovered"], jm["saved"], jm["errors"], jm["notes"],
-            jm["job_id"], jm["artifact_run_key"], started_at,
-            jm.get("finished_at") or finished_at,
-        )))
+        w(
+            "\t".join(
+                copy_field(v)
+                for v in (
+                    jm["slug"],
+                    jm["discovered"],
+                    jm["saved"],
+                    jm["errors"],
+                    jm["notes"],
+                    jm["job_id"],
+                    jm["artifact_run_key"],
+                    started_at,
+                    jm.get("finished_at") or finished_at,
+                )
+            )
+        )
     w("\\.")
     w("SET LOCAL statement_timeout = '600s';")
 
@@ -2920,7 +3229,8 @@ DO $$ BEGIN
   END IF;
 END $$;""")
 
-    w("""
+    w(
+        """
 -- Cushman's provider GUID is not a durable property identity. Fixed artifacts
 -- stage URL-v1 identities, but inserting one beside an active legacy GUID row
 -- would grow the exact duplicate-URL defect this repair is intended to stop.
@@ -3417,8 +3727,9 @@ DO $$ BEGIN
 END $$;
 
 """.replace("{colliers_transition_row_sql}", colliers_transition_row_sql).replace(
-        "{jll_price_withheld_row_sql}", jll_price_withheld_row_sql
-    ))
+            "{jll_price_withheld_row_sql}", jll_price_withheld_row_sql
+        )
+    )
 
     w(f"""
 -- Canonical full ingest synchronizes source observation and lifecycle mirror
@@ -3990,7 +4301,9 @@ WHERE t.sale_price_usd    IS DISTINCT FROM p.sale_price_usd
    OR t.status            IS DISTINCT FROM p.status
    OR t.cap_rate          IS DISTINCT FROM p.cap_rate;"""
     if mark_missing_slugs:
-        slug_list = ", ".join("'" + s.replace("'", "''") + "'" for s in sorted(mark_missing_slugs))
+        slug_list = ", ".join(
+            "'" + s.replace("'", "''") + "'" for s in sorted(mark_missing_slugs)
+        )
         # (M3) Capture the soon-to-be-retired listings BEFORE the UPDATE overwrites
         # status, so the disappeared event can record the prior status as old_value.
         # The _retired temp table also drives the M2 archive INSERTs below.
@@ -4482,9 +4795,7 @@ def database_target_fingerprint_from_url(db_url):
     if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
         raise ValueError("selected database URL has no usable PostgreSQL host")
     authority = parsed.netloc.rsplit("@", 1)[-1]
-    decoded_hostname = strict_uri_unquote(
-        parsed.hostname, label="PostgreSQL URL host"
-    )
+    decoded_hostname = strict_uri_unquote(parsed.hostname, label="PostgreSQL URL host")
     if "," in authority or "," in decoded_hostname:
         raise ValueError("multi-host PostgreSQL URLs are not supported")
     override_keys = {
@@ -4524,7 +4835,9 @@ def assert_expected_database_target(db_url, expected_sha256):
     if not isinstance(expected_sha256, str) or not re.fullmatch(
         r"[0-9a-f]{64}", expected_sha256
     ):
-        raise SystemExit("expected database target fingerprint must be 64 lowercase hex")
+        raise SystemExit(
+            "expected database target fingerprint must be 64 lowercase hex"
+        )
     try:
         actual = database_target_fingerprint_from_url(db_url)["value"]
     except ValueError as exc:
@@ -4625,9 +4938,7 @@ def psql_connection_env(db_url):
     env = os.environ.copy()
     for key in PSQL_TARGET_ENV_KEYS:
         env.pop(key, None)
-    env["PGHOST"] = strict_uri_unquote(
-        parsed.hostname, label="PostgreSQL URL host"
-    )
+    env["PGHOST"] = strict_uri_unquote(parsed.hostname, label="PostgreSQL URL host")
     try:
         env["PGPORT"] = str(parsed.port or 5432)
     except ValueError as exc:
@@ -4673,9 +4984,7 @@ def psql_connection_args(db_url):
     ]
     if not uri_only:
         return []
-    hostname = strict_uri_unquote(
-        parsed.hostname or "", label="PostgreSQL URL host"
-    )
+    hostname = strict_uri_unquote(parsed.hostname or "", label="PostgreSQL URL host")
     if ":" in hostname:
         rendered_host = f"[{quote(hostname, safe=':')}]"
     else:
@@ -4811,16 +5120,25 @@ def iter_copy_json_rows(psql, db_url, inner_select, *, label="read"):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--in", dest="inputs", action="append", required=True,
-                    help="collect.ts output JSON (repeatable)")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--in",
+        dest="inputs",
+        action="append",
+        required=True,
+        help="collect.ts output JSON (repeatable)",
+    )
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
     ap.add_argument(
         "--expected-db-target-sha256",
         default=None,
         help=argparse.SUPPRESS,
     )
-    ap.add_argument("--dry-run", action="store_true", help="build SQL, print stats, don't connect")
+    ap.add_argument(
+        "--dry-run", action="store_true", help="build SQL, print stats, don't connect"
+    )
     ap.add_argument(
         "--require-strict-freshness",
         action="store_true",
@@ -4829,17 +5147,25 @@ def main():
             "freshness contract; checkpoint refresh passes this for strict sources"
         ),
     )
-    ap.add_argument("--mark-missing", action="store_true",
-                    help="soft-delete listings not present in this run (full runs only); "
-                         "applies only to brokerages whose every source pass ran error-free "
-                         "and staged >= --mark-missing-floor rows")
+    ap.add_argument(
+        "--mark-missing",
+        action="store_true",
+        help="soft-delete listings not present in this run (full runs only); "
+        "applies only to brokerages whose every source pass ran error-free "
+        "and staged >= --mark-missing-floor rows",
+    )
     ap.add_argument("--mark-missing-floor", type=int, default=100)
-    ap.add_argument("--activate-status", action="store_true",
-                    help="enable Phase-2 source-derived status activation "
-                         "(default OFF; also via CRE_ACTIVATE_STATUS=1). Only use once "
-                         "the EQUIRE consumer board-gate is deployed, or non-active rows "
-                         "silently drop off the 'active'-only board")
-    ap.add_argument("--keep-artifacts", default=None, help="dir to keep the generated SQL in")
+    ap.add_argument(
+        "--activate-status",
+        action="store_true",
+        help="enable Phase-2 source-derived status activation "
+        "(default OFF; also via CRE_ACTIVATE_STATUS=1). Only use once "
+        "the EQUIRE consumer board-gate is deployed, or non-active rows "
+        "silently drop off the 'active'-only board",
+    )
+    ap.add_argument(
+        "--keep-artifacts", default=None, help="dir to keep the generated SQL in"
+    )
     ap.add_argument(
         "--skip-post-commit-summary",
         action="store_true",
@@ -4850,7 +5176,7 @@ def main():
     )
     args = ap.parse_args()
 
-    merged = {}          # (slug, external_id) -> row
+    merged = {}  # (slug, external_id) -> row
     inventory_only_merged = {}  # (slug, external_id) -> source-index row
     inventory_only_scopes_merged = {}  # source_key -> proven full scope
     skipped_no_url = 0
@@ -4881,8 +5207,7 @@ def main():
             isinstance(entry, dict) and entry.get("sourceKey") == "colliers-main"
             for entry in (data.get("sources") or [])
         ) or any(
-            isinstance(listing, dict)
-            and listing.get("sourceKey") == "colliers-main"
+            isinstance(listing, dict) and listing.get("sourceKey") == "colliers-main"
             for listing in (data.get("listings") or [])
         )
         if has_colliers_main:
@@ -4910,9 +5235,8 @@ def main():
             finished_at is None
             or parse_strict_freshness_timestamp(
                 artifact_finished_at, field="runMeta.finishedAt"
-            ) > parse_strict_freshness_timestamp(
-                finished_at, field="runMeta.finishedAt"
             )
+            > parse_strict_freshness_timestamp(finished_at, field="runMeta.finishedAt")
         ):
             finished_at = artifact_finished_at
         brokers_by_idx = {i: b for i, b in enumerate(data.get("brokers") or [])}
@@ -4925,13 +5249,10 @@ def main():
                     continue
                 slug = mapping[0]
                 prior_finished_at = finished_at_by_slug.get(slug)
-                if (
-                    prior_finished_at is None
-                    or parse_strict_freshness_timestamp(
-                        artifact_finished_at, field="runMeta.finishedAt"
-                    ) > parse_strict_freshness_timestamp(
-                        prior_finished_at, field="runMeta.finishedAt"
-                    )
+                if prior_finished_at is None or parse_strict_freshness_timestamp(
+                    artifact_finished_at, field="runMeta.finishedAt"
+                ) > parse_strict_freshness_timestamp(
+                    prior_finished_at, field="runMeta.finishedAt"
                 ):
                     finished_at_by_slug[slug] = artifact_finished_at
         artifact_scopes = inventory_only_full_scopes(data)
@@ -5015,7 +5336,10 @@ def main():
     activate_status = _status_activation_enabled(args.activate_status)
     suppressed = apply_status_activation_gate(rows, activate_status)
     if activate_status:
-        print("status activation: ENABLED (Phase-2 source statuses will be written)", file=sys.stderr)
+        print(
+            "status activation: ENABLED (Phase-2 source statuses will be written)",
+            file=sys.stderr,
+        )
     else:
         print(
             f"status activation: OFF (default) -- suppressed {suppressed} source status "
@@ -5042,10 +5366,14 @@ def main():
         st = slug_stats.setdefault(slug, {"discovered": 0, "errors": 0, "notes": []})
         collected = e.get("listingsCollected") or 0
         st["discovered"] += collected
-        discovered_by_source_key[source_key] = discovered_by_source_key.get(source_key, 0) + collected
+        discovered_by_source_key[source_key] = (
+            discovered_by_source_key.get(source_key, 0) + collected
+        )
         if e.get("error"):
             st["errors"] += 1
-            st["notes"].append(f"{e.get('sourceKey')}/{e.get('transaction')}: {e['error'][:160]}")
+            st["notes"].append(
+                f"{e.get('sourceKey')}/{e.get('transaction')}: {e['error'][:160]}"
+            )
         if e.get("truncated"):
             st["errors"] += 1
             st["notes"].append(
@@ -5062,10 +5390,9 @@ def main():
             # (M1) Count-aware folded coverage: every folded key must have a nonzero
             # discovered count this run. Singletons (len == 1) skip the count check
             # because the --mark-missing-floor staged-count check already covers them.
-            has_complete_folded_coverage = (
-                len(known_keys) == 1
-                or (known_keys <= seen_keys
-                    and all(discovered_by_source_key.get(k, 0) > 0 for k in known_keys))
+            has_complete_folded_coverage = len(known_keys) == 1 or (
+                known_keys <= seen_keys
+                and all(discovered_by_source_key.get(k, 0) > 0 for k in known_keys)
             )
             if (
                 st["errors"] == 0
@@ -5106,8 +5433,8 @@ def main():
     ]
 
     artifact_run_key, _ = artifact_run_identity(args.inputs)
-    colliers_first_party_transition = (
-        bool(colliers_transition_inputs) and all(colliers_transition_inputs)
+    colliers_first_party_transition = bool(colliers_transition_inputs) and all(
+        colliers_transition_inputs
     )
     print(
         "Colliers first-party canonical transition: "
@@ -5143,7 +5470,9 @@ def main():
     sql_path = os.path.join(out_dir, "ingest.sql")
     with open(sql_path, "w") as f:
         f.write(sql)
-    print(f"sql: {sql_path} ({os.path.getsize(sql_path) / 1e6:.1f} MB)", file=sys.stderr)
+    print(
+        f"sql: {sql_path} ({os.path.getsize(sql_path) / 1e6:.1f} MB)", file=sys.stderr
+    )
 
     if args.dry_run:
         print("dry run: not connecting", file=sys.stderr)
@@ -5164,7 +5493,8 @@ def main():
             sql_path,
         ],
         env=psql_connection_env(db_url),
-        stdout=sys.stdout, stderr=sys.stderr,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
     )
     if not args.keep_artifacts:
         shutil.rmtree(out_dir, ignore_errors=True)
