@@ -320,6 +320,10 @@ export function jllGraphqlPriceText(price: any): string | null {
   return `${prefix}${amountText}${unit ? `/${unit}` : ""}`;
 }
 
+export function jllDetailPriceText(price: any): string | null {
+  return clean(price) ?? jllGraphqlPriceText(price);
+}
+
 export function jllGraphqlItemToListing(
   item: any,
   tx: Tx,
@@ -1082,8 +1086,8 @@ export async function enrichJllListing(base: any): Promise<any> {
       postalCode: clean(property.postcode) ?? base.postalCode,
       latitude: num(property.latitude) ?? base.latitude,
       longitude: num(property.longitude) ?? base.longitude,
-      salePriceText: clean(property.salePrice) ?? base.salePriceText,
-      leaseRateText: clean(property.rentPrice) ?? base.leaseRateText,
+      salePriceText: jllDetailPriceText(property.salePrice) ?? base.salePriceText,
+      leaseRateText: jllDetailPriceText(property.rentPrice) ?? base.leaseRateText,
       sizeText: clean(property.surfaceArea) ?? base.sizeText,
       buildingSizeSqft: jllSurfaceAreaSqft(property) ?? base.buildingSizeSqft,
       ...lifted,

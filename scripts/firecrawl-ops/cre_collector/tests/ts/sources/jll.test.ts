@@ -30,6 +30,7 @@ import {
   jllStrandedStructured,
   fetchJllSearchPage,
   jllGraphqlItemToListing,
+  jllDetailPriceText,
   jllGraphqlPriceText,
   jllGraphqlVariables,
   parseJllGraphqlSearchPage,
@@ -547,6 +548,8 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
           property: {
             id: "101",
             pageUrl: "/listings/floor-plan-proof",
+            salePrice: { amount: 3250000, currency: "USD", unit: null },
+            rentPrice: { amount: 32.5, currency: "USD", unit: "feet" },
             floorPlans,
             brochures: [
               "https://cdn.jll.com/assets/opaque.pdf",
@@ -569,6 +572,8 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
 
     const enriched = await enrichJllListing(base);
     assert.equal(enriched.detailError, undefined);
+    assert.equal(enriched.salePriceText, "$3,250,000");
+    assert.equal(enriched.leaseRateText, "$32.50/feet");
     assert.deepEqual(enriched.jllDetail.floorPlans, floorPlans);
     assert.equal(enriched.jllDetail.floorPlanAssetCount, 2);
     assert.deepEqual(enriched.brochures, [
@@ -586,6 +591,19 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
     else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
     rmSync(cacheDir, { recursive: true, force: true });
   }
+});
+
+test("JLL detail price text accepts legacy strings and structured values", () => {
+  assert.equal(jllDetailPriceText("$2,500,000"), "$2,500,000");
+  assert.equal(
+    jllDetailPriceText({ amount: 3250000, currency: "USD", unit: null }),
+    "$3,250,000"
+  );
+  assert.equal(
+    jllDetailPriceText({ amount: 32.5, currency: "USD", unit: "feet" }),
+    "$32.50/feet"
+  );
+  assert.equal(jllDetailPriceText(null), null);
 });
 
 test("jll detail cache round-trips through temp dir", () => {

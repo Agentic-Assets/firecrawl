@@ -1,9 +1,10 @@
 # CRE bold capacity experiment
 
-> **Status:** prepared and reviewed, not activated. No candidate resource
-> transition or live 128-detail benchmark has been run under this workflow.
-> The commands below describe guarded operator steps; they are not evidence of
-> runtime activation, provider acceptance, throughput gain, or adoptability.
+> **Status:** implemented and exercised once on 2026-09-14. The candidate was
+> admitted, one 128-detail replicate ran, strict quality failed, the remaining
+> replicates were stopped, and the original baseline was restored. The result
+> does not support adoption. The commands below remain guarded operator steps,
+> not standing authorization for another run.
 
 `bold-jll-128` is a named, no-write experiment profile. It is not the default
 production profile and normal collector startup never selects it. Its single
@@ -260,6 +261,58 @@ PID 384, and API 1 CPU. At this revision, this workflow does not expose an
 admitted command that generates that baseline artifact. Until a supported,
 exactly matched baseline exists, the candidate result can establish safety and
 fidelity evidence but the comparison must return `no_adoption_decision`.
+
+## 2026-09-14 execution record
+
+The reviewed candidate at Git commit
+`489959adc6041935be31e4ce15ac2a13d8f9937e` passed all 38 live admission
+checks. Replicate 1 issued exactly 128 predeclared JLL detail requests at a
+maximum locally awaited concurrency of 10. The worker returned 128 unique
+identity rows in 38.031 seconds of source time, a gross diagnostic rate of
+201.941 rows per minute. This is not qualified throughput because 25 rows were
+degraded detail-error rows.
+
+The guard did not trigger: 19 two-second samples peaked at 52.31 percent host
+CPU. There was no 429, challenge, provider cooldown, retry, OOM, PID-limit, or
+queue-settlement failure. Both replicate and final settlement were idle in one
+poll. The result is `completed=false`, `stop_reason=replicate_failed`, and
+`comparison_state=failed`; the fail-closed runner correctly did not start
+replicates 2 or 3.
+
+Strict fidelity results were:
+
+- 103 of 128 rows had fresh detail provenance.
+- 102 retained every historically present native asset channel.
+- 89 retained every historically supported normalized field.
+- 0 received the run-level `qualified_fresh_unique_rows` measure because that
+  measure is intentionally all-or-nothing across the exact 128-row replicate.
+
+Offline artifact diagnosis found that all 25 detail errors were current target
+HTTP 404 pages with valid `__NEXT_DATA__` but no property, while all 103
+successful rows were HTTP 200. The historical source bodies for those failed
+records dated from June 12 through June 19, so listing turnover is supported by
+the evidence; permanent retirement is not proven. One current HTTP-200 listing
+removed brokers and another removed a brochure. Twelve HTTP-200 listings
+exposed structured `{amount,currency,unit}` price objects that the detail
+normalizer previously treated as strings. The normalizer now accepts both
+structured values and legacy strings, but that correction is locally tested
+only and does not retroactively change this failed result.
+
+The private result artifact is
+`tasks/tmp/cre-capacity-benchmark-489959ad-0700/result.json` in the isolated
+runtime worktree, with SHA-256
+`8c14fcf1944c728e79a54eaae7e509add7cfc09a855759e7992d76ffdf6fe1b0`.
+Raw provider bodies remain private and uncommitted. Independent post-run
+readback verified the baseline API at 1 CPU and 8 GiB, the browser at 2 CPU,
+16 GiB, four page slots, and PID 384, with no additional swap. API, RabbitMQ,
+NuQ, active-crawl, and browser-page counters were idle, and the canonical lock
+was absent.
+
+Do not relax the fidelity gate or reinterpret gross rows as successful
+enrichment. A later matched experiment needs a newly validated current
+128-record cohort, an explicit diagnostic for current target-404 attrition,
+and the same contemporaneous cohort under both baseline and candidate settings.
+It requires a new preflight, approval, admission, grant, and artifact root.
 
 ## Stop, rollback, and resume
 
