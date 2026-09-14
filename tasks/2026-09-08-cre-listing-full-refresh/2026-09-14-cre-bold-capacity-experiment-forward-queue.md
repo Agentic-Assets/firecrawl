@@ -37,13 +37,12 @@ Verify each item before acting.
   tests plus the pinned SDK transport-attempt test in a dependency-complete CI
   lane.
 
-## Evaluation
+## Historical pre-execution evaluation queue
 
-- **Run the first coordinating-reviewed 128-detail candidate** (priority: operator
-  decision; confidence: implementation prepared). Capture all three replicates,
-  settlement, resource, cooldown, and per-record fidelity evidence. A negative
-  or inconclusive result is acceptable and must not be converted into a
-  production success claim.
+- **First coordinating-reviewed 128-detail candidate completed** (superseded by
+  the post-execution queue below). It produced a safe negative result and was
+  not converted into a production success claim. Do not treat this historical
+  item as authorization to rerun it.
 - **Consider a larger soak only after candidate safety passes** (priority:
   later; confidence: planned). Preserve the same no-write, source identity,
   freshness, fidelity, retry, and settlement contract.

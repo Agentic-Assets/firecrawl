@@ -1,12 +1,18 @@
 # CRE bold capacity experiment closeout (2026-09-14)
 
+## Historical preparation snapshot
+
+This section records the reviewed state before activation. It is superseded by
+the post-execution closeout below and must not be read as current runtime or PR
+state.
+
 **Branch:** `feat/cre-bold-experiment-profile`
 
 **Base:** `origin/main` at `2befd1705b14a173d39fe4bb24d7d9e1a925feb6`
 
 **Reviewed implementation:** `a10743bfc1644f72153b91da0f0f482aeb63b3ee`
 
-**State:** draft PR [#52](https://github.com/Agentic-Assets/firecrawl/pull/52), published and unmerged
+**Historical state:** draft PR [#52](https://github.com/Agentic-Assets/firecrawl/pull/52), published and unmerged
 
 ## Goal
 
@@ -113,8 +119,9 @@ the isolated detached worktree.
   text fields.
 - The live candidate passed 38 admission checks. Replicate 1 processed the
   exact 128-record sample in 38.031 source seconds at maximum local concurrency
-  10. Host CPU peaked at 52.31 percent with no guard, cooldown, retry, OOM, PID,
-  or settlement failure.
+  10, a gross diagnostic rate of 201.941 rows per minute. Host CPU peaked at
+  52.31 percent across 19 samples with no guard, cooldown, retry, OOM, PID, or
+  settlement failure.
 - Strict fidelity failed: 103 fresh, 102 native-channel complete, and 89
   structurally complete rows. The all-or-nothing qualified count was zero, so
   the runner stopped before replicates 2 and 3 and produced no adoption
@@ -130,7 +137,8 @@ the isolated detached worktree.
 - Final collector Python suite: `2,780 passed, 18 skipped`.
 - Final TypeScript unit suite: `850 passed`; focused JLL suite: `49 passed`;
   TypeScript typecheck and diff checks passed.
-- Independent exact-head review caught and closed an ESM launch failure plus a
+- Live execution exposed the ESM launch failure; independent exact-head review
+  validated its repair. Independent review then caught and drove closure of a
   hidden-price leak before merge.
 - Offline raw-cache diagnosis classified all 25 detail errors as current target
   HTTP 404 pages. Twelve HTTP-200 records exposed structured price objects that
