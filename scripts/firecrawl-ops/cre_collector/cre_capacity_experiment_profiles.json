@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "default_profile": "production-current",
+  "profiles": {
+    "production-current": {
+      "kind": "baseline",
+      "runtime_baseline": {
+        "orbstack_memory_mib": 32768,
+        "browser_memory_bytes": 17179869184,
+        "browser_swap_bytes": 0,
+        "api_memory_bytes": 8589934592,
+        "api_swap_bytes": 0
+      },
+      "requested": {
+        "browser_cpus": 2,
+        "global_pages": 4,
+        "jll_detail_concurrency": 4,
+        "browser_pids": 384,
+        "api_cpus": 1,
+        "host_cpu_guard_percent": 90,
+        "host_cpu_guard_seconds": 30,
+        "host_cpu_sample_seconds": 2
+      },
+      "planned": {
+        "source_parallelism": "serial"
+      }
+    },
+    "bold-jll-128": {
+      "kind": "experiment",
+      "runtime_baseline": {
+        "orbstack_memory_mib": 32768,
+        "browser_memory_bytes": 17179869184,
+        "browser_swap_bytes": 0,
+        "api_memory_bytes": 8589934592,
+        "api_swap_bytes": 0
+      },
+      "requested": {
+        "browser_cpus": 6,
+        "global_pages": 10,
+        "jll_detail_concurrency": 10,
+        "browser_pids": 768,
+        "api_cpus": 2,
+        "host_cpu_guard_percent": 90,
+        "host_cpu_guard_seconds": 30,
+        "host_cpu_sample_seconds": 2
+      },
+      "provider_budget": {
+        "global_pages": 10,
+        "later_two_provider_split": [6, 4]
+      },
+      "workload": {
+        "source": "jll",
+        "details": 128,
+        "replicates": 3,
+        "writes": "forbidden"
+      },
+      "planned": {
+        "source_parallelism": "unimplemented",
+        "full_path_no_write_adapter": "unimplemented",
+        "provider_429_challenge_cooldown": "required-at-execution"
+      }
+    }
+  }
+}
