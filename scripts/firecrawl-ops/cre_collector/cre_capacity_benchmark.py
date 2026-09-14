@@ -35,6 +35,7 @@ from typing import Any
 
 import cre_capacity_experiment as experiment
 import cre_capacity_runtime as capacity_runtime
+import cre_capacity_telemetry as capacity_telemetry
 from cre_checkpoint_refresh import (
     BENCHMARK_QUARANTINE_MARKER,
     LockHeldError,
@@ -75,6 +76,7 @@ IMPLEMENTATION_PATHS = (
     "scripts/firecrawl-ops/cre_collector/cre_capacity_benchmark.py",
     "scripts/firecrawl-ops/cre_collector/cre_capacity_experiment.py",
     "scripts/firecrawl-ops/cre_collector/cre_capacity_runtime.py",
+    "scripts/firecrawl-ops/cre_collector/cre_capacity_telemetry.py",
     "scripts/firecrawl-ops/cre_collector/cre_checkpoint_refresh.py",
     "scripts/firecrawl-ops/cre_collector/sources/jll.ts",
     "scripts/firecrawl-ops/cre_collector/lib/broker.ts",
@@ -1601,7 +1603,7 @@ def _settlement_backends(api_url: str) -> dict[str, Any]:
     if not isinstance(crawls, list):
         raise BenchmarkError("active crawl settlement is invalid")
 
-    def command(argv: list[str]) -> list[str]:
+    def command(argv: list[str]) -> str:
         try:
             completed = subprocess.run(
                 argv,
@@ -1614,7 +1616,7 @@ def _settlement_backends(api_url: str) -> dict[str, Any]:
             raise BenchmarkError("backend settlement telemetry is unavailable") from exc
         if completed.returncode != 0 or len(completed.stdout) > 128 * 1024:
             raise BenchmarkError("backend settlement telemetry is unavailable")
-        return completed.stdout.splitlines()
+        return completed.stdout
 
     rabbit_rows = command(
         [
@@ -1629,15 +1631,6 @@ def _settlement_backends(api_url: str) -> dict[str, Any]:
             "--quiet",
         ]
     )
-    rabbit_counts: list[tuple[int, int]] = []
-    for row in rabbit_rows:
-        parts = row.split()
-        if len(parts) < 3 or not parts[-2].isdigit() or not parts[-1].isdigit():
-            raise BenchmarkError("RabbitMQ settlement telemetry is invalid")
-        rabbit_counts.append((int(parts[-2]), int(parts[-1])))
-    if not rabbit_counts:
-        raise BenchmarkError("RabbitMQ settlement telemetry is empty")
-
     nuq_rows = command(
         [
             "docker",
@@ -1659,25 +1652,15 @@ def _settlement_backends(api_url: str) -> dict[str, Any]:
             ),
         ]
     )
-    nuq: dict[str, int] = {}
-    for row in nuq_rows:
-        parts = row.split("|")
-        if len(parts) != 2 or not parts[1].isdigit():
-            raise BenchmarkError("NuQ settlement telemetry is invalid")
-        nuq[parts[0]] = int(parts[1])
-    expected_nuq = {
-        "queue_scrape_total",
-        "queue_scrape_backlog_total",
-        "queue_crawl_finished_total",
-    }
-    if set(nuq) != expected_nuq:
-        raise BenchmarkError("NuQ settlement telemetry is incomplete")
+    try:
+        rabbit_settlement = capacity_telemetry.parse_rabbitmq_settlement(rabbit_rows)
+        nuq_settlement = capacity_telemetry.parse_nuq_settlement(nuq_rows)
+    except capacity_telemetry.CapacityTelemetryError as exc:
+        raise BenchmarkError(str(exc)) from exc
     return {
         "active_crawls": len(crawls),
-        "rabbitmq_queue_count": len(rabbit_counts),
-        "rabbitmq_ready": sum(item[0] for item in rabbit_counts),
-        "rabbitmq_unacknowledged": sum(item[1] for item in rabbit_counts),
-        "nuq": nuq,
+        **rabbit_settlement,
+        **nuq_settlement,
     }
 
 

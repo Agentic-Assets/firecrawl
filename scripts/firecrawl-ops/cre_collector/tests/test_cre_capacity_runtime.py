@@ -330,6 +330,55 @@ def test_runtime_endpoint_readiness_wait_propagates_interrupt(
         runtime._http_status("http://127.0.0.1:3103/")
 
 
+def test_runtime_settlement_accepts_shared_rabbitmq_3137_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rabbitmq = (
+        Path(__file__).with_name("fixtures") / "rabbitmq-3.13.7-idle.txt"
+    ).read_text(encoding="utf-8")
+    nuq = (
+        "queue_crawl_finished_total|0\n"
+        "queue_scrape_backlog_total|0\n"
+        "queue_scrape_total|0\n"
+    )
+
+    def queue_json(url: str) -> dict[str, object]:
+        if url.endswith("queue-status"):
+            return {
+                "activeJobsInQueue": 0,
+                "waitingJobsInQueue": 0,
+                "jobsInQueue": 0,
+            }
+        return {"data": {"crawls": []}}
+
+    def runner(argv, _cwd, _env) -> runtime.CommandResult:
+        if "rabbitmqctl" in argv:
+            return runtime.CommandResult(0, rabbitmq)
+        if "psql" in argv:
+            return runtime.CommandResult(0, nuq)
+        if argv[:2] == ["/bin/ps", "-Ao"]:
+            return runtime.CommandResult(0, "")
+        raise AssertionError(f"unexpected command: {argv}")
+
+    monkeypatch.setattr(runtime, "_queue_json", queue_json)
+    monkeypatch.setattr(
+        runtime,
+        "_http_status",
+        lambda url: 200 if ":3102" in url else 404,
+    )
+
+    result = runtime._settlement(runner)
+
+    assert result["rabbitmq_queue_count"] == 4
+    assert result["rabbitmq_ready"] == 0
+    assert result["rabbitmq_unacknowledged"] == 0
+    assert result["nuq"] == {
+        "queue_crawl_finished_total": 0,
+        "queue_scrape_backlog_total": 0,
+        "queue_scrape_total": 0,
+    }
+
+
 def test_container_memory_headroom_is_required() -> None:
     selected, _ = profile()
     public = public_state()

@@ -1,0 +1,5 @@
+name	messages_ready	messages_unacknowledged
+extract.jobs	0	0
+nuq.queue_scrape.prefetch	0	0
+extract.dlq	0	0
+nuq.queue_crawl_finished.prefetch	0	0

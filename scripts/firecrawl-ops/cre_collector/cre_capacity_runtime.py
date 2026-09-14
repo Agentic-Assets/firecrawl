@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 import cre_capacity_experiment as experiment
+import cre_capacity_telemetry as capacity_telemetry
 import cre_checkpoint_refresh as checkpoint_refresh
 from cre_checkpoint_refresh import (
     LockHeldError,
@@ -57,6 +58,7 @@ EXECUTION_INPUTS = {
     "runtime_controller": Path(__file__).resolve(),
     "profile_planner": Path(experiment.__file__).resolve(),
     "profile_config": experiment.DEFAULT_CONFIG.resolve(),
+    "settlement_telemetry": Path(capacity_telemetry.__file__).resolve(),
     "compose": COMPOSE_PATH,
     "candidate_override": OVERRIDE_PATH,
     "shared_lock": Path(checkpoint_refresh.__file__).resolve(),
@@ -583,14 +585,7 @@ def _settlement(runner: CommandRunner) -> dict[str, Any]:
             "messages_unacknowledged",
             "--quiet",
         ],
-    ).splitlines()
-    rabbit_counts: list[tuple[int, int]] = []
-    for row in rabbit:
-        parts = row.split()
-        if len(parts) >= 3 and parts[-2:].count("0") == 2:
-            rabbit_counts.append((0, 0))
-        elif len(parts) >= 3 and parts[-2].isdigit() and parts[-1].isdigit():
-            rabbit_counts.append((int(parts[-2]), int(parts[-1])))
+    )
     nuq = _run(
         runner,
         [
@@ -612,12 +607,12 @@ def _settlement(runner: CommandRunner) -> dict[str, Any]:
                 "select 'queue_crawl_finished_total', count(*) from nuq.queue_crawl_finished order by 1;"
             ),
         ],
-    ).splitlines()
-    nuq_counts: dict[str, int] = {}
-    for row in nuq:
-        parts = row.split("|")
-        if len(parts) == 2 and parts[1].isdigit():
-            nuq_counts[parts[0]] = int(parts[1])
+    )
+    try:
+        rabbit_settlement = capacity_telemetry.parse_rabbitmq_settlement(rabbit)
+        nuq_settlement = capacity_telemetry.parse_nuq_settlement(nuq)
+    except capacity_telemetry.CapacityTelemetryError as exc:
+        raise RuntimeAdmissionError(str(exc)) from exc
     processes = _run(runner, ["/bin/ps", "-Ao", "command="])
     process_busy = any(
         marker in processes
@@ -634,10 +629,8 @@ def _settlement(runner: CommandRunner) -> dict[str, Any]:
         "browser_root_status": _http_status("http://127.0.0.1:3103/"),
         "api": {"active": active_jobs, "waiting": waiting_jobs, "total": total_jobs},
         "active_crawls": len(crawls) if isinstance(crawls, list) else None,
-        "rabbitmq_queue_count": len(rabbit_counts),
-        "rabbitmq_ready": sum(value[0] for value in rabbit_counts),
-        "rabbitmq_unacknowledged": sum(value[1] for value in rabbit_counts),
-        "nuq": nuq_counts,
+        **rabbit_settlement,
+        **nuq_settlement,
         "cre_process_active": process_busy,
     }
 
