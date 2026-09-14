@@ -30,6 +30,7 @@ import {
   jllStrandedStructured,
   fetchJllSearchPage,
   jllGraphqlItemToListing,
+  jllDetailPriceText,
   jllGraphqlPriceText,
   jllGraphqlVariables,
   parseJllGraphqlSearchPage,
@@ -547,6 +548,8 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
           property: {
             id: "101",
             pageUrl: "/listings/floor-plan-proof",
+            salePrice: { amount: 3250000, currency: "USD", unit: null },
+            rentPrice: { amount: 32.5, currency: "USD", unit: "feet" },
             floorPlans,
             brochures: [
               "https://cdn.jll.com/assets/opaque.pdf",
@@ -569,6 +572,8 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
 
     const enriched = await enrichJllListing(base);
     assert.equal(enriched.detailError, undefined);
+    assert.equal(enriched.salePriceText, "$3,250,000");
+    assert.equal(enriched.leaseRateText, "$32.50/feet");
     assert.deepEqual(enriched.jllDetail.floorPlans, floorPlans);
     assert.equal(enriched.jllDetail.floorPlanAssetCount, 2);
     assert.deepEqual(enriched.brochures, [
@@ -581,6 +586,64 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
         { url: "https://cdn.jll.com/assets/preview.jpg", docType: "floor_plan" },
       ]
     );
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL detail price text accepts legacy strings and structured values", () => {
+  assert.equal(jllDetailPriceText("$2,500,000"), "$2,500,000");
+  assert.equal(
+    jllDetailPriceText({ amount: 3250000, currency: "USD", unit: null }),
+    "$3,250,000"
+  );
+  assert.equal(
+    jllDetailPriceText({ amount: 32.5, currency: "USD", unit: "feet" }),
+    "$32.50/feet"
+  );
+  assert.equal(jllDetailPriceText(null), null);
+});
+
+test("JLL detail enrichment preserves list and detail hidden-price controls", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-hidden-price-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  try {
+    for (const hiddenAt of ["list", "detail"] as const) {
+      const url = `https://property.jll.com/listings/hidden-at-${hiddenAt}`;
+      const base = {
+        id: hiddenAt,
+        url,
+        salePriceUsd: 1000000,
+        salePriceText: "$1,000,000",
+        leaseRateText: "$20/feet",
+        jllSearchResult: { hidePrice: hiddenAt === "list" },
+      };
+      const property = {
+        id: hiddenAt,
+        pageUrl: `/listings/hidden-at-${hiddenAt}`,
+        hidePrice: hiddenAt === "detail",
+        salePrice: { amount: 3250000, currency: "USD", unit: null },
+        rentPrice: { amount: 32.5, currency: "USD", unit: "feet" },
+      };
+      writeJllDetailCache(url, {
+        rawHtml:
+          '<script id="__NEXT_DATA__" type="application/json">' +
+          JSON.stringify({ props: { pageProps: { property, brokers: [] } } }) +
+          "</script>",
+        markdown: "",
+        links: [],
+        images: [],
+      });
+
+      const enriched = await enrichJllListing(base);
+      assert.equal(enriched.detailError, undefined);
+      assert.equal(enriched.salePriceUsd, undefined);
+      assert.equal(enriched.salePriceText, undefined);
+      assert.equal(enriched.leaseRateText, undefined);
+    }
   } finally {
     if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
     else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
