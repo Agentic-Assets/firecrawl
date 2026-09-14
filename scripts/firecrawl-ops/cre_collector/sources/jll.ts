@@ -437,20 +437,31 @@ function jllLeasePriceText(price: JllNormalizedPrice): string | null {
 function jllWithholdingControl(value: unknown, key: string): JllWithholdingControl {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return "absent";
   const record = value as Record<string, unknown>;
-  const control = record[key];
-  if (control === true) return "withheld";
-  if (control === false) return "visible";
-  // A legacy hidePrice flag is authoritative only when it is actually boolean.
-  // A null/garbage flag must not mask an explicit normalized control that an
-  // earlier listing stage already derived from the provider response.
-  if (Object.hasOwn(record, "priceWithholdingControl")) {
-    const fallback = record.priceWithholdingControl;
-    if (["absent", "visible", "withheld", "unknown"].includes(fallback as string)) {
-      return fallback as JllWithholdingControl;
+  const controls: JllWithholdingControl[] = [];
+  const legacyKey = key.toLowerCase();
+  for (const [candidateKey, candidate] of Object.entries(record)) {
+    const normalizedKey = candidateKey.toLowerCase();
+    if (normalizedKey === legacyKey) {
+      controls.push(candidate === true ? "withheld" : candidate === false ? "visible" : "unknown");
+    } else if (normalizedKey === "pricewithholdingcontrol") {
+      controls.push(
+        typeof candidate === "string" && ["absent", "visible", "withheld", "unknown"].includes(candidate)
+          ? (candidate as JllWithholdingControl)
+          : "unknown"
+      );
     }
-    return "unknown";
   }
-  return Object.hasOwn(record, key) ? "unknown" : "absent";
+  if (!controls.length) return "absent";
+  // Reconcile every present signal.  A concealment signal wins even if another
+  // provider field is malformed; otherwise any ambiguity or disagreement
+  // fails closed.  In particular, `hidePrice: false` cannot override an
+  // explicit normalized `withheld`, nor can duplicate case variants be picked
+  // by insertion order.
+  if (controls.includes("withheld")) return "withheld";
+  if (controls.includes("unknown")) return "unknown";
+  if (controls.every((control) => control === "visible")) return "visible";
+  if (controls.every((control) => control === "absent")) return "absent";
+  return "unknown";
 }
 
 function jllStoredWithholdingControl(value: unknown): JllWithholdingControl {
@@ -481,10 +492,11 @@ const JLL_FREE_TEXT_KEYS = new Set(["description", "highlights", "markdown", "su
 const JLL_SENSITIVE_PARENT_CHILDREN = new Map([
   ["financials", new Set(["amount"])],
   ["futureeconomics", new Set(["consideration"])],
+  ["dealeconomics", new Set(["amount"])],
 ]);
 const JLL_MONEY_AMOUNT = String.raw`(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?`;
 const JLL_MONEY_TOKEN = new RegExp(
-  String.raw`(?:\b(?:usd|us\$)\s*)?\$\s*${JLL_MONEY_AMOUNT}(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?`,
+  String.raw`(?:(?:\b(?:usd|cad|eur)\s*)|(?:us\$|c\$)|[$€])\s*${JLL_MONEY_AMOUNT}(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?`,
   "gi"
 );
 const JLL_LABELLED_PRICE = new RegExp(
@@ -909,7 +921,21 @@ export function jllPublicProfileUrl(pageUrl: any): string | null {
 
 export function jllStringUrls(values: any): string[] {
   if (!Array.isArray(values)) return [];
-  return dedupeStrings(values.map((value) => clean(value))).filter((url) => /^https?:\/\//i.test(url));
+  return dedupeStrings(values.map((value) => clean(value))).filter((value): value is string => {
+    if (!value) return false;
+    try {
+      const url = new URL(value);
+      return (
+        (url.protocol === "http:" || url.protocol === "https:") &&
+        url.hostname.length > 0 &&
+        url.pathname.length > 1
+      );
+    } catch {
+      // Assets are optional evidence.  A malformed brochure/media URL must
+      // not turn an otherwise valid listing into a detail-enrichment failure.
+      return false;
+    }
+  });
 }
 
 /** True only for a native or typed brochure with a usable public URL. */
@@ -1355,7 +1381,10 @@ export async function enrichJllListing(base: any): Promise<any> {
     }));
     const documents = documentChannels.documents;
     const photos = dedupeStrings([...(images.length ? images : base.photos ?? []), ...harvested.images]);
-    const lifted = jllStrandedStructured(property);
+    // Withheld detail gets a deliberately minimal, allowlisted representation.
+    // Do not attempt to maintain a future blacklist for arbitrary provider
+    // fields: price-bearing prose can surface in highlights or long-tail facts.
+    const lifted = hiddenPrice ? {} : jllStrandedStructured(property);
     // `publicBase` already strips search-card prose, but successful detail
     // enrichment replaces it below.  Keep the visibility boundary for those
     // normalized detail values too.
@@ -1416,21 +1445,21 @@ export async function enrichJllListing(base: any): Promise<any> {
         pageUrl: clean(property.pageUrl),
         relativeUrl: clean(pageProps?.relativeUrl),
         pricing,
-        tenureTypes: property.tenureTypes,
-        propertyTypes: property.propertyTypes,
-        labels: property.labels,
-        amenities: property.amenities,
-        amenitiesData: property.amenitiesData,
-        highlights: property.highlights,
+        tenureTypes: hiddenPrice ? undefined : property.tenureTypes,
+        propertyTypes: hiddenPrice ? undefined : property.propertyTypes,
+        labels: hiddenPrice ? undefined : property.labels,
+        amenities: hiddenPrice ? undefined : property.amenities,
+        amenitiesData: hiddenPrice ? undefined : property.amenitiesData,
+        highlights: hiddenPrice ? undefined : property.highlights,
         customRefId: clean(property.customRefId),
         buildingClass: clean(property.buildingClass),
-        parkingDetails: property.parkingDetails,
-        locationDescription: stripHtmlText(property.locationDescription),
-        submarket: clean(property.submarket),
-        videos: property.videos,
-        virtualTours: property.virtualTours,
-        view360URLs: property.view360URLs,
-        floorPlans: property.floorPlans,
+        parkingDetails: hiddenPrice ? undefined : property.parkingDetails,
+        locationDescription: hiddenPrice ? undefined : stripHtmlText(property.locationDescription),
+        submarket: hiddenPrice ? undefined : clean(property.submarket),
+        videos: hiddenPrice ? undefined : property.videos,
+        virtualTours: hiddenPrice ? undefined : property.virtualTours,
+        view360URLs: hiddenPrice ? undefined : property.view360URLs,
+        floorPlans: hiddenPrice ? undefined : property.floorPlans,
         floorPlanAssetCount: floorPlanDocuments.length,
         brokerCount: contactsDetailed.length,
         brochureCount: documentChannels.brochures.length,

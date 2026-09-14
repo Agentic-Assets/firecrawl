@@ -4061,10 +4061,13 @@ def compare_results(
     }
 
 
-def _compare_counterbalanced_pair(
-    pair_plan_path: Path, *, adoption_capability: object | None = None
-) -> dict[str, Any]:
-    """Compare all six rehashed arms, optionally with live controller authority."""
+def _compare_counterbalanced_pair(pair_plan_path: Path) -> dict[str, Any]:
+    """Compare all six rehashed arms as advisory evidence only.
+
+    A persisted result can never authorize a runtime adoption: filesystem
+    artifacts are reproducible by a party that can write their private root.
+    The governed runtime transition remains a separate human-reviewed action.
+    """
     try:
         plan, plan_sha256 = _load_counterbalanced_pair_plan(pair_plan_path)
         state = _load_counterbalanced_pair_state(plan, plan_sha256)
@@ -4224,7 +4227,6 @@ def _compare_counterbalanced_pair(
         for index in range(0, len(attrition_signatures), 2)
     )
     fixture_only = not production
-    persisted_only = adoption_capability is not _ORCHESTRATOR_ADOPTION_CAPABILITY
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": "cre_capacity_counterbalanced_comparison",
@@ -4232,18 +4234,14 @@ def _compare_counterbalanced_pair(
         "decision": (
             "fixture_only_not_adoptable"
             if fixture_only
-            else "persisted_evidence_not_adoptable"
-            if persisted_only
-            else "adoptable"
+            else "candidate_for_operator_adoption"
             if gain >= 15 and symmetric
             else "do_not_adopt"
         ),
         "reasons": (
             ["sealed_offline_fixture_not_production_authority"]
             if fixture_only
-            else ["persisted_evidence_requires_guarded_orchestrator"]
-            if persisted_only
-            else []
+            else ["production_evidence_requires_governed_operator_review"]
         ),
         "criterion_percent": 15,
         "gain_percent": gain,
@@ -4712,12 +4710,7 @@ def run_benchmark(
 
 PAIR_PLAN_KIND = "cre_capacity_counterbalanced_pair_plan"
 PAIR_STATE_KIND = "cre_capacity_counterbalanced_pair_state"
-PAIR_ORCHESTRATOR_INPUT_KIND = "cre_capacity_guarded_pair_arms"
 PAIR_EVIDENCE_MODES = frozenset({"production", "sealed_offline_fixture"})
-# Never serialized: persisted artifacts remain advisory even when they rehash.
-# The all-arm guarded controller is the sole in-process holder while it runs
-# every one-use admitted arm from an empty plan state.
-_ORCHESTRATOR_ADOPTION_CAPABILITY = object()
 
 
 def _benchmark_repo_root() -> Path:
@@ -4932,117 +4925,17 @@ def run_counterbalanced_pair_orchestrator(
     arms: Sequence[Mapping[str, Any]],
     timeout_seconds: int,
 ) -> dict[str, Any]:
-    """Run a whole guarded AB/BA/AB study and retain its in-process authority.
+    """Refuse the unsafe all-arm controller pending a governed runtime path.
 
-    The durable results remain advisory when re-opened later.  This controller
-    is intentionally the only path that may return an adoption decision: it
-    begins with an empty production plan, verifies a clean checkout, executes
-    all six freshly admitted arms in the present process, and performs each
-    candidate rollback before its result is recorded.
+    Fresh admissions cannot honestly be preloaded across all six ABBAAB arms,
+    and candidate-to-baseline rollback alone cannot prepare consecutive arms.
+    Keeping a mockable controller would turn fabricated artifacts into adoption
+    authority, so manual paired execution is required until that transition
+    protocol is implemented and separately reviewed.
     """
-    plan, plan_sha256 = _load_counterbalanced_pair_plan(pair_plan_path)
-    if plan["evidence_mode"] != "production":
-        raise BenchmarkError("sealed offline fixture plans cannot run the controller")
-    _require_clean_git(repo_root)
-    state = _load_counterbalanced_pair_state(plan, plan_sha256)
-    if state["arms"]:
-        raise BenchmarkError("guarded pair controller requires an empty plan state")
-    if len(arms) != len(plan["sequence"]):
-        raise BenchmarkError("guarded pair controller requires one admission per arm")
-    artifact_root = _bound_artifact_directory(Path(plan["artifact_root"]))
-    for order, variant in enumerate(plan["sequence"], 1):
-        if (artifact_root / f"arm-{order:02d}-{variant}").exists():
-            raise BenchmarkError("guarded pair controller found a pre-existing arm")
-
-    results = []
-    for order, (variant, arm) in enumerate(zip(plan["sequence"], arms, strict=True), 1):
-        if not isinstance(arm, Mapping):
-            raise BenchmarkError("guarded pair controller arm is invalid")
-        admission = arm.get("admission")
-        admission_path = arm.get("admission_path")
-        rollback_path = arm.get("candidate_receipt_path")
-        if not isinstance(admission, Mapping) or not isinstance(admission_path, Path):
-            raise BenchmarkError("guarded pair controller admission is invalid")
-        if variant == "candidate":
-            if not isinstance(rollback_path, Path):
-                raise BenchmarkError(
-                    "candidate controller arm requires rollback receipt"
-                )
-        elif rollback_path is not None:
-            raise BenchmarkError(
-                "baseline controller arm cannot carry rollback receipt"
-            )
-        results.append(
-            run_counterbalanced_pair_step(
-                repo_root=repo_root,
-                pair_plan_path=pair_plan_path,
-                admission=admission,
-                admission_path=admission_path,
-                timeout_seconds=timeout_seconds,
-                candidate_receipt_path=rollback_path,
-            )
-        )
-    comparison = _compare_counterbalanced_pair(
-        pair_plan_path, adoption_capability=_ORCHESTRATOR_ADOPTION_CAPABILITY
+    raise BenchmarkError(
+        "guarded paired controller is disabled; use manual governed paired execution"
     )
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "kind": "cre_capacity_guarded_counterbalanced_execution",
-        "completed": all(result.get("completed") is True for result in results),
-        "arm_count": len(results),
-        "comparison": comparison,
-    }
-
-
-def _load_guarded_pair_arms(path: Path) -> list[dict[str, Any]]:
-    """Read only private arm inputs; their capability is never persisted."""
-    document = _read_json(
-        _bound_regular_file(path, maximum=REVIEW_BENCHMARK_GRANT_MAX_BYTES),
-        REVIEW_BENCHMARK_GRANT_MAX_BYTES,
-    )
-    if (
-        not isinstance(document, Mapping)
-        or document.get("schema_version") != SCHEMA_VERSION
-        or document.get("kind") != PAIR_ORCHESTRATOR_INPUT_KIND
-        or not isinstance(document.get("arms"), list)
-        or len(document["arms"]) != len(PAIR_SEQUENCE)
-    ):
-        raise BenchmarkError("guarded pair arm input is invalid")
-    arms: list[dict[str, Any]] = []
-    for expected_variant, item in zip(PAIR_SEQUENCE, document["arms"], strict=True):
-        if not isinstance(item, Mapping) or set(item) - {
-            "admission_path",
-            "candidate_receipt_path",
-        }:
-            raise BenchmarkError("guarded pair arm input is invalid")
-        admission_path_value = item.get("admission_path")
-        if not isinstance(admission_path_value, str):
-            raise BenchmarkError("guarded pair arm admission path is invalid")
-        admission_path = _bound_regular_file(
-            Path(admission_path_value), maximum=MAX_SAMPLE_BYTES
-        )
-        candidate_path_value = item.get("candidate_receipt_path")
-        if expected_variant == "candidate":
-            if not isinstance(candidate_path_value, str):
-                raise BenchmarkError("candidate pair arm requires rollback receipt")
-            candidate_path = _bound_regular_file(
-                Path(candidate_path_value), maximum=MAX_SAMPLE_BYTES
-            )
-        elif candidate_path_value is not None:
-            raise BenchmarkError("baseline pair arm cannot have rollback receipt")
-        else:
-            candidate_path = None
-        admission = _read_json(admission_path)
-        if not isinstance(admission, Mapping):
-            raise BenchmarkError("guarded pair arm admission is invalid")
-        arms.append(
-            {
-                "admission": admission,
-                "admission_path": admission_path,
-                "candidate_receipt_path": candidate_path,
-            }
-        )
-    return arms
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -5060,7 +4953,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pair-plan", type=Path)
     parser.add_argument("--run-counterbalanced-step", action="store_true")
     parser.add_argument("--run-counterbalanced-pair", action="store_true")
-    parser.add_argument("--guarded-pair-arms", type=Path)
     parser.add_argument("--compare-counterbalanced-pair", type=Path)
     parser.add_argument("--candidate-rollback-receipt", type=Path)
     parser.add_argument("--replicate-timeout-seconds", type=int, default=1800)
@@ -5130,18 +5022,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, sort_keys=True, indent=2))
             return 0 if result["completed"] else 75
         if args.run_counterbalanced_pair:
-            if not args.pair_plan or not args.guarded_pair_arms:
-                raise BenchmarkError(
-                    "--run-counterbalanced-pair requires --pair-plan and --guarded-pair-arms"
-                )
-            result = run_counterbalanced_pair_orchestrator(
-                repo_root=repo_root,
-                pair_plan_path=args.pair_plan,
-                arms=_load_guarded_pair_arms(args.guarded_pair_arms),
-                timeout_seconds=args.replicate_timeout_seconds,
+            raise BenchmarkError(
+                "--run-counterbalanced-pair is disabled pending governed runtime orchestration"
             )
-            print(json.dumps(result, sort_keys=True, indent=2))
-            return 0 if result["completed"] else 75
         if not args.artifact_root:
             raise BenchmarkError("--artifact-root is required outside compare mode")
         contract = _experiment_contract()

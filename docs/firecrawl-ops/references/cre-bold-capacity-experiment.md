@@ -245,11 +245,12 @@ The ordinary two-result command remains diagnostic-only and can never return
 rehashing every artifact: files alone cannot establish that a runtime was
 actually guarded. It reopens and rehashes the sample, admission, consumption
 marker, worker output, performance receipt, and each raw cache receipt before
-reporting its measured result. Only the guarded all-arm controller may return
-an adoption authority, and it starts from an empty production plan, holds its
-capability only in-process, consumes one fresh admission per arm, and rolls a
-candidate back to baseline in `finally` before recording that arm. Do not batch
-admissions or hold an approval across the allowed pair gap.
+reporting a measured result or `candidate_for_operator_adoption`. That latter
+value is evidence for a separate governed operator review, never an executable
+adoption instruction. The former all-arm controller is deliberately disabled:
+it preloaded short-lived admissions and could not honestly effect the required
+baseline-to-candidate transitions. Do not batch admissions or hold approval
+across the allowed pair gap.
 
 Worker status fields are not comparison authority. The comparator derives each
 row's URL, hashes, HTTP status, challenge signal, and JLL tombstone semantics
@@ -261,13 +262,15 @@ checkout's implementation manifest and every generated `worker.mts`; arm
 results must be below the paired plan root. Reopening either a production plan
 or a `sealed_offline_fixture` plan always remains non-adoptable evidence;
 fixtures report `fixture_only_not_adoptable` and persisted production evidence
-reports `persisted_evidence_not_adoptable`.
+reports `candidate_for_operator_adoption` only when the evidence clears the
+criterion and remains subject to governed operator review.
 
 When JLL reports a withheld or unknown price control, raw-data retention keeps
-only the control and redacted pricing provenance. It removes known price schema
-paths, legacy `financials.amount`, and monetary disclosures in stored markdown,
-description, highlights, and summary text; it preserves unrelated provenance
-such as `currentTenants`. A merged sale/lease row carries a non-sensitive
+only a small allowlisted listing envelope, controls, and redacted pricing
+provenance. It removes arbitrary provider detail, known price schema paths,
+legacy `financials.amount` and `dealEconomics.amount`, and USD/CAD/EUR monetary
+disclosures in stored markdown and description; it preserves unrelated
+top-level provenance such as `currentTenants`. A merged sale/lease row carries a non-sensitive
 `jllPriceWithheld` marker so the SQL upsert clears a previously visible sale or
 lease price without inferring state from nested provider JSON. Foreign-currency
 lease amounts remain public normalized provenance only and never enter the
@@ -282,12 +285,6 @@ python3 cre_capacity_benchmark.py --pair-plan /restricted/pair-001/counterbalanc
   --admission /restricted/fresh-admission.json --run-counterbalanced-step \
   --candidate-rollback-receipt /restricted/candidate-runtime-receipt.json
 
-# Only this guarded all-arm command may report adoption authority. Its private
-# input has exactly six fresh admission paths in B-C,C-B,C-B,B-C order and a
-# rollback receipt for each candidate arm; it refuses a non-empty plan state.
-python3 cre_capacity_benchmark.py --pair-plan /restricted/pair-002/counterbalanced-pair-plan.json \
-  --guarded-pair-arms /restricted/fresh-six-arm-input.json --run-counterbalanced-pair
-
 # Reopening disk evidence is intentionally advisory only.
 python3 cre_capacity_benchmark.py \
   --compare-counterbalanced-pair /restricted/pair-001/counterbalanced-pair-plan.json
@@ -296,9 +293,10 @@ python3 cre_capacity_benchmark.py \
 The final comparator admits only six disk-bound arms with the exact fixed
 order, pair ID, immutable sample/config hashes, matching per-pair attrition
 identity manifests, and timestamps within the centrally configured gap. Disk
-evidence is a review record, never adoption authority by itself. The guarded
-all-arm controller reports median qualified rows per minute, percentage gain, completeness,
-normalized/native/fresh fidelity, and p50/p95/p99 latency. Confirmed JLL 404
+evidence is a review record, never adoption authority by itself. Manual,
+governed paired execution records median qualified rows per minute, percentage
+gain, completeness, normalized/native/fresh fidelity, and p50/p95/p99 latency.
+Confirmed JLL 404
 attrition remains in its immutable slot, continues later replicas, and is
 excluded only from that row's current throughput. Asymmetric attrition reduces
 matching confidence and blocks adoption; it never silently substitutes cohort

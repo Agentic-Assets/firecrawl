@@ -25,9 +25,8 @@ import json
 import sys
 from datetime import datetime, timezone
 
-import pytest
-
 import cre_ingest as ci
+import pytest
 
 _SCRAPED_AT = datetime(2026, 6, 15, 0, 0, 0, tzinfo=timezone.utc).isoformat()
 
@@ -769,7 +768,7 @@ def test_withheld_jll_raw_data_redacts_prices_without_dropping_tenant_provenance
     stored = json.dumps(raw)
     assert raw["jllPriceWithheld"] is True
     assert raw["currentTenants"] == [{"name": "Acme Holdings"}]
-    assert raw["financials"] == {"occupancy": 0.95}
+    assert "financials" not in raw
     assert raw["markdown"] == "Confidential asking consideration: [redacted]."
     assert "3250000" not in stored
     assert "$3,250,000" not in stored
@@ -784,7 +783,7 @@ def test_to_row_fails_closed_for_case_variant_or_fallback_hidden_jll_controls():
             "salePriceUsd": 3250000,
             "SalePrice": "$3,250,000",
             "markdown": "Confidential consideration: $3,250,000.",
-            "description": "Asking price: $3,250,000.",
+            "description": "Asking price: EUR 3,250,000.",
             "currentTenants": [{"name": "Acme Holdings"}],
             "jllSearchResult": {
                 "HidePrice": None,
@@ -796,6 +795,7 @@ def test_to_row_fails_closed_for_case_variant_or_fallback_hidden_jll_controls():
                     "consideration": "$3,250,000",
                     "occupancy": 0.95,
                 },
+                "dealEconomics": {"amount": 3250000},
             },
         }
     )
@@ -805,9 +805,39 @@ def test_to_row_fails_closed_for_case_variant_or_fallback_hidden_jll_controls():
     assert row["description"] == "Asking price: [redacted]."
     assert row["markdown"] == "Confidential consideration: [redacted]."
     assert row["raw_data"]["currentTenants"] == [{"name": "Acme Holdings"}]
-    assert row["raw_data"]["jllDetail"]["futureEconomics"] == {"occupancy": 0.95}
+    assert row["raw_data"]["jllDetail"] == {}
     assert "3250000" not in stored
     assert "$3,250,000" not in stored
+    assert "EUR 3,250,000" not in stored
+
+
+def test_to_row_reconciles_every_jll_price_control_case_insensitively():
+    concealed = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/contradictory-controls",
+            "id": "contradictory-controls",
+            "salePriceUsd": 3250000,
+            "jllSearchResult": {
+                "hidePrice": False,
+                "PRICEWITHHOLDINGCONTROL": "withheld",
+            },
+        }
+    )
+    assert concealed["sale_price_usd"] is None
+    assert concealed["raw_data"]["jllPriceWithheld"] is True
+
+    ambiguous = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/duplicate-controls",
+            "id": "duplicate-controls",
+            "salePriceUsd": 3250000,
+            "jllSearchResult": {"hidePrice": False, "HIDEPRICE": None},
+        }
+    )
+    assert ambiguous["sale_price_usd"] is None
+    assert ambiguous["raw_data"]["jllPriceWithheld"] is True
 
 
 def test_merge_carries_jll_withheld_marker_across_dual_passes():

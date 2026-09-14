@@ -12,10 +12,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
+import pytest
 
 
 def _cache_record(index: int) -> dict[str, object]:
@@ -1979,8 +1978,10 @@ def test_persisted_production_pair_is_advisory_even_when_every_artifact_rehashes
     comparison = benchmark.compare_counterbalanced_pair(plan_path)
 
     assert comparison["state"] == "measured"
-    assert comparison["decision"] == "persisted_evidence_not_adoptable"
-    assert comparison["reasons"] == ["persisted_evidence_requires_guarded_orchestrator"]
+    assert comparison["decision"] == "candidate_for_operator_adoption"
+    assert comparison["reasons"] == [
+        "production_evidence_requires_governed_operator_review"
+    ]
 
 
 def test_production_pair_refuses_external_arm_roots(
@@ -2088,8 +2089,8 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
     assert rollbacks == [(receipt, "bold-jll-128", "baseline", True)]
 
 
-def test_guarded_pair_controller_is_the_only_in_process_adoption_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_guarded_pair_controller_is_disabled_pending_governed_runtime_orchestration(
+    tmp_path: Path,
 ) -> None:
     sample = _sample(tmp_path)
     sample_path = tmp_path / "immutable-sample.json"
@@ -2105,21 +2106,6 @@ def test_guarded_pair_controller_is_the_only_in_process_adoption_path(
     admission_path.write_text("{}", encoding="utf-8")
     receipt = tmp_path / "candidate-receipt.json"
     receipt.write_text("{}", encoding="utf-8")
-    calls = []
-    observed_capabilities = []
-
-    monkeypatch.setattr(benchmark, "_require_clean_git", lambda _root: "c" * 40)
-
-    def fake_step(**kwargs):
-        calls.append(kwargs["candidate_receipt_path"])
-        return {"completed": True}
-
-    def fake_compare(_path, *, adoption_capability=None):
-        observed_capabilities.append(adoption_capability)
-        return {"decision": "adoptable"}
-
-    monkeypatch.setattr(benchmark, "run_counterbalanced_pair_step", fake_step)
-    monkeypatch.setattr(benchmark, "_compare_counterbalanced_pair", fake_compare)
     arms = [
         {
             "admission": {},
@@ -2129,17 +2115,13 @@ def test_guarded_pair_controller_is_the_only_in_process_adoption_path(
         for variant in benchmark.PAIR_SEQUENCE
     ]
 
-    result = benchmark.run_counterbalanced_pair_orchestrator(
-        repo_root=Path(__file__).resolve().parents[4],
-        pair_plan_path=plan_path,
-        arms=arms,
-        timeout_seconds=1,
-    )
-
-    assert result["completed"] is True
-    assert result["comparison"]["decision"] == "adoptable"
-    assert len(calls) == 6
-    assert observed_capabilities == [benchmark._ORCHESTRATOR_ADOPTION_CAPABILITY]
+    with pytest.raises(benchmark.BenchmarkError, match="controller is disabled"):
+        benchmark.run_counterbalanced_pair_orchestrator(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            arms=arms,
+            timeout_seconds=1,
+        )
 
 
 def test_summarize_replicate_fails_closed_on_native_delta_and_remote_timeout(

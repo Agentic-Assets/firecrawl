@@ -111,7 +111,7 @@ test("jllPublicProfileUrl builds profile URLs from slugs or passes through absol
 
 test("jllStringUrls keeps unique http(s) URLs only", () => {
   assert.deepEqual(
-    jllStringUrls(["https://a.example/b.pdf", "mailto:x@y.com", "https://a.example/b.pdf", "  "]),
+    jllStringUrls(["https://a.example/b.pdf", "mailto:x@y.com", "https://", "https:///relative.pdf", "https://a.example/b.pdf", "  "]),
     ["https://a.example/b.pdf"]
   );
   assert.deepEqual(jllStringUrls(null), []);
@@ -355,6 +355,36 @@ test("JLL GraphQL item mapping respects hidden prices and rejects unsafe identit
     priceWithholdingControl: "unknown",
   });
   assert.doesNotMatch(JSON.stringify(unknownControl.jllSearchResult), /not-a-boolean/);
+  const contradictory = jllGraphqlItemToListing(
+    {
+      id: "3",
+      pageUrl: "/listings/contradictory-control",
+      hidePrice: false,
+      PRICEWITHHOLDINGCONTROL: "withheld",
+      salePrice: { amount: 3250000, currency: "USD" },
+    },
+    "sale",
+    "office",
+    1,
+    1
+  );
+  assert.equal(contradictory.salePriceUsd, undefined);
+  assert.equal(contradictory.jllSearchResult.priceWithholdingControl, "withheld");
+  const duplicate = jllGraphqlItemToListing(
+    {
+      id: "4",
+      pageUrl: "/listings/duplicate-control",
+      hidePrice: false,
+      HIDEPRICE: null,
+      salePrice: { amount: 3250000, currency: "USD" },
+    },
+    "sale",
+    "office",
+    1,
+    1
+  );
+  assert.equal(duplicate.salePriceUsd, undefined);
+  assert.equal(duplicate.jllSearchResult.priceWithholdingControl, "unknown");
   assert.throws(
     () => jllGraphqlItemToListing({ pageUrl: "/listings/missing" }, "sale", "office", 1, 1),
     /lacks an id/
@@ -957,6 +987,8 @@ test("JLL successful hidden detail redacts normalized prose and case-variant pri
                 descriptionSections: [
                   { content: "Sale price: $3,250,000. Institutional office." },
                 ],
+                highlights: ["EUR 3,250,000 confidential consideration"],
+                dealEconomics: { amount: 3250000 },
                 brokers: [],
               },
             },
@@ -991,6 +1023,8 @@ test("JLL successful hidden detail redacts normalized prose and case-variant pri
     assert.equal(enriched.description, "Sale price: [redacted]. Institutional office.");
     assert.equal(enriched.markdown, "Confidential asking consideration: [redacted].");
     assert.deepEqual(enriched.currentTenants, [{ name: "Acme Holdings" }]);
+    assert.equal(enriched.jllDetail.highlights, undefined);
+    assert.equal(enriched.jllDetail.dealEconomics, undefined);
     assert.doesNotMatch(JSON.stringify(enriched), /3250000|3,250,000/);
   } finally {
     if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;

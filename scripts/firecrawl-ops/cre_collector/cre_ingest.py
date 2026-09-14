@@ -1737,10 +1737,11 @@ _JLL_FREE_TEXT_KEYS = frozenset({"description", "highlights", "markdown", "summa
 _JLL_SENSITIVE_PARENT_CHILDREN = {
     "financials": frozenset({"amount"}),
     "futureeconomics": frozenset({"consideration"}),
+    "dealeconomics": frozenset({"amount"}),
 }
 _JLL_MONEY_AMOUNT = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 _JLL_MONEY_TOKEN = re.compile(
-    rf"(?i)(?:\b(?:usd|us\$)\s*)?\$\s*{_JLL_MONEY_AMOUNT}"
+    rf"(?i)(?:(?:\b(?:usd|cad|eur)\s*)|(?:us\$|c\$)|[$€])\s*{_JLL_MONEY_AMOUNT}"
     r"(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?"
 )
 _JLL_LABELLED_PRICE = re.compile(
@@ -1865,6 +1866,63 @@ def _jll_raw_payload_withheld(value):
     )
 
 
+_JLL_WITHHELD_TOP_LEVEL = frozenset(
+    {
+        "sourceKey",
+        "id",
+        "url",
+        "canonicalUrl",
+        "name",
+        "headline",
+        "transactionType",
+        "assetType",
+        "street",
+        "city",
+        "state",
+        "postalCode",
+        "country",
+        "latitude",
+        "longitude",
+        "description",
+        "markdown",
+        "sizeText",
+        "buildingSizeSqft",
+        "lastUpdated",
+        "detailObservedAt",
+        "freshnessProvenance",
+        "currentTenants",
+        "jllSearchResult",
+        _JLL_WITHHELD_MARKER,
+    }
+)
+_JLL_WITHHELD_SEARCH_RESULT = frozenset(
+    {
+        "propertyTypes",
+        "tenureTypes",
+        "surfaceAreas",
+        "priceWithholdingControl",
+        "hidePrice",
+    }
+)
+
+
+def _safe_jll_withheld_projection(value, pricing):
+    """Keep a small documented envelope, not arbitrary hidden provider detail."""
+    raw = _redact_jll_price_values(value)
+    projected = {
+        key: item for key, item in raw.items() if key in _JLL_WITHHELD_TOP_LEVEL
+    }
+    search = projected.get("jllSearchResult")
+    if isinstance(search, dict):
+        projected["jllSearchResult"] = {
+            key: item
+            for key, item in search.items()
+            if key in _JLL_WITHHELD_SEARCH_RESULT
+        }
+    projected["jllDetail"] = {"pricing": pricing} if pricing else {}
+    return projected
+
+
 def _safe_jll_raw_data(listing):
     """Copy only validated, redacted JLL pricing into raw_data staging."""
     if not isinstance(listing, dict) or listing.get("sourceKey") != "jll":
@@ -1878,8 +1936,12 @@ def _safe_jll_raw_data(listing):
     )
     if not has_pricing and not must_redact:
         return listing
-    raw = _redact_jll_price_values(listing) if must_redact else dict(listing)
-    if isinstance(detail, dict):
+    raw = (
+        _safe_jll_withheld_projection(listing, safe_pricing)
+        if must_redact
+        else dict(listing)
+    )
+    if isinstance(detail, dict) and not must_redact:
         raw_detail = dict(raw.get("jllDetail", {}))
         if safe_pricing is None:
             raw_detail.pop("pricing", None)
@@ -1904,29 +1966,46 @@ def _safe_jll_raw_data(listing):
     return raw
 
 
-def _jll_mapping_value_casefold(value, key):
-    if not isinstance(value, dict):
-        return False, None
-    wanted = key.casefold()
-    for candidate_key, candidate in value.items():
-        if isinstance(candidate_key, str) and candidate_key.casefold() == wanted:
-            return True, candidate
-    return False, None
-
-
 def _jll_withholding_control(value):
-    """Read a JLL control with a boolean legacy flag as the only authority."""
-    has_legacy, legacy = _jll_mapping_value_casefold(value, "hidePrice")
-    if isinstance(legacy, bool):
-        return "withheld" if legacy else "visible"
-    has_fallback, fallback = _jll_mapping_value_casefold(
-        value, "priceWithholdingControl"
-    )
-    if isinstance(fallback, str) and fallback in _JLL_PRICE_CONTROL_CLASSES:
-        return fallback
-    if has_legacy or has_fallback:
+    """Reconcile every case-insensitive legacy and normalized control.
+
+    Provider objects can contain duplicate case variants after merge.  Reading
+    the first one is unsafe: any explicit withholding wins; all remaining
+    malformed or contradictory values fail closed.
+    """
+    if not isinstance(value, dict):
+        return "absent"
+    controls = []
+    for candidate_key, candidate in value.items():
+        if not isinstance(candidate_key, str):
+            continue
+        key = candidate_key.casefold()
+        if key == "hideprice":
+            controls.append(
+                "withheld"
+                if candidate is True
+                else "visible"
+                if candidate is False
+                else "unknown"
+            )
+        elif key == "pricewithholdingcontrol":
+            controls.append(
+                candidate
+                if isinstance(candidate, str)
+                and candidate in _JLL_PRICE_CONTROL_CLASSES
+                else "unknown"
+            )
+    if not controls:
+        return "absent"
+    if "withheld" in controls:
+        return "withheld"
+    if "unknown" in controls:
         return "unknown"
-    return "absent"
+    if all(control == "visible" for control in controls):
+        return "visible"
+    if all(control == "absent" for control in controls):
+        return "absent"
+    return "unknown"
 
 
 def _jll_pricing_is_withheld(listing):
