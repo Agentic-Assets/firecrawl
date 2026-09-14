@@ -244,6 +244,7 @@ def test_runtime_endpoint_retries_transient_startup_failure(
 ) -> None:
     attempts = 0
     sleeps: list[int] = []
+    clock = 0.0
 
     class Response:
         status = 404
@@ -257,16 +258,22 @@ def test_runtime_endpoint_retries_transient_startup_failure(
         def read(self, _size: int) -> bytes:
             return b""
 
-    def urlopen(_url: str, *, timeout: int) -> Response:
+    def urlopen(_url: str, *, timeout: float) -> Response:
         nonlocal attempts
-        assert timeout == 10
+        assert 0 < timeout <= 10
         attempts += 1
         if attempts < 3:
             raise urllib.error.URLError("container listener is starting")
         return Response()
 
+    def sleep(seconds: int) -> None:
+        nonlocal clock
+        sleeps.append(seconds)
+        clock += seconds
+
     monkeypatch.setattr(runtime.urllib.request, "urlopen", urlopen)
-    monkeypatch.setattr(runtime.time, "sleep", sleeps.append)
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: clock)
+    monkeypatch.setattr(runtime.time, "sleep", sleep)
 
     assert runtime._http_status("http://127.0.0.1:3103/") == 404
     assert attempts == 3
@@ -278,23 +285,49 @@ def test_runtime_endpoint_fails_after_bounded_readiness_window(
 ) -> None:
     attempts = 0
     sleeps: list[int] = []
+    clock = 0.0
 
-    def urlopen(_url: str, *, timeout: int) -> object:
+    def urlopen(_url: str, *, timeout: float) -> object:
         nonlocal attempts
-        assert timeout == 10
+        assert 0 < timeout <= 10
         attempts += 1
         raise urllib.error.URLError("listener never became ready")
 
+    def sleep(seconds: int) -> None:
+        nonlocal clock
+        sleeps.append(seconds)
+        clock += seconds
+
     monkeypatch.setattr(runtime.urllib.request, "urlopen", urlopen)
-    monkeypatch.setattr(runtime.time, "sleep", sleeps.append)
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: clock)
+    monkeypatch.setattr(runtime.time, "sleep", sleep)
 
     with pytest.raises(runtime.RuntimeAdmissionError, match="endpoint unavailable"):
         runtime._http_status("http://127.0.0.1:3103/")
 
-    assert attempts == runtime.RUNTIME_ENDPOINT_ATTEMPTS
-    assert sleeps == [runtime.RUNTIME_ENDPOINT_RETRY_SECONDS] * (
-        runtime.RUNTIME_ENDPOINT_ATTEMPTS - 1
+    assert clock == runtime.RUNTIME_ENDPOINT_READY_SECONDS
+    assert attempts == len(sleeps) + 1
+
+
+def test_runtime_endpoint_readiness_wait_propagates_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(
+        runtime.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            urllib.error.URLError("listener is starting")
+        ),
     )
+    monkeypatch.setattr(
+        runtime.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        runtime._http_status("http://127.0.0.1:3103/")
 
 
 def test_container_memory_headroom_is_required() -> None:
