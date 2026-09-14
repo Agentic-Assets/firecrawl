@@ -5,12 +5,17 @@
     "calibration_per_source": 8,
     "core_per_source": 24,
     "minimum_detail_eligible_for_core": 16,
-    "minimum_sources_for_experiment": 16
+    "minimum_sources_for_experiment": 20,
+    "stratification_seed": "cre-multisource-v1-2026-09-14"
+  },
+  "workload_weighting": {
+    "basis": "fresh_enumeration_total",
+    "winsorize_percentile": 0.95
   },
   "profiles": {
     "P0": {"browser_cpus": 2, "global_pages": 4, "source_workers": 1},
     "P1": {"browser_cpus": 6, "global_pages": 10, "source_workers": 1},
-    "P2": {"browser_cpus": 6, "global_pages": 10, "source_workers": 2, "provider_family_exclusions": ["colliers"]}
+    "P2": {"browser_cpus": 6, "global_pages": 10, "source_workers": 2, "provider_family_exclusions": ["buildout", "cbre", "colliers", "jll"]}
   },
   "counterbalance": {
     "screening_epochs": 3,
@@ -19,24 +24,24 @@
   },
   "sources": [
     {"key": "jll", "plane": "strict_detail", "provider_family": "jll", "hosts": ["property.jll.com"], "not_found_classifier": "jll_next_data_404_no_property"},
-    {"key": "jll-investor", "plane": "strict_detail", "provider_family": "jll", "hosts": ["jll.com", "www.jll.com"], "not_found_classifier": null},
-    {"key": "colliers", "plane": "strict_detail", "provider_family": "colliers", "hosts": ["colliers.com", "www.colliers.com"], "not_found_classifier": null},
+    {"key": "jll-investor", "plane": "strict_detail", "provider_family": "jll", "hosts": ["invest.jll.com"], "not_found_classifier": null},
+    {"key": "colliers", "plane": "strict_detail", "provider_family": "colliers", "hosts": ["sales.colliers.com", "my.rcm1.com"], "not_found_classifier": null},
     {"key": "colliers-main", "plane": "strict_detail", "provider_family": "colliers", "hosts": ["colliers.com", "www.colliers.com"], "not_found_classifier": null, "exclusive": true},
     {"key": "marcus-millichap", "plane": "strict_detail", "provider_family": "marcus-millichap", "hosts": ["marcusmillichap.com", "www.marcusmillichap.com"], "not_found_classifier": null},
-    {"key": "avison-young", "plane": "strict_detail", "provider_family": "avison-young", "hosts": ["avisonyoung.us", "www.avisonyoung.us"], "not_found_classifier": null},
-    {"key": "savills", "plane": "strict_detail", "provider_family": "savills", "hosts": ["www.savills.us", "savills.us"], "not_found_classifier": null},
-    {"key": "nai-global", "plane": "strict_detail", "provider_family": "nai", "hosts": ["naiopportunities.com", "www.naiopportunities.com"], "not_found_classifier": null},
+    {"key": "avison-young", "plane": "strict_detail", "provider_family": "avison-young", "hosts": ["www.avisonyoung.us", "pse-api.sharplaunch.com"], "not_found_classifier": null},
+    {"key": "savills", "plane": "strict_detail", "provider_family": "savills", "hosts": ["search.savills.com"], "not_found_classifier": null},
+    {"key": "nai-global", "plane": "strict_detail", "provider_family": "nai", "hosts": ["ab.infabode.com", "infabode.com"], "not_found_classifier": null},
     {"key": "transwestern", "plane": "strict_detail", "provider_family": "transwestern", "hosts": ["transwestern.com", "www.transwestern.com"], "not_found_classifier": null},
     {"key": "matthews", "plane": "strict_detail", "provider_family": "matthews", "hosts": ["matthews.com", "www.matthews.com"], "not_found_classifier": null},
     {"key": "foundry-commercial", "plane": "strict_detail", "provider_family": "foundry", "hosts": ["foundrycommercial.com", "www.foundrycommercial.com"], "not_found_classifier": null},
     {"key": "daum-commercial", "plane": "strict_detail", "provider_family": "daum", "hosts": ["daumcommercial.com", "www.daumcommercial.com"], "not_found_classifier": null},
     {"key": "cbre", "plane": "authoritative_inventory", "provider_family": "cbre", "hosts": ["cbre.com", "www.cbre.com"], "not_found_classifier": null},
-    {"key": "cbre-dealflow", "plane": "authoritative_inventory", "provider_family": "cbre", "hosts": ["cbre.com", "www.cbre.com"], "not_found_classifier": null},
+    {"key": "cbre-dealflow", "plane": "authoritative_inventory", "provider_family": "cbre", "hosts": ["www.cbredealflow.com"], "not_found_classifier": null},
     {"key": "cushman-wakefield", "plane": "authoritative_inventory", "provider_family": "cushman", "hosts": ["cushmanwakefield.com", "www.cushmanwakefield.com"], "not_found_classifier": null},
     {"key": "newmark", "plane": "authoritative_inventory", "provider_family": "newmark", "hosts": ["nmrk.com", "www.nmrk.com"], "not_found_classifier": null},
-    {"key": "svn", "plane": "authoritative_inventory", "provider_family": "svn", "hosts": ["svn.com", "www.svn.com"], "not_found_classifier": null},
-    {"key": "lee-associates", "plane": "authoritative_inventory", "provider_family": "lee", "hosts": ["lee-associates.com", "www.lee-associates.com"], "not_found_classifier": null},
+    {"key": "svn", "plane": "authoritative_inventory", "provider_family": "buildout", "hosts": ["svn.com"], "not_found_classifier": null},
+    {"key": "lee-associates", "plane": "authoritative_inventory", "provider_family": "buildout", "hosts": ["www.lee-associates.com"], "not_found_classifier": null},
     {"key": "srs", "plane": "authoritative_inventory", "provider_family": "srs", "hosts": ["srsre.com", "www.srsre.com"], "not_found_classifier": null},
-    {"key": "bull-realty", "plane": "authoritative_inventory", "provider_family": "bull", "hosts": ["bullrealty.com", "www.bullrealty.com"], "not_found_classifier": null}
+    {"key": "bull-realty", "plane": "authoritative_inventory", "provider_family": "buildout", "hosts": ["www.bullrealty.com"], "not_found_classifier": null}
   ]
 }
