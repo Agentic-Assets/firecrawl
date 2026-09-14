@@ -85,13 +85,27 @@ _write_lock_owner() { printf '%s %s\n' "$$" "$(date +%s)" >"${LOCKDIR}/pid"; }
 # Read the recorded owner pid (first field of "pid epoch"); empty if absent.
 _lock_owner_pid() { [ -f "${LOCKDIR}/pid" ] && cut -d' ' -f1 "${LOCKDIR}/pid" 2>/dev/null || true; }
 
+# A capacity benchmark arms this durable marker before its detached worker can
+# start. Quarantine is added when final settlement cannot be proved. Either
+# entry blocks stale-owner reclamation, including dangling symlinks.
+_lock_interlocked() {
+    [ -e "${LOCKDIR}/capacity-benchmark-active.json" ] ||
+        [ -L "${LOCKDIR}/capacity-benchmark-active.json" ] ||
+        [ -e "${LOCKDIR}/capacity-benchmark-quarantine.json" ] ||
+        [ -L "${LOCKDIR}/capacity-benchmark-quarantine.json" ]
+}
+
 acquire_lock() {
     if mkdir "${LOCKDIR}" 2>/dev/null; then
         _write_lock_owner
         LOCK_HELD=1
         return 0
     fi
-    # Lock dir exists. Identify the recorded owner.
+    # Lock dir exists. A benchmark interlock always wins over stale-owner logic.
+    if _lock_interlocked; then
+        return 1
+    fi
+    # Identify the recorded owner.
     local owner=""
     owner="$(_lock_owner_pid)"
     if [ -z "${owner}" ]; then
@@ -112,6 +126,10 @@ acquire_lock() {
     local cur=""
     cur="$(_lock_owner_pid)"
     if [ -n "${cur}" ] && kill -0 "${cur}" 2>/dev/null; then
+        rm -rf "${LOCKDIR}.reclaim" 2>/dev/null || true
+        return 1
+    fi
+    if _lock_interlocked; then
         rm -rf "${LOCKDIR}.reclaim" 2>/dev/null || true
         return 1
     fi
@@ -278,7 +296,9 @@ finish() {
             notify_failure "${rc}" "${failures:-1}"
         fi
         prune_runtime_artifacts            # bound disk on every real run, pass or fail
-        rm -rf "${LOCKDIR}" 2>/dev/null || true
+        if ! _lock_interlocked; then
+            rm -rf "${LOCKDIR}" 2>/dev/null || true
+        fi
         rm -rf "${LOCKDIR}.reclaim" 2>/dev/null || true
     fi
     exit "${rc}"

@@ -563,7 +563,7 @@ test("diagnostic clock failures do not turn a successful scrape into a retry", a
   }
 });
 
-test("scrape timeout telemetry preserves three attempts and all existing backoffs", async () => {
+test("scrape timeout telemetry records only backoffs before real retries", async () => {
   const fixture = recorderFixture();
   const originalScrape = firecrawl.scrape;
   const originalSetTimeout = globalThis.setTimeout;
@@ -603,8 +603,8 @@ test("scrape timeout telemetry preserves three attempts and all existing backoff
     );
     assert.deepEqual(requests.retry.http_helper, {
       retry_attempts: 2,
-      backoff_ms: 15_000,
-      terminal_backoff_ms: 7_500,
+      backoff_ms: 7_500,
+      terminal_backoff_ms: 0,
     });
     assert.equal(fixture.fs.snapshot().metrics.logical_scrape_calls.raw, 1);
     assert.equal(existingLogs.length, 3, "telemetry does not change existing retry logging");

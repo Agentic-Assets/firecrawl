@@ -1,0 +1,14 @@
+# Named bold CRE capacity candidate. This file is inert until an operator uses
+# cre_capacity_runtime.py with a fresh transition receipt and root-review approval.
+services:
+  playwright-service:
+    cpus: 6.0
+    pids_limit: 768
+    mem_limit: 17179869184
+    memswap_limit: 17179869184
+    environment:
+      MAX_CONCURRENT_PAGES: "10"
+  api:
+    cpus: 2.0
+    mem_limit: 8589934592
+    memswap_limit: 8589934592

@@ -4,12 +4,75 @@ process.argv = [process.argv[0]!, process.argv[1]!];
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  configuredScrapeMaxAttempts,
+  createScrapeClient,
   firecrawl,
   parseJsonBody,
   repairUnescapedJsonStringQuotes,
+  scrapeRetryDelayMs,
   scrapeRaw,
   withRequestDeadline,
 } from "../../../lib/scrape.js";
+
+describe("scrape retry controls", () => {
+  it("defaults to three attempts and accepts only the bounded opt-in", () => {
+    assert.equal(configuredScrapeMaxAttempts({}), 3);
+    assert.equal(
+      configuredScrapeMaxAttempts({ CRE_SCRAPE_MAX_ATTEMPTS: "1" }),
+      1
+    );
+    assert.equal(
+      configuredScrapeMaxAttempts({ CRE_SCRAPE_MAX_ATTEMPTS: "3" }),
+      3
+    );
+    assert.throws(
+      () => configuredScrapeMaxAttempts({ CRE_SCRAPE_MAX_ATTEMPTS: "0" }),
+      /integer from 1 through 3/
+    );
+    assert.throws(
+      () => configuredScrapeMaxAttempts({ CRE_SCRAPE_MAX_ATTEMPTS: "4" }),
+      /integer from 1 through 3/
+    );
+  });
+
+  it("never schedules backoff after the terminal attempt", () => {
+    assert.equal(scrapeRetryDelayMs(1, 3), 2500);
+    assert.equal(scrapeRetryDelayMs(2, 3), 5000);
+    assert.equal(scrapeRetryDelayMs(3, 3), null);
+    assert.equal(scrapeRetryDelayMs(1, 1), null);
+  });
+
+  for (const [name, environment, expectedAttempts] of [
+    ["default", {}, 3],
+    ["benchmark", { CRE_SCRAPE_MAX_ATTEMPTS: "1" }, 1],
+  ] as const) {
+    it(`bounds ${name} SDK HTTP attempts even when the gateway returns 502`, async () => {
+      const client = createScrapeClient(environment);
+      // Stub only the pinned SDK's HTTP boundary; its real retry loop still runs.
+      const transport = (client as unknown as {
+        http: {
+          instance: { request: () => Promise<never> };
+          sleep: () => Promise<void>;
+        };
+      }).http;
+      const failure = Object.assign(new Error("synthetic gateway failure"), {
+        response: { status: 502 },
+      });
+      let attempts = 0;
+      transport.instance.request = async () => {
+        attempts += 1;
+        throw failure;
+      };
+      transport.sleep = async () => undefined;
+
+      await assert.rejects(
+        () => client.scrape("https://example.com/sdk-attempt-bound"),
+        /synthetic gateway failure/
+      );
+      assert.equal(attempts, expectedAttempts);
+    });
+  }
+});
 
 describe("scrape freshness options", () => {
   it("forwards explicit maxAge zero and preserves the default when omitted", async () => {
