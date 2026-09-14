@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1345,11 +1347,23 @@ def test_admission_consumption_requires_review_grant_then_writes_private_audit(
         )
 
     monkeypatch.setattr(benchmark.subprocess, "run", consume)
+    directory_fsyncs: list[Path] = []
+    original_fsync_directory = benchmark._fsync_directory
+
+    def fsync_directory(path: Path) -> None:
+        directory_fsyncs.append(path)
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(benchmark, "_fsync_directory", fsync_directory)
 
     marker = benchmark._consume_admission(admission_path, admission)
 
     assert calls[0][0][:2] == ["/usr/bin/python3", "-c"]
     assert calls[0][0][-1] == admission["review_benchmark_grant_path"]
+    assert directory_fsyncs == [
+        tmp_path / "out",
+        tmp_path / "out" / ".capacity-admission-consumption",
+    ]
     assert marker.parent == tmp_path / "out" / ".capacity-admission-consumption"
     assert marker.stat().st_mode & 0o077 == 0
     audit = json.loads(marker.read_text())
@@ -1386,6 +1400,40 @@ def test_admission_consumption_executes_same_user_grant_helper_once(
     )
 
     assert marker.exists()
+    assert not grant_path.exists()
+
+
+def test_same_user_grant_helper_persists_rename_and_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admission = _admission(tmp_path)
+    admission["review_approval_created_at"] = benchmark._now()
+    grant_path = Path(str(admission["review_benchmark_grant_path"]))
+    benchmark._atomic_private_json(grant_path, _review_grant(admission))
+    output = io.BytesIO()
+    directory_fsyncs: list[int] = []
+    original_fsync = os.fsync
+
+    def fsync(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_fsyncs.append(descriptor)
+        original_fsync(descriptor)
+
+    with monkeypatch.context() as isolated:
+        isolated.setattr(os, "fsync", fsync)
+        isolated.setattr(sys, "argv", ["grant-helper", str(grant_path)])
+        isolated.setattr(sys, "stdout", SimpleNamespace(buffer=output))
+        exec(  # noqa: S102 - checked-in helper is tested without network/runtime
+            compile(
+                benchmark.REVIEW_BENCHMARK_GRANT_CONSUMER,
+                "<offline-review-grant-helper>",
+                "exec",
+            ),
+            {},
+        )
+
+    assert len(directory_fsyncs) == 2
+    assert json.loads(output.getvalue()) == _review_grant(admission)
     assert not grant_path.exists()
 
 
@@ -1493,6 +1541,49 @@ def test_admission_consumption_rejects_unsafe_opened_marker(
     lock_path = tmp_path / "out" / "daily" / ".cre.lock"
 
     with pytest.raises(benchmark.BenchmarkError, match="marker is unsafe"):
+        benchmark._consume_admission(
+            admission_path, admission, canonical_lock_path=lock_path
+        )
+
+    marker = (
+        tmp_path
+        / "out"
+        / ".capacity-admission-consumption"
+        / f"{admission['review_approval_nonce_sha256']}.json"
+    )
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("fail_on_call", [1, 2])
+def test_admission_consumption_fails_before_launch_when_directory_fsync_fails(
+    fail_on_call: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admission_path = tmp_path / "admission.json"
+    admission = _admission(tmp_path)
+    admission["review_approval_created_at"] = benchmark._now()
+    grant = _review_grant(admission)
+    benchmark._atomic_private_json(admission_path, admission)
+    monkeypatch.setattr(
+        benchmark.subprocess,
+        "run",
+        lambda argv, **_kwargs: benchmark.subprocess.CompletedProcess(
+            argv, 0, json.dumps(grant).encode(), b""
+        ),
+    )
+    calls = 0
+    original_fsync_directory = benchmark._fsync_directory
+
+    def fsync_directory(path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == fail_on_call:
+            raise benchmark.BenchmarkError("injected directory durability failure")
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(benchmark, "_fsync_directory", fsync_directory)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+
+    with pytest.raises(benchmark.BenchmarkError, match="durability failure"):
         benchmark._consume_admission(
             admission_path, admission, canonical_lock_path=lock_path
         )

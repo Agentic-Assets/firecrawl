@@ -112,11 +112,18 @@ if (not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1
 if (not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != euid
         or stat.S_IMODE(parent_stat.st_mode) != 0o700):
     raise SystemExit("grant parent is not operator-owned mode 0700")
+def fsync_parent():
+    descriptor = os.open(parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 consumed = os.path.join(
     parent,
     "." + name + ".consumed-" + secrets.token_hex(16),
 )
 os.rename(path, consumed)
+fsync_parent()
 try:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(consumed, flags)
@@ -147,6 +154,7 @@ try:
     sys.stdout.buffer.write(raw)
 finally:
     os.unlink(consumed)
+    fsync_parent()
 """
 
 
@@ -163,6 +171,20 @@ def _operator_uid() -> int:
             "capacity benchmark requires a non-root unswitched operating account"
         )
     return euid
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist directory-entry changes or fail closed."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise BenchmarkError(
+            "technical admission consumption directory is not durable"
+        ) from exc
 
 
 def _now() -> str:
@@ -394,6 +416,7 @@ def _consume_admission(
         or stat.S_IMODE(consumption_stat.st_mode) != 0o700
     ):
         raise BenchmarkError("canonical admission consumption directory is unsafe")
+    _fsync_directory(consumption_root.parent)
     marker = consumption_root / f"{nonce_sha256}.json"
     payload = (
         _canonical(
@@ -450,6 +473,14 @@ def _consume_admission(
         raise
     finally:
         os.close(descriptor)
+    try:
+        _fsync_directory(consumption_root)
+    except BenchmarkError:
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+        raise
     return marker
 
 
