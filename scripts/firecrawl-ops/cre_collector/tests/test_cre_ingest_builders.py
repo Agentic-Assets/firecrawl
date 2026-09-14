@@ -914,7 +914,7 @@ def test_to_row_withheld_jll_redacts_public_text_and_drops_unproven_extra_facts(
     )
 
     assert row["title"] == "[redacted] Office Portfolio"
-    assert row["highlights"] == ["[redacted] consideration", "Transit access"]
+    assert row["highlights"] is None
     assert row["extra_facts"] is None
     assert row["description"] is None
     assert row["markdown"] is None
@@ -927,18 +927,120 @@ def test_to_row_withheld_jll_redacts_public_text_and_drops_unproven_extra_facts(
     assert "EUR" not in stored
 
 
+def test_withheld_jll_identity_text_requires_an_explicit_monetary_signal():
+    safe = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/identity-text",
+            "id": "identity-text",
+            "hidePrice": True,
+            "name": "3M Company at Building 3B, 3 B Street, 500K SF",
+            "highlights": ["3M Company", "500K SF available"],
+        }
+    )
+    assert safe["title"] == "3M Company at Building 3B, 3 B Street, 500K SF"
+    assert safe["highlights"] is None
+
+    redacted = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/identity-price",
+            "id": "identity-price",
+            "hidePrice": True,
+            "name": "Asking price 3.25MM RUB 3,250,000 portfolio",
+        }
+    )
+    assert redacted["title"] == "Asking price [redacted] [redacted] portfolio"
+    assert "3.25" not in redacted["title"]
+    assert "3,250" not in redacted["title"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Price: 3.25MM",
+        "Consideration: 3.25 million",
+        "USD 3.25MM",
+        "3.25MM USD",
+        "RUB 3,250,000",
+        "3,250,000 RUB",
+        "$3.25M",
+    ],
+)
+def test_withheld_jll_title_redacts_labelled_and_prefix_or_suffix_currency_prices(
+    value,
+):
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/monetary-title",
+            "id": "monetary-title",
+            "hidePrice": True,
+            "name": value,
+        }
+    )
+
+    assert row["title"] is not None
+    assert "[redacted]" in row["title"]
+    assert "3.25" not in row["title"]
+    assert "3,250" not in row["title"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["3M Company", "Building 3B", "3 B Street", "500K SF"],
+)
+def test_withheld_jll_title_preserves_non_economic_identity_text(value):
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/non-economic-title",
+            "id": "non-economic-title",
+            "hidePrice": True,
+            "name": value,
+        }
+    )
+
+    assert row["title"] == value
+
+
 @pytest.mark.parametrize(
     "value",
     [
         "https://user:pass@property.jll.com/brochure.pdf",
         "https://property.jll.com:444/brochure.pdf",
         "https://property.jll.com/\ninvalid.pdf",
+        "https://property.jll.com/brochure file.pdf",
+        "https://property .jll.com/brochure.pdf",
+        "https://property.jll.com/brochure.pdf?token=has whitespace",
+        "https://property.jll.com/\u0085control.pdf",
+        "https://property.jll.com:invalid/brochure.pdf",
+        "https://property.jll.com:65536/brochure.pdf",
         "https:///relative.pdf",
         "http://?x",
     ],
 )
 def test_http_url_or_none_rejects_unsafe_jll_asset_urls(value):
     assert ci.http_url_or_none(value) is None
+
+
+def test_to_row_filters_unsafe_photo_urls_before_staging_assets() -> None:
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/strict-photo-url",
+            "id": "strict-photo-url",
+            "photos": [
+                "https://cdn.example/valid.jpg",
+                "https://cdn.example/has whitespace.jpg",
+                "https://user:pass@cdn.example/private.jpg",
+            ],
+        }
+    )
+
+    assert row["images"] == [
+        {"url": "https://cdn.example/valid.jpg", "isPrimary": True, "order": 0}
+    ]
 
 
 def test_to_row_rejects_jll_document_queries_and_fragments() -> None:
@@ -965,16 +1067,10 @@ def test_withheld_jll_sql_replaces_or_clears_prior_price_bearing_prose() -> None
     row_gate = "( EXCLUDED.raw_data->>'jllPriceWithheld' = 'true' )"
     stage_gate = "( s.raw_data->>'jllPriceWithheld' = 'true' )"
 
-    assert f"title = CASE WHEN {row_gate} THEN CASE WHEN ( t.title ~*" in compact
-    assert "THEN EXCLUDED.title ELSE COALESCE(EXCLUDED.title, t.title) END" in compact
-    assert (
-        f"highlights = CASE WHEN {row_gate} THEN CASE WHEN ( "
-        "array_to_string(COALESCE(t.highlights, ARRAY[]::text[]), ' ') ~*" in compact
-    )
-    assert (
-        "THEN EXCLUDED.highlights ELSE COALESCE(EXCLUDED.highlights, t.highlights) END"
-        in compact
-    )
+    assert f"title = CASE WHEN {row_gate} THEN EXCLUDED.title" in compact
+    assert f"highlights = CASE WHEN {row_gate} THEN EXCLUDED.highlights" in compact
+    assert "t.title ~*" not in compact
+    assert "array_to_string(COALESCE(t.highlights" not in compact
     assert (
         f"description = CASE WHEN {row_gate} THEN NULL "
         "ELSE COALESCE(EXCLUDED.description, t.description) END" in compact
@@ -1079,6 +1175,51 @@ def test_merge_carries_jll_withheld_marker_across_dual_passes():
     assert merged["raw_data"]["secondary_pass"]["jllPriceWithheld"] is True
     assert "3250000" not in json.dumps(merged["raw_data"])
     assert "$3,250,000" not in json.dumps(merged["raw_data"])
+
+
+def test_merge_final_withheld_projection_clears_visible_sibling_prose_in_either_order():
+    def visible():
+        return _row(
+            {
+                "sourceKey": "jll",
+                "url": "https://property.jll.com/listings/merged-prose",
+                "id": "merged-prose",
+                "transactionMode": "sale",
+                "salePriceUsd": 3250000,
+                "name": "Asking price $3,250,000 Trophy Office",
+                "highlights": ["Offered for $3,250,000", "Transit access"],
+                "extraFacts": {"consideration": "USD 3,250,000"},
+                "description": "Offered for $3,250,000.",
+                "markdown": "Asking price $3,250,000.",
+            }
+        )
+
+    def withheld():
+        return _row(
+            {
+                "sourceKey": "jll",
+                "url": "https://property.jll.com/listings/merged-prose",
+                "id": "merged-prose",
+                "transactionMode": "lease",
+                "hidePrice": True,
+                "name": "3M Company Building 3B",
+            }
+        )
+
+    for first, second in ((visible(), withheld()), (withheld(), visible())):
+        merged = ci.merge_rows(first, second)
+        assert merged["raw_data"]["jllPriceWithheld"] is True
+        assert merged["title"] not in {
+            "Asking price $3,250,000 Trophy Office",
+            "Asking price 3250000 Trophy Office",
+        }
+        assert merged["highlights"] is None
+        assert merged["extra_facts"] is None
+        assert merged["description"] is None
+        assert merged["markdown"] is None
+        rendered = ci.build_sql([merged], [], _SCRAPED_AT, set())
+        assert "3,250,000" not in rendered
+        assert "3250000" not in rendered
 
 
 def test_to_row_does_not_stage_foreign_currency_jll_lease_rates():
