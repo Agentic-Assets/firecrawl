@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import cre_capacity_multisource_v1 as multisource
 import pytest
+
+import cre_capacity_multisource_v1 as multisource
 
 ADMISSION_NOW = datetime(2026, 9, 14, 12, 5, tzinfo=timezone.utc)
 OBSERVED_AT = "2026-09-14T12:00:00Z"
@@ -48,7 +49,15 @@ def _jll_raw_html(*, property_value: dict[str, Any] | None) -> str:
     )
 
 
-def _raw_body(source_key: str, provider_id: str, classification: str) -> dict[str, Any]:
+def _raw_body(
+    source_key: str,
+    provider_id: str,
+    classification: str,
+    *,
+    canonical_url: str,
+    transaction_type: str,
+    property_type: str,
+) -> dict[str, Any]:
     if classification == "confirmed_current_attrition":
         return {"rawHtml": _jll_raw_html(property_value=None)}
     if source_key == "jll":
@@ -56,8 +65,11 @@ def _raw_body(source_key: str, provider_id: str, classification: str) -> dict[st
             "rawHtml": _jll_raw_html(
                 property_value={
                     "id": provider_id,
+                    "pageUrl": canonical_url,
                     "address": "1 Test Street",
                     "title": "Test listing",
+                    "tenureTypes": [transaction_type],
+                    "propertyTypes": [property_type],
                 }
             )
         }
@@ -65,7 +77,12 @@ def _raw_body(source_key: str, provider_id: str, classification: str) -> dict[st
 
 
 def _locator_fields(fields: dict[str, Any]) -> dict[str, dict[str, str]]:
-    source_fields = {"address": "address", "name": "title"}
+    source_fields = {
+        "address": "address",
+        "name": "title",
+        "transaction_type": "tenureTypes[0]",
+        "property_type": "propertyTypes[0]",
+    }
     return {
         key: {
             "source_path": f"property.{source_fields[key]}",
@@ -107,6 +124,14 @@ def _refresh_extractor(root: Path, row: dict[str, Any]) -> None:
     row["extractor_receipt_sha256"] = digest
 
 
+def _rewrite_raw_receipt(
+    root: Path, row: dict[str, Any], document: dict[str, Any]
+) -> None:
+    path, digest = _write(root, Path(row["raw_receipt_path"]).name, document)
+    row["raw_receipt_path"] = str(path)
+    row["raw_receipt_sha256"] = digest
+
+
 def _receipt_batch(
     root: Path,
     *,
@@ -139,7 +164,9 @@ def _receipt_batch(
     config_hash = multisource._sha256(multisource._canonical(config))
     rows = []
     for number, provider_id in enumerate(provider_ids):
-        canonical_url = f"https://{source['hosts'][0]}/listing/{provider_id}"
+        canonical_url = f"https://{source['hosts'][0]}/listings/{provider_id}"
+        transaction_type = "sale" if number % 2 else "rent"
+        property_type = "office" if number % 3 else "industrial"
         http_status = 404 if classification == "confirmed_current_attrition" else 200
         raw_path, raw_hash = _write(
             root,
@@ -151,10 +178,22 @@ def _receipt_batch(
                 "content_type": "application/json",
                 "observed_at": OBSERVED_AT,
                 "timing_ms": 12 + number,
-                "body": _raw_body(source_key, provider_id, classification),
+                "body": _raw_body(
+                    source_key,
+                    provider_id,
+                    classification,
+                    canonical_url=canonical_url,
+                    transaction_type=transaction_type,
+                    property_type=property_type,
+                ),
             },
         )
-        fields = {"address": "1 Test Street", "name": "Test listing"}
+        fields = {
+            "address": "1 Test Street",
+            "name": "Test listing",
+            "transaction_type": transaction_type,
+            "property_type": property_type,
+        }
         normalized_path, normalized_hash = _write(
             root,
             f"normalized-{source_key}-{number}.json",
@@ -203,11 +242,6 @@ def _receipt_batch(
             "config_sha256": config_hash,
             "source_config_sha256": multisource._source_config_sha256(source),
             "classification": classification,
-            "stratum": {
-                "transaction_class": "sale" if number % 2 else "lease",
-                "property_type": "office" if number % 3 else "industrial",
-                "page_weight_band": "small" if number % 4 else "large",
-            },
         }
         row["enumeration_identity_sha256"] = multisource._enumeration_identity(
             source_key,
@@ -344,6 +378,17 @@ def test_prevalidation_uses_artifact_bound_fidelity_and_deterministic_strata(
     assert len(jll["core"]) == 24
     assert jll["core"] == reversed_jll["core"]
     assert jll["fresh_enumeration"]["total_population"] == 25
+    assert {member["stratum"]["transaction_class"] for member in jll["core"]} == {
+        "lease",
+        "sale",
+    }
+    assert {member["stratum"]["property_type"] for member in jll["core"]} == {
+        "industrial",
+        "office",
+    }
+    assert {member["stratum"]["page_weight_band"] for member in jll["core"]} == {
+        "small"
+    }
     assert jll["row_rates"] == {
         "current_active_successes": 1.0,
         "confirmed_current_attrition": 0.0,
@@ -443,7 +488,7 @@ def test_invented_fidelity_and_challenge_block_source_admission(
     assert jll["core"] == []
 
 
-def test_unsafe_url_and_calibration_strata_tampering_are_detected(
+def test_unsafe_url_and_caller_asserted_strata_are_rejected(
     evidence_root: Path,
 ) -> None:
     root = _private_dir(evidence_root, "credential-url")
@@ -452,12 +497,67 @@ def test_unsafe_url_and_calibration_strata_tampering_are_detected(
     with pytest.raises(multisource.MultisourceError, match="provider host contract"):
         _prevalidate(root, rows)
 
-    root = _private_dir(evidence_root, "calibration-hash")
+    root = _private_dir(evidence_root, "caller-stratum")
     rows = _receipt_batch(root, source_key="jll", count=25)
-    original = _prevalidate(root, rows)
-    rows[0]["stratum"]["page_weight_band"] = "changed"
-    changed = _prevalidate(root, rows)
-    assert original["cohort_sha256"] != changed["cohort_sha256"]
+    rows[0]["stratum"] = {
+        "transaction_class": "arbitrary",
+        "property_type": "arbitrary",
+        "page_weight_band": "arbitrary",
+    }
+    with pytest.raises(multisource.MultisourceError, match="unsupported"):
+        _prevalidate(root, rows)
+
+
+def test_jll_replayed_detail_identity_is_rejected_before_cohort_selection(
+    evidence_root: Path,
+) -> None:
+    root = _private_dir(evidence_root, "jll-replay")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    replayed_body = _read(Path(rows[0]["raw_receipt_path"]))["body"]
+    raw = _read(Path(rows[1]["raw_receipt_path"]))
+    raw["body"] = replayed_body
+    _rewrite_raw_receipt(root, rows[1], raw)
+    _refresh_extractor(root, rows[1])
+
+    with pytest.raises(multisource.MultisourceError, match="raw JLL property id"):
+        _prevalidate(root, rows)
+
+    root = _private_dir(evidence_root, "jll-page-target")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    raw = _read(Path(rows[0]["raw_receipt_path"]))
+    raw["body"] = _raw_body(
+        "jll",
+        rows[0]["provider_id"],
+        "eligible_detail",
+        canonical_url="https://property.jll.com/listings/a-different-property",
+        transaction_type="rent",
+        property_type="industrial",
+    )
+    _rewrite_raw_receipt(root, rows[0], raw)
+    _refresh_extractor(root, rows[0])
+
+    with pytest.raises(multisource.MultisourceError, match="raw JLL property page URL"):
+        _prevalidate(root, rows)
+
+
+def test_nonpositive_detail_timing_cannot_make_a_source_or_plane_ready(
+    evidence_root: Path,
+) -> None:
+    root = _private_dir(evidence_root, "zero-timing")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    for row in rows:
+        raw = _read(Path(row["raw_receipt_path"]))
+        raw["timing_ms"] = 0
+        _rewrite_raw_receipt(root, row, raw)
+        row["timing_ms"] = 0
+        _refresh_extractor(root, row)
+
+    cohort = _prevalidate(root, rows)
+    jll = next(source for source in cohort["sources"] if source["source_key"] == "jll")
+    assert jll["core_state"] == "invalid_measurement_timing"
+    assert jll["core"] == []
+    assert jll["individually_qualified_rows_per_minute"] is None
+    assert cohort["planes"]["strict_detail"]["sources_core_ready"] == 0
 
 
 def test_malicious_or_incomplete_evidence_is_rejected_and_output_is_sanitized(

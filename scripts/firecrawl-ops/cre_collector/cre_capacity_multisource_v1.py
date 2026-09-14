@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import stat
 import urllib.parse
@@ -55,6 +56,27 @@ CLASSIFICATIONS = frozenset(
 )
 PLANES = frozenset({"strict_detail", "authoritative_inventory"})
 STRATUM_FIELDS = ("transaction_class", "property_type", "page_weight_band")
+_JLL_TRANSACTION_CLASSES = {
+    "sale": "sale",
+    "for sale": "sale",
+    "investment sale": "sale",
+    "lease": "lease",
+    "for lease": "lease",
+    "rent": "lease",
+    "sale/lease": "sale_or_lease",
+    "sale or lease": "sale_or_lease",
+}
+_JLL_PROPERTY_TYPES = {
+    "office": "office",
+    "industrial": "industrial",
+    "retail": "retail",
+    "medical": "medical",
+    "multifamily": "multifamily",
+    "land": "land",
+    "hospitality": "hospitality",
+    "mixed use": "mixed_use",
+    "special purpose": "special_purpose",
+}
 # This is a versioned prevalidation lane, not a generic registry projection.
 # Keep the review matrix adjacent to its verifier so a config edit cannot point
 # an admitted cohort at a stale proxy/search host by accident.
@@ -385,6 +407,38 @@ def _public_url(value: Any, source: Mapping[str, Any]) -> str:
     return value
 
 
+def _canonical_jll_listing_url(value: Any, source: Mapping[str, Any]) -> str:
+    """Normalize a JLL inventory/detail target before identity comparison."""
+    if not isinstance(value, str):
+        raise MultisourceError("receipt target is outside the provider host contract")
+    absolute = urllib.parse.urljoin("https://property.jll.com/", value)
+    public_url = _public_url(absolute, source)
+    parsed = urllib.parse.urlsplit(public_url)
+    path = urllib.parse.quote(
+        urllib.parse.unquote(parsed.path), safe="/%:@!$&'()*+,;=-._~"
+    )
+    if not path.startswith("/listings/"):
+        raise MultisourceError("JLL target is not a canonical listing URL")
+    normalized_path = path.rstrip("/") or "/"
+    return urllib.parse.urlunsplit(
+        ("https", parsed.hostname.lower(), normalized_path, "", "")
+    )
+
+
+def _canonical_target_url(value: Any, source: Mapping[str, Any]) -> str:
+    if source["key"] == "jll":
+        return _canonical_jll_listing_url(value, source)
+    return _public_url(value, source)
+
+
+def _finite_nonnegative_timing(value: Any) -> bool:
+    return type(value) in {int, float} and math.isfinite(value) and value >= 0
+
+
+def _finite_positive_timing(value: Any) -> bool:
+    return _finite_nonnegative_timing(value) and value > 0
+
+
 def _observed_at(value: Any, *, now_utc: datetime, maximum_age: int) -> str:
     # This is deliberately a narrow, UTC-only serial form.  The producer must
     # record the same timestamp in the private enumeration receipt.
@@ -469,8 +523,7 @@ def _enumeration_binding(
         or document["http_status"] != 200
         or not isinstance(document["content_type"], str)
         or not document["content_type"]
-        or type(document["timing_ms"]) not in {int, float}
-        or document["timing_ms"] < 0
+        or not _finite_positive_timing(document["timing_ms"])
     ):
         raise MultisourceError("enumeration completeness proof is invalid")
     body_hash = _sha256(document["body"].encode())
@@ -478,7 +531,7 @@ def _enumeration_binding(
         receipt.get("enumeration_body_sha256"), label="enumeration body"
     ):
         raise MultisourceError("enumeration body hash drifted")
-    canonical_url = _public_url(receipt.get("canonical_url"), source)
+    canonical_url = _canonical_target_url(receipt.get("canonical_url"), source)
     identity = _enumeration_identity(
         source["key"],
         receipt["provider_id"],
@@ -533,7 +586,7 @@ def _extractor_receipt_binding(
 
 def _raw_receipt_binding(
     receipt: Mapping[str, Any], source: Mapping[str, Any], *, root: Path
-) -> tuple[Mapping[str, Any], str]:
+) -> tuple[Mapping[str, Any], str, str]:
     """Bind receipt transport claims to bytes captured by the extractor."""
     raw_path_value = receipt.get("raw_receipt_path")
     if not isinstance(raw_path_value, str):
@@ -565,7 +618,7 @@ def _raw_receipt_binding(
         or document["timing_ms"] != receipt["timing_ms"]
     ):
         raise MultisourceError("raw receipt does not bind transport evidence")
-    return document, raw_hash
+    return document, raw_hash, _sha256(_canonical(document["body"]))
 
 
 def _jll_next_property(raw: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -591,6 +644,55 @@ def _jll_next_property(raw: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return property_value if isinstance(property_value, Mapping) else None
 
 
+def _jll_property_source_field(
+    property_value: Mapping[str, Any], normalized_field: str
+) -> tuple[str, Any] | None:
+    """Return only an unambiguous JLL detail value and its locator path."""
+    direct_fields = {"address": "address", "name": "title"}
+    if normalized_field in direct_fields:
+        key = direct_fields[normalized_field]
+        return (f"property.{key}", property_value.get(key))
+    collection_fields = {
+        "transaction_type": "tenureTypes",
+        "property_type": "propertyTypes",
+    }
+    key = collection_fields.get(normalized_field)
+    value = property_value.get(key) if key else None
+    if (
+        not isinstance(value, list)
+        or len(value) != 1
+        or not isinstance(value[0], str)
+        or not value[0].strip()
+    ):
+        return None
+    return (f"property.{key}[0]", value[0])
+
+
+def _jll_raw_detail_identity(
+    raw: Mapping[str, Any],
+    *,
+    provider_id: str,
+    canonical_url: str,
+    source: Mapping[str, Any],
+) -> tuple[str, str]:
+    """Bind a JLL detail body to the enumerated provider identity and target."""
+    property_value = _jll_next_property(raw)
+    if property_value is None:
+        raise MultisourceError("raw JLL property identity is absent")
+    raw_provider_id = property_value.get("id")
+    if not isinstance(raw_provider_id, str) or raw_provider_id != provider_id:
+        raise MultisourceError(
+            "raw JLL property id does not match enumerated provider id"
+        )
+    raw_page_url = property_value.get("pageUrl")
+    raw_canonical_url = _canonical_jll_listing_url(raw_page_url, source)
+    if raw_canonical_url != canonical_url:
+        raise MultisourceError(
+            "raw JLL property page URL does not match enumerated canonical target"
+        )
+    return raw_provider_id, raw_canonical_url
+
+
 def _verified_jll_locator_fidelity(
     normalized: Mapping[str, Any], locators: Mapping[str, Any], raw: Mapping[str, Any]
 ) -> bool:
@@ -606,22 +708,16 @@ def _verified_jll_locator_fidelity(
         or property_value is None
     ):
         return False
-    source_fields = {
-        "address": "address",
-        "name": "title",
-        "property_type": "propertyType",
-        "transaction_type": "transactionType",
-    }
     for normalized_field, normalized_value in fields.items():
         locator = locator_fields.get(normalized_field)
+        source_field = _jll_property_source_field(property_value, normalized_field)
         if (
-            normalized_field not in source_fields
-            or not isinstance(locator, Mapping)
+            not isinstance(locator, Mapping)
             or set(locator) != {"source_path", "value_sha256"}
-            or locator.get("source_path")
-            != f"property.{source_fields[normalized_field]}"
+            or source_field is None
+            or locator.get("source_path") != source_field[0]
             or locator.get("value_sha256") != _sha256(_canonical(normalized_value))
-            or property_value.get(source_fields[normalized_field]) != normalized_value
+            or source_field[1] != normalized_value
         ):
             return False
     return True
@@ -633,7 +729,7 @@ def _fidelity_evidence(
     raw: Mapping[str, Any],
     *,
     root: Path,
-) -> tuple[str, str, str, bool]:
+) -> tuple[str, str, str, bool, Mapping[str, Any]]:
     """Bind field and asset fidelity to real normalized artifacts, never booleans."""
     values: dict[str, tuple[int, Any]] = {
         "normalized": (MAX_RAW_RECEIPT_BYTES, None),
@@ -657,7 +753,7 @@ def _fidelity_evidence(
         documents[name] = document
         hashes[name] = actual
     provider_id = receipt["provider_id"]
-    canonical_url = receipt["canonical_url"]
+    canonical_url = _canonical_target_url(receipt["canonical_url"], source)
     normalized = documents["normalized"]
     locators = documents["field_locator"]
     assets = documents["asset_evidence"]
@@ -687,16 +783,56 @@ def _fidelity_evidence(
         hashes["field_locator"],
         hashes["asset_evidence"],
         verified,
+        normalized,
     )
 
 
-def _stratum(value: Any) -> dict[str, str]:
-    if not isinstance(value, Mapping) or set(value) != set(STRATUM_FIELDS):
-        raise MultisourceError("stratification fields are incomplete")
-    result = {field: value[field] for field in STRATUM_FIELDS}
-    if not all(isinstance(item, str) and item.strip() for item in result.values()):
-        raise MultisourceError("stratification fields are invalid")
-    return result
+def _page_weight_band(total_population: int) -> str:
+    """Use one closed, reviewable population rule for the sealed page band."""
+    if type(total_population) is not int or total_population < 1:
+        raise MultisourceError("enumeration population is invalid for stratification")
+    if total_population <= 50:
+        return "small"
+    if total_population <= 500:
+        return "medium"
+    return "large"
+
+
+def _closed_jll_stratum_value(value: Any, vocabulary: Mapping[str, str]) -> str:
+    if not isinstance(value, str):
+        return "other_verified"
+    return vocabulary.get(" ".join(value.casefold().split()), "other_verified")
+
+
+def _evidence_derived_stratum(
+    source: Mapping[str, Any],
+    normalized: Mapping[str, Any],
+    *,
+    population_total: int,
+    fidelity_verified: bool,
+) -> dict[str, str]:
+    """Never trust caller strata; expose only a closed evidence-derived tuple."""
+    page_weight_band = _page_weight_band(population_total)
+    fields = normalized.get("fields")
+    if (
+        source["key"] != "jll"
+        or not fidelity_verified
+        or not isinstance(fields, Mapping)
+    ):
+        return {
+            "transaction_class": "unverified",
+            "property_type": "unverified",
+            "page_weight_band": page_weight_band,
+        }
+    return {
+        "transaction_class": _closed_jll_stratum_value(
+            fields.get("transaction_type"), _JLL_TRANSACTION_CLASSES
+        ),
+        "property_type": _closed_jll_stratum_value(
+            fields.get("property_type"), _JLL_PROPERTY_TYPES
+        ),
+        "page_weight_band": page_weight_band,
+    }
 
 
 def _receipt_summary(
@@ -739,7 +875,6 @@ def _receipt_summary(
         "config_sha256",
         "source_config_sha256",
         "classification",
-        "stratum",
     }
     allowed = required | {"not_found_classifier"}
     if set(receipt) - allowed or not required <= set(receipt):
@@ -762,7 +897,7 @@ def _receipt_summary(
         now_utc=now_utc,
         maximum_age=maximum_age,
     )
-    canonical_url = _public_url(receipt["canonical_url"], source)
+    canonical_url = _canonical_target_url(receipt["canonical_url"], source)
     _public_url(receipt.get("request_url"), source)
     _public_url(receipt.get("final_url"), source)
     _observed_at(receipt.get("observed_at"), now_utc=now_utc, maximum_age=maximum_age)
@@ -775,8 +910,7 @@ def _receipt_summary(
         raise MultisourceError("receipt transport metadata is invalid")
     _safe_redacted_headers(receipt["redacted_headers"])
     if (
-        type(receipt.get("timing_ms")) not in {int, float}
-        or receipt["timing_ms"] < 0
+        not _finite_nonnegative_timing(receipt.get("timing_ms"))
         or type(receipt.get("retry_count")) is not int
         or receipt["retry_count"] < 0
     ):
@@ -784,14 +918,17 @@ def _receipt_summary(
     for key in ("raw_receipt_sha256", "parser_sha256", "config_sha256"):
         _hex_digest(receipt.get(key), label=key)
     _extractor_receipt_binding(receipt, root=root)
-    raw_document, raw_hash = _raw_receipt_binding(receipt, source, root=root)
-    if raw_document["final_url"] != canonical_url:
+    raw_document, raw_hash, raw_body_sha256 = _raw_receipt_binding(
+        receipt, source, root=root
+    )
+    if _canonical_target_url(raw_document["final_url"], source) != canonical_url:
         raise MultisourceError("raw receipt final target is not the enumerated listing")
     (
         normalized_sha256,
         field_locator_sha256,
         asset_evidence_sha256,
         fidelity_verified,
+        normalized,
     ) = _fidelity_evidence(receipt, source, raw_document, root=root)
     classification = receipt["classification"]
     if classification == "confirmed_current_attrition":
@@ -802,6 +939,14 @@ def _receipt_summary(
             raise MultisourceError("provider-specific attrition proof is absent")
     elif classification == "eligible_detail" and receipt["http_status"] != 200:
         raise MultisourceError("eligible detail receipt must be HTTP 200")
+    raw_detail_identity = None
+    if source["key"] == "jll" and classification == "eligible_detail":
+        raw_detail_identity = _jll_raw_detail_identity(
+            raw_document,
+            provider_id=receipt["provider_id"],
+            canonical_url=canonical_url,
+            source=source,
+        )
     return {
         "provider_id": receipt["provider_id"],
         "enumeration_identity_sha256": identity,
@@ -813,13 +958,20 @@ def _receipt_summary(
         "retry_count": receipt["retry_count"],
         "classification": classification,
         "raw_receipt_sha256": raw_hash,
+        "raw_body_sha256": raw_body_sha256,
+        "raw_detail_identity": raw_detail_identity,
         "normalized_sha256": normalized_sha256,
         "field_locator_sha256": field_locator_sha256,
         "asset_evidence_sha256": asset_evidence_sha256,
         "fidelity_verified": fidelity_verified,
         "parser_sha256": receipt["parser_sha256"],
         "config_sha256": receipt["config_sha256"],
-        "stratum": _stratum(receipt["stratum"]),
+        "stratum": _evidence_derived_stratum(
+            source,
+            normalized,
+            population_total=population_total,
+            fidelity_verified=fidelity_verified,
+        ),
     }
 
 
@@ -879,6 +1031,13 @@ def _safe_member(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _positive_throughput(row_count: int, timing_total: float) -> float | None:
+    if row_count < 1 or not _finite_positive_timing(timing_total):
+        return None
+    rate = row_count * 60_000 / timing_total
+    return rate if math.isfinite(rate) and rate > 0 else None
+
+
 def prevalidate_cohort(
     receipts: Mapping[str, Any],
     *,
@@ -904,7 +1063,12 @@ def prevalidate_cohort(
     by_source = {source["key"]: source for source in config["sources"]}
     summaries: dict[str, list[dict[str, Any]]] = {key: [] for key in by_source}
     config_sha256 = _sha256(_canonical(config))
-    seen: set[tuple[str, str]] = set()
+    seen_provider_ids: set[tuple[str, str]] = set()
+    seen_canonical_targets: set[tuple[str, str]] = set()
+    seen_raw_detail_ids: set[tuple[str, str]] = set()
+    seen_raw_detail_targets: set[tuple[str, str]] = set()
+    seen_raw_detail_receipts: set[tuple[str, str]] = set()
+    seen_raw_detail_bodies: set[tuple[str, str]] = set()
     for item in receipts["receipts"]:
         if not isinstance(item, dict) or item.get("source_key") not in by_source:
             raise MultisourceError("receipt source is not in the fixed matrix")
@@ -917,10 +1081,33 @@ def prevalidate_cohort(
         )
         if summary["config_sha256"] != config_sha256:
             raise MultisourceError("receipt configuration digest is not this cohort")
-        identity = (item["source_key"], summary["provider_id"])
-        if identity in seen:
+        provider_identity = (item["source_key"], summary["provider_id"])
+        if provider_identity in seen_provider_ids:
             raise MultisourceError("fresh enumeration identity is duplicated")
-        seen.add(identity)
+        seen_provider_ids.add(provider_identity)
+        target_identity = (item["source_key"], summary["canonical_url"])
+        if target_identity in seen_canonical_targets:
+            raise MultisourceError("enumerated canonical target is duplicated")
+        seen_canonical_targets.add(target_identity)
+        raw_detail_identity = summary["raw_detail_identity"]
+        if raw_detail_identity is not None:
+            raw_provider_id, raw_canonical_url = raw_detail_identity
+            raw_provider_identity = (item["source_key"], raw_provider_id)
+            raw_target_identity = (item["source_key"], raw_canonical_url)
+            raw_receipt_identity = (item["source_key"], summary["raw_receipt_sha256"])
+            raw_body_identity = (item["source_key"], summary["raw_body_sha256"])
+            if raw_provider_identity in seen_raw_detail_ids:
+                raise MultisourceError("raw JLL property identity is replayed")
+            if raw_target_identity in seen_raw_detail_targets:
+                raise MultisourceError("raw JLL property target is replayed")
+            if raw_receipt_identity in seen_raw_detail_receipts:
+                raise MultisourceError("raw JLL detail receipt is replayed")
+            if raw_body_identity in seen_raw_detail_bodies:
+                raise MultisourceError("raw JLL detail body is replayed")
+            seen_raw_detail_ids.add(raw_provider_identity)
+            seen_raw_detail_targets.add(raw_target_identity)
+            seen_raw_detail_receipts.add(raw_receipt_identity)
+            seen_raw_detail_bodies.add(raw_body_identity)
         summaries[item["source_key"]].append(summary)
     sampling = config["sampling"]
     cohort_sources = []
@@ -972,7 +1159,11 @@ def prevalidate_cohort(
             row["fidelity_verified"] is True for row in eligible
         )
         core_target_rows = min(sampling["core_per_source"], population_total)
-        if source["provider_family"] in challenged_families:
+        qualified_rate = _positive_throughput(len(qualified), timing_total)
+        eligible_rate = _positive_throughput(len(eligible), timing_total)
+        if rows and not all(_finite_positive_timing(row["timing_ms"]) for row in rows):
+            core_state = "invalid_measurement_timing"
+        elif source["provider_family"] in challenged_families:
             core_state = "challenge_or_throttle_in_family"
         elif fidelity_failures:
             core_state = "semantic_fidelity_unverified"
@@ -980,6 +1171,8 @@ def prevalidate_cohort(
             core_state = "insufficient_current_detail_eligibility"
         elif len(selected_core) < core_target_rows:
             core_state = "core_sample_underfilled"
+        elif qualified_rate is None:
+            core_state = "invalid_measurement_timing"
         else:
             core_state = "ready"
         cohort_sources.append(
@@ -1049,15 +1242,11 @@ def prevalidate_cohort(
                     if timing_values
                     else None,
                 },
-                "eligible_detail_rows_per_minute": round(
-                    len(eligible) * 60_000 / timing_total, 3
-                )
-                if timing_total
+                "eligible_detail_rows_per_minute": round(eligible_rate, 3)
+                if eligible_rate is not None
                 else None,
-                "individually_qualified_rows_per_minute": round(
-                    len(qualified) * 60_000 / timing_total, 3
-                )
-                if timing_total
+                "individually_qualified_rows_per_minute": round(qualified_rate, 3)
+                if qualified_rate is not None
                 else None,
                 "structured_field_evidence_bound": len(eligible) - fidelity_failures,
                 "asset_evidence_bound": len(eligible) - fidelity_failures,
@@ -1072,10 +1261,15 @@ def prevalidate_cohort(
     }
     for plane in sorted(PLANES):
         plane_ready = [item for item in ready if item["plane"] == plane]
-        plane_rates = [
-            item["individually_qualified_rows_per_minute"]
+        if any(
+            not _finite_positive_timing(item["individually_qualified_rows_per_minute"])
             for item in plane_ready
-            if item["individually_qualified_rows_per_minute"] is not None
+        ):
+            raise MultisourceError(
+                "ready source lacks a finite primary throughput rate"
+            )
+        plane_rates = [
+            item["individually_qualified_rows_per_minute"] for item in plane_ready
         ]
         populations = sorted(
             item["fresh_enumeration"]["total_population"] for item in plane_ready
@@ -1100,7 +1294,6 @@ def prevalidate_cohort(
                 min(item["fresh_enumeration"]["total_population"], workload_cap),
             )
             for item in plane_ready
-            if item["individually_qualified_rows_per_minute"] is not None
         ]
         plane_results[plane] = {
             "sources_in_matrix": expected_plane_sizes[plane],
