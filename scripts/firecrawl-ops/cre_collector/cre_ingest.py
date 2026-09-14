@@ -1714,34 +1714,38 @@ _JLL_PRICE_SOURCE_SHAPES = {
 }
 _JLL_WITHHELD_MARKER = "jllPriceWithheld"
 _JLL_SAFE_CONTROL_KEYS = frozenset(
-    {"hidePrice", "priceWithholdingControl", _JLL_WITHHELD_MARKER}
+    {"hideprice", "pricewithholdingcontrol", _JLL_WITHHELD_MARKER.casefold()}
 )
 _JLL_DIRECT_PRICE_KEYS = frozenset(
     {
-        "askingPrice",
-        "leaseRateMax",
-        "leaseRateMin",
-        "leaseRateText",
-        "leaseRateType",
+        "askingprice",
+        "leaseratemax",
+        "leaseratemin",
+        "leaseratetext",
+        "leaseratetype",
         "price",
-        "pricePerAcre",
-        "pricePerUnit",
+        "priceperacre",
+        "priceperunit",
         "pricing",
-        "salePrice",
-        "salePricePerSf",
-        "salePriceText",
-        "salePriceUsd",
+        "saleprice",
+        "salepricepersf",
+        "salepricetext",
+        "salepriceusd",
     }
 )
 _JLL_FREE_TEXT_KEYS = frozenset({"description", "highlights", "markdown", "summary"})
+_JLL_SENSITIVE_PARENT_CHILDREN = {
+    "financials": frozenset({"amount"}),
+    "futureeconomics": frozenset({"consideration"}),
+}
 _JLL_MONEY_AMOUNT = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 _JLL_MONEY_TOKEN = re.compile(
     rf"(?i)(?:\b(?:usd|us\$)\s*)?\$\s*{_JLL_MONEY_AMOUNT}"
     r"(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?"
 )
 _JLL_LABELLED_PRICE = re.compile(
-    r"(?i)(\b(?:asking|list|sale|lease|rental)\s*"
-    r"(?:price|rate|rent|consideration)\s*[:\-]?\s*)"
+    r"(?i)(\b(?:(?:asking|list|sale|lease|rental)\s*"
+    r"(?:price|rate|rent|consideration)|consideration)\s*[:\-]?\s*)"
     rf"(?:\$?\s*{_JLL_MONEY_AMOUNT}(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?)"
 )
 
@@ -1827,14 +1831,23 @@ def _redact_jll_price_values(value, *, parent_key=None):
     for key, item in value.items():
         if not isinstance(key, str):
             continue
-        if key in _JLL_DIRECT_PRICE_KEYS and key not in _JLL_SAFE_CONTROL_KEYS:
+        normalized_key = key.casefold()
+        normalized_parent = (
+            parent_key.casefold() if isinstance(parent_key, str) else None
+        )
+        if (
+            normalized_key in _JLL_DIRECT_PRICE_KEYS
+            and normalized_key not in _JLL_SAFE_CONTROL_KEYS
+        ):
             continue
-        if parent_key == "financials" and key == "amount":
+        if normalized_key in _JLL_SENSITIVE_PARENT_CHILDREN.get(
+            normalized_parent, frozenset()
+        ):
             continue
-        if key in _JLL_FREE_TEXT_KEYS:
+        if normalized_key in _JLL_FREE_TEXT_KEYS:
             redacted[key] = _redact_jll_free_text(item)
             continue
-        redacted[key] = _redact_jll_price_values(item, parent_key=key)
+        redacted[key] = _redact_jll_price_values(item, parent_key=normalized_key)
     return redacted
 
 
@@ -1891,6 +1904,31 @@ def _safe_jll_raw_data(listing):
     return raw
 
 
+def _jll_mapping_value_casefold(value, key):
+    if not isinstance(value, dict):
+        return False, None
+    wanted = key.casefold()
+    for candidate_key, candidate in value.items():
+        if isinstance(candidate_key, str) and candidate_key.casefold() == wanted:
+            return True, candidate
+    return False, None
+
+
+def _jll_withholding_control(value):
+    """Read a JLL control with a boolean legacy flag as the only authority."""
+    has_legacy, legacy = _jll_mapping_value_casefold(value, "hidePrice")
+    if isinstance(legacy, bool):
+        return "withheld" if legacy else "visible"
+    has_fallback, fallback = _jll_mapping_value_casefold(
+        value, "priceWithholdingControl"
+    )
+    if isinstance(fallback, str) and fallback in _JLL_PRICE_CONTROL_CLASSES:
+        return fallback
+    if has_legacy or has_fallback:
+        return "unknown"
+    return "absent"
+
+
 def _jll_pricing_is_withheld(listing):
     if not isinstance(listing, dict) or listing.get("sourceKey") != "jll":
         return False
@@ -1907,16 +1945,7 @@ def _jll_pricing_is_withheld(listing):
     for value in (detail, search):
         if not isinstance(value, dict):
             continue
-        control = value.get("hidePrice", value.get("priceWithholdingControl"))
-        if control is True or (
-            isinstance(control, str) and control in {"withheld", "unknown"}
-        ):
-            return True
-        if (
-            control is not None
-            and control is not False
-            and not (isinstance(control, str) and control in {"absent", "visible"})
-        ):
+        if _jll_withholding_control(value) in {"withheld", "unknown"}:
             return True
     return False
 
@@ -2210,6 +2239,13 @@ def to_row(listing, brokers_by_idx, scraped_at):
 
     title = listing.get("name") or listing.get("headline") or listing.get("street")
     desc = listing.get("description")
+    markdown = listing.get("markdown")
+    if jll_pricing_withheld:
+        # The adapter redacts hidden detail prose, but ingestion must retain the
+        # same boundary for legacy/manual artifacts before text reaches either
+        # staging columns or raw_data.
+        desc = _redact_jll_free_text(desc)
+        markdown = _redact_jll_free_text(markdown)
 
     return {
         "slug": slug,
@@ -2280,7 +2316,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "highlights": str_array_or_none(listing.get("highlights")),
         "amenities": str_array_or_none(listing.get("amenities")),
         "description": desc[:20000] if isinstance(desc, str) else None,
-        "markdown": clean_text(listing.get("markdown")),
+        "markdown": clean_text(markdown),
         "updated_date": iso_date_or_none(listing.get("lastUpdated")),
         "status": norm_status(listing),
         "source_lastmod": group_source_lastmod([listing]),
@@ -2518,8 +2554,21 @@ def merge_rows(a, b):
     ) or _jll_raw_payload_withheld(b["raw_data"])
     if b["raw_data"] is not a["raw_data"]:
         a["raw_data"] = {"primary": a["raw_data"], "secondary_pass": b["raw_data"]}
-    if jll_price_withheld and isinstance(a["raw_data"], dict):
-        a["raw_data"][_JLL_WITHHELD_MARKER] = True
+    if jll_price_withheld:
+        if isinstance(a["raw_data"], dict):
+            a["raw_data"][_JLL_WITHHELD_MARKER] = True
+        # SQL clearing handles an existing listing, but a first-seen dual-mode
+        # row takes INSERT ... SELECT without entering DO UPDATE.  Clear the
+        # staged provider price fields before either path so a visible sale pass
+        # cannot leak through a withheld/unknown lease pass.
+        for key in (
+            "sale_price_usd",
+            "sale_price_per_sf",
+            "lease_rate_min",
+            "lease_rate_max",
+            "lease_rate_type",
+        ):
+            a[key] = None
     return a
 
 

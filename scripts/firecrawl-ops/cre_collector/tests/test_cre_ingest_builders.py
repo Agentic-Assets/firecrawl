@@ -25,8 +25,9 @@ import json
 import sys
 from datetime import datetime, timezone
 
-import cre_ingest as ci
 import pytest
+
+import cre_ingest as ci
 
 _SCRAPED_AT = datetime(2026, 6, 15, 0, 0, 0, tzinfo=timezone.utc).isoformat()
 
@@ -774,6 +775,41 @@ def test_withheld_jll_raw_data_redacts_prices_without_dropping_tenant_provenance
     assert "$3,250,000" not in stored
 
 
+def test_to_row_fails_closed_for_case_variant_or_fallback_hidden_jll_controls():
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/casefold-hidden",
+            "id": "casefold-hidden",
+            "salePriceUsd": 3250000,
+            "SalePrice": "$3,250,000",
+            "markdown": "Confidential consideration: $3,250,000.",
+            "description": "Asking price: $3,250,000.",
+            "currentTenants": [{"name": "Acme Holdings"}],
+            "jllSearchResult": {
+                "HidePrice": None,
+                "priceWithholdingControl": "withheld",
+            },
+            "jllDetail": {
+                "SalePrice": {"amount": 3250000},
+                "futureEconomics": {
+                    "consideration": "$3,250,000",
+                    "occupancy": 0.95,
+                },
+            },
+        }
+    )
+
+    stored = json.dumps(row["raw_data"])
+    assert row["sale_price_usd"] is None
+    assert row["description"] == "Asking price: [redacted]."
+    assert row["markdown"] == "Confidential consideration: [redacted]."
+    assert row["raw_data"]["currentTenants"] == [{"name": "Acme Holdings"}]
+    assert row["raw_data"]["jllDetail"]["futureEconomics"] == {"occupancy": 0.95}
+    assert "3250000" not in stored
+    assert "$3,250,000" not in stored
+
+
 def test_merge_carries_jll_withheld_marker_across_dual_passes():
     visible = _row(
         {
@@ -797,7 +833,9 @@ def test_merge_carries_jll_withheld_marker_across_dual_passes():
     )
 
     merged = ci.merge_rows(visible, hidden)
-    assert merged["sale_price_usd"] == 3250000
+    assert merged["sale_price_usd"] is None
+    assert merged["lease_rate_min"] is None
+    assert merged["lease_rate_max"] is None
     assert merged["raw_data"]["jllPriceWithheld"] is True
     assert merged["raw_data"]["secondary_pass"]["jllPriceWithheld"] is True
 

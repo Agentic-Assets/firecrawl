@@ -12,9 +12,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
-import pytest
 
 
 def _cache_record(index: int) -> dict[str, object]:
@@ -1275,9 +1276,14 @@ def _write_comparison_artifact(
     variant: str,
     *,
     attrition: bool = False,
+    artifact_root: Path | None = None,
 ) -> tuple[dict[str, object], Path]:
     """Build one complete rehashable comparison artifact without live I/O."""
-    root = (tmp_path / f"artifact-{variant}-{int(rate)}").resolve()
+    root = (
+        artifact_root.resolve()
+        if artifact_root is not None
+        else (tmp_path / f"artifact-{variant}-{int(rate)}").resolve()
+    )
     root.mkdir(mode=0o700)
     root.chmod(0o700)
     sample_path = root / "sample.json"
@@ -1910,6 +1916,73 @@ def test_counterbalanced_pair_comparison_rehashes_real_ab_ba_ab_artifacts(
     )
 
 
+def test_persisted_production_pair_is_advisory_even_when_every_artifact_rehashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample = _sample(tmp_path)
+    sample_path = tmp_path / "immutable-sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    pair_root = tmp_path / "pair"
+    pair_root.mkdir(mode=0o700)
+    pair_root.chmod(0o700)
+    plan = benchmark.create_counterbalanced_pair_plan(
+        artifact_root=pair_root, sample_path=sample_path
+    )
+    plan_path = pair_root / "counterbalanced-pair-plan.json"
+    plan_sha256 = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    arms = []
+    for order, variant in enumerate(plan["sequence"], 1):
+        result, result_path = _write_comparison_artifact(
+            tmp_path,
+            sample,
+            100 if variant == "baseline" else 120,
+            variant,
+            artifact_root=pair_root / f"arm-{order:02d}-{variant}",
+        )
+        started_second = (order - 1) * 20
+        result["started_at"] = (
+            f"2026-09-14T00:{started_second // 60:02d}:{started_second % 60:02d}Z"
+        )
+        result["finished_at"] = (
+            f"2026-09-14T00:{(started_second + 10) // 60:02d}:{(started_second + 10) % 60:02d}Z"
+        )
+        result["pairing"] = {
+            "pair_id": plan["pair_id"],
+            "pair_plan_sha256": plan_sha256,
+            "arm_order": order,
+            "sequence": plan["sequence"],
+            "max_gap_seconds": plan["max_gap_seconds"],
+            "min_gap_seconds": plan["min_gap_seconds"],
+        }
+        result_path.write_bytes(benchmark._canonical(result))
+        arms.append(
+            {
+                "arm_order": order,
+                "variant": variant,
+                "result_path": str(result_path),
+                "result_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
+            }
+        )
+    Path(plan["state_path"]).write_bytes(
+        benchmark._canonical(
+            {
+                "schema_version": 1,
+                "kind": "cre_capacity_counterbalanced_pair_state",
+                "pair_id": plan["pair_id"],
+                "pair_plan_sha256": plan_sha256,
+                "arms": arms,
+            }
+        )
+    )
+    monkeypatch.setattr(benchmark, "_require_clean_git", lambda _root: "c" * 40)
+
+    comparison = benchmark.compare_counterbalanced_pair(plan_path)
+
+    assert comparison["state"] == "measured"
+    assert comparison["decision"] == "persisted_evidence_not_adoptable"
+    assert comparison["reasons"] == ["persisted_evidence_requires_guarded_orchestrator"]
+
+
 def test_production_pair_refuses_external_arm_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2013,6 +2086,60 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
     assert admissions == ["production-current", "bold-jll-128"]
     assert [arm["variant"] for arm in state["arms"]] == ["baseline", "candidate"]
     assert rollbacks == [(receipt, "bold-jll-128", "baseline", True)]
+
+
+def test_guarded_pair_controller_is_the_only_in_process_adoption_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample = _sample(tmp_path)
+    sample_path = tmp_path / "immutable-sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    pair_root = tmp_path / "pair"
+    pair_root.mkdir(mode=0o700)
+    pair_root.chmod(0o700)
+    benchmark.create_counterbalanced_pair_plan(
+        artifact_root=pair_root, sample_path=sample_path
+    )
+    plan_path = pair_root / "counterbalanced-pair-plan.json"
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+    receipt = tmp_path / "candidate-receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    calls = []
+    observed_capabilities = []
+
+    monkeypatch.setattr(benchmark, "_require_clean_git", lambda _root: "c" * 40)
+
+    def fake_step(**kwargs):
+        calls.append(kwargs["candidate_receipt_path"])
+        return {"completed": True}
+
+    def fake_compare(_path, *, adoption_capability=None):
+        observed_capabilities.append(adoption_capability)
+        return {"decision": "adoptable"}
+
+    monkeypatch.setattr(benchmark, "run_counterbalanced_pair_step", fake_step)
+    monkeypatch.setattr(benchmark, "_compare_counterbalanced_pair", fake_compare)
+    arms = [
+        {
+            "admission": {},
+            "admission_path": admission_path,
+            "candidate_receipt_path": receipt if variant == "candidate" else None,
+        }
+        for variant in benchmark.PAIR_SEQUENCE
+    ]
+
+    result = benchmark.run_counterbalanced_pair_orchestrator(
+        repo_root=Path(__file__).resolve().parents[4],
+        pair_plan_path=plan_path,
+        arms=arms,
+        timeout_seconds=1,
+    )
+
+    assert result["completed"] is True
+    assert result["comparison"]["decision"] == "adoptable"
+    assert len(calls) == 6
+    assert observed_capabilities == [benchmark._ORCHESTRATOR_ADOPTION_CAPABILITY]
 
 
 def test_summarize_replicate_fails_closed_on_native_delta_and_remote_timeout(

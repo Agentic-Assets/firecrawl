@@ -435,38 +435,26 @@ function jllLeasePriceText(price: JllNormalizedPrice): string | null {
 }
 
 function jllWithholdingControl(value: unknown, key: string): JllWithholdingControl {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    !Object.hasOwn(value, key) ||
-    (value as Record<string, unknown>)[key] === undefined
-  ) {
-    return "absent";
-  }
-  const control = (value as Record<string, unknown>)[key];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return "absent";
+  const record = value as Record<string, unknown>;
+  const control = record[key];
   if (control === true) return "withheld";
   if (control === false) return "visible";
-  return "unknown";
+  // A legacy hidePrice flag is authoritative only when it is actually boolean.
+  // A null/garbage flag must not mask an explicit normalized control that an
+  // earlier listing stage already derived from the provider response.
+  if (Object.hasOwn(record, "priceWithholdingControl")) {
+    const fallback = record.priceWithholdingControl;
+    if (["absent", "visible", "withheld", "unknown"].includes(fallback as string)) {
+      return fallback as JllWithholdingControl;
+    }
+    return "unknown";
+  }
+  return Object.hasOwn(record, key) ? "unknown" : "absent";
 }
 
 function jllStoredWithholdingControl(value: unknown): JllWithholdingControl {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return "absent";
-  }
-  const record = value as Record<string, unknown>;
-  const stored = Object.hasOwn(record, "priceWithholdingControl")
-    ? (["absent", "visible", "withheld", "unknown"] as const).includes(
-          record.priceWithholdingControl as JllWithholdingControl
-        )
-      ? (record.priceWithholdingControl as JllWithholdingControl)
-      : "unknown"
-    : "absent";
-  const legacy = jllWithholdingControl(value, "hidePrice");
-  if (stored === "unknown" || legacy === "unknown") return "unknown";
-  if (stored === "withheld" || legacy === "withheld") return "withheld";
-  if (stored === "visible" || legacy === "visible") return "visible";
-  return "absent";
+  return jllWithholdingControl(value, "hidePrice");
 }
 
 function jllPriceWithheld(...controls: JllWithholdingControl[]): boolean {
@@ -490,13 +478,17 @@ const JLL_DIRECT_PRICE_KEYS = new Set([
   "salepriceusd",
 ]);
 const JLL_FREE_TEXT_KEYS = new Set(["description", "highlights", "markdown", "summary"]);
+const JLL_SENSITIVE_PARENT_CHILDREN = new Map([
+  ["financials", new Set(["amount"])],
+  ["futureeconomics", new Set(["consideration"])],
+]);
 const JLL_MONEY_AMOUNT = String.raw`(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?`;
 const JLL_MONEY_TOKEN = new RegExp(
   String.raw`(?:\b(?:usd|us\$)\s*)?\$\s*${JLL_MONEY_AMOUNT}(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?`,
   "gi"
 );
 const JLL_LABELLED_PRICE = new RegExp(
-  String.raw`(\b(?:asking|list|sale|lease|rental)\s*(?:price|rate|rent|consideration)\s*[:\-]?\s*)(?:\$?\s*${JLL_MONEY_AMOUNT}(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?)`,
+  String.raw`(\b(?:(?:asking|list|sale|lease|rental)\s*(?:price|rate|rent|consideration)|consideration)\s*[:\-]?\s*)(?:\$?\s*${JLL_MONEY_AMOUNT}(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?)`,
   "gi"
 );
 
@@ -523,7 +515,7 @@ function jllRedactSensitivePriceFields(value: unknown, parentKey?: string): any 
     if (!JLL_PRICE_CONTROL_KEYS.has(normalizedKey) && JLL_DIRECT_PRICE_KEYS.has(normalizedKey)) {
       continue;
     }
-    if (parentKey === "financials" && normalizedKey === "amount") {
+    if (JLL_SENSITIVE_PARENT_CHILDREN.get(parentKey ?? "")?.has(normalizedKey)) {
       continue;
     }
     if (JLL_FREE_TEXT_KEYS.has(normalizedKey)) {
@@ -1364,6 +1356,11 @@ export async function enrichJllListing(base: any): Promise<any> {
     const documents = documentChannels.documents;
     const photos = dedupeStrings([...(images.length ? images : base.photos ?? []), ...harvested.images]);
     const lifted = jllStrandedStructured(property);
+    // `publicBase` already strips search-card prose, but successful detail
+    // enrichment replaces it below.  Keep the visibility boundary for those
+    // normalized detail values too.
+    const description = jllDescription(property) ?? base.description;
+    const markdown = doc.markdown || base.markdown;
     return prune({
       ...publicBase,
       detailObservedAt: doc.detailObservation?.observedAt,
@@ -1378,7 +1375,7 @@ export async function enrichJllListing(base: any): Promise<any> {
       assetType: Array.isArray(property.propertyTypes)
         ? property.propertyTypes.map(jllPropertyTypeLabel).join(", ")
         : clean(property.propertyType) ?? base.assetType,
-      description: jllDescription(property) ?? base.description,
+      description: hiddenPrice ? jllRedactPriceDisclosure(description) : description,
       street: clean(property.address) ?? base.street,
       city: clean(property.city) ?? base.city,
       state: clean(property.state) ?? base.state,
@@ -1410,7 +1407,7 @@ export async function enrichJllListing(base: any): Promise<any> {
       media: harvested.media,
       links: harvested.links,
       photos,
-      markdown: doc.markdown || base.markdown,
+      markdown: hiddenPrice ? jllRedactPriceDisclosure(markdown) : markdown,
       url,
       lastUpdated: base.lastUpdated,
       jllDetail: {

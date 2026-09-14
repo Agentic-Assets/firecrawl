@@ -934,6 +934,71 @@ test("JLL detail enrichment preserves list and detail hidden-price controls", as
   }
 });
 
+test("JLL successful hidden detail redacts normalized prose and case-variant price paths", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-hidden-success-redaction-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const url = "https://property.jll.com/listings/hidden-success-redaction";
+  try {
+    writeJllDetailCache(url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify({
+          props: {
+            pageProps: {
+              property: {
+                id: "hidden-success-redaction",
+                pageUrl: "/listings/hidden-success-redaction",
+                // A null legacy control is not authoritative: the explicit
+                // provider fallback still requires withholding.
+                hidePrice: null,
+                priceWithholdingControl: "withheld",
+                salePrice: { amount: 3250000, currency: "USD" },
+                descriptionSections: [
+                  { content: "Sale price: $3,250,000. Institutional office." },
+                ],
+                brokers: [],
+              },
+            },
+          },
+        }) +
+        "</script>",
+      markdown: "Confidential asking consideration: $3,250,000.",
+      links: [],
+      images: [],
+    });
+
+    const enriched = await enrichJllListing({
+      id: "hidden-success-redaction",
+      url,
+      salePriceUsd: 3250000,
+      SalePrice: "$3,250,000",
+      markdown: "Legacy asking price: $3,250,000.",
+      currentTenants: [{ name: "Acme Holdings" }],
+      jllSearchResult: { priceWithholdingControl: "withheld" },
+      jllDetail: {
+        SalePrice: { amount: 3250000 },
+        futureEconomics: { consideration: "$3,250,000", occupancy: 0.95 },
+      },
+    });
+
+    assert.equal(enriched.detailError, undefined);
+    assert.equal(enriched.salePriceUsd, undefined);
+    assert.equal(enriched.SalePrice, undefined);
+    assert.equal(enriched.jllDetail.SalePrice, undefined);
+    assert.equal(enriched.jllDetail.futureEconomics, undefined);
+    assert.equal(enriched.jllDetail.pricing.detailWithholdingControl, "withheld");
+    assert.equal(enriched.description, "Sale price: [redacted]. Institutional office.");
+    assert.equal(enriched.markdown, "Confidential asking consideration: [redacted].");
+    assert.deepEqual(enriched.currentTenants, [{ name: "Acme Holdings" }]);
+    assert.doesNotMatch(JSON.stringify(enriched), /3250000|3,250,000/);
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
 test("JLL rejects unsupported price units and redacts hidden prices on detail-shape errors", async () => {
   const sale = jllGraphqlItemToListing(
     {

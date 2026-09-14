@@ -241,13 +241,15 @@ SHA remains provenance, but an unrelated documentation-only commit is not a
 substitute for executable dependency matching.
 
 The ordinary two-result command remains diagnostic-only and can never return
-`adoptable`. It reopens and rehashes the sample, admission, consumption marker,
-worker output, performance receipt, and each raw cache receipt before reporting
-its measured result. Create the immutable paired plan from a fresh prevalidated
-JLL sample, then execute only its next arm with a fresh one-use admission. The
-candidate arm requires its existing runtime receipt and is rolled back to the
-baseline in `finally` before the arm is recorded. Do not batch admissions or
-hold an approval across the allowed pair gap.
+`adoptable`. The persisted paired comparator is also advisory-only, even after
+rehashing every artifact: files alone cannot establish that a runtime was
+actually guarded. It reopens and rehashes the sample, admission, consumption
+marker, worker output, performance receipt, and each raw cache receipt before
+reporting its measured result. Only the guarded all-arm controller may return
+an adoption authority, and it starts from an empty production plan, holds its
+capability only in-process, consumes one fresh admission per arm, and rolls a
+candidate back to baseline in `finally` before recording that arm. Do not batch
+admissions or hold an approval across the allowed pair gap.
 
 Worker status fields are not comparison authority. The comparator derives each
 row's URL, hashes, HTTP status, challenge signal, and JLL tombstone semantics
@@ -256,8 +258,10 @@ JLL HTTP 404, valid `__NEXT_DATA__`, explicit `notFound`, an error status 404,
 and no property object. A worker claim that disagrees with its receipt is a
 fidelity failure. Production comparison also rehashes the current clean
 checkout's implementation manifest and every generated `worker.mts`; arm
-results must be below the paired plan root. A `sealed_offline_fixture` plan is
-valid only for test evidence and always reports `fixture_only_not_adoptable`.
+results must be below the paired plan root. Reopening either a production plan
+or a `sealed_offline_fixture` plan always remains non-adoptable evidence;
+fixtures report `fixture_only_not_adoptable` and persisted production evidence
+reports `persisted_evidence_not_adoptable`.
 
 When JLL reports a withheld or unknown price control, raw-data retention keeps
 only the control and redacted pricing provenance. It removes known price schema
@@ -273,19 +277,27 @@ currency-free lease columns.
 python3 cre_capacity_benchmark.py --artifact-root /restricted/pair-001 \
   --sample /restricted/jll-128-sample.json --create-counterbalanced-pair
 
-# Repeat only for the plan's next arm, using its fresh baseline or candidate admission.
+# A one-arm command records advisory evidence only. Its candidate arm rolls back.
 python3 cre_capacity_benchmark.py --pair-plan /restricted/pair-001/counterbalanced-pair-plan.json \
   --admission /restricted/fresh-admission.json --run-counterbalanced-step \
   --candidate-rollback-receipt /restricted/candidate-runtime-receipt.json
 
+# Only this guarded all-arm command may report adoption authority. Its private
+# input has exactly six fresh admission paths in B-C,C-B,C-B,B-C order and a
+# rollback receipt for each candidate arm; it refuses a non-empty plan state.
+python3 cre_capacity_benchmark.py --pair-plan /restricted/pair-002/counterbalanced-pair-plan.json \
+  --guarded-pair-arms /restricted/fresh-six-arm-input.json --run-counterbalanced-pair
+
+# Reopening disk evidence is intentionally advisory only.
 python3 cre_capacity_benchmark.py \
   --compare-counterbalanced-pair /restricted/pair-001/counterbalanced-pair-plan.json
 ```
 
 The final comparator admits only six disk-bound arms with the exact fixed
 order, pair ID, immutable sample/config hashes, matching per-pair attrition
-identity manifests, and timestamps within the centrally configured gap. It
-reports median qualified rows per minute, percentage gain, completeness,
+identity manifests, and timestamps within the centrally configured gap. Disk
+evidence is a review record, never adoption authority by itself. The guarded
+all-arm controller reports median qualified rows per minute, percentage gain, completeness,
 normalized/native/fresh fidelity, and p50/p95/p99 latency. Confirmed JLL 404
 attrition remains in its immutable slot, continues later replicas, and is
 excluded only from that row's current throughput. Asymmetric attrition reduces
