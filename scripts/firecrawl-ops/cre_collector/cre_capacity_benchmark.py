@@ -50,7 +50,7 @@ SUPPORTED_BASELINE_ADMISSION_AVAILABLE = False
 MAX_SAMPLE_BYTES = 8 * 1024 * 1024
 MAX_CACHE_RECORD_BYTES = 4 * 1024 * 1024
 MAX_WORKER_OUTPUT_BYTES = 512 * 1024 * 1024
-ROOT_BENCHMARK_GRANT_MAX_BYTES = 64 * 1024
+REVIEW_BENCHMARK_GRANT_MAX_BYTES = 64 * 1024
 NEXT_DATA = re.compile(
     r"<script[^>]+id=[\"']__NEXT_DATA__[\"'][^>]*>(.*?)</script>",
     re.IGNORECASE | re.DOTALL,
@@ -87,7 +87,7 @@ IMPLEMENTATION_PATHS = (
     "scripts/firecrawl-ops/cre_collector/package-lock.json",
     "scripts/firecrawl-ops/cre_collector/tsconfig.json",
 )
-ROOT_BENCHMARK_GRANT_CONSUMER = r"""
+REVIEW_BENCHMARK_GRANT_CONSUMER = r"""
 import json
 import os
 import re
@@ -98,16 +98,20 @@ import sys
 path = os.path.abspath(sys.argv[1])
 parent = os.path.dirname(path)
 name = os.path.basename(path)
+uid = os.getuid()
+euid = os.geteuid()
+if uid == 0 or euid == 0 or uid != euid:
+    raise SystemExit("grant consumer requires a non-root unswitched operating account")
 if not re.fullmatch(r"\.cre-capacity-benchmark-grant-[0-9a-f]{64}\.json", name):
     raise SystemExit("grant path is invalid")
 file_stat = os.lstat(path)
 parent_stat = os.lstat(parent)
 if (not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1
-        or file_stat.st_uid != 0 or stat.S_IMODE(file_stat.st_mode) != 0o600):
-    raise SystemExit("grant is not a singly linked root-owned mode 0600 file")
-if (not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != 0
+        or file_stat.st_uid != euid or stat.S_IMODE(file_stat.st_mode) != 0o600):
+    raise SystemExit("grant is not a singly linked operator-owned mode 0600 file")
+if (not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != euid
         or stat.S_IMODE(parent_stat.st_mode) != 0o700):
-    raise SystemExit("grant parent is not root-owned mode 0700")
+    raise SystemExit("grant parent is not operator-owned mode 0700")
 consumed = os.path.join(
     parent,
     "." + name + ".consumed-" + secrets.token_hex(16),
@@ -119,7 +123,7 @@ try:
     try:
         opened = os.fstat(fd)
         if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
-                or opened.st_uid != 0 or stat.S_IMODE(opened.st_mode) != 0o600):
+                or opened.st_uid != euid or stat.S_IMODE(opened.st_mode) != 0o600):
             raise SystemExit("consumed grant ownership changed")
         chunks = []
         remaining = 65537
@@ -148,6 +152,17 @@ finally:
 
 class BenchmarkError(ValueError):
     """The benchmark cannot safely proceed."""
+
+
+def _operator_uid() -> int:
+    """Return the ordinary operating-account UID or fail on privilege switching."""
+    uid = os.getuid()
+    euid = os.geteuid()
+    if uid == 0 or euid == 0 or uid != euid:
+        raise BenchmarkError(
+            "capacity benchmark requires a non-root unswitched operating account"
+        )
+    return euid
 
 
 def _now() -> str:
@@ -249,27 +264,27 @@ def _verify_implementation_manifest(
     return observed
 
 
-def _validate_root_grant_freshness(
+def _validate_review_grant_freshness(
     grant: Mapping[str, Any], *, now: datetime | None = None
 ) -> None:
-    """Enforce the root-bound clock, never a renewed local admission timestamp."""
-    created_value = grant.get("root_approval_created_at")
+    """Enforce the review-bound clock, never a renewed local admission timestamp."""
+    created_value = grant.get("review_approval_created_at")
     expiry = grant.get("expires_after_seconds")
     if (
         not isinstance(created_value, str)
         or type(expiry) is not int
         or expiry != capacity_runtime.RECEIPT_MAX_AGE_SECONDS
     ):
-        raise BenchmarkError("root benchmark grant expiry contract is invalid")
+        raise BenchmarkError("review benchmark grant expiry contract is invalid")
     try:
         created = datetime.fromisoformat(created_value.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise BenchmarkError("root benchmark grant timestamp is invalid") from exc
+        raise BenchmarkError("review benchmark grant timestamp is invalid") from exc
     if created.tzinfo is None:
-        raise BenchmarkError("root benchmark grant timestamp is invalid")
+        raise BenchmarkError("review benchmark grant timestamp is invalid")
     age = ((now or datetime.now(UTC)) - created.astimezone(UTC)).total_seconds()
     if age < 0 or age > expiry:
-        raise BenchmarkError("root benchmark grant is stale")
+        raise BenchmarkError("review benchmark grant is stale")
 
 
 def _consume_admission(
@@ -278,21 +293,29 @@ def _consume_admission(
     *,
     canonical_lock_path: Path | None = None,
 ) -> Path:
-    """Consume the root grant, then retain a non-authoritative local audit."""
+    """Consume the review grant, then retain a non-authoritative local audit."""
+    operator_uid = _operator_uid()
     candidate = admission_path.expanduser()
-    if candidate.is_symlink():
+    try:
+        admission_stat = candidate.lstat()
+    except OSError as exc:
+        raise BenchmarkError("technical admission path is unavailable") from exc
+    if (
+        not stat.S_ISREG(admission_stat.st_mode)
+        or admission_stat.st_nlink != 1
+        or admission_stat.st_uid != operator_uid
+        or stat.S_IMODE(admission_stat.st_mode) != 0o600
+    ):
         raise BenchmarkError("technical admission path is not a regular file")
     resolved = candidate.resolve()
-    if not resolved.is_file() or stat.S_IMODE(resolved.stat().st_mode) & 0o077:
-        raise BenchmarkError("technical admission path is not a regular file")
     if _canonical(_read_json(resolved)) != _canonical(admission):
         raise BenchmarkError("technical admission changed after validation")
-    nonce_sha256 = admission.get("root_approval_nonce_sha256")
+    nonce_sha256 = admission.get("review_approval_nonce_sha256")
     if not _is_sha256(nonce_sha256):
-        raise BenchmarkError("technical admission root approval binding is invalid")
-    grant_value = admission.get("root_benchmark_grant_path")
+        raise BenchmarkError("technical admission review approval binding is invalid")
+    grant_value = admission.get("review_benchmark_grant_path")
     if not isinstance(grant_value, str):
-        raise BenchmarkError("root benchmark grant path is missing")
+        raise BenchmarkError("review benchmark grant path is missing")
     grant_path = Path(grant_value)
     expected_name = f".cre-capacity-benchmark-grant-{nonce_sha256}.json"
     if (
@@ -300,15 +323,13 @@ def _consume_admission(
         or grant_path.name != expected_name
         or grant_path.parent == grant_path
     ):
-        raise BenchmarkError("root benchmark grant path is invalid")
+        raise BenchmarkError("review benchmark grant path is invalid")
     try:
         completed = subprocess.run(
             [
-                "/usr/bin/sudo",
-                "-n",
                 "/usr/bin/python3",
                 "-c",
-                ROOT_BENCHMARK_GRANT_CONSUMER,
+                REVIEW_BENCHMARK_GRANT_CONSUMER,
                 str(grant_path),
             ],
             capture_output=True,
@@ -316,22 +337,20 @@ def _consume_admission(
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise BenchmarkError("root benchmark grant consumer is unavailable") from exc
+        raise BenchmarkError("review benchmark grant consumer is unavailable") from exc
     if completed.returncode != 0:
-        raise BenchmarkError(
-            "root benchmark grant consumption requires current sudo authorization"
-        )
+        raise BenchmarkError("review benchmark grant consumption failed")
     raw = completed.stdout
     if (
         not isinstance(raw, bytes)
         or not raw
-        or len(raw) > ROOT_BENCHMARK_GRANT_MAX_BYTES
+        or len(raw) > REVIEW_BENCHMARK_GRANT_MAX_BYTES
     ):
-        raise BenchmarkError("root benchmark grant response is invalid")
+        raise BenchmarkError("review benchmark grant response is invalid")
     try:
         grant = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise BenchmarkError("root benchmark grant response is invalid") from exc
+        raise BenchmarkError("review benchmark grant response is invalid") from exc
     expected_grant = {
         "schema_version": SCHEMA_VERSION,
         "kind": capacity_runtime.BENCHMARK_GRANT_KIND,
@@ -339,14 +358,14 @@ def _consume_admission(
         "config_sha256": admission.get("config_sha256"),
         "transition_receipt_sha256": admission.get("transition_receipt_sha256"),
         "source_git_sha": admission.get("source_git_sha"),
-        "root_approval_nonce_sha256": nonce_sha256,
-        "root_approval_created_at": admission.get("root_approval_created_at"),
+        "review_approval_nonce_sha256": nonce_sha256,
+        "review_approval_created_at": admission.get("review_approval_created_at"),
         "expires_after_seconds": admission.get("expires_after_seconds"),
         "approved": True,
     }
     if not _same_typed_value(grant, expected_grant):
-        raise BenchmarkError("root benchmark grant does not bind this admission")
-    _validate_root_grant_freshness(grant)
+        raise BenchmarkError("review benchmark grant does not bind this admission")
+    _validate_review_grant_freshness(grant)
     admission_sha256 = _sha256(_canonical(admission))
     grant_sha256 = _sha256(_canonical(grant))
     if canonical_lock_path is None:
@@ -363,10 +382,16 @@ def _consume_admission(
         raise BenchmarkError("canonical admission consumption path is invalid")
     consumption_root = lock_path.parent.parent / ".capacity-admission-consumption"
     consumption_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        consumption_stat = consumption_root.lstat()
+    except OSError as exc:
+        raise BenchmarkError(
+            "canonical admission consumption directory is unsafe"
+        ) from exc
     if (
-        consumption_root.is_symlink()
-        or not consumption_root.is_dir()
-        or stat.S_IMODE(consumption_root.stat().st_mode) & 0o077
+        not stat.S_ISDIR(consumption_stat.st_mode)
+        or consumption_stat.st_uid != operator_uid
+        or stat.S_IMODE(consumption_stat.st_mode) != 0o700
     ):
         raise BenchmarkError("canonical admission consumption directory is unsafe")
     marker = consumption_root / f"{nonce_sha256}.json"
@@ -376,9 +401,9 @@ def _consume_admission(
                 "schema_version": SCHEMA_VERSION,
                 "kind": "cre_capacity_admission_consumption",
                 "admission_sha256": admission_sha256,
-                "root_benchmark_grant_sha256": grant_sha256,
-                "root_approval_nonce_sha256": nonce_sha256,
-                "root_approval_created_at": grant["root_approval_created_at"],
+                "review_benchmark_grant_sha256": grant_sha256,
+                "review_approval_nonce_sha256": nonce_sha256,
+                "review_approval_created_at": grant["review_approval_created_at"],
                 "expires_after_seconds": grant["expires_after_seconds"],
                 "consumed_at": _now(),
                 "pid": os.getpid(),
@@ -399,7 +424,16 @@ def _consume_admission(
         raise BenchmarkError(
             "technical admission consumption could not be recorded"
         ) from exc
+    marker_created = True
     try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_uid != operator_uid
+            or stat.S_IMODE(opened.st_mode) != 0o600
+        ):
+            raise BenchmarkError("technical admission consumption marker is unsafe")
         remaining = memoryview(payload)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -407,6 +441,13 @@ def _consume_admission(
                 raise BenchmarkError("technical admission consumption write was short")
             remaining = remaining[written:]
         os.fsync(descriptor)
+    except BaseException:
+        if marker_created:
+            try:
+                marker.unlink()
+            except FileNotFoundError:
+                pass
+        raise
     finally:
         os.close(descriptor)
     return marker
@@ -1121,21 +1162,21 @@ def validate_admission(
         raise BenchmarkError(
             "technical admission transition receipt binding is invalid"
         )
-    if not _is_sha256(value.get("root_approval_nonce_sha256")):
-        raise BenchmarkError("technical admission root approval binding is invalid")
-    grant_path = value.get("root_benchmark_grant_path")
+    if not _is_sha256(value.get("review_approval_nonce_sha256")):
+        raise BenchmarkError("technical admission review approval binding is invalid")
+    grant_path = value.get("review_benchmark_grant_path")
     expected_grant_name = (
-        f".cre-capacity-benchmark-grant-{value['root_approval_nonce_sha256']}.json"
+        f".cre-capacity-benchmark-grant-{value['review_approval_nonce_sha256']}.json"
     )
     if (
         not isinstance(grant_path, str)
         or not Path(grant_path).is_absolute()
         or Path(grant_path).name != expected_grant_name
     ):
-        raise BenchmarkError("technical admission root benchmark grant is invalid")
+        raise BenchmarkError("technical admission review benchmark grant is invalid")
     if value.get("expires_after_seconds") != capacity_runtime.RECEIPT_MAX_AGE_SECONDS:
         raise BenchmarkError("technical admission expiry contract is invalid")
-    _validate_root_grant_freshness(value, now=now)
+    _validate_review_grant_freshness(value, now=now)
     try:
         created = datetime.fromisoformat(
             str(value.get("created_at")).replace("Z", "+00:00")
@@ -1971,7 +2012,7 @@ def _run_worker(
     api_url: str,
     timeout_seconds: int,
     expected_details: int,
-    root_grant: Mapping[str, Any] | None = None,
+    review_grant: Mapping[str, Any] | None = None,
 ) -> tuple[int, list[dict[str, Any]], str | None]:
     replicate_dir.mkdir(mode=0o700)
     worker_path = replicate_dir / "worker.ts"
@@ -2029,8 +2070,8 @@ def _run_worker(
     process: subprocess.Popen[bytes] | None = None
     pending_exception: BaseException | None = None
     try:
-        if root_grant is not None:
-            _validate_root_grant_freshness(root_grant)
+        if review_grant is not None:
+            _validate_review_grant_freshness(review_grant)
         process = subprocess.Popen(
             ["/usr/bin/nice", "-n", "15", str(tsx), str(worker_path)],
             cwd=repo_root / "scripts/firecrawl-ops/cre_collector",
@@ -2920,9 +2961,9 @@ def _comparison_evidence(
         "worker_source_sha256",
         "config_sha256",
         "admission_sha256",
-        "root_approval_nonce_sha256",
+        "review_approval_nonce_sha256",
         "admission_consumption_sha256",
-        "root_benchmark_grant_sha256",
+        "review_benchmark_grant_sha256",
     )
     if any(
         not _is_sha256(value.get(key)) for key in required_sha256
@@ -3143,7 +3184,7 @@ def _quarantine_shared_lock(
     *,
     artifact_result_path: Path,
     admission_sha256: str,
-    root_approval_nonce_sha256: str,
+    review_approval_nonce_sha256: str,
 ) -> dict[str, Any]:
     """Make an unknown-settlement lock non-reclaimable until operator recovery."""
     lock_path = lock.path
@@ -3157,7 +3198,7 @@ def _quarantine_shared_lock(
         "reason": "bounded_idle_settlement_not_proven",
         "quarantined_at": _now(),
         "admission_sha256": admission_sha256,
-        "root_approval_nonce_sha256": root_approval_nonce_sha256,
+        "review_approval_nonce_sha256": review_approval_nonce_sha256,
         "result_path": str(artifact_result_path),
         "lock_path": str(lock_path),
         "recovery": {
@@ -3214,7 +3255,7 @@ def run_benchmark(
                 admission_path, admission, canonical_lock_path=lock_path
             )
             authorized_grant_timing = {
-                "root_approval_created_at": admission["root_approval_created_at"],
+                "review_approval_created_at": admission["review_approval_created_at"],
                 "expires_after_seconds": admission["expires_after_seconds"],
             }
             audit = _read_json(marker)
@@ -3246,9 +3287,11 @@ def run_benchmark(
                 "sample_canonical_sha256": sample_canonical_sha256,
                 "sample_provenance": sample_provenance,
                 "admission_sha256": _sha256(_canonical(admission)),
-                "root_approval_nonce_sha256": admission["root_approval_nonce_sha256"],
+                "review_approval_nonce_sha256": admission[
+                    "review_approval_nonce_sha256"
+                ],
                 "admission_consumption_sha256": _file_sha256(marker),
-                "root_benchmark_grant_sha256": audit["root_benchmark_grant_sha256"],
+                "review_benchmark_grant_sha256": audit["review_benchmark_grant_sha256"],
                 "live_admission": live_admission,
                 "effective_runtime": live_admission["effective_runtime"],
                 "shared_lock": {"canonical": True, "path": str(lock_path)},
@@ -3259,7 +3302,7 @@ def run_benchmark(
                     "canonical_cache_writes": 0,
                     "raw_bodies": "retained_in_private_replicate_cache",
                     "admission": "single_use",
-                    "root_grant": "sudo_n_atomic_rename_read_delete",
+                    "review_grant": "same_user_atomic_rename_read_delete",
                     "provider_retry_policy": {
                         "jll_graphql_attempts": 1,
                         "jll_detail_fallback": "disabled",
@@ -3291,7 +3334,7 @@ def run_benchmark(
                         resources_before = _resource_snapshot()
                         started = time.monotonic()
                         if not interlock_armed:
-                            _validate_root_grant_freshness(authorized_grant_timing)
+                            _validate_review_grant_freshness(authorized_grant_timing)
                             shared_lock.arm_benchmark(
                                 {
                                     "schema_version": SCHEMA_VERSION,
@@ -3300,8 +3343,8 @@ def run_benchmark(
                                     "armed_at": _now(),
                                     "pid": os.getpid(),
                                     "admission_sha256": result["admission_sha256"],
-                                    "root_approval_nonce_sha256": result[
-                                        "root_approval_nonce_sha256"
+                                    "review_approval_nonce_sha256": result[
+                                        "review_approval_nonce_sha256"
                                     ],
                                     "result_path": str(artifact_root / "result.json"),
                                 }
@@ -3317,7 +3360,7 @@ def run_benchmark(
                                 api_url=endpoints["api_url"],
                                 timeout_seconds=timeout_seconds,
                                 expected_details=details,
-                                root_grant=authorized_grant_timing
+                                review_grant=authorized_grant_timing
                                 if number == 1
                                 else None,
                             )
@@ -3461,8 +3504,8 @@ def run_benchmark(
                             shared_lock,
                             artifact_result_path=artifact_root / "result.json",
                             admission_sha256=result["admission_sha256"],
-                            root_approval_nonce_sha256=result[
-                                "root_approval_nonce_sha256"
+                            review_approval_nonce_sha256=result[
+                                "review_approval_nonce_sha256"
                             ],
                         )
                     except BenchmarkError as quarantine_exc:

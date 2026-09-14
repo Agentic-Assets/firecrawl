@@ -11,10 +11,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import cre_capacity_experiment as experiment
 import cre_capacity_runtime as runtime
+import pytest
 
 
 def profile() -> tuple[dict[str, object], str]:
@@ -150,7 +149,7 @@ def write_approval(path: Path, receipt: dict[str, object], digest: str) -> Path:
         "config_sha256": digest,
         "transition_receipt_sha256": receipt["receipt_sha256"],
         "source_git_sha": receipt["baseline"]["repo"]["git_sha"],  # type: ignore[index]
-        "approved_by": "root-review",
+        "approved_by": "coordinating-review",
         "approved": True,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "expires_after_seconds": runtime.RECEIPT_MAX_AGE_SECONDS,
@@ -193,18 +192,18 @@ def mock_transition_authority(
             path.unlink()
         except OSError as exc:
             raise runtime.RuntimeAdmissionError(
-                "root approval could not be atomically consumed"
+                "review approval could not be atomically consumed"
             ) from exc
         return raw
 
-    monkeypatch.setattr(runtime, "_consume_root_approval_bytes", consume_approval)
-    monkeypatch.setattr(runtime, "_recover_root_consumption", lambda *a, **kw: None)
+    monkeypatch.setattr(runtime, "_consume_review_approval_bytes", consume_approval)
+    monkeypatch.setattr(runtime, "_recover_review_consumption", lambda *a, **kw: None)
 
     def destroy_grant(path: Path) -> None:
         observed.append("grant-destroy")
         path.unlink()
 
-    monkeypatch.setattr(runtime, "_destroy_root_benchmark_grant", destroy_grant)
+    monkeypatch.setattr(runtime, "_destroy_review_benchmark_grant", destroy_grant)
 
 
 def mixed_capture(browser_state: str, api_state: str) -> runtime.RuntimeCapture:
@@ -592,7 +591,9 @@ def test_apply_executes_and_writes_bound_admission(
         original_write(path, value, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(runtime, "write_private", write_with_event)
-    approval_path = write_approval(tmp_path / "approval" / "root.json", receipt, digest)
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
     original_approval = json.loads(approval_path.read_text())
     result = runtime.transition(
         receipt_path,
@@ -608,9 +609,9 @@ def test_apply_executes_and_writes_bound_admission(
     assert calls == [("browser", "candidate"), ("api", "candidate")]
     assert admission["kind"] == runtime.ADMISSION_KIND
     assert admission["transition_receipt_sha256"] == receipt["receipt_sha256"]
-    assert admission["root_approval_nonce_sha256"] == runtime._hash("e" * 64)
-    assert admission["root_approval_created_at"] == original_approval["created_at"]
-    grant_path = Path(admission["root_benchmark_grant_path"])
+    assert admission["review_approval_nonce_sha256"] == runtime._hash("e" * 64)
+    assert admission["review_approval_created_at"] == original_approval["created_at"]
+    grant_path = Path(admission["review_benchmark_grant_path"])
     assert grant_path.is_absolute()
     assert json.loads(grant_path.read_text()) == {
         "schema_version": 1,
@@ -619,8 +620,8 @@ def test_apply_executes_and_writes_bound_admission(
         "config_sha256": digest,
         "transition_receipt_sha256": receipt["receipt_sha256"],
         "source_git_sha": receipt["baseline"]["repo"]["git_sha"],  # type: ignore[index]
-        "root_approval_nonce_sha256": runtime._hash("e" * 64),
-        "root_approval_created_at": original_approval["created_at"],
+        "review_approval_nonce_sha256": runtime._hash("e" * 64),
+        "review_approval_created_at": original_approval["created_at"],
         "expires_after_seconds": 600,
         "approved": True,
     }
@@ -665,7 +666,7 @@ def test_candidate_execute_requires_admission_path_before_mutation(
         )
 
 
-def test_candidate_execute_requires_bound_root_approval_before_mutation(
+def test_candidate_execute_requires_bound_review_approval_before_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     selected, digest = profile()
@@ -681,7 +682,9 @@ def test_candidate_execute_requires_bound_root_approval_before_mutation(
         "_compose_recreate",
         lambda *args: pytest.fail("mutation must not start"),
     )
-    with pytest.raises(runtime.RuntimeAdmissionError, match="root-review approval"):
+    with pytest.raises(
+        runtime.RuntimeAdmissionError, match="coordinating-review approval"
+    ):
         runtime.transition(
             receipt_path,
             "bold-jll-128",
@@ -748,7 +751,7 @@ def test_failed_candidate_verification_rolls_back(
                 / "admission.json"
             ),
             approval_path=write_approval(
-                tmp_path / "approval" / "root.json", receipt, digest
+                tmp_path / "approval" / "review.json", receipt, digest
             ),
         )
     assert calls == [
@@ -804,14 +807,20 @@ def test_rollback_accepts_stale_receipt_and_restores_baseline(
     assert calls == [("browser", "baseline"), ("api", "baseline")]
 
 
-def test_root_approval_requires_root_execution_and_is_one_use(
+def test_review_approval_requires_operator_ownership_and_is_one_use(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     selected, digest = profile()
     receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
-    approval_path = write_approval(tmp_path / "approval" / "root.json", receipt, digest)
-    with pytest.raises(runtime.RuntimeAdmissionError, match="root-owned"):
-        runtime._validate_root_authority(approval_path)
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
+    runtime._validate_review_authority(approval_path)
+    operator_uid = os.geteuid()
+    monkeypatch.setattr(runtime.os, "geteuid", lambda: operator_uid + 1)
+    with pytest.raises(runtime.RuntimeAdmissionError, match="non-root unswitched"):
+        runtime._validate_review_authority(approval_path)
+    monkeypatch.setattr(runtime.os, "geteuid", lambda: operator_uid)
     assert approval_path.exists()
 
     def consume_approval(path: Path, recovery_path: Path) -> bytes:
@@ -820,28 +829,73 @@ def test_root_approval_requires_root_execution_and_is_one_use(
             path.unlink()
         except OSError as exc:
             raise runtime.RuntimeAdmissionError(
-                "root approval could not be atomically consumed"
+                "review approval could not be atomically consumed"
             ) from exc
         return raw
 
-    monkeypatch.setattr(runtime, "_consume_root_approval_bytes", consume_approval)
-    monkeypatch.setattr(runtime, "_recover_root_consumption", lambda *a, **kw: None)
-    approval, grant_path = runtime.consume_root_approval(
+    monkeypatch.setattr(runtime, "_consume_review_approval_bytes", consume_approval)
+    monkeypatch.setattr(runtime, "_recover_review_consumption", lambda *a, **kw: None)
+    approval, grant_path = runtime.consume_review_approval(
         approval_path, receipt, "bold-jll-128", digest
     )
     assert approval["nonce"] == "e" * 64
     assert grant_path == runtime._benchmark_grant_path(approval_path.parent, approval)
     assert not approval_path.exists()
     with pytest.raises(runtime.RuntimeAdmissionError, match="atomically consumed"):
-        runtime.consume_root_approval(approval_path, receipt, "bold-jll-128", digest)
+        runtime.consume_review_approval(approval_path, receipt, "bold-jll-128", digest)
 
 
-def test_root_benchmark_grant_is_exact_private_and_exclusive(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("uid", "euid"),
+    [
+        (0, 0),
+        (501, 0),
+        (501, 502),
+    ],
+)
+def test_review_approval_rejects_root_or_switched_account(
+    uid: int, euid: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runtime.os, "getuid", lambda: uid)
+    monkeypatch.setattr(runtime.os, "geteuid", lambda: euid)
+
+    with pytest.raises(runtime.RuntimeAdmissionError, match="non-root unswitched"):
+        runtime._operator_uid()
+
+
+def test_review_approval_consumer_never_invokes_sudo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     selected, digest = profile()
     receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
-    approval_path = write_approval(tmp_path / "approval" / "root.json", receipt, digest)
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
+    recovery_path = approval_path.parent / (
+        ".cre-capacity-consumption-" + "d" * 64 + ".json"
+    )
+    raw = approval_path.read_bytes()
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **_kwargs: object) -> object:
+        calls.append(argv)
+        return runtime.subprocess.CompletedProcess(argv, 0, raw, b"")
+
+    monkeypatch.setattr(runtime.subprocess, "run", run)
+
+    assert runtime._consume_review_approval_bytes(approval_path, recovery_path) == raw
+    assert calls[0][:2] == ["/usr/bin/python3", "-c"]
+    assert "/usr/bin/sudo" not in calls[0]
+
+
+def test_review_benchmark_grant_is_exact_private_and_exclusive(tmp_path: Path) -> None:
+    selected, digest = profile()
+    receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
     approval = json.loads(approval_path.read_text())
-    grant_path = runtime._write_root_benchmark_grant(approval_path.parent, approval)
+    grant_path = runtime._write_review_benchmark_grant(approval_path.parent, approval)
     grant = json.loads(grant_path.read_text())
     assert set(grant) == {
         "schema_version",
@@ -850,42 +904,44 @@ def test_root_benchmark_grant_is_exact_private_and_exclusive(tmp_path: Path) -> 
         "config_sha256",
         "transition_receipt_sha256",
         "source_git_sha",
-        "root_approval_nonce_sha256",
-        "root_approval_created_at",
+        "review_approval_nonce_sha256",
+        "review_approval_created_at",
         "expires_after_seconds",
         "approved",
     }
-    assert grant["root_approval_nonce_sha256"] == runtime._hash("e" * 64)
-    assert grant["root_approval_created_at"] == approval["created_at"]
+    assert grant["review_approval_nonce_sha256"] == runtime._hash("e" * 64)
+    assert grant["review_approval_created_at"] == approval["created_at"]
     assert grant["expires_after_seconds"] == 600
     assert "nonce" not in grant
     assert stat.S_IMODE(grant_path.stat().st_mode) == 0o600
     with pytest.raises(runtime.RuntimeAdmissionError, match="exclusively"):
-        runtime._write_root_benchmark_grant(approval_path.parent, approval)
+        runtime._write_review_benchmark_grant(approval_path.parent, approval)
     assert json.loads(grant_path.read_text()) == grant
 
 
-def test_invalid_consumed_approval_destroys_its_root_grant(
+def test_invalid_consumed_approval_destroys_its_review_grant(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     selected, digest = profile()
     receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
-    approval_path = write_approval(tmp_path / "approval" / "root.json", receipt, digest)
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
     approval = json.loads(approval_path.read_text())
     approval["profile"] = "wrong-profile"
     raw = json.dumps(approval).encode()
     destroyed: list[Path] = []
     monkeypatch.setattr(
-        runtime, "_consume_root_approval_bytes", lambda path, recovery: raw
+        runtime, "_consume_review_approval_bytes", lambda path, recovery: raw
     )
-    monkeypatch.setattr(runtime, "_recover_root_consumption", lambda *a, **kw: None)
+    monkeypatch.setattr(runtime, "_recover_review_consumption", lambda *a, **kw: None)
     monkeypatch.setattr(
         runtime,
-        "_destroy_root_benchmark_grant",
+        "_destroy_review_benchmark_grant",
         lambda path: destroyed.append(path),
     )
     with pytest.raises(runtime.RuntimeAdmissionError, match="does not bind"):
-        runtime.consume_root_approval(approval_path, receipt, "bold-jll-128", digest)
+        runtime.consume_review_approval(approval_path, receipt, "bold-jll-128", digest)
     assert destroyed == [runtime._benchmark_grant_path(approval_path.parent, approval)]
 
 
@@ -1139,7 +1195,9 @@ def test_keyboard_interrupt_after_mutation_request_compensates_before_reraise(
     restored = capture()
     receipt = runtime._receipt_payload("bold-jll-128", selected, digest, baseline)
     receipt_path = tmp_path / "receipt.json"
-    approval_path = write_approval(tmp_path / "approval" / "root.json", receipt, digest)
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
     admission_path = (
         tmp_path / "tasks" / "tmp" / "cre-capacity-transition-test" / "out.json"
     )
@@ -1195,7 +1253,9 @@ def test_candidate_overlay_cleanup_error_still_compensates_both_components(
     restored = capture()
     receipt = runtime._receipt_payload("bold-jll-128", selected, digest, baseline)
     receipt_path = tmp_path / "receipt.json"
-    approval_path = write_approval(tmp_path / "approval" / "root.json", receipt, digest)
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
     runtime.write_private(receipt_path, receipt)
     events: list[str] = []
     mock_transition_authority(monkeypatch, tmp_path, events)
@@ -1271,35 +1331,32 @@ def test_grant_rejects_invalid_original_expiry(
 ) -> None:
     selected, digest = profile()
     receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
-    approval_path = write_approval(tmp_path / "approval" / "root.json", receipt, digest)
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
     approval = json.loads(approval_path.read_text())
     approval[key] = value
     with pytest.raises(runtime.RuntimeAdmissionError):
-        runtime._write_root_benchmark_grant(approval_path.parent, approval)
+        runtime._write_review_benchmark_grant(approval_path.parent, approval)
     assert not list(approval_path.parent.glob(".cre-capacity-benchmark-grant-*"))
 
 
-def run_root_helper_offline(
+def run_review_helper_offline(
     monkeypatch: pytest.MonkeyPatch, source: str, *args: Path | str
 ) -> bytes:
-    """Exercise helper code on temporary files with ownership checks simulated."""
+    """Exercise same-user helper code on temporary files."""
     original_lstat = os.lstat
     original_fstat = os.fstat
 
-    def owned(value: os.stat_result) -> os.stat_result:
-        fields = list(value)
-        fields[4] = 0
-        return os.stat_result(fields)
-
     output = io.BytesIO()
     with monkeypatch.context() as isolated:
-        isolated.setattr(os, "lstat", lambda *a, **kw: owned(original_lstat(*a, **kw)))
-        isolated.setattr(os, "fstat", lambda fd: owned(original_fstat(fd)))
+        isolated.setattr(os, "lstat", original_lstat)
+        isolated.setattr(os, "fstat", original_fstat)
         isolated.setattr(sys, "argv", ["helper", *(str(arg) for arg in args)])
         isolated.setattr(sys, "stdout", SimpleNamespace(buffer=output))
         isolated.setattr(runtime.signal, "signal", lambda *a: None)
         try:
-            exec(compile(source, "<offline-root-helper>", "exec"), {})  # noqa: S102 - checked-in helper tested without sudo
+            exec(compile(source, "<offline-review-helper>", "exec"), {})  # noqa: S102 - checked-in helper tested offline
         except SystemExit as exc:
             if exc.code != 0:
                 raise
@@ -1307,12 +1364,14 @@ def run_root_helper_offline(
 
 
 @pytest.mark.parametrize("failure", ["signal", "consumed-delete"])
-def test_root_helper_destroys_grant_on_failure_after_creation(
+def test_review_helper_destroys_grant_on_failure_after_creation(
     failure: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     selected, digest = profile()
     receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
-    approval_path = write_approval(tmp_path / "approval" / "root.json", receipt, digest)
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
     approval = json.loads(approval_path.read_text())
     grant_path = runtime._benchmark_grant_path(approval_path.parent, approval)
     recovery = approval_path.parent / (
@@ -1339,8 +1398,8 @@ def test_root_helper_destroys_grant_on_failure_after_creation(
         monkeypatch.setattr(os, "unlink", failed_consumed_unlink)
         expected = PermissionError
     with pytest.raises(expected):
-        run_root_helper_offline(
-            monkeypatch, runtime.ROOT_APPROVAL_CONSUMER, approval_path, recovery
+        run_review_helper_offline(
+            monkeypatch, runtime.REVIEW_APPROVAL_CONSUMER, approval_path, recovery
         )
     assert not grant_path.exists()
 
@@ -1351,33 +1410,35 @@ def test_consumer_recovers_grant_when_helper_response_is_lost(
 ) -> None:
     selected, digest = profile()
     receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
-    approval_path = write_approval(tmp_path / "approval" / "root.json", receipt, digest)
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
     approval = json.loads(approval_path.read_text())
     grant_path = runtime._benchmark_grant_path(approval_path.parent, approval)
 
     def interrupted_consumer(path: Path, recovery_path: Path) -> bytes:
-        run_root_helper_offline(
-            monkeypatch, runtime.ROOT_APPROVAL_CONSUMER, path, recovery_path
+        run_review_helper_offline(
+            monkeypatch, runtime.REVIEW_APPROVAL_CONSUMER, path, recovery_path
         )
         assert grant_path.exists()
         grant = json.loads(grant_path.read_text())
-        assert grant["root_approval_created_at"] == approval["created_at"]
+        assert grant["review_approval_created_at"] == approval["created_at"]
         assert grant["expires_after_seconds"] == 600
         raise failure("helper response unavailable")
 
-    monkeypatch.setattr(runtime, "_consume_root_approval_bytes", interrupted_consumer)
+    monkeypatch.setattr(runtime, "_consume_review_approval_bytes", interrupted_consumer)
     monkeypatch.setattr(
         runtime,
-        "_recover_root_consumption",
-        lambda path, *, discard: run_root_helper_offline(
+        "_recover_review_consumption",
+        lambda path, *, discard: run_review_helper_offline(
             monkeypatch,
-            runtime.ROOT_CONSUMPTION_RECOVERY,
+            runtime.REVIEW_CONSUMPTION_RECOVERY,
             path,
             "discard" if discard else "release",
         ),
     )
     with pytest.raises(failure, match="helper response unavailable"):
-        runtime.consume_root_approval(approval_path, receipt, "bold-jll-128", digest)
+        runtime.consume_review_approval(approval_path, receipt, "bold-jll-128", digest)
     assert not grant_path.exists()
     assert not list(approval_path.parent.glob(".cre-capacity-consumption-*"))
 
@@ -1390,12 +1451,14 @@ def test_pending_signal_is_delivered_after_grant_ownership_is_assigned(
     receipt = runtime._receipt_payload("bold-jll-128", selected, digest, baseline)
     receipt_path = tmp_path / "receipt.json"
     runtime.write_private(receipt_path, receipt)
-    approval_path = write_approval(tmp_path / "approval" / "root.json", receipt, digest)
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
     events: list[str] = []
     mock_transition_authority(monkeypatch, tmp_path, events)
     monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(runtime, "capture_runtime", lambda runner: baseline)
-    original_consume = runtime.consume_root_approval
+    original_consume = runtime.consume_review_approval
 
     def consume_then_cancel(*args: object) -> tuple[dict[str, object], Path]:
         result = original_consume(*args)
@@ -1403,7 +1466,7 @@ def test_pending_signal_is_delivered_after_grant_ownership_is_assigned(
         handler(runtime.signal.SIGTERM, None)
         return result
 
-    monkeypatch.setattr(runtime, "consume_root_approval", consume_then_cancel)
+    monkeypatch.setattr(runtime, "consume_review_approval", consume_then_cancel)
     monkeypatch.setattr(
         runtime, "_compose_recreate", lambda *a, **kw: pytest.fail("cancelled apply")
     )
@@ -1428,7 +1491,9 @@ def test_failed_full_capture_still_compensates_both_components(
     receipt = runtime._receipt_payload("bold-jll-128", selected, digest, baseline)
     receipt_path = tmp_path / "receipt.json"
     runtime.write_private(receipt_path, receipt)
-    approval_path = write_approval(tmp_path / "approval" / "root.json", receipt, digest)
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
     events: list[str] = []
     mock_transition_authority(monkeypatch, tmp_path, events)
     monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)

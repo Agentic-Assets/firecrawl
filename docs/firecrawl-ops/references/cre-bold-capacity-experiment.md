@@ -66,50 +66,55 @@ python3 cre_capacity_runtime.py apply \
   --receipt ../../../tasks/tmp/cre-capacity-transition-001/receipt.json
 ```
 
-After explicit technical review, the independent root reviewer supplies a
-private, one-use mode `0600` attestation with kind
-`cre_capacity_root_approval`, `approved_by` set to `root-review`, and the exact
-profile, config hash, source SHA, transition receipt hash, timestamp,
+After explicit technical review, an independent coordinating reviewer supplies
+a private, one-use mode `0600` attestation with kind
+`cre_capacity_review_approval`, `approved_by` set to `coordinating-review`, and
+the exact profile, config hash, source SHA, transition receipt hash, timestamp,
 600-second expiry, `approved: true`, and a fresh 64-hex-character `nonce`. The
 reviewer, not this controller and not an operator helper command, must create
-it. The file must be owned by Unix root, have exactly one hard link, and live
-in a Unix-root-owned mode `0700` directory. The controller atomically renames,
-reads, and destroys it through a non-interactive root helper before issuing any
-resource command, so it cannot be replayed.
+it. The file must have exactly one hard link, be owned by the operating account,
+and live in an operating-account-owned mode `0700` directory. The controller
+atomically renames, reads, and destroys it in an isolated same-user helper
+before issuing any resource command, so the file cannot be replayed.
 
-Successful approval consumption also creates a second private, root-owned,
-mode `0600`, one-use benchmark grant in the same root-owned directory. Its
-filename is bound to the approval nonce hash, and its payload is bound to the
-profile, profile-config hash, transition receipt, source SHA, original
-root-approval timestamp, and 600-second expiry. The runtime admission records
-that grant path, nonce hash, and root-bound timestamp, never the nonce. If the
-candidate transition or admission write fails, the controller destroys the
-unused grant before completing automatic compensation. A benchmark cannot
-start from the ordinary admission JSON alone: while holding the canonical
-lock, it must atomically consume and destroy this root grant through `sudo -n`,
-enforce the root-bound expiry again immediately before first worker launch,
-and record a private, non-authoritative local consumption receipt. Editing the
-ordinary admission timestamp cannot extend this authority.
+Successful approval consumption also creates a second private, mode `0600`,
+one-use benchmark grant in the same private directory. Its filename is bound to
+the approval nonce hash, and its payload is bound to the profile, profile-config
+hash, transition receipt, source SHA, original review timestamp, and 600-second
+expiry. The runtime admission records that grant path, nonce hash, and
+review-bound timestamp, never the nonce. If the candidate transition or
+admission write fails, the controller destroys the unused grant before
+completing automatic compensation. A benchmark cannot start from the ordinary
+admission JSON alone: while holding the canonical lock, it must atomically
+consume and destroy this review grant in a same-user helper, enforce the
+review-bound expiry again immediately before first worker launch, and record a
+private, non-authoritative local consumption receipt. Editing the ordinary
+admission timestamp cannot extend this authority.
 
-A practical safe path is for the reviewer to create a dedicated directory
-under `/var/root`, set its mode to `0700`, use a trusted root editor to enter
-the reviewed bindings and timestamp into a new JSON file, and set that file to
-root ownership and mode `0600`. Generate the nonce separately with a
-cryptographically secure tool and paste it into the reviewed document; do not
-derive it from the receipt. Immediately before execution, the operator must
-run `sudo -v` interactively so the controller's later `sudo -n` approval
-consumer can run without a prompt. The attestation contains bindings, not
-secrets. Never paste container environments, credentials, raw receipt
+A practical safe path is for the coordinating reviewer to create a dedicated
+directory under `tasks/tmp/cre-capacity-approvals-<attempt>`, set it to mode
+`0700`, enter the reviewed bindings and timestamp into a new mode `0600` JSON
+file, and transfer its exact path to the execution owner. Generate the nonce
+separately with a cryptographically secure tool and paste it into the reviewed
+document; do not derive it from the receipt. The attestation contains bindings,
+not secrets. Never paste container environments, credentials, raw receipt
 snapshots, or provider data into it. Do not generate the approval from the
 receipt with a script, shell substitution, `jq`, or the controller, and do not
 reuse or edit it after an execution attempt.
+
+This filesystem boundary prevents accidental disclosure, loose permissions,
+and replay. It does not make the approval cryptographically independent from
+another process running as the same operating account. Independence is provided
+by the separate coordinating review record and exact content bindings, not by a
+claim of Unix privilege separation. No `sudo` or Unix-root ownership is needed
+for these Docker resource controls.
 
 The candidate transition is:
 
 ```bash
 python3 cre_capacity_runtime.py apply \
   --receipt ../../../tasks/tmp/cre-capacity-transition-001/receipt.json \
-  --approval /var/root/agentic-assets/cre-capacity-approvals/root-approval.json \
+  --approval ../../../tasks/tmp/cre-capacity-approvals-001/review-approval.json \
   --execute \
   --admission-out ../../../tasks/tmp/cre-capacity-transition-001/admission.json
 ```
@@ -155,14 +160,12 @@ adopt an unrelated, unreviewed environment change.
 The benchmark adapter accepts only source `jll`, exactly 128 predeclared detail
 records, exactly three matched replicates, the local Firecrawl endpoint, a
 fully clean source worktree at the admitted HEAD, and a fresh one-use admission
-record from the controller plus its bound root-owned benchmark grant. Both are
+record from the controller plus its bound private benchmark grant. Both are
 consumed when launch begins, including when the worker is interrupted or a
 provider cooldown is detected; a new artifact directory does not make the old
-approval reusable. The operator must refresh `sudo` authorization immediately
-before launch so the grant consumer can run non-interactively. Its default mode
-only validates and prints a plan and does not consume either record. Preparing
-a representative manifest reads an existing JLL detail cache and makes no
-network or database call:
+approval reusable. Its default mode only validates and prints a plan and does
+not consume either record. Preparing a representative manifest reads an
+existing JLL detail cache and makes no network or database call:
 
 ```bash
 python3 cre_capacity_benchmark.py \
@@ -268,6 +271,6 @@ third state is refused.
 
 Any later retry is a new reviewed attempt: start from verified baseline, run a
 fresh preflight at the intended clean HEAD, obtain a new independent one-use
-root approval and admission, and use a new private benchmark artifact root. A
+review approval and admission, and use a new private benchmark artifact root. A
 partial or interrupted three-replicate result is diagnostic evidence only and
 cannot be spliced into a matched comparison.

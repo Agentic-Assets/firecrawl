@@ -1,5 +1,5 @@
 # Named bold CRE capacity candidate. This file is inert until an operator uses
-# cre_capacity_runtime.py with a fresh transition receipt and root-review approval.
+# cre_capacity_runtime.py with a fresh receipt and coordinating-review approval.
 services:
   playwright-service:
     cpus: 6.0

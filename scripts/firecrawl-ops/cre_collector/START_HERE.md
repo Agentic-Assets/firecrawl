@@ -192,7 +192,7 @@ Full evidence and limitations are in the linked evaluation document below.
 
 The next combined capacity candidate is now prepared as the opt-in
 `bold-jll-128` profile, but it is not active or a production default. Its
-central settings, machine preflight, root-review activation gate, exact
+central settings, machine preflight, coordinating-review activation gate, exact
 128-detail no-write adapter, offline comparison, and rollback procedure are in
 [`cre-bold-capacity-experiment.md`](../../../docs/firecrawl-ops/references/cre-bold-capacity-experiment.md).
 Do not use the older resource helper below to activate that combined profile.

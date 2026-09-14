@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import subprocess
 from pathlib import Path
-
-import pytest
+from types import SimpleNamespace
 
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
+import pytest
 
 
 def _cache_record(index: int) -> dict[str, object]:
@@ -256,16 +258,31 @@ def _admission(tmp_path: Path, *, source_sha: str = "a" * 40) -> dict[str, objec
         "config_sha256": contract["config_sha256"],
         "source_git_sha": source_sha,
         "transition_receipt_sha256": "9" * 64,
-        "root_approval_nonce_sha256": nonce,
-        "root_benchmark_grant_path": str(
+        "review_approval_nonce_sha256": nonce,
+        "review_benchmark_grant_path": str(
             tmp_path / f".cre-capacity-benchmark-grant-{nonce}.json"
         ),
         "created_at": "2026-09-13T01:00:00+00:00",
-        "root_approval_created_at": "2026-09-13T01:00:00+00:00",
+        "review_approval_created_at": "2026-09-13T01:00:00+00:00",
         "expires_after_seconds": 600,
         "writes": "forbidden",
         "checks": {"candidate": True, "preserved": True},
         "effective": _runtime_public(source_sha),
+    }
+
+
+def _review_grant(admission: dict[str, object]) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "kind": benchmark.capacity_runtime.BENCHMARK_GRANT_KIND,
+        "profile": admission["profile"],
+        "config_sha256": admission["config_sha256"],
+        "transition_receipt_sha256": admission["transition_receipt_sha256"],
+        "source_git_sha": admission["source_git_sha"],
+        "review_approval_nonce_sha256": admission["review_approval_nonce_sha256"],
+        "review_approval_created_at": admission["review_approval_created_at"],
+        "expires_after_seconds": 600,
+        "approved": True,
     }
 
 
@@ -277,8 +294,8 @@ def _audit_file(tmp_path: Path, admission: dict[str, object]) -> Path:
             "admission_sha256": hashlib.sha256(
                 benchmark._canonical(admission)
             ).hexdigest(),
-            "root_benchmark_grant_sha256": "8" * 64,
-            "root_approval_created_at": admission["root_approval_created_at"],
+            "review_benchmark_grant_sha256": "8" * 64,
+            "review_approval_created_at": admission["review_approval_created_at"],
             "expires_after_seconds": 600,
         },
     )
@@ -288,7 +305,7 @@ def _audit_file(tmp_path: Path, admission: dict[str, object]) -> Path:
 def test_validate_admission_requires_exact_profile_and_idle_loopback() -> None:
     profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, "bold-jll-128")
     source_sha = "a" * 40
-    receipt = _admission(Path("/private/root-grants"), source_sha=source_sha)
+    receipt = _admission(Path("/private/review-grants"), source_sha=source_sha)
 
     validated = benchmark.validate_admission(
         receipt,
@@ -317,7 +334,7 @@ def test_validate_admission_requires_exact_profile_and_idle_loopback() -> None:
         ("schema_version", True, "kind is invalid"),
         ("config_sha256", "a" * 40, "profile/config"),
         ("transition_receipt_sha256", "a" * 40, "transition receipt"),
-        ("root_approval_nonce_sha256", "a" * 40, "root approval"),
+        ("review_approval_nonce_sha256", "a" * 40, "review approval"),
         ("source_git_sha", "a" * 39, "source SHA"),
     ],
 )
@@ -327,7 +344,7 @@ def test_validate_admission_rejects_nonexact_schema_and_digest_lengths(
     message: str,
 ) -> None:
     profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, "bold-jll-128")
-    receipt = _admission(Path("/private/root-grants"))
+    receipt = _admission(Path("/private/review-grants"))
     receipt[key] = invalid
 
     with pytest.raises(benchmark.BenchmarkError, match=message):
@@ -669,7 +686,7 @@ def test_post_worker_settlement_failure_persists_unknown_result(
     sample_path.write_text(json.dumps(sample), encoding="utf-8")
     admission_path = tmp_path / "admission.json"
     admission = _admission(tmp_path)
-    admission["root_approval_created_at"] = benchmark._now()
+    admission["review_approval_created_at"] = benchmark._now()
     admission["endpoints"] = {
         "api_url": "http://127.0.0.1:3102",
         "browser_health_url": "http://127.0.0.1:3103/health",
@@ -1002,9 +1019,9 @@ def _comparison_result(rate: float, variant: str = "baseline") -> dict[str, obje
         "worker_contract": worker_contract,
         "implementation_manifest": implementation,
         "admission_sha256": "f" * 64,
-        "root_approval_nonce_sha256": "2" * 64,
+        "review_approval_nonce_sha256": "2" * 64,
         "admission_consumption_sha256": "1" * 64,
-        "root_benchmark_grant_sha256": "8" * 64,
+        "review_benchmark_grant_sha256": "8" * 64,
         "freshness_policy": dict(benchmark.EXPECTED_FRESHNESS_POLICY),
         "workload": dict(contract["workload"]),
         "requested": requested,
@@ -1065,7 +1082,7 @@ def test_outer_worker_failure_persists_settlement_then_reraises(
     sample_path = tmp_path / "sample.json"
     sample_path.write_text(json.dumps(sample), encoding="utf-8")
     admission = _admission(tmp_path)
-    admission["root_approval_created_at"] = benchmark._now()
+    admission["review_approval_created_at"] = benchmark._now()
     admission["endpoints"] = {
         "api_url": "http://127.0.0.1:3102",
         "browser_health_url": "http://127.0.0.1:3103/health",
@@ -1305,24 +1322,13 @@ def test_summarize_replicate_fails_closed_on_native_delta_and_remote_timeout(
     assert summary["comparison_state"] == "quality_failed"
 
 
-def test_admission_consumption_requires_root_grant_then_writes_private_audit(
+def test_admission_consumption_requires_review_grant_then_writes_private_audit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     admission_path = tmp_path / "admission.json"
     admission = _admission(tmp_path)
-    admission["root_approval_created_at"] = benchmark._now()
-    grant = {
-        "schema_version": 1,
-        "kind": benchmark.capacity_runtime.BENCHMARK_GRANT_KIND,
-        "profile": admission["profile"],
-        "config_sha256": admission["config_sha256"],
-        "transition_receipt_sha256": admission["transition_receipt_sha256"],
-        "source_git_sha": admission["source_git_sha"],
-        "root_approval_nonce_sha256": admission["root_approval_nonce_sha256"],
-        "root_approval_created_at": admission["root_approval_created_at"],
-        "expires_after_seconds": 600,
-        "approved": True,
-    }
+    admission["review_approval_created_at"] = benchmark._now()
+    grant = _review_grant(admission)
     admission_path.write_text(json.dumps(admission), encoding="utf-8")
     admission_path.chmod(0o600)
     monkeypatch.setattr(
@@ -1342,13 +1348,8 @@ def test_admission_consumption_requires_root_grant_then_writes_private_audit(
 
     marker = benchmark._consume_admission(admission_path, admission)
 
-    assert calls[0][0][:4] == [
-        "/usr/bin/sudo",
-        "-n",
-        "/usr/bin/python3",
-        "-c",
-    ]
-    assert calls[0][0][-1] == admission["root_benchmark_grant_path"]
+    assert calls[0][0][:2] == ["/usr/bin/python3", "-c"]
+    assert calls[0][0][-1] == admission["review_benchmark_grant_path"]
     assert marker.parent == tmp_path / "out" / ".capacity-admission-consumption"
     assert marker.stat().st_mode & 0o077 == 0
     audit = json.loads(marker.read_text())
@@ -1357,7 +1358,7 @@ def test_admission_consumption_requires_root_grant_then_writes_private_audit(
         == hashlib.sha256(benchmark._canonical(admission)).hexdigest()
     )
     assert (
-        audit["root_benchmark_grant_sha256"]
+        audit["review_benchmark_grant_sha256"]
         == hashlib.sha256(benchmark._canonical(grant)).hexdigest()
     )
     copied = tmp_path / "copied-admission.json"
@@ -1368,16 +1369,153 @@ def test_admission_consumption_requires_root_grant_then_writes_private_audit(
         benchmark._consume_admission(copied, altered_copy)
 
 
+def test_admission_consumption_executes_same_user_grant_helper_once(
+    tmp_path: Path,
+) -> None:
+    admission_path = tmp_path / "admission.json"
+    admission = _admission(tmp_path)
+    admission["review_approval_created_at"] = benchmark._now()
+    grant_path = Path(str(admission["review_benchmark_grant_path"]))
+    benchmark._atomic_private_json(grant_path, _review_grant(admission))
+    benchmark._atomic_private_json(admission_path, admission)
+
+    marker = benchmark._consume_admission(
+        admission_path,
+        admission,
+        canonical_lock_path=tmp_path / "out" / "daily" / ".cre.lock",
+    )
+
+    assert marker.exists()
+    assert not grant_path.exists()
+
+
+@pytest.mark.parametrize("unsafe_kind", ["public", "hardlink", "symlink"])
+def test_admission_consumption_rejects_unsafe_grant_file(
+    unsafe_kind: str, tmp_path: Path
+) -> None:
+    admission_path = tmp_path / "admission.json"
+    admission = _admission(tmp_path)
+    admission["review_approval_created_at"] = benchmark._now()
+    grant_path = Path(str(admission["review_benchmark_grant_path"]))
+    benchmark._atomic_private_json(admission_path, admission)
+    if unsafe_kind == "symlink":
+        target = tmp_path / "grant-target.json"
+        benchmark._atomic_private_json(target, _review_grant(admission))
+        grant_path.symlink_to(target)
+    else:
+        benchmark._atomic_private_json(grant_path, _review_grant(admission))
+        if unsafe_kind == "public":
+            grant_path.chmod(0o644)
+        else:
+            os.link(grant_path, tmp_path / "grant-hardlink.json")
+
+    with pytest.raises(benchmark.BenchmarkError, match="grant consumption failed"):
+        benchmark._consume_admission(
+            admission_path,
+            admission,
+            canonical_lock_path=tmp_path / "out" / "daily" / ".cre.lock",
+        )
+
+    assert grant_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("uid", "euid"),
+    [
+        (0, 0),
+        (501, 0),
+        (501, 502),
+    ],
+)
+def test_admission_consumption_rejects_root_or_switched_account(
+    uid: int, euid: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(benchmark.os, "getuid", lambda: uid)
+    monkeypatch.setattr(benchmark.os, "geteuid", lambda: euid)
+
+    with pytest.raises(benchmark.BenchmarkError, match="non-root unswitched"):
+        benchmark._operator_uid()
+
+
+def test_admission_consumption_rejects_public_replay_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admission_path = tmp_path / "admission.json"
+    admission = _admission(tmp_path)
+    admission["review_approval_created_at"] = benchmark._now()
+    grant = _review_grant(admission)
+    admission_path.write_text(json.dumps(admission), encoding="utf-8")
+    admission_path.chmod(0o600)
+    consumption_root = tmp_path / "out" / ".capacity-admission-consumption"
+    consumption_root.mkdir(parents=True, mode=0o700)
+    consumption_root.chmod(0o755)
+    monkeypatch.setattr(
+        benchmark.subprocess,
+        "run",
+        lambda argv, **_kwargs: benchmark.subprocess.CompletedProcess(
+            argv, 0, json.dumps(grant).encode(), b""
+        ),
+    )
+
+    with pytest.raises(benchmark.BenchmarkError, match="directory is unsafe"):
+        benchmark._consume_admission(
+            admission_path,
+            admission,
+            canonical_lock_path=tmp_path / "out" / "daily" / ".cre.lock",
+        )
+
+
+def test_admission_consumption_rejects_unsafe_opened_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admission_path = tmp_path / "admission.json"
+    admission = _admission(tmp_path)
+    admission["review_approval_created_at"] = benchmark._now()
+    grant = _review_grant(admission)
+    admission_path.write_text(json.dumps(admission), encoding="utf-8")
+    admission_path.chmod(0o600)
+    monkeypatch.setattr(
+        benchmark.subprocess,
+        "run",
+        lambda argv, **_kwargs: benchmark.subprocess.CompletedProcess(
+            argv, 0, json.dumps(grant).encode(), b""
+        ),
+    )
+    monkeypatch.setattr(
+        benchmark.os,
+        "fstat",
+        lambda _descriptor: SimpleNamespace(
+            st_mode=stat.S_IFREG | 0o644,
+            st_nlink=1,
+            st_uid=os.geteuid(),
+        ),
+    )
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+
+    with pytest.raises(benchmark.BenchmarkError, match="marker is unsafe"):
+        benchmark._consume_admission(
+            admission_path, admission, canonical_lock_path=lock_path
+        )
+
+    marker = (
+        tmp_path
+        / "out"
+        / ".capacity-admission-consumption"
+        / f"{admission['review_approval_nonce_sha256']}.json"
+    )
+    assert not marker.exists()
+
+
 @pytest.mark.parametrize(
     ("key", "invalid"),
     [
         ("config_sha256", "0" * 64),
         ("schema_version", True),
-        ("root_approval_created_at", "2026-09-14T00:00:00Z"),
+        ("review_approval_created_at", "2026-09-14T00:00:00Z"),
         ("expires_after_seconds", 601),
     ],
 )
-def test_root_grant_binding_mismatch_is_never_admitted(
+def test_review_grant_binding_mismatch_is_never_admitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     key: str,
@@ -1394,8 +1532,8 @@ def test_root_grant_binding_mismatch_is_never_admitted(
         "config_sha256": admission["config_sha256"],
         "transition_receipt_sha256": admission["transition_receipt_sha256"],
         "source_git_sha": admission["source_git_sha"],
-        "root_approval_nonce_sha256": admission["root_approval_nonce_sha256"],
-        "root_approval_created_at": admission["root_approval_created_at"],
+        "review_approval_nonce_sha256": admission["review_approval_nonce_sha256"],
+        "review_approval_created_at": admission["review_approval_created_at"],
         "expires_after_seconds": 600,
         "approved": True,
     }
@@ -1428,19 +1566,23 @@ def test_root_grant_binding_mismatch_is_never_admitted(
         ("2026-09-13T01:00:00Z", 601),
     ],
 )
-def test_root_grant_freshness_rejects_stale_future_and_invalid_fields(created, expiry):
-    with pytest.raises(benchmark.BenchmarkError, match="root benchmark grant"):
-        benchmark._validate_root_grant_freshness(
-            {"root_approval_created_at": created, "expires_after_seconds": expiry},
+def test_review_grant_freshness_rejects_stale_future_and_invalid_fields(
+    created, expiry
+):
+    with pytest.raises(benchmark.BenchmarkError, match="review benchmark grant"):
+        benchmark._validate_review_grant_freshness(
+            {"review_approval_created_at": created, "expires_after_seconds": expiry},
             now=benchmark.datetime(2026, 9, 13, 1, 0, tzinfo=benchmark.UTC),
         )
 
 
-def test_editing_admission_timestamp_cannot_renew_root_grant(tmp_path):
+def test_editing_admission_timestamp_cannot_renew_review_grant(tmp_path):
     profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, "bold-jll-128")
     admission = _admission(tmp_path)
     admission["created_at"] = "2026-09-14T01:00:00Z"
-    with pytest.raises(benchmark.BenchmarkError, match="root benchmark grant is stale"):
+    with pytest.raises(
+        benchmark.BenchmarkError, match="review benchmark grant is stale"
+    ):
         benchmark.validate_admission(
             admission,
             profile,
@@ -1451,7 +1593,7 @@ def test_editing_admission_timestamp_cannot_renew_root_grant(tmp_path):
         )
 
 
-def test_consumption_enforces_authentic_root_grant_age(tmp_path, monkeypatch):
+def test_consumption_enforces_authentic_review_grant_age(tmp_path, monkeypatch):
     admission = _admission(tmp_path)
     admission["created_at"] = benchmark._now()
     path = tmp_path / "admission.json"
@@ -1464,8 +1606,8 @@ def test_consumption_enforces_authentic_root_grant_age(tmp_path, monkeypatch):
             "config_sha256",
             "source_git_sha",
             "transition_receipt_sha256",
-            "root_approval_nonce_sha256",
-            "root_approval_created_at",
+            "review_approval_nonce_sha256",
+            "review_approval_created_at",
             "expires_after_seconds",
         )
     }
@@ -1479,7 +1621,9 @@ def test_consumption_enforces_authentic_root_grant_age(tmp_path, monkeypatch):
             argv, 0, json.dumps(grant).encode(), b""
         ),
     )
-    with pytest.raises(benchmark.BenchmarkError, match="root benchmark grant is stale"):
+    with pytest.raises(
+        benchmark.BenchmarkError, match="review benchmark grant is stale"
+    ):
         benchmark._consume_admission(
             path,
             admission,
@@ -1488,7 +1632,7 @@ def test_consumption_enforces_authentic_root_grant_age(tmp_path, monkeypatch):
     assert not (tmp_path / "out" / ".capacity-admission-consumption").exists()
 
 
-def test_worker_rechecks_root_grant_immediately_before_popen(tmp_path, monkeypatch):
+def test_worker_rechecks_review_grant_immediately_before_popen(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     tsx = repo / "scripts/firecrawl-ops/cre_collector/node_modules/.bin/tsx"
     tsx.parent.mkdir(parents=True)
@@ -1507,8 +1651,8 @@ def test_worker_rechecks_root_grant_immediately_before_popen(tmp_path, monkeypat
             api_url="http://127.0.0.1:3102",
             timeout_seconds=60,
             expected_details=128,
-            root_grant={
-                "root_approval_created_at": "2000-01-01T00:00:00Z",
+            review_grant={
+                "review_approval_created_at": "2000-01-01T00:00:00Z",
                 "expires_after_seconds": 600,
             },
         )
@@ -1524,7 +1668,7 @@ def test_benchmark_interlock_spans_workers_settlement_and_durable_result(
 ):
     profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, "bold-jll-128")
     admission = _admission(tmp_path)
-    admission["root_approval_created_at"] = benchmark._now()
+    admission["review_approval_created_at"] = benchmark._now()
     admission["endpoints"] = {
         "api_url": "http://127.0.0.1:3102",
         "browser_health_url": "http://127.0.0.1:3103/health",
@@ -1575,13 +1719,13 @@ def test_benchmark_interlock_spans_workers_settlement_and_durable_result(
 
     def worker(**kwargs):
         assert active_path.is_file()
-        if kwargs["root_grant"] is not None:
+        if kwargs["review_grant"] is not None:
             assert (
-                kwargs["root_grant"]["root_approval_created_at"]
-                == admission["root_approval_created_at"]
+                kwargs["review_grant"]["review_approval_created_at"]
+                == admission["review_approval_created_at"]
             )
         events.append(
-            "first_worker" if kwargs["root_grant"] is not None else "later_worker"
+            "first_worker" if kwargs["review_grant"] is not None else "later_worker"
         )
         if outcome == "worker_error":
             raise OSError("worker failed unexpectedly")
@@ -1665,7 +1809,7 @@ def test_unknown_settlement_quarantines_canonical_lock_against_reclaim(
         lock,
         artifact_result_path=tmp_path / "result.json",
         admission_sha256="a" * 64,
-        root_approval_nonce_sha256="b" * 64,
+        review_approval_nonce_sha256="b" * 64,
     )
     lock.release()
 
