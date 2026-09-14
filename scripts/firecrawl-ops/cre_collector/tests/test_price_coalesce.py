@@ -65,11 +65,26 @@ def test_jll_withheld_visibility_clears_previously_visible_price_columns():
         "lease_rate_min",
         "lease_rate_max",
         "lease_rate_type",
+        "cap_rate",
+        "noi",
+        "gross_revenue",
+        "price_per_unit",
+        "grm",
+        "price_per_acre",
+        "revpar",
     ):
         assert f"{column}" in sql
     assert (
         sql.count("WHEN (\n      EXCLUDED.raw_data->>'jllPriceWithheld' = 'true'") >= 5
     )
+
+
+def test_jll_withheld_visibility_clears_phase_two_derived_columns_on_prior_update():
+    sql = _sql()
+    compact = " ".join(sql.split())
+    guard = "s.raw_data->>'jllPriceWithheld' = 'true'"
+    for column in ("price_per_unit", "grm", "price_per_acre", "revpar"):
+        assert f"{column} = CASE WHEN ( {guard} ) THEN NULL" in compact
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +129,7 @@ def test_lease_rate_max_unconditional_gone():
 # ---------------------------------------------------------------------------
 
 
-def test_cap_rate_still_coalesce():
-    assert "cap_rate          = COALESCE(EXCLUDED.cap_rate, t.cap_rate)" in _sql(), (
-        "cap_rate COALESCE-keep was inadvertently removed."
+def test_cap_rate_coalesce_is_retained_after_the_withheld_clear_gate():
+    assert "ELSE COALESCE(EXCLUDED.cap_rate, t.cap_rate) END" in _sql(), (
+        "The clear gate must preserve ordinary sparse-update COALESCE behavior."
     )

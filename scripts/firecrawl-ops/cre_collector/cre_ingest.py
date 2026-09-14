@@ -560,7 +560,11 @@ def http_url_or_none(v):
     if not isinstance(v, str):
         return None
     s = v.strip()
-    if not re.match(r"^https?://", s, re.I):
+    try:
+        parsed = urlsplit(s)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
         return None
     return s
 
@@ -1713,6 +1717,22 @@ _JLL_PRICE_SOURCE_SHAPES = {
     "unsupported",
 }
 _JLL_WITHHELD_MARKER = "jllPriceWithheld"
+_JLL_PRICE_DERIVED_STAGING_COLUMNS = frozenset(
+    {
+        "sale_price_usd",
+        "sale_price_per_sf",
+        "lease_rate_min",
+        "lease_rate_max",
+        "lease_rate_type",
+        "cap_rate",
+        "noi",
+        "gross_revenue",
+        "price_per_unit",
+        "grm",
+        "price_per_acre",
+        "revpar",
+    }
+)
 _JLL_SAFE_CONTROL_KEYS = frozenset(
     {"hideprice", "pricewithholdingcontrol", _JLL_WITHHELD_MARKER.casefold()}
 )
@@ -1872,8 +1892,6 @@ _JLL_WITHHELD_TOP_LEVEL = frozenset(
         "id",
         "url",
         "canonicalUrl",
-        "name",
-        "headline",
         "transactionType",
         "assetType",
         "street",
@@ -1883,8 +1901,6 @@ _JLL_WITHHELD_TOP_LEVEL = frozenset(
         "country",
         "latitude",
         "longitude",
-        "description",
-        "markdown",
         "sizeText",
         "buildingSizeSqft",
         "lastUpdated",
@@ -1905,6 +1921,63 @@ _JLL_WITHHELD_SEARCH_RESULT = frozenset(
     }
 )
 
+_JLL_SAFE_FRESHNESS_VALUES = {
+    "detailScope": frozenset({"detail_page"}),
+    "method": frozenset({"jll_detail"}),
+    "cacheDisposition": frozenset({"live", "generation_cache"}),
+}
+
+
+def _safe_jll_tenant_identities(value):
+    """Retain only a non-monetary tenant identity from hidden JLL detail."""
+    if not isinstance(value, list):
+        return []
+    tenants = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = clean_text(item.get("name") or item.get("tenantName"), 256)
+        if (
+            not name
+            or _JLL_MONEY_TOKEN.search(name)
+            or _JLL_LABELLED_PRICE.search(name)
+        ):
+            continue
+        tenants.append({"name": name})
+    return tenants
+
+
+def _safe_jll_freshness_provenance(value):
+    """Project trusted JLL freshness leaves, never arbitrary detail prose."""
+    if not isinstance(value, dict):
+        return None
+    projected = {}
+    for key, allowed in _JLL_SAFE_FRESHNESS_VALUES.items():
+        candidate = value.get(key)
+        if candidate in allowed:
+            projected[key] = candidate
+    return projected or None
+
+
+def _redacted_jll_pricing(pricing):
+    """Convert valid public price provenance to a non-numeric hidden envelope."""
+    if not isinstance(pricing, dict):
+        return None
+    redacted = {
+        "visibility": "withheld",
+        "searchWithholdingControl": pricing.get("searchWithholdingControl"),
+        "detailWithholdingControl": pricing.get("detailWithholdingControl"),
+    }
+    for side in ("sale", "lease"):
+        item = pricing.get(side)
+        if not isinstance(item, dict):
+            return None
+        source_shape = item.get("sourceShape")
+        if source_shape not in _JLL_PRICE_SOURCE_SHAPES:
+            return None
+        redacted[side] = {"sourceShape": source_shape, "normalization": "redacted"}
+    return redacted
+
 
 def _safe_jll_withheld_projection(value, pricing):
     """Keep a small documented envelope, not arbitrary hidden provider detail."""
@@ -1919,6 +1992,22 @@ def _safe_jll_withheld_projection(value, pricing):
             for key, item in search.items()
             if key in _JLL_WITHHELD_SEARCH_RESULT
         }
+        # Raw provider controls can occur in duplicate case variants.  Preserve
+        # one derived, non-sensitive classification rather than an arbitrary
+        # source object whose insertion order could be misleading.
+        projected["jllSearchResult"] = {
+            "priceWithholdingControl": _jll_withholding_control(search)
+        }
+    tenants = _safe_jll_tenant_identities(raw.get("currentTenants"))
+    if tenants:
+        projected["currentTenants"] = tenants
+    else:
+        projected.pop("currentTenants", None)
+    freshness = _safe_jll_freshness_provenance(raw.get("freshnessProvenance"))
+    if freshness:
+        projected["freshnessProvenance"] = freshness
+    else:
+        projected.pop("freshnessProvenance", None)
     projected["jllDetail"] = {"pricing": pricing} if pricing else {}
     return projected
 
@@ -1937,7 +2026,10 @@ def _safe_jll_raw_data(listing):
     if not has_pricing and not must_redact:
         return listing
     raw = (
-        _safe_jll_withheld_projection(listing, safe_pricing)
+        _safe_jll_withheld_projection(
+            listing,
+            _redacted_jll_pricing(safe_pricing) if must_redact else safe_pricing,
+        )
         if must_redact
         else dict(listing)
     )
@@ -1964,6 +2056,27 @@ def _safe_jll_raw_data(listing):
         # only upsert authority to clear a previously public price.
         raw[_JLL_WITHHELD_MARKER] = True
     return raw
+
+
+def _force_jll_raw_payload_withheld(value):
+    """Redact every direct JLL child when a merged row has any hidden pass."""
+    if not isinstance(value, dict):
+        return value
+    if value.get("sourceKey") == "jll":
+        detail = value.get("jllDetail")
+        pricing = detail.get("pricing") if isinstance(detail, dict) else None
+        safe_pricing = _safe_jll_pricing(pricing)
+        redacted = _safe_jll_withheld_projection(
+            value, _redacted_jll_pricing(safe_pricing)
+        )
+        redacted[_JLL_WITHHELD_MARKER] = True
+        return redacted
+    return {
+        key: _force_jll_raw_payload_withheld(item)
+        if key in {"primary", "secondary_pass"}
+        else item
+        for key, item in value.items()
+    }
 
 
 def _jll_withholding_control(value):
@@ -2021,7 +2134,7 @@ def _jll_pricing_is_withheld(listing):
     ):
         return True
     search = listing.get("jllSearchResult")
-    for value in (detail, search):
+    for value in (listing, detail, search):
         if not isinstance(value, dict):
             continue
         if _jll_withholding_control(value) in {"withheld", "unknown"}:
@@ -2320,11 +2433,13 @@ def to_row(listing, brokers_by_idx, scraped_at):
     desc = listing.get("description")
     markdown = listing.get("markdown")
     if jll_pricing_withheld:
-        # The adapter redacts hidden detail prose, but ingestion must retain the
-        # same boundary for legacy/manual artifacts before text reaches either
-        # staging columns or raw_data.
-        desc = _redact_jll_free_text(desc)
-        markdown = _redact_jll_free_text(markdown)
+        # A legacy/manual JLL artifact cannot prove that prose is free of an
+        # asking-price disclosure. Omit it rather than attempting a future
+        # blacklist. Likewise, no present source contract proves NOI or gross
+        # revenue independent from the withheld asking-price context, so both
+        # stay unstaged until such a source-specific proof is introduced.
+        desc = None
+        markdown = None
 
     return {
         "slug": slug,
@@ -2352,9 +2467,19 @@ def to_row(listing, brokers_by_idx, scraped_at):
         ),
         "sale_price_usd": sale_price,
         "sale_price_per_sf": price_per_sf,
-        "cap_rate": norm_cap_rate(listing.get("capRatePct")),
-        "noi": num_or_none(listing.get("noi"), lo=0, hi=1e12),
-        "gross_revenue": num_or_none(listing.get("grossRevenue"), lo=0, hi=1e12),
+        "cap_rate": (
+            None if jll_pricing_withheld else norm_cap_rate(listing.get("capRatePct"))
+        ),
+        "noi": (
+            None
+            if jll_pricing_withheld
+            else num_or_none(listing.get("noi"), lo=0, hi=1e12)
+        ),
+        "gross_revenue": (
+            None
+            if jll_pricing_withheld
+            else num_or_none(listing.get("grossRevenue"), lo=0, hi=1e12)
+        ),
         "occupancy_rate": norm_occupancy_rate(listing.get("occupancyRate")),
         "units": num_or_none(listing.get("units"), lo=0, hi=1e6),
         "floors": num_or_none(listing.get("floors"), lo=0, hi=1e4),
@@ -2367,7 +2492,11 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "term_max_months": num_or_none(listing.get("termMaxMonths"), lo=0, hi=1e4),
         "lease_rate_min": lease_min,
         "lease_rate_max": lease_max,
-        "lease_rate_type": norm_lease_rate_type(listing.get("leaseRateType")),
+        "lease_rate_type": (
+            None
+            if jll_pricing_withheld
+            else norm_lease_rate_type(listing.get("leaseRateType"))
+        ),
         "zoning": clean_text(listing.get("zoning"), 128),
         "market": clean_text(listing.get("market"), 128),
         "submarket": clean_text(listing.get("submarket"), 128),
@@ -2381,11 +2510,27 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "lease_years_remaining": num_or_none(
             listing.get("leaseYearsRemaining"), lo=0, hi=99
         ),
-        "price_per_unit": num_or_none(listing.get("pricePerUnit"), lo=0, hi=1e9),
-        "grm": num_or_none(listing.get("grm"), lo=0, hi=100),
-        "price_per_acre": num_or_none(listing.get("pricePerAcre"), lo=0, hi=1e9),
+        "price_per_unit": (
+            None
+            if jll_pricing_withheld
+            else num_or_none(listing.get("pricePerUnit"), lo=0, hi=1e9)
+        ),
+        "grm": (
+            None
+            if jll_pricing_withheld
+            else num_or_none(listing.get("grm"), lo=0, hi=100)
+        ),
+        "price_per_acre": (
+            None
+            if jll_pricing_withheld
+            else num_or_none(listing.get("pricePerAcre"), lo=0, hi=1e9)
+        ),
         "num_rooms": int_or_none(listing.get("numRooms"), lo=0, hi=1e5),
-        "revpar": num_or_none(listing.get("revpar"), lo=0, hi=1e5),
+        "revpar": (
+            None
+            if jll_pricing_withheld
+            else num_or_none(listing.get("revpar"), lo=0, hi=1e5)
+        ),
         "clear_height_ft": num_or_none(listing.get("clearHeightFt"), lo=0, hi=200),
         "dock_doors": int_or_none(listing.get("dockDoors"), lo=-1, hi=1e4),
         "drive_in_doors": int_or_none(listing.get("driveInDoors"), lo=-1, hi=1e4),
@@ -2640,14 +2785,11 @@ def merge_rows(a, b):
         # row takes INSERT ... SELECT without entering DO UPDATE.  Clear the
         # staged provider price fields before either path so a visible sale pass
         # cannot leak through a withheld/unknown lease pass.
-        for key in (
-            "sale_price_usd",
-            "sale_price_per_sf",
-            "lease_rate_min",
-            "lease_rate_max",
-            "lease_rate_type",
-        ):
+        a["raw_data"] = _force_jll_raw_payload_withheld(a["raw_data"])
+        for key in _JLL_PRICE_DERIVED_STAGING_COLUMNS:
             a[key] = None
+        a["description"] = None
+        a["markdown"] = None
     return a
 
 
@@ -2952,6 +3094,9 @@ def build_sql(
     # is already classified fail-closed before it can reach this upsert.
     jll_price_withheld_row_sql = """(
       EXCLUDED.raw_data->>'jllPriceWithheld' = 'true'
+    )"""
+    jll_price_withheld_stage_sql = """(
+      s.raw_data->>'jllPriceWithheld' = 'true'
     )"""
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
@@ -3576,9 +3721,15 @@ WITH ins AS (
                                  WHEN {colliers_transition_row_sql}
                                  THEN NULL
                                  ELSE COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf) END,
-        cap_rate          = COALESCE(EXCLUDED.cap_rate, t.cap_rate),
-        noi               = COALESCE(EXCLUDED.noi, t.noi),
-        gross_revenue     = COALESCE(EXCLUDED.gross_revenue, t.gross_revenue),
+        cap_rate          = CASE WHEN {jll_price_withheld_row_sql}
+                                 THEN NULL
+                                 ELSE COALESCE(EXCLUDED.cap_rate, t.cap_rate) END,
+        noi               = CASE WHEN {jll_price_withheld_row_sql}
+                                 THEN NULL
+                                 ELSE COALESCE(EXCLUDED.noi, t.noi) END,
+        gross_revenue     = CASE WHEN {jll_price_withheld_row_sql}
+                                 THEN NULL
+                                 ELSE COALESCE(EXCLUDED.gross_revenue, t.gross_revenue) END,
         occupancy_rate    = COALESCE(EXCLUDED.occupancy_rate, t.occupancy_rate),
         lease_rate_min    = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN NULL
@@ -3831,11 +3982,19 @@ DO $$ BEGIN
         tenant_name           = COALESCE(s.tenant_name, t.tenant_name),
         guarantor             = COALESCE(s.guarantor, t.guarantor),
         lease_years_remaining = COALESCE(s.lease_years_remaining, t.lease_years_remaining),
-        price_per_unit        = COALESCE(s.price_per_unit, t.price_per_unit),
-        grm                   = COALESCE(s.grm, t.grm),
-        price_per_acre        = COALESCE(s.price_per_acre, t.price_per_acre),
+        price_per_unit        = CASE WHEN {jll_price_withheld_stage_sql}
+                                     THEN NULL
+                                     ELSE COALESCE(s.price_per_unit, t.price_per_unit) END,
+        grm                   = CASE WHEN {jll_price_withheld_stage_sql}
+                                     THEN NULL
+                                     ELSE COALESCE(s.grm, t.grm) END,
+        price_per_acre        = CASE WHEN {jll_price_withheld_stage_sql}
+                                     THEN NULL
+                                     ELSE COALESCE(s.price_per_acre, t.price_per_acre) END,
         num_rooms             = COALESCE(s.num_rooms, t.num_rooms),
-        revpar                = COALESCE(s.revpar, t.revpar),
+        revpar                = CASE WHEN {jll_price_withheld_stage_sql}
+                                     THEN NULL
+                                     ELSE COALESCE(s.revpar, t.revpar) END,
         clear_height_ft       = COALESCE(s.clear_height_ft, t.clear_height_ft),
         dock_doors            = COALESCE(s.dock_doors, t.dock_doors),
         drive_in_doors        = COALESCE(s.drive_in_doors, t.drive_in_doors),
@@ -3854,9 +4013,9 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-""".replace("{colliers_transition_row_sql}", colliers_transition_row_sql).replace(
-            "{jll_price_withheld_row_sql}", jll_price_withheld_row_sql
-        )
+""".replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
+        .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
+        .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
     )
 
     w(f"""

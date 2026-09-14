@@ -111,7 +111,7 @@ test("jllPublicProfileUrl builds profile URLs from slugs or passes through absol
 
 test("jllStringUrls keeps unique http(s) URLs only", () => {
   assert.deepEqual(
-    jllStringUrls(["https://a.example/b.pdf", "mailto:x@y.com", "https://", "https:///relative.pdf", "https://a.example/b.pdf", "  "]),
+    jllStringUrls(["https://a.example/b.pdf", "mailto:x@y.com", "https://", "https:///relative.pdf", "http://?x", "https://a.example/b.pdf", "  "]),
     ["https://a.example/b.pdf"]
   );
   assert.deepEqual(jllStringUrls(null), []);
@@ -1020,8 +1020,8 @@ test("JLL successful hidden detail redacts normalized prose and case-variant pri
     assert.equal(enriched.jllDetail.SalePrice, undefined);
     assert.equal(enriched.jllDetail.futureEconomics, undefined);
     assert.equal(enriched.jllDetail.pricing.detailWithholdingControl, "withheld");
-    assert.equal(enriched.description, "Sale price: [redacted]. Institutional office.");
-    assert.equal(enriched.markdown, "Confidential asking consideration: [redacted].");
+    assert.equal(enriched.description, undefined);
+    assert.equal(enriched.markdown, undefined);
     assert.deepEqual(enriched.currentTenants, [{ name: "Acme Holdings" }]);
     assert.equal(enriched.jllDetail.highlights, undefined);
     assert.equal(enriched.jllDetail.dealEconomics, undefined);
@@ -1114,14 +1114,14 @@ test("JLL rejects unsupported price units and redacts hidden prices on detail-sh
       jllSearchResult: { hidePrice: false },
       jllDetail: { salePrice: { amount: 3250000 } },
     });
-    assert.match(enriched.detailError, /floorPlans/);
+    assert.equal(enriched.detailError, undefined);
     assert.equal(enriched.salePriceUsd, undefined);
     assert.equal(enriched.salePriceText, undefined);
     assert.equal(enriched.askingPrice, undefined);
     assert.equal(enriched.jllDetail.salePrice, undefined);
-    assert.equal(enriched.markdown, "Confidential asking consideration: [redacted].");
+    assert.equal(enriched.markdown, undefined);
     assert.deepEqual(enriched.currentTenants, [{ name: "Acme Holdings" }]);
-    assert.deepEqual(enriched.financials, { occupancy: 0.95 });
+    assert.equal(enriched.financials, undefined);
     assert.deepEqual(enriched.jllDetail.pricing, {
       visibility: "withheld",
       searchWithholdingControl: "visible",
@@ -1539,35 +1539,26 @@ test("JLL document reconciliation makes native floor-plan typing authoritative",
   );
 });
 
-test("jllStrandedDocs surfaces unknown non-null floor-plan shapes", () => {
+test("jllStrandedDocs skips malformed floor-plan entries without discarding valid assets", () => {
   assert.deepEqual(jllStrandedDocs({}), []);
   assert.deepEqual(jllStrandedDocs({ floorPlans: null }), []);
-  assert.throws(
-    () => jllStrandedDocs({ floorPlans: "https://cdn.jll.com/fp/not-an-array.pdf" }),
-    /unsupported shape/
-  );
-  assert.throws(
-    () => jllStrandedDocs({ floorPlans: { images: "not-an-array", files: [] } }),
-    /floorPlans\.images must be an array/
-  );
-  assert.throws(
-    () =>
-      jllStrandedDocs({
-        floorPlans: { images: [], files: [{ download: "https://cdn.jll.com/fp/new-shape.pdf" }] },
-      }),
-    /unsupported field\(s\): download/
-  );
-  assert.throws(
-    () => jllStrandedDocs({ floorPlans: { images: [], files: [{ type: "floorplan" }] } }),
-    /has no URL or image/
-  );
-  assert.throws(
-    () => jllStrandedDocs({ floorPlans: { images: ["/relative-plan.jpg"], files: [] } }),
-    /must be an absolute HTTP\(S\) URL/
-  );
-  assert.throws(
-    () => jllStrandedDocs({ floorPlans: { images: [], files: [], futureAssets: [] } }),
-    /unsupported field\(s\): futureAssets/
+  assert.deepEqual(jllStrandedDocs({ floorPlans: "https://cdn.jll.com/fp/not-an-array.pdf" }), []);
+  assert.deepEqual(
+    jllStrandedDocs({
+      floorPlans: {
+        images: ["https://cdn.jll.com/fp/valid.jpg", "/relative-plan.jpg", "https://"],
+        files: [
+          { url: "https://cdn.jll.com/fp/valid.pdf", type: "floorplan" },
+          { download: "https://cdn.jll.com/fp/new-shape.pdf" },
+          { url: "https://", image: "http://?x" },
+        ],
+        futureAssets: [],
+      },
+    }).map(({ url, docType }) => ({ url, docType })),
+    [
+      { url: "https://cdn.jll.com/fp/valid.jpg", docType: "floor_plan" },
+      { url: "https://cdn.jll.com/fp/valid.pdf", docType: "floor_plan" },
+    ]
   );
 });
 

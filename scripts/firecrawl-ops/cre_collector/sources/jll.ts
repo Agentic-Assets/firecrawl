@@ -494,29 +494,13 @@ const JLL_SENSITIVE_PARENT_CHILDREN = new Map([
   ["futureeconomics", new Set(["consideration"])],
   ["dealeconomics", new Set(["amount"])],
 ]);
-const JLL_MONEY_AMOUNT = String.raw`(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?`;
-const JLL_MONEY_TOKEN = new RegExp(
-  String.raw`(?:(?:\b(?:usd|cad|eur)\s*)|(?:us\$|c\$)|[$€])\s*${JLL_MONEY_AMOUNT}(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?`,
-  "gi"
-);
-const JLL_LABELLED_PRICE = new RegExp(
-  String.raw`(\b(?:(?:asking|list|sale|lease|rental)\s*(?:price|rate|rent|consideration)|consideration)\s*[:\-]?\s*)(?:\$?\s*${JLL_MONEY_AMOUNT}(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?)`,
-  "gi"
-);
-
-function jllRedactPriceDisclosure(value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  return value
-    .replace(JLL_LABELLED_PRICE, "$1[redacted]")
-    .replace(JLL_MONEY_TOKEN, "[redacted]");
-}
-
 /** Apply the narrow JLL withheld-price raw-retention contract.
  *
  * Exact schema paths are removed rather than substring-matching field names,
- * preserving unrelated provenance such as currentTenants.  A legacy
- * financials.amount is expressly a price payload, and known prose fields keep
- * their non-price text while monetary disclosures are redacted.
+ * preserving unrelated provenance such as currentTenants. A legacy
+ * financials.amount is expressly a price payload. Hidden detail prose is
+ * omitted entirely because a generic sanitizer cannot prove it has no monetary
+ * disclosure.
  */
 function jllRedactSensitivePriceFields(value: unknown, parentKey?: string): any {
   if (Array.isArray(value)) return value.map((item) => jllRedactSensitivePriceFields(item, parentKey));
@@ -531,12 +515,60 @@ function jllRedactSensitivePriceFields(value: unknown, parentKey?: string): any 
       continue;
     }
     if (JLL_FREE_TEXT_KEYS.has(normalizedKey)) {
-      output[key] = jllRedactPriceDisclosure(child);
       continue;
     }
     output[key] = jllRedactSensitivePriceFields(child, normalizedKey);
   }
   return output;
+}
+
+const JLL_WITHHELD_PUBLIC_BASE_KEYS = new Set([
+  "id",
+  "url",
+  "canonicalUrl",
+  "name",
+  "headline",
+  "transactionType",
+  "assetType",
+  "street",
+  "city",
+  "state",
+  "postalCode",
+  "country",
+  "latitude",
+  "longitude",
+  "sizeText",
+  "buildingSizeSqft",
+  "lastUpdated",
+  "detailObservedAt",
+]);
+
+function jllSafeTenantIdentities(value: unknown): Array<{ name: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((tenant) => {
+    const record = tenant as Record<string, unknown> | null;
+    const name = clean(record?.name ?? record?.tenantName);
+    // An identity can contain ordinary digits (for example, 7-Eleven), but it
+    // cannot be a currency-bearing value or prose disclosure.
+    if (!name || /[$€]|\b(?:usd|cad|eur)\b/i.test(name)) return [];
+    return [{ name }];
+  });
+}
+
+function jllWithheldPublicProjection(value: unknown): Record<string, unknown> {
+  const redacted = jllRedactSensitivePriceFields(value) as Record<string, unknown>;
+  const projected: Record<string, unknown> = {};
+  for (const key of JLL_WITHHELD_PUBLIC_BASE_KEYS) {
+    if (Object.hasOwn(redacted, key)) projected[key] = redacted[key];
+  }
+  const tenants = jllSafeTenantIdentities(redacted.currentTenants);
+  if (tenants.length) projected.currentTenants = tenants;
+  if (redacted.jllSearchResult !== undefined) {
+    projected.jllSearchResult = {
+      priceWithholdingControl: jllStoredWithholdingControl(redacted.jllSearchResult),
+    };
+  }
+  return projected;
 }
 
 function jllPriceProvenance(
@@ -1064,17 +1096,21 @@ export function jllStrandedMedia(property: any): (MediaItem | string)[] {
   return out;
 }
 
-function jllFloorPlanUrl(value: unknown, field: string): string | null {
+function jllFloorPlanUrl(value: unknown): string | null {
   if (value === null || value === undefined || value === "") return null;
   const url = clean(value);
-  if (!url) {
-    throw new Error(`JLL ${field} must be an absolute HTTP(S) URL`);
-  }
+  if (!url) return null;
   try {
     const parsed = new URL(url);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error();
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      !parsed.hostname ||
+      parsed.pathname.length <= 1
+    ) {
+      return null;
+    }
   } catch {
-    throw new Error(`JLL ${field} must be an absolute HTTP(S) URL`);
+    return null;
   }
   return url;
 }
@@ -1119,38 +1155,29 @@ export function jllReconcileDocumentChannels(
   };
 }
 
-function jllFloorPlanEntryUrls(value: unknown, field: string): string[] {
+function jllFloorPlanEntryUrls(value: unknown): string[] {
   if (value === null || value === undefined) return [];
   if (typeof value === "string") {
-    const url = jllFloorPlanUrl(value, field);
+    const url = jllFloorPlanUrl(value);
     return url ? [url] : [];
   }
   if (typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`JLL ${field} has an unsupported floor-plan entry shape`);
+    return [];
   }
 
   const entry = value as Record<string, unknown>;
-  const unknownFields = Object.entries(entry)
-    .filter(([key, item]) => !["url", "image", "type"].includes(key) && item != null)
-    .map(([key]) => key);
-  if (unknownFields.length) {
-    throw new Error(`JLL ${field} has unsupported field(s): ${unknownFields.join(", ")}`);
-  }
   const urls = [
-    jllFloorPlanUrl(entry.url, `${field}.url`),
-    jllFloorPlanUrl(entry.image, `${field}.image`),
+    jllFloorPlanUrl(entry.url),
+    jllFloorPlanUrl(entry.image),
   ].filter((url): url is string => url !== null);
-  if (!urls.length) {
-    throw new Error(`JLL ${field} has no URL or image`);
-  }
   return urls;
 }
 
 /**
  * Promote every native JLL floor-plan URL as an explicitly typed floor_plan
  * document, including image floor plans. JLL has emitted both a legacy array
- * and the current `{ images, files }` object; an unknown non-null shape throws
- * so enrichJllListing surfaces detailError instead of silently losing assets.
+ * and the current `{ images, files }` object. These are optional assets, so a
+ * malformed entry is skipped while valid sibling detail remains usable.
  */
 export function jllStrandedDocs(property: any): DocItem[] {
   const floorPlans = property?.floorPlans;
@@ -1158,37 +1185,17 @@ export function jllStrandedDocs(property: any): DocItem[] {
 
   let urls: string[];
   if (Array.isArray(floorPlans)) {
-    urls = floorPlans.flatMap((value, index) =>
-      jllFloorPlanEntryUrls(value, `floorPlans[${index}]`)
-    );
+    urls = floorPlans.flatMap(jllFloorPlanEntryUrls);
   } else if (typeof floorPlans === "object") {
     const value = floorPlans as Record<string, unknown>;
-    const unknownFields = Object.entries(value)
-      .filter(([key, item]) => !["images", "files"].includes(key) && item != null)
-      .map(([key]) => key);
-    if (unknownFields.length) {
-      throw new Error(`JLL floorPlans has unsupported field(s): ${unknownFields.join(", ")}`);
-    }
-    if (!("images" in value) && !("files" in value)) {
-      throw new Error("JLL floorPlans has an unsupported object shape");
-    }
-    for (const key of ["images", "files"] as const) {
-      if (value[key] != null && !Array.isArray(value[key])) {
-        throw new Error(`JLL floorPlans.${key} must be an array`);
-      }
-    }
-    const images = (value.images as unknown[] | null | undefined) ?? [];
-    const files = (value.files as unknown[] | null | undefined) ?? [];
+    const images = Array.isArray(value.images) ? value.images : [];
+    const files = Array.isArray(value.files) ? value.files : [];
     urls = [
-      ...images.flatMap((item, index) =>
-        jllFloorPlanEntryUrls(item, `floorPlans.images[${index}]`)
-      ),
-      ...files.flatMap((item, index) =>
-        jllFloorPlanEntryUrls(item, `floorPlans.files[${index}]`)
-      ),
+      ...images.flatMap(jllFloorPlanEntryUrls),
+      ...files.flatMap(jllFloorPlanEntryUrls),
     ];
   } else {
-    throw new Error("JLL floorPlans has an unsupported shape");
+    return [];
   }
 
   const seen = new Set<string>();
@@ -1329,7 +1336,7 @@ export async function enrichJllListing(base: any): Promise<any> {
       lease: jllPriceProvenance(rentPrice, hiddenPrice),
     };
     failurePricing = hiddenPrice ? pricing : null;
-    const publicBase = hiddenPrice ? jllRedactSensitivePriceFields(base) : base;
+    const publicBase = hiddenPrice ? jllWithheldPublicProjection(base) : base;
 
     const contactsDetailed = jllContacts(Array.isArray(pageProps?.brokers) ? pageProps.brokers : property?.brokers);
     const brokerIds = contactsDetailed
@@ -1404,7 +1411,7 @@ export async function enrichJllListing(base: any): Promise<any> {
       assetType: Array.isArray(property.propertyTypes)
         ? property.propertyTypes.map(jllPropertyTypeLabel).join(", ")
         : clean(property.propertyType) ?? base.assetType,
-      description: hiddenPrice ? jllRedactPriceDisclosure(description) : description,
+      description: hiddenPrice ? undefined : description,
       street: clean(property.address) ?? base.street,
       city: clean(property.city) ?? base.city,
       state: clean(property.state) ?? base.state,
@@ -1436,7 +1443,7 @@ export async function enrichJllListing(base: any): Promise<any> {
       media: harvested.media,
       links: harvested.links,
       photos,
-      markdown: hiddenPrice ? jllRedactPriceDisclosure(markdown) : markdown,
+      markdown: hiddenPrice ? undefined : markdown,
       url,
       lastUpdated: base.lastUpdated,
       jllDetail: {
@@ -1476,7 +1483,10 @@ export async function enrichJllListing(base: any): Promise<any> {
     // The error path is also a visibility boundary.  Redact recursively so a
     // search-card askingPrice or an old nested jllDetail price cannot survive a
     // malformed detail field; preserve only safe control/provenance fields.
-    const redacted = jllRedactSensitivePriceFields(base);
+    const baseControl = jllStoredWithholdingControl(base?.jllSearchResult);
+    const redacted = jllPriceWithheld(baseControl) || failurePricing !== null
+      ? jllWithheldPublicProjection(base)
+      : jllRedactSensitivePriceFields(base);
     const detail =
       failurePricing === null
         ? redacted.jllDetail

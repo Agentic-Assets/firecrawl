@@ -25,8 +25,9 @@ import json
 import sys
 from datetime import datetime, timezone
 
-import cre_ingest as ci
 import pytest
+
+import cre_ingest as ci
 
 _SCRAPED_AT = datetime(2026, 6, 15, 0, 0, 0, tzinfo=timezone.utc).isoformat()
 
@@ -115,6 +116,20 @@ def test_norm_state_unknown_is_none():
 
 def test_norm_state_non_str_is_none():
     assert ci.norm_state(7) is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["https://", "https:///relative.pdf", "http://?x", "mailto:test@example.com"],
+)
+def test_http_url_or_none_rejects_malformed_or_non_http_urls(value):
+    assert ci.http_url_or_none(value) is None
+
+
+def test_http_url_or_none_uses_parsed_http_url():
+    assert ci.http_url_or_none(" https://cdn.example/brochure.pdf ") == (
+        "https://cdn.example/brochure.pdf"
+    )
 
 
 # ===========================================================================
@@ -679,6 +694,47 @@ def test_to_row_redacts_withheld_jll_pricing_before_raw_data_staging():
     assert r["lease_rate_max"] is None
 
 
+def test_to_row_withheld_jll_clears_every_price_derived_staging_column_on_insert():
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/withheld-derived",
+            "id": "withheld-derived",
+            "salePriceUsd": 3250000,
+            "salePricePerSf": 325,
+            "leaseRateMin": 32,
+            "leaseRateMax": 35,
+            "leaseRateType": "per_sf_year",
+            "capRatePct": 6.5,
+            "noi": 150000,
+            "grossRevenue": 500000,
+            "pricePerUnit": 130000,
+            "pricePerAcre": 2500000,
+            "grm": 6.5,
+            "revpar": 125,
+            "jllSearchResult": {"hidePrice": True},
+        }
+    )
+
+    # There is no source-proof contract for an operating fact independent of a
+    # withheld JLL asking price, so NOI and gross revenue fail closed too.
+    for key in (
+        "sale_price_usd",
+        "sale_price_per_sf",
+        "lease_rate_min",
+        "lease_rate_max",
+        "lease_rate_type",
+        "cap_rate",
+        "noi",
+        "gross_revenue",
+        "price_per_unit",
+        "price_per_acre",
+        "grm",
+        "revpar",
+    ):
+        assert row[key] is None
+
+
 def test_to_row_drops_malformed_jll_pricing_and_fails_closed_on_prices():
     r = _row(
         {
@@ -747,17 +803,30 @@ def test_to_row_rejects_contradictory_or_legacy_hidden_jll_price_provenance():
     stored = json.dumps(legacy_hidden["raw_data"])
     assert "3250000" not in stored
     assert "3.25m" not in stored
-    assert legacy_hidden["raw_data"]["jllSearchResult"]["hidePrice"] is True
+    assert legacy_hidden["raw_data"]["jllSearchResult"] == {
+        "priceWithholdingControl": "withheld"
+    }
 
 
-def test_withheld_jll_raw_data_redacts_prices_without_dropping_tenant_provenance():
+def test_withheld_jll_raw_data_keeps_only_leaf_level_safe_tenant_provenance():
     row = _row(
         {
             "sourceKey": "jll",
             "url": "https://property.jll.com/listings/schema-aware-redaction",
             "id": "schema-aware-redaction",
+            "description": "Sale price: EUR 3,250,000.",
             "markdown": "Confidential asking consideration: $3,250,000.",
-            "currentTenants": [{"name": "Acme Holdings"}],
+            "currentTenants": [
+                {"name": "Acme Holdings", "rent": 3250000, "note": "asking $3m"},
+                {"name": "$3m Tenant"},
+            ],
+            "freshnessProvenance": {
+                "detailScope": "detail_page",
+                "method": "jll_detail",
+                "cacheDisposition": "live",
+                "amount": 3250000,
+                "note": "asking $3m",
+            },
             "financials": {"amount": 3250000, "occupancy": 0.95},
             "jllSearchResult": {"hidePrice": True},
             "jllDetail": {"salePrice": {"amount": 3250000}},
@@ -768,8 +837,16 @@ def test_withheld_jll_raw_data_redacts_prices_without_dropping_tenant_provenance
     stored = json.dumps(raw)
     assert raw["jllPriceWithheld"] is True
     assert raw["currentTenants"] == [{"name": "Acme Holdings"}]
+    assert raw["freshnessProvenance"] == {
+        "detailScope": "detail_page",
+        "method": "jll_detail",
+        "cacheDisposition": "live",
+    }
     assert "financials" not in raw
-    assert raw["markdown"] == "Confidential asking consideration: [redacted]."
+    assert "description" not in raw
+    assert "markdown" not in raw
+    assert row["description"] is None
+    assert row["markdown"] is None
     assert "3250000" not in stored
     assert "$3,250,000" not in stored
 
@@ -802,8 +879,8 @@ def test_to_row_fails_closed_for_case_variant_or_fallback_hidden_jll_controls():
 
     stored = json.dumps(row["raw_data"])
     assert row["sale_price_usd"] is None
-    assert row["description"] == "Asking price: [redacted]."
-    assert row["markdown"] == "Confidential consideration: [redacted]."
+    assert row["description"] is None
+    assert row["markdown"] is None
     assert row["raw_data"]["currentTenants"] == [{"name": "Acme Holdings"}]
     assert row["raw_data"]["jllDetail"] == {}
     assert "3250000" not in stored
@@ -839,6 +916,20 @@ def test_to_row_reconciles_every_jll_price_control_case_insensitively():
     assert ambiguous["sale_price_usd"] is None
     assert ambiguous["raw_data"]["jllPriceWithheld"] is True
 
+    top_level = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/top-level-controls",
+            "id": "top-level-controls",
+            "salePriceUsd": 3250000,
+            "hidePrice": False,
+            "PRICEWITHHOLDINGCONTROL": "withheld",
+            "HiDePrIcE": None,
+        }
+    )
+    assert top_level["sale_price_usd"] is None
+    assert top_level["raw_data"]["jllPriceWithheld"] is True
+
 
 def test_merge_carries_jll_withheld_marker_across_dual_passes():
     visible = _row(
@@ -848,6 +939,16 @@ def test_merge_carries_jll_withheld_marker_across_dual_passes():
             "id": "merged-hidden",
             "transactionMode": "sale",
             "salePriceUsd": 3250000,
+            "salePricePerSf": 325,
+            "capRatePct": 6.5,
+            "noi": 150000,
+            "grossRevenue": 500000,
+            "pricePerUnit": 130000,
+            "pricePerAcre": 2500000,
+            "grm": 6.5,
+            "revpar": 125,
+            "description": "Office offered at $3,250,000.",
+            "markdown": "Confidential asking consideration: $3,250,000.",
         }
     )
     hidden = _row(
@@ -866,8 +967,23 @@ def test_merge_carries_jll_withheld_marker_across_dual_passes():
     assert merged["sale_price_usd"] is None
     assert merged["lease_rate_min"] is None
     assert merged["lease_rate_max"] is None
+    for key in (
+        "sale_price_per_sf",
+        "cap_rate",
+        "noi",
+        "gross_revenue",
+        "price_per_unit",
+        "price_per_acre",
+        "grm",
+        "revpar",
+    ):
+        assert merged[key] is None
+    assert merged["description"] is None
+    assert merged["markdown"] is None
     assert merged["raw_data"]["jllPriceWithheld"] is True
     assert merged["raw_data"]["secondary_pass"]["jllPriceWithheld"] is True
+    assert "3250000" not in json.dumps(merged["raw_data"])
+    assert "$3,250,000" not in json.dumps(merged["raw_data"])
 
 
 def test_to_row_does_not_stage_foreign_currency_jll_lease_rates():
