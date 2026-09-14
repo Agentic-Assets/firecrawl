@@ -319,6 +319,24 @@ test("JLL GraphQL item mapping respects hidden prices and rejects unsafe identit
   );
   assert.equal(hidden.salePriceUsd, undefined);
   assert.equal(hidden.salePriceText, undefined);
+  const unknownControl = jllGraphqlItemToListing(
+    {
+      id: "2",
+      pageUrl: "/listings/unknown-control",
+      hidePrice: "not-a-boolean",
+      salePrice: { amount: 3250000, currency: "USD" },
+    },
+    "sale",
+    "office",
+    1,
+    1
+  );
+  assert.equal(unknownControl.salePriceUsd, undefined);
+  assert.equal(unknownControl.salePriceText, undefined);
+  assert.deepEqual(unknownControl.jllSearchResult, {
+    priceWithholdingControl: "unknown",
+  });
+  assert.doesNotMatch(JSON.stringify(unknownControl.jllSearchResult), /not-a-boolean/);
   assert.throws(
     () => jllGraphqlItemToListing({ pageUrl: "/listings/missing" }, "sale", "office", 1, 1),
     /lacks an id/
@@ -593,8 +611,11 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
   }
 });
 
-test("JLL detail price text accepts legacy strings and structured values", () => {
+test("JLL detail price text accepts public legacy, numeric, and structured values", () => {
   assert.equal(jllDetailPriceText("$2,500,000"), "$2,500,000");
+  assert.equal(jllDetailPriceText(3250000), "$3,250,000");
+  assert.equal(jllDetailPriceText("3250000"), "$3,250,000");
+  assert.equal(jllDetailPriceText("3,250,000"), "$3,250,000");
   assert.equal(
     jllDetailPriceText({ amount: 3250000, currency: "USD", unit: null }),
     "$3,250,000"
@@ -603,7 +624,208 @@ test("JLL detail price text accepts legacy strings and structured values", () =>
     jllDetailPriceText({ amount: 32.5, currency: "USD", unit: "feet" }),
     "$32.50/feet"
   );
-  assert.equal(jllDetailPriceText(null), null);
+  assert.equal(
+    jllDetailPriceText({ amount: "32.5", currency: "USD", unit: "feet" }),
+    "$32.50/feet"
+  );
+  for (const malformed of [undefined, null, false, [], [3250000], {}, { amount: [] }]) {
+    assert.doesNotThrow(() => jllDetailPriceText(malformed));
+    assert.equal(jllDetailPriceText(malformed), null);
+  }
+});
+
+test("JLL detail enrichment normalizes price source shapes with redacted provenance", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-price-shapes-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const shapes = [
+    {
+      price: "$2,500,000",
+      expected: "$2,500,000",
+      sourceShape: "legacy_string",
+      amount: 2500000,
+      currency: "USD",
+    },
+    {
+      price: 3250000,
+      expected: "$3,250,000",
+      sourceShape: "bare_number",
+      amount: 3250000,
+      currency: null,
+    },
+    {
+      price: "3250000",
+      expected: "$3,250,000",
+      sourceShape: "numeric_string",
+      amount: 3250000,
+      currency: null,
+    },
+    {
+      price: { amount: "3250000", currency: "USD", unit: null },
+      expected: "$3,250,000",
+      sourceShape: "structured",
+      amount: 3250000,
+      currency: "USD",
+    },
+  ];
+  try {
+    for (const [index, item] of shapes.entries()) {
+      const id = String(index + 1);
+      const url = `https://property.jll.com/listings/price-shape-${id}`;
+      writeJllDetailCache(url, {
+        rawHtml:
+          '<script id="__NEXT_DATA__" type="application/json">' +
+          JSON.stringify({
+            props: {
+              pageProps: {
+                property: { id, pageUrl: `/listings/price-shape-${id}`, salePrice: item.price },
+                brokers: [],
+              },
+            },
+          }) +
+          "</script>",
+        markdown: "",
+        links: [],
+        images: [],
+      });
+
+      const enriched = await enrichJllListing({ id, url });
+      assert.equal(enriched.detailError, undefined);
+      assert.equal(enriched.salePriceText, item.expected);
+      assert.equal(enriched.salePriceUsd, item.amount);
+      const provenance = enriched.jllDetail.pricing.sale;
+      assert.equal(provenance.sourceShape, item.sourceShape);
+      assert.equal(provenance.normalization, "available");
+      assert.equal(provenance.normalizedText, item.expected);
+      assert.equal(provenance.normalizedAmount, item.amount);
+      assert.equal(provenance.currency, item.currency ?? undefined);
+      assert.equal(provenance.unit, undefined);
+    }
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL detail enrichment fails closed on malformed or unknown price controls", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-price-redaction-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  try {
+    for (const [index, hidePrice] of ["false", 0, null, {}, []].entries()) {
+      const id = String(index + 1);
+      const url = `https://property.jll.com/listings/withheld-${id}`;
+      const price = { amount: 3250000, currency: "USD", unit: null };
+      writeJllDetailCache(url, {
+        rawHtml:
+          '<script id="__NEXT_DATA__" type="application/json">' +
+          JSON.stringify({
+            props: {
+              pageProps: {
+                property: { id, pageUrl: `/listings/withheld-${id}`, hidePrice, salePrice: price, rentPrice: "$32/SF" },
+                brokers: [],
+              },
+            },
+          }) +
+          "</script>",
+        markdown: "",
+        links: [],
+        images: [],
+      });
+      const enriched = await enrichJllListing({
+        id,
+        url,
+        salePriceUsd: 1000000,
+        salePriceText: "$1,000,000",
+        leaseRateText: "$20/SF",
+      });
+      assert.equal(enriched.detailError, undefined);
+      assert.equal(enriched.salePriceUsd, undefined);
+      assert.equal(enriched.salePriceText, undefined);
+      assert.equal(enriched.leaseRateText, undefined);
+      assert.deepEqual(enriched.jllDetail.pricing, {
+        visibility: "withheld",
+        searchWithholdingControl: "absent",
+        detailWithholdingControl: "unknown",
+        sale: { sourceShape: "structured", normalization: "redacted" },
+        lease: { sourceShape: "legacy_string", normalization: "redacted" },
+      });
+      const stored = JSON.stringify(enriched.jllDetail.pricing);
+      assert.doesNotMatch(stored, /3250000|3,250,000|\$32/);
+    }
+
+    const url = "https://property.jll.com/listings/unknown-stored-control";
+    writeJllDetailCache(url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify({
+          props: {
+            pageProps: {
+              property: {
+                id: "stored-control",
+                pageUrl: "/listings/unknown-stored-control",
+                hidePrice: false,
+                salePrice: { amount: 3250000, currency: "USD" },
+              },
+              brokers: [],
+            },
+          },
+        }) +
+        "</script>",
+      markdown: "",
+      links: [],
+      images: [],
+    });
+    const storedControl = await enrichJllListing({
+      id: "stored-control",
+      url,
+      salePriceUsd: 3250000,
+      jllSearchResult: { priceWithholdingControl: "false" },
+    });
+    assert.equal(storedControl.salePriceUsd, undefined);
+    assert.deepEqual(storedControl.jllDetail.pricing, {
+      visibility: "withheld",
+      searchWithholdingControl: "unknown",
+      detailWithholdingControl: "visible",
+      sale: { sourceShape: "structured", normalization: "redacted" },
+      lease: { sourceShape: "absent", normalization: "redacted" },
+    });
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL detail enrichment never throws for malformed price shapes", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-malformed-price-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  try {
+    for (const [index, price] of [[], {}, { amount: [] }, { amount: "not-a-number" }].entries()) {
+      const id = String(index + 1);
+      const url = `https://property.jll.com/listings/malformed-price-${id}`;
+      writeJllDetailCache(url, {
+        rawHtml:
+          '<script id="__NEXT_DATA__" type="application/json">' +
+          JSON.stringify({ props: { pageProps: { property: { id, pageUrl: `/listings/malformed-price-${id}`, salePrice: price }, brokers: [] } } }) +
+          "</script>",
+        markdown: "",
+        links: [],
+        images: [],
+      });
+      const enriched = await enrichJllListing({ id, url });
+      assert.equal(enriched.detailError, undefined);
+      assert.equal(enriched.salePriceText, undefined);
+      assert.equal(enriched.salePriceUsd, undefined);
+      assert.equal(enriched.jllDetail.pricing.sale.normalization, "unavailable");
+    }
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
 });
 
 test("JLL detail enrichment preserves list and detail hidden-price controls", async () => {

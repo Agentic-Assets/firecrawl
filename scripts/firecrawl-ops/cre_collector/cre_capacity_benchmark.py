@@ -1912,7 +1912,7 @@ function normalizedEvidence(normalized) {
     price_rate: { sale: present(normalized?.salePriceText) || present(normalized?.salePriceUsd), lease: present(normalized?.leaseRateText) },
     size: { surface_area: present(normalized?.sizeText) || present(normalized?.buildingSizeSqft) },
     brokers_contacts: { contacts: present(normalized?.contactsDetailed) || present(normalized?.brokerIds) },
-    documents: { brochures: present(normalized?.brochures), floor_plans: documents.some((item) => String(item?.docType ?? item?.documentType ?? item?.type ?? "").toLowerCase().includes("floor")) },
+    documents: { brochures: present(normalized?.brochures) || documents.some((item) => String(item?.docType ?? item?.documentType ?? item?.type ?? "").toLowerCase() === "brochure"), floor_plans: documents.some((item) => String(item?.docType ?? item?.documentType ?? item?.type ?? "").toLowerCase().includes("floor")) },
     images: { photos: present(normalized?.photos) },
     media: { videos: media.some((item) => item?.mediaType === "video"), tours_360: media.some((item) => item?.mediaType === "virtual_tour" || item?.mediaType === "matterport"), other: media.some((item) => item?.mediaType === "other") },
     markdown: { body: present(normalized?.markdown) },

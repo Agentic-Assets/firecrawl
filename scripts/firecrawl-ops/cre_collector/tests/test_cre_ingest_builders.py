@@ -572,6 +572,130 @@ def test_to_row_uses_explicit_detail_observation_not_artifact_finish():
     assert r["scraped_at"] == "2026-06-14T21:30:00+00:00"
 
 
+def test_to_row_redacts_withheld_jll_pricing_before_raw_data_staging():
+    r = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/withheld-price",
+            "id": "withheld-price",
+            "salePriceUsd": 3250000,
+            "salePriceText": "$3,250,000",
+            "salePricePerSf": 325,
+            "leaseRateText": "$32/SF",
+            "leaseRateMin": 32,
+            "leaseRateMax": 32,
+            "jllDetail": {
+                "pricing": {
+                    "visibility": "withheld",
+                    "searchWithholdingControl": "unknown",
+                    "detailWithholdingControl": "withheld",
+                    "sale": {
+                        "sourceShape": "structured",
+                        "normalization": "available",
+                        "normalizedText": "$3,250,000",
+                        "normalizedAmount": 3250000,
+                        "currency": "USD",
+                        "unit": "SF",
+                    },
+                    "lease": {
+                        "sourceShape": "legacy_string",
+                        "normalization": "available",
+                        "normalizedText": "$32/SF",
+                    },
+                }
+            },
+        }
+    )
+
+    pricing = r["raw_data"]["jllDetail"]["pricing"]
+    assert pricing == {
+        "visibility": "withheld",
+        "searchWithholdingControl": "unknown",
+        "detailWithholdingControl": "withheld",
+        "sale": {"sourceShape": "structured", "normalization": "redacted"},
+        "lease": {"sourceShape": "legacy_string", "normalization": "redacted"},
+    }
+    assert "3250000" not in json.dumps(r["raw_data"])
+    assert "$3,250,000" not in json.dumps(r["raw_data"])
+    assert "$32/SF" not in json.dumps(r["raw_data"])
+    assert r["sale_price_usd"] is None
+    assert r["sale_price_per_sf"] is None
+    assert r["lease_rate_min"] is None
+    assert r["lease_rate_max"] is None
+
+
+def test_to_row_drops_malformed_jll_pricing_and_fails_closed_on_prices():
+    r = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/malformed-price",
+            "id": "malformed-price",
+            "salePriceUsd": 3250000,
+            "salePriceText": "$3,250,000",
+            "leaseRateText": "$32/SF",
+            "jllDetail": {
+                "pricing": {
+                    "visibility": "withheld",
+                    "sale": {"normalizedAmount": 3250000},
+                }
+            },
+        }
+    )
+
+    assert "pricing" not in r["raw_data"]["jllDetail"]
+    assert r["sale_price_usd"] is None
+    assert r["lease_rate_min"] is None
+
+
+def test_to_row_retains_valid_public_jll_pricing_provenance_only():
+    r = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/public-price",
+            "id": "public-price",
+            "salePriceUsd": 3250000,
+            "jllDetail": {
+                "pricing": {
+                    "visibility": "visible",
+                    "searchWithholdingControl": "visible",
+                    "detailWithholdingControl": "absent",
+                    "sale": {
+                        "sourceShape": "structured",
+                        "normalization": "available",
+                        "normalizedText": "$3,250,000",
+                        "normalizedAmount": 3250000,
+                        "currency": "USD",
+                        "unit": None,
+                        "unexpectedRawPrice": "do-not-store",
+                    },
+                    "lease": {
+                        "sourceShape": "absent",
+                        "normalization": "unavailable",
+                        "unexpectedRawPrice": "$32/SF",
+                    },
+                }
+            },
+        }
+    )
+
+    assert r["sale_price_usd"] == 3250000
+    assert r["raw_data"]["jllDetail"]["pricing"] == {
+        "visibility": "visible",
+        "searchWithholdingControl": "visible",
+        "detailWithholdingControl": "absent",
+        "sale": {
+            "sourceShape": "structured",
+            "normalization": "available",
+            "normalizedText": "$3,250,000",
+            "normalizedAmount": 3250000,
+            "currency": "USD",
+            "unit": None,
+        },
+        "lease": {"sourceShape": "absent", "normalization": "unavailable"},
+    }
+    assert "do-not-store" not in json.dumps(r["raw_data"])
+
+
 def test_to_row_uses_inventory_observation_for_authoritative_feed():
     r = _row(
         {

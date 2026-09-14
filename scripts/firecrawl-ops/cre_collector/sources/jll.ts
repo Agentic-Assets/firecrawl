@@ -307,11 +307,40 @@ export function jllGraphqlVariables(
   };
 }
 
-export function jllGraphqlPriceText(price: any): string | null {
-  const amount = num(price?.amount);
-  if (amount === null) return null;
-  const currency = clean(price?.currency);
-  const unit = clean(price?.unit);
+type JllPriceSourceShape =
+  | "absent"
+  | "legacy_string"
+  | "numeric_string"
+  | "bare_number"
+  | "structured"
+  | "unsupported";
+type JllWithholdingControl = "absent" | "visible" | "withheld" | "unknown";
+type JllNormalizedPrice = {
+  sourceShape: JllPriceSourceShape;
+  text: string | null;
+  amount: number | null;
+  currency: string | null;
+  unit: string | null;
+};
+
+function jllPublicPriceAmount(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+  if (typeof value !== "string") return null;
+  const text = clean(value);
+  if (!text || !/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/.test(text)) {
+    return null;
+  }
+  const amount = Number(text.replace(/,/g, ""));
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
+function jllFormattedPriceText(
+  amount: number,
+  currency: string | null,
+  unit: string | null
+): string {
   const amountText = amount.toLocaleString("en-US", {
     minimumFractionDigits: Number.isInteger(amount) ? 0 : 2,
     maximumFractionDigits: 2,
@@ -320,8 +349,129 @@ export function jllGraphqlPriceText(price: any): string | null {
   return `${prefix}${amountText}${unit ? `/${unit}` : ""}`;
 }
 
+function jllNormalizedPrice(price: unknown): JllNormalizedPrice {
+  if (price === null || price === undefined) {
+    return { sourceShape: "absent", text: null, amount: null, currency: null, unit: null };
+  }
+  if (typeof price === "number") {
+    const amount = jllPublicPriceAmount(price);
+    return {
+      sourceShape: "bare_number",
+      text: amount === null ? null : jllFormattedPriceText(amount, null, null),
+      amount,
+      currency: null,
+      unit: null,
+    };
+  }
+  if (typeof price === "string") {
+    const text = clean(price);
+    if (text === null) {
+      return { sourceShape: "legacy_string", text: null, amount: null, currency: null, unit: null };
+    }
+    const amount = jllPublicPriceAmount(text);
+    if (amount !== null) {
+      return {
+        sourceShape: "numeric_string",
+        text: jllFormattedPriceText(amount, null, null),
+        amount,
+        currency: null,
+        unit: null,
+      };
+    }
+    const legacyAmount = moneyToNumber(text);
+    return {
+      sourceShape: "legacy_string",
+      text,
+      amount: legacyAmount,
+      currency: legacyAmount === null ? null : "USD",
+      unit: null,
+    };
+  }
+  if (typeof price !== "object" || Array.isArray(price)) {
+    return { sourceShape: "unsupported", text: null, amount: null, currency: null, unit: null };
+  }
+  const value = price as { amount?: unknown; currency?: unknown; unit?: unknown };
+  const amount = jllPublicPriceAmount(value.amount);
+  const currency = clean(value.currency)?.toUpperCase() ?? null;
+  const unit = clean(value.unit);
+  return {
+    sourceShape: "structured",
+    text: amount === null ? null : jllFormattedPriceText(amount, currency, unit),
+    amount,
+    currency,
+    unit,
+  };
+}
+
+function jllPriceUsd(price: JllNormalizedPrice): number | null {
+  return price.amount !== null && (!price.currency || price.currency === "USD")
+    ? price.amount
+    : null;
+}
+
+function jllWithholdingControl(value: unknown, key: string): JllWithholdingControl {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !Object.hasOwn(value, key) ||
+    (value as Record<string, unknown>)[key] === undefined
+  ) {
+    return "absent";
+  }
+  const control = (value as Record<string, unknown>)[key];
+  if (control === true) return "withheld";
+  if (control === false) return "visible";
+  return "unknown";
+}
+
+function jllStoredWithholdingControl(value: unknown): JllWithholdingControl {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return "absent";
+  }
+  const record = value as Record<string, unknown>;
+  const stored = Object.hasOwn(record, "priceWithholdingControl")
+    ? (["absent", "visible", "withheld", "unknown"] as const).includes(
+          record.priceWithholdingControl as JllWithholdingControl
+        )
+      ? (record.priceWithholdingControl as JllWithholdingControl)
+      : "unknown"
+    : "absent";
+  const legacy = jllWithholdingControl(value, "hidePrice");
+  if (stored === "unknown" || legacy === "unknown") return "unknown";
+  if (stored === "withheld" || legacy === "withheld") return "withheld";
+  if (stored === "visible" || legacy === "visible") return "visible";
+  return "absent";
+}
+
+function jllPriceWithheld(...controls: JllWithholdingControl[]): boolean {
+  return controls.some((control) => control === "withheld" || control === "unknown");
+}
+
+function jllPriceProvenance(
+  price: JllNormalizedPrice,
+  withheld: boolean
+): Record<string, unknown> {
+  const provenance: Record<string, unknown> = {
+    sourceShape: price.sourceShape,
+    normalization: withheld ? "redacted" : price.text === null ? "unavailable" : "available",
+  };
+  if (!withheld && price.text !== null) {
+    provenance.normalizedText = price.text;
+    provenance.normalizedAmount = price.amount;
+    provenance.currency = price.currency;
+    provenance.unit = price.unit;
+  }
+  return provenance;
+}
+
+export function jllGraphqlPriceText(price: any): string | null {
+  const normalized = jllNormalizedPrice(price);
+  return normalized.sourceShape === "structured" ? normalized.text : null;
+}
+
 export function jllDetailPriceText(price: any): string | null {
-  return clean(price) ?? jllGraphqlPriceText(price);
+  return jllNormalizedPrice(price).text;
 }
 
 export function jllGraphqlItemToListing(
@@ -355,11 +505,10 @@ export function jllGraphqlItemToListing(
     );
   }
 
-  const hiddenPrice = item?.hidePrice === true;
-  const salePrice = hiddenPrice ? null : item?.salePrice;
-  const rentPrice = hiddenPrice ? null : item?.rentPrice;
-  const salePriceAmount = num(salePrice?.amount);
-  const saleCurrency = clean(salePrice?.currency)?.toUpperCase() ?? null;
+  const priceWithholdingControl = jllWithholdingControl(item, "hidePrice");
+  const hiddenPrice = jllPriceWithheld(priceWithholdingControl);
+  const salePrice = jllNormalizedPrice(item?.salePrice);
+  const rentPrice = jllNormalizedPrice(item?.rentPrice);
   const buildingSizeSqft = jllSurfaceAreaSqft(item);
   const propertyTypes = Array.isArray(item?.propertyTypes)
     ? item.propertyTypes.map((value: any) => clean(value)).filter(Boolean)
@@ -381,11 +530,11 @@ export function jllGraphqlItemToListing(
     latitude: num(item?.latitude),
     longitude: num(item?.longitude),
     salePriceUsd:
-      tx === "sale" && salePriceAmount !== null && (!saleCurrency || saleCurrency === "USD")
-        ? salePriceAmount
+      tx === "sale" && !hiddenPrice
+        ? jllPriceUsd(salePrice)
         : null,
-    salePriceText: tx === "sale" ? jllGraphqlPriceText(salePrice) : null,
-    leaseRateText: tx === "lease" ? jllGraphqlPriceText(rentPrice) : null,
+    salePriceText: tx === "sale" && !hiddenPrice ? salePrice.text : null,
+    leaseRateText: tx === "lease" && !hiddenPrice ? rentPrice.text : null,
     sizeText:
       buildingSizeSqft === null
         ? null
@@ -401,7 +550,7 @@ export function jllGraphqlItemToListing(
       propertyTypes,
       tenureTypes,
       surfaceAreas: item?.surfaceAreas,
-      hidePrice: hiddenPrice,
+      priceWithholdingControl,
     },
   });
 }
@@ -1064,8 +1213,16 @@ export async function enrichJllListing(base: any): Promise<any> {
     const documents = documentChannels.documents;
     const photos = dedupeStrings([...(images.length ? images : base.photos ?? []), ...harvested.images]);
     const lifted = jllStrandedStructured(property);
-    const hiddenPrice =
-      base?.jllSearchResult?.hidePrice === true || property?.hidePrice === true;
+    const searchWithholdingControl = jllStoredWithholdingControl(
+      base?.jllSearchResult
+    );
+    const detailWithholdingControl = jllWithholdingControl(property, "hidePrice");
+    const hiddenPrice = jllPriceWithheld(
+      searchWithholdingControl,
+      detailWithholdingControl
+    );
+    const salePrice = jllNormalizedPrice(property.salePrice);
+    const rentPrice = jllNormalizedPrice(property.rentPrice);
 
     return prune({
       ...base,
@@ -1088,13 +1245,9 @@ export async function enrichJllListing(base: any): Promise<any> {
       postalCode: clean(property.postcode) ?? base.postalCode,
       latitude: num(property.latitude) ?? base.latitude,
       longitude: num(property.longitude) ?? base.longitude,
-      salePriceUsd: hiddenPrice ? null : base.salePriceUsd,
-      salePriceText: hiddenPrice
-        ? null
-        : jllDetailPriceText(property.salePrice) ?? base.salePriceText,
-      leaseRateText: hiddenPrice
-        ? null
-        : jllDetailPriceText(property.rentPrice) ?? base.leaseRateText,
+      salePriceUsd: hiddenPrice ? null : jllPriceUsd(salePrice) ?? base.salePriceUsd,
+      salePriceText: hiddenPrice ? null : salePrice.text ?? base.salePriceText,
+      leaseRateText: hiddenPrice ? null : rentPrice.text ?? base.leaseRateText,
       sizeText: clean(property.surfaceArea) ?? base.sizeText,
       buildingSizeSqft: jllSurfaceAreaSqft(property) ?? base.buildingSizeSqft,
       ...lifted,
@@ -1113,6 +1266,13 @@ export async function enrichJllListing(base: any): Promise<any> {
         refId: clean(property.refId),
         pageUrl: clean(property.pageUrl),
         relativeUrl: clean(pageProps?.relativeUrl),
+        pricing: {
+          visibility: hiddenPrice ? "withheld" : "visible",
+          searchWithholdingControl,
+          detailWithholdingControl,
+          sale: jllPriceProvenance(salePrice, hiddenPrice),
+          lease: jllPriceProvenance(rentPrice, hiddenPrice),
+        },
         tenureTypes: property.tenureTypes,
         propertyTypes: property.propertyTypes,
         labels: property.labels,

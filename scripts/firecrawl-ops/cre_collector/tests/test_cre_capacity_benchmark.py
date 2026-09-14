@@ -2695,6 +2695,18 @@ def test_summarize_accepts_value_changes_but_rejects_supported_channel_drops(
     assert failed["comparison_state"] == "quality_failed"
 
 
+def test_worker_brochure_fidelity_accepts_typed_documents_without_double_counting() -> (
+    None
+):
+    source = benchmark._worker_source(Path(__file__).resolve().parents[4])
+
+    assert "present(normalized?.brochures) || documents.some(" in source
+    assert (
+        'String(item?.docType ?? item?.documentType ?? item?.type ?? "").toLowerCase() === "brochure"'
+        in source
+    )
+
+
 def _benchmark_success_rows(
     sample: dict[str, object], generation: str
 ) -> list[dict[str, object]]:

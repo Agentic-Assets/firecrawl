@@ -1645,6 +1645,106 @@ def cushman_canonical_external_id(url):
     return f"url:v1:{digest}"
 
 
+_JLL_PRICE_CONTROL_CLASSES = {"absent", "visible", "withheld", "unknown"}
+_JLL_PRICE_SOURCE_SHAPES = {
+    "absent",
+    "legacy_string",
+    "numeric_string",
+    "bare_number",
+    "structured",
+    "unsupported",
+}
+
+
+def _safe_jll_pricing(value):
+    """Retain JLL price provenance without storing withheld price values."""
+    if not isinstance(value, dict):
+        return None
+    visibility = value.get("visibility")
+    if visibility not in {"visible", "withheld"}:
+        return None
+    controls = {
+        key: value.get(key)
+        for key in ("searchWithholdingControl", "detailWithholdingControl")
+    }
+    if not all(control in _JLL_PRICE_CONTROL_CLASSES for control in controls.values()):
+        return None
+    safe = {"visibility": visibility, **controls}
+    for side in ("sale", "lease"):
+        candidate = value.get(side)
+        if not isinstance(candidate, dict):
+            return None
+        source_shape = candidate.get("sourceShape")
+        normalization = candidate.get("normalization")
+        if source_shape not in _JLL_PRICE_SOURCE_SHAPES or normalization not in {
+            "available",
+            "unavailable",
+            "redacted",
+        }:
+            return None
+        item = {"sourceShape": source_shape}
+        if visibility == "withheld":
+            item["normalization"] = "redacted"
+        elif normalization == "available":
+            text = clean_text(candidate.get("normalizedText"), 256)
+            amount = num_or_none(candidate.get("normalizedAmount"), lo=0, hi=1e11)
+            if text is None or amount is None:
+                return None
+            item.update(
+                {
+                    "normalization": "available",
+                    "normalizedText": text,
+                    "normalizedAmount": amount,
+                    "currency": clean_text(candidate.get("currency"), 16),
+                    "unit": clean_text(candidate.get("unit"), 64),
+                }
+            )
+        else:
+            item["normalization"] = "unavailable"
+        safe[side] = item
+    return safe
+
+
+def _safe_jll_raw_data(listing):
+    """Copy only validated, redacted JLL pricing into raw_data staging."""
+    if not isinstance(listing, dict) or listing.get("sourceKey") != "jll":
+        return listing
+    detail = listing.get("jllDetail")
+    if not isinstance(detail, dict) or "pricing" not in detail:
+        return listing
+    safe_pricing = _safe_jll_pricing(detail.get("pricing"))
+    raw = dict(listing)
+    raw_detail = dict(detail)
+    if safe_pricing is None:
+        raw_detail.pop("pricing", None)
+    else:
+        raw_detail["pricing"] = safe_pricing
+    raw["jllDetail"] = raw_detail
+    if safe_pricing is None or safe_pricing["visibility"] == "withheld":
+        for key in (
+            "salePriceUsd",
+            "salePriceText",
+            "salePricePerSf",
+            "leaseRateText",
+            "leaseRateMin",
+            "leaseRateMax",
+            "leaseRateType",
+        ):
+            raw.pop(key, None)
+    return raw
+
+
+def _jll_pricing_is_withheld(listing):
+    if not isinstance(listing, dict) or listing.get("sourceKey") != "jll":
+        return False
+    detail = listing.get("jllDetail")
+    pricing = detail.get("pricing") if isinstance(detail, dict) else None
+    safe = _safe_jll_pricing(pricing)
+    return isinstance(detail, dict) and "pricing" in detail and (
+        safe is None or safe["visibility"] == "withheld"
+    )
+
+
 def to_row(listing, brokers_by_idx, scraped_at):
     """Map one collector listing to a staging row dict, or None to skip."""
     if is_retired_om_parse_listing(listing):
@@ -1678,6 +1778,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
             listing.get("inventoryObservedAt")
         )
     slug, prefix = mapping
+    jll_pricing_withheld = _jll_pricing_is_withheld(listing)
 
     url = listing.get("url")
     if not url or not isinstance(url, str) or not url.startswith("http"):
@@ -1714,6 +1815,10 @@ def to_row(listing, brokers_by_idx, scraped_at):
     sale_price_text = listing.get("salePriceText")
     sale_price = num_or_none(listing.get("salePriceUsd"), lo=100, hi=1e11)
     price_per_sf = num_or_none(listing.get("salePricePerSf"), lo=0, hi=10000)
+    if jll_pricing_withheld:
+        sale_price_text = None
+        sale_price = None
+        price_per_sf = None
     # (DQ guard 1) NAI 'POUND '-labeled price: the value is really USD with a wrong
     # currency LABEL (RAW_DATA_GAP doc). When salePriceUsd is absent/zero but the
     # text carries a stripped currency label, recover the numeric as USD. Scoped
@@ -1752,6 +1857,9 @@ def to_row(listing, brokers_by_idx, scraped_at):
     lease_max = lease_max if lease_max is not None else num_or_none(
         listing.get("leaseRateMax"), lo=0, hi=500
     )
+    if jll_pricing_withheld:
+        lease_min = None
+        lease_max = None
 
     contacts = []
     source_contacts = listing.get("contactsDetailed") or []
@@ -1944,7 +2052,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
         # compatibility fallback for legacy/non-strict artifacts and must not
         # manufacture current detail freshness.
         "scraped_at": observation_scraped_at or scraped_at,
-        "raw_data": listing,
+        "raw_data": _safe_jll_raw_data(listing),
         "contacts": contacts,
         "documents": documents,
         "images": images,
