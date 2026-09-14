@@ -16,6 +16,7 @@ import {
   jllNextData,
   jllPublicProfileUrl,
   jllStringUrls,
+  jllHasUsableBrochure,
   jllSurfaceAreaSqft,
   jllDescription,
   jllContacts,
@@ -114,6 +115,20 @@ test("jllStringUrls keeps unique http(s) URLs only", () => {
     ["https://a.example/b.pdf"]
   );
   assert.deepEqual(jllStringUrls(null), []);
+});
+
+test("jllHasUsableBrochure requires a public URL for native and typed brochure evidence", () => {
+  assert.equal(
+    jllHasUsableBrochure({ documents: [{ docType: "brochure", url: "https://cdn.example/om.pdf" }] }),
+    true
+  );
+  assert.equal(
+    jllHasUsableBrochure({ brochures: [{ url: "http://cdn.example/om.pdf" }] }),
+    true
+  );
+  assert.equal(jllHasUsableBrochure({ documents: [{ docType: "brochure" }] }), false);
+  assert.equal(jllHasUsableBrochure({ documents: [{ docType: "brochure", url: "/om.pdf" }] }), false);
+  assert.equal(jllHasUsableBrochure({ documents: [{ docType: "floor_plan", url: "https://cdn.example/floor.pdf" }] }), false);
 });
 
 test("jllSurfaceAreaSqft reads direct value or nested feet metrics", () => {
@@ -265,7 +280,7 @@ test("JLL GraphQL item mapping preserves identity, location, price, surface, and
     propertyTypes: ["office", "medical"],
     tenureTypes: ["sale", "rent"],
     salePrice: { amount: 3250000, currency: "USD", unit: null },
-    rentPrice: { amount: 32.5, currency: "USD", unit: "feet" },
+    rentPrice: { amount: 32.5, currency: "USD", unit: "sf" },
     hidePrice: false,
     pageUrl: "/listings/80-w-gore-st-south-orange",
     latitude: 28.53077,
@@ -299,7 +314,7 @@ test("JLL GraphQL item mapping preserves identity, location, price, surface, and
   assert.deepEqual(sale.jllSearchResult.tenureTypes, ["sale", "rent"]);
 
   const lease = jllGraphqlItemToListing(item, "lease", "office", 1, 4300);
-  assert.equal(lease.leaseRateText, "$32.50/feet");
+  assert.equal(lease.leaseRateText, "$32.50/sf");
   assert.equal(lease.salePriceUsd, undefined);
   assert.equal(jllGraphqlPriceText({ amount: 42, currency: "CAD", unit: "month" }), "CAD 42/month");
 });
@@ -567,7 +582,7 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
             id: "101",
             pageUrl: "/listings/floor-plan-proof",
             salePrice: { amount: 3250000, currency: "USD", unit: null },
-            rentPrice: { amount: 32.5, currency: "USD", unit: "feet" },
+            rentPrice: { amount: 32.5, currency: "USD", unit: "sf" },
             floorPlans,
             brochures: [
               "https://cdn.jll.com/assets/opaque.pdf",
@@ -591,7 +606,7 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
     const enriched = await enrichJllListing(base);
     assert.equal(enriched.detailError, undefined);
     assert.equal(enriched.salePriceText, "$3,250,000");
-    assert.equal(enriched.leaseRateText, "$32.50/feet");
+    assert.equal(enriched.leaseRateText, "$32.50/sf");
     assert.deepEqual(enriched.jllDetail.floorPlans, floorPlans);
     assert.equal(enriched.jllDetail.floorPlanAssetCount, 2);
     assert.deepEqual(enriched.brochures, [
@@ -866,6 +881,91 @@ test("JLL detail enrichment preserves list and detail hidden-price controls", as
       assert.equal(enriched.salePriceText, undefined);
       assert.equal(enriched.leaseRateText, undefined);
     }
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL rejects unsupported price units and redacts hidden prices on detail-shape errors", async () => {
+  const sale = jllGraphqlItemToListing(
+    {
+      id: "unsupported-sale-unit",
+      pageUrl: "/listings/unsupported-sale-unit",
+      salePrice: { amount: 6, currency: "USD", unit: "feet" },
+      hidePrice: false,
+    },
+    "sale",
+    "office",
+    1,
+    1
+  );
+  const lease = jllGraphqlItemToListing(
+    {
+      id: "unsupported-lease-unit",
+      pageUrl: "/listings/unsupported-lease-unit",
+      rentPrice: { amount: 25, currency: "USD", unit: "unit" },
+      hidePrice: false,
+    },
+    "lease",
+    "office",
+    1,
+    1
+  );
+  assert.equal(sale.salePriceUsd, undefined);
+  assert.equal(lease.leaseRateText, undefined);
+  assert.equal(sale.jllSearchResult.priceWithholdingControl, "visible");
+
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-hidden-detail-error-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const url = "https://property.jll.com/listings/hidden-detail-error";
+  try {
+    writeJllDetailCache(url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify({
+          props: {
+            pageProps: {
+              property: {
+                id: "hidden-detail-error",
+                pageUrl: "/listings/hidden-detail-error",
+                hidePrice: true,
+                salePrice: { amount: 3250000, currency: "USD" },
+                floorPlans: { files: [{ download: "https://cdn.example/floor.pdf" }] },
+              },
+              brokers: [],
+            },
+          },
+        }) +
+        "</script>",
+      markdown: "",
+      links: [],
+      images: [],
+    });
+    const enriched = await enrichJllListing({
+      id: "hidden-detail-error",
+      url,
+      salePriceUsd: 3250000,
+      salePriceText: "$3,250,000",
+      askingPrice: "$3.25m",
+      jllSearchResult: { hidePrice: false },
+      jllDetail: { salePrice: { amount: 3250000 } },
+    });
+    assert.match(enriched.detailError, /floorPlans/);
+    assert.equal(enriched.salePriceUsd, undefined);
+    assert.equal(enriched.salePriceText, undefined);
+    assert.equal(enriched.askingPrice, undefined);
+    assert.equal(enriched.jllDetail.salePrice, undefined);
+    assert.deepEqual(enriched.jllDetail.pricing, {
+      visibility: "withheld",
+      searchWithholdingControl: "visible",
+      detailWithholdingControl: "withheld",
+      sale: { sourceShape: "structured", normalization: "redacted" },
+      lease: { sourceShape: "absent", normalization: "redacted" },
+    });
+    assert.doesNotMatch(JSON.stringify(enriched), /3250000|3,250,000|3\.25m/);
   } finally {
     if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
     else process.env.JLL_DETAIL_CACHE_DIR = oldDir;

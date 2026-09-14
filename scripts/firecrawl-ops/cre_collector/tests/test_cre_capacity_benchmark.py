@@ -1269,6 +1269,164 @@ def _comparison_result(rate: float, variant: str = "baseline") -> dict[str, obje
     }
 
 
+def _write_comparison_artifact(
+    tmp_path: Path,
+    sample: dict[str, object],
+    rate: float,
+    variant: str,
+    *,
+    attrition: bool = False,
+) -> tuple[dict[str, object], Path]:
+    """Build one complete rehashable comparison artifact without live I/O."""
+    root = (tmp_path / f"artifact-{variant}-{int(rate)}").resolve()
+    root.mkdir(mode=0o700)
+    root.chmod(0o700)
+    sample_path = root / "sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    result = _comparison_result(rate, variant)
+    requested = result["requested"]
+    assert isinstance(requested, dict)
+    contract = benchmark._worker_contract(128, requested["jll_detail_concurrency"])
+    result["sample_inventory_sha256"] = sample["inventory_sha256"]
+    result["sample_manifest_sha256"] = hashlib.sha256(sample_path.read_bytes()).hexdigest()
+    result["sample_canonical_sha256"] = hashlib.sha256(
+        benchmark._canonical(sample)
+    ).hexdigest()
+    result["worker_contract"] = contract
+    result["worker_source_sha256"] = hashlib.sha256(
+        benchmark._worker_source(
+            Path(__file__).resolve().parents[4],
+            concurrency=requested["jll_detail_concurrency"],
+        ).encode()
+    ).hexdigest()
+    generation = f"2026-09-14T010000Z-{variant}fixture"
+    cache_root = Path(sample["population"]["cache_directory"])
+    for number, replicate in enumerate(result["replicates"], 1):
+        replicate_dir = root / f"replicate-{number}"
+        raw_cache = replicate_dir / "raw-cache"
+        raw_cache.mkdir(parents=True, mode=0o700)
+        replicate_dir.chmod(0o700)
+        raw_cache.chmod(0o700)
+        rows = _benchmark_success_rows(sample, generation)
+        for index, row in enumerate(rows):
+            detail = sample["details"][index]
+            source_cache = cache_root / detail["historic"]["cache_file"]
+            cached = json.loads(source_cache.read_text(encoding="utf-8"))
+            if attrition and index == 0:
+                cached["rawHtml"] = (
+                    '<script id="__NEXT_DATA__" type="application/json">'
+                    + json.dumps(
+                        {
+                            "props": {
+                                "pageProps": {
+                                    "notFound": True,
+                                    "error": {"statusCode": 404, "message": "Not Found"},
+                                }
+                            }
+                        }
+                    )
+                    + "</script>"
+                )
+            cached.update(
+                {
+                    "cachedAt": "2026-09-14T01:00:01Z",
+                    "detailObservedAt": "2026-09-14T01:00:01Z",
+                    "generationId": generation,
+                    "metadata": {"statusCode": 404 if attrition and index == 0 else 200},
+                }
+            )
+            cache_path = raw_cache / f"{index:03}.json"
+            cache_path.write_bytes(benchmark._canonical(cached))
+            raw_bytes = cache_path.read_bytes()
+            raw_html = cached["rawHtml"]
+            if attrition and index == 0:
+                row["normalized"] = {
+                    "id": detail["id"],
+                    "url": detail["url"],
+                    "transactionType": row["transaction_type"],
+                    "detailError": "missing property in __NEXT_DATA__",
+                }
+                row.pop("native", None)
+                row.pop("fidelity", None)
+            else:
+                row["native"].update(
+                    {
+                        "raw_cache_file": str(cache_path),
+                        "raw_cache_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                    }
+                )
+            row["observation"] = {
+                "cache_readable": True,
+                "cache_url": detail["url"],
+                "cache_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                "raw_html_sha256": hashlib.sha256(raw_html.encode()).hexdigest(),
+                "cached_at": cached["cachedAt"],
+                "detail_observed_at": cached["detailObservedAt"],
+                "generation_id": generation,
+                "http_status": 404 if attrition and index == 0 else 200,
+                "next_data_valid": True,
+                "explicit_not_found": attrition and index == 0,
+                "no_property": attrition and index == 0,
+                "provider_challenge": False,
+            }
+            if not (attrition and index == 0):
+                row["normalized"]["detailObservedAt"] = cached["detailObservedAt"]
+                row["normalized"]["freshnessProvenance"] = {
+                    "cacheDisposition": "live",
+                    "generationId": generation,
+                }
+        _write_worker_result(
+            replicate_dir,
+            contract,
+            generation,
+            rows,
+            performance_concurrency=int(requested["jll_detail_concurrency"]),
+        )
+        summary = benchmark.summarize_replicate(
+            replicate_dir,
+            sample,
+            round(128 * 60 / rate, 3),
+            sample_canonical_sha256=result["sample_canonical_sha256"],
+            worker_contract=contract,
+        )
+        replicate.update(summary)
+        replicate["guard_telemetry"]["worker_source_sha256"] = result[
+            "worker_source_sha256"
+        ]
+    admission = {
+        "profile": result["profile"],
+        "config_sha256": result["config_sha256"],
+        "source_git_sha": result["source_git_sha"],
+        "review_approval_nonce_sha256": "2" * 64,
+    }
+    admission_path = root / "admission.json"
+    admission_path.write_bytes(benchmark._canonical(admission))
+    result["admission_sha256"] = hashlib.sha256(
+        benchmark._canonical(admission)
+    ).hexdigest()
+    marker = {
+        "kind": "cre_capacity_admission_consumption",
+        "admission_sha256": result["admission_sha256"],
+        "review_benchmark_grant_sha256": result["review_benchmark_grant_sha256"],
+        "review_approval_nonce_sha256": result["review_approval_nonce_sha256"],
+    }
+    marker_path = root / "admission-consumption.json"
+    marker_path.write_bytes(benchmark._canonical(marker))
+    result["admission_consumption_sha256"] = hashlib.sha256(
+        marker_path.read_bytes()
+    ).hexdigest()
+    result["artifact_evidence"] = {
+        "artifact_root": str(root),
+        "sample_path": str(sample_path),
+        "sample_manifest_sha256": result["sample_manifest_sha256"],
+        "admission_path": str(admission_path),
+        "admission_consumption_path": str(marker_path),
+    }
+    result_path = root / "result.json"
+    result_path.write_bytes(benchmark._canonical(result))
+    return result, result_path
+
+
 @pytest.mark.parametrize(
     ("worker_error", "final_settlement", "error_type"),
     [
@@ -1409,44 +1567,71 @@ def test_sigterm_handler_fails_into_interrupt_cleanup_path() -> None:
 
 
 def test_compare_results_requires_matched_complete_evidence_and_fifteen_percent(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(benchmark, "SUPPORTED_BASELINE_ADMISSION_AVAILABLE", True)
-    baseline = _comparison_result(100)
-    candidate = _comparison_result(115, "candidate")
-    repo = Path(__file__).resolve().parents[4]
-    baseline["worker_source_sha256"] = hashlib.sha256(
-        benchmark._worker_source(repo, concurrency=4).encode()
-    ).hexdigest()
-    candidate["worker_source_sha256"] = hashlib.sha256(
-        benchmark._worker_source(repo, concurrency=10).encode()
-    ).hexdigest()
+    sample = _sample(tmp_path)
+    baseline, baseline_path = _write_comparison_artifact(
+        tmp_path, sample, 100, "baseline"
+    )
+    candidate, candidate_path = _write_comparison_artifact(
+        tmp_path, sample, 115.001, "candidate"
+    )
     assert baseline["worker_source_sha256"] != candidate["worker_source_sha256"]
 
-    comparison = benchmark.compare_results(baseline, candidate)
+    comparison = benchmark.compare_results(
+        baseline,
+        candidate,
+        baseline_result_path=baseline_path,
+        candidate_result_path=candidate_path,
+    )
     assert comparison["state"] == "measured"
-    assert comparison["gain_percent"] == 15
-    assert comparison["decision"] == "adoptable"
+    assert comparison["gain_percent"] >= 15
+    assert comparison["decision"] == "do_not_adopt"
+    assert comparison["reasons"] == ["counterbalanced_pair_required"]
     assert comparison["candidate"]["completeness_fidelity"][
         "historic_native_asset_matches_per_replicate"
     ] == [128, 128, 128]
 
     candidate["replicates"][0]["resource_verdict"] = {"state": "inconclusive"}
-    comparison = benchmark.compare_results(baseline, candidate)
+    comparison = benchmark.compare_results(
+        baseline,
+        candidate,
+        baseline_result_path=baseline_path,
+        candidate_result_path=candidate_path,
+    )
     assert comparison["state"] == "inconclusive"
     assert "candidate_replicate_1_resources" in comparison["reasons"]
 
 
 def test_compare_results_safe_negative_and_mismatch_are_nonfatal(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(benchmark, "SUPPORTED_BASELINE_ADMISSION_AVAILABLE", True)
-    baseline = _comparison_result(100)
-    candidate = _comparison_result(114, "candidate")
-    assert benchmark.compare_results(baseline, candidate)["decision"] == "do_not_adopt"
+    sample = _sample(tmp_path)
+    baseline, baseline_path = _write_comparison_artifact(
+        tmp_path, sample, 100, "baseline", attrition=True
+    )
+    candidate, candidate_path = _write_comparison_artifact(
+        tmp_path, sample, 114, "candidate"
+    )
+    assert (
+        benchmark.compare_results(
+            baseline,
+            candidate,
+            baseline_result_path=baseline_path,
+            candidate_result_path=candidate_path,
+        )["decision"]
+        == "do_not_adopt"
+    )
 
     candidate["sample_manifest_sha256"] = "e" * 64
-    comparison = benchmark.compare_results(baseline, candidate)
+    comparison = benchmark.compare_results(
+        baseline,
+        candidate,
+        baseline_result_path=baseline_path,
+        candidate_result_path=candidate_path,
+    )
     assert comparison["state"] == "inconclusive"
     assert "mismatch_sample_manifest_sha256" in comparison["reasons"]
 
@@ -1531,12 +1716,22 @@ def test_replicate_state_keeps_confirmed_attrition_measured_for_later_replicates
     assert benchmark._replicate_state(result["replicates"][0], 128) == "measured"
 
 
-def test_compare_excludes_asymmetric_attrition_without_replacing_cohort_rows() -> None:
-    baseline = _comparison_result(100)
-    candidate = _comparison_result(120, "candidate")
-    _mark_confirmed_attrition(baseline, 0)
-
-    comparison = benchmark.compare_results(baseline, candidate)
+def test_compare_excludes_asymmetric_attrition_without_replacing_cohort_rows(
+    tmp_path: Path,
+) -> None:
+    sample = _sample(tmp_path)
+    baseline, baseline_path = _write_comparison_artifact(
+        tmp_path, sample, 100, "baseline", attrition=True
+    )
+    candidate, candidate_path = _write_comparison_artifact(
+        tmp_path, sample, 120, "candidate"
+    )
+    comparison = benchmark.compare_results(
+        baseline,
+        candidate,
+        baseline_result_path=baseline_path,
+        candidate_result_path=candidate_path,
+    )
 
     assert comparison["state"] == "measured"
     assert comparison["decision"] == "do_not_adopt"
@@ -1556,11 +1751,12 @@ def test_compare_excludes_asymmetric_attrition_without_replacing_cohort_rows() -
 def test_compare_cli_is_read_only_and_needs_no_artifact_root(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    baseline = tmp_path / "baseline.json"
-    candidate = tmp_path / "candidate.json"
-    baseline.write_text(json.dumps(_comparison_result(100)), encoding="utf-8")
-    candidate.write_text(
-        json.dumps(_comparison_result(114, "candidate")), encoding="utf-8"
+    sample = _sample(tmp_path)
+    _baseline, baseline = _write_comparison_artifact(
+        tmp_path, sample, 100, "baseline"
+    )
+    _candidate, candidate = _write_comparison_artifact(
+        tmp_path, sample, 114, "candidate"
     )
 
     code = benchmark.main(
@@ -1575,6 +1771,132 @@ def test_compare_cli_is_read_only_and_needs_no_artifact_root(
     assert code == 0
     comparison = json.loads(capsys.readouterr().out)
     assert comparison["decision"] == "do_not_adopt"
+
+
+def test_counterbalanced_pair_comparison_rehashes_real_ab_ba_ab_artifacts(
+    tmp_path: Path,
+) -> None:
+    sample = _sample(tmp_path)
+    sample_path = tmp_path / "immutable-sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    pair_root = tmp_path / "pair"
+    pair_root.mkdir(mode=0o700)
+    pair_root.chmod(0o700)
+    plan = benchmark.create_counterbalanced_pair_plan(
+        artifact_root=pair_root, sample_path=sample_path
+    )
+    plan_path = pair_root / "counterbalanced-pair-plan.json"
+    plan_sha256 = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    arms = []
+    for order, variant in enumerate(plan["sequence"], 1):
+        rate = 100 if variant == "baseline" else 115.001
+        arm_fixture_root = tmp_path / f"arm-fixture-{order}"
+        arm_fixture_root.mkdir()
+        result, result_path = _write_comparison_artifact(
+            arm_fixture_root, sample, rate, variant
+        )
+        start_second = (order - 1) * 20
+        finish_second = start_second + 10
+        result["started_at"] = (
+            f"2026-09-14T00:{start_second // 60:02d}:{start_second % 60:02d}Z"
+        )
+        result["finished_at"] = (
+            f"2026-09-14T00:{finish_second // 60:02d}:{finish_second % 60:02d}Z"
+        )
+        result["pairing"] = {
+            "pair_id": plan["pair_id"],
+            "pair_plan_sha256": plan_sha256,
+            "arm_order": order,
+            "sequence": plan["sequence"],
+            "max_gap_seconds": plan["max_gap_seconds"],
+            "min_gap_seconds": plan["min_gap_seconds"],
+        }
+        result_path.write_bytes(benchmark._canonical(result))
+        arms.append(
+            {
+                "arm_order": order,
+                "variant": variant,
+                "result_path": str(result_path),
+                "result_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
+            }
+        )
+    state = {
+        "schema_version": 1,
+        "kind": "cre_capacity_counterbalanced_pair_state",
+        "pair_id": plan["pair_id"],
+        "pair_plan_sha256": plan_sha256,
+        "arms": arms,
+    }
+    Path(plan["state_path"]).write_bytes(benchmark._canonical(state))
+
+    comparison = benchmark.compare_counterbalanced_pair(plan_path)
+
+    assert comparison["state"] == "measured"
+    assert comparison["decision"] == "adoptable"
+    assert comparison["sequence"] == ["baseline", "candidate", "candidate", "baseline", "baseline", "candidate"]
+
+    arms[1]["result_sha256"] = "0" * 64
+    Path(plan["state_path"]).write_bytes(benchmark._canonical(state))
+    assert benchmark.compare_counterbalanced_pair(plan_path)["decision"] == "no_adoption_decision"
+
+
+def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample = _sample(tmp_path)
+    sample_path = tmp_path / "immutable-sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    pair_root = tmp_path / "pair"
+    pair_root.mkdir(mode=0o700)
+    pair_root.chmod(0o700)
+    benchmark.create_counterbalanced_pair_plan(
+        artifact_root=pair_root, sample_path=sample_path
+    )
+    plan_path = pair_root / "counterbalanced-pair-plan.json"
+    admissions: list[str] = []
+    rollbacks: list[tuple[Path, str, str, bool]] = []
+
+    monkeypatch.setattr(benchmark, "validate_admission", lambda value, *_args, **_kwargs: value)
+
+    def fake_run_benchmark(**kwargs):
+        admissions.append(kwargs["profile_name"])
+        result_path = kwargs["artifact_root"] / "result.json"
+        result_path.write_bytes(benchmark._canonical({"completed": True}))
+        return {"completed": True}
+
+    monkeypatch.setattr(benchmark, "run_benchmark", fake_run_benchmark)
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "transition",
+        lambda receipt, profile, target, *, execute: rollbacks.append(
+            (receipt, profile, target, execute)
+        ),
+    )
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+    receipt = tmp_path / "candidate-receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+
+    benchmark.run_counterbalanced_pair_step(
+        repo_root=Path(__file__).resolve().parents[4],
+        pair_plan_path=plan_path,
+        admission={},
+        admission_path=admission_path,
+        timeout_seconds=1,
+    )
+    benchmark.run_counterbalanced_pair_step(
+        repo_root=Path(__file__).resolve().parents[4],
+        pair_plan_path=plan_path,
+        admission={},
+        admission_path=admission_path,
+        timeout_seconds=1,
+        candidate_receipt_path=receipt,
+    )
+
+    state = json.loads((pair_root / "counterbalanced-pair-state.json").read_text())
+    assert admissions == ["production-current", "bold-jll-128"]
+    assert [arm["variant"] for arm in state["arms"]] == ["baseline", "candidate"]
+    assert rollbacks == [(receipt, "bold-jll-128", "baseline", True)]
 
 
 def test_summarize_replicate_fails_closed_on_native_delta_and_remote_timeout(
@@ -1636,7 +1958,7 @@ def test_summarize_replicate_fails_closed_on_native_delta_and_remote_timeout(
     )
 
     assert summary["qualified_fresh_unique_rows"] == 0
-    assert summary["native_asset_deltas"] == 128
+    assert summary["native_asset_deltas"] == 0
     assert summary["remote_settlement_unknown"] == 1
     assert summary["provider_cooldown"]["required"] is False
     assert summary["comparison_state"] == "quality_failed"
@@ -2695,16 +3017,13 @@ def test_summarize_accepts_value_changes_but_rejects_supported_channel_drops(
     assert failed["comparison_state"] == "quality_failed"
 
 
-def test_worker_brochure_fidelity_accepts_typed_documents_without_double_counting() -> (
+def test_worker_uses_executed_brochure_url_classifier_without_double_counting() -> (
     None
 ):
     source = benchmark._worker_source(Path(__file__).resolve().parents[4])
 
-    assert "present(normalized?.brochures) || documents.some(" in source
-    assert (
-        'String(item?.docType ?? item?.documentType ?? item?.type ?? "").toLowerCase() === "brochure"'
-        in source
-    )
+    assert "jllHasUsableBrochure" in source
+    assert "brochures: jllHasUsableBrochure(normalized)" in source
 
 
 def _benchmark_success_rows(
@@ -2771,6 +3090,8 @@ def _write_worker_result(
     contract: dict[str, object],
     generation: str,
     rows: list[dict[str, object]],
+    *,
+    performance_concurrency: int = 10,
 ) -> None:
     (replicate / "worker-output.json").write_text(
         json.dumps(
@@ -2786,7 +3107,7 @@ def _write_worker_result(
         encoding="utf-8",
     )
     (replicate / "performance.json").write_text(
-        json.dumps(_performance()), encoding="utf-8"
+        json.dumps(_performance(performance_concurrency)), encoding="utf-8"
     )
 
 

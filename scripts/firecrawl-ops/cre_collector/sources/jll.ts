@@ -379,12 +379,14 @@ function jllNormalizedPrice(price: unknown): JllNormalizedPrice {
       };
     }
     const legacyAmount = moneyToNumber(text);
+    const unitMatch = text.match(/(?:\/|\bper\s+)([a-z0-9. ]+)/i);
+    const unit = unitMatch ? clean(unitMatch[1]) : null;
     return {
       sourceShape: "legacy_string",
       text,
       amount: legacyAmount,
       currency: legacyAmount === null ? null : "USD",
-      unit: null,
+      unit,
     };
   }
   if (typeof price !== "object" || Array.isArray(price)) {
@@ -404,9 +406,25 @@ function jllNormalizedPrice(price: unknown): JllNormalizedPrice {
 }
 
 function jllPriceUsd(price: JllNormalizedPrice): number | null {
-  return price.amount !== null && (!price.currency || price.currency === "USD")
+  const unit = price.unit?.trim().toLowerCase().replace(/\s+/g, " ") ?? null;
+  const totalSaleUnit = unit === null || ["total", "total sale", "total_price"].includes(unit);
+  return price.amount !== null && (!price.currency || price.currency === "USD") && totalSaleUnit
     ? price.amount
     : null;
+}
+
+function jllLeasePriceText(price: JllNormalizedPrice): string | null {
+  if (price.text === null) return null;
+  const unit = price.unit?.trim().toLowerCase().replace(/\s+/g, " ") ?? null;
+  // A bare legacy display string is the established JLL lease representation.
+  // Once a unit is provided, admit only explicit area/time lease-rate units.
+  if (
+    unit === null ||
+    ["sf", "sq ft", "sqft", "square foot", "square feet", "sf/year", "sf/yr", "sf/month", "sf/mo"].includes(unit)
+  ) {
+    return price.text;
+  }
+  return null;
 }
 
 function jllWithholdingControl(value: unknown, key: string): JllWithholdingControl {
@@ -446,6 +464,26 @@ function jllStoredWithholdingControl(value: unknown): JllWithholdingControl {
 
 function jllPriceWithheld(...controls: JllWithholdingControl[]): boolean {
   return controls.some((control) => control === "withheld" || control === "unknown");
+}
+
+const JLL_PRICE_CONTROL_KEYS = new Set(["hideprice", "pricewithholdingcontrol"]);
+
+/** Remove sensitive price/rate material while retaining harmless provenance. */
+function jllRedactSensitivePriceFields(value: unknown): any {
+  if (Array.isArray(value)) return value.map(jllRedactSensitivePriceFields);
+  if (value === null || typeof value !== "object") return value;
+  const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedKey = key.toLowerCase();
+    if (
+      !JLL_PRICE_CONTROL_KEYS.has(normalizedKey) &&
+      /(price|rate|rent)/i.test(key)
+    ) {
+      continue;
+    }
+    output[key] = jllRedactSensitivePriceFields(child);
+  }
+  return output;
 }
 
 function jllPriceProvenance(
@@ -529,12 +567,9 @@ export function jllGraphqlItemToListing(
     country: "US",
     latitude: num(item?.latitude),
     longitude: num(item?.longitude),
-    salePriceUsd:
-      tx === "sale" && !hiddenPrice
-        ? jllPriceUsd(salePrice)
-        : null,
+    salePriceUsd: tx === "sale" && !hiddenPrice ? jllPriceUsd(salePrice) : null,
     salePriceText: tx === "sale" && !hiddenPrice ? salePrice.text : null,
-    leaseRateText: tx === "lease" && !hiddenPrice ? rentPrice.text : null,
+    leaseRateText: tx === "lease" && !hiddenPrice ? jllLeasePriceText(rentPrice) : null,
     sizeText:
       buildingSizeSqft === null
         ? null
@@ -836,6 +871,33 @@ export function jllStringUrls(values: any): string[] {
   return dedupeStrings(values.map((value) => clean(value))).filter((url) => /^https?:\/\//i.test(url));
 }
 
+/** True only for a native or typed brochure with a usable public URL. */
+export function jllHasUsableBrochure(normalized: unknown): boolean {
+  if (normalized === null || typeof normalized !== "object" || Array.isArray(normalized)) {
+    return false;
+  }
+  const record = normalized as Record<string, unknown>;
+  const usableUrl = (value: unknown): boolean =>
+    typeof value === "string" && /^https?:\/\//i.test(value);
+  const brochures = record.brochures;
+  if (
+    Array.isArray(brochures) &&
+    brochures.some((item) => usableUrl(typeof item === "string" ? item : (item as any)?.url))
+  ) {
+    return true;
+  }
+  const documents = record.documents;
+  return (
+    Array.isArray(documents) &&
+    documents.some(
+      (item: any) =>
+        usableUrl(item?.url) &&
+        String(item?.docType ?? item?.documentType ?? item?.type ?? "").toLowerCase() ===
+          "brochure"
+    )
+  );
+}
+
 export function jllSurfaceAreaSqft(property: any): number | null {
   const direct = num(property?.surfaceArea);
   if (direct) return direct;
@@ -1134,6 +1196,7 @@ export function jllStrandedStructured(property: any): Record<string, any> {
 
 export async function enrichJllListing(base: any): Promise<any> {
   if (!base.url) return base;
+  let failurePricing: Record<string, unknown> | null = null;
   try {
     let doc = await scrapeJllDetailDoc(base.url);
     let next = jllNextData(doc.rawHtml);
@@ -1145,7 +1208,12 @@ export async function enrichJllListing(base: any): Promise<any> {
       pageProps = next?.props?.pageProps;
       property = pageProps?.property;
     }
-    if (!property) return prune({ ...base, detailError: "missing property in __NEXT_DATA__" });
+    if (!property) {
+      return prune({
+        ...jllRedactSensitivePriceFields(base),
+        detailError: "missing property in __NEXT_DATA__",
+      });
+    }
 
     const detailId = clean(property.id);
     const detailUrlRaw = clean(property.pageUrl) ?? clean(pageProps?.relativeUrl);
@@ -1161,6 +1229,29 @@ export async function enrichJllListing(base: any): Promise<any> {
     ) {
       throw new Error("JLL detail listing URL does not match enumerated inventory URL");
     }
+
+    // Establish and enforce the price visibility boundary before parsing any
+    // fallible detail shape.  A malformed floor-plan payload must not turn a
+    // hidden price into the unmodified search-card fallback.
+    const searchWithholdingControl = jllStoredWithholdingControl(
+      base?.jllSearchResult
+    );
+    const detailWithholdingControl = jllWithholdingControl(property, "hidePrice");
+    const hiddenPrice = jllPriceWithheld(
+      searchWithholdingControl,
+      detailWithholdingControl
+    );
+    const salePrice = jllNormalizedPrice(property.salePrice);
+    const rentPrice = jllNormalizedPrice(property.rentPrice);
+    const pricing = {
+      visibility: hiddenPrice ? "withheld" : "visible",
+      searchWithholdingControl,
+      detailWithholdingControl,
+      sale: jllPriceProvenance(salePrice, hiddenPrice),
+      lease: jllPriceProvenance(rentPrice, hiddenPrice),
+    };
+    failurePricing = hiddenPrice ? pricing : null;
+    const publicBase = hiddenPrice ? jllRedactSensitivePriceFields(base) : base;
 
     const contactsDetailed = jllContacts(Array.isArray(pageProps?.brokers) ? pageProps.brokers : property?.brokers);
     const brokerIds = contactsDetailed
@@ -1213,19 +1304,8 @@ export async function enrichJllListing(base: any): Promise<any> {
     const documents = documentChannels.documents;
     const photos = dedupeStrings([...(images.length ? images : base.photos ?? []), ...harvested.images]);
     const lifted = jllStrandedStructured(property);
-    const searchWithholdingControl = jllStoredWithholdingControl(
-      base?.jllSearchResult
-    );
-    const detailWithholdingControl = jllWithholdingControl(property, "hidePrice");
-    const hiddenPrice = jllPriceWithheld(
-      searchWithholdingControl,
-      detailWithholdingControl
-    );
-    const salePrice = jllNormalizedPrice(property.salePrice);
-    const rentPrice = jllNormalizedPrice(property.rentPrice);
-
     return prune({
-      ...base,
+      ...publicBase,
       detailObservedAt: doc.detailObservation?.observedAt,
       freshnessProvenance: {
         detailScope: "detail_page",
@@ -1245,9 +1325,21 @@ export async function enrichJllListing(base: any): Promise<any> {
       postalCode: clean(property.postcode) ?? base.postalCode,
       latitude: num(property.latitude) ?? base.latitude,
       longitude: num(property.longitude) ?? base.longitude,
-      salePriceUsd: hiddenPrice ? null : jllPriceUsd(salePrice) ?? base.salePriceUsd,
-      salePriceText: hiddenPrice ? null : salePrice.text ?? base.salePriceText,
-      leaseRateText: hiddenPrice ? null : rentPrice.text ?? base.leaseRateText,
+      salePriceUsd: hiddenPrice
+        ? null
+        : salePrice.sourceShape === "absent"
+          ? base.salePriceUsd
+          : jllPriceUsd(salePrice),
+      salePriceText: hiddenPrice
+        ? null
+        : salePrice.sourceShape === "absent"
+          ? base.salePriceText
+          : salePrice.text,
+      leaseRateText: hiddenPrice
+        ? null
+        : rentPrice.sourceShape === "absent"
+          ? base.leaseRateText
+          : jllLeasePriceText(rentPrice),
       sizeText: clean(property.surfaceArea) ?? base.sizeText,
       buildingSizeSqft: jllSurfaceAreaSqft(property) ?? base.buildingSizeSqft,
       ...lifted,
@@ -1266,13 +1358,7 @@ export async function enrichJllListing(base: any): Promise<any> {
         refId: clean(property.refId),
         pageUrl: clean(property.pageUrl),
         relativeUrl: clean(pageProps?.relativeUrl),
-        pricing: {
-          visibility: hiddenPrice ? "withheld" : "visible",
-          searchWithholdingControl,
-          detailWithholdingControl,
-          sale: jllPriceProvenance(salePrice, hiddenPrice),
-          lease: jllPriceProvenance(rentPrice, hiddenPrice),
-        },
+        pricing,
         tenureTypes: property.tenureTypes,
         propertyTypes: property.propertyTypes,
         labels: property.labels,
@@ -1301,7 +1387,15 @@ export async function enrichJllListing(base: any): Promise<any> {
     });
   } catch (err) {
     console.error(`  jll: detail failed for ${base.url}: ${err}`);
-    return prune({ ...base, detailError: String(err) });
+    // The error path is also a visibility boundary.  Redact recursively so a
+    // search-card askingPrice or an old nested jllDetail price cannot survive a
+    // malformed detail field; preserve only safe control/provenance fields.
+    const redacted = jllRedactSensitivePriceFields(base);
+    const detail =
+      failurePricing === null
+        ? redacted.jllDetail
+        : { ...(redacted.jllDetail ?? {}), pricing: failurePricing };
+    return prune({ ...redacted, jllDetail: detail, detailError: String(err) });
   }
 }
 

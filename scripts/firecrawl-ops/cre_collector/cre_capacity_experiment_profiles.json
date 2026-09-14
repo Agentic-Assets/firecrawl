@@ -1,6 +1,19 @@
 {
   "schema_version": 1,
   "default_profile": "production-current",
+  "benchmark_controls": {
+    "counterbalanced_pair": {
+      "sequence": ["baseline", "candidate", "candidate", "baseline", "baseline", "candidate"],
+      "max_gap_seconds": 14400,
+      "min_gap_seconds": 1
+    },
+    "multisource_v1": {
+      "calibration_per_source": 8,
+      "core_per_source": 24,
+      "minimum_detail_eligible_for_core": 16,
+      "minimum_sources": 16
+    }
+  },
   "profiles": {
     "production-current": {
       "kind": "baseline",

@@ -647,6 +647,54 @@ def test_to_row_drops_malformed_jll_pricing_and_fails_closed_on_prices():
     assert r["lease_rate_min"] is None
 
 
+def test_to_row_rejects_contradictory_or_legacy_hidden_jll_price_provenance():
+    contradictory = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/contradictory-price",
+            "id": "contradictory-price",
+            "salePriceUsd": 3250000,
+            "askingPrice": "$3.25m",
+            "jllDetail": {
+                "salePrice": {"amount": 3250000},
+                "pricing": {
+                    "visibility": "visible",
+                    "searchWithholdingControl": "unknown",
+                    "detailWithholdingControl": "visible",
+                    "sale": {
+                        "sourceShape": "structured",
+                        "normalization": "available",
+                        "normalizedText": "$3,250,000",
+                        "normalizedAmount": 3250000,
+                    },
+                    "lease": {"sourceShape": "absent", "normalization": "unavailable"},
+                },
+            },
+        }
+    )
+    assert contradictory["sale_price_usd"] is None
+    assert "pricing" not in contradictory["raw_data"]["jllDetail"]
+    assert "3250000" not in json.dumps(contradictory["raw_data"])
+    assert "3.25m" not in json.dumps(contradictory["raw_data"])
+
+    legacy_hidden = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/legacy-hidden-price",
+            "id": "legacy-hidden-price",
+            "salePriceUsd": 3250000,
+            "askingPrice": "$3.25m",
+            "jllSearchResult": {"hidePrice": True, "askingPrice": "$3.25m"},
+            "jllDetail": {"salePrice": {"amount": 3250000}},
+        }
+    )
+    assert legacy_hidden["sale_price_usd"] is None
+    stored = json.dumps(legacy_hidden["raw_data"])
+    assert "3250000" not in stored
+    assert "3.25m" not in stored
+    assert legacy_hidden["raw_data"]["jllSearchResult"]["hidePrice"] is True
+
+
 def test_to_row_retains_valid_public_jll_pricing_provenance_only():
     r = _row(
         {

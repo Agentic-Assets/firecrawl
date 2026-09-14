@@ -216,8 +216,9 @@ proves all loopback API, browser, RabbitMQ, NuQ, active-crawl, and queue counter
 are idle, reviews the recorded result, and removes that exact canonical lock
 directory. Do not remove it merely because the local worker process exited.
 
-The candidate is adoptable only if the three matched replicates show at least a
-15 percent throughput gain and all identity, normalized-field fidelity,
+The candidate is adoptable only if three counterbalanced matched pairs (the
+fixed `baseline,candidate,candidate,baseline,baseline,candidate` AB/BA/AB
+sequence) show at least a 15 percent throughput gain and all identity, normalized-field fidelity,
 document/media/asset fidelity, freshness, executable provenance, host and
 container telemetry, OOM, PID, queue settlement, cooldown, and no-write gates
 pass. Summary booleans alone are insufficient: every replicate must retain the
@@ -239,28 +240,39 @@ freshness and normalized field, asset, document, and media parity. A source Git
 SHA remains provenance, but an unrelated documentation-only commit is not a
 substitute for executable dependency matching.
 
+The ordinary two-result command remains diagnostic-only and can never return
+`adoptable`. It reopens and rehashes the sample, admission, consumption marker,
+worker output, performance receipt, and each raw cache receipt before reporting
+its measured result. Create the immutable paired plan from a fresh prevalidated
+JLL sample, then execute only its next arm with a fresh one-use admission. The
+candidate arm requires its existing runtime receipt and is rolled back to the
+baseline in `finally` before the arm is recorded. Do not batch admissions or
+hold an approval across the allowed pair gap.
+
 ```bash
+python3 cre_capacity_benchmark.py --artifact-root /restricted/pair-001 \
+  --sample /restricted/jll-128-sample.json --create-counterbalanced-pair
+
+# Repeat only for the plan's next arm, using its fresh baseline or candidate admission.
+python3 cre_capacity_benchmark.py --pair-plan /restricted/pair-001/counterbalanced-pair-plan.json \
+  --admission /restricted/fresh-admission.json --run-counterbalanced-step \
+  --candidate-rollback-receipt /restricted/candidate-runtime-receipt.json
+
 python3 cre_capacity_benchmark.py \
-  --compare-baseline /restricted/matched-baseline-result.json \
-  --compare-candidate ../../../tasks/tmp/cre-capacity-benchmark-001/result.json
+  --compare-counterbalanced-pair /restricted/pair-001/counterbalanced-pair-plan.json
 ```
 
-It reports median qualified rows per minute, percentage gain, completeness,
-normalized/native/fresh fidelity, and p50/p95/p99 latency. Under a future
-supported baseline-admission path, at least 15 percent would yield `adoptable`
-and a measured smaller gain would yield nonfatal `do_not_adopt`; missing or
-unmatched evidence yields `no_adoption_decision`. At this revision the
-comparison is hard-disabled from returning an adoption decision because no
-supported baseline producer exists. Do not substitute the prior 32-detail
-probe or any unmatched historical result.
-
-The first candidate run does not require a baseline run. Adoption does. The
-required baseline is the exact same JLL 128-record manifest and three-replicate
-evidence contract at browser 2 CPU, global pages 4, JLL detail width 4, browser
-PID 384, and API 1 CPU. At this revision, this workflow does not expose an
-admitted command that generates that baseline artifact. Until a supported,
-exactly matched baseline exists, the candidate result can establish safety and
-fidelity evidence but the comparison must return `no_adoption_decision`.
+The final comparator admits only six disk-bound arms with the exact fixed
+order, pair ID, immutable sample/config hashes, matching per-pair attrition
+identity manifests, and timestamps within the centrally configured gap. It
+reports median qualified rows per minute, percentage gain, completeness,
+normalized/native/fresh fidelity, and p50/p95/p99 latency. Confirmed JLL 404
+attrition remains in its immutable slot, continues later replicas, and is
+excluded only from that row's current throughput. Asymmetric attrition reduces
+matching confidence and blocks adoption; it never silently substitutes cohort
+members or infers a database inactive state. Any transport, challenge, 429,
+unknown-status, malformed-content, parser, or fidelity failure remains
+fail-closed.
 
 ## 2026-09-14 execution record
 

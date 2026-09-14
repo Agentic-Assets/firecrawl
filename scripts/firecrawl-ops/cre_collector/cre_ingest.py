@@ -1669,6 +1669,13 @@ def _safe_jll_pricing(value):
     }
     if not all(control in _JLL_PRICE_CONTROL_CLASSES for control in controls.values()):
         return None
+    # A visible envelope cannot coexist with a hidden or unparseable control.
+    # Treat that contradictory provider state as unsafe rather than admitting a
+    # numeric value into staging on the basis of its self-declared visibility.
+    if visibility == "visible" and any(
+        control in {"withheld", "unknown"} for control in controls.values()
+    ):
+        return None
     safe = {"visibility": visibility, **controls}
     for side in ("sale", "lease"):
         candidate = value.get(side)
@@ -1705,21 +1712,45 @@ def _safe_jll_pricing(value):
     return safe
 
 
+def _redact_jll_price_values(value):
+    """Recursively remove price/rate payloads while keeping control provenance."""
+    if isinstance(value, list):
+        return [_redact_jll_price_values(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    safe_controls = {"hideprice", "pricewithholdingcontrol"}
+    redacted = {}
+    for key, item in value.items():
+        lowered = str(key).lower()
+        if lowered not in safe_controls and any(
+            token in lowered for token in ("price", "rate", "rent")
+        ):
+            continue
+        redacted[key] = _redact_jll_price_values(item)
+    return redacted
+
+
 def _safe_jll_raw_data(listing):
     """Copy only validated, redacted JLL pricing into raw_data staging."""
     if not isinstance(listing, dict) or listing.get("sourceKey") != "jll":
         return listing
     detail = listing.get("jllDetail")
-    if not isinstance(detail, dict) or "pricing" not in detail:
+    has_pricing = isinstance(detail, dict) and "pricing" in detail
+    safe_pricing = _safe_jll_pricing(detail.get("pricing")) if has_pricing else None
+    must_redact = _jll_pricing_is_withheld(listing) or (
+        has_pricing
+        and (safe_pricing is None or safe_pricing["visibility"] == "withheld")
+    )
+    if not has_pricing and not must_redact:
         return listing
-    safe_pricing = _safe_jll_pricing(detail.get("pricing"))
-    raw = dict(listing)
-    raw_detail = dict(detail)
-    if safe_pricing is None:
-        raw_detail.pop("pricing", None)
-    else:
-        raw_detail["pricing"] = safe_pricing
-    raw["jllDetail"] = raw_detail
+    raw = _redact_jll_price_values(listing) if must_redact else dict(listing)
+    if isinstance(detail, dict):
+        raw_detail = dict(raw.get("jllDetail", {}))
+        if safe_pricing is None:
+            raw_detail.pop("pricing", None)
+        else:
+            raw_detail["pricing"] = safe_pricing
+        raw["jllDetail"] = raw_detail
     if safe_pricing is None or safe_pricing["visibility"] == "withheld":
         for key in (
             "salePriceUsd",
@@ -1740,9 +1771,24 @@ def _jll_pricing_is_withheld(listing):
     detail = listing.get("jllDetail")
     pricing = detail.get("pricing") if isinstance(detail, dict) else None
     safe = _safe_jll_pricing(pricing)
-    return isinstance(detail, dict) and "pricing" in detail and (
+    if isinstance(detail, dict) and "pricing" in detail and (
         safe is None or safe["visibility"] == "withheld"
-    )
+    ):
+        return True
+    search = listing.get("jllSearchResult")
+    for value in (detail, search):
+        if not isinstance(value, dict):
+            continue
+        control = value.get("hidePrice", value.get("priceWithholdingControl"))
+        if control is True or (
+            isinstance(control, str) and control in {"withheld", "unknown"}
+        ):
+            return True
+        if control is not None and control is not False and not (
+            isinstance(control, str) and control in {"absent", "visible"}
+        ):
+            return True
+    return False
 
 
 def to_row(listing, brokers_by_idx, scraped_at):
@@ -2475,6 +2521,14 @@ def build_sql(
         '$.**.freshnessProvenance.detailScope ? (@ == "first_party_detail_api")'
       )
     )"""
+    # Price visibility is an explicit provider fact, unlike a sparse ordinary
+    # update.  When JLL now withholds the price, clear previously visible
+    # columns rather than allowing the ordinary COALESCE-keep policy to retain
+    # stale values.
+    jll_price_withheld_row_sql = """(
+      EXCLUDED.raw_data->>'sourceKey' = 'jll'
+      AND EXCLUDED.raw_data#>>'{jllDetail,pricing,visibility}' = 'withheld'
+    )"""
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
     # Large complete-source artifacts (CBRE is ~80 MB of inline COPY data) can
@@ -3074,23 +3128,33 @@ WITH ins AS (
         -- and other neighbors that already use COALESCE-keep. The lifted structured
         -- columns (noi/gross_revenue/occupancy_rate/divisible/term/parking/...) follow
         -- the same rule so a sparse detail pass never clobbers a fuller prior capture.
-        sale_price_usd    = CASE WHEN {colliers_transition_row_sql}
+        sale_price_usd    = CASE WHEN {jll_price_withheld_row_sql}
+                                 THEN NULL
+                                 WHEN {colliers_transition_row_sql}
                                  THEN NULL
                                  ELSE COALESCE(EXCLUDED.sale_price_usd, t.sale_price_usd) END,
-        sale_price_per_sf = CASE WHEN {colliers_transition_row_sql}
+        sale_price_per_sf = CASE WHEN {jll_price_withheld_row_sql}
+                                 THEN NULL
+                                 WHEN {colliers_transition_row_sql}
                                  THEN NULL
                                  ELSE COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf) END,
         cap_rate          = COALESCE(EXCLUDED.cap_rate, t.cap_rate),
         noi               = COALESCE(EXCLUDED.noi, t.noi),
         gross_revenue     = COALESCE(EXCLUDED.gross_revenue, t.gross_revenue),
         occupancy_rate    = COALESCE(EXCLUDED.occupancy_rate, t.occupancy_rate),
-        lease_rate_min    = CASE WHEN {colliers_transition_row_sql}
+        lease_rate_min    = CASE WHEN {jll_price_withheld_row_sql}
+                                 THEN NULL
+                                 WHEN {colliers_transition_row_sql}
                                  THEN NULL
                                  ELSE COALESCE(EXCLUDED.lease_rate_min, t.lease_rate_min) END,
-        lease_rate_max    = CASE WHEN {colliers_transition_row_sql}
+        lease_rate_max    = CASE WHEN {jll_price_withheld_row_sql}
+                                 THEN NULL
+                                 WHEN {colliers_transition_row_sql}
                                  THEN NULL
                                  ELSE COALESCE(EXCLUDED.lease_rate_max, t.lease_rate_max) END,
-        lease_rate_type   = CASE WHEN {colliers_transition_row_sql}
+        lease_rate_type   = CASE WHEN {jll_price_withheld_row_sql}
+                                 THEN NULL
+                                 WHEN {colliers_transition_row_sql}
                                  THEN NULL
                                  ELSE COALESCE(EXCLUDED.lease_rate_type, t.lease_rate_type) END,
         term_min_months   = COALESCE(EXCLUDED.term_min_months, t.term_min_months),
@@ -3352,7 +3416,9 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-""".replace("{colliers_transition_row_sql}", colliers_transition_row_sql))
+""".replace("{colliers_transition_row_sql}", colliers_transition_row_sql).replace(
+        "{jll_price_withheld_row_sql}", jll_price_withheld_row_sql
+    ))
 
     w(f"""
 -- Canonical full ingest synchronizes source observation and lifecycle mirror

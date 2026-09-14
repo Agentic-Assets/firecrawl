@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import signal
 import stat
 import subprocess
@@ -56,6 +57,10 @@ MAX_SAMPLE_BYTES = 8 * 1024 * 1024
 MAX_CACHE_RECORD_BYTES = 4 * 1024 * 1024
 MAX_WORKER_OUTPUT_BYTES = 512 * 1024 * 1024
 REVIEW_BENCHMARK_GRANT_MAX_BYTES = 64 * 1024
+COMPARISON_RESULT_MAX_BYTES = 64 * 1024 * 1024
+PAIR_SEQUENCE = ("baseline", "candidate", "candidate", "baseline", "baseline", "candidate")
+PAIR_MAX_GAP_SECONDS = 4 * 60 * 60
+PAIR_MIN_GAP_SECONDS = 1
 NEXT_DATA = re.compile(
     r"<script[^>]+id=[\"']__NEXT_DATA__[\"'][^>]*>(.*?)</script>",
     re.IGNORECASE | re.DOTALL,
@@ -593,6 +598,17 @@ def _experiment_contract() -> dict[str, Any]:
     workload = candidate.get("workload")
     if baseline_digest != candidate_digest or not isinstance(workload, dict):
         raise BenchmarkError("central experiment configuration is inconsistent")
+    controls = document.get("benchmark_controls")
+    pair = controls.get("counterbalanced_pair") if isinstance(controls, Mapping) else None
+    if (
+        not isinstance(pair, Mapping)
+        or set(pair) != {"sequence", "max_gap_seconds", "min_gap_seconds"}
+        or tuple(pair.get("sequence", ())) != PAIR_SEQUENCE
+        or type(pair.get("max_gap_seconds")) is not int
+        or type(pair.get("min_gap_seconds")) is not int
+        or not 0 <= pair["min_gap_seconds"] <= pair["max_gap_seconds"]
+    ):
+        raise BenchmarkError("central counterbalanced-pair controls are invalid")
     return {
         "config_sha256": candidate_digest,
         "workload": dict(workload),
@@ -601,6 +617,7 @@ def _experiment_contract() -> dict[str, Any]:
             "baseline": dict(baseline["requested"]),
             "candidate": dict(candidate["requested"]),
         },
+        "counterbalanced_pair": dict(pair),
     }
 
 
@@ -1868,7 +1885,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import {
   enrichJllListing, jllDetailCachePath, jllNextData, jllStrandedDocs,
-  jllStrandedMedia, jllStringUrls,
+  jllStrandedMedia, jllStringUrls, jllHasUsableBrochure,
 } from __JLL_IMPORT__;
 import {
   flushPerformance, recordSourceCompleted, recordSourceStarted, withPerformanceSource,
@@ -1912,7 +1929,7 @@ function normalizedEvidence(normalized) {
     price_rate: { sale: present(normalized?.salePriceText) || present(normalized?.salePriceUsd), lease: present(normalized?.leaseRateText) },
     size: { surface_area: present(normalized?.sizeText) || present(normalized?.buildingSizeSqft) },
     brokers_contacts: { contacts: present(normalized?.contactsDetailed) || present(normalized?.brokerIds) },
-    documents: { brochures: present(normalized?.brochures) || documents.some((item) => String(item?.docType ?? item?.documentType ?? item?.type ?? "").toLowerCase() === "brochure"), floor_plans: documents.some((item) => String(item?.docType ?? item?.documentType ?? item?.type ?? "").toLowerCase().includes("floor")) },
+    documents: { brochures: jllHasUsableBrochure(normalized), floor_plans: documents.some((item) => /^https?:\/\//i.test(String(item?.url ?? "")) && String(item?.docType ?? item?.documentType ?? item?.type ?? "").toLowerCase().includes("floor")) },
     images: { photos: present(normalized?.photos) },
     media: { videos: media.some((item) => item?.mediaType === "video"), tours_360: media.some((item) => item?.mediaType === "virtual_tour" || item?.mediaType === "matterport"), other: media.some((item) => item?.mediaType === "other") },
     markdown: { body: present(normalized?.markdown) },
@@ -2840,7 +2857,10 @@ def summarize_replicate(
         },
         "freshness_matches": freshness_matches,
         "historic_native_asset_matches": native_matches,
-        "native_asset_deltas": len(rows) - native_matches,
+        # Confirmed attrition remains in the immutable cohort but has no live
+        # native asset collection to compare.  Measure channel deltas only over
+        # active rows; any active mismatch remains a strict fidelity failure.
+        "native_asset_deltas": current_active_successes - native_matches,
         "historic_native_value_matches": native_value_matches,
         "normalized_structural_matches": fidelity_matches,
         "normalized_structural_drops": fidelity_drops,
@@ -3211,8 +3231,291 @@ def _valid_record_evidence(
     )
 
 
+def _bound_regular_file(
+    path: Path,
+    *,
+    maximum: int,
+    root: Path | None = None,
+) -> Path:
+    """Resolve one private evidence file without following a supplied symlink."""
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        raise BenchmarkError("comparison artifact path must be absolute")
+    try:
+        opened = candidate.lstat()
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise BenchmarkError("comparison artifact is unavailable") from exc
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+        or opened.st_size <= 0
+        or opened.st_size > maximum
+    ):
+        raise BenchmarkError("comparison artifact is not a bounded regular file")
+    if root is not None:
+        root_resolved = root.resolve(strict=True)
+        if resolved != root_resolved and root_resolved not in resolved.parents:
+            raise BenchmarkError("comparison artifact escapes its bound root")
+    return resolved
+
+
+def _bound_artifact_directory(path: Path) -> Path:
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        raise BenchmarkError("comparison artifact root must be absolute")
+    try:
+        opened = candidate.lstat()
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise BenchmarkError("comparison artifact root is unavailable") from exc
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or stat.S_IMODE(opened.st_mode) & 0o077
+        or candidate != resolved
+    ):
+        raise BenchmarkError("comparison artifact root is unsafe")
+    return resolved
+
+
+def _parse_bound_timestamp(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise BenchmarkError("comparison timestamp is invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise BenchmarkError("comparison timestamp is invalid") from exc
+    if parsed.tzinfo is None:
+        raise BenchmarkError("comparison timestamp is invalid")
+    return parsed.astimezone(UTC)
+
+
+def _cache_payload_for_comparison(path: Path) -> Mapping[str, Any]:
+    value = _read_json(path, MAX_CACHE_RECORD_BYTES)
+    if not isinstance(value, Mapping):
+        raise BenchmarkError("comparison raw cache is malformed")
+    return value
+
+
+def _valid_worker_raw_cache_evidence(
+    worker: Mapping[str, Any],
+    sample: Mapping[str, Any],
+    replicate_dir: Path,
+) -> bool:
+    """Rehash every worker cache receipt, including proven JLL tombstones."""
+    rows = worker.get("rows")
+    expected = sample.get("details")
+    cache_root = replicate_dir / "raw-cache"
+    if not isinstance(rows, list) or not isinstance(expected, list):
+        return False
+    try:
+        cache_root = _bound_artifact_directory(cache_root)
+    except BenchmarkError:
+        return False
+    indexed_rows = {
+        row.get("sample_index"): row
+        for row in rows
+        if isinstance(row, Mapping) and type(row.get("sample_index")) is int
+    }
+    if len(indexed_rows) != len(expected):
+        return False
+    cache_by_hash: dict[str, list[tuple[Path, Mapping[str, Any]]]] = defaultdict(list)
+    try:
+        for cache_path in cache_root.iterdir():
+            if cache_path.is_dir():
+                return False
+            bounded = _bound_regular_file(
+                cache_path, maximum=MAX_CACHE_RECORD_BYTES, root=cache_root
+            )
+            cache_by_hash[_file_sha256(bounded)].append(
+                (bounded, _cache_payload_for_comparison(bounded))
+            )
+    except (BenchmarkError, OSError):
+        return False
+    for index, item in enumerate(expected):
+        if not isinstance(item, Mapping):
+            return False
+        row = indexed_rows.get(index)
+        if not isinstance(row, Mapping):
+            return False
+        observation = row.get("observation")
+        if not isinstance(observation, Mapping):
+            return False
+        normalized = row.get("normalized")
+        detail_error = isinstance(normalized, Mapping) and bool(
+            normalized.get("detailError")
+        )
+        if detail_error:
+            cache_sha256 = observation.get("cache_sha256")
+            matches = cache_by_hash.get(cache_sha256, [])
+            if len(matches) != 1:
+                return False
+            _cache_path, cache = matches[0]
+        else:
+            native = row.get("native")
+            if not isinstance(native, Mapping) or not isinstance(
+                native.get("raw_cache_file"), str
+            ):
+                return False
+            try:
+                cache_path = _bound_regular_file(
+                    Path(native["raw_cache_file"]),
+                    maximum=MAX_CACHE_RECORD_BYTES,
+                    root=cache_root,
+                )
+            except BenchmarkError:
+                return False
+            if native.get("raw_cache_sha256") != _file_sha256(cache_path):
+                return False
+            cache = _cache_payload_for_comparison(cache_path)
+        raw_html = cache.get("rawHtml")
+        if (
+            cache.get("url") != item.get("url")
+            or observation.get("cache_url") != item.get("url")
+            or observation.get("cache_sha256") not in cache_by_hash
+            or not isinstance(raw_html, str)
+            or observation.get("raw_html_sha256") != _sha256(raw_html.encode())
+        ):
+            return False
+    return True
+
+
+def _valid_comparison_artifacts(
+    value: Mapping[str, Any],
+    *,
+    label: str,
+    result_path: Path | None,
+    details: int,
+    worker_contract: Mapping[str, Any],
+) -> list[str]:
+    """Bind a comparison result to rehashed private evidence on disk."""
+    if result_path is None:
+        return [f"{label}_result_artifact_required"]
+    try:
+        bounded_result = _bound_regular_file(
+            result_path, maximum=COMPARISON_RESULT_MAX_BYTES
+        )
+        disk_result = _read_json(bounded_result, COMPARISON_RESULT_MAX_BYTES)
+    except BenchmarkError:
+        return [f"{label}_result_artifact"]
+    if not isinstance(disk_result, Mapping) or not _same_typed_value(disk_result, value):
+        return [f"{label}_result_artifact_binding"]
+    evidence = value.get("artifact_evidence")
+    expected_evidence = {
+        "artifact_root",
+        "sample_path",
+        "sample_manifest_sha256",
+        "admission_path",
+        "admission_consumption_path",
+    }
+    if not isinstance(evidence, Mapping) or set(evidence) != expected_evidence:
+        return [f"{label}_artifact_evidence"]
+    try:
+        artifact_root = _bound_artifact_directory(Path(evidence["artifact_root"]))
+        if bounded_result.parent != artifact_root:
+            raise BenchmarkError("result is outside its declared artifact root")
+        sample_path = _bound_regular_file(
+            Path(evidence["sample_path"]), maximum=MAX_SAMPLE_BYTES
+        )
+        if evidence.get("sample_manifest_sha256") != _file_sha256(sample_path):
+            raise BenchmarkError("sample manifest drift")
+        sample = validate_sample(_read_json(sample_path), details)
+        if (
+            value.get("sample_manifest_sha256") != _file_sha256(sample_path)
+            or value.get("sample_canonical_sha256") != _sha256(_canonical(sample))
+            or value.get("sample_inventory_sha256") != sample.get("inventory_sha256")
+        ):
+            raise BenchmarkError("sample evidence is not bound to the result")
+        admission_path = _bound_regular_file(
+            Path(evidence["admission_path"]), maximum=MAX_SAMPLE_BYTES
+        )
+        admission = _read_json(admission_path)
+        if not isinstance(admission, Mapping) or value.get("admission_sha256") != _sha256(
+            _canonical(admission)
+        ):
+            raise BenchmarkError("admission evidence is not bound to the result")
+        if any(
+            admission.get(key) != value.get(key)
+            for key in (
+                "profile",
+                "config_sha256",
+                "source_git_sha",
+                "review_approval_nonce_sha256",
+            )
+        ):
+            raise BenchmarkError("admission identity does not match result")
+        marker_path = _bound_regular_file(
+            Path(evidence["admission_consumption_path"]),
+            maximum=REVIEW_BENCHMARK_GRANT_MAX_BYTES,
+        )
+        marker = _read_json(marker_path, REVIEW_BENCHMARK_GRANT_MAX_BYTES)
+        if (
+            not isinstance(marker, Mapping)
+            or marker.get("kind") != "cre_capacity_admission_consumption"
+            or value.get("admission_consumption_sha256") != _file_sha256(marker_path)
+            or any(
+                marker.get(key) != value.get(key)
+                for key in (
+                    "admission_sha256",
+                    "review_benchmark_grant_sha256",
+                    "review_approval_nonce_sha256",
+                )
+            )
+        ):
+            raise BenchmarkError("admission consumption evidence is not bound")
+        replicates = value.get("replicates")
+        if not isinstance(replicates, list):
+            raise BenchmarkError("result has no replicates")
+        for index, replicate in enumerate(replicates, 1):
+            if not isinstance(replicate, Mapping):
+                raise BenchmarkError("replicate is malformed")
+            replicate_dir = _bound_artifact_directory(artifact_root / f"replicate-{index}")
+            worker_path = _bound_regular_file(
+                replicate_dir / "worker-output.json",
+                maximum=MAX_WORKER_OUTPUT_BYTES,
+                root=replicate_dir,
+            )
+            worker = _read_json(worker_path, MAX_WORKER_OUTPUT_BYTES)
+            if (
+                not isinstance(worker, Mapping)
+                or replicate.get("worker_output_sha256") != _file_sha256(worker_path)
+                or not _valid_worker_raw_cache_evidence(worker, sample, replicate_dir)
+            ):
+                raise BenchmarkError("worker or raw cache evidence is not bound")
+            performance_path = _bound_regular_file(
+                replicate_dir / "performance.json",
+                maximum=MAX_WORKER_OUTPUT_BYTES,
+                root=replicate_dir,
+            )
+            performance = _read_json(performance_path, MAX_WORKER_OUTPUT_BYTES)
+            if not _same_typed_value(performance, replicate.get("performance")):
+                raise BenchmarkError("performance evidence is not bound")
+            wall_seconds = replicate.get("wall_seconds")
+            if type(wall_seconds) not in {int, float} or wall_seconds <= 0:
+                raise BenchmarkError("replicate wall time is invalid")
+            recomputed = summarize_replicate(
+                replicate_dir,
+                sample,
+                float(wall_seconds),
+                sample_canonical_sha256=value["sample_canonical_sha256"],
+                worker_contract=worker_contract,
+            )
+            if any(
+                not _same_typed_value(replicate.get(key), expected)
+                for key, expected in recomputed.items()
+            ):
+                raise BenchmarkError("replicate summary is not derived from artifacts")
+    except (BenchmarkError, KeyError, TypeError, ValueError):
+        return [f"{label}_artifact_rehash"]
+    return []
+
+
 def _comparison_evidence(
-    value: Any, label: str, contract: Mapping[str, Any]
+    value: Any,
+    label: str,
+    contract: Mapping[str, Any],
+    *,
+    result_path: Path | None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     reasons: list[str] = []
     if not isinstance(value, dict):
@@ -3248,6 +3551,15 @@ def _comparison_evidence(
         expected_concurrency=requested["jll_detail_concurrency"],
     ):
         reasons.append(f"{label}_worker_contract")
+    reasons.extend(
+        _valid_comparison_artifacts(
+            value,
+            label=label,
+            result_path=result_path,
+            details=details,
+            worker_contract=expected_worker,
+        )
+    )
     if not _valid_effective_runtime(value.get("effective_runtime"), requested):
         reasons.append(f"{label}_effective_runtime")
     if not _valid_live_admission(
@@ -3437,7 +3749,13 @@ def _comparison_evidence(
     }, []
 
 
-def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
+def compare_results(
+    baseline: Any,
+    candidate: Any,
+    *,
+    baseline_result_path: Path | None = None,
+    candidate_result_path: Path | None = None,
+) -> dict[str, Any]:
     try:
         contract = _experiment_contract()
     except BenchmarkError:
@@ -3449,10 +3767,16 @@ def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
             "reasons": ["central_experiment_configuration_unavailable"],
         }
     baseline_summary, baseline_reasons = _comparison_evidence(
-        baseline, "baseline", contract
+        baseline,
+        "baseline",
+        contract,
+        result_path=baseline_result_path,
     )
     candidate_summary, candidate_reasons = _comparison_evidence(
-        candidate, "candidate", contract
+        candidate,
+        "candidate",
+        contract,
+        result_path=candidate_result_path,
     )
     reasons = baseline_reasons + candidate_reasons
     if not SUPPORTED_BASELINE_ADMISSION_AVAILABLE:
@@ -3536,11 +3860,11 @@ def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "kind": "cre_jll_capacity_comparison",
         "state": "measured",
-        "decision": (
-            "adoptable"
-            if gain >= 15 and cohort_matching["state"] == "matched"
-            else "do_not_adopt"
-        ),
+        # A two-file comparison is a diagnostic only.  Adoption requires the
+        # supported six-arm AB/BA/AB comparator below, which rehashes every
+        # pair artifact and binds order and contemporaneous timestamps.
+        "decision": "do_not_adopt",
+        "reasons": ["counterbalanced_pair_required"],
         "criterion_percent": 15,
         "gain_percent": gain,
         "throughput_metric": "eligible_current_active_rows_per_minute",
@@ -3558,6 +3882,134 @@ def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
                 "worker_source_sha256": candidate["worker_source_sha256"],
             },
         },
+    }
+
+
+def compare_counterbalanced_pair(pair_plan_path: Path) -> dict[str, Any]:
+    """Adopt only from all six rehashed, contemporaneous counterbalanced arms."""
+    try:
+        plan, plan_sha256 = _load_counterbalanced_pair_plan(pair_plan_path)
+        state = _load_counterbalanced_pair_state(plan, plan_sha256)
+        contract = _experiment_contract()
+    except BenchmarkError:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "cre_capacity_counterbalanced_comparison",
+            "state": "inconclusive",
+            "decision": "no_adoption_decision",
+            "reasons": ["counterbalanced_pair_artifact_invalid"],
+        }
+    arms = state["arms"]
+    if len(arms) != len(PAIR_SEQUENCE):
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "cre_capacity_counterbalanced_comparison",
+            "state": "inconclusive",
+            "decision": "no_adoption_decision",
+            "reasons": ["counterbalanced_pair_incomplete"],
+        }
+    reasons: list[str] = []
+    summaries: dict[str, list[dict[str, Any]]] = {"baseline": [], "candidate": []}
+    values: list[Mapping[str, Any]] = []
+    prior_finished: datetime | None = None
+    for order, (arm, expected_variant) in enumerate(zip(arms, PAIR_SEQUENCE, strict=True), 1):
+        if (
+            not isinstance(arm, Mapping)
+            or arm.get("arm_order") != order
+            or arm.get("variant") != expected_variant
+            or not _is_sha256(arm.get("result_sha256"))
+            or not isinstance(arm.get("result_path"), str)
+        ):
+            reasons.append(f"pair_arm_{order}_state")
+            continue
+        try:
+            path = _bound_regular_file(Path(arm["result_path"]), maximum=COMPARISON_RESULT_MAX_BYTES)
+            if _file_sha256(path) != arm["result_sha256"]:
+                raise BenchmarkError("pair result hash drift")
+            value = _read_json(path, COMPARISON_RESULT_MAX_BYTES)
+            summary, evidence_reasons = _comparison_evidence(
+                value,
+                expected_variant,
+                contract,
+                result_path=path,
+            )
+            pairing = value.get("pairing") if isinstance(value, Mapping) else None
+            expected_pairing = {
+                "pair_id": plan["pair_id"],
+                "pair_plan_sha256": plan_sha256,
+                "arm_order": order,
+                "sequence": plan["sequence"],
+                "max_gap_seconds": plan["max_gap_seconds"],
+                "min_gap_seconds": plan["min_gap_seconds"],
+            }
+            if not isinstance(pairing, Mapping) or not _same_typed_value(pairing, expected_pairing):
+                evidence_reasons.append(f"pair_arm_{order}_binding")
+            started = _parse_bound_timestamp(value.get("started_at"))
+            finished = _parse_bound_timestamp(value.get("finished_at"))
+            if finished < started:
+                evidence_reasons.append(f"pair_arm_{order}_timestamps")
+            if prior_finished is not None:
+                gap = (started - prior_finished).total_seconds()
+                if gap < plan["min_gap_seconds"] or gap > plan["max_gap_seconds"]:
+                    evidence_reasons.append(f"pair_arm_{order}_gap")
+            prior_finished = finished
+            if evidence_reasons or summary is None:
+                reasons.extend(evidence_reasons)
+                continue
+            summaries[expected_variant].append(summary)
+            values.append(value)
+        except (BenchmarkError, TypeError, ValueError):
+            reasons.append(f"pair_arm_{order}_artifact")
+    if reasons or any(len(items) != 3 for items in summaries.values()):
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "cre_capacity_counterbalanced_comparison",
+            "state": "inconclusive",
+            "decision": "no_adoption_decision",
+            "reasons": sorted(set(reasons or ["counterbalanced_pair_evidence_missing"])),
+        }
+    match_keys = ("sample_inventory_sha256", "sample_manifest_sha256", "sample_canonical_sha256", "config_sha256")
+    if any(any(value.get(key) != values[0].get(key) for key in match_keys) for value in values[1:]):
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "cre_capacity_counterbalanced_comparison",
+            "state": "inconclusive",
+            "decision": "no_adoption_decision",
+            "reasons": ["counterbalanced_pair_cohort_mismatch"],
+        }
+    baseline_rates = [item["median_eligible_current_active_rows_per_minute"] for item in summaries["baseline"]]
+    candidate_rates = [item["median_eligible_current_active_rows_per_minute"] for item in summaries["candidate"]]
+    baseline_rate = round(median(baseline_rates), 3)
+    candidate_rate = round(median(candidate_rates), 3)
+    gain = round((candidate_rate - baseline_rate) * 100 / baseline_rate, 3)
+    attrition_signatures = [
+        [
+            replicate.get("record_evidence_manifest", {}).get("attrition_sample_ids_sha256")
+            for replicate in value.get("replicates", [])
+            if isinstance(replicate, Mapping)
+        ]
+        for value in values
+    ]
+    symmetric = all(
+        attrition_signatures[index] == attrition_signatures[index + 1]
+        for index in range(0, len(attrition_signatures), 2)
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "cre_capacity_counterbalanced_comparison",
+        "state": "measured",
+        "decision": "adoptable" if gain >= 15 and symmetric else "do_not_adopt",
+        "criterion_percent": 15,
+        "gain_percent": gain,
+        "pair_id": plan["pair_id"],
+        "sequence": plan["sequence"],
+        "cohort_matching": {
+            "state": "matched" if symmetric else "asymmetric_confirmed_attrition",
+            "confidence": "full" if symmetric else "reduced",
+            "basis": "immutable_prevalidated_cohort_with_paired_attrition_signatures",
+        },
+        "baseline": {"rates": baseline_rates, "median": baseline_rate},
+        "candidate": {"rates": candidate_rates, "median": candidate_rate},
     }
 
 
@@ -3702,6 +4154,7 @@ def run_benchmark(
     admission: Mapping[str, Any],
     admission_path: Path,
     timeout_seconds: int,
+    pairing: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     replicates = int(profile["workload"]["replicates"])
     implementation = _implementation_manifest(repo_root)
@@ -3760,6 +4213,13 @@ def run_benchmark(
                 ],
                 "admission_consumption_sha256": _file_sha256(marker),
                 "review_benchmark_grant_sha256": audit["review_benchmark_grant_sha256"],
+                "artifact_evidence": {
+                    "artifact_root": str(artifact_root.resolve()),
+                    "sample_path": str(sample_path.resolve()),
+                    "sample_manifest_sha256": sample_manifest_sha256,
+                    "admission_path": str(admission_path.resolve()),
+                    "admission_consumption_path": str(marker.resolve()),
+                },
                 "live_admission": live_admission,
                 "effective_runtime": live_admission["effective_runtime"],
                 "shared_lock": {"canonical": True, "path": str(lock_path)},
@@ -3779,6 +4239,8 @@ def run_benchmark(
                     "cancellation_limitation": "no_supported_scrape_job_cancel_endpoint_or_job_ids; idle_settlement_required_before_lock_release",
                 },
             }
+            if pairing is not None:
+                result["pairing"] = dict(pairing)
             details = int(profile["workload"]["details"])
             worker_may_have_launched = False
             interlock_armed = False
@@ -3997,6 +4459,193 @@ def run_benchmark(
         raise BenchmarkError("canonical CRE shared lock is already held") from exc
 
 
+PAIR_PLAN_KIND = "cre_capacity_counterbalanced_pair_plan"
+PAIR_STATE_KIND = "cre_capacity_counterbalanced_pair_state"
+
+
+def create_counterbalanced_pair_plan(
+    *, artifact_root: Path, sample_path: Path
+) -> dict[str, Any]:
+    """Create a private AB/BA/AB plan; it does not touch runtime or providers."""
+    contract = _experiment_contract()
+    details = int(contract["workload"]["details"])
+    bounded_sample = _bound_regular_file(sample_path, maximum=MAX_SAMPLE_BYTES)
+    sample = validate_sample(_read_json(bounded_sample), details)
+    pair = contract["counterbalanced_pair"]
+    root = _bound_artifact_directory(artifact_root)
+    plan = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": PAIR_PLAN_KIND,
+        "pair_id": secrets.token_hex(32),
+        "created_at": _now(),
+        "artifact_root": str(root),
+        "sample_path": str(bounded_sample),
+        "sample_manifest_sha256": _file_sha256(bounded_sample),
+        "sample_canonical_sha256": _sha256(_canonical(sample)),
+        "sample_inventory_sha256": sample["inventory_sha256"],
+        "config_sha256": contract["config_sha256"],
+        "sequence": list(pair["sequence"]),
+        "max_gap_seconds": pair["max_gap_seconds"],
+        "min_gap_seconds": pair["min_gap_seconds"],
+        "state_path": str(root / "counterbalanced-pair-state.json"),
+        "safety": {
+            "database_writes": 0,
+            "canonical_cache_writes": 0,
+            "scheduler_writes": 0,
+            "runtime_mutation": "candidate_step_rolls_back_via_existing_receipt",
+            "admission": "fresh_single_use_per_arm",
+        },
+    }
+    _atomic_private_json(root / "counterbalanced-pair-plan.json", plan)
+    return plan
+
+
+def _load_counterbalanced_pair_plan(path: Path) -> tuple[dict[str, Any], str]:
+    bounded = _bound_regular_file(path, maximum=REVIEW_BENCHMARK_GRANT_MAX_BYTES)
+    value = _read_json(bounded, REVIEW_BENCHMARK_GRANT_MAX_BYTES)
+    contract = _experiment_contract()
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != SCHEMA_VERSION
+        or value.get("kind") != PAIR_PLAN_KIND
+        or not isinstance(value.get("pair_id"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", value["pair_id"]) is None
+        or value.get("sequence") != list(contract["counterbalanced_pair"]["sequence"])
+        or value.get("max_gap_seconds")
+        != contract["counterbalanced_pair"]["max_gap_seconds"]
+        or value.get("min_gap_seconds")
+        != contract["counterbalanced_pair"]["min_gap_seconds"]
+        or value.get("config_sha256") != contract["config_sha256"]
+    ):
+        raise BenchmarkError("counterbalanced pair plan is invalid")
+    root = _bound_artifact_directory(Path(value.get("artifact_root", "")))
+    if bounded.parent != root:
+        raise BenchmarkError("counterbalanced pair plan is outside its artifact root")
+    sample_path = _bound_regular_file(
+        Path(value.get("sample_path", "")), maximum=MAX_SAMPLE_BYTES
+    )
+    sample = validate_sample(_read_json(sample_path), int(contract["workload"]["details"]))
+    if (
+        value.get("sample_manifest_sha256") != _file_sha256(sample_path)
+        or value.get("sample_canonical_sha256") != _sha256(_canonical(sample))
+        or value.get("sample_inventory_sha256") != sample.get("inventory_sha256")
+    ):
+        raise BenchmarkError("counterbalanced pair sample is not immutable")
+    state_path = Path(value.get("state_path", ""))
+    if state_path.parent != root or not state_path.is_absolute():
+        raise BenchmarkError("counterbalanced pair state path is unsafe")
+    return value, _file_sha256(bounded)
+
+
+def _load_counterbalanced_pair_state(plan: Mapping[str, Any], plan_sha256: str) -> dict[str, Any]:
+    path = Path(plan["state_path"])
+    if not path.exists():
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": PAIR_STATE_KIND,
+            "pair_id": plan["pair_id"],
+            "pair_plan_sha256": plan_sha256,
+            "arms": [],
+        }
+    value = _read_json(_bound_regular_file(path, maximum=COMPARISON_RESULT_MAX_BYTES))
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != SCHEMA_VERSION
+        or value.get("kind") != PAIR_STATE_KIND
+        or value.get("pair_id") != plan["pair_id"]
+        or value.get("pair_plan_sha256") != plan_sha256
+        or not isinstance(value.get("arms"), list)
+    ):
+        raise BenchmarkError("counterbalanced pair state is invalid")
+    return value
+
+
+def run_counterbalanced_pair_step(
+    *,
+    repo_root: Path,
+    pair_plan_path: Path,
+    admission: Mapping[str, Any],
+    admission_path: Path,
+    timeout_seconds: int,
+    candidate_receipt_path: Path | None = None,
+) -> dict[str, Any]:
+    """Run exactly the next arm and restore candidate runtime before recording it.
+
+    Each invocation needs a fresh, one-use admission.  Keeping each arm
+    explicit avoids a daemon holding stale approvals across the four-hour pair
+    gap, while still producing a supported AB/BA/AB result chain.
+    """
+    plan, plan_sha256 = _load_counterbalanced_pair_plan(pair_plan_path)
+    state = _load_counterbalanced_pair_state(plan, plan_sha256)
+    order = len(state["arms"]) + 1
+    sequence = plan["sequence"]
+    if order > len(sequence):
+        raise BenchmarkError("counterbalanced pair already has every planned arm")
+    variant = sequence[order - 1]
+    contract = _experiment_contract()
+    profile_name = contract["profiles"][variant]
+    profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, profile_name)
+    validated_admission = validate_admission(
+        admission,
+        profile,
+        profile_name,
+        digest,
+        source_git_sha=_git_head(repo_root),
+    )
+    artifact_root = _bound_artifact_directory(Path(plan["artifact_root"]))
+    arm_root = artifact_root / f"arm-{order:02d}-{variant}"
+    arm_root.mkdir(mode=0o700)
+    arm_root.chmod(0o700)
+    pairing = {
+        "pair_id": plan["pair_id"],
+        "pair_plan_sha256": plan_sha256,
+        "arm_order": order,
+        "sequence": sequence,
+        "max_gap_seconds": plan["max_gap_seconds"],
+        "min_gap_seconds": plan["min_gap_seconds"],
+    }
+    result: dict[str, Any] | None = None
+    try:
+        result = run_benchmark(
+            repo_root=repo_root,
+            artifact_root=arm_root,
+            sample_path=Path(plan["sample_path"]),
+            sample=validate_sample(
+                _read_json(Path(plan["sample_path"])), int(profile["workload"]["details"])
+            ),
+            profile=profile,
+            profile_name=profile_name,
+            config_sha256=digest,
+            admission=validated_admission,
+            admission_path=admission_path,
+            timeout_seconds=timeout_seconds,
+            pairing=pairing,
+        )
+    finally:
+        if variant == "candidate":
+            if candidate_receipt_path is None:
+                raise BenchmarkError("candidate pair step requires its rollback receipt")
+            capacity_runtime.transition(
+                candidate_receipt_path,
+                profile_name,
+                "baseline",
+                execute=True,
+            )
+    if result is None or result.get("completed") is not True:
+        raise BenchmarkError("counterbalanced pair arm did not complete")
+    result_path = arm_root / "result.json"
+    state["arms"].append(
+        {
+            "arm_order": order,
+            "variant": variant,
+            "result_path": str(result_path),
+            "result_sha256": _file_sha256(result_path),
+        }
+    )
+    _atomic_private_json(Path(plan["state_path"]), state)
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile")
@@ -4008,10 +4657,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--compare-baseline", type=Path)
     parser.add_argument("--compare-candidate", type=Path)
+    parser.add_argument("--create-counterbalanced-pair", action="store_true")
+    parser.add_argument("--pair-plan", type=Path)
+    parser.add_argument("--run-counterbalanced-step", action="store_true")
+    parser.add_argument("--compare-counterbalanced-pair", type=Path)
+    parser.add_argument("--candidate-rollback-receipt", type=Path)
     parser.add_argument("--replicate-timeout-seconds", type=int, default=1800)
     args = parser.parse_args(argv)
     repo_root = Path(__file__).resolve().parents[3]
     try:
+        if args.compare_counterbalanced_pair:
+            print(
+                json.dumps(
+                    compare_counterbalanced_pair(args.compare_counterbalanced_pair),
+                    sort_keys=True,
+                    indent=2,
+                )
+            )
+            return 0
         if args.compare_baseline or args.compare_candidate:
             if not args.compare_baseline or not args.compare_candidate:
                 comparison = {
@@ -4026,6 +4689,8 @@ def main(argv: list[str] | None = None) -> int:
                     comparison = compare_results(
                         _read_json(args.compare_baseline, MAX_WORKER_OUTPUT_BYTES),
                         _read_json(args.compare_candidate, MAX_WORKER_OUTPUT_BYTES),
+                        baseline_result_path=args.compare_baseline,
+                        candidate_result_path=args.compare_candidate,
                     )
                 except BenchmarkError:
                     comparison = {
@@ -4037,6 +4702,32 @@ def main(argv: list[str] | None = None) -> int:
                     }
             print(json.dumps(comparison, sort_keys=True, indent=2))
             return 0
+        if args.create_counterbalanced_pair:
+            if not args.artifact_root or not args.sample:
+                raise BenchmarkError(
+                    "--create-counterbalanced-pair requires --artifact-root and --sample"
+                )
+            artifact_root = _private_artifact_root(args.artifact_root, repo_root)
+            plan_value = create_counterbalanced_pair_plan(
+                artifact_root=artifact_root, sample_path=args.sample.resolve()
+            )
+            print(json.dumps(plan_value, sort_keys=True, indent=2))
+            return 0
+        if args.run_counterbalanced_step:
+            if not args.pair_plan or not args.admission:
+                raise BenchmarkError(
+                    "--run-counterbalanced-step requires --pair-plan and --admission"
+                )
+            result = run_counterbalanced_pair_step(
+                repo_root=repo_root,
+                pair_plan_path=args.pair_plan,
+                admission=_read_json(args.admission),
+                admission_path=args.admission,
+                timeout_seconds=args.replicate_timeout_seconds,
+                candidate_receipt_path=args.candidate_rollback_receipt,
+            )
+            print(json.dumps(result, sort_keys=True, indent=2))
+            return 0 if result["completed"] else 75
         if not args.artifact_root:
             raise BenchmarkError("--artifact-root is required outside compare mode")
         contract = _experiment_contract()

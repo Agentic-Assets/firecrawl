@@ -55,6 +55,24 @@ def test_lease_rate_max_coalesce_present():
     )
 
 
+def test_jll_withheld_visibility_clears_previously_visible_price_columns():
+    sql = _sql()
+    guard = (
+        "EXCLUDED.raw_data->>'sourceKey' = 'jll'\n"
+        "      AND EXCLUDED.raw_data#>>'{jllDetail,pricing,visibility}' = 'withheld'"
+    )
+    assert guard in sql
+    for column in (
+        "sale_price_usd",
+        "sale_price_per_sf",
+        "lease_rate_min",
+        "lease_rate_max",
+        "lease_rate_type",
+    ):
+        assert f"{column}" in sql
+    assert sql.count("WHEN (\n      EXCLUDED.raw_data->>'sourceKey' = 'jll'") >= 5
+
+
 # ---------------------------------------------------------------------------
 # Assert the old unconditional overwrite forms are GONE
 # ---------------------------------------------------------------------------
