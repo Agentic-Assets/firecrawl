@@ -1064,6 +1064,8 @@ export async function enrichJllListing(base: any): Promise<any> {
     const documents = documentChannels.documents;
     const photos = dedupeStrings([...(images.length ? images : base.photos ?? []), ...harvested.images]);
     const lifted = jllStrandedStructured(property);
+    const hiddenPrice =
+      base?.jllSearchResult?.hidePrice === true || property?.hidePrice === true;
 
     return prune({
       ...base,
@@ -1086,8 +1088,12 @@ export async function enrichJllListing(base: any): Promise<any> {
       postalCode: clean(property.postcode) ?? base.postalCode,
       latitude: num(property.latitude) ?? base.latitude,
       longitude: num(property.longitude) ?? base.longitude,
-      salePriceText: jllDetailPriceText(property.salePrice) ?? base.salePriceText,
-      leaseRateText: jllDetailPriceText(property.rentPrice) ?? base.leaseRateText,
+      salePriceText: hiddenPrice
+        ? null
+        : jllDetailPriceText(property.salePrice) ?? base.salePriceText,
+      leaseRateText: hiddenPrice
+        ? null
+        : jllDetailPriceText(property.rentPrice) ?? base.leaseRateText,
       sizeText: clean(property.surfaceArea) ?? base.sizeText,
       buildingSizeSqft: jllSurfaceAreaSqft(property) ?? base.buildingSizeSqft,
       ...lifted,
