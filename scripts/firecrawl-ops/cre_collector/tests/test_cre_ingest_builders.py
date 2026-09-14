@@ -888,6 +888,101 @@ def test_to_row_fails_closed_for_case_variant_or_fallback_hidden_jll_controls():
     assert "EUR 3,250,000" not in stored
 
 
+def test_to_row_withheld_jll_redacts_public_text_and_drops_unproven_extra_facts():
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/withheld-public-text",
+            "id": "withheld-public-text",
+            "hidePrice": False,
+            "PRICEWITHHOLDINGCONTROL": "withheld",
+            "name": "GBP 3.25m Office Portfolio",
+            "headline": "AUD 3m legacy headline",
+            "highlights": ["JPY 3250000 consideration", "Transit access"],
+            "extraFacts": {
+                "safe_label": "Visible fact",
+                "consideration": "EUR 3,250,000",
+                "amount": 3250000,
+            },
+            "description": "Asking £3.25m.",
+            "markdown": "Confidential JPY 3250000 consideration.",
+            "currentTenants": [
+                {"name": "Acme Holdings"},
+                {"name": "GBP 3m Tenant"},
+            ],
+        }
+    )
+
+    assert row["title"] == "[redacted] Office Portfolio"
+    assert row["highlights"] == ["[redacted] consideration", "Transit access"]
+    assert row["extra_facts"] is None
+    assert row["description"] is None
+    assert row["markdown"] is None
+    stored = json.dumps(row, default=list)
+    assert "3250000" not in stored
+    assert "3.25m" not in stored
+    assert "GBP" not in stored
+    assert "AUD" not in stored
+    assert "JPY" not in stored
+    assert "EUR" not in stored
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://user:pass@property.jll.com/brochure.pdf",
+        "https://property.jll.com:444/brochure.pdf",
+        "https://property.jll.com/\ninvalid.pdf",
+        "https:///relative.pdf",
+        "http://?x",
+    ],
+)
+def test_http_url_or_none_rejects_unsafe_jll_asset_urls(value):
+    assert ci.http_url_or_none(value) is None
+
+
+def test_to_row_rejects_jll_document_queries_and_fragments() -> None:
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/strict-document-url",
+            "id": "strict-document-url",
+            "brochures": [
+                {"url": "https://cdn.example/om.pdf?token=secret"},
+                {"url": "https://cdn.example/om.pdf#page=1"},
+                {"url": "https://cdn.example/om.pdf"},
+            ],
+        }
+    )
+
+    assert row["documents"] == [
+        {"title": None, "url": "https://cdn.example/om.pdf", "docType": "brochure"}
+    ]
+
+
+def test_withheld_jll_sql_replaces_or_clears_prior_price_bearing_prose() -> None:
+    compact = " ".join(ci.build_sql([], [], _SCRAPED_AT, set()).split())
+    row_gate = "( EXCLUDED.raw_data->>'jllPriceWithheld' = 'true' )"
+    stage_gate = "( s.raw_data->>'jllPriceWithheld' = 'true' )"
+
+    assert f"title = CASE WHEN {row_gate} THEN CASE WHEN ( t.title ~*" in compact
+    assert "THEN EXCLUDED.title ELSE COALESCE(EXCLUDED.title, t.title) END" in compact
+    assert (
+        f"highlights = CASE WHEN {row_gate} THEN CASE WHEN ( "
+        "array_to_string(COALESCE(t.highlights, ARRAY[]::text[]), ' ') ~*" in compact
+    )
+    assert (
+        "THEN EXCLUDED.highlights ELSE COALESCE(EXCLUDED.highlights, t.highlights) END"
+        in compact
+    )
+    assert (
+        f"description = CASE WHEN {row_gate} THEN NULL "
+        "ELSE COALESCE(EXCLUDED.description, t.description) END" in compact
+    )
+    assert f"markdown = CASE WHEN {row_gate} THEN NULL" in compact
+    assert f"extra_facts = CASE WHEN {stage_gate} THEN NULL" in compact
+
+
 def test_to_row_reconciles_every_jll_price_control_case_insensitively():
     concealed = _row(
         {

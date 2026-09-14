@@ -556,15 +556,30 @@ def norm_state(v):
     return US_STATES.get(s.lower())
 
 
-def http_url_or_none(v):
+def http_url_or_none(v, *, allow_query=True, allow_fragment=True):
     if not isinstance(v, str):
         return None
     s = v.strip()
+    if not s or any(ord(char) < 32 or ord(char) == 127 for char in s):
+        return None
     try:
         parsed = urlsplit(s)
     except ValueError:
         return None
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    default_port = 443 if parsed.scheme.lower() == "https" else 80
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or (port is not None and port != default_port)
+        or (parsed.query and not allow_query)
+        or (parsed.fragment and not allow_fragment)
+    ):
         return None
     return s
 
@@ -1761,9 +1776,10 @@ _JLL_SENSITIVE_PARENT_CHILDREN = {
 }
 _JLL_MONEY_AMOUNT = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 _JLL_MONEY_TOKEN = re.compile(
-    rf"(?i)(?:(?:\b(?:usd|cad|eur)\s*)|(?:us\$|c\$)|[$€])\s*{_JLL_MONEY_AMOUNT}"
+    rf"(?i)(?:(?:\b(?:usd|cad|eur|gbp|jpy|aud|nzd|chf|hkd|sgd|cny|rmb|inr|mxn|brl|krw|aed|sar|sek|nok|dkk|pln|try|zar)\s*)|(?:us\$|c\$|a\$)|[$€£¥])\s*{_JLL_MONEY_AMOUNT}"
     r"(?:\s*[kmb])?(?:\s*/\s*[a-z. ]+)?"
 )
+_JLL_MONEY_SUFFIX = re.compile(rf"(?i)\b{_JLL_MONEY_AMOUNT}\s*[kmb]\b")
 _JLL_LABELLED_PRICE = re.compile(
     r"(?i)(\b(?:(?:asking|list|sale|lease|rental)\s*"
     r"(?:price|rate|rent|consideration)|consideration)\s*[:\-]?\s*)"
@@ -1832,7 +1848,14 @@ def _redact_jll_free_text(value):
     if not isinstance(value, str):
         return value
     value = _JLL_LABELLED_PRICE.sub(r"\1[redacted]", value)
-    return _JLL_MONEY_TOKEN.sub("[redacted]", value)
+    value = _JLL_MONEY_TOKEN.sub("[redacted]", value)
+    return _JLL_MONEY_SUFFIX.sub("[redacted]", value)
+
+
+def _jll_text_has_monetary_disclosure(value):
+    return isinstance(value, str) and bool(
+        _JLL_MONEY_TOKEN.search(value) or _JLL_MONEY_SUFFIX.search(value)
+    )
 
 
 def _redact_jll_price_values(value, *, parent_key=None):
@@ -1939,7 +1962,7 @@ def _safe_jll_tenant_identities(value):
         name = clean_text(item.get("name") or item.get("tenantName"), 256)
         if (
             not name
-            or _JLL_MONEY_TOKEN.search(name)
+            or _jll_text_has_monetary_disclosure(name)
             or _JLL_LABELLED_PRICE.search(name)
         ):
             continue
@@ -2345,7 +2368,11 @@ def to_row(listing, brokers_by_idx, scraped_at):
     documents = []
     for d in listing.get("brochures") or []:
         if isinstance(d, dict):
-            doc_url = http_url_or_none(d.get("url"))
+            doc_url = http_url_or_none(
+                d.get("url"),
+                allow_query=source_key != "jll",
+                allow_fragment=False,
+            )
             if doc_url:
                 documents.append(
                     {
@@ -2362,7 +2389,11 @@ def to_row(listing, brokers_by_idx, scraped_at):
     # backfill / doc-reclassification scripts (contract Section D), not re-run here.
     for d in listing.get("documents") or []:
         if isinstance(d, dict):
-            doc_url = http_url_or_none(d.get("url"))
+            doc_url = http_url_or_none(
+                d.get("url"),
+                allow_query=source_key != "jll",
+                allow_fragment=False,
+            )
             if doc_url:
                 documents.append(
                     {
@@ -2432,12 +2463,24 @@ def to_row(listing, brokers_by_idx, scraped_at):
     title = listing.get("name") or listing.get("headline") or listing.get("street")
     desc = listing.get("description")
     markdown = listing.get("markdown")
+    highlights = str_array_or_none(listing.get("highlights"))
+    extra_facts = extra_facts_or_none(listing.get("extraFacts"))
     if jll_pricing_withheld:
         # A legacy/manual JLL artifact cannot prove that prose is free of an
         # asking-price disclosure. Omit it rather than attempting a future
         # blacklist. Likewise, no present source contract proves NOI or gross
         # revenue independent from the withheld asking-price context, so both
         # stay unstaged until such a source-specific proof is introduced.
+        title = _redact_jll_free_text(title)
+        highlights = (
+            [_redact_jll_free_text(item) for item in highlights]
+            if highlights is not None
+            else None
+        )
+        # The free-form extra-facts object has no source-specific independent
+        # operating-fact proof. Do not retain arbitrary numeric or prose leaves
+        # while price visibility is withheld/unknown.
+        extra_facts = None
         desc = None
         markdown = None
 
@@ -2536,8 +2579,8 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "drive_in_doors": int_or_none(listing.get("driveInDoors"), lo=-1, hi=1e4),
         "power_service": clean_text(listing.get("powerService"), 128),
         "rail_served": bool_or_none(listing.get("railServed")),
-        "extra_facts": extra_facts_or_none(listing.get("extraFacts")),
-        "highlights": str_array_or_none(listing.get("highlights")),
+        "extra_facts": extra_facts,
+        "highlights": highlights,
         "amenities": str_array_or_none(listing.get("amenities")),
         "description": desc[:20000] if isinstance(desc, str) else None,
         "markdown": clean_text(markdown),
@@ -3097,6 +3140,19 @@ def build_sql(
     )"""
     jll_price_withheld_stage_sql = """(
       s.raw_data->>'jllPriceWithheld' = 'true'
+    )"""
+    # A withheld update should not erase a demonstrably non-monetary prior
+    # title/highlight when the sparse provider pass supplies none.  It must,
+    # however, replace any prior monetary prose with the redacted staged value.
+    # Descriptions/markdown and arbitrary JSON facts have no comparable bounded
+    # proof, so their withheld path stays an explicit clear below.
+    jll_withheld_title_has_money_sql = r"""(
+      t.title ~* '([$€£¥]|\m(usd|cad|eur|gbp|jpy|aud|nzd|chf|hkd|sgd|cny|rmb|inr|mxn|brl|krw|aed|sar|sek|nok|dkk|pln|try|zar)[[:space:]]*)[[:space:]]*[0-9]'
+      OR t.title ~* '[0-9]+([.][0-9]+)?[[:space:]]*[kmb]($|[^[:alpha:]])'
+    )"""
+    jll_withheld_highlights_have_money_sql = r"""(
+      array_to_string(COALESCE(t.highlights, ARRAY[]::text[]), ' ') ~* '([$€£¥]|\m(usd|cad|eur|gbp|jpy|aud|nzd|chf|hkd|sgd|cny|rmb|inr|mxn|brl|krw|aed|sar|sek|nok|dkk|pln|try|zar)[[:space:]]*)[[:space:]]*[0-9]'
+      OR array_to_string(COALESCE(t.highlights, ARRAY[]::text[]), ' ') ~* '[0-9]+([.][0-9]+)?[[:space:]]*[kmb]($|[^[:alpha:]])'
     )"""
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
@@ -3671,7 +3727,14 @@ WITH ins AS (
                               ELSE t.transaction_type
                             END,
         property_type     = COALESCE(EXCLUDED.property_type, t.property_type),
-        title             = COALESCE(EXCLUDED.title, t.title),
+        -- A newly withheld JLL observation is an explicit visibility change,
+        -- not an ordinary sparse field. Replace title/highlights with their
+        -- redacted staged values and clear prose that may retain a prior ask.
+        title             = CASE WHEN {jll_price_withheld_row_sql}
+                                 THEN CASE WHEN {jll_withheld_title_has_money_sql}
+                                           THEN EXCLUDED.title
+                                           ELSE COALESCE(EXCLUDED.title, t.title) END
+                                 ELSE COALESCE(EXCLUDED.title, t.title) END,
         address           = COALESCE(EXCLUDED.address, t.address),
         city              = COALESCE(EXCLUDED.city, t.city),
         state             = COALESCE(EXCLUDED.state, t.state),
@@ -3749,12 +3812,19 @@ WITH ins AS (
         term_min_months   = COALESCE(EXCLUDED.term_min_months, t.term_min_months),
         term_max_months   = COALESCE(EXCLUDED.term_max_months, t.term_max_months),
         zoning            = COALESCE(EXCLUDED.zoning, t.zoning),
-        highlights        = COALESCE(EXCLUDED.highlights, t.highlights),
+        highlights        = CASE WHEN {jll_price_withheld_row_sql}
+                                 THEN CASE WHEN {jll_withheld_highlights_have_money_sql}
+                                           THEN EXCLUDED.highlights
+                                           ELSE COALESCE(EXCLUDED.highlights, t.highlights) END
+                                 ELSE COALESCE(EXCLUDED.highlights, t.highlights) END,
         amenities         = COALESCE(EXCLUDED.amenities, t.amenities),
-        description       = COALESCE(EXCLUDED.description, t.description),
+        description       = CASE WHEN {jll_price_withheld_row_sql}
+                                 THEN NULL
+                                 ELSE COALESCE(EXCLUDED.description, t.description) END,
         -- markdown reuses the existing (currently-empty) column; NULLIF guards a
         -- sparse/empty pass from clobbering a fuller prior capture (COALESCE-keep).
         markdown          = CASE
+                              WHEN {jll_price_withheld_row_sql} THEN NULL
                               WHEN jsonb_path_exists(
                                 EXCLUDED.raw_data,
                                 '$.**.preserveExistingMarkdown ? (@ == true || @ == "true")'
@@ -4003,6 +4073,7 @@ DO $$ BEGIN
         -- extra_facts: jsonb merge, keeping prior keys; a NULL/empty staged blob
         -- (no new facts this pass) leaves the prior blob untouched.
         extra_facts           = CASE
+                                  WHEN {jll_price_withheld_stage_sql} THEN NULL
                                   WHEN s.extra_facts IS NULL
                                        OR s.extra_facts = '{}'::jsonb THEN COALESCE(t.extra_facts, '{}'::jsonb)
                                   ELSE COALESCE(t.extra_facts, '{}'::jsonb) || s.extra_facts
@@ -4016,6 +4087,11 @@ END $$;
 """.replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
+        .replace("{jll_withheld_title_has_money_sql}", jll_withheld_title_has_money_sql)
+        .replace(
+            "{jll_withheld_highlights_have_money_sql}",
+            jll_withheld_highlights_have_money_sql,
+        )
     )
 
     w(f"""

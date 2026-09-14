@@ -90,24 +90,40 @@ def _sql():
 
 
 def test_to_row_builds_media_from_dicts():
-    row = _row(_svn(media=[
-        {"mediaType": "video", "provider": "vimeo",
-         "url": "https://vimeo.com/123",
-         "embedUrl": "https://player.vimeo.com/video/123", "title": "Tour"},
-    ]))
+    row = _row(
+        _svn(
+            media=[
+                {
+                    "mediaType": "video",
+                    "provider": "vimeo",
+                    "url": "https://vimeo.com/123",
+                    "embedUrl": "https://player.vimeo.com/video/123",
+                    "title": "Tour",
+                },
+            ]
+        )
+    )
     assert row["media"] == [
-        {"mediaType": "video", "provider": "vimeo",
-         "url": "https://vimeo.com/123",
-         "embedUrl": "https://player.vimeo.com/video/123", "title": "Tour"},
+        {
+            "mediaType": "video",
+            "provider": "vimeo",
+            "url": "https://vimeo.com/123",
+            "embedUrl": "https://player.vimeo.com/video/123",
+            "title": "Tour",
+        },
     ]
 
 
 def test_to_row_normalizes_bare_string_media():
     row = _row(_svn(media=["https://my.matterport.com/show/?m=abc"]))
     assert row["media"] == [
-        {"mediaType": "other", "provider": None,
-         "url": "https://my.matterport.com/show/?m=abc",
-         "embedUrl": None, "title": None},
+        {
+            "mediaType": "other",
+            "provider": None,
+            "url": "https://my.matterport.com/show/?m=abc",
+            "embedUrl": None,
+            "title": None,
+        },
     ]
 
 
@@ -118,18 +134,36 @@ def test_to_row_filters_non_http_media():
 
 
 def test_to_row_media_embed_url_http_filtered():
-    row = _row(_svn(media=[{"url": "https://vimeo.com/1", "embedUrl": "javascript:void"}]))
+    row = _row(
+        _svn(media=[{"url": "https://vimeo.com/1", "embedUrl": "javascript:void"}])
+    )
     assert row["media"][0]["embedUrl"] is None
 
 
 def test_to_row_builds_links_and_normalizes_bare_string():
-    row = _row(_svn(links=[
-        {"url": "https://www.loopnet.com/Listing/1", "linkType": "external_listing", "rel": "nofollow"},
-        "https://www.google.com/maps/place/x",
-    ]))
+    row = _row(
+        _svn(
+            links=[
+                {
+                    "url": "https://www.loopnet.com/Listing/1",
+                    "linkType": "external_listing",
+                    "rel": "nofollow",
+                },
+                "https://www.google.com/maps/place/x",
+            ]
+        )
+    )
     assert row["links"] == [
-        {"url": "https://www.loopnet.com/Listing/1", "rel": "nofollow", "linkType": "external_listing"},
-        {"url": "https://www.google.com/maps/place/x", "rel": None, "linkType": "other"},
+        {
+            "url": "https://www.loopnet.com/Listing/1",
+            "rel": "nofollow",
+            "linkType": "external_listing",
+        },
+        {
+            "url": "https://www.google.com/maps/place/x",
+            "rel": None,
+            "linkType": "other",
+        },
     ]
 
 
@@ -174,27 +208,47 @@ def test_to_row_document_doctype_default_brochure():
 
 
 def test_to_row_document_doctype_om_preserved():
-    row = _row(_svn(brochures=[
-        {"name": "OM", "url": "https://cdn.x/om.pdf", "docType": "om"},
-    ]))
+    row = _row(
+        _svn(
+            brochures=[
+                {"name": "OM", "url": "https://cdn.x/om.pdf", "docType": "om"},
+            ]
+        )
+    )
     assert row["documents"][0]["docType"] == "om"
 
 
 def test_to_row_harvested_documents_fold_in_with_doctype():
     # harvested DocItems (financials/rent_roll) ride the documents channel.
-    row = _row(_svn(documents=[
-        {"title": "T-12", "url": "https://cdn.x/t12.pdf", "docType": "financials"},
-        {"title": "Rent Roll", "url": "https://cdn.x/rr.pdf", "docType": "rent_roll"},
-    ]))
+    row = _row(
+        _svn(
+            documents=[
+                {
+                    "title": "T-12",
+                    "url": "https://cdn.x/t12.pdf",
+                    "docType": "financials",
+                },
+                {
+                    "title": "Rent Roll",
+                    "url": "https://cdn.x/rr.pdf",
+                    "docType": "rent_roll",
+                },
+            ]
+        )
+    )
     types = {d["docType"] for d in row["documents"]}
     assert types == {"financials", "rent_roll"}
 
 
 def test_to_row_harvested_document_default_brochure_and_http_filtered():
-    row = _row(_svn(documents=[
-        {"title": "No type", "url": "https://cdn.x/x.pdf"},
-        {"title": "bad", "url": "not-a-url"},
-    ]))
+    row = _row(
+        _svn(
+            documents=[
+                {"title": "No type", "url": "https://cdn.x/x.pdf"},
+                {"title": "bad", "url": "not-a-url"},
+            ]
+        )
+    )
     assert row["documents"] == [
         {"title": "No type", "url": "https://cdn.x/x.pdf", "docType": "brochure"},
     ]
@@ -206,13 +260,25 @@ def test_to_row_harvested_document_default_brochure_and_http_filtered():
 
 
 def test_to_row_lifts_structured_numeric_fields():
-    row = _row(_svn(noi=250000, grossRevenue=400000, occupancyRate=92, units=24,
-                    floors=3, parkingSpaces=50, parkingRatio=2.5, availableSf=12000,
-                    minDivisibleSf=1000, maxDivisibleSf=12000, termMinMonths=12,
-                    termMaxMonths=120))
+    row = _row(
+        _svn(
+            noi=250000,
+            grossRevenue=400000,
+            occupancyRate=92,
+            units=24,
+            floors=3,
+            parkingSpaces=50,
+            parkingRatio=2.5,
+            availableSf=12000,
+            minDivisibleSf=1000,
+            maxDivisibleSf=12000,
+            termMinMonths=12,
+            termMaxMonths=120,
+        )
+    )
     assert row["noi"] == 250000.0
     assert row["gross_revenue"] == 400000.0
-    assert row["occupancy_rate"] == 0.92          # percent -> fraction
+    assert row["occupancy_rate"] == 0.92  # percent -> fraction
     assert row["units"] == 24.0
     assert row["floors"] == 3.0
     assert row["parking_spaces"] == 50.0
@@ -225,15 +291,21 @@ def test_to_row_lifts_structured_numeric_fields():
 
 
 def test_to_row_lifts_text_and_array_fields():
-    row = _row(_svn(market="Dallas-Fort Worth", submarket="North Dallas",
-                    zoning="C-2", leaseRateType="nnn",
-                    highlights=["Corner lot", "New roof", "Corner lot"],
-                    amenities=["Parking"]))
+    row = _row(
+        _svn(
+            market="Dallas-Fort Worth",
+            submarket="North Dallas",
+            zoning="C-2",
+            leaseRateType="nnn",
+            highlights=["Corner lot", "New roof", "Corner lot"],
+            amenities=["Parking"],
+        )
+    )
     assert row["market"] == "Dallas-Fort Worth"
     assert row["submarket"] == "North Dallas"
     assert row["zoning"] == "C-2"
     assert row["lease_rate_type"] == "nnn"
-    assert row["highlights"] == ["Corner lot", "New roof"]   # deduped, order-preserving
+    assert row["highlights"] == ["Corner lot", "New roof"]  # deduped, order-preserving
     assert row["amenities"] == ["Parking"]
 
 
@@ -249,7 +321,10 @@ def test_to_row_lease_rate_type_maps_variants_to_enum_tokens():
     assert _row(_svn(leaseRateType="NNN"))["lease_rate_type"] == "nnn"
     assert _row(_svn(leaseRateType="Triple Net"))["lease_rate_type"] == "nnn"
     assert _row(_svn(leaseRateType="triple-net"))["lease_rate_type"] == "nnn"
-    assert _row(_svn(leaseRateType="Modified Gross"))["lease_rate_type"] == "modified_gross"
+    assert (
+        _row(_svn(leaseRateType="Modified Gross"))["lease_rate_type"]
+        == "modified_gross"
+    )
     assert _row(_svn(leaseRateType="mod gross"))["lease_rate_type"] == "modified_gross"
     assert _row(_svn(leaseRateType="Gross"))["lease_rate_type"] == "gross"
     assert _row(_svn(leaseRateType="Full Service"))["lease_rate_type"] == "full_service"
@@ -274,16 +349,23 @@ def test_to_row_lease_rate_type_junk_clamps_to_none():
 
 def test_merge_folds_media_links_from_other_pass():
     a = _row(_svn())  # sale pass, no media/links
-    b = _row(_svn(
-        url="https://www.svn.com/property?propertyId=svn-0001-lease",
-        transactionMode="lease",
-        media=[{"url": "https://vimeo.com/9"}],
-        links=[{"url": "https://x.com/feed", "linkType": "social"}],
-    ))
+    b = _row(
+        _svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+            media=[{"url": "https://vimeo.com/9"}],
+            links=[{"url": "https://x.com/feed", "linkType": "social"}],
+        )
+    )
     merged = merge_rows(a, b)
     assert merged["media"] == [
-        {"mediaType": "other", "provider": None, "url": "https://vimeo.com/9",
-         "embedUrl": None, "title": None},
+        {
+            "mediaType": "other",
+            "provider": None,
+            "url": "https://vimeo.com/9",
+            "embedUrl": None,
+            "title": None,
+        },
     ]
     assert merged["links"] == [
         {"url": "https://x.com/feed", "rel": None, "linkType": "social"},
@@ -291,18 +373,22 @@ def test_merge_folds_media_links_from_other_pass():
 
 
 def test_merge_unions_distinct_children_when_both_passes_are_nonempty():
-    a = _row(_svn(
-        photos=["https://x.com/sale.jpg"],
-        media=[{"url": "https://vimeo.com/sale", "mediaType": "video"}],
-        links=[{"url": "https://x.com/sale", "linkType": "other"}],
-    ))
-    b = _row(_svn(
-        url="https://www.svn.com/property?propertyId=svn-0001-lease",
-        transactionMode="lease",
-        photos=["https://x.com/lease.jpg"],
-        media=[{"url": "https://vimeo.com/lease", "mediaType": "video"}],
-        links=[{"url": "https://x.com/lease", "linkType": "other"}],
-    ))
+    a = _row(
+        _svn(
+            photos=["https://x.com/sale.jpg"],
+            media=[{"url": "https://vimeo.com/sale", "mediaType": "video"}],
+            links=[{"url": "https://x.com/sale", "linkType": "other"}],
+        )
+    )
+    b = _row(
+        _svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+            photos=["https://x.com/lease.jpg"],
+            media=[{"url": "https://vimeo.com/lease", "mediaType": "video"}],
+            links=[{"url": "https://x.com/lease", "linkType": "other"}],
+        )
+    )
     a["contacts"] = [{"name": "Sale Broker", "email": "sale@example.com"}]
     b["contacts"] = [{"name": "Lease Broker", "email": "lease@example.com"}]
     a["documents"] = [{"url": "https://x.com/sale.pdf", "title": None}]
@@ -335,20 +421,26 @@ def test_merge_unions_distinct_children_when_both_passes_are_nonempty():
 
 def test_merge_dedupes_children_and_fills_missing_fields():
     a = _row(_svn())
-    b = _row(_svn(
-        url="https://www.svn.com/property?propertyId=svn-0001-lease",
-        transactionMode="lease",
-    ))
-    a["contacts"] = [{
-        "name": "Same Broker",
-        "email": "same@example.com",
-        "phone": None,
-    }]
-    b["contacts"] = [{
-        "name": "Same Broker",
-        "email": "SAME@example.com",
-        "phone": "555-0100",
-    }]
+    b = _row(
+        _svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+        )
+    )
+    a["contacts"] = [
+        {
+            "name": "Same Broker",
+            "email": "same@example.com",
+            "phone": None,
+        }
+    ]
+    b["contacts"] = [
+        {
+            "name": "Same Broker",
+            "email": "SAME@example.com",
+            "phone": "555-0100",
+        }
+    ]
     a["documents"] = [{"url": "https://x.com/same.pdf", "title": None}]
     b["documents"] = [{"url": "https://x.com/same.pdf", "title": "Current PDF"}]
     a["images"] = [{"url": "https://x.com/same.jpg", "isPrimary": False}]
@@ -366,10 +458,12 @@ def test_merge_dedupes_children_and_fills_missing_fields():
 
 def test_merge_contacts_use_email_or_name_phone_aliases_and_dedupe_primary():
     a = _row(_svn())
-    b = _row(_svn(
-        url="https://www.svn.com/property?propertyId=svn-0001-lease",
-        transactionMode="lease",
-    ))
+    b = _row(
+        _svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+        )
+    )
     a["contacts"] = [
         {
             "name": "Same Broker",
@@ -410,10 +504,12 @@ def test_merge_contacts_preserves_transitive_aliases_in_any_order():
 
     for ordered in (contacts, list(reversed(contacts))):
         a = _row(_svn())
-        b = _row(_svn(
-            url="https://www.svn.com/property?propertyId=svn-0001-lease",
-            transactionMode="lease",
-        ))
+        b = _row(
+            _svn(
+                url="https://www.svn.com/property?propertyId=svn-0001-lease",
+                transactionMode="lease",
+            )
+        )
         a["contacts"] = ordered[:2]
         b["contacts"] = ordered[2:]
 
@@ -432,10 +528,12 @@ def test_merge_contacts_closes_aliases_synthesized_from_complementary_fields():
 
     for ordered in (contacts, list(reversed(contacts))):
         a = _row(_svn())
-        b = _row(_svn(
-            url="https://www.svn.com/property?propertyId=svn-0001-lease",
-            transactionMode="lease",
-        ))
+        b = _row(
+            _svn(
+                url="https://www.svn.com/property?propertyId=svn-0001-lease",
+                transactionMode="lease",
+            )
+        )
         a["contacts"] = ordered[:2]
         b["contacts"] = ordered[2:]
 
@@ -448,39 +546,47 @@ def test_merge_contacts_closes_aliases_synthesized_from_complementary_fields():
 
 def test_merge_markdown_prefers_longer():
     a = _row(_svn(markdown="short"))
-    b = _row(_svn(
-        url="https://www.svn.com/property?propertyId=svn-0001-lease",
-        transactionMode="lease",
-        markdown="a much longer markdown body with detail",
-    ))
+    b = _row(
+        _svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+            markdown="a much longer markdown body with detail",
+        )
+    )
     assert merge_rows(a, b)["markdown"] == "a much longer markdown body with detail"
 
 
 def test_merge_markdown_keeps_existing_when_other_blank():
     a = _row(_svn(markdown="kept body"))
-    b = _row(_svn(
-        url="https://www.svn.com/property?propertyId=svn-0001-lease",
-        transactionMode="lease",
-    ))
+    b = _row(
+        _svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+        )
+    )
     assert merge_rows(a, b)["markdown"] == "kept body"
 
 
 def test_merge_markdown_none_when_both_empty():
     a = _row(_svn())
-    b = _row(_svn(
-        url="https://www.svn.com/property?propertyId=svn-0001-lease",
-        transactionMode="lease",
-    ))
+    b = _row(
+        _svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+        )
+    )
     assert merge_rows(a, b)["markdown"] is None
 
 
 def test_merge_folds_lifted_numeric_first_non_none():
     a = _row(_svn())  # no noi
-    b = _row(_svn(
-        url="https://www.svn.com/property?propertyId=svn-0001-lease",
-        transactionMode="lease",
-        noi=99000,
-    ))
+    b = _row(
+        _svn(
+            url="https://www.svn.com/property?propertyId=svn-0001-lease",
+            transactionMode="lease",
+            noi=99000,
+        )
+    )
     assert merge_rows(a, b)["noi"] == 99000.0
 
 
@@ -495,11 +601,26 @@ def test_stage_cols_include_media_links_markdown():
 
 
 def test_stage_cols_include_lifted_structured_cols():
-    for col in ("noi", "gross_revenue", "occupancy_rate", "units", "floors",
-                "parking_spaces", "parking_ratio", "available_sf",
-                "min_divisible_sf", "max_divisible_sf", "term_min_months",
-                "term_max_months", "lease_rate_type", "zoning", "market",
-                "submarket", "highlights", "amenities"):
+    for col in (
+        "noi",
+        "gross_revenue",
+        "occupancy_rate",
+        "units",
+        "floors",
+        "parking_spaces",
+        "parking_ratio",
+        "available_sf",
+        "min_divisible_sf",
+        "max_divisible_sf",
+        "term_min_months",
+        "term_max_months",
+        "lease_rate_type",
+        "zoning",
+        "market",
+        "submarket",
+        "highlights",
+        "amenities",
+    ):
         assert col in STAGE_COLS
 
 
@@ -517,16 +638,28 @@ def test_stage_ddl_declares_media_links_markdown_types():
 def test_build_sql_media_block_guarded_delete_reinsert():
     sql = _sql()
     assert "IF to_regclass('credeals.cre_listing_media') IS NOT NULL THEN" in sql
-    assert "DELETE FROM credeals.cre_listing_media WHERE listing_id IN (SELECT id FROM _child_refresh)" in sql
-    assert "INSERT INTO credeals.cre_listing_media (listing_id, media_type, provider, url, embed_url, title)" in sql
+    assert (
+        "DELETE FROM credeals.cre_listing_media WHERE listing_id IN (SELECT id FROM _child_refresh)"
+        in sql
+    )
+    assert (
+        "INSERT INTO credeals.cre_listing_media (listing_id, media_type, provider, url, embed_url, title)"
+        in sql
+    )
     assert "ON CONFLICT (listing_id, media_type, url) DO NOTHING" in sql
 
 
 def test_build_sql_links_block_guarded_delete_reinsert():
     sql = _sql()
     assert "IF to_regclass('credeals.cre_listing_links') IS NOT NULL THEN" in sql
-    assert "DELETE FROM credeals.cre_listing_links WHERE listing_id IN (SELECT id FROM _child_refresh)" in sql
-    assert "INSERT INTO credeals.cre_listing_links (listing_id, link_type, url, rel)" in sql
+    assert (
+        "DELETE FROM credeals.cre_listing_links WHERE listing_id IN (SELECT id FROM _child_refresh)"
+        in sql
+    )
+    assert (
+        "INSERT INTO credeals.cre_listing_links (listing_id, link_type, url, rel)"
+        in sql
+    )
     assert "ON CONFLICT (listing_id, link_type, url) DO NOTHING" in sql
 
 
@@ -535,21 +668,22 @@ def test_build_sql_media_links_additive_inserts_use_schema_unique_keys():
     expected = (
         (
             "media",
-            "INSERT INTO credeals.cre_listing_media "
-            "(listing_id, media_type, provider, url, embed_url, title)",
+            (
+                "INSERT INTO credeals.cre_listing_media "
+                "(listing_id, media_type, provider, url, embed_url, title)"
+            ),
             "ON CONFLICT (listing_id, media_type, url) DO NOTHING",
         ),
         (
             "links",
-            "INSERT INTO credeals.cre_listing_links "
-            "(listing_id, link_type, url, rel)",
+            "INSERT INTO credeals.cre_listing_links (listing_id, link_type, url, rel)",
             "ON CONFLICT (listing_id, link_type, url) DO NOTHING",
         ),
     )
 
     for table, insert, conflict in expected:
         guard = f"IF to_regclass('credeals.cre_listing_{table}') IS NOT NULL THEN"
-        block = sql[sql.index(guard):sql.index("END IF;", sql.index(guard))]
+        block = sql[sql.index(guard) : sql.index("END IF;", sql.index(guard))]
         assert block.count(insert) == 2
         assert block.count(conflict) == 2
         assert "u.id IN (SELECT id FROM _child_additive)" in block
@@ -583,7 +717,9 @@ def test_existing_avison_partial_detail_adds_media_links_without_deleting_childr
     assert "https://listing.example/avison-0001" in sql
 
     additive_start = sql.index("CREATE TEMP TABLE _child_additive")
-    additive_end = sql.index("DELETE FROM credeals.cre_listing_contacts", additive_start)
+    additive_end = sql.index(
+        "DELETE FROM credeals.cre_listing_contacts", additive_start
+    )
     additive_definition = sql[additive_start:additive_end]
     assert "JOIN _prior_vals p" in additive_definition
     assert "$.**.preserveChildCollections" in additive_definition
@@ -631,9 +767,11 @@ def test_build_sql_media_links_excludes_detail_error_via_child_refresh():
     # clean detail touch (mirrors the images block).
     sql = _sql()
     assert "WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')" in sql
-    assert "$.**.preserveChildCollections ? (@ == true || @ == \"true\")" in sql
+    assert '$.**.preserveChildCollections ? (@ == true || @ == "true")' in sql
     # the media/links INSERTs reference the same _child_refresh gate
-    assert sql.count("u.id IN (SELECT id FROM _child_refresh)") >= 5  # contacts, docs, images, media, links
+    assert (
+        sql.count("u.id IN (SELECT id FROM _child_refresh)") >= 5
+    )  # contacts, docs, images, media, links
 
 
 def test_dual_pass_preserve_flag_remains_recursively_guarded():
@@ -666,10 +804,14 @@ def test_build_sql_markdown_coalesce_keep_with_nullif():
 def test_build_sql_numeric_structured_coalesce_keep():
     sql = _sql()
     assert "ELSE COALESCE(EXCLUDED.noi, t.noi) END" in sql
-    assert "occupancy_rate    = COALESCE(EXCLUDED.occupancy_rate, t.occupancy_rate)" in sql
+    assert (
+        "occupancy_rate    = COALESCE(EXCLUDED.occupancy_rate, t.occupancy_rate)" in sql
+    )
     assert "ELSE COALESCE(EXCLUDED.units, t.units) END" in sql
     # arrays COALESCE-keep too
-    assert "highlights        = COALESCE(EXCLUDED.highlights, t.highlights)" in sql
+    # JLL withholding adds a fail-closed monetary-prose replacement branch,
+    # while the normal path still preserves the established COALESCE behavior.
+    assert "ELSE COALESCE(EXCLUDED.highlights, t.highlights) END" in sql
     assert "amenities         = COALESCE(EXCLUDED.amenities, t.amenities)" in sql
 
 
@@ -692,11 +834,20 @@ def _write_artifact(payload, tmp_path, name="artifact.json"):
 def _run_dry(artifact_path, tmp_path, mark_missing=False):
     artifacts_dir = str(tmp_path / "artifacts")
     os.makedirs(artifacts_dir, exist_ok=True)
-    cmd = [sys.executable, "cre_ingest.py", "--in", artifact_path,
-           "--dry-run", "--keep-artifacts", artifacts_dir]
+    cmd = [
+        sys.executable,
+        "cre_ingest.py",
+        "--in",
+        artifact_path,
+        "--dry-run",
+        "--keep-artifacts",
+        artifacts_dir,
+    ]
     if mark_missing:
         cmd += ["--mark-missing", "--mark-missing-floor", "1"]
-    result = subprocess.run(cmd, cwd=_COLLECTOR_DIR, capture_output=True, text=True)
+    result = subprocess.run(
+        cmd, cwd=_COLLECTOR_DIR, capture_output=True, text=True, check=False
+    )
     sql_path = os.path.join(artifacts_dir, "ingest.sql")
     sql_text = None
     if os.path.isfile(sql_path):
@@ -714,8 +865,12 @@ def test_detail_error_row_present_but_child_refresh_self_excludes(tmp_path):
     payload = {
         "runMeta": {"startedAt": _SCRAPED_AT, "finishedAt": _SCRAPED_AT},
         "brokers": [],
-        "sources": [{"sourceKey": "svn", "transaction": "sale", "listingsCollected": 1}],
-        "listings": [_svn(detailError="timeout", media=[{"url": "https://vimeo.com/1"}])],
+        "sources": [
+            {"sourceKey": "svn", "transaction": "sale", "listingsCollected": 1}
+        ],
+        "listings": [
+            _svn(detailError="timeout", media=[{"url": "https://vimeo.com/1"}])
+        ],
     }
     art = _write_artifact(payload, tmp_path)
     rc, stderr, sql = _run_dry(art, tmp_path)
@@ -730,9 +885,15 @@ def test_detail_error_row_present_but_child_refresh_self_excludes(tmp_path):
 
 def test_base_row_preserves_child_collections(tmp_path):
     payload = {
-        "runMeta": {"mode": "full", "startedAt": _SCRAPED_AT, "finishedAt": _SCRAPED_AT},
+        "runMeta": {
+            "mode": "full",
+            "startedAt": _SCRAPED_AT,
+            "finishedAt": _SCRAPED_AT,
+        },
         "brokers": [],
-        "sources": [{"sourceKey": "svn", "transaction": "sale", "listingsCollected": 1}],
+        "sources": [
+            {"sourceKey": "svn", "transaction": "sale", "listingsCollected": 1}
+        ],
         "listings": [_svn(preserveChildCollections=True)],
     }
     art = _write_artifact(payload, tmp_path)
@@ -740,7 +901,7 @@ def test_base_row_preserves_child_collections(tmp_path):
     assert rc == 0, f"ingestor exited {rc}. stderr:\n{stderr}"
     assert sql is not None
     assert "preserveChildCollections" in sql
-    assert "$.**.preserveChildCollections ? (@ == true || @ == \"true\")" in sql
+    assert '$.**.preserveChildCollections ? (@ == true || @ == "true")' in sql
     assert "OR NOT EXISTS" in sql
     assert "FROM _prior_vals p" in sql
     assert "THEN NULL\n                                     ELSE t.scraped_at" in sql
@@ -777,9 +938,14 @@ def test_media_links_archive_emitted_guarded_on_mark_missing(tmp_path):
     payload = {
         "runMeta": {"startedAt": _SCRAPED_AT, "finishedAt": _SCRAPED_AT},
         "brokers": [],
-        "sources": [{"sourceKey": "svn", "transaction": "sale", "listingsCollected": 3}],
+        "sources": [
+            {"sourceKey": "svn", "transaction": "sale", "listingsCollected": 3}
+        ],
         "listings": [
-            _svn(url=f"https://www.svn.com/property?propertyId=svn-{i:04d}-sale", id=f"svn-{i:04d}")
+            _svn(
+                url=f"https://www.svn.com/property?propertyId=svn-{i:04d}-sale",
+                id=f"svn-{i:04d}",
+            )
             for i in range(3)
         ],
     }

@@ -359,8 +359,9 @@ test("JLL GraphQL item mapping respects hidden prices and rejects unsafe identit
     {
       id: "3",
       pageUrl: "/listings/contradictory-control",
-      hidePrice: false,
+      hidePrice: true,
       PRICEWITHHOLDINGCONTROL: "withheld",
+      HiDePrIcE: false,
       salePrice: { amount: 3250000, currency: "USD" },
     },
     "sale",
@@ -1026,6 +1027,69 @@ test("JLL successful hidden detail redacts normalized prose and case-variant pri
     assert.equal(enriched.jllDetail.highlights, undefined);
     assert.equal(enriched.jllDetail.dealEconomics, undefined);
     assert.doesNotMatch(JSON.stringify(enriched), /3250000|3,250,000/);
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL top-level price controls redact cached detail and monetary public text", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-top-level-hidden-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const url = "https://property.jll.com/listings/top-level-hidden";
+  try {
+    writeJllDetailCache(url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify({
+          props: {
+            pageProps: {
+              property: {
+                id: "top-level-hidden",
+                pageUrl: "/listings/top-level-hidden",
+                hidePrice: false,
+                salePrice: { amount: 3250000, currency: "USD" },
+                title: "GBP 3.25m Office Portfolio",
+                floorPlans: {
+                  files: [{ download: "https://cdn.example/floor.pdf" }, null],
+                },
+              },
+              brokers: [],
+            },
+          },
+        }) +
+        "</script>",
+      markdown: "Asking £3.25m.",
+      links: [],
+      images: [],
+    });
+
+    const enriched = await enrichJllListing({
+      id: "top-level-hidden",
+      url,
+      hidePrice: false,
+      PRICEWITHHOLDINGCONTROL: "withheld",
+      name: "AUD 3m Legacy Name",
+      headline: "JPY 3250000 headline",
+      salePriceUsd: 3250000,
+      salePriceText: "$3,250,000",
+      jllSearchResult: { hidePrice: false },
+      currentTenants: [
+        { name: "Acme Holdings" },
+        { name: "GBP 3m Tenant" },
+      ],
+    });
+
+    assert.equal(enriched.detailError, undefined);
+    assert.equal(enriched.salePriceUsd, undefined);
+    assert.equal(enriched.salePriceText, undefined);
+    assert.equal(enriched.name, undefined);
+    assert.deepEqual(enriched.currentTenants, [{ name: "Acme Holdings" }]);
+    assert.equal(enriched.jllDetail.pricing.visibility, "withheld");
+    assert.equal(enriched.jllDetail.pricing.searchWithholdingControl, "withheld");
+    assert.doesNotMatch(JSON.stringify(enriched), /3250000|3,250,000|3\.25m|GBP|JPY|AUD|£/);
   } finally {
     if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
     else process.env.JLL_DETAIL_CACHE_DIR = oldDir;

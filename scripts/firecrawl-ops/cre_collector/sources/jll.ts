@@ -464,6 +464,19 @@ function jllWithholdingControl(value: unknown, key: string): JllWithholdingContr
   return "unknown";
 }
 
+function jllReconciledWithholdingControl(...values: unknown[]): JllWithholdingControl {
+  const controls = values
+    .map((value) => jllWithholdingControl(value, "hidePrice"))
+    .filter((control) => control !== "absent");
+  if (!controls.length) return "absent";
+  // The provider can repeat a normalized control at the top level and in the
+  // search-card envelope. A concealment signal always prevents price exposure;
+  // malformed or duplicate-case signals remain fail-closed as `unknown`.
+  if (controls.includes("withheld")) return "withheld";
+  if (controls.includes("unknown")) return "unknown";
+  return controls.every((control) => control === "visible") ? "visible" : "unknown";
+}
+
 function jllStoredWithholdingControl(value: unknown): JllWithholdingControl {
   return jllWithholdingControl(value, "hidePrice");
 }
@@ -494,6 +507,18 @@ const JLL_SENSITIVE_PARENT_CHILDREN = new Map([
   ["futureeconomics", new Set(["consideration"])],
   ["dealeconomics", new Set(["amount"])],
 ]);
+const JLL_MONEY_AMOUNT = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?";
+const JLL_MONEY_TOKEN = new RegExp(
+  `(?:\\b(?:usd|cad|eur|gbp|jpy|aud|nzd|chf|hkd|sgd|cny|rmb|inr|mxn|brl|krw|aed|sar|sek|nok|dkk|pln|try|zar)\\s*|(?:us\\$|c\\$|a\\$)|[$€£¥])\\s*${JLL_MONEY_AMOUNT}(?:\\s*[kmb])?(?:\\s*/\\s*[a-z. ]+)?`,
+  "i"
+);
+const JLL_MONEY_SUFFIX = new RegExp(`\\b${JLL_MONEY_AMOUNT}\\s*[kmb]\\b`, "i");
+
+function jllSafePublicText(value: unknown): string | null {
+  const text = clean(value);
+  return text && !JLL_MONEY_TOKEN.test(text) && !JLL_MONEY_SUFFIX.test(text) ? text : null;
+}
+
 /** Apply the narrow JLL withheld-price raw-retention contract.
  *
  * Exact schema paths are removed rather than substring-matching field names,
@@ -547,10 +572,10 @@ function jllSafeTenantIdentities(value: unknown): Array<{ name: string }> {
   if (!Array.isArray(value)) return [];
   return value.flatMap((tenant) => {
     const record = tenant as Record<string, unknown> | null;
-    const name = clean(record?.name ?? record?.tenantName);
+    const name = jllSafePublicText(record?.name ?? record?.tenantName);
     // An identity can contain ordinary digits (for example, 7-Eleven), but it
     // cannot be a currency-bearing value or prose disclosure.
-    if (!name || /[$€]|\b(?:usd|cad|eur)\b/i.test(name)) return [];
+    if (!name) return [];
     return [{ name }];
   });
 }
@@ -559,7 +584,14 @@ function jllWithheldPublicProjection(value: unknown): Record<string, unknown> {
   const redacted = jllRedactSensitivePriceFields(value) as Record<string, unknown>;
   const projected: Record<string, unknown> = {};
   for (const key of JLL_WITHHELD_PUBLIC_BASE_KEYS) {
-    if (Object.hasOwn(redacted, key)) projected[key] = redacted[key];
+    if (!Object.hasOwn(redacted, key)) continue;
+    const candidate = redacted[key];
+    if (typeof candidate !== "string") {
+      projected[key] = candidate;
+      continue;
+    }
+    const safe = jllSafePublicText(candidate);
+    if (safe) projected[key] = safe;
   }
   const tenants = jllSafeTenantIdentities(redacted.currentTenants);
   if (tenants.length) projected.currentTenants = tenants;
@@ -1281,6 +1313,14 @@ export function jllStrandedStructured(property: any): Record<string, any> {
 
 export async function enrichJllListing(base: any): Promise<any> {
   if (!base.url) return base;
+  // A listing can carry the same provider control at its top level and inside
+  // jllSearchResult. Establish that boundary before a cached detail payload is
+  // parsed so a malformed detail shape cannot restore a public search price.
+  const baseWithholdingControl = jllReconciledWithholdingControl(
+    base,
+    base?.jllSearchResult
+  );
+  const basePriceWithheld = jllPriceWithheld(baseWithholdingControl);
   let failurePricing: Record<string, unknown> | null = null;
   try {
     let doc = await scrapeJllDetailDoc(base.url);
@@ -1295,7 +1335,9 @@ export async function enrichJllListing(base: any): Promise<any> {
     }
     if (!property) {
       return prune({
-        ...jllRedactSensitivePriceFields(base),
+        ...(basePriceWithheld
+          ? jllWithheldPublicProjection(base)
+          : jllRedactSensitivePriceFields(base)),
         detailError: "missing property in __NEXT_DATA__",
       });
     }
@@ -1318,7 +1360,8 @@ export async function enrichJllListing(base: any): Promise<any> {
     // Establish and enforce the price visibility boundary before parsing any
     // fallible detail shape.  A malformed floor-plan payload must not turn a
     // hidden price into the unmodified search-card fallback.
-    const searchWithholdingControl = jllStoredWithholdingControl(
+    const searchWithholdingControl = jllReconciledWithholdingControl(
+      base,
       base?.jllSearchResult
     );
     const detailWithholdingControl = jllWithholdingControl(property, "hidePrice");
@@ -1407,15 +1450,31 @@ export async function enrichJllListing(base: any): Promise<any> {
         cacheDisposition: doc.detailObservation?.cacheDisposition ?? "live",
       },
       id: base.id,
-      name: clean(property.title) ?? base.name,
-      assetType: Array.isArray(property.propertyTypes)
-        ? property.propertyTypes.map(jllPropertyTypeLabel).join(", ")
-        : clean(property.propertyType) ?? base.assetType,
+      name: hiddenPrice
+        ? jllSafePublicText(clean(property.title) ?? publicBase.name) ?? undefined
+        : clean(property.title) ?? base.name,
+      assetType: hiddenPrice
+        ? jllSafePublicText(
+            Array.isArray(property.propertyTypes)
+              ? property.propertyTypes.map(jllPropertyTypeLabel).join(", ")
+              : clean(property.propertyType) ?? publicBase.assetType
+          ) ?? undefined
+        : Array.isArray(property.propertyTypes)
+          ? property.propertyTypes.map(jllPropertyTypeLabel).join(", ")
+          : clean(property.propertyType) ?? base.assetType,
       description: hiddenPrice ? undefined : description,
-      street: clean(property.address) ?? base.street,
-      city: clean(property.city) ?? base.city,
-      state: clean(property.state) ?? base.state,
-      postalCode: clean(property.postcode) ?? base.postalCode,
+      street: hiddenPrice
+        ? jllSafePublicText(clean(property.address) ?? publicBase.street) ?? undefined
+        : clean(property.address) ?? base.street,
+      city: hiddenPrice
+        ? jllSafePublicText(clean(property.city) ?? publicBase.city) ?? undefined
+        : clean(property.city) ?? base.city,
+      state: hiddenPrice
+        ? jllSafePublicText(clean(property.state) ?? publicBase.state) ?? undefined
+        : clean(property.state) ?? base.state,
+      postalCode: hiddenPrice
+        ? jllSafePublicText(clean(property.postcode) ?? publicBase.postalCode) ?? undefined
+        : clean(property.postcode) ?? base.postalCode,
       latitude: num(property.latitude) ?? base.latitude,
       longitude: num(property.longitude) ?? base.longitude,
       salePriceUsd: hiddenPrice
@@ -1433,7 +1492,9 @@ export async function enrichJllListing(base: any): Promise<any> {
         : rentPrice.sourceShape === "absent"
           ? base.leaseRateText
           : jllLeasePriceText(rentPrice),
-      sizeText: clean(property.surfaceArea) ?? base.sizeText,
+      sizeText: hiddenPrice
+        ? jllSafePublicText(clean(property.surfaceArea) ?? publicBase.sizeText) ?? undefined
+        : clean(property.surfaceArea) ?? base.sizeText,
       buildingSizeSqft: jllSurfaceAreaSqft(property) ?? base.buildingSizeSqft,
       ...lifted,
       brokerIds,
@@ -1448,9 +1509,11 @@ export async function enrichJllListing(base: any): Promise<any> {
       lastUpdated: base.lastUpdated,
       jllDetail: {
         id: clean(property.id),
-        refId: clean(property.refId),
-        pageUrl: clean(property.pageUrl),
-        relativeUrl: clean(pageProps?.relativeUrl),
+        refId: hiddenPrice ? jllSafePublicText(property.refId) ?? undefined : clean(property.refId),
+        pageUrl: hiddenPrice ? jllSafePublicText(property.pageUrl) ?? undefined : clean(property.pageUrl),
+        relativeUrl: hiddenPrice
+          ? jllSafePublicText(pageProps?.relativeUrl) ?? undefined
+          : clean(pageProps?.relativeUrl),
         pricing,
         tenureTypes: hiddenPrice ? undefined : property.tenureTypes,
         propertyTypes: hiddenPrice ? undefined : property.propertyTypes,
@@ -1458,8 +1521,12 @@ export async function enrichJllListing(base: any): Promise<any> {
         amenities: hiddenPrice ? undefined : property.amenities,
         amenitiesData: hiddenPrice ? undefined : property.amenitiesData,
         highlights: hiddenPrice ? undefined : property.highlights,
-        customRefId: clean(property.customRefId),
-        buildingClass: clean(property.buildingClass),
+        customRefId: hiddenPrice
+          ? jllSafePublicText(property.customRefId) ?? undefined
+          : clean(property.customRefId),
+        buildingClass: hiddenPrice
+          ? jllSafePublicText(property.buildingClass) ?? undefined
+          : clean(property.buildingClass),
         parkingDetails: hiddenPrice ? undefined : property.parkingDetails,
         locationDescription: hiddenPrice ? undefined : stripHtmlText(property.locationDescription),
         submarket: hiddenPrice ? undefined : clean(property.submarket),
@@ -1483,8 +1550,7 @@ export async function enrichJllListing(base: any): Promise<any> {
     // The error path is also a visibility boundary.  Redact recursively so a
     // search-card askingPrice or an old nested jllDetail price cannot survive a
     // malformed detail field; preserve only safe control/provenance fields.
-    const baseControl = jllStoredWithholdingControl(base?.jllSearchResult);
-    const redacted = jllPriceWithheld(baseControl) || failurePricing !== null
+    const redacted = basePriceWithheld || failurePricing !== null
       ? jllWithheldPublicProjection(base)
       : jllRedactSensitivePriceFields(base);
     const detail =
