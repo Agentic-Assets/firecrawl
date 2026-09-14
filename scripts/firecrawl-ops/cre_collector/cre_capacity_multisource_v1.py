@@ -17,6 +17,7 @@ import stat
 import urllib.parse
 from collections import Counter
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -73,10 +74,19 @@ EXPECTED_SOURCE_HOSTS = {
     "cbre": ("cbre.com", "www.cbre.com"),
     "cbre-dealflow": ("www.cbredealflow.com",),
     "cushman-wakefield": ("cushmanwakefield.com", "www.cushmanwakefield.com"),
-    "newmark": ("nmrk.com", "www.nmrk.com"),
+    "newmark": (
+        "api-public.nim.nmrk.com",
+        "nim.nmrk.com",
+        "nmrk.com",
+        "www.nmrk.com",
+    ),
     "svn": ("svn.com",),
     "lee-associates": ("www.lee-associates.com",),
-    "srs": ("srsre.com", "www.srsre.com"),
+    "srs": (
+        "srsre-next-412955565034.us-central1.run.app",
+        "srsre.com",
+        "www.srsre.com",
+    ),
     "bull-realty": ("www.bullrealty.com",),
 }
 EXPECTED_PLANE_COUNTS = {"strict_detail": 12, "authoritative_inventory": 8}
@@ -201,6 +211,7 @@ def load_config(path: Path = CONFIG) -> dict[str, Any]:
             "minimum_detail_eligible_for_core",
             "minimum_sources_for_experiment",
             "stratification_seed",
+            "maximum_enumeration_age_seconds",
         }
         or any(
             type(sampling[key]) is not int or sampling[key] < 1
@@ -209,6 +220,7 @@ def load_config(path: Path = CONFIG) -> dict[str, Any]:
                 "core_per_source",
                 "minimum_detail_eligible_for_core",
                 "minimum_sources_for_experiment",
+                "maximum_enumeration_age_seconds",
             )
         )
         or not isinstance(sampling["stratification_seed"], str)
@@ -227,7 +239,12 @@ def load_config(path: Path = CONFIG) -> dict[str, Any]:
             "browser_cpus": 6,
             "global_pages": 10,
             "source_workers": 2,
-            "provider_family_exclusions": ["buildout", "cbre", "colliers", "jll"],
+            "future_executor_provider_family_exclusions": [
+                "buildout",
+                "cbre",
+                "colliers",
+                "jll",
+            ],
         },
     }
     if profiles != expected_profiles:
@@ -254,6 +271,7 @@ def load_config(path: Path = CONFIG) -> dict[str, Any]:
                 "hosts",
                 "not_found_classifier",
                 "exclusive",
+                "allow_query",
             }
             or not isinstance(source.get("key"), str)
             or source.get("plane") not in PLANES
@@ -264,6 +282,7 @@ def load_config(path: Path = CONFIG) -> dict[str, Any]:
             or source.get("not_found_classifier")
             not in {None, "jll_next_data_404_no_property"}
             or ("exclusive" in source and type(source["exclusive"]) is not bool)
+            or ("allow_query" in source and type(source["allow_query"]) is not bool)
         ):
             raise MultisourceError("multisource-v1 source matrix is invalid")
         if tuple(source["hosts"]) != EXPECTED_SOURCE_HOSTS[source["key"]]:
@@ -275,7 +294,7 @@ def load_config(path: Path = CONFIG) -> dict[str, Any]:
     return document
 
 
-def _valid_jll_not_found(raw: bytes, receipt: Mapping[str, Any]) -> bool:
+def _valid_jll_not_found(raw: Mapping[str, Any], receipt: Mapping[str, Any]) -> bool:
     """The only current v1 attrition classifier: explicit JLL __NEXT_DATA__ 404."""
     if (
         receipt.get("http_status") != 404
@@ -283,8 +302,8 @@ def _valid_jll_not_found(raw: bytes, receipt: Mapping[str, Any]) -> bool:
     ):
         return False
     try:
-        payload = json.loads(raw)
-        html = payload.get("rawHtml") if isinstance(payload, dict) else None
+        body = raw.get("body")
+        html = body.get("rawHtml") if isinstance(body, Mapping) else None
         match = re.search(
             r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
             html or "",
@@ -340,19 +359,33 @@ def _source_config_sha256(source: Mapping[str, Any]) -> str:
 
 
 def _public_url(value: Any, source: Mapping[str, Any]) -> str:
-    parsed = urllib.parse.urlsplit(value) if isinstance(value, str) else None
+    if not isinstance(value, str) or any(
+        ord(character) < 32 or ord(character) == 127 for character in value
+    ):
+        raise MultisourceError("receipt target is outside the provider host contract")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise MultisourceError(
+            "receipt target is outside the provider host contract"
+        ) from exc
     if (
-        not parsed
-        or parsed.scheme != "https"
+        parsed.scheme != "https"
         or not parsed.hostname
         or parsed.hostname not in source["hosts"]
         or not parsed.path
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.fragment
+        or (parsed.query and source.get("allow_query") is not True)
     ):
         raise MultisourceError("receipt target is outside the provider host contract")
     return value
 
 
-def _observed_at(value: Any) -> str:
+def _observed_at(value: Any, *, now_utc: datetime, maximum_age: int) -> str:
     # This is deliberately a narrow, UTC-only serial form.  The producer must
     # record the same timestamp in the private enumeration receipt.
     if (
@@ -361,11 +394,24 @@ def _observed_at(value: Any) -> str:
         is None
     ):
         raise MultisourceError("enumeration timestamp is invalid")
+    try:
+        observed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    except ValueError as exc:
+        raise MultisourceError("enumeration timestamp is invalid") from exc
+    if observed < now_utc - timedelta(
+        seconds=maximum_age
+    ) or observed > now_utc + timedelta(seconds=60):
+        raise MultisourceError("enumeration timestamp is outside the freshness window")
     return value
 
 
 def _enumeration_binding(
-    receipt: Mapping[str, Any], source: Mapping[str, Any], *, root: Path
+    receipt: Mapping[str, Any],
+    source: Mapping[str, Any],
+    *,
+    root: Path,
+    now_utc: datetime,
+    maximum_age: int,
 ) -> tuple[str, int, str]:
     """Rehash an enumeration receipt instead of trusting a row's assertion."""
     enum_path_value = receipt.get("enumeration_receipt_path")
@@ -380,10 +426,26 @@ def _enumeration_binding(
     ):
         raise MultisourceError("enumeration receipt hash drifted")
     document = _read_json(enum_path, MAX_RAW_RECEIPT_BYTES)
-    required = {"observed_at", "total", "complete", "truncated", "provider_ids", "body"}
+    required = {
+        "observed_at",
+        "total",
+        "complete",
+        "truncated",
+        "provider_ids",
+        "body",
+        "request_url",
+        "final_url",
+        "http_status",
+        "content_type",
+        "timing_ms",
+    }
     if not isinstance(document, dict) or set(document) != required:
         raise MultisourceError("enumeration receipt is malformed")
-    observed_at = _observed_at(receipt.get("enumeration_observed_at"))
+    observed_at = _observed_at(
+        receipt.get("enumeration_observed_at"),
+        now_utc=now_utc,
+        maximum_age=maximum_age,
+    )
     total = receipt.get("enumeration_total")
     if (
         document["observed_at"] != observed_at
@@ -398,8 +460,17 @@ def _enumeration_binding(
             for identifier in document["provider_ids"]
         )
         or receipt.get("provider_id") not in document["provider_ids"]
-        or len(document["provider_ids"]) > total
+        or len(document["provider_ids"]) != total
+        or len(set(document["provider_ids"])) != total
         or not isinstance(document["body"], str)
+        or _public_url(document["request_url"], source) != document["request_url"]
+        or _public_url(document["final_url"], source) != document["final_url"]
+        or type(document["http_status"]) is not int
+        or document["http_status"] != 200
+        or not isinstance(document["content_type"], str)
+        or not document["content_type"]
+        or type(document["timing_ms"]) not in {int, float}
+        or document["timing_ms"] < 0
     ):
         raise MultisourceError("enumeration completeness proof is invalid")
     body_hash = _sha256(document["body"].encode())
@@ -422,9 +493,147 @@ def _enumeration_binding(
     return identity, total, enum_hash
 
 
-def _fidelity_evidence(
+def _extractor_receipt_binding(
     receipt: Mapping[str, Any], *, root: Path
-) -> tuple[str, str, str]:
+) -> Mapping[str, Any]:
+    """Rehash the extractor receipt that binds all detail-side artifacts."""
+    path_value = receipt.get("extractor_receipt_path")
+    if not isinstance(path_value, str):
+        raise MultisourceError("extractor receipt path is invalid")
+    path = _private_regular(Path(path_value), MAX_RAW_RECEIPT_BYTES, root=root)
+    actual = _file_sha256(path)
+    if actual != _hex_digest(
+        receipt.get("extractor_receipt_sha256"), label="extractor receipt"
+    ):
+        raise MultisourceError("extractor receipt hash drifted")
+    document = _read_json(path, MAX_RAW_RECEIPT_BYTES)
+    required = {
+        "source_key",
+        "provider_id",
+        "canonical_url",
+        "request_url",
+        "final_url",
+        "http_status",
+        "content_type",
+        "observed_at",
+        "timing_ms",
+        "raw_receipt_sha256",
+        "parser_sha256",
+        "normalized_sha256",
+        "field_locator_sha256",
+        "asset_evidence_sha256",
+    }
+    if not isinstance(document, Mapping) or set(document) != required:
+        raise MultisourceError("extractor receipt is malformed")
+    for key in required:
+        if document[key] != receipt.get(key):
+            raise MultisourceError("extractor receipt does not bind row evidence")
+    return document
+
+
+def _raw_receipt_binding(
+    receipt: Mapping[str, Any], source: Mapping[str, Any], *, root: Path
+) -> tuple[Mapping[str, Any], str]:
+    """Bind receipt transport claims to bytes captured by the extractor."""
+    raw_path_value = receipt.get("raw_receipt_path")
+    if not isinstance(raw_path_value, str):
+        raise MultisourceError("raw receipt path is invalid")
+    raw_path = _private_regular(Path(raw_path_value), MAX_RAW_RECEIPT_BYTES, root=root)
+    raw_hash = _file_sha256(raw_path)
+    if raw_hash != receipt["raw_receipt_sha256"]:
+        raise MultisourceError("raw receipt hash drifted")
+    document = _read_json(raw_path, MAX_RAW_RECEIPT_BYTES)
+    required = {
+        "request_url",
+        "final_url",
+        "http_status",
+        "content_type",
+        "observed_at",
+        "timing_ms",
+        "body",
+    }
+    if not isinstance(document, Mapping) or set(document) != required:
+        raise MultisourceError("raw receipt is malformed")
+    if (
+        _public_url(document["request_url"], source) != document["request_url"]
+        or _public_url(document["final_url"], source) != document["final_url"]
+        or document["request_url"] != receipt["request_url"]
+        or document["final_url"] != receipt["final_url"]
+        or document["http_status"] != receipt["http_status"]
+        or document["content_type"] != receipt["content_type"]
+        or document["observed_at"] != receipt["observed_at"]
+        or document["timing_ms"] != receipt["timing_ms"]
+    ):
+        raise MultisourceError("raw receipt does not bind transport evidence")
+    return document, raw_hash
+
+
+def _jll_next_property(raw: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Return the exact public JLL property object used by the v1 verifier."""
+    body = raw.get("body")
+    html = body.get("rawHtml") if isinstance(body, Mapping) else None
+    if not isinstance(html, str):
+        return None
+    try:
+        match = re.search(
+            r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+            html,
+            re.IGNORECASE | re.DOTALL,
+        )
+        next_data = json.loads(match.group(1)) if match else None
+        property_value = (
+            next_data.get("props", {}).get("pageProps", {}).get("property")
+            if isinstance(next_data, Mapping)
+            else None
+        )
+    except (AttributeError, json.JSONDecodeError):
+        return None
+    return property_value if isinstance(property_value, Mapping) else None
+
+
+def _verified_jll_locator_fidelity(
+    normalized: Mapping[str, Any], locators: Mapping[str, Any], raw: Mapping[str, Any]
+) -> bool:
+    """Verify normalized JLL field values against explicit NEXT-data locators."""
+    fields = normalized.get("fields")
+    locator_fields = locators.get("fields")
+    property_value = _jll_next_property(raw)
+    if (
+        not isinstance(fields, Mapping)
+        or not fields
+        or not isinstance(locator_fields, Mapping)
+        or set(locator_fields) != set(fields)
+        or property_value is None
+    ):
+        return False
+    source_fields = {
+        "address": "address",
+        "name": "title",
+        "property_type": "propertyType",
+        "transaction_type": "transactionType",
+    }
+    for normalized_field, normalized_value in fields.items():
+        locator = locator_fields.get(normalized_field)
+        if (
+            normalized_field not in source_fields
+            or not isinstance(locator, Mapping)
+            or set(locator) != {"source_path", "value_sha256"}
+            or locator.get("source_path")
+            != f"property.{source_fields[normalized_field]}"
+            or locator.get("value_sha256") != _sha256(_canonical(normalized_value))
+            or property_value.get(source_fields[normalized_field]) != normalized_value
+        ):
+            return False
+    return True
+
+
+def _fidelity_evidence(
+    receipt: Mapping[str, Any],
+    source: Mapping[str, Any],
+    raw: Mapping[str, Any],
+    *,
+    root: Path,
+) -> tuple[str, str, str, bool]:
     """Bind field and asset fidelity to real normalized artifacts, never booleans."""
     values: dict[str, tuple[int, Any]] = {
         "normalized": (MAX_RAW_RECEIPT_BYTES, None),
@@ -462,12 +671,23 @@ def _fidelity_evidence(
         or locators.get("provider_id") != provider_id
         or not isinstance(locator_fields, Mapping)
         or not locator_fields
-        or not set(locator_fields) <= set(fields)
+        or set(locator_fields) != set(fields)
         or assets.get("provider_id") != provider_id
         or not isinstance(assets.get("assets"), list)
     ):
         raise MultisourceError("artifact-bound fidelity evidence is incomplete")
-    return hashes["normalized"], hashes["field_locator"], hashes["asset_evidence"]
+    # v1 intentionally does not fabricate a generic semantic parser. Sources
+    # without a reviewed verifier remain valuable screening evidence but cannot
+    # become an experiment-ready cohort member.
+    verified = source["key"] == "jll" and _verified_jll_locator_fidelity(
+        normalized, locators, raw
+    )
+    return (
+        hashes["normalized"],
+        hashes["field_locator"],
+        hashes["asset_evidence"],
+        verified,
+    )
 
 
 def _stratum(value: Any) -> dict[str, str]:
@@ -480,7 +700,12 @@ def _stratum(value: Any) -> dict[str, str]:
 
 
 def _receipt_summary(
-    receipt: Mapping[str, Any], source: Mapping[str, Any], *, root: Path
+    receipt: Mapping[str, Any],
+    source: Mapping[str, Any],
+    *,
+    root: Path,
+    now_utc: datetime,
+    maximum_age: int,
 ) -> dict[str, Any]:
     required = {
         "source_key",
@@ -500,6 +725,10 @@ def _receipt_summary(
         "retry_count",
         "raw_receipt_path",
         "raw_receipt_sha256",
+        "request_url",
+        "observed_at",
+        "extractor_receipt_path",
+        "extractor_receipt_sha256",
         "normalized_path",
         "normalized_sha256",
         "field_locator_path",
@@ -527,10 +756,16 @@ def _receipt_summary(
     if receipt.get("source_config_sha256") != _source_config_sha256(source):
         raise MultisourceError("receipt source configuration digest is not this cohort")
     identity, population_total, enumeration_receipt_sha256 = _enumeration_binding(
-        receipt, source, root=root
+        receipt,
+        source,
+        root=root,
+        now_utc=now_utc,
+        maximum_age=maximum_age,
     )
     canonical_url = _public_url(receipt["canonical_url"], source)
+    _public_url(receipt.get("request_url"), source)
     _public_url(receipt.get("final_url"), source)
+    _observed_at(receipt.get("observed_at"), now_utc=now_utc, maximum_age=maximum_age)
     if (
         type(receipt.get("http_status")) is not int
         or not 100 <= receipt["http_status"] <= 599
@@ -548,21 +783,21 @@ def _receipt_summary(
         raise MultisourceError("receipt timing is invalid")
     for key in ("raw_receipt_sha256", "parser_sha256", "config_sha256"):
         _hex_digest(receipt.get(key), label=key)
-    raw_path_value = receipt.get("raw_receipt_path")
-    if not isinstance(raw_path_value, str):
-        raise MultisourceError("raw receipt path is invalid")
-    raw_path = _private_regular(Path(raw_path_value), MAX_RAW_RECEIPT_BYTES, root=root)
-    raw_hash = _file_sha256(raw_path)
-    if raw_hash != receipt["raw_receipt_sha256"]:
-        raise MultisourceError("raw receipt hash drifted")
-    normalized_sha256, field_locator_sha256, asset_evidence_sha256 = _fidelity_evidence(
-        receipt, root=root
-    )
+    _extractor_receipt_binding(receipt, root=root)
+    raw_document, raw_hash = _raw_receipt_binding(receipt, source, root=root)
+    if raw_document["final_url"] != canonical_url:
+        raise MultisourceError("raw receipt final target is not the enumerated listing")
+    (
+        normalized_sha256,
+        field_locator_sha256,
+        asset_evidence_sha256,
+        fidelity_verified,
+    ) = _fidelity_evidence(receipt, source, raw_document, root=root)
     classification = receipt["classification"]
     if classification == "confirmed_current_attrition":
         classifier = source.get("not_found_classifier")
         if classifier != "jll_next_data_404_no_property" or not _valid_jll_not_found(
-            raw_path.read_bytes(), receipt
+            raw_document, receipt
         ):
             raise MultisourceError("provider-specific attrition proof is absent")
     elif classification == "eligible_detail" and receipt["http_status"] != 200:
@@ -581,6 +816,7 @@ def _receipt_summary(
         "normalized_sha256": normalized_sha256,
         "field_locator_sha256": field_locator_sha256,
         "asset_evidence_sha256": asset_evidence_sha256,
+        "fidelity_verified": fidelity_verified,
         "parser_sha256": receipt["parser_sha256"],
         "config_sha256": receipt["config_sha256"],
         "stratum": _stratum(receipt["stratum"]),
@@ -637,16 +873,25 @@ def _safe_member(row: Mapping[str, Any]) -> dict[str, Any]:
             "field_locator_sha256",
             "asset_evidence_sha256",
             "parser_sha256",
+            "fidelity_verified",
             "stratum",
         )
     }
 
 
 def prevalidate_cohort(
-    receipts: Mapping[str, Any], *, config_path: Path = CONFIG
+    receipts: Mapping[str, Any],
+    *,
+    config_path: Path = CONFIG,
+    now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """Build a fixed, immutable multisource cohort from rehashed private receipts."""
     config = load_config(config_path)
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    if now_utc.tzinfo is None or now_utc.utcoffset() is None:
+        raise MultisourceError("admission clock must be UTC-aware")
+    now_utc = now_utc.astimezone(timezone.utc)
     if (
         receipts.get("schema_version") != SCHEMA_VERSION
         or receipts.get("kind") != "cre_capacity_multisource_v1_receipts"
@@ -663,7 +908,13 @@ def prevalidate_cohort(
     for item in receipts["receipts"]:
         if not isinstance(item, dict) or item.get("source_key") not in by_source:
             raise MultisourceError("receipt source is not in the fixed matrix")
-        summary = _receipt_summary(item, by_source[item["source_key"]], root=root)
+        summary = _receipt_summary(
+            item,
+            by_source[item["source_key"]],
+            root=root,
+            now_utc=now_utc,
+            maximum_age=config["sampling"]["maximum_enumeration_age_seconds"],
+        )
         if summary["config_sha256"] != config_sha256:
             raise MultisourceError("receipt configuration digest is not this cohort")
         identity = (item["source_key"], summary["provider_id"])
@@ -673,6 +924,11 @@ def prevalidate_cohort(
         summaries[item["source_key"]].append(summary)
     sampling = config["sampling"]
     cohort_sources = []
+    challenged_families = {
+        by_source[key]["provider_family"]
+        for key, rows in summaries.items()
+        if any(row["classification"] == "challenge_or_throttle" for row in rows)
+    }
     for key, source in by_source.items():
         rows = summaries[key]
         totals = {row["enumeration_total"] for row in rows}
@@ -682,14 +938,18 @@ def prevalidate_cohort(
         if rows and len(rows) > next(iter(totals)):
             raise MultisourceError("source rows exceed fresh enumeration population")
         eligible = [row for row in rows if row["classification"] == "eligible_detail"]
-        qualified = [row for row in eligible if row["retry_count"] == 0]
+        screening_qualified = [row for row in eligible if row["retry_count"] == 0]
+        qualified = [
+            row for row in screening_qualified if row["fidelity_verified"] is True
+        ]
         attrition = [
             row
             for row in rows
             if row["classification"] == "confirmed_current_attrition"
         ]
+        population_total = next(iter(totals)) if totals else 0
         selected_calibration = _ranked_stratified(
-            qualified,
+            screening_qualified,
             count=sampling["calibration_per_source"],
             seed=sampling["stratification_seed"],
         )
@@ -705,10 +965,23 @@ def prevalidate_cohort(
         transport_failures = sum(
             row["classification"] == "transport_failure" for row in rows
         )
-        # Artifact fidelity is a gate, not a caller-owned boolean.  A malformed
-        # normalized/locator/asset artifact rejects the entire admission above,
-        # so every admitted row has exactly zero unbound-fidelity failures.
-        fidelity_failures = 0
+        # Artifact hashes alone are only integrity evidence.  A row becomes
+        # qualified only when the source-specific verifier tied its normalized
+        # field values to raw receipt bytes and explicit locators.
+        fidelity_failures = len(eligible) - sum(
+            row["fidelity_verified"] is True for row in eligible
+        )
+        core_target_rows = min(sampling["core_per_source"], population_total)
+        if source["provider_family"] in challenged_families:
+            core_state = "challenge_or_throttle_in_family"
+        elif fidelity_failures:
+            core_state = "semantic_fidelity_unverified"
+        elif len(qualified) < sampling["minimum_detail_eligible_for_core"]:
+            core_state = "insufficient_current_detail_eligibility"
+        elif len(selected_core) < core_target_rows:
+            core_state = "core_sample_underfilled"
+        else:
+            core_state = "ready"
         cohort_sources.append(
             {
                 "source_key": key,
@@ -717,13 +990,13 @@ def prevalidate_cohort(
                 "exclusive": source.get("exclusive", False),
                 "calibration": [_safe_member(row) for row in selected_calibration],
                 "core": [_safe_member(row) for row in selected_core]
-                if len(qualified) >= sampling["minimum_detail_eligible_for_core"]
+                if core_state == "ready"
                 else [],
-                "core_state": "ready"
-                if len(qualified) >= sampling["minimum_detail_eligible_for_core"]
-                else "insufficient_current_detail_eligibility",
+                "core_state": core_state,
+                "core_target_rows": core_target_rows,
+                "core_selected_rows": len(selected_core),
                 "fresh_enumeration": {
-                    "total_population": next(iter(totals)) if totals else 0,
+                    "total_population": population_total,
                     "receipt_sha256": next(iter(enumeration_hashes))
                     if enumeration_hashes
                     else None,
@@ -741,6 +1014,7 @@ def prevalidate_cohort(
                 "parser_failures": parser_failures,
                 "transport_failures": transport_failures,
                 "fidelity_failures": fidelity_failures,
+                "semantic_fidelity_verified_rows": len(eligible) - fidelity_failures,
                 "row_rates": {
                     "current_active_successes": round(len(eligible) / row_count, 6)
                     if row_count
@@ -785,80 +1059,13 @@ def prevalidate_cohort(
                 )
                 if timing_total
                 else None,
-                "structured_field_evidence_bound": len(eligible),
-                "asset_evidence_bound": len(eligible),
+                "structured_field_evidence_bound": len(eligible) - fidelity_failures,
+                "asset_evidence_bound": len(eligible) - fidelity_failures,
                 "raw_receipts_retained": len(rows),
             }
         )
     ready = [item for item in cohort_sources if item["core_state"] == "ready"]
-    ready_rates = [
-        item["individually_qualified_rows_per_minute"]
-        for item in ready
-        if item["individually_qualified_rows_per_minute"] is not None
-    ]
-    populations = sorted(
-        item["fresh_enumeration"]["total_population"] for item in ready
-    )
-    if populations:
-        percentile_index = min(
-            len(populations) - 1,
-            max(
-                0,
-                int(
-                    (len(populations) - 1)
-                    * config["workload_weighting"]["winsorize_percentile"]
-                ),
-            ),
-        )
-        workload_cap = populations[percentile_index]
-    else:
-        workload_cap = 0
-    workload_weights = {
-        item["source_key"]: min(
-            item["fresh_enumeration"]["total_population"], workload_cap
-        )
-        for item in ready
-    }
-    weighted_rates = [
-        (
-            item["individually_qualified_rows_per_minute"],
-            workload_weights[item["source_key"]],
-        )
-        for item in ready
-        if item["individually_qualified_rows_per_minute"] is not None
-    ]
-    cohort_members = [
-        {
-            "source_key": item["source_key"],
-            "plane": item["plane"],
-            "core": [
-                {
-                    key: row[key]
-                    for key in (
-                        "provider_id",
-                        "enumeration_identity_sha256",
-                        "raw_receipt_sha256",
-                        "normalized_sha256",
-                        "field_locator_sha256",
-                        "asset_evidence_sha256",
-                        "parser_sha256",
-                    )
-                }
-                for row in item["core"]
-            ],
-        }
-        for item in cohort_sources
-    ]
-    cohort_sha256 = _sha256(
-        _canonical(
-            {
-                "schema_version": SCHEMA_VERSION,
-                "config_sha256": config_sha256,
-                "members": cohort_members,
-            }
-        )
-    )
-    plane_results = {}
+    plane_results: dict[str, dict[str, Any]] = {}
     expected_plane_sizes = {
         plane: sum(source["plane"] == plane for source in config["sources"])
         for plane in PLANES
@@ -870,10 +1077,27 @@ def prevalidate_cohort(
             for item in plane_ready
             if item["individually_qualified_rows_per_minute"] is not None
         ]
+        populations = sorted(
+            item["fresh_enumeration"]["total_population"] for item in plane_ready
+        )
+        if populations:
+            percentile_index = min(
+                len(populations) - 1,
+                max(
+                    0,
+                    int(
+                        (len(populations) - 1)
+                        * config["workload_weighting"]["winsorize_percentile"]
+                    ),
+                ),
+            )
+            workload_cap = populations[percentile_index]
+        else:
+            workload_cap = 0
         plane_weights = [
             (
                 item["individually_qualified_rows_per_minute"],
-                workload_weights[item["source_key"]],
+                min(item["fresh_enumeration"]["total_population"], workload_cap),
             )
             for item in plane_ready
             if item["individually_qualified_rows_per_minute"] is not None
@@ -884,6 +1108,7 @@ def prevalidate_cohort(
             "source_keys": [
                 item["source_key"] for item in cohort_sources if item["plane"] == plane
             ],
+            "estimand": "individually_qualified_rows_per_minute",
             "equal_source_individually_qualified_rows_per_minute": round(
                 sum(plane_rates) / len(plane_rates), 3
             )
@@ -896,6 +1121,10 @@ def prevalidate_cohort(
             )
             if plane_weights and sum(weight for _, weight in plane_weights)
             else None,
+            "workload_weighting": {
+                "basis": config["workload_weighting"]["basis"],
+                "winsorized_population_cap": workload_cap or None,
+            },
         }
     complete_matrix = (
         len(ready) == sampling["minimum_sources_for_experiment"]
@@ -903,6 +1132,31 @@ def prevalidate_cohort(
         and all(
             plane_results[plane]["sources_core_ready"] == expected_plane_sizes[plane]
             for plane in PLANES
+        )
+    )
+    aggregate = {
+        "sources_in_matrix": len(cohort_sources),
+        "sources_core_ready": len(ready),
+        "state": "ready_for_review" if complete_matrix else "incomplete_screen",
+        "aggregation_scope": "per_plane_only",
+        "cross_plane_aggregation": "not_computed_distinct_plane_estimands",
+        "primary_aggregation": "per_plane_equal_source_individually_qualified_rows_per_minute",
+        "secondary_aggregation": "per_plane_workload_weighted_individually_qualified_rows_per_minute",
+    }
+    # The hash seals every non-sensitive review datum: source outcomes,
+    # deterministic calibration/core selections and strata, plane results, and
+    # the aggregate state. It intentionally excludes restricted receipt paths,
+    # raw URLs, headers, and bodies.
+    cohort_sha256 = _sha256(
+        _canonical(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "config_sha256": config_sha256,
+                "sampling": sampling,
+                "sources": cohort_sources,
+                "planes": plane_results,
+                "aggregate": aggregate,
+            }
         )
     )
     return {
@@ -914,29 +1168,7 @@ def prevalidate_cohort(
         "sampling": sampling,
         "sources": cohort_sources,
         "planes": plane_results,
-        "aggregate": {
-            "sources_in_matrix": len(cohort_sources),
-            "sources_core_ready": len(ready),
-            "state": "ready_for_review" if complete_matrix else "incomplete_screen",
-            "primary_aggregation": "equal_source_weighted",
-            "secondary_aggregation": "workload_weighted",
-            "equal_source_individually_qualified_rows_per_minute": round(
-                sum(ready_rates) / len(ready_rates), 3
-            )
-            if ready_rates
-            else None,
-            "workload_weighted_individually_qualified_rows_per_minute": round(
-                sum(rate * weight for rate, weight in weighted_rates)
-                / sum(weight for _, weight in weighted_rates),
-                3,
-            )
-            if weighted_rates and sum(weight for _, weight in weighted_rates)
-            else None,
-            "workload_weighting": {
-                "basis": config["workload_weighting"]["basis"],
-                "winsorized_population_cap": workload_cap or None,
-            },
-        },
+        "aggregate": aggregate,
         "safety": {
             "database_writes": 0,
             "cache_writes": 0,
@@ -944,7 +1176,13 @@ def prevalidate_cohort(
             "scheduler_writes": 0,
             "model_or_ocr_changes": 0,
             "unsupported_attrition": "fail_closed",
-            "provider_family_stop": "challenge_or_throttle_stops_family_only",
+            "admission_challenge_gate": "challenge_or_throttle_blocks_all_source_family_core",
+            "future_execution_requirements": {
+                "P2_provider_family_exclusions": config["profiles"]["P2"][
+                    "future_executor_provider_family_exclusions"
+                ],
+                "challenge_handling": "must_stop_affected_family_without_stopping_other_sources",
+            },
             "primary_measurement_retries": 0,
         },
     }
