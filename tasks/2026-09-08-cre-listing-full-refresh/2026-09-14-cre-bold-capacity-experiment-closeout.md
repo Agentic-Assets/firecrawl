@@ -71,10 +71,19 @@ fidelity, and artifact proof.
   duplicate-URL regression and the broader source/readback gates remain
   separate.
 
-## Left to the operator
+## Historical operator handoff (superseded below)
 
 Review the draft PR and decide whether to authorize a fresh root-reviewed
 candidate attempt. Any live attempt requires a new clean-HEAD receipt, the
 independently created root approval, current `sudo` authorization, exact sample,
 idle runtime, and explicit `--run`. Merge, activation, and later experiment
 progression remain operator decisions.
+
+## Superseded approval mechanism (2026-09-14)
+
+The Unix-root and `sudo` mechanism described above was later found to be an
+implementation-only constraint, not a company, product, or repository policy.
+The follow-up repair replaces it with a non-root operating-account-owned
+private file and same-user one-use grant while retaining independent
+coordinating review, exact bindings, expiry, atomic consumption, rollback, and
+all benchmark gates. See the current runbook for the supported procedure.

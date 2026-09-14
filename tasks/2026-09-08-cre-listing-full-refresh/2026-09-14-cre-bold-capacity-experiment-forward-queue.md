@@ -6,7 +6,7 @@ Verify each item before acting.
 ## Hardening
 
 - **Add a supported matched-baseline admission path** (priority: high;
-  confidence: verified gap). Build a root-reviewed baseline producer for the
+  confidence: verified gap). Build a coordinating-reviewed baseline producer for the
   exact same 128-record, three-replicate evidence contract. Until then, keep
   the comparator's adoption result hard-disabled.
 - **Add a guarded quarantine-recovery command** (priority: high; confidence:
@@ -22,15 +22,16 @@ Verify each item before acting.
 
 ## Robustness and simplification
 
-- **Fault-inject the real root helper lifecycle on macOS** (priority: medium;
-  confidence: test expansion). In a disposable root-owned directory, test
+- **Fault-inject the real review-helper lifecycle on macOS** (priority: medium;
+  confidence: test expansion). In a disposable operator-owned directory, test
   signal, timeout, lost-response, invalid-grant, and cleanup-error paths without
   touching Docker or provider endpoints.
-- **Consolidate embedded root-helper protocol code** (priority: medium;
+- **Consolidate embedded review-helper protocol code** (priority: medium;
   confidence: design hypothesis). The controller and benchmark intentionally
-  embed small stdlib-only helpers for privilege separation. Evaluate a single
-  audited protocol module or generated helper only if it preserves exact source
-  binding and does not create a reusable authorization service.
+  embed small stdlib-only helpers for isolated atomic consumption, not Unix
+  privilege separation. Evaluate a single audited protocol module or generated
+  helper only if it preserves exact source binding and does not create a
+  reusable authorization service.
 - **Add CI coverage for cross-language retry and lock contracts** (priority:
   medium; confidence: verified local-only coverage). Run Python lock/admission
   tests plus the pinned SDK transport-attempt test in a dependency-complete CI
@@ -38,7 +39,7 @@ Verify each item before acting.
 
 ## Evaluation
 
-- **Run the first root-reviewed 128-detail candidate** (priority: operator
+- **Run the first coordinating-reviewed 128-detail candidate** (priority: operator
   decision; confidence: implementation prepared). Capture all three replicates,
   settlement, resource, cooldown, and per-record fidelity evidence. A negative
   or inconclusive result is acceptable and must not be converted into a

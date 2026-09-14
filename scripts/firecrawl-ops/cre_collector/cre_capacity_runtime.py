@@ -3,7 +3,7 @@
 Preflight observations and verification are read-only; preflight writes only a
 private receipt. Apply and rollback are dry-run by default. Candidate mutation
 requires ``--execute``, a fresh machine receipt, and a one-use, externally
-created root-owned approval file. No command reads the repository ``.env``
+created operator-owned approval file. No command reads the repository ``.env``
 file.
 """
 
@@ -40,8 +40,8 @@ from cre_checkpoint_refresh import (
 SCHEMA_VERSION = 1
 RECEIPT_KIND = "cre_capacity_runtime_transition"
 ADMISSION_KIND = "cre_capacity_runtime_admission"
-APPROVAL_KIND = "cre_capacity_root_approval"
-BENCHMARK_GRANT_KIND = "cre_capacity_root_benchmark_grant"
+APPROVAL_KIND = "cre_capacity_review_approval"
+BENCHMARK_GRANT_KIND = "cre_capacity_review_benchmark_grant"
 RECEIPT_MAX_AGE_SECONDS = 600
 API_CONTAINER = "firecrawl-api-1"
 BROWSER_CONTAINER = "firecrawl-playwright-service-1"
@@ -61,8 +61,8 @@ EXECUTION_INPUTS = {
 PRIVATE_PAGE_KEY = "MAX_CONCURRENT_PAGES"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40,64}\Z")
 NONCE_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
-ROOT_APPROVAL_MAX_BYTES = 64 * 1024
-ROOT_APPROVAL_CONSUMER = r"""
+REVIEW_APPROVAL_MAX_BYTES = 64 * 1024
+REVIEW_APPROVAL_CONSUMER = r"""
 import hashlib
 import json
 import os
@@ -76,6 +76,10 @@ from datetime import datetime, timezone
 path = os.path.abspath(sys.argv[1])
 parent = os.path.dirname(path)
 recovery_path = os.path.abspath(sys.argv[2])
+uid = os.getuid()
+euid = os.geteuid()
+if uid == 0 or euid == 0 or uid != euid:
+    raise SystemExit("approval consumer requires a non-root unswitched operating account")
 if (os.path.dirname(recovery_path) != parent or not re.fullmatch(
         r"\.cre-capacity-consumption-[0-9a-f]{64}\.json",
         os.path.basename(recovery_path))):
@@ -90,11 +94,11 @@ file_stat = os.lstat(path)
 parent_stat = os.lstat(parent)
 if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
     raise SystemExit("approval is not a singly linked regular file")
-if file_stat.st_uid != 0 or stat.S_IMODE(file_stat.st_mode) != 0o600:
-    raise SystemExit("approval is not root-owned mode 0600")
-if (not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != 0
+if file_stat.st_uid != euid or stat.S_IMODE(file_stat.st_mode) != 0o600:
+    raise SystemExit("approval is not operator-owned mode 0600")
+if (not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != euid
         or stat.S_IMODE(parent_stat.st_mode) != 0o700):
-    raise SystemExit("approval parent is not root-owned mode 0700")
+    raise SystemExit("approval parent is not operator-owned mode 0700")
 consumed = os.path.join(
     parent,
     "." + os.path.basename(path) + ".consumed-" + secrets.token_hex(16),
@@ -105,7 +109,7 @@ try:
     fd = os.open(consumed, flags)
     try:
         opened = os.fstat(fd)
-        if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != 0
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != euid
                 or stat.S_IMODE(opened.st_mode) != 0o600
                 or opened.st_nlink != 1):
             raise SystemExit("consumed approval ownership changed")
@@ -130,7 +134,7 @@ try:
     source_sha = re.compile(r"[0-9a-f]{40,64}\Z")
     if (not isinstance(approval, dict)
             or approval.get("schema_version") != 1
-            or approval.get("kind") != "cre_capacity_root_approval"
+            or approval.get("kind") != "cre_capacity_review_approval"
             or not isinstance(approval.get("profile"), str)
             or not approval.get("profile")
             or not sha.fullmatch(str(approval.get("config_sha256")))
@@ -158,13 +162,13 @@ try:
     ).hexdigest()
     grant = {
         "schema_version": 1,
-        "kind": "cre_capacity_root_benchmark_grant",
+        "kind": "cre_capacity_review_benchmark_grant",
         "profile": approval["profile"],
         "config_sha256": approval["config_sha256"],
         "transition_receipt_sha256": approval["transition_receipt_sha256"],
         "source_git_sha": approval["source_git_sha"],
-        "root_approval_nonce_sha256": nonce_hash,
-        "root_approval_created_at": approval["created_at"],
+        "review_approval_nonce_sha256": nonce_hash,
+        "review_approval_created_at": approval["created_at"],
         "expires_after_seconds": 600,
         "approved": True,
     }
@@ -239,7 +243,7 @@ finally:
                 pass
         raise
 """
-ROOT_GRANT_DESTROYER = r"""
+REVIEW_GRANT_DESTROYER = r"""
 import os
 import re
 import stat
@@ -248,6 +252,10 @@ import sys
 path = os.path.abspath(sys.argv[1])
 parent = os.path.dirname(path)
 name = os.path.basename(path)
+uid = os.getuid()
+euid = os.geteuid()
+if uid == 0 or euid == 0 or uid != euid:
+    raise SystemExit("grant destroyer requires a non-root unswitched operating account")
 if not re.fullmatch(r"\.cre-capacity-benchmark-grant-[0-9a-f]{64}\.json", name):
     raise SystemExit("grant path is invalid")
 try:
@@ -255,15 +263,15 @@ try:
 except FileNotFoundError:
     raise SystemExit(0)
 parent_stat = os.lstat(parent)
-if (not stat.S_ISREG(file_stat.st_mode) or file_stat.st_uid != 0
+if (not stat.S_ISREG(file_stat.st_mode) or file_stat.st_uid != euid
         or stat.S_IMODE(file_stat.st_mode) != 0o600 or file_stat.st_nlink != 1):
     raise SystemExit("grant file ownership is invalid")
-if (not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != 0
+if (not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != euid
         or stat.S_IMODE(parent_stat.st_mode) != 0o700):
     raise SystemExit("grant parent ownership is invalid")
 os.unlink(path)
 """
-ROOT_CONSUMPTION_RECOVERY = r"""
+REVIEW_CONSUMPTION_RECOVERY = r"""
 import json
 import os
 import re
@@ -273,11 +281,15 @@ import sys
 path = os.path.abspath(sys.argv[1])
 discard = sys.argv[2] == "discard"
 parent = os.path.dirname(path)
+uid = os.getuid()
+euid = os.geteuid()
+if uid == 0 or euid == 0 or uid != euid:
+    raise SystemExit("consumption recovery requires a non-root unswitched operating account")
 if not re.fullmatch(r"\.cre-capacity-consumption-[0-9a-f]{64}\.json", os.path.basename(path)):
     raise SystemExit("consumption recovery path is invalid")
 def validate(target, directory=False):
     value = os.lstat(target)
-    if (value.st_uid != 0 or stat.S_IMODE(value.st_mode) != (0o700 if directory else 0o600)
+    if (value.st_uid != euid or stat.S_IMODE(value.st_mode) != (0o700 if directory else 0o600)
             or not (stat.S_ISDIR(value.st_mode) if directory else stat.S_ISREG(value.st_mode))
             or (not directory and value.st_nlink != 1)):
         raise SystemExit("consumption recovery ownership is invalid")
@@ -314,6 +326,17 @@ class RuntimeMutationError(RuntimeAdmissionError):
 
 class RuntimeOverlayCleanupError(RuntimeMutationError):
     """A resource command completed but its private overlay did not clean up."""
+
+
+def _operator_uid() -> int:
+    """Return the ordinary operating-account UID or fail on privilege switching."""
+    uid = os.getuid()
+    euid = os.geteuid()
+    if uid == 0 or euid == 0 or uid != euid:
+        raise RuntimeAdmissionError(
+            "capacity approval requires a non-root unswitched operating account"
+        )
+    return euid
 
 
 class RuntimeCompensationError(RuntimeAdmissionError):
@@ -1072,24 +1095,27 @@ def load_fresh_receipt(
     return receipt, profile, digest
 
 
-def _validate_root_authority(path: Path) -> None:
-    """Require a real root boundary, rather than trusting JSON authorship."""
+def _validate_review_authority(path: Path) -> None:
+    """Require a private file owned by the current operating account."""
     try:
         file_stat = path.lstat()
         parent_stat = path.parent.lstat()
     except OSError as exc:
-        raise RuntimeAdmissionError("root approval path is unavailable") from exc
+        raise RuntimeAdmissionError("review approval path is unavailable") from exc
     if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
-        raise RuntimeAdmissionError("root approval must be a regular private file")
-    if file_stat.st_uid != 0 or stat.S_IMODE(file_stat.st_mode) != 0o600:
-        raise RuntimeAdmissionError("root approval file must be root-owned mode 0600")
+        raise RuntimeAdmissionError("review approval must be a regular private file")
+    owner_uid = _operator_uid()
+    if file_stat.st_uid != owner_uid or stat.S_IMODE(file_stat.st_mode) != 0o600:
+        raise RuntimeAdmissionError(
+            "review approval file must be operator-owned mode 0600"
+        )
     if (
         not stat.S_ISDIR(parent_stat.st_mode)
-        or parent_stat.st_uid != 0
+        or parent_stat.st_uid != owner_uid
         or stat.S_IMODE(parent_stat.st_mode) != 0o700
     ):
         raise RuntimeAdmissionError(
-            "root approval directory must be root-owned mode 0700"
+            "review approval directory must be operator-owned mode 0700"
         )
 
 
@@ -1117,7 +1143,7 @@ def _benchmark_grant_payload(approval: Mapping[str, Any]) -> dict[str, Any]:
         or type(approval.get("expires_after_seconds")) is not int
         or approval.get("expires_after_seconds") != RECEIPT_MAX_AGE_SECONDS
     ):
-        raise RuntimeAdmissionError("root approval grant bindings are invalid")
+        raise RuntimeAdmissionError("review approval grant bindings are invalid")
     _parse_time(approval.get("created_at"))
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1126,8 +1152,8 @@ def _benchmark_grant_payload(approval: Mapping[str, Any]) -> dict[str, Any]:
         "config_sha256": approval["config_sha256"],
         "transition_receipt_sha256": approval["transition_receipt_sha256"],
         "source_git_sha": approval["source_git_sha"],
-        "root_approval_nonce_sha256": _hash(approval["nonce"]),
-        "root_approval_created_at": approval["created_at"],
+        "review_approval_nonce_sha256": _hash(approval["nonce"]),
+        "review_approval_created_at": approval["created_at"],
         "expires_after_seconds": approval["expires_after_seconds"],
         "approved": True,
     }
@@ -1136,11 +1162,11 @@ def _benchmark_grant_payload(approval: Mapping[str, Any]) -> dict[str, Any]:
 def _benchmark_grant_path(parent: Path, approval: Mapping[str, Any]) -> Path:
     grant = _benchmark_grant_payload(approval)
     return parent / (
-        f".cre-capacity-benchmark-grant-{grant['root_approval_nonce_sha256']}.json"
+        f".cre-capacity-benchmark-grant-{grant['review_approval_nonce_sha256']}.json"
     )
 
 
-def _write_root_benchmark_grant(parent: Path, approval: Mapping[str, Any]) -> Path:
+def _write_review_benchmark_grant(parent: Path, approval: Mapping[str, Any]) -> Path:
     grant = _benchmark_grant_payload(approval)
     path = _benchmark_grant_path(parent, approval)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -1148,7 +1174,7 @@ def _write_root_benchmark_grant(parent: Path, approval: Mapping[str, Any]) -> Pa
         fd = os.open(path, flags, 0o600)
     except OSError as exc:
         raise RuntimeAdmissionError(
-            "root benchmark grant could not be created exclusively"
+            "review benchmark grant could not be created exclusively"
         ) from exc
     try:
         os.fchmod(fd, 0o600)
@@ -1168,16 +1194,15 @@ def _write_root_benchmark_grant(parent: Path, approval: Mapping[str, Any]) -> Pa
     return path
 
 
-def _consume_root_approval_bytes(path: Path, recovery_path: Path) -> bytes:
-    """Read-and-destroy approval through root without changing Docker identity."""
-    prefix = [] if os.geteuid() == 0 else ["/usr/bin/sudo", "-n"]
+def _consume_review_approval_bytes(path: Path, recovery_path: Path) -> bytes:
+    """Read-and-destroy approval in an isolated same-user helper process."""
+    _validate_review_authority(path)
     try:
         result = subprocess.run(
             [
-                *prefix,
                 "/usr/bin/python3",
                 "-c",
-                ROOT_APPROVAL_CONSUMER,
+                REVIEW_APPROVAL_CONSUMER,
                 str(path),
                 str(recovery_path),
             ],
@@ -1186,24 +1211,21 @@ def _consume_root_approval_bytes(path: Path, recovery_path: Path) -> bytes:
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeAdmissionError("root approval consumer is unavailable") from exc
+        raise RuntimeAdmissionError("review approval consumer is unavailable") from exc
     if result.returncode != 0:
-        raise RuntimeAdmissionError(
-            "root approval consumption requires a current sudo authorization"
-        )
+        raise RuntimeAdmissionError("review approval consumption failed")
     return result.stdout
 
 
-def _recover_root_consumption(path: Path, *, discard: bool) -> None:
+def _recover_review_consumption(path: Path, *, discard: bool) -> None:
     """Recover an exact helper transaction even if its response was lost."""
-    prefix = [] if os.geteuid() == 0 else ["/usr/bin/sudo", "-n"]
+    _operator_uid()
     try:
         result = subprocess.run(
             [
-                *prefix,
                 "/usr/bin/python3",
                 "-c",
-                ROOT_CONSUMPTION_RECOVERY,
+                REVIEW_CONSUMPTION_RECOVERY,
                 str(path),
                 "discard" if discard else "release",
             ],
@@ -1212,38 +1234,22 @@ def _recover_root_consumption(path: Path, *, discard: bool) -> None:
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeAdmissionError("root consumption recovery is unavailable") from exc
+        raise RuntimeAdmissionError(
+            "review consumption recovery is unavailable"
+        ) from exc
     if result.returncode != 0:
-        raise RuntimeAdmissionError("root consumption recovery failed")
+        raise RuntimeAdmissionError("review consumption recovery failed")
 
 
-def _destroy_root_benchmark_grant(path: Path) -> None:
-    """Destroy an unused root grant without exposing or reading its payload."""
-    if os.geteuid() == 0:
-        if not re.fullmatch(
-            r"\.cre-capacity-benchmark-grant-[0-9a-f]{64}\.json", path.name
-        ):
-            raise RuntimeAdmissionError("root benchmark grant path is invalid")
-        try:
-            path.lstat()
-        except FileNotFoundError:
-            return
-        _validate_root_authority(path)
-        try:
-            path.unlink()
-        except OSError as exc:
-            raise RuntimeAdmissionError(
-                "root benchmark grant could not be destroyed"
-            ) from exc
-        return
+def _destroy_review_benchmark_grant(path: Path) -> None:
+    """Destroy an unused review grant without exposing or reading its payload."""
+    _operator_uid()
     try:
         result = subprocess.run(
             [
-                "/usr/bin/sudo",
-                "-n",
                 "/usr/bin/python3",
                 "-c",
-                ROOT_GRANT_DESTROYER,
+                REVIEW_GRANT_DESTROYER,
                 str(path),
             ],
             capture_output=True,
@@ -1252,10 +1258,10 @@ def _destroy_root_benchmark_grant(path: Path) -> None:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeAdmissionError(
-            "root benchmark grant destroyer is unavailable"
+            "review benchmark grant destroyer is unavailable"
         ) from exc
     if result.returncode != 0:
-        raise RuntimeAdmissionError("root benchmark grant could not be destroyed")
+        raise RuntimeAdmissionError("review benchmark grant could not be destroyed")
 
 
 def _validate_approval_payload(
@@ -1287,29 +1293,29 @@ def _validate_approval_payload(
         or approval.get("transition_receipt_sha256") != receipt.get("receipt_sha256")
         or approval.get("source_git_sha")
         != receipt.get("baseline", {}).get("repo", {}).get("git_sha")
-        or approval.get("approved_by") != "root-review"
+        or approval.get("approved_by") != "coordinating-review"
         or approval.get("approved") is not True
         or approval.get("expires_after_seconds") != RECEIPT_MAX_AGE_SECONDS
         or not NONCE_PATTERN.fullmatch(str(approval.get("nonce")))
     ):
         raise RuntimeAdmissionError(
-            "root approval does not bind the admitted transition"
+            "review approval does not bind the admitted transition"
         )
     current = now or datetime.now(timezone.utc)
     age = (current - _parse_time(approval.get("created_at"))).total_seconds()
     if age < 0 or age > RECEIPT_MAX_AGE_SECONDS:
-        raise RuntimeAdmissionError("root approval is stale")
+        raise RuntimeAdmissionError("review approval is stale")
     return dict(approval)
 
 
-def consume_root_approval(
+def consume_review_approval(
     path: Path,
     receipt: Mapping[str, Any],
     profile_name: str,
     config_sha256: str,
     now: datetime | None = None,
 ) -> tuple[dict[str, Any], Path]:
-    """Atomically consume one root-owned approval before issuing a mutation."""
+    """Atomically consume one operator-owned approval before issuing a mutation."""
     path = Path(os.path.abspath(path))
     recovery_path = path.parent / (
         f".cre-capacity-consumption-{secrets.token_hex(32)}.json"
@@ -1317,37 +1323,152 @@ def consume_root_approval(
     grant_path: Path | None = None
     try:
         try:
-            approval = json.loads(_consume_root_approval_bytes(path, recovery_path))
+            approval = json.loads(_consume_review_approval_bytes(path, recovery_path))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise RuntimeAdmissionError("root approval contains invalid JSON") from exc
+            raise RuntimeAdmissionError(
+                "review approval contains invalid JSON"
+            ) from exc
         if not isinstance(approval, Mapping):
-            raise RuntimeAdmissionError("root approval contains invalid JSON")
+            raise RuntimeAdmissionError("review approval contains invalid JSON")
         grant_path = _benchmark_grant_path(path.parent, approval)
         validated = _validate_approval_payload(
             approval, receipt, profile_name, config_sha256, now
         )
-        _recover_root_consumption(recovery_path, discard=False)
+        _recover_review_consumption(recovery_path, discard=False)
         return validated, grant_path
     except BaseException as primary_error:
         cleanup_errors: list[BaseException] = []
         with _defer_transition_signals():
             try:
-                _recover_root_consumption(recovery_path, discard=True)
+                _recover_review_consumption(recovery_path, discard=True)
             except BaseException as exc:  # noqa: BLE001 - always attempt known grant cleanup
                 cleanup_errors.append(exc)
             if grant_path is not None:
                 try:
-                    _destroy_root_benchmark_grant(grant_path)
+                    _destroy_review_benchmark_grant(grant_path)
                 except BaseException as exc:  # noqa: BLE001 - retain both cleanup failures
                     cleanup_errors.append(exc)
         if cleanup_errors:
             error = RuntimeAdmissionError(
-                "root approval failed and grant cleanup failed"
+                "review approval failed and grant cleanup failed"
             )
             for cleanup_error in cleanup_errors:
                 error.add_note(str(cleanup_error))
             raise error from primary_error
         raise
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist directory-entry changes or fail closed."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise RuntimeAdmissionError(
+            "review approval consumption directory could not be made durable"
+        ) from exc
+
+
+def _record_review_approval_consumption(
+    lock_path: Path,
+    approval: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    config_sha256: str,
+) -> Path:
+    """Durably consume an approval nonce before any resource mutation."""
+    operator_uid = _operator_uid()
+    canonical_lock = lock_path.resolve()
+    if canonical_lock.name != ".cre.lock" or canonical_lock.parent.name != "daily":
+        raise RuntimeAdmissionError("canonical approval consumption path is invalid")
+    consumption_root = canonical_lock.parent.parent / ".capacity-review-consumption"
+    consumption_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        root_stat = consumption_root.lstat()
+    except OSError as exc:
+        raise RuntimeAdmissionError(
+            "canonical approval consumption directory is unsafe"
+        ) from exc
+    if (
+        not stat.S_ISDIR(root_stat.st_mode)
+        or root_stat.st_uid != operator_uid
+        or stat.S_IMODE(root_stat.st_mode) != 0o700
+    ):
+        raise RuntimeAdmissionError(
+            "canonical approval consumption directory is unsafe"
+        )
+    _fsync_directory(consumption_root.parent)
+    nonce_sha256 = _hash(approval["nonce"])
+    marker = consumption_root / f"{nonce_sha256}.json"
+    payload = (
+        _canonical(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "kind": "cre_capacity_review_approval_consumption",
+                "approval_sha256": _hash(approval),
+                "profile": approval["profile"],
+                "config_sha256": config_sha256,
+                "transition_receipt_sha256": receipt["receipt_sha256"],
+                "source_git_sha": approval["source_git_sha"],
+                "review_approval_nonce_sha256": nonce_sha256,
+                "review_approval_created_at": approval["created_at"],
+                "expires_after_seconds": approval["expires_after_seconds"],
+                "consumed_at": utc_now(),
+                "pid": os.getpid(),
+            }
+        )
+        + b"\n"
+    )
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(marker, flags, 0o600)
+    except FileExistsError as exc:
+        raise RuntimeAdmissionError(
+            "review approval was already consumed; a fresh review is required"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeAdmissionError(
+            "review approval consumption could not be recorded"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_uid != operator_uid
+            or stat.S_IMODE(opened.st_mode) != 0o600
+        ):
+            raise RuntimeAdmissionError("review approval consumption marker is unsafe")
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise RuntimeAdmissionError(
+                    "review approval consumption write was short"
+                )
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+    except BaseException:
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        os.close(descriptor)
+    try:
+        _fsync_directory(consumption_root)
+    except RuntimeAdmissionError as exc:
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+        raise RuntimeAdmissionError(
+            "review approval consumption could not be made durable"
+        ) from exc
+    return marker
 
 
 def preservation_checks(
@@ -1848,14 +1969,14 @@ def transition(
             raise RuntimeAdmissionError("admission output path already exists")
         if approval_path is None:
             raise RuntimeAdmissionError(
-                "candidate execution requires a root-review approval file"
+                "candidate execution requires a coordinating-review approval file"
             )
     lock_path = _canonical_transition_lock()
     plan = {
         "profile": profile_name,
         "state": state,
         "execute": execute,
-        "root_approval_required": state == "candidate",
+        "review_approval_required": state == "candidate",
         "canonical_lock": str(lock_path),
         "commands": receipt["apply_plan"]
         if state == "candidate"
@@ -1892,7 +2013,7 @@ def transition(
         return plan
 
     mutation_issued = False
-    root_grant_path: Path | None = None
+    review_grant_path: Path | None = None
 
     def mark_mutation() -> None:
         nonlocal mutation_issued
@@ -1923,8 +2044,11 @@ def transition(
                     raise RuntimeAdmissionError("runtime drifted after preflight")
                 assert approval_path is not None
                 with _delay_transition_signals():
-                    approval, root_grant_path = consume_root_approval(
+                    approval, review_grant_path = consume_review_approval(
                         approval_path, receipt, profile_name, digest
+                    )
+                    _record_review_approval_consumption(
+                        lock_path, approval, receipt, digest
                     )
                 _compose_recreate(
                     current,
@@ -1962,9 +2086,9 @@ def transition(
                     "config_sha256": digest,
                     "source_git_sha": after.public["repo"]["git_sha"],
                     "transition_receipt_sha256": receipt["receipt_sha256"],
-                    "root_approval_nonce_sha256": _hash(approval["nonce"]),
-                    "root_approval_created_at": approval["created_at"],
-                    "root_benchmark_grant_path": str(root_grant_path),
+                    "review_approval_nonce_sha256": _hash(approval["nonce"]),
+                    "review_approval_created_at": approval["created_at"],
+                    "review_benchmark_grant_path": str(review_grant_path),
                     "created_at": utc_now(),
                     "expires_after_seconds": RECEIPT_MAX_AGE_SECONDS,
                     "admitted": True,
@@ -1977,10 +2101,10 @@ def transition(
             return result
         except BaseException:
             grant_cleanup_error: BaseException | None = None
-            if state == "candidate" and root_grant_path is not None:
+            if state == "candidate" and review_grant_path is not None:
                 try:
                     with _defer_transition_signals():
-                        _destroy_root_benchmark_grant(root_grant_path)
+                        _destroy_review_benchmark_grant(review_grant_path)
                 except BaseException as cleanup_exc:  # noqa: BLE001 - keep compensating
                     grant_cleanup_error = cleanup_exc
             compensation_error: BaseException | None = None
@@ -2017,11 +2141,11 @@ def transition(
                 elif compensation_error is not None:
                     detail = "automatic rollback verification failed"
                 else:
-                    detail = "unused root benchmark grant cleanup failed"
+                    detail = "unused review benchmark grant cleanup failed"
                 failure = RuntimeAdmissionError(detail)
                 if grant_cleanup_error is not None and compensation_error is not None:
                     failure.add_note(
-                        f"root grant cleanup also failed: {grant_cleanup_error}"
+                        f"review grant cleanup also failed: {grant_cleanup_error}"
                     )
                 raise failure from (compensation_error or grant_cleanup_error)
             raise
