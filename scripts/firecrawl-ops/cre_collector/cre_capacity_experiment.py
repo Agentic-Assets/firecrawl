@@ -14,10 +14,7 @@ import hashlib
 import json
 import os
 import stat
-import subprocess
 import tempfile
-import urllib.error
-import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -28,11 +25,17 @@ MAX_CONFIG_BYTES = 64 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024
 REQUIRED_RUNTIME = frozenset(
     {
-        "docker_memtotal_bytes",
+        "orbstack_memory_mib",
+        "minimum_docker_memtotal_basis_points",
         "browser_memory_bytes",
         "browser_swap_bytes",
         "api_memory_bytes",
         "api_swap_bytes",
+        "browser_cpus",
+        "global_pages",
+        "browser_pids",
+        "browser_shm_bytes",
+        "api_cpus",
     }
 )
 REQUESTED_LIMITS = {
@@ -108,6 +111,12 @@ def load_profile(path: Path, profile_name: str) -> tuple[dict[str, Any], str]:
         raise ProfileError("runtime_baseline has an unexpected key set")
     for key in REQUIRED_RUNTIME:
         _strict_int(runtime[key], key, 0, 2**63 - 1)
+    if runtime["orbstack_memory_mib"] != 32768:
+        raise ProfileError("OrbStack configured memory must be exactly 32768 MiB")
+    if not 1 <= runtime["minimum_docker_memtotal_basis_points"] <= 10000:
+        raise ProfileError(
+            "minimum Docker memory basis points must be between 1 and 10000"
+        )
     requested = _object(profile.get("requested"), "requested")
     if set(requested) != set(REQUESTED_LIMITS):
         raise ProfileError("requested settings have an unexpected key set")
@@ -151,16 +160,11 @@ def load_profile(path: Path, profile_name: str) -> tuple[dict[str, Any], str]:
         or planned
         != {
             "source_parallelism": "unimplemented",
-            "full_path_no_write_adapter": "unimplemented",
+            "full_path_no_write_adapter": "cre_capacity_benchmark",
             "provider_429_challenge_cooldown": "required-at-execution",
         }
     ):
         raise ProfileError("bold experiment contract has an unexpected value")
-    if (
-        profile["kind"] == "experiment"
-        and planned.get("full_path_no_write_adapter") != "unimplemented"
-    ):
-        raise ProfileError("an execution adapter must declare its implementation state")
     profile["runtime_baseline"] = dict(runtime)
     profile["requested"] = normalized_requested
     return profile, hashlib.sha256(_canonical(document)).hexdigest()
@@ -178,7 +182,7 @@ def _compare_effective(
     drift = [
         {"field": key, "expected": expected[key], "actual": supplied[key]}
         for key in sorted(set(expected) & set(supplied))
-        if isinstance(supplied[key], bool) or supplied[key] != expected[key]
+        if type(supplied[key]) is not int or supplied[key] != expected[key]
     ]
     return {
         "state": "match" if not missing and not drift else "drift",
@@ -216,7 +220,7 @@ def resolve(
             if runtime["state"] == "unverified"
             else ["effective_runtime_drift"]
             if runtime["state"] == "drift"
-            else ["full_path_no_write_adapter_unimplemented"]
+            else ["technical_admission_required"]
             if profile["kind"] == "experiment"
             else [],
         },
@@ -245,104 +249,25 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def inspect_runtime() -> dict[str, Any]:
-    """Read active container and queue facts without reading env or mutating state."""
-    try:
-        completed = subprocess.run(
-            ["docker", "inspect", "firecrawl-api-1", "firecrawl-playwright-service-1"],
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=3,
-        )
-        containers = json.loads(completed.stdout) if completed.returncode == 0 else []
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        containers = []
-    by_name = {
-        str(item.get("Name", "")).lstrip("/"): item
-        for item in containers
-        if isinstance(item, dict)
-    }
-    browser, api = (
-        by_name.get("firecrawl-playwright-service-1", {}),
-        by_name.get("firecrawl-api-1", {}),
-    )
-    browser_host = browser.get("HostConfig", {}) if isinstance(browser, dict) else {}
-    api_host = api.get("HostConfig", {}) if isinstance(api, dict) else {}
-
-    def swap_limit(host: Mapping[str, Any]) -> int | None:
-        memory, total = host.get("Memory"), host.get("MemorySwap")
-        if isinstance(memory, int) and isinstance(total, int) and total >= memory:
-            return total - memory
-        return None
-
-    try:
-        vm = subprocess.run(
-            ["docker", "info", "--format", "{{.MemTotal}}"],
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=3,
-        )
-        vm_mib = int(vm.stdout.strip()) // (1024 * 1024) if vm.returncode == 0 else None
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        vm_mib = None
-    result: dict[str, Any] = {
-        "effective": {
-            "docker_memtotal_bytes": vm_mib * 1024 * 1024
-            if vm_mib is not None
-            else None,
-            "browser_memory_bytes": browser_host.get("Memory"),
-            "browser_swap_bytes": swap_limit(browser_host),
-            "api_memory_bytes": api_host.get("Memory"),
-            "api_swap_bytes": swap_limit(api_host),
-        },
-        "containers": {
-            "browser": {
-                "image": browser.get("Image"),
-                "cpus": browser_host.get("NanoCpus"),
-                "pids": browser_host.get("PidsLimit"),
-            },
-            "api": {
-                "image": api.get("Image"),
-                "cpus": api_host.get("NanoCpus"),
-                "pids": api_host.get("PidsLimit"),
-            },
-        },
-        "queue": "unavailable",
-    }
-    try:
-        with urllib.request.urlopen(
-            "http://localhost:3102/v2/team/queue-status", timeout=3
-        ) as response:
-            queue = json.loads(response.read(8192))
-        result["queue"] = queue if isinstance(queue, dict) else "invalid"
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-        pass
-    return result
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", default="production-current")
+    parser.add_argument("--profile")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--effective-settings", type=Path)
     parser.add_argument("--write-plan", type=Path)
-    parser.add_argument("--inspect-runtime", action="store_true")
     args = parser.parse_args(argv)
     try:
-        profile, digest = load_profile(args.config, args.profile)
-        inspection = inspect_runtime() if args.inspect_runtime else None
+        profile_name = args.profile
+        if profile_name is None:
+            configured_default = _read_json(args.config).get("default_profile")
+            if not isinstance(configured_default, str):
+                raise ProfileError("default_profile must be a string")
+            profile_name = configured_default
+        profile, digest = load_profile(args.config, profile_name)
         effective = (
-            inspection["effective"]
-            if inspection
-            else (
-                _read_json(args.effective_settings) if args.effective_settings else None
-            )
+            _read_json(args.effective_settings) if args.effective_settings else None
         )
-        result = resolve(profile, args.profile, digest, effective)
-        if inspection is not None:
-            result["runtime_inspection"] = inspection
+        result = resolve(profile, profile_name, digest, effective)
         if args.write_plan:
             if result["runtime_baseline_check"]["state"] != "match":
                 raise ProfileError(
