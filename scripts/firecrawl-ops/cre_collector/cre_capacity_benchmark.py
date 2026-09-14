@@ -59,6 +59,10 @@ WORKER_ENV_ALLOWLIST = frozenset(
     {"PATH", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE", "TZ"}
 )
 ALLOWED_API_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+LOOPBACK_ENDPOINTS = {
+    "api_url": "http://127.0.0.1:3102",
+    "browser_health_url": "http://127.0.0.1:3103/health",
+}
 SETTLEMENT_TIMEOUT_SECONDS = 60
 SETTLEMENT_POLL_SECONDS = 2
 EXPECTED_FRESHNESS_POLICY = {
@@ -1254,12 +1258,7 @@ def validate_admission(
     state_checks.pop("collector_idle", None)
     if not state_checks or not all(state_checks.values()):
         raise BenchmarkError("technical admission effective state is not the candidate")
-    result = dict(value)
-    result["endpoints"] = {
-        "api_url": "http://127.0.0.1:3102",
-        "browser_health_url": "http://127.0.0.1:3103/health",
-    }
-    return result
+    return dict(value)
 
 
 def _git_head(repo_root: Path) -> str:
@@ -3268,7 +3267,7 @@ def run_benchmark(
 ) -> dict[str, Any]:
     replicates = int(profile["workload"]["replicates"])
     implementation = _implementation_manifest(repo_root)
-    endpoints = admission["endpoints"]
+    endpoints = LOOPBACK_ENDPOINTS
     lock_path = canonical_shared_lock_dir(repo_root)
     try:
         with SharedLock(lock_path) as shared_lock:

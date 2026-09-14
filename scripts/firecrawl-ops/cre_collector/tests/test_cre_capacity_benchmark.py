@@ -317,7 +317,8 @@ def test_validate_admission_requires_exact_profile_and_idle_loopback() -> None:
         source_git_sha=source_sha,
         now=benchmark.datetime(2026, 9, 13, 1, 5, tzinfo=benchmark.UTC),
     )
-    assert validated["endpoints"]["api_url"] == "http://127.0.0.1:3102"
+    assert validated == receipt
+    assert "endpoints" not in validated
     receipt["checks"] = {"candidate": True, "preserved": False}
     with pytest.raises(benchmark.BenchmarkError, match="all true"):
         benchmark.validate_admission(
@@ -1381,6 +1382,267 @@ def test_admission_consumption_requires_review_grant_then_writes_private_audit(
     copied.chmod(0o600)
     with pytest.raises(benchmark.BenchmarkError, match="already consumed"):
         benchmark._consume_admission(copied, altered_copy)
+
+
+def test_validated_admission_tamper_is_rejected_before_grant_consumption(
+    tmp_path: Path,
+) -> None:
+    profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, "bold-jll-128")
+    source_sha = "a" * 40
+    admission = _admission(tmp_path, source_sha=source_sha)
+    admission["created_at"] = benchmark._now()
+    admission["review_approval_created_at"] = benchmark._now()
+    validated = benchmark.validate_admission(
+        admission,
+        profile,
+        "bold-jll-128",
+        digest,
+        source_git_sha=source_sha,
+    )
+    admission_path = tmp_path / "admission.json"
+    grant_path = Path(str(admission["review_benchmark_grant_path"]))
+    benchmark._atomic_private_json(admission_path, admission)
+    benchmark._atomic_private_json(grant_path, _review_grant(admission))
+    tampered = {**admission, "writes": "allowed"}
+    benchmark._atomic_private_json(admission_path, tampered)
+
+    with pytest.raises(benchmark.BenchmarkError, match="changed after validation"):
+        benchmark._consume_admission(
+            admission_path,
+            validated,
+            canonical_lock_path=tmp_path / "out" / "daily" / ".cre.lock",
+        )
+
+    assert grant_path.exists()
+
+
+def test_offline_runtime_admission_benchmark_and_rollback_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = benchmark.capacity_runtime
+    source_sha = "a" * 40
+    repo_root = Path(__file__).resolve().parents[4]
+    controller_root = tmp_path / "repo"
+    controlled = (
+        controller_root / "tasks" / "tmp" / "cre-capacity-transition-integration"
+    )
+    controlled.mkdir(parents=True, mode=0o700)
+    controlled.chmod(0o700)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    component_state = {"browser": "baseline", "api": "baseline"}
+    transition_events: list[str] = []
+
+    def current_capture() -> object:
+        baseline = _runtime_public(source_sha, "baseline")
+        candidate = _runtime_public(source_sha, "candidate")
+        for value in (baseline, candidate):
+            value["api"]["id"] = "api-fixed"
+            value["browser"]["id"] = (
+                "browser-baseline"
+                if value["browser"]["page_slots"] == "4"
+                else "browser-candidate"
+            )
+        public = json.loads(json.dumps(baseline))
+        public["browser"] = json.loads(
+            json.dumps(
+                baseline["browser"]
+                if component_state["browser"] == "baseline"
+                else candidate["browser"]
+            )
+        )
+        public["api"] = json.loads(
+            json.dumps(
+                baseline["api"]
+                if component_state["api"] == "baseline"
+                else candidate["api"]
+            )
+        )
+        public["transition_sha256"] = runtime.transition_fingerprint(public)
+        public["snapshot_sha256"] = runtime.snapshot_fingerprint(public)
+        return runtime.RuntimeCapture(
+            public=public,
+            browser_env={"MAX_CONCURRENT_PAGES": public["browser"]["page_slots"]},
+            api_env={},
+        )
+
+    def capture_runtime(_runner=runtime._default_runner):
+        return current_capture()
+
+    def recreate(
+        _capture,
+        _profile,
+        state,
+        _runner,
+        *,
+        execute=True,
+        mutation_observer=None,
+    ) -> None:
+        assert execute is True
+        if mutation_observer is not None:
+            mutation_observer()
+        component_state["browser"] = state
+        transition_events.append(f"browser:{state}")
+
+    def update_api(_profile, state, _runner, *, mutation_observer=None) -> None:
+        if mutation_observer is not None:
+            mutation_observer()
+        component_state["api"] = state
+        transition_events.append(f"api:{state}")
+
+    monkeypatch.setattr(runtime, "REPO_ROOT", controller_root)
+    monkeypatch.setattr(runtime, "capture_runtime", capture_runtime)
+    monkeypatch.setattr(runtime, "_compose_recreate", recreate)
+    monkeypatch.setattr(runtime, "_api_update", update_api)
+    monkeypatch.setattr(runtime, "_canonical_transition_lock", lambda: lock_path)
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(benchmark, "_other_collector_process_active", lambda: False)
+    monkeypatch.setattr(benchmark, "_require_clean_git", lambda _root: source_sha)
+    monkeypatch.setattr(
+        benchmark, "_settlement_snapshot", lambda *_args: _settlement(final=False)
+    )
+    monkeypatch.setattr(
+        benchmark, "_await_idle_settlement", lambda *_args: _settlement(final=True)
+    )
+    monkeypatch.setattr(benchmark, "_resource_snapshot", _resource_snapshot)
+
+    receipt_path = controlled / "receipt.json"
+    receipt = runtime.preflight("bold-jll-128", receipt_path)
+    profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, "bold-jll-128")
+    approval_path = controlled / "review-approval.json"
+    approval = {
+        "schema_version": runtime.SCHEMA_VERSION,
+        "kind": runtime.APPROVAL_KIND,
+        "profile": "bold-jll-128",
+        "config_sha256": digest,
+        "transition_receipt_sha256": receipt["receipt_sha256"],
+        "source_git_sha": source_sha,
+        "approved_by": "coordinating-review",
+        "approved": True,
+        "created_at": runtime.utc_now(),
+        "expires_after_seconds": runtime.RECEIPT_MAX_AGE_SECONDS,
+        "nonce": "e" * 64,
+    }
+    runtime.write_private(approval_path, approval)
+    admission_path = controlled / "admission.json"
+    runtime.transition(
+        receipt_path,
+        "bold-jll-128",
+        "candidate",
+        execute=True,
+        admission_out=admission_path,
+        approval_path=approval_path,
+    )
+    raw_admission = json.loads(admission_path.read_text())
+    admission = benchmark.validate_admission(
+        raw_admission,
+        profile,
+        "bold-jll-128",
+        digest,
+        source_git_sha=source_sha,
+    )
+    assert admission == raw_admission
+    assert not approval_path.exists()
+    grant_path = Path(raw_admission["review_benchmark_grant_path"])
+    assert grant_path.exists()
+
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    sample = _sample(fixture_root)
+    sample_path = controlled / "jll-128-sample.json"
+    benchmark._atomic_private_json(sample_path, sample)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir(mode=0o700)
+    worker_calls: list[bool] = []
+
+    def worker(**kwargs) -> tuple[int, list[dict[str, object]], None]:
+        replicate_dir = kwargs["replicate_dir"]
+        replicate_dir.mkdir(parents=True, mode=0o700)
+        worker_calls.append(kwargs["review_grant"] is not None)
+        generation = f"2026-09-14T01000{len(worker_calls)}Z-offline"
+        started_at = benchmark._now()
+        rows = []
+        for row in sample["details"]:
+            rows.append(
+                {
+                    "sample_index": row["sample_index"],
+                    "sample_id": row["sample_id"],
+                    "latency_ms": 10,
+                    "transaction_type": benchmark._transaction_type(
+                        row["transaction_class"]
+                    ),
+                    "normalized": {
+                        "id": row["id"],
+                        "url": row["url"],
+                        "transactionType": benchmark._transaction_type(
+                            row["transaction_class"]
+                        ),
+                        "detailObservedAt": benchmark._now(),
+                        "freshnessProvenance": {
+                            "cacheDisposition": "live",
+                            "generationId": generation,
+                        },
+                    },
+                    "native": json.loads(json.dumps(row["historic"]["native"])),
+                    "fidelity": json.loads(json.dumps(row["historic"]["fidelity"])),
+                }
+            )
+        benchmark._atomic_private_json(
+            replicate_dir / "worker-output.json",
+            {
+                "schema_version": 1,
+                "kind": "cre_jll_capacity_worker",
+                "worker_contract_sha256": benchmark._worker_contract(128, 10)["sha256"],
+                "generation": generation,
+                "started_at": started_at,
+                "rows": rows,
+            },
+        )
+        benchmark._atomic_private_json(
+            replicate_dir / "performance.json", _performance()
+        )
+        return (
+            0,
+            [{"observed_at": benchmark._now(), "host_cpu_percent": 50.0}],
+            None,
+        )
+
+    monkeypatch.setattr(benchmark, "_run_worker", worker)
+    result = benchmark.run_benchmark(
+        repo_root=repo_root,
+        artifact_root=artifact_root,
+        sample_path=sample_path,
+        sample=sample,
+        profile=profile,
+        profile_name="bold-jll-128",
+        config_sha256=digest,
+        admission=admission,
+        admission_path=admission_path,
+        timeout_seconds=60,
+    )
+
+    assert result["completed"] is True
+    assert worker_calls == [True, False, False]
+    assert (
+        result["admission_sha256"]
+        == hashlib.sha256(benchmark._canonical(raw_admission)).hexdigest()
+    )
+    assert not grant_path.exists()
+    assert (artifact_root / "result.json").exists()
+
+    rollback = runtime.transition(
+        receipt_path, "bold-jll-128", "baseline", execute=True
+    )
+    assert rollback["verified"] is True
+    assert component_state == {"browser": "baseline", "api": "baseline"}
+    assert transition_events == [
+        "browser:candidate",
+        "api:candidate",
+        "browser:baseline",
+        "api:baseline",
+    ]
+    assert not lock_path.exists()
 
 
 def test_admission_consumption_executes_same_user_grant_helper_once(
