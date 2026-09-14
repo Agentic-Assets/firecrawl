@@ -5,7 +5,7 @@
     "production-current": {
       "kind": "baseline",
       "runtime_baseline": {
-        "orbstack_memory_mib": 32768,
+        "docker_memtotal_bytes": 33669808128,
         "browser_memory_bytes": 17179869184,
         "browser_swap_bytes": 0,
         "api_memory_bytes": 8589934592,
@@ -28,7 +28,7 @@
     "bold-jll-128": {
       "kind": "experiment",
       "runtime_baseline": {
-        "orbstack_memory_mib": 32768,
+        "docker_memtotal_bytes": 33669808128,
         "browser_memory_bytes": 17179869184,
         "browser_swap_bytes": 0,
         "api_memory_bytes": 8589934592,

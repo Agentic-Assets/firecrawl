@@ -14,7 +14,10 @@ import hashlib
 import json
 import os
 import stat
+import subprocess
 import tempfile
+import urllib.error
+import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -25,7 +28,7 @@ MAX_CONFIG_BYTES = 64 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024
 REQUIRED_RUNTIME = frozenset(
     {
-        "orbstack_memory_mib",
+        "docker_memtotal_bytes",
         "browser_memory_bytes",
         "browser_swap_bytes",
         "api_memory_bytes",
@@ -224,19 +227,104 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def inspect_runtime() -> dict[str, Any]:
+    """Read active container and queue facts without reading env or mutating state."""
+    try:
+        completed = subprocess.run(
+            ["docker", "inspect", "firecrawl-api-1", "firecrawl-playwright-service-1"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=3,
+        )
+        containers = json.loads(completed.stdout) if completed.returncode == 0 else []
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        containers = []
+    by_name = {
+        str(item.get("Name", "")).lstrip("/"): item
+        for item in containers
+        if isinstance(item, dict)
+    }
+    browser, api = (
+        by_name.get("firecrawl-playwright-service-1", {}),
+        by_name.get("firecrawl-api-1", {}),
+    )
+    browser_host = browser.get("HostConfig", {}) if isinstance(browser, dict) else {}
+    api_host = api.get("HostConfig", {}) if isinstance(api, dict) else {}
+
+    def swap_limit(host: Mapping[str, Any]) -> int | None:
+        memory, total = host.get("Memory"), host.get("MemorySwap")
+        if isinstance(memory, int) and isinstance(total, int) and total >= memory:
+            return total - memory
+        return None
+
+    try:
+        vm = subprocess.run(
+            ["docker", "info", "--format", "{{.MemTotal}}"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=3,
+        )
+        vm_mib = int(vm.stdout.strip()) // (1024 * 1024) if vm.returncode == 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        vm_mib = None
+    result: dict[str, Any] = {
+        "effective": {
+            "docker_memtotal_bytes": vm_mib * 1024 * 1024
+            if vm_mib is not None
+            else None,
+            "browser_memory_bytes": browser_host.get("Memory"),
+            "browser_swap_bytes": swap_limit(browser_host),
+            "api_memory_bytes": api_host.get("Memory"),
+            "api_swap_bytes": swap_limit(api_host),
+        },
+        "containers": {
+            "browser": {
+                "image": browser.get("Image"),
+                "cpus": browser_host.get("NanoCpus"),
+                "pids": browser_host.get("PidsLimit"),
+            },
+            "api": {
+                "image": api.get("Image"),
+                "cpus": api_host.get("NanoCpus"),
+                "pids": api_host.get("PidsLimit"),
+            },
+        },
+        "queue": "unavailable",
+    }
+    try:
+        with urllib.request.urlopen(
+            "http://localhost:3102/v2/team/queue-status", timeout=3
+        ) as response:
+            queue = json.loads(response.read(8192))
+        result["queue"] = queue if isinstance(queue, dict) else "invalid"
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        pass
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", default="bold-jll-128")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--effective-settings", type=Path)
     parser.add_argument("--write-plan", type=Path)
+    parser.add_argument("--inspect-runtime", action="store_true")
     args = parser.parse_args(argv)
     try:
         profile, digest = load_profile(args.config, args.profile)
+        inspection = inspect_runtime() if args.inspect_runtime else None
         effective = (
-            _read_json(args.effective_settings) if args.effective_settings else None
+            inspection["effective"]
+            if inspection
+            else (
+                _read_json(args.effective_settings) if args.effective_settings else None
+            )
         )
         result = resolve(profile, args.profile, digest, effective)
+        if inspection is not None:
+            result["runtime_inspection"] = inspection
         if args.write_plan:
             _write_json(args.write_plan, result)
         print(json.dumps(result, sort_keys=True, indent=2))
