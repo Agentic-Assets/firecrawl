@@ -141,7 +141,19 @@ def _receipt_batch(
 ) -> list[dict[str, Any]]:
     source = _source(source_key)
     provider_ids = [f"{source_key}-{number:02d}" for number in range(count)]
-    body = json.dumps({"source": source_key, "provider_ids": provider_ids})
+    body = json.dumps(
+        {
+            "data": {
+                "properties": {
+                    "count": len(provider_ids),
+                    "items": [{"id": provider_id} for provider_id in provider_ids],
+                }
+            }
+        }
+        if source_key == "jll"
+        else {"source": source_key, "provider_ids": provider_ids},
+        separators=(",", ":"),
+    )
     enumeration_request = f"https://{source['hosts'][0]}/enumeration"
     enum_path, enum_hash = _write(
         root,
@@ -437,6 +449,84 @@ def test_stale_or_partial_enumeration_cannot_claim_complete(
     _rebind_enumeration(root, rows, observed_at="2000-01-01T00:00:00Z")
     with pytest.raises(multisource.MultisourceError, match="freshness window"):
         _prevalidate(root, rows)
+
+
+def test_jll_population_requires_native_graphql_body_not_signed_wrapper(
+    evidence_root: Path,
+) -> None:
+    root = _private_dir(evidence_root, "jll-bogus-enumeration-body")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    provider_ids = [row["provider_id"] for row in rows] + [
+        f"jll-wrapper-{number:03d}" for number in range(501 - len(rows))
+    ]
+    _rebind_enumeration(
+        root,
+        rows,
+        total=len(provider_ids),
+        provider_ids=provider_ids,
+        body="not an enumeration response",
+    )
+
+    with pytest.raises(
+        multisource.MultisourceError, match="JLL enumeration completeness"
+    ):
+        _prevalidate(root, rows)
+
+
+def test_jll_native_enumeration_requires_exact_unique_wrapper_ids(
+    evidence_root: Path,
+) -> None:
+    root = _private_dir(evidence_root, "jll-mismatched-enumeration-ids")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    provider_ids = [row["provider_id"] for row in rows]
+    forged_ids = provider_ids[:-1] + [provider_ids[0]]
+    _rebind_enumeration(
+        root,
+        rows,
+        body=json.dumps(
+            {
+                "data": {
+                    "properties": {
+                        "count": len(forged_ids),
+                        "items": [{"id": provider_id} for provider_id in forged_ids],
+                    }
+                }
+            },
+            separators=(",", ":"),
+        ),
+    )
+
+    with pytest.raises(
+        multisource.MultisourceError, match="JLL enumeration completeness"
+    ):
+        _prevalidate(root, rows)
+
+
+def test_unverified_source_population_is_screening_only_not_workload_weighted(
+    evidence_root: Path,
+) -> None:
+    root = _private_dir(evidence_root, "screening-only-population")
+    rows = _receipt_batch(root, source_key="cbre", count=16)
+    cohort = _prevalidate(root, rows)
+    cbre = next(
+        source for source in cohort["sources"] if source["source_key"] == "cbre"
+    )
+
+    assert cbre["core_state"] == "enumeration_population_unverified"
+    assert cbre["core_target_rows"] == 0
+    assert cbre["core_selected_rows"] == 0
+    assert cbre["fresh_enumeration"] == {
+        "total_population": None,
+        "population_state": "unverified",
+        "receipt_sha256": cbre["fresh_enumeration"]["receipt_sha256"],
+        "complete": False,
+    }
+    assert {row["stratum"]["page_weight_band"] for row in cbre["calibration"]} == {
+        "unverified"
+    }
+    plane = cohort["planes"]["authoritative_inventory"]
+    assert plane["workload_weighted_individually_qualified_rows_per_minute"] is None
+    assert plane["workload_weighting"]["population_state"] == "unverified"
 
 
 def test_core_never_silently_substitutes_a_smaller_qualified_sample(

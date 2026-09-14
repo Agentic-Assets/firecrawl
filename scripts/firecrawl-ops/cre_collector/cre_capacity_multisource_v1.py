@@ -466,7 +466,7 @@ def _enumeration_binding(
     root: Path,
     now_utc: datetime,
     maximum_age: int,
-) -> tuple[str, int, str]:
+) -> tuple[str, int, str, bool]:
     """Rehash an enumeration receipt instead of trusting a row's assertion."""
     enum_path_value = receipt.get("enumeration_receipt_path")
     if not isinstance(enum_path_value, str):
@@ -543,7 +543,62 @@ def _enumeration_binding(
     )
     if receipt.get("enumeration_identity_sha256") != identity:
         raise MultisourceError("receipt lacks a fresh enumeration receipt binding")
-    return identity, total, enum_hash
+    # Only JLL has a reviewed native enumeration parser in v1. A signed
+    # wrapper can prove capture integrity, but it cannot establish population
+    # size or workload until the provider response itself agrees exactly.
+    population_verified = False
+    if source["key"] == "jll":
+        population_verified = _verified_jll_enumeration_population(
+            document["body"],
+            provider_ids=document["provider_ids"],
+            total=total,
+        )
+        if not population_verified:
+            raise MultisourceError("JLL enumeration completeness proof is invalid")
+    return identity, total, enum_hash, population_verified
+
+
+def _verified_jll_enumeration_population(
+    body: str, *, provider_ids: list[str], total: int
+) -> bool:
+    """Bind JLL's GraphQL count and complete item IDs to the sealed wrapper."""
+    try:
+        payload = json.loads(body)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, Mapping) or isinstance(payload, list):
+        return False
+    if "errors" in payload and (
+        not isinstance(payload["errors"], list) or payload["errors"]
+    ):
+        return False
+    data = payload.get("data")
+    if not isinstance(data, Mapping):
+        return False
+    properties = data.get("properties")
+    if not isinstance(properties, Mapping):
+        return False
+    count = properties.get("count")
+    items = properties.get("items")
+    if (
+        type(count) is not int
+        or count < 0
+        or count != total
+        or not isinstance(items, list)
+    ):
+        return False
+    body_ids = [item.get("id") for item in items if isinstance(item, Mapping)]
+    if (
+        len(body_ids) != len(items)
+        or not all(
+            isinstance(identifier, str) and identifier.strip()
+            for identifier in body_ids
+        )
+        or len(items) != total
+        or len(set(body_ids)) != total
+    ):
+        return False
+    return set(body_ids) == set(provider_ids)
 
 
 def _extractor_receipt_binding(
@@ -808,10 +863,19 @@ def _evidence_derived_stratum(
     source: Mapping[str, Any],
     normalized: Mapping[str, Any],
     *,
-    population_total: int,
+    population_total: int | None,
+    population_verified: bool,
     fidelity_verified: bool,
 ) -> dict[str, str]:
     """Never trust caller strata; expose only a closed evidence-derived tuple."""
+    if not population_verified:
+        return {
+            "transaction_class": "unverified",
+            "property_type": "unverified",
+            "page_weight_band": "unverified",
+        }
+    if population_total is None:
+        raise MultisourceError("verified enumeration population is missing")
     page_weight_band = _page_weight_band(population_total)
     fields = normalized.get("fields")
     if (
@@ -890,7 +954,12 @@ def _receipt_summary(
         raise MultisourceError("receipt lacks fresh enumeration provider identity")
     if receipt.get("source_config_sha256") != _source_config_sha256(source):
         raise MultisourceError("receipt source configuration digest is not this cohort")
-    identity, population_total, enumeration_receipt_sha256 = _enumeration_binding(
+    (
+        identity,
+        population_total,
+        enumeration_receipt_sha256,
+        population_verified,
+    ) = _enumeration_binding(
         receipt,
         source,
         root=root,
@@ -952,6 +1021,7 @@ def _receipt_summary(
         "enumeration_identity_sha256": identity,
         "enumeration_receipt_sha256": enumeration_receipt_sha256,
         "enumeration_total": population_total,
+        "enumeration_population_verified": population_verified,
         "canonical_url": canonical_url,
         "http_status": receipt["http_status"],
         "timing_ms": receipt["timing_ms"],
@@ -970,6 +1040,7 @@ def _receipt_summary(
             source,
             normalized,
             population_total=population_total,
+            population_verified=population_verified,
             fidelity_verified=fidelity_verified,
         ),
     }
@@ -1124,6 +1195,9 @@ def prevalidate_cohort(
             raise MultisourceError("source rows do not share one fresh enumeration")
         if rows and len(rows) > next(iter(totals)):
             raise MultisourceError("source rows exceed fresh enumeration population")
+        population_verified = bool(rows) and all(
+            row["enumeration_population_verified"] is True for row in rows
+        )
         eligible = [row for row in rows if row["classification"] == "eligible_detail"]
         screening_qualified = [row for row in eligible if row["retry_count"] == 0]
         qualified = [
@@ -1135,6 +1209,7 @@ def prevalidate_cohort(
             if row["classification"] == "confirmed_current_attrition"
         ]
         population_total = next(iter(totals)) if totals else 0
+        verified_population_total = population_total if population_verified else None
         selected_calibration = _ranked_stratified(
             screening_qualified,
             count=sampling["calibration_per_source"],
@@ -1142,7 +1217,7 @@ def prevalidate_cohort(
         )
         selected_core = _ranked_stratified(
             qualified,
-            count=sampling["core_per_source"],
+            count=sampling["core_per_source"] if population_verified else 0,
             seed=sampling["stratification_seed"],
         )
         timing_values = sorted(row["timing_ms"] for row in rows)
@@ -1158,13 +1233,19 @@ def prevalidate_cohort(
         fidelity_failures = len(eligible) - sum(
             row["fidelity_verified"] is True for row in eligible
         )
-        core_target_rows = min(sampling["core_per_source"], population_total)
+        core_target_rows = (
+            min(sampling["core_per_source"], population_total)
+            if population_verified
+            else 0
+        )
         qualified_rate = _positive_throughput(len(qualified), timing_total)
         eligible_rate = _positive_throughput(len(eligible), timing_total)
         if rows and not all(_finite_positive_timing(row["timing_ms"]) for row in rows):
             core_state = "invalid_measurement_timing"
         elif source["provider_family"] in challenged_families:
             core_state = "challenge_or_throttle_in_family"
+        elif not population_verified:
+            core_state = "enumeration_population_unverified"
         elif fidelity_failures:
             core_state = "semantic_fidelity_unverified"
         elif len(qualified) < sampling["minimum_detail_eligible_for_core"]:
@@ -1189,11 +1270,14 @@ def prevalidate_cohort(
                 "core_target_rows": core_target_rows,
                 "core_selected_rows": len(selected_core),
                 "fresh_enumeration": {
-                    "total_population": population_total,
+                    "total_population": verified_population_total,
+                    "population_state": (
+                        "verified" if population_verified else "unverified"
+                    ),
                     "receipt_sha256": next(iter(enumeration_hashes))
                     if enumeration_hashes
                     else None,
-                    "complete": bool(rows),
+                    "complete": population_verified,
                 },
                 "outcomes": dict(
                     sorted(Counter(row["classification"] for row in rows).items())
@@ -1268,6 +1352,14 @@ def prevalidate_cohort(
             raise MultisourceError(
                 "ready source lacks a finite primary throughput rate"
             )
+        if any(
+            item["fresh_enumeration"]["population_state"] != "verified"
+            or type(item["fresh_enumeration"]["total_population"]) is not int
+            for item in plane_ready
+        ):
+            raise MultisourceError(
+                "ready source lacks a verified enumeration population"
+            )
         plane_rates = [
             item["individually_qualified_rows_per_minute"] for item in plane_ready
         ]
@@ -1317,6 +1409,7 @@ def prevalidate_cohort(
             "workload_weighting": {
                 "basis": config["workload_weighting"]["basis"],
                 "winsorized_population_cap": workload_cap or None,
+                "population_state": "verified" if plane_ready else "unverified",
             },
         }
     complete_matrix = (
