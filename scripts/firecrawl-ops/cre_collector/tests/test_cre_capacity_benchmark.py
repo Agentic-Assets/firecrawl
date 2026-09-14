@@ -12,9 +12,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
-import pytest
 
 
 def _cache_record(index: int) -> dict[str, object]:
@@ -587,6 +588,91 @@ def test_worker_source_is_hashable_and_imports_real_jll_adapter(tmp_path: Path) 
     assert benchmark._worker_contract(128, 10)["concurrency"] == 10
     assert "jll-investor" not in source.lower()
     assert len(hashlib.sha256(source.encode()).hexdigest()) == 64
+
+
+def test_worker_artifact_uses_explicit_esm_extension_outside_package_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    tsx = repo / "scripts/firecrawl-ops/cre_collector/node_modules/.bin/tsx"
+    tsx.parent.mkdir(parents=True)
+    tsx.write_text("stub", encoding="utf-8")
+    sample = tmp_path / "sample.json"
+    sample.write_text("{}", encoding="utf-8")
+    replicate = tmp_path / "replicate-1"
+
+    class StartedProcess:
+        pid = 123
+        returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    argv: list[str] = []
+
+    def popen(command, **_kwargs):
+        argv.extend(command)
+        return StartedProcess()
+
+    monkeypatch.setattr(benchmark.subprocess, "Popen", popen)
+    monkeypatch.setattr(benchmark, "_cpu_ticks", lambda: (1, 1, 1, 1))
+
+    code, samples, reason = benchmark._run_worker(
+        repo_root=repo,
+        sample_path=sample,
+        replicate_dir=replicate,
+        requested={
+            "jll_detail_concurrency": 10,
+            "host_cpu_sample_seconds": 2,
+            "host_cpu_sustained_seconds": 30,
+            "host_cpu_limit_percent": 90,
+        },
+        api_url="http://127.0.0.1:3002",
+        timeout_seconds=10,
+        expected_details=128,
+    )
+
+    assert code == 0
+    assert samples == []
+    assert reason is None
+    assert argv[-1] == str(replicate / "worker.mts")
+    assert (replicate / "worker.mts").is_file()
+
+
+def test_generated_worker_compiles_as_esm_outside_package_scope(tmp_path: Path) -> None:
+    repo = Path(__file__).resolve().parents[4]
+    tsx = repo / "scripts/firecrawl-ops/cre_collector/node_modules/.bin/tsx"
+    if not tsx.is_file():
+        pytest.skip("collector tsx dependency is unavailable")
+
+    worker = tmp_path / "worker.mts"
+    worker.write_text(benchmark._worker_source(repo), encoding="utf-8")
+    sample = tmp_path / "invalid-sample.json"
+    sample.write_text("{}", encoding="utf-8")
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "CRE_BENCHMARK_SAMPLE": str(sample),
+        "CRE_BENCHMARK_OUTPUT": str(tmp_path / "output.json"),
+        "JLL_DETAIL_CONCURRENCY": "10",
+    }
+
+    completed = subprocess.run(
+        [str(tsx), str(worker)],
+        cwd=repo / "scripts/firecrawl-ops/cre_collector",
+        env=environment,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode != 0
+    assert "invalid exact JLL benchmark sample" in completed.stderr
+    assert "Top-level await is currently not supported" not in completed.stderr
 
 
 def test_darwin_cpu_percent_uses_recorded_user_system_idle_nice_fixture(
