@@ -1358,6 +1358,108 @@ def consume_review_approval(
         raise
 
 
+def _record_review_approval_consumption(
+    lock_path: Path,
+    approval: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    config_sha256: str,
+) -> Path:
+    """Durably consume an approval nonce before any resource mutation."""
+    operator_uid = _operator_uid()
+    canonical_lock = lock_path.resolve()
+    if canonical_lock.name != ".cre.lock" or canonical_lock.parent.name != "daily":
+        raise RuntimeAdmissionError("canonical approval consumption path is invalid")
+    consumption_root = canonical_lock.parent.parent / ".capacity-review-consumption"
+    consumption_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        root_stat = consumption_root.lstat()
+    except OSError as exc:
+        raise RuntimeAdmissionError(
+            "canonical approval consumption directory is unsafe"
+        ) from exc
+    if (
+        not stat.S_ISDIR(root_stat.st_mode)
+        or root_stat.st_uid != operator_uid
+        or stat.S_IMODE(root_stat.st_mode) != 0o700
+    ):
+        raise RuntimeAdmissionError(
+            "canonical approval consumption directory is unsafe"
+        )
+    nonce_sha256 = _hash(approval["nonce"])
+    marker = consumption_root / f"{nonce_sha256}.json"
+    payload = (
+        _canonical(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "kind": "cre_capacity_review_approval_consumption",
+                "approval_sha256": _hash(approval),
+                "profile": approval["profile"],
+                "config_sha256": config_sha256,
+                "transition_receipt_sha256": receipt["receipt_sha256"],
+                "source_git_sha": approval["source_git_sha"],
+                "review_approval_nonce_sha256": nonce_sha256,
+                "review_approval_created_at": approval["created_at"],
+                "expires_after_seconds": approval["expires_after_seconds"],
+                "consumed_at": utc_now(),
+                "pid": os.getpid(),
+            }
+        )
+        + b"\n"
+    )
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(marker, flags, 0o600)
+    except FileExistsError as exc:
+        raise RuntimeAdmissionError(
+            "review approval was already consumed; a fresh review is required"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeAdmissionError(
+            "review approval consumption could not be recorded"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_uid != operator_uid
+            or stat.S_IMODE(opened.st_mode) != 0o600
+        ):
+            raise RuntimeAdmissionError("review approval consumption marker is unsafe")
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise RuntimeAdmissionError(
+                    "review approval consumption write was short"
+                )
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+    except BaseException:
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        os.close(descriptor)
+    try:
+        directory_descriptor = os.open(consumption_root, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    except OSError as exc:
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+        raise RuntimeAdmissionError(
+            "review approval consumption could not be made durable"
+        ) from exc
+    return marker
+
+
 def preservation_checks(
     current: RuntimeCapture, baseline: Mapping[str, Any], state: str
 ) -> dict[str, bool]:
@@ -1933,6 +2035,9 @@ def transition(
                 with _delay_transition_signals():
                     approval, review_grant_path = consume_review_approval(
                         approval_path, receipt, profile_name, digest
+                    )
+                    _record_review_approval_consumption(
+                        lock_path, approval, receipt, digest
                     )
                 _compose_recreate(
                     current,

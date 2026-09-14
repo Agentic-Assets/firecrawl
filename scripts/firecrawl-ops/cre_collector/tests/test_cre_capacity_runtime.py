@@ -166,7 +166,7 @@ def mock_transition_authority(
 
     class FakeLock:
         def __init__(self, path: Path) -> None:
-            assert path == tmp_path / ".cre.lock"
+            assert path == tmp_path / "out" / "daily" / ".cre.lock"
 
         def acquire(self) -> None:
             observed.append("lock-acquire")
@@ -176,7 +176,9 @@ def mock_transition_authority(
 
     monkeypatch.setattr(runtime, "SharedLock", FakeLock)
     monkeypatch.setattr(
-        runtime, "_canonical_transition_lock", lambda: tmp_path / ".cre.lock"
+        runtime,
+        "_canonical_transition_lock",
+        lambda: tmp_path / "out" / "daily" / ".cre.lock",
     )
 
     def consume_approval(path: Path, recovery_path: Path) -> bytes:
@@ -720,7 +722,9 @@ def test_failed_candidate_verification_rolls_back(
         receipt_path,
         receipt,
     )
-    captures = iter((baseline, invalid_candidate, invalid_candidate, baseline))
+    captures = iter(
+        (baseline, invalid_candidate, invalid_candidate, baseline, baseline)
+    )
     calls: list[tuple[str, str]] = []
     mock_transition_authority(monkeypatch, tmp_path)
     monkeypatch.setattr(runtime, "capture_runtime", lambda runner: next(captures))
@@ -736,6 +740,14 @@ def test_failed_candidate_verification_rolls_back(
         "_api_update",
         lambda selected, state, runner, **kwargs: calls.append(("api", state)),
     )
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
+    copied_approval_path = tmp_path / "approval-copy" / "review.json"
+    runtime.write_private(copied_approval_path, json.loads(approval_path.read_text()))
+    admission_path = (
+        tmp_path / "tasks" / "tmp" / "cre-capacity-transition-test" / "admission.json"
+    )
     with pytest.raises(runtime.RuntimeAdmissionError, match="verification failed"):
         runtime.transition(
             receipt_path,
@@ -743,16 +755,8 @@ def test_failed_candidate_verification_rolls_back(
             "candidate",
             execute=True,
             runner=lambda argv, cwd, env: runtime.CommandResult(0, ""),
-            admission_out=(
-                tmp_path
-                / "tasks"
-                / "tmp"
-                / "cre-capacity-transition-test"
-                / "admission.json"
-            ),
-            approval_path=write_approval(
-                tmp_path / "approval" / "review.json", receipt, digest
-            ),
+            admission_out=admission_path,
+            approval_path=approval_path,
         )
     assert calls == [
         ("browser", "candidate"),
@@ -762,6 +766,21 @@ def test_failed_candidate_verification_rolls_back(
     ]
     assert not list(
         (tmp_path / "approval").glob(".cre-capacity-benchmark-grant-*.json")
+    )
+    mutation_calls = list(calls)
+    with pytest.raises(runtime.RuntimeAdmissionError, match="already consumed"):
+        runtime.transition(
+            receipt_path,
+            "bold-jll-128",
+            "candidate",
+            execute=True,
+            runner=lambda argv, cwd, env: runtime.CommandResult(0, ""),
+            admission_out=admission_path,
+            approval_path=copied_approval_path,
+        )
+    assert calls == mutation_calls
+    assert not list(
+        (tmp_path / "approval-copy").glob(".cre-capacity-benchmark-grant-*.json")
     )
 
 
@@ -846,6 +865,40 @@ def test_review_approval_requires_operator_ownership_and_is_one_use(
 
 
 @pytest.mark.parametrize(
+    ("unsafe_kind", "message"),
+    [
+        ("public", "operator-owned mode 0600"),
+        ("hardlink", "regular private file"),
+        ("symlink", "regular private file"),
+        ("public-parent", "operator-owned mode 0700"),
+    ],
+)
+def test_review_approval_rejects_unsafe_file_or_parent(
+    unsafe_kind: str,
+    message: str,
+    tmp_path: Path,
+) -> None:
+    selected, digest = profile()
+    receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
+    if unsafe_kind == "public":
+        approval_path.chmod(0o644)
+    elif unsafe_kind == "hardlink":
+        os.link(approval_path, approval_path.parent / "review-copy.json")
+    elif unsafe_kind == "symlink":
+        target = approval_path.parent / "review-target.json"
+        approval_path.rename(target)
+        approval_path.symlink_to(target)
+    else:
+        approval_path.parent.chmod(0o755)
+
+    with pytest.raises(runtime.RuntimeAdmissionError, match=message):
+        runtime._validate_review_authority(approval_path)
+
+
+@pytest.mark.parametrize(
     ("uid", "euid"),
     [
         (0, 0),
@@ -886,6 +939,37 @@ def test_review_approval_consumer_never_invokes_sudo(
     assert runtime._consume_review_approval_bytes(approval_path, recovery_path) == raw
     assert calls[0][:2] == ["/usr/bin/python3", "-c"]
     assert "/usr/bin/sudo" not in calls[0]
+
+
+def test_review_approval_nonce_has_canonical_durable_one_use_marker(
+    tmp_path: Path,
+) -> None:
+    selected, digest = profile()
+    receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
+    approval = json.loads(approval_path.read_text())
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+
+    marker = runtime._record_review_approval_consumption(
+        lock_path, approval, receipt, digest
+    )
+
+    value = json.loads(marker.read_text())
+    assert marker.parent == tmp_path / "out" / ".capacity-review-consumption"
+    assert stat.S_IMODE(marker.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o600
+    assert value["kind"] == "cre_capacity_review_approval_consumption"
+    assert value["approval_sha256"] == runtime._hash(approval)
+    assert value["config_sha256"] == digest
+    assert value["transition_receipt_sha256"] == receipt["receipt_sha256"]
+    assert value["source_git_sha"] == approval["source_git_sha"]
+    assert value["review_approval_nonce_sha256"] == runtime._hash(approval["nonce"])
+    with pytest.raises(runtime.RuntimeAdmissionError, match="already consumed"):
+        runtime._record_review_approval_consumption(
+            lock_path, approval, receipt, digest
+        )
 
 
 def test_review_benchmark_grant_is_exact_private_and_exclusive(tmp_path: Path) -> None:

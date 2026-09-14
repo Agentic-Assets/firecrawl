@@ -28,9 +28,10 @@ Verify each item before acting.
   touching Docker or provider endpoints.
 - **Consolidate embedded review-helper protocol code** (priority: medium;
   confidence: design hypothesis). The controller and benchmark intentionally
-  embed small stdlib-only helpers for privilege separation. Evaluate a single
-  audited protocol module or generated helper only if it preserves exact source
-  binding and does not create a reusable authorization service.
+  embed small stdlib-only helpers for isolated atomic consumption, not Unix
+  privilege separation. Evaluate a single audited protocol module or generated
+  helper only if it preserves exact source binding and does not create a
+  reusable authorization service.
 - **Add CI coverage for cross-language retry and lock contracts** (priority:
   medium; confidence: verified local-only coverage). Run Python lock/admission
   tests plus the pinned SDK transport-attempt test in a dependency-complete CI

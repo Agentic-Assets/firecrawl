@@ -75,7 +75,12 @@ reviewer, not this controller and not an operator helper command, must create
 it. The file must have exactly one hard link, be owned by the operating account,
 and live in an operating-account-owned mode `0700` directory. The controller
 atomically renames, reads, and destroys it in an isolated same-user helper
-before issuing any resource command, so the file cannot be replayed.
+before issuing any resource command. While holding the canonical lock, the
+controller then creates a durable `O_EXCL` consumption marker keyed by the
+approval nonce hash in the canonical private output tree. The marker binds the
+approval hash, profile, config, transition receipt, source SHA, original review
+timestamp, and expiry. It survives rollback, so neither the original file nor a
+copy can authorize another attempt.
 
 Successful approval consumption also creates a second private, mode `0600`,
 one-use benchmark grant in the same private directory. Its filename is bound to
@@ -103,11 +108,12 @@ receipt with a script, shell substitution, `jq`, or the controller, and do not
 reuse or edit it after an execution attempt.
 
 This filesystem boundary prevents accidental disclosure, loose permissions,
-and replay. It does not make the approval cryptographically independent from
-another process running as the same operating account. Independence is provided
-by the separate coordinating review record and exact content bindings, not by a
-claim of Unix privilege separation. No `sudo` or Unix-root ownership is needed
-for these Docker resource controls.
+unsafe file types, and protocol-level replay. It does not make the approval
+cryptographically independent from another process running as the same
+operating account, which could delete or alter its own files. Independence is
+provided by the separate coordinating review record and exact content bindings,
+not by a claim of Unix privilege separation. No `sudo` or Unix-root ownership
+is needed for these Docker resource controls.
 
 The candidate transition is:
 

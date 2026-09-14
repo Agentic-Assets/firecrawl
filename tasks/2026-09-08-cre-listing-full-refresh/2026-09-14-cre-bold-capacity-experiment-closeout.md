@@ -71,7 +71,7 @@ fidelity, and artifact proof.
   duplicate-URL regression and the broader source/readback gates remain
   separate.
 
-## Left to the operator
+## Historical operator handoff (superseded below)
 
 Review the draft PR and decide whether to authorize a fresh root-reviewed
 candidate attempt. Any live attempt requires a new clean-HEAD receipt, the
