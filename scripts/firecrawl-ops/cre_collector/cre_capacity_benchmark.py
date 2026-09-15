@@ -5212,10 +5212,7 @@ def run_counterbalanced_pair_step(
                     or quarantine_error is not None
                     or retention_error is not None
                 ):
-                    if (
-                        quarantine_error is not None
-                        and not quarantine_evidence_durable
-                    ):
+                    if quarantine_error is not None and not quarantine_evidence_durable:
                         failure_message = (
                             "candidate pair rollback or lock quarantine failed; "
                             "durable quarantine evidence publication failed; "

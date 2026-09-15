@@ -19,9 +19,7 @@ ATTEMPT = "2026-07-29T12:00:00+00:00"
 
 def listing(source="svn", index=1, tx="sale", **extra):
     host = (
-        "www.cushmanwakefield.com"
-        if source == "cushman-wakefield"
-        else "example.test"
+        "www.cushmanwakefield.com" if source == "cushman-wakefield" else "example.test"
     )
     return {
         "sourceKey": source,
@@ -237,15 +235,15 @@ def strict_artifact(
                     "photos": ["https://cdn.example/listing.jpg"],
                 }
             )
-            row["freshnessProvenance"]["method"] = (
-                "jll_investor_next_data_detail"
-            )
+            row["freshnessProvenance"]["method"] = "jll_investor_next_data_detail"
     for entry in payload["sources"]:
         count = entry["listingsCollected"]
         entry["freshness"] = {
             "listings": count,
             "inventoryObserved": count,
-            "detailObserved": 0 if detail_scope == "authoritative_inventory_feed" else count,
+            "detailObserved": 0
+            if detail_scope == "authoritative_inventory_feed"
+            else count,
             "authoritativeInventoryFeed": (
                 count if detail_scope == "authoritative_inventory_feed" else 0
             ),
@@ -394,11 +392,9 @@ def test_authoritative_feed_admission_does_not_expand_inventory_only_storage():
         "cbre-dealflow",
         "colliers",
     }
-    assert (
-        refresh.CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
-        & set(refresh.INVENTORY_ONLY_SOURCE_DEFINITIONS)
-        == {"cbre-dealflow"}
-    )
+    assert refresh.CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS & set(
+        refresh.INVENTORY_ONLY_SOURCE_DEFINITIONS
+    ) == {"cbre-dealflow"}
 
 
 def test_collect_argv_is_single_source_full_unlimited(tmp_path):
@@ -568,9 +564,7 @@ def test_strict_ingest_argv_passes_explicit_freshness_requirement(tmp_path):
 
 
 def test_dry_run_argv_builds_sql_without_live_flags(tmp_path):
-    argv = refresh.build_ingest_dry_run_argv(
-        tmp_path / "source.json", tmp_path / "sql"
-    )
+    argv = refresh.build_ingest_dry_run_argv(tmp_path / "source.json", tmp_path / "sql")
     assert "--dry-run" in argv
     assert "--keep-artifacts" in argv
     assert "--skip-post-commit-summary" in argv
@@ -777,9 +771,7 @@ def test_fresh_env_records_allowlisted_runtime_tuning_without_secrets(
         "9" * 100,
     ],
 )
-def test_fresh_env_redacts_invalid_allowlisted_runtime_tuning(
-    tmp_path, invalid_value
-):
+def test_fresh_env_redacts_invalid_allowlisted_runtime_tuning(tmp_path, invalid_value):
     env, summary = refresh.fresh_source_env(
         "jll",
         tmp_path,
@@ -885,7 +877,9 @@ def test_colliers_main_chunks_continue_until_complete_artifact(tmp_path, monkeyp
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with cache_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"id": f"main:{len(calls)}"}) + "\n")
-        out = Path(next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--out=")))
+        out = Path(
+            next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--out="))
+        )
         out.write_text(
             json.dumps(_colliers_chunk_artifact(complete=len(calls) == 3)),
             encoding="utf-8",
@@ -922,8 +916,12 @@ def test_colliers_main_chunks_resume_from_run_local_cache(tmp_path, monkeypatch)
         assert env["COLLIERS_MAIN_DETAIL_CACHE_PATH"] == str(cache_path)
         with cache_path.open("a", encoding="utf-8") as handle:
             handle.write('{"id":"main:new"}\n')
-        out = Path(next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--out=")))
-        out.write_text(json.dumps(_colliers_chunk_artifact(complete=True)), encoding="utf-8")
+        out = Path(
+            next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--out="))
+        )
+        out.write_text(
+            json.dumps(_colliers_chunk_artifact(complete=True)), encoding="utf-8"
+        )
         return 0
 
     monkeypatch.setattr(refresh, "run_command", fake_run)
@@ -959,8 +957,12 @@ def test_colliers_main_chunks_fail_closed_when_partial_artifact_stalls(
 
     def fake_run(argv, _log_path, *, env):
         assert env["COLLIERS_MAIN_DETAIL_CACHE_PATH"] == str(cache_path)
-        out = Path(next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--out=")))
-        out.write_text(json.dumps(_colliers_chunk_artifact(complete=False)), encoding="utf-8")
+        out = Path(
+            next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--out="))
+        )
+        out.write_text(
+            json.dumps(_colliers_chunk_artifact(complete=False)), encoding="utf-8"
+        )
         return 0
 
     monkeypatch.setattr(refresh, "run_command", fake_run)
@@ -976,12 +978,17 @@ def test_colliers_main_chunks_fail_closed_when_partial_artifact_stalls(
     )
 
     assert rc == 75
-    assert error == "colliers-main incomplete artifact made no durable detail-cache progress"
+    assert (
+        error
+        == "colliers-main incomplete artifact made no durable detail-cache progress"
+    )
     assert chunks[0]["artifact_complete"] is False
     assert len(chunks) == 1
 
 
-def test_collect_source_routes_colliers_main_through_chunk_protocol(tmp_path, monkeypatch):
+def test_collect_source_routes_colliers_main_through_chunk_protocol(
+    tmp_path, monkeypatch
+):
     run_dir = tmp_path / "checkpoint"
     monkeypatch.setattr(refresh, "utc_now", lambda: "2026-07-29T12:00:00+00:00")
     monkeypatch.setattr(refresh, "collector_runtime_dependency_error", lambda: None)
@@ -1380,9 +1387,7 @@ def test_strict_jll_structured_detail_preservation_is_accepted(tmp_path):
 
 
 def test_strict_jll_structured_detail_rejects_partial_preservation(tmp_path):
-    payload = strict_artifact(
-        "jll-investor", "detail_page", preserve_children=True
-    )
+    payload = strict_artifact("jll-investor", "detail_page", preserve_children=True)
     payload["listings"][0].pop("detailObservedWithChildPreservation")
     path = write_artifact(tmp_path, payload)
     with pytest.raises(
@@ -1999,7 +2004,9 @@ def test_lock_reclaims_dead_owner(tmp_path):
     assert not lock_dir.exists()
 
 
-@pytest.mark.parametrize("marker", [refresh.BENCHMARK_ACTIVE_MARKER, refresh.BENCHMARK_QUARANTINE_MARKER])
+@pytest.mark.parametrize(
+    "marker", [refresh.BENCHMARK_ACTIVE_MARKER, refresh.BENCHMARK_QUARANTINE_MARKER]
+)
 @pytest.mark.parametrize("entry_type", ["malformed", "symlink", "directory"])
 def test_lock_interlock_blocks_dead_owner_reclamation(tmp_path, marker, entry_type):
     lock_dir = tmp_path / ".cre.lock"
@@ -2278,7 +2285,9 @@ def test_partial_recovery_refuses_renamed_or_replaced_directory(tmp_path, monkey
     assert displaced.is_dir()
 
 
-def test_partial_recovery_cleanup_failure_preserves_operator_stop(tmp_path, monkeypatch):
+def test_partial_recovery_cleanup_failure_preserves_operator_stop(
+    tmp_path, monkeypatch
+):
     lock = refresh.SharedLock(
         tmp_path / ".cre.lock",
         recovery_required=True,
@@ -2398,7 +2407,9 @@ def test_host_cpu_guard_requires_sustained_saturation(tmp_path):
     assert "90.0%" in reason
 
 
-def test_host_cpu_guard_captures_one_sanitized_snapshot_per_high_window(tmp_path, monkeypatch):
+def test_host_cpu_guard_captures_one_sanitized_snapshot_per_high_window(
+    tmp_path, monkeypatch
+):
     captured = []
 
     def snapshot(path, **kwargs):
@@ -2419,9 +2430,14 @@ def test_host_cpu_guard_captures_one_sanitized_snapshot_per_high_window(tmp_path
 
     assert len(captured) == 2
     assert captured[0][1]["context"] == {
-        "phase": "collect", "source": "jll", "child_pid": 42
+        "phase": "collect",
+        "source": "jll",
+        "child_pid": 42,
     }
-    records = [json.loads(line) for line in (tmp_path / "cpu-guard.jsonl").read_text().splitlines()]
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "cpu-guard.jsonl").read_text().splitlines()
+    ]
     assert records[-1]["incident_snapshot"]["log"].endswith("cpu-incidents.jsonl")
 
 
@@ -2487,9 +2503,7 @@ def test_host_cpu_guard_telemetry_failure_trips_fail_closed(tmp_path, monkeypatc
         sampler=broken_sampler,
         coordinator_pid=4321,
     )
-    monkeypatch.setattr(
-        refresh.os, "kill", lambda pid, sig: signals.append((pid, sig))
-    )
+    monkeypatch.setattr(refresh.os, "kill", lambda pid, sig: signals.append((pid, sig)))
 
     guard.start()
     guard.thread.join(timeout=1)
@@ -2520,9 +2534,7 @@ def test_host_cpu_guard_invalid_sample_trips_fail_closed(
         sampler=lambda: invalid_sample,
         coordinator_pid=4321,
     )
-    monkeypatch.setattr(
-        refresh.os, "kill", lambda pid, sig: signals.append((pid, sig))
-    )
+    monkeypatch.setattr(refresh.os, "kill", lambda pid, sig: signals.append((pid, sig)))
 
     guard.start()
     guard.thread.join(timeout=1)
@@ -2542,13 +2554,9 @@ def test_host_cpu_guard_log_failure_still_signals(tmp_path, monkeypatch):
     monkeypatch.setattr(
         guard,
         "_write_record",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            refresh.CpuTelemetryError("disk full")
-        ),
+        lambda **_kwargs: (_ for _ in ()).throw(refresh.CpuTelemetryError("disk full")),
     )
-    monkeypatch.setattr(
-        refresh.os, "kill", lambda pid, sig: signals.append((pid, sig))
-    )
+    monkeypatch.setattr(refresh.os, "kill", lambda pid, sig: signals.append((pid, sig)))
 
     guard._trip("sustained saturation")
 
@@ -2674,14 +2682,18 @@ def test_checkpoint_lock_dir_rejects_noncanonical_override(tmp_path, monkeypatch
         refresh.checkpoint_lock_dir(str(tmp_path / "split" / ".cre.lock"))
 
 
-def test_checkpoint_lock_dir_accepts_canonical_override_for_test_injection(tmp_path, monkeypatch):
+def test_checkpoint_lock_dir_accepts_canonical_override_for_test_injection(
+    tmp_path, monkeypatch
+):
     canonical = tmp_path / "canonical" / ".cre.lock"
     monkeypatch.setattr(refresh, "canonical_shared_lock_dir", lambda: canonical)
 
     assert refresh.checkpoint_lock_dir(str(canonical)) == canonical.resolve()
 
 
-def test_gate_hold_is_recorded_without_being_infrastructure_failure(tmp_path, monkeypatch):
+def test_gate_hold_is_recorded_without_being_infrastructure_failure(
+    tmp_path, monkeypatch
+):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
         run_dir,
@@ -2715,7 +2727,9 @@ def test_gate_hold_is_recorded_without_being_infrastructure_failure(tmp_path, mo
     assert manifest["sources"]["svn"]["gate"]["mark_missing_safe"] is False
 
 
-def test_subset_gate_can_admit_additive_rows_but_never_mark_missing(tmp_path, monkeypatch):
+def test_subset_gate_can_admit_additive_rows_but_never_mark_missing(
+    tmp_path, monkeypatch
+):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
         run_dir,
@@ -2735,11 +2749,11 @@ def test_subset_gate_can_admit_additive_rows_but_never_mark_missing(tmp_path, mo
             run_dir / "gates" / "savills.json",
             {
                 "per_source": {
-                        "savills": {
-                            "verdict": "hold",
-                            "reason": "current_active 3 below floor 100",
-                            "mark_missing_safe": False,
-                        }
+                    "savills": {
+                        "verdict": "hold",
+                        "reason": "current_active 3 below floor 100",
+                        "mark_missing_safe": False,
+                    }
                 },
                 "summary": {
                     "hold_sources": ["savills"],
@@ -2783,8 +2797,7 @@ def test_subset_gate_admission_accepts_only_clean_or_baseline_only_holds():
         {
             "verdict": "hold",
             "reason": (
-                "current_active 60 below 70% of baseline median 100 "
-                "(threshold 70)"
+                "current_active 60 below 70% of baseline median 100 (threshold 70)"
             ),
         }
     )
@@ -2850,10 +2863,7 @@ def test_full_additive_coverage_hold_is_admitted_without_lifecycle_claim(
     assert recorded["admission_scope"] == "additive_coverage_hold"
     assert recorded["mark_missing_safe"] is False
     assert refresh.gate_verdict_is_admitted(manifest, recorded["verdict"])
-    assert (
-        manifest["scope"]["kind"]
-        == "collector_registry_additive_coverage_hold"
-    )
+    assert manifest["scope"]["kind"] == "collector_registry_additive_coverage_hold"
     durable_gate = json.loads(
         (run_dir / "gates" / "nai-global.json").read_text(encoding="utf-8")
     )
@@ -2874,9 +2884,7 @@ def test_full_additive_hold_mode_does_not_admit_first_seen():
     )
     assert not refresh.gate_verdict_is_admitted(manifest, "first_seen")
     assert not refresh.gate_verdict_is_admitted(manifest, "hold")
-    assert refresh.gate_verdict_is_admitted(
-        manifest, "ok_additive_coverage_hold"
-    )
+    assert refresh.gate_verdict_is_admitted(manifest, "ok_additive_coverage_hold")
 
 
 def test_subset_first_seen_gate_remains_blocked(tmp_path, monkeypatch):
@@ -2963,7 +2971,7 @@ def test_aggregate_gate_hold_prevents_completion(tmp_path, monkeypatch):
                 "summary": {
                     "hold_sources": ["svn"],
                     "mark_missing_safe_brokerages": [],
-                }
+                },
             },
         )
         return 2
@@ -2990,9 +2998,7 @@ def test_subset_aggregate_gate_strips_whole_source_missing_safe_claim(
     artifact_path = run_dir / "sources" / "savills.json"
     artifact_path.parent.mkdir(parents=True)
     artifact_path.write_text("{}", encoding="utf-8")
-    manifest["sources"]["savills"]["artifact"] = {
-        "path": "sources/savills.json"
-    }
+    manifest["sources"]["savills"]["artifact"] = {"path": "sources/savills.json"}
 
     def fake_run(_argv, _log, **_kwargs):
         refresh.atomic_write_json(
@@ -3040,9 +3046,7 @@ def test_full_aggregate_gate_can_admit_only_explicit_baseline_hold_additively(
     artifact_path = run_dir / "sources" / "nai-global.json"
     artifact_path.parent.mkdir(parents=True)
     artifact_path.write_text("{}", encoding="utf-8")
-    manifest["sources"]["nai-global"]["artifact"] = {
-        "path": "sources/nai-global.json"
-    }
+    manifest["sources"]["nai-global"]["artifact"] = {"path": "sources/nai-global.json"}
 
     def fake_run(_argv, _log, **_kwargs):
         refresh.atomic_write_json(
@@ -3114,7 +3118,9 @@ def test_aggregate_gate_first_seen_prevents_completion(tmp_path, monkeypatch):
     assert manifest["aggregate_gate"]["non_ok_sources"] == ["svn"]
 
 
-def test_aggregate_gate_missing_configured_source_prevents_completion(tmp_path, monkeypatch):
+def test_aggregate_gate_missing_configured_source_prevents_completion(
+    tmp_path, monkeypatch
+):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
         run_dir,
@@ -3477,9 +3483,9 @@ def test_cohort_scheduler_respects_exclusive_and_provider_lanes():
     ) == ["cbre", "svn"]
     buildout = tuple(sorted(refresh.BUILDOUT_SOURCE_KEYS))
     assert len(buildout) >= 2
-    assert refresh.select_cohort_sources(
-        buildout, (), source_workers=4
-    ) == [buildout[0]]
+    assert refresh.select_cohort_sources(buildout, (), source_workers=4) == [
+        buildout[0]
+    ]
 
 
 def test_cohort_worker_argv_carries_only_collection_inputs(tmp_path):
@@ -3501,9 +3507,7 @@ def test_cohort_worker_argv_carries_only_collection_inputs(tmp_path):
     assert "cre_ingest.py" not in argv
 
 
-def test_one_source_worker_preserves_the_serial_preparation_path(
-    tmp_path, monkeypatch
-):
+def test_one_source_worker_preserves_the_serial_preparation_path(tmp_path, monkeypatch):
     manifest = refresh.new_manifest(
         tmp_path / "run",
         git_sha="abc",
@@ -3597,8 +3601,9 @@ def test_legacy_resume_missing_cpu_guard_uses_fixed_safe_defaults(tmp_path):
 
     refresh.save_manifest(run_dir, loaded)
 
-    assert json.loads(path.read_text())["config"]["host_cpu_guard"] == (
-        loaded["config"]["host_cpu_guard"]
+    assert (
+        json.loads(path.read_text())["config"]["host_cpu_guard"]
+        == (loaded["config"]["host_cpu_guard"])
     )
     with pytest.raises(refresh.RefreshError, match="configuration differs"):
         refresh.load_resume_manifest(
@@ -3654,9 +3659,7 @@ def test_resume_preserves_explicit_historical_cpu_guard_profile(
         cpu_sustain_seconds=sustain_seconds,
         cpu_sample_seconds=sample_seconds,
     )
-    assert loaded["config"]["host_cpu_guard"] == (
-        manifest["config"]["host_cpu_guard"]
-    )
+    assert loaded["config"]["host_cpu_guard"] == (manifest["config"]["host_cpu_guard"])
 
 
 def test_cohort_prepares_all_artifacts_before_any_gate_or_dry_run(
@@ -3716,16 +3719,19 @@ def test_cohort_prepares_all_artifacts_before_any_gate_or_dry_run(
     monkeypatch.setattr(refresh, "_manifest_checkpoint_artifact_valid", artifact_valid)
     monkeypatch.setattr(refresh, "advance_source", advance)
 
-    assert refresh.prepare_sources_cohort(
-        run_dir,
-        manifest,
-        tuple(manifest["config"]["sources"]),
-        page_cap=400,
-        concurrency=3,
-        attempts_this_run=1,
-        env_file=None,
-        source_workers=2,
-    ) == []
+    assert (
+        refresh.prepare_sources_cohort(
+            run_dir,
+            manifest,
+            tuple(manifest["config"]["sources"]),
+            page_cap=400,
+            concurrency=3,
+            attempts_this_run=1,
+            env_file=None,
+            source_workers=2,
+        )
+        == []
+    )
     assert [source for kind, source in events if kind == "finalize"] == [
         "svn",
         "cbre",
@@ -3770,7 +3776,9 @@ def test_cohort_interrupt_terminates_every_active_child_before_returning(
     def start(_run_dir, _manifest, source, **_kwargs):
         return refresh.CohortCollectionProcess(
             source=source,
-            process=RunningProcess(6000 + len(signals) + (1 if source == "cbre" else 0)),
+            process=RunningProcess(
+                6000 + len(signals) + (1 if source == "cbre" else 0)
+            ),
             log_handle=io.StringIO(),
             tmp_artifact=run_dir / "sources" / f"{source}.tmp",
             attempt={"number": 1},
@@ -3778,7 +3786,11 @@ def test_cohort_interrupt_terminates_every_active_child_before_returning(
         )
 
     monkeypatch.setattr(refresh, "_start_cohort_collection", start)
-    monkeypatch.setattr(refresh.time, "sleep", lambda _seconds: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(
+        refresh.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
     monkeypatch.setattr(
         refresh.os, "killpg", lambda pid, sig: signals.append((pid, sig))
     )
@@ -4064,9 +4076,7 @@ def test_ingesting_with_invalid_artifact_never_recollects_or_replays(
     assert checkpoint["ingest_recovery"]["reason"] == "invalid_or_missing_artifact"
 
 
-def test_recover_interrupted_ingest_accepts_only_exact_readback(
-    tmp_path, monkeypatch
-):
+def test_recover_interrupted_ingest_accepts_only_exact_readback(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
         run_dir,
@@ -4114,9 +4124,7 @@ def test_recover_interrupted_ingest_accepts_only_exact_readback(
     assert checkpoint["ingest_recovery"]["readback_ok"] is True
 
 
-def test_recover_interrupted_ingest_never_replays_on_mismatch(
-    tmp_path, monkeypatch
-):
+def test_recover_interrupted_ingest_never_replays_on_mismatch(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
         run_dir,
@@ -4202,9 +4210,7 @@ def test_recover_interrupted_ingest_marks_exact_rollback_replayable(
     assert checkpoint["ingest_recovery"]["replay_safe"] is True
 
 
-def test_recover_interrupted_ingest_blocks_partial_job_footprint(
-    tmp_path, monkeypatch
-):
+def test_recover_interrupted_ingest_blocks_partial_job_footprint(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
         run_dir,
@@ -4274,9 +4280,7 @@ def _recovery_validation(active=2):
                     "detail_unavailable": "0",
                 }
             ],
-            "freshness_generations": [
-                freshness_generation_row(active=active)
-            ],
+            "freshness_generations": [freshness_generation_row(active=active)],
             "inventory_only_index": [],
             "artifact_run_jobs": [{"matching_jobs": "1"}],
         }
@@ -4302,15 +4306,14 @@ def _assert_all_saves_keep_canonical_identity(saved, manifest):
         assert candidate["run_id"] == manifest["run_id"]
         assert candidate["collector_git_sha"] == manifest["collector_git_sha"]
         assert candidate["config"] == manifest["config"]
-        assert candidate["preflight"]["database_target"] == (
-            manifest["preflight"]["database_target"]
+        assert (
+            candidate["preflight"]["database_target"]
+            == (manifest["preflight"]["database_target"])
         )
         assert set(candidate["sources"]) == set(manifest["config"]["sources"])
 
 
-def test_recovery_success_never_saves_single_source_projection(
-    tmp_path, monkeypatch
-):
+def test_recovery_success_never_saves_single_source_projection(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     manifest = _identity_bound_recovery_manifest(run_dir)
     validation = _recovery_validation()
@@ -4327,14 +4330,13 @@ def test_recovery_success_never_saves_single_source_projection(
 
     assert len(saved) == 1
     _assert_all_saves_keep_canonical_identity(saved, manifest)
-    assert json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))[
-        "run_id"
-    ] == manifest["run_id"]
+    assert (
+        json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))["run_id"]
+        == manifest["run_id"]
+    )
 
 
-def test_recovery_mismatch_saves_only_canonical_failure_state(
-    tmp_path, monkeypatch
-):
+def test_recovery_mismatch_saves_only_canonical_failure_state(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     manifest = _identity_bound_recovery_manifest(run_dir)
     validation = _recovery_validation(active=1)
@@ -4481,8 +4483,9 @@ def test_validation_readback_requires_exact_staged_count(tmp_path):
     result = refresh.verify_validation_readback(run_dir, manifest, validation)
     assert result == {"ok": False, "failed_sources": ["svn"]}
     assert manifest["sources"]["svn"]["readback"]["ok"] is False
-    assert "generation batch 1 != staged unique 2" == (
-        manifest["sources"]["svn"]["readback"]["reason"]
+    assert (
+        "generation batch 1 != staged unique 2"
+        == (manifest["sources"]["svn"]["readback"]["reason"])
     )
 
 
@@ -4513,9 +4516,7 @@ def test_strict_readback_accepts_observations_within_artifact_freshness_slo(
                     "detail_unavailable": "0",
                 }
             ],
-            "freshness_generations": [
-                freshness_generation_row(source="jll", active=2)
-            ],
+            "freshness_generations": [freshness_generation_row(source="jll", active=2)],
             "inventory_only_index": [],
         }
     }
@@ -4638,9 +4639,7 @@ def test_strict_readback_rejects_observations_older_than_artifact_freshness_slo(
     validation = {
         "queries": {
             "source_counts": [],
-            "freshness_generations": [
-                freshness_generation_row(source="jll", active=2)
-            ],
+            "freshness_generations": [freshness_generation_row(source="jll", active=2)],
             "inventory_only_index": [],
         }
     }
@@ -4973,16 +4972,12 @@ def test_avison_property_detail_readback_does_not_make_contact_freshness_claim(
         concurrency=3,
     )
     artifact_info = strict_artifact_info()
-    artifact_info.update(
-        {"strict_freshness": False, "property_detail_freshness": True}
-    )
+    artifact_info.update({"strict_freshness": False, "property_detail_freshness": True})
     manifest["sources"]["avison-young"]["artifact"] = artifact_info
     validation = {
         "queries": {
             # Contact counts are deliberately not part of this source policy.
-            "freshness_generations": [
-                freshness_generation_row(source="avison-young")
-            ],
+            "freshness_generations": [freshness_generation_row(source="avison-young")],
             "inventory_only_index": [],
         }
     }
@@ -5009,9 +5004,7 @@ def test_validation_readback_proves_mixed_canonical_and_inventory_only_lanes(tmp
     }
     validation = {
         "queries": {
-            "freshness_generations": [
-                freshness_generation_row(source="cbre-dealflow")
-            ],
+            "freshness_generations": [freshness_generation_row(source="cbre-dealflow")],
             "inventory_only_index": [
                 {
                     "source_key": "cbre-dealflow",
@@ -5116,9 +5109,7 @@ def test_validation_quality_allows_missing_canonical_growth_for_authoritative_in
     before = absolute_quality_report(
         source="cbre-dealflow", missing_canonical_url="222"
     )
-    after = absolute_quality_report(
-        source="cbre-dealflow", missing_canonical_url="270"
-    )
+    after = absolute_quality_report(source="cbre-dealflow", missing_canonical_url="270")
     assert refresh.compare_validation_quality(before, after) == {
         "ok": True,
         "failures": [],
@@ -5132,9 +5123,7 @@ def test_validation_quality_allows_missing_canonical_growth_for_authoritative_in
     ]
 
     canonical_before = absolute_quality_report(source="jll")
-    canonical_after = absolute_quality_report(
-        source="jll", missing_canonical_url="1"
-    )
+    canonical_after = absolute_quality_report(source="jll", missing_canonical_url="1")
     result = refresh.compare_validation_quality(canonical_before, canonical_after)
     assert result["ok"] is False
     assert result["failures"] == [
@@ -5142,9 +5131,7 @@ def test_validation_quality_allows_missing_canonical_growth_for_authoritative_in
     ]
 
     unknown_before = absolute_quality_report(source="unknown")
-    unknown_after = absolute_quality_report(
-        source="unknown", missing_canonical_url="1"
-    )
+    unknown_after = absolute_quality_report(source="unknown", missing_canonical_url="1")
     result = refresh.compare_validation_quality(unknown_before, unknown_after)
     assert result["ok"] is False
     assert result["failures"] == [
@@ -5182,11 +5169,9 @@ def test_absolute_validation_quality_allows_sparse_coordinates_but_rejects_hard_
     defects["queries"]["primary_child_conflicts"] = [
         {"child_type": "images", "listings": "1"}
     ]
-    next(
-        row
-        for row in defects["queries"]["orphans"]
-        if row["child_type"] == "images"
-    )["orphan_rows"] = "1"
+    next(row for row in defects["queries"]["orphans"] if row["child_type"] == "images")[
+        "orphan_rows"
+    ] = "1"
 
     result = refresh.verify_absolute_validation_quality(defects)
     assert result["ok"] is False
@@ -5233,9 +5218,12 @@ def test_absolute_validation_quality_requires_canonical_listing_url():
 
 def test_unknown_or_malformed_policy_requires_canonical_url():
     assert refresh._source_requires_canonical_url({}, "unknown") is True
-    assert refresh._source_requires_canonical_url(
-        {"unknown": {"canonical_claim": "novel_claim"}}, "unknown"
-    ) is True
+    assert (
+        refresh._source_requires_canonical_url(
+            {"unknown": {"canonical_claim": "novel_claim"}}, "unknown"
+        )
+        is True
+    )
 
 
 def test_final_validation_records_preexisting_absolute_defect_without_blocking_refresh(
@@ -5284,9 +5272,7 @@ def test_final_validation_still_blocks_a_new_quality_regression(tmp_path, monkey
     before = absolute_quality_report()
     after = absolute_quality_report()
     after["queries"]["duplicates"][0]["groups"] = "1"
-    (run_dir / "pre-validation.json").write_text(
-        json.dumps(before), encoding="utf-8"
-    )
+    (run_dir / "pre-validation.json").write_text(json.dumps(before), encoding="utf-8")
     manifest = refresh.new_manifest(
         run_dir,
         git_sha="abc",
@@ -5324,9 +5310,7 @@ def test_final_validation_persists_canonical_manifest_and_readbacks(
     (run_dir / "logs").mkdir(parents=True)
     report = absolute_quality_report()
     report["queries"].update(_recovery_validation()["queries"])
-    (run_dir / "pre-validation.json").write_text(
-        json.dumps(report), encoding="utf-8"
-    )
+    (run_dir / "pre-validation.json").write_text(json.dumps(report), encoding="utf-8")
     manifest = refresh.new_manifest(
         run_dir,
         git_sha="abc",
@@ -5355,9 +5339,7 @@ def test_final_validation_persists_canonical_manifest_and_readbacks(
     _assert_all_saves_keep_canonical_identity(saved, manifest)
     assert saved[0]["sources"]["svn"]["readback"]["ok"] is True
     assert saved[1]["validation"]["readback_ok"] is True
-    persisted = json.loads(
-        (run_dir / "manifest.json").read_text(encoding="utf-8")
-    )
+    persisted = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     assert persisted["run_id"] == manifest["run_id"]
     assert persisted["sources"]["svn"]["readback"]["ok"] is True
     assert persisted["validation"]["readback_ok"] is True
@@ -5428,9 +5410,7 @@ def test_additive_coverage_hold_report_retains_lifecycle_warning(tmp_path):
         concurrency=3,
         admit_baseline_hold_additively=True,
     )
-    manifest["aggregate_gate"] = {
-        "baseline_advisory_holds": ["nai-global"]
-    }
+    manifest["aggregate_gate"] = {"baseline_advisory_holds": ["nai-global"]}
     report = refresh.render_report(manifest)
     assert "retained historical coverage hold" in report
     assert "no lifecycle deletion or whole-source freshness claim" in report
