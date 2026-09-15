@@ -2706,6 +2706,41 @@ def test_candidate_authority_initialization_failure_recovers_under_owned_lock(
     assert lock_path.with_name(f"{lock_path.name}.authority").is_file()
 
 
+def test_candidate_rollback_lock_reclaims_interrupted_stale_tombstone(
+    tmp_path: Path,
+) -> None:
+    """Mandatory rollback reacquires under the recovered stale-lock authority."""
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.mkdir()
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    (lock_path / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    authority.write_text(f"v1 {owner} {token} {generation} normal\n", encoding="utf-8")
+    stale_identity = refresh._lock_directory_identity(lock_path)
+    tombstone = lock_path.with_name(f"{lock_path.name}.reclaim")
+    os.rename(lock_path, tombstone)
+    authority.write_text(
+        (
+            f"v1 reclaiming bound {owner} {token} {generation} "
+            f"{stale_identity[0]} {stale_identity[1]} 0\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with benchmark._candidate_rollback_lock(lock_path) as (held_lock, initial_error):
+        assert initial_error is None
+        descriptor = held_lock._owned_directory_fd()
+        os.close(descriptor)
+        held_lock.clear_recovery_requirement()
+
+    assert not lock_path.exists()
+    assert not tombstone.exists()
+
+
 def test_candidate_pair_stale_reclaim_lease_failure_recovers_and_rolls_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

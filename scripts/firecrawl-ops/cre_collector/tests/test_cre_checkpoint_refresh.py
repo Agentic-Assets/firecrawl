@@ -2836,15 +2836,12 @@ def test_stale_reclaim_commit_faults_leave_reusable_authority(
     with pytest.raises(OSError, match=expected):
         lock.acquire()
 
-    assert not lock_path.exists()
     if failure_stage == "stale-parent-fsync":
-        assert authority.read_bytes() == original_authority
+        assert not lock_path.exists()
+        assert authority.read_text(encoding="utf-8").startswith("v1 reclaiming ")
     else:
-        descriptor = os.open(authority, os.O_RDONLY)
-        try:
-            assert refresh.SharedLock._authority_fields(descriptor) is not None
-        finally:
-            os.close(descriptor)
+        assert lock_path.is_dir()
+        assert authority.read_text(encoding="utf-8").startswith("v1 reclaiming ")
 
     monkeypatch.setattr(refresh.os, "fsync", original_fsync)
     successor = refresh.SharedLock(lock_path)
@@ -2892,6 +2889,184 @@ lock.acquire()
     successor = refresh.SharedLock(lock_path)
     successor.acquire()
     successor.release()
+
+
+@pytest.mark.parametrize("partial_entry", ["pid", "lease"])
+def test_successor_recovers_subprocess_partial_legacy_reclaim(tmp_path, partial_entry):
+    """Resume only the exact old rmtree prefix without deleting its guard."""
+    lock_path = tmp_path / ".cre.lock"
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    script = """
+import os
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+owner, token, generation, partial = sys.argv[2:]
+path.mkdir()
+(path / "pid").write_text(f"{owner} 1\\n", encoding="utf-8")
+(path / "lease").write_text(f"{generation}\\n", encoding="utf-8")
+authority = path.with_name(f"{path.name}.authority")
+authority.write_text(f"v1 {owner} {token} {generation} normal\\n", encoding="utf-8")
+path.with_name(f"{path.name}.reclaim").mkdir()
+(path / partial).unlink()
+os._exit(23)
+"""
+    crashed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(lock_path),
+            str(owner),
+            token,
+            generation,
+            partial_entry,
+        ],
+        cwd=Path(refresh.__file__).parent,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert crashed.returncode == 23, crashed.stderr
+
+    successor = refresh.SharedLock(lock_path)
+    successor.acquire()
+    try:
+        legacy_guards = list(tmp_path.glob(".cre.lock.reclaim.legacy-guard.*"))
+        assert len(legacy_guards) == 1
+        assert not lock_path.with_name(f"{lock_path.name}.reclaim").exists()
+        assert refresh._lock_owner(lock_path) == os.getpid()
+        assert refresh._lock_lease(lock_path) == successor.lease_token
+        assert successor.authority_generation == successor.lease_token
+        assert refresh._lock_directory_identity(
+            legacy_guards[0]
+        ) != refresh._lock_directory_identity(lock_path)
+    finally:
+        successor.release()
+
+
+@pytest.mark.parametrize("unsafe_entry", ["unexpected", "nonempty-guard", "bad-lease"])
+def test_partial_legacy_reclaim_residue_fails_closed_when_unverified(
+    tmp_path, unsafe_entry
+):
+    """Only old, empty-guard, authority-matching partial state is resumed."""
+    lock_path = tmp_path / ".cre.lock"
+    lock_path.mkdir()
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    (lock_path / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    authority.write_text(f"v1 {owner} {token} {generation} normal\n", encoding="utf-8")
+    legacy_guard = lock_path.with_name(f"{lock_path.name}.reclaim")
+    legacy_guard.mkdir()
+    (lock_path / "lease").unlink()
+    if unsafe_entry == "unexpected":
+        (lock_path / "foreign").write_text("do not touch\n", encoding="utf-8")
+    elif unsafe_entry == "nonempty-guard":
+        (legacy_guard / "foreign").write_text("do not touch\n", encoding="utf-8")
+    else:
+        (lock_path / "lease").write_text("wrong-lease\n", encoding="utf-8")
+
+    with pytest.raises(refresh.LockHeldError):
+        refresh.SharedLock(lock_path).acquire()
+
+    assert lock_path.is_dir()
+    assert legacy_guard.is_dir()
+    assert authority.read_text(encoding="utf-8").endswith("normal\n")
+
+
+def test_preexisting_reclaim_tombstone_fails_before_authority_mutation(tmp_path):
+    """A foreign tombstone never becomes a sidecar state-machine input."""
+    lock_path = tmp_path / ".cre.lock"
+    lock_path.mkdir()
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    (lock_path / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    original = f"v1 {owner} {token} {generation} normal\n"
+    authority.write_text(original, encoding="utf-8")
+    tombstone = lock_path.with_name(f"{lock_path.name}.reclaim")
+    tombstone.mkdir()
+    (tombstone / "foreign").write_text("do not touch\n", encoding="utf-8")
+
+    with pytest.raises(refresh.LockHeldError, match="tombstone path is occupied"):
+        refresh.SharedLock(lock_path).acquire()
+
+    assert authority.read_text(encoding="utf-8") == original
+    assert lock_path.is_dir()
+    assert (tombstone / "foreign").is_file()
+
+
+@pytest.mark.parametrize(
+    "crash_prefix",
+    ["prepared", "renamed", "renamed-fsynced", "partial-delete", "deleted"],
+)
+def test_successor_resumes_every_fsynced_reclaim_prefix(tmp_path, crash_prefix):
+    """A sidecar reclaim record makes every post-prepare crash resumable."""
+    lock_path = tmp_path / ".cre.lock"
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    lock_path.mkdir()
+    (lock_path / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    authority.write_text(f"v1 {owner} {token} {generation} normal\n", encoding="utf-8")
+    script = """
+import os
+import shutil
+import sys
+from pathlib import Path
+import cre_checkpoint_refresh as refresh
+path = Path(sys.argv[1])
+phase = sys.argv[2]
+lock = refresh.SharedLock(path)
+lock._claim_authority("n" * 32)
+authority = lock._authority_fields(lock.authority_fd)
+state = refresh._AuthorityReclaimState(
+    owner=authority[0], token=authority[1], generation=authority[2],
+    recovery_required=False, source_identity=refresh._lock_directory_identity(path),
+)
+lock._write_reclaim_state(state)
+if phase != "prepared":
+    tombstone = path.with_name(f"{path.name}.reclaim")
+    os.rename(path, tombstone)
+    if phase == "renamed-fsynced":
+        parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        os.fsync(parent_fd)
+        os.close(parent_fd)
+    if phase == "partial-delete":
+        (tombstone / "lease").unlink()
+    if phase == "deleted":
+        shutil.rmtree(tombstone)
+os._exit(23)
+"""
+    crashed = subprocess.run(
+        [sys.executable, "-c", script, str(lock_path), crash_prefix],
+        cwd=Path(refresh.__file__).parent,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert crashed.returncode == 23, crashed.stderr
+
+    successor = refresh.SharedLock(lock_path)
+    successor.acquire()
+    try:
+        assert not lock_path.with_name(f"{lock_path.name}.reclaim").exists()
+        assert refresh._lock_owner(lock_path) == os.getpid()
+        assert refresh._lock_lease(lock_path) == successor.lease_token
+        assert authority.read_text(encoding="utf-8").endswith("normal\n")
+    finally:
+        successor.release()
 
 
 @pytest.mark.parametrize("operation", ["arm", "disarm"])

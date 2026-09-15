@@ -673,6 +673,18 @@ OPERATOR_RECOVERY_LEASE_PREFIX = "operator-recovery-required:"
 LOCK_AUTHORITY_SUFFIX = ".authority"
 
 
+@dataclass(frozen=True)
+class _AuthorityReclaimState:
+    """Durable authority record for an in-progress stale-directory handoff."""
+
+    owner: int | None
+    token: str | None
+    generation: str | None
+    recovery_required: bool
+    source_identity: tuple[int, int]
+    legacy_guard: bool = False
+
+
 def _lock_requires_operator_recovery(lock_dir: Path) -> bool:
     lease = _lock_lease(lock_dir)
     return bool(lease and lease.startswith(OPERATOR_RECOVERY_LEASE_PREFIX))
@@ -893,8 +905,273 @@ class SharedLock:
         if not self._authority_fd_matches_path():
             raise LockHeldError("CRE lock authority changed before mutation")
 
+    def _verified_interrupted_legacy_reclaim(
+        self, authority: tuple[int, str, str, bool]
+    ) -> bool:
+        """Recognize only the old protocol's safely resumable partial residue.
+
+        Versions before the tombstone handoff created an empty ``.reclaim``
+        directory and then recursively deleted the canonical lock.  A process
+        death could leave just ``pid`` or ``lease`` behind.  Accept that exact
+        residue only when the held, normal authority identifies a dead owner,
+        the marker is an empty real directory, and every remaining lock entry
+        is a regular no-follow file consistent with that authority.  Anything
+        else remains an operator stop.
+        """
+        owner, _token, generation, recovery_required = authority
+        if (
+            self._authority_is_neutral(authority)
+            or recovery_required
+            or _pid_alive(owner)
+        ):
+            return False
+        legacy_guard = self.path.with_name(f"{self.path.name}.reclaim")
+        try:
+            guard_fd = os.open(
+                legacy_guard, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+        except OSError:
+            return False
+        try:
+            guard_stat = os.fstat(guard_fd)
+            named_guard = legacy_guard.lstat()
+            if (
+                not stat.S_ISDIR(guard_stat.st_mode)
+                or (guard_stat.st_dev, guard_stat.st_ino)
+                != (named_guard.st_dev, named_guard.st_ino)
+                or os.listdir(guard_fd)
+            ):
+                return False
+        except OSError:
+            return False
+        finally:
+            os.close(guard_fd)
+        try:
+            lock_fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            return False
+        try:
+            observed = os.fstat(lock_fd)
+            if _lock_directory_identity(self.path) != (
+                observed.st_dev,
+                observed.st_ino,
+            ):
+                return False
+            entries = set(os.listdir(lock_fd))
+            if not entries.issubset({"pid", "lease"}):
+                return False
+            for name in entries:
+                descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=lock_fd)
+                try:
+                    entry = os.fstat(descriptor)
+                    raw_bytes = os.read(descriptor, 512)
+                    raw = raw_bytes.decode("utf-8").strip()
+                    if (
+                        not stat.S_ISREG(entry.st_mode)
+                        or entry.st_nlink != 1
+                        or len(raw_bytes) >= 512
+                        or os.read(descriptor, 1)
+                    ):
+                        return False
+                except (OSError, UnicodeDecodeError):
+                    return False
+                finally:
+                    os.close(descriptor)
+                if name == "pid":
+                    try:
+                        if int(raw.split()[0]) != owner:
+                            return False
+                    except (IndexError, ValueError):
+                        return False
+                elif raw != generation:
+                    return False
+            return True
+        except OSError:
+            return False
+        finally:
+            os.close(lock_fd)
+
+    @staticmethod
+    def _authority_reclaim_state(descriptor: int) -> _AuthorityReclaimState | None:
+        raw = os.pread(descriptor, 512, 0)
+        try:
+            parts = raw.decode("utf-8").strip().split()
+        except UnicodeDecodeError as exc:
+            raise LockHeldError("CRE lock authority is malformed") from exc
+        if not parts or parts[:2] != ["v1", "reclaiming"]:
+            return None
+        if len(parts) != 9:
+            raise LockHeldError("CRE lock authority reclaim state is malformed")
+        _, _, mode, owner_raw, token, generation, dev_raw, ino_raw, legacy_raw = parts
+        if mode == "neutral":
+            if (owner_raw, token, generation) != ("-", "-", "-"):
+                raise LockHeldError("CRE lock authority reclaim state is malformed")
+            owner = None
+            token_value = generation_value = None
+        elif mode == "bound":
+            try:
+                owner = int(owner_raw)
+            except ValueError as exc:
+                raise LockHeldError(
+                    "CRE lock authority reclaim state is malformed"
+                ) from exc
+            if (
+                owner <= 0
+                or re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) is None
+                or re.fullmatch(
+                    rf"(?:{re.escape(OPERATOR_RECOVERY_LEASE_PREFIX)})?[A-Za-z0-9_-]{{32,128}}",
+                    generation,
+                )
+                is None
+            ):
+                raise LockHeldError("CRE lock authority reclaim state is malformed")
+            token_value, generation_value = token, generation
+        else:
+            raise LockHeldError("CRE lock authority reclaim state is malformed")
+        try:
+            identity = (int(dev_raw), int(ino_raw))
+        except ValueError as exc:
+            raise LockHeldError(
+                "CRE lock authority reclaim state is malformed"
+            ) from exc
+        if identity[0] < 0 or identity[1] <= 0 or legacy_raw not in {"0", "1"}:
+            raise LockHeldError("CRE lock authority reclaim state is malformed")
+        return _AuthorityReclaimState(
+            owner=owner,
+            token=token_value,
+            generation=generation_value,
+            recovery_required=False,
+            source_identity=identity,
+            legacy_guard=legacy_raw == "1",
+        )
+
+    def _write_authority_bytes(self, payload: bytes) -> None:
+        if not self._authority_fd_matches_path():
+            raise LockHeldError("CRE lock authority changed before initialization")
+        os.ftruncate(self.authority_fd, 0)
+        os.lseek(self.authority_fd, 0, os.SEEK_SET)
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(self.authority_fd, remaining)
+            if written <= 0:
+                raise OSError("CRE lock authority write was short")
+            remaining = remaining[written:]
+        os.fsync(self.authority_fd)
+
+    def _write_reclaim_state(self, state: _AuthorityReclaimState) -> None:
+        if state.owner is None:
+            mode, owner, token, generation = "neutral", "-", "-", "-"
+        else:
+            mode, owner, token, generation = (
+                "bound",
+                str(state.owner),
+                state.token,
+                state.generation,
+            )
+        payload = (
+            f"v1 reclaiming {mode} {owner} {token} {generation} "
+            f"{state.source_identity[0]} {state.source_identity[1]} "
+            f"{int(state.legacy_guard)}\n"
+        ).encode()
+        self._write_authority_bytes(payload)
+
+    def _restore_reclaim_authority(self, state: _AuthorityReclaimState) -> None:
+        if state.owner is None:
+            payload = b"v1 neutral\n"
+        else:
+            payload = (
+                f"v1 {state.owner} {state.token} {state.generation} normal\n"
+            ).encode()
+        self._write_authority_bytes(payload)
+
+    def _fsync_lock_parent(self) -> None:
+        parent_fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+
+    def _resume_reclaim_state(self, state: _AuthorityReclaimState) -> None:
+        """Finish a previously fsynced rename/delete handoff under this flock."""
+        self._require_authority_hold()
+        tombstone = self.path.with_name(f"{self.path.name}.reclaim")
+        try:
+            canonical_identity = _lock_directory_identity(self.path)
+        except FileNotFoundError:
+            canonical_identity = None
+        try:
+            tombstone_identity = _lock_directory_identity(tombstone)
+        except FileNotFoundError:
+            tombstone_identity = None
+
+        if canonical_identity is not None:
+            if canonical_identity != state.source_identity:
+                raise LockHeldError("CRE reclaim source directory changed")
+            if tombstone_identity is not None:
+                if not state.legacy_guard or os.listdir(tombstone):
+                    raise LockHeldError("CRE reclaim tombstone path is occupied")
+                orphan = tombstone.with_name(
+                    f"{tombstone.name}.legacy-guard.{secrets.token_urlsafe(16)}"
+                )
+                os.rename(tombstone, orphan)
+                self._fsync_lock_parent()
+            os.rename(self.path, tombstone)
+            if _lock_directory_identity(tombstone) != state.source_identity:
+                raise LockHeldError("CRE reclaim tombstone changed during handoff")
+            self._fsync_lock_parent()
+            tombstone_identity = state.source_identity
+        elif (
+            tombstone_identity is not None
+            and tombstone_identity != state.source_identity
+        ):
+            raise LockHeldError("CRE reclaim tombstone changed")
+        elif canonical_identity is not None and tombstone_identity is not None:
+            raise LockHeldError("CRE reclaim has both canonical and tombstone paths")
+
+        if tombstone_identity is not None:
+            shutil.rmtree(tombstone)
+            self._fsync_lock_parent()
+        self._require_authority_hold()
+        self._restore_reclaim_authority(state)
+
+    def _begin_reclaim_state(
+        self,
+        authority: tuple[int, str, str, bool],
+        original_identity: tuple[int, int],
+        *,
+        legacy_guard: bool,
+    ) -> None:
+        tombstone = self.path.with_name(f"{self.path.name}.reclaim")
+        try:
+            tombstone.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if not legacy_guard:
+                raise LockHeldError("CRE reclaim tombstone path is occupied")
+        if self._authority_is_neutral(authority):
+            state = _AuthorityReclaimState(
+                owner=None,
+                token=None,
+                generation=None,
+                recovery_required=False,
+                source_identity=original_identity,
+                legacy_guard=legacy_guard,
+            )
+        else:
+            state = _AuthorityReclaimState(
+                owner=authority[0],
+                token=authority[1],
+                generation=authority[2],
+                recovery_required=False,
+                source_identity=original_identity,
+                legacy_guard=legacy_guard,
+            )
+        self._write_reclaim_state(state)
+        self._resume_reclaim_state(state)
+
     def _reclaim_stale_directory_before_authority_commit(self) -> None:
-        """Remove only a verified stale directory before changing authority gen."""
+        """Reclaim a verified stale directory through a durable sidecar state."""
         self._require_authority_hold()
         try:
             original_identity = _lock_directory_identity(self.path)
@@ -907,43 +1184,34 @@ class SharedLock:
         if _lock_requires_operator_recovery(self.path):
             raise LockHeldError(f"CRE lock requires operator recovery: {self.path}")
         owner = _lock_owner(self.path)
-        if owner is None:
+        authority = self._authority_fields(self.authority_fd)
+        if authority is None:
+            raise LockHeldError("CRE lock authority is malformed")
+        interrupted_legacy_reclaim = self._verified_interrupted_legacy_reclaim(
+            authority
+        )
+        if owner is None and not interrupted_legacy_reclaim:
             raise LockHeldError("CRE lock is held (owner is starting)")
-        if _pid_alive(owner):
+        if owner is not None and _pid_alive(owner):
             raise LockHeldError(f"CRE lock is held (live owner pid {owner})")
-        reclaim = Path(f"{self.path}.reclaim")
-        try:
-            reclaim.mkdir()
-        except FileExistsError as exc:
-            raise LockHeldError(
-                f"CRE lock reclamation is already in progress: {self.path}"
-            ) from exc
-        try:
-            current = _lock_owner(self.path)
-            if (
-                _lock_interlocked(self.path)
-                or _lock_directory_identity(self.path) != original_identity
-                or current is None
-            ):
-                raise LockHeldError(
-                    "CRE lock changed or became interlocked during reclaim"
-                )
-            if _pid_alive(current):
-                raise LockHeldError(
-                    f"CRE lock became live during reclaim (pid {current})"
-                )
-            self._require_authority_hold()
-            shutil.rmtree(self.path, ignore_errors=True)
-            if self.path.exists():
-                raise LockHeldError("CRE stale lock directory could not be removed")
-            parent_fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(parent_fd)
-            finally:
-                os.close(parent_fd)
-            self._require_authority_hold()
-        finally:
-            shutil.rmtree(reclaim, ignore_errors=True)
+        current = _lock_owner(self.path)
+        if (
+            _lock_interlocked(self.path)
+            or _lock_directory_identity(self.path) != original_identity
+            or (not interrupted_legacy_reclaim and current is None)
+            or (
+                interrupted_legacy_reclaim
+                and not self._verified_interrupted_legacy_reclaim(authority)
+            )
+        ):
+            raise LockHeldError("CRE lock changed or became interlocked during reclaim")
+        if current is not None and _pid_alive(current):
+            raise LockHeldError(f"CRE lock became live during reclaim (pid {current})")
+        self._begin_reclaim_state(
+            authority,
+            original_identity,
+            legacy_guard=interrupted_legacy_reclaim,
+        )
 
     def _claim_authority(self, generation: str) -> None:
         """Take the persistent sidecar without committing a successor yet.
@@ -982,6 +1250,9 @@ class SharedLock:
             descriptor = -1
             if not self._authority_fd_matches_path():
                 raise LockHeldError("CRE lock authority changed before acquisition")
+            reclaim_state = self._authority_reclaim_state(self.authority_fd)
+            if reclaim_state is not None:
+                self._resume_reclaim_state(reclaim_state)
             prior = self._authority_fields(self.authority_fd)
             if created:
                 # Keep the exact held descriptor available to a candidate
@@ -1000,9 +1271,10 @@ class SharedLock:
             if not self._authority_is_neutral(prior) and self.path.exists():
                 directory_owner = _lock_owner(self.path)
                 directory_lease = _lock_lease(self.path)
-                if directory_owner is not None and (
-                    directory_owner != prior[0] or directory_lease != prior[2]
-                ):
+                if (directory_owner, directory_lease) != (
+                    prior[0],
+                    prior[2],
+                ) and not self._verified_interrupted_legacy_reclaim(prior):
                     raise LockHeldError(
                         "CRE lock authority is not a verified stale generation"
                     )

@@ -31,12 +31,26 @@ Malformed, empty, or replacement sidecars are not rewritten automatically.
 When a caller first encounters a legacy directory, it fsyncs a versioned
 `v1 neutral` sidecar before returning any live-owner or starting-owner stop.
 That neutral state is reusable and never changes the legacy directory. For a
-verified stale directory, the flock holder removes and fsyncs the stale
-directory first, then writes the successor generation to the held sidecar. A
+verified stale directory, the flock holder completes the durable reclaim
+handoff first, then writes the successor generation to the held sidecar. A
 crash or injected failure before that generation fsync therefore leaves either
-the prior generation with no directory, or a fail-closed sidecar, never a new
-generation that claims an old directory. Sidecar creation and generation writes
-are fault-tested; a failed fsync is not represented as a durability success.
+the prior generation and a resumable reclaim state, or a fail-closed sidecar,
+never a new generation that claims an old directory. Sidecar creation and
+generation writes are fault-tested; a failed fsync is not represented as a
+durability success.
+
+Stale reclamation itself is a versioned, fsynced `v1 reclaiming` sidecar state,
+not a best-effort recursive deletion. The record binds the old authority and
+the stale directory's device/inode before the canonical directory is renamed
+to `.cre.lock.reclaim` and the parent is fsynced. A new flock holder resumes
+only that recorded inode: canonical source before rename, exact tombstone after
+rename, a partially deleted exact tombstone, or neither after deletion. It
+then fsyncs, restores the prior authority state, and only afterwards commits a
+successor generation. A foreign, replaced, malformed, live, interlocked, or
+recovery-required path fails closed untouched. The older empty `.reclaim`
+sentinel is recognized only for a dead, authority-matching partial legacy
+directory with no entries except safe matching `pid` and `lease` files; its
+empty guard is retained under a distinct forensic name rather than deleted.
 
 If initialization of a newly created sidecar fails after exclusive creation,
 the same process retains the descriptor, inode, token, and generation. It can
