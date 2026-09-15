@@ -37,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Self
 
+import cre_recovery_guard_journal as recovery_guard_journal
 from cre_ingest import (
     AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS,
     BUILDOUT_SOURCE_KEYS,
@@ -1530,9 +1531,13 @@ class SharedLock:
             # unlinking evidence.  Import lazily to avoid the recovery module's
             # dependency on this canonical lock implementation at import time.
             try:
-                from cre_quarantine_recovery import completed_guard_allows_acquire
+                from cre_quarantine_recovery import completed_guard_evidence_is_valid
 
-                completed = completed_guard_allows_acquire(guard_path, self.path)
+                completed = recovery_guard_journal.completed_allows_acquire(
+                    guard_path,
+                    self.path,
+                    validate_completed=completed_guard_evidence_is_valid,
+                )
             except Exception:
                 completed = False
             if not completed:

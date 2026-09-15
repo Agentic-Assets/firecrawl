@@ -135,6 +135,13 @@ starts a new append-only operation record rather than overwriting prior proof.
 It never unlinks or recursively deletes lock artifacts. Any interrupted or
 uncertain recovery is a stop, not permission for shell removal.
 
+The journal has a fixed 64-KiB cap. Every encoded record reserves its complete
+byte length before the write; an over-cap append leaves the prior verified
+prefix untouched and stops for operator review. Recovery deliberately does not
+compact, overwrite, or delete prior forensic records to make space. A future
+operator procedure must archive and attest the completed journal as evidence
+before any separately reviewed retention change can reclaim capacity.
+
 A guard phase records a completed durable archive prefix and the next intended
 operation. It is not a perpetual assertion that a third party will keep a
 canonical source pathname absent after the phase's check. Every phase that

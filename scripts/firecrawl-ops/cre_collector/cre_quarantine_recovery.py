@@ -8,7 +8,6 @@ receipt evidence.
 
 from __future__ import annotations
 
-import contextvars
 import ctypes
 import errno
 import fcntl
@@ -26,6 +25,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 import cre_checkpoint_refresh as checkpoint_refresh
+import cre_recovery_guard_journal as guard_journal
 from cre_capacity_errors import RuntimeAdmissionError
 from cre_checkpoint_refresh import LockHeldError
 
@@ -34,11 +34,8 @@ QUARANTINE_ARCHIVE_DIR = ".cre-quarantine-forensics"
 QUARANTINE_RECOVERY_KIND = "cre_capacity_quarantine_recovery"
 QUARANTINE_RECOVERY_GUARD = checkpoint_refresh.QUARANTINE_RECOVERY_GUARD
 LEGACY_AUTHORITY_TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}\Z")
-GUARD_JOURNAL_VERSION = 1
-GUARD_JOURNAL_MAX_BYTES = 65536
-_ACTIVE_GUARD_JOURNAL: contextvars.ContextVar[_GuardJournal | None] = (
-    contextvars.ContextVar("active_cre_quarantine_guard_journal", default=None)
-)
+GUARD_JOURNAL_VERSION = guard_journal.JOURNAL_VERSION
+GUARD_JOURNAL_MAX_BYTES = guard_journal.JOURNAL_MAX_BYTES
 
 
 @dataclass(frozen=True)
@@ -81,19 +78,6 @@ class QuarantineRecoveryResult(TypedDict, total=False):
     phase: str
     pair: QuarantineEvidence
     executed: bool
-
-
-@dataclass
-class _GuardJournal:
-    """One identity-bound, append-only recovery guard descriptor."""
-
-    path: Path
-    descriptor: int
-    identity: tuple[int, int]
-    state: dict[str, Any]
-    sequence: int
-    record_sha256: str | None
-    valid_size: int
 
 
 @dataclass(frozen=True)
@@ -303,221 +287,32 @@ def _recovery_guard_path(lock_path: Path) -> Path:
     return lock_path.parent / QUARANTINE_RECOVERY_GUARD
 
 
-def _guard_parent(path: Path) -> None:
-    try:
-        parent_stat = path.parent.lstat()
-    except OSError as exc:
-        raise RuntimeAdmissionError(
-            "quarantine recovery parent is unavailable"
-        ) from exc
-    if (
-        not stat.S_ISDIR(parent_stat.st_mode)
-        or parent_stat.st_uid != os.geteuid()
-        or stat.S_IMODE(parent_stat.st_mode) & 0o022
-    ):
-        raise RuntimeAdmissionError("quarantine recovery parent is unsafe")
-
-
-def _write_all(descriptor: int, raw: bytes, *, message: str) -> None:
-    payload = memoryview(raw)
-    while payload:
-        written = os.write(descriptor, payload)
-        if written <= 0:
-            raise OSError(message)
-        payload = payload[written:]
-
-
-def _guard_identity(descriptor: int, path: Path) -> tuple[int, int]:
-    observed = os.fstat(descriptor)
-    if (
-        not stat.S_ISREG(observed.st_mode)
-        or observed.st_nlink != 1
-        or observed.st_uid != os.geteuid()
-        or stat.S_IMODE(observed.st_mode) != 0o600
-    ):
-        raise RuntimeAdmissionError("quarantine recovery guard is unsafe")
-    try:
-        named = path.lstat()
-    except OSError as exc:
-        raise RuntimeAdmissionError("quarantine recovery guard changed") from exc
-    if (
-        not stat.S_ISREG(named.st_mode)
-        or named.st_nlink != 1
-        or named.st_uid != os.geteuid()
-        or stat.S_IMODE(named.st_mode) != 0o600
-        or (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino)
-    ):
-        raise RuntimeAdmissionError("quarantine recovery guard changed")
-    return (observed.st_dev, observed.st_ino)
-
-
-def _guard_record(
-    state: Mapping[str, Any], sequence: int, previous: str | None
-) -> tuple[bytes, str]:
-    unsigned = {
-        "journal_version": GUARD_JOURNAL_VERSION,
-        "sequence": sequence,
-        "previous_sha256": previous,
-        "state": dict(state),
-    }
-    digest = _hash(unsigned)
-    return _canonical({**unsigned, "record_sha256": digest}) + b"\n", digest
-
-
-def _read_guard_journal(
-    descriptor: int, path: Path
-) -> tuple[dict[str, Any], int, str, int]:
-    identity = _guard_identity(descriptor, path)
-    observed = os.fstat(descriptor)
-    if observed.st_size <= 0 or observed.st_size > GUARD_JOURNAL_MAX_BYTES:
-        raise RuntimeAdmissionError("quarantine recovery guard is malformed")
-    raw = os.pread(descriptor, observed.st_size, 0)
-    if len(raw) != observed.st_size:
-        raise RuntimeAdmissionError("quarantine recovery guard changed")
-    state: dict[str, Any] | None = None
-    sequence = 0
-    previous: str | None = None
-    valid_size = 0
-    lines = raw.splitlines(keepends=True)
-    for index, line in enumerate(lines):
-        if not line.endswith(b"\n"):
-            if index == len(lines) - 1:
-                break
-            raise RuntimeAdmissionError("quarantine recovery guard is malformed")
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise RuntimeAdmissionError(
-                "quarantine recovery guard is malformed"
-            ) from exc
-        if not isinstance(record, dict):
-            raise RuntimeAdmissionError("quarantine recovery guard is malformed")
-        supplied = record.get("record_sha256")
-        unsigned = {
-            key: value for key, value in record.items() if key != "record_sha256"
-        }
-        candidate = unsigned.get("state")
-        if (
-            unsigned.get("journal_version") != GUARD_JOURNAL_VERSION
-            or unsigned.get("sequence") != sequence + 1
-            or unsigned.get("previous_sha256") != previous
-            or not isinstance(candidate, dict)
-            or not isinstance(supplied, str)
-            or supplied != _hash(unsigned)
-        ):
-            raise RuntimeAdmissionError("quarantine recovery guard is malformed")
-        state = dict(candidate)
-        sequence += 1
-        previous = supplied
-        valid_size += len(line)
-    if state is None or previous is None:
-        raise RuntimeAdmissionError("quarantine recovery guard is malformed")
-    if _guard_identity(descriptor, path) != identity:
-        raise RuntimeAdmissionError("quarantine recovery guard changed")
-    return state, sequence, previous, valid_size
-
-
-def _open_guard_journal(path: Path) -> _GuardJournal:
-    _guard_parent(path)
-    try:
-        descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
-    except OSError as exc:
-        raise RuntimeAdmissionError("quarantine recovery guard is unsafe") from exc
-    try:
-        identity = _guard_identity(descriptor, path)
-        state, sequence, previous, valid_size = _read_guard_journal(descriptor, path)
-        return _GuardJournal(
-            path, descriptor, identity, state, sequence, previous, valid_size
-        )
-    except BaseException:
-        os.close(descriptor)
-        raise
-
-
-def _create_guard_journal(path: Path, state: Mapping[str, Any]) -> _GuardJournal:
-    _guard_parent(path)
-    try:
-        descriptor = os.open(
-            path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
-        )
-    except FileExistsError as exc:
-        raise RuntimeAdmissionError("quarantine recovery guard already exists") from exc
-    try:
-        os.fchmod(descriptor, 0o600)
-        identity = _guard_identity(descriptor, path)
-        journal = _GuardJournal(path, descriptor, identity, {}, 0, None, 0)
-        _append_guard_state(journal, state)
-        fsync_directory(path.parent)
-        return journal
-    except BaseException:
-        os.close(descriptor)
-        raise
+_GuardJournal = guard_journal.GuardJournal
+_guard_identity = guard_journal.guard_identity
+_guard_record = guard_journal.guard_record
+_close_guard_journal = guard_journal.close
 
 
 def _append_guard_state(journal: _GuardJournal, state: Mapping[str, Any]) -> None:
-    """Append one fsynced phase record without ever replacing the guard path."""
-    if _guard_identity(journal.descriptor, journal.path) != journal.identity:
-        raise RuntimeAdmissionError("quarantine recovery guard changed")
-    observed = os.fstat(journal.descriptor)
-    if observed.st_size < journal.valid_size:
-        raise RuntimeAdmissionError("quarantine recovery guard changed")
-    if observed.st_size != journal.valid_size:
-        # A crash can leave only a partial final record.  The verified FD is
-        # authoritative, so discard that torn suffix before extending the
-        # longest checksum-valid prefix.  A complete malformed record never
-        # reaches this branch: the reader rejects it fail closed.
-        os.ftruncate(journal.descriptor, journal.valid_size)
-        os.fsync(journal.descriptor)
-        if _guard_identity(journal.descriptor, journal.path) != journal.identity:
-            raise RuntimeAdmissionError("quarantine recovery guard changed")
-    raw, digest = _guard_record(state, journal.sequence + 1, journal.record_sha256)
-    os.lseek(journal.descriptor, 0, os.SEEK_END)
-    _write_all(
-        journal.descriptor, raw, message="quarantine recovery guard write was short"
-    )
-    os.fsync(journal.descriptor)
-    if _guard_identity(journal.descriptor, journal.path) != journal.identity:
-        raise RuntimeAdmissionError("quarantine recovery guard changed")
-    journal.state = dict(state)
-    journal.sequence += 1
-    journal.record_sha256 = digest
-    journal.valid_size += len(raw)
+    # Preserve the narrow cap-injection seam for the recovery matrix while the
+    # journal module owns the actual encoded-record reservation.
+    guard_journal.JOURNAL_MAX_BYTES = GUARD_JOURNAL_MAX_BYTES
+    guard_journal.append(journal, state)
+
+
+def _open_guard_journal(path: Path) -> _GuardJournal:
+    return guard_journal.open_journal(path)
+
+
+def _create_guard_journal(path: Path, state: Mapping[str, Any]) -> _GuardJournal:
+    return guard_journal.create(path, state, fsync_parent=fsync_directory)
 
 
 def _write_recovery_guard(
     path: Path, value: Mapping[str, Any], *, create: bool
 ) -> None:
-    """Advance the active durable journal, or provide a safe test seam.
-
-    Production recovery installs its journal in a context-local slot for the
-    complete operation.  That preserves the original no-follow FD across every
-    phase.  The non-active path is intentionally limited to isolated fixtures:
-    it creates an exclusive journal or appends through a freshly verified FD;
-    it never replaces or unlinks a pathname.
-    """
-    active = _ACTIVE_GUARD_JOURNAL.get()
-    if active is not None:
-        if active.path != path:
-            raise RuntimeAdmissionError("quarantine recovery guard changed")
-        if not create:
-            _append_guard_state(active, value)
-        return
-    if create:
-        journal = _create_guard_journal(path, value)
-    else:
-        journal = _open_guard_journal(path)
-        try:
-            _append_guard_state(journal, value)
-        finally:
-            _close_guard_journal(journal)
-        return
-    _close_guard_journal(journal)
-
-
-def _close_guard_journal(journal: _GuardJournal | None) -> None:
-    if journal is not None and journal.descriptor >= 0:
-        os.close(journal.descriptor)
-        journal.descriptor = -1
+    guard_journal.JOURNAL_MAX_BYTES = GUARD_JOURNAL_MAX_BYTES
+    guard_journal.write(path, value, create_record=create, fsync_parent=fsync_directory)
 
 
 def _read_recovery_guard(path: Path) -> dict[str, Any]:
@@ -736,7 +531,7 @@ def _write_recovery_receipt(path: Path, result: Mapping[str, Any]) -> dict[str, 
     try:
         os.fchmod(descriptor, 0o600)
         identity = _guard_identity(descriptor, path)
-        _write_all(
+        guard_journal.write_all(
             descriptor,
             _canonical(receipt) + b"\n",
             message="quarantine recovery receipt write was short",
@@ -782,7 +577,7 @@ def _validate_recovery_receipt(
     return receipt
 
 
-def _completed_guard_evidence_is_valid(
+def completed_guard_evidence_is_valid(
     state: Mapping[str, Any], lock_path: Path
 ) -> bool:
     """Validate a terminal journal state without touching a later lock cycle."""
@@ -813,20 +608,10 @@ def _completed_guard_evidence_is_valid(
 
 
 def completed_guard_allows_acquire(path: Path, lock_path: Path) -> bool:
-    """Allow a normal lock only after a retained terminal journal is exact."""
-    try:
-        journal = _open_guard_journal(path)
-    except RuntimeAdmissionError:
-        return False
-    try:
-        authority = lock_path.with_name(f"{lock_path.name}.authority")
-        return (
-            _completed_guard_evidence_is_valid(journal.state, lock_path)
-            and _path_is_absent(lock_path)
-            and _path_is_absent(authority)
-        )
-    finally:
-        _close_guard_journal(journal)
+    """Compatibility wrapper around the explicit journal admission API."""
+    return guard_journal.completed_allows_acquire(
+        path, lock_path, validate_completed=completed_guard_evidence_is_valid
+    )
 
 
 def recover_quarantine(
@@ -854,10 +639,10 @@ def recover_quarantine(
         # A fault before the namespace-operation try/finally still must not
         # leak a retained descriptor or contaminate a later same-process
         # operator invocation.
-        active = _ACTIVE_GUARD_JOURNAL.get()
+        active = guard_journal.active()
         if active is not None:
             _close_guard_journal(active)
-            _ACTIVE_GUARD_JOURNAL.set(None)
+            guard_journal.clear_active()
         checkpoint_refresh.release_quarantine_recovery_sync(synchronizer)
 
 
@@ -929,13 +714,13 @@ def _recover_quarantine_while_synchronized(
     archive_root.mkdir(mode=0o700, exist_ok=True)
     _private_directory(archive_root, message="quarantine forensic archive is unsafe")
     journal: _GuardJournal | None = None
-    journal_context: contextvars.Token[_GuardJournal | None] | None = None
+    journal_context: object | None = None
     if guard is None:
         # The guard is the first durable operation artifact.  A crash before
         # archive creation can therefore be replayed by creating the exact
         # deterministic directory, rather than stranding the source pair.
         journal = _create_guard_journal(guard_path, result)
-        journal_context = _ACTIVE_GUARD_JOURNAL.set(journal)
+        journal_context = guard_journal.activate(journal)
         _write_recovery_guard(guard_path, result, create=True)
         archive.mkdir(mode=0o700, exist_ok=False)
         fsync_directory(archive_root)
@@ -943,7 +728,7 @@ def _recover_quarantine_while_synchronized(
         # Reopen the retained journal only after read-only admission succeeds.
         # Any replaced or torn guard fails before the first namespace mutation.
         journal = _open_guard_journal(guard_path)
-        journal_context = _ACTIVE_GUARD_JOURNAL.set(journal)
+        journal_context = guard_journal.activate(journal)
         result = dict(journal.state)
         pair = dict(result["pair"])
         archive = Path(str(result["archive"]))
@@ -953,7 +738,7 @@ def _recover_quarantine_while_synchronized(
         result.update({"cpu": cpu, "checks": checks, "settlement": settlement})
     assert journal is not None
     if result.get("phase") == "completed":
-        if not _completed_guard_evidence_is_valid(result, lock_path):
+        if not completed_guard_evidence_is_valid(result, lock_path):
             _close_guard_journal(journal)
             raise RuntimeAdmissionError("quarantine recovery guard is not replay-safe")
         if _path_is_absent(lock_path) and _path_is_absent(authority):
@@ -1157,5 +942,5 @@ def _recover_quarantine_while_synchronized(
             fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
         if journal_context is not None:
-            _ACTIVE_GUARD_JOURNAL.reset(journal_context)
+            guard_journal.deactivate(journal_context)
         _close_guard_journal(journal)

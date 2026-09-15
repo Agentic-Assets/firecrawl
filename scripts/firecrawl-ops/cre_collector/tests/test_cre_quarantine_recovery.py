@@ -15,6 +15,7 @@ from pathlib import Path
 import cre_capacity_runtime as runtime
 import cre_checkpoint_refresh as checkpoint_refresh
 import cre_quarantine_recovery as recovery
+import cre_recovery_guard_journal as guard_journal
 import pytest
 from cre_capacity_runtime_test_support import capture, profile
 
@@ -80,6 +81,10 @@ def test_quarantine_recovery_state_machine_is_owned_by_its_dedicated_module() ->
     assert "def _recover_quarantine_while_synchronized" in recovery_source
     assert "class QuarantineRecoveryConfig" in recovery_source
     assert "class QuarantineRecoveryCallbacks" in recovery_source
+    assert "class GuardJournal" in Path(guard_journal.__file__).read_text(
+        encoding="utf-8"
+    )
+    assert "class GuardJournal" not in recovery_source
 
 
 def test_public_recovery_config_and_callbacks_support_offline_dry_run(
@@ -207,6 +212,63 @@ def test_guard_journal_discards_only_a_torn_final_record_before_replay(
     )
     assert _guard_state(guard)["phase"] == "lock-renaming"
     assert guard.read_bytes().endswith(b"\n")
+
+
+def test_guard_journal_capacity_exact_fit_then_overflow_is_nonmutating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The byte cap rejects one extra record before it can alter the guard."""
+    guard = tmp_path / recovery.QUARANTINE_RECOVERY_GUARD
+    first = {"kind": "test", "phase": "prepared", "payload": "a" * 64}
+    first_raw, first_hash = recovery._guard_record(first, 1, None)
+    second = {"kind": "test", "phase": "lock-renaming", "payload": "a" * 64}
+    second_raw, _ = recovery._guard_record(second, 2, first_hash)
+    monkeypatch.setattr(
+        recovery, "GUARD_JOURNAL_MAX_BYTES", len(first_raw) + len(second_raw)
+    )
+    recovery._write_recovery_guard(guard, first, create=True)
+    recovery._write_recovery_guard(guard, second, create=False)
+    assert guard.stat().st_size == len(first_raw) + len(second_raw)
+    assert _guard_state(guard) == second
+    before = guard.read_bytes()
+    with pytest.raises(runtime.RuntimeAdmissionError, match="journal is full"):
+        recovery._write_recovery_guard(
+            guard,
+            {"kind": "test", "phase": "lock-archived", "payload": "a" * 64},
+            create=False,
+        )
+    assert guard.read_bytes() == before
+    assert _guard_state(guard) == second
+
+
+def test_guard_journal_repeated_appends_stop_with_a_readable_valid_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated cycles fail closed before a valid journal becomes unreadable."""
+    guard = tmp_path / recovery.QUARANTINE_RECOVERY_GUARD
+    monkeypatch.setattr(recovery, "GUARD_JOURNAL_MAX_BYTES", 2_048)
+    state = {"kind": "test", "phase": "prepared", "payload": "x" * 128}
+    recovery._write_recovery_guard(guard, state, create=True)
+    last = state
+    for index in range(1, 100):
+        candidate = {
+            "kind": "test",
+            "phase": "lock-renaming",
+            "payload": "x" * 128,
+            "cycle": index,
+        }
+        before = guard.read_bytes()
+        try:
+            recovery._write_recovery_guard(guard, candidate, create=False)
+        except runtime.RuntimeAdmissionError as exc:
+            assert "journal is full" in str(exc)
+            assert guard.read_bytes() == before
+            break
+        last = candidate
+    else:  # pragma: no cover - protects the test's deliberately small cap
+        pytest.fail("journal cap did not stop repeated appends")
+    assert _guard_state(guard) == last
+    assert guard.stat().st_size <= recovery.GUARD_JOURNAL_MAX_BYTES
 
 
 def test_completed_guard_substitution_blocks_acquire_without_deleting_foreign_path(
