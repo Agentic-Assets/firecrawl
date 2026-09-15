@@ -13,9 +13,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Self
 
+import pytest
+
 import cre_capacity_experiment as experiment
 import cre_capacity_runtime as runtime
-import pytest
 
 
 def profile() -> tuple[dict[str, object], str]:

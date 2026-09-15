@@ -12,9 +12,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
-import pytest
 
 
 def _cache_record(index: int) -> dict[str, object]:
@@ -2356,8 +2357,10 @@ def test_candidate_pair_defers_quarantine_until_after_rollback(
     admission_path.write_text("{}", encoding="utf-8")
 
     expected = (
-        "canonical interlock is retained"
-        if rollback_failure or quarantine_failure
+        "durable quarantine evidence publication failed"
+        if quarantine_failure
+        else "canonical lock is quarantined"
+        if rollback_failure
         else "post-worker benchmark failure"
         if run_failure
         else "did not complete"
@@ -2428,9 +2431,7 @@ def test_candidate_pair_prearms_interlock_before_benchmark_failure_and_rollback_
     admission_path = tmp_path / "admission.json"
     admission_path.write_text("{}", encoding="utf-8")
 
-    with pytest.raises(
-        benchmark.BenchmarkError, match="canonical interlock is retained"
-    ):
+    with pytest.raises(benchmark.BenchmarkError, match="canonical lock is quarantined"):
         benchmark.run_counterbalanced_pair_step(
             repo_root=Path(__file__).resolve().parents[4],
             pair_plan_path=plan_path,
@@ -2521,6 +2522,72 @@ def test_candidate_pair_marker_arm_failure_obeys_rollback_interlock(
         assert evidence["reason"] == "candidate_baseline_rollback_failed"
         with pytest.raises(benchmark.LockHeldError):
             benchmark.SharedLock(lock_path).acquire()
+
+
+def test_candidate_pair_retains_owned_lock_when_quarantine_publication_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    original_arm = benchmark.SharedLock.arm_benchmark
+    original_write = benchmark._atomic_private_json
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_arm_once(_lock, _evidence):
+        monkeypatch.setattr(benchmark.SharedLock, "arm_benchmark", original_arm)
+        raise OSError("outer marker arm failed before create")
+
+    def fail_quarantine(path: Path, value: object) -> None:
+        if path.name == benchmark.BENCHMARK_QUARANTINE_MARKER:
+            raise OSError("quarantine publication failed")
+        original_write(path, value)
+
+    monkeypatch.setattr(benchmark.SharedLock, "arm_benchmark", fail_arm_once)
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "transition",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("rollback failed")),
+    )
+    monkeypatch.setattr(benchmark, "_atomic_private_json", fail_quarantine)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        benchmark.BenchmarkError,
+        match="durable quarantine evidence publication failed; operator intervention is required",
+    ):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert lock_path.is_dir()
+    assert not (lock_path / "capacity-benchmark-active.json").exists()
+    assert not (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).exists()
+    assert (lock_path / "pid").is_file()
+    assert (lock_path / "lease").is_file()
+    with pytest.raises(benchmark.LockHeldError, match="live owner"):
+        benchmark.SharedLock(lock_path).acquire()
 
 
 def test_candidate_pair_prearmed_interlock_survives_interrupt_until_rollback(

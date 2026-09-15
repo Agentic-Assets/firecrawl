@@ -719,6 +719,7 @@ class SharedLock:
     lease_token: str | None = field(default=None, init=False)
     directory_identity: tuple[int, int] | None = field(default=None, init=False)
     benchmark_marker_identity: tuple[int, int] | None = field(default=None, init=False)
+    retain_on_exit: bool = field(default=False, init=False)
 
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -776,6 +777,7 @@ class SharedLock:
             raise
         self.lease_token = lease_token
         self.directory_identity = _lock_directory_identity(self.path)
+        self.retain_on_exit = False
         self.held = True
 
     def _owned_directory_fd(self) -> int:
@@ -884,6 +886,19 @@ class SharedLock:
         finally:
             os.close(directory_fd)
 
+    def retain_for_operator_recovery(self) -> None:
+        """Keep this verified lease on context exit when publication has failed.
+
+        This is deliberately process-local: an operator-visible marker remains
+        the durable recovery boundary, while a dead owner without a marker can
+        still use the ordinary stale-lock reclaim path.
+        """
+        directory_fd = self._owned_directory_fd()
+        try:
+            self.retain_on_exit = True
+        finally:
+            os.close(directory_fd)
+
     def release(self) -> None:
         if (
             self.held
@@ -892,6 +907,7 @@ class SharedLock:
             and _lock_lease(self.path) == self.lease_token
             and not _lock_interlocked(self.path)
             and self.benchmark_marker_identity is None
+            and not self.retain_on_exit
         ):
             shutil.rmtree(self.path, ignore_errors=True)
         self.held = False

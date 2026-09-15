@@ -2093,6 +2093,38 @@ def test_lock_benchmark_disarm_allows_normal_release(tmp_path):
     assert not lock.path.exists()
 
 
+def test_lock_retain_on_exit_preserves_owned_lock_but_allows_stale_reclaim(tmp_path):
+    lock = refresh.SharedLock(tmp_path / ".cre.lock")
+    lock.acquire()
+    lock.retain_for_operator_recovery()
+    lock.release()
+
+    assert lock.path.is_dir()
+    with pytest.raises(refresh.LockHeldError, match="live owner"):
+        refresh.SharedLock(lock.path).acquire()
+
+    (lock.path / "pid").write_text("99999999 1\n", encoding="utf-8")
+    reclaimed = refresh.SharedLock(lock.path)
+    reclaimed.acquire()
+    reclaimed.release()
+    assert not lock.path.exists()
+
+
+def test_lock_retain_on_exit_refuses_replaced_lease(tmp_path):
+    lock = refresh.SharedLock(tmp_path / ".cre.lock")
+    lock.acquire()
+    shutil.rmtree(lock.path)
+    lock.path.mkdir()
+    (lock.path / "pid").write_text(f"{os.getpid()} 1\n", encoding="utf-8")
+    (lock.path / "lease").write_text("replacement-lease\n", encoding="utf-8")
+
+    with pytest.raises(refresh.LockHeldError, match="ownership changed"):
+        lock.retain_for_operator_recovery()
+    lock.release()
+    assert lock.path.is_dir()
+    assert refresh._lock_lease(lock.path) == "replacement-lease"
+
+
 @pytest.mark.parametrize("operation", ["arm", "disarm"])
 def test_lock_benchmark_fsync_failure_preserves_interlock(
     tmp_path, monkeypatch, operation

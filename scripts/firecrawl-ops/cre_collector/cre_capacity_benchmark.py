@@ -5004,6 +5004,8 @@ def run_counterbalanced_pair_step(
                 benchmark_error: BaseException | None = None
                 rollback_error: BaseException | None = None
                 quarantine_error: BaseException | None = None
+                retention_error: BaseException | None = None
+                quarantine_evidence_published = False
                 try:
                     # Candidate runtime is already active when its fresh admission is
                     # validated. Arm before any benchmark preflight so a malformed
@@ -5056,6 +5058,14 @@ def run_counterbalanced_pair_step(
                         held_lock.disarm_benchmark()
                 except BaseException as exc:  # noqa: BLE001 - quarantine still follows
                     rollback_error = exc
+                    # This in-memory retain gate is set before attempting the
+                    # durable quarantine write. If publication itself fails,
+                    # SharedLock.__exit__ must not delete the current verified
+                    # canonical lease and turn a rollback failure into overlap.
+                    try:
+                        held_lock.retain_for_operator_recovery()
+                    except BaseException as retain_exc:  # noqa: BLE001 - fail closed
+                        retention_error = retain_exc
                 finally:
                     # A failed rollback is itself an unsafe terminal state even
                     # when the outer marker could not be created. The SharedLock
@@ -5084,11 +5094,45 @@ def run_counterbalanced_pair_step(
                             )
                         except BaseException as exc:  # noqa: BLE001 - preserve stop
                             quarantine_error = exc
-                if rollback_error is not None or quarantine_error is not None:
-                    failure = BenchmarkError(
-                        "candidate pair rollback or lock quarantine failed; "
-                        "canonical interlock is retained"
-                    )
+                    try:
+                        quarantine_stat = (
+                            lock_path / BENCHMARK_QUARANTINE_MARKER
+                        ).lstat()
+                        quarantine_evidence_published = stat.S_ISREG(
+                            quarantine_stat.st_mode
+                        )
+                    except OSError:
+                        quarantine_evidence_published = False
+                if (
+                    rollback_error is not None
+                    or quarantine_error is not None
+                    or retention_error is not None
+                ):
+                    if (
+                        quarantine_error is not None
+                        and not quarantine_evidence_published
+                    ):
+                        failure_message = (
+                            "candidate pair rollback or lock quarantine failed; "
+                            "durable quarantine evidence publication failed; "
+                            "operator intervention is required"
+                        )
+                    elif quarantine_error is not None:
+                        failure_message = (
+                            "candidate pair rollback or lock quarantine finalization failed "
+                            "after durable evidence publication; operator intervention is required"
+                        )
+                    elif retention_error is not None:
+                        failure_message = (
+                            "candidate pair rollback failed and canonical lock retention "
+                            "could not be verified; operator intervention is required"
+                        )
+                    else:
+                        failure_message = (
+                            "candidate pair rollback failed; canonical lock is quarantined "
+                            "and requires operator recovery"
+                        )
+                    failure = BenchmarkError(failure_message)
                     if benchmark_error is not None:
                         failure.add_note(
                             f"benchmark error: {type(benchmark_error).__name__}: {benchmark_error}"
@@ -5101,7 +5145,13 @@ def run_counterbalanced_pair_step(
                         failure.add_note(
                             f"quarantine error: {type(quarantine_error).__name__}: {quarantine_error}"
                         )
-                    raise failure from (quarantine_error or rollback_error)
+                    if retention_error is not None:
+                        failure.add_note(
+                            f"retention error: {type(retention_error).__name__}: {retention_error}"
+                        )
+                    raise failure from (
+                        quarantine_error or retention_error or rollback_error
+                    )
                 if benchmark_error is not None:
                     raise benchmark_error
         except LockHeldError as exc:
