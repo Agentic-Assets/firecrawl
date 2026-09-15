@@ -11,8 +11,24 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .contracts import C10Error, require_sha256
+from .inventory import (
+    BullRealtyAdapter,
+    CbreAdapter,
+    CbreDealflowAdapter,
+    CushmanWakefieldAdapter,
+    LeeAssociatesAdapter,
+    NewmarkAdapter,
+    SrsAdapter,
+    SvnAdapter,
+)
 from .policy import load_policy
+from .strict_detail_avison_young import AvisonYoungCapacityC10Adapter
 from .strict_detail_batch_b import strict_detail_batch_b_adapters
+from .strict_detail_colliers import ColliersCapacityC10Adapter
+from .strict_detail_colliers_main import ColliersMainCapacityC10Adapter
+from .strict_detail_jll import JllCapacityC10Adapter
+from .strict_detail_jll_investor import JllInvestorCapacityC10Adapter
+from .strict_detail_marcus_millichap import MarcusMillichapCapacityC10Adapter
 
 
 class C10SourceAdapter(Protocol):
@@ -74,6 +90,40 @@ def batch_b_registry() -> dict[str, C10SourceAdapter]:
     """
     registry = default_registry()
     registry.update(strict_detail_batch_b_adapters())
+    return registry
+
+
+def candidate_registry() -> dict[str, C10SourceAdapter]:
+    """Expose all 20 named C10 candidates without making any executable.
+
+    This is the sole discovery surface for Wave 2 receipt verifiers. It starts
+    from the fixed policy registry, replaces only named slots, and never
+    synthesizes a generic adapter or admission fallback.
+    """
+    registry = batch_b_registry()
+    registry.update(
+        {
+            "jll": JllCapacityC10Adapter(),
+            "jll-investor": JllInvestorCapacityC10Adapter(),
+            "colliers": ColliersCapacityC10Adapter(),
+            "colliers-main": ColliersMainCapacityC10Adapter(),
+            "marcus-millichap": MarcusMillichapCapacityC10Adapter(),
+            "avison-young": AvisonYoungCapacityC10Adapter(),
+            "cbre": CbreAdapter(),
+            "cbre-dealflow": CbreDealflowAdapter(),
+            "cushman-wakefield": CushmanWakefieldAdapter(),
+            "newmark": NewmarkAdapter(),
+            "svn": SvnAdapter(),
+            "lee-associates": LeeAssociatesAdapter(),
+            "srs": SrsAdapter(),
+            "bull-realty": BullRealtyAdapter(),
+        }
+    )
+    expected = {source["key"] for source in load_policy()["sources"]}
+    if set(registry) != expected:
+        raise C10Error("C10 candidate registry must exactly match the fixed policy")
+    if any(adapter.fully_verified is not False for adapter in registry.values()):
+        raise C10Error("C10 candidate registry cannot contain an admitting adapter")
     return registry
 
 

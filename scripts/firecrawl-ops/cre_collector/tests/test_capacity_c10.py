@@ -137,6 +137,18 @@ def test_default_registry_has_no_generic_or_admitting_adapter() -> None:
         adapters.verified_registry(loaded, registry)
 
 
+def test_candidate_registry_exposes_exact_twenty_named_unverified_adapters() -> None:
+    loaded = policy.load_policy()
+    registry = adapters.candidate_registry()
+    assert set(registry) == {source["key"] for source in loaded["sources"]}
+    assert all(adapter.fully_verified is False for adapter in registry.values())
+    assert registry["jll"].__class__.__name__ == "JllCapacityC10Adapter"
+    assert registry["cbre"].__class__.__name__ == "CbreAdapter"
+    assert registry["savills"].__class__.__name__ == "SavillsAdapter"
+    with pytest.raises(contracts.C10Error, match="not fully verified"):
+        adapters.verified_registry(loaded, registry)
+
+
 def test_admission_binds_exact_cohort_profiles_and_implementation_manifest() -> None:
     plan = _plan()
     contracts.validate_plan(plan)

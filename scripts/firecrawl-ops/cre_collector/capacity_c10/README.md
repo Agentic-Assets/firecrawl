@@ -35,8 +35,10 @@ attempt a fresh lock acquisition, a generic fallback, or an automatic rerun.
 `strict_detail_colliers.py`, `strict_detail_colliers_main.py`,
 `strict_detail_marcus_millichap.py`, and
 `strict_detail_avison_young.py` are source-local receipt verifiers and
-no-write request descriptors only. They are intentionally **not** imported by
-the registry and all retain `fully_verified = False`. A later registry-only
-admission change must independently prove each adapter's private receipt root,
-actual no-write transport, and source-specific attrition behavior; it must not
-turn these fixtures or descriptors into a generic fetcher.
+no-write request descriptors only. `candidate_registry()` exposes them for
+review alongside the other C10 candidates, but all retain
+`fully_verified = False`; neither `default_registry()` nor plan admission can
+execute them. A later registry-only admission change must independently prove
+each adapter's private receipt root, actual no-write transport, and
+source-specific attrition behavior; it must not turn these fixtures or
+descriptors into a generic fetcher.

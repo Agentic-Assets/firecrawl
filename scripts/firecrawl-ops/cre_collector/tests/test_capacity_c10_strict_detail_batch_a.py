@@ -263,8 +263,16 @@ def test_batch_a_malformed_port_is_a_domain_rejection_not_a_raw_url_error(
 
 def test_batch_a_modules_do_not_provide_network_or_mutating_executor() -> None:
     adapter_dir = Path(__file__).parent.parent / "capacity_c10"
-    modules = sorted(adapter_dir.glob("strict_detail_*.py"))
-    assert len(modules) == 6
+    module_names = (
+        "strict_detail_avison_young.py",
+        "strict_detail_colliers.py",
+        "strict_detail_colliers_main.py",
+        "strict_detail_jll.py",
+        "strict_detail_jll_investor.py",
+        "strict_detail_marcus_millichap.py",
+    )
+    modules = [adapter_dir / name for name in module_names]
+    assert all(module.is_file() for module in modules)
     forbidden = (
         "requests.",
         "urllib.request",
