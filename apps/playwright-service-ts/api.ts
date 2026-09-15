@@ -1,4 +1,5 @@
 import express, { Request, Response } from "express";
+import { createHash, randomUUID } from "node:crypto";
 import { chromium as stealthChromium } from "playwright-extra";
 import {
   Browser,
@@ -24,6 +25,12 @@ import {
   parseBrowserBatchFetchInput,
   withBrowserBatchHardTimeout,
 } from "./browser_batch_fetch";
+import {
+  C10_BROWSER_INTERNAL_PATH,
+  parseC10SidecarInput,
+  verifyC10SidecarAuthorization,
+} from "./c10_browser_internal";
+import { executeC10BrowserPageFetch } from "./c10_browser_execution";
 
 // Register stealth plugin before any launch call.
 stealthChromium.use(StealthPlugin());
@@ -52,6 +59,7 @@ const ALLOW_LOCAL_WEBHOOKS =
 const PROXY_SERVER = process.env.PROXY_SERVER || null;
 const PROXY_USERNAME = process.env.PROXY_USERNAME || null;
 const PROXY_PASSWORD = process.env.PROXY_PASSWORD || null;
+const C10_BROWSER_INTERNAL_SECRET = process.env.C10_BROWSER_INTERNAL_SECRET;
 
 class InsecureConnectionError extends Error {
   constructor(
@@ -145,6 +153,29 @@ const pageSemaphore = new Semaphore(MAX_CONCURRENT_PAGES);
 const browserBatchSemaphore = new Semaphore(
   Math.min(MAX_CONCURRENT_BROWSER_BATCHES, MAX_CONCURRENT_PAGES),
 );
+
+/** Slot ownership is paired with a real pageSemaphore permit for C10 evidence. */
+class C10PageLeasePool {
+  private readonly available = new Set<number>(
+    Array.from({ length: MAX_CONCURRENT_PAGES }, (_, index) => index),
+  );
+
+  acquire(): { leaseId: string; slot: number } {
+    const slot = this.available.values().next().value;
+    if (typeof slot !== "number") throw new Error("C10 page slot is unavailable after semaphore admission");
+    this.available.delete(slot);
+    return { leaseId: randomUUID(), slot };
+  }
+
+  release(slot: number): void {
+    if (this.available.has(slot) || slot < 0 || slot >= MAX_CONCURRENT_PAGES) {
+      throw new Error("C10 page lease release is invalid");
+    }
+    this.available.add(slot);
+  }
+}
+
+const c10PageLeasePool = new C10PageLeasePool();
 
 const AD_SERVING_DOMAINS = [
   "doubleclick.net",
@@ -662,6 +693,94 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
     }
   }
 });
+
+/**
+ * Deliberately absent unless an operator provisions a private C10 secret.
+ * This is a sidecar-internal capability, not an apps/api or Firecrawl route.
+ */
+if (C10_BROWSER_INTERNAL_SECRET) {
+  app.post(C10_BROWSER_INTERNAL_PATH, async (req: Request, res: Response) => {
+    let input;
+    try {
+      input = parseC10SidecarInput(req.body);
+    } catch {
+      return res.status(400).json({ error: "Invalid internal C10 browser request" });
+    }
+    if (!verifyC10SidecarAuthorization(
+      C10_BROWSER_INTERNAL_SECRET,
+      input,
+      req.header("x-c10-browser-authorization") ?? undefined,
+    )) {
+      // Deliberately do not disclose whether the path, token, arm, or card was wrong.
+      return res.sendStatus(404);
+    }
+
+    const queuedAt = Date.now();
+    let permitAcquired = false;
+    let lease: { leaseId: string; slot: number } | null = null;
+    let requestContext: BrowserContext | null = null;
+    let page: Page | null = null;
+    try {
+      await assertSafeTargetUrl(input.card.browserBootstrapUrl, false);
+      await assertSafeTargetUrl(input.card.url, false);
+      if (!browser) await initializeBrowser();
+      await pageSemaphore.acquire(input.card.timeoutMs);
+      permitAcquired = true;
+      lease = c10PageLeasePool.acquire();
+      const queueMs = Date.now() - queuedAt;
+      const startedAt = Date.now();
+      const contextBundle = await createContext(false, undefined, false);
+      requestContext = contextBundle.context;
+      page = await requestContext.newPage();
+      const browserResponse = await executeC10BrowserPageFetch(page, input.card);
+      const body = Buffer.from(browserResponse.bodyBase64, "base64");
+      if (body.byteLength > input.card.maxBytes) {
+        throw new Error("C10 browser response exceeds its reviewed byte limit");
+      }
+      const challengeDetected = /(?:captcha|cf-chl|challenge-platform|access denied)/i.test(
+        body.subarray(0, Math.min(body.byteLength, 256 * 1024)).toString("utf8"),
+      );
+      const proxyId = PROXY_SERVER
+        ? createHash("sha256").update(PROXY_SERVER).digest("hex")
+        : null;
+      return res.json({
+        status: browserResponse.status,
+        finalUrl: browserResponse.finalUrl,
+        redirectCount: browserResponse.redirected || browserResponse.finalUrl !== input.card.url ? 1 : 0,
+        elapsedMs: Date.now() - startedAt,
+        challengeDetected,
+        contentType: browserResponse.contentType,
+        bodyBase64: browserResponse.bodyBase64,
+        jobId: randomUUID(),
+        pageLease: lease,
+        queueMs,
+        proxy: {
+          mode: PROXY_SERVER ? "configured" : "direct",
+          proxyId,
+          country: process.env.PROXY_COUNTRY || null,
+        },
+        engine: "playwright-service",
+        engineAttempts: 1,
+        fallbackDisabled: true,
+        fallbackUsed: false,
+        cacheRead: false,
+        cacheWrite: false,
+      });
+    } catch (error) {
+      console.error("C10 internal browser execution failed:", error);
+      return res.status(502).json({ error: "C10 internal browser execution failed" });
+    } finally {
+      await cleanupBrowserBatchResources(
+        page ? () => page!.close() : null,
+        requestContext ? () => requestContext!.close() : null,
+        () => {
+          if (lease) c10PageLeasePool.release(lease.slot);
+          if (permitAcquired) pageSemaphore.release();
+        },
+      );
+    }
+  });
+}
 
 app.post("/scrape", async (req: Request, res: Response) => {
   const {

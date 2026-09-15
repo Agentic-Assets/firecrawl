@@ -201,7 +201,7 @@ function validateEvidence(
 export class BrowserTransport implements DirectProviderTransport {
   private readonly cards = new Map<string, string>();
   private readonly token: CoordinatorArmToken;
-  private consumed = false;
+  private readonly consumed = new Set<string>();
 
   constructor(
     sourceKey: string,
@@ -227,8 +227,10 @@ export class BrowserTransport implements DirectProviderTransport {
     if (this.cards.get(card.id) !== cardSha256) {
       throw new C10ReceiptError("browser transport accepts only predeclared allowlisted request cards");
     }
-    if (this.consumed) throw new C10ReceiptError("browser transport coordinator arm is already consumed");
-    this.consumed = true;
+    if (this.consumed.has(cardSha256)) {
+      throw new C10ReceiptError("browser transport request card was already consumed by its coordinator arm");
+    }
+    this.consumed.add(cardSha256);
     await this.armGate.consume(this.token, cardSha256);
     let response: TransportResponse;
     try {
