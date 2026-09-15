@@ -4,6 +4,7 @@ import { refreshGenerationId, requireFreshDetails } from "../lib/freshness.js";
 import { dedupeStrings, jsonLdObjects } from "../lib/html.js";
 import { clean, pmap, prune } from "../lib/util.js";
 import type { SourceResult, Tx } from "../types.js";
+import { classifyFoundryStatus, normalizedFoundryStatus, type FoundryStatusDecision } from "./pure/foundry-status.js";
 
 export const FOUNDRY_HOST = "https://www.foundrycommercial.com";
 export const FOUNDRY_SOURCE_URL = `${FOUNDRY_HOST}/properties/`;
@@ -15,22 +16,7 @@ const FOUNDRY_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
 const FOUNDRY_NON_PHOTO = /avatar|headshot|logo|favicon|placeholder|sprite|cropped-/i;
 const FOUNDRY_ASSET_QUERY_KEYS = new Set(["ver", "w"]);
 const FOUNDRY_PROPERTY_SITEMAP_PATH = /(?:^|\/)property-sitemap(?:\d+)?\.xml$/i;
-const FOUNDRY_TERMINAL_STATUSES = new Set([
-  "closed",
-  "discontinued",
-  "leased",
-  "off market",
-  "sold",
-  "unavailable",
-  "withdrawn",
-]);
-
-export type FoundryStatusDecision = {
-  disposition: "active" | "terminal" | "held";
-  status: string | null;
-  tenures: Tx[];
-  reason: string;
-};
+export { classifyFoundryStatus, type FoundryStatusDecision } from "./pure/foundry-status.js";
 
 export type FoundryParseContext = {
   inventoryObservedAt?: string;
@@ -61,76 +47,6 @@ function foundryAssetQueryIsBenign(url: URL): boolean {
   return true;
 }
 
-function normalizedStatus(value: string | null): string | null {
-  return clean(value)
-    ?.toLowerCase()
-    .replace(/[_-]+/g, " ")
-    .replace(/\s*[/|]\s*/g, " or ")
-    .replace(/\s+/g, " ")
-    .trim() ?? null;
-}
-
-/**
- * Foundry publishes an explicit WordPress property-status taxonomy. Only the
- * documented tokens below may admit a row. Missing or novel status text is
- * held so a theme or taxonomy change cannot silently activate old inventory.
- */
-export function classifyFoundryStatus(value: string | null): FoundryStatusDecision {
-  const status = normalizedStatus(value);
-  if (!status) {
-    return {
-      disposition: "held",
-      status: null,
-      tenures: [],
-      reason: "missing explicit Foundry property status",
-    };
-  }
-  if (FOUNDRY_TERMINAL_STATUSES.has(status)) {
-    return {
-      disposition: "terminal",
-      status,
-      tenures: [],
-      reason: `terminal Foundry property status: ${status}`,
-    };
-  }
-  if (status === "for sale") {
-    return { disposition: "active", status, tenures: ["sale"], reason: "explicit for-sale status" };
-  }
-  if (status === "for lease" || status === "sublease") {
-    return { disposition: "active", status, tenures: ["lease"], reason: `explicit ${status} status` };
-  }
-  if (
-    status === "for sale or lease"
-    || status === "for lease or sale"
-    || status === "sale and lease"
-  ) {
-    return {
-      disposition: "active",
-      status,
-      tenures: ["sale", "lease"],
-      reason: "explicit dual-tenure status",
-    };
-  }
-  if (
-    status === "available"
-    || status === "coming soon"
-    || status === "proposed"
-    || status === "under contract"
-  ) {
-    return {
-      disposition: "active",
-      status,
-      tenures: [],
-      reason: `active status ${status} requires a separate explicit transaction token`,
-    };
-  }
-  return {
-    disposition: "held",
-    status,
-    tenures: [],
-    reason: `unknown Foundry property status: ${status}`,
-  };
-}
 
 function foundryUrl(value: string, kind: "detail" | "sitemap"): string | null {
   try {
@@ -381,7 +297,7 @@ function foundryStatusFromNotes(notes: string[]): FoundryStatusDecision {
 function explicitFoundryTenures(notes: string[]): Tx[] {
   const tenures = new Set<Tx>();
   for (const note of notes) {
-    const normalized = normalizedStatus(note);
+    const normalized = normalizedFoundryStatus(note);
     if (!normalized) continue;
     if (/\bfor sale\b|\bsale and lease\b|\bfor sale or lease\b|\bfor lease or sale\b/.test(normalized)) {
       tenures.add("sale");

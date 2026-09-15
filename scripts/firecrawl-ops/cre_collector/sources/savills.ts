@@ -4,6 +4,7 @@ import { detailObservation } from "../lib/freshness.js";
 import { scrapeRaw } from "../lib/scrape.js";
 import { SourceResult, Tx } from "../types.js";
 import { clean, moneyToNumber, num } from "../lib/util.js";
+import { parseSavillsNextData, savillsFailedSearchInformation, savillsListHtmlIsUsable, savillsNextDataProperties } from "./pure/savills-next.js";
 
 
 // --- Savills: server-rendered list pages ---
@@ -226,40 +227,13 @@ export function savillsClearlyNonUsLocation(address2: string | null): boolean {
   return terminalProvince ? CANADIAN_PROVINCE_ABBRS.has(terminalProvince) : false;
 }
 
-export function parseSavillsNextData(html: string): any | null {
-  const raw = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-export function savillsNextDataProperties(html: string): any[] {
-  const data = parseSavillsNextData(html);
-  const props = data?.props?.initialReduxState?.properties;
-  return props && typeof props === "object" ? Object.values(props) : [];
-}
+export { parseSavillsNextData, savillsFailedSearchInformation, savillsListHtmlIsUsable, savillsNextDataProperties } from "./pure/savills-next.js";
 
 /**
  * A nominally successful list page can carry a provider-side search failure
  * alongside stale cards from another geography. That is not a zero-result U.S.
  * inventory observation, so surface it before any card-level reconciliation.
  */
-export function savillsFailedSearchInformation(html: string): string | null {
-  const state = parseSavillsNextData(html)?.props?.initialReduxState;
-  const candidate =
-    state?.FailedSearchInformation ??
-    state?.failedSearchInformation ??
-    state?.listPage?.FailedSearchInformation ??
-    state?.listPage?.failedSearchInformation;
-  if (typeof candidate === "string") return clean(candidate);
-  if (candidate && typeof candidate === "object") {
-    return clean(candidate.Message ?? candidate.message ?? candidate.Text ?? candidate.text);
-  }
-  return null;
-}
 
 /**
  * Reject challenge pages, redirect shells, and other successful-but-wrong
@@ -268,10 +242,6 @@ export function savillsFailedSearchInformation(html: string): string | null {
  * suppress disappearance events rather than treating a partial enumeration as
  * an empty current inventory.
  */
-export function savillsListHtmlIsUsable(html: string): boolean {
-  const state = parseSavillsNextData(html)?.props?.initialReduxState;
-  return !!state?.listPage && !!state?.properties && typeof state.properties === "object";
-}
 
 async function savillsDirectListHtmlOnce(
   url: string,
