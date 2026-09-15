@@ -1908,6 +1908,20 @@ def _canonical_transition_lock() -> Path:
     return path
 
 
+def _verified_external_transition_lock(lock: SharedLock, lock_path: Path) -> SharedLock:
+    """Accept only the exact, currently owned pair-step canonical lock."""
+    if lock.path != lock_path:
+        raise RuntimeAdmissionError("caller-held lock is not the canonical CRE lock")
+    try:
+        descriptor = lock._owned_directory_fd()
+    except LockHeldError as exc:
+        raise RuntimeAdmissionError(
+            "caller-held canonical CRE lock is not owned"
+        ) from exc
+    os.close(descriptor)
+    return lock
+
+
 def _signal_as_interrupt(signum: int, _frame: object) -> None:
     raise KeyboardInterrupt(f"runtime transition interrupted by signal {signum}")
 
@@ -2060,6 +2074,7 @@ def transition(
     runner: CommandRunner = _default_runner,
     admission_out: Path | None = None,
     approval_path: Path | None = None,
+    _held_shared_lock: SharedLock | None = None,
 ) -> dict[str, Any]:
     receipt, profile, digest = load_fresh_receipt(
         receipt_path, profile_name, require_fresh=state == "candidate"
@@ -2088,6 +2103,8 @@ def transition(
         else receipt["rollback_plan"],
     }
     if not execute:
+        if _held_shared_lock is not None:
+            raise RuntimeAdmissionError("caller-held lock is only valid for execution")
         current = capture_runtime(runner)
         baseline = receipt["baseline"]
         try:
@@ -2125,10 +2142,14 @@ def transition(
         mutation_issued = True
 
     with _transition_signal_handlers():
+        external_lock = _held_shared_lock is not None
         try:
-            lock = SharedLock(lock_path)
-            with _defer_transition_signals():
-                lock.acquire()
+            if _held_shared_lock is not None:
+                lock = _verified_external_transition_lock(_held_shared_lock, lock_path)
+            else:
+                lock = SharedLock(lock_path)
+                with _defer_transition_signals():
+                    lock.acquire()
         except LockHeldError as exc:
             raise RuntimeAdmissionError(str(exc)) from exc
         try:
@@ -2247,8 +2268,9 @@ def transition(
                 raise failure from (compensation_error or grant_cleanup_error)
             raise
         finally:
-            with _defer_transition_signals():
-                lock.release()
+            if not external_lock:
+                with _defer_transition_signals():
+                    lock.release()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

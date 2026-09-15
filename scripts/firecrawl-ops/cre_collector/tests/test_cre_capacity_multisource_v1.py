@@ -334,7 +334,13 @@ def _receipt_batch(
         )
         transaction_type = "sale" if number % 2 else "rent"
         property_type = "office" if number % 3 else "industrial"
-        http_status = 404 if classification == "confirmed_current_attrition" else 200
+        http_status = (
+            404
+            if classification == "confirmed_current_attrition"
+            else 429
+            if classification == "challenge_or_throttle"
+            else 200
+        )
         raw_path, raw_hash = _write(
             root,
             f"raw-{source_key}-{number}.json",
@@ -951,7 +957,14 @@ def test_jll_producer_failure_cleanup_preserves_replaced_output(
     )
     with pytest.raises(
         multisource.MultisourceError,
-        match="cleanup left replaced output entries: raced-aggregate.json",
+        match=(
+            "retained published outputs: "
+            + re.escape(str(aggregate_path))
+            + " sha256="
+            + _hash(
+                json.dumps(replacement, sort_keys=True, separators=(",", ":")).encode()
+            )
+        ),
     ):
         multisource.produce_jll_enumeration_artifacts(
             receipt_root=root,
@@ -961,7 +974,10 @@ def test_jll_producer_failure_cleanup_preserves_replaced_output(
         )
 
     assert _read(aggregate_path) == replacement
-    assert not list(root.glob("raced-aggregate.resolution-*.json"))
+    published_resolutions = list(root.glob("raced-aggregate.resolution-*.json"))
+    assert len(published_resolutions) == 16
+    assert all(path.is_file() for path in published_resolutions)
+    assert not list(root.glob(".jll-produce-*"))
 
 
 def test_jll_producer_prevalidation_and_staging_leave_no_partial_artifacts(
@@ -1187,10 +1203,39 @@ def test_invented_fidelity_and_challenge_block_source_admission(
     investor_rows = _receipt_batch(
         root, source_key="jll-investor", classification="challenge_or_throttle"
     )
+    assert _read(Path(investor_rows[0]["raw_receipt_path"]))["http_status"] == 429
     cohort = _prevalidate(root, jll_rows + investor_rows)
     jll = next(source for source in cohort["sources"] if source["source_key"] == "jll")
     assert jll["core_state"] == "challenge_or_throttle_in_family"
     assert jll["core"] == []
+
+    root = _private_dir(evidence_root, "challenge-wrapper-mismatch")
+    inconsistent = _receipt_batch(
+        root, source_key="jll-investor", classification="challenge_or_throttle"
+    )
+    inconsistent[0]["classification"] = "eligible_detail"
+    with pytest.raises(
+        multisource.MultisourceError, match="classification conflicts with raw evidence"
+    ):
+        _prevalidate(root, inconsistent)
+
+
+def test_bound_challenge_marker_requires_the_challenge_classification(
+    evidence_root: Path,
+) -> None:
+    root = _private_dir(evidence_root, "challenge-marker")
+    rows = _receipt_batch(root, source_key="jll-investor")
+    raw = _read(Path(rows[0]["raw_receipt_path"]))
+    raw["body"] = {"rawHtml": "<title>Verify you are human</title>"}
+    _rewrite_raw_receipt(root, rows[0], raw)
+    _refresh_extractor(root, rows[0])
+    with pytest.raises(
+        multisource.MultisourceError, match="classification conflicts with raw evidence"
+    ):
+        _prevalidate(root, rows)
+
+    rows[0]["classification"] = "challenge_or_throttle"
+    assert _prevalidate(root, rows)["aggregate"]["state"] == "incomplete_screen"
 
 
 def test_unsafe_url_and_caller_asserted_strata_are_rejected(

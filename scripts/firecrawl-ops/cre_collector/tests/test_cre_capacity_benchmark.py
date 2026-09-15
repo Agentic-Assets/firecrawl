@@ -12,9 +12,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
-import pytest
 
 
 def _cache_record(index: int) -> dict[str, object]:
@@ -2043,6 +2044,8 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
     plan_path = pair_root / "counterbalanced-pair-plan.json"
     admissions: list[str] = []
     rollbacks: list[tuple[Path, str, str, bool]] = []
+    lock_windows: list[str] = []
+    lock_path = benchmark.canonical_shared_lock_dir(Path(__file__).resolve().parents[4])
 
     monkeypatch.setattr(
         benchmark, "validate_admission", lambda value, *_args, **_kwargs: value
@@ -2059,18 +2062,26 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
 
     def fake_run_benchmark(**kwargs):
         admissions.append(kwargs["profile_name"])
+        held_lock = kwargs.get("_held_shared_lock")
+        if held_lock is not None:
+            assert held_lock.held
+            with pytest.raises(benchmark.LockHeldError):
+                benchmark.SharedLock(lock_path).acquire()
+            lock_windows.append("benchmark")
         result_path = kwargs["artifact_root"] / "result.json"
         result_path.write_bytes(benchmark._canonical({"completed": True}))
         return {"completed": True}
 
     monkeypatch.setattr(benchmark, "run_benchmark", fake_run_benchmark)
-    monkeypatch.setattr(
-        benchmark.capacity_runtime,
-        "transition",
-        lambda receipt, profile, target, *, execute: rollbacks.append(
-            (receipt, profile, target, execute)
-        ),
-    )
+
+    def fake_transition(receipt, profile, target, *, execute, _held_shared_lock):
+        assert _held_shared_lock.held
+        with pytest.raises(benchmark.LockHeldError):
+            benchmark.SharedLock(lock_path).acquire()
+        lock_windows.append("rollback")
+        rollbacks.append((receipt, profile, target, execute))
+
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", fake_transition)
     admission_path = tmp_path / "admission.json"
     admission_path.write_text("{}", encoding="utf-8")
     receipt = tmp_path / "candidate-receipt.json"
@@ -2096,6 +2107,7 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
     assert admissions == ["production-current", "bold-jll-128"]
     assert [arm["variant"] for arm in state["arms"]] == ["baseline", "candidate"]
     assert rollbacks == [(receipt, "bold-jll-128", "baseline", True)]
+    assert lock_windows == ["benchmark", "rollback"]
 
 
 def test_candidate_pair_step_rejects_missing_or_invalid_rollback_before_benchmark(

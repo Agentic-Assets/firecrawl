@@ -1084,6 +1084,52 @@ test("JLL detail enrichment preserves list and detail hidden-price controls", as
   }
 });
 
+test("JLL hidden detail retains safe suffix text and redacts only price evidence", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-hidden-safe-text-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  try {
+    for (const [id, title, expected] of [
+      ["safe-company", "3M Company", "3M Company"],
+      ["safe-building", "Building3B", "Building3B"],
+      ["safe-street", "3 B Street", "3 B Street"],
+      ["explicit-usd", "USD 3M", undefined],
+      ["labelled", "Asking price: 3M", undefined],
+    ] as const) {
+      const url = `https://property.jll.com/listings/${id}`;
+      writeJllDetailCache(url, {
+        rawHtml:
+          '<script id="__NEXT_DATA__" type="application/json">' +
+          JSON.stringify({
+            props: {
+              pageProps: {
+                property: {
+                  id,
+                  pageUrl: `/listings/${id}`,
+                  hidePrice: true,
+                  title,
+                  surfaceArea: "500K SF",
+                },
+                brokers: [],
+              },
+            },
+          }) +
+          "</script>",
+        markdown: "",
+        links: [],
+        images: [],
+      });
+      const enriched = await enrichJllListing({ id, url });
+      assert.equal(enriched.name, expected);
+      assert.equal(enriched.sizeText, "500K SF");
+    }
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
 test("JLL successful hidden detail redacts normalized prose and case-variant price paths", async () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "jll-hidden-success-redaction-cache-"));
   const oldDir = process.env.JLL_DETAIL_CACHE_DIR;

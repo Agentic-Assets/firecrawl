@@ -352,7 +352,7 @@ def _publish_staged_file(
     final_path: Path,
     *,
     root_fd: int,
-    published: dict[str, tuple[int, int]],
+    published: set[str],
 ) -> None:
     """Publish an owned staged file, refusing a destination changed during link."""
     staged_inode = _path_inode(staged_path)
@@ -363,7 +363,7 @@ def _publish_staged_file(
     final_inode = _entry_inode(root_fd, final_path.name)
     if final_inode != staged_inode:
         raise MultisourceError("producer output changed during publication")
-    published[final_path.name] = staged_inode
+    published.add(final_path.name)
     staged_path.unlink()
 
 
@@ -1178,6 +1178,32 @@ def _raw_receipt_binding(
     return document, raw_hash, _sha256(_canonical(document["body"]))
 
 
+_CHALLENGE_MARKERS = (
+    "captcha",
+    "cf-chl-",
+    "cloudflare challenge",
+    "challenge-platform",
+    "verify you are human",
+)
+_CHALLENGE_HTTP_STATUSES = frozenset({401, 403, 429})
+
+
+def _raw_challenge_classification(raw: Mapping[str, Any]) -> str | None:
+    """Derive a stop signal only from the bound transport/body evidence."""
+    if raw.get("http_status") in _CHALLENGE_HTTP_STATUSES:
+        return "challenge_or_throttle"
+    body = raw.get("body")
+    if isinstance(body, Mapping):
+        text = " ".join(value for value in body.values() if isinstance(value, str))
+    elif isinstance(body, str):
+        text = body
+    else:
+        text = ""
+    if any(marker in text.casefold() for marker in _CHALLENGE_MARKERS):
+        return "challenge_or_throttle"
+    return None
+
+
 def _jll_next_property(raw: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """Return the exact public JLL property object used by the v1 verifier."""
     body = raw.get("body")
@@ -1506,6 +1532,11 @@ def _receipt_summary(
         normalized,
     ) = _fidelity_evidence(receipt, source, raw_document, root=root)
     classification = receipt["classification"]
+    raw_classification = _raw_challenge_classification(raw_document)
+    if raw_classification is not None and classification != raw_classification:
+        raise MultisourceError("receipt classification conflicts with raw evidence")
+    if classification == "challenge_or_throttle" and raw_classification is None:
+        raise MultisourceError("challenge classification lacks raw evidence")
     if classification == "confirmed_current_attrition":
         classifier = source.get("not_found_classifier")
         if classifier != "jll_next_data_404_no_property" or not _valid_jll_not_found(
@@ -2149,7 +2180,7 @@ def produce_jll_enumeration_artifacts(
         raise MultisourceError("JLL producer detail identities are duplicated")
     root_fd = _open_private_directory(root)
     stage: Path | None = None
-    published: dict[str, tuple[int, int]] = {}
+    published: set[str] = set()
     try:
         stage = Path(tempfile.mkdtemp(prefix=".jll-produce-", dir=root))
         stage.chmod(0o700)
@@ -2241,21 +2272,20 @@ def produce_jll_enumeration_artifacts(
             raise MultisourceError("published JLL producer output is not consumable")
         return {"path": str(aggregate_path), "sha256": _sha256(aggregate_raw)}
     except Exception as exc:
-        replacements: list[str] = []
-        for name, owned_inode in reversed(published.items()):
-            try:
-                if _entry_inode(root_fd, name) == owned_inode:
-                    os.unlink(name, dir_fd=root_fd)
-                else:
-                    replacements.append(name)
-            except OSError:
-                pass
-            except MultisourceError:
-                replacements.append(name)
-        if replacements:
+        if published:
+            retained_entries = []
+            for name in sorted(published):
+                path = root / name
+                try:
+                    digest = _sha256(
+                        _private_regular_bytes(path, MAX_RAW_RECEIPT_BYTES, root=root)
+                    )
+                except MultisourceError:
+                    digest = "unavailable"
+                retained_entries.append(f"{path} sha256={digest}")
+            retained = ", ".join(retained_entries)
             raise MultisourceError(
-                "producer cleanup left replaced output entries: "
-                + ", ".join(sorted(replacements))
+                "producer publication failed; retained published outputs: " + retained
             ) from exc
         raise
     finally:

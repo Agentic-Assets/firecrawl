@@ -552,11 +552,14 @@ const JLL_MONEY_TOKEN = new RegExp(
   `(?:\\b(?:usd|cad|eur|gbp|jpy|aud|nzd|chf|hkd|sgd|cny|rmb|inr|mxn|brl|krw|aed|sar|sek|nok|dkk|pln|try|zar)\\s*|(?:us\\$|c\\$|a\\$)|[$€£¥])\\s*${JLL_MONEY_AMOUNT}(?:\\s*[kmb])?(?:\\s*/\\s*[a-z. ]+)?`,
   "i"
 );
-const JLL_MONEY_SUFFIX = new RegExp(`\\b${JLL_MONEY_AMOUNT}\\s*[kmb]\\b`, "i");
+const JLL_PRICE_LABELLED_TOKEN = new RegExp(
+  `\\b(?:asking(?:\\s+price)?|sale\\s+price|lease\\s+(?:rate|price)?|rent(?:al)?\\s+(?:rate|price)?|price|consideration)\\b\\s*[:=-]?\\s*${JLL_MONEY_AMOUNT}(?:\\s*[kmb])?(?:\\s*/\\s*[a-z. ]+)?`,
+  "i"
+);
 
 function jllSafePublicText(value: unknown): string | null {
   const text = clean(value);
-  return text && !JLL_MONEY_TOKEN.test(text) && !JLL_MONEY_SUFFIX.test(text) ? text : null;
+  return text && !JLL_MONEY_TOKEN.test(text) && !JLL_PRICE_LABELLED_TOKEN.test(text) ? text : null;
 }
 
 /** Apply the narrow JLL withheld-price raw-retention contract.

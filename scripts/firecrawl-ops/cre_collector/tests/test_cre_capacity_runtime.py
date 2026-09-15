@@ -1977,3 +1977,15 @@ def test_compensation_requires_full_final_health_verification(
             before, receipt, selected, lambda *a: runtime.CommandResult(0, "")
         )
     assert calls == ["browser", "api"]
+
+
+def test_external_pair_lock_must_be_the_owned_canonical_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    canonical = tmp_path / "out" / "daily" / ".cre.lock"
+    other = tmp_path / "other.lock"
+    monkeypatch.setattr(runtime, "_canonical_transition_lock", lambda: canonical)
+    with runtime.SharedLock(canonical) as held:
+        assert runtime._verified_external_transition_lock(held, canonical) is held
+        with pytest.raises(runtime.RuntimeAdmissionError, match="not the canonical"):
+            runtime._verified_external_transition_lock(held, other)

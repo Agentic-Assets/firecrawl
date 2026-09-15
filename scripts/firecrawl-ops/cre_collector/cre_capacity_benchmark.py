@@ -4391,6 +4391,23 @@ def _quarantine_shared_lock(
     }
 
 
+@contextmanager
+def _benchmark_shared_lock(lock_path: Path, held_lock: SharedLock | None):
+    """Use a verified caller-held canonical lock only for paired candidate work."""
+    if held_lock is not None:
+        if held_lock.path != lock_path:
+            raise BenchmarkError("caller-held lock is not the canonical CRE lock")
+        try:
+            descriptor = held_lock._owned_directory_fd()
+        except LockHeldError as exc:
+            raise BenchmarkError("caller-held canonical CRE lock is not owned") from exc
+        os.close(descriptor)
+        yield held_lock
+        return
+    with SharedLock(lock_path) as acquired_lock:
+        yield acquired_lock
+
+
 def run_benchmark(
     *,
     repo_root: Path,
@@ -4404,13 +4421,14 @@ def run_benchmark(
     admission_path: Path,
     timeout_seconds: int,
     pairing: Mapping[str, Any] | None = None,
+    _held_shared_lock: SharedLock | None = None,
 ) -> dict[str, Any]:
     replicates = int(profile["workload"]["replicates"])
     implementation = _implementation_manifest(repo_root)
     endpoints = LOOPBACK_ENDPOINTS
     lock_path = canonical_shared_lock_dir(repo_root)
     try:
-        with SharedLock(lock_path) as shared_lock:
+        with _benchmark_shared_lock(lock_path, _held_shared_lock) as shared_lock:
             _verify_implementation_manifest(repo_root, implementation)
             locked_sample = validate_sample(
                 _read_json(sample_path), int(profile["workload"]["details"])
@@ -4897,8 +4915,41 @@ def run_counterbalanced_pair_step(
         "max_gap_seconds": plan["max_gap_seconds"],
         "min_gap_seconds": plan["min_gap_seconds"],
     }
+    run_kwargs = {
+        "repo_root": repo_root,
+        "artifact_root": arm_root,
+        "sample_path": Path(plan["sample_path"]),
+        "sample": validate_sample(
+            _read_json(Path(plan["sample_path"])),
+            int(profile["workload"]["details"]),
+        ),
+        "profile": profile,
+        "profile_name": profile_name,
+        "config_sha256": digest,
+        "admission": validated_admission,
+        "admission_path": admission_path,
+        "timeout_seconds": timeout_seconds,
+        "pairing": pairing,
+    }
     result: dict[str, Any] | None = None
-    try:
+    if variant == "candidate":
+        lock_path = canonical_shared_lock_dir(repo_root)
+        try:
+            with SharedLock(lock_path) as held_lock:
+                try:
+                    result = run_benchmark(**run_kwargs, _held_shared_lock=held_lock)
+                finally:
+                    assert rollback_receipt_path is not None
+                    capacity_runtime.transition(
+                        rollback_receipt_path,
+                        profile_name,
+                        "baseline",
+                        execute=True,
+                        _held_shared_lock=held_lock,
+                    )
+        except LockHeldError as exc:
+            raise BenchmarkError("canonical CRE shared lock is already held") from exc
+    else:
         result = run_benchmark(
             repo_root=repo_root,
             artifact_root=arm_root,
@@ -4915,15 +4966,6 @@ def run_counterbalanced_pair_step(
             timeout_seconds=timeout_seconds,
             pairing=pairing,
         )
-    finally:
-        if variant == "candidate":
-            assert rollback_receipt_path is not None
-            capacity_runtime.transition(
-                rollback_receipt_path,
-                profile_name,
-                "baseline",
-                execute=True,
-            )
     if result is None or result.get("completed") is not True:
         raise BenchmarkError("counterbalanced pair arm did not complete")
     result_path = arm_root / "result.json"
