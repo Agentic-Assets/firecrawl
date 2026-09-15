@@ -9,9 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 import cre_capacity_multisource_v1 as multisource
+import pytest
 
 ADMISSION_NOW = datetime(2026, 9, 14, 12, 5, tzinfo=timezone.utc)
 OBSERVED_AT = "2026-09-14T12:00:00Z"
@@ -365,6 +364,8 @@ def _receipt_batch(
         canonical_url = (
             f"https://{source['hosts'][0]}/listings/search-{provider_id}"
             if source_key == "jll"
+            else f"https://{source['hosts'][0]}/properties/?propertyId={provider_id}-sale"
+            if source["provider_family"] == "buildout"
             else f"https://{source['hosts'][0]}/listings/{provider_id}"
         )
         transaction_type = "sale" if number % 2 else "rent"
@@ -1434,6 +1435,46 @@ def test_unsafe_url_and_caller_asserted_strata_are_rejected(
     }
     with pytest.raises(multisource.MultisourceError, match="unsupported"):
         _prevalidate(root, rows)
+
+
+@pytest.mark.parametrize(
+    ("source_key", "url"),
+    [
+        ("svn", "https://svn.com/properties/?propertyId=0-pray-boulevard-sale"),
+        (
+            "lee-associates",
+            "https://www.lee-associates.com/properties/?propertyId=882616-sale&address=9001-Alico-Trade-Center-Rd&officeId=2403",
+        ),
+    ],
+)
+def test_buildout_property_id_query_contract_admits_native_listing_urls(
+    source_key: str, url: str
+) -> None:
+    assert multisource._canonical_target_url(url, _source(source_key)) == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://svn.com/properties/",
+        "https://svn.com/properties/?propertyId=",
+        "https://svn.com/properties/?propertyId=one&propertyId=two",
+        "https://svn.com/properties/?propertyid=one",
+        "https://svn.com/properties/?propertyId=one&next=https%3A%2F%2Fbad.example",
+        "https://svn.com/properties/?propertyId=one&officeId=abc",
+        "https://svn.com/properties/?propertyId=one%ZZ",
+        "https://svn.com/properties/?propertyId=one#fragment",
+        "http://svn.com/properties/?propertyId=one",
+        "https://user:pass@svn.com/properties/?propertyId=one",
+        "https://svn.com:8443/properties/?propertyId=one",
+        "https://attacker.example/properties/?propertyId=one",
+    ],
+)
+def test_buildout_property_id_query_contract_rejects_unsafe_or_malformed_targets(
+    url: str,
+) -> None:
+    with pytest.raises(multisource.MultisourceError, match="provider host contract"):
+        multisource._canonical_target_url(url, _source("svn"))
 
 
 def test_jll_replayed_detail_identity_is_rejected_before_cohort_selection(

@@ -40,9 +40,9 @@
     {"key": "cbre-dealflow", "plane": "authoritative_inventory", "provider_family": "cbre", "hosts": ["www.cbredealflow.com"], "not_found_classifier": null, "allow_query": true},
     {"key": "cushman-wakefield", "plane": "authoritative_inventory", "provider_family": "cushman", "hosts": ["cushmanwakefield.com", "www.cushmanwakefield.com"], "not_found_classifier": null},
     {"key": "newmark", "plane": "authoritative_inventory", "provider_family": "newmark", "hosts": ["api-public.nim.nmrk.com", "nim.nmrk.com", "nmrk.com", "www.nmrk.com"], "not_found_classifier": null},
-    {"key": "svn", "plane": "authoritative_inventory", "provider_family": "buildout", "hosts": ["svn.com"], "not_found_classifier": null},
-    {"key": "lee-associates", "plane": "authoritative_inventory", "provider_family": "buildout", "hosts": ["www.lee-associates.com"], "not_found_classifier": null},
+    {"key": "svn", "plane": "authoritative_inventory", "provider_family": "buildout", "hosts": ["svn.com"], "not_found_classifier": null, "query_contract": "buildout_property_id_v1"},
+    {"key": "lee-associates", "plane": "authoritative_inventory", "provider_family": "buildout", "hosts": ["www.lee-associates.com"], "not_found_classifier": null, "query_contract": "buildout_property_id_v1"},
     {"key": "srs", "plane": "authoritative_inventory", "provider_family": "srs", "hosts": ["srsre-next-412955565034.us-central1.run.app", "srsre.com", "www.srsre.com"], "not_found_classifier": null},
-    {"key": "bull-realty", "plane": "authoritative_inventory", "provider_family": "buildout", "hosts": ["www.bullrealty.com"], "not_found_classifier": null}
+    {"key": "bull-realty", "plane": "authoritative_inventory", "provider_family": "buildout", "hosts": ["www.bullrealty.com"], "not_found_classifier": null, "query_contract": "buildout_property_id_v1"}
   ]
 }

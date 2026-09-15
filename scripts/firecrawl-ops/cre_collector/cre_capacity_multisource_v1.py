@@ -464,6 +464,7 @@ def load_config(path: Path = CONFIG) -> dict[str, Any]:
                 "not_found_classifier",
                 "exclusive",
                 "allow_query",
+                "query_contract",
             }
             or not isinstance(source.get("key"), str)
             or source.get("plane") not in PLANES
@@ -475,10 +476,19 @@ def load_config(path: Path = CONFIG) -> dict[str, Any]:
             not in {None, "jll_next_data_404_no_property"}
             or ("exclusive" in source and type(source["exclusive"]) is not bool)
             or ("allow_query" in source and type(source["allow_query"]) is not bool)
+            or (
+                "query_contract" in source
+                and source["query_contract"] != "buildout_property_id_v1"
+            )
         ):
             raise MultisourceError("multisource-v1 source matrix is invalid")
         if tuple(source["hosts"]) != EXPECTED_SOURCE_HOSTS[source["key"]]:
             raise MultisourceError("multisource-v1 source host contract drifted")
+        if source.get("query_contract") == "buildout_property_id_v1" and (
+            source["provider_family"] != "buildout"
+            or source.get("allow_query") is True
+        ):
+            raise MultisourceError("multisource-v1 query contract is invalid")
     if {
         plane: sum(source["plane"] == plane for source in sources) for plane in PLANES
     } != EXPECTED_PLANE_COUNTS:
@@ -555,6 +565,44 @@ def _source_config_sha256(source: Mapping[str, Any]) -> str:
     return _sha256(_canonical(dict(source)))
 
 
+def _buildout_property_id_query(query: str) -> bool:
+    """Accept the exact Buildout listing query shape, not arbitrary parameters.
+
+    Buildout's native ``show_link`` always identifies the row with one
+    ``propertyId``.  Lee's recorded adapter fixtures also carry its display-only
+    ``address`` and numeric ``officeId`` parameters, so retain those exact
+    provider parameters while refusing a generic query-string escape hatch.
+    """
+    if not query or re.search(r"%(?![0-9A-Fa-f]{2})", query):
+        return False
+    try:
+        pairs = urllib.parse.parse_qsl(
+            query,
+            keep_blank_values=True,
+            strict_parsing=True,
+            encoding="utf-8",
+            errors="strict",
+        )
+    except (UnicodeDecodeError, ValueError):
+        return False
+    permitted = {"propertyId", "address", "officeId"}
+    if not pairs or any(key not in permitted or not value for key, value in pairs):
+        return False
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)) or keys.count("propertyId") != 1:
+        return False
+    values = dict(pairs)
+    property_id = values["propertyId"]
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._~-]*", property_id) is None:
+        return False
+    if "officeId" in values and not values["officeId"].isdigit():
+        return False
+    return not any(
+        any(ord(character) < 32 or ord(character) == 127 for character in value)
+        for value in values.values()
+    )
+
+
 def _public_url(value: Any, source: Mapping[str, Any]) -> str:
     if not isinstance(value, str) or any(
         ord(character) < 32 or ord(character) == 127 for character in value
@@ -576,7 +624,14 @@ def _public_url(value: Any, source: Mapping[str, Any]) -> str:
         or parsed.password is not None
         or port is not None
         or parsed.fragment
-        or (parsed.query and source.get("allow_query") is not True)
+        or (
+            parsed.query
+            and source.get("allow_query") is not True
+            and not (
+                source.get("query_contract") == "buildout_property_id_v1"
+                and _buildout_property_id_query(parsed.query)
+            )
+        )
     ):
         raise MultisourceError("receipt target is outside the provider host contract")
     return value
@@ -603,7 +658,13 @@ def _canonical_jll_listing_url(value: Any, source: Mapping[str, Any]) -> str:
 def _canonical_target_url(value: Any, source: Mapping[str, Any]) -> str:
     if source["key"] == "jll":
         return _canonical_jll_listing_url(value, source)
-    return _public_url(value, source)
+    public_url = _public_url(value, source)
+    if (
+        source.get("query_contract") == "buildout_property_id_v1"
+        and not urllib.parse.urlsplit(public_url).query
+    ):
+        raise MultisourceError("receipt target is outside the provider host contract")
+    return public_url
 
 
 def _finite_nonnegative_timing(value: Any) -> bool:
