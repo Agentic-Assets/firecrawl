@@ -28,6 +28,16 @@ migrated into the persistent sidecar format while the caller holds its flock.
 The prior three-field sidecar format is read only for that controlled migration.
 Malformed, empty, or replacement sidecars are not rewritten automatically.
 
+When a caller first encounters a legacy directory, it fsyncs a versioned
+`v1 neutral` sidecar before returning any live-owner or starting-owner stop.
+That neutral state is reusable and never changes the legacy directory. For a
+verified stale directory, the flock holder removes and fsyncs the stale
+directory first, then writes the successor generation to the held sidecar. A
+crash or injected failure before that generation fsync therefore leaves either
+the prior generation with no directory, or a fail-closed sidecar, never a new
+generation that claims an old directory. Sidecar creation and generation writes
+are fault-tested; a failed fsync is not represented as a durability success.
+
 If initialization of a newly created sidecar fails after exclusive creation,
 the same process retains the descriptor, inode, token, and generation. It can
 finish the exact sidecar and obtain the directory lock for mandatory rollback.

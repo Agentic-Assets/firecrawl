@@ -2753,6 +2753,147 @@ def test_legacy_directory_only_lock_migrates_to_persistent_authority(tmp_path):
     assert authority.read_text(encoding="utf-8").startswith("v1 ")
 
 
+def test_live_legacy_contention_leaves_neutral_authority_for_successor(tmp_path):
+    """A failed migration must not strand an empty sidecar beside live work."""
+    lock_path = tmp_path / ".cre.lock"
+    script = """
+import os
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+path.mkdir()
+(path / "pid").write_text(f"{os.getpid()} 1\\n", encoding="utf-8")
+print("ready", flush=True)
+sys.stdin.read()
+"""
+    owner = subprocess.Popen(
+        [sys.executable, "-c", script, str(lock_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert owner.stdout is not None
+        assert owner.stdout.readline().strip() == "ready"
+        with pytest.raises(refresh.LockHeldError, match="live owner"):
+            refresh.SharedLock(lock_path).acquire()
+
+        authority = lock_path.with_name(f"{lock_path.name}.authority")
+        assert authority.read_text(encoding="utf-8") == "v1 neutral\n"
+        assert (lock_path / "pid").read_text(encoding="utf-8").split()[0] == str(
+            owner.pid
+        )
+    finally:
+        if owner.stdin is not None:
+            owner.stdin.close()
+        owner.wait(timeout=5)
+
+    successor = refresh.SharedLock(lock_path)
+    successor.acquire()
+    successor.release()
+    assert not lock_path.exists()
+
+
+@pytest.mark.parametrize("failure_stage", ["stale-parent-fsync", "generation-fsync"])
+def test_stale_reclaim_commit_faults_leave_reusable_authority(
+    tmp_path, monkeypatch, failure_stage
+):
+    """Every stale-reclaim/commit prefix is either old-state or reusable."""
+    lock_path = tmp_path / ".cre.lock"
+    lock_path.mkdir()
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    (lock_path / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    authority = lock_path.with_name(f"{lock_path.name}{refresh.LOCK_AUTHORITY_SUFFIX}")
+    original_authority = f"v1 {owner} {token} {generation} normal\n".encode()
+    authority.write_bytes(original_authority)
+    lock = refresh.SharedLock(lock_path)
+    original_fsync = refresh.os.fsync
+    parent_identity = refresh._lock_directory_identity(lock_path.parent)
+
+    def fail_selected_fsync(descriptor):
+        identity = (os.fstat(descriptor).st_dev, os.fstat(descriptor).st_ino)
+        if failure_stage == "stale-parent-fsync" and identity == parent_identity:
+            raise OSError("stale parent fsync failed")
+        if (
+            failure_stage == "generation-fsync"
+            and lock.authority_identity is not None
+            and identity == lock.authority_identity
+            and lock.authority_initializing
+        ):
+            raise OSError("authority generation fsync failed")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(refresh.os, "fsync", fail_selected_fsync)
+    expected = (
+        "stale parent fsync failed"
+        if failure_stage == "stale-parent-fsync"
+        else "authority generation fsync failed"
+    )
+    with pytest.raises(OSError, match=expected):
+        lock.acquire()
+
+    assert not lock_path.exists()
+    if failure_stage == "stale-parent-fsync":
+        assert authority.read_bytes() == original_authority
+    else:
+        descriptor = os.open(authority, os.O_RDONLY)
+        try:
+            assert refresh.SharedLock._authority_fields(descriptor) is not None
+        finally:
+            os.close(descriptor)
+
+    monkeypatch.setattr(refresh.os, "fsync", original_fsync)
+    successor = refresh.SharedLock(lock_path)
+    successor.acquire()
+    successor.release()
+
+
+def test_crash_after_stale_remove_before_generation_commit_is_recoverable(tmp_path):
+    """A crash leaves the prior sidecar and no directory, never a mismatch."""
+    lock_path = tmp_path / ".cre.lock"
+    lock_path.mkdir()
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    (lock_path / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    authority = lock_path.with_name(f"{lock_path.name}{refresh.LOCK_AUTHORITY_SUFFIX}")
+    original_authority = f"v1 {owner} {token} {generation} normal\n"
+    authority.write_text(original_authority, encoding="utf-8")
+    script = """
+import os
+import sys
+from pathlib import Path
+import cre_checkpoint_refresh as refresh
+lock = refresh.SharedLock(Path(sys.argv[1]))
+reclaim = lock._reclaim_stale_directory_before_authority_commit
+def crash_after_reclaim():
+    reclaim()
+    os._exit(23)
+lock._reclaim_stale_directory_before_authority_commit = crash_after_reclaim
+lock.acquire()
+"""
+    crashed = subprocess.run(
+        [sys.executable, "-c", script, str(lock_path)],
+        cwd=Path(refresh.__file__).parent,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert crashed.returncode == 23, crashed.stderr
+    assert not lock_path.exists()
+    assert authority.read_text(encoding="utf-8") == original_authority
+
+    successor = refresh.SharedLock(lock_path)
+    successor.acquire()
+    successor.release()
+
+
 @pytest.mark.parametrize("operation", ["arm", "disarm"])
 def test_lock_benchmark_fsync_failure_preserves_interlock(
     tmp_path, monkeypatch, operation

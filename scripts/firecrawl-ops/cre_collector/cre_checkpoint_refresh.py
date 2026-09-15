@@ -770,6 +770,8 @@ class SharedLock:
             parts = raw.decode("utf-8").strip().split()
         except UnicodeDecodeError as exc:
             raise LockHeldError("CRE lock authority is malformed") from exc
+        if parts == ["v1", "neutral"]:
+            return 0, "", "", False
         if len(parts) == 3:
             # The former ephemeral sidecar format. It is readable only so a
             # stale legacy directory can migrate under the new held flock.
@@ -869,10 +871,33 @@ class SharedLock:
         self.authority_initializing = False
         self._require_authority()
 
-    def _authority_acquire_preflight(self) -> None:
-        """Refuse durable stops before overwriting a flocked sidecar state."""
+    def _write_neutral_authority(self) -> None:
+        """Publish a durable reusable sidecar before a legacy-contention stop."""
+        if not self._authority_fd_matches_path():
+            raise LockHeldError("CRE lock authority changed before initialization")
+        os.ftruncate(self.authority_fd, 0)
+        os.lseek(self.authority_fd, 0, os.SEEK_SET)
+        payload = memoryview(b"v1 neutral\n")
+        while payload:
+            written = os.write(self.authority_fd, payload)
+            if written <= 0:
+                raise OSError("CRE lock authority write was short")
+            payload = payload[written:]
+        os.fsync(self.authority_fd)
+
+    @staticmethod
+    def _authority_is_neutral(fields: tuple[int, str, str, bool]) -> bool:
+        return fields == (0, "", "", False)
+
+    def _require_authority_hold(self) -> None:
+        if not self._authority_fd_matches_path():
+            raise LockHeldError("CRE lock authority changed before mutation")
+
+    def _reclaim_stale_directory_before_authority_commit(self) -> None:
+        """Remove only a verified stale directory before changing authority gen."""
+        self._require_authority_hold()
         try:
-            _lock_directory_identity(self.path)
+            original_identity = _lock_directory_identity(self.path)
         except FileNotFoundError:
             return
         if _lock_interlocked(self.path):
@@ -886,8 +911,51 @@ class SharedLock:
             raise LockHeldError("CRE lock is held (owner is starting)")
         if _pid_alive(owner):
             raise LockHeldError(f"CRE lock is held (live owner pid {owner})")
+        reclaim = Path(f"{self.path}.reclaim")
+        try:
+            reclaim.mkdir()
+        except FileExistsError as exc:
+            raise LockHeldError(
+                f"CRE lock reclamation is already in progress: {self.path}"
+            ) from exc
+        try:
+            current = _lock_owner(self.path)
+            if (
+                _lock_interlocked(self.path)
+                or _lock_directory_identity(self.path) != original_identity
+                or current is None
+            ):
+                raise LockHeldError(
+                    "CRE lock changed or became interlocked during reclaim"
+                )
+            if _pid_alive(current):
+                raise LockHeldError(
+                    f"CRE lock became live during reclaim (pid {current})"
+                )
+            self._require_authority_hold()
+            shutil.rmtree(self.path, ignore_errors=True)
+            if self.path.exists():
+                raise LockHeldError("CRE stale lock directory could not be removed")
+            parent_fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+            self._require_authority_hold()
+        finally:
+            shutil.rmtree(reclaim, ignore_errors=True)
 
     def _claim_authority(self, generation: str) -> None:
+        """Take the persistent sidecar without committing a successor yet.
+
+        A newly-created sidecar is first made durable as ``v1 neutral``.  That
+        matters for a live legacy directory: we must leave a reusable,
+        versioned authority behind even though no directory or sidecar state is
+        ours to mutate.  A non-neutral generation is not published until any
+        matching stale directory was removed and its parent directory fsynced.
+        Thus a process crash in that gap leaves the *previous* generation plus
+        no directory, which a later flock holder can safely supersede.
+        """
         token = secrets.token_urlsafe(32)
         descriptor = -1
         created = False
@@ -915,11 +983,21 @@ class SharedLock:
             if not self._authority_fd_matches_path():
                 raise LockHeldError("CRE lock authority changed before acquisition")
             prior = self._authority_fields(self.authority_fd)
-            if prior is None and not created:
+            if created:
+                # Keep the exact held descriptor available to a candidate
+                # controller if neutral initialization itself faults.  No other
+                # process can observe or mutate it while this flock is held.
+                self.authority_token = token
+                self.authority_generation = generation
+                self.authority_recovery_required = self.recovery_required
+                self.authority_initializing = True
+                self._write_neutral_authority()
+                prior = self._authority_fields(self.authority_fd)
+            if prior is None:
                 raise LockHeldError("CRE lock authority is malformed")
             if prior is not None and prior[3]:
                 raise LockHeldError("CRE lock authority requires operator recovery")
-            if prior is not None and self.path.exists():
+            if not self._authority_is_neutral(prior) and self.path.exists():
                 directory_owner = _lock_owner(self.path)
                 directory_lease = _lock_lease(self.path)
                 if directory_owner is not None and (
@@ -928,13 +1006,12 @@ class SharedLock:
                     raise LockHeldError(
                         "CRE lock authority is not a verified stale generation"
                     )
-            self._authority_acquire_preflight()
-            self.authority_token = token
-            self.authority_generation = generation
-            self.authority_recovery_required = self.recovery_required
-            self.authority_initializing = True
+            if not created:
+                self.authority_token = token
+                self.authority_generation = generation
+                self.authority_recovery_required = self.recovery_required
+                self.authority_initializing = True
             os.fchmod(self.authority_fd, 0o600)
-            self._write_owned_authority()
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
@@ -977,6 +1054,8 @@ class SharedLock:
         self.lease_token = lease_token
         try:
             self._claim_authority(lease_token)
+            self._reclaim_stale_directory_before_authority_commit()
+            self._write_owned_authority()
             self._acquire_with_authority()
         except BaseException:
             if not (
@@ -984,7 +1063,7 @@ class SharedLock:
                 and self.preserve_recovery_on_acquire_failure
                 and (
                     self.partial_directory_identity is not None
-                    or self.authority_initializing
+                    or (self.authority_initializing and not self.path.exists())
                 )
             ):
                 self._release_authority()
@@ -992,49 +1071,11 @@ class SharedLock:
             raise
 
     def _acquire_with_authority(self) -> None:
-        if _lock_interlocked(self.path):
-            raise LockHeldError(
-                f"CRE benchmark interlock requires operator recovery: {self.path}"
-            )
         try:
             self.path.mkdir()
             self._record_created_directory()
         except FileExistsError:
-            original_identity = _lock_directory_identity(self.path)
-            if _lock_requires_operator_recovery(self.path):
-                raise LockHeldError(f"CRE lock requires operator recovery: {self.path}")
-            owner = _lock_owner(self.path)
-            if owner is None or _pid_alive(owner):
-                detail = (
-                    "owner is starting" if owner is None else f"live owner pid {owner}"
-                )
-                raise LockHeldError(f"CRE lock is held ({detail}): {self.path}")
-            reclaim = Path(f"{self.path}.reclaim")
-            try:
-                reclaim.mkdir()
-            except FileExistsError as exc:
-                raise LockHeldError(
-                    f"CRE lock reclamation is already in progress: {self.path}"
-                ) from exc
-            try:
-                current = _lock_owner(self.path)
-                if (
-                    _lock_interlocked(self.path)
-                    or _lock_directory_identity(self.path) != original_identity
-                    or current is None
-                ):
-                    raise LockHeldError(
-                        "CRE lock changed or became interlocked during reclaim"
-                    )
-                if _pid_alive(current):
-                    raise LockHeldError(
-                        f"CRE lock became live during reclaim (pid {current})"
-                    )
-                shutil.rmtree(self.path, ignore_errors=True)
-                self.path.mkdir()
-                self._record_created_directory()
-            finally:
-                shutil.rmtree(reclaim, ignore_errors=True)
+            raise LockHeldError("CRE lock directory changed before acquisition")
         if self.lease_token is None:
             raise LockHeldError("CRE lock has no authority-bound lease")
         lease_token = self.lease_token
