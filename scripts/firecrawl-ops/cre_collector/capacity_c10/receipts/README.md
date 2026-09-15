@@ -10,8 +10,17 @@ A future, independently reviewed source module may implement only
 `ReceiptProducer.produceEnumerationReceipt()` and
 `ReceiptProducer.produceMemberReceipt()`. Its context supplies a source-bound
 `SourceBoundOneShotTransport`: producers name a predeclared request-card ID,
-never a URL, and each card can be consumed once. A status, challenge, redirect,
-host, byte, or time-bound failure is terminal with zero retries and no fallback.
+never a URL, and each card can be consumed once. The required parser callback
+receives a temporary body copy once, returns a canonical immutable projection,
+and never returns a reusable raw-body handle. A status, challenge, redirect,
+host, byte, time, cache, or attempt-bound failure is terminal with zero retries
+and no fallback.
+
+Initial cards are fixed enumeration cards. Native next-page and member cards
+must be emitted by a source-specific request-graph factory from a sealed parent
+event and parsed coordinate. Each append is privately sealed with the parent
+event and projection hashes; member cards must be frozen before execution. POST
+cards require exact canonical JSON, a bounded body hash, and JSON content type.
 
 Private artifacts contain the request and response evidence under an absolute
 0700 root. They are written through an exclusive no-follow temporary file and

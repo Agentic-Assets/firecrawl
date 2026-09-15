@@ -35,21 +35,13 @@ function cards() {
     {
       id: "enum",
       sourceKey: "jll",
+      stage: "enumeration",
       method: "GET",
       url: "https://example.test/search?page=1",
       allowedHost: "example.test",
       headers: { accept: "application/json" },
-      cacheMode: "no-store",
-      timeoutMs: 1_000,
-      maxBytes: 64,
-    },
-    {
-      id: "member",
-      sourceKey: "jll",
-      method: "GET",
-      url: "https://example.test/member/1",
-      allowedHost: "example.test",
-      headers: { accept: "application/json" },
+      contentType: null,
+      body: null,
       cacheMode: "no-store",
       timeoutMs: 1_000,
       maxBytes: 64,
@@ -59,6 +51,7 @@ function cards() {
 
 class FakeTransport implements DirectProviderTransport {
   readonly calls: string[] = [];
+  readonly requestCards: Readonly<RequestCard>[] = [];
 
   constructor(
     private readonly result: TransportResponse | ((card: Readonly<RequestCard>) => TransportResponse),
@@ -66,6 +59,7 @@ class FakeTransport implements DirectProviderTransport {
 
   async execute(card: Readonly<RequestCard>): Promise<TransportResponse> {
     this.calls.push(card.id);
+    this.requestCards.push(card);
     return typeof this.result === "function" ? this.result(card) : this.result;
   }
 }
@@ -84,6 +78,10 @@ function response(url: string): TransportResponse {
   };
 }
 
+function projection(finalUrl: string) {
+  return { providerId: "provider-1", canonicalUrl: finalUrl, requiredFields: ["title"] };
+}
+
 test("canonical JSON is deterministic and matches the ASCII C10 convention", () => {
   assert.equal(canonicalJson({ b: "é", a: -0 }), '{"a":0,"b":"\\u00e9"}');
 });
@@ -94,17 +92,36 @@ test("one-shot transport seals private artifacts and exposes URL-free accounting
   const fake = new FakeTransport((card) => response(card.url));
   const transport = new SourceBoundOneShotTransport("jll", binding, cards(), store, fake);
 
-  const event = await transport.oneShot("enum");
+  let leakedBody: Uint8Array | undefined;
+  const event = await transport.oneShot("enum", (view) => {
+    leakedBody = view.body;
+    return projection(view.finalUrl);
+  });
   assert.equal(fake.calls.length, 1);
   assert.equal(event.status, 200);
   assert.match(event.bodySha256, /^[0-9a-f]{64}$/);
+  assert.match(event.projectionSha256, /^[0-9a-f]{64}$/);
   assert.deepEqual(transport.requestAccounting().retries, 0);
   assert.equal(JSON.stringify(transport.requestAccounting()).includes("example.test"), false);
   assert.equal(JSON.stringify(transport.requestAccounting()).includes('{"ok":true}'), false);
-  await assert.rejects(transport.oneShot("not-allowlisted"), /not allowlisted/);
-  await assert.rejects(transport.oneShot("enum"), C10ReceiptError);
+  await assert.rejects(transport.oneShot("not-allowlisted", (view) => projection(view.finalUrl)), /not allowlisted/);
+  await assert.rejects(transport.oneShot("enum", (view) => projection(view.finalUrl)), C10ReceiptError);
   assert.equal(fake.calls.length, 1);
+  assert.deepEqual([...(leakedBody ?? [])], Array.from({ length: 11 }, () => 0));
+  assert.equal(Object.isFrozen(event.projection), true);
+  assert.throws(() => { (event.projection as { providerId: string }).providerId = "mutated"; }, TypeError);
   assert.ok((await readdir(root)).some((name) => name.endsWith(".sealed")));
+});
+
+test("projection failure consumes the card without exposing a reusable body handle", async () => {
+  const root = await mkdtemp(join(tmpdir(), "c10-receipts-"));
+  const store = await PrivateReceiptStore.create(root);
+  const fake = new FakeTransport((card) => response(card.url));
+  const transport = new SourceBoundOneShotTransport("jll", binding, cards(), store, fake);
+  await assert.rejects(transport.oneShot("enum", () => { throw new Error("native parser rejected body"); }), /projection failed/);
+  await assert.rejects(transport.oneShot("enum", (view) => projection(view.finalUrl)), /already consumed/);
+  assert.equal(fake.calls.length, 1);
+  assert.equal(transport.requestAccounting().events[0]?.privateEventSha256, null);
 });
 
 test("response failures are terminal, counted once, and never retried", async () => {
@@ -113,7 +130,7 @@ test("response failures are terminal, counted once, and never retried", async ()
   const fake = new FakeTransport({ ...response("https://example.test/search?page=1"), redirectCount: 1 });
   const transport = new SourceBoundOneShotTransport("jll", binding, cards(), store, fake);
 
-  await assert.rejects(transport.oneShot("enum"), /violates/);
+  await assert.rejects(transport.oneShot("enum", (view) => projection(view.finalUrl)), /violates/);
   assert.equal(fake.calls.length, 1);
   assert.deepEqual(transport.requestAccounting(), {
     logicalRequests: 1,
@@ -130,8 +147,92 @@ test("response failures are terminal, counted once, and never retried", async ()
       privateEventSha256: null,
     }],
   });
-  await assert.rejects(transport.oneShot("enum"), /already consumed/);
+  await assert.rejects(transport.oneShot("enum", (view) => projection(view.finalUrl)), /already consumed/);
   assert.equal(fake.calls.length, 1);
+});
+
+test("POST cards seal exact canonical bodies and redact them from public accounting", async () => {
+  const root = await mkdtemp(join(tmpdir(), "c10-receipts-"));
+  const store = await PrivateReceiptStore.create(root);
+  const fake = new FakeTransport((card) => response(card.url));
+  const body = canonicalJson({ query: "publicPosts", variables: { limit: 100, offset: 0 } });
+  const postCards = allowlistedCards("nai-global", [{
+    id: "posts-0",
+    sourceKey: "nai-global",
+    stage: "enumeration",
+    method: "POST",
+    url: "https://infabode.com/graphql",
+    allowedHost: "infabode.com",
+    headers: { authorization: "Bearer private", "content-type": "application/json" },
+    contentType: "application/json",
+    body,
+    cacheMode: "no-store",
+    timeoutMs: 1_000,
+    maxBytes: 64,
+  }]);
+  const transport = new SourceBoundOneShotTransport("nai-global", binding, postCards, store, fake);
+  const event = await transport.oneShot("posts-0", (view) => projection(view.finalUrl));
+  assert.equal(fake.requestCards[0]?.body, body);
+  assert.match(fake.requestCards[0]?.bodySha256 ?? "", /^[0-9a-f]{64}$/);
+  assert.equal(JSON.stringify(event).includes("Bearer private"), false);
+  assert.equal(JSON.stringify(transport.requestAccounting()).includes("publicPosts"), false);
+  assert.throws(() => allowlistedCards("nai-global", [{
+    ...postCards.get("posts-0")!, body: '{"variables":{"offset":0,"limit":100},"query":"publicPosts"}',
+  }]), /not canonical/);
+  assert.throws(() => allowlistedCards("nai-global", [{
+    ...postCards.get("posts-0")!, method: "GET", contentType: "application/json",
+  }]), /cannot have a body/);
+});
+
+test("staged graph rejects arbitrary, replayed, backward, excess, and post-freeze cards", async () => {
+  const root = await mkdtemp(join(tmpdir(), "c10-receipts-"));
+  const store = await PrivateReceiptStore.create(root);
+  const fake = new FakeTransport((card) => response(card.url));
+  const transport = new SourceBoundOneShotTransport("jll", binding, cards(), store, fake);
+  const first = await transport.oneShot("enum", (view) => ({ ...projection(view.finalUrl), nextPage: 2 }));
+  const enumerationFactory = {
+    sourceKey: "jll",
+    stage: "enumeration" as const,
+    maximumCards: 3,
+    create(parent: Readonly<typeof first>, page: number) {
+      if (parent.projection.nextPage !== page || page !== 2) throw new C10ReceiptError("non-native next page");
+      return {
+        id: "enum-2", sourceKey: "jll", stage: "enumeration" as const, method: "GET" as const,
+        url: "https://example.test/search?page=2", allowedHost: "example.test", headers: {},
+        contentType: null, body: null, cacheMode: "no-store" as const, timeoutMs: 1_000, maxBytes: 64,
+      };
+    },
+  };
+  await assert.rejects(transport.appendFrom(first, enumerationFactory, 1), /non-native/);
+  const expansion = await transport.appendFrom(first, enumerationFactory, 2);
+  assert.equal(expansion.parentProjectionSha256, first.projectionSha256);
+  await assert.rejects(transport.appendFrom(first, enumerationFactory, 2), /duplicated/);
+  await assert.rejects(transport.appendFrom(first, { ...enumerationFactory, maximumCards: 2 }, 2), /cap exceeded/);
+  const otherCards = allowlistedCards("other", [{
+    ...cards().get("enum")!, sourceKey: "other", url: "https://other.test/search?page=1", allowedHost: "other.test",
+  }]);
+  const other = new SourceBoundOneShotTransport("other", binding, otherCards, store, fake);
+  await assert.rejects(other.appendFrom(first, enumerationFactory, 2), /another source/);
+  const second = await transport.oneShot("enum-2", (view) => projection(view.finalUrl));
+  const memberFactory = {
+    sourceKey: "jll",
+    stage: "member" as const,
+    maximumCards: 1,
+    create(parent: Readonly<typeof second>, id: string) {
+      if (id !== "provider-1") throw new C10ReceiptError("arbitrary member identity");
+      return {
+        id: "member-1", sourceKey: "jll", stage: "member" as const, method: "GET" as const,
+        url: "https://example.test/member/1", allowedHost: "example.test", headers: {},
+        contentType: null, body: null, cacheMode: "no-store" as const, timeoutMs: 1_000, maxBytes: 64,
+      };
+    },
+  };
+  await transport.appendFrom(second, memberFactory, "provider-1");
+  await assert.rejects(transport.oneShot("member-1", (view) => projection(view.finalUrl)), /must be frozen/);
+  await transport.freezeMemberGraph();
+  await assert.rejects(transport.appendFrom(second, memberFactory, "provider-1"), /after freeze/);
+  await assert.rejects(transport.oneShot("enum-2", (view) => projection(view.finalUrl)), /(already consumed|frozen)/);
+  await transport.oneShot("member-1", (view) => projection(view.finalUrl));
 });
 
 test("challenge, status, byte, time, and final-URL bounds are terminal", async () => {
@@ -148,7 +249,7 @@ test("challenge, status, byte, time, and final-URL bounds are terminal", async (
     const store = await PrivateReceiptStore.create(root);
     const fake = new FakeTransport({ ...response("https://example.test/search?page=1"), ...override });
     const transport = new SourceBoundOneShotTransport("jll", binding, cards(), store, fake);
-    await assert.rejects(transport.oneShot("enum"), /violates/);
+    await assert.rejects(transport.oneShot("enum", (view) => projection(view.finalUrl)), /violates/);
     assert.equal(fake.calls.length, 1);
     assert.equal(transport.requestAccounting().events[0]?.outcome, "rejected");
   }
@@ -185,17 +286,42 @@ test("producer protocol binds each sealed public receipt to immutable C10 hashes
     store,
     transport: new SourceBoundOneShotTransport("jll", binding, cards(), store, fake),
   };
+  let enumerationEvent: Awaited<ReturnType<typeof context.transport.oneShot>> | undefined;
   const producer: ReceiptProducer = {
     async produceEnumerationReceipt(receiptContext) {
-      await receiptContext.transport.oneShot("enum");
+      enumerationEvent = await receiptContext.transport.oneShot("enum", (view) => projection(view.finalUrl));
       return sealStageReceipt(receiptContext, "enumeration", null, { providerCount: 1 });
     },
     async produceMemberReceipt(receiptContext, member) {
-      await receiptContext.transport.oneShot("member");
+      await receiptContext.transport.oneShot("member", (view) => projection(view.finalUrl));
       return sealStageReceipt(receiptContext, "member", member.key, { providerId: member.providerId });
     },
   };
   const enumeration = await producer.produceEnumerationReceipt(context);
+  await context.transport.appendFrom(enumerationEvent!, {
+    sourceKey: "jll",
+    stage: "member",
+    maximumCards: 1,
+    create(parent, memberKey: string) {
+      assert.equal(parent.projection.providerId, "provider-1");
+      if (memberKey !== "member-1") throw new C10ReceiptError("unexpected member coordinate");
+      return {
+        id: "member",
+        sourceKey: "jll",
+        stage: "member",
+        method: "GET",
+        url: "https://example.test/member/1",
+        allowedHost: "example.test",
+        headers: { accept: "application/json" },
+        contentType: null,
+        body: null,
+        cacheMode: "no-store",
+        timeoutMs: 1_000,
+        maxBytes: 64,
+      };
+    },
+  }, "member-1");
+  await context.transport.freezeMemberGraph();
   const member = await producer.produceMemberReceipt(context, { key: "member-1", providerId: "provider-1" });
   assert.equal(enumeration.binding.planSha256, binding.planSha256);
   assert.equal(member.binding.armSha256, binding.armSha256);
