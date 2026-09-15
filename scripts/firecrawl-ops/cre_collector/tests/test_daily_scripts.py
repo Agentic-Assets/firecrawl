@@ -34,7 +34,9 @@ INSTALLER = COLLECTOR / "launchd" / "install_launchd.sh"
 STATUS = COLLECTOR / "cre_status.sh"
 ENRICHMENT_WORKFLOW = COLLECTOR / "workflows" / "cre_enrichment_worker.workflow.js"
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+pytestmark = pytest.mark.skipif(
+    shutil.which("bash") is None, reason="bash not available"
+)
 
 
 def _extract_function(name, script_text):
@@ -77,68 +79,6 @@ def _run_keep_newest(target_dir, pattern, keep):
     subprocess.run(
         ["bash", "-c", script, "bash", str(target_dir), pattern, str(keep)], check=True
     )
-
-
-def _attempt_tier_lock(lock_dir):
-    text = RUN_TIER.read_text(encoding="utf-8")
-    functions = "\n".join(
-        _extract_function(name, text)
-        for name in ("_lock_interlocked", "acquire_lock")
-    )
-    script = (
-        'set -uo pipefail\nLOCKDIR="$1"\nLOCK_HELD=0\n'
-        "ts() { printf 'test'; }\n"
-        "_write_lock_owner() { printf '%s 0\\n' \"$$\" >\"${LOCKDIR}/pid\"; }\n"
-        "_lock_owner_pid() { [ -f \"${LOCKDIR}/pid\" ] && cut -d' ' -f1 \"${LOCKDIR}/pid\" || true; }\n"
-        f"{functions}\nacquire_lock\n"
-    )
-    return subprocess.run(
-        ["bash", "-c", script, "bash", str(lock_dir)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-
-@pytest.mark.parametrize(
-    "marker",
-    ("capacity-benchmark-active.json", "capacity-benchmark-quarantine.json"),
-)
-def test_tier_lock_never_reclaims_benchmark_interlock(tmp_path, marker):
-    lock_dir = tmp_path / ".cre.lock"
-    lock_dir.mkdir()
-    (lock_dir / "pid").write_text("999999 0\n", encoding="utf-8")
-    (lock_dir / marker).write_text("{}\n", encoding="utf-8")
-
-    result = _attempt_tier_lock(lock_dir)
-
-    assert result.returncode != 0
-    assert (lock_dir / marker).exists()
-    assert (lock_dir / "pid").read_text(encoding="utf-8") == "999999 0\n"
-
-
-def test_tier_lock_treats_dangling_benchmark_marker_as_interlock(tmp_path):
-    lock_dir = tmp_path / ".cre.lock"
-    lock_dir.mkdir()
-    (lock_dir / "pid").write_text("999999 0\n", encoding="utf-8")
-    marker = lock_dir / "capacity-benchmark-active.json"
-    marker.symlink_to(lock_dir / "missing-evidence")
-
-    result = _attempt_tier_lock(lock_dir)
-
-    assert result.returncode != 0
-    assert marker.is_symlink()
-
-
-def test_tier_lock_still_reclaims_an_ordinary_dead_owner(tmp_path):
-    lock_dir = tmp_path / ".cre.lock"
-    lock_dir.mkdir()
-    (lock_dir / "pid").write_text("999999 0\n", encoding="utf-8")
-
-    result = _attempt_tier_lock(lock_dir)
-
-    assert result.returncode == 0
-    assert (lock_dir / "pid").read_text(encoding="utf-8").split()[0] != "999999"
 
 
 def test_prune_keep_retains_newest_n_and_spares_markers(tmp_path):
@@ -233,7 +173,7 @@ def _run_firecrawl_readiness(tmp_path, response, *, curl_rc=0):
     fake_curl.write_text(
         "#!/usr/bin/env bash\n"
         "printf '%s' \"${FAKE_CURL_RESPONSE:-}\"\n"
-        "exit \"${FAKE_CURL_RC:-0}\"\n",
+        'exit "${FAKE_CURL_RC:-0}"\n',
         encoding="utf-8",
     )
     fake_curl.chmod(0o755)
@@ -292,8 +232,7 @@ def _run_full_firecrawl_health(tmp_path, response):
     stack_check = _extract_function("check_firecrawl_stack", status)
     fake_curl = tmp_path / "curl"
     fake_curl.write_text(
-        "#!/usr/bin/env bash\n"
-        "printf '%s' \"${FAKE_CURL_RESPONSE:-}\"\n",
+        "#!/usr/bin/env bash\nprintf '%s' \"${FAKE_CURL_RESPONSE:-}\"\n",
         encoding="utf-8",
     )
     fake_curl.chmod(0o755)
@@ -301,7 +240,7 @@ def _run_full_firecrawl_health(tmp_path, response):
     healthcheck.parent.mkdir(parents=True)
     healthcheck.write_text(
         "#!/usr/bin/env bash\n"
-        "printf '%s' \"${API_URL:-}\" >\"${HEALTHCHECK_CAPTURE:?}\"\n",
+        'printf \'%s\' "${API_URL:-}" >"${HEALTHCHECK_CAPTURE:?}"\n',
         encoding="utf-8",
     )
     healthcheck.chmod(0o755)
@@ -384,8 +323,8 @@ def test_failure_webhook_keeps_credential_out_of_curl_argv(tmp_path):
     fake_curl = tmp_path / "curl"
     fake_curl.write_text(
         "#!/usr/bin/env bash\n"
-        "printf '%s\\0' \"$@\" >\"${CAPTURE_ARGS:?}\"\n"
-        "cat >\"${CAPTURE_STDIN:?}\"\n",
+        'printf \'%s\\0\' "$@" >"${CAPTURE_ARGS:?}"\n'
+        'cat >"${CAPTURE_STDIN:?}"\n',
         encoding="utf-8",
     )
     fake_curl.chmod(0o755)
@@ -498,7 +437,9 @@ def test_rendered_plist_injects_alert_secret_path_not_value(tmp_path):
         capture_output=True,
     )
     assert "<key>CRE_ALERT_WEBHOOK_FILE</key>" in result.stdout
-    assert f"<string>{html.escape(str(secret_file), quote=True)}</string>" in result.stdout
+    assert (
+        f"<string>{html.escape(str(secret_file), quote=True)}</string>" in result.stdout
+    )
     assert secret_url not in result.stdout
     if shutil.which("plutil"):
         subprocess.run(
@@ -526,7 +467,9 @@ def test_daily_validation_is_advisory_and_status_visible():
 
 
 def test_status_compares_installed_plists_without_loading_or_writing():
-    installer = (COLLECTOR / "launchd" / "install_launchd.sh").read_text(encoding="utf-8")
+    installer = (COLLECTOR / "launchd" / "install_launchd.sh").read_text(
+        encoding="utf-8"
+    )
     status = STATUS.read_text(encoding="utf-8")
     assert 'if [ "$MODE" != "print" ]; then' in installer
     assert "installed launchd template drift" in status
@@ -551,7 +494,9 @@ def test_status_checkout_identity_accepts_only_matching_clean_head(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "CRE Test"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "CRE Test"], check=True
+    )
     subprocess.run(
         ["git", "-C", str(repo), "config", "user.email", "cre-test@example.invalid"],
         check=True,
@@ -606,7 +551,10 @@ def test_status_checkout_identity_accepts_only_matching_clean_head(tmp_path):
 
 def test_historical_enrichment_workflow_cannot_cut_over_production():
     workflow = ENRICHMENT_WORKFLOW.read_text(encoding="utf-8")
-    assert "REFUSED: this historical workflow cannot apply DDL or mutate schedulers" in workflow
+    assert (
+        "REFUSED: this historical workflow cannot apply DDL or mutate schedulers"
+        in workflow
+    )
     assert "Live database and scheduler are always untouched" in workflow
     assert "Perform ONLY the SAFE, additive live cutover" not in workflow
     assert "ALLOWED: apply sql/010_cre_enrichment_ops.sql" not in workflow

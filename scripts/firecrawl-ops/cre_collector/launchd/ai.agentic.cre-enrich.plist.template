@@ -13,8 +13,8 @@
   this tier carries no status-flip circuit breaker and no CRE_MONITOR_APPLY var.
 
   Offset 30 min from the top of the hour so it never collides with the monitor
-  tier (06:10 / 18:10). The shared portable mkdir lock in cre_run_tier.sh is the
-  backstop if two tiers ever overlap: the holder wins and the competitor exits 0.
+  tier (06:10 / 18:10). The shared governed Python authority is the backstop if
+  two tiers ever overlap: the holder wins and the competitor exits 0.
 
   This is a TEMPLATE. Do not load it directly. Render a machine-specific copy
   with launchd/install_launchd.sh, which fills in this machine's collector path,

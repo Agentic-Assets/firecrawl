@@ -184,8 +184,8 @@ if [ -f launchd/install_launchd.sh ]; then
 else
   warn "launchd/install_launchd.sh missing"
 fi
-# The tier dispatcher uses a portable mkdir lock (no flock needed; stock macOS
-# ships none), so there is no extra lock tool to install.
+# The tier dispatcher uses the collector's stdlib Python SharedLock authority
+# and recovery-sync protocol, so there is no external lock tool to install.
 if [ -x cre_status.sh ] || [ -f cre_status.sh ]; then
   ok "run-health command present (cre_status.sh)"
   note "Check scheduled-run health any time: bash cre_status.sh"

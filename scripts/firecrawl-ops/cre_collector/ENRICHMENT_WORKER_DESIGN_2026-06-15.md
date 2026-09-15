@@ -62,7 +62,7 @@ drop from ~60k to the few hundred that actually changed.
 | ~~daily~~ | retired | unloaded; case kept for rollback | n/a | No |
 
 Enrich is offset 30 min from the top of the hour so it never collides with the
-monitor (06:10/18:10). The shared `mkdir` lock (`out/daily/.cre.lock`) is the
+monitor (06:10/18:10). The shared governed Python authority lock (`out/daily/.cre.lock`) is the
 backstop: if two tiers ever overlap, the holder wins and the competitor exits 0.
 
 ### 2.1 Soft-delete invariant (preserved, non-negotiable)

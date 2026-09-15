@@ -91,6 +91,12 @@ inspect a guard or create an authority, so a recovery cannot archive the old
 authority while a cooperating acquisition creates a new canonical lock. The
 synchronizer is never moved or replaced by the protocol.
 
+The launchd/manual tier entrypoint, `cre_tier_dispatch.py`, is also a normal
+`SharedLock` owner. It forks `cre_run_tier.sh` only after taking both flocks and
+passes the descriptor-bound authority to that child for the complete tier
+lifetime. The shell verifies that inherited proof before any collector work;
+it never creates, reclaims, or removes the canonical lock namespace itself.
+
 It then archives the directory and authority as an exact retained mode-0700
 pair, fsyncing each namespace transition and advancing the guard through
 `prepared`, `lock-renaming`, `lock-archived`, `authority-renaming`,

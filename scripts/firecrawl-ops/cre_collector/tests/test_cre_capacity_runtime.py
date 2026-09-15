@@ -9,6 +9,8 @@ import os
 import stat
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -625,6 +627,112 @@ def test_quarantine_recovery_dry_run_and_exact_pair_archive(
         json.loads((archive / "recovery-receipt.json").read_text())["phase"]
         == "archived"
     )
+
+
+def test_actual_quarantine_recovery_sync_blocks_tier_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The launchd worker cannot enter while recover_quarantine owns its sync."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    entered = threading.Event()
+    proceed = threading.Event()
+    outcome: dict[str, object] = {}
+
+    def pause_after_sync() -> dict[str, bool]:
+        entered.set()
+        assert proceed.wait(timeout=10)
+        return {"ok": True}
+
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", pause_after_sync)
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+
+    def recover() -> None:
+        try:
+            outcome["result"] = runtime.recover_quarantine(execute=True)
+        except Exception as exc:  # noqa: BLE001 - surface thread failure below
+            outcome["error"] = exc
+
+    recovery = threading.Thread(target=recover)
+    recovery.start()
+    assert entered.wait(timeout=5)
+    tier_attempt = (
+        "from pathlib import Path; import cre_tier_dispatch as d; "
+        f"raise SystemExit(d.run_tier('monitor', lock_path=Path({str(lock_path)!r}), "
+        "command=['/bin/true']))"
+    )
+    blocked = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            tier_attempt,
+        ],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert blocked.returncode == 0
+    assert "tier/recovery is active; skipping monitor" in blocked.stderr
+    assert lock_path.is_dir()
+    assert lock_path.with_name(f"{lock_path.name}.authority").is_file()
+
+    proceed.set()
+    recovery.join(timeout=10)
+    assert not recovery.is_alive()
+    assert "error" not in outcome
+    assert outcome["result"]
+
+
+def test_actual_quarantine_recovery_refuses_while_tier_dispatch_holds_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recovery never archives or reclaims a namespace held by a tier worker."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    ready = tmp_path / "tier-ready"
+    child_code = (
+        f"import pathlib, time; pathlib.Path({str(ready)!r}).write_text('ready'); "
+        "time.sleep(30)"
+    )
+    runner_code = (
+        "from pathlib import Path; import sys; import cre_tier_dispatch as d; "
+        f"raise SystemExit(d.run_tier('monitor', lock_path=Path({str(lock_path)!r}), "
+        f"command=[sys.executable, '-c', {child_code!r}]))"
+    )
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            runner_code,
+        ],
+        cwd=Path(__file__).resolve().parent.parent,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists()
+        with pytest.raises(runtime.RuntimeAdmissionError, match="already in progress"):
+            runtime.recover_quarantine(execute=True)
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+    assert process.returncode == 143
 
 
 def test_quarantine_recovery_refuses_live_or_ambiguous_residue(
