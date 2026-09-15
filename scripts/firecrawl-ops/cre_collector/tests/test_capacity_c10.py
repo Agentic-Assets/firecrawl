@@ -815,6 +815,194 @@ def test_coordinator_failure_persists_claim_and_blocks_recovery_replay(
     ]
 
 
+def _raw_browser_arm(
+    plan: Mapping[str, object], arm: Mapping[str, object], concurrency: int
+) -> dict[str, object]:
+    return {
+        "started_monotonic_ns": 1_000_000_000,
+        "finished_monotonic_ns": 61_000_000_000,
+        "request": {"maxAge": 0, "storeInCache": False},
+        "scheduler": {
+            "configured_concurrency": concurrency,
+            "observed_max_active": concurrency,
+            "scheduled_member_count": 16,
+        },
+        "sources": [
+            {
+                "key": source["key"],
+                "plane": source["plane"],
+                "execution_mode": "browser_rendered",
+                "engine": "c10-browser-only",
+                "client_attempts": 1,
+                "engine_attempts": 1,
+                "cache_read": False,
+                "cache_write": False,
+                "qualified_rows": 100,
+            }
+            for source in plan["sources"]  # type: ignore[index]
+        ],
+    }
+
+
+def _runtime_receipt(plan: Mapping[str, object], variant: str) -> dict[str, object]:
+    return {
+        "profile": plan["profiles"][variant]["name"],  # type: ignore[index]
+        "config_sha256": plan["profiles"]["config_sha256"],  # type: ignore[index]
+        "receipt_sha256": _digest(f"runtime-{variant}"),
+        "baseline": {
+            "snapshot_sha256": _digest(f"baseline-snapshot-{variant}"),
+            "transition_sha256": _digest(f"baseline-transition-{variant}"),
+        },
+    }
+
+
+def test_coordinator_holds_one_lock_and_binds_p0_p1_scheduler_evidence(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    events: list[str] = []
+
+    class FakeLock:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.retain_on_exit = False
+
+        def acquire(self) -> None:
+            events.append("acquire")
+
+        def release(self) -> None:
+            events.append("release")
+
+    def preflight(profile_name: str, _out: Path, **kwargs: object) -> dict[str, object]:
+        assert kwargs == {
+            "profile_config": admission.PROFILE_CONFIG,
+            "experiment_kind": "C10",
+        }
+        variant = "p0" if profile_name == "c10-p0" else "p1"
+        events.append(f"preflight-{variant}")
+        return _runtime_receipt(plan, variant)
+
+    def transition(*args: object, **kwargs: object) -> dict[str, object]:
+        state = args[2]
+        assert kwargs["_held_shared_lock"].path == tmp_path / ".cre.lock"  # type: ignore[index,union-attr]
+        if state == "candidate":
+            events.append("candidate")
+            return {
+                "profile": "c10-p1",
+                "state": "candidate",
+                "verified": True,
+                "container_snapshot_sha256": _digest("candidate-snapshot"),
+                "transition_sha256": _digest("candidate-transition"),
+            }
+        events.append("rollback")
+        receipt = _runtime_receipt(plan, "p1")
+        return {
+            "profile": "c10-p1",
+            "state": "baseline",
+            "verified": True,
+            "container_snapshot_sha256": receipt["baseline"]["snapshot_sha256"],  # type: ignore[index]
+            "transition_sha256": receipt["baseline"]["transition_sha256"],  # type: ignore[index]
+        }
+
+    hooks = runner.C10CoordinatorHooks(
+        preflight=preflight,
+        transition=transition,
+        run_browser_arm=lambda arm, concurrency: (
+            events.append(f"run-{concurrency}")
+            or _raw_browser_arm(plan, arm, concurrency)
+        ),
+        settle=lambda arm: (
+            events.append(f"settle-{arm['variant']}")
+            or {"state": "idle", "complete": True}
+        ),
+        quarantine=lambda reason: events.append(f"quarantine:{reason}"),
+        lock_factory=FakeLock,
+        canonical_lock_path=lambda: tmp_path / ".cre.lock",
+    )
+    first = runner.run_one_coordinated_arm(
+        plan,
+        runner.initial_session(plan),
+        paths=runner.C10CoordinatorPaths(receipt_path=tmp_path / "p0.json"),
+        hooks=hooks,
+    )
+    second = runner.run_one_coordinated_arm(
+        plan,
+        first["session"],
+        paths=runner.C10CoordinatorPaths(
+            receipt_path=tmp_path / "p1.json",
+            approval_path=tmp_path / "approval.json",
+            admission_out=tmp_path / "admission.json",
+        ),
+        hooks=hooks,
+    )
+    assert first["result"]["sealed_browser_evidence"]["scheduler"] == {
+        "configured_concurrency": 4,
+        "observed_max_active": 4,
+        "scheduled_member_count": 16,
+    }
+    assert second["result"]["sealed_browser_evidence"]["scheduler"] == {
+        "configured_concurrency": 10,
+        "observed_max_active": 10,
+        "scheduled_member_count": 16,
+    }
+    assert events == [
+        "acquire",
+        "preflight-p0",
+        "run-4",
+        "settle-p0",
+        "release",
+        "acquire",
+        "preflight-p1",
+        "candidate",
+        "run-10",
+        "settle-p1",
+        "rollback",
+        "settle-p1",
+        "release",
+    ]
+
+
+def test_coordinator_quarantines_before_releasing_lock(tmp_path: Path) -> None:
+    plan = _plan()
+    events: list[str] = []
+
+    class FakeLock:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.retain_on_exit = False
+
+        def acquire(self) -> None:
+            events.append("acquire")
+
+        def release(self) -> None:
+            events.append("release")
+
+    hooks = runner.C10CoordinatorHooks(
+        preflight=lambda profile, out, **kwargs: _runtime_receipt(plan, "p0"),
+        transition=lambda *args, **kwargs: pytest.fail("P0 must not transition"),
+        run_browser_arm=lambda arm, concurrency: {
+            **_raw_browser_arm(plan, arm, concurrency),
+            "scheduler": {
+                "configured_concurrency": concurrency,
+                "observed_max_active": concurrency - 1,
+                "scheduled_member_count": 16,
+            },
+        },
+        settle=lambda arm: pytest.fail("invalid evidence must not settle"),
+        quarantine=lambda reason: events.append("quarantine"),
+        lock_factory=FakeLock,
+        canonical_lock_path=lambda: tmp_path / ".cre.lock",
+    )
+    with pytest.raises(contracts.C10Error, match="planned saturation"):
+        runner.run_one_coordinated_arm(
+            plan,
+            runner.initial_session(plan),
+            paths=runner.C10CoordinatorPaths(receipt_path=tmp_path / "p0.json"),
+            hooks=hooks,
+        )
+    assert events == ["acquire", "quarantine", "release"]
+
+
 def test_comparator_is_plane_separated_no_write_and_never_executable_adoption() -> None:
     plan = _plan()
     result = compare.compare(plan, [_arm(plan, index) for index in range(8)])
@@ -914,6 +1102,26 @@ def test_comparator_derives_each_source_rate_from_its_own_interval() -> None:
     p1_rates = compare._browser_evidence_rates(plan, p1, 1)
     key = plan["sources"][0]["key"]
     assert round((p1_rates[key] / p0_rates[key] - 1.0) * 100, 3) == -40.0
+
+
+def test_comparator_rejects_direct_or_unsaturated_browser_evidence() -> None:
+    plan = _plan()
+    arms = [_arm(plan, index) for index in range(8)]
+    evidence = arms[0]["sealed_browser_evidence"]
+    evidence["sources"][0]["execution_mode"] = "direct_native"
+    evidence["evidence_sha256"] = contracts.sha256(
+        {key: value for key, value in evidence.items() if key != "evidence_sha256"}
+    )
+    with pytest.raises(contracts.C10Error, match="browser-rendered"):
+        compare.compare(plan, arms)
+    arms = [_arm(plan, index) for index in range(8)]
+    evidence = arms[0]["sealed_browser_evidence"]
+    evidence["scheduler"]["observed_max_active"] = 3
+    evidence["evidence_sha256"] = contracts.sha256(
+        {key: value for key, value in evidence.items() if key != "evidence_sha256"}
+    )
+    with pytest.raises(contracts.C10Error, match="planned saturation"):
+        compare.compare(plan, arms)
 
 
 def test_comparator_rejects_direct_or_unsaturated_browser_evidence() -> None:
