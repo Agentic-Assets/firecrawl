@@ -1499,6 +1499,7 @@ def test_quarantine_recovery_later_phase_reappearance_stops_before_mutation(
     authority = lock_path.with_name(f"{lock_path.name}.authority")
     guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
     real_guard_write = runtime._write_recovery_guard
+
     real_rename = runtime._atomic_rename_noreplace
     real_receipt_write = runtime._write_recovery_receipt
 
@@ -1593,6 +1594,152 @@ def test_quarantine_recovery_later_phase_reappearance_stops_before_mutation(
     else:
         assert source.read_bytes() == source_before
     assert fsync_paths == [archive.parent]
+
+
+def test_quarantine_recovery_post_fence_reappearance_is_a_retained_intent_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A noncooperating post-fence write cannot reach the next mutation.
+
+    A pathname writer outside the recovery flock can always race an absence
+    observation.  The guard is consequently a durable next-operation intent,
+    not a perpetual assertion about that pathname: the next phase must reject
+    the reappearance before it can archive the authority, write a receipt, or
+    clear the guard.
+    """
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
+    real_guard_write = runtime._write_recovery_guard
+
+    def snapshot_tree(path: Path) -> list[tuple[object, ...]]:
+        result: list[tuple[object, ...]] = []
+        for entry in [path, *sorted(path.rglob("*"))]:
+            observed = entry.lstat()
+            result.append(
+                (
+                    entry.relative_to(path),
+                    observed.st_dev,
+                    observed.st_ino,
+                    stat.S_IMODE(observed.st_mode),
+                    observed.st_uid,
+                    observed.st_nlink,
+                    entry.read_bytes() if stat.S_ISREG(observed.st_mode) else None,
+                )
+            )
+        return result
+
+    def interrupt_after_lock_archive_intent(
+        path: Path, value: dict[str, object], *, create: bool
+    ) -> None:
+        if value.get("phase") == "authority-renaming":
+            raise OSError("simulated lock-archived interruption")
+        real_guard_write(path, value, create=create)
+
+    monkeypatch.setattr(
+        runtime, "_write_recovery_guard", interrupt_after_lock_archive_intent
+    )
+    with pytest.raises(OSError, match="lock-archived interruption"):
+        runtime.recover_quarantine(execute=True)
+    assert json.loads(guard.read_text(encoding="utf-8"))["phase"] == "lock-archived"
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", real_guard_write)
+    real_fence = runtime._require_phase_source_absence
+    injected = False
+    injected_lock_before: list[tuple[object, ...]] | None = None
+
+    def inject_after_lock_fence(
+        phase: str, observed_lock: Path, observed_authority: Path
+    ) -> None:
+        nonlocal injected, injected_lock_before
+        real_fence(phase, observed_lock, observed_authority)
+        if phase == "lock-archived" and not injected:
+            injected = True
+            observed_lock.mkdir(mode=0o700)
+            injected_lock_before = snapshot_tree(observed_lock)
+
+    monkeypatch.setattr(
+        runtime, "_require_phase_source_absence", inject_after_lock_fence
+    )
+    archived_lock = (
+        Path(json.loads(guard.read_text(encoding="utf-8"))["archive"]) / lock_path.name
+    )
+    archived_lock_before = snapshot_tree(archived_lock)
+    authority_before = (
+        authority.lstat().st_dev,
+        authority.lstat().st_ino,
+        stat.S_IMODE(authority.lstat().st_mode),
+        authority.lstat().st_uid,
+        authority.lstat().st_nlink,
+        authority.read_bytes(),
+    )
+    guard_writes: list[str] = []
+
+    def record_guard_intent(
+        path: Path, value: dict[str, object], *, create: bool
+    ) -> None:
+        guard_writes.append(str(value["phase"]))
+        real_guard_write(path, value, create=create)
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", record_guard_intent)
+    monkeypatch.setattr(
+        runtime,
+        "_atomic_rename_noreplace",
+        lambda *_args, **_kwargs: pytest.fail(
+            "post-fence source must stop authority rename"
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_write_recovery_receipt",
+        lambda *_args, **_kwargs: pytest.fail(
+            "post-fence source must stop receipt write"
+        ),
+    )
+    with pytest.raises(runtime.RuntimeAdmissionError, match="lock source reappeared"):
+        runtime.recover_quarantine(execute=True)
+
+    assert injected
+    assert injected_lock_before is not None
+    assert guard_writes == ["authority-renaming"]
+    assert (
+        json.loads(guard.read_text(encoding="utf-8"))["phase"] == "authority-renaming"
+    )
+    assert lock_path.is_dir()
+    assert snapshot_tree(lock_path) == injected_lock_before
+    assert snapshot_tree(archived_lock) == archived_lock_before
+    assert (
+        authority.lstat().st_dev,
+        authority.lstat().st_ino,
+        stat.S_IMODE(authority.lstat().st_mode),
+        authority.lstat().st_uid,
+        authority.lstat().st_nlink,
+        authority.read_bytes(),
+    ) == authority_before
+    archive = archived_lock.parent
+    assert not (archive / "recovery-receipt.json").exists()
+
+    guard_before_replay = guard.read_bytes()
+    with pytest.raises(runtime.RuntimeAdmissionError, match="lock source reappeared"):
+        runtime.recover_quarantine(execute=True)
+    assert guard.read_bytes() == guard_before_replay
+    assert snapshot_tree(lock_path) == injected_lock_before
+    assert snapshot_tree(archived_lock) == archived_lock_before
+    assert authority.read_bytes() == authority_before[-1]
+    assert not (archive / "recovery-receipt.json").exists()
 
 
 def test_dry_run_transition_requires_unchanged_machine_snapshot(

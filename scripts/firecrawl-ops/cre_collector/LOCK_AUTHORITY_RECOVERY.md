@@ -88,8 +88,8 @@ strict readback. Before that claim, and throughout archive/replay, it holds the
 stable private `.cre.lock.recovery-sync` flock. Every normal
 `SharedLock.acquire` holds that same flock for its own lifetime before it can
 inspect a guard or create an authority, so a recovery cannot archive the old
-authority while a new canonical lock appears. The synchronizer is never moved
-or replaced by the protocol.
+authority while a cooperating acquisition creates a new canonical lock. The
+synchronizer is never moved or replaced by the protocol.
 
 It then archives the directory and authority as an exact retained mode-0700
 pair, fsyncing each namespace transition and advancing the guard through
@@ -103,3 +103,14 @@ after the immutable hashed receipt and the complete archive root are
 revalidated does it fsync removal of the guard. It never unlinks or recursively
 deletes lock artifacts. Any interrupted or uncertain recovery is a stop, not
 permission for shell removal.
+
+A guard phase records a completed durable archive prefix and the next intended
+operation. It is not a perpetual assertion that a third party will keep a
+canonical source pathname absent after the phase's check. Every phase that
+would mutate another member, write the receipt, or clear the guard rechecks the
+canonical sources it expects to be absent. A noncooperating same-UID writer can
+therefore cause at most one intent-phase advance after a check; the next
+destructive phase stops with the guard and all forensic evidence retained. The
+protocol cannot atomically couple absence of an unrelated pathname with a
+separate guard write on both supported platforms. That direct-filesystem writer
+is outside the cooperative-process boundary above and requires manual recovery.
