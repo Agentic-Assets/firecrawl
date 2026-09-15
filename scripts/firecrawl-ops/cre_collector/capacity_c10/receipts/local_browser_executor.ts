@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 import {
   C10ReceiptError,
@@ -18,7 +18,6 @@ import { type RequestCard, type TransportResponse } from "./transport.js";
 
 const INTERNAL_PATH = "/internal/c10/browser-execute";
 const TOKEN_PURPOSE = "cre-capacity-c10-browser-arm-v1";
-const REQUEST_PURPOSE = "cre-capacity-c10-browser-request-v1";
 
 export interface LocalBrowserFetchResponse {
   readonly ok: boolean;
@@ -55,8 +54,14 @@ function tokenDigest(secret: string, token: Pick<CoordinatorArmToken, "sourceKey
   return sha256(hmac(secret, TOKEN_PURPOSE, [token.sourceKey, token.armSha256, token.tokenId]));
 }
 
-function requestAuthorization(secret: string, token: CoordinatorArmToken, cardSha256: string): string {
-  return hmac(secret, REQUEST_PURPOSE, [token.sourceKey, token.armSha256, token.tokenId, cardSha256]);
+function capabilityAuthorization(secret: string, token: CoordinatorArmToken, cardSha256: string, card: RequestCard): string {
+  const input = { sourceKey: token.sourceKey, armSha256: token.armSha256, tokenId: token.tokenId, tokenSha256: token.tokenSha256, cardSha256, card };
+  const capability = {
+    nonce: randomUUID(), expiresAt: Date.now() + 60_000, sourceKey: token.sourceKey, armSha256: token.armSha256,
+    tokenId: token.tokenId, tokenSha256: token.tokenSha256, cardSha256, manifestSha256: sha256(canonicalJson(input)),
+  };
+  const payload = Buffer.from(canonicalJson(capability), "utf8").toString("base64url");
+  return `${payload}.${hmac(secret, "cre-capacity-c10-browser-capability-v2", [payload])}`;
 }
 
 function exactKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
@@ -135,13 +140,16 @@ export class LocalCoordinatorArmGate implements CoordinatorArmGate {
     grant.consumed.add(cardSha256);
   }
 
-  authorizationFor(token: Readonly<CoordinatorArmToken>, cardSha256: string): string {
+  authorizationFor(token: Readonly<CoordinatorArmToken>, cardSha256: string, card: RequestCard): string {
     const grant = this.grants.get(token.tokenId);
     if (!grant || !grant.consumed.has(cardSha256) || !grant.cards.has(cardSha256)) {
       throw new C10ReceiptError("C10 coordinator arm token was not consumed for this request card");
     }
-    return requestAuthorization(this.secret, grant.token, cardSha256);
+    return capabilityAuthorization(this.secret, grant.token, cardSha256, card);
   }
+
+  /** Coordinator-side verifier only; the capability token never contains this secret. */
+  secretForSidecar(): string { return this.secret; }
 }
 
 interface SidecarResponse {
@@ -162,13 +170,14 @@ interface SidecarResponse {
   readonly fallbackUsed: false;
   readonly cacheRead: false;
   readonly cacheWrite: false;
+  readonly evidenceSignature: string;
 }
 
 function parseSidecarResponse(value: unknown): SidecarResponse {
   if (!exactKeys(value, [
     "bodyBase64", "challengeDetected", "contentType", "elapsedMs", "finalUrl", "jobId", "pageLease",
     "proxy", "queueMs", "redirectCount", "status", "engine", "engineAttempts", "fallbackDisabled",
-    "fallbackUsed", "cacheRead", "cacheWrite",
+    "fallbackUsed", "cacheRead", "cacheWrite", "evidenceSignature",
   ]) || !exactKeys(value.pageLease, ["leaseId", "slot"]) || !exactKeys(value.proxy, ["country", "mode", "proxyId"])) {
     throw new C10ReceiptError("C10 browser sidecar evidence is unavailable");
   }
@@ -194,6 +203,7 @@ function parseSidecarResponse(value: unknown): SidecarResponse {
     || response.fallbackUsed !== false
     || response.cacheRead !== false
     || response.cacheWrite !== false
+    || typeof response.evidenceSignature !== "string"
   ) {
     throw new C10ReceiptError("C10 browser sidecar evidence is malformed");
   }
@@ -217,7 +227,7 @@ export class LocalPlaywrightBrowserExecutor implements InternalBrowserExecutor {
     if (!card.browserBootstrapUrl) {
       throw new C10ReceiptError("C10 browser card requires a reviewed bootstrap URL");
     }
-    const authorization = this.gate.authorizationFor(armToken, cardSha256);
+    const authorization = this.gate.authorizationFor(armToken, cardSha256, card);
     const payload = canonicalJson({
       sourceKey: armToken.sourceKey,
       armSha256: armToken.armSha256,
@@ -244,6 +254,13 @@ export class LocalPlaywrightBrowserExecutor implements InternalBrowserExecutor {
       throw new C10ReceiptError("C10 browser sidecar rejected the armed request without fallback");
     }
     const evidence = parseSidecarResponse(await http.json());
+    const unsignedEvidence = { ...evidence } as Record<string, unknown>;
+    const signature = unsignedEvidence.evidenceSignature;
+    delete unsignedEvidence.evidenceSignature;
+    const expectedSignature = hmac(this.gate.secretForSidecar(), "cre-capacity-c10-browser-evidence-v1", [canonicalJson(unsignedEvidence)]);
+    if (typeof signature !== "string" || signature.length !== expectedSignature.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
+      throw new C10ReceiptError("C10 browser sidecar evidence authentication failed");
+    }
     const body = Buffer.from(evidence.bodyBase64, "base64");
     const trustedBrowserEvidence: BrowserTrustedEvidence = Object.freeze({
       schemaVersion: 1,
