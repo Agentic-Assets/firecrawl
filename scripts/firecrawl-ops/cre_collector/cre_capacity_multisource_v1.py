@@ -485,8 +485,7 @@ def load_config(path: Path = CONFIG) -> dict[str, Any]:
         if tuple(source["hosts"]) != EXPECTED_SOURCE_HOSTS[source["key"]]:
             raise MultisourceError("multisource-v1 source host contract drifted")
         if source.get("query_contract") == "buildout_property_id_v1" and (
-            source["provider_family"] != "buildout"
-            or source.get("allow_query") is True
+            source["provider_family"] != "buildout" or source.get("allow_query") is True
         ):
             raise MultisourceError("multisource-v1 query contract is invalid")
     if {
