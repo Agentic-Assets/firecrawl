@@ -788,6 +788,17 @@ def _lock_directory_identity(lock_dir: Path) -> tuple[int, int]:
     return observed.st_dev, observed.st_ino
 
 
+def _lock_path_is_absent(lock_dir: Path) -> bool:
+    """Only a missing directory entry is absent; dangling symlinks are stops."""
+    try:
+        lock_dir.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def canonical_shared_lock_dir(repo_root: Path = REPO_ROOT) -> Path:
     """Resolve the primary checkout's CRE lock, including from a worktree."""
     common_git_dir = subprocess.run(
@@ -1461,16 +1472,21 @@ class SharedLock:
                 raise LockHeldError("CRE lock authority is malformed")
             if prior is not None and prior[3]:
                 raise LockHeldError("CRE lock authority requires operator recovery")
-            if not self._authority_is_neutral(prior) and self.path.exists():
-                directory_owner = _lock_owner(self.path)
-                directory_lease = _lock_lease(self.path)
-                if (directory_owner, directory_lease) != (
-                    prior[0],
-                    prior[2],
-                ) and not self._verified_interrupted_legacy_reclaim(prior):
-                    raise LockHeldError(
-                        "CRE lock authority is not a verified stale generation"
-                    )
+            if not self._authority_is_neutral(prior):
+                try:
+                    _lock_directory_identity(self.path)
+                except FileNotFoundError:
+                    pass
+                else:
+                    directory_owner = _lock_owner(self.path)
+                    directory_lease = _lock_lease(self.path)
+                    if (directory_owner, directory_lease) != (
+                        prior[0],
+                        prior[2],
+                    ) and not self._verified_interrupted_legacy_reclaim(prior):
+                        raise LockHeldError(
+                            "CRE lock authority is not a verified stale generation"
+                        )
             if not created:
                 self.authority_token = token
                 self.authority_generation = generation
@@ -1561,7 +1577,7 @@ class SharedLock:
                 and self.preserve_recovery_on_acquire_failure
                 and (
                     self.partial_directory_identity is not None
-                    or (self.authority_initializing and not self.path.exists())
+                    or (self.authority_initializing and _lock_path_is_absent(self.path))
                 )
             ):
                 self._release_authority()

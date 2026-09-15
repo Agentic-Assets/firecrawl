@@ -151,6 +151,18 @@ def test_quarantine_recovery_dry_run_and_exact_pair_archive(
     # not permanently wedge the next normal cooperative acquisition.
     with runtime.SharedLock(lock_path):
         assert lock_path.is_dir()
+    persistent_authority = lock_path.with_name(f"{lock_path.name}.authority")
+    authority_identity = (
+        persistent_authority.stat().st_dev,
+        persistent_authority.stat().st_ino,
+    )
+    # The completed guard admits an ordinary, unlocked persistent authority
+    # through SharedLock's existing no-follow/flock/parser validation.
+    with runtime.SharedLock(lock_path):
+        assert lock_path.is_dir()
+    assert (persistent_authority.stat().st_dev, persistent_authority.stat().st_ino) == (
+        authority_identity
+    )
     # A later exact residue does not overwrite the completed evidence.  It
     # appends a distinct operation and retains both forensic archives.
     _historic_quarantine_pair(lock_path)
@@ -370,6 +382,66 @@ def test_completed_guard_substitution_blocks_acquire_without_deleting_foreign_pa
         runtime.SharedLock(lock_path).acquire()
     assert guard.read_bytes() == foreign
     assert original.exists()
+
+
+def test_completed_guard_rejects_dangling_canonical_lock_or_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dangling canonical namespace entry blocks before authority claim/write."""
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    lock_path.parent.mkdir(parents=True)
+    guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
+    recovery._write_recovery_guard(
+        guard,
+        {"kind": "test", "phase": "completed"},
+        create=True,
+    )
+    monkeypatch.setattr(recovery, "completed_guard_evidence_is_valid", lambda *_: True)
+    missing = tmp_path / "missing-target"
+
+    lock_path.symlink_to(missing)
+    with pytest.raises(runtime.LockHeldError, match="operator completion"):
+        runtime.SharedLock(lock_path).acquire()
+    assert lock_path.is_symlink()
+    assert not os.path.lexists(lock_path.with_name(f"{lock_path.name}.authority"))
+
+    lock_path.unlink()
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    authority.symlink_to(missing)
+    with pytest.raises(runtime.LockHeldError, match="operator completion"):
+        runtime.SharedLock(lock_path).acquire()
+    assert authority.is_symlink()
+    assert not os.path.lexists(lock_path)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"not an authority\n",
+        b"v1 99999999 " + b"t" * 32 + b" " + b"g" * 32 + b" recovery-required\n",
+    ],
+)
+def test_completed_guard_defers_existing_authority_to_sharedlock_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: bytes
+) -> None:
+    """Malformed or recovery-required persistent sidecars remain untouched stops."""
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    lock_path.parent.mkdir(parents=True)
+    guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
+    recovery._write_recovery_guard(
+        guard,
+        {"kind": "test", "phase": "completed"},
+        create=True,
+    )
+    monkeypatch.setattr(recovery, "completed_guard_evidence_is_valid", lambda *_: True)
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    authority.write_bytes(payload)
+    authority.chmod(0o600)
+
+    with pytest.raises(runtime.LockHeldError):
+        runtime.SharedLock(lock_path).acquire()
+    assert authority.read_bytes() == payload
+    assert not os.path.lexists(lock_path)
 
 
 def test_actual_quarantine_recovery_sync_blocks_tier_dispatch(

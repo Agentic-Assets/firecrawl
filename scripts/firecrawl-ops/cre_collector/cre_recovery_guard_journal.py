@@ -275,6 +275,17 @@ def clear_active() -> None:
     _ACTIVE_JOURNAL.set(None)
 
 
+def _path_is_absent(path: Path) -> bool:
+    """Treat every directory entry, including a dangling symlink, as present."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def completed_allows_acquire(
     path: Path,
     lock_path: Path,
@@ -288,11 +299,21 @@ def completed_allows_acquire(
         return False
     try:
         authority = lock_path.with_name(f"{lock_path.name}.authority")
-        return (
-            validate_completed(journal.state, lock_path)
-            and not lock_path.exists()
-            and not authority.exists()
-        )
+        if not validate_completed(journal.state, lock_path) or not _path_is_absent(
+            lock_path
+        ):
+            return False
+        try:
+            authority_stat = authority.lstat()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        # A persistent regular sidecar belongs to SharedLock and must reach
+        # its existing O_NOFOLLOW/flock/parser validation.  A symlink is not
+        # an authority record, including when it is dangling, and must block
+        # before SharedLock can publish any new generation.
+        return not stat.S_ISLNK(authority_stat.st_mode)
     finally:
         close(journal)
 

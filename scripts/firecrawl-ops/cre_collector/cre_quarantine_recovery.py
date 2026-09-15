@@ -617,7 +617,9 @@ def completed_guard_evidence_is_valid(
 def completed_guard_allows_acquire(path: Path, lock_path: Path) -> bool:
     """Compatibility wrapper around the explicit journal admission API."""
     return guard_journal.completed_allows_acquire(
-        path, lock_path, validate_completed=completed_guard_evidence_is_valid
+        path,
+        lock_path,
+        validate_completed=completed_guard_evidence_is_valid,
     )
 
 
