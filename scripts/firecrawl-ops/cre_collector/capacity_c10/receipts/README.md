@@ -32,3 +32,10 @@ Every public receipt binds plan, cohort, policy, source, arm, and implementation
 SHA-256 values supplied by the canonical C10 coordinator. This package cannot
 create a plan, acquire a lock, execute an arm, settle, roll back, quarantine,
 or activate a source.
+
+`strict_detail/` now contains source-local batch-A producers for JLL, JLL
+Investor, Colliers SalesTracker, and Marcus & Millichap. They remain unregistered
+and not fully verified. Avison Young and Colliers Main are explicit blockers,
+not degraded receipts, until their browser-dependent detail paths can meet this
+same ephemeral one-attempt evidence contract. See
+[`strict_detail/README.md`](./strict_detail/README.md).
