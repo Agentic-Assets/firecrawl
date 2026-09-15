@@ -3069,6 +3069,99 @@ os._exit(23)
         successor.release()
 
 
+@pytest.mark.parametrize("location", ["canonical", "tombstone"])
+def test_reclaim_state_rejects_recovery_required_generation_untouched(
+    tmp_path, location
+):
+    """A recovery lease is never resumable as an ordinary stale handoff."""
+    lock_path = tmp_path / ".cre.lock"
+    owner = 99999999
+    token = "t" * 32
+    generation = f"{refresh.OPERATOR_RECOVERY_LEASE_PREFIX}{'g' * 32}"
+    lock_path.mkdir()
+    (lock_path / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    if location == "tombstone":
+        os.rename(lock_path, lock_path.with_name(f"{lock_path.name}.reclaim"))
+        protected_path = lock_path.with_name(f"{lock_path.name}.reclaim")
+    else:
+        protected_path = lock_path
+    identity = refresh._lock_directory_identity(protected_path)
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    original = (
+        f"v1 reclaiming bound {owner} {token} {generation} "
+        f"{identity[0]} {identity[1]} 0\n"
+    ).encode()
+    authority.write_bytes(original)
+
+    with pytest.raises(refresh.LockHeldError, match="reclaim state is malformed"):
+        refresh.SharedLock(lock_path).acquire()
+
+    assert authority.read_bytes() == original
+    assert protected_path.is_dir()
+    assert (protected_path / "pid").is_file()
+    assert (protected_path / "lease").is_file()
+
+
+@pytest.mark.parametrize("mismatch", ["live-owner", "pid", "lease"])
+def test_reclaim_state_revalidates_bound_source_before_mutation(tmp_path, mismatch):
+    """A valid reclaim record cannot delete a live or changed canonical lock."""
+    lock_path = tmp_path / ".cre.lock"
+    owner = os.getpid() if mismatch == "live-owner" else 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    lock_path.mkdir()
+    written_owner = owner + 1 if mismatch == "pid" else owner
+    written_generation = "h" * 32 if mismatch == "lease" else generation
+    (lock_path / "pid").write_text(f"{written_owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{written_generation}\n", encoding="utf-8")
+    identity = refresh._lock_directory_identity(lock_path)
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    original = (
+        f"v1 reclaiming bound {owner} {token} {generation} "
+        f"{identity[0]} {identity[1]} 0\n"
+    ).encode()
+    authority.write_bytes(original)
+
+    expected = "live owner" if mismatch == "live-owner" else "owner or lease changed"
+    with pytest.raises(refresh.LockHeldError, match=expected):
+        refresh.SharedLock(lock_path).acquire()
+
+    assert authority.read_bytes() == original
+    assert lock_path.is_dir()
+    assert (lock_path / "pid").read_text(encoding="utf-8").split()[0] == str(
+        written_owner
+    )
+    assert (lock_path / "lease").read_text(
+        encoding="utf-8"
+    ).strip() == written_generation
+
+
+def test_reclaim_state_rejects_oversized_padded_sidecar_untouched(tmp_path):
+    """The reclaim parser shares the ordinary sidecar's bounded safe read."""
+    lock_path = tmp_path / ".cre.lock"
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    lock_path.mkdir()
+    (lock_path / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    identity = refresh._lock_directory_identity(lock_path)
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    original = (
+        f"v1 reclaiming bound {owner} {token} {generation} "
+        f"{identity[0]} {identity[1]} 0\n".encode()
+        + b" " * 512
+    )
+    authority.write_bytes(original)
+
+    with pytest.raises(refresh.LockHeldError, match="authority is oversized"):
+        refresh.SharedLock(lock_path).acquire()
+
+    assert authority.read_bytes() == original
+    assert lock_path.is_dir()
+
+
 @pytest.mark.parametrize("operation", ["arm", "disarm"])
 def test_lock_benchmark_fsync_failure_preserves_interlock(
     tmp_path, monkeypatch, operation

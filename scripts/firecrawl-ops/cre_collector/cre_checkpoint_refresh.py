@@ -769,13 +769,19 @@ class SharedLock:
         return self.path.with_name(f"{self.path.name}{LOCK_AUTHORITY_SUFFIX}")
 
     @staticmethod
-    def _authority_fields(descriptor: int) -> tuple[int, str, str, bool] | None:
+    def _safe_authority_bytes(descriptor: int) -> bytes:
+        """Read one bounded, regular, no-link authority record."""
         observed = os.fstat(descriptor)
         if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
             raise LockHeldError("CRE lock authority is unsafe")
         raw = os.pread(descriptor, 512, 0)
         if len(raw) >= 512:
             raise LockHeldError("CRE lock authority is oversized")
+        return raw
+
+    @staticmethod
+    def _authority_fields(descriptor: int) -> tuple[int, str, str, bool] | None:
+        raw = SharedLock._safe_authority_bytes(descriptor)
         if not raw.strip():
             return None
         try:
@@ -993,7 +999,7 @@ class SharedLock:
 
     @staticmethod
     def _authority_reclaim_state(descriptor: int) -> _AuthorityReclaimState | None:
-        raw = os.pread(descriptor, 512, 0)
+        raw = SharedLock._safe_authority_bytes(descriptor)
         try:
             parts = raw.decode("utf-8").strip().split()
         except UnicodeDecodeError as exc:
@@ -1018,11 +1024,7 @@ class SharedLock:
             if (
                 owner <= 0
                 or re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) is None
-                or re.fullmatch(
-                    rf"(?:{re.escape(OPERATOR_RECOVERY_LEASE_PREFIX)})?[A-Za-z0-9_-]{{32,128}}",
-                    generation,
-                )
-                is None
+                or re.fullmatch(r"[A-Za-z0-9_-]{32,128}", generation) is None
             ):
                 raise LockHeldError("CRE lock authority reclaim state is malformed")
             token_value, generation_value = token, generation
@@ -1094,6 +1096,10 @@ class SharedLock:
     def _resume_reclaim_state(self, state: _AuthorityReclaimState) -> None:
         """Finish a previously fsynced rename/delete handoff under this flock."""
         self._require_authority_hold()
+        if state.recovery_required:
+            raise LockHeldError("CRE recovery-required reclaim state cannot resume")
+        if state.owner is not None and _pid_alive(state.owner):
+            raise LockHeldError(f"CRE reclaim source has live owner pid {state.owner}")
         tombstone = self.path.with_name(f"{self.path.name}.reclaim")
         try:
             canonical_identity = _lock_directory_identity(self.path)
@@ -1107,6 +1113,24 @@ class SharedLock:
         if canonical_identity is not None:
             if canonical_identity != state.source_identity:
                 raise LockHeldError("CRE reclaim source directory changed")
+            if _lock_interlocked(self.path) or _lock_requires_operator_recovery(
+                self.path
+            ):
+                raise LockHeldError("CRE reclaim source requires operator recovery")
+            if state.owner is None:
+                owner = _lock_owner(self.path)
+                if owner is None or _pid_alive(owner):
+                    raise LockHeldError("CRE reclaim source owner changed")
+            elif state.legacy_guard:
+                if not self._verified_interrupted_legacy_reclaim(
+                    (state.owner, state.token or "", state.generation or "", False)
+                ):
+                    raise LockHeldError("CRE reclaim legacy source changed")
+            elif (
+                _lock_owner(self.path) != state.owner
+                or _lock_lease(self.path) != state.generation
+            ):
+                raise LockHeldError("CRE reclaim source owner or lease changed")
             if tombstone_identity is not None:
                 if not state.legacy_guard or os.listdir(tombstone):
                     raise LockHeldError("CRE reclaim tombstone path is occupied")
@@ -1129,6 +1153,10 @@ class SharedLock:
             raise LockHeldError("CRE reclaim has both canonical and tombstone paths")
 
         if tombstone_identity is not None:
+            if _lock_interlocked(tombstone) or _lock_requires_operator_recovery(
+                tombstone
+            ):
+                raise LockHeldError("CRE reclaim tombstone requires operator recovery")
             shutil.rmtree(tombstone)
             self._fsync_lock_parent()
         self._require_authority_hold()
