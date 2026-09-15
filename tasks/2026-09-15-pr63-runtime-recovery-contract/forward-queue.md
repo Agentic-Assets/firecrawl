@@ -22,9 +22,10 @@ is a menu, not a roadmap. Verify each item before acting.
   no-clobber, and completed-guard tests run locally but are not represented by
   a visible PR status check.
 - **Add automated skills-lock restore validation** (priority: medium;
-  confidence: verified gap). The lock now uses the supported immutable Git
-  `ref` and folder-content hash, but CI does not yet exercise a clean restore
-  and hash comparison for every pinned project skill.
+  confidence: verified gap). PR #64 separately makes the requested skill
+  installation durable with a supported immutable Git `ref` and folder-content
+  hash; CI does not yet exercise a clean restore and hash comparison for every
+  pinned project skill. PR #63 excluded that local skill footprint.
 
 ## Simplification
 

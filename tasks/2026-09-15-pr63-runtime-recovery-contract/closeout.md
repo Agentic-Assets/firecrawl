@@ -29,10 +29,15 @@ mutation path outside the governed operator workflow.
 - Centralized loopback topology and the governed baseline resources, including
   API `3002`, browser `3003`, API 8 GiB, browser 16 GiB, and browser shared
   memory 8 GiB.
-- Added the repository-local thermo-nuclear code-quality-review skill from
-  `cursor/plugins` commit `c1c0a32802223f4be824112dd83d33ad29a8b26c`.
-  Its `skills-lock.json` entry uses the supported immutable `ref` plus the
-  verified folder-content hash.
+
+## Separate PR #64 installation
+
+PR #63 deliberately excluded the local thermo-nuclear skill footprint,
+including `.agents/skills/thermo-nuclear-code-quality-review/` and its
+`skills-lock.json` entry. This separate PR #64 independently makes the
+requested installation durable from `cursor/plugins` commit
+`c1c0a32802223f4be824112dd83d33ad29a8b26c`, using the supported immutable
+`ref` and verified folder-content hash.
 
 ## Verification
 
