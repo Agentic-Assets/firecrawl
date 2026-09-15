@@ -95,25 +95,22 @@ test("parseLeaseRate returns null result for empty string", () => {
   assert.deepEqual(parseLeaseRate(""), { min: null, max: null, type: null });
 });
 
-test("parseLeaseRate: bare $N.NN with no qualifiers is trusted as-is (like golden vector 1)", () => {
-  // A bare "$N.NN" with no other tokens is returned as min (the adapter labeled this as a rate).
-  // This matches the golden vector row 1: "$23.40" -> {min:23.40, max:null, type:null}.
-  assert.deepEqual(parseLeaseRate("$12.50"), { min: 12.50, max: null, type: null });
+test("parseLeaseRate: bare amount lacks currency, denominator and period evidence", () => {
+  assert.deepEqual(parseLeaseRate("$12.50"), { min: null, max: null, type: null });
 });
 
-test("parseLeaseRate: large bare dollar amount that exceeds 500 is rejected by the AY cap", () => {
-  // "$1,200,000" is a bare amount but min > 500, so rejected by the implausible-value guard.
+test("parseLeaseRate: large bare amount also lacks source units", () => {
   assert.deepEqual(parseLeaseRate("$1,200,000"), { min: null, max: null, type: null });
 });
 
 test("parseLeaseRate: NNN variant 'Triple Net' recognized", () => {
-  const r = parseLeaseRate("$25.00/SF/YR Triple Net");
+  const r = parseLeaseRate("USD 25.00/SF/YR Triple Net");
   assert.equal(r.type, "nnn");
   assert.equal(r.min, 25);
 });
 
 test("parseLeaseRate: Full Service Gross alias FSG", () => {
-  const r = parseLeaseRate("$24.00/SF/YR, FSG");
+  const r = parseLeaseRate("USD 24.00/SF/YR, FSG");
   assert.equal(r.type, "full_service");
   assert.equal(r.min, 24);
   assert.equal(r.max, null);
@@ -126,14 +123,14 @@ test("parseLeaseRate: modified_gross beats gross when both present", () => {
 
 test("parseLeaseRate: range where both values are above 100 is kept (institutional high-value markets)", () => {
   // Both annualized: $120 and $150 per SF/yr are high but not a mis-range.
-  const r = parseLeaseRate("$120 - $150 PSF");
+  const r = parseLeaseRate("USD 120 - $150 PSF/year");
   // Neither value is < 100 while the other is > 100, so it is NOT rejected.
   assert.equal(r.min, 120);
   assert.equal(r.max, 150);
 });
 
 test("parseLeaseRate: 'per square foot' long form recognized as per-SF signal", () => {
-  const r = parseLeaseRate("$18.00 per square foot NNN");
+  const r = parseLeaseRate("USD 18.00 per square foot/year NNN");
   assert.equal(r.min, 18);
   assert.equal(r.type, "nnn");
 });
