@@ -4359,17 +4359,21 @@ def _quarantine_shared_lock(
     artifact_result_path: Path,
     admission_sha256: str,
     review_approval_nonce_sha256: str,
+    reason: str = "bounded_idle_settlement_not_proven",
 ) -> dict[str, Any]:
-    """Make an unknown-settlement lock non-reclaimable until operator recovery."""
+    """Make this owned canonical lock non-reclaimable until operator recovery."""
     lock_path = lock.path
-    if not lock.held or lock.lease_token is None or not lock_path.is_dir():
-        raise BenchmarkError("canonical shared lock cannot be quarantined")
+    try:
+        directory_fd = lock._owned_directory_fd()
+    except LockHeldError as exc:
+        raise BenchmarkError("canonical shared lock cannot be quarantined") from exc
+    os.close(directory_fd)
     evidence_path = lock_path / BENCHMARK_QUARANTINE_MARKER
     evidence = {
         "schema_version": SCHEMA_VERSION,
         "kind": "cre_capacity_benchmark_lock_quarantine",
         "state": "quarantined",
-        "reason": "bounded_idle_settlement_not_proven",
+        "reason": reason,
         "quarantined_at": _now(),
         "admission_sha256": admission_sha256,
         "review_approval_nonce_sha256": review_approval_nonce_sha256,
@@ -4382,10 +4386,13 @@ def _quarantine_shared_lock(
         },
     }
     try:
+        # Publish the durable stop before mutating the lease files. If a later
+        # unlink fails, the marker still prevents SharedLock.release() from
+        # removing this exact owned directory.
+        _atomic_private_json(evidence_path, evidence)
         (lock_path / "pid").unlink()
         (lock_path / "lease").unlink()
         lock_path.chmod(0o700)
-        _atomic_private_json(evidence_path, evidence)
     except (OSError, BenchmarkError) as exc:
         raise BenchmarkError("canonical shared lock quarantine failed") from exc
     return {
@@ -5050,7 +5057,15 @@ def run_counterbalanced_pair_step(
                 except BaseException as exc:  # noqa: BLE001 - quarantine still follows
                     rollback_error = exc
                 finally:
-                    if held_lock.benchmark_marker_identity is not None:
+                    # A failed rollback is itself an unsafe terminal state even
+                    # when the outer marker could not be created. The SharedLock
+                    # ownership check inside quarantine binds this stop to this
+                    # exact canonical lease rather than retaining an unrelated
+                    # directory.
+                    if (
+                        held_lock.benchmark_marker_identity is not None
+                        or rollback_error is not None
+                    ):
                         try:
                             _quarantine_shared_lock(
                                 held_lock,
@@ -5061,6 +5076,11 @@ def run_counterbalanced_pair_step(
                                 review_approval_nonce_sha256=validated_admission[
                                     "review_approval_nonce_sha256"
                                 ],
+                                reason=(
+                                    "candidate_baseline_rollback_failed"
+                                    if rollback_error is not None
+                                    else "bounded_idle_settlement_not_proven"
+                                ),
                             )
                         except BaseException as exc:  # noqa: BLE001 - preserve stop
                             quarantine_error = exc
