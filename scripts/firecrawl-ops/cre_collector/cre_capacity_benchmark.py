@@ -4825,6 +4825,23 @@ def _load_counterbalanced_pair_state(
     return value
 
 
+def _validate_candidate_rollback_receipt(
+    receipt_path: Path | None, profile_name: str, config_sha256: str
+) -> Path:
+    """Bind a candidate arm to a usable baseline rollback receipt before work."""
+    if receipt_path is None:
+        raise BenchmarkError("candidate pair step requires its rollback receipt")
+    try:
+        _, _, receipt_config_sha256 = capacity_runtime.load_fresh_receipt(
+            receipt_path, profile_name, require_fresh=False
+        )
+    except capacity_runtime.RuntimeAdmissionError as exc:
+        raise BenchmarkError("candidate rollback receipt is invalid") from exc
+    if receipt_config_sha256 != config_sha256:
+        raise BenchmarkError("candidate rollback receipt does not bind the profile")
+    return receipt_path
+
+
 def run_counterbalanced_pair_step(
     *,
     repo_root: Path,
@@ -4854,6 +4871,13 @@ def run_counterbalanced_pair_step(
     contract = _experiment_contract()
     profile_name = contract["profiles"][variant]
     profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, profile_name)
+    rollback_receipt_path = (
+        _validate_candidate_rollback_receipt(
+            candidate_receipt_path, profile_name, digest
+        )
+        if variant == "candidate"
+        else None
+    )
     validated_admission = validate_admission(
         admission,
         profile,
@@ -4893,12 +4917,9 @@ def run_counterbalanced_pair_step(
         )
     finally:
         if variant == "candidate":
-            if candidate_receipt_path is None:
-                raise BenchmarkError(
-                    "candidate pair step requires its rollback receipt"
-                )
+            assert rollback_receipt_path is not None
             capacity_runtime.transition(
-                candidate_receipt_path,
+                rollback_receipt_path,
                 profile_name,
                 "baseline",
                 execute=True,

@@ -662,9 +662,9 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
 
 test("JLL detail price text accepts public legacy, numeric, and structured values", () => {
   assert.equal(jllDetailPriceText("$2,500,000"), "$2,500,000");
-  assert.equal(jllDetailPriceText(3250000), "$3,250,000");
-  assert.equal(jllDetailPriceText("3250000"), "$3,250,000");
-  assert.equal(jllDetailPriceText("3,250,000"), "$3,250,000");
+  assert.equal(jllDetailPriceText(3250000), "3,250,000");
+  assert.equal(jllDetailPriceText("3250000"), "3,250,000");
+  assert.equal(jllDetailPriceText("3,250,000"), "3,250,000");
   assert.equal(
     jllDetailPriceText({ amount: 3250000, currency: "USD", unit: null }),
     "$3,250,000"
@@ -694,20 +694,26 @@ test("JLL detail enrichment normalizes price source shapes with redacted provena
       sourceShape: "legacy_string",
       amount: 2500000,
       currency: "USD",
+      stagedAmount: 2500000,
+      stagedText: "$2,500,000",
     },
     {
       price: 3250000,
-      expected: "$3,250,000",
+      expected: "3,250,000",
       sourceShape: "bare_number",
       amount: 3250000,
       currency: null,
+      stagedAmount: undefined,
+      stagedText: undefined,
     },
     {
       price: "3250000",
-      expected: "$3,250,000",
+      expected: "3,250,000",
       sourceShape: "numeric_string",
       amount: 3250000,
       currency: null,
+      stagedAmount: undefined,
+      stagedText: undefined,
     },
     {
       price: { amount: "3250000", currency: "USD", unit: null },
@@ -715,6 +721,8 @@ test("JLL detail enrichment normalizes price source shapes with redacted provena
       sourceShape: "structured",
       amount: 3250000,
       currency: "USD",
+      stagedAmount: 3250000,
+      stagedText: "$3,250,000",
     },
   ];
   try {
@@ -740,8 +748,8 @@ test("JLL detail enrichment normalizes price source shapes with redacted provena
 
       const enriched = await enrichJllListing({ id, url });
       assert.equal(enriched.detailError, undefined);
-      assert.equal(enriched.salePriceText, item.expected);
-      assert.equal(enriched.salePriceUsd, item.amount);
+      assert.equal(enriched.salePriceText, item.stagedText);
+      assert.equal(enriched.salePriceUsd, item.stagedAmount);
       const provenance = enriched.jllDetail.pricing.sale;
       assert.equal(provenance.sourceShape, item.sourceShape);
       assert.equal(provenance.normalization, "available");
@@ -750,6 +758,117 @@ test("JLL detail enrichment normalizes price source shapes with redacted provena
       assert.equal(provenance.currency, item.currency ?? undefined);
       assert.equal(provenance.unit, undefined);
     }
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL legacy price staging requires explicit USD provenance", () => {
+  const cadSale = jllGraphqlItemToListing(
+    {
+      id: "legacy-cad-sale",
+      pageUrl: "/listings/legacy-cad-sale",
+      salePrice: "CAD $1m",
+      hidePrice: false,
+    },
+    "sale",
+    "office",
+    1,
+    1
+  );
+  const cadLease = jllGraphqlItemToListing(
+    {
+      id: "legacy-cad-lease",
+      pageUrl: "/listings/legacy-cad-lease",
+      rentPrice: "CAD $32/SF",
+      hidePrice: false,
+    },
+    "lease",
+    "office",
+    1,
+    1
+  );
+  const usdSale = jllGraphqlItemToListing(
+    {
+      id: "legacy-usd-sale",
+      pageUrl: "/listings/legacy-usd-sale",
+      salePrice: "USD $1m",
+      hidePrice: false,
+    },
+    "sale",
+    "office",
+    1,
+    1
+  );
+  const usdLease = jllGraphqlItemToListing(
+    {
+      id: "legacy-usd-lease",
+      pageUrl: "/listings/legacy-usd-lease",
+      rentPrice: "USD $32/SF",
+      hidePrice: false,
+    },
+    "lease",
+    "office",
+    1,
+    1
+  );
+  const unknown = jllGraphqlItemToListing(
+    {
+      id: "legacy-unknown-currency",
+      pageUrl: "/listings/legacy-unknown-currency",
+      salePrice: "XYZ $1m",
+      hidePrice: false,
+    },
+    "sale",
+    "office",
+    1,
+    1
+  );
+
+  assert.equal(cadSale.salePriceUsd, undefined);
+  assert.equal(cadSale.salePriceText, undefined);
+  assert.equal(cadLease.leaseRateText, undefined);
+  assert.equal(usdSale.salePriceUsd, 1_000_000);
+  assert.equal(usdSale.salePriceText, "USD $1m");
+  assert.equal(usdLease.leaseRateText, "USD $32/SF");
+  assert.equal(unknown.salePriceUsd, undefined);
+  assert.equal(unknown.salePriceText, undefined);
+});
+
+test("JLL historical CAD text suppresses a legacy salePriceUsd fallback", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-legacy-cad-fallback-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const url = "https://property.jll.com/listings/legacy-cad-fallback";
+  try {
+    writeJllDetailCache(url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify({
+          props: {
+            pageProps: {
+              property: { id: "legacy-cad-fallback", pageUrl: "/listings/legacy-cad-fallback" },
+              brokers: [],
+            },
+          },
+        }) +
+        "</script>",
+      markdown: "",
+      links: [],
+      images: [],
+    });
+    const enriched = await enrichJllListing({
+      id: "legacy-cad-fallback",
+      url,
+      salePriceUsd: 1_000_000,
+      salePriceText: "CAD $1m",
+      leaseRateText: "CAD $32/SF",
+    });
+    assert.equal(enriched.salePriceUsd, undefined);
+    assert.equal(enriched.salePriceText, undefined);
+    assert.equal(enriched.leaseRateText, undefined);
   } finally {
     if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
     else process.env.JLL_DETAIL_CACHE_DIR = oldDir;

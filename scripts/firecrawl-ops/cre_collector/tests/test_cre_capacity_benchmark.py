@@ -2047,6 +2047,15 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
     monkeypatch.setattr(
         benchmark, "validate_admission", lambda value, *_args, **_kwargs: value
     )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda _path, _profile_name, *, require_fresh: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
 
     def fake_run_benchmark(**kwargs):
         admissions.append(kwargs["profile_name"])
@@ -2087,6 +2096,70 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
     assert admissions == ["production-current", "bold-jll-128"]
     assert [arm["variant"] for arm in state["arms"]] == ["baseline", "candidate"]
     assert rollbacks == [(receipt, "bold-jll-128", "baseline", True)]
+
+
+def test_candidate_pair_step_rejects_missing_or_invalid_rollback_before_benchmark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample = _sample(tmp_path)
+    sample_path = tmp_path / "immutable-sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    pair_root = tmp_path / "pair"
+    pair_root.mkdir(mode=0o700)
+    pair_root.chmod(0o700)
+    plan = benchmark.create_counterbalanced_pair_plan(
+        artifact_root=pair_root, sample_path=sample_path
+    )
+    plan_path = pair_root / "counterbalanced-pair-plan.json"
+    benchmark._atomic_private_json(
+        Path(plan["state_path"]),
+        {
+            "schema_version": benchmark.SCHEMA_VERSION,
+            "kind": benchmark.PAIR_STATE_KIND,
+            "pair_id": plan["pair_id"],
+            "pair_plan_sha256": benchmark._file_sha256(plan_path),
+            "arms": [{"variant": "baseline"}],
+        },
+    )
+    calls: list[str] = []
+    transitions: list[tuple[Path, str, str, bool]] = []
+    monkeypatch.setattr(
+        benchmark, "validate_admission", lambda value, *_args, **_kwargs: value
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "run_benchmark",
+        lambda **_kwargs: calls.append("benchmark") or {"completed": True},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "transition",
+        lambda receipt, profile, target, *, execute: transitions.append(
+            (receipt, profile, target, execute)
+        ),
+    )
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+    common = {
+        "repo_root": Path(__file__).resolve().parents[4],
+        "pair_plan_path": plan_path,
+        "admission": {},
+        "admission_path": admission_path,
+        "timeout_seconds": 1,
+    }
+
+    with pytest.raises(benchmark.BenchmarkError, match="requires its rollback receipt"):
+        benchmark.run_counterbalanced_pair_step(**common)
+
+    invalid = tmp_path / "invalid-rollback.json"
+    invalid.write_text("{}", encoding="utf-8")
+    with pytest.raises(benchmark.BenchmarkError, match="rollback receipt is invalid"):
+        benchmark.run_counterbalanced_pair_step(
+            **common, candidate_receipt_path=invalid
+        )
+
+    assert calls == []
+    assert transitions == []
 
 
 def test_guarded_pair_controller_is_disabled_pending_governed_runtime_orchestration(

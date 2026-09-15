@@ -345,8 +345,44 @@ function jllFormattedPriceText(
     minimumFractionDigits: Number.isInteger(amount) ? 0 : 2,
     maximumFractionDigits: 2,
   });
-  const prefix = !currency || currency.toUpperCase() === "USD" ? "$" : `${currency} `;
+  const prefix = currency?.toUpperCase() === "USD" ? "$" : currency ? `${currency} ` : "";
   return `${prefix}${amountText}${unit ? `/${unit}` : ""}`;
+}
+
+const JLL_LEGACY_CURRENCY_CODES = new Set([
+  "USD", "CAD", "EUR", "GBP", "JPY", "AUD", "NZD", "CHF", "HKD", "SGD", "CNY", "RMB",
+  "INR", "MXN", "BRL", "KRW", "AED", "SAR", "SEK", "NOK", "DKK", "PLN", "TRY", "ZAR",
+]);
+const JLL_LEGACY_PRICE_AMOUNT = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?";
+const JLL_LEGACY_PRICE_TOKEN = new RegExp(
+  `(?:\\b[a-z]{3}\\b\\s*|us\\$|c\\$|a\\$|[$€£¥]\\s*)(${JLL_LEGACY_PRICE_AMOUNT})\\s*([kmb])?`,
+  "i"
+);
+
+function jllLegacyCurrency(text: string): string | null {
+  const codes = [...text.matchAll(/\b([a-z]{3})\b\s*(?=(?:us\$|c\$|a\$|[$€£¥]|\d))/gi)]
+    .map((match) => match[1].toUpperCase());
+  if (codes.length) {
+    return codes.length === 1 && JLL_LEGACY_CURRENCY_CODES.has(codes[0]) ? codes[0] : null;
+  }
+  if (/\bus\$/i.test(text)) return "USD";
+  if (/\bc\$/i.test(text)) return "CAD";
+  if (/\ba\$/i.test(text)) return "AUD";
+  if (/€/.test(text)) return "EUR";
+  if (/£/.test(text)) return "GBP";
+  if (/¥/.test(text)) return null;
+  return /\$/.test(text) ? "USD" : null;
+}
+
+function jllLegacyPriceAmount(text: string): number | null {
+  const match = text.match(JLL_LEGACY_PRICE_TOKEN);
+  if (!match) return null;
+  const amount = Number(match[1].replace(/,/g, ""));
+  const multiplier = ({ k: 1_000, m: 1_000_000, b: 1_000_000_000 } as const)[
+    match[2]?.toLowerCase() as "k" | "m" | "b"
+  ] ?? 1;
+  const normalized = amount * multiplier;
+  return Number.isFinite(normalized) && normalized > 0 ? normalized : null;
 }
 
 function jllNormalizedPrice(price: unknown): JllNormalizedPrice {
@@ -378,14 +414,14 @@ function jllNormalizedPrice(price: unknown): JllNormalizedPrice {
         unit: null,
       };
     }
-    const legacyAmount = moneyToNumber(text);
+    const legacyAmount = jllLegacyPriceAmount(text);
     const unitMatch = text.match(/(?:\/|\bper\s+)([a-z0-9. ]+)/i);
     const unit = unitMatch ? clean(unitMatch[1]) : null;
     return {
       sourceShape: "legacy_string",
       text,
       amount: legacyAmount,
-      currency: legacyAmount === null ? null : "USD",
+      currency: legacyAmount === null ? null : jllLegacyCurrency(text),
       unit,
     };
   }
@@ -408,7 +444,7 @@ function jllNormalizedPrice(price: unknown): JllNormalizedPrice {
 function jllPriceUsd(price: JllNormalizedPrice): number | null {
   const unit = price.unit?.trim().toLowerCase().replace(/\s+/g, " ") ?? null;
   const totalSaleUnit = unit === null || ["total", "total sale", "total_price"].includes(unit);
-  return price.amount !== null && (!price.currency || price.currency === "USD") && totalSaleUnit
+  return price.amount !== null && price.currency === "USD" && totalSaleUnit
     ? price.amount
     : null;
 }
@@ -421,7 +457,7 @@ function jllLeasePriceText(price: JllNormalizedPrice): string | null {
   // public foreign-currency value in jllDetail.pricing provenance, but never
   // route it through leaseRateText where the currency-free parser could stage
   // it as a USD rate.
-  if (price.currency !== null && price.currency !== JLL_BASE_CURRENCY) return null;
+  if (price.currency !== JLL_BASE_CURRENCY) return null;
   const unit = price.unit?.trim().toLowerCase().replace(/\s+/g, " ") ?? null;
   // A bare legacy display string is the established JLL lease representation.
   // Once a unit is provided, admit only explicit area/time lease-rate units.
@@ -432,6 +468,10 @@ function jllLeasePriceText(price: JllNormalizedPrice): string | null {
     return price.text;
   }
   return null;
+}
+
+function jllSalePriceText(price: JllNormalizedPrice): string | null {
+  return jllPriceUsd(price) === null ? null : price.text;
 }
 
 function jllWithholdingControl(value: unknown, key: string): JllWithholdingControl {
@@ -685,7 +725,7 @@ export function jllGraphqlItemToListing(
     latitude: num(item?.latitude),
     longitude: num(item?.longitude),
     salePriceUsd: tx === "sale" && !hiddenPrice ? jllPriceUsd(salePrice) : null,
-    salePriceText: tx === "sale" && !hiddenPrice ? salePrice.text : null,
+    salePriceText: tx === "sale" && !hiddenPrice ? jllSalePriceText(salePrice) : null,
     leaseRateText: tx === "lease" && !hiddenPrice ? jllLeasePriceText(rentPrice) : null,
     sizeText:
       buildingSizeSqft === null
@@ -1371,6 +1411,10 @@ export async function enrichJllListing(base: any): Promise<any> {
     );
     const salePrice = jllNormalizedPrice(property.salePrice);
     const rentPrice = jllNormalizedPrice(property.rentPrice);
+    const baseSalePrice = jllNormalizedPrice(
+      base.salePriceText ?? base.salePrice ?? base.salePriceUsd
+    );
+    const baseLeasePrice = jllNormalizedPrice(base.leaseRateText);
     const pricing = {
       visibility: hiddenPrice ? "withheld" : "visible",
       searchWithholdingControl,
@@ -1480,17 +1524,17 @@ export async function enrichJllListing(base: any): Promise<any> {
       salePriceUsd: hiddenPrice
         ? null
         : salePrice.sourceShape === "absent"
-          ? base.salePriceUsd
+          ? jllPriceUsd(baseSalePrice)
           : jllPriceUsd(salePrice),
       salePriceText: hiddenPrice
         ? null
         : salePrice.sourceShape === "absent"
-          ? base.salePriceText
-          : salePrice.text,
+          ? jllSalePriceText(baseSalePrice)
+          : jllSalePriceText(salePrice),
       leaseRateText: hiddenPrice
         ? null
         : rentPrice.sourceShape === "absent"
-          ? base.leaseRateText
+          ? jllLeasePriceText(baseLeasePrice)
           : jllLeasePriceText(rentPrice),
       sizeText: hiddenPrice
         ? jllSafePublicText(clean(property.surfaceArea) ?? publicBase.sizeText) ?? undefined
