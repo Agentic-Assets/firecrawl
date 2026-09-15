@@ -2157,6 +2157,49 @@ def test_recovery_required_lease_clears_after_safe_completion(tmp_path):
     assert not lock.path.exists()
 
 
+def test_clear_recovery_requirement_never_mutates_or_releases_replacement(
+    tmp_path, monkeypatch
+):
+    lock = refresh.SharedLock(tmp_path / ".cre.lock", recovery_required=True)
+    lock.acquire()
+    original_replace = lock._replace_owned_lease
+    displaced = tmp_path / ".cre.lock.displaced"
+
+    def replace_then_swap(directory_fd, value):
+        original_replace(directory_fd, value)
+        lock.path.rename(displaced)
+        lock.path.mkdir()
+        (lock.path / "pid").write_text(f"{os.getpid()} 1\n", encoding="utf-8")
+        (lock.path / "lease").write_text("replacement-lease\n", encoding="utf-8")
+
+    monkeypatch.setattr(lock, "_replace_owned_lease", replace_then_swap)
+    with pytest.raises(refresh.LockHeldError, match="directory changed while clearing"):
+        lock.clear_recovery_requirement()
+
+    lock.release()
+    assert lock.path.is_dir()
+    assert refresh._lock_lease(lock.path) == "replacement-lease"
+    assert displaced.is_dir()
+    assert not refresh._lock_requires_operator_recovery(displaced)
+
+
+def test_release_never_removes_replaced_same_lease_directory(tmp_path):
+    lock = refresh.SharedLock(tmp_path / ".cre.lock")
+    lock.acquire()
+    displaced = tmp_path / ".cre.lock.displaced"
+    original_lease = lock.lease_token
+    assert original_lease
+    lock.path.rename(displaced)
+    lock.path.mkdir()
+    (lock.path / "pid").write_text(f"{os.getpid()} 1\n", encoding="utf-8")
+    (lock.path / "lease").write_text(f"{original_lease}\n", encoding="utf-8")
+
+    lock.release()
+    assert lock.path.is_dir()
+    assert refresh._lock_lease(lock.path) == original_lease
+    assert displaced.is_dir()
+
+
 def test_recovery_required_acquire_failure_preserves_its_stop(tmp_path, monkeypatch):
     lock = refresh.SharedLock(
         tmp_path / ".cre.lock",

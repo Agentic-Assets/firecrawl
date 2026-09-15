@@ -925,6 +925,56 @@ class SharedLock:
         finally:
             os.close(directory_fd)
 
+    @staticmethod
+    def _owned_lease(directory_fd: int) -> str | None:
+        descriptor = os.open("lease", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        try:
+            observed = os.fstat(descriptor)
+            if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+                raise LockHeldError("CRE recovery lease is unsafe")
+            value = os.read(descriptor, 512).decode("utf-8").strip()
+            if os.read(descriptor, 1):
+                raise LockHeldError("CRE recovery lease is oversized")
+            return value or None
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _replace_owned_lease(directory_fd: int, value: str) -> None:
+        temporary = f".lease.{secrets.token_urlsafe(16)}.tmp"
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_fd,
+            )
+            os.fchmod(descriptor, 0o600)
+            remaining = memoryview(f"{value}\n".encode("utf-8"))
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise OSError("CRE recovery lease write was short")
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            os.replace(
+                temporary,
+                "lease",
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+            os.fsync(directory_fd)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+
     def clear_recovery_requirement(self) -> None:
         """Durably make a successfully restored candidate lease reclaimable."""
         if not self.recovery_required:
@@ -932,26 +982,39 @@ class SharedLock:
         directory_fd = self._owned_directory_fd()
         try:
             replacement = secrets.token_urlsafe(32)
-            atomic_write_text(self.path / "lease", f"{replacement}\n")
-            if _lock_lease(self.path) != replacement:
+            self._replace_owned_lease(directory_fd, replacement)
+            if self._owned_lease(directory_fd) != replacement:
                 raise LockHeldError("CRE recovery lease changed while clearing")
+            if _lock_directory_identity(self.path) != self.directory_identity:
+                raise LockHeldError("CRE lock directory changed while clearing recovery")
             self.lease_token = replacement
             self.recovery_required = False
         finally:
             os.close(directory_fd)
 
     def release(self) -> None:
-        if (
-            self.held
-            and self.lease_token is not None
-            and _lock_owner(self.path) == os.getpid()
-            and _lock_lease(self.path) == self.lease_token
-            and not _lock_interlocked(self.path)
-            and self.benchmark_marker_identity is None
-            and not self.retain_on_exit
-            and not self.recovery_required
-        ):
-            shutil.rmtree(self.path, ignore_errors=True)
+        try:
+            directory_fd = self._owned_directory_fd()
+        except LockHeldError:
+            directory_fd = -1
+        try:
+            try:
+                if (
+                    directory_fd >= 0
+                    and self.lease_token is not None
+                    and self._owned_lease(directory_fd) == self.lease_token
+                    and not _lock_interlocked(self.path)
+                    and self.benchmark_marker_identity is None
+                    and not self.retain_on_exit
+                    and not self.recovery_required
+                    and _lock_directory_identity(self.path) == self.directory_identity
+                ):
+                    shutil.rmtree(self.path, ignore_errors=True)
+            except (LockHeldError, OSError):
+                pass
+        finally:
+            if directory_fd >= 0:
+                os.close(directory_fd)
         self.held = False
         self.lease_token = None
         self.directory_identity = None
