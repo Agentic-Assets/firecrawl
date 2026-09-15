@@ -4478,6 +4478,18 @@ def _candidate_rollback_lock(lock_path: Path):
     try:
         initial.acquire()
     except BaseException as initial_error:  # noqa: BLE001 - rollback is mandatory
+        try:
+            initial.recover_partial_acquire()
+        except BaseException as partial_error:  # noqa: BLE001 - try an independent lease
+            partial_recovery_error: BaseException | None = partial_error
+        else:
+            partial_recovery_error = None
+        if partial_recovery_error is None:
+            try:
+                yield initial, initial_error
+            finally:
+                initial.release()
+            return
         recovery = SharedLock(
             lock_path,
             recovery_required=True,
@@ -4492,6 +4504,10 @@ def _candidate_rollback_lock(lock_path: Path):
             )
             failure.add_note(
                 f"initial lock error: {type(initial_error).__name__}: {initial_error}"
+            )
+            failure.add_note(
+                "partial lock recovery error: "
+                f"{type(partial_recovery_error).__name__}: {partial_recovery_error}"
             )
             failure.add_note(
                 f"recovery lock error: {type(recovery_error).__name__}: {recovery_error}"

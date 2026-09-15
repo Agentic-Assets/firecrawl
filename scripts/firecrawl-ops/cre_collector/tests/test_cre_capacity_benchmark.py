@@ -2609,6 +2609,125 @@ def test_candidate_pair_transient_lock_failure_rolls_back_under_recovery_lock(
     assert not lock_path.exists()
 
 
+def test_candidate_pair_partial_lease_failure_recovers_and_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    events: list[str] = []
+    original_write = refresh.atomic_write_text
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_first_lease(path: Path, value: str) -> None:
+        if path.name == "lease" and not events:
+            events.append("lease failure")
+            raise OSError("lease write failed before creation")
+        original_write(path, value)
+
+    def rollback(*_args, _held_shared_lock, **_kwargs):
+        assert _held_shared_lock.held
+        assert _held_shared_lock.recovery_required
+        events.append("rollback")
+
+    monkeypatch.setattr(refresh, "atomic_write_text", fail_first_lease)
+    monkeypatch.setattr(benchmark, "run_benchmark", lambda **_kwargs: pytest.fail())
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", rollback)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(OSError, match="lease write failed before creation"):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert events == ["lease failure", "rollback"]
+    assert not lock_path.exists()
+
+
+def test_candidate_pair_partial_cleanup_failure_never_rolls_back_unlocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    transitions: list[str] = []
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_first_lease(path: Path, _value: str) -> None:
+        if path.name == "lease":
+            (path.parent / ".lease.abandoned.tmp").write_text("partial")
+            raise OSError("lease write failed before creation")
+
+    original_unlink = refresh.os.unlink
+
+    def fail_partial_cleanup(path, *args, **kwargs):
+        if path == ".lease.abandoned.tmp":
+            raise OSError("partial cleanup failed")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(refresh, "atomic_write_text", fail_first_lease)
+    monkeypatch.setattr(refresh.os, "unlink", fail_partial_cleanup)
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "transition",
+        lambda *_args, **_kwargs: transitions.append("unsafe rollback"),
+    )
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        benchmark.BenchmarkError,
+        match="cannot acquire a verified canonical recovery lock",
+    ):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert transitions == []
+    assert refresh._lock_requires_operator_recovery(lock_path)
+
+
 @pytest.mark.parametrize("initial_error", [OSError("disk failed"), KeyboardInterrupt()])
 def test_candidate_pair_unavailable_recovery_lock_never_rolls_back_unlocked(
     initial_error: BaseException, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

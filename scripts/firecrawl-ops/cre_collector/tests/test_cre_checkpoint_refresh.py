@@ -2222,6 +2222,110 @@ def test_recovery_required_acquire_failure_preserves_its_stop(tmp_path, monkeypa
         refresh.SharedLock(lock.path).acquire()
 
 
+def test_partial_recovery_acquire_removes_owned_temps_and_finishes_lock(
+    tmp_path, monkeypatch
+):
+    lock = refresh.SharedLock(
+        tmp_path / ".cre.lock",
+        recovery_required=True,
+        preserve_recovery_on_acquire_failure=True,
+    )
+    original_write = refresh.atomic_write_text
+
+    def fail_before_lease(path, value):
+        if path.name == "lease":
+            (path.parent / ".lease.abandoned.tmp").write_text("partial")
+            raise OSError("lease write failed before creation")
+        original_write(path, value)
+
+    monkeypatch.setattr(refresh, "atomic_write_text", fail_before_lease)
+    with pytest.raises(OSError, match="before creation"):
+        lock.acquire()
+
+    assert not (lock.path / "lease").exists()
+    assert (lock.path / ".lease.abandoned.tmp").is_file()
+    lock.recover_partial_acquire()
+    assert lock.held
+    assert not (lock.path / ".lease.abandoned.tmp").exists()
+    assert refresh._lock_owner(lock.path) == os.getpid()
+    lock.clear_recovery_requirement()
+    lock.release()
+    assert not lock.path.exists()
+
+
+def test_partial_recovery_refuses_renamed_or_replaced_directory(tmp_path, monkeypatch):
+    lock = refresh.SharedLock(
+        tmp_path / ".cre.lock",
+        recovery_required=True,
+        preserve_recovery_on_acquire_failure=True,
+    )
+    displaced = tmp_path / ".cre.lock.displaced"
+
+    def replace_before_lease(path, _value):
+        path.parent.rename(displaced)
+        path.parent.mkdir()
+        (path.parent / "pid").write_text(f"{os.getpid()} 1\n", encoding="utf-8")
+        (path.parent / "lease").write_text("replacement-lease\n", encoding="utf-8")
+        raise OSError("lease write raced with replacement")
+
+    monkeypatch.setattr(refresh, "atomic_write_text", replace_before_lease)
+    with pytest.raises(OSError, match="raced with replacement"):
+        lock.acquire()
+    with pytest.raises(refresh.LockHeldError, match="directory changed"):
+        lock.recover_partial_acquire()
+
+    assert refresh._lock_lease(lock.path) == "replacement-lease"
+    assert displaced.is_dir()
+
+
+def test_partial_recovery_cleanup_failure_preserves_operator_stop(tmp_path, monkeypatch):
+    lock = refresh.SharedLock(
+        tmp_path / ".cre.lock",
+        recovery_required=True,
+        preserve_recovery_on_acquire_failure=True,
+    )
+
+    def fail_before_lease(path, _value):
+        if path.name == "lease":
+            (path.parent / ".lease.abandoned.tmp").write_text("partial")
+            raise OSError("lease write failed before creation")
+
+    monkeypatch.setattr(refresh, "atomic_write_text", fail_before_lease)
+    with pytest.raises(OSError, match="before creation"):
+        lock.acquire()
+
+    original_unlink = refresh.os.unlink
+
+    def fail_partial_cleanup(path, *args, **kwargs):
+        if path == ".lease.abandoned.tmp":
+            raise OSError("partial cleanup failed")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(refresh.os, "unlink", fail_partial_cleanup)
+    with pytest.raises(OSError, match="partial cleanup failed"):
+        lock.recover_partial_acquire()
+
+    assert refresh._lock_requires_operator_recovery(lock.path)
+    assert not lock.held
+    with pytest.raises(refresh.LockHeldError, match="requires operator recovery"):
+        refresh.SharedLock(lock.path).acquire()
+
+
+def test_partial_recovery_refuses_unowned_starting_lock(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.mkdir()
+    lock = refresh.SharedLock(
+        lock_dir,
+        recovery_required=True,
+        preserve_recovery_on_acquire_failure=True,
+    )
+    with pytest.raises(refresh.LockHeldError, match="owner is starting"):
+        lock.acquire()
+    with pytest.raises(refresh.LockHeldError, match="not owned"):
+        lock.recover_partial_acquire()
+    assert lock_dir.is_dir()
+
+
 @pytest.mark.parametrize("operation", ["arm", "disarm"])
 def test_lock_benchmark_fsync_failure_preserves_interlock(
     tmp_path, monkeypatch, operation

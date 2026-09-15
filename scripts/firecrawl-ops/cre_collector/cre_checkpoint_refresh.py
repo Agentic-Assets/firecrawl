@@ -733,6 +733,7 @@ class SharedLock:
     directory_identity: tuple[int, int] | None = field(default=None, init=False)
     benchmark_marker_identity: tuple[int, int] | None = field(default=None, init=False)
     retain_on_exit: bool = field(default=False, init=False)
+    partial_directory_identity: tuple[int, int] | None = field(default=None, init=False)
 
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -742,6 +743,7 @@ class SharedLock:
             )
         try:
             self.path.mkdir()
+            self.partial_directory_identity = _lock_directory_identity(self.path)
         except FileExistsError:
             original_identity = _lock_directory_identity(self.path)
             if _lock_requires_operator_recovery(self.path):
@@ -782,6 +784,7 @@ class SharedLock:
         lease_token = secrets.token_urlsafe(32)
         if self.recovery_required:
             lease_token = f"{OPERATOR_RECOVERY_LEASE_PREFIX}{lease_token}"
+        self.lease_token = lease_token
         try:
             atomic_write_text(self.path / "lease", f"{lease_token}\n")
             atomic_write_text(
@@ -801,8 +804,8 @@ class SharedLock:
             ):
                 shutil.rmtree(self.path, ignore_errors=True)
             raise
-        self.lease_token = lease_token
         self.directory_identity = _lock_directory_identity(self.path)
+        self.partial_directory_identity = None
         self.retain_on_exit = False
         self.held = True
 
@@ -940,8 +943,8 @@ class SharedLock:
             os.close(descriptor)
 
     @staticmethod
-    def _replace_owned_lease(directory_fd: int, value: str) -> None:
-        temporary = f".lease.{secrets.token_urlsafe(16)}.tmp"
+    def _replace_owned_text(directory_fd: int, name: str, value: str) -> None:
+        temporary = f".{name}.{secrets.token_urlsafe(16)}.tmp"
         descriptor = -1
         try:
             descriptor = os.open(
@@ -962,7 +965,7 @@ class SharedLock:
             descriptor = -1
             os.replace(
                 temporary,
-                "lease",
+                name,
                 src_dir_fd=directory_fd,
                 dst_dir_fd=directory_fd,
             )
@@ -974,6 +977,89 @@ class SharedLock:
                 os.unlink(temporary, dir_fd=directory_fd)
             except FileNotFoundError:
                 pass
+
+    @staticmethod
+    def _replace_owned_lease(directory_fd: int, value: str) -> None:
+        SharedLock._replace_owned_text(directory_fd, "lease", value)
+
+    @staticmethod
+    def _owned_pid(directory_fd: int) -> int | None:
+        descriptor = os.open("pid", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        try:
+            observed = os.fstat(descriptor)
+            if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+                raise LockHeldError("CRE recovery pid is unsafe")
+            first = os.read(descriptor, 512).decode("utf-8").split()[0]
+            return int(first)
+        finally:
+            os.close(descriptor)
+
+    def recover_partial_acquire(self) -> None:
+        """Finish only this instance's exact, newly-created recovery lock."""
+        identity = self.partial_directory_identity
+        if not self.recovery_required or identity is None or self.held:
+            raise LockHeldError("CRE partial recovery lock is not owned")
+        directory_fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(directory_fd)
+            if (
+                (opened.st_dev, opened.st_ino) != identity
+                or _lock_directory_identity(self.path) != identity
+            ):
+                raise LockHeldError("CRE partial recovery lock directory changed")
+            entries = os.listdir(directory_fd)
+            temporary_entries: list[str] = []
+            for name in entries:
+                if name in {"lease", "pid"}:
+                    continue
+                if not (
+                    name.startswith((".lease.", ".pid."))
+                    and name.endswith(".tmp")
+                ):
+                    raise LockHeldError(
+                        "CRE partial recovery lock contains unexpected entry"
+                    )
+                observed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+                    raise LockHeldError("CRE partial recovery lock contains unsafe entry")
+                temporary_entries.append(name)
+            lease = self._owned_lease(directory_fd) if "lease" in entries else None
+            if lease is None:
+                lease = f"{OPERATOR_RECOVERY_LEASE_PREFIX}{secrets.token_urlsafe(32)}"
+                self._replace_owned_lease(directory_fd, lease)
+            if not lease.startswith(OPERATOR_RECOVERY_LEASE_PREFIX):
+                raise LockHeldError("CRE partial recovery lease is not recoverable")
+            for name in temporary_entries:
+                os.unlink(name, dir_fd=directory_fd)
+            self.lease_token = lease
+            try:
+                pid = self._owned_pid(directory_fd)
+            except FileNotFoundError:
+                pid = None
+            if pid is None:
+                self._replace_owned_text(
+                    directory_fd,
+                    "pid",
+                    f"{os.getpid()} {int(datetime.now(timezone.utc).timestamp())}",
+                )
+            elif pid != os.getpid():
+                raise LockHeldError("CRE partial recovery lock owner changed")
+            os.fsync(directory_fd)
+            if _lock_directory_identity(self.path) != identity:
+                raise LockHeldError("CRE partial recovery lock directory changed")
+            parent_fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+            if _lock_directory_identity(self.path) != identity:
+                raise LockHeldError("CRE partial recovery lock directory changed")
+            self.directory_identity = identity
+            self.retain_on_exit = False
+            self.held = True
+            self.partial_directory_identity = None
+        finally:
+            os.close(directory_fd)
 
     def clear_recovery_requirement(self) -> None:
         """Durably make a successfully restored candidate lease reclaimable."""
