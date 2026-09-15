@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+
 from capacity_c10 import adapters, admission, compare, contracts, policy, runner
 
 
