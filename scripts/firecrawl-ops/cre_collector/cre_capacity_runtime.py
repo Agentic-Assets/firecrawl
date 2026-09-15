@@ -36,12 +36,23 @@ from typing import Any
 
 import cre_capacity_experiment as experiment
 import cre_capacity_telemetry as capacity_telemetry
+import cre_capacity_topology as capacity_topology
 import cre_checkpoint_refresh as checkpoint_refresh
+import cre_quarantine_recovery as quarantine_recovery
+from cre_capacity_errors import (
+    RuntimeAdmissionError,
+    RuntimeMutationError,
+    RuntimeOverlayCleanupError,
+)
 from cre_checkpoint_refresh import (
     LockHeldError,
     SharedLock,
     canonical_shared_lock_dir,
 )
+
+CommandResult = capacity_topology.CommandResult
+CommandRunner = capacity_topology.CommandRunner
+_default_runner = capacity_topology.default_command_runner
 
 SCHEMA_VERSION = 1
 RECEIPT_KIND = "cre_capacity_runtime_transition"
@@ -329,18 +340,6 @@ os.unlink(path)
 """
 
 
-class RuntimeAdmissionError(RuntimeError):
-    """Runtime state cannot be admitted or changed safely."""
-
-
-class RuntimeMutationError(RuntimeAdmissionError):
-    """A runtime mutation command was issued but did not complete cleanly."""
-
-
-class RuntimeOverlayCleanupError(RuntimeMutationError):
-    """A resource command completed but its private overlay did not clean up."""
-
-
 def _operator_uid() -> int:
     """Return the ordinary operating-account UID or fail on privilege switching."""
     uid = os.getuid()
@@ -358,17 +357,6 @@ class RuntimeCompensationError(RuntimeAdmissionError):
     def __init__(self, message: str, *, baseline_verified: bool) -> None:
         super().__init__(message)
         self.baseline_verified = baseline_verified
-
-
-@dataclass(frozen=True)
-class CommandResult:
-    returncode: int
-    stdout: str
-
-
-CommandRunner = Callable[
-    [Sequence[str], Path | None, Mapping[str, str] | None], CommandResult
-]
 
 
 @dataclass
@@ -394,26 +382,6 @@ def _hash(value: object) -> str:
 
 def _file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _default_runner(
-    argv: Sequence[str], cwd: Path | None = None, env: Mapping[str, str] | None = None
-) -> CommandResult:
-    try:
-        completed = subprocess.run(
-            list(argv),
-            cwd=cwd,
-            env=dict(env) if env is not None else None,
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=120,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeAdmissionError(
-            f"runtime command unavailable: {Path(argv[0]).name}"
-        ) from exc
-    return CommandResult(completed.returncode, completed.stdout)
 
 
 def _run(
@@ -573,47 +541,12 @@ def _cgroup_value(runner: CommandRunner, container: str, name: str) -> int | Non
     return parsed
 
 
-def _compose_loopback_endpoints(runner: CommandRunner) -> dict[str, str]:
-    """Resolve public loopback endpoints from the same rendered Compose config.
+def compose_loopback_endpoints(runner: CommandRunner) -> dict[str, str]:
+    """Public Compose-derived endpoint contract shared with benchmark tooling."""
+    return capacity_topology.compose_loopback_endpoints(runner, repo_root=REPO_ROOT)
 
-    The controller must not retain a second, hard-coded port contract.  In
-    particular, local Compose defaults are 3002/3003 while an older experiment
-    host used 3102/3103.
-    """
-    try:
-        configured = json.loads(
-            _run(
-                runner,
-                ["docker", "compose", "config", "--format", "json"],
-                cwd=REPO_ROOT,
-            )
-        )
-        services = configured["services"]
-        result: dict[str, str] = {}
-        for label, service_name in (("api", "api"), ("browser", "playwright-service")):
-            service = services[service_name]
-            environment = service["environment"]
-            target = int(environment["PORT"])
-            ports = service["ports"]
-            match = next(
-                (
-                    port
-                    for port in ports
-                    if int(port["target"]) == target
-                    and str(port.get("protocol", "tcp")) == "tcp"
-                    and str(port.get("host_ip", "127.0.0.1"))
-                    in {"127.0.0.1", "0.0.0.0", "::", ""}
-                ),
-                None,
-            )
-            if not isinstance(match, Mapping):
-                raise KeyError(service_name)
-            result[label] = f"http://127.0.0.1:{int(match['published'])}"
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeAdmissionError(
-            "resolved Compose loopback endpoints are invalid"
-        ) from exc
-    return result
+
+_compose_loopback_endpoints = compose_loopback_endpoints
 
 
 def _settlement(runner: CommandRunner, endpoints: Mapping[str, str]) -> dict[str, Any]:
@@ -1106,774 +1039,46 @@ def _controller_output(path: Path) -> Path:
     return resolved
 
 
-def _fsync_directory(path: Path) -> None:
-    """Fsync one owner-controlled directory without following substitutions."""
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        observed = os.fstat(descriptor)
-        named = path.lstat()
-        if (
-            not stat.S_ISDIR(observed.st_mode)
-            or observed.st_uid != os.geteuid()
-            or stat.S_IMODE(observed.st_mode) & 0o022
-            or observed.st_nlink < 2
-            or (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino)
-        ):
-            raise RuntimeAdmissionError(
-                "directory changed before durability acknowledgement"
-            )
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+_fsync_directory = quarantine_recovery.fsync_directory
 
 
-def _regular_file_evidence(
-    path: Path, *, limit: int = 65536
-) -> tuple[bytes, dict[str, Any]]:
-    """Read a private singleton file while binding its complete identity."""
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    try:
-        observed = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(observed.st_mode)
-            or observed.st_nlink != 1
-            or observed.st_uid != os.geteuid()
-            or stat.S_IMODE(observed.st_mode) != 0o600
-        ):
-            raise RuntimeAdmissionError(
-                "quarantine evidence is not a private regular file"
-            )
-        raw = os.read(descriptor, limit + 1)
-        if len(raw) > limit:
-            raise RuntimeAdmissionError("quarantine evidence is oversized")
-        named = path.lstat()
-        if (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino):
-            raise RuntimeAdmissionError("quarantine evidence changed during inspection")
-        return raw, {
-            "identity": [observed.st_dev, observed.st_ino],
-            "mode": stat.S_IMODE(observed.st_mode),
-            "uid": observed.st_uid,
-            "nlink": observed.st_nlink,
-            "sha256": hashlib.sha256(raw).hexdigest(),
-        }
-    finally:
-        os.close(descriptor)
+def _quarantine_recovery_config() -> quarantine_recovery.QuarantineRecoveryConfig:
+    lock_path = canonical_shared_lock_dir(REPO_ROOT)
+    expected = REPO_ROOT / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    if lock_path != expected:
+        raise RuntimeAdmissionError("canonical quarantine target is invalid")
+    return quarantine_recovery.QuarantineRecoveryConfig(lock_path=lock_path)
 
 
-def _regular_bytes(path: Path, *, limit: int = 65536) -> tuple[bytes, tuple[int, int]]:
-    raw, evidence = _regular_file_evidence(path, limit=limit)
-    return raw, tuple(evidence["identity"])
-
-
-def _private_directory(path: Path, *, message: str) -> os.stat_result:
-    try:
-        observed = path.lstat()
-    except OSError as exc:
-        raise RuntimeAdmissionError(message) from exc
-    if (
-        not stat.S_ISDIR(observed.st_mode)
-        or observed.st_uid != os.geteuid()
-        or stat.S_IMODE(observed.st_mode) != 0o700
-    ):
-        raise RuntimeAdmissionError(message)
-    return observed
-
-
-def _empty_private_directory(path: Path, *, message: str) -> None:
-    _private_directory(path, message=message)
-    try:
-        if any(path.iterdir()):
-            raise RuntimeAdmissionError(message)
-    except OSError as exc:
-        raise RuntimeAdmissionError(message) from exc
-
-
-def _quarantine_pair(lock_path: Path) -> dict[str, Any]:
-    """Recognize only the historic pre-persistent-authority pytest residue."""
-    authority = lock_path.with_name(f"{lock_path.name}.authority")
-    try:
-        lock_stat = lock_path.lstat()
-    except FileNotFoundError as exc:
-        raise RuntimeAdmissionError("canonical quarantine lock is absent") from exc
-    _private_directory(lock_path, message="canonical quarantine lock is unsafe")
-    entries = sorted(item.name for item in lock_path.iterdir())
-    expected = sorted(
-        [
-            checkpoint_refresh.BENCHMARK_ACTIVE_MARKER,
-            checkpoint_refresh.BENCHMARK_QUARANTINE_MARKER,
-        ]
+def _quarantine_recovery_callbacks(
+    runner: CommandRunner,
+) -> quarantine_recovery.QuarantineRecoveryCallbacks:
+    return quarantine_recovery.QuarantineRecoveryCallbacks(
+        runner=runner,
+        compose_endpoints=_compose_loopback_endpoints,
+        settlement=_settlement,
+        load_baseline_profile=lambda: experiment.load_profile(
+            experiment.DEFAULT_CONFIG, "bold-jll-128"
+        ),
+        capture_runtime=capture_runtime,
+        evaluate_state=evaluate_state,
+        cpu_evidence=quarantine_recovery._recovery_cpu_evidence,
     )
-    if entries != expected:
-        raise RuntimeAdmissionError("quarantine lock has ambiguous entries")
-    active_raw, active_evidence = _regular_file_evidence(lock_path / expected[0])
-    quarantine_raw, quarantine_evidence = _regular_file_evidence(
-        lock_path / expected[1]
-    )
-    authority_raw, authority_evidence = _regular_file_evidence(authority, limit=512)
-    try:
-        active = json.loads(active_raw)
-        quarantine = json.loads(quarantine_raw)
-        authority_parts = authority_raw.decode("utf-8").strip().split()
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeAdmissionError("quarantine evidence is malformed") from exc
-    if (
-        not isinstance(active, Mapping)
-        or not isinstance(quarantine, Mapping)
-        or active.get("kind") != "cre_capacity_candidate_pair_active"
-        or active.get("state") != "active"
-        or active.get("profile") != "bold-jll-128"
-        or quarantine.get("kind") != "cre_capacity_benchmark_lock_quarantine"
-        or quarantine.get("state") != "quarantined"
-        or quarantine.get("reason") != "candidate_baseline_rollback_failed"
-        or quarantine.get("lock_path") != str(lock_path)
-        or active.get("result_path") != quarantine.get("result_path")
-        or "/pytest-of-" not in str(active.get("result_path", ""))
-        or len(authority_parts) != 2
-        or not authority_parts[0].isdigit()
-        or not LEGACY_AUTHORITY_TOKEN.fullmatch(authority_parts[1])
-    ):
-        raise RuntimeAdmissionError(
-            "quarantine residue is not the exact recoverable legacy form"
-        )
-    owner = int(authority_parts[0])
-    if owner <= 0 or checkpoint_refresh._pid_alive(owner):
-        raise RuntimeAdmissionError("quarantine authority owner is live or invalid")
-    if active.get("pid") != owner:
-        raise RuntimeAdmissionError("quarantine marker and authority owner differ")
-    return {
-        "lock_identity": [lock_stat.st_dev, lock_stat.st_ino],
-        "authority_identity": authority_evidence["identity"],
-        "active_identity": active_evidence["identity"],
-        "quarantine_identity": quarantine_evidence["identity"],
-        "active_sha256": active_evidence["sha256"],
-        "quarantine_sha256": quarantine_evidence["sha256"],
-        "authority_sha256": authority_evidence["sha256"],
-        "active_evidence": active_evidence,
-        "quarantine_evidence": quarantine_evidence,
-        "authority_evidence": authority_evidence,
-        "owner": owner,
-    }
-
-
-def _recovery_cpu_evidence(
-    *,
-    sampler: Callable[[], float] | None = None,
-    sleep: Callable[[float], None] = time.sleep,
-) -> dict[str, Any]:
-    """Require a fresh full 90%-for-30s observation before manual recovery."""
-    read = sampler or checkpoint_refresh.DarwinCpuSampler()
-    samples: list[float] = []
-    for index in range(16):
-        value = read()
-        if not isinstance(value, (int, float)) or not 0 <= value <= 100:
-            raise RuntimeAdmissionError("quarantine recovery CPU telemetry is invalid")
-        samples.append(float(value))
-        if index < 15:
-            sleep(2)
-    if any(value >= 90 for value in samples):
-        raise RuntimeAdmissionError("quarantine recovery CPU guard is not idle")
-    return {
-        "threshold_percent": 90,
-        "sample_seconds": 2,
-        "sustain_seconds": 30,
-        "samples": [round(value, 2) for value in samples],
-    }
-
-
-def _recovery_guard_path(lock_path: Path) -> Path:
-    return lock_path.parent / QUARANTINE_RECOVERY_GUARD
-
-
-def _write_recovery_guard(
-    path: Path, value: Mapping[str, Any], *, create: bool
-) -> None:
-    """Durably publish the only state normal lock acquisition understands.
-
-    The guard is intentionally outside the quarantined directory: after the
-    first archive rename, there is no canonical directory in which to place a
-    stop marker.  ``SharedLock.acquire`` treats any such guard as an operator
-    stop, so no successor can slip between either paired rename.
-    """
-    parent = path.parent
-    try:
-        parent_stat = parent.lstat()
-    except OSError as exc:
-        raise RuntimeAdmissionError(
-            "quarantine recovery parent is unavailable"
-        ) from exc
-    if (
-        not stat.S_ISDIR(parent_stat.st_mode)
-        or parent_stat.st_uid != os.geteuid()
-        or stat.S_IMODE(parent_stat.st_mode) & 0o022
-    ):
-        raise RuntimeAdmissionError("quarantine recovery parent is unsafe")
-    if create:
-        # Initial guards and receipts are operation claims.  They must never
-        # use replace semantics: a second recovery that races this creation has
-        # to stop, not overwrite a more advanced durable phase.
-        descriptor = -1
-        try:
-            descriptor = os.open(
-                path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-            )
-        except FileExistsError as exc:
-            raise RuntimeAdmissionError(
-                "quarantine recovery guard already exists"
-            ) from exc
-        try:
-            os.fchmod(descriptor, 0o600)
-            observed = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(observed.st_mode)
-                or observed.st_nlink != 1
-                or observed.st_uid != os.geteuid()
-                or stat.S_IMODE(observed.st_mode) != 0o600
-            ):
-                raise RuntimeAdmissionError("quarantine recovery guard is unsafe")
-            payload = memoryview(_canonical(value) + b"\n")
-            while payload:
-                written = os.write(descriptor, payload)
-                if written <= 0:
-                    raise OSError("quarantine recovery guard write was short")
-                payload = payload[written:]
-            os.fsync(descriptor)
-            named = path.lstat()
-            if (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino):
-                raise RuntimeAdmissionError("quarantine recovery guard changed")
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-        _fsync_directory(path.parent)
-        if _read_recovery_guard(path) != dict(value):
-            raise RuntimeAdmissionError("quarantine recovery guard changed")
-        return
-    if path.is_symlink():
-        raise RuntimeAdmissionError("quarantine recovery guard is unsafe")
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=parent
-    )
-    try:
-        os.fchmod(descriptor, 0o600)
-        payload = memoryview(_canonical(value) + b"\n")
-        while payload:
-            written = os.write(descriptor, payload)
-            if written <= 0:
-                raise OSError("quarantine recovery guard write was short")
-            payload = payload[written:]
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = -1
-        os.replace(temporary, path)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        Path(temporary).unlink(missing_ok=True)
-    _fsync_directory(path.parent)
-
-
-def _read_recovery_guard(path: Path) -> dict[str, Any]:
-    raw, _identity = _regular_bytes(path, limit=8192)
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeAdmissionError("quarantine recovery guard is malformed") from exc
-    if not isinstance(value, dict):
-        raise RuntimeAdmissionError("quarantine recovery guard is malformed")
-    return value
-
-
-def _same_identity(path: Path, expected: Sequence[int]) -> bool:
-    try:
-        observed = path.lstat()
-    except OSError:
-        return False
-    return [observed.st_dev, observed.st_ino] == list(expected)
-
-
-def _path_is_absent(path: Path) -> bool:
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return False
-    return False
-
-
-def _require_phase_source_absence(phase: str, lock_path: Path, authority: Path) -> None:
-    """Fail closed if a completed handoff's canonical source reappears."""
-    if phase in {
-        "lock-archived",
-        "authority-renaming",
-        "pair-archived",
-        "receipt-written",
-    }:
-        if not _path_is_absent(lock_path):
-            raise RuntimeAdmissionError("quarantine lock source reappeared")
-    if phase in {"pair-archived", "receipt-written"}:
-        if not _path_is_absent(authority):
-            raise RuntimeAdmissionError("quarantine authority source reappeared")
-
-
-def _rename_exact_to_empty_target(
-    source: Path,
-    target: Path,
-    expected: Sequence[int],
-    *,
-    message: str,
-) -> None:
-    """Move only the expected source to a target proven absent at handoff.
-
-    Replay accepts an already-archived expected inode, but an occupied target
-    is always forensic evidence, not a destination we may replace. The
-    authority flock serializes cooperative recovery participants, while the
-    operating-system no-replace primitive closes the check-to-rename window
-    against a foreign target appearing between the identity check and handoff.
-    """
-    if not _same_identity(source, expected):
-        raise RuntimeAdmissionError(message)
-    if not _path_is_absent(target):
-        raise RuntimeAdmissionError(message)
-    _atomic_rename_noreplace(source, target, message=message)
-    if not _same_identity(target, expected) or not _path_is_absent(source):
-        raise RuntimeAdmissionError(message)
-
-
-def _atomic_rename_noreplace(source: Path, target: Path, *, message: str) -> None:
-    """Atomically rename only when ``target`` does not exist on Darwin/Linux.
-
-    POSIX ``rename`` clobbers a destination.  A preflight ``lstat`` cannot make
-    that safe, so this uses Darwin's ``renameatx_np(RENAME_EXCL)`` or Linux's
-    ``renameat2(RENAME_NOREPLACE)``. Unsupported runtimes deliberately stop
-    rather than falling back to clobbering rename semantics.
-    """
-    library = ctypes.CDLL(None, use_errno=True)
-    source_bytes = os.fsencode(source)
-    target_bytes = os.fsencode(target)
-    if sys.platform == "darwin":
-        operation = getattr(library, "renameatx_np", None)
-        directory_fd = -2  # AT_FDCWD on Darwin.
-        flags = 0x0004  # RENAME_EXCL
-    elif sys.platform.startswith("linux"):
-        operation = getattr(library, "renameat2", None)
-        directory_fd = -100  # AT_FDCWD on Linux.
-        flags = 0x0001  # RENAME_NOREPLACE
-    else:
-        operation = None
-        directory_fd = 0
-        flags = 0
-    if operation is None:
-        raise RuntimeAdmissionError("atomic no-replace rename is unavailable")
-    operation.argtypes = (
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    )
-    operation.restype = ctypes.c_int
-    ctypes.set_errno(0)
-    if operation(directory_fd, source_bytes, directory_fd, target_bytes, flags) == 0:
-        return
-    failure = ctypes.get_errno()
-    if failure in {errno.EEXIST, errno.ENOTEMPTY}:
-        raise RuntimeAdmissionError(message)
-    raise OSError(failure, os.strerror(failure), target)
-
-
-def _archive_entries_are_exact(archive: Path, expected: Sequence[str]) -> bool:
-    """Bind the archive root itself, not just its nested lock contents."""
-    try:
-        _private_directory(archive, message="quarantine forensic archive is unsafe")
-        return sorted(item.name for item in archive.iterdir()) == sorted(expected)
-    except (OSError, RuntimeAdmissionError):
-        return False
-
-
-def _archive_pair_is_exact(
-    archive: Path, pair: Mapping[str, Any], *, receipt: bool | None = False
-) -> bool:
-    """Verify the complete archive root and every evidence-bearing member.
-
-    ``None`` accepts the narrow crash prefix after receipt creation but before
-    the guard phase advances; any receipt in that prefix is still separately
-    schema/hash validated by the caller before it can be trusted.
-    """
-    lock = archive / ".cre.lock"
-    authority = archive / ".cre.lock.authority"
-    root_pair = [lock.name, authority.name]
-    root_with_receipt = [*root_pair, "recovery-receipt.json"]
-    if receipt is True:
-        expected_roots = [root_with_receipt]
-    elif receipt is False:
-        expected_roots = [root_pair]
-    else:
-        expected_roots = [root_pair, root_with_receipt]
-    if not any(
-        _archive_entries_are_exact(archive, entries) for entries in expected_roots
-    ):
-        return False
-    try:
-        _private_directory(lock, message="quarantine forensic lock is unsafe")
-    except RuntimeAdmissionError:
-        return False
-    if not _same_identity(lock, pair.get("lock_identity", [])) or not _same_identity(
-        authority, pair.get("authority_identity", [])
-    ):
-        return False
-    try:
-        if sorted(item.name for item in lock.iterdir()) != sorted(
-            [
-                checkpoint_refresh.BENCHMARK_ACTIVE_MARKER,
-                checkpoint_refresh.BENCHMARK_QUARANTINE_MARKER,
-            ]
-        ):
-            return False
-    except OSError:
-        return False
-    try:
-        _active, active_evidence = _regular_file_evidence(
-            lock / checkpoint_refresh.BENCHMARK_ACTIVE_MARKER
-        )
-        _quarantine, quarantine_evidence = _regular_file_evidence(
-            lock / checkpoint_refresh.BENCHMARK_QUARANTINE_MARKER
-        )
-        _authority, authority_evidence = _regular_file_evidence(authority, limit=512)
-    except (OSError, RuntimeAdmissionError):
-        return False
-    return (
-        active_evidence == pair.get("active_evidence")
-        and quarantine_evidence == pair.get("quarantine_evidence")
-        and authority_evidence == pair.get("authority_evidence")
-    )
-
-
-def _archive_phase_entries_are_exact(archive: Path, phase: str) -> bool:
-    """Accept only the durable namespace prefixes for one recovery phase."""
-    lock = ".cre.lock"
-    authority = ".cre.lock.authority"
-    receipt = "recovery-receipt.json"
-    allowed: dict[str, tuple[Sequence[str], ...]] = {
-        "prepared": ((),),
-        # A crash may occur after the durable intent but before/after rename.
-        "lock-renaming": ((), (lock,)),
-        "lock-archived": ((lock,),),
-        "authority-renaming": ((lock,), (lock, authority)),
-        # Receipt creation is durable before the phase guard advances.
-        "pair-archived": ((lock, authority), (lock, authority, receipt)),
-        "receipt-written": ((lock, authority, receipt),),
-    }
-    return phase in allowed and any(
-        _archive_entries_are_exact(archive, entries) for entries in allowed[phase]
-    )
-
-
-def _recovery_receipt_payload(result: Mapping[str, Any]) -> dict[str, Any]:
-    completed = {**result, "phase": "archived", "executed": True}
-    completed["receipt_sha256"] = _hash(completed)
-    return completed
-
-
-def _write_recovery_receipt(path: Path, result: Mapping[str, Any]) -> dict[str, Any]:
-    """Atomically write, file-fsync, rename, and parent-fsync the receipt."""
-    _private_directory(path.parent, message="quarantine forensic archive is unsafe")
-    receipt = _recovery_receipt_payload(result)
-    _write_recovery_guard(path, receipt, create=True)
-    return receipt
-
-
-def _validate_recovery_receipt(
-    path: Path,
-    *,
-    lock_path: Path,
-    archive: Path,
-    pair: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Accept only a complete receipt bound to this exact archived pair."""
-    raw, _ = _regular_bytes(path, limit=8192)
-    try:
-        receipt = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeAdmissionError("quarantine recovery receipt is malformed") from exc
-    if not isinstance(receipt, dict):
-        raise RuntimeAdmissionError("quarantine recovery receipt is malformed")
-    supplied_hash = receipt.get("receipt_sha256")
-    unsigned = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
-    if (
-        receipt.get("schema_version") != SCHEMA_VERSION
-        or receipt.get("kind") != QUARANTINE_RECOVERY_KIND
-        or receipt.get("phase") != "archived"
-        or receipt.get("executed") is not True
-        or receipt.get("lock_path") != str(lock_path)
-        or receipt.get("archive") != str(archive)
-        or receipt.get("pair") != dict(pair)
-        or not isinstance(supplied_hash, str)
-        or supplied_hash != _hash(unsigned)
-    ):
-        raise RuntimeAdmissionError("quarantine recovery receipt is not bound")
-    return receipt
 
 
 def recover_quarantine(
     *, execute: bool, runner: CommandRunner = _default_runner
 ) -> dict[str, Any]:
-    """Serialize the explicit paired archive against every normal acquire."""
-    lock_path = canonical_shared_lock_dir(REPO_ROOT)
-    if lock_path != (
-        REPO_ROOT / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
-    ):
-        raise RuntimeAdmissionError("canonical quarantine target is invalid")
-    try:
-        synchronizer = checkpoint_refresh.acquire_quarantine_recovery_sync(lock_path)
-    except LockHeldError as exc:
-        raise RuntimeAdmissionError(
-            "quarantine recovery is already in progress"
-        ) from exc
-    try:
-        return _recover_quarantine_while_synchronized(execute=execute, runner=runner)
-    finally:
-        checkpoint_refresh.release_quarantine_recovery_sync(synchronizer)
+    """Archive only the exact governed legacy quarantine residue.
 
-
-def _recover_quarantine_while_synchronized(
-    *, execute: bool, runner: CommandRunner = _default_runner
-) -> dict[str, Any]:
-    """Durably archive one exact historic residue as a matched forensic pair."""
-    lock_path = canonical_shared_lock_dir(REPO_ROOT)
-    if lock_path != (
-        REPO_ROOT / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
-    ):
-        raise RuntimeAdmissionError("canonical quarantine target is invalid")
-    authority = lock_path.with_name(f"{lock_path.name}.authority")
-    guard_path = _recovery_guard_path(lock_path)
-    guard = _read_recovery_guard(guard_path) if guard_path.exists() else None
-    if guard is not None and (
-        guard.get("kind") != QUARANTINE_RECOVERY_KIND
-        or guard.get("lock_path") != str(lock_path)
-        or guard.get("phase")
-        not in {
-            "prepared",
-            "lock-renaming",
-            "lock-archived",
-            "authority-renaming",
-            "pair-archived",
-            "receipt-written",
-        }
-        or not isinstance(guard.get("pair"), Mapping)
-        or not isinstance(guard.get("archive"), str)
-    ):
-        raise RuntimeAdmissionError("quarantine recovery guard is not replay-safe")
-    if guard is None:
-        pair = _quarantine_pair(lock_path)
-        operation = hashlib.sha256(_canonical(pair)).hexdigest()
-        archive = lock_path.parent / QUARANTINE_ARCHIVE_DIR / operation
-        result: dict[str, Any] = {
-            "schema_version": SCHEMA_VERSION,
-            "kind": QUARANTINE_RECOVERY_KIND,
-            "lock_path": str(lock_path),
-            "pair": pair,
-            "archive": str(archive),
-            "phase": "prepared",
-        }
-    else:
-        pair = dict(guard["pair"])
-        archive = Path(guard["archive"])
-        if archive.parent != lock_path.parent / QUARANTINE_ARCHIVE_DIR:
-            raise RuntimeAdmissionError("quarantine recovery archive target is invalid")
-        result = dict(guard)
-    # Before the first durable guard, require all live safety evidence.  A
-    # resumed guarded operation still rechecks the runtime before it can clear
-    # the guard, but does not reinterpret the historical source artifact.
-    cpu = _recovery_cpu_evidence()
-    endpoints = _compose_loopback_endpoints(runner)
-    settlement = _settlement(runner, endpoints)
-    profile, _ = experiment.load_profile(experiment.DEFAULT_CONFIG, "bold-jll-128")
-    capture = capture_runtime(runner)
-    checks = evaluate_state(capture.public, profile, "baseline")
-    if not all(checks.values()):
-        raise RuntimeAdmissionError(
-            "quarantine recovery requires an exact idle baseline runtime"
-        )
-    result.update({"cpu": cpu, "checks": checks, "settlement": settlement})
-    if not execute:
-        return {**result, "executed": False}
-
-    archive_root = lock_path.parent / QUARANTINE_ARCHIVE_DIR
-    archive_root.mkdir(mode=0o700, exist_ok=True)
-    _private_directory(archive_root, message="quarantine forensic archive is unsafe")
-    if guard is None:
-        # The guard is the first durable operation artifact.  A crash before
-        # archive creation can therefore be replayed by creating the exact
-        # deterministic directory, rather than stranding the source pair.
-        _write_recovery_guard(guard_path, result, create=True)
-        archive.mkdir(mode=0o700, exist_ok=False)
-        _fsync_directory(archive_root)
-    elif not archive.exists():
-        if result.get("phase") != "prepared":
-            raise RuntimeAdmissionError("quarantine recovery archive is missing")
-        archive.mkdir(mode=0o700, exist_ok=False)
-        _fsync_directory(archive_root)
-    else:
-        try:
-            _private_directory(archive, message="quarantine recovery archive changed")
-        except RuntimeAdmissionError:
-            raise RuntimeAdmissionError("quarantine recovery archive changed")
-    # An interrupted first creation can leave the deterministic archive name
-    # visible but its parent-entry durability unknown.  A replay must repair
-    # that acknowledgement before it advances the guard or moves either
-    # canonical artifact into the archive.
-    _fsync_directory(archive_root)
-
-    phase = str(result["phase"])
-    if not _archive_phase_entries_are_exact(archive, phase):
-        raise RuntimeAdmissionError("quarantine recovery archive entries changed")
-    archived_lock = archive / lock_path.name
-    archived_authority = archive / authority.name
-    held_authority = authority
-    if phase in {"pair-archived", "receipt-written"}:
-        held_authority = archived_authority
-    elif phase == "authority-renaming" and not authority.exists():
-        held_authority = archived_authority
-    descriptor = os.open(held_authority, os.O_RDWR | os.O_NOFOLLOW)
-    try:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            raise RuntimeAdmissionError("quarantine authority is held") from exc
-        if phase == "prepared":
-            # Revalidate the exact pair immediately before mutation.  No generic
-            # lock, malformed authority, or a live owner can enter this path.
-            _empty_private_directory(
-                archive, message="quarantine recovery archive changed"
-            )
-            if _quarantine_pair(lock_path) != pair:
-                raise RuntimeAdmissionError("quarantine source changed before archive")
-            if not _same_identity(authority, pair["authority_identity"]):
-                raise RuntimeAdmissionError(
-                    "quarantine authority changed before archive"
-                )
-            result["phase"] = "lock-renaming"
-            _write_recovery_guard(guard_path, result, create=False)
-            phase = "lock-renaming"
-        if phase == "lock-renaming":
-            source_present = _same_identity(lock_path, pair["lock_identity"])
-            archived_present = _same_identity(archived_lock, pair["lock_identity"])
-            if source_present and not archived_present:
-                _rename_exact_to_empty_target(
-                    lock_path,
-                    archived_lock,
-                    pair["lock_identity"],
-                    message="quarantine lock handoff changed",
-                )
-            elif not source_present and archived_present:
-                # An archived expected inode is replayable only when its
-                # canonical source name is genuinely absent.  A foreign or
-                # reappeared source is forensic evidence, never absence.
-                if not _path_is_absent(lock_path):
-                    raise RuntimeAdmissionError("quarantine lock handoff changed")
-            else:
-                raise RuntimeAdmissionError("quarantine lock handoff changed")
-            if not _archive_entries_are_exact(archive, [archived_lock.name]):
-                raise RuntimeAdmissionError("quarantine lock archive entries changed")
-            # A cross-directory rename must first make the archive entry
-            # durable.  Fsyncing the source parent first could persist the
-            # removal while losing the only forensic destination on power loss.
-            _fsync_directory(archive)
-            _fsync_directory(lock_path.parent)
-            result["phase"] = "lock-archived"
-            _write_recovery_guard(guard_path, result, create=False)
-            phase = "lock-archived"
-        if phase == "lock-archived":
-            _require_phase_source_absence(phase, lock_path, authority)
-            if not _archive_entries_are_exact(archive, [archived_lock.name]):
-                raise RuntimeAdmissionError("quarantine lock archive entries changed")
-            if not _same_identity(archived_lock, pair["lock_identity"]):
-                raise RuntimeAdmissionError("quarantine lock archive changed")
-            if not _same_identity(authority, pair["authority_identity"]):
-                raise RuntimeAdmissionError(
-                    "quarantine authority changed before archive"
-                )
-            result["phase"] = "authority-renaming"
-            _write_recovery_guard(guard_path, result, create=False)
-            phase = "authority-renaming"
-        if phase == "authority-renaming":
-            _require_phase_source_absence(phase, lock_path, authority)
-            source_present = _same_identity(authority, pair["authority_identity"])
-            archived_present = _same_identity(
-                archived_authority, pair["authority_identity"]
-            )
-            if source_present and not archived_present:
-                _rename_exact_to_empty_target(
-                    authority,
-                    archived_authority,
-                    pair["authority_identity"],
-                    message="quarantine authority handoff changed",
-                )
-            elif not source_present and archived_present:
-                # Apply the same strict absence rule to the authority sidecar
-                # before any further paired-archive mutation can occur.
-                if not _path_is_absent(authority):
-                    raise RuntimeAdmissionError("quarantine authority handoff changed")
-            else:
-                raise RuntimeAdmissionError("quarantine authority handoff changed")
-            if not _archive_entries_are_exact(
-                archive, [archived_lock.name, archived_authority.name]
-            ):
-                raise RuntimeAdmissionError(
-                    "quarantine authority archive entries changed"
-                )
-            # Keep the paired authority handoff in the same destination-first
-            # durability order as the lock directory above.
-            _fsync_directory(archive)
-            _fsync_directory(lock_path.parent)
-            result["phase"] = "pair-archived"
-            _write_recovery_guard(guard_path, result, create=False)
-            phase = "pair-archived"
-        if phase == "pair-archived":
-            _require_phase_source_absence(phase, lock_path, authority)
-            if not _archive_pair_is_exact(archive, pair, receipt=None):
-                raise RuntimeAdmissionError("quarantine forensic pair changed")
-            receipt = archive / "recovery-receipt.json"
-            if receipt.exists():
-                _validate_recovery_receipt(
-                    receipt, lock_path=lock_path, archive=archive, pair=pair
-                )
-            else:
-                _write_recovery_receipt(receipt, result)
-            # A receipt may have been file-fsynced just before its containing
-            # archive directory fsync failed.  Replaying must repair that
-            # directory-entry durability before it advances the phase/guard.
-            _fsync_directory(archive)
-            if not _archive_pair_is_exact(archive, pair, receipt=True):
-                raise RuntimeAdmissionError("quarantine forensic pair changed")
-            _validate_recovery_receipt(
-                receipt, lock_path=lock_path, archive=archive, pair=pair
-            )
-            result["phase"] = "receipt-written"
-            _write_recovery_guard(guard_path, result, create=False)
-            phase = "receipt-written"
-        if phase != "receipt-written" or not _archive_pair_is_exact(
-            archive, pair, receipt=True
-        ):
-            raise RuntimeAdmissionError("quarantine recovery did not complete safely")
-        _require_phase_source_absence(phase, lock_path, authority)
-        _validate_recovery_receipt(
-            archive / "recovery-receipt.json",
-            lock_path=lock_path,
-            archive=archive,
-            pair=pair,
-        )
-        # A crash before this unlink leaves a replay-safe guard and the immutable
-        # forensic pair.  A crash after it is also safe: both original artifacts
-        # have already been durably archived and no stale authority remains.
-        guard_path.unlink()
-        _fsync_directory(guard_path.parent)
-        return {**result, "executed": True, "archive": str(archive)}
-    finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+    The runtime controller owns CLI and current-resource observation.  The
+    durable archive/replay protocol is isolated in ``cre_quarantine_recovery``.
+    """
+    return quarantine_recovery.recover_quarantine(
+        execute=execute,
+        config=_quarantine_recovery_config(),
+        callbacks=_quarantine_recovery_callbacks(runner),
+    )
 
 
 def preflight(

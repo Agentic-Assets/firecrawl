@@ -74,7 +74,10 @@ manual recovery. Never delete the sidecar as an automated repair step.
 ## Historic pytest quarantine residue
 
 `cre_capacity_runtime.py recover-quarantine` is the only operator path for the
-historic pre-persistent-authority pytest residue. It is dry-run by default,
+historic pre-persistent-authority pytest residue. Its CLI wrapper injects live
+runtime observation into the dedicated `cre_quarantine_recovery.py` archive and
+replay module, which owns the filesystem state machine and forensic receipt
+contract. It is dry-run by default,
 accepts no alternate lock path, and requires the exact canonical directory and
 its legacy two-field authority sibling, coherent active/quarantine marker
 hashes, a dead matching owner, a fresh 90-percent/30-second CPU observation,

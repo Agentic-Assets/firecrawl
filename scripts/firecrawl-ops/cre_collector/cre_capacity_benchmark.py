@@ -39,6 +39,7 @@ import cre_capacity_multisource_v1 as multisource
 import cre_capacity_runtime as capacity_runtime
 import cre_capacity_telemetry as capacity_telemetry
 import cre_checkpoint_refresh as checkpoint_refresh
+from cre_capacity_topology import compose_loopback_endpoints, default_command_runner
 from cre_checkpoint_refresh import (
     BENCHMARK_ACTIVE_MARKER,
     BENCHMARK_QUARANTINE_MARKER,
@@ -4578,9 +4579,7 @@ def run_benchmark(
     implementation = _implementation_manifest(repo_root)
     if _loopback_endpoints is None:
         try:
-            resolved = capacity_runtime._compose_loopback_endpoints(
-                capacity_runtime._default_runner
-            )
+            resolved = compose_loopback_endpoints(default_command_runner)
         except capacity_runtime.RuntimeAdmissionError as exc:
             raise BenchmarkError(
                 "resolved Compose loopback endpoints are unavailable"

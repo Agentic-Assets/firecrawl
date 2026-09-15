@@ -12,18 +12,19 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
 import cre_checkpoint_refresh as refresh
-import pytest
 
 
 @pytest.fixture(autouse=True)
 def _offline_compose_loopback_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep pure benchmark tests off the host while using the runtime resolver."""
     monkeypatch.setattr(
-        benchmark.capacity_runtime,
-        "_compose_loopback_endpoints",
+        benchmark,
+        "compose_loopback_endpoints",
         lambda _runner: {
             "api": "http://127.0.0.1:3002",
             "browser": "http://127.0.0.1:3003",
