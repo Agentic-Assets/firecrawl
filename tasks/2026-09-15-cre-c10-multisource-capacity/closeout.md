@@ -1,8 +1,8 @@
 # C10 multisource capacity closeout (2026-09-15)
 
-**Branch:** `feat/cre-c10-multisource-capacity`  
-**Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`  
-**Implementation commit:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643`  
+**Branch:** `feat/cre-c10-multisource-capacity`
+**Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
+**Implementation commit:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643`
 **State:** draft [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is open; no merge, runtime, or data mutation occurred.
 
 ## Goal
