@@ -621,6 +621,11 @@ def atomic_write_text(path: Path, text: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -655,6 +660,12 @@ def _lock_lease(lock_dir: Path) -> str | None:
 
 BENCHMARK_ACTIVE_MARKER = "capacity-benchmark-active.json"
 BENCHMARK_QUARANTINE_MARKER = "capacity-benchmark-quarantine.json"
+OPERATOR_RECOVERY_LEASE_PREFIX = "operator-recovery-required:"
+
+
+def _lock_requires_operator_recovery(lock_dir: Path) -> bool:
+    lease = _lock_lease(lock_dir)
+    return bool(lease and lease.startswith(OPERATOR_RECOVERY_LEASE_PREFIX))
 
 
 def _lock_interlocked(lock_dir: Path) -> bool:
@@ -715,6 +726,7 @@ def checkpoint_lock_dir(lock_dir_override: str | None) -> Path:
 @dataclass
 class SharedLock:
     path: Path
+    recovery_required: bool = False
     held: bool = False
     lease_token: str | None = field(default=None, init=False)
     directory_identity: tuple[int, int] | None = field(default=None, init=False)
@@ -731,6 +743,10 @@ class SharedLock:
             self.path.mkdir()
         except FileExistsError:
             original_identity = _lock_directory_identity(self.path)
+            if _lock_requires_operator_recovery(self.path):
+                raise LockHeldError(
+                    f"CRE lock requires operator recovery: {self.path}"
+                )
             owner = _lock_owner(self.path)
             if owner is None or _pid_alive(owner):
                 detail = (
@@ -763,6 +779,8 @@ class SharedLock:
             finally:
                 shutil.rmtree(reclaim, ignore_errors=True)
         lease_token = secrets.token_urlsafe(32)
+        if self.recovery_required:
+            lease_token = f"{OPERATOR_RECOVERY_LEASE_PREFIX}{lease_token}"
         try:
             atomic_write_text(self.path / "lease", f"{lease_token}\n")
             atomic_write_text(
@@ -899,6 +917,21 @@ class SharedLock:
         finally:
             os.close(directory_fd)
 
+    def clear_recovery_requirement(self) -> None:
+        """Durably make a successfully restored candidate lease reclaimable."""
+        if not self.recovery_required:
+            return
+        directory_fd = self._owned_directory_fd()
+        try:
+            replacement = secrets.token_urlsafe(32)
+            atomic_write_text(self.path / "lease", f"{replacement}\n")
+            if _lock_lease(self.path) != replacement:
+                raise LockHeldError("CRE recovery lease changed while clearing")
+            self.lease_token = replacement
+            self.recovery_required = False
+        finally:
+            os.close(directory_fd)
+
     def release(self) -> None:
         if (
             self.held
@@ -908,6 +941,7 @@ class SharedLock:
             and not _lock_interlocked(self.path)
             and self.benchmark_marker_identity is None
             and not self.retain_on_exit
+            and not self.recovery_required
         ):
             shutil.rmtree(self.path, ignore_errors=True)
         self.held = False

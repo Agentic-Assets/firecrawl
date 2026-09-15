@@ -16,6 +16,7 @@ import pytest
 
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
+import cre_checkpoint_refresh as refresh
 
 
 def _cache_record(index: int) -> dict[str, object]:
@@ -374,6 +375,27 @@ def _audit_file(tmp_path: Path, admission: dict[str, object]) -> Path:
         },
     )
     return path
+
+
+def test_atomic_private_json_reports_unknown_durability_after_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "capacity-benchmark-quarantine.json"
+    real_fsync = benchmark.os.fsync
+
+    def fail_directory_fsync(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("directory fsync failed after rename")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(benchmark.os, "fsync", fail_directory_fsync)
+    with pytest.raises(
+        benchmark.AtomicPrivateJsonDurabilityError,
+        match="rename durability is unknown",
+    ):
+        benchmark._atomic_private_json(target, {"state": "quarantined"})
+
+    assert target.is_file()
 
 
 def test_validate_admission_requires_exact_profile_and_idle_loopback() -> None:
@@ -2586,7 +2608,87 @@ def test_candidate_pair_retains_owned_lock_when_quarantine_publication_fails(
     assert not (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).exists()
     assert (lock_path / "pid").is_file()
     assert (lock_path / "lease").is_file()
-    with pytest.raises(benchmark.LockHeldError, match="live owner"):
+    with pytest.raises(benchmark.LockHeldError, match="requires operator recovery"):
+        benchmark.SharedLock(lock_path).acquire()
+
+
+def test_candidate_pair_unknown_quarantine_durability_blocks_stale_reclaim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    original_arm = benchmark.SharedLock.arm_benchmark
+    original_write = benchmark._atomic_private_json
+    real_fsync = benchmark.os.fsync
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_arm_once(_lock, _evidence):
+        monkeypatch.setattr(benchmark.SharedLock, "arm_benchmark", original_arm)
+        raise OSError("outer marker arm failed before create")
+
+    def rename_then_fail_directory_fsync(path: Path, value: object) -> None:
+        if path.name != benchmark.BENCHMARK_QUARANTINE_MARKER:
+            original_write(path, value)
+            return
+
+        def fail_directory_fsync(descriptor: int) -> None:
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise OSError("quarantine directory fsync failed after rename")
+            real_fsync(descriptor)
+
+        monkeypatch.setattr(benchmark.os, "fsync", fail_directory_fsync)
+        try:
+            original_write(path, value)
+        finally:
+            monkeypatch.setattr(benchmark.os, "fsync", real_fsync)
+
+    monkeypatch.setattr(benchmark.SharedLock, "arm_benchmark", fail_arm_once)
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "transition",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("rollback failed")),
+    )
+    monkeypatch.setattr(
+        benchmark, "_atomic_private_json", rename_then_fail_directory_fsync
+    )
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        benchmark.BenchmarkError,
+        match="durable quarantine evidence publication failed; operator intervention is required",
+    ):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    marker = lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER
+    assert marker.is_file()
+    assert refresh._lock_requires_operator_recovery(lock_path)
+    marker.unlink()
+    (lock_path / "pid").write_text("99999999 1\n", encoding="utf-8")
+    with pytest.raises(benchmark.LockHeldError, match="requires operator recovery"):
         benchmark.SharedLock(lock_path).acquire()
 
 

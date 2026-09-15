@@ -2125,6 +2125,38 @@ def test_lock_retain_on_exit_refuses_replaced_lease(tmp_path):
     assert refresh._lock_lease(lock.path) == "replacement-lease"
 
 
+def test_recovery_required_lease_blocks_stale_reclaim_but_plain_lease_does_not(
+    tmp_path,
+):
+    recovery_lock = refresh.SharedLock(
+        tmp_path / ".cre-recovery.lock", recovery_required=True
+    )
+    recovery_lock.acquire()
+    recovery_lock.release()
+    assert refresh._lock_requires_operator_recovery(recovery_lock.path)
+    (recovery_lock.path / "pid").write_text("99999999 1\n", encoding="utf-8")
+
+    with pytest.raises(refresh.LockHeldError, match="requires operator recovery"):
+        refresh.SharedLock(recovery_lock.path).acquire()
+
+    ordinary_lock = tmp_path / ".cre-ordinary.lock"
+    ordinary_lock.mkdir()
+    (ordinary_lock / "pid").write_text("99999999 1\n", encoding="utf-8")
+    (ordinary_lock / "lease").write_text("ordinary-lease\n", encoding="utf-8")
+    reclaimed = refresh.SharedLock(ordinary_lock)
+    reclaimed.acquire()
+    reclaimed.release()
+    assert not ordinary_lock.exists()
+
+
+def test_recovery_required_lease_clears_after_safe_completion(tmp_path):
+    lock = refresh.SharedLock(tmp_path / ".cre.lock", recovery_required=True)
+    lock.acquire()
+    lock.clear_recovery_requirement()
+    lock.release()
+    assert not lock.path.exists()
+
+
 @pytest.mark.parametrize("operation", ["arm", "disarm"])
 def test_lock_benchmark_fsync_failure_preserves_interlock(
     tmp_path, monkeypatch, operation

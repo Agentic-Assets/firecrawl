@@ -187,6 +187,18 @@ class BenchmarkError(ValueError):
     """The benchmark cannot safely proceed."""
 
 
+class AtomicPrivateJsonDurabilityError(BenchmarkError):
+    """The new name is visible, but its directory entry is not confirmed durable."""
+
+
+class QuarantineSharedLockError(BenchmarkError):
+    """Carry whether quarantine evidence was durably published before failure."""
+
+    def __init__(self, message: str, *, evidence_durable: bool) -> None:
+        super().__init__(message)
+        self.evidence_durable = evidence_durable
+
+
 def _operator_uid() -> int:
     """Return the ordinary operating-account UID or fail on privilege switching."""
     uid = os.getuid()
@@ -517,6 +529,7 @@ def _atomic_private_json(path: Path, value: Any) -> None:
     descriptor, temporary = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
+    renamed = False
     try:
         os.fchmod(descriptor, stat.S_IRUSR | stat.S_IWUSR)
         remaining = memoryview(encoded)
@@ -529,11 +542,24 @@ def _atomic_private_json(path: Path, value: Any) -> None:
         os.close(descriptor)
         descriptor = -1
         os.replace(temporary, path)
+        renamed = True
         directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(directory_fd)
+        except OSError as exc:
+            raise AtomicPrivateJsonDurabilityError(
+                f"private JSON rename durability is unknown: {path}"
+            ) from exc
         finally:
             os.close(directory_fd)
+    except AtomicPrivateJsonDurabilityError:
+        raise
+    except OSError as exc:
+        if renamed:
+            raise AtomicPrivateJsonDurabilityError(
+                f"private JSON rename durability is unknown: {path}"
+            ) from exc
+        raise
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -4390,11 +4416,25 @@ def _quarantine_shared_lock(
         # unlink fails, the marker still prevents SharedLock.release() from
         # removing this exact owned directory.
         _atomic_private_json(evidence_path, evidence)
+    except AtomicPrivateJsonDurabilityError as exc:
+        raise QuarantineSharedLockError(
+            "canonical shared lock quarantine evidence durability is unknown",
+            evidence_durable=False,
+        ) from exc
+    except (OSError, BenchmarkError) as exc:
+        raise QuarantineSharedLockError(
+            "canonical shared lock quarantine evidence was not published",
+            evidence_durable=False,
+        ) from exc
+    try:
         (lock_path / "pid").unlink()
         (lock_path / "lease").unlink()
         lock_path.chmod(0o700)
     except (OSError, BenchmarkError) as exc:
-        raise BenchmarkError("canonical shared lock quarantine failed") from exc
+        raise QuarantineSharedLockError(
+            "canonical shared lock quarantine finalization failed",
+            evidence_durable=True,
+        ) from exc
     return {
         "state": "quarantined",
         "evidence_path": str(evidence_path),
@@ -5000,12 +5040,12 @@ def run_counterbalanced_pair_step(
     if variant == "candidate":
         lock_path = canonical_shared_lock_dir(repo_root)
         try:
-            with SharedLock(lock_path) as held_lock:
+            with SharedLock(lock_path, recovery_required=True) as held_lock:
                 benchmark_error: BaseException | None = None
                 rollback_error: BaseException | None = None
                 quarantine_error: BaseException | None = None
                 retention_error: BaseException | None = None
-                quarantine_evidence_published = False
+                quarantine_evidence_durable = False
                 try:
                     # Candidate runtime is already active when its fresh admission is
                     # validated. Arm before any benchmark preflight so a malformed
@@ -5056,6 +5096,8 @@ def run_counterbalanced_pair_step(
                                 "candidate benchmark lost its canonical interlock"
                             )
                         held_lock.disarm_benchmark()
+                    if held_lock.benchmark_marker_identity is None:
+                        held_lock.clear_recovery_requirement()
                 except BaseException as exc:  # noqa: BLE001 - quarantine still follows
                     rollback_error = exc
                     # This in-memory retain gate is set before attempting the
@@ -5094,15 +5136,9 @@ def run_counterbalanced_pair_step(
                             )
                         except BaseException as exc:  # noqa: BLE001 - preserve stop
                             quarantine_error = exc
-                    try:
-                        quarantine_stat = (
-                            lock_path / BENCHMARK_QUARANTINE_MARKER
-                        ).lstat()
-                        quarantine_evidence_published = stat.S_ISREG(
-                            quarantine_stat.st_mode
-                        )
-                    except OSError:
-                        quarantine_evidence_published = False
+                            quarantine_evidence_durable = bool(
+                                getattr(exc, "evidence_durable", False)
+                            )
                 if (
                     rollback_error is not None
                     or quarantine_error is not None
@@ -5110,7 +5146,7 @@ def run_counterbalanced_pair_step(
                 ):
                     if (
                         quarantine_error is not None
-                        and not quarantine_evidence_published
+                        and not quarantine_evidence_durable
                     ):
                         failure_message = (
                             "candidate pair rollback or lock quarantine failed; "
