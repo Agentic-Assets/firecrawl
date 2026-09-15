@@ -4,16 +4,28 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 import cre_capacity_multisource_v1 as multisource
+import pytest
 
 ADMISSION_NOW = datetime(2026, 9, 14, 12, 5, tzinfo=timezone.utc)
 OBSERVED_AT = "2026-09-14T12:00:00Z"
+
+
+def _jll_search_query() -> str:
+    source = (Path(__file__).parents[1] / "sources" / "jll.ts").read_text()
+    match = re.search(
+        r"export const JLL_SEARCH_RESULTS_QUERY = `(.*?)`;", source, re.DOTALL
+    )
+    assert match is not None
+    return match.group(1)
+
+
+JLL_SEARCH_QUERY = _jll_search_query()
 
 
 def _hash(value: bytes) -> str:
@@ -140,9 +152,20 @@ def _jll_enumeration(
 ) -> tuple[Path, str, str, int]:
     """Create the sealed aggregate plus every native JLL GraphQL page receipt."""
     if filters is None:
-        filters = [("office", "sale", provider_ids)]
+        filters = [
+            (property_type, "sale", provider_ids)
+            for property_type in sorted(multisource._JLL_ENUMERATION_PROPERTY_TYPES)
+        ]
     manifests = []
+    resolution_manifests = []
     graphql_url = "https://property.jll.com/api/graphql"
+    entries = {
+        provider_id: (
+            f"search-{provider_id}",
+            f"https://property.jll.com/listings/search-{provider_id}",
+        )
+        for provider_id in provider_ids
+    }
     for filter_number, (property_type, tenure_type, filter_ids) in enumerate(filters):
         for page_number, skip in enumerate(range(0, len(filter_ids), 50) or (0,)):
             page_ids = filter_ids[skip : skip + 50]
@@ -151,7 +174,13 @@ def _jll_enumeration(
                     "data": {
                         "properties": {
                             "count": len(filter_ids),
-                            "items": [{"id": provider_id} for provider_id in page_ids],
+                            "items": [
+                                {
+                                    "id": entries[provider_id][0],
+                                    "pageUrl": entries[provider_id][1],
+                                }
+                                for provider_id in page_ids
+                            ],
                         }
                     }
                 },
@@ -184,7 +213,7 @@ def _jll_enumeration(
                     },
                     "request_body": json.dumps(
                         {
-                            "query": "query SearchResults { properties { count items { id } } }",
+                            "query": JLL_SEARCH_QUERY,
                             "variables": {
                                 "market": "us",
                                 "language": "en",
@@ -202,10 +231,43 @@ def _jll_enumeration(
                         },
                         separators=(",", ":"),
                     ),
+                    "query_sha256": _hash(JLL_SEARCH_QUERY.encode()),
                     "body": body,
                 },
             )
             manifests.append({"path": str(page_path), "sha256": page_hash})
+    for number, provider_id in enumerate(provider_ids):
+        search_id, canonical_url = entries[provider_id]
+        detail_path, detail_hash = _write(
+            root,
+            f"jll-detail-{number}.json",
+            {
+                "kind": "jll_detail_page_receipt_v1",
+                "request_url": canonical_url,
+                "final_url": canonical_url,
+                "http_status": 200,
+                "content_type": "text/html; charset=utf-8",
+                "observed_at": OBSERVED_AT,
+                "timing_ms": 10,
+                "body": _jll_raw_html(
+                    property_value={"id": provider_id, "pageUrl": canonical_url}
+                ),
+            },
+        )
+        resolution_path, resolution_hash = _write(
+            root,
+            f"jll-resolution-{number}.json",
+            {
+                "kind": "jll_detail_resolution_receipt_v1",
+                "search_id": search_id,
+                "canonical_url": canonical_url,
+                "detail_receipt_path": str(detail_path),
+                "detail_receipt_sha256": detail_hash,
+            },
+        )
+        resolution_manifests.append(
+            {"path": str(resolution_path), "sha256": resolution_hash}
+        )
     aggregate = {
         "kind": "jll_graphql_enumeration_aggregate_v1",
         "observed_at": OBSERVED_AT,
@@ -214,6 +276,7 @@ def _jll_enumeration(
         "truncated": False,
         "provider_ids": provider_ids,
         "page_receipts": manifests,
+        "resolution_receipts": resolution_manifests,
     }
     path, digest = _write(root, "enumeration-jll.json", aggregate)
     return path, digest, _hash(multisource._canonical(manifests)), len(provider_ids)
@@ -228,7 +291,11 @@ def _receipt_batch(
     jll_filters: list[tuple[str, str, list[str]]] | None = None,
 ) -> list[dict[str, Any]]:
     source = _source(source_key)
-    provider_ids = [f"{source_key}-{number:02d}" for number in range(count)]
+    provider_ids = (
+        [str(1_000_000 + number) for number in range(count)]
+        if source_key == "jll"
+        else [f"{source_key}-{number:02d}" for number in range(count)]
+    )
     if source_key == "jll":
         enum_path, enum_hash, body_hash, enumeration_total = _jll_enumeration(
             root, provider_ids, filters=jll_filters
@@ -259,7 +326,11 @@ def _receipt_batch(
     config_hash = multisource._sha256(multisource._canonical(config))
     rows = []
     for number, provider_id in enumerate(provider_ids):
-        canonical_url = f"https://{source['hosts'][0]}/listings/{provider_id}"
+        canonical_url = (
+            f"https://{source['hosts'][0]}/listings/search-{provider_id}"
+            if source_key == "jll"
+            else f"https://{source['hosts'][0]}/listings/{provider_id}"
+        )
         transaction_type = "sale" if number % 2 else "rent"
         property_type = "office" if number % 3 else "industrial"
         http_status = 404 if classification == "confirmed_current_attrition" else 200
@@ -558,21 +629,108 @@ def test_jll_native_aggregate_seals_paginated_pages_and_filter_overlap(
     evidence_root: Path,
 ) -> None:
     root = _private_dir(evidence_root, "jll-paginated-overlap")
-    provider_ids = [f"jll-{number:02d}" for number in range(51)]
+    provider_ids = [str(1_000_000 + number) for number in range(51)]
     rows = _receipt_batch(
         root,
         source_key="jll",
         count=len(provider_ids),
         jll_filters=[
-            ("office", "sale", provider_ids),
-            ("industrial", "rent", provider_ids[:10]),
+            (
+                property_type,
+                "sale",
+                provider_ids if property_type == "office" else provider_ids[:10],
+            )
+            for property_type in sorted(multisource._JLL_ENUMERATION_PROPERTY_TYPES)
         ],
     )
     cohort = _prevalidate(root, rows)
     aggregate = _read(Path(rows[0]["enumeration_receipt_path"]))
 
-    assert len(aggregate["page_receipts"]) == 3
+    assert len(aggregate["page_receipts"]) == 10
     assert cohort["sources"][0]["fresh_enumeration"]["total_population"] == 51
+    first_page = _read(Path(aggregate["page_receipts"][0]["path"]))
+    first_card = json.loads(first_page["body"])["data"]["properties"]["items"][0]
+    assert first_card["id"] != rows[0]["provider_id"]
+    assert rows[0]["provider_id"].isdigit()
+
+
+def test_jll_aggregate_requires_all_adapter_filters_and_pinned_query(
+    evidence_root: Path,
+) -> None:
+    root = _private_dir(evidence_root, "jll-filter-contract")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    aggregate = _read(Path(rows[0]["enumeration_receipt_path"]))
+    aggregate["page_receipts"] = [
+        manifest
+        for manifest in aggregate["page_receipts"]
+        if json.loads(_read(Path(manifest["path"]))["request_body"])["variables"][
+            "propertyTypes"
+        ][0]
+        != "office"
+    ]
+    _bind_enumeration_document(root, rows, aggregate)
+    with pytest.raises(
+        multisource.MultisourceError, match="JLL enumeration completeness"
+    ):
+        _prevalidate(root, rows)
+
+    root = _private_dir(evidence_root, "jll-invented-filter")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    aggregate = _read(Path(rows[0]["enumeration_receipt_path"]))
+    page = _read(Path(aggregate["page_receipts"][0]["path"]))
+    page["variables"]["propertyTypes"] = ["invented"]
+    request = json.loads(page["request_body"])
+    request["variables"]["propertyTypes"] = ["invented"]
+    page["request_body"] = json.dumps(request, separators=(",", ":"))
+    _rewrite_jll_page(root, rows, 0, page)
+    with pytest.raises(
+        multisource.MultisourceError, match="JLL enumeration completeness"
+    ):
+        _prevalidate(root, rows)
+
+    root = _private_dir(evidence_root, "jll-unrelated-query")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    aggregate = _read(Path(rows[0]["enumeration_receipt_path"]))
+    page = _read(Path(aggregate["page_receipts"][0]["path"]))
+    request = json.loads(page["request_body"])
+    request["query"] = "query SearchResults { unrelated { id } }"
+    page["request_body"] = json.dumps(request, separators=(",", ":"))
+    page["query_sha256"] = _hash(request["query"].encode())
+    _rewrite_jll_page(root, rows, 0, page)
+    with pytest.raises(
+        multisource.MultisourceError, match="JLL enumeration completeness"
+    ):
+        _prevalidate(root, rows)
+
+
+def test_jll_producer_roundtrip_and_unresolved_detail_fail_closed(
+    evidence_root: Path,
+) -> None:
+    root = _private_dir(evidence_root, "jll-producer")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    original = _read(Path(rows[0]["enumeration_receipt_path"]))
+    produced = multisource.produce_jll_enumeration_artifacts(
+        receipt_root=root,
+        page_receipt_paths=[Path(item["path"]) for item in original["page_receipts"]],
+        detail_receipt_paths=[
+            Path(_read(Path(item["path"]))["detail_receipt_path"])
+            for item in original["resolution_receipts"]
+        ],
+        aggregate_path=root / "produced-aggregate.json",
+    )
+    _bind_enumeration_document(root, rows, _read(Path(produced["path"])))
+    cohort = _prevalidate(root, rows)
+    assert cohort["sources"][0]["fresh_enumeration"]["total_population"] == 16
+
+    root = _private_dir(evidence_root, "jll-unresolved-detail")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    aggregate = _read(Path(rows[0]["enumeration_receipt_path"]))
+    aggregate["resolution_receipts"].pop()
+    _bind_enumeration_document(root, rows, aggregate)
+    with pytest.raises(
+        multisource.MultisourceError, match="JLL enumeration completeness"
+    ):
+        _prevalidate(root, rows)
 
 
 def test_jll_wrapper_cannot_claim_population_absent_from_native_pages(

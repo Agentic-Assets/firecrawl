@@ -34,8 +34,8 @@ headers.
 JLL is the only source with a native population verifier in v1. Its private
 aggregate must be exactly `jll_graphql_enumeration_aggregate_v1`, with
 `observed_at`, `total`, `complete`, `truncated`, `provider_ids`, and a nonempty
-`page_receipts` list. Every page manifest is exactly a private `path` plus its
-SHA-256. The aggregate is itself rehashed, and the row's
+`page_receipts` and `resolution_receipts` list. Every manifest is exactly a
+private `path` plus its SHA-256. The aggregate is itself rehashed, and the row's
 `enumeration_body_sha256` is the canonical digest of that sealed page-manifest
 list, not an unverified synthetic response body.
 
@@ -43,16 +43,28 @@ Each referenced page must be exactly `jll_graphql_page_receipt_v1` and retain
 the origin-bound `/api/graphql` request/final URL, HTTP 200 JSON transport,
 fresh UTC observation time, positive timing, `SearchResults` operation, raw
 GraphQL request body, request variables, and raw JSON response. The request
-body must bind the operation and variables below. Variables must retain the
-public JLL `us`/`en` market and language, one property-type filter, one
-sale-or-rent tenure
-filter, `take: 50`, a zero-based `skip` divisible by 50, and the pinned
-`dateModified desc` ordering. For every property-type/tenure filter, page
-counts must agree, skips must be the complete sequence without gaps or repeats,
-and each page must contain exactly its expected number of unique IDs. IDs may
-overlap across filters, but the reconciled unique union must exactly equal both
-the aggregate provider-ID set and its total. A former single synthetic response
-cannot satisfy this schema.
+body must match the pinned current adapter query SHA-256, operation, and
+variables. Variables must retain the public JLL `us`/`en` market and language,
+one sale-or-rent tenure across the whole aggregate, every exact current adapter
+property-type filter (`office`, `industrial`, `retail`, `land`, `medical`,
+`multifamily`, `lab`, `coworking`, and `data-center`), `take: 50`, a zero-based
+`skip` divisible by 50, and the pinned `dateModified desc` ordering. For every
+property-type/tenure filter, page counts must agree, skips must be the complete
+sequence without gaps or repeats, and each page must contain exactly its
+expected number of unique cards. The aggregate observation timestamp must fall
+inside the native page timestamp minimum/maximum bound. A former single
+synthetic response cannot satisfy this schema.
+
+Search-card `id` values are not cohort provider IDs. Every unique search ID and
+canonical `pageUrl` must have one sealed `jll_detail_resolution_receipt_v1`.
+That receipt rehashes a successfully fetched private detail-page artifact and
+binds the search identity and URL to `__NEXT_DATA__.props.pageProps.property`.
+Only that numeric detail `property.id` may appear in aggregate `provider_ids`
+or the row wrapper. Search IDs, canonical URLs, and detail IDs must each form a
+bijection: duplicate targets or detail IDs, changed detail URL, or an unresolved
+card fail closed. `produce_jll_enumeration_artifacts` is the offline producer
+for already captured private page/detail artifacts; it writes the aggregate and
+resolution receipts but makes no network call.
 
 All other sources remain screening-only until they receive reviewed native
 enumeration verifiers. Their asserted wrapper total never populates a page band,

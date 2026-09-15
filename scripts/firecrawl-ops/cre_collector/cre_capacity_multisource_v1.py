@@ -84,6 +84,23 @@ _JLL_GRAPHQL_ORDER_BY = {
     "direction": "desc",
     "imagePriority": True,
 }
+_JLL_ENUMERATION_PROPERTY_TYPES = frozenset(
+    {
+        "office",
+        "industrial",
+        "retail",
+        "land",
+        "medical",
+        "multifamily",
+        "lab",
+        "coworking",
+        "data-center",
+    }
+)
+_JLL_SUPPORTED_TENURES = frozenset({"sale", "rent"})
+_JLL_SEARCH_RESULTS_QUERY_SHA256 = (
+    "a37aa4cde62fc942439ef618db119157f6158a70a9700acc7cd44a5d6577a9b6"
+)
 # This is a versioned prevalidation lane, not a generic registry projection.
 # Keep the review matrix adjacent to its verifier so a config edit cannot point
 # an admitted cohort at a stale proxy/search host by accident.
@@ -473,7 +490,7 @@ def _enumeration_binding(
     root: Path,
     now_utc: datetime,
     maximum_age: int,
-) -> tuple[str, int, str, bool]:
+) -> tuple[str, int, str, bool, dict[str, str] | None]:
     """Rehash an enumeration receipt instead of trusting a row's assertion."""
     enum_path_value = receipt.get("enumeration_receipt_path")
     if not isinstance(enum_path_value, str):
@@ -497,6 +514,7 @@ def _enumeration_binding(
             "truncated",
             "provider_ids",
             "page_receipts",
+            "resolution_receipts",
         }
         if jll_aggregate
         else {
@@ -542,6 +560,8 @@ def _enumeration_binding(
                 document["kind"] != "jll_graphql_enumeration_aggregate_v1"
                 or not isinstance(document["page_receipts"], list)
                 or not document["page_receipts"]
+                or not isinstance(document["resolution_receipts"], list)
+                or not document["resolution_receipts"]
             )
         )
         or (
@@ -585,8 +605,9 @@ def _enumeration_binding(
     # wrapper can prove capture integrity, but it cannot establish population
     # size or workload until the provider response itself agrees exactly.
     population_verified = False
+    resolution_targets: dict[str, str] | None = None
     if jll_aggregate:
-        population_verified = _verified_jll_enumeration_population(
+        resolution_targets = _verified_jll_enumeration_population(
             document,
             provider_ids=document["provider_ids"],
             total=total,
@@ -595,9 +616,10 @@ def _enumeration_binding(
             now_utc=now_utc,
             maximum_age=maximum_age,
         )
+        population_verified = isinstance(resolution_targets, dict)
         if not population_verified:
             raise MultisourceError("JLL enumeration completeness proof is invalid")
-    return identity, total, enum_hash, population_verified
+    return identity, total, enum_hash, population_verified, resolution_targets
 
 
 def _verified_jll_enumeration_population(
@@ -609,13 +631,14 @@ def _verified_jll_enumeration_population(
     source: Mapping[str, Any],
     now_utc: datetime,
     maximum_age: int,
-) -> bool:
+) -> dict[str, str] | bool:
     """Validate every native JLL GraphQL page sealed by the aggregate receipt."""
     page_receipts = aggregate.get("page_receipts")
     if not isinstance(page_receipts, list) or not page_receipts:
         return False
     pages_by_filter: dict[tuple[str, str], list[tuple[int, int, list[str]]]] = {}
-    all_ids: list[str] = []
+    page_timestamps: list[datetime] = []
+    search_targets: dict[str, str] = {}
     seen_artifacts: set[tuple[str, str]] = set()
     for manifest in page_receipts:
         if not isinstance(manifest, Mapping) or set(manifest) != {"path", "sha256"}:
@@ -649,6 +672,7 @@ def _verified_jll_enumeration_population(
             "operation_name",
             "variables",
             "request_body",
+            "query_sha256",
             "body",
         }
         if not isinstance(page_receipt, Mapping) or set(page_receipt) != required:
@@ -664,6 +688,7 @@ def _verified_jll_enumeration_population(
             or "application/json" not in page_receipt["content_type"].casefold()
             or not _finite_positive_timing(page_receipt["timing_ms"])
             or not isinstance(page_receipt["request_body"], str)
+            or page_receipt["query_sha256"] != _JLL_SEARCH_RESULTS_QUERY_SHA256
             or not isinstance(page_receipt["body"], str)
         ):
             return False
@@ -683,6 +708,8 @@ def _verified_jll_enumeration_population(
             or set(request_payload) != {"query", "variables", "operationName"}
             or not isinstance(request_payload["query"], str)
             or not request_payload["query"].strip()
+            or _sha256(request_payload["query"].encode())
+            != page_receipt["query_sha256"]
             or request_payload["operationName"] != page_receipt["operation_name"]
             or request_payload["variables"] != variables
         ):
@@ -709,7 +736,7 @@ def _verified_jll_enumeration_population(
             or not property_types[0].strip()
             or not isinstance(tenure_types, list)
             or len(tenure_types) != 1
-            or tenure_types[0] not in {"sale", "rent"}
+            or tenure_types[0] not in _JLL_SUPPORTED_TENURES
             or type(skip) is not int
             or skip < 0
             or skip % _JLL_PAGE_TAKE != 0
@@ -731,15 +758,44 @@ def _verified_jll_enumeration_population(
         items = properties.get("items")
         if type(count) is not int or count < 0 or not isinstance(items, list):
             return False
-        ids = [item.get("id") for item in items if isinstance(item, Mapping)]
-        if len(ids) != len(items) or not all(
-            isinstance(identifier, str) and identifier.strip() for identifier in ids
-        ):
-            return False
+        ids: list[str] = []
+        for item in items:
+            if not isinstance(item, Mapping):
+                return False
+            search_id = item.get("id")
+            if not isinstance(search_id, str) or not search_id.strip():
+                return False
+            try:
+                target = _canonical_jll_listing_url(item.get("pageUrl"), source)
+            except MultisourceError:
+                return False
+            existing_target = search_targets.get(search_id)
+            if existing_target is not None and existing_target != target:
+                return False
+            if target in search_targets.values() and existing_target != target:
+                return False
+            search_targets[search_id] = target
+            ids.append(search_id)
         pages_by_filter.setdefault((property_types[0], tenure_types[0]), []).append(
             (skip, count, ids)
         )
-        all_ids.extend(ids)
+        page_timestamps.append(
+            datetime.fromisoformat(
+                page_receipt["observed_at"].removesuffix("Z") + "+00:00"
+            )
+        )
+    if (
+        {property_type for property_type, _ in pages_by_filter}
+        != _JLL_ENUMERATION_PROPERTY_TYPES
+        or len({tenure for _, tenure in pages_by_filter}) != 1
+        or not page_timestamps
+    ):
+        return False
+    aggregate_observed = datetime.fromisoformat(
+        aggregate["observed_at"].removesuffix("Z") + "+00:00"
+    )
+    if not min(page_timestamps) <= aggregate_observed <= max(page_timestamps):
+        return False
     for pages in pages_by_filter.values():
         counts = {count for _, count, _ in pages}
         if len(counts) != 1:
@@ -757,11 +813,15 @@ def _verified_jll_enumeration_population(
             filter_ids.extend(ids)
         if len(filter_ids) != count or len(set(filter_ids)) != count:
             return False
-    unique_ids = set(all_ids)
-    return (
-        len(unique_ids) == total
-        and len(provider_ids) == total
-        and set(provider_ids) == unique_ids
+    return _verified_jll_resolution_targets(
+        aggregate,
+        search_targets=search_targets,
+        provider_ids=provider_ids,
+        total=total,
+        root=root,
+        source=source,
+        now_utc=now_utc,
+        maximum_age=maximum_age,
     )
 
 
@@ -783,6 +843,143 @@ def _valid_jll_graphql_url(value: Any, source: Mapping[str, Any]) -> bool:
         and parsed.username is None
         and parsed.password is None
         and parsed.port is None
+    )
+
+
+def _verified_jll_resolution_targets(
+    aggregate: Mapping[str, Any],
+    *,
+    search_targets: Mapping[str, str],
+    provider_ids: list[str],
+    total: int,
+    root: Path,
+    source: Mapping[str, Any],
+    now_utc: datetime,
+    maximum_age: int,
+) -> dict[str, str] | bool:
+    """Resolve every search-card identity to its sealed detail-page numeric ID."""
+    manifests = aggregate.get("resolution_receipts")
+    if not isinstance(manifests, list) or len(manifests) != len(search_targets):
+        return False
+    resolved_search_ids: set[str] = set()
+    detail_targets: dict[str, str] = {}
+    seen_artifacts: set[tuple[str, str]] = set()
+    for manifest in manifests:
+        if not isinstance(manifest, Mapping) or set(manifest) != {"path", "sha256"}:
+            return False
+        path_value = manifest.get("path")
+        if not isinstance(path_value, str):
+            return False
+        try:
+            resolution_path = _private_regular(
+                Path(path_value), MAX_RAW_RECEIPT_BYTES, root=root
+            )
+            resolution_hash = _hex_digest(
+                manifest.get("sha256"), label="JLL resolution receipt"
+            )
+        except MultisourceError:
+            return False
+        artifact = (str(resolution_path), resolution_hash)
+        if (
+            artifact in seen_artifacts
+            or _file_sha256(resolution_path) != resolution_hash
+        ):
+            return False
+        seen_artifacts.add(artifact)
+        try:
+            resolution = _read_json(resolution_path, MAX_RAW_RECEIPT_BYTES)
+        except MultisourceError:
+            return False
+        required = {
+            "kind",
+            "search_id",
+            "canonical_url",
+            "detail_receipt_path",
+            "detail_receipt_sha256",
+        }
+        if not isinstance(resolution, Mapping) or set(resolution) != required:
+            return False
+        search_id = resolution.get("search_id")
+        if (
+            resolution.get("kind") != "jll_detail_resolution_receipt_v1"
+            or not isinstance(search_id, str)
+            or search_id in resolved_search_ids
+            or search_targets.get(search_id) != resolution.get("canonical_url")
+        ):
+            return False
+        try:
+            canonical_url = _canonical_jll_listing_url(
+                resolution["canonical_url"], source
+            )
+            detail_path = _private_regular(
+                Path(resolution["detail_receipt_path"]),
+                MAX_RAW_RECEIPT_BYTES,
+                root=root,
+            )
+            detail_hash = _hex_digest(
+                resolution["detail_receipt_sha256"], label="JLL detail receipt"
+            )
+        except (KeyError, MultisourceError, TypeError):
+            return False
+        if _file_sha256(detail_path) != detail_hash:
+            return False
+        try:
+            detail = _read_json(detail_path, MAX_RAW_RECEIPT_BYTES)
+        except MultisourceError:
+            return False
+        detail_required = {
+            "kind",
+            "request_url",
+            "final_url",
+            "http_status",
+            "content_type",
+            "observed_at",
+            "timing_ms",
+            "body",
+        }
+        if not isinstance(detail, Mapping) or set(detail) != detail_required:
+            return False
+        if (
+            detail.get("kind") != "jll_detail_page_receipt_v1"
+            or _canonical_jll_listing_url(detail.get("request_url"), source)
+            != canonical_url
+            or detail.get("final_url") != detail.get("request_url")
+            or detail.get("http_status") != 200
+            or not isinstance(detail.get("content_type"), str)
+            or "text/html" not in detail["content_type"].casefold()
+            or not _finite_positive_timing(detail.get("timing_ms"))
+            or not isinstance(detail.get("body"), str)
+        ):
+            return False
+        try:
+            _observed_at(
+                detail["observed_at"], now_utc=now_utc, maximum_age=maximum_age
+            )
+        except MultisourceError:
+            return False
+        property_value = _jll_next_property({"body": {"rawHtml": detail["body"]}})
+        detail_id = property_value.get("id") if property_value else None
+        detail_url = property_value.get("pageUrl") if property_value else None
+        if (
+            not isinstance(detail_id, str)
+            or re.fullmatch(r"[0-9]+", detail_id) is None
+            or detail_id in detail_targets
+        ):
+            return False
+        try:
+            if _canonical_jll_listing_url(detail_url, source) != canonical_url:
+                return False
+        except MultisourceError:
+            return False
+        resolved_search_ids.add(search_id)
+        detail_targets[detail_id] = canonical_url
+    return (
+        detail_targets
+        if resolved_search_ids == set(search_targets)
+        and len(detail_targets) == total
+        and set(provider_ids) == set(detail_targets)
+        and all(re.fullmatch(r"[0-9]+", identifier) for identifier in provider_ids)
+        else False
     )
 
 
@@ -1144,6 +1341,7 @@ def _receipt_summary(
         population_total,
         enumeration_receipt_sha256,
         population_verified,
+        resolution_targets,
     ) = _enumeration_binding(
         receipt,
         source,
@@ -1152,6 +1350,11 @@ def _receipt_summary(
         maximum_age=maximum_age,
     )
     canonical_url = _canonical_target_url(receipt["canonical_url"], source)
+    if source["key"] == "jll" and (
+        resolution_targets is None
+        or resolution_targets.get(receipt["provider_id"]) != canonical_url
+    ):
+        raise MultisourceError("receipt is not bound to a resolved JLL detail identity")
     _public_url(receipt.get("request_url"), source)
     _public_url(receipt.get("final_url"), source)
     _observed_at(receipt.get("observed_at"), now_utc=now_utc, maximum_age=maximum_age)
@@ -1657,6 +1860,123 @@ def prevalidate_cohort(
             "primary_measurement_retries": 0,
         },
     }
+
+
+def produce_jll_enumeration_artifacts(
+    *,
+    receipt_root: Path,
+    page_receipt_paths: list[Path],
+    detail_receipt_paths: list[Path],
+    aggregate_path: Path,
+) -> dict[str, Any]:
+    """Seal existing private JLL captures into aggregate and resolution receipts.
+
+    This is deliberately an offline producer: callers supply already-captured
+    native GraphQL page and detail-page artifacts. It performs no transport and
+    writes only the requested aggregate plus its sibling resolution receipts.
+    The admission verifier remains the authority that validates the full schema.
+    """
+    root = _private_root(receipt_root)
+    parent = aggregate_path.resolve().parent
+    if parent != root or aggregate_path.exists():
+        raise MultisourceError("aggregate output must be a new file in receipt root")
+    if not page_receipt_paths or not detail_receipt_paths:
+        raise MultisourceError("JLL producer requires page and detail artifacts")
+    source = {"key": "jll", "hosts": ["property.jll.com"]}
+    page_manifests: list[dict[str, str]] = []
+    search_targets: dict[str, str] = {}
+    observed: list[datetime] = []
+    for path in page_receipt_paths:
+        private_path = _private_regular(
+            path.resolve(), MAX_RAW_RECEIPT_BYTES, root=root
+        )
+        page = _read_json(private_path, MAX_RAW_RECEIPT_BYTES)
+        if not isinstance(page, Mapping) or not isinstance(page.get("body"), str):
+            raise MultisourceError("JLL producer page artifact is malformed")
+        try:
+            payload = json.loads(page["body"])
+            items = payload["data"]["properties"]["items"]
+            page_observed = _observed_at(
+                page.get("observed_at"),
+                now_utc=datetime.now(timezone.utc),
+                maximum_age=365 * 24 * 60 * 60,
+            )
+        except (KeyError, TypeError, MultisourceError, json.JSONDecodeError) as exc:
+            raise MultisourceError("JLL producer page artifact is malformed") from exc
+        if not isinstance(items, list):
+            raise MultisourceError("JLL producer page artifact is malformed")
+        for item in items:
+            if not isinstance(item, Mapping) or not isinstance(item.get("id"), str):
+                raise MultisourceError("JLL producer search identity is malformed")
+            target = _canonical_jll_listing_url(item.get("pageUrl"), source)
+            existing = search_targets.get(item["id"])
+            if existing is not None and existing != target:
+                raise MultisourceError("JLL producer search identity is ambiguous")
+            if target in search_targets.values() and existing != target:
+                raise MultisourceError("JLL producer search target is ambiguous")
+            search_targets[item["id"]] = target
+        observed.append(
+            datetime.fromisoformat(page_observed.removesuffix("Z") + "+00:00")
+        )
+        page_manifests.append(
+            {"path": str(private_path), "sha256": _file_sha256(private_path)}
+        )
+    detail_by_target: dict[str, tuple[Path, str, str]] = {}
+    for path in detail_receipt_paths:
+        private_path = _private_regular(
+            path.resolve(), MAX_RAW_RECEIPT_BYTES, root=root
+        )
+        detail = _read_json(private_path, MAX_RAW_RECEIPT_BYTES)
+        if not isinstance(detail, Mapping) or not isinstance(detail.get("body"), str):
+            raise MultisourceError("JLL producer detail artifact is malformed")
+        property_value = _jll_next_property({"body": {"rawHtml": detail["body"]}})
+        detail_id = property_value.get("id") if property_value else None
+        detail_url = property_value.get("pageUrl") if property_value else None
+        if not isinstance(detail_id, str) or re.fullmatch(r"[0-9]+", detail_id) is None:
+            raise MultisourceError("JLL producer detail identity is malformed")
+        target = _canonical_jll_listing_url(detail_url, source)
+        if target in detail_by_target:
+            raise MultisourceError("JLL producer detail target is duplicated")
+        detail_by_target[target] = (private_path, _file_sha256(private_path), detail_id)
+    if set(detail_by_target) != set(search_targets.values()):
+        raise MultisourceError("JLL producer has unresolved search targets")
+    detail_ids = [detail_by_target[target][2] for target in search_targets.values()]
+    if len(set(detail_ids)) != len(detail_ids):
+        raise MultisourceError("JLL producer detail identities are duplicated")
+    resolution_manifests: list[dict[str, str]] = []
+    for index, (search_id, target) in enumerate(sorted(search_targets.items())):
+        detail_path, detail_hash, _ = detail_by_target[target]
+        resolution_path = root / f"{aggregate_path.stem}.resolution-{index}.json"
+        resolution_raw = _canonical(
+            {
+                "kind": "jll_detail_resolution_receipt_v1",
+                "search_id": search_id,
+                "canonical_url": target,
+                "detail_receipt_path": str(detail_path),
+                "detail_receipt_sha256": detail_hash,
+            }
+        )
+        resolution_path.write_bytes(resolution_raw)
+        resolution_path.chmod(0o600)
+        resolution_manifests.append(
+            {"path": str(resolution_path), "sha256": _sha256(resolution_raw)}
+        )
+    aggregate = {
+        "kind": "jll_graphql_enumeration_aggregate_v1",
+        "observed_at": max(observed)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
+        "total": len(detail_ids),
+        "complete": True,
+        "truncated": False,
+        "provider_ids": sorted(detail_ids, key=int),
+        "page_receipts": page_manifests,
+        "resolution_receipts": resolution_manifests,
+    }
+    aggregate_raw = _canonical(aggregate)
+    aggregate_path.write_bytes(aggregate_raw)
+    aggregate_path.chmod(0o600)
+    return {"path": str(aggregate_path), "sha256": _sha256(aggregate_raw)}
 
 
 def main(argv: list[str] | None = None) -> int:
