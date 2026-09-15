@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 import cre_capacity_experiment as experiment
+import pytest
 
 
 def test_bold_profile_resolves_global_budget_and_bounded_adapter() -> None:
@@ -21,6 +20,32 @@ def test_bold_profile_resolves_global_budget_and_bounded_adapter() -> None:
     assert plan["planned"]["full_path_no_write_adapter"] == ("cre_capacity_benchmark")
     assert plan["execution"]["startable"] is False
     assert plan["execution"]["blockers"] == ["runtime_evidence_unverified"]
+
+
+def test_baseline_profile_declares_the_same_admitted_no_write_workload() -> None:
+    baseline, baseline_digest = experiment.load_profile(
+        experiment.DEFAULT_CONFIG, "production-current"
+    )
+    candidate, _candidate_digest = experiment.load_profile(
+        experiment.DEFAULT_CONFIG, "bold-jll-128"
+    )
+    plan = experiment.resolve(
+        baseline,
+        "production-current",
+        baseline_digest,
+        baseline["runtime_baseline"],
+    )
+
+    assert (
+        baseline["workload"]
+        == candidate["workload"]
+        == experiment.JLL_BENCHMARK_WORKLOAD
+    )
+    assert baseline["planned"]["full_path_no_write_adapter"] == (
+        "cre_capacity_benchmark"
+    )
+    assert plan["execution"]["technical_admission_required"] is True
+    assert plan["execution"]["blockers"] == ["technical_admission_required"]
 
 
 def test_effective_runtime_match_is_distinguished_from_proposed_cpu_settings() -> None:

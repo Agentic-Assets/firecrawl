@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import signal
 import stat
 import subprocess
@@ -34,10 +35,12 @@ from statistics import median
 from typing import Any
 
 import cre_capacity_experiment as experiment
+import cre_capacity_multisource_v1 as multisource
 import cre_capacity_runtime as capacity_runtime
 import cre_capacity_telemetry as capacity_telemetry
 import cre_checkpoint_refresh as checkpoint_refresh
 from cre_checkpoint_refresh import (
+    BENCHMARK_ACTIVE_MARKER,
     BENCHMARK_QUARANTINE_MARKER,
     LockHeldError,
     SharedLock,
@@ -48,11 +51,25 @@ SCHEMA_VERSION = 1
 SAMPLE_KIND = "cre_jll_capacity_sample"
 ADMISSION_KIND = "cre_capacity_runtime_admission"
 RESULT_KIND = "cre_jll_capacity_benchmark"
-SUPPORTED_BASELINE_ADMISSION_AVAILABLE = False
+# A baseline run now has the same workload, one-use admission, and worker
+# evidence contract as the candidate.  Comparison remains fail-closed unless
+# both independently produced result artifacts satisfy that contract.
+SUPPORTED_BASELINE_ADMISSION_AVAILABLE = True
 MAX_SAMPLE_BYTES = 8 * 1024 * 1024
 MAX_CACHE_RECORD_BYTES = 4 * 1024 * 1024
 MAX_WORKER_OUTPUT_BYTES = 512 * 1024 * 1024
 REVIEW_BENCHMARK_GRANT_MAX_BYTES = 64 * 1024
+COMPARISON_RESULT_MAX_BYTES = 64 * 1024 * 1024
+PAIR_SEQUENCE = (
+    "baseline",
+    "candidate",
+    "candidate",
+    "baseline",
+    "baseline",
+    "candidate",
+)
+PAIR_MAX_GAP_SECONDS = 4 * 60 * 60
+PAIR_MIN_GAP_SECONDS = 1
 NEXT_DATA = re.compile(
     r"<script[^>]+id=[\"']__NEXT_DATA__[\"'][^>]*>(.*?)</script>",
     re.IGNORECASE | re.DOTALL,
@@ -76,6 +93,7 @@ EXPECTED_FRESHNESS_POLICY = {
 IMPLEMENTATION_PATHS = (
     "scripts/firecrawl-ops/cre_collector/cre_capacity_benchmark.py",
     "scripts/firecrawl-ops/cre_collector/cre_capacity_experiment.py",
+    "scripts/firecrawl-ops/cre_collector/cre_capacity_multisource_v1.py",
     "scripts/firecrawl-ops/cre_collector/cre_capacity_runtime.py",
     "scripts/firecrawl-ops/cre_collector/cre_capacity_telemetry.py",
     "scripts/firecrawl-ops/cre_collector/cre_checkpoint_refresh.py",
@@ -167,6 +185,18 @@ finally:
 
 class BenchmarkError(ValueError):
     """The benchmark cannot safely proceed."""
+
+
+class AtomicPrivateJsonDurabilityError(BenchmarkError):
+    """The new name is visible, but its directory entry is not confirmed durable."""
+
+
+class QuarantineSharedLockError(BenchmarkError):
+    """Carry whether quarantine evidence was durably published before failure."""
+
+    def __init__(self, message: str, *, evidence_durable: bool) -> None:
+        super().__init__(message)
+        self.evidence_durable = evidence_durable
 
 
 def _operator_uid() -> int:
@@ -499,6 +529,7 @@ def _atomic_private_json(path: Path, value: Any) -> None:
     descriptor, temporary = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
+    renamed = False
     try:
         os.fchmod(descriptor, stat.S_IRUSR | stat.S_IWUSR)
         remaining = memoryview(encoded)
@@ -511,11 +542,24 @@ def _atomic_private_json(path: Path, value: Any) -> None:
         os.close(descriptor)
         descriptor = -1
         os.replace(temporary, path)
+        renamed = True
         directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(directory_fd)
+        except OSError as exc:
+            raise AtomicPrivateJsonDurabilityError(
+                f"private JSON rename durability is unknown: {path}"
+            ) from exc
         finally:
             os.close(directory_fd)
+    except AtomicPrivateJsonDurabilityError:
+        raise
+    except OSError as exc:
+        if renamed:
+            raise AtomicPrivateJsonDurabilityError(
+                f"private JSON rename durability is unknown: {path}"
+            ) from exc
+        raise
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -590,6 +634,19 @@ def _experiment_contract() -> dict[str, Any]:
     workload = candidate.get("workload")
     if baseline_digest != candidate_digest or not isinstance(workload, dict):
         raise BenchmarkError("central experiment configuration is inconsistent")
+    controls = document.get("benchmark_controls")
+    pair = (
+        controls.get("counterbalanced_pair") if isinstance(controls, Mapping) else None
+    )
+    if (
+        not isinstance(pair, Mapping)
+        or set(pair) != {"sequence", "max_gap_seconds", "min_gap_seconds"}
+        or tuple(pair.get("sequence", ())) != PAIR_SEQUENCE
+        or type(pair.get("max_gap_seconds")) is not int
+        or type(pair.get("min_gap_seconds")) is not int
+        or not 0 <= pair["min_gap_seconds"] <= pair["max_gap_seconds"]
+    ):
+        raise BenchmarkError("central counterbalanced-pair controls are invalid")
     return {
         "config_sha256": candidate_digest,
         "workload": dict(workload),
@@ -598,6 +655,7 @@ def _experiment_contract() -> dict[str, Any]:
             "baseline": dict(baseline["requested"]),
             "candidate": dict(candidate["requested"]),
         },
+        "counterbalanced_pair": dict(pair),
     }
 
 
@@ -715,23 +773,19 @@ def _historic_fidelity(
             "size": {"surface_area": _present(property_value.get("surfaceArea"))},
             "brokers_contacts": {"contacts": _present(brokers)},
             "documents": {
-                "brochures": bool(_string_urls(property_value.get("brochures"))),
-                "floor_plans": bool(_floor_plan_urls(property_value.get("floorPlans"))),
+                "brochures": bool(_jll_native_asset_urls(property_value, "brochures")),
+                "floor_plans": bool(
+                    _jll_native_asset_urls(property_value, "floorPlans")
+                ),
             },
-            "images": {"photos": bool(_string_urls(property_value.get("images")))},
+            "images": {
+                "photos": bool(_jll_native_asset_urls(property_value, "images"))
+            },
             "media": {
-                "videos": bool(_string_urls(property_value.get("videos"))),
+                "videos": bool(_jll_native_asset_urls(property_value, "videos")),
                 "tours_360": bool(
-                    _string_urls(
-                        property_value.get("virtualTours")
-                        if isinstance(property_value.get("virtualTours"), list)
-                        else [property_value.get("virtualTours")]
-                    )
-                    or _string_urls(
-                        property_value.get("view360URLs")
-                        if isinstance(property_value.get("view360URLs"), list)
-                        else [property_value.get("view360URLs")]
-                    )
+                    _jll_native_asset_urls(property_value, "virtualTours")
+                    or _jll_native_asset_urls(property_value, "view360URLs")
                 ),
                 "other": bool(
                     _string_urls(
@@ -746,22 +800,29 @@ def _historic_fidelity(
     )
 
 
+def _jll_native_asset_urls(
+    property_value: Mapping[str, Any], raw_channel: str
+) -> list[str]:
+    return sorted(
+        {
+            url
+            for item in multisource._jll_asset_values(
+                raw_channel, property_value.get(raw_channel)
+            )
+            if (url := multisource._public_asset_url(item))
+        }
+    )
+
+
 def _native_evidence(property_value: Mapping[str, Any]) -> dict[str, Any]:
+
     channels = {
-        "images": _string_urls(property_value.get("images")),
-        "brochures": _string_urls(property_value.get("brochures")),
-        "floor_plans": _floor_plan_urls(property_value.get("floorPlans")),
-        "videos": _string_urls(property_value.get("videos")),
-        "virtual_tours": _string_urls(
-            property_value.get("virtualTours")
-            if isinstance(property_value.get("virtualTours"), list)
-            else [property_value.get("virtualTours")]
-        ),
-        "view_360": _string_urls(
-            property_value.get("view360URLs")
-            if isinstance(property_value.get("view360URLs"), list)
-            else [property_value.get("view360URLs")]
-        ),
+        "images": _jll_native_asset_urls(property_value, "images"),
+        "brochures": _jll_native_asset_urls(property_value, "brochures"),
+        "floor_plans": _jll_native_asset_urls(property_value, "floorPlans"),
+        "videos": _jll_native_asset_urls(property_value, "videos"),
+        "virtual_tours": _jll_native_asset_urls(property_value, "virtualTours"),
+        "view_360": _jll_native_asset_urls(property_value, "view360URLs"),
     }
     return {
         "counts": {key: len(values) for key, values in channels.items()},
@@ -1174,11 +1235,20 @@ def validate_admission(
     ):
         raise BenchmarkError("technical admission receipt kind is invalid")
     contract = _experiment_contract()
+    variant = (
+        "baseline"
+        if profile_name == contract["profiles"]["baseline"]
+        else "candidate"
+        if profile_name == contract["profiles"]["candidate"]
+        else None
+    )
     if (
-        profile_name != contract["profiles"]["candidate"]
+        variant is None
         or config_sha256 != contract["config_sha256"]
-        or profile.get("requested") != contract["requested"]["candidate"]
+        or profile.get("requested") != contract["requested"][variant]
         or profile.get("workload") != contract["workload"]
+        or profile.get("kind")
+        != ("baseline" if variant == "baseline" else "experiment")
     ):
         raise BenchmarkError("technical admission is not the central experiment")
     if value.get("admitted") is not True:
@@ -1253,7 +1323,7 @@ def validate_admission(
     ):
         raise BenchmarkError("technical admission repository state is invalid")
     try:
-        state_checks = capacity_runtime.evaluate_state(effective, profile, "candidate")
+        state_checks = capacity_runtime.evaluate_state(effective, profile, variant)
     except (KeyError, TypeError, capacity_runtime.RuntimeAdmissionError) as exc:
         raise BenchmarkError(
             "technical admission effective state is malformed"
@@ -1495,7 +1565,8 @@ def _valid_live_admission(
 def verify_live_admission(
     admission: Mapping[str, Any], profile: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Re-observe the candidate immediately before any workload starts."""
+    """Re-observe the admitted treatment immediately before workload starts."""
+    state = "baseline" if profile.get("kind") == "baseline" else "candidate"
     try:
         capture = capacity_runtime.capture_runtime()
     except capacity_runtime.RuntimeAdmissionError as exc:
@@ -1523,7 +1594,7 @@ def verify_live_admission(
     adjusted["settlement"] = dict(settlement)
     adjusted["settlement"]["cre_process_active"] = False
     try:
-        checks = capacity_runtime.evaluate_state(adjusted, profile, "candidate")
+        checks = capacity_runtime.evaluate_state(adjusted, profile, state)
     except (KeyError, TypeError, capacity_runtime.RuntimeAdmissionError) as exc:
         raise BenchmarkError("live technical admission state is malformed") from exc
     if not checks or not all(checks.values()):
@@ -1854,8 +1925,8 @@ WORKER_TEMPLATE = r"""import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import {
-  enrichJllListing, jllDetailCachePath, jllNextData, jllStrandedDocs,
-  jllStrandedMedia, jllStringUrls,
+  enrichJllListing, jllDetailCachePath, jllNextData,
+  jllStrandedMedia, jllNativeAssetUrls, jllHasUsableBrochure,
 } from __JLL_IMPORT__;
 import {
   flushPerformance, recordSourceCompleted, recordSourceStarted, withPerformanceSource,
@@ -1875,7 +1946,7 @@ if (sample.kind !== "cre_jll_capacity_sample" || sample.source !== "jll" || samp
   throw new Error("invalid exact JLL benchmark sample");
 }
 const fingerprint = (values) => createHash("sha256").update([...new Set(values)].sort().join("\n")).digest("hex");
-const urls = (value) => Array.isArray(value) ? value.filter((item) => typeof item === "string" && /^https?:\/\//.test(item)) : [];
+const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const itemUrls = (value) => Array.isArray(value) ? value.flatMap((item) => typeof item === "string" ? [item] : item && typeof item.url === "string" ? [item.url] : []) : [];
 const present = (value) => typeof value === "number" || (typeof value === "string" && value.trim().length > 0) || (Array.isArray(value) && value.length > 0) || (!!value && typeof value === "object" && Object.keys(value).length > 0);
 function transactionTypeFor(value) {
@@ -1898,7 +1969,7 @@ function normalizedEvidence(normalized) {
     price_rate: { sale: present(normalized?.salePriceText) || present(normalized?.salePriceUsd), lease: present(normalized?.leaseRateText) },
     size: { surface_area: present(normalized?.sizeText) || present(normalized?.buildingSizeSqft) },
     brokers_contacts: { contacts: present(normalized?.contactsDetailed) || present(normalized?.brokerIds) },
-    documents: { brochures: present(normalized?.brochures), floor_plans: documents.some((item) => String(item?.docType ?? item?.documentType ?? item?.type ?? "").toLowerCase().includes("floor")) },
+    documents: { brochures: jllHasUsableBrochure(normalized), floor_plans: documents.some((item) => /^https?:\/\//i.test(String(item?.url ?? "")) && String(item?.docType ?? item?.documentType ?? item?.type ?? "").toLowerCase().includes("floor")) },
     images: { photos: present(normalized?.photos) },
     media: { videos: media.some((item) => item?.mediaType === "video"), tours_360: media.some((item) => item?.mediaType === "virtual_tour" || item?.mediaType === "matterport"), other: media.some((item) => item?.mediaType === "other") },
     markdown: { body: present(normalized?.markdown) },
@@ -1909,8 +1980,8 @@ function nativeEvidence(row) {
   const property = jllNextData(cached.rawHtml)?.props?.pageProps?.property;
   if (!property || String(property.id) !== String(row.id)) throw new Error("native identity mismatch");
   const channels = {
-    images: jllStringUrls(property.images), brochures: jllStringUrls(property.brochures),
-    floor_plans: itemUrls(jllStrandedDocs(property)), videos: urls(property.videos),
+    images: jllNativeAssetUrls(property.images, "images"), brochures: jllNativeAssetUrls(property.brochures, "brochures"),
+    floor_plans: jllNativeAssetUrls(property.floorPlans, "floorPlans"), videos: jllNativeAssetUrls(property.videos, "videos"),
     virtual_tours: itemUrls(jllStrandedMedia({ virtualTours: property.virtualTours })),
     view_360: itemUrls(jllStrandedMedia({ view360URLs: property.view360URLs })),
   };
@@ -1920,6 +1991,62 @@ function nativeEvidence(row) {
     shape: Object.entries(channels).filter(([, value]) => value.length).map(([key]) => key).sort(),
     raw_cache_file: jllDetailCachePath(row.url), raw_cache_sha256: createHash("sha256").update(readFileSync(jllDetailCachePath(row.url))).digest("hex"),
   };
+}
+function cacheObservation(item) {
+  const cachePath = jllDetailCachePath(item.url);
+  try {
+    const rawCache = readFileSync(cachePath);
+    const cached = JSON.parse(rawCache.toString("utf8"));
+    const rawHtml = typeof cached?.rawHtml === "string" ? cached.rawHtml : null;
+    const next = rawHtml === null ? null : jllNextData(rawHtml);
+    const pageProps = next && typeof next === "object" && !Array.isArray(next)
+      && next.props && typeof next.props === "object" && !Array.isArray(next.props)
+      && next.props.pageProps && typeof next.props.pageProps === "object" && !Array.isArray(next.props.pageProps)
+      ? next.props.pageProps : null;
+    const property = pageProps?.property;
+    const hasProperty = !!property && typeof property === "object" && !Array.isArray(property);
+    const error = pageProps?.error;
+    // Current JLL attrition is intentionally stricter than an arbitrary error
+    // page: a valid __NEXT_DATA__ payload must explicitly say notFound, carry
+    // no property object, and expose a 404 error status.  Python comparison
+    // independently re-derives these same fields from the raw receipt.
+    const explicitNotFound = !hasProperty && pageProps?.notFound === true &&
+      !!error && typeof error === "object" && !Array.isArray(error) &&
+      error.statusCode === 404;
+    const candidateStatus = cached?.metadata?.statusCode;
+    const httpStatus = typeof candidateStatus === "number" && Number.isInteger(candidateStatus)
+      && candidateStatus >= 100 && candidateStatus <= 599 ? candidateStatus : null;
+    const rawLower = rawHtml?.toLowerCase() ?? "";
+    return {
+      cache_readable: true,
+      cache_url: typeof cached?.url === "string" ? cached.url : null,
+      cache_sha256: sha256(rawCache),
+      raw_html_sha256: rawHtml === null ? null : sha256(rawHtml),
+      cached_at: typeof cached?.cachedAt === "string" ? cached.cachedAt : null,
+      detail_observed_at: typeof cached?.detailObservedAt === "string" ? cached.detailObservedAt : null,
+      generation_id: typeof cached?.generationId === "string" ? cached.generationId : null,
+      http_status: httpStatus,
+      next_data_valid: !!next && typeof next === "object" && !Array.isArray(next),
+      explicit_not_found: explicitNotFound,
+      no_property: !hasProperty,
+      provider_challenge: /cf-chl-|challenge-platform|just a moment/.test(rawLower),
+    };
+  } catch {
+    return {
+      cache_readable: false,
+      cache_url: null,
+      cache_sha256: null,
+      raw_html_sha256: null,
+      cached_at: null,
+      detail_observed_at: null,
+      generation_id: null,
+      http_status: null,
+      next_data_valid: false,
+      explicit_not_found: false,
+      no_property: false,
+      provider_challenge: false,
+    };
+  }
 }
 __WORKER_SCHEDULER__
 const startedAt = new Date().toISOString();
@@ -1932,10 +2059,12 @@ function performanceHas429() {
   const value = JSON.parse(readFileSync(performancePath, "utf8"));
   return Number(value?.metrics?.requests?.status_counts?.["429"] ?? 0) > 0;
 }
-function providerSignal(normalized, item) {
+function providerSignal(normalized, item, observation) {
   const error = String(normalized?.detailError ?? "").toLowerCase();
   if (/\b429\b/.test(error)) return "detail_error_http_429";
   if (error.includes("challenge")) return "detail_error_challenge";
+  if (observation?.http_status === 429) return "detail_http_429";
+  if (observation?.provider_challenge === true) return "raw_provider_challenge";
   try {
     const body = readFileSync(jllDetailCachePath(item.url), "utf8").toLowerCase();
     if (body.includes("cf-chl-") || body.includes("challenge-platform") || body.includes("just a moment")) return "raw_provider_challenge";
@@ -1950,10 +2079,11 @@ try {
     const expectedTransactionType = transactionTypeFor(item.transaction_class);
     const base = { id: item.id, url: item.url, transactionType: expectedTransactionType, assetType: item.property_types.join(", ") };
     const normalized = await enrichJllListing(base);
-    const signal = providerSignal(normalized, item);
+    const observation = cacheObservation(item);
+    const signal = providerSignal(normalized, item, observation);
     if (signal && !providerStop) providerStop = { signal, sample_index: index, sample_id: item.sample_id };
     const native = normalized?.detailError ? null : nativeEvidence(item);
-    return { sample_index: index, sample_id: item.sample_id, transaction_type: expectedTransactionType, latency_ms: Number((performance.now() - started).toFixed(3)), normalized, native, fidelity: normalizedEvidence(normalized) };
+    return { sample_index: index, sample_id: item.sample_id, transaction_type: expectedTransactionType, latency_ms: Number((performance.now() - started).toFixed(3)), normalized, observation, native, fidelity: normalizedEvidence(normalized) };
   }, () => providerStop !== null));
   recordSourceCompleted("jll", "sale", { outcome: providerStop ? "failed" : "succeeded", listingsEmitted: rows.length });
 } catch (error) {
@@ -2313,6 +2443,193 @@ def _performance_telemetry_complete(
     )
 
 
+_ATTRITION_OBSERVATION_KEYS = frozenset(
+    {
+        "cache_readable",
+        "cache_url",
+        "cache_sha256",
+        "raw_html_sha256",
+        "cached_at",
+        "detail_observed_at",
+        "generation_id",
+        "http_status",
+        "next_data_valid",
+        "explicit_not_found",
+        "no_property",
+        "provider_challenge",
+    }
+)
+
+
+def _timestamp_at_or_after(value: Any, lower_bound: float | None) -> bool:
+    if not isinstance(value, str) or lower_bound is None:
+        return False
+    try:
+        observed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return observed.tzinfo is not None and observed.timestamp() >= lower_bound
+
+
+def _derived_jll_cache_observation(
+    cache: Mapping[str, Any], raw: bytes
+) -> dict[str, Any]:
+    """Re-derive the worker observation from a rehashed private cache receipt.
+
+    Comparison never treats worker-authored HTTP status or tombstone booleans as
+    authority.  The cache receipt is the bound source for all of these facts.
+    """
+    raw_html = cache.get("rawHtml")
+    next_data: Any = None
+    if isinstance(raw_html, str):
+        match = NEXT_DATA.search(raw_html)
+        if match is not None:
+            try:
+                candidate = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                candidate = None
+            if isinstance(candidate, Mapping):
+                next_data = candidate
+    props = next_data.get("props") if isinstance(next_data, Mapping) else None
+    page_props = props.get("pageProps") if isinstance(props, Mapping) else None
+    if not isinstance(page_props, Mapping):
+        page_props = None
+    property_value = page_props.get("property") if page_props is not None else None
+    has_property = isinstance(property_value, Mapping)
+    error = page_props.get("error") if page_props is not None else None
+    metadata = cache.get("metadata")
+    http_status = metadata.get("statusCode") if isinstance(metadata, Mapping) else None
+    if type(http_status) is not int or not 100 <= http_status <= 599:
+        http_status = None
+    # This is deliberately narrower than a generic website error: a JLL
+    # current-attrition receipt is valid only for a real __NEXT_DATA__ payload,
+    # HTTP 404, explicit notFound, no property object, and an error status 404.
+    explicit_not_found = bool(
+        page_props is not None
+        and not has_property
+        and page_props.get("notFound") is True
+        and isinstance(error, Mapping)
+        and error.get("statusCode") == 404
+    )
+    raw_lower = raw_html.lower() if isinstance(raw_html, str) else ""
+    return {
+        "cache_readable": True,
+        "cache_url": cache.get("url") if isinstance(cache.get("url"), str) else None,
+        "cache_sha256": _sha256(raw),
+        "raw_html_sha256": _sha256(raw_html.encode())
+        if isinstance(raw_html, str)
+        else None,
+        "cached_at": cache.get("cachedAt")
+        if isinstance(cache.get("cachedAt"), str)
+        else None,
+        "detail_observed_at": cache.get("detailObservedAt")
+        if isinstance(cache.get("detailObservedAt"), str)
+        else None,
+        "generation_id": cache.get("generationId")
+        if isinstance(cache.get("generationId"), str)
+        else None,
+        "http_status": http_status,
+        "next_data_valid": next_data is not None,
+        "explicit_not_found": explicit_not_found,
+        "no_property": not has_property,
+        "provider_challenge": bool(
+            re.search(r"cf-chl-|challenge-platform|just a moment", raw_lower)
+        ),
+    }
+
+
+def _rehashed_raw_cache_observations(
+    replicate_dir: Path, expected_rows: Sequence[Mapping[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Require exactly one rehashed private receipt for every immutable URL."""
+    cache_root = _bound_artifact_directory(replicate_dir / "raw-cache")
+    expected_urls = {
+        item.get("url") for item in expected_rows if isinstance(item.get("url"), str)
+    }
+    if len(expected_urls) != len(expected_rows):
+        raise BenchmarkError("sample cache identity is invalid")
+    observations: dict[str, dict[str, Any]] = {}
+    paths = list(cache_root.iterdir())
+    if len(paths) != len(expected_rows):
+        raise BenchmarkError("raw cache receipt count is invalid")
+    for candidate in paths:
+        bounded = _bound_regular_file(
+            candidate, maximum=MAX_CACHE_RECORD_BYTES, root=cache_root
+        )
+        raw = bounded.read_bytes()
+        cache = _cache_payload_for_comparison(bounded)
+        url = cache.get("url") if isinstance(cache, Mapping) else None
+        if not isinstance(url, str) or url not in expected_urls or url in observations:
+            raise BenchmarkError("raw cache receipt URL is not an immutable sample URL")
+        observations[url] = _derived_jll_cache_observation(cache, raw)
+    if set(observations) != expected_urls:
+        raise BenchmarkError("raw cache receipts do not cover the immutable sample")
+    return observations
+
+
+def _confirmed_attrition_evidence(
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    *,
+    worker_generation: Any,
+    worker_started_ms: float | None,
+) -> dict[str, Any] | None:
+    """Return only a fully evidenced current JLL 404 tombstone.
+
+    A ``detailError`` is never a tombstone by itself.  This admits exactly an
+    HTTP 404 cache record with a parseable JLL ``__NEXT_DATA__`` error payload,
+    no property object, and generation-local URL/hash/timestamp provenance.
+    Every missing or ambiguous element remains an extraction defect.
+    """
+    observation = actual.get("observation")
+    if (
+        not isinstance(observation, Mapping)
+        or set(observation) != _ATTRITION_OBSERVATION_KEYS
+    ):
+        return None
+    if (
+        observation.get("cache_readable") is not True
+        or observation.get("cache_url") != expected.get("url")
+        or not _is_sha256(observation.get("cache_sha256"))
+        or not _is_sha256(observation.get("raw_html_sha256"))
+        or observation.get("generation_id") != worker_generation
+        or observation.get("http_status") != 404
+        or observation.get("next_data_valid") is not True
+        or observation.get("explicit_not_found") is not True
+        or observation.get("no_property") is not True
+        or observation.get("provider_challenge") is not False
+        or not _timestamp_at_or_after(observation.get("cached_at"), worker_started_ms)
+        or not _timestamp_at_or_after(
+            observation.get("detail_observed_at"), worker_started_ms
+        )
+    ):
+        return None
+    return {
+        "cache_url": observation["cache_url"],
+        "cache_sha256": observation["cache_sha256"],
+        "raw_html_sha256": observation["raw_html_sha256"],
+        "cached_at": observation["cached_at"],
+        "detail_observed_at": observation["detail_observed_at"],
+        "generation_id": observation["generation_id"],
+        "http_status": 404,
+    }
+
+
+def _detail_failure_classification(actual: Mapping[str, Any]) -> str:
+    """Classify an unconfirmed failed detail without turning it into attrition."""
+    observation = actual.get("observation")
+    if not isinstance(observation, Mapping):
+        return "transport_failure"
+    status = observation.get("http_status")
+    if observation.get("provider_challenge") is True or status == 429:
+        return "transport_failure"
+    if type(status) is not int:
+        return "transport_failure"
+    if status == 200 or status == 404:
+        return "parser_failure"
+    return "transport_failure"
+
+
 def summarize_replicate(
     replicate_dir: Path,
     sample: Mapping[str, Any],
@@ -2320,6 +2637,7 @@ def summarize_replicate(
     *,
     sample_canonical_sha256: str,
     worker_contract: Mapping[str, Any],
+    require_raw_receipts: bool = False,
 ) -> dict[str, Any]:
     worker_path = replicate_dir / "worker-output.json"
     worker = _read_json(worker_path, MAX_WORKER_OUTPUT_BYTES)
@@ -2337,6 +2655,17 @@ def summarize_replicate(
     if not isinstance(rows, list):
         raise BenchmarkError("worker output has no rows")
     expected_rows = sample["details"]
+    if not isinstance(expected_rows, list):
+        raise BenchmarkError("sample details are invalid")
+    raw_observations: dict[str, dict[str, Any]] = {}
+    raw_cache_path = replicate_dir / "raw-cache"
+    if raw_cache_path.exists() or require_raw_receipts:
+        raw_observations = _rehashed_raw_cache_observations(
+            replicate_dir,
+            [item for item in expected_rows if isinstance(item, Mapping)],
+        )
+        if len(raw_observations) != len(expected_rows):
+            raise BenchmarkError("raw cache receipt evidence is incomplete")
     worker_generation = worker.get("generation")
     worker_started_at = worker.get("started_at")
     worker_started_ms = (
@@ -2353,6 +2682,11 @@ def summarize_replicate(
     fidelity_drops: list[dict[str, Any]] = []
     freshness_matches = 0
     record_evidence: list[dict[str, Any]] = []
+    current_active_successes = 0
+    confirmed_attrition = 0
+    parser_failures = 0
+    transport_failures = 0
+    fidelity_failures = 0
     actual_by_index = {
         actual.get("sample_index"): actual
         for actual in rows
@@ -2366,15 +2700,19 @@ def summarize_replicate(
         actual = actual_by_index.get(index)
         if not isinstance(actual, dict):
             errors.append({"sample_id": expected["sample_id"], "kind": "missing_row"})
+            transport_failures += 1
             continue
+        normalized = actual.get("normalized")
+        if not isinstance(normalized, Mapping):
+            normalized = {}
+        latency = actual.get("latency_ms")
+        if isinstance(latency, (int, float)) and not isinstance(latency, bool):
+            latencies.append(float(latency))
+        row_error_start = len(errors)
         if actual.get("sample_id") != expected["sample_id"]:
             errors.append(
                 {"sample_id": expected["sample_id"], "kind": "sample_binding"}
             )
-        normalized = actual.get("normalized", {})
-        latency = actual.get("latency_ms")
-        if isinstance(latency, (int, float)) and not isinstance(latency, bool):
-            latencies.append(float(latency))
         identity = (str(normalized.get("id", "")), str(normalized.get("url", "")))
         identities.add(identity)
         identity_match = identity == (expected["id"], expected["url"])
@@ -2394,37 +2732,112 @@ def summarize_replicate(
                     "expected": expected_transaction_type,
                 }
             )
-        if normalized.get("detailError"):
-            errors.append({"sample_id": expected["sample_id"], "kind": "detail_error"})
-        provenance = normalized.get("freshnessProvenance", {})
-        observed_at = normalized.get("detailObservedAt")
-        try:
-            observed_ms = (
-                datetime.fromisoformat(observed_at.replace("Z", "+00:00")).timestamp()
-                if isinstance(observed_at, str)
-                else None
+        detail_error = bool(normalized.get("detailError"))
+        derived_observation = raw_observations.get(expected["url"])
+        observation_for_classification = (
+            derived_observation
+            if derived_observation is not None
+            else actual.get("observation")
+        )
+        if derived_observation is not None and not _same_typed_value(
+            actual.get("observation"), derived_observation
+        ):
+            errors.append({"sample_id": expected["sample_id"], "kind": "raw_receipt"})
+        attrition = (
+            _confirmed_attrition_evidence(
+                expected,
+                {"observation": observation_for_classification},
+                worker_generation=worker_generation,
+                worker_started_ms=worker_started_ms,
             )
-        except ValueError:
-            observed_ms = None
-        freshness_match = (
+            if (
+                detail_error
+                and identity_match
+                and transaction_match
+                and (
+                    derived_observation is None
+                    or _same_typed_value(actual.get("observation"), derived_observation)
+                )
+            )
+            else None
+        )
+        if attrition is not None:
+            confirmed_attrition += 1
+            record_evidence.append(
+                {
+                    "sample_index": index,
+                    "sample_id": expected["sample_id"],
+                    "identity_match": True,
+                    "identity_sha256": _sha256(_canonical(identity)),
+                    "freshness_match": None,
+                    "native_complete": None,
+                    "native_evidence_sha256": _sha256(_canonical(None)),
+                    "structural_complete": None,
+                    "structural_evidence_sha256": _sha256(_canonical(None)),
+                    "transaction_type": transaction_type,
+                    "transaction_type_match": True,
+                    "classification": "confirmed_attrition",
+                    "attrition": attrition,
+                }
+            )
+            continue
+        if detail_error:
+            classification = _detail_failure_classification(
+                {"observation": observation_for_classification}
+            )
+            if classification == "parser_failure":
+                parser_failures += 1
+            else:
+                transport_failures += 1
+            errors.append(
+                {
+                    "sample_id": expected["sample_id"],
+                    "kind": classification,
+                }
+            )
+            record_evidence.append(
+                {
+                    "sample_index": index,
+                    "sample_id": expected["sample_id"],
+                    "identity_match": identity_match,
+                    "identity_sha256": _sha256(_canonical(identity)),
+                    "freshness_match": None,
+                    "native_complete": None,
+                    "native_evidence_sha256": _sha256(_canonical(None)),
+                    "structural_complete": None,
+                    "structural_evidence_sha256": _sha256(_canonical(None)),
+                    "transaction_type": transaction_type,
+                    "transaction_type_match": transaction_match,
+                    "classification": classification,
+                    "attrition": None,
+                }
+            )
+            continue
+        provenance = normalized.get("freshnessProvenance", {})
+        if not isinstance(provenance, Mapping):
+            provenance = {}
+        observed_at = normalized.get("detailObservedAt")
+        freshness_match = _timestamp_at_or_after(observed_at, worker_started_ms) and (
             provenance.get("cacheDisposition") == "live"
             and provenance.get("generationId") == worker_generation
-            and observed_ms is not None
-            and worker_started_ms is not None
-            and observed_ms >= worker_started_ms
         )
         if freshness_match:
             freshness_matches += 1
         else:
             errors.append({"sample_id": expected["sample_id"], "kind": "freshness"})
-        current_native = actual.get("native") if isinstance(actual, dict) else None
-        historic_native = expected.get("historic", {}).get("native")
+        current_native = actual.get("native")
+        historic = expected.get("historic")
+        historic_native = (
+            historic.get("native") if isinstance(historic, Mapping) else None
+        )
         native_missing = []
         native_shape_valid = False
-        if isinstance(current_native, dict) and isinstance(historic_native, dict):
+        if isinstance(current_native, Mapping) and isinstance(historic_native, Mapping):
             current_counts = current_native.get("counts")
             historic_counts = historic_native.get("counts")
-            if isinstance(current_counts, dict) and isinstance(historic_counts, dict):
+            if isinstance(current_counts, Mapping) and isinstance(
+                historic_counts, Mapping
+            ):
                 native_shape_valid = True
                 native_missing = sorted(
                     channel
@@ -2448,16 +2861,16 @@ def summarize_replicate(
                 }
             )
         if (
-            isinstance(current_native, dict)
-            and isinstance(historic_native, dict)
-            and (
-                current_native.get("fingerprints")
-                == historic_native.get("fingerprints")
-            )
+            isinstance(current_native, Mapping)
+            and isinstance(historic_native, Mapping)
+            and current_native.get("fingerprints")
+            == historic_native.get("fingerprints")
         ):
             native_value_matches += 1
         current_fidelity = actual.get("fidelity")
-        historic_fidelity = expected.get("historic", {}).get("fidelity")
+        historic_fidelity = (
+            historic.get("fidelity") if isinstance(historic, Mapping) else None
+        )
         missing_fields = (
             _missing_structural_fields(historic_fidelity, current_fidelity)
             if isinstance(historic_fidelity, Mapping)
@@ -2479,6 +2892,12 @@ def summarize_replicate(
             )
         else:
             fidelity_matches += 1
+        row_errors = errors[row_error_start:]
+        classification = "active_success" if not row_errors else "fidelity_failure"
+        if classification == "active_success":
+            current_active_successes += 1
+        else:
+            fidelity_failures += 1
         record_evidence.append(
             {
                 "sample_index": index,
@@ -2492,6 +2911,8 @@ def summarize_replicate(
                 "structural_evidence_sha256": _sha256(_canonical(current_fidelity)),
                 "transaction_type": transaction_type,
                 "transaction_type_match": transaction_match,
+                "classification": classification,
+                "attrition": None,
             }
         )
     requests = performance.get("metrics", {}).get("requests", {})
@@ -2516,8 +2937,30 @@ def summarize_replicate(
         if "challenge" in detail_error or re.search(r"\b429\b", detail_error):
             provider_signals.append("detail_error_429_or_challenge")
             break
-    qualified = len(rows) if not errors and len(identities) == len(rows) else 0
+        observation = actual.get("observation") if isinstance(actual, dict) else None
+        if isinstance(observation, Mapping) and (
+            observation.get("http_status") == 429
+            or observation.get("provider_challenge") is True
+        ):
+            provider_signals.append("detail_http_429_or_challenge")
+            break
+    qualified = current_active_successes
+    # The 128-row cohort is immutable.  A confirmed provider tombstone is
+    # retained in its original slot and reported, but is not a current listing
+    # eligible for per-row extraction throughput.
+    eligible_rows = current_active_successes
+    predeclared_cohort_denominator = len(expected_rows)
     sample_ids = [entry["sample_id"] for entry in record_evidence]
+    eligible_sample_ids = [
+        entry["sample_id"]
+        for entry in record_evidence
+        if entry.get("classification") == "active_success"
+    ]
+    attrition_sample_ids = [
+        entry["sample_id"]
+        for entry in record_evidence
+        if entry.get("classification") == "confirmed_attrition"
+    ]
     records_sha256 = _sha256(_canonical(record_evidence))
     worker_output_sha256 = _file_sha256(worker_path)
     return {
@@ -2528,6 +2971,53 @@ def summarize_replicate(
         "qualified_fresh_unique_per_minute": round(qualified * 60 / wall_seconds, 3)
         if wall_seconds > 0
         else None,
+        "current_active_successes": current_active_successes,
+        "confirmed_attrition": confirmed_attrition,
+        "individually_qualified_rows": qualified,
+        "parser_failures": parser_failures,
+        "transport_failures": transport_failures,
+        "fidelity_failures": fidelity_failures,
+        "predeclared_cohort_denominator": predeclared_cohort_denominator,
+        "predeclared_eligible_denominator": predeclared_cohort_denominator,
+        "eligible_denominator": eligible_rows,
+        "eligible_rows": eligible_rows,
+        "cohort_rates": {
+            "current_active_successes": round(
+                current_active_successes / predeclared_cohort_denominator, 6
+            ),
+            "confirmed_attrition": round(
+                confirmed_attrition / predeclared_cohort_denominator, 6
+            ),
+            "individually_qualified_rows": round(
+                qualified / predeclared_cohort_denominator, 6
+            ),
+            "parser_failures": round(
+                parser_failures / predeclared_cohort_denominator, 6
+            ),
+            "transport_failures": round(
+                transport_failures / predeclared_cohort_denominator, 6
+            ),
+            "fidelity_failures": round(
+                fidelity_failures / predeclared_cohort_denominator, 6
+            ),
+            "eligible_rows": round(eligible_rows / predeclared_cohort_denominator, 6),
+        },
+        "cohort_throughput_per_minute": {
+            "current_active_successes": round(
+                current_active_successes * 60 / wall_seconds, 3
+            )
+            if wall_seconds > 0
+            else None,
+            "confirmed_attrition": round(confirmed_attrition * 60 / wall_seconds, 3)
+            if wall_seconds > 0
+            else None,
+            "individually_qualified_rows": round(qualified * 60 / wall_seconds, 3)
+            if wall_seconds > 0
+            else None,
+            "eligible_rows": round(eligible_rows * 60 / wall_seconds, 3)
+            if wall_seconds > 0
+            else None,
+        },
         "latency_ms": {
             "p50": _percentile(latencies, 0.50),
             "p95": _percentile(latencies, 0.95),
@@ -2535,7 +3025,10 @@ def summarize_replicate(
         },
         "freshness_matches": freshness_matches,
         "historic_native_asset_matches": native_matches,
-        "native_asset_deltas": len(rows) - native_matches,
+        # Confirmed attrition remains in the immutable cohort but has no live
+        # native asset collection to compare.  Measure channel deltas only over
+        # active rows; any active mismatch remains a strict fidelity failure.
+        "native_asset_deltas": current_active_successes - native_matches,
         "historic_native_value_matches": native_value_matches,
         "normalized_structural_matches": fidelity_matches,
         "normalized_structural_drops": fidelity_drops,
@@ -2552,6 +3045,10 @@ def summarize_replicate(
             "worker_output_sha256": worker_output_sha256,
             "record_count": len(record_evidence),
             "sample_ids_sha256": _sha256(_canonical(sample_ids)),
+            "predeclared_cohort_denominator": predeclared_cohort_denominator,
+            "eligible_denominator": eligible_rows,
+            "eligible_sample_ids_sha256": _sha256(_canonical(eligible_sample_ids)),
+            "attrition_sample_ids_sha256": _sha256(_canonical(attrition_sample_ids)),
             "records_sha256": records_sha256,
         },
         "remote_settlement_unknown": remote_unknown,
@@ -2562,7 +3059,12 @@ def summarize_replicate(
         },
         "comparison_state": (
             "measured"
-            if not errors and telemetry_complete
+            if (
+                not errors
+                and current_active_successes + confirmed_attrition
+                == predeclared_cohort_denominator
+                and telemetry_complete
+            )
             else "quality_failed"
             if errors
             else "inconclusive"
@@ -2780,6 +3282,10 @@ def _valid_record_evidence(
             "worker_output_sha256",
             "record_count",
             "sample_ids_sha256",
+            "predeclared_cohort_denominator",
+            "eligible_denominator",
+            "eligible_sample_ids_sha256",
+            "attrition_sample_ids_sha256",
             "records_sha256",
         }
         or type(manifest.get("schema_version")) is not int
@@ -2787,12 +3293,15 @@ def _valid_record_evidence(
         or manifest.get("kind") != "cre_jll_capacity_record_evidence"
         or manifest.get("sample_canonical_sha256") != sample_canonical_sha256
         or manifest.get("record_count") != details
+        or manifest.get("predeclared_cohort_denominator") != details
         or not _is_sha256(replicate.get("worker_output_sha256"))
         or manifest.get("worker_output_sha256") != replicate.get("worker_output_sha256")
         or replicate.get("worker_contract_sha256") != worker_contract_sha256
     ):
         return False
     sample_ids: list[str] = []
+    eligible_sample_ids: list[str] = []
+    attrition_sample_ids: list[str] = []
     required = {
         "sample_index",
         "sample_id",
@@ -2805,6 +3314,8 @@ def _valid_record_evidence(
         "structural_evidence_sha256",
         "transaction_type",
         "transaction_type_match",
+        "classification",
+        "attrition",
     }
     for index, record in enumerate(records):
         if (
@@ -2814,16 +3325,6 @@ def _valid_record_evidence(
             or record.get("sample_index") != index
             or not isinstance(record.get("sample_id"), str)
             or not re.fullmatch(r"[0-9a-f]{24}", record["sample_id"])
-            or any(
-                record.get(key) is not True
-                for key in (
-                    "identity_match",
-                    "freshness_match",
-                    "native_complete",
-                    "structural_complete",
-                    "transaction_type_match",
-                )
-            )
             or record.get("transaction_type") not in {"Sale", "Lease"}
             or any(
                 not _is_sha256(record.get(key))
@@ -2835,16 +3336,384 @@ def _valid_record_evidence(
             )
         ):
             return False
+        classification = record.get("classification")
+        if classification == "active_success":
+            if record.get("attrition") is not None or any(
+                record.get(key) is not True
+                for key in (
+                    "identity_match",
+                    "freshness_match",
+                    "native_complete",
+                    "structural_complete",
+                    "transaction_type_match",
+                )
+            ):
+                return False
+            eligible_sample_ids.append(record["sample_id"])
+        elif classification == "confirmed_attrition":
+            attrition = record.get("attrition")
+            if (
+                record.get("identity_match") is not True
+                or record.get("transaction_type_match") is not True
+                or any(
+                    record.get(key) is not None
+                    for key in (
+                        "freshness_match",
+                        "native_complete",
+                        "structural_complete",
+                    )
+                )
+                or not isinstance(attrition, Mapping)
+                or set(attrition)
+                != {
+                    "cache_url",
+                    "cache_sha256",
+                    "raw_html_sha256",
+                    "cached_at",
+                    "detail_observed_at",
+                    "generation_id",
+                    "http_status",
+                }
+                or not isinstance(attrition.get("cache_url"), str)
+                or not _is_sha256(attrition.get("cache_sha256"))
+                or not _is_sha256(attrition.get("raw_html_sha256"))
+                or not isinstance(attrition.get("cached_at"), str)
+                or not isinstance(attrition.get("detail_observed_at"), str)
+                or not isinstance(attrition.get("generation_id"), str)
+                or attrition.get("http_status") != 404
+            ):
+                return False
+            attrition_sample_ids.append(record["sample_id"])
+        else:
+            return False
         sample_ids.append(record["sample_id"])
     return bool(
         len(set(sample_ids)) == details
         and manifest.get("sample_ids_sha256") == _sha256(_canonical(sample_ids))
+        and manifest.get("eligible_denominator") == len(eligible_sample_ids)
+        and manifest.get("eligible_sample_ids_sha256")
+        == _sha256(_canonical(eligible_sample_ids))
+        and manifest.get("attrition_sample_ids_sha256")
+        == _sha256(_canonical(attrition_sample_ids))
         and manifest.get("records_sha256") == _sha256(_canonical(records))
     )
 
 
+def _bound_regular_file(
+    path: Path,
+    *,
+    maximum: int,
+    root: Path | None = None,
+) -> Path:
+    """Resolve one private evidence file without following a supplied symlink."""
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        raise BenchmarkError("comparison artifact path must be absolute")
+    try:
+        opened = candidate.lstat()
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise BenchmarkError("comparison artifact is unavailable") from exc
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+        or opened.st_size <= 0
+        or opened.st_size > maximum
+    ):
+        raise BenchmarkError("comparison artifact is not a bounded regular file")
+    if root is not None:
+        root_resolved = root.resolve(strict=True)
+        if resolved != root_resolved and root_resolved not in resolved.parents:
+            raise BenchmarkError("comparison artifact escapes its bound root")
+    return resolved
+
+
+def _bound_artifact_directory(path: Path) -> Path:
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        raise BenchmarkError("comparison artifact root must be absolute")
+    try:
+        opened = candidate.lstat()
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise BenchmarkError("comparison artifact root is unavailable") from exc
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or stat.S_IMODE(opened.st_mode) & 0o077
+        or candidate != resolved
+    ):
+        raise BenchmarkError("comparison artifact root is unsafe")
+    return resolved
+
+
+def _parse_bound_timestamp(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise BenchmarkError("comparison timestamp is invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise BenchmarkError("comparison timestamp is invalid") from exc
+    if parsed.tzinfo is None:
+        raise BenchmarkError("comparison timestamp is invalid")
+    return parsed.astimezone(UTC)
+
+
+def _cache_payload_for_comparison(path: Path) -> Mapping[str, Any]:
+    value = _read_json(path, MAX_CACHE_RECORD_BYTES)
+    if not isinstance(value, Mapping):
+        raise BenchmarkError("comparison raw cache is malformed")
+    return value
+
+
+def _valid_worker_raw_cache_evidence(
+    worker: Mapping[str, Any],
+    sample: Mapping[str, Any],
+    replicate_dir: Path,
+) -> bool:
+    """Rehash every worker cache receipt, including proven JLL tombstones."""
+    rows = worker.get("rows")
+    expected = sample.get("details")
+    cache_root = replicate_dir / "raw-cache"
+    if not isinstance(rows, list) or not isinstance(expected, list):
+        return False
+    try:
+        cache_root = _bound_artifact_directory(cache_root)
+    except BenchmarkError:
+        return False
+    indexed_rows = {
+        row.get("sample_index"): row
+        for row in rows
+        if isinstance(row, Mapping) and type(row.get("sample_index")) is int
+    }
+    if len(indexed_rows) != len(expected):
+        return False
+    cache_by_hash: dict[str, list[tuple[Path, Mapping[str, Any]]]] = defaultdict(list)
+    try:
+        for cache_path in cache_root.iterdir():
+            if cache_path.is_dir():
+                return False
+            bounded = _bound_regular_file(
+                cache_path, maximum=MAX_CACHE_RECORD_BYTES, root=cache_root
+            )
+            cache_by_hash[_file_sha256(bounded)].append(
+                (bounded, _cache_payload_for_comparison(bounded))
+            )
+    except (BenchmarkError, OSError):
+        return False
+    for index, item in enumerate(expected):
+        if not isinstance(item, Mapping):
+            return False
+        row = indexed_rows.get(index)
+        if not isinstance(row, Mapping):
+            return False
+        observation = row.get("observation")
+        if not isinstance(observation, Mapping):
+            return False
+        normalized = row.get("normalized")
+        detail_error = isinstance(normalized, Mapping) and bool(
+            normalized.get("detailError")
+        )
+        if detail_error:
+            cache_sha256 = observation.get("cache_sha256")
+            matches = cache_by_hash.get(cache_sha256, [])
+            if len(matches) != 1:
+                return False
+            cache_path, cache = matches[0]
+        else:
+            native = row.get("native")
+            if not isinstance(native, Mapping) or not isinstance(
+                native.get("raw_cache_file"), str
+            ):
+                return False
+            try:
+                cache_path = _bound_regular_file(
+                    Path(native["raw_cache_file"]),
+                    maximum=MAX_CACHE_RECORD_BYTES,
+                    root=cache_root,
+                )
+            except BenchmarkError:
+                return False
+            if native.get("raw_cache_sha256") != _file_sha256(cache_path):
+                return False
+            cache = _cache_payload_for_comparison(cache_path)
+        try:
+            derived = _derived_jll_cache_observation(cache, cache_path.read_bytes())
+        except OSError:
+            return False
+        raw_html = cache.get("rawHtml")
+        if (
+            not _same_typed_value(observation, derived)
+            or cache.get("url") != item.get("url")
+            or observation.get("cache_url") != item.get("url")
+            or observation.get("cache_sha256") not in cache_by_hash
+            or not isinstance(raw_html, str)
+            or observation.get("raw_html_sha256") != _sha256(raw_html.encode())
+        ):
+            return False
+    return True
+
+
+def _valid_comparison_artifacts(
+    value: Mapping[str, Any],
+    *,
+    label: str,
+    result_path: Path | None,
+    details: int,
+    worker_contract: Mapping[str, Any],
+    repo_root: Path | None = None,
+) -> list[str]:
+    """Bind a comparison result to rehashed private evidence on disk."""
+    if result_path is None:
+        return [f"{label}_result_artifact_required"]
+    try:
+        bounded_result = _bound_regular_file(
+            result_path, maximum=COMPARISON_RESULT_MAX_BYTES
+        )
+        disk_result = _read_json(bounded_result, COMPARISON_RESULT_MAX_BYTES)
+    except BenchmarkError:
+        return [f"{label}_result_artifact"]
+    if not isinstance(disk_result, Mapping) or not _same_typed_value(
+        disk_result, value
+    ):
+        return [f"{label}_result_artifact_binding"]
+    evidence = value.get("artifact_evidence")
+    expected_evidence = {
+        "artifact_root",
+        "sample_path",
+        "sample_manifest_sha256",
+        "admission_path",
+        "admission_consumption_path",
+    }
+    if not isinstance(evidence, Mapping) or set(evidence) != expected_evidence:
+        return [f"{label}_artifact_evidence"]
+    try:
+        artifact_root = _bound_artifact_directory(Path(evidence["artifact_root"]))
+        if bounded_result.parent != artifact_root:
+            raise BenchmarkError("result is outside its declared artifact root")
+        sample_path = _bound_regular_file(
+            Path(evidence["sample_path"]), maximum=MAX_SAMPLE_BYTES
+        )
+        if evidence.get("sample_manifest_sha256") != _file_sha256(sample_path):
+            raise BenchmarkError("sample manifest drift")
+        sample = validate_sample(_read_json(sample_path), details)
+        if (
+            value.get("sample_manifest_sha256") != _file_sha256(sample_path)
+            or value.get("sample_canonical_sha256") != _sha256(_canonical(sample))
+            or value.get("sample_inventory_sha256") != sample.get("inventory_sha256")
+        ):
+            raise BenchmarkError("sample evidence is not bound to the result")
+        admission_path = _bound_regular_file(
+            Path(evidence["admission_path"]), maximum=MAX_SAMPLE_BYTES
+        )
+        admission = _read_json(admission_path)
+        if not isinstance(admission, Mapping) or value.get(
+            "admission_sha256"
+        ) != _sha256(_canonical(admission)):
+            raise BenchmarkError("admission evidence is not bound to the result")
+        if any(
+            admission.get(key) != value.get(key)
+            for key in (
+                "profile",
+                "config_sha256",
+                "source_git_sha",
+                "review_approval_nonce_sha256",
+            )
+        ):
+            raise BenchmarkError("admission identity does not match result")
+        marker_path = _bound_regular_file(
+            Path(evidence["admission_consumption_path"]),
+            maximum=REVIEW_BENCHMARK_GRANT_MAX_BYTES,
+        )
+        marker = _read_json(marker_path, REVIEW_BENCHMARK_GRANT_MAX_BYTES)
+        if (
+            not isinstance(marker, Mapping)
+            or marker.get("kind") != "cre_capacity_admission_consumption"
+            or value.get("admission_consumption_sha256") != _file_sha256(marker_path)
+            or any(
+                marker.get(key) != value.get(key)
+                for key in (
+                    "admission_sha256",
+                    "review_benchmark_grant_sha256",
+                    "review_approval_nonce_sha256",
+                )
+            )
+        ):
+            raise BenchmarkError("admission consumption evidence is not bound")
+        replicates = value.get("replicates")
+        if not isinstance(replicates, list):
+            raise BenchmarkError("result has no replicates")
+        for index, replicate in enumerate(replicates, 1):
+            if not isinstance(replicate, Mapping):
+                raise BenchmarkError("replicate is malformed")
+            replicate_dir = _bound_artifact_directory(
+                artifact_root / f"replicate-{index}"
+            )
+            worker_path = _bound_regular_file(
+                replicate_dir / "worker-output.json",
+                maximum=MAX_WORKER_OUTPUT_BYTES,
+                root=replicate_dir,
+            )
+            worker = _read_json(worker_path, MAX_WORKER_OUTPUT_BYTES)
+            if (
+                not isinstance(worker, Mapping)
+                or replicate.get("worker_output_sha256") != _file_sha256(worker_path)
+                or not _valid_worker_raw_cache_evidence(worker, sample, replicate_dir)
+            ):
+                raise BenchmarkError("worker or raw cache evidence is not bound")
+            if repo_root is not None:
+                worker_source_path = _bound_regular_file(
+                    replicate_dir / "worker.mts",
+                    maximum=MAX_WORKER_OUTPUT_BYTES,
+                    root=replicate_dir,
+                )
+                expected_worker_source = _worker_source(
+                    repo_root,
+                    expected_details=details,
+                    concurrency=int(worker_contract["concurrency"]),
+                ).encode()
+                if (
+                    _file_sha256(worker_source_path)
+                    != value.get("worker_source_sha256")
+                    or worker_source_path.read_bytes() != expected_worker_source
+                ):
+                    raise BenchmarkError("worker source is not bound to this checkout")
+            performance_path = _bound_regular_file(
+                replicate_dir / "performance.json",
+                maximum=MAX_WORKER_OUTPUT_BYTES,
+                root=replicate_dir,
+            )
+            performance = _read_json(performance_path, MAX_WORKER_OUTPUT_BYTES)
+            if not _same_typed_value(performance, replicate.get("performance")):
+                raise BenchmarkError("performance evidence is not bound")
+            wall_seconds = replicate.get("wall_seconds")
+            if type(wall_seconds) not in {int, float} or wall_seconds <= 0:
+                raise BenchmarkError("replicate wall time is invalid")
+            recomputed = summarize_replicate(
+                replicate_dir,
+                sample,
+                float(wall_seconds),
+                sample_canonical_sha256=value["sample_canonical_sha256"],
+                worker_contract=worker_contract,
+                require_raw_receipts=True,
+            )
+            if any(
+                not _same_typed_value(replicate.get(key), expected)
+                for key, expected in recomputed.items()
+            ):
+                raise BenchmarkError("replicate summary is not derived from artifacts")
+    except (BenchmarkError, KeyError, TypeError, ValueError):
+        return [f"{label}_artifact_rehash"]
+    return []
+
+
 def _comparison_evidence(
-    value: Any, label: str, contract: Mapping[str, Any]
+    value: Any,
+    label: str,
+    contract: Mapping[str, Any],
+    *,
+    result_path: Path | None,
+    current_checkout: Mapping[str, Any] | None = None,
+    repo_root: Path | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     reasons: list[str] = []
     if not isinstance(value, dict):
@@ -2880,6 +3749,16 @@ def _comparison_evidence(
         expected_concurrency=requested["jll_detail_concurrency"],
     ):
         reasons.append(f"{label}_worker_contract")
+    reasons.extend(
+        _valid_comparison_artifacts(
+            value,
+            label=label,
+            result_path=result_path,
+            details=details,
+            worker_contract=expected_worker,
+            repo_root=repo_root,
+        )
+    )
     if not _valid_effective_runtime(value.get("effective_runtime"), requested):
         reasons.append(f"{label}_effective_runtime")
     if not _valid_live_admission(
@@ -2895,6 +3774,9 @@ def _comparison_evidence(
     throughput: list[float] = []
     latency: list[dict[str, Any]] = []
     qualified_rows: list[int] = []
+    active_successes: list[int] = []
+    attrition_rows: list[int] = []
+    eligible_rows: list[int] = []
     freshness_rows: list[int] = []
     native_matches: list[int] = []
     structural_matches: list[int] = []
@@ -2903,25 +3785,51 @@ def _comparison_evidence(
         if not isinstance(replicate, dict):
             reasons.append(f"{prefix}_invalid")
             continue
-        rate = replicate.get("qualified_fresh_unique_per_minute")
+        rate = replicate.get("cohort_throughput_per_minute", {}).get("eligible_rows")
         if type(rate) not in {int, float} or rate <= 0:
             reasons.append(f"{prefix}_throughput")
         else:
             throughput.append(float(rate))
         if (
             replicate.get("comparison_state") != "measured"
-            or replicate.get("qualified_fresh_unique_rows") != details
-            or replicate.get("freshness_matches") != details
-            or replicate.get("historic_native_asset_matches") != details
+            or replicate.get("predeclared_cohort_denominator") != details
+            or replicate.get("predeclared_eligible_denominator") != details
+            or type(replicate.get("current_active_successes")) is not int
+            or type(replicate.get("confirmed_attrition")) is not int
+            or replicate.get("current_active_successes")
+            + replicate.get("confirmed_attrition")
+            != details
+            or replicate.get("eligible_denominator")
+            != replicate.get("current_active_successes")
+            or replicate.get("eligible_rows")
+            != replicate.get("current_active_successes")
+            or replicate.get("individually_qualified_rows")
+            != replicate.get("current_active_successes")
+            or replicate.get("qualified_fresh_unique_rows")
+            != replicate.get("current_active_successes")
+            or replicate.get("freshness_matches")
+            != replicate.get("current_active_successes")
+            or replicate.get("historic_native_asset_matches")
+            != replicate.get("current_active_successes")
             or replicate.get("native_asset_deltas") != 0
-            or replicate.get("normalized_structural_matches") != details
+            or replicate.get("normalized_structural_matches")
+            != replicate.get("current_active_successes")
             or replicate.get("normalized_structural_drops") != []
+            or replicate.get("parser_failures") != 0
+            or replicate.get("transport_failures") != 0
+            or replicate.get("fidelity_failures") != 0
             or replicate.get("quality_errors") != []
             or replicate.get("performance_telemetry_complete") is not True
         ):
             reasons.append(f"{prefix}_quality")
         if type(replicate.get("qualified_fresh_unique_rows")) is int:
             qualified_rows.append(replicate["qualified_fresh_unique_rows"])
+        if type(replicate.get("current_active_successes")) is int:
+            active_successes.append(replicate["current_active_successes"])
+        if type(replicate.get("confirmed_attrition")) is int:
+            attrition_rows.append(replicate["confirmed_attrition"])
+        if type(replicate.get("eligible_rows")) is int:
+            eligible_rows.append(replicate["eligible_rows"])
         if type(replicate.get("freshness_matches")) is int:
             freshness_rows.append(replicate["freshness_matches"])
         if type(replicate.get("historic_native_asset_matches")) is int:
@@ -2997,6 +3905,14 @@ def _comparison_evidence(
         reasons.append(f"{label}_freshness_policy")
     if not _valid_implementation_manifest(value.get("implementation_manifest")):
         reasons.append(f"{label}_implementation_manifest")
+    if current_checkout is not None and (
+        value.get("source_git_sha") != current_checkout.get("source_git_sha")
+        or not _same_typed_value(
+            value.get("implementation_manifest"),
+            current_checkout.get("implementation_manifest"),
+        )
+    ):
+        reasons.append(f"{label}_checkout_binding")
     if value.get("shared_lock", {}).get("canonical") is not True:
         reasons.append(f"{label}_shared_lock")
     if not _valid_settlement(value.get("final_settlement"), final=True):
@@ -3017,7 +3933,7 @@ def _comparison_evidence(
     if reasons:
         return None, sorted(set(reasons))
     return {
-        "median_qualified_fresh_unique_per_minute": round(median(throughput), 3),
+        "median_eligible_current_active_rows_per_minute": round(median(throughput), 3),
         "latency_ms": {
             key: round(median(float(item[key]) for item in latency), 3)
             for key in ("p50", "p95", "p99")
@@ -3026,6 +3942,11 @@ def _comparison_evidence(
         "replicates": replicate_count,
         "completeness_fidelity": {
             "qualified_fresh_unique_rows_per_replicate": qualified_rows,
+            "current_active_successes_per_replicate": active_successes,
+            "confirmed_attrition_per_replicate": attrition_rows,
+            "eligible_rows_per_replicate": eligible_rows,
+            "predeclared_eligible_denominator": details,
+            "predeclared_cohort_denominator": details,
             "freshness_matches_per_replicate": freshness_rows,
             "historic_native_asset_matches_per_replicate": native_matches,
             "normalized_structural_matches_per_replicate": structural_matches,
@@ -3035,7 +3956,13 @@ def _comparison_evidence(
     }, []
 
 
-def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
+def compare_results(
+    baseline: Any,
+    candidate: Any,
+    *,
+    baseline_result_path: Path | None = None,
+    candidate_result_path: Path | None = None,
+) -> dict[str, Any]:
     try:
         contract = _experiment_contract()
     except BenchmarkError:
@@ -3047,10 +3974,16 @@ def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
             "reasons": ["central_experiment_configuration_unavailable"],
         }
     baseline_summary, baseline_reasons = _comparison_evidence(
-        baseline, "baseline", contract
+        baseline,
+        "baseline",
+        contract,
+        result_path=baseline_result_path,
     )
     candidate_summary, candidate_reasons = _comparison_evidence(
-        candidate, "candidate", contract
+        candidate,
+        "candidate",
+        contract,
+        result_path=candidate_result_path,
     )
     reasons = baseline_reasons + candidate_reasons
     if not SUPPORTED_BASELINE_ADMISSION_AVAILABLE:
@@ -3064,6 +3997,11 @@ def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
         "freshness_policy",
         "workload",
     )
+    cohort_matching = {
+        "state": "matched",
+        "confidence": "full",
+        "basis": "exact_predeclared_cohort_and_per_replicate_eligible_ids",
+    }
     if isinstance(baseline, dict) and isinstance(candidate, dict):
         reasons.extend(
             f"mismatch_{key}"
@@ -3085,17 +4023,35 @@ def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
         if baseline_identity != candidate_identity:
             reasons.append("mismatch_effective_runtime_identity")
         baseline_ids = [
-            row.get("record_evidence_manifest", {}).get("sample_ids_sha256")
+            row.get("record_evidence_manifest", {}).get("eligible_sample_ids_sha256")
             for row in baseline.get("replicates", [])
             if isinstance(row, Mapping)
         ]
         candidate_ids = [
-            row.get("record_evidence_manifest", {}).get("sample_ids_sha256")
+            row.get("record_evidence_manifest", {}).get("eligible_sample_ids_sha256")
+            for row in candidate.get("replicates", [])
+            if isinstance(row, Mapping)
+        ]
+        baseline_attrition = [
+            row.get("record_evidence_manifest", {}).get("attrition_sample_ids_sha256")
+            for row in baseline.get("replicates", [])
+            if isinstance(row, Mapping)
+        ]
+        candidate_attrition = [
+            row.get("record_evidence_manifest", {}).get("attrition_sample_ids_sha256")
             for row in candidate.get("replicates", [])
             if isinstance(row, Mapping)
         ]
         if baseline_ids != candidate_ids:
-            reasons.append("mismatch_record_sample_ids")
+            cohort_matching = {
+                "state": "asymmetric_confirmed_attrition",
+                "confidence": "reduced",
+                "basis": "exact_predeclared_cohort_retained_but_eligible_ids_differ",
+                "baseline_eligible_sample_ids_sha256": baseline_ids,
+                "candidate_eligible_sample_ids_sha256": candidate_ids,
+                "baseline_attrition_sample_ids_sha256": baseline_attrition,
+                "candidate_attrition_sample_ids_sha256": candidate_attrition,
+            }
     if reasons or baseline_summary is None or candidate_summary is None:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -3104,16 +4060,22 @@ def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
             "decision": "no_adoption_decision",
             "reasons": sorted(set(reasons or ["missing_comparable_evidence"])),
         }
-    baseline_rate = baseline_summary["median_qualified_fresh_unique_per_minute"]
-    candidate_rate = candidate_summary["median_qualified_fresh_unique_per_minute"]
+    baseline_rate = baseline_summary["median_eligible_current_active_rows_per_minute"]
+    candidate_rate = candidate_summary["median_eligible_current_active_rows_per_minute"]
     gain = round((candidate_rate - baseline_rate) * 100 / baseline_rate, 3)
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": "cre_jll_capacity_comparison",
         "state": "measured",
-        "decision": "adoptable" if gain >= 15 else "do_not_adopt",
+        # A two-file comparison is a diagnostic only.  Adoption requires the
+        # supported six-arm AB/BA/AB comparator below, which rehashes every
+        # pair artifact and binds order and contemporaneous timestamps.
+        "decision": "do_not_adopt",
+        "reasons": ["counterbalanced_pair_required"],
         "criterion_percent": 15,
         "gain_percent": gain,
+        "throughput_metric": "eligible_current_active_rows_per_minute",
+        "cohort_matching": cohort_matching,
         "baseline": baseline_summary,
         "candidate": candidate_summary,
         "matched": {key: baseline[key] for key in match_fields},
@@ -3128,6 +4090,207 @@ def compare_results(baseline: Any, candidate: Any) -> dict[str, Any]:
             },
         },
     }
+
+
+def _compare_counterbalanced_pair(pair_plan_path: Path) -> dict[str, Any]:
+    """Compare all six rehashed arms as advisory evidence only.
+
+    A persisted result can never authorize a runtime adoption: filesystem
+    artifacts are reproducible by a party that can write their private root.
+    The governed runtime transition remains a separate human-reviewed action.
+    """
+    try:
+        plan, plan_sha256 = _load_counterbalanced_pair_plan(pair_plan_path)
+        state = _load_counterbalanced_pair_state(plan, plan_sha256)
+        contract = _experiment_contract()
+    except BenchmarkError:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "cre_capacity_counterbalanced_comparison",
+            "state": "inconclusive",
+            "decision": "no_adoption_decision",
+            "reasons": ["counterbalanced_pair_artifact_invalid"],
+        }
+    production = plan["evidence_mode"] == "production"
+    checkout: dict[str, Any] | None = None
+    repo_root: Path | None = None
+    if production:
+        try:
+            repo_root = _benchmark_repo_root()
+            checkout = {
+                "source_git_sha": _require_clean_git(repo_root),
+                "implementation_manifest": _implementation_manifest(repo_root),
+            }
+        except BenchmarkError:
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "kind": "cre_capacity_counterbalanced_comparison",
+                "state": "inconclusive",
+                "decision": "no_adoption_decision",
+                "reasons": ["production_checkout_rehash_required"],
+            }
+    arms = state["arms"]
+    if len(arms) != len(PAIR_SEQUENCE):
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "cre_capacity_counterbalanced_comparison",
+            "state": "inconclusive",
+            "decision": "no_adoption_decision",
+            "reasons": ["counterbalanced_pair_incomplete"],
+        }
+    reasons: list[str] = []
+    summaries: dict[str, list[dict[str, Any]]] = {"baseline": [], "candidate": []}
+    values: list[Mapping[str, Any]] = []
+    prior_finished: datetime | None = None
+    for order, (arm, expected_variant) in enumerate(
+        zip(arms, PAIR_SEQUENCE, strict=True), 1
+    ):
+        if (
+            not isinstance(arm, Mapping)
+            or arm.get("arm_order") != order
+            or arm.get("variant") != expected_variant
+            or not _is_sha256(arm.get("result_sha256"))
+            or not isinstance(arm.get("result_path"), str)
+        ):
+            reasons.append(f"pair_arm_{order}_state")
+            continue
+        try:
+            path = _bound_regular_file(
+                Path(arm["result_path"]), maximum=COMPARISON_RESULT_MAX_BYTES
+            )
+            if production:
+                root = _bound_artifact_directory(Path(plan["artifact_root"]))
+                expected_arm_root = root / f"arm-{order:02d}-{expected_variant}"
+                if path != expected_arm_root / "result.json":
+                    raise BenchmarkError(
+                        "production arm result escapes the paired root"
+                    )
+            if _file_sha256(path) != arm["result_sha256"]:
+                raise BenchmarkError("pair result hash drift")
+            value = _read_json(path, COMPARISON_RESULT_MAX_BYTES)
+            summary, evidence_reasons = _comparison_evidence(
+                value,
+                expected_variant,
+                contract,
+                result_path=path,
+                current_checkout=checkout,
+                repo_root=repo_root,
+            )
+            pairing = value.get("pairing") if isinstance(value, Mapping) else None
+            expected_pairing = {
+                "pair_id": plan["pair_id"],
+                "pair_plan_sha256": plan_sha256,
+                "arm_order": order,
+                "sequence": plan["sequence"],
+                "max_gap_seconds": plan["max_gap_seconds"],
+                "min_gap_seconds": plan["min_gap_seconds"],
+            }
+            if not isinstance(pairing, Mapping) or not _same_typed_value(
+                pairing, expected_pairing
+            ):
+                evidence_reasons.append(f"pair_arm_{order}_binding")
+            started = _parse_bound_timestamp(value.get("started_at"))
+            finished = _parse_bound_timestamp(value.get("finished_at"))
+            if finished < started:
+                evidence_reasons.append(f"pair_arm_{order}_timestamps")
+            if prior_finished is not None:
+                gap = (started - prior_finished).total_seconds()
+                if gap < plan["min_gap_seconds"] or gap > plan["max_gap_seconds"]:
+                    evidence_reasons.append(f"pair_arm_{order}_gap")
+            prior_finished = finished
+            if evidence_reasons or summary is None:
+                reasons.extend(evidence_reasons)
+                continue
+            summaries[expected_variant].append(summary)
+            values.append(value)
+        except (BenchmarkError, TypeError, ValueError):
+            reasons.append(f"pair_arm_{order}_artifact")
+    if reasons or any(len(items) != 3 for items in summaries.values()):
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "cre_capacity_counterbalanced_comparison",
+            "state": "inconclusive",
+            "decision": "no_adoption_decision",
+            "reasons": sorted(
+                set(reasons or ["counterbalanced_pair_evidence_missing"])
+            ),
+        }
+    match_keys = (
+        "sample_inventory_sha256",
+        "sample_manifest_sha256",
+        "sample_canonical_sha256",
+        "config_sha256",
+    )
+    if any(
+        any(value.get(key) != values[0].get(key) for key in match_keys)
+        for value in values[1:]
+    ):
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "cre_capacity_counterbalanced_comparison",
+            "state": "inconclusive",
+            "decision": "no_adoption_decision",
+            "reasons": ["counterbalanced_pair_cohort_mismatch"],
+        }
+    baseline_rates = [
+        item["median_eligible_current_active_rows_per_minute"]
+        for item in summaries["baseline"]
+    ]
+    candidate_rates = [
+        item["median_eligible_current_active_rows_per_minute"]
+        for item in summaries["candidate"]
+    ]
+    baseline_rate = round(median(baseline_rates), 3)
+    candidate_rate = round(median(candidate_rates), 3)
+    gain = round((candidate_rate - baseline_rate) * 100 / baseline_rate, 3)
+    attrition_signatures = [
+        [
+            replicate.get("record_evidence_manifest", {}).get(
+                "attrition_sample_ids_sha256"
+            )
+            for replicate in value.get("replicates", [])
+            if isinstance(replicate, Mapping)
+        ]
+        for value in values
+    ]
+    symmetric = all(
+        attrition_signatures[index] == attrition_signatures[index + 1]
+        for index in range(0, len(attrition_signatures), 2)
+    )
+    fixture_only = not production
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "cre_capacity_counterbalanced_comparison",
+        "state": "measured",
+        "decision": (
+            "fixture_only_not_adoptable"
+            if fixture_only
+            else "candidate_for_operator_adoption"
+            if gain >= 15 and symmetric
+            else "do_not_adopt"
+        ),
+        "reasons": (
+            ["sealed_offline_fixture_not_production_authority"]
+            if fixture_only
+            else ["production_evidence_requires_governed_operator_review"]
+        ),
+        "criterion_percent": 15,
+        "gain_percent": gain,
+        "pair_id": plan["pair_id"],
+        "sequence": plan["sequence"],
+        "cohort_matching": {
+            "state": "matched" if symmetric else "asymmetric_confirmed_attrition",
+            "confidence": "full" if symmetric else "reduced",
+            "basis": "immutable_prevalidated_cohort_with_paired_attrition_signatures",
+        },
+        "baseline": {"rates": baseline_rates, "median": baseline_rate},
+        "candidate": {"rates": candidate_rates, "median": candidate_rate},
+    }
+
+
+def compare_counterbalanced_pair(pair_plan_path: Path) -> dict[str, Any]:
+    """Read persisted evidence for review; this public path never adopts."""
+    return _compare_counterbalanced_pair(pair_plan_path)
 
 
 def plan(
@@ -3182,11 +4345,24 @@ def _replicate_state(entry: Mapping[str, Any], details: int) -> str:
     )
     if failed:
         return "failed"
+    active_successes = entry.get("current_active_successes")
+    confirmed_attrition = entry.get("confirmed_attrition")
     measured = (
-        entry.get("qualified_fresh_unique_rows") == details
-        and entry.get("freshness_matches") == details
-        and entry.get("historic_native_asset_matches") == details
-        and entry.get("normalized_structural_matches") == details
+        type(active_successes) is int
+        and type(confirmed_attrition) is int
+        and entry.get("predeclared_cohort_denominator") == details
+        and entry.get("predeclared_eligible_denominator") == details
+        and entry.get("eligible_denominator") == active_successes
+        and entry.get("eligible_rows") == active_successes
+        and active_successes + confirmed_attrition == details
+        and entry.get("individually_qualified_rows") == active_successes
+        and entry.get("qualified_fresh_unique_rows") == active_successes
+        and entry.get("freshness_matches") == active_successes
+        and entry.get("historic_native_asset_matches") == active_successes
+        and entry.get("normalized_structural_matches") == active_successes
+        and entry.get("parser_failures") == 0
+        and entry.get("transport_failures") == 0
+        and entry.get("fidelity_failures") == 0
         and entry.get("quality_errors") == []
         and entry.get("normalized_structural_drops") == []
         and entry.get("comparison_state") == "measured"
@@ -3209,17 +4385,21 @@ def _quarantine_shared_lock(
     artifact_result_path: Path,
     admission_sha256: str,
     review_approval_nonce_sha256: str,
+    reason: str = "bounded_idle_settlement_not_proven",
 ) -> dict[str, Any]:
-    """Make an unknown-settlement lock non-reclaimable until operator recovery."""
+    """Make this owned canonical lock non-reclaimable until operator recovery."""
     lock_path = lock.path
-    if not lock.held or lock.lease_token is None or not lock_path.is_dir():
-        raise BenchmarkError("canonical shared lock cannot be quarantined")
+    try:
+        directory_fd = lock._owned_directory_fd()
+    except LockHeldError as exc:
+        raise BenchmarkError("canonical shared lock cannot be quarantined") from exc
+    os.close(directory_fd)
     evidence_path = lock_path / BENCHMARK_QUARANTINE_MARKER
     evidence = {
         "schema_version": SCHEMA_VERSION,
         "kind": "cre_capacity_benchmark_lock_quarantine",
         "state": "quarantined",
-        "reason": "bounded_idle_settlement_not_proven",
+        "reason": reason,
         "quarantined_at": _now(),
         "admission_sha256": admission_sha256,
         "review_approval_nonce_sha256": review_approval_nonce_sha256,
@@ -3232,18 +4412,142 @@ def _quarantine_shared_lock(
         },
     }
     try:
+        # Publish the durable stop before mutating the lease files. If a later
+        # unlink fails, the marker still prevents SharedLock.release() from
+        # removing this exact owned directory.
+        _atomic_private_json(evidence_path, evidence)
+    except AtomicPrivateJsonDurabilityError as exc:
+        raise QuarantineSharedLockError(
+            "canonical shared lock quarantine evidence durability is unknown",
+            evidence_durable=False,
+        ) from exc
+    except (OSError, BenchmarkError) as exc:
+        raise QuarantineSharedLockError(
+            "canonical shared lock quarantine evidence was not published",
+            evidence_durable=False,
+        ) from exc
+    try:
         (lock_path / "pid").unlink()
         (lock_path / "lease").unlink()
         lock_path.chmod(0o700)
-        _atomic_private_json(evidence_path, evidence)
     except (OSError, BenchmarkError) as exc:
-        raise BenchmarkError("canonical shared lock quarantine failed") from exc
+        raise QuarantineSharedLockError(
+            "canonical shared lock quarantine finalization failed",
+            evidence_durable=True,
+        ) from exc
     return {
         "state": "quarantined",
         "evidence_path": str(evidence_path),
         "evidence_sha256": _file_sha256(evidence_path),
         "recovery": evidence["recovery"],
     }
+
+
+@contextmanager
+def _benchmark_shared_lock(lock_path: Path, held_lock: SharedLock | None):
+    """Use a verified caller-held canonical lock only for paired candidate work."""
+    if held_lock is not None:
+        if held_lock.path != lock_path:
+            raise BenchmarkError("caller-held lock is not the canonical CRE lock")
+        try:
+            descriptor = held_lock._owned_directory_fd()
+        except LockHeldError as exc:
+            raise BenchmarkError("caller-held canonical CRE lock is not owned") from exc
+        os.close(descriptor)
+        yield held_lock
+        return
+    with SharedLock(lock_path) as acquired_lock:
+        yield acquired_lock
+
+
+@contextmanager
+def _candidate_rollback_lock(lock_path: Path):
+    """Yield a verified lock, recovering only to perform mandatory rollback.
+
+    The caller enters this boundary after the candidate runtime is already
+    active. A first acquisition failure therefore cannot simply abort: retry
+    under a fresh verified lock so rollback remains serialized. If that lock is
+    unavailable, do not mutate runtime without ownership or claim a stop that
+    could not be durably established.
+    """
+    initial = SharedLock(
+        lock_path,
+        recovery_required=True,
+        preserve_recovery_on_acquire_failure=True,
+    )
+    try:
+        initial.acquire()
+    except BaseException as initial_error:  # noqa: BLE001 - rollback is mandatory
+        try:
+            initial.recover_partial_acquire()
+        except BaseException as partial_error:  # noqa: BLE001 - try an independent lease
+            partial_recovery_error: BaseException | None = partial_error
+        else:
+            partial_recovery_error = None
+        if partial_recovery_error is None:
+            try:
+                yield initial, initial_error
+            finally:
+                initial.release()
+            return
+        recovery = SharedLock(
+            lock_path,
+            recovery_required=True,
+            preserve_recovery_on_acquire_failure=True,
+        )
+        try:
+            recovery.acquire()
+        except BaseException as recovery_error:  # noqa: BLE001 - preserve both causes
+            failure = BenchmarkError(
+                "candidate rollback cannot acquire a verified canonical recovery lock; "
+                "operator intervention is required"
+            )
+            failure.add_note(
+                f"initial lock error: {type(initial_error).__name__}: {initial_error}"
+            )
+            failure.add_note(
+                "partial lock recovery error: "
+                f"{type(partial_recovery_error).__name__}: {partial_recovery_error}"
+            )
+            failure.add_note(
+                f"recovery lock error: {type(recovery_error).__name__}: {recovery_error}"
+            )
+            raise failure from recovery_error
+        try:
+            yield recovery, initial_error
+        finally:
+            recovery.release()
+    else:
+        try:
+            yield initial, None
+        finally:
+            initial.release()
+
+
+def _require_prearmed_benchmark_interlock(lock: SharedLock) -> None:
+    """Verify that an outer candidate step owns the active interlock."""
+    if lock.benchmark_marker_identity is None:
+        raise BenchmarkError("caller-held canonical lock has no active interlock")
+    try:
+        directory_fd = lock._owned_directory_fd()
+    except LockHeldError as exc:
+        raise BenchmarkError("caller-held canonical lock is not owned") from exc
+    try:
+        observed = os.stat(
+            BENCHMARK_ACTIVE_MARKER,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if (
+            (observed.st_dev, observed.st_ino) != lock.benchmark_marker_identity
+            or not stat.S_ISREG(observed.st_mode)
+            or observed.st_nlink != 1
+        ):
+            raise BenchmarkError("caller-held canonical interlock changed")
+    except FileNotFoundError as exc:
+        raise BenchmarkError("caller-held canonical interlock is missing") from exc
+    finally:
+        os.close(directory_fd)
 
 
 def run_benchmark(
@@ -3258,13 +4562,29 @@ def run_benchmark(
     admission: Mapping[str, Any],
     admission_path: Path,
     timeout_seconds: int,
+    pairing: Mapping[str, Any] | None = None,
+    _held_shared_lock: SharedLock | None = None,
+    _retain_benchmark_interlock: bool = False,
+    _prearmed_benchmark_interlock: bool = False,
 ) -> dict[str, Any]:
+    if _retain_benchmark_interlock and _held_shared_lock is None:
+        raise BenchmarkError(
+            "only a caller-held canonical lock may retain the benchmark interlock"
+        )
+    if _prearmed_benchmark_interlock and (
+        _held_shared_lock is None or not _retain_benchmark_interlock
+    ):
+        raise BenchmarkError(
+            "only a retained caller-held canonical lock may prearm the benchmark interlock"
+        )
     replicates = int(profile["workload"]["replicates"])
     implementation = _implementation_manifest(repo_root)
     endpoints = LOOPBACK_ENDPOINTS
     lock_path = canonical_shared_lock_dir(repo_root)
     try:
-        with SharedLock(lock_path) as shared_lock:
+        with _benchmark_shared_lock(lock_path, _held_shared_lock) as shared_lock:
+            if _prearmed_benchmark_interlock:
+                _require_prearmed_benchmark_interlock(shared_lock)
             _verify_implementation_manifest(repo_root, implementation)
             locked_sample = validate_sample(
                 _read_json(sample_path), int(profile["workload"]["details"])
@@ -3316,6 +4636,13 @@ def run_benchmark(
                 ],
                 "admission_consumption_sha256": _file_sha256(marker),
                 "review_benchmark_grant_sha256": audit["review_benchmark_grant_sha256"],
+                "artifact_evidence": {
+                    "artifact_root": str(artifact_root.resolve()),
+                    "sample_path": str(sample_path.resolve()),
+                    "sample_manifest_sha256": sample_manifest_sha256,
+                    "admission_path": str(admission_path.resolve()),
+                    "admission_consumption_path": str(marker.resolve()),
+                },
                 "live_admission": live_admission,
                 "effective_runtime": live_admission["effective_runtime"],
                 "shared_lock": {"canonical": True, "path": str(lock_path)},
@@ -3335,9 +4662,11 @@ def run_benchmark(
                     "cancellation_limitation": "no_supported_scrape_job_cancel_endpoint_or_job_ids; idle_settlement_required_before_lock_release",
                 },
             }
+            if pairing is not None:
+                result["pairing"] = dict(pairing)
             details = int(profile["workload"]["details"])
             worker_may_have_launched = False
-            interlock_armed = False
+            interlock_armed = _prearmed_benchmark_interlock
             pending_error: BaseException | None = None
             try:
                 with _benchmark_signal_handlers():
@@ -3523,27 +4852,40 @@ def run_benchmark(
                     worker_may_have_launched
                     and result["final_settlement"].get("state") != "idle"
                 ):
-                    try:
-                        result["lock_quarantine"] = _quarantine_shared_lock(
-                            shared_lock,
-                            artifact_result_path=artifact_root / "result.json",
-                            admission_sha256=result["admission_sha256"],
-                            review_approval_nonce_sha256=result[
-                                "review_approval_nonce_sha256"
-                            ],
-                        )
-                    except BenchmarkError as quarantine_exc:
+                    if _held_shared_lock is not None:
+                        # The pair controller must retain its lease through the
+                        # mandatory baseline rollback.  The durable result is
+                        # the handoff signal; its nested cleanup quarantines the
+                        # still-armed lock after rollback has been attempted.
                         result["lock_quarantine"] = {
-                            "state": "quarantine_evidence_unknown",
-                            "error_type": type(quarantine_exc).__name__,
+                            "state": "deferred_to_pair_rollback",
+                            "reason": "bounded_idle_settlement_not_proven",
+                            "lock_path": str(lock_path),
+                            "result_path": str(artifact_root / "result.json"),
                         }
-                        if pending_error is None:
-                            pending_error = quarantine_exc
+                    else:
+                        try:
+                            result["lock_quarantine"] = _quarantine_shared_lock(
+                                shared_lock,
+                                artifact_result_path=artifact_root / "result.json",
+                                admission_sha256=result["admission_sha256"],
+                                review_approval_nonce_sha256=result[
+                                    "review_approval_nonce_sha256"
+                                ],
+                            )
+                        except BenchmarkError as quarantine_exc:
+                            result["lock_quarantine"] = {
+                                "state": "quarantine_evidence_unknown",
+                                "error_type": type(quarantine_exc).__name__,
+                            }
+                            if pending_error is None:
+                                pending_error = quarantine_exc
                 _atomic_private_json(artifact_root / "result.json", result)
                 if (
                     interlock_armed
                     and pending_error is None
                     and result["final_settlement"].get("state") == "idle"
+                    and not _retain_benchmark_interlock
                 ):
                     shared_lock.disarm_benchmark()
             if pending_error is not None:
@@ -3551,6 +4893,420 @@ def run_benchmark(
             return result
     except LockHeldError as exc:
         raise BenchmarkError("canonical CRE shared lock is already held") from exc
+
+
+PAIR_PLAN_KIND = "cre_capacity_counterbalanced_pair_plan"
+PAIR_STATE_KIND = "cre_capacity_counterbalanced_pair_state"
+PAIR_EVIDENCE_MODES = frozenset({"production", "sealed_offline_fixture"})
+
+
+def _benchmark_repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def create_counterbalanced_pair_plan(
+    *,
+    artifact_root: Path,
+    sample_path: Path,
+    evidence_mode: str = "production",
+) -> dict[str, Any]:
+    """Create a private AB/BA/AB plan; it does not touch runtime or providers."""
+    contract = _experiment_contract()
+    details = int(contract["workload"]["details"])
+    bounded_sample = _bound_regular_file(sample_path, maximum=MAX_SAMPLE_BYTES)
+    sample = validate_sample(_read_json(bounded_sample), details)
+    pair = contract["counterbalanced_pair"]
+    root = _bound_artifact_directory(artifact_root)
+    if evidence_mode not in PAIR_EVIDENCE_MODES:
+        raise BenchmarkError("counterbalanced pair evidence mode is invalid")
+    plan = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": PAIR_PLAN_KIND,
+        "pair_id": secrets.token_hex(32),
+        "created_at": _now(),
+        "artifact_root": str(root),
+        "sample_path": str(bounded_sample),
+        "sample_manifest_sha256": _file_sha256(bounded_sample),
+        "sample_canonical_sha256": _sha256(_canonical(sample)),
+        "sample_inventory_sha256": sample["inventory_sha256"],
+        "config_sha256": contract["config_sha256"],
+        "evidence_mode": evidence_mode,
+        "sequence": list(pair["sequence"]),
+        "max_gap_seconds": pair["max_gap_seconds"],
+        "min_gap_seconds": pair["min_gap_seconds"],
+        "state_path": str(root / "counterbalanced-pair-state.json"),
+        "safety": {
+            "database_writes": 0,
+            "canonical_cache_writes": 0,
+            "scheduler_writes": 0,
+            "runtime_mutation": "candidate_step_rolls_back_via_existing_receipt",
+            "admission": "fresh_single_use_per_arm",
+        },
+    }
+    _atomic_private_json(root / "counterbalanced-pair-plan.json", plan)
+    return plan
+
+
+def _load_counterbalanced_pair_plan(path: Path) -> tuple[dict[str, Any], str]:
+    bounded = _bound_regular_file(path, maximum=REVIEW_BENCHMARK_GRANT_MAX_BYTES)
+    value = _read_json(bounded, REVIEW_BENCHMARK_GRANT_MAX_BYTES)
+    contract = _experiment_contract()
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != SCHEMA_VERSION
+        or value.get("kind") != PAIR_PLAN_KIND
+        or not isinstance(value.get("pair_id"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", value["pair_id"]) is None
+        or value.get("sequence") != list(contract["counterbalanced_pair"]["sequence"])
+        or value.get("max_gap_seconds")
+        != contract["counterbalanced_pair"]["max_gap_seconds"]
+        or value.get("min_gap_seconds")
+        != contract["counterbalanced_pair"]["min_gap_seconds"]
+        or value.get("config_sha256") != contract["config_sha256"]
+        or value.get("evidence_mode") not in PAIR_EVIDENCE_MODES
+    ):
+        raise BenchmarkError("counterbalanced pair plan is invalid")
+    root = _bound_artifact_directory(Path(value.get("artifact_root", "")))
+    if bounded.parent != root:
+        raise BenchmarkError("counterbalanced pair plan is outside its artifact root")
+    sample_path = _bound_regular_file(
+        Path(value.get("sample_path", "")), maximum=MAX_SAMPLE_BYTES
+    )
+    sample = validate_sample(
+        _read_json(sample_path), int(contract["workload"]["details"])
+    )
+    if (
+        value.get("sample_manifest_sha256") != _file_sha256(sample_path)
+        or value.get("sample_canonical_sha256") != _sha256(_canonical(sample))
+        or value.get("sample_inventory_sha256") != sample.get("inventory_sha256")
+    ):
+        raise BenchmarkError("counterbalanced pair sample is not immutable")
+    state_path = Path(value.get("state_path", ""))
+    if state_path.parent != root or not state_path.is_absolute():
+        raise BenchmarkError("counterbalanced pair state path is unsafe")
+    return value, _file_sha256(bounded)
+
+
+def _load_counterbalanced_pair_state(
+    plan: Mapping[str, Any], plan_sha256: str
+) -> dict[str, Any]:
+    path = Path(plan["state_path"])
+    if not path.exists():
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": PAIR_STATE_KIND,
+            "pair_id": plan["pair_id"],
+            "pair_plan_sha256": plan_sha256,
+            "arms": [],
+        }
+    value = _read_json(_bound_regular_file(path, maximum=COMPARISON_RESULT_MAX_BYTES))
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != SCHEMA_VERSION
+        or value.get("kind") != PAIR_STATE_KIND
+        or value.get("pair_id") != plan["pair_id"]
+        or value.get("pair_plan_sha256") != plan_sha256
+        or not isinstance(value.get("arms"), list)
+    ):
+        raise BenchmarkError("counterbalanced pair state is invalid")
+    return value
+
+
+def _validate_candidate_rollback_receipt(
+    receipt_path: Path | None, profile_name: str, config_sha256: str
+) -> Path:
+    """Bind a candidate arm to a usable baseline rollback receipt before work."""
+    if receipt_path is None:
+        raise BenchmarkError("candidate pair step requires its rollback receipt")
+    try:
+        _, _, receipt_config_sha256 = capacity_runtime.load_fresh_receipt(
+            receipt_path, profile_name, require_fresh=False
+        )
+    except capacity_runtime.RuntimeAdmissionError as exc:
+        raise BenchmarkError("candidate rollback receipt is invalid") from exc
+    if receipt_config_sha256 != config_sha256:
+        raise BenchmarkError("candidate rollback receipt does not bind the profile")
+    return receipt_path
+
+
+def run_counterbalanced_pair_step(
+    *,
+    repo_root: Path,
+    pair_plan_path: Path,
+    admission: Mapping[str, Any],
+    admission_path: Path,
+    timeout_seconds: int,
+    candidate_receipt_path: Path | None = None,
+) -> dict[str, Any]:
+    """Run exactly the next arm and restore candidate runtime before recording it.
+
+    Each invocation needs a fresh, one-use admission.  Keeping each arm
+    explicit avoids a daemon holding stale approvals across the four-hour pair
+    gap, while still producing a supported AB/BA/AB result chain.
+    """
+    plan, plan_sha256 = _load_counterbalanced_pair_plan(pair_plan_path)
+    if plan["evidence_mode"] != "production":
+        raise BenchmarkError(
+            "sealed offline fixture plans cannot execute a runtime arm"
+        )
+    state = _load_counterbalanced_pair_state(plan, plan_sha256)
+    order = len(state["arms"]) + 1
+    sequence = plan["sequence"]
+    if order > len(sequence):
+        raise BenchmarkError("counterbalanced pair already has every planned arm")
+    variant = sequence[order - 1]
+    contract = _experiment_contract()
+    profile_name = contract["profiles"][variant]
+    profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, profile_name)
+    rollback_receipt_path = (
+        _validate_candidate_rollback_receipt(
+            candidate_receipt_path, profile_name, digest
+        )
+        if variant == "candidate"
+        else None
+    )
+    validated_admission = validate_admission(
+        admission,
+        profile,
+        profile_name,
+        digest,
+        source_git_sha=_git_head(repo_root),
+    )
+    artifact_root = _bound_artifact_directory(Path(plan["artifact_root"]))
+    arm_root = artifact_root / f"arm-{order:02d}-{variant}"
+    arm_root.mkdir(mode=0o700)
+    arm_root.chmod(0o700)
+    pairing = {
+        "pair_id": plan["pair_id"],
+        "pair_plan_sha256": plan_sha256,
+        "arm_order": order,
+        "sequence": sequence,
+        "max_gap_seconds": plan["max_gap_seconds"],
+        "min_gap_seconds": plan["min_gap_seconds"],
+    }
+    run_kwargs = {
+        "repo_root": repo_root,
+        "artifact_root": arm_root,
+        "sample_path": Path(plan["sample_path"]),
+        "sample": validate_sample(
+            _read_json(Path(plan["sample_path"])),
+            int(profile["workload"]["details"]),
+        ),
+        "profile": profile,
+        "profile_name": profile_name,
+        "config_sha256": digest,
+        "admission": validated_admission,
+        "admission_path": admission_path,
+        "timeout_seconds": timeout_seconds,
+        "pairing": pairing,
+    }
+    result: dict[str, Any] | None = None
+    if variant == "candidate":
+        lock_path = canonical_shared_lock_dir(repo_root)
+        try:
+            with _candidate_rollback_lock(lock_path) as (
+                held_lock,
+                acquisition_error,
+            ):
+                benchmark_error: BaseException | None = acquisition_error
+                rollback_error: BaseException | None = None
+                quarantine_error: BaseException | None = None
+                retention_error: BaseException | None = None
+                quarantine_evidence_durable = False
+                try:
+                    # Candidate runtime is already active when its fresh admission is
+                    # validated. Arm before any benchmark preflight so a malformed
+                    # sample, admission-consumption failure, or interrupt cannot
+                    # release the canonical lock before mandatory rollback.
+                    if benchmark_error is None:
+                        held_lock.arm_benchmark(
+                            {
+                                "schema_version": SCHEMA_VERSION,
+                                "kind": "cre_capacity_candidate_pair_active",
+                                "state": "active",
+                                "armed_at": _now(),
+                                "pid": os.getpid(),
+                                "profile": profile_name,
+                                "pair_id": plan["pair_id"],
+                                "admission_sha256": _sha256(
+                                    _canonical(validated_admission)
+                                ),
+                                "review_approval_nonce_sha256": validated_admission[
+                                    "review_approval_nonce_sha256"
+                                ],
+                                "result_path": str(arm_root / "result.json"),
+                            }
+                        )
+                        result = run_benchmark(
+                            **run_kwargs,
+                            _held_shared_lock=held_lock,
+                            _retain_benchmark_interlock=True,
+                            _prearmed_benchmark_interlock=True,
+                        )
+                except BaseException as exc:  # noqa: BLE001 - rollback is mandatory
+                    benchmark_error = exc
+                try:
+                    assert rollback_receipt_path is not None
+                    capacity_runtime.transition(
+                        rollback_receipt_path,
+                        profile_name,
+                        "baseline",
+                        execute=True,
+                        _held_shared_lock=held_lock,
+                    )
+                    if (
+                        benchmark_error is None
+                        and result is not None
+                        and result.get("completed") is True
+                    ):
+                        if held_lock.benchmark_marker_identity is None:
+                            raise BenchmarkError(
+                                "candidate benchmark lost its canonical interlock"
+                            )
+                        held_lock.disarm_benchmark()
+                    if held_lock.benchmark_marker_identity is None:
+                        held_lock.clear_recovery_requirement()
+                except BaseException as exc:  # noqa: BLE001 - quarantine still follows
+                    rollback_error = exc
+                    # This in-memory retain gate is set before attempting the
+                    # durable quarantine write. If publication itself fails,
+                    # SharedLock.__exit__ must not delete the current verified
+                    # canonical lease and turn a rollback failure into overlap.
+                    try:
+                        held_lock.retain_for_operator_recovery()
+                    except BaseException as retain_exc:  # noqa: BLE001 - fail closed
+                        retention_error = retain_exc
+                finally:
+                    # A failed rollback is itself an unsafe terminal state even
+                    # when the outer marker could not be created. The SharedLock
+                    # ownership check inside quarantine binds this stop to this
+                    # exact canonical lease rather than retaining an unrelated
+                    # directory.
+                    if (
+                        held_lock.benchmark_marker_identity is not None
+                        or rollback_error is not None
+                    ):
+                        try:
+                            _quarantine_shared_lock(
+                                held_lock,
+                                artifact_result_path=arm_root / "result.json",
+                                admission_sha256=_sha256(
+                                    _canonical(validated_admission)
+                                ),
+                                review_approval_nonce_sha256=validated_admission[
+                                    "review_approval_nonce_sha256"
+                                ],
+                                reason=(
+                                    "candidate_baseline_rollback_failed"
+                                    if rollback_error is not None
+                                    else "bounded_idle_settlement_not_proven"
+                                ),
+                            )
+                        except BaseException as exc:  # noqa: BLE001 - preserve stop
+                            quarantine_error = exc
+                            quarantine_evidence_durable = bool(
+                                getattr(exc, "evidence_durable", False)
+                            )
+                if (
+                    rollback_error is not None
+                    or quarantine_error is not None
+                    or retention_error is not None
+                ):
+                    if quarantine_error is not None and not quarantine_evidence_durable:
+                        failure_message = (
+                            "candidate pair rollback or lock quarantine failed; "
+                            "durable quarantine evidence publication failed; "
+                            "operator intervention is required"
+                        )
+                    elif quarantine_error is not None:
+                        failure_message = (
+                            "candidate pair rollback or lock quarantine finalization failed "
+                            "after durable evidence publication; operator intervention is required"
+                        )
+                    elif retention_error is not None:
+                        failure_message = (
+                            "candidate pair rollback failed and canonical lock retention "
+                            "could not be verified; operator intervention is required"
+                        )
+                    else:
+                        failure_message = (
+                            "candidate pair rollback failed; canonical lock is quarantined "
+                            "and requires operator recovery"
+                        )
+                    failure = BenchmarkError(failure_message)
+                    if benchmark_error is not None:
+                        failure.add_note(
+                            f"benchmark error: {type(benchmark_error).__name__}: {benchmark_error}"
+                        )
+                    if rollback_error is not None:
+                        failure.add_note(
+                            f"rollback error: {type(rollback_error).__name__}: {rollback_error}"
+                        )
+                    if quarantine_error is not None:
+                        failure.add_note(
+                            f"quarantine error: {type(quarantine_error).__name__}: {quarantine_error}"
+                        )
+                    if retention_error is not None:
+                        failure.add_note(
+                            f"retention error: {type(retention_error).__name__}: {retention_error}"
+                        )
+                    raise failure from (
+                        quarantine_error or retention_error or rollback_error
+                    )
+                if benchmark_error is not None:
+                    raise benchmark_error
+        except LockHeldError as exc:
+            raise BenchmarkError("canonical CRE shared lock is already held") from exc
+    else:
+        result = run_benchmark(
+            repo_root=repo_root,
+            artifact_root=arm_root,
+            sample_path=Path(plan["sample_path"]),
+            sample=validate_sample(
+                _read_json(Path(plan["sample_path"])),
+                int(profile["workload"]["details"]),
+            ),
+            profile=profile,
+            profile_name=profile_name,
+            config_sha256=digest,
+            admission=validated_admission,
+            admission_path=admission_path,
+            timeout_seconds=timeout_seconds,
+            pairing=pairing,
+        )
+    if result is None or result.get("completed") is not True:
+        raise BenchmarkError("counterbalanced pair arm did not complete")
+    result_path = arm_root / "result.json"
+    state["arms"].append(
+        {
+            "arm_order": order,
+            "variant": variant,
+            "result_path": str(result_path),
+            "result_sha256": _file_sha256(result_path),
+        }
+    )
+    _atomic_private_json(Path(plan["state_path"]), state)
+    return result
+
+
+def run_counterbalanced_pair_orchestrator(
+    *,
+    repo_root: Path,
+    pair_plan_path: Path,
+    arms: Sequence[Mapping[str, Any]],
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    """Refuse the unsafe all-arm controller pending a governed runtime path.
+
+    Fresh admissions cannot honestly be preloaded across all six ABBAAB arms,
+    and candidate-to-baseline rollback alone cannot prepare consecutive arms.
+    Keeping a mockable controller would turn fabricated artifacts into adoption
+    authority, so manual paired execution is required until that transition
+    protocol is implemented and separately reviewed.
+    """
+    raise BenchmarkError(
+        "guarded paired controller is disabled; use manual governed paired execution"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3564,10 +5320,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--compare-baseline", type=Path)
     parser.add_argument("--compare-candidate", type=Path)
+    parser.add_argument("--create-counterbalanced-pair", action="store_true")
+    parser.add_argument("--pair-plan", type=Path)
+    parser.add_argument("--run-counterbalanced-step", action="store_true")
+    parser.add_argument("--run-counterbalanced-pair", action="store_true")
+    parser.add_argument("--compare-counterbalanced-pair", type=Path)
+    parser.add_argument("--candidate-rollback-receipt", type=Path)
     parser.add_argument("--replicate-timeout-seconds", type=int, default=1800)
     args = parser.parse_args(argv)
     repo_root = Path(__file__).resolve().parents[3]
     try:
+        if args.compare_counterbalanced_pair:
+            print(
+                json.dumps(
+                    compare_counterbalanced_pair(args.compare_counterbalanced_pair),
+                    sort_keys=True,
+                    indent=2,
+                )
+            )
+            return 0
         if args.compare_baseline or args.compare_candidate:
             if not args.compare_baseline or not args.compare_candidate:
                 comparison = {
@@ -3582,6 +5353,8 @@ def main(argv: list[str] | None = None) -> int:
                     comparison = compare_results(
                         _read_json(args.compare_baseline, MAX_WORKER_OUTPUT_BYTES),
                         _read_json(args.compare_candidate, MAX_WORKER_OUTPUT_BYTES),
+                        baseline_result_path=args.compare_baseline,
+                        candidate_result_path=args.compare_candidate,
                     )
                 except BenchmarkError:
                     comparison = {
@@ -3593,6 +5366,36 @@ def main(argv: list[str] | None = None) -> int:
                     }
             print(json.dumps(comparison, sort_keys=True, indent=2))
             return 0
+        if args.create_counterbalanced_pair:
+            if not args.artifact_root or not args.sample:
+                raise BenchmarkError(
+                    "--create-counterbalanced-pair requires --artifact-root and --sample"
+                )
+            artifact_root = _private_artifact_root(args.artifact_root, repo_root)
+            plan_value = create_counterbalanced_pair_plan(
+                artifact_root=artifact_root, sample_path=args.sample.resolve()
+            )
+            print(json.dumps(plan_value, sort_keys=True, indent=2))
+            return 0
+        if args.run_counterbalanced_step:
+            if not args.pair_plan or not args.admission:
+                raise BenchmarkError(
+                    "--run-counterbalanced-step requires --pair-plan and --admission"
+                )
+            result = run_counterbalanced_pair_step(
+                repo_root=repo_root,
+                pair_plan_path=args.pair_plan,
+                admission=_read_json(args.admission),
+                admission_path=args.admission,
+                timeout_seconds=args.replicate_timeout_seconds,
+                candidate_receipt_path=args.candidate_rollback_receipt,
+            )
+            print(json.dumps(result, sort_keys=True, indent=2))
+            return 0 if result["completed"] else 75
+        if args.run_counterbalanced_pair:
+            raise BenchmarkError(
+                "--run-counterbalanced-pair is disabled pending governed runtime orchestration"
+            )
         if not args.artifact_root:
             raise BenchmarkError("--artifact-root is required outside compare mode")
         contract = _experiment_contract()

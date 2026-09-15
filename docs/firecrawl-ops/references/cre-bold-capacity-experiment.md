@@ -216,8 +216,15 @@ proves all loopback API, browser, RabbitMQ, NuQ, active-crawl, and queue counter
 are idle, reviews the recorded result, and removes that exact canonical lock
 directory. Do not remove it merely because the local worker process exited.
 
-The candidate is adoptable only if the three matched replicates show at least a
-15 percent throughput gain and all identity, normalized-field fidelity,
+If a candidate-step lock or quarantine write reaches rename but cannot confirm
+directory durability, the lock lease itself remains recovery-required even if a
+marker later appears absent. Treat that lease exactly like a quarantine stop:
+do not reclaim it from a dead PID or run an unlocked rollback. An operator must
+verify idle state and remove the exact canonical lock directory before retrying.
+
+The candidate is adoptable only if three counterbalanced matched pairs (the
+fixed `baseline,candidate,candidate,baseline,baseline,candidate` AB/BA/AB
+sequence) show at least a 15 percent throughput gain and all identity, normalized-field fidelity,
 document/media/asset fidelity, freshness, executable provenance, host and
 container telemetry, OOM, PID, queue settlement, cooldown, and no-write gates
 pass. Summary booleans alone are insufficient: every replicate must retain the
@@ -239,28 +246,74 @@ freshness and normalized field, asset, document, and media parity. A source Git
 SHA remains provenance, but an unrelated documentation-only commit is not a
 substitute for executable dependency matching.
 
+The ordinary two-result command remains diagnostic-only and can never return
+`adoptable`. The persisted paired comparator is also advisory-only, even after
+rehashing every artifact: files alone cannot establish that a runtime was
+actually guarded. It reopens and rehashes the sample, admission, consumption
+marker, worker output, performance receipt, and each raw cache receipt before
+reporting a measured result or `candidate_for_operator_adoption`. That latter
+value is evidence for a separate governed operator review, never an executable
+adoption instruction. The former all-arm controller is deliberately disabled:
+it preloaded short-lived admissions and could not honestly effect the required
+baseline-to-candidate transitions. Do not batch admissions or hold approval
+across the allowed pair gap.
+
+Worker status fields are not comparison authority. The comparator derives each
+row's URL, hashes, HTTP status, challenge signal, and JLL tombstone semantics
+again from its rehashed private raw receipt. A confirmed tombstone requires a
+JLL HTTP 404, valid `__NEXT_DATA__`, explicit `notFound`, an error status 404,
+and no property object. A worker claim that disagrees with its receipt is a
+fidelity failure. Production comparison also rehashes the current clean
+checkout's implementation manifest and every generated `worker.mts`; arm
+results must be below the paired plan root. Reopening either a production plan
+or a `sealed_offline_fixture` plan always remains non-adoptable evidence;
+fixtures report `fixture_only_not_adoptable` and persisted production evidence
+reports `candidate_for_operator_adoption` only when the evidence clears the
+criterion and remains subject to governed operator review.
+
+When JLL reports a withheld or unknown price control, raw-data retention keeps
+only a small allowlisted listing envelope, controls, and redacted pricing
+provenance. It removes arbitrary provider detail, known price schema paths,
+legacy `financials.amount` and `dealEconomics.amount`, and USD/CAD/EUR monetary
+disclosures in stored markdown and description; it preserves unrelated
+top-level provenance such as `currentTenants`. A merged sale/lease row carries a non-sensitive
+`jllPriceWithheld` marker so the SQL upsert clears a previously visible sale or
+lease price without inferring state from nested provider JSON. Foreign-currency
+lease amounts remain public normalized provenance only and never enter the
+currency-free lease columns.
+
 ```bash
+python3 cre_capacity_benchmark.py --artifact-root /restricted/pair-001 \
+  --sample /restricted/jll-128-sample.json --create-counterbalanced-pair
+
+# A one-arm command records advisory evidence only. Its candidate arm rolls back.
+python3 cre_capacity_benchmark.py --pair-plan /restricted/pair-001/counterbalanced-pair-plan.json \
+  --admission /restricted/fresh-admission.json --run-counterbalanced-step \
+  --candidate-rollback-receipt /restricted/candidate-runtime-receipt.json
+
+# Reopening disk evidence is intentionally advisory only.
 python3 cre_capacity_benchmark.py \
-  --compare-baseline /restricted/matched-baseline-result.json \
-  --compare-candidate ../../../tasks/tmp/cre-capacity-benchmark-001/result.json
+  --compare-counterbalanced-pair /restricted/pair-001/counterbalanced-pair-plan.json
 ```
 
-It reports median qualified rows per minute, percentage gain, completeness,
-normalized/native/fresh fidelity, and p50/p95/p99 latency. Under a future
-supported baseline-admission path, at least 15 percent would yield `adoptable`
-and a measured smaller gain would yield nonfatal `do_not_adopt`; missing or
-unmatched evidence yields `no_adoption_decision`. At this revision the
-comparison is hard-disabled from returning an adoption decision because no
-supported baseline producer exists. Do not substitute the prior 32-detail
-probe or any unmatched historical result.
+The final comparator admits only six disk-bound arms with the exact fixed
+order, pair ID, immutable sample/config hashes, matching per-pair attrition
+identity manifests, and timestamps within the centrally configured gap. Disk
+evidence is a review record, never adoption authority by itself. Manual,
+governed paired execution records median qualified rows per minute, percentage
+gain, completeness, normalized/native/fresh fidelity, and p50/p95/p99 latency.
+Confirmed JLL 404
+attrition remains in its immutable slot, continues later replicas, and is
+excluded only from that row's current throughput. Asymmetric attrition reduces
+matching confidence and blocks adoption; it never silently substitutes cohort
+members or infers a database inactive state. Any transport, challenge, 429,
+unknown-status, malformed-content, parser, or fidelity failure remains
+fail-closed.
 
-The first candidate run does not require a baseline run. Adoption does. The
-required baseline is the exact same JLL 128-record manifest and three-replicate
-evidence contract at browser 2 CPU, global pages 4, JLL detail width 4, browser
-PID 384, and API 1 CPU. At this revision, this workflow does not expose an
-admitted command that generates that baseline artifact. Until a supported,
-exactly matched baseline exists, the candidate result can establish safety and
-fidelity evidence but the comparison must return `no_adoption_decision`.
+The separate [multisource-v1 cohort contract](cre-multisource-capacity-v1.md)
+is prevalidation-only until every listed provider has a reviewed execution
+adapter and explicit current not-found classifier. It must not be substituted
+for this controlled JLL paired lane.
 
 ## 2026-09-14 execution record
 

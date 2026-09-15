@@ -1021,8 +1021,8 @@ def preflight(
 ) -> dict[str, Any]:
     out = _controller_output(out)
     profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, profile_name)
-    if profile["kind"] != "experiment":
-        raise RuntimeAdmissionError("runtime transition requires an experiment profile")
+    if profile["kind"] not in {"baseline", "experiment"}:
+        raise RuntimeAdmissionError("runtime transition requires a benchmark profile")
     capture = capture_runtime(runner)
     receipt = _receipt_payload(profile_name, profile, digest, capture)
     write_private(out, receipt, refuse_existing=True)
@@ -1363,6 +1363,104 @@ def consume_review_approval(
                 error.add_note(str(cleanup_error))
             raise error from primary_error
         raise
+
+
+def _admission_payload(
+    *,
+    profile_name: str,
+    config_sha256: str,
+    receipt: Mapping[str, Any],
+    approval: Mapping[str, Any],
+    review_grant_path: Path,
+    effective: Mapping[str, Any],
+    checks: Mapping[str, bool],
+) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": ADMISSION_KIND,
+        "profile": profile_name,
+        "config_sha256": config_sha256,
+        "source_git_sha": effective["repo"]["git_sha"],
+        "transition_receipt_sha256": receipt["receipt_sha256"],
+        "review_approval_nonce_sha256": _hash(approval["nonce"]),
+        "review_approval_created_at": approval["created_at"],
+        "review_benchmark_grant_path": str(review_grant_path),
+        "created_at": utc_now(),
+        "expires_after_seconds": RECEIPT_MAX_AGE_SECONDS,
+        "admitted": True,
+        "writes": "forbidden",
+        "checks": dict(checks),
+        "effective": dict(effective),
+    }
+
+
+def admit_baseline(
+    receipt_path: Path,
+    profile_name: str,
+    *,
+    admission_out: Path,
+    approval_path: Path,
+    runner: CommandRunner = _default_runner,
+) -> dict[str, Any]:
+    """Bind a baseline benchmark to a fresh, read-only review admission.
+
+    This producer never changes containers or API resources. It verifies that
+    the runtime is still the exact preflight baseline, consumes one review
+    approval only to create the benchmark grant, and writes a private admission
+    receipt for the normal benchmark worker.
+    """
+    receipt, profile, digest = load_fresh_receipt(receipt_path, profile_name)
+    if profile["kind"] != "baseline":
+        raise RuntimeAdmissionError("baseline admission requires a baseline profile")
+    admission_out = _controller_output(admission_out)
+    if admission_out.exists():
+        raise RuntimeAdmissionError("admission output path already exists")
+    lock_path = _canonical_transition_lock()
+    review_grant_path: Path | None = None
+    with _transition_signal_handlers():
+        try:
+            lock = SharedLock(lock_path)
+            with _defer_transition_signals():
+                lock.acquire()
+        except LockHeldError as exc:
+            raise RuntimeAdmissionError(str(exc)) from exc
+        try:
+            current = capture_runtime(runner)
+            baseline = receipt["baseline"]
+            if current.public["transition_sha256"] != baseline["transition_sha256"]:
+                raise RuntimeAdmissionError("runtime drifted after preflight")
+            checks = verify_capture(current, receipt, profile, "baseline")
+            if not checks or not all(checks.values()):
+                raise RuntimeAdmissionError("baseline verification failed")
+            with _delay_transition_signals():
+                approval, review_grant_path = consume_review_approval(
+                    approval_path, receipt, profile_name, digest
+                )
+            admission = _admission_payload(
+                profile_name=profile_name,
+                config_sha256=digest,
+                receipt=receipt,
+                approval=approval,
+                review_grant_path=review_grant_path,
+                effective=current.public,
+                checks=checks,
+            )
+            write_private(admission_out, admission, refuse_existing=True)
+            return {
+                "profile": profile_name,
+                "state": "baseline",
+                "checks": checks,
+                "verified": True,
+                "admission_path": str(admission_out),
+            }
+        except BaseException:
+            if review_grant_path is not None:
+                with _defer_transition_signals():
+                    _destroy_review_benchmark_grant(review_grant_path)
+            raise
+        finally:
+            with _defer_transition_signals():
+                lock.release()
 
 
 def _fsync_directory(path: Path) -> None:
@@ -1810,6 +1908,20 @@ def _canonical_transition_lock() -> Path:
     return path
 
 
+def _verified_external_transition_lock(lock: SharedLock, lock_path: Path) -> SharedLock:
+    """Accept only the exact, currently owned pair-step canonical lock."""
+    if lock.path != lock_path:
+        raise RuntimeAdmissionError("caller-held lock is not the canonical CRE lock")
+    try:
+        descriptor = lock._owned_directory_fd()
+    except LockHeldError as exc:
+        raise RuntimeAdmissionError(
+            "caller-held canonical CRE lock is not owned"
+        ) from exc
+    os.close(descriptor)
+    return lock
+
+
 def _signal_as_interrupt(signum: int, _frame: object) -> None:
     raise KeyboardInterrupt(f"runtime transition interrupted by signal {signum}")
 
@@ -1962,6 +2074,7 @@ def transition(
     runner: CommandRunner = _default_runner,
     admission_out: Path | None = None,
     approval_path: Path | None = None,
+    _held_shared_lock: SharedLock | None = None,
 ) -> dict[str, Any]:
     receipt, profile, digest = load_fresh_receipt(
         receipt_path, profile_name, require_fresh=state == "candidate"
@@ -1990,6 +2103,8 @@ def transition(
         else receipt["rollback_plan"],
     }
     if not execute:
+        if _held_shared_lock is not None:
+            raise RuntimeAdmissionError("caller-held lock is only valid for execution")
         current = capture_runtime(runner)
         baseline = receipt["baseline"]
         try:
@@ -2027,10 +2142,14 @@ def transition(
         mutation_issued = True
 
     with _transition_signal_handlers():
+        external_lock = _held_shared_lock is not None
         try:
-            lock = SharedLock(lock_path)
-            with _defer_transition_signals():
-                lock.acquire()
+            if _held_shared_lock is not None:
+                lock = _verified_external_transition_lock(_held_shared_lock, lock_path)
+            else:
+                lock = SharedLock(lock_path)
+                with _defer_transition_signals():
+                    lock.acquire()
         except LockHeldError as exc:
             raise RuntimeAdmissionError(str(exc)) from exc
         try:
@@ -2086,23 +2205,15 @@ def transition(
                 "verified": True,
             }
             if state == "candidate" and admission_out is not None:
-                admission = {
-                    "schema_version": SCHEMA_VERSION,
-                    "kind": ADMISSION_KIND,
-                    "profile": profile_name,
-                    "config_sha256": digest,
-                    "source_git_sha": after.public["repo"]["git_sha"],
-                    "transition_receipt_sha256": receipt["receipt_sha256"],
-                    "review_approval_nonce_sha256": _hash(approval["nonce"]),
-                    "review_approval_created_at": approval["created_at"],
-                    "review_benchmark_grant_path": str(review_grant_path),
-                    "created_at": utc_now(),
-                    "expires_after_seconds": RECEIPT_MAX_AGE_SECONDS,
-                    "admitted": True,
-                    "writes": "forbidden",
-                    "checks": checks,
-                    "effective": after.public,
-                }
+                admission = _admission_payload(
+                    profile_name=profile_name,
+                    config_sha256=digest,
+                    receipt=receipt,
+                    approval=approval,
+                    review_grant_path=review_grant_path,
+                    effective=after.public,
+                    checks=checks,
+                )
                 write_private(admission_out, admission, refuse_existing=True)
                 result["admission_path"] = str(admission_out)
             return result
@@ -2157,8 +2268,9 @@ def transition(
                 raise failure from (compensation_error or grant_cleanup_error)
             raise
         finally:
-            with _defer_transition_signals():
-                lock.release()
+            if not external_lock:
+                with _defer_transition_signals():
+                    lock.release()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -2167,6 +2279,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     pre = subparsers.add_parser("preflight")
     pre.add_argument("--profile", default="bold-jll-128")
     pre.add_argument("--out", type=Path, required=True)
+    baseline_admission = subparsers.add_parser("baseline-admission")
+    baseline_admission.add_argument("--profile", default="production-current")
+    baseline_admission.add_argument("--receipt", type=Path, required=True)
+    baseline_admission.add_argument("--admission-out", type=Path, required=True)
+    baseline_admission.add_argument("--approval", type=Path, required=True)
     for command in ("apply", "rollback"):
         selected = subparsers.add_parser(command)
         selected.add_argument("--profile", default="bold-jll-128")
@@ -2179,6 +2296,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "preflight":
             result = preflight(args.profile, args.out)
+        elif args.command == "baseline-admission":
+            result = admit_baseline(
+                args.receipt,
+                args.profile,
+                admission_out=args.admission_out,
+                approval_path=args.approval,
+            )
         else:
             result = transition(
                 args.receipt,

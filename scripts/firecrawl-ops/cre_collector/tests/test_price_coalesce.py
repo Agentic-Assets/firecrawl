@@ -17,7 +17,7 @@ Pure Python, no DB connection. Asserts against build_sql([], [], scraped_at, set
 
 from datetime import datetime, timezone
 
-from cre_ingest import build_sql
+from cre_ingest import build_sql, source_key_sql
 
 _SCRAPED_AT = datetime(2026, 6, 15, 0, 0, 0, tzinfo=timezone.utc).isoformat()
 
@@ -38,9 +38,9 @@ def test_sale_price_usd_coalesce_present():
 
 
 def test_sale_price_per_sf_coalesce_present():
-    assert "ELSE COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf) END" in _sql(), (
-        "Expected COALESCE-keep for sale_price_per_sf in DO UPDATE SET block."
-    )
+    assert (
+        "ELSE COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf) END" in _sql()
+    ), "Expected COALESCE-keep for sale_price_per_sf in DO UPDATE SET block."
 
 
 def test_lease_rate_min_coalesce_present():
@@ -53,6 +53,39 @@ def test_lease_rate_max_coalesce_present():
     assert "ELSE COALESCE(EXCLUDED.lease_rate_max, t.lease_rate_max) END" in _sql(), (
         "Expected COALESCE-keep for lease_rate_max in DO UPDATE SET block."
     )
+
+
+def test_jll_withheld_visibility_clears_previously_visible_price_columns():
+    sql = _sql()
+    guard = "EXCLUDED.raw_data->>'jllPriceWithheld' = 'true'"
+    assert guard in sql
+    for column in (
+        "sale_price_usd",
+        "sale_price_per_sf",
+        "lease_rate_min",
+        "lease_rate_max",
+        "lease_rate_type",
+        "cap_rate",
+        "noi",
+        "gross_revenue",
+        "price_per_unit",
+        "grm",
+        "price_per_acre",
+        "revpar",
+    ):
+        assert f"{column}" in sql
+    assert (
+        sql.count("WHEN (\n      EXCLUDED.raw_data->>'jllPriceWithheld' = 'true'") >= 5
+    )
+
+
+def test_jll_withheld_visibility_clears_phase_two_derived_columns_on_prior_update():
+    sql = _sql()
+    compact = " ".join(sql.split())
+    source_key = " ".join(source_key_sql("s", "b").split())
+    guard = f"s.raw_data->>'jllPriceWithheld' = 'true' AND {source_key} = 'jll'"
+    for column in ("price_per_unit", "grm", "price_per_acre", "revpar"):
+        assert f"{column} = CASE WHEN ( {guard} ) THEN NULL" in compact
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +130,7 @@ def test_lease_rate_max_unconditional_gone():
 # ---------------------------------------------------------------------------
 
 
-def test_cap_rate_still_coalesce():
-    assert "cap_rate          = COALESCE(EXCLUDED.cap_rate, t.cap_rate)" in _sql(), (
-        "cap_rate COALESCE-keep was inadvertently removed."
+def test_cap_rate_coalesce_is_retained_after_the_withheld_clear_gate():
+    assert "ELSE COALESCE(EXCLUDED.cap_rate, t.cap_rate) END" in _sql(), (
+        "The clear gate must preserve ordinary sparse-update COALESCE behavior."
     )

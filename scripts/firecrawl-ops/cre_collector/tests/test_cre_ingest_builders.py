@@ -25,9 +25,8 @@ import json
 import sys
 from datetime import datetime, timezone
 
-import pytest
-
 import cre_ingest as ci
+import pytest
 
 _SCRAPED_AT = datetime(2026, 6, 15, 0, 0, 0, tzinfo=timezone.utc).isoformat()
 
@@ -46,20 +45,20 @@ def _row(listing, brokers=None):
 @pytest.mark.parametrize(
     "value,expected",
     [
-        (None, None),            # non-numeric
-        ("6.5", None),           # string is non-numeric (isinstance int/float gate)
-        (True, None),            # bool -> frac 1.0 -> >= 0.5 dropped
-        (0, None),               # <= 0
-        (-5, None),              # negative
-        (0.065, 0.065),          # already a fraction, kept
-        (0.5, None),             # fraction == 0.5 dropped (strict < 0.5)
-        (0.6, None),             # fraction > 0.5 dropped
-        (1, None),               # ==1 -> frac 1.0 dropped
-        (6.5, 0.065),            # percent -> fraction
-        (25, 0.25),              # percent < 30 -> fraction
-        (29.9, round(0.299, 6)), # just under the 30-percent ceiling
-        (30, None),              # percent == 30 dropped (elif v < 30)
-        (35, None),              # percent >= 30 dropped
+        (None, None),  # non-numeric
+        ("6.5", None),  # string is non-numeric (isinstance int/float gate)
+        (True, None),  # bool -> frac 1.0 -> >= 0.5 dropped
+        (0, None),  # <= 0
+        (-5, None),  # negative
+        (0.065, 0.065),  # already a fraction, kept
+        (0.5, None),  # fraction == 0.5 dropped (strict < 0.5)
+        (0.6, None),  # fraction > 0.5 dropped
+        (1, None),  # ==1 -> frac 1.0 dropped
+        (6.5, 0.065),  # percent -> fraction
+        (25, 0.25),  # percent < 30 -> fraction
+        (29.9, round(0.299, 6)),  # just under the 30-percent ceiling
+        (30, None),  # percent == 30 dropped (elif v < 30)
+        (35, None),  # percent >= 30 dropped
     ],
 )
 def test_norm_cap_rate_edge_grid(value, expected):
@@ -102,10 +101,34 @@ def test_norm_property_type_empty_and_non_str_is_none():
 # ===========================================================================
 
 
-def test_norm_state_full_name_maps(): assert ci.norm_state("California") == "CA"
-def test_norm_state_two_letter_code(): assert ci.norm_state("ca") == "CA"
-def test_norm_state_unknown_is_none(): assert ci.norm_state("ZZ") is None
-def test_norm_state_non_str_is_none(): assert ci.norm_state(7) is None
+def test_norm_state_full_name_maps():
+    assert ci.norm_state("California") == "CA"
+
+
+def test_norm_state_two_letter_code():
+    assert ci.norm_state("ca") == "CA"
+
+
+def test_norm_state_unknown_is_none():
+    assert ci.norm_state("ZZ") is None
+
+
+def test_norm_state_non_str_is_none():
+    assert ci.norm_state(7) is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["https://", "https:///relative.pdf", "http://?x", "mailto:test@example.com"],
+)
+def test_http_url_or_none_rejects_malformed_or_non_http_urls(value):
+    assert ci.http_url_or_none(value) is None
+
+
+def test_http_url_or_none_uses_parsed_http_url():
+    assert ci.http_url_or_none(" https://cdn.example/brochure.pdf ") == (
+        "https://cdn.example/brochure.pdf"
+    )
 
 
 # ===========================================================================
@@ -134,21 +157,26 @@ def test_extra_facts_empty_after_strip_key_dropped():
 def test_extra_facts_keeps_supported_value_types_and_strips_keys():
     out = ci.extra_facts_or_none(
         {
-            " key1 ": " val ",   # trimmed key + trimmed string value
-            "k_none": None,      # dropped
-            "k_empty": "",       # dropped (empty after strip)
-            5: "x",              # non-string key dropped
-            "k_bool": True,      # bool kept
-            "k_num": 3.5,        # number kept
-            "k_list": [1, 2],    # non-empty list kept
+            " key1 ": " val ",  # trimmed key + trimmed string value
+            "k_none": None,  # dropped
+            "k_empty": "",  # dropped (empty after strip)
+            5: "x",  # non-string key dropped
+            "k_bool": True,  # bool kept
+            "k_num": 3.5,  # number kept
+            "k_list": [1, 2],  # non-empty list kept
             "k_empty_list": [],  # empty list dropped
             "k_dict": {"a": 1},  # non-empty dict kept
             "k_empty_dict": {},  # empty dict dropped
-            "k_tuple": ("t",),   # unsupported type dropped
+            "k_tuple": ("t",),  # unsupported type dropped
         }
     )
-    assert out == {"key1": "val", "k_bool": True, "k_num": 3.5,
-                   "k_list": [1, 2], "k_dict": {"a": 1}}
+    assert out == {
+        "key1": "val",
+        "k_bool": True,
+        "k_num": 3.5,
+        "k_list": [1, 2],
+        "k_dict": {"a": 1},
+    }
 
 
 # ===========================================================================
@@ -168,12 +196,11 @@ def test_om_facts_drops_non_dict_items():
 def test_om_facts_requires_full_provenance():
     # Missing source_doc_url or parser_version -> dropped (never fabricate audit).
     assert ci.om_facts_rows([{"factKey": "noi"}]) == []
-    assert ci.om_facts_rows(
-        [{"factKey": "noi", "sourceDocUrl": "https://x.com/om.pdf"}]
-    ) == []
-    assert ci.om_facts_rows(
-        [{"factKey": "noi", "parserVersion": "v1"}]
-    ) == []
+    assert (
+        ci.om_facts_rows([{"factKey": "noi", "sourceDocUrl": "https://x.com/om.pdf"}])
+        == []
+    )
+    assert ci.om_facts_rows([{"factKey": "noi", "parserVersion": "v1"}]) == []
 
 
 def test_om_facts_full_row_with_clamps():
@@ -183,7 +210,7 @@ def test_om_facts_full_row_with_clamps():
                 "factKey": "noi",
                 "sourceDocUrl": "https://x.com/om.pdf",
                 "parserVersion": "v1",
-                "factGroup": "weird",   # not in allowed set -> clamps to scalar
+                "factGroup": "weird",  # not in allowed set -> clamps to scalar
                 "confidence": 0.7,
                 "factValueNum": 12345,
                 "unitCount": 10,
@@ -253,7 +280,10 @@ def test_om_facts_snake_case_aliases_accepted():
 
 
 def test_transaction_type_of_sale_and_lease():
-    assert ci.transaction_type_of({"transactionType": "For Sale and Lease"}) == "sale_or_lease"
+    assert (
+        ci.transaction_type_of({"transactionType": "For Sale and Lease"})
+        == "sale_or_lease"
+    )
     assert ci.transaction_type_of({"transactionType": "Sale or Let"}) == "sale_or_lease"
 
 
@@ -273,7 +303,9 @@ def test_transaction_type_of_unknown_mode_is_none():
 
 
 def test_parse_lastmod_z_suffix_to_offset():
-    assert ci.parse_source_lastmod("2026-03-18T14:23:05Z") == "2026-03-18T14:23:05+00:00"
+    assert (
+        ci.parse_source_lastmod("2026-03-18T14:23:05Z") == "2026-03-18T14:23:05+00:00"
+    )
 
 
 def test_parse_lastmod_space_separator_via_regex():
@@ -375,58 +407,62 @@ def test_cushman_external_id_is_stable_across_provider_guid_rotation():
         "https://www.cushmanwakefield.com/en/united-states/properties/"
         "for-sale/office/tx/dallas/example-s"
     )
-    first = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": url,
-        "id": "provider-guid-a",
-        "transactionMode": "sale",
-    })
-    rotated = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": url,
-        "id": "provider-guid-b",
-        "transactionMode": "sale",
-    })
+    first = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": url,
+            "id": "provider-guid-a",
+            "transactionMode": "sale",
+        }
+    )
+    rotated = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": url,
+            "id": "provider-guid-b",
+            "transactionMode": "sale",
+        }
+    )
     expected = "url:v1:" + hashlib.sha256(url.encode()).hexdigest()[:32]
     assert first["external_id"] == expected
     assert rotated["external_id"] == expected
 
 
 def test_cushman_external_id_normalizes_legacy_host_and_url_noise():
-    path = (
-        "/en/united-states/properties/for-lease/industrial/oh/cleveland/"
-        "example-l"
+    path = "/en/united-states/properties/for-lease/industrial/oh/cleveland/example-l"
+    public = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": f"https://www.cushmanwakefield.com{path}",
+            "id": "provider-guid-a",
+        }
     )
-    public = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": f"https://www.cushmanwakefield.com{path}",
-        "id": "provider-guid-a",
-    })
-    legacy = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": (
-            f"https://sitecore-www.cushmanwakefield.com{path}/"
-            "?tracking=1#top"
-        ),
-        "id": "provider-guid-b",
-    })
+    legacy = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": (f"https://sitecore-www.cushmanwakefield.com{path}/?tracking=1#top"),
+            "id": "provider-guid-b",
+        }
+    )
     assert public["external_id"] == legacy["external_id"]
 
 
 def test_cushman_external_id_maps_official_azure_host_to_public_path():
-    path = (
-        "/en/united-states/properties/for-sale/industrial/il/chicago/example-s"
+    path = "/en/united-states/properties/for-sale/industrial/il/chicago/example-s"
+    public = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": f"https://www.cushmanwakefield.com{path}",
+            "id": "provider-guid-a",
+        }
     )
-    public = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": f"https://www.cushmanwakefield.com{path}",
-        "id": "provider-guid-a",
-    })
-    azure = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": f"https://cw-prod-gblgws-a-cm.azurewebsites.net{path}",
-        "id": "provider-guid-b",
-    })
+    azure = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": f"https://cw-prod-gblgws-a-cm.azurewebsites.net{path}",
+            "id": "provider-guid-b",
+        }
+    )
     assert public["external_id"] == azure["external_id"]
 
 
@@ -435,21 +471,27 @@ def test_cushman_onecap_identity_retains_record_id_query():
         "https://onecap.cushmanwakefield.com/en/united-states/properties/"
         "for-sale/listing"
     )
-    first = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": f"{base}?recordId=a2N-A",
-        "id": "provider-guid-a",
-    })
-    second = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": f"{base}?recordId=a2N-B",
-        "id": "provider-guid-b",
-    })
-    missing = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": base,
-        "id": "provider-guid-c",
-    })
+    first = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": f"{base}?recordId=a2N-A",
+            "id": "provider-guid-a",
+        }
+    )
+    second = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": f"{base}?recordId=a2N-B",
+            "id": "provider-guid-b",
+        }
+    )
+    missing = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": base,
+            "id": "provider-guid-c",
+        }
+    )
     assert first["external_id"] != second["external_id"]
     assert missing is None
 
@@ -459,31 +501,41 @@ def test_cushman_onecap_identity_normalizes_whitespace_and_rejects_duplicates():
         "https://onecap.cushmanwakefield.com/en/united-states/properties/"
         "for-sale/listing"
     )
-    normalized = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": f"{base}?recordId=A+B",
-        "id": "provider-guid-a",
-    })
-    noisy = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": f"{base}?recordId=%20A%20%20B%20",
-        "id": "provider-guid-b",
-    })
-    duplicate = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": f"{base}?recordId=A&recordId=B",
-        "id": "provider-guid-c",
-    })
-    duplicate_blank = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": f"{base}?recordId=A&recordId=",
-        "id": "provider-guid-d",
-    })
-    tilde = _row({
-        "sourceKey": "cushman-wakefield",
-        "url": f"{base}?recordId=A%7EB",
-        "id": "provider-guid-e",
-    })
+    normalized = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": f"{base}?recordId=A+B",
+            "id": "provider-guid-a",
+        }
+    )
+    noisy = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": f"{base}?recordId=%20A%20%20B%20",
+            "id": "provider-guid-b",
+        }
+    )
+    duplicate = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": f"{base}?recordId=A&recordId=B",
+            "id": "provider-guid-c",
+        }
+    )
+    duplicate_blank = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": f"{base}?recordId=A&recordId=",
+            "id": "provider-guid-d",
+        }
+    )
+    tilde = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": f"{base}?recordId=A%7EB",
+            "id": "provider-guid-e",
+        }
+    )
     assert normalized["external_id"] == noisy["external_id"]
     assert duplicate is None
     assert duplicate_blank is None
@@ -495,11 +547,16 @@ def test_cushman_onecap_identity_normalizes_whitespace_and_rejects_duplicates():
 
 
 def test_cushman_rejects_noncanonical_identity_host():
-    assert _row({
-        "sourceKey": "cushman-wakefield",
-        "url": "https://example.com/property/1",
-        "id": "provider-guid",
-    }) is None
+    assert (
+        _row(
+            {
+                "sourceKey": "cushman-wakefield",
+                "url": "https://example.com/property/1",
+                "id": "provider-guid",
+            }
+        )
+        is None
+    )
 
 
 def test_cushman_same_url_merge_preserves_provider_payload_and_children():
@@ -513,18 +570,22 @@ def test_cushman_same_url_merge_preserves_provider_payload_and_children():
         "transactionMode": "lease",
         "preserveChildCollections": True,
     }
-    first = _row({
-        **base,
-        "id": "provider-guid-a",
-        "name": "Example",
-        "rawCushmanApi": {"id": "provider-guid-a"},
-    })
-    second = _row({
-        **base,
-        "id": "provider-guid-b",
-        "documents": [{"url": "https://assets.example.com/example.pdf"}],
-        "rawCushmanApi": {"id": "provider-guid-b"},
-    })
+    first = _row(
+        {
+            **base,
+            "id": "provider-guid-a",
+            "name": "Example",
+            "rawCushmanApi": {"id": "provider-guid-a"},
+        }
+    )
+    second = _row(
+        {
+            **base,
+            "id": "provider-guid-b",
+            "documents": [{"url": "https://assets.example.com/example.pdf"}],
+            "rawCushmanApi": {"id": "provider-guid-b"},
+        }
+    )
 
     merged = ci.merge_rows(first, second)
     assert merged["external_id"] == first["external_id"]
@@ -537,21 +598,29 @@ def test_cushman_same_url_merge_preserves_provider_payload_and_children():
     ]
     assert merged["raw_data"]["primary"]["rawCushmanApi"]["id"] == "provider-guid-a"
     assert (
-        merged["raw_data"]["secondary_pass"]["rawCushmanApi"]["id"]
-        == "provider-guid-b"
+        merged["raw_data"]["secondary_pass"]["rawCushmanApi"]["id"] == "provider-guid-b"
     )
 
 
 def test_to_row_buildout_propertyid_strips_sale_suffix():
-    r = _row({"sourceKey": "svn",
-              "url": "https://svn.com/x?propertyId=1614726-sale", "id": "99"})
+    r = _row(
+        {
+            "sourceKey": "svn",
+            "url": "https://svn.com/x?propertyId=1614726-sale",
+            "id": "99",
+        }
+    )
     # The propertyId base wins over the raw inventory id, and -sale is stripped.
     assert r["external_id"] == "1614726"
 
 
 def test_to_row_buildout_propertyid_strips_lease_suffix():
-    r = _row({"sourceKey": "lee-associates",
-              "url": "https://buildout.com/x?propertyId=42-lease"})
+    r = _row(
+        {
+            "sourceKey": "lee-associates",
+            "url": "https://buildout.com/x?propertyId=42-lease",
+        }
+    )
     assert r["external_id"] == "42"
 
 
@@ -572,6 +641,1110 @@ def test_to_row_uses_explicit_detail_observation_not_artifact_finish():
     assert r["scraped_at"] == "2026-06-14T21:30:00+00:00"
 
 
+def test_to_row_redacts_withheld_jll_pricing_before_raw_data_staging():
+    r = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/withheld-price",
+            "id": "withheld-price",
+            "salePriceUsd": 3250000,
+            "salePriceText": "$3,250,000",
+            "salePricePerSf": 325,
+            "leaseRateText": "$32/SF",
+            "leaseRateMin": 32,
+            "leaseRateMax": 32,
+            "jllDetail": {
+                "pricing": {
+                    "visibility": "withheld",
+                    "searchWithholdingControl": "unknown",
+                    "detailWithholdingControl": "withheld",
+                    "sale": {
+                        "sourceShape": "structured",
+                        "normalization": "available",
+                        "normalizedText": "$3,250,000",
+                        "normalizedAmount": 3250000,
+                        "currency": "USD",
+                        "unit": "SF",
+                    },
+                    "lease": {
+                        "sourceShape": "legacy_string",
+                        "normalization": "available",
+                        "normalizedText": "$32/SF",
+                    },
+                }
+            },
+        }
+    )
+
+    pricing = r["raw_data"]["jllDetail"]["pricing"]
+    assert pricing == {
+        "visibility": "withheld",
+        "searchWithholdingControl": "unknown",
+        "detailWithholdingControl": "withheld",
+        "sale": {"sourceShape": "structured", "normalization": "redacted"},
+        "lease": {"sourceShape": "legacy_string", "normalization": "redacted"},
+    }
+    assert "3250000" not in json.dumps(r["raw_data"])
+    assert "$3,250,000" not in json.dumps(r["raw_data"])
+    assert "$32/SF" not in json.dumps(r["raw_data"])
+    assert r["sale_price_usd"] is None
+    assert r["sale_price_per_sf"] is None
+    assert r["lease_rate_min"] is None
+    assert r["lease_rate_max"] is None
+
+
+def test_withheld_jll_child_metadata_keeps_identity_urls_and_drops_price_labels():
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/hidden-children",
+            "id": "hidden-children",
+            "hidePrice": True,
+            "contactsDetailed": [
+                {
+                    "id": "broker-1",
+                    "name": "Jane Broker",
+                    "email": "jane@example.com",
+                    "phone": "555-0100",
+                    "profileUrl": "https://jll.example/broker-1",
+                    "title": "$3.25M Advisor",
+                    "office": "Asking price $3.25M",
+                    "license": "License $3.25M",
+                    "caption": "CAD $1,000,000 broker disclosure",
+                    "label": "Offering 3.25M USD",
+                    "headline": "Building 3B",
+                }
+            ],
+            "brochures": [
+                {
+                    "url": "https://cdn.example/brochure.pdf",
+                    "name": "$3.25M brochure",
+                    "caption": "USD $3.25M brochure caption",
+                    "headline": "Offering 3.25M USD",
+                }
+            ],
+            "documents": [
+                {
+                    "url": "https://cdn.example/floor.pdf",
+                    "title": "$3.25M floor plan",
+                    "docType": "floor_plan",
+                    "headline": "Asking price 3.25M",
+                    "caption": "Offering 3.25M USD",
+                }
+            ],
+            "media": [
+                {
+                    "url": "https://video.example/watch",
+                    "embedUrl": "https://video.example/embed",
+                    "mediaType": "video",
+                    "provider": "vimeo",
+                    "title": "$3.25M tour",
+                    "caption": "EUR 3.25M virtual tour",
+                    "headline": "Offering 3.25M USD",
+                }
+            ],
+        }
+    )
+
+    assert row["contacts"] == [
+        {
+            "name": "Jane Broker",
+            "title": None,
+            "license": None,
+            "email": "jane@example.com",
+            "phone": "555-0100",
+            "company": None,
+            "profileUrl": "https://jll.example/broker-1",
+            "avatarUrl": None,
+            "vcardUrl": None,
+            "isPrimary": True,
+        }
+    ]
+    assert row["documents"] == [
+        {
+            "title": None,
+            "url": "https://cdn.example/brochure.pdf",
+            "docType": "brochure",
+        },
+        {
+            "title": None,
+            "url": "https://cdn.example/floor.pdf",
+            "docType": "floor_plan",
+        },
+    ]
+    assert row["media"] == [
+        {
+            "mediaType": "video",
+            "provider": "vimeo",
+            "url": "https://video.example/watch",
+            "embedUrl": "https://video.example/embed",
+            "title": None,
+        }
+    ]
+    raw = json.dumps(row["raw_data"])
+    assert "3.25M" not in raw
+    assert "CAD" not in raw
+    assert "USD" not in raw
+    assert "EUR" not in raw
+    assert "Offering" not in raw
+    assert "Jane Broker" in raw
+    assert "Building 3B" in raw
+    assert "https://video.example/watch" in raw
+
+
+def test_to_row_withheld_jll_clears_every_price_derived_staging_column_on_insert():
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/withheld-derived",
+            "id": "withheld-derived",
+            "salePriceUsd": 3250000,
+            "salePricePerSf": 325,
+            "leaseRateMin": 32,
+            "leaseRateMax": 35,
+            "leaseRateType": "per_sf_year",
+            "capRatePct": 6.5,
+            "noi": 150000,
+            "grossRevenue": 500000,
+            "pricePerUnit": 130000,
+            "pricePerAcre": 2500000,
+            "grm": 6.5,
+            "revpar": 125,
+            "jllSearchResult": {"hidePrice": True},
+        }
+    )
+
+    # There is no source-proof contract for an operating fact independent of a
+    # withheld JLL asking price, so NOI and gross revenue fail closed too.
+    for key in (
+        "sale_price_usd",
+        "sale_price_per_sf",
+        "lease_rate_min",
+        "lease_rate_max",
+        "lease_rate_type",
+        "cap_rate",
+        "noi",
+        "gross_revenue",
+        "price_per_unit",
+        "price_per_acre",
+        "grm",
+        "revpar",
+    ):
+        assert row[key] is None
+
+
+def test_to_row_drops_malformed_jll_pricing_and_fails_closed_on_prices():
+    r = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/malformed-price",
+            "id": "malformed-price",
+            "salePriceUsd": 3250000,
+            "salePriceText": "$3,250,000",
+            "leaseRateText": "$32/SF",
+            "jllDetail": {
+                "pricing": {
+                    "visibility": "withheld",
+                    "sale": {"normalizedAmount": 3250000},
+                }
+            },
+        }
+    )
+
+    assert "pricing" not in r["raw_data"]["jllDetail"]
+    assert r["sale_price_usd"] is None
+    assert r["lease_rate_min"] is None
+
+
+def test_to_row_rejects_contradictory_or_legacy_hidden_jll_price_provenance():
+    contradictory = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/contradictory-price",
+            "id": "contradictory-price",
+            "salePriceUsd": 3250000,
+            "askingPrice": "$3.25m",
+            "jllDetail": {
+                "salePrice": {"amount": 3250000},
+                "pricing": {
+                    "visibility": "visible",
+                    "searchWithholdingControl": "unknown",
+                    "detailWithholdingControl": "visible",
+                    "sale": {
+                        "sourceShape": "structured",
+                        "normalization": "available",
+                        "normalizedText": "$3,250,000",
+                        "normalizedAmount": 3250000,
+                    },
+                    "lease": {"sourceShape": "absent", "normalization": "unavailable"},
+                },
+            },
+        }
+    )
+    assert contradictory["sale_price_usd"] is None
+    assert "pricing" not in contradictory["raw_data"]["jllDetail"]
+    assert "3250000" not in json.dumps(contradictory["raw_data"])
+    assert "3.25m" not in json.dumps(contradictory["raw_data"])
+
+    legacy_hidden = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/legacy-hidden-price",
+            "id": "legacy-hidden-price",
+            "salePriceUsd": 3250000,
+            "askingPrice": "$3.25m",
+            "jllSearchResult": {"hidePrice": True, "askingPrice": "$3.25m"},
+            "jllDetail": {"salePrice": {"amount": 3250000}},
+        }
+    )
+    assert legacy_hidden["sale_price_usd"] is None
+    stored = json.dumps(legacy_hidden["raw_data"])
+    assert "3250000" not in stored
+    assert "3.25m" not in stored
+    assert legacy_hidden["raw_data"]["jllSearchResult"] == {
+        "priceWithholdingControl": "withheld"
+    }
+
+
+def test_withheld_jll_raw_data_keeps_only_leaf_level_safe_tenant_provenance():
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/schema-aware-redaction",
+            "id": "schema-aware-redaction",
+            "description": "Sale price: EUR 3,250,000.",
+            "markdown": "Confidential asking consideration: $3,250,000.",
+            "currentTenants": [
+                {"name": "Acme Holdings", "rent": 3250000, "note": "asking $3m"},
+                {"name": "$3m Tenant"},
+            ],
+            "freshnessProvenance": {
+                "detailScope": "detail_page",
+                "method": "jll_detail",
+                "cacheDisposition": "live",
+                "amount": 3250000,
+                "note": "asking $3m",
+            },
+            "financials": {"amount": 3250000, "occupancy": 0.95},
+            "jllSearchResult": {"hidePrice": True},
+            "jllDetail": {"salePrice": {"amount": 3250000}},
+        }
+    )
+
+    raw = row["raw_data"]
+    stored = json.dumps(raw)
+    assert raw["jllPriceWithheld"] is True
+    assert raw["currentTenants"] == [{"name": "Acme Holdings"}]
+    assert raw["freshnessProvenance"] == {
+        "detailScope": "detail_page",
+        "method": "jll_detail",
+        "cacheDisposition": "live",
+    }
+    assert "financials" not in raw
+    assert "description" not in raw
+    assert "markdown" not in raw
+    assert row["description"] is None
+    assert row["markdown"] is None
+    assert "3250000" not in stored
+    assert "$3,250,000" not in stored
+
+
+def test_to_row_fails_closed_for_case_variant_or_fallback_hidden_jll_controls():
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/casefold-hidden",
+            "id": "casefold-hidden",
+            "salePriceUsd": 3250000,
+            "SalePrice": "$3,250,000",
+            "markdown": "Confidential consideration: $3,250,000.",
+            "description": "Asking price: EUR 3,250,000.",
+            "currentTenants": [{"name": "Acme Holdings"}],
+            "jllSearchResult": {
+                "HidePrice": None,
+                "priceWithholdingControl": "withheld",
+            },
+            "jllDetail": {
+                "SalePrice": {"amount": 3250000},
+                "futureEconomics": {
+                    "consideration": "$3,250,000",
+                    "occupancy": 0.95,
+                },
+                "dealEconomics": {"amount": 3250000},
+            },
+        }
+    )
+
+    stored = json.dumps(row["raw_data"])
+    assert row["sale_price_usd"] is None
+    assert row["description"] is None
+    assert row["markdown"] is None
+    assert row["raw_data"]["currentTenants"] == [{"name": "Acme Holdings"}]
+    assert row["raw_data"]["jllDetail"] == {}
+    assert "3250000" not in stored
+    assert "$3,250,000" not in stored
+    assert "EUR 3,250,000" not in stored
+
+
+def test_to_row_withheld_jll_redacts_public_text_and_drops_unproven_extra_facts():
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/withheld-public-text",
+            "id": "withheld-public-text",
+            "hidePrice": False,
+            "PRICEWITHHOLDINGCONTROL": "withheld",
+            "name": "GBP 3.25m Office Portfolio",
+            "headline": "AUD 3m legacy headline",
+            "highlights": ["JPY 3250000 consideration", "Transit access"],
+            "extraFacts": {
+                "safe_label": "Visible fact",
+                "consideration": "EUR 3,250,000",
+                "amount": 3250000,
+            },
+            "description": "Asking £3.25m.",
+            "markdown": "Confidential JPY 3250000 consideration.",
+            "currentTenants": [
+                {"name": "Acme Holdings"},
+                {"name": "GBP 3m Tenant"},
+            ],
+        }
+    )
+
+    assert row["title"] == "[redacted] Office Portfolio"
+    assert row["highlights"] is None
+    assert row["extra_facts"] is None
+    assert row["description"] is None
+    assert row["markdown"] is None
+    stored = json.dumps(row, default=list)
+    assert "3250000" not in stored
+    assert "3.25m" not in stored
+    assert "GBP" not in stored
+    assert "AUD" not in stored
+    assert "JPY" not in stored
+    assert "EUR" not in stored
+
+
+def test_withheld_jll_identity_text_requires_an_explicit_monetary_signal():
+    safe = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/identity-text",
+            "id": "identity-text",
+            "hidePrice": True,
+            "name": "3M Company at Building 3B, 3 B Street, 500K SF",
+            "highlights": ["3M Company", "500K SF available"],
+        }
+    )
+    assert safe["title"] == "3M Company at Building 3B, 3 B Street, 500K SF"
+    assert safe["highlights"] is None
+
+    redacted = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/identity-price",
+            "id": "identity-price",
+            "hidePrice": True,
+            "name": "Asking price 3.25MM RUB 3,250,000 portfolio",
+        }
+    )
+    assert redacted["title"] == "Asking price [redacted] [redacted] portfolio"
+    assert "3.25" not in redacted["title"]
+    assert "3,250" not in redacted["title"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Price: 3.25MM",
+        "Consideration: 3.25 million",
+        "USD 3.25MM",
+        "3.25MM USD",
+        "RUB 3,250,000",
+        "3,250,000 RUB",
+        "$3.25M",
+    ],
+)
+def test_withheld_jll_title_redacts_labelled_and_prefix_or_suffix_currency_prices(
+    value,
+):
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/monetary-title",
+            "id": "monetary-title",
+            "hidePrice": True,
+            "name": value,
+        }
+    )
+
+    assert row["title"] is not None
+    assert "[redacted]" in row["title"]
+    assert "3.25" not in row["title"]
+    assert "3,250" not in row["title"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["3M Company", "Building 3B", "3 B Street", "500K SF"],
+)
+def test_withheld_jll_title_preserves_non_economic_identity_text(value):
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/non-economic-title",
+            "id": "non-economic-title",
+            "hidePrice": True,
+            "name": value,
+        }
+    )
+
+    assert row["title"] == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://user:pass@property.jll.com/brochure.pdf",
+        "https://property.jll.com:444/brochure.pdf",
+        "https://property.jll.com/\ninvalid.pdf",
+        "https://property.jll.com/brochure file.pdf",
+        "https://property .jll.com/brochure.pdf",
+        "https://property.jll.com/brochure.pdf?token=has whitespace",
+        "https://property.jll.com/\u0085control.pdf",
+        "https://property.jll.com:invalid/brochure.pdf",
+        "https://property.jll.com:65536/brochure.pdf",
+        "https:///relative.pdf",
+        "http://?x",
+    ],
+)
+def test_http_url_or_none_rejects_unsafe_jll_asset_urls(value):
+    assert ci.http_url_or_none(value) is None
+
+
+def test_to_row_filters_unsafe_photo_urls_before_staging_assets() -> None:
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/strict-photo-url",
+            "id": "strict-photo-url",
+            "photos": [
+                "https://cdn.example/valid.jpg",
+                "https://cdn.example/has whitespace.jpg",
+                "https://user:pass@cdn.example/private.jpg",
+            ],
+        }
+    )
+
+    assert row["images"] == [
+        {"url": "https://cdn.example/valid.jpg", "isPrimary": True, "order": 0}
+    ]
+
+
+def test_to_row_rejects_jll_document_queries_and_fragments() -> None:
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/strict-document-url",
+            "id": "strict-document-url",
+            "brochures": [
+                {"url": "https://cdn.example/om.pdf?token=secret"},
+                {"url": "https://cdn.example/om.pdf#page=1"},
+                {"url": "https://cdn.example/om.pdf"},
+            ],
+        }
+    )
+
+    assert row["documents"] == [
+        {"title": None, "url": "https://cdn.example/om.pdf", "docType": "brochure"}
+    ]
+
+
+def test_withheld_jll_sql_replaces_or_clears_prior_price_bearing_prose() -> None:
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    compact = " ".join(sql.split())
+    row_source_key = " ".join(ci.source_key_sql("EXCLUDED", "b_jll").split())
+    stage_source_key = " ".join(ci.source_key_sql("s", "b").split())
+    row_gate = (
+        "( EXCLUDED.raw_data->>'jllPriceWithheld' = 'true' "
+        "AND EXISTS ( SELECT 1 FROM credeals.cre_brokerages b_jll "
+        "WHERE b_jll.id = t.brokerage_id "
+        f"AND {row_source_key} = 'jll' ) )"
+    )
+    stage_gate = (
+        f"( s.raw_data->>'jllPriceWithheld' = 'true' AND {stage_source_key} = 'jll' )"
+    )
+
+    assert f"title = CASE WHEN {row_gate} THEN EXCLUDED.title" in compact
+    assert f"highlights = CASE WHEN {row_gate} THEN EXCLUDED.highlights" in compact
+    assert "t.title ~*" not in compact
+    assert "array_to_string(COALESCE(t.highlights" not in compact
+    assert (
+        f"description = CASE WHEN {row_gate} THEN NULL "
+        "ELSE COALESCE(EXCLUDED.description, t.description) END" in compact
+    )
+    assert f"markdown = CASE WHEN {row_gate} THEN NULL" in compact
+    assert f"extra_facts = CASE WHEN {stage_gate} THEN NULL" in compact
+
+
+def test_jll_withheld_sql_rejects_a_non_jll_marker_collision() -> None:
+    svn = _row(
+        {
+            "sourceKey": "svn",
+            "url": "https://example.buildout.com/website/property?propertyId=42",
+            "id": "42",
+            "name": "Non-JLL control collision",
+            "salePriceUsd": 3250000,
+            "jllPriceWithheld": True,
+        }
+    )
+    jll = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/42",
+            "id": "42",
+            "name": "JLL hidden",
+            "salePriceUsd": 3250000,
+            "hidePrice": True,
+        }
+    )
+    assert svn is not None and jll is not None
+    assert svn["sale_price_usd"] == 3250000
+    assert svn["raw_data"]["jllPriceWithheld"] is True
+    assert jll["sale_price_usd"] is None
+    assert jll["raw_data"]["jllPriceWithheld"] is True
+
+    sql = ci.build_sql([svn, jll], [], _SCRAPED_AT, set())
+    assert "b_jll.id = t.brokerage_id" in sql
+    assert f"{ci.source_key_sql('EXCLUDED', 'b_jll')} = 'jll'" in sql
+    assert f"{ci.source_key_sql('s', 'b')} = 'jll'" in sql
+
+
+def test_withheld_jll_detail_error_clears_only_prior_monetary_child_labels() -> None:
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    compact = " ".join(sql.split())
+    money_predicate = ci.sql_lit(ci._JLL_SQL_HIDDEN_LABEL_DISCLOSURE)
+
+    start = compact.index("CREATE TEMP TABLE _jll_withheld_child_label_clear")
+    end = compact.index("-- Colliers", start)
+    clear_scope = compact[start:end]
+    assert "FROM _child_additive additive" in clear_scope
+    assert "s.raw_data->>'jllPriceWithheld' = 'true'" in clear_scope
+    assert "END = 'jll'" in clear_scope
+
+    for column in ("c.title", "c.license", "d.title", "m.title"):
+        assert f"{column} ~* {money_predicate}" in sql
+    assert "SET title = NULL, license = NULL" not in compact
+    assert "UPDATE credeals.cre_listing_documents SET title = NULL" not in compact
+    assert "UPDATE credeals.cre_listing_media SET title = NULL" not in compact
+    assert "SET title = CASE WHEN (c.title ~*" in compact
+    assert "THEN NULL ELSE c.title END" in compact
+    assert "license = CASE WHEN (c.license ~*" in compact
+    assert "THEN NULL ELSE c.license END" in compact
+    assert "SET title = CASE WHEN (d.title ~*" in compact
+    assert "THEN NULL ELSE d.title END" in compact
+    assert "SET title = CASE WHEN (m.title ~*" in compact
+    assert "THEN NULL ELSE m.title END" in compact
+    assert (
+        "IF EXISTS ( SELECT 1 FROM information_schema.columns WHERE table_schema = 'credeals' "
+        "AND table_name = 'cre_listing_contacts' AND column_name = 'license' ) THEN"
+        in compact
+    )
+
+
+def test_withheld_jll_child_label_contract_clears_price_and_retains_safe_labels() -> (
+    None
+):
+    safe = ci._safe_jll_hidden_child_metadata(
+        {
+            "title": "Offering 3.25M USD",
+            "license": "License $3.25M",
+            "name": "Jane Broker",
+            "headline": "Building 3B",
+            "caption": "500K SF warehouse",
+            "description": "3M Company campus on 3 B Street",
+        },
+        broker=True,
+    )
+
+    assert safe == {
+        "name": "Jane Broker",
+        "headline": "Building 3B",
+        "caption": "500K SF warehouse",
+        "description": "3M Company campus on 3 B Street",
+    }
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    assert "[^[:alnum:]_]" in ci._JLL_SQL_HIDDEN_LABEL_DISCLOSURE
+    assert ci.sql_lit(ci._JLL_SQL_HIDDEN_LABEL_DISCLOSURE) in sql
+
+
+@pytest.mark.parametrize("currency_suffix", ("US$", "C$", "A$"))
+def test_withheld_jll_sql_matches_prefixed_currency_suffixes(currency_suffix) -> None:
+    label = f"Offering 3.25M {currency_suffix}"
+    assert ci._safe_jll_hidden_child_metadata(
+        {"title": label, "name": "Jane Broker"}, broker=True
+    ) == {"name": "Jane Broker"}
+    assert currency_suffix.lower().replace("$", "[$]") in ci._JLL_SQL_CURRENCY_SUFFIX
+
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    assert ci.sql_lit(ci._JLL_SQL_HIDDEN_LABEL_DISCLOSURE) in sql
+
+
+@pytest.mark.parametrize(
+    "label",
+    (
+        "Asking Rate 3.25M",
+        "List Price 3.25M",
+        "List Price=3.25M",
+        "Sale Consideration 3.25M",
+        "Lease Rent 3.25M",
+        "Rental Consideration 3.25M",
+        "Asking 3.25 million",
+        "Price RUB 3.25M",
+    ),
+)
+def test_withheld_jll_labelled_price_contract_matches_python_and_sql(label) -> None:
+    assert ci._safe_jll_hidden_child_metadata(
+        {"title": label, "name": "Jane Broker"}, broker=True
+    ) == {"name": "Jane Broker"}
+    assert ci.sql_lit(ci._JLL_SQL_HIDDEN_LABEL_DISCLOSURE) in ci.build_sql(
+        [], [], _SCRAPED_AT, set()
+    )
+
+
+@pytest.mark.parametrize(
+    "label", ("Building 3B", "3M Company", "500K SF warehouse", "3 B Street")
+)
+def test_withheld_jll_labelled_price_contract_keeps_safe_labels(label) -> None:
+    assert ci._safe_jll_hidden_child_metadata(
+        {"title": label, "name": "Jane Broker"}, broker=True
+    ) == {"title": label, "name": "Jane Broker"}
+
+
+def test_to_row_reconciles_every_jll_price_control_case_insensitively():
+    concealed = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/contradictory-controls",
+            "id": "contradictory-controls",
+            "salePriceUsd": 3250000,
+            "jllSearchResult": {
+                "hidePrice": False,
+                "PRICEWITHHOLDINGCONTROL": "withheld",
+            },
+        }
+    )
+    assert concealed["sale_price_usd"] is None
+    assert concealed["raw_data"]["jllPriceWithheld"] is True
+
+    ambiguous = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/duplicate-controls",
+            "id": "duplicate-controls",
+            "salePriceUsd": 3250000,
+            "jllSearchResult": {"hidePrice": False, "HIDEPRICE": None},
+        }
+    )
+    assert ambiguous["sale_price_usd"] is None
+    assert ambiguous["raw_data"]["jllPriceWithheld"] is True
+
+    top_level = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/top-level-controls",
+            "id": "top-level-controls",
+            "salePriceUsd": 3250000,
+            "hidePrice": False,
+            "PRICEWITHHOLDINGCONTROL": "withheld",
+            "HiDePrIcE": None,
+        }
+    )
+    assert top_level["sale_price_usd"] is None
+    assert top_level["raw_data"]["jllPriceWithheld"] is True
+
+
+def test_merge_carries_jll_withheld_marker_across_dual_passes():
+    visible = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/merged-hidden",
+            "id": "merged-hidden",
+            "transactionMode": "sale",
+            "salePriceUsd": 3250000,
+            "salePricePerSf": 325,
+            "capRatePct": 6.5,
+            "noi": 150000,
+            "grossRevenue": 500000,
+            "pricePerUnit": 130000,
+            "pricePerAcre": 2500000,
+            "grm": 6.5,
+            "revpar": 125,
+            "description": "Office offered at $3,250,000.",
+            "markdown": "Confidential asking consideration: $3,250,000.",
+        }
+    )
+    hidden = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/merged-hidden",
+            "id": "merged-hidden",
+            "transactionMode": "lease",
+            "leaseRateText": "$32/SF",
+            "jllSearchResult": {"hidePrice": True},
+            "jllDetail": {"salePrice": {"amount": 3250000}},
+        }
+    )
+
+    merged = ci.merge_rows(visible, hidden)
+    assert merged["sale_price_usd"] is None
+    assert merged["lease_rate_min"] is None
+    assert merged["lease_rate_max"] is None
+    for key in (
+        "sale_price_per_sf",
+        "cap_rate",
+        "noi",
+        "gross_revenue",
+        "price_per_unit",
+        "price_per_acre",
+        "grm",
+        "revpar",
+    ):
+        assert merged[key] is None
+    assert merged["description"] is None
+    assert merged["markdown"] is None
+    assert merged["raw_data"]["jllPriceWithheld"] is True
+    assert merged["raw_data"]["secondary_pass"]["jllPriceWithheld"] is True
+    assert "3250000" not in json.dumps(merged["raw_data"])
+    assert "$3,250,000" not in json.dumps(merged["raw_data"])
+
+
+def test_merge_ignores_jll_marker_collision_on_dual_svn_rows():
+    assert not ci._jll_raw_payload_withheld(
+        {
+            "sourceKey": "svn",
+            "jllPriceWithheld": True,
+            "primary": {"sourceKey": "jll", "jllPriceWithheld": True},
+        }
+    )
+    assert ci._jll_raw_payload_withheld({"sourceKey": "jll", "jllPriceWithheld": True})
+    sale = _row(
+        {
+            "sourceKey": "svn",
+            "url": "https://example.buildout.com/property?propertyId=marker-42",
+            "id": "marker-42",
+            "transactionMode": "sale",
+            "name": "SVN $3.25M listing",
+            "salePriceUsd": 3250000,
+            "jllPriceWithheld": True,
+        }
+    )
+    lease = _row(
+        {
+            "sourceKey": "svn",
+            "url": "https://example.buildout.com/property?propertyId=marker-42",
+            "id": "marker-42",
+            "transactionMode": "lease",
+            "leaseRateText": "$32/SF",
+            "jllPriceWithheld": True,
+        }
+    )
+
+    merged = ci.merge_rows(sale, lease)
+
+    assert merged["sale_price_usd"] == 3250000
+    assert merged["lease_rate_min"] == 32
+    assert merged["title"] == "SVN $3.25M listing"
+    assert merged["raw_data"].get("jllPriceWithheld") is None
+    assert merged["raw_data"]["primary"]["jllPriceWithheld"] is True
+    assert merged["raw_data"]["secondary_pass"]["jllPriceWithheld"] is True
+
+
+def test_merge_requires_both_passes_to_be_canonical_jll_before_redaction():
+    svn = _row(
+        {
+            "sourceKey": "svn",
+            "url": "https://example.buildout.com/property?propertyId=mixed-42",
+            "id": "mixed-42",
+            "transactionMode": "sale",
+            "name": "SVN $3.25M listing",
+            "salePriceUsd": 3250000,
+            "jllPriceWithheld": True,
+        }
+    )
+    hidden_jll = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/mixed-42",
+            "id": "mixed-42",
+            "transactionMode": "lease",
+            "hidePrice": True,
+        }
+    )
+
+    merged = ci.merge_rows(svn, hidden_jll)
+
+    assert merged["sale_price_usd"] == 3250000
+    assert merged["title"] == "SVN $3.25M listing"
+    assert merged["raw_data"].get("jllPriceWithheld") is None
+    assert ci._raw_payload_source_keys(merged["raw_data"]) == frozenset({"jll", "svn"})
+
+
+def test_merge_final_withheld_projection_sanitizes_visible_child_metadata():
+    visible = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/merged-hidden-children",
+            "id": "merged-hidden-children",
+            "transactionMode": "sale",
+            "contactsDetailed": [
+                {
+                    "id": "broker-1",
+                    "name": "Jane Broker",
+                    "email": "jane@example.com",
+                    "profileUrl": "https://jll.example/broker-1",
+                    "title": "$3.25M Advisor",
+                    "license": "Offering 3.25M USD",
+                }
+            ],
+            "brochures": [
+                {
+                    "url": "https://cdn.example/brochure.pdf",
+                    "name": "Offering 3.25M USD",
+                }
+            ],
+            "documents": [
+                {
+                    "url": "https://cdn.example/floor.pdf",
+                    "title": "$3.25M floor plan",
+                    "docType": "floor_plan",
+                }
+            ],
+            "media": [
+                {
+                    "url": "https://video.example/watch",
+                    "mediaType": "video",
+                    "title": "Offering 3.25M USD",
+                }
+            ],
+        }
+    )
+    withheld = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/merged-hidden-children",
+            "id": "merged-hidden-children",
+            "transactionMode": "lease",
+            "hidePrice": True,
+        }
+    )
+
+    merged = ci.merge_rows(visible, withheld)
+
+    assert merged["contacts"] == [
+        {
+            "name": "Jane Broker",
+            "email": "jane@example.com",
+            "phone": None,
+            "company": None,
+            "profileUrl": "https://jll.example/broker-1",
+            "avatarUrl": None,
+            "vcardUrl": None,
+            "isPrimary": True,
+        }
+    ]
+    assert merged["documents"] == [
+        {"url": "https://cdn.example/brochure.pdf", "docType": "brochure"},
+        {"url": "https://cdn.example/floor.pdf", "docType": "floor_plan"},
+    ]
+    assert merged["media"] == [
+        {
+            "mediaType": "video",
+            "provider": None,
+            "url": "https://video.example/watch",
+            "embedUrl": None,
+        }
+    ]
+    rendered = repr(merged)
+    assert "3.25M" not in rendered
+    assert "USD" not in rendered
+    assert "Jane Broker" in rendered
+    assert "https://video.example/watch" in rendered
+
+
+def test_withheld_jll_broker_id_fallback_sanitizes_legacy_broker_metadata():
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/hidden-broker-fallback",
+            "id": "hidden-broker-fallback",
+            "hidePrice": True,
+            "brokerIds": [0],
+        },
+        brokers={
+            0: {
+                "id": "broker-legacy",
+                "name": "Jane Broker",
+                "email": "jane@example.com",
+                "phone": "555-0100",
+                "profileUrl": "https://jll.example/broker-legacy",
+                "title": "$3.25M Advisor",
+                "license": "Offering 3.25M USD",
+                "office": "Asking price $3.25M",
+            }
+        },
+    )
+
+    assert row["contacts"] == [
+        {
+            "name": "Jane Broker",
+            "title": None,
+            "license": None,
+            "email": "jane@example.com",
+            "phone": "555-0100",
+            "company": None,
+            "avatarUrl": None,
+            "isPrimary": True,
+        }
+    ]
+    assert "3.25M" not in repr(row)
+    assert "USD" not in repr(row)
+
+
+def test_merge_final_withheld_projection_clears_visible_sibling_prose_in_either_order():
+    def visible():
+        return _row(
+            {
+                "sourceKey": "jll",
+                "url": "https://property.jll.com/listings/merged-prose",
+                "id": "merged-prose",
+                "transactionMode": "sale",
+                "salePriceUsd": 3250000,
+                "name": "Asking price $3,250,000 Trophy Office",
+                "highlights": ["Offered for $3,250,000", "Transit access"],
+                "extraFacts": {"consideration": "USD 3,250,000"},
+                "description": "Offered for $3,250,000.",
+                "markdown": "Asking price $3,250,000.",
+            }
+        )
+
+    def withheld():
+        return _row(
+            {
+                "sourceKey": "jll",
+                "url": "https://property.jll.com/listings/merged-prose",
+                "id": "merged-prose",
+                "transactionMode": "lease",
+                "hidePrice": True,
+                "name": "3M Company Building 3B",
+            }
+        )
+
+    for first, second in ((visible(), withheld()), (withheld(), visible())):
+        merged = ci.merge_rows(first, second)
+        assert merged["raw_data"]["jllPriceWithheld"] is True
+        assert merged["title"] not in {
+            "Asking price $3,250,000 Trophy Office",
+            "Asking price 3250000 Trophy Office",
+        }
+        assert merged["highlights"] is None
+        assert merged["extra_facts"] is None
+        assert merged["description"] is None
+        assert merged["markdown"] is None
+        rendered = ci.build_sql([merged], [], _SCRAPED_AT, set())
+        assert "3,250,000" not in rendered
+        assert "3250000" not in rendered
+
+
+def test_to_row_does_not_stage_foreign_currency_jll_lease_rates():
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/cad-lease",
+            "id": "cad-lease",
+            "leaseRateText": "$32/SF",
+            "leaseRateMin": 32,
+            "leaseRateMax": 32,
+            "jllDetail": {
+                "pricing": {
+                    "visibility": "visible",
+                    "searchWithholdingControl": "visible",
+                    "detailWithholdingControl": "absent",
+                    "sale": {"sourceShape": "absent", "normalization": "unavailable"},
+                    "lease": {
+                        "sourceShape": "structured",
+                        "normalization": "available",
+                        "normalizedText": "CAD 32/SF",
+                        "normalizedAmount": 32,
+                        "currency": "CAD",
+                        "unit": "SF",
+                    },
+                }
+            },
+        }
+    )
+
+    assert row["lease_rate_min"] is None
+    assert row["lease_rate_max"] is None
+    assert row["raw_data"]["jllDetail"]["pricing"]["lease"] == {
+        "sourceShape": "structured",
+        "normalization": "available",
+        "normalizedText": "CAD 32/SF",
+        "normalizedAmount": 32,
+        "currency": "CAD",
+        "unit": "SF",
+    }
+
+
+def test_to_row_retains_valid_public_jll_pricing_provenance_only():
+    r = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/public-price",
+            "id": "public-price",
+            "salePriceUsd": 3250000,
+            "jllDetail": {
+                "pricing": {
+                    "visibility": "visible",
+                    "searchWithholdingControl": "visible",
+                    "detailWithholdingControl": "absent",
+                    "sale": {
+                        "sourceShape": "structured",
+                        "normalization": "available",
+                        "normalizedText": "$3,250,000",
+                        "normalizedAmount": 3250000,
+                        "currency": "USD",
+                        "unit": None,
+                        "unexpectedRawPrice": "do-not-store",
+                    },
+                    "lease": {
+                        "sourceShape": "absent",
+                        "normalization": "unavailable",
+                        "unexpectedRawPrice": "$32/SF",
+                    },
+                }
+            },
+        }
+    )
+
+    assert r["sale_price_usd"] == 3250000
+    assert r["raw_data"]["jllDetail"]["pricing"] == {
+        "visibility": "visible",
+        "searchWithholdingControl": "visible",
+        "detailWithholdingControl": "absent",
+        "sale": {
+            "sourceShape": "structured",
+            "normalization": "available",
+            "normalizedText": "$3,250,000",
+            "normalizedAmount": 3250000,
+            "currency": "USD",
+            "unit": None,
+        },
+        "lease": {"sourceShape": "absent", "normalization": "unavailable"},
+    }
+    assert "do-not-store" not in json.dumps(r["raw_data"])
+
+
 def test_to_row_uses_inventory_observation_for_authoritative_feed():
     r = _row(
         {
@@ -579,9 +1752,7 @@ def test_to_row_uses_inventory_observation_for_authoritative_feed():
             "url": "https://svn.com/x?propertyId=1-sale",
             "id": "1",
             "inventoryObservedAt": "2026-06-14T22:00:00Z",
-            "freshnessProvenance": {
-                "detailScope": "authoritative_inventory_feed"
-            },
+            "freshnessProvenance": {"detailScope": "authoritative_inventory_feed"},
         }
     )
     assert r["scraped_at"] == "2026-06-14T22:00:00+00:00"
@@ -665,9 +1836,7 @@ def _strict_freshness_payload(
                 "photos": ["https://cdn.example/listing.jpg"],
             }
         )
-        listing["freshnessProvenance"]["method"] = (
-            "jll_investor_next_data_detail"
-        )
+        listing["freshnessProvenance"]["method"] = "jll_investor_next_data_detail"
     return {
         "runMeta": {
             "freshness": {
@@ -985,7 +2154,9 @@ def test_colliers_first_party_transition_rejects_artifact_older_than_24_hours():
     "mutation",
     [
         pytest.param({"sourceKey": "jll"}, id="wrong-source"),
-        pytest.param({"colliersMain": {"unresolvedExpertIds": []}}, id="no-unresolved-ids"),
+        pytest.param(
+            {"colliersMain": {"unresolvedExpertIds": []}}, id="no-unresolved-ids"
+        ),
         pytest.param(
             {"detailObservedWithContactPreservation": False},
             id="missing-current-detail-marker",
@@ -1089,12 +2260,10 @@ def test_cbre_dealflow_detail_unavailable_preserves_existing_children_on_ingest(
             "sourceKey": "cbre-dealflow",
             "id": "public-card-token",
             "url": (
-                "https://www.cbredealflow.com/handler/landing.aspx"
-                "?pv=public-card-token"
+                "https://www.cbredealflow.com/handler/landing.aspx?pv=public-card-token"
             ),
             "canonicalUrl": (
-                "https://www.cbredealflow.com/handler/landing.aspx"
-                "?pv=public-card-token"
+                "https://www.cbredealflow.com/handler/landing.aspx?pv=public-card-token"
             ),
             "name": "Current public card",
             "preserveChildCollections": True,
@@ -1108,14 +2277,9 @@ def test_cbre_dealflow_detail_unavailable_preserves_existing_children_on_ingest(
     assert row is not None
     assert row["external_id"] == "dealflow:public-card-token"
     assert row["raw_data"]["preserveChildCollections"] is True
-    assert row["raw_data"]["detailUnavailable"]["reason"] == (
-        "detail_request_failed"
-    )
+    assert row["raw_data"]["detailUnavailable"]["reason"] == ("detail_request_failed")
     sql = ci.build_sql([row], [], _SCRAPED_AT, set())
-    assert (
-        '$.**.preserveChildCollections ? (@ == true || @ == "true")'
-        in sql
-    )
+    assert '$.**.preserveChildCollections ? (@ == true || @ == "true")' in sql
     assert "CREATE TEMP TABLE _child_additive" in sql
 
 
@@ -1126,10 +2290,7 @@ def test_direct_detail_markdown_inserts_new_evidence_but_preserves_existing_rich
     assert "NULLIF(EXCLUDED.markdown, '')" in sql
     assert "NOT jsonb_path_exists" in sql
     assert "_child_additive" in sql
-    assert (
-        "$.**.preserveChildCollections ? (@ == true || @ == \"true\")"
-        in sql
-    )
+    assert '$.**.preserveChildCollections ? (@ == true || @ == "true")' in sql
 
 
 def test_explicit_strict_ingest_flag_rejects_unmarked_nonstrict_artifact():
@@ -1328,18 +2489,12 @@ def test_psql_connection_args_preserve_uri_only_options_without_credentials():
     ("url", "expected_host", "expected_uri_host"),
     [
         (
-            (
-                "postgresql://user:secret@%2FUsers%2FCayman%2FPG/cre"
-                "?keepalives=0"
-            ),
+            ("postgresql://user:secret@%2FUsers%2FCayman%2FPG/cre?keepalives=0"),
             "/Users/Cayman/PG",
             "postgresql://%2FUsers%2FCayman%2FPG/cre?",
         ),
         (
-            (
-                "postgresql://user:secret@[fe80::1%25en0]:5432/cre"
-                "?keepalives=1"
-            ),
+            ("postgresql://user:secret@[fe80::1%25en0]:5432/cre?keepalives=1"),
             "fe80::1%en0",
             "postgresql://[fe80::1%25en0]:5432/cre?",
         ),
@@ -1436,18 +2591,23 @@ def test_cli_rejects_target_drift_before_psql_discovery(tmp_path, monkeypatch):
 
 
 def test_to_row_franklin_street_buildout_propertyid_strips_suffix():
-    r = _row({
-        "sourceKey": "franklin-street",
-        "url": "https://www.franklinst.com/properties/?propertyId=777-sale",
-        "id": "raw-777",
-    })
+    r = _row(
+        {
+            "sourceKey": "franklin-street",
+            "url": "https://www.franklinst.com/properties/?propertyId=777-sale",
+            "id": "raw-777",
+        }
+    )
     assert r["external_id"] == "777"
 
 
 @pytest.mark.parametrize(
     "source_key,prefix",
-    [("cbre-dealflow", "dealflow:"), ("jll-investor", "investor:"),
-     ("colliers-main", "main:")],
+    [
+        ("cbre-dealflow", "dealflow:"),
+        ("jll-investor", "investor:"),
+        ("colliers-main", "main:"),
+    ],
 )
 def test_to_row_folded_prefixes(source_key, prefix):
     r = _row({"sourceKey": source_key, "url": "https://x.com/p", "id": "abc"})
@@ -1470,14 +2630,28 @@ def test_to_row_missing_or_non_http_url_is_none():
 
 
 def test_to_row_price_per_sf_computed_from_price_and_size():
-    r = _row({"sourceKey": "cbre", "url": "https://cbre.com/h", "id": "1",
-              "salePriceUsd": 1000000, "buildingSizeSqft": 5000})
+    r = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/h",
+            "id": "1",
+            "salePriceUsd": 1000000,
+            "buildingSizeSqft": 5000,
+        }
+    )
     assert r["sale_price_per_sf"] == 200.0
 
 
 def test_to_row_rejects_impossible_derived_price_per_sf():
-    r = _row({"sourceKey": "colliers", "url": "https://sales.colliers.com/h", "id": "1",
-              "salePriceUsd": 16000000, "buildingSizeSqft": 857})
+    r = _row(
+        {
+            "sourceKey": "colliers",
+            "url": "https://sales.colliers.com/h",
+            "id": "1",
+            "salePriceUsd": 16000000,
+            "buildingSizeSqft": 857,
+        }
+    )
     assert r["sale_price_usd"] == 16000000.0
     assert r["size_sf"] == 857.0
     assert r["sale_price_per_sf"] is None
@@ -1486,62 +2660,115 @@ def test_to_row_rejects_impossible_derived_price_per_sf():
 def test_to_row_accepts_derived_price_per_sf_at_upper_bound():
     # The derivation intentionally requires size_sf > 100, so exercise the
     # exact $10,000/SF boundary with a slightly larger denominator.
-    r = _row({"sourceKey": "cbre", "url": "https://cbre.com/h", "id": "1",
-              "salePriceUsd": 1010000, "buildingSizeSqft": 101})
+    r = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/h",
+            "id": "1",
+            "salePriceUsd": 1010000,
+            "buildingSizeSqft": 101,
+        }
+    )
     assert r["sale_price_per_sf"] == 10000.0
 
 
 def test_to_row_prefers_explicit_price_per_sf_over_derivation():
-    r = _row({"sourceKey": "cbre", "url": "https://cbre.com/h", "id": "1",
-              "salePriceUsd": 1000000, "salePricePerSf": 225,
-              "buildingSizeSqft": 5000})
+    r = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/h",
+            "id": "1",
+            "salePriceUsd": 1000000,
+            "salePricePerSf": 225,
+            "buildingSizeSqft": 5000,
+        }
+    )
     assert r["sale_price_per_sf"] == 225.0
 
 
 def test_to_row_per_sf_sale_text_suppresses_absolute_price():
-    r = _row({"sourceKey": "lee-associates",
-              "url": "https://buildout.com/x?propertyId=5",
-              "salePriceText": "$6.00/SF", "salePriceUsd": 6.0})
+    r = _row(
+        {
+            "sourceKey": "lee-associates",
+            "url": "https://buildout.com/x?propertyId=5",
+            "salePriceText": "$6.00/SF",
+            "salePriceUsd": 6.0,
+        }
+    )
     assert r["sale_price_usd"] is None
     assert r["sale_price_per_sf"] == 6.0
 
 
 def test_to_row_nai_pound_currency_label_recovered_as_usd():
-    r = _row({"sourceKey": "nai-global", "url": "https://nai.com/x", "id": "1",
-              "salePriceText": "POUND 545000"})
+    r = _row(
+        {
+            "sourceKey": "nai-global",
+            "url": "https://nai.com/x",
+            "id": "1",
+            "salePriceText": "POUND 545000",
+        }
+    )
     assert r["sale_price_usd"] == 545000.0
 
 
 def test_to_row_size_from_text_when_numeric_absent():
-    r = _row({"sourceKey": "cbre", "url": "https://cbre.com/s", "id": "1",
-              "sizeText": "10,000 SF"})
+    r = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/s",
+            "id": "1",
+            "sizeText": "10,000 SF",
+        }
+    )
     assert r["size_sf"] == 10000.0
 
 
 def test_to_row_lot_size_from_acres():
-    r = _row({"sourceKey": "cbre", "url": "https://cbre.com/l", "id": "1",
-              "lotSizeAcres": 2})
+    r = _row(
+        {"sourceKey": "cbre", "url": "https://cbre.com/l", "id": "1", "lotSizeAcres": 2}
+    )
     assert r["lot_size_sf"] == 2 * ci.SQFT_PER_ACRE
 
 
 def test_to_row_year_built_clamped():
-    assert _row({"sourceKey": "cbre", "url": "https://x.com", "id": "1",
-                 "yearBuilt": 1850})["year_built"] == 1850
-    assert _row({"sourceKey": "cbre", "url": "https://x.com", "id": "1",
-                 "yearBuilt": 1600})["year_built"] is None
-    assert _row({"sourceKey": "cbre", "url": "https://x.com", "id": "1",
-                 "yearBuilt": 2200})["year_built"] is None
+    assert (
+        _row(
+            {"sourceKey": "cbre", "url": "https://x.com", "id": "1", "yearBuilt": 1850}
+        )["year_built"]
+        == 1850
+    )
+    assert (
+        _row(
+            {"sourceKey": "cbre", "url": "https://x.com", "id": "1", "yearBuilt": 1600}
+        )["year_built"]
+        is None
+    )
+    assert (
+        _row(
+            {"sourceKey": "cbre", "url": "https://x.com", "id": "1", "yearBuilt": 2200}
+        )["year_built"]
+        is None
+    )
 
 
 def test_to_row_title_truncated_to_500():
     long_name = "Z" * 600
-    r = _row({"sourceKey": "cbre", "url": "https://x.com", "id": "1", "name": long_name})
+    r = _row(
+        {"sourceKey": "cbre", "url": "https://x.com", "id": "1", "name": long_name}
+    )
     assert len(r["title"]) == 500
 
 
 def test_to_row_lat_lng_clamped_to_bounds():
-    r = _row({"sourceKey": "cbre", "url": "https://x.com", "id": "1",
-              "latitude": 200, "longitude": -400})
+    r = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://x.com",
+            "id": "1",
+            "latitude": 200,
+            "longitude": -400,
+        }
+    )
     assert r["lat"] is None and r["lng"] is None
 
 
@@ -1549,12 +2776,21 @@ def test_to_row_lat_lng_clamped_to_bounds():
 
 
 def test_to_row_contacts_detailed_first_is_primary():
-    r = _row({"sourceKey": "marcus-millichap", "url": "https://mm.com/x", "id": "1",
-              "contactsDetailed": [
-                  {"name": "Lead", "license": "01234567",
-                   "profileUrl": "https://mm.com/lead"},
-                  {"email": "two@x.com"},
-              ]})
+    r = _row(
+        {
+            "sourceKey": "marcus-millichap",
+            "url": "https://mm.com/x",
+            "id": "1",
+            "contactsDetailed": [
+                {
+                    "name": "Lead",
+                    "license": "01234567",
+                    "profileUrl": "https://mm.com/lead",
+                },
+                {"email": "two@x.com"},
+            ],
+        }
+    )
     assert [c["isPrimary"] for c in r["contacts"]] == [True, False]
     assert r["contacts"][0]["license"] == "01234567"
 
@@ -1562,9 +2798,13 @@ def test_to_row_contacts_detailed_first_is_primary():
 def test_to_row_contacts_detailed_all_empty_falls_to_brokers():
     brokers = {0: {"name": "BrokerA", "email": "a@x.com"}}
     r = _row(
-        {"sourceKey": "cbre", "url": "https://cbre.com/x", "id": "1",
-         "contactsDetailed": [{"foo": "bar"}],  # no identifying field -> skipped
-         "brokerIds": [0]},
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/x",
+            "id": "1",
+            "contactsDetailed": [{"foo": "bar"}],  # no identifying field -> skipped
+            "brokerIds": [0],
+        },
         brokers=brokers,
     )
     assert [c["name"] for c in r["contacts"]] == ["BrokerA"]
@@ -1573,7 +2813,12 @@ def test_to_row_contacts_detailed_all_empty_falls_to_brokers():
 def test_to_row_broker_fallback_skips_unidentified_broker():
     brokers = {0: {"title": "no name no email"}, 1: {"name": "Real"}}
     r = _row(
-        {"sourceKey": "cbre", "url": "https://cbre.com/y", "id": "1", "brokerIds": [0, 1]},
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/y",
+            "id": "1",
+            "brokerIds": [0, 1],
+        },
         brokers=brokers,
     )
     assert [c["name"] for c in r["contacts"]] == ["Real"]
@@ -1583,21 +2828,41 @@ def test_to_row_broker_fallback_skips_unidentified_broker():
 
 
 def test_to_row_documents_from_both_channels_with_doctype():
-    r = _row({"sourceKey": "cbre", "url": "https://cbre.com/i", "id": "1",
-              "brochures": [{"name": "B", "url": "https://x.com/b.pdf"}],
-              "documents": [{"title": "D", "url": "https://x.com/d.pdf", "docType": "om"}]})
+    r = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/i",
+            "id": "1",
+            "brochures": [{"name": "B", "url": "https://x.com/b.pdf"}],
+            "documents": [
+                {"title": "D", "url": "https://x.com/d.pdf", "docType": "om"}
+            ],
+        }
+    )
     assert [d["docType"] for d in r["documents"]] == ["brochure", "om"]
 
 
 def test_to_row_documents_skip_non_http_url():
-    r = _row({"sourceKey": "cbre", "url": "https://cbre.com/i2", "id": "1",
-              "brochures": [{"name": "B", "url": "not-a-url"}]})
+    r = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/i2",
+            "id": "1",
+            "brochures": [{"name": "B", "url": "not-a-url"}],
+        }
+    )
     assert r["documents"] == []
 
 
 def test_to_row_images_only_http_strings_with_order():
-    r = _row({"sourceKey": "cbre", "url": "https://cbre.com/p", "id": "1",
-              "photos": ["https://x.com/1.jpg", "bad", "https://x.com/2.jpg"]})
+    r = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/p",
+            "id": "1",
+            "photos": ["https://x.com/1.jpg", "bad", "https://x.com/2.jpg"],
+        }
+    )
     # 'bad' is skipped but the enumerate index is preserved for the kept ones.
     assert [(im["url"], im["order"], im["isPrimary"]) for im in r["images"]] == [
         ("https://x.com/1.jpg", 0, True),
@@ -1606,36 +2871,61 @@ def test_to_row_images_only_http_strings_with_order():
 
 
 def test_to_row_media_string_and_dict_forms():
-    r = _row({"sourceKey": "cbre", "url": "https://cbre.com/j", "id": "1",
-              "media": ["https://x.com/v.mp4",
-                        {"url": "https://x.com/t", "mediaType": "video", "provider": "yt",
-                         "embedUrl": "https://x.com/embed", "title": "Tour"},
-                        {"url": "not-a-url"}]})  # filtered
+    r = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/j",
+            "id": "1",
+            "media": [
+                "https://x.com/v.mp4",
+                {
+                    "url": "https://x.com/t",
+                    "mediaType": "video",
+                    "provider": "yt",
+                    "embedUrl": "https://x.com/embed",
+                    "title": "Tour",
+                },
+                {"url": "not-a-url"},
+            ],
+        }
+    )  # filtered
     assert [m["mediaType"] for m in r["media"]] == ["other", "video"]
     assert r["media"][1]["embedUrl"] == "https://x.com/embed"
 
 
 def test_to_row_links_string_and_dict_forms():
-    r = _row({"sourceKey": "cbre", "url": "https://cbre.com/k", "id": "1",
-              "links": ["https://x.com/l",
-                        {"url": "https://x.com/l2", "linkType": "website", "rel": "canonical"},
-                        {"url": "not-a-url"}]})  # filtered
+    r = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/k",
+            "id": "1",
+            "links": [
+                "https://x.com/l",
+                {"url": "https://x.com/l2", "linkType": "website", "rel": "canonical"},
+                {"url": "not-a-url"},
+            ],
+        }
+    )  # filtered
     assert [ln["linkType"] for ln in r["links"]] == ["other", "website"]
     assert r["links"][1]["rel"] == "canonical"
 
 
 def test_to_row_discards_legacy_om_facts_payload():
-    r = _row({
-        "sourceKey": "cbre",
-        "url": "https://cbre.com/om",
-        "id": "1",
-        "omFacts": [{
-            "factKey": "noi",
-            "factValueNum": 1000000,
-            "sourceDocUrl": "https://cbre.com/om.pdf",
-            "parserVersion": "legacy/1",
-        }],
-    })
+    r = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/om",
+            "id": "1",
+            "omFacts": [
+                {
+                    "factKey": "noi",
+                    "factValueNum": 1000000,
+                    "sourceDocUrl": "https://cbre.com/om.pdf",
+                    "parserVersion": "legacy/1",
+                }
+            ],
+        }
+    )
     assert r["om_facts"] == []
 
     sql = ci.build_sql([r], [], _SCRAPED_AT, set())
@@ -1648,15 +2938,17 @@ def test_to_row_discards_legacy_om_facts_payload():
 
 
 def test_normal_brokerage_scalars_are_not_rejected_with_retired_artifacts():
-    row = _row({
-        "sourceKey": "cbre",
-        "url": "https://cbre.com/normal-listing",
-        "id": "normal-1",
-        "noi": 975000,
-        "capRatePct": 6.25,
-        "units": 42,
-        "yearBuilt": 2004,
-    })
+    row = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/normal-listing",
+            "id": "normal-1",
+            "noi": 975000,
+            "capRatePct": 6.25,
+            "units": 42,
+            "yearBuilt": 2004,
+        }
+    )
 
     assert row["external_id"] == "normal-1"
     assert row["noi"] == 975000.0
@@ -1758,9 +3050,7 @@ def test_inventory_only_reconciliation_requires_strict_full_enumeration():
             "slug": "cbre",
             "source_key": "cbre-dealflow",
             "external_id_like": "dealflow:card:%",
-            "watermark_external_id": (
-                "dealflow:scope:inventory-only-watermark"
-            ),
+            "watermark_external_id": ("dealflow:scope:inventory-only-watermark"),
             "watermark_url": "https://www.cbredealflow.com/",
             "watermark_fingerprint": "inventory-only-scope-watermark-v1",
             "observed_at": _SCRAPED_AT,
@@ -1895,9 +3185,7 @@ def test_colliers_full_snapshot_authorizes_its_own_inventory_scope():
             "slug": "colliers",
             "source_key": "colliers",
             "external_id_like": "salestracker:card:%",
-            "watermark_external_id": (
-                "salestracker:scope:inventory-only-watermark"
-            ),
+            "watermark_external_id": ("salestracker:scope:inventory-only-watermark"),
             "watermark_url": "https://sales.colliers.com/",
             "watermark_fingerprint": (
                 "inventory-only-scope-watermark-v1:colliers-salestracker"
@@ -1907,9 +3195,7 @@ def test_colliers_full_snapshot_authorizes_its_own_inventory_scope():
     ]
 
 
-def test_cli_rejects_duplicate_complete_inventory_scopes(
-    tmp_path, monkeypatch
-):
+def test_cli_rejects_duplicate_complete_inventory_scopes(tmp_path, monkeypatch):
     payload = {
         "runMeta": {
             "mode": "full",
@@ -1952,9 +3238,7 @@ def test_cli_rejects_duplicate_complete_inventory_scopes(
         ci.main()
 
 
-def test_cli_does_not_let_complete_scope_authorize_partial_input(
-    tmp_path, monkeypatch
-):
+def test_cli_does_not_let_complete_scope_authorize_partial_input(tmp_path, monkeypatch):
     complete = {
         "runMeta": {
             "mode": "full",
@@ -2091,16 +3375,12 @@ def test_inventory_only_stale_replay_watermarks_are_source_specific():
     assert "salestracker:scope:inventory-only-watermark" in sql
     assert "https://www.cbredealflow.com/" in sql
     assert "https://sales.colliers.com/" in sql
-    assert (
-        "inventory-only-scope-watermark-v1:colliers-salestracker" in sql
-    )
+    assert "inventory-only-scope-watermark-v1:colliers-salestracker" in sql
     assert "prior.source_key = scope.source_key" in sql
     assert "prior.external_id = scope.watermark_external_id" in sql
 
 
-def test_cli_refuses_conflicting_colliers_canonical_identity(
-    tmp_path, monkeypatch
-):
+def test_cli_refuses_conflicting_colliers_canonical_identity(tmp_path, monkeypatch):
     artifact = tmp_path / "colliers-conflict.json"
     artifact.write_text(
         json.dumps(
@@ -2116,9 +3396,7 @@ def test_cli_refuses_conflicting_colliers_canonical_identity(
                     {
                         "sourceKey": "colliers",
                         "id": "12345",
-                        "url": (
-                            "https://my.rcm1.com/handler/modern.aspx?pv=linked"
-                        ),
+                        "url": ("https://my.rcm1.com/handler/modern.aspx?pv=linked"),
                         "canonicalUrl": (
                             "https://my.rcm1.com/handler/modern.aspx?pv=linked"
                         ),
@@ -2129,9 +3407,7 @@ def test_cli_refuses_conflicting_colliers_canonical_identity(
                         "sourceKey": "colliers",
                         "id": "12345",
                         "url": "https://sales.colliers.com/#project-12345",
-                        "canonicalUrl": (
-                            "https://sales.colliers.com/#project-12345"
-                        ),
+                        "canonicalUrl": ("https://sales.colliers.com/#project-12345"),
                         "name": "Different Unlinked Property",
                         "transactionMode": "sale",
                     },
@@ -2154,9 +3430,7 @@ def test_cli_refuses_conflicting_colliers_canonical_identity(
         ci.main()
 
 
-def test_cli_refuses_duplicate_colliers_provisional_identity(
-    tmp_path, monkeypatch
-):
+def test_cli_refuses_duplicate_colliers_provisional_identity(tmp_path, monkeypatch):
     artifact = tmp_path / "colliers-provisional-duplicate.json"
     provisional = {
         "sourceKey": "colliers",
@@ -2282,16 +3556,22 @@ def test_newmark_identity_guard_rejects_duplicate_ingest_slug():
 
 def test_cli_refuses_marked_retired_om_parse_artifact(tmp_path, monkeypatch):
     artifact = tmp_path / "retired-om.json"
-    artifact.write_text(json.dumps({
-        "artifactKind": ci.RETIRED_OM_PARSE_ARTIFACT_KIND,
-        "listings": [{
-            "sourceKey": "cbre",
-            "externalId": "legacy-id",
-            "url": "https://cbre.com/legacy",
-            "noi": 1000000,
-            "omFacts": [],
-        }],
-    }))
+    artifact.write_text(
+        json.dumps(
+            {
+                "artifactKind": ci.RETIRED_OM_PARSE_ARTIFACT_KIND,
+                "listings": [
+                    {
+                        "sourceKey": "cbre",
+                        "externalId": "legacy-id",
+                        "url": "https://cbre.com/legacy",
+                        "noi": 1000000,
+                        "omFacts": [],
+                    }
+                ],
+            }
+        )
+    )
     monkeypatch.setattr(sys, "argv", ["cre_ingest.py", "--in", str(artifact)])
 
     with pytest.raises(SystemExit, match="sole production OM extraction writer"):
@@ -2300,11 +3580,13 @@ def test_cli_refuses_marked_retired_om_parse_artifact(tmp_path, monkeypatch):
 
 def test_build_sql_discards_direct_legacy_om_facts_rows():
     row = _row({"sourceKey": "cbre", "url": "https://cbre.com/om", "id": "1"})
-    row["om_facts"] = [{
-        "factKey": "noi",
-        "sourceDocUrl": "https://cbre.com/om.pdf",
-        "parserVersion": "legacy/1",
-    }]
+    row["om_facts"] = [
+        {
+            "factKey": "noi",
+            "sourceDocUrl": "https://cbre.com/om.pdf",
+            "parserVersion": "legacy/1",
+        }
+    ]
     sql = ci.build_sql([row], [], _SCRAPED_AT, set())
     assert "legacy/1" not in sql
 
@@ -2316,78 +3598,176 @@ def test_build_sql_discards_direct_legacy_om_facts_rows():
 
 
 def test_merge_sale_plus_lease_modes_to_sale_or_lease():
-    a = _row({"sourceKey": "svn", "url": "https://svn.com/x?propertyId=100-sale",
-              "transactionMode": "sale", "salePriceUsd": 500000})
-    b = _row({"sourceKey": "svn", "url": "https://svn.com/x?propertyId=100-lease",
-              "transactionMode": "lease", "leaseRateMin": 20})
+    a = _row(
+        {
+            "sourceKey": "svn",
+            "url": "https://svn.com/x?propertyId=100-sale",
+            "transactionMode": "sale",
+            "salePriceUsd": 500000,
+        }
+    )
+    b = _row(
+        {
+            "sourceKey": "svn",
+            "url": "https://svn.com/x?propertyId=100-lease",
+            "transactionMode": "lease",
+            "leaseRateMin": 20,
+        }
+    )
     m = ci.merge_rows(a, b)
     assert m["transaction_type"] == "sale_or_lease"
-    assert m["sale_price_usd"] == 500000.0     # a kept
-    assert m["lease_rate_min"] == 20.0         # filled from b
+    assert m["sale_price_usd"] == 500000.0  # a kept
+    assert m["lease_rate_min"] == 20.0  # filled from b
 
 
 def test_merge_secondary_sale_or_lease_promotes():
     # b already classified sale_or_lease (via transactionType text), modes do
     # not span sale+lease; the b-is-sale_or_lease branch still promotes.
-    a = _row({"sourceKey": "cbre", "url": "https://cbre.com/sl", "id": "1",
-              "transactionMode": "sale"})
-    b = _row({"sourceKey": "cbre", "url": "https://cbre.com/sl", "id": "1",
-              "transactionType": "For Sale or Lease"})
+    a = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/sl",
+            "id": "1",
+            "transactionMode": "sale",
+        }
+    )
+    b = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/sl",
+            "id": "1",
+            "transactionType": "For Sale or Lease",
+        }
+    )
     assert b["transaction_type"] == "sale_or_lease"
     assert ci.merge_rows(a, b)["transaction_type"] == "sale_or_lease"
 
 
 def test_merge_fills_none_scalar_from_b():
-    a = _row({"sourceKey": "cbre", "url": "https://cbre.com/a", "id": "1",
-              "transactionMode": "sale"})
-    b = _row({"sourceKey": "cbre", "url": "https://cbre.com/a", "id": "1",
-              "transactionMode": "sale", "salePriceUsd": 999999})
+    a = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/a",
+            "id": "1",
+            "transactionMode": "sale",
+        }
+    )
+    b = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/a",
+            "id": "1",
+            "transactionMode": "sale",
+            "salePriceUsd": 999999,
+        }
+    )
     assert ci.merge_rows(a, b)["sale_price_usd"] == 999999.0
 
 
 def test_merge_keeps_a_scalar_when_b_none_coalesce_keep():
-    a = _row({"sourceKey": "cbre", "url": "https://cbre.com/c", "id": "1",
-              "transactionMode": "sale", "salePriceUsd": 111})
-    b = _row({"sourceKey": "cbre", "url": "https://cbre.com/c", "id": "1",
-              "transactionMode": "sale"})
+    a = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/c",
+            "id": "1",
+            "transactionMode": "sale",
+            "salePriceUsd": 111,
+        }
+    )
+    b = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/c",
+            "id": "1",
+            "transactionMode": "sale",
+        }
+    )
     assert ci.merge_rows(a, b)["sale_price_usd"] == 111.0  # never blanked
 
 
 def test_merge_fills_empty_child_lists_from_b():
     a = _row({"sourceKey": "cbre", "url": "https://cbre.com/d", "id": "1"})
-    b = _row({"sourceKey": "cbre", "url": "https://cbre.com/d", "id": "1",
-              "contactsDetailed": [{"name": "Jane"}]})
+    b = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/d",
+            "id": "1",
+            "contactsDetailed": [{"name": "Jane"}],
+        }
+    )
     assert [c["name"] for c in ci.merge_rows(a, b)["contacts"]] == ["Jane"]
 
 
 def test_merge_markdown_prefers_longer():
-    a = _row({"sourceKey": "cbre", "url": "https://cbre.com/e", "id": "1",
-              "markdown": "short"})
-    b = _row({"sourceKey": "cbre", "url": "https://cbre.com/e", "id": "1",
-              "markdown": "a much longer markdown body wins"})
+    a = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/e",
+            "id": "1",
+            "markdown": "short",
+        }
+    )
+    b = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/e",
+            "id": "1",
+            "markdown": "a much longer markdown body wins",
+        }
+    )
     assert ci.merge_rows(a, b)["markdown"] == "a much longer markdown body wins"
 
 
 def test_merge_extra_facts_union_a_wins_collision():
-    a = _row({"sourceKey": "cbre", "url": "https://cbre.com/f", "id": "1",
-              "extraFacts": {"x": "1"}})
-    b = _row({"sourceKey": "cbre", "url": "https://cbre.com/f", "id": "1",
-              "extraFacts": {"x": "2", "y": "3"}})
+    a = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/f",
+            "id": "1",
+            "extraFacts": {"x": "1"},
+        }
+    )
+    b = _row(
+        {
+            "sourceKey": "cbre",
+            "url": "https://cbre.com/f",
+            "id": "1",
+            "extraFacts": {"x": "2", "y": "3"},
+        }
+    )
     assert ci.merge_rows(a, b)["extra_facts"] == {"x": "1", "y": "3"}
 
 
 def test_merge_status_drop_signal_wins_over_transitional():
-    a = _row({"sourceKey": "cushman-wakefield", "url": "https://www.cushmanwakefield.com/1", "id": "1",
-              "listingStatus": "Under Contract"})
-    b = _row({"sourceKey": "cushman-wakefield", "url": "https://www.cushmanwakefield.com/1", "id": "1",
-              "listingStatus": "Sold"})
+    a = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": "https://www.cushmanwakefield.com/1",
+            "id": "1",
+            "listingStatus": "Under Contract",
+        }
+    )
+    b = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": "https://www.cushmanwakefield.com/1",
+            "id": "1",
+            "listingStatus": "Sold",
+        }
+    )
     assert ci.merge_rows(a, b)["status"] == "sold"
 
 
 def test_merge_status_fills_none_from_b():
     a = _row({"sourceKey": "cbre", "url": "https://cbre.com/g", "id": "1"})
-    b = _row({"sourceKey": "cushman-wakefield", "url": "https://www.cushmanwakefield.com/g", "id": "1",
-              "listingStatus": "Pending"})
+    b = _row(
+        {
+            "sourceKey": "cushman-wakefield",
+            "url": "https://www.cushmanwakefield.com/g",
+            "id": "1",
+            "listingStatus": "Pending",
+        }
+    )
     assert a["status"] is None
     assert ci.merge_rows(a, b)["status"] == "pending"
 

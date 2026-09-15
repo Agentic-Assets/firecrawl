@@ -3,7 +3,13 @@ process.argv = [process.argv[0]!, process.argv[1]!];
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,9 +22,12 @@ import {
   jllNextData,
   jllPublicProfileUrl,
   jllStringUrls,
+  jllNativeAssetUrls,
+  jllHasUsableBrochure,
   jllSurfaceAreaSqft,
   jllDescription,
   jllContacts,
+  jllSanitizeHiddenChildMetadata,
   jllExtractLicense,
   jllDetailCachePath,
   readJllDetailCache,
@@ -58,7 +67,6 @@ function jllDetailRow(): any {
   return loadJllFixture().find((r: any) => r._source === "jll");
 }
 
-
 test("jllPropertyTypeLabel title-cases hyphenated property types", () => {
   assert.equal(jllPropertyTypeLabel("office"), "Office");
   assert.equal(jllPropertyTypeLabel("data-center"), "Data Center");
@@ -68,11 +76,13 @@ test("jllPropertyTypeLabel title-cases hyphenated property types", () => {
 test("normalizedJllListingUrl resolves relative links and strips query/hash", () => {
   assert.equal(
     normalizedJllListingUrl("/listings/dallas-tower-123"),
-    "https://property.jll.com/listings/dallas-tower-123"
+    "https://property.jll.com/listings/dallas-tower-123",
   );
   assert.equal(
-    normalizedJllListingUrl("https://property.jll.com/listings/foo/?utm=1#section"),
-    "https://property.jll.com/listings/foo"
+    normalizedJllListingUrl(
+      "https://property.jll.com/listings/foo/?utm=1#section",
+    ),
+    "https://property.jll.com/listings/foo",
   );
 });
 
@@ -98,38 +108,143 @@ test("jllNextData parses __NEXT_DATA__ JSON from HTML", () => {
   const data = jllNextData(html);
   assert.equal(data?.props?.pageProps?.property?.id, "12345");
   assert.equal(jllNextData("<html></html>"), null);
-  assert.equal(jllNextData('<script id="__NEXT_DATA__">{bad json</script>'), null);
+  assert.equal(
+    jllNextData('<script id="__NEXT_DATA__">{bad json</script>'),
+    null,
+  );
 });
 
 test("jllPublicProfileUrl builds profile URLs from slugs or passes through absolute URLs", () => {
-  assert.equal(jllPublicProfileUrl("jane-doe"), "https://www.us.jll.com/en/people/jane-doe");
-  assert.equal(jllPublicProfileUrl("/people/john-smith"), "https://www.us.jll.com/en/people/people/john-smith");
-  assert.equal(jllPublicProfileUrl("https://www.us.jll.com/en/people/existing"), "https://www.us.jll.com/en/people/existing");
+  assert.equal(
+    jllPublicProfileUrl("jane-doe"),
+    "https://www.us.jll.com/en/people/jane-doe",
+  );
+  assert.equal(
+    jllPublicProfileUrl("/people/john-smith"),
+    "https://www.us.jll.com/en/people/people/john-smith",
+  );
+  assert.equal(
+    jllPublicProfileUrl("https://www.us.jll.com/en/people/existing"),
+    "https://www.us.jll.com/en/people/existing",
+  );
   assert.equal(jllPublicProfileUrl(null), null);
 });
 
 test("jllStringUrls keeps unique http(s) URLs only", () => {
   assert.deepEqual(
-    jllStringUrls(["https://a.example/b.pdf", "mailto:x@y.com", "https://a.example/b.pdf", "  "]),
-    ["https://a.example/b.pdf"]
+    jllStringUrls([
+      "https://a.example/b.pdf",
+      "mailto:x@y.com",
+      "https://",
+      "https:///relative.pdf",
+      "http://?x",
+      "https://a.example/b.pdf",
+      "  ",
+    ]),
+    ["https://a.example/b.pdf"],
   );
   assert.deepEqual(jllStringUrls(null), []);
+});
+
+test("JLL native asset URLs accept bounded documented string and object shapes", () => {
+  assert.deepEqual(
+    jllNativeAssetUrls(
+      ["https://cdn.example/image.jpg", { image: "https://cdn.example/preview.jpg" }],
+      "images",
+    ),
+    ["https://cdn.example/image.jpg", "https://cdn.example/preview.jpg"],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls(
+      [{ file: "https://cdn.example/brochure.pdf" }, "https://cdn.example/other.pdf"],
+      "brochures",
+    ),
+    ["https://cdn.example/brochure.pdf", "https://cdn.example/other.pdf"],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls(
+      { images: [{ image: "https://cdn.example/floor.jpg" }], files: [{ download: "https://cdn.example/floor.pdf" }] },
+      "floorPlans",
+    ),
+    ["https://cdn.example/floor.jpg", "https://cdn.example/floor.pdf"],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls([{ url: "https://video.example/watch" }], "videos"),
+    ["https://video.example/watch"],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls({ url: "https://tour.example/virtual" }, "virtualTours"),
+    ["https://tour.example/virtual"],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls(["https://tour.example/360"], "view360URLs"),
+    ["https://tour.example/360"],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls({ nested: { url: "https://unsafe.example/unbounded" } }, "videos"),
+    [],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls([["https://unsafe.example/nested-array"]], "images"),
+    [],
+  );
+});
+
+test("jllHasUsableBrochure requires a public URL for native and typed brochure evidence", () => {
+  assert.equal(
+    jllHasUsableBrochure({
+      documents: [{ docType: "brochure", url: "https://cdn.example/om.pdf" }],
+    }),
+    true,
+  );
+  assert.equal(
+    jllHasUsableBrochure({ brochures: [{ url: "http://cdn.example/om.pdf" }] }),
+    true,
+  );
+  assert.equal(
+    jllHasUsableBrochure({ documents: [{ docType: "brochure" }] }),
+    false,
+  );
+  assert.equal(
+    jllHasUsableBrochure({
+      documents: [{ docType: "brochure", url: "/om.pdf" }],
+    }),
+    false,
+  );
+  assert.equal(jllHasUsableBrochure({ brochures: ["https://"] }), false);
+  assert.equal(
+    jllHasUsableBrochure({ brochures: ["https:///relative.pdf"] }),
+    false,
+  );
+  assert.equal(jllHasUsableBrochure({ brochures: ["http://?x"] }), false);
+  assert.equal(
+    jllHasUsableBrochure({
+      documents: [
+        { docType: "floor_plan", url: "https://cdn.example/floor.pdf" },
+      ],
+    }),
+    false,
+  );
 });
 
 test("jllSurfaceAreaSqft reads direct value or nested feet metrics", () => {
   assert.equal(jllSurfaceAreaSqft({ surfaceArea: 12500 }), 12500);
   assert.equal(
     jllSurfaceAreaSqft({
-      surfaceAreas: [{ metrics: [{ unit: "Feet", value: { min: 8000, max: 12000 } }] }],
+      surfaceAreas: [
+        { metrics: [{ unit: "Feet", value: { min: 8000, max: 12000 } }] },
+      ],
     }),
-    12000
+    12000,
   );
   assert.equal(jllSurfaceAreaSqft({}), null);
 });
 
 test("jllDescription joins sections and highlights", () => {
   const property = {
-    descriptionSections: [{ title: "<p>Overview</p>", content: "<p>Prime asset.</p>" }],
+    descriptionSections: [
+      { title: "<p>Overview</p>", content: "<p>Prime asset.</p>" },
+    ],
     highlights: ["<li>Corner lot</li>", "Transit access"],
   };
   const text = jllDescription(property);
@@ -141,13 +256,21 @@ test("jllDescription joins sections and highlights", () => {
 
 test("jllContacts maps brokers and dedupes by email", () => {
   const contacts = jllContacts([
-    { name: "Jane Doe", email: "jane@jll.com", pageUrl: "jane-doe", jobTitle: "MD" },
+    {
+      name: "Jane Doe",
+      email: "jane@jll.com",
+      pageUrl: "jane-doe",
+      jobTitle: "MD",
+    },
     { name: "Jane Doe", email: "jane@jll.com", pageUrl: "jane-doe" },
     { name: "John Smith", email: "john@jll.com", telephone: "555-0100" },
   ]);
   assert.equal(contacts.length, 2);
   assert.equal(contacts[0]?.company, "JLL");
-  assert.equal(contacts[0]?.profileUrl, "https://www.us.jll.com/en/people/jane-doe");
+  assert.equal(
+    contacts[0]?.profileUrl,
+    "https://www.us.jll.com/en/people/jane-doe",
+  );
   assert.equal(contacts[1]?.phone, "555-0100");
 });
 
@@ -214,11 +337,16 @@ test("parseJllSearchPage maps lease transaction and rent price text", () => {
 });
 
 test("parseJllSearchPage preserves an explicit zero-result total", () => {
-  const parsed = parseJllSearchPage("<h2>0 properties</h2>", "sale", "office", 1);
+  const parsed = parseJllSearchPage(
+    "<h2>0 properties</h2>",
+    "sale",
+    "office",
+    1,
+  );
   assert.equal(parsed.total, 0);
   assert.deepEqual(parsed.listings, []);
   assert.doesNotThrow(() =>
-    assertJllSearchPageCompleteness(parsed, 1, 0, true)
+    assertJllSearchPageCompleteness(parsed, 1, 0, true),
   );
 });
 
@@ -249,7 +377,10 @@ test("JLL GraphQL variables use exact public search paging and tenure inputs", (
       imagePriority: true,
     },
   });
-  assert.throws(() => jllGraphqlVariables("sale", "office", 0), /positive integer/);
+  assert.throws(
+    () => jllGraphqlVariables("sale", "office", 0),
+    /positive integer/,
+  );
 });
 
 test("JLL GraphQL item mapping preserves identity, location, price, surface, and images", () => {
@@ -265,7 +396,7 @@ test("JLL GraphQL item mapping preserves identity, location, price, surface, and
     propertyTypes: ["office", "medical"],
     tenureTypes: ["sale", "rent"],
     salePrice: { amount: 3250000, currency: "USD", unit: null },
-    rentPrice: { amount: 32.5, currency: "USD", unit: "feet" },
+    rentPrice: { amount: 32.5, currency: "USD", unit: "sf" },
     hidePrice: false,
     pageUrl: "/listings/80-w-gore-st-south-orange",
     latitude: 28.53077,
@@ -283,7 +414,10 @@ test("JLL GraphQL item mapping preserves identity, location, price, surface, and
   };
   const sale = jllGraphqlItemToListing(item, "sale", "office", 1, 323);
   assert.equal(sale.id, "656588");
-  assert.equal(sale.url, "https://property.jll.com/listings/80-w-gore-st-south-orange");
+  assert.equal(
+    sale.url,
+    "https://property.jll.com/listings/80-w-gore-st-south-orange",
+  );
   assert.equal(sale.street, "80 W Gore St");
   assert.equal(sale.city, "Orlando");
   assert.equal(sale.state, "FL");
@@ -299,9 +433,12 @@ test("JLL GraphQL item mapping preserves identity, location, price, surface, and
   assert.deepEqual(sale.jllSearchResult.tenureTypes, ["sale", "rent"]);
 
   const lease = jllGraphqlItemToListing(item, "lease", "office", 1, 4300);
-  assert.equal(lease.leaseRateText, "$32.50/feet");
+  assert.equal(lease.leaseRateText, "$32.50/sf");
   assert.equal(lease.salePriceUsd, undefined);
-  assert.equal(jllGraphqlPriceText({ amount: 42, currency: "CAD", unit: "month" }), "CAD 42/month");
+  assert.equal(
+    jllGraphqlPriceText({ amount: 42, currency: "CAD", unit: "month" }),
+    "CAD 42/month",
+  );
 });
 
 test("JLL GraphQL item mapping respects hidden prices and rejects unsafe identities", () => {
@@ -315,13 +452,75 @@ test("JLL GraphQL item mapping respects hidden prices and rejects unsafe identit
     "sale",
     "office",
     1,
-    1
+    1,
   );
   assert.equal(hidden.salePriceUsd, undefined);
   assert.equal(hidden.salePriceText, undefined);
+  const unknownControl = jllGraphqlItemToListing(
+    {
+      id: "2",
+      pageUrl: "/listings/unknown-control",
+      hidePrice: "not-a-boolean",
+      salePrice: { amount: 3250000, currency: "USD" },
+    },
+    "sale",
+    "office",
+    1,
+    1,
+  );
+  assert.equal(unknownControl.salePriceUsd, undefined);
+  assert.equal(unknownControl.salePriceText, undefined);
+  assert.deepEqual(unknownControl.jllSearchResult, {
+    priceWithholdingControl: "unknown",
+  });
+  assert.doesNotMatch(
+    JSON.stringify(unknownControl.jllSearchResult),
+    /not-a-boolean/,
+  );
+  const contradictory = jllGraphqlItemToListing(
+    {
+      id: "3",
+      pageUrl: "/listings/contradictory-control",
+      hidePrice: true,
+      PRICEWITHHOLDINGCONTROL: "withheld",
+      HiDePrIcE: false,
+      salePrice: { amount: 3250000, currency: "USD" },
+    },
+    "sale",
+    "office",
+    1,
+    1,
+  );
+  assert.equal(contradictory.salePriceUsd, undefined);
+  assert.equal(
+    contradictory.jllSearchResult.priceWithholdingControl,
+    "withheld",
+  );
+  const duplicate = jllGraphqlItemToListing(
+    {
+      id: "4",
+      pageUrl: "/listings/duplicate-control",
+      hidePrice: false,
+      HIDEPRICE: null,
+      salePrice: { amount: 3250000, currency: "USD" },
+    },
+    "sale",
+    "office",
+    1,
+    1,
+  );
+  assert.equal(duplicate.salePriceUsd, undefined);
+  assert.equal(duplicate.jllSearchResult.priceWithholdingControl, "unknown");
   assert.throws(
-    () => jllGraphqlItemToListing({ pageUrl: "/listings/missing" }, "sale", "office", 1, 1),
-    /lacks an id/
+    () =>
+      jllGraphqlItemToListing(
+        { pageUrl: "/listings/missing" },
+        "sale",
+        "office",
+        1,
+        1,
+      ),
+    /lacks an id/,
   );
   assert.throws(
     () =>
@@ -330,9 +529,9 @@ test("JLL GraphQL item mapping respects hidden prices and rejects unsafe identit
         "sale",
         "office",
         1,
-        1
+        1,
       ),
-    /non-listing pageUrl/
+    /non-listing pageUrl/,
   );
 });
 
@@ -353,9 +552,9 @@ test("parseJllGraphqlSearchPage validates exact response shape, zero totals, and
       { data: { properties: { count: 0, items: [] } } },
       "sale",
       "office",
-      1
+      1,
     ),
-    { total: 0, listings: [] }
+    { total: 0, listings: [] },
   );
 
   for (const [bad, message] of [
@@ -367,7 +566,7 @@ test("parseJllGraphqlSearchPage validates exact response shape, zero totals, and
   ] as const) {
     assert.throws(
       () => parseJllGraphqlSearchPage(bad, "sale", "office", 1),
-      message
+      message,
     );
   }
   assert.throws(
@@ -386,44 +585,59 @@ test("parseJllGraphqlSearchPage validates exact response shape, zero totals, and
         },
         "sale",
         "office",
-        1
+        1,
       ),
-    /duplicate or missing ids\/urls/
+    /duplicate or missing ids\/urls/,
   );
 });
 
 test("strict JLL pagination rejects missing, unstable, and partial page evidence", () => {
   assert.throws(
-    () => assertJllSearchPageCompleteness({ total: null, listings: [] }, 1, null, true),
-    /finite nonnegative total/
-  );
-  assert.throws(
     () =>
       assertJllSearchPageCompleteness(
-        { total: 51, listings: [{ url: "https://property.jll.com/listings/one" }] },
-        2,
-        50,
-        true
-      ),
-    /total changed/
-  );
-  assert.throws(
-    () =>
-      assertJllSearchPageCompleteness(
-        { total: 51, listings: [{ url: "https://property.jll.com/listings/one" }] },
+        { total: null, listings: [] },
         1,
         null,
-        true
+        true,
       ),
-    /expected 50 unique cards/
+    /finite nonnegative total/,
+  );
+  assert.throws(
+    () =>
+      assertJllSearchPageCompleteness(
+        {
+          total: 51,
+          listings: [{ url: "https://property.jll.com/listings/one" }],
+        },
+        2,
+        50,
+        true,
+      ),
+    /total changed/,
+  );
+  assert.throws(
+    () =>
+      assertJllSearchPageCompleteness(
+        {
+          total: 51,
+          listings: [{ url: "https://property.jll.com/listings/one" }],
+        },
+        1,
+        null,
+        true,
+      ),
+    /expected 50 unique cards/,
   );
   assert.doesNotThrow(() =>
     assertJllSearchPageCompleteness(
-      { total: 51, listings: [{ url: "https://property.jll.com/listings/final" }] },
+      {
+        total: 51,
+        listings: [{ url: "https://property.jll.com/listings/final" }],
+      },
       2,
       51,
-      true
-    )
+      true,
+    ),
   );
 });
 
@@ -437,9 +651,9 @@ test("strict JLL filter reconciliation rejects cross-page gaps and duplicates", 
           "https://property.jll.com/listings/one",
           "https://property.jll.com/listings/one",
         ],
-        true
+        true,
       ),
-    /reconciled 1 unique cards against reported total 2/
+    /reconciled 1 unique cards against reported total 2/,
   );
   assert.doesNotThrow(() =>
     assertJllFilterCoverage(
@@ -449,8 +663,8 @@ test("strict JLL filter reconciliation rejects cross-page gaps and duplicates", 
         "https://property.jll.com/listings/one",
         "https://property.jll.com/listings/two",
       ],
-      true
-    )
+      true,
+    ),
   );
 });
 
@@ -460,7 +674,7 @@ test("JLL inventory identity reconciliation requires a one-to-one provider id an
       { id: "101", url: "https://property.jll.com/listings/one" },
       { id: "101", url: "https://property.jll.com/listings/one/" },
       { id: "202", url: "https://property.jll.com/listings/two" },
-    ])
+    ]),
   );
   assert.throws(
     () =>
@@ -468,7 +682,7 @@ test("JLL inventory identity reconciliation requires a one-to-one provider id an
         { id: "101", url: "https://property.jll.com/listings/one" },
         { id: "101", url: "https://property.jll.com/listings/other" },
       ]),
-    /maps to multiple listing URLs/
+    /maps to multiple listing URLs/,
   );
   assert.throws(
     () =>
@@ -476,7 +690,7 @@ test("JLL inventory identity reconciliation requires a one-to-one provider id an
         { id: "101", url: "https://property.jll.com/listings/one" },
         { id: "202", url: "https://property.jll.com/listings/one" },
       ]),
-    /maps to multiple provider ids/
+    /maps to multiple provider ids/,
   );
 });
 
@@ -514,7 +728,10 @@ test("JLL detail enrichment fails closed when provider id or URL differs from in
     const wrongUrl = await enrichJllListing(base);
     assert.equal(wrongUrl.id, "101");
     assert.equal(wrongUrl.url, base.url);
-    assert.match(wrongUrl.detailError, /does not match enumerated inventory URL/);
+    assert.match(
+      wrongUrl.detailError,
+      /does not match enumerated inventory URL/,
+    );
   } finally {
     if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
     else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
@@ -549,7 +766,7 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
             id: "101",
             pageUrl: "/listings/floor-plan-proof",
             salePrice: { amount: 3250000, currency: "USD", unit: null },
-            rentPrice: { amount: 32.5, currency: "USD", unit: "feet" },
+            rentPrice: { amount: 32.5, currency: "USD", unit: "sf" },
             floorPlans,
             brochures: [
               "https://cdn.jll.com/assets/opaque.pdf",
@@ -573,7 +790,7 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
     const enriched = await enrichJllListing(base);
     assert.equal(enriched.detailError, undefined);
     assert.equal(enriched.salePriceText, "$3,250,000");
-    assert.equal(enriched.leaseRateText, "$32.50/feet");
+    assert.equal(enriched.leaseRateText, "$32.50/sf");
     assert.deepEqual(enriched.jllDetail.floorPlans, floorPlans);
     assert.equal(enriched.jllDetail.floorPlanAssetCount, 2);
     assert.deepEqual(enriched.brochures, [
@@ -582,9 +799,15 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
     assert.deepEqual(
       enriched.documents.map(({ url, docType }: any) => ({ url, docType })),
       [
-        { url: "https://CDN.JLL.COM/assets/opaque.pdf/", docType: "floor_plan" },
-        { url: "https://cdn.jll.com/assets/preview.jpg", docType: "floor_plan" },
-      ]
+        {
+          url: "https://CDN.JLL.COM/assets/opaque.pdf/",
+          docType: "floor_plan",
+        },
+        {
+          url: "https://cdn.jll.com/assets/preview.jpg",
+          docType: "floor_plan",
+        },
+      ],
     );
   } finally {
     if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
@@ -593,17 +816,425 @@ test("JLL enrichment preserves raw floor plans and authoritative child typing", 
   }
 });
 
-test("JLL detail price text accepts legacy strings and structured values", () => {
+test("JLL detail price text accepts public legacy, numeric, and structured values", () => {
   assert.equal(jllDetailPriceText("$2,500,000"), "$2,500,000");
+  assert.equal(jllDetailPriceText(3250000), "3,250,000");
+  assert.equal(jllDetailPriceText("3250000"), "3,250,000");
+  assert.equal(jllDetailPriceText("3,250,000"), "3,250,000");
   assert.equal(
     jllDetailPriceText({ amount: 3250000, currency: "USD", unit: null }),
-    "$3,250,000"
+    "$3,250,000",
   );
   assert.equal(
     jllDetailPriceText({ amount: 32.5, currency: "USD", unit: "feet" }),
-    "$32.50/feet"
+    "$32.50/feet",
   );
-  assert.equal(jllDetailPriceText(null), null);
+  assert.equal(
+    jllDetailPriceText({ amount: "32.5", currency: "USD", unit: "feet" }),
+    "$32.50/feet",
+  );
+  for (const malformed of [
+    undefined,
+    null,
+    false,
+    [],
+    [3250000],
+    {},
+    { amount: [] },
+  ]) {
+    assert.doesNotThrow(() => jllDetailPriceText(malformed));
+    assert.equal(jllDetailPriceText(malformed), null);
+  }
+});
+
+test("JLL detail enrichment normalizes price source shapes with redacted provenance", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-price-shapes-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const shapes = [
+    {
+      price: "$2,500,000",
+      expected: "$2,500,000",
+      sourceShape: "legacy_string",
+      amount: 2500000,
+      currency: "USD",
+      stagedAmount: 2500000,
+      stagedText: "$2,500,000",
+    },
+    {
+      price: 3250000,
+      expected: "3,250,000",
+      sourceShape: "bare_number",
+      amount: 3250000,
+      currency: null,
+      stagedAmount: undefined,
+      stagedText: undefined,
+    },
+    {
+      price: "3250000",
+      expected: "3,250,000",
+      sourceShape: "numeric_string",
+      amount: 3250000,
+      currency: null,
+      stagedAmount: undefined,
+      stagedText: undefined,
+    },
+    {
+      price: { amount: "3250000", currency: "USD", unit: null },
+      expected: "$3,250,000",
+      sourceShape: "structured",
+      amount: 3250000,
+      currency: "USD",
+      stagedAmount: 3250000,
+      stagedText: "$3,250,000",
+    },
+  ];
+  try {
+    for (const [index, item] of shapes.entries()) {
+      const id = String(index + 1);
+      const url = `https://property.jll.com/listings/price-shape-${id}`;
+      writeJllDetailCache(url, {
+        rawHtml:
+          '<script id="__NEXT_DATA__" type="application/json">' +
+          JSON.stringify({
+            props: {
+              pageProps: {
+                property: {
+                  id,
+                  pageUrl: `/listings/price-shape-${id}`,
+                  salePrice: item.price,
+                },
+                brokers: [],
+              },
+            },
+          }) +
+          "</script>",
+        markdown: "",
+        links: [],
+        images: [],
+      });
+
+      const enriched = await enrichJllListing({ id, url });
+      assert.equal(enriched.detailError, undefined);
+      assert.equal(enriched.salePriceText, item.stagedText);
+      assert.equal(enriched.salePriceUsd, item.stagedAmount);
+      const provenance = enriched.jllDetail.pricing.sale;
+      assert.equal(provenance.sourceShape, item.sourceShape);
+      assert.equal(provenance.normalization, "available");
+      assert.equal(provenance.normalizedText, item.expected);
+      assert.equal(provenance.normalizedAmount, item.amount);
+      assert.equal(provenance.currency, item.currency ?? undefined);
+      assert.equal(provenance.unit, undefined);
+    }
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL legacy price staging requires explicit USD provenance", () => {
+  const cadSale = jllGraphqlItemToListing(
+    {
+      id: "legacy-cad-sale",
+      pageUrl: "/listings/legacy-cad-sale",
+      salePrice: "CAD $1m",
+      hidePrice: false,
+    },
+    "sale",
+    "office",
+    1,
+    1,
+  );
+  const cadLease = jllGraphqlItemToListing(
+    {
+      id: "legacy-cad-lease",
+      pageUrl: "/listings/legacy-cad-lease",
+      rentPrice: "CAD $32/SF",
+      hidePrice: false,
+    },
+    "lease",
+    "office",
+    1,
+    1,
+  );
+  const usdSale = jllGraphqlItemToListing(
+    {
+      id: "legacy-usd-sale",
+      pageUrl: "/listings/legacy-usd-sale",
+      salePrice: "USD $1m",
+      hidePrice: false,
+    },
+    "sale",
+    "office",
+    1,
+    1,
+  );
+  const usdLease = jllGraphqlItemToListing(
+    {
+      id: "legacy-usd-lease",
+      pageUrl: "/listings/legacy-usd-lease",
+      rentPrice: "USD $32/SF",
+      hidePrice: false,
+    },
+    "lease",
+    "office",
+    1,
+    1,
+  );
+  const unknown = jllGraphqlItemToListing(
+    {
+      id: "legacy-unknown-currency",
+      pageUrl: "/listings/legacy-unknown-currency",
+      salePrice: "XYZ $1m",
+      hidePrice: false,
+    },
+    "sale",
+    "office",
+    1,
+    1,
+  );
+
+  assert.equal(cadSale.salePriceUsd, undefined);
+  assert.equal(cadSale.salePriceText, undefined);
+  assert.equal(cadLease.leaseRateText, undefined);
+  assert.equal(usdSale.salePriceUsd, 1_000_000);
+  assert.equal(usdSale.salePriceText, "USD $1m");
+  assert.equal(usdLease.leaseRateText, "USD $32/SF");
+  assert.equal(unknown.salePriceUsd, undefined);
+  assert.equal(unknown.salePriceText, undefined);
+});
+
+test("JLL historical CAD text suppresses a legacy salePriceUsd fallback", async () => {
+  const cacheDir = mkdtempSync(
+    join(tmpdir(), "jll-legacy-cad-fallback-cache-"),
+  );
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const url = "https://property.jll.com/listings/legacy-cad-fallback";
+  try {
+    writeJllDetailCache(url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify({
+          props: {
+            pageProps: {
+              property: {
+                id: "legacy-cad-fallback",
+                pageUrl: "/listings/legacy-cad-fallback",
+              },
+              brokers: [],
+            },
+          },
+        }) +
+        "</script>",
+      markdown: "",
+      links: [],
+      images: [],
+    });
+    const enriched = await enrichJllListing({
+      id: "legacy-cad-fallback",
+      url,
+      salePriceUsd: 1_000_000,
+      salePriceText: "CAD $1m",
+      leaseRateText: "CAD $32/SF",
+    });
+    assert.equal(enriched.salePriceUsd, undefined);
+    assert.equal(enriched.salePriceText, undefined);
+    assert.equal(enriched.leaseRateText, undefined);
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL detail enrichment fails closed on malformed or unknown price controls", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-price-redaction-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  try {
+    for (const [index, hidePrice] of ["false", 0, null, {}, []].entries()) {
+      const id = String(index + 1);
+      const url = `https://property.jll.com/listings/withheld-${id}`;
+      const price = { amount: 3250000, currency: "USD", unit: null };
+      writeJllDetailCache(url, {
+        rawHtml:
+          '<script id="__NEXT_DATA__" type="application/json">' +
+          JSON.stringify({
+            props: {
+              pageProps: {
+                property: {
+                  id,
+                  pageUrl: `/listings/withheld-${id}`,
+                  hidePrice,
+                  salePrice: price,
+                  rentPrice: "$32/SF",
+                },
+                brokers: [],
+              },
+            },
+          }) +
+          "</script>",
+        markdown: "",
+        links: [],
+        images: [],
+      });
+      const enriched = await enrichJllListing({
+        id,
+        url,
+        salePriceUsd: 1000000,
+        salePriceText: "$1,000,000",
+        leaseRateText: "$20/SF",
+      });
+      assert.equal(enriched.detailError, undefined);
+      assert.equal(enriched.salePriceUsd, undefined);
+      assert.equal(enriched.salePriceText, undefined);
+      assert.equal(enriched.leaseRateText, undefined);
+      assert.deepEqual(enriched.jllDetail.pricing, {
+        visibility: "withheld",
+        searchWithholdingControl: "absent",
+        detailWithholdingControl: "unknown",
+        sale: { sourceShape: "structured", normalization: "redacted" },
+        lease: { sourceShape: "legacy_string", normalization: "redacted" },
+      });
+      const stored = JSON.stringify(enriched.jllDetail.pricing);
+      assert.doesNotMatch(stored, /3250000|3,250,000|\$32/);
+    }
+
+    const url = "https://property.jll.com/listings/unknown-stored-control";
+    writeJllDetailCache(url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify({
+          props: {
+            pageProps: {
+              property: {
+                id: "stored-control",
+                pageUrl: "/listings/unknown-stored-control",
+                hidePrice: false,
+                salePrice: { amount: 3250000, currency: "USD" },
+              },
+              brokers: [],
+            },
+          },
+        }) +
+        "</script>",
+      markdown: "",
+      links: [],
+      images: [],
+    });
+    const storedControl = await enrichJllListing({
+      id: "stored-control",
+      url,
+      salePriceUsd: 3250000,
+      jllSearchResult: { priceWithholdingControl: "false" },
+    });
+    assert.equal(storedControl.salePriceUsd, undefined);
+    assert.deepEqual(storedControl.jllDetail.pricing, {
+      visibility: "withheld",
+      searchWithholdingControl: "unknown",
+      detailWithholdingControl: "visible",
+      sale: { sourceShape: "structured", normalization: "redacted" },
+      lease: { sourceShape: "absent", normalization: "redacted" },
+    });
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL detail enrichment never throws for malformed price shapes", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-malformed-price-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  try {
+    for (const [index, price] of [
+      [],
+      {},
+      { amount: [] },
+      { amount: "not-a-number" },
+    ].entries()) {
+      const id = String(index + 1);
+      const url = `https://property.jll.com/listings/malformed-price-${id}`;
+      writeJllDetailCache(url, {
+        rawHtml:
+          '<script id="__NEXT_DATA__" type="application/json">' +
+          JSON.stringify({
+            props: {
+              pageProps: {
+                property: {
+                  id,
+                  pageUrl: `/listings/malformed-price-${id}`,
+                  salePrice: price,
+                },
+                brokers: [],
+              },
+            },
+          }) +
+          "</script>",
+        markdown: "",
+        links: [],
+        images: [],
+      });
+      const enriched = await enrichJllListing({ id, url });
+      assert.equal(enriched.detailError, undefined);
+      assert.equal(enriched.salePriceText, undefined);
+      assert.equal(enriched.salePriceUsd, undefined);
+      assert.equal(
+        enriched.jllDetail.pricing.sale.normalization,
+        "unavailable",
+      );
+    }
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL keeps public foreign lease provenance but never stages a currency-free rate", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-foreign-lease-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const url = "https://property.jll.com/listings/foreign-lease";
+  try {
+    writeJllDetailCache(url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify({
+          props: {
+            pageProps: {
+              property: {
+                id: "foreign-lease",
+                pageUrl: "/listings/foreign-lease",
+                rentPrice: { amount: 32, currency: "CAD", unit: "sf" },
+              },
+              brokers: [],
+            },
+          },
+        }) +
+        "</script>",
+      markdown: "",
+      links: [],
+      images: [],
+    });
+    const enriched = await enrichJllListing({ id: "foreign-lease", url });
+    assert.equal(enriched.leaseRateText, undefined);
+    assert.deepEqual(enriched.jllDetail.pricing.lease, {
+      sourceShape: "structured",
+      normalization: "available",
+      normalizedText: "CAD 32/sf",
+      normalizedAmount: 32,
+      currency: "CAD",
+      unit: "sf",
+    });
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
 });
 
 test("JLL detail enrichment preserves list and detail hidden-price controls", async () => {
@@ -651,6 +1282,414 @@ test("JLL detail enrichment preserves list and detail hidden-price controls", as
   }
 });
 
+test("JLL hidden detail retains safe suffix text and redacts only price evidence", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-hidden-safe-text-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  try {
+    for (const [id, title, expected] of [
+      ["safe-company", "3M Company", "3M Company"],
+      ["safe-building", "Building3B", "Building3B"],
+      ["safe-street", "3 B Street", "3 B Street"],
+      ["explicit-usd", "USD 3M", undefined],
+      ["labelled", "Asking price: 3M", undefined],
+    ] as const) {
+      const url = `https://property.jll.com/listings/${id}`;
+      writeJllDetailCache(url, {
+        rawHtml:
+          '<script id="__NEXT_DATA__" type="application/json">' +
+          JSON.stringify({
+            props: {
+              pageProps: {
+                property: {
+                  id,
+                  pageUrl: `/listings/${id}`,
+                  hidePrice: true,
+                  title,
+                  surfaceArea: "500K SF",
+                },
+                brokers: [],
+              },
+            },
+          }) +
+          "</script>",
+        markdown: "",
+        links: [],
+        images: [],
+      });
+      const enriched = await enrichJllListing({ id, url });
+      assert.equal(enriched.name, expected);
+      assert.equal(enriched.sizeText, "500K SF");
+    }
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL successful hidden detail redacts normalized prose and case-variant price paths", async () => {
+  const cacheDir = mkdtempSync(
+    join(tmpdir(), "jll-hidden-success-redaction-cache-"),
+  );
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const url = "https://property.jll.com/listings/hidden-success-redaction";
+  try {
+    writeJllDetailCache(url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify({
+          props: {
+            pageProps: {
+              property: {
+                id: "hidden-success-redaction",
+                pageUrl: "/listings/hidden-success-redaction",
+                // A null legacy control is not authoritative: the explicit
+                // provider fallback still requires withholding.
+                hidePrice: null,
+                priceWithholdingControl: "withheld",
+                salePrice: { amount: 3250000, currency: "USD" },
+                descriptionSections: [
+                  { content: "Sale price: $3,250,000. Institutional office." },
+                ],
+                highlights: ["EUR 3,250,000 confidential consideration"],
+                dealEconomics: { amount: 3250000 },
+                brokers: [],
+              },
+            },
+          },
+        }) +
+        "</script>",
+      markdown: "Confidential asking consideration: $3,250,000.",
+      links: [],
+      images: [],
+    });
+
+    const enriched = await enrichJllListing({
+      id: "hidden-success-redaction",
+      url,
+      salePriceUsd: 3250000,
+      SalePrice: "$3,250,000",
+      markdown: "Legacy asking price: $3,250,000.",
+      currentTenants: [{ name: "Acme Holdings" }],
+      jllSearchResult: { priceWithholdingControl: "withheld" },
+      jllDetail: {
+        SalePrice: { amount: 3250000 },
+        futureEconomics: { consideration: "$3,250,000", occupancy: 0.95 },
+      },
+    });
+
+    assert.equal(enriched.detailError, undefined);
+    assert.equal(enriched.salePriceUsd, undefined);
+    assert.equal(enriched.SalePrice, undefined);
+    assert.equal(enriched.jllDetail.SalePrice, undefined);
+    assert.equal(enriched.jllDetail.futureEconomics, undefined);
+    assert.equal(
+      enriched.jllDetail.pricing.detailWithholdingControl,
+      "withheld",
+    );
+    assert.equal(enriched.description, undefined);
+    assert.equal(enriched.markdown, undefined);
+    assert.deepEqual(enriched.currentTenants, [{ name: "Acme Holdings" }]);
+    assert.equal(enriched.jllDetail.highlights, undefined);
+    assert.equal(enriched.jllDetail.dealEconomics, undefined);
+    assert.doesNotMatch(JSON.stringify(enriched), /3250000|3,250,000/);
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL top-level price controls redact cached detail and monetary public text", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "jll-top-level-hidden-cache-"));
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const url = "https://property.jll.com/listings/top-level-hidden";
+  try {
+    writeJllDetailCache(url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify({
+          props: {
+            pageProps: {
+              property: {
+                id: "top-level-hidden",
+                pageUrl: "/listings/top-level-hidden",
+                hidePrice: false,
+                salePrice: { amount: 3250000, currency: "USD" },
+                title: "GBP 3.25m Office Portfolio",
+                floorPlans: {
+                  files: [{ download: "https://cdn.example/floor.pdf" }, null],
+                },
+              },
+              brokers: [],
+            },
+          },
+        }) +
+        "</script>",
+      markdown: "Asking £3.25m.",
+      links: [],
+      images: [],
+    });
+
+    const enriched = await enrichJllListing({
+      id: "top-level-hidden",
+      url,
+      hidePrice: false,
+      PRICEWITHHOLDINGCONTROL: "withheld",
+      name: "AUD 3m Legacy Name",
+      headline: "JPY 3250000 headline",
+      salePriceUsd: 3250000,
+      salePriceText: "$3,250,000",
+      jllSearchResult: { hidePrice: false },
+      currentTenants: [{ name: "Acme Holdings" }, { name: "GBP 3m Tenant" }],
+    });
+
+    assert.equal(enriched.detailError, undefined);
+    assert.equal(enriched.salePriceUsd, undefined);
+    assert.equal(enriched.salePriceText, undefined);
+    assert.equal(enriched.name, undefined);
+    assert.deepEqual(enriched.currentTenants, [{ name: "Acme Holdings" }]);
+    assert.equal(enriched.jllDetail.pricing.visibility, "withheld");
+    assert.equal(
+      enriched.jllDetail.pricing.searchWithholdingControl,
+      "withheld",
+    );
+    assert.doesNotMatch(
+      JSON.stringify(enriched),
+      /3250000|3,250,000|3\.25m|GBP|JPY|AUD|£/,
+    );
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL hidden child sanitizer preserves identities and URLs while omitting price labels", () => {
+  const broker = jllSanitizeHiddenChildMetadata(
+    {
+      id: "broker-1",
+      name: "Jane Broker",
+      email: "jane@example.com",
+      phone: "555-0100",
+      profileUrl: "https://jll.example/broker-1",
+      title: "$3.25M Advisor",
+      office: "Asking price $3.25M",
+      license: "License $3.25M",
+      caption: "CAD $1,000,000 broker disclosure",
+      headline: "Price 3.25M",
+      label: "Offering 3.25M USD",
+      description: "Offering 3.25M US$",
+      licenses: ["Offering 3.25M C$", "Offering 3.25M A$"],
+    },
+    "broker",
+  );
+  assert.deepEqual(broker, {
+    id: "broker-1",
+    name: "Jane Broker",
+    email: "jane@example.com",
+    phone: "555-0100",
+    profileUrl: "https://jll.example/broker-1",
+  });
+
+  for (const child of [
+    {
+      url: "https://cdn.example/brochure.pdf",
+      name: "$3.25M brochure",
+      caption: "USD $3.25M brochure caption",
+      headline: "Offering 3.25M USD",
+      docType: "brochure",
+    },
+    {
+      url: "https://cdn.example/floor.pdf",
+      title: "$3.25M floor plan",
+      headline: "Asking price 3.25M",
+      docType: "floor_plan",
+    },
+    {
+      url: "https://video.example/watch",
+      embedUrl: "https://video.example/embed",
+      type: "video",
+      provider: "vimeo",
+      title: "$3.25M tour",
+      caption: "EUR 3.25M virtual tour",
+    },
+  ]) {
+    const safe = jllSanitizeHiddenChildMetadata(child, "artifact");
+    assert.equal(safe.url, child.url);
+    assert.equal(safe.type ?? safe.docType, child.type ?? child.docType);
+    assert.equal(safe.provider, child.provider);
+    assert.equal(safe.embedUrl, child.embedUrl);
+    assert.equal(safe.name, undefined);
+    assert.equal(safe.title, undefined);
+    assert.equal(safe.caption, undefined);
+    assert.equal(safe.headline, undefined);
+    assert.equal(safe.label, undefined);
+    assert.doesNotMatch(JSON.stringify(safe), /\$3\.25M|3\.25M|CAD|USD|EUR/);
+  }
+
+  const nonprice = jllSanitizeHiddenChildMetadata(
+    {
+      url: "https://cdn.example/3b.pdf",
+      caption: "Building 3B",
+      headline: "3M Company",
+    },
+    "artifact",
+  );
+  assert.deepEqual(nonprice, {
+    url: "https://cdn.example/3b.pdf",
+    caption: "Building 3B",
+    headline: "3M Company",
+  });
+});
+
+test("JLL rejects unsupported price units and redacts hidden prices on detail-shape errors", async () => {
+  const sale = jllGraphqlItemToListing(
+    {
+      id: "unsupported-sale-unit",
+      pageUrl: "/listings/unsupported-sale-unit",
+      salePrice: { amount: 6, currency: "USD", unit: "feet" },
+      hidePrice: false,
+    },
+    "sale",
+    "office",
+    1,
+    1,
+  );
+  const lease = jllGraphqlItemToListing(
+    {
+      id: "unsupported-lease-unit",
+      pageUrl: "/listings/unsupported-lease-unit",
+      rentPrice: { amount: 25, currency: "USD", unit: "unit" },
+      hidePrice: false,
+    },
+    "lease",
+    "office",
+    1,
+    1,
+  );
+  assert.equal(sale.salePriceUsd, undefined);
+  assert.equal(lease.leaseRateText, undefined);
+  assert.equal(sale.jllSearchResult.priceWithholdingControl, "visible");
+  const foreignLease = jllGraphqlItemToListing(
+    {
+      id: "foreign-lease",
+      pageUrl: "/listings/foreign-lease",
+      rentPrice: { amount: 32, currency: "CAD", unit: "sf" },
+      hidePrice: false,
+    },
+    "lease",
+    "office",
+    1,
+    1,
+  );
+  assert.equal(foreignLease.leaseRateText, undefined);
+
+  const cacheDir = mkdtempSync(
+    join(tmpdir(), "jll-hidden-detail-error-cache-"),
+  );
+  const oldDir = process.env.JLL_DETAIL_CACHE_DIR;
+  process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
+  const url = "https://property.jll.com/listings/hidden-detail-error";
+  try {
+    writeJllDetailCache(url, {
+      rawHtml:
+        '<script id="__NEXT_DATA__" type="application/json">' +
+        JSON.stringify({
+          props: {
+            pageProps: {
+              property: {
+                id: "hidden-detail-error",
+                pageUrl: "/listings/hidden-detail-error",
+                hidePrice: true,
+                salePrice: { amount: 3250000, currency: "USD" },
+                floorPlans: {
+                  files: [{ download: "https://cdn.example/floor.pdf" }],
+                },
+              },
+              brokers: [],
+            },
+          },
+        }) +
+        "</script>",
+      markdown: "",
+      links: [],
+      images: [],
+    });
+    const enriched = await enrichJllListing({
+      id: "hidden-detail-error",
+      url,
+      salePriceUsd: 3250000,
+      salePriceText: "$3,250,000",
+      askingPrice: "$3.25m",
+      markdown: "Confidential asking consideration: $3,250,000.",
+      currentTenants: [{ name: "Acme Holdings" }],
+      financials: { amount: 3250000, occupancy: 0.95 },
+      jllSearchResult: { hidePrice: false },
+      jllDetail: { salePrice: { amount: 3250000 } },
+    });
+    assert.equal(enriched.detailError, undefined);
+    assert.equal(enriched.salePriceUsd, undefined);
+    assert.equal(enriched.salePriceText, undefined);
+    assert.equal(enriched.askingPrice, undefined);
+    assert.equal(enriched.jllDetail.salePrice, undefined);
+    assert.equal(enriched.markdown, undefined);
+    assert.deepEqual(enriched.currentTenants, [{ name: "Acme Holdings" }]);
+    assert.equal(enriched.financials, undefined);
+    assert.deepEqual(enriched.jllDetail.pricing, {
+      visibility: "withheld",
+      searchWithholdingControl: "visible",
+      detailWithholdingControl: "withheld",
+      sale: { sourceShape: "structured", normalization: "redacted" },
+      lease: { sourceShape: "absent", normalization: "redacted" },
+    });
+    assert.doesNotMatch(JSON.stringify(enriched), /3250000|3,250,000|3\.25m/);
+  } finally {
+    if (oldDir === undefined) delete process.env.JLL_DETAIL_CACHE_DIR;
+    else process.env.JLL_DETAIL_CACHE_DIR = oldDir;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("JLL hidden child sanitizer matches the labelled-price parity matrix", () => {
+  for (const label of [
+    "Asking Rate 3.25M",
+    "List Price 3.25M",
+    "List Price=3.25M",
+    "Sale Consideration 3.25M",
+    "Lease Rent 3.25M",
+    "Rental Consideration 3.25M",
+    "Asking 3.25 million",
+    "Price RUB 3.25M",
+  ]) {
+    assert.deepEqual(
+      jllSanitizeHiddenChildMetadata(
+        { title: label, name: "Jane Broker" },
+        "broker",
+      ),
+      { name: "Jane Broker" },
+    );
+  }
+
+  for (const label of [
+    "Building 3B",
+    "3M Company",
+    "500K SF warehouse",
+    "3 B Street",
+  ]) {
+    assert.deepEqual(
+      jllSanitizeHiddenChildMetadata(
+        { title: label, name: "Jane Broker" },
+        "broker",
+      ),
+      { title: label, name: "Jane Broker" },
+    );
+  }
+});
+
 test("jll detail cache round-trips through temp dir", () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "jll-detail-cache-"));
   const prev = process.env.JLL_DETAIL_CACHE_DIR;
@@ -666,7 +1705,13 @@ test("jll detail cache round-trips through temp dir", () => {
       markdown: "# Detail",
       links: ["https://example.com/brochure.pdf"],
       images: ["https://example.com/gallery.jpg"],
-      attributes: [{ selector: "iframe", attribute: "src", values: ["https://example.com/tour"] }],
+      attributes: [
+        {
+          selector: "iframe",
+          attribute: "src",
+          values: ["https://example.com/tour"],
+        },
+      ],
       metadata: { title: "Cache Test" },
     };
     writeJllDetailCache(url, doc);
@@ -690,17 +1735,26 @@ test("jll detail cache round-trips through temp dir", () => {
 });
 
 test("JLL cache admission honors a run freshness boundary", () => {
-  assert.equal(jllCachedAtMeetsBoundary("2026-07-29T12:00:00Z", undefined), true);
+  assert.equal(
+    jllCachedAtMeetsBoundary("2026-07-29T12:00:00Z", undefined),
+    true,
+  );
   assert.equal(
     jllCachedAtMeetsBoundary("2026-07-29T12:00:00Z", "2026-07-29T11:59:59Z"),
-    true
+    true,
   );
   assert.equal(
     jllCachedAtMeetsBoundary("2026-07-29T12:00:00Z", "2026-07-29T12:00:01Z"),
-    false
+    false,
   );
-  assert.equal(jllCachedAtMeetsBoundary(undefined, "2026-07-29T12:00:00Z"), false);
-  assert.equal(jllCachedAtMeetsBoundary("not-a-date", "2026-07-29T12:00:00Z"), false);
+  assert.equal(
+    jllCachedAtMeetsBoundary(undefined, "2026-07-29T12:00:00Z"),
+    false,
+  );
+  assert.equal(
+    jllCachedAtMeetsBoundary("not-a-date", "2026-07-29T12:00:00Z"),
+    false,
+  );
 });
 
 test("JLL detail cache is generation-specific and preserves observation time", () => {
@@ -723,8 +1777,14 @@ test("JLL detail cache is generation-specific and preserves observation time", (
       },
     });
     const current = readJllDetailCache(url);
-    assert.equal(current?.detailObservation?.observedAt, "2026-07-29T12:00:00Z");
-    assert.equal(current?.detailObservation?.cacheDisposition, "generation_cache");
+    assert.equal(
+      current?.detailObservation?.observedAt,
+      "2026-07-29T12:00:00Z",
+    );
+    assert.equal(
+      current?.detailObservation?.cacheDisposition,
+      "generation_cache",
+    );
     process.env.CRE_REFRESH_GENERATION = "generation-b";
     assert.equal(readJllDetailCache(url), null);
   } finally {
@@ -740,7 +1800,10 @@ test("JLL search uses an uncached GraphQL POST with exact page variables", async
   const oldFetch = globalThis.fetch;
   const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
   const calls: Array<{ input: string; init: RequestInit; body: any }> = [];
-  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+  globalThis.fetch = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
     const body = JSON.parse(String(init?.body));
     calls.push({ input: String(input), init: init ?? {}, body });
     return new Response(
@@ -752,7 +1815,10 @@ test("JLL search uses an uncached GraphQL POST with exact page variables", async
           },
         },
       }),
-      { status: 200, headers: { "content-type": "application/json; charset=utf-8" } }
+      {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      },
     );
   };
   try {
@@ -800,7 +1866,7 @@ test("JLL GraphQL transport retries transient failures and fails closed on non-J
       }
       return new Response(
         JSON.stringify({ data: { properties: { count: 0, items: [] } } }),
-        { status: 200, headers: { "content-type": "application/json" } }
+        { status: 200, headers: { "content-type": "application/json" } },
       );
     };
     const parsed = await fetchJllSearchPage("sale", "office", 1);
@@ -817,7 +1883,7 @@ test("JLL GraphQL transport retries transient failures and fails closed on non-J
     };
     await assert.rejects(
       () => fetchJllSearchPage("sale", "office", 1),
-      /non-JSON content-type/
+      /non-JSON content-type/,
     );
     assert.equal(attempts, 1);
 
@@ -831,7 +1897,7 @@ test("JLL GraphQL transport retries transient failures and fails closed on non-J
     };
     await assert.rejects(
       () => fetchJllSearchPage("sale", "office", 1),
-      /malformed JSON/
+      /malformed JSON/,
     );
     assert.equal(attempts, 1);
   } finally {
@@ -856,7 +1922,7 @@ test("strict JLL GraphQL search retries incomplete page coverage before failing 
             }));
       return new Response(
         JSON.stringify({ data: { properties: { count: 51, items } } }),
-        { status: 200, headers: { "content-type": "application/json" } }
+        { status: 200, headers: { "content-type": "application/json" } },
       );
     };
     const parsed = await fetchJllSearchPage("sale", "office", 1);
@@ -877,7 +1943,10 @@ test("strict JLL GraphQL search and detail Firecrawl calls both bypass caches", 
   const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
   const detailCalls: any[] = [];
   const searchCalls: RequestInit[] = [];
-  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+  globalThis.fetch = async (
+    _input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
     searchCalls.push(init ?? {});
     return new Response(
       JSON.stringify({
@@ -888,7 +1957,7 @@ test("strict JLL GraphQL search and detail Firecrawl calls both bypass caches", 
           },
         },
       }),
-      { status: 200, headers: { "content-type": "application/json" } }
+      { status: 200, headers: { "content-type": "application/json" } },
     );
   };
   (firecrawl as any).scrape = async (url: string, options: any) => {
@@ -904,7 +1973,10 @@ test("strict JLL GraphQL search and detail Firecrawl calls both bypass caches", 
     });
     assert.equal(searchCalls.length, 1);
     assert.equal(searchCalls[0]?.cache, "no-store");
-    assert.equal((searchCalls[0]?.headers as Record<string, string>)["cache-control"], "no-cache");
+    assert.equal(
+      (searchCalls[0]?.headers as Record<string, string>)["cache-control"],
+      "no-cache",
+    );
     assert.equal(detailCalls.length, 1);
     assert.equal(detailCalls[0]?.maxAge, 0);
   } finally {
@@ -924,7 +1996,11 @@ test("readJllDetailCache rejects mismatched url or malformed payload", () => {
   process.env.JLL_DETAIL_CACHE_DIR = cacheDir;
   try {
     const url = "https://property.jll.com/listings/bad-cache";
-    writeJllDetailCache(url, { rawHtml: "<html></html>", markdown: "", links: [] });
+    writeJllDetailCache(url, {
+      rawHtml: "<html></html>",
+      markdown: "",
+      links: [],
+    });
     const path = jllDetailCachePath(url);
     const badUrl = JSON.parse(readFileSync(path, "utf8"));
     badUrl.url = "https://property.jll.com/listings/other";
@@ -939,20 +2015,36 @@ test("readJllDetailCache rejects mismatched url or malformed payload", () => {
 
 test("jllStrandedMedia: videos as bare strings (provider-classified), tours/360 typed virtual_tour", () => {
   const property = {
-    videos: ["https://vimeo.com/824804225", "https://www.youtube.com/watch?v=abc123XYZ_0"],
+    videos: [
+      "https://vimeo.com/824804225",
+      "https://www.youtube.com/watch?v=abc123XYZ_0",
+      { url: "https://vimeo.com/824804226" },
+    ],
     virtualTours: ["https://my.matterport.com/show/?m=ABC123"],
     view360URLs: ["https://kuula.co/share/collection/xyz"],
   };
   const promoted = jllStrandedMedia(property);
   // Run through the harvester (the production path) to assert end-to-end typing.
-  const out = harvestDetail({ rawHtml: "", markdown: "", links: [] } as any, { extraMedia: promoted });
+  const out = harvestDetail({ rawHtml: "", markdown: "", links: [] } as any, {
+    extraMedia: promoted,
+  });
   // Videos are bare strings -> harvester classifies provider + embed.
-  assert.ok(out.media.some((m) => m.provider === "vimeo" && m.mediaType === "video"));
-  assert.ok(out.media.some((m) => m.provider === "youtube" && m.embedUrl?.includes("/embed/")));
+  assert.ok(
+    out.media.some((m) => m.provider === "vimeo" && m.mediaType === "video"),
+  );
+  assert.ok(
+    out.media.some(
+      (m) => m.provider === "youtube" && m.embedUrl?.includes("/embed/"),
+    ),
+  );
+  assert.ok(out.media.some((m) => m.url === "https://vimeo.com/824804226"));
   // virtualTours + view360URLs are promoted as TYPED virtual_tour items; the
   // harvester trusts that asserted type and does NOT reclassify (so a matterport
   // url that arrived via virtualTours stays virtual_tour, not matterport).
-  assert.equal(out.media.filter((m) => m.mediaType === "virtual_tour").length, 2);
+  assert.equal(
+    out.media.filter((m) => m.mediaType === "virtual_tour").length,
+    2,
+  );
   assert.equal(out.media.filter((m) => m.mediaType === "matterport").length, 0);
 });
 
@@ -968,8 +2060,11 @@ test("jllStrandedDocs classifies and dedupes legacy floor-plan arrays", () => {
     docs.map(({ url, docType }) => ({ url, docType })),
     [
       { url: "https://cdn.jll.com/fp/level-1.pdf", docType: "floor_plan" },
-      { url: "https://cdn.jll.com/fp/level-1-image.jpg", docType: "floor_plan" },
-    ]
+      {
+        url: "https://cdn.jll.com/fp/level-1-image.jpg",
+        docType: "floor_plan",
+      },
+    ],
   );
 });
 
@@ -998,18 +2093,24 @@ test("jllStrandedDocs captures live object images and file URL/image forms", () 
     docs.map(({ url, docType }) => ({ url, docType })),
     [
       { url: "https://cdn.jll.com/fp/site-plan.jpg", docType: "floor_plan" },
-      { url: "https://cdn.jll.com/fp/shared-preview.png", docType: "floor_plan" },
+      {
+        url: "https://cdn.jll.com/fp/shared-preview.png",
+        docType: "floor_plan",
+      },
       { url: "https://cdn.jll.com/fp/level-2.pdf", docType: "floor_plan" },
-      { url: "https://cdn.jll.com/fp/level-2-preview.jpg", docType: "floor_plan" },
-    ]
+      {
+        url: "https://cdn.jll.com/fp/level-2-preview.jpg",
+        docType: "floor_plan",
+      },
+    ],
   );
   const harvested = harvestDetail(
     { rawHtml: "", markdown: "", links: [], images: [] } as any,
-    { extraDocs: docs }
+    { extraDocs: docs },
   );
   assert.deepEqual(
     harvested.documents.map(({ url, docType }) => ({ url, docType })),
-    docs.map(({ url, docType }) => ({ url, docType }))
+    docs.map(({ url, docType }) => ({ url, docType })),
   );
   assert.deepEqual(harvested.images, []);
 });
@@ -1018,7 +2119,9 @@ test("JLL document reconciliation makes native floor-plan typing authoritative",
   const floorPlanDocuments = jllStrandedDocs({
     floorPlans: {
       images: [],
-      files: [{ url: "https://CDN.JLL.COM/assets/opaque.pdf/", type: "floorplan" }],
+      files: [
+        { url: "https://CDN.JLL.COM/assets/opaque.pdf/", type: "floorplan" },
+      ],
     },
   });
   const harvested = harvestDetail(
@@ -1031,7 +2134,7 @@ test("JLL document reconciliation makes native floor-plan typing authoritative",
       ],
       images: [],
     } as any,
-    { extraDocs: floorPlanDocuments }
+    { extraDocs: floorPlanDocuments },
   );
   const reconciled = jllReconcileDocumentChannels(
     [
@@ -1040,48 +2143,55 @@ test("JLL document reconciliation makes native floor-plan typing authoritative",
       "https://CDN.JLL.COM/assets/brochure.pdf/",
     ],
     harvested.documents,
-    floorPlanDocuments
+    floorPlanDocuments,
   );
 
-  assert.deepEqual(reconciled.brochures, ["https://cdn.jll.com/assets/brochure.pdf"]);
+  assert.deepEqual(reconciled.brochures, [
+    "https://cdn.jll.com/assets/brochure.pdf",
+  ]);
   assert.deepEqual(
     reconciled.documents.map(({ url, docType }) => ({ url, docType })),
     [
       { url: "https://CDN.JLL.COM/assets/opaque.pdf/", docType: "floor_plan" },
       { url: "https://cdn.jll.com/assets/other.pdf", docType: "other" },
-    ]
+    ],
   );
 });
 
-test("jllStrandedDocs surfaces unknown non-null floor-plan shapes", () => {
+test("jllStrandedDocs skips malformed floor-plan entries without discarding valid assets", () => {
   assert.deepEqual(jllStrandedDocs({}), []);
   assert.deepEqual(jllStrandedDocs({ floorPlans: null }), []);
-  assert.throws(
-    () => jllStrandedDocs({ floorPlans: "https://cdn.jll.com/fp/not-an-array.pdf" }),
-    /unsupported shape/
+  assert.deepEqual(
+    jllStrandedDocs({ floorPlans: "https://cdn.jll.com/fp/not-an-array.pdf" }),
+    [
+      {
+        url: "https://cdn.jll.com/fp/not-an-array.pdf",
+        title: "not an array",
+        docType: "floor_plan",
+      },
+    ],
   );
-  assert.throws(
-    () => jllStrandedDocs({ floorPlans: { images: "not-an-array", files: [] } }),
-    /floorPlans\.images must be an array/
-  );
-  assert.throws(
-    () =>
-      jllStrandedDocs({
-        floorPlans: { images: [], files: [{ download: "https://cdn.jll.com/fp/new-shape.pdf" }] },
-      }),
-    /unsupported field\(s\): download/
-  );
-  assert.throws(
-    () => jllStrandedDocs({ floorPlans: { images: [], files: [{ type: "floorplan" }] } }),
-    /has no URL or image/
-  );
-  assert.throws(
-    () => jllStrandedDocs({ floorPlans: { images: ["/relative-plan.jpg"], files: [] } }),
-    /must be an absolute HTTP\(S\) URL/
-  );
-  assert.throws(
-    () => jllStrandedDocs({ floorPlans: { images: [], files: [], futureAssets: [] } }),
-    /unsupported field\(s\): futureAssets/
+  assert.deepEqual(
+    jllStrandedDocs({
+      floorPlans: {
+        images: [
+          "https://cdn.jll.com/fp/valid.jpg",
+          "/relative-plan.jpg",
+          "https://",
+        ],
+        files: [
+          { url: "https://cdn.jll.com/fp/valid.pdf", type: "floorplan" },
+          { download: "https://cdn.jll.com/fp/new-shape.pdf" },
+          { url: "https://", image: "http://?x" },
+        ],
+        futureAssets: [],
+      },
+    }).map(({ url, docType }) => ({ url, docType })),
+    [
+      { url: "https://cdn.jll.com/fp/valid.jpg", docType: "floor_plan" },
+      { url: "https://cdn.jll.com/fp/valid.pdf", docType: "floor_plan" },
+      { url: "https://cdn.jll.com/fp/new-shape.pdf", docType: "floor_plan" },
+    ],
   );
 });
 
@@ -1112,11 +2222,13 @@ test("jllStrandedStructured lifts submarket/year/floors/units/amenities/highligh
 test("jllExtractLicense formats location:number from first license entry", () => {
   assert.equal(
     jllExtractLicense([{ location: "Indiana", licenseNumber: "RB14042705" }]),
-    "Indiana: RB14042705"
+    "Indiana: RB14042705",
   );
   assert.equal(
-    jllExtractLicense([{ type: "Broker", location: "Texas - Dallas", licenseNumber: "234599" }]),
-    "Texas - Dallas: 234599"
+    jllExtractLicense([
+      { type: "Broker", location: "Texas - Dallas", licenseNumber: "234599" },
+    ]),
+    "Texas - Dallas: 234599",
   );
   assert.equal(jllExtractLicense([]), null);
   assert.equal(jllExtractLicense(null), null);
@@ -1146,10 +2258,22 @@ test("jllStrandedStructured extracts highlights from object array (.title)", () 
 });
 
 test("jllStrandedStructured normalizes buildingClass via normBuildingClass", () => {
-  assert.equal(jllStrandedStructured({ buildingClass: "Class A" }).buildingClass, "A");
-  assert.equal(jllStrandedStructured({ buildingClass: "B" }).buildingClass, "B");
-  assert.equal(jllStrandedStructured({ buildingClass: "Unclassified" }).buildingClass, undefined);
-  assert.equal(jllStrandedStructured({ buildingClass: "" }).buildingClass, undefined);
+  assert.equal(
+    jllStrandedStructured({ buildingClass: "Class A" }).buildingClass,
+    "A",
+  );
+  assert.equal(
+    jllStrandedStructured({ buildingClass: "B" }).buildingClass,
+    "B",
+  );
+  assert.equal(
+    jllStrandedStructured({ buildingClass: "Unclassified" }).buildingClass,
+    undefined,
+  );
+  assert.equal(
+    jllStrandedStructured({ buildingClass: "" }).buildingClass,
+    undefined,
+  );
   assert.equal(jllStrandedStructured({}).buildingClass, undefined);
 });
 
@@ -1159,7 +2283,7 @@ test("jllStrandedStructured emits canonicalUrl from relative pageUrl", () => {
   });
   assert.equal(
     out.canonicalUrl,
-    "https://property.jll.com/listings/1401-e-memorial-dr-not-tracked-indiana"
+    "https://property.jll.com/listings/1401-e-memorial-dr-not-tracked-indiana",
   );
 });
 
@@ -1167,7 +2291,10 @@ test("jllStrandedStructured passes through absolute pageUrl unchanged", () => {
   const out = jllStrandedStructured({
     pageUrl: "https://property.jll.com/listings/some-listing",
   });
-  assert.equal(out.canonicalUrl, "https://property.jll.com/listings/some-listing");
+  assert.equal(
+    out.canonicalUrl,
+    "https://property.jll.com/listings/some-listing",
+  );
 });
 
 test("jllStrandedStructured emits extraFacts with location_description when present", () => {
@@ -1215,7 +2342,7 @@ test("jll fixture: jllStrandedStructured lifts all Phase-2 fields from real raw_
   // canonicalUrl from relative pageUrl
   assert.equal(
     out.canonicalUrl,
-    "https://property.jll.com/listings/1401-e-memorial-dr-not-tracked-indiana"
+    "https://property.jll.com/listings/1401-e-memorial-dr-not-tracked-indiana",
   );
 
   // extraFacts: locationDescription

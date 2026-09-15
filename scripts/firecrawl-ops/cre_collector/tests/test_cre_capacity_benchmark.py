@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
+import cre_checkpoint_refresh as refresh
 import pytest
 
 
@@ -74,6 +75,77 @@ def test_build_sample_is_exact_unique_and_spans_declared_strata(tmp_path: Path) 
     assert len(sample["coverage"]["primary_property_types"]) == 5
     assert {"light", "heavy"}.issubset(sample["coverage"]["page_weight_bands"])
     assert "not a population-weighted estimate" in sample["representation_claim"]
+
+
+def test_native_evidence_uses_the_bounded_jll_asset_contract_and_worker_import() -> (
+    None
+):
+    property_value = {
+        "images": [
+            "https://cdn.example/image.jpg",
+            {"image": "https://cdn.example/preview.jpg"},
+        ],
+        "brochures": [{"file": "https://cdn.example/brochure.pdf"}],
+        "floorPlans": {
+            "images": [{"image": "https://cdn.example/floor.jpg"}],
+            "files": [{"download": "https://cdn.example/floor.pdf"}],
+        },
+        "videos": [{"url": "https://video.example/watch", "caption": "$3.25M"}],
+        "virtualTours": {"url": "https://tour.example/virtual"},
+        "view360URLs": ["https://tour.example/360"],
+    }
+
+    native = benchmark._native_evidence(property_value)
+
+    assert native["counts"] == {
+        "images": 2,
+        "brochures": 1,
+        "floor_plans": 2,
+        "videos": 1,
+        "virtual_tours": 1,
+        "view_360": 1,
+    }
+    assert native["shape"] == sorted(native["counts"])
+    assert (
+        benchmark._native_evidence(
+            {"videos": {"nested": {"url": "https://unsafe.example/unbounded"}}}
+        )["counts"]["videos"]
+        == 0
+    )
+    source = benchmark._worker_source(Path(__file__).resolve().parents[4])
+    assert "jllNativeAssetUrls" in source
+    assert 'jllNativeAssetUrls(property.videos, "videos")' in source
+    assert 'jllNativeAssetUrls(property.floorPlans, "floorPlans")' in source
+
+
+def test_only_a_caller_held_lock_can_retain_a_benchmark_interlock(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(benchmark.BenchmarkError, match="caller-held canonical lock"):
+        benchmark.run_benchmark(
+            repo_root=tmp_path,
+            artifact_root=tmp_path,
+            sample_path=tmp_path / "sample.json",
+            sample={},
+            profile={},
+            profile_name="candidate",
+            config_sha256="a" * 64,
+            admission={},
+            admission_path=tmp_path / "admission.json",
+            timeout_seconds=1,
+            _retain_benchmark_interlock=True,
+        )
+
+
+def test_prearmed_benchmark_interlock_requires_owned_active_marker(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    with benchmark.SharedLock(lock_path) as held_lock:
+        with pytest.raises(benchmark.BenchmarkError, match="no active interlock"):
+            benchmark._require_prearmed_benchmark_interlock(held_lock)
+        held_lock.arm_benchmark({"state": "active"})
+        benchmark._require_prearmed_benchmark_interlock(held_lock)
 
 
 def test_validate_sample_rejects_jll_investor_and_duplicate_identity(
@@ -304,6 +376,27 @@ def _audit_file(tmp_path: Path, admission: dict[str, object]) -> Path:
     return path
 
 
+def test_atomic_private_json_reports_unknown_durability_after_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "capacity-benchmark-quarantine.json"
+    real_fsync = benchmark.os.fsync
+
+    def fail_directory_fsync(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("directory fsync failed after rename")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(benchmark.os, "fsync", fail_directory_fsync)
+    with pytest.raises(
+        benchmark.AtomicPrivateJsonDurabilityError,
+        match="rename durability is unknown",
+    ):
+        benchmark._atomic_private_json(target, {"state": "quarantined"})
+
+    assert target.is_file()
+
+
 def test_validate_admission_requires_exact_profile_and_idle_loopback() -> None:
     profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, "bold-jll-128")
     source_sha = "a" * 40
@@ -329,6 +422,29 @@ def test_validate_admission_requires_exact_profile_and_idle_loopback() -> None:
             source_git_sha=source_sha,
             now=benchmark.datetime(2026, 9, 13, 1, 5, tzinfo=benchmark.UTC),
         )
+
+
+def test_validate_admission_accepts_the_matched_baseline_profile() -> None:
+    profile, digest = experiment.load_profile(
+        experiment.DEFAULT_CONFIG, "production-current"
+    )
+    source_sha = "a" * 40
+    receipt = _admission(Path("/private/review-grants"), source_sha=source_sha)
+    receipt["profile"] = "production-current"
+    receipt["config_sha256"] = digest
+    receipt["effective"] = _runtime_public(source_sha, "baseline")
+    receipt["source_git_sha"] = source_sha
+
+    validated = benchmark.validate_admission(
+        receipt,
+        profile,
+        "production-current",
+        digest,
+        source_git_sha=source_sha,
+        now=benchmark.datetime(2026, 9, 13, 1, 5, tzinfo=benchmark.UTC),
+    )
+
+    assert validated == receipt
 
 
 @pytest.mark.parametrize(
@@ -1089,6 +1205,8 @@ def _comparison_result(rate: float, variant: str = "baseline") -> dict[str, obje
             "structural_evidence_sha256": "c" * 64,
             "transaction_type": "Sale" if index % 2 == 0 else "Lease",
             "transaction_type_match": True,
+            "classification": "active_success",
+            "attrition": None,
         }
         for index in range(128)
     ]
@@ -1102,6 +1220,14 @@ def _comparison_result(rate: float, variant: str = "baseline") -> dict[str, obje
         "sample_ids_sha256": hashlib.sha256(
             benchmark._canonical(sample_ids)
         ).hexdigest(),
+        "predeclared_cohort_denominator": 128,
+        "eligible_denominator": 128,
+        "eligible_sample_ids_sha256": hashlib.sha256(
+            benchmark._canonical(sample_ids)
+        ).hexdigest(),
+        "attrition_sample_ids_sha256": hashlib.sha256(
+            benchmark._canonical([])
+        ).hexdigest(),
         "records_sha256": hashlib.sha256(benchmark._canonical(records)).hexdigest(),
     }
     replicates = []
@@ -1114,6 +1240,31 @@ def _comparison_result(rate: float, variant: str = "baseline") -> dict[str, obje
                 "termination_reason": None,
                 "qualified_fresh_unique_rows": 128,
                 "qualified_fresh_unique_per_minute": rate,
+                "current_active_successes": 128,
+                "confirmed_attrition": 0,
+                "individually_qualified_rows": 128,
+                "parser_failures": 0,
+                "transport_failures": 0,
+                "fidelity_failures": 0,
+                "predeclared_cohort_denominator": 128,
+                "predeclared_eligible_denominator": 128,
+                "eligible_denominator": 128,
+                "eligible_rows": 128,
+                "cohort_rates": {
+                    "current_active_successes": 1,
+                    "confirmed_attrition": 0,
+                    "individually_qualified_rows": 1,
+                    "parser_failures": 0,
+                    "transport_failures": 0,
+                    "fidelity_failures": 0,
+                    "eligible_rows": 1,
+                },
+                "cohort_throughput_per_minute": {
+                    "current_active_successes": rate,
+                    "confirmed_attrition": 0,
+                    "individually_qualified_rows": rate,
+                    "eligible_rows": rate,
+                },
                 "freshness_matches": 128,
                 "historic_native_asset_matches": 128,
                 "native_asset_deltas": 0,
@@ -1208,6 +1359,184 @@ def _comparison_result(rate: float, variant: str = "baseline") -> dict[str, obje
         },
         "replicates": replicates,
     }
+
+
+def _write_comparison_artifact(
+    tmp_path: Path,
+    sample: dict[str, object],
+    rate: float,
+    variant: str,
+    *,
+    attrition: bool = False,
+    artifact_root: Path | None = None,
+) -> tuple[dict[str, object], Path]:
+    """Build one complete rehashable comparison artifact without live I/O."""
+    root = (
+        artifact_root.resolve()
+        if artifact_root is not None
+        else (tmp_path / f"artifact-{variant}-{int(rate)}").resolve()
+    )
+    root.mkdir(mode=0o700)
+    root.chmod(0o700)
+    sample_path = root / "sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    result = _comparison_result(rate, variant)
+    requested = result["requested"]
+    assert isinstance(requested, dict)
+    contract = benchmark._worker_contract(128, requested["jll_detail_concurrency"])
+    result["sample_inventory_sha256"] = sample["inventory_sha256"]
+    result["sample_manifest_sha256"] = hashlib.sha256(
+        sample_path.read_bytes()
+    ).hexdigest()
+    result["sample_canonical_sha256"] = hashlib.sha256(
+        benchmark._canonical(sample)
+    ).hexdigest()
+    result["worker_contract"] = contract
+    result["worker_source_sha256"] = hashlib.sha256(
+        benchmark._worker_source(
+            Path(__file__).resolve().parents[4],
+            concurrency=requested["jll_detail_concurrency"],
+        ).encode()
+    ).hexdigest()
+    generation = f"2026-09-14T010000Z-{variant}fixture"
+    cache_root = Path(sample["population"]["cache_directory"])
+    for number, replicate in enumerate(result["replicates"], 1):
+        replicate_dir = root / f"replicate-{number}"
+        raw_cache = replicate_dir / "raw-cache"
+        raw_cache.mkdir(parents=True, mode=0o700)
+        replicate_dir.chmod(0o700)
+        raw_cache.chmod(0o700)
+        (replicate_dir / "worker.mts").write_text(
+            benchmark._worker_source(
+                Path(__file__).resolve().parents[4],
+                expected_details=128,
+                concurrency=int(requested["jll_detail_concurrency"]),
+            ),
+            encoding="utf-8",
+        )
+        rows = _benchmark_success_rows(sample, generation)
+        for index, row in enumerate(rows):
+            detail = sample["details"][index]
+            source_cache = cache_root / detail["historic"]["cache_file"]
+            cached = json.loads(source_cache.read_text(encoding="utf-8"))
+            if attrition and index == 0:
+                cached["rawHtml"] = (
+                    '<script id="__NEXT_DATA__" type="application/json">'
+                    + json.dumps(
+                        {
+                            "props": {
+                                "pageProps": {
+                                    "notFound": True,
+                                    "error": {
+                                        "statusCode": 404,
+                                        "message": "Not Found",
+                                    },
+                                }
+                            }
+                        }
+                    )
+                    + "</script>"
+                )
+            cached.update(
+                {
+                    "cachedAt": "2026-09-14T01:00:01Z",
+                    "detailObservedAt": "2026-09-14T01:00:01Z",
+                    "generationId": generation,
+                    "metadata": {
+                        "statusCode": 404 if attrition and index == 0 else 200
+                    },
+                }
+            )
+            cache_path = raw_cache / f"{index:03}.json"
+            cache_path.write_bytes(benchmark._canonical(cached))
+            raw_bytes = cache_path.read_bytes()
+            raw_html = cached["rawHtml"]
+            if attrition and index == 0:
+                row["normalized"] = {
+                    "id": detail["id"],
+                    "url": detail["url"],
+                    "transactionType": row["transaction_type"],
+                    "detailError": "missing property in __NEXT_DATA__",
+                }
+                row.pop("native", None)
+                row.pop("fidelity", None)
+            else:
+                row["native"].update(
+                    {
+                        "raw_cache_file": str(cache_path),
+                        "raw_cache_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                    }
+                )
+            row["observation"] = {
+                "cache_readable": True,
+                "cache_url": detail["url"],
+                "cache_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                "raw_html_sha256": hashlib.sha256(raw_html.encode()).hexdigest(),
+                "cached_at": cached["cachedAt"],
+                "detail_observed_at": cached["detailObservedAt"],
+                "generation_id": generation,
+                "http_status": 404 if attrition and index == 0 else 200,
+                "next_data_valid": True,
+                "explicit_not_found": attrition and index == 0,
+                "no_property": attrition and index == 0,
+                "provider_challenge": False,
+            }
+            if not (attrition and index == 0):
+                row["normalized"]["detailObservedAt"] = cached["detailObservedAt"]
+                row["normalized"]["freshnessProvenance"] = {
+                    "cacheDisposition": "live",
+                    "generationId": generation,
+                }
+        _write_worker_result(
+            replicate_dir,
+            contract,
+            generation,
+            rows,
+            performance_concurrency=int(requested["jll_detail_concurrency"]),
+        )
+        summary = benchmark.summarize_replicate(
+            replicate_dir,
+            sample,
+            round(128 * 60 / rate, 3),
+            sample_canonical_sha256=result["sample_canonical_sha256"],
+            worker_contract=contract,
+        )
+        replicate.update(summary)
+        replicate["guard_telemetry"]["worker_source_sha256"] = result[
+            "worker_source_sha256"
+        ]
+    admission = {
+        "profile": result["profile"],
+        "config_sha256": result["config_sha256"],
+        "source_git_sha": result["source_git_sha"],
+        "review_approval_nonce_sha256": "2" * 64,
+    }
+    admission_path = root / "admission.json"
+    admission_path.write_bytes(benchmark._canonical(admission))
+    result["admission_sha256"] = hashlib.sha256(
+        benchmark._canonical(admission)
+    ).hexdigest()
+    marker = {
+        "kind": "cre_capacity_admission_consumption",
+        "admission_sha256": result["admission_sha256"],
+        "review_benchmark_grant_sha256": result["review_benchmark_grant_sha256"],
+        "review_approval_nonce_sha256": result["review_approval_nonce_sha256"],
+    }
+    marker_path = root / "admission-consumption.json"
+    marker_path.write_bytes(benchmark._canonical(marker))
+    result["admission_consumption_sha256"] = hashlib.sha256(
+        marker_path.read_bytes()
+    ).hexdigest()
+    result["artifact_evidence"] = {
+        "artifact_root": str(root),
+        "sample_path": str(sample_path),
+        "sample_manifest_sha256": result["sample_manifest_sha256"],
+        "admission_path": str(admission_path),
+        "admission_consumption_path": str(marker_path),
+    }
+    result_path = root / "result.json"
+    result_path.write_bytes(benchmark._canonical(result))
+    return result, result_path
 
 
 @pytest.mark.parametrize(
@@ -1350,56 +1679,239 @@ def test_sigterm_handler_fails_into_interrupt_cleanup_path() -> None:
 
 
 def test_compare_results_requires_matched_complete_evidence_and_fifteen_percent(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(benchmark, "SUPPORTED_BASELINE_ADMISSION_AVAILABLE", True)
-    baseline = _comparison_result(100)
-    candidate = _comparison_result(115, "candidate")
-    repo = Path(__file__).resolve().parents[4]
-    baseline["worker_source_sha256"] = hashlib.sha256(
-        benchmark._worker_source(repo, concurrency=4).encode()
-    ).hexdigest()
-    candidate["worker_source_sha256"] = hashlib.sha256(
-        benchmark._worker_source(repo, concurrency=10).encode()
-    ).hexdigest()
+    sample = _sample(tmp_path)
+    baseline, baseline_path = _write_comparison_artifact(
+        tmp_path, sample, 100, "baseline"
+    )
+    candidate, candidate_path = _write_comparison_artifact(
+        tmp_path, sample, 115.001, "candidate"
+    )
     assert baseline["worker_source_sha256"] != candidate["worker_source_sha256"]
 
-    comparison = benchmark.compare_results(baseline, candidate)
+    comparison = benchmark.compare_results(
+        baseline,
+        candidate,
+        baseline_result_path=baseline_path,
+        candidate_result_path=candidate_path,
+    )
     assert comparison["state"] == "measured"
-    assert comparison["gain_percent"] == 15
-    assert comparison["decision"] == "adoptable"
+    assert comparison["gain_percent"] >= 15
+    assert comparison["decision"] == "do_not_adopt"
+    assert comparison["reasons"] == ["counterbalanced_pair_required"]
     assert comparison["candidate"]["completeness_fidelity"][
         "historic_native_asset_matches_per_replicate"
     ] == [128, 128, 128]
 
     candidate["replicates"][0]["resource_verdict"] = {"state": "inconclusive"}
-    comparison = benchmark.compare_results(baseline, candidate)
+    comparison = benchmark.compare_results(
+        baseline,
+        candidate,
+        baseline_result_path=baseline_path,
+        candidate_result_path=candidate_path,
+    )
     assert comparison["state"] == "inconclusive"
     assert "candidate_replicate_1_resources" in comparison["reasons"]
 
 
 def test_compare_results_safe_negative_and_mismatch_are_nonfatal(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(benchmark, "SUPPORTED_BASELINE_ADMISSION_AVAILABLE", True)
-    baseline = _comparison_result(100)
-    candidate = _comparison_result(114, "candidate")
-    assert benchmark.compare_results(baseline, candidate)["decision"] == "do_not_adopt"
+    sample = _sample(tmp_path)
+    baseline, baseline_path = _write_comparison_artifact(
+        tmp_path, sample, 100, "baseline", attrition=True
+    )
+    candidate, candidate_path = _write_comparison_artifact(
+        tmp_path, sample, 114, "candidate"
+    )
+    assert (
+        benchmark.compare_results(
+            baseline,
+            candidate,
+            baseline_result_path=baseline_path,
+            candidate_result_path=candidate_path,
+        )["decision"]
+        == "do_not_adopt"
+    )
 
     candidate["sample_manifest_sha256"] = "e" * 64
-    comparison = benchmark.compare_results(baseline, candidate)
+    comparison = benchmark.compare_results(
+        baseline,
+        candidate,
+        baseline_result_path=baseline_path,
+        candidate_result_path=candidate_path,
+    )
     assert comparison["state"] == "inconclusive"
     assert "mismatch_sample_manifest_sha256" in comparison["reasons"]
+
+
+def test_comparison_rederives_raw_receipt_before_accepting_worker_attrition(
+    tmp_path: Path,
+) -> None:
+    sample = _sample(tmp_path)
+    result, _result_path = _write_comparison_artifact(
+        tmp_path, sample, 100, "baseline", attrition=True
+    )
+    artifact_root = Path(result["artifact_evidence"]["artifact_root"])
+    replicate_dir = artifact_root / "replicate-1"
+    cache_path = replicate_dir / "raw-cache" / "000.json"
+    cache = json.loads(cache_path.read_text())
+    historic_path = (
+        Path(sample["population"]["cache_directory"])
+        / sample["details"][0]["historic"]["cache_file"]
+    )
+    historic = json.loads(historic_path.read_text())
+    cache["rawHtml"] = historic["rawHtml"]
+    cache["metadata"] = {"statusCode": 200}
+    cache_path.write_bytes(benchmark._canonical(cache))
+
+    worker_path = replicate_dir / "worker-output.json"
+    worker = json.loads(worker_path.read_text())
+    derived = benchmark._derived_jll_cache_observation(cache, cache_path.read_bytes())
+    worker["rows"][0]["observation"] = {
+        **derived,
+        "http_status": 404,
+        "explicit_not_found": True,
+        "no_property": True,
+    }
+    worker_path.write_bytes(benchmark._canonical(worker))
+
+    assert not benchmark._valid_worker_raw_cache_evidence(worker, sample, replicate_dir)
+    summary = benchmark.summarize_replicate(
+        replicate_dir,
+        sample,
+        result["replicates"][0]["wall_seconds"],
+        sample_canonical_sha256=result["sample_canonical_sha256"],
+        worker_contract=result["worker_contract"],
+        require_raw_receipts=True,
+    )
+    assert summary["confirmed_attrition"] == 0
+    assert summary["parser_failures"] == 1
+    assert summary["comparison_state"] == "quality_failed"
+
+
+def _mark_confirmed_attrition(result: dict[str, object], sample_index: int) -> None:
+    """Convert a fixture row into a provenance-bound attrition tombstone."""
+    for replicate in result["replicates"]:
+        record = replicate["record_evidence"][sample_index]
+        record.update(
+            {
+                "classification": "confirmed_attrition",
+                "freshness_match": None,
+                "native_complete": None,
+                "structural_complete": None,
+                "attrition": {
+                    "cache_url": "https://www.us.jll.com/en/property/removed",
+                    "cache_sha256": "d" * 64,
+                    "raw_html_sha256": "e" * 64,
+                    "cached_at": "2026-09-13T01:00:00Z",
+                    "detail_observed_at": "2026-09-13T01:00:00Z",
+                    "generation_id": "2026-09-13T010000Z-fixture",
+                    "http_status": 404,
+                },
+            }
+        )
+        records = replicate["record_evidence"]
+        eligible_ids = [
+            row["sample_id"]
+            for row in records
+            if row["classification"] == "active_success"
+        ]
+        attrition_ids = [
+            row["sample_id"]
+            for row in records
+            if row["classification"] == "confirmed_attrition"
+        ]
+        manifest = replicate["record_evidence_manifest"]
+        manifest.update(
+            {
+                "eligible_denominator": len(eligible_ids),
+                "eligible_sample_ids_sha256": hashlib.sha256(
+                    benchmark._canonical(eligible_ids)
+                ).hexdigest(),
+                "attrition_sample_ids_sha256": hashlib.sha256(
+                    benchmark._canonical(attrition_ids)
+                ).hexdigest(),
+                "records_sha256": hashlib.sha256(
+                    benchmark._canonical(records)
+                ).hexdigest(),
+            }
+        )
+        replicate.update(
+            {
+                "current_active_successes": len(eligible_ids),
+                "confirmed_attrition": len(attrition_ids),
+                "individually_qualified_rows": len(eligible_ids),
+                "qualified_fresh_unique_rows": len(eligible_ids),
+                "freshness_matches": len(eligible_ids),
+                "historic_native_asset_matches": len(eligible_ids),
+                "normalized_structural_matches": len(eligible_ids),
+                "eligible_denominator": len(eligible_ids),
+                "eligible_rows": len(eligible_ids),
+                "cohort_rates": {
+                    "current_active_successes": len(eligible_ids) / 128,
+                    "confirmed_attrition": len(attrition_ids) / 128,
+                    "individually_qualified_rows": len(eligible_ids) / 128,
+                    "parser_failures": 0,
+                    "transport_failures": 0,
+                    "fidelity_failures": 0,
+                    "eligible_rows": len(eligible_ids) / 128,
+                },
+            }
+        )
+
+
+def test_replicate_state_keeps_confirmed_attrition_measured_for_later_replicates() -> (
+    None
+):
+    result = _comparison_result(100)
+    _mark_confirmed_attrition(result, 0)
+
+    assert benchmark._replicate_state(result["replicates"][0], 128) == "measured"
+
+
+def test_compare_excludes_asymmetric_attrition_without_replacing_cohort_rows(
+    tmp_path: Path,
+) -> None:
+    sample = _sample(tmp_path)
+    baseline, baseline_path = _write_comparison_artifact(
+        tmp_path, sample, 100, "baseline", attrition=True
+    )
+    candidate, candidate_path = _write_comparison_artifact(
+        tmp_path, sample, 120, "candidate"
+    )
+    comparison = benchmark.compare_results(
+        baseline,
+        candidate,
+        baseline_result_path=baseline_path,
+        candidate_result_path=candidate_path,
+    )
+
+    assert comparison["state"] == "measured"
+    assert comparison["decision"] == "do_not_adopt"
+    assert comparison["cohort_matching"]["state"] == "asymmetric_confirmed_attrition"
+    assert comparison["cohort_matching"]["confidence"] == "reduced"
+    assert (
+        comparison["baseline"]["completeness_fidelity"][
+            "predeclared_cohort_denominator"
+        ]
+        == 128
+    )
+    assert comparison["baseline"]["completeness_fidelity"][
+        "eligible_rows_per_replicate"
+    ] == [127, 127, 127]
 
 
 def test_compare_cli_is_read_only_and_needs_no_artifact_root(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    baseline = tmp_path / "baseline.json"
-    candidate = tmp_path / "candidate.json"
-    baseline.write_text(json.dumps(_comparison_result(100)), encoding="utf-8")
-    candidate.write_text(
-        json.dumps(_comparison_result(114, "candidate")), encoding="utf-8"
+    sample = _sample(tmp_path)
+    _baseline, baseline = _write_comparison_artifact(tmp_path, sample, 100, "baseline")
+    _candidate, candidate = _write_comparison_artifact(
+        tmp_path, sample, 114, "candidate"
     )
 
     code = benchmark.main(
@@ -1413,8 +1925,1476 @@ def test_compare_cli_is_read_only_and_needs_no_artifact_root(
 
     assert code == 0
     comparison = json.loads(capsys.readouterr().out)
+    assert comparison["decision"] == "do_not_adopt"
+
+
+def test_counterbalanced_pair_comparison_rehashes_real_ab_ba_ab_artifacts(
+    tmp_path: Path,
+) -> None:
+    sample = _sample(tmp_path)
+    sample_path = tmp_path / "immutable-sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    pair_root = tmp_path / "pair"
+    pair_root.mkdir(mode=0o700)
+    pair_root.chmod(0o700)
+    plan = benchmark.create_counterbalanced_pair_plan(
+        artifact_root=pair_root,
+        sample_path=sample_path,
+        evidence_mode="sealed_offline_fixture",
+    )
+    plan_path = pair_root / "counterbalanced-pair-plan.json"
+    plan_sha256 = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    arms = []
+    for order, variant in enumerate(plan["sequence"], 1):
+        rate = 100 if variant == "baseline" else 115.001
+        arm_fixture_root = tmp_path / f"arm-fixture-{order}"
+        arm_fixture_root.mkdir()
+        result, result_path = _write_comparison_artifact(
+            arm_fixture_root, sample, rate, variant
+        )
+        start_second = (order - 1) * 20
+        finish_second = start_second + 10
+        result["started_at"] = (
+            f"2026-09-14T00:{start_second // 60:02d}:{start_second % 60:02d}Z"
+        )
+        result["finished_at"] = (
+            f"2026-09-14T00:{finish_second // 60:02d}:{finish_second % 60:02d}Z"
+        )
+        result["pairing"] = {
+            "pair_id": plan["pair_id"],
+            "pair_plan_sha256": plan_sha256,
+            "arm_order": order,
+            "sequence": plan["sequence"],
+            "max_gap_seconds": plan["max_gap_seconds"],
+            "min_gap_seconds": plan["min_gap_seconds"],
+        }
+        result_path.write_bytes(benchmark._canonical(result))
+        arms.append(
+            {
+                "arm_order": order,
+                "variant": variant,
+                "result_path": str(result_path),
+                "result_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
+            }
+        )
+    state = {
+        "schema_version": 1,
+        "kind": "cre_capacity_counterbalanced_pair_state",
+        "pair_id": plan["pair_id"],
+        "pair_plan_sha256": plan_sha256,
+        "arms": arms,
+    }
+    Path(plan["state_path"]).write_bytes(benchmark._canonical(state))
+
+    comparison = benchmark.compare_counterbalanced_pair(plan_path)
+
+    assert comparison["state"] == "measured"
+    assert comparison["decision"] == "fixture_only_not_adoptable"
+    assert comparison["reasons"] == ["sealed_offline_fixture_not_production_authority"]
+    assert comparison["sequence"] == [
+        "baseline",
+        "candidate",
+        "candidate",
+        "baseline",
+        "baseline",
+        "candidate",
+    ]
+
+    arms[1]["result_sha256"] = "0" * 64
+    Path(plan["state_path"]).write_bytes(benchmark._canonical(state))
+    assert (
+        benchmark.compare_counterbalanced_pair(plan_path)["decision"]
+        == "no_adoption_decision"
+    )
+
+
+def test_persisted_production_pair_is_advisory_even_when_every_artifact_rehashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample = _sample(tmp_path)
+    sample_path = tmp_path / "immutable-sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    pair_root = tmp_path / "pair"
+    pair_root.mkdir(mode=0o700)
+    pair_root.chmod(0o700)
+    plan = benchmark.create_counterbalanced_pair_plan(
+        artifact_root=pair_root, sample_path=sample_path
+    )
+    plan_path = pair_root / "counterbalanced-pair-plan.json"
+    plan_sha256 = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    arms = []
+    for order, variant in enumerate(plan["sequence"], 1):
+        result, result_path = _write_comparison_artifact(
+            tmp_path,
+            sample,
+            100 if variant == "baseline" else 120,
+            variant,
+            artifact_root=pair_root / f"arm-{order:02d}-{variant}",
+        )
+        started_second = (order - 1) * 20
+        result["started_at"] = (
+            f"2026-09-14T00:{started_second // 60:02d}:{started_second % 60:02d}Z"
+        )
+        result["finished_at"] = (
+            f"2026-09-14T00:{(started_second + 10) // 60:02d}:{(started_second + 10) % 60:02d}Z"
+        )
+        result["pairing"] = {
+            "pair_id": plan["pair_id"],
+            "pair_plan_sha256": plan_sha256,
+            "arm_order": order,
+            "sequence": plan["sequence"],
+            "max_gap_seconds": plan["max_gap_seconds"],
+            "min_gap_seconds": plan["min_gap_seconds"],
+        }
+        result_path.write_bytes(benchmark._canonical(result))
+        arms.append(
+            {
+                "arm_order": order,
+                "variant": variant,
+                "result_path": str(result_path),
+                "result_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
+            }
+        )
+    Path(plan["state_path"]).write_bytes(
+        benchmark._canonical(
+            {
+                "schema_version": 1,
+                "kind": "cre_capacity_counterbalanced_pair_state",
+                "pair_id": plan["pair_id"],
+                "pair_plan_sha256": plan_sha256,
+                "arms": arms,
+            }
+        )
+    )
+    monkeypatch.setattr(benchmark, "_require_clean_git", lambda _root: "c" * 40)
+
+    comparison = benchmark.compare_counterbalanced_pair(plan_path)
+
+    assert comparison["state"] == "measured"
+    assert comparison["decision"] == "candidate_for_operator_adoption"
+    assert comparison["reasons"] == [
+        "production_evidence_requires_governed_operator_review"
+    ]
+
+
+def test_production_pair_refuses_external_arm_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample = _sample(tmp_path)
+    sample_path = tmp_path / "immutable-sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    pair_root = tmp_path / "pair"
+    pair_root.mkdir(mode=0o700)
+    pair_root.chmod(0o700)
+    plan = benchmark.create_counterbalanced_pair_plan(
+        artifact_root=pair_root, sample_path=sample_path
+    )
+    plan_path = pair_root / "counterbalanced-pair-plan.json"
+    external_root = tmp_path / "external"
+    external_root.mkdir()
+    _result, external_result = _write_comparison_artifact(
+        external_root, sample, 100, "baseline"
+    )
+    monkeypatch.setattr(benchmark, "_require_clean_git", lambda _root: "c" * 40)
+    state = {
+        "schema_version": 1,
+        "kind": "cre_capacity_counterbalanced_pair_state",
+        "pair_id": plan["pair_id"],
+        "pair_plan_sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+        "arms": [
+            {
+                "arm_order": order,
+                "variant": variant,
+                "result_path": str(external_result),
+                "result_sha256": hashlib.sha256(
+                    external_result.read_bytes()
+                ).hexdigest(),
+            }
+            for order, variant in enumerate(plan["sequence"], 1)
+        ],
+    }
+    Path(plan["state_path"]).write_bytes(benchmark._canonical(state))
+
+    comparison = benchmark.compare_counterbalanced_pair(plan_path)
+
     assert comparison["decision"] == "no_adoption_decision"
-    assert "supported_baseline_admission_unavailable" in comparison["reasons"]
+    assert "pair_arm_1_artifact" in comparison["reasons"]
+
+
+def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample = _sample(tmp_path)
+    sample_path = tmp_path / "immutable-sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    pair_root = tmp_path / "pair"
+    pair_root.mkdir(mode=0o700)
+    pair_root.chmod(0o700)
+    benchmark.create_counterbalanced_pair_plan(
+        artifact_root=pair_root, sample_path=sample_path
+    )
+    plan_path = pair_root / "counterbalanced-pair-plan.json"
+    admissions: list[str] = []
+    rollbacks: list[tuple[Path, str, str, bool]] = []
+    lock_windows: list[str] = []
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda value, *_args, **_kwargs: {
+            **value,
+            "review_approval_nonce_sha256": "a" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda _path, _profile_name, *, require_fresh: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fake_run_benchmark(**kwargs):
+        admissions.append(kwargs["profile_name"])
+        held_lock = kwargs.get("_held_shared_lock")
+        if held_lock is not None:
+            assert held_lock.held
+            with pytest.raises(benchmark.LockHeldError):
+                benchmark.SharedLock(lock_path).acquire()
+            assert held_lock.benchmark_marker_identity is not None
+            assert (lock_path / "capacity-benchmark-active.json").is_file()
+            assert kwargs["_prearmed_benchmark_interlock"] is True
+            lock_windows.append("benchmark")
+        result_path = kwargs["artifact_root"] / "result.json"
+        result_path.write_bytes(benchmark._canonical({"completed": True}))
+        return {"completed": True}
+
+    monkeypatch.setattr(benchmark, "run_benchmark", fake_run_benchmark)
+
+    def fake_transition(receipt, profile, target, *, execute, _held_shared_lock):
+        assert _held_shared_lock.held
+        assert _held_shared_lock.benchmark_marker_identity is not None
+        with pytest.raises(benchmark.LockHeldError):
+            benchmark.SharedLock(lock_path).acquire()
+        lock_windows.append("rollback")
+        rollbacks.append((receipt, profile, target, execute))
+
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", fake_transition)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+    receipt = tmp_path / "candidate-receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+
+    benchmark.run_counterbalanced_pair_step(
+        repo_root=Path(__file__).resolve().parents[4],
+        pair_plan_path=plan_path,
+        admission={},
+        admission_path=admission_path,
+        timeout_seconds=1,
+    )
+    benchmark.run_counterbalanced_pair_step(
+        repo_root=Path(__file__).resolve().parents[4],
+        pair_plan_path=plan_path,
+        admission={},
+        admission_path=admission_path,
+        timeout_seconds=1,
+        candidate_receipt_path=receipt,
+    )
+
+    state = json.loads((pair_root / "counterbalanced-pair-state.json").read_text())
+    assert admissions == ["production-current", "bold-jll-128"]
+    assert [arm["variant"] for arm in state["arms"]] == ["baseline", "candidate"]
+    assert rollbacks == [(receipt, "bold-jll-128", "baseline", True)]
+    assert lock_windows == ["benchmark", "rollback"]
+    assert not lock_path.exists()
+
+
+def test_candidate_pair_step_rejects_missing_or_invalid_rollback_before_benchmark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample = _sample(tmp_path)
+    sample_path = tmp_path / "immutable-sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    pair_root = tmp_path / "pair"
+    pair_root.mkdir(mode=0o700)
+    pair_root.chmod(0o700)
+    plan = benchmark.create_counterbalanced_pair_plan(
+        artifact_root=pair_root, sample_path=sample_path
+    )
+    plan_path = pair_root / "counterbalanced-pair-plan.json"
+    benchmark._atomic_private_json(
+        Path(plan["state_path"]),
+        {
+            "schema_version": benchmark.SCHEMA_VERSION,
+            "kind": benchmark.PAIR_STATE_KIND,
+            "pair_id": plan["pair_id"],
+            "pair_plan_sha256": benchmark._file_sha256(plan_path),
+            "arms": [{"variant": "baseline"}],
+        },
+    )
+    calls: list[str] = []
+    transitions: list[tuple[Path, str, str, bool]] = []
+    monkeypatch.setattr(
+        benchmark, "validate_admission", lambda value, *_args, **_kwargs: value
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "run_benchmark",
+        lambda **_kwargs: calls.append("benchmark") or {"completed": True},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "transition",
+        lambda receipt, profile, target, *, execute: transitions.append(
+            (receipt, profile, target, execute)
+        ),
+    )
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+    common = {
+        "repo_root": Path(__file__).resolve().parents[4],
+        "pair_plan_path": plan_path,
+        "admission": {},
+        "admission_path": admission_path,
+        "timeout_seconds": 1,
+    }
+
+    with pytest.raises(benchmark.BenchmarkError, match="requires its rollback receipt"):
+        benchmark.run_counterbalanced_pair_step(**common)
+
+    invalid = tmp_path / "invalid-rollback.json"
+    invalid.write_text("{}", encoding="utf-8")
+    with pytest.raises(benchmark.BenchmarkError, match="rollback receipt is invalid"):
+        benchmark.run_counterbalanced_pair_step(
+            **common, candidate_receipt_path=invalid
+        )
+
+    assert calls == []
+    assert transitions == []
+
+
+def _candidate_pair_plan(tmp_path: Path) -> tuple[Path, Path, Path]:
+    sample = _sample(tmp_path)
+    sample_path = tmp_path / "candidate-sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    pair_root = tmp_path / "candidate-pair"
+    pair_root.mkdir(mode=0o700)
+    pair_root.chmod(0o700)
+    plan = benchmark.create_counterbalanced_pair_plan(
+        artifact_root=pair_root, sample_path=sample_path
+    )
+    plan_path = pair_root / "counterbalanced-pair-plan.json"
+    benchmark._atomic_private_json(
+        Path(plan["state_path"]),
+        {
+            "schema_version": benchmark.SCHEMA_VERSION,
+            "kind": benchmark.PAIR_STATE_KIND,
+            "pair_id": plan["pair_id"],
+            "pair_plan_sha256": benchmark._file_sha256(plan_path),
+            "arms": [{"variant": "baseline"}],
+        },
+    )
+    receipt = tmp_path / "candidate-rollback.json"
+    receipt.write_text("{}", encoding="utf-8")
+    return pair_root, plan_path, receipt
+
+
+@pytest.mark.parametrize(
+    ("run_failure", "rollback_failure", "quarantine_failure"),
+    [
+        (False, False, False),
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ],
+    ids=(
+        "unknown-settlement",
+        "post-worker-error",
+        "rollback-error",
+        "quarantine-error",
+    ),
+)
+def test_candidate_pair_defers_quarantine_until_after_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    run_failure: bool,
+    rollback_failure: bool,
+    quarantine_failure: bool,
+) -> None:
+    pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    events: list[str] = []
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+    original_write = benchmark._atomic_private_json
+
+    def write(path: Path, value: object) -> None:
+        if quarantine_failure and path.name == benchmark.BENCHMARK_QUARANTINE_MARKER:
+            raise OSError("quarantine receipt write failed")
+        original_write(path, value)
+
+    def fake_run(**kwargs):
+        assert kwargs["_retain_benchmark_interlock"] is True
+        lock = kwargs["_held_shared_lock"]
+        assert kwargs["_prearmed_benchmark_interlock"] is True
+        assert lock.benchmark_marker_identity is not None
+        events.append("benchmark")
+        with pytest.raises(benchmark.LockHeldError):
+            benchmark.SharedLock(lock_path).acquire()
+        if run_failure:
+            raise OSError("post-worker benchmark failure")
+        return {"completed": False}
+
+    def fake_rollback(*_args, _held_shared_lock, **_kwargs):
+        assert _held_shared_lock.held
+        with pytest.raises(benchmark.LockHeldError):
+            benchmark.SharedLock(lock_path).acquire()
+        events.append("rollback")
+        if rollback_failure:
+            raise OSError("rollback failed")
+
+    monkeypatch.setattr(benchmark, "_atomic_private_json", write)
+    monkeypatch.setattr(benchmark, "run_benchmark", fake_run)
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", fake_rollback)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    expected = (
+        "durable quarantine evidence publication failed"
+        if quarantine_failure
+        else "canonical lock is quarantined"
+        if rollback_failure
+        else "post-worker benchmark failure"
+        if run_failure
+        else "did not complete"
+    )
+    with pytest.raises((benchmark.BenchmarkError, OSError), match=expected):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert events == ["benchmark", "rollback"]
+    assert not (pair_root / "arm-02-candidate" / "result.json").exists()
+    assert not json.loads((pair_root / "counterbalanced-pair-state.json").read_text())[
+        "arms"
+    ][1:]
+    assert (lock_path / "capacity-benchmark-active.json").is_file()
+    with pytest.raises(benchmark.LockHeldError):
+        benchmark.SharedLock(lock_path).acquire()
+    if quarantine_failure:
+        assert not (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).exists()
+    else:
+        assert (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).is_file()
+
+
+def test_candidate_pair_prearms_interlock_before_benchmark_failure_and_rollback_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    events: list[str] = []
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_before_inner_arm(**kwargs):
+        lock = kwargs["_held_shared_lock"]
+        assert kwargs["_prearmed_benchmark_interlock"] is True
+        assert lock.benchmark_marker_identity is not None
+        assert (lock_path / "capacity-benchmark-active.json").is_file()
+        events.append("benchmark")
+        raise OSError("benchmark preflight failed before worker arm")
+
+    def fail_rollback(*_args, _held_shared_lock, **_kwargs):
+        assert _held_shared_lock.benchmark_marker_identity is not None
+        events.append("rollback")
+        raise OSError("baseline rollback failed")
+
+    monkeypatch.setattr(benchmark, "run_benchmark", fail_before_inner_arm)
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", fail_rollback)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(benchmark.BenchmarkError, match="canonical lock is quarantined"):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert events == ["benchmark", "rollback"]
+    assert (lock_path / "capacity-benchmark-active.json").is_file()
+    assert (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).is_file()
+    with pytest.raises(benchmark.LockHeldError):
+        benchmark.SharedLock(lock_path).acquire()
+
+
+@pytest.mark.parametrize(
+    ("rollback_failure", "lock_retained"),
+    [(True, True), (False, False)],
+    ids=("rollback-failure-quarantines", "rollback-success-releases"),
+)
+def test_candidate_pair_marker_arm_failure_obeys_rollback_interlock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    rollback_failure: bool,
+    lock_retained: bool,
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    events: list[str] = []
+    original_arm = benchmark.SharedLock.arm_benchmark
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_arm_once(lock, evidence):
+        assert evidence["kind"] == "cre_capacity_candidate_pair_active"
+        events.append("arm")
+        monkeypatch.setattr(benchmark.SharedLock, "arm_benchmark", original_arm)
+        raise OSError("outer marker arm failed before create")
+
+    def should_not_run(**_kwargs):
+        raise AssertionError("benchmark must not run after marker-arm failure")
+
+    def rollback(*_args, **_kwargs):
+        events.append("rollback")
+        if rollback_failure:
+            raise OSError("baseline rollback failed")
+
+    monkeypatch.setattr(benchmark.SharedLock, "arm_benchmark", fail_arm_once)
+    monkeypatch.setattr(benchmark, "run_benchmark", should_not_run)
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", rollback)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    expected = benchmark.BenchmarkError if rollback_failure else OSError
+    with pytest.raises(expected):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert events == ["arm", "rollback"]
+    assert lock_path.exists() is lock_retained
+    if lock_retained:
+        assert (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).is_file()
+        evidence = json.loads(
+            (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).read_text()
+        )
+        assert evidence["reason"] == "candidate_baseline_rollback_failed"
+        with pytest.raises(benchmark.LockHeldError):
+            benchmark.SharedLock(lock_path).acquire()
+
+
+@pytest.mark.parametrize(
+    "initial_error",
+    [OSError("candidate lock acquisition failed"), KeyboardInterrupt()],
+    ids=("io-failure", "interrupt"),
+)
+def test_candidate_pair_transient_lock_failure_rolls_back_under_recovery_lock(
+    initial_error: BaseException, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    original_acquire = benchmark.SharedLock.acquire
+    acquire_calls = 0
+    events: list[str] = []
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_once(lock):
+        nonlocal acquire_calls
+        acquire_calls += 1
+        if acquire_calls == 1:
+            raise initial_error
+        return original_acquire(lock)
+
+    def rollback(*_args, _held_shared_lock, **_kwargs):
+        assert _held_shared_lock.held
+        assert _held_shared_lock.benchmark_marker_identity is None
+        events.append("rollback")
+
+    monkeypatch.setattr(benchmark.SharedLock, "acquire", fail_once)
+    monkeypatch.setattr(benchmark, "run_benchmark", lambda **_kwargs: pytest.fail())
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", rollback)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(type(initial_error)):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert acquire_calls == 2
+    assert events == ["rollback"]
+    assert not lock_path.exists()
+
+
+def test_candidate_pair_partial_lease_failure_recovers_and_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    events: list[str] = []
+    original_write = refresh.atomic_write_text
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_first_lease(path: Path, value: str) -> None:
+        if path.name == "lease" and not events:
+            events.append("lease failure")
+            raise OSError("lease write failed before creation")
+        original_write(path, value)
+
+    def rollback(*_args, _held_shared_lock, **_kwargs):
+        assert _held_shared_lock.held
+        assert _held_shared_lock.recovery_required
+        events.append("rollback")
+
+    monkeypatch.setattr(refresh, "atomic_write_text", fail_first_lease)
+    monkeypatch.setattr(benchmark, "run_benchmark", lambda **_kwargs: pytest.fail())
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", rollback)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(OSError, match="lease write failed before creation"):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert events == ["lease failure", "rollback"]
+    assert not lock_path.exists()
+
+
+@pytest.mark.parametrize("operation", ["write", "fsync"])
+def test_candidate_authority_initialization_failure_recovers_under_owned_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    original_write = refresh.os.write
+    original_fsync = refresh.os.fsync
+    failed = False
+    events: list[str] = []
+
+    def fail_once_write(descriptor, payload):
+        nonlocal failed
+        if operation == "write" and not failed:
+            failed = True
+            raise OSError("authority write failed")
+        return original_write(descriptor, payload)
+
+    def fail_once_fsync(descriptor):
+        nonlocal failed
+        if operation == "fsync" and not failed:
+            failed = True
+            raise OSError("authority fsync failed")
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(refresh.os, "write", fail_once_write)
+    monkeypatch.setattr(refresh.os, "fsync", fail_once_fsync)
+    with benchmark._candidate_rollback_lock(lock_path) as (held_lock, initial_error):
+        assert isinstance(initial_error, OSError)
+        descriptor = held_lock._owned_directory_fd()
+        os.close(descriptor)
+        events.append("rollback")
+        held_lock.clear_recovery_requirement()
+
+    assert events == ["rollback"]
+    assert not lock_path.exists()
+    assert lock_path.with_name(f"{lock_path.name}.authority").is_file()
+
+
+def test_candidate_rollback_lock_reclaims_interrupted_stale_tombstone(
+    tmp_path: Path,
+) -> None:
+    """Mandatory rollback reacquires under the recovered stale-lock authority."""
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.mkdir()
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    (lock_path / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    authority.write_text(f"v1 {owner} {token} {generation} normal\n", encoding="utf-8")
+    stale_identity = refresh._lock_directory_identity(lock_path)
+    tombstone = lock_path.with_name(f"{lock_path.name}.reclaim")
+    os.rename(lock_path, tombstone)
+    authority.write_text(
+        (
+            f"v1 reclaiming bound {owner} {token} {generation} "
+            f"{stale_identity[0]} {stale_identity[1]} 0\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with benchmark._candidate_rollback_lock(lock_path) as (held_lock, initial_error):
+        assert initial_error is None
+        descriptor = held_lock._owned_directory_fd()
+        os.close(descriptor)
+        held_lock.clear_recovery_requirement()
+
+    assert not lock_path.exists()
+    assert not tombstone.exists()
+
+
+def test_candidate_rollback_lock_reclaims_after_legacy_guard_move(
+    tmp_path: Path,
+) -> None:
+    """Rollback remains owned after the legacy-guard move crash prefix."""
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.mkdir()
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    (lock_path / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    authority.write_text(f"v1 {owner} {token} {generation} normal\n", encoding="utf-8")
+    guard = lock_path.with_name(f"{lock_path.name}.reclaim")
+    guard.mkdir()
+    (lock_path / "lease").unlink()
+    initializer = refresh.SharedLock(lock_path)
+    initializer._claim_authority("n" * 32)
+    fields = initializer._authority_fields(initializer.authority_fd)
+    state = refresh._AuthorityReclaimState(
+        owner=fields[0],
+        token=fields[1],
+        generation=fields[2],
+        recovery_required=False,
+        source_identity=refresh._lock_directory_identity(lock_path),
+        legacy_guard=1,
+    )
+    initializer._write_reclaim_state(state)
+    os.rename(guard, initializer._legacy_guard_forensic_path(state))
+    initializer._release_authority()
+
+    with benchmark._candidate_rollback_lock(lock_path) as (held_lock, initial_error):
+        assert initial_error is None
+        descriptor = held_lock._owned_directory_fd()
+        os.close(descriptor)
+        held_lock.clear_recovery_requirement()
+
+    assert not lock_path.exists()
+    assert not lock_path.with_name(f"{lock_path.name}.reclaim").exists()
+
+
+def test_candidate_pair_stale_reclaim_lease_failure_recovers_and_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    lock_path.mkdir(parents=True)
+    (lock_path / "pid").write_text("99999999 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text("stale-lease\n", encoding="utf-8")
+    events: list[str] = []
+    original_write = refresh.atomic_write_text
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_first_lease(path: Path, value: str) -> None:
+        if path.name == "lease" and not events:
+            events.append("lease failure")
+            raise OSError("stale-reclaim lease write failed before creation")
+        original_write(path, value)
+
+    def rollback(*_args, _held_shared_lock, **_kwargs):
+        assert _held_shared_lock.held
+        assert _held_shared_lock.recovery_required
+        events.append("rollback")
+
+    monkeypatch.setattr(refresh, "atomic_write_text", fail_first_lease)
+    monkeypatch.setattr(benchmark, "run_benchmark", lambda **_kwargs: pytest.fail())
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", rollback)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(OSError, match="stale-reclaim lease write failed"):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert events == ["lease failure", "rollback"]
+    assert not lock_path.exists()
+
+
+def test_candidate_pair_partial_cleanup_failure_never_rolls_back_unlocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    transitions: list[str] = []
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_first_lease(path: Path, _value: str) -> None:
+        if path.name == "lease":
+            (path.parent / ".lease.abandoned.tmp").write_text("partial")
+            raise OSError("lease write failed before creation")
+
+    original_unlink = refresh.os.unlink
+
+    def fail_partial_cleanup(path, *args, **kwargs):
+        if path == ".lease.abandoned.tmp":
+            raise OSError("partial cleanup failed")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(refresh, "atomic_write_text", fail_first_lease)
+    monkeypatch.setattr(refresh.os, "unlink", fail_partial_cleanup)
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "transition",
+        lambda *_args, **_kwargs: transitions.append("unsafe rollback"),
+    )
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        benchmark.BenchmarkError,
+        match="cannot acquire a verified canonical recovery lock",
+    ):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert transitions == []
+    assert refresh._lock_requires_operator_recovery(lock_path)
+
+
+@pytest.mark.parametrize("initial_error", [OSError("disk failed"), KeyboardInterrupt()])
+def test_candidate_pair_unavailable_recovery_lock_never_rolls_back_unlocked(
+    initial_error: BaseException, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    transitions: list[str] = []
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+    monkeypatch.setattr(
+        benchmark.SharedLock,
+        "acquire",
+        lambda _lock: (_ for _ in ()).throw(initial_error),
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "transition",
+        lambda *_args, **_kwargs: transitions.append("unsafe rollback"),
+    )
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        benchmark.BenchmarkError,
+        match="cannot acquire a verified canonical recovery lock",
+    ) as raised:
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert transitions == []
+    assert any("initial lock error" in note for note in raised.value.__notes__)
+    assert any("recovery lock error" in note for note in raised.value.__notes__)
+
+
+def test_candidate_pair_foreign_lock_never_performs_unowned_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    foreign = benchmark.SharedLock(lock_path)
+    foreign.acquire()
+    transitions: list[str] = []
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "transition",
+        lambda *_args, **_kwargs: transitions.append("unsafe rollback"),
+    )
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    try:
+        with pytest.raises(
+            benchmark.BenchmarkError,
+            match="cannot acquire a verified canonical recovery lock",
+        ):
+            benchmark.run_counterbalanced_pair_step(
+                repo_root=Path(__file__).resolve().parents[4],
+                pair_plan_path=plan_path,
+                admission={},
+                admission_path=admission_path,
+                timeout_seconds=1,
+                candidate_receipt_path=receipt,
+            )
+        assert transitions == []
+        assert (lock_path / "lease").read_text(encoding="utf-8") == (
+            f"{foreign.lease_token}\n"
+        )
+    finally:
+        foreign.release()
+
+
+def test_candidate_pair_retains_owned_lock_when_quarantine_publication_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    original_arm = benchmark.SharedLock.arm_benchmark
+    original_write = benchmark._atomic_private_json
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_arm_once(_lock, _evidence):
+        monkeypatch.setattr(benchmark.SharedLock, "arm_benchmark", original_arm)
+        raise OSError("outer marker arm failed before create")
+
+    def fail_quarantine(path: Path, value: object) -> None:
+        if path.name == benchmark.BENCHMARK_QUARANTINE_MARKER:
+            raise OSError("quarantine publication failed")
+        original_write(path, value)
+
+    monkeypatch.setattr(benchmark.SharedLock, "arm_benchmark", fail_arm_once)
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "transition",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("rollback failed")),
+    )
+    monkeypatch.setattr(benchmark, "_atomic_private_json", fail_quarantine)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        benchmark.BenchmarkError,
+        match="durable quarantine evidence publication failed; operator intervention is required",
+    ):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert lock_path.is_dir()
+    assert not (lock_path / "capacity-benchmark-active.json").exists()
+    assert not (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).exists()
+    assert (lock_path / "pid").is_file()
+    assert (lock_path / "lease").is_file()
+    with pytest.raises(benchmark.LockHeldError, match="requires operator recovery"):
+        benchmark.SharedLock(lock_path).acquire()
+
+
+def test_candidate_pair_unknown_quarantine_durability_blocks_stale_reclaim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    original_arm = benchmark.SharedLock.arm_benchmark
+    original_write = benchmark._atomic_private_json
+    real_fsync = benchmark.os.fsync
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_arm_once(_lock, _evidence):
+        monkeypatch.setattr(benchmark.SharedLock, "arm_benchmark", original_arm)
+        raise OSError("outer marker arm failed before create")
+
+    def rename_then_fail_directory_fsync(path: Path, value: object) -> None:
+        if path.name != benchmark.BENCHMARK_QUARANTINE_MARKER:
+            original_write(path, value)
+            return
+
+        def fail_directory_fsync(descriptor: int) -> None:
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise OSError("quarantine directory fsync failed after rename")
+            real_fsync(descriptor)
+
+        monkeypatch.setattr(benchmark.os, "fsync", fail_directory_fsync)
+        try:
+            original_write(path, value)
+        finally:
+            monkeypatch.setattr(benchmark.os, "fsync", real_fsync)
+
+    monkeypatch.setattr(benchmark.SharedLock, "arm_benchmark", fail_arm_once)
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "transition",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("rollback failed")),
+    )
+    monkeypatch.setattr(
+        benchmark, "_atomic_private_json", rename_then_fail_directory_fsync
+    )
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        benchmark.BenchmarkError,
+        match="durable quarantine evidence publication failed; operator intervention is required",
+    ):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    marker = lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER
+    assert marker.is_file()
+    assert refresh._lock_requires_operator_recovery(lock_path)
+    marker.unlink()
+    (lock_path / "pid").write_text("99999999 1\n", encoding="utf-8")
+    with pytest.raises(benchmark.LockHeldError, match="requires operator recovery"):
+        benchmark.SharedLock(lock_path).acquire()
+
+
+def test_candidate_pair_prearmed_interlock_survives_interrupt_until_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    events: list[str] = []
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def interrupt_before_inner_arm(**kwargs):
+        lock = kwargs["_held_shared_lock"]
+        assert kwargs["_prearmed_benchmark_interlock"] is True
+        assert lock.benchmark_marker_identity is not None
+        events.append("benchmark")
+        raise KeyboardInterrupt("benchmark preflight interrupted")
+
+    def rollback(*_args, _held_shared_lock, **_kwargs):
+        assert _held_shared_lock.benchmark_marker_identity is not None
+        events.append("rollback")
+
+    monkeypatch.setattr(benchmark, "run_benchmark", interrupt_before_inner_arm)
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", rollback)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(KeyboardInterrupt, match="benchmark preflight interrupted"):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert events == ["benchmark", "rollback"]
+    assert (lock_path / "capacity-benchmark-active.json").is_file()
+    assert (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).is_file()
+    with pytest.raises(benchmark.LockHeldError):
+        benchmark.SharedLock(lock_path).acquire()
+
+
+def test_caller_held_unknown_settlement_is_durably_deferred_to_pair_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, "bold-jll-128")
+    admission = _admission(tmp_path)
+    admission["review_approval_created_at"] = benchmark._now()
+    admission["endpoints"] = {
+        "api_url": "http://127.0.0.1:3102",
+        "browser_health_url": "http://127.0.0.1:3103/health",
+    }
+    sample = {"inventory_sha256": "a" * 64}
+    sample_path = tmp_path / "sample.json"
+    sample_path.write_text(json.dumps(sample))
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(benchmark, "_implementation_manifest", lambda *_args: {})
+    monkeypatch.setattr(benchmark, "_verify_implementation_manifest", lambda *_args: {})
+    monkeypatch.setattr(benchmark, "validate_sample", lambda value, _details: value)
+    monkeypatch.setattr(benchmark, "verify_sample_provenance", lambda *_args: {})
+    monkeypatch.setattr(
+        benchmark, "verify_live_admission", lambda *_args: {"effective_runtime": {}}
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "_consume_admission",
+        lambda *_args, **_kwargs: _audit_file(tmp_path, admission),
+    )
+    monkeypatch.setattr(
+        benchmark, "_settlement_snapshot", lambda *_args: {"idle": True}
+    )
+    monkeypatch.setattr(benchmark, "_resource_snapshot", dict)
+    monkeypatch.setattr(benchmark, "_resource_verdict", lambda *_args: {})
+    monkeypatch.setattr(
+        benchmark,
+        "summarize_replicate",
+        lambda *_args, **_kwargs: {"remote_settlement_unknown": 0},
+    )
+    monkeypatch.setattr(benchmark, "_replicate_state", lambda *_args: "failed")
+    monkeypatch.setattr(benchmark, "_run_worker", lambda **_kwargs: (0, [], None))
+    monkeypatch.setattr(
+        benchmark,
+        "_await_idle_settlement",
+        lambda *_args: {"idle": False, "state": "unknown"},
+    )
+
+    with benchmark.SharedLock(lock_path) as held_lock:
+        result = benchmark.run_benchmark(
+            repo_root=tmp_path,
+            artifact_root=artifact,
+            sample_path=sample_path,
+            sample=sample,
+            profile=profile,
+            profile_name="bold-jll-128",
+            config_sha256=digest,
+            admission=admission,
+            admission_path=tmp_path / "admission.json",
+            timeout_seconds=60,
+            _held_shared_lock=held_lock,
+        )
+        assert result["lock_quarantine"]["state"] == "deferred_to_pair_rollback"
+        assert held_lock.held
+        assert (lock_path / "pid").is_file()
+        assert (lock_path / "lease").is_file()
+        assert (lock_path / "capacity-benchmark-active.json").is_file()
+        with pytest.raises(benchmark.LockHeldError):
+            benchmark.SharedLock(lock_path).acquire()
+
+
+def test_caller_held_idle_benchmark_retains_interlock_until_pair_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, "bold-jll-128")
+    admission = _admission(tmp_path)
+    admission["review_approval_created_at"] = benchmark._now()
+    admission["endpoints"] = {
+        "api_url": "http://127.0.0.1:3102",
+        "browser_health_url": "http://127.0.0.1:3103/health",
+    }
+    sample = {"inventory_sha256": "a" * 64}
+    sample_path = tmp_path / "sample.json"
+    sample_path.write_text(json.dumps(sample))
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(benchmark, "_implementation_manifest", lambda *_args: {})
+    monkeypatch.setattr(benchmark, "_verify_implementation_manifest", lambda *_args: {})
+    monkeypatch.setattr(benchmark, "validate_sample", lambda value, _details: value)
+    monkeypatch.setattr(benchmark, "verify_sample_provenance", lambda *_args: {})
+    monkeypatch.setattr(
+        benchmark, "verify_live_admission", lambda *_args: {"effective_runtime": {}}
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "_consume_admission",
+        lambda *_args, **_kwargs: _audit_file(tmp_path, admission),
+    )
+    monkeypatch.setattr(
+        benchmark, "_settlement_snapshot", lambda *_args: {"idle": True}
+    )
+    monkeypatch.setattr(benchmark, "_resource_snapshot", dict)
+    monkeypatch.setattr(benchmark, "_resource_verdict", lambda *_args: {})
+    monkeypatch.setattr(
+        benchmark,
+        "summarize_replicate",
+        lambda *_args, **_kwargs: {"remote_settlement_unknown": 0},
+    )
+    monkeypatch.setattr(benchmark, "_replicate_state", lambda *_args: "measured")
+    monkeypatch.setattr(benchmark, "_run_worker", lambda **_kwargs: (0, [], None))
+    monkeypatch.setattr(
+        benchmark,
+        "_await_idle_settlement",
+        lambda *_args: {"idle": True, "state": "idle"},
+    )
+
+    with benchmark.SharedLock(lock_path) as held_lock:
+        held_lock.arm_benchmark({"state": "outer-candidate-step"})
+        result = benchmark.run_benchmark(
+            repo_root=tmp_path,
+            artifact_root=artifact,
+            sample_path=sample_path,
+            sample=sample,
+            profile=profile,
+            profile_name="bold-jll-128",
+            config_sha256=digest,
+            admission=admission,
+            admission_path=tmp_path / "admission.json",
+            timeout_seconds=60,
+            _held_shared_lock=held_lock,
+            _retain_benchmark_interlock=True,
+            _prearmed_benchmark_interlock=True,
+        )
+        assert result["completed"] is True
+        assert held_lock.benchmark_marker_identity is not None
+        assert (lock_path / "capacity-benchmark-active.json").is_file()
+        with pytest.raises(benchmark.LockHeldError):
+            benchmark.SharedLock(lock_path).acquire()
+
+
+def test_guarded_pair_controller_is_disabled_pending_governed_runtime_orchestration(
+    tmp_path: Path,
+) -> None:
+    sample = _sample(tmp_path)
+    sample_path = tmp_path / "immutable-sample.json"
+    sample_path.write_bytes(benchmark._canonical(sample))
+    pair_root = tmp_path / "pair"
+    pair_root.mkdir(mode=0o700)
+    pair_root.chmod(0o700)
+    benchmark.create_counterbalanced_pair_plan(
+        artifact_root=pair_root, sample_path=sample_path
+    )
+    plan_path = pair_root / "counterbalanced-pair-plan.json"
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+    receipt = tmp_path / "candidate-receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    arms = [
+        {
+            "admission": {},
+            "admission_path": admission_path,
+            "candidate_receipt_path": receipt if variant == "candidate" else None,
+        }
+        for variant in benchmark.PAIR_SEQUENCE
+    ]
+
+    with pytest.raises(benchmark.BenchmarkError, match="controller is disabled"):
+        benchmark.run_counterbalanced_pair_orchestrator(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            arms=arms,
+            timeout_seconds=1,
+        )
 
 
 def test_summarize_replicate_fails_closed_on_native_delta_and_remote_timeout(
@@ -1476,7 +3456,7 @@ def test_summarize_replicate_fails_closed_on_native_delta_and_remote_timeout(
     )
 
     assert summary["qualified_fresh_unique_rows"] == 0
-    assert summary["native_asset_deltas"] == 128
+    assert summary["native_asset_deltas"] == 0
     assert summary["remote_settlement_unknown"] == 1
     assert summary["provider_cooldown"]["required"] is False
     assert summary["comparison_state"] == "quality_failed"
@@ -2304,6 +4284,10 @@ def test_benchmark_interlock_spans_workers_settlement_and_durable_result(
     else:
         assert active_path.is_file()
         assert "disarmed" not in events
+        if outcome == "unknown":
+            assert (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).is_file()
+            assert not (lock_path / "pid").exists()
+            assert not (lock_path / "lease").exists()
         with pytest.raises(benchmark.LockHeldError):
             benchmark.SharedLock(lock_path).acquire()
 
@@ -2343,6 +4327,10 @@ def test_implementation_manifest_is_config_independent_and_rechecked(
     manifest = benchmark._implementation_manifest(repo)
 
     assert set(manifest["files"]) == set(benchmark.IMPLEMENTATION_PATHS)
+    assert (
+        "scripts/firecrawl-ops/cre_collector/cre_capacity_multisource_v1.py"
+        in manifest["files"]
+    )
     assert not any("experiment_profiles" in path for path in manifest["files"])
     monkeypatch.setattr(benchmark, "_require_clean_git", lambda _repo: "a" * 40)
     monkeypatch.setattr(
@@ -2529,6 +4517,229 @@ def test_summarize_accepts_value_changes_but_rejects_supported_channel_drops(
         sample_canonical_sha256=sample_sha256,
         worker_contract=contract,
     )
-    assert failed["qualified_fresh_unique_rows"] == 0
+    assert failed["qualified_fresh_unique_rows"] == 127
     assert failed["normalized_structural_matches"] == 127
+    assert failed["fidelity_failures"] == 1
     assert failed["comparison_state"] == "quality_failed"
+
+
+def test_worker_uses_executed_brochure_url_classifier_without_double_counting() -> None:
+    source = benchmark._worker_source(Path(__file__).resolve().parents[4])
+
+    assert "jllHasUsableBrochure" in source
+    assert "brochures: jllHasUsableBrochure(normalized)" in source
+
+
+def _benchmark_success_rows(
+    sample: dict[str, object], generation: str
+) -> list[dict[str, object]]:
+    """Build a fully qualified exact-cohort worker result without a live scrape."""
+    rows: list[dict[str, object]] = []
+    for row in sample["details"]:
+        rows.append(
+            {
+                "sample_index": row["sample_index"],
+                "sample_id": row["sample_id"],
+                "latency_ms": 10,
+                "transaction_type": benchmark._transaction_type(
+                    row["transaction_class"]
+                ),
+                "normalized": {
+                    "id": row["id"],
+                    "url": row["url"],
+                    "transactionType": benchmark._transaction_type(
+                        row["transaction_class"]
+                    ),
+                    "detailObservedAt": "2026-09-13T01:00:00Z",
+                    "freshnessProvenance": {
+                        "cacheDisposition": "live",
+                        "generationId": generation,
+                    },
+                },
+                "native": json.loads(json.dumps(row["historic"]["native"])),
+                "fidelity": json.loads(json.dumps(row["historic"]["fidelity"])),
+            }
+        )
+    return rows
+
+
+def _attrition_observation(
+    row: dict[str, object],
+    generation: str,
+    *,
+    http_status: int | None = 404,
+    next_data_valid: bool = True,
+    explicit_not_found: bool = True,
+    no_property: bool = True,
+    challenge: bool = False,
+) -> dict[str, object]:
+    return {
+        "cache_readable": True,
+        "cache_url": row["url"],
+        "cache_sha256": "a" * 64,
+        "raw_html_sha256": "b" * 64,
+        "cached_at": "2026-09-13T01:00:00Z",
+        "detail_observed_at": "2026-09-13T01:00:00Z",
+        "generation_id": generation,
+        "http_status": http_status,
+        "next_data_valid": next_data_valid,
+        "explicit_not_found": explicit_not_found,
+        "no_property": no_property,
+        "provider_challenge": challenge,
+    }
+
+
+def _write_worker_result(
+    replicate: Path,
+    contract: dict[str, object],
+    generation: str,
+    rows: list[dict[str, object]],
+    *,
+    performance_concurrency: int = 10,
+) -> None:
+    (replicate / "worker-output.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "cre_jll_capacity_worker",
+                "worker_contract_sha256": contract["sha256"],
+                "generation": generation,
+                "started_at": "2026-09-13T00:59:00Z",
+                "rows": rows,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (replicate / "performance.json").write_text(
+        json.dumps(_performance(performance_concurrency)), encoding="utf-8"
+    )
+
+
+def test_summarize_counts_confirmed_jll_404_attrition_without_failing_cohort(
+    tmp_path: Path,
+) -> None:
+    sample = _sample(tmp_path)
+    contract = benchmark._worker_contract(128, 10)
+    sample_sha256 = hashlib.sha256(benchmark._canonical(sample)).hexdigest()
+    replicate = tmp_path / "replicate"
+    replicate.mkdir()
+    generation = "2026-09-13T010000Z-abcdefabcdef"
+    rows = _benchmark_success_rows(sample, generation)
+    rows[0] = {
+        "sample_index": rows[0]["sample_index"],
+        "sample_id": rows[0]["sample_id"],
+        "latency_ms": 10,
+        "transaction_type": rows[0]["transaction_type"],
+        "normalized": {
+            "id": sample["details"][0]["id"],
+            "url": sample["details"][0]["url"],
+            "transactionType": rows[0]["transaction_type"],
+            "detailError": "missing property in __NEXT_DATA__",
+        },
+        "observation": _attrition_observation(sample["details"][0], generation),
+    }
+    _write_worker_result(replicate, contract, generation, rows)
+
+    summary = benchmark.summarize_replicate(
+        replicate,
+        sample,
+        60,
+        sample_canonical_sha256=sample_sha256,
+        worker_contract=contract,
+    )
+
+    assert summary["current_active_successes"] == 127
+    assert summary["confirmed_attrition"] == 1
+    assert summary["individually_qualified_rows"] == 127
+    assert summary["parser_failures"] == 0
+    assert summary["transport_failures"] == 0
+    assert summary["fidelity_failures"] == 0
+    assert summary["predeclared_eligible_denominator"] == 128
+    assert summary["predeclared_cohort_denominator"] == 128
+    assert summary["eligible_rows"] == 127
+    assert summary["comparison_state"] == "measured"
+    assert summary["record_evidence"][0]["classification"] == "confirmed_attrition"
+
+
+@pytest.mark.parametrize(
+    ("observation", "expected_field"),
+    [
+        (
+            {
+                "http_status": 404,
+                "next_data_valid": False,
+                "explicit_not_found": True,
+                "no_property": True,
+            },
+            "parser_failures",
+        ),
+        (
+            {
+                "http_status": 200,
+                "next_data_valid": True,
+                "explicit_not_found": True,
+                "no_property": True,
+            },
+            "parser_failures",
+        ),
+        (
+            {
+                "http_status": 429,
+                "next_data_valid": True,
+                "explicit_not_found": True,
+                "no_property": True,
+            },
+            "transport_failures",
+        ),
+        (
+            {
+                "http_status": None,
+                "next_data_valid": True,
+                "explicit_not_found": True,
+                "no_property": True,
+            },
+            "transport_failures",
+        ),
+    ],
+)
+def test_summarize_never_misclassifies_ambiguous_detail_as_attrition(
+    tmp_path: Path,
+    observation: dict[str, object],
+    expected_field: str,
+) -> None:
+    sample = _sample(tmp_path)
+    contract = benchmark._worker_contract(128, 10)
+    sample_sha256 = hashlib.sha256(benchmark._canonical(sample)).hexdigest()
+    replicate = tmp_path / "replicate"
+    replicate.mkdir()
+    generation = "2026-09-13T010000Z-abcdefabcdef"
+    rows = _benchmark_success_rows(sample, generation)
+    rows[0] = {
+        "sample_index": rows[0]["sample_index"],
+        "sample_id": rows[0]["sample_id"],
+        "latency_ms": 10,
+        "transaction_type": rows[0]["transaction_type"],
+        "normalized": {
+            "id": sample["details"][0]["id"],
+            "url": sample["details"][0]["url"],
+            "transactionType": rows[0]["transaction_type"],
+            "detailError": "missing property in __NEXT_DATA__",
+        },
+        "observation": _attrition_observation(
+            sample["details"][0], generation, **observation
+        ),
+    }
+    _write_worker_result(replicate, contract, generation, rows)
+
+    summary = benchmark.summarize_replicate(
+        replicate,
+        sample,
+        60,
+        sample_canonical_sha256=sample_sha256,
+        worker_contract=contract,
+    )
+
+    assert summary["confirmed_attrition"] == 0
+    assert summary[expected_field] == 1
+    assert summary["eligible_rows"] == 127
+    assert summary["comparison_state"] == "quality_failed"

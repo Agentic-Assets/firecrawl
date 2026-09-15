@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import fcntl
 import hashlib
 import json
 import math
@@ -31,7 +32,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Self
@@ -231,9 +232,7 @@ def _read_darwin_cpu_ticks() -> tuple[int, int, int, int]:
     return tuple(int(value) for value in info.cpu_ticks)  # type: ignore[return-value]
 
 
-def cpu_percent_from_ticks(
-    previous: Sequence[int], current: Sequence[int]
-) -> float:
+def cpu_percent_from_ticks(previous: Sequence[int], current: Sequence[int]) -> float:
     """Compute busy CPU percentage from wrapping 32-bit Mach tick counters."""
     if len(previous) != _CPU_STATE_MAX or len(current) != _CPU_STATE_MAX:
         raise CpuTelemetryError("Darwin CPU telemetry returned an invalid tick vector")
@@ -499,9 +498,17 @@ def _resource_stop_phase(
     if source_value is None and len(configured) == 1 and isinstance(configured[0], str):
         source_value = configured[0]
     if raw_phase in {"preflight", "healthcheck", "pre_validation"}:
-        return "preflight", str(context.get("active_operation") or raw_phase), source_value
+        return (
+            "preflight",
+            str(context.get("active_operation") or raw_phase),
+            source_value,
+        )
     if raw_phase != "collect":
-        return raw_phase, str(context.get("active_operation") or raw_phase), source_value
+        return (
+            raw_phase,
+            str(context.get("active_operation") or raw_phase),
+            source_value,
+        )
 
     sources = manifest.get("sources")
     checkpoint = (
@@ -524,9 +531,7 @@ def resource_stop_record(
     details: CpuGuardTripDetails,
 ) -> dict[str, Any]:
     """Build the child-to-series typed stop contract after owned cleanup."""
-    phase, active_operation, source = _resource_stop_phase(
-        manifest, details.context
-    )
+    phase, active_operation, source = _resource_stop_phase(manifest, details.context)
     return {
         "schema_version": 1,
         "reason_code": details.reason_code,
@@ -590,7 +595,9 @@ def sha256_file(path: Path) -> str:
 
 def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, raw_tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    fd, raw_tmp = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
     tmp = Path(raw_tmp)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -613,7 +620,9 @@ def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
 
 def atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, raw_tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    fd, raw_tmp = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
     tmp = Path(raw_tmp)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -621,6 +630,11 @@ def atomic_write_text(path: Path, text: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -655,6 +669,27 @@ def _lock_lease(lock_dir: Path) -> str | None:
 
 BENCHMARK_ACTIVE_MARKER = "capacity-benchmark-active.json"
 BENCHMARK_QUARANTINE_MARKER = "capacity-benchmark-quarantine.json"
+OPERATOR_RECOVERY_LEASE_PREFIX = "operator-recovery-required:"
+LOCK_AUTHORITY_SUFFIX = ".authority"
+
+
+@dataclass(frozen=True)
+class _AuthorityReclaimState:
+    """Durable authority record for an in-progress stale-directory handoff."""
+
+    owner: int | None
+    token: str | None
+    generation: str | None
+    recovery_required: bool
+    source_identity: tuple[int, int]
+    # 0 is not legacy, 1 is the original sentinel still at `.reclaim`, and
+    # 2 is the fsynced post-move state with the sentinel at its forensic path.
+    legacy_guard: int = 0
+
+
+def _lock_requires_operator_recovery(lock_dir: Path) -> bool:
+    lease = _lock_lease(lock_dir)
+    return bool(lease and lease.startswith(OPERATOR_RECOVERY_LEASE_PREFIX))
 
 
 def _lock_interlocked(lock_dir: Path) -> bool:
@@ -715,53 +750,723 @@ def checkpoint_lock_dir(lock_dir_override: str | None) -> Path:
 @dataclass
 class SharedLock:
     path: Path
+    recovery_required: bool = False
+    preserve_recovery_on_acquire_failure: bool = False
     held: bool = False
     lease_token: str | None = field(default=None, init=False)
     directory_identity: tuple[int, int] | None = field(default=None, init=False)
     benchmark_marker_identity: tuple[int, int] | None = field(default=None, init=False)
+    retain_on_exit: bool = field(default=False, init=False)
+    partial_directory_identity: tuple[int, int] | None = field(default=None, init=False)
+    authority_fd: int = field(default=-1, init=False)
+    authority_identity: tuple[int, int] | None = field(default=None, init=False)
+    authority_token: str | None = field(default=None, init=False)
+    authority_generation: str | None = field(default=None, init=False)
+    authority_recovery_required: bool = field(default=False, init=False)
+    authority_locked: bool = field(default=False, init=False)
+    authority_initializing: bool = field(default=False, init=False)
 
-    def acquire(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    @property
+    def authority_path(self) -> Path:
+        return self.path.with_name(f"{self.path.name}{LOCK_AUTHORITY_SUFFIX}")
+
+    @staticmethod
+    def _safe_authority_bytes(descriptor: int) -> bytes:
+        """Read one bounded, regular, no-link authority record."""
+        observed = os.fstat(descriptor)
+        if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+            raise LockHeldError("CRE lock authority is unsafe")
+        raw = os.pread(descriptor, 512, 0)
+        if len(raw) >= 512:
+            raise LockHeldError("CRE lock authority is oversized")
+        return raw
+
+    @staticmethod
+    def _authority_fields(descriptor: int) -> tuple[int, str, str, bool] | None:
+        raw = SharedLock._safe_authority_bytes(descriptor)
+        if not raw.strip():
+            return None
+        try:
+            parts = raw.decode("utf-8").strip().split()
+        except UnicodeDecodeError as exc:
+            raise LockHeldError("CRE lock authority is malformed") from exc
+        if parts == ["v1", "neutral"]:
+            return 0, "", "", False
+        if len(parts) == 3:
+            # The former ephemeral sidecar format. It is readable only so a
+            # stale legacy directory can migrate under the new held flock.
+            pid_raw, token, generation = parts
+            recovery_required = generation.startswith(OPERATOR_RECOVERY_LEASE_PREFIX)
+        elif len(parts) == 5 and parts[0] == "v1":
+            _, pid_raw, token, generation, state = parts
+            if state not in {"normal", "recovery-required"}:
+                raise LockHeldError("CRE lock authority is malformed")
+            recovery_required = state == "recovery-required"
+        else:
+            raise LockHeldError("CRE lock authority is malformed")
+        try:
+            pid = int(pid_raw)
+        except ValueError as exc:
+            raise LockHeldError("CRE lock authority has an invalid owner") from exc
+        if (
+            pid <= 0
+            or re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) is None
+            or re.fullmatch(
+                rf"(?:{re.escape(OPERATOR_RECOVERY_LEASE_PREFIX)})?[A-Za-z0-9_-]{{32,128}}",
+                generation,
+            )
+            is None
+        ):
+            raise LockHeldError("CRE lock authority is malformed")
+        return pid, token, generation, recovery_required
+
+    def _authority_fd_matches_path(self) -> bool:
+        if (
+            self.authority_fd < 0
+            or self.authority_identity is None
+            or not self.authority_locked
+        ):
+            return False
+        try:
+            opened = os.fstat(self.authority_fd)
+            named = self.authority_path.lstat()
+            if (
+                not stat.S_ISREG(named.st_mode)
+                or named.st_nlink != 1
+                or (opened.st_dev, opened.st_ino) != self.authority_identity
+                or (named.st_dev, named.st_ino) != self.authority_identity
+            ):
+                return False
+            return True
+        except OSError:
+            return False
+
+    def _authority_is_current(self) -> bool:
+        if (
+            not self._authority_fd_matches_path()
+            or self.authority_token is None
+            or self.authority_generation is None
+            or self.authority_initializing
+        ):
+            return False
+        try:
+            fields = self._authority_fields(self.authority_fd)
+        except (LockHeldError, OSError):
+            return False
+        if fields is None:
+            return False
+        owner, token, generation, recovery_required = fields
+        return (
+            owner == os.getpid()
+            and token == self.authority_token
+            and generation == self.authority_generation
+            and recovery_required == self.authority_recovery_required
+        )
+
+    def _require_authority(self) -> None:
+        if not self._authority_is_current():
+            raise LockHeldError("CRE lock authority changed before mutation")
+
+    def _authority_payload(self) -> bytes:
+        if self.authority_token is None or self.authority_generation is None:
+            raise LockHeldError("CRE lock authority is not initialized")
+        state = "recovery-required" if self.authority_recovery_required else "normal"
+        return (
+            f"v1 {os.getpid()} {self.authority_token} "
+            f"{self.authority_generation} {state}\n"
+        ).encode()
+
+    def _write_owned_authority(self) -> None:
+        if not self._authority_fd_matches_path():
+            raise LockHeldError("CRE lock authority changed before initialization")
+        os.ftruncate(self.authority_fd, 0)
+        os.lseek(self.authority_fd, 0, os.SEEK_SET)
+        payload = memoryview(self._authority_payload())
+        while payload:
+            written = os.write(self.authority_fd, payload)
+            if written <= 0:
+                raise OSError("CRE lock authority write was short")
+            payload = payload[written:]
+        os.fsync(self.authority_fd)
+        self.authority_initializing = False
+        self._require_authority()
+
+    def _write_neutral_authority(self) -> None:
+        """Publish a durable reusable sidecar before a legacy-contention stop."""
+        if not self._authority_fd_matches_path():
+            raise LockHeldError("CRE lock authority changed before initialization")
+        os.ftruncate(self.authority_fd, 0)
+        os.lseek(self.authority_fd, 0, os.SEEK_SET)
+        payload = memoryview(b"v1 neutral\n")
+        while payload:
+            written = os.write(self.authority_fd, payload)
+            if written <= 0:
+                raise OSError("CRE lock authority write was short")
+            payload = payload[written:]
+        os.fsync(self.authority_fd)
+
+    @staticmethod
+    def _authority_is_neutral(fields: tuple[int, str, str, bool]) -> bool:
+        return fields == (0, "", "", False)
+
+    def _require_authority_hold(self) -> None:
+        if not self._authority_fd_matches_path():
+            raise LockHeldError("CRE lock authority changed before mutation")
+
+    def _verified_interrupted_legacy_reclaim(
+        self, authority: tuple[int, str, str, bool]
+    ) -> bool:
+        """Recognize only the old protocol's safely resumable partial residue.
+
+        Versions before the tombstone handoff created an empty ``.reclaim``
+        directory and then recursively deleted the canonical lock.  A process
+        death could leave just ``pid`` or ``lease`` behind.  Accept that exact
+        residue only when the held, normal authority identifies a dead owner,
+        the marker is an empty real directory, and every remaining lock entry
+        is a regular no-follow file consistent with that authority.  Anything
+        else remains an operator stop.
+        """
+        owner, _token, generation, recovery_required = authority
+        if (
+            self._authority_is_neutral(authority)
+            or recovery_required
+            or _pid_alive(owner)
+        ):
+            return False
+        legacy_guard = self.path.with_name(f"{self.path.name}.reclaim")
+        try:
+            guard_fd = os.open(
+                legacy_guard, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+        except OSError:
+            return False
+        try:
+            guard_stat = os.fstat(guard_fd)
+            named_guard = legacy_guard.lstat()
+            if (
+                not stat.S_ISDIR(guard_stat.st_mode)
+                or (guard_stat.st_dev, guard_stat.st_ino)
+                != (named_guard.st_dev, named_guard.st_ino)
+                or os.listdir(guard_fd)
+            ):
+                return False
+        except OSError:
+            return False
+        finally:
+            os.close(guard_fd)
+        return self._verified_interrupted_legacy_source(authority)
+
+    def _verified_interrupted_legacy_source(
+        self, authority: tuple[int, str, str, bool]
+    ) -> bool:
+        """Validate the old partial pid/lease residue without its sentinel."""
+        owner, _token, generation, recovery_required = authority
+        if (
+            self._authority_is_neutral(authority)
+            or recovery_required
+            or _pid_alive(owner)
+        ):
+            return False
+        try:
+            lock_fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            return False
+        try:
+            observed = os.fstat(lock_fd)
+            if _lock_directory_identity(self.path) != (
+                observed.st_dev,
+                observed.st_ino,
+            ):
+                return False
+            entries = set(os.listdir(lock_fd))
+            if not entries.issubset({"pid", "lease"}):
+                return False
+            for name in entries:
+                descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=lock_fd)
+                try:
+                    entry = os.fstat(descriptor)
+                    raw_bytes = os.read(descriptor, 512)
+                    raw = raw_bytes.decode("utf-8").strip()
+                    if (
+                        not stat.S_ISREG(entry.st_mode)
+                        or entry.st_nlink != 1
+                        or len(raw_bytes) >= 512
+                        or os.read(descriptor, 1)
+                    ):
+                        return False
+                except (OSError, UnicodeDecodeError):
+                    return False
+                finally:
+                    os.close(descriptor)
+                if name == "pid":
+                    try:
+                        if int(raw.split()[0]) != owner:
+                            return False
+                    except (IndexError, ValueError):
+                        return False
+                elif raw != generation:
+                    return False
+            return True
+        except OSError:
+            return False
+        finally:
+            os.close(lock_fd)
+
+    @staticmethod
+    def _authority_reclaim_state(descriptor: int) -> _AuthorityReclaimState | None:
+        raw = SharedLock._safe_authority_bytes(descriptor)
+        try:
+            parts = raw.decode("utf-8").strip().split()
+        except UnicodeDecodeError as exc:
+            raise LockHeldError("CRE lock authority is malformed") from exc
+        if not parts or parts[:2] != ["v1", "reclaiming"]:
+            return None
+        if len(parts) != 9:
+            raise LockHeldError("CRE lock authority reclaim state is malformed")
+        _, _, mode, owner_raw, token, generation, dev_raw, ino_raw, legacy_raw = parts
+        if mode == "neutral":
+            if (owner_raw, token, generation) != ("-", "-", "-"):
+                raise LockHeldError("CRE lock authority reclaim state is malformed")
+            owner = None
+            token_value = generation_value = None
+        elif mode == "bound":
+            try:
+                owner = int(owner_raw)
+            except ValueError as exc:
+                raise LockHeldError(
+                    "CRE lock authority reclaim state is malformed"
+                ) from exc
+            if (
+                owner <= 0
+                or re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) is None
+                or re.fullmatch(r"[A-Za-z0-9_-]{32,128}", generation) is None
+            ):
+                raise LockHeldError("CRE lock authority reclaim state is malformed")
+            token_value, generation_value = token, generation
+        else:
+            raise LockHeldError("CRE lock authority reclaim state is malformed")
+        try:
+            identity = (int(dev_raw), int(ino_raw))
+        except ValueError as exc:
+            raise LockHeldError(
+                "CRE lock authority reclaim state is malformed"
+            ) from exc
+        if identity[0] < 0 or identity[1] <= 0 or legacy_raw not in {"0", "1", "2"}:
+            raise LockHeldError("CRE lock authority reclaim state is malformed")
+        return _AuthorityReclaimState(
+            owner=owner,
+            token=token_value,
+            generation=generation_value,
+            recovery_required=False,
+            source_identity=identity,
+            legacy_guard=int(legacy_raw),
+        )
+
+    def _write_authority_bytes(self, payload: bytes) -> None:
+        if not self._authority_fd_matches_path():
+            raise LockHeldError("CRE lock authority changed before initialization")
+        os.ftruncate(self.authority_fd, 0)
+        os.lseek(self.authority_fd, 0, os.SEEK_SET)
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(self.authority_fd, remaining)
+            if written <= 0:
+                raise OSError("CRE lock authority write was short")
+            remaining = remaining[written:]
+        os.fsync(self.authority_fd)
+
+    def _write_reclaim_state(self, state: _AuthorityReclaimState) -> None:
+        if state.owner is None:
+            mode, owner, token, generation = "neutral", "-", "-", "-"
+        else:
+            mode, owner, token, generation = (
+                "bound",
+                str(state.owner),
+                state.token,
+                state.generation,
+            )
+        payload = (
+            f"v1 reclaiming {mode} {owner} {token} {generation} "
+            f"{state.source_identity[0]} {state.source_identity[1]} "
+            f"{int(state.legacy_guard)}\n"
+        ).encode()
+        self._write_authority_bytes(payload)
+
+    def _restore_reclaim_authority(self, state: _AuthorityReclaimState) -> None:
+        if state.owner is None:
+            payload = b"v1 neutral\n"
+        else:
+            payload = (
+                f"v1 {state.owner} {state.token} {state.generation} normal\n"
+            ).encode()
+        self._write_authority_bytes(payload)
+
+    def _fsync_lock_parent(self) -> None:
+        parent_fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+
+    def _legacy_guard_forensic_path(self, state: _AuthorityReclaimState) -> Path:
+        if state.owner is None or state.token is None:
+            raise LockHeldError("CRE legacy reclaim state is malformed")
+        tombstone = self.path.with_name(f"{self.path.name}.reclaim")
+        return tombstone.with_name(f"{tombstone.name}.legacy-guard.{state.token}")
+
+    @staticmethod
+    def _empty_real_directory(path: Path) -> bool:
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            return False
+        try:
+            opened = os.fstat(descriptor)
+            named = path.lstat()
+            return (
+                stat.S_ISDIR(opened.st_mode)
+                and (opened.st_dev, opened.st_ino) == (named.st_dev, named.st_ino)
+                and not os.listdir(descriptor)
+            )
+        except OSError:
+            return False
+        finally:
+            os.close(descriptor)
+
+    def _resume_reclaim_state(self, state: _AuthorityReclaimState) -> None:
+        """Finish a previously fsynced rename/delete handoff under this flock."""
+        self._require_authority_hold()
+        if state.recovery_required:
+            raise LockHeldError("CRE recovery-required reclaim state cannot resume")
+        if state.owner is not None and _pid_alive(state.owner):
+            raise LockHeldError(f"CRE reclaim source has live owner pid {state.owner}")
+        tombstone = self.path.with_name(f"{self.path.name}.reclaim")
+        try:
+            canonical_identity = _lock_directory_identity(self.path)
+        except FileNotFoundError:
+            canonical_identity = None
+        try:
+            tombstone_identity = _lock_directory_identity(tombstone)
+        except FileNotFoundError:
+            tombstone_identity = None
+
+        if canonical_identity is not None:
+            if canonical_identity != state.source_identity:
+                raise LockHeldError("CRE reclaim source directory changed")
+            if _lock_interlocked(self.path) or _lock_requires_operator_recovery(
+                self.path
+            ):
+                raise LockHeldError("CRE reclaim source requires operator recovery")
+            if state.owner is None:
+                owner = _lock_owner(self.path)
+                if owner is None or _pid_alive(owner):
+                    raise LockHeldError("CRE reclaim source owner changed")
+            elif state.legacy_guard:
+                legacy_authority = (
+                    state.owner,
+                    state.token or "",
+                    state.generation or "",
+                    False,
+                )
+                if not self._verified_interrupted_legacy_source(legacy_authority):
+                    raise LockHeldError("CRE reclaim legacy source changed")
+            elif (
+                _lock_owner(self.path) != state.owner
+                or _lock_lease(self.path) != state.generation
+            ):
+                raise LockHeldError("CRE reclaim source owner or lease changed")
+            if state.legacy_guard:
+                forensic = self._legacy_guard_forensic_path(state)
+                if state.legacy_guard == 1:
+                    if tombstone_identity is not None:
+                        if (
+                            not self._empty_real_directory(tombstone)
+                            or forensic.exists()
+                        ):
+                            raise LockHeldError(
+                                "CRE reclaim tombstone path is occupied"
+                            )
+                        os.rename(tombstone, forensic)
+                        self._fsync_lock_parent()
+                    else:
+                        if not self._empty_real_directory(forensic):
+                            raise LockHeldError("CRE reclaim legacy guard changed")
+                        # A predecessor may have performed this rename and
+                        # crashed before its parent fsync. Acknowledge it
+                        # durably before advancing the sidecar phase.
+                        self._fsync_lock_parent()
+                    state = replace(state, legacy_guard=2)
+                    self._write_reclaim_state(state)
+                elif state.legacy_guard == 2:
+                    if tombstone_identity is not None or not self._empty_real_directory(
+                        forensic
+                    ):
+                        raise LockHeldError("CRE reclaim legacy guard changed")
+                else:
+                    raise LockHeldError("CRE reclaim legacy state is malformed")
+            elif tombstone_identity is not None:
+                raise LockHeldError("CRE reclaim tombstone path is occupied")
+            os.rename(self.path, tombstone)
+            if _lock_directory_identity(tombstone) != state.source_identity:
+                raise LockHeldError("CRE reclaim tombstone changed during handoff")
+            self._fsync_lock_parent()
+            tombstone_identity = state.source_identity
+        elif (
+            tombstone_identity is not None
+            and tombstone_identity != state.source_identity
+        ):
+            raise LockHeldError("CRE reclaim tombstone changed")
+        elif canonical_identity is not None and tombstone_identity is not None:
+            raise LockHeldError("CRE reclaim has both canonical and tombstone paths")
+
+        if tombstone_identity is not None:
+            if _lock_interlocked(tombstone) or _lock_requires_operator_recovery(
+                tombstone
+            ):
+                raise LockHeldError("CRE reclaim tombstone requires operator recovery")
+            shutil.rmtree(tombstone)
+            self._fsync_lock_parent()
+        else:
+            # A prior process can have removed the exact tombstone and died
+            # before its parent fsync.  Do not clear the durable reclaim record
+            # until this successor has made that deletion durable as well.
+            self._fsync_lock_parent()
+        self._require_authority_hold()
+        self._restore_reclaim_authority(state)
+
+    def _begin_reclaim_state(
+        self,
+        authority: tuple[int, str, str, bool],
+        original_identity: tuple[int, int],
+        *,
+        legacy_guard: bool,
+    ) -> None:
+        tombstone = self.path.with_name(f"{self.path.name}.reclaim")
+        try:
+            tombstone.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if not legacy_guard:
+                raise LockHeldError("CRE reclaim tombstone path is occupied")
+        if self._authority_is_neutral(authority):
+            state = _AuthorityReclaimState(
+                owner=None,
+                token=None,
+                generation=None,
+                recovery_required=False,
+                source_identity=original_identity,
+                legacy_guard=1 if legacy_guard else 0,
+            )
+        else:
+            state = _AuthorityReclaimState(
+                owner=authority[0],
+                token=authority[1],
+                generation=authority[2],
+                recovery_required=False,
+                source_identity=original_identity,
+                legacy_guard=1 if legacy_guard else 0,
+            )
+        if legacy_guard:
+            # This sentinel originated under the pre-authority protocol. Make
+            # its verified namespace presence durable before acknowledging it
+            # in phase one of the persistent reclaim state.
+            self._fsync_lock_parent()
+        self._write_reclaim_state(state)
+        self._resume_reclaim_state(state)
+
+    def _reclaim_stale_directory_before_authority_commit(self) -> None:
+        """Reclaim a verified stale directory through a durable sidecar state."""
+        self._require_authority_hold()
+        try:
+            original_identity = _lock_directory_identity(self.path)
+        except FileNotFoundError:
+            prior = self._authority_fields(self.authority_fd)
+            if prior is None:
+                raise LockHeldError("CRE lock authority is malformed")
+            if not self._authority_is_neutral(prior):
+                # A prior release may have removed the directory but crashed
+                # before persisting that deletion. Never publish a successor
+                # generation over that observed absence until it is durable.
+                # A freshly-created neutral sidecar has no prior directory to
+                # acknowledge and must still be able to retain a recovery
+                # stop if its initial lock write fails.
+                self._fsync_lock_parent()
+            return
         if _lock_interlocked(self.path):
             raise LockHeldError(
                 f"CRE benchmark interlock requires operator recovery: {self.path}"
             )
+        if _lock_requires_operator_recovery(self.path):
+            raise LockHeldError(f"CRE lock requires operator recovery: {self.path}")
+        owner = _lock_owner(self.path)
+        authority = self._authority_fields(self.authority_fd)
+        if authority is None:
+            raise LockHeldError("CRE lock authority is malformed")
+        interrupted_legacy_reclaim = self._verified_interrupted_legacy_reclaim(
+            authority
+        )
+        if owner is None and not interrupted_legacy_reclaim:
+            raise LockHeldError("CRE lock is held (owner is starting)")
+        if owner is not None and _pid_alive(owner):
+            raise LockHeldError(f"CRE lock is held (live owner pid {owner})")
+        current = _lock_owner(self.path)
+        if (
+            _lock_interlocked(self.path)
+            or _lock_directory_identity(self.path) != original_identity
+            or (not interrupted_legacy_reclaim and current is None)
+            or (
+                interrupted_legacy_reclaim
+                and not self._verified_interrupted_legacy_reclaim(authority)
+            )
+        ):
+            raise LockHeldError("CRE lock changed or became interlocked during reclaim")
+        if current is not None and _pid_alive(current):
+            raise LockHeldError(f"CRE lock became live during reclaim (pid {current})")
+        self._begin_reclaim_state(
+            authority,
+            original_identity,
+            legacy_guard=interrupted_legacy_reclaim,
+        )
+
+    def _claim_authority(self, generation: str) -> None:
+        """Take the persistent sidecar without committing a successor yet.
+
+        A newly-created sidecar is first made durable as ``v1 neutral``.  That
+        matters for a live legacy directory: we must leave a reusable,
+        versioned authority behind even though no directory or sidecar state is
+        ours to mutate.  A non-neutral generation is not published until any
+        matching stale directory was removed and its parent directory fsynced.
+        Thus a process crash in that gap leaves the *previous* generation plus
+        no directory, which a later flock holder can safely supersede.
+        """
+        token = secrets.token_urlsafe(32)
+        descriptor = -1
+        created = False
+        try:
+            try:
+                descriptor = os.open(
+                    self.authority_path,
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                )
+                created = True
+            except FileExistsError:
+                descriptor = os.open(self.authority_path, os.O_RDWR | os.O_NOFOLLOW)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise LockHeldError(
+                    "CRE lock authority is held by another process"
+                ) from exc
+            observed = os.fstat(descriptor)
+            self.authority_fd = descriptor
+            self.authority_identity = (observed.st_dev, observed.st_ino)
+            self.authority_locked = True
+            descriptor = -1
+            if not self._authority_fd_matches_path():
+                raise LockHeldError("CRE lock authority changed before acquisition")
+            reclaim_state = self._authority_reclaim_state(self.authority_fd)
+            if reclaim_state is not None:
+                self._resume_reclaim_state(reclaim_state)
+            prior = self._authority_fields(self.authority_fd)
+            if created:
+                # Keep the exact held descriptor available to a candidate
+                # controller if neutral initialization itself faults.  No other
+                # process can observe or mutate it while this flock is held.
+                self.authority_token = token
+                self.authority_generation = generation
+                self.authority_recovery_required = self.recovery_required
+                self.authority_initializing = True
+                self._write_neutral_authority()
+                prior = self._authority_fields(self.authority_fd)
+            if prior is None:
+                raise LockHeldError("CRE lock authority is malformed")
+            if prior is not None and prior[3]:
+                raise LockHeldError("CRE lock authority requires operator recovery")
+            if not self._authority_is_neutral(prior) and self.path.exists():
+                directory_owner = _lock_owner(self.path)
+                directory_lease = _lock_lease(self.path)
+                if (directory_owner, directory_lease) != (
+                    prior[0],
+                    prior[2],
+                ) and not self._verified_interrupted_legacy_reclaim(prior):
+                    raise LockHeldError(
+                        "CRE lock authority is not a verified stale generation"
+                    )
+            if not created:
+                self.authority_token = token
+                self.authority_generation = generation
+                self.authority_recovery_required = self.recovery_required
+                self.authority_initializing = True
+            os.fchmod(self.authority_fd, 0o600)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _release_authority(self) -> None:
+        try:
+            if self.authority_fd >= 0 and self.authority_locked:
+                fcntl.flock(self.authority_fd, fcntl.LOCK_UN)
+        finally:
+            if self.authority_fd >= 0:
+                os.close(self.authority_fd)
+            self.authority_fd = -1
+            self.authority_identity = None
+            self.authority_token = None
+            self.authority_generation = None
+            self.authority_recovery_required = False
+            self.authority_locked = False
+            self.authority_initializing = False
+
+    def _record_created_directory(self) -> None:
+        """Bind partial recovery to this just-created directory before I/O."""
+        self._require_authority()
+        directory_fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            observed = os.fstat(directory_fd)
+            identity = (observed.st_dev, observed.st_ino)
+            if _lock_directory_identity(self.path) != identity:
+                raise LockHeldError("CRE newly-created lock directory changed")
+            if os.listdir(directory_fd):
+                raise LockHeldError("CRE newly-created lock directory is not empty")
+            self.partial_directory_identity = identity
+        finally:
+            os.close(directory_fd)
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lease_token = secrets.token_urlsafe(32)
+        if self.recovery_required:
+            lease_token = f"{OPERATOR_RECOVERY_LEASE_PREFIX}{lease_token}"
+        self.lease_token = lease_token
+        try:
+            self._claim_authority(lease_token)
+            self._reclaim_stale_directory_before_authority_commit()
+            self._write_owned_authority()
+            self._acquire_with_authority()
+        except BaseException:
+            if not (
+                self.recovery_required
+                and self.preserve_recovery_on_acquire_failure
+                and (
+                    self.partial_directory_identity is not None
+                    or (self.authority_initializing and not self.path.exists())
+                )
+            ):
+                self._release_authority()
+                self.lease_token = None
+            raise
+
+    def _acquire_with_authority(self) -> None:
         try:
             self.path.mkdir()
+            self._record_created_directory()
         except FileExistsError:
-            original_identity = _lock_directory_identity(self.path)
-            owner = _lock_owner(self.path)
-            if owner is None or _pid_alive(owner):
-                detail = (
-                    "owner is starting" if owner is None else f"live owner pid {owner}"
-                )
-                raise LockHeldError(f"CRE lock is held ({detail}): {self.path}")
-            reclaim = Path(f"{self.path}.reclaim")
-            try:
-                reclaim.mkdir()
-            except FileExistsError as exc:
-                raise LockHeldError(
-                    f"CRE lock reclamation is already in progress: {self.path}"
-                ) from exc
-            try:
-                current = _lock_owner(self.path)
-                if (
-                    _lock_interlocked(self.path)
-                    or _lock_directory_identity(self.path) != original_identity
-                    or current is None
-                ):
-                    raise LockHeldError(
-                        "CRE lock changed or became interlocked during reclaim"
-                    )
-                if _pid_alive(current):
-                    raise LockHeldError(
-                        f"CRE lock became live during reclaim (pid {current})"
-                    )
-                shutil.rmtree(self.path, ignore_errors=True)
-                self.path.mkdir()
-            finally:
-                shutil.rmtree(reclaim, ignore_errors=True)
-        lease_token = secrets.token_urlsafe(32)
+            raise LockHeldError("CRE lock directory changed before acquisition")
+        if self.lease_token is None:
+            raise LockHeldError("CRE lock has no authority-bound lease")
+        lease_token = self.lease_token
         try:
             atomic_write_text(self.path / "lease", f"{lease_token}\n")
             atomic_write_text(
@@ -769,16 +1474,25 @@ class SharedLock:
                 f"{os.getpid()} {int(datetime.now(timezone.utc).timestamp())}\n",
             )
         except Exception:
-            if _lock_lease(self.path) == lease_token and not _lock_interlocked(
-                self.path
+            preserve = (
+                self.recovery_required
+                and self.preserve_recovery_on_acquire_failure
+                and _lock_lease(self.path) == lease_token
+            )
+            if (
+                not preserve
+                and _lock_lease(self.path) == lease_token
+                and not _lock_interlocked(self.path)
             ):
                 shutil.rmtree(self.path, ignore_errors=True)
             raise
-        self.lease_token = lease_token
         self.directory_identity = _lock_directory_identity(self.path)
+        self.partial_directory_identity = None
+        self.retain_on_exit = False
         self.held = True
 
     def _owned_directory_fd(self) -> int:
+        self._require_authority()
         if (
             not self.held
             or self.lease_token is None
@@ -884,19 +1598,227 @@ class SharedLock:
         finally:
             os.close(directory_fd)
 
+    def retain_for_operator_recovery(self) -> None:
+        """Keep this verified lease on context exit when publication has failed.
+
+        This is deliberately process-local: an operator-visible marker remains
+        the durable recovery boundary, while a dead owner without a marker can
+        still use the ordinary stale-lock reclaim path.
+        """
+        directory_fd = self._owned_directory_fd()
+        try:
+            self.retain_on_exit = True
+        finally:
+            os.close(directory_fd)
+
+    @staticmethod
+    def _owned_lease(directory_fd: int) -> str | None:
+        descriptor = os.open("lease", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        try:
+            observed = os.fstat(descriptor)
+            if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+                raise LockHeldError("CRE recovery lease is unsafe")
+            value = os.read(descriptor, 512).decode("utf-8").strip()
+            if os.read(descriptor, 1):
+                raise LockHeldError("CRE recovery lease is oversized")
+            return value or None
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _replace_owned_text(directory_fd: int, name: str, value: str) -> None:
+        temporary = f".{name}.{secrets.token_urlsafe(16)}.tmp"
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_fd,
+            )
+            os.fchmod(descriptor, 0o600)
+            remaining = memoryview(f"{value}\n".encode("utf-8"))
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise OSError("CRE recovery lease write was short")
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            os.replace(
+                temporary,
+                name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+            os.fsync(directory_fd)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+
+    @staticmethod
+    def _replace_owned_lease(directory_fd: int, value: str) -> None:
+        SharedLock._replace_owned_text(directory_fd, "lease", value)
+
+    @staticmethod
+    def _owned_pid(directory_fd: int) -> int | None:
+        descriptor = os.open("pid", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        try:
+            observed = os.fstat(descriptor)
+            if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+                raise LockHeldError("CRE recovery pid is unsafe")
+            first = os.read(descriptor, 512).decode("utf-8").split()[0]
+            return int(first)
+        finally:
+            os.close(descriptor)
+
+    def recover_partial_acquire(self) -> None:
+        """Finish only this instance's exact, newly-created recovery lock."""
+        identity = self.partial_directory_identity
+        if not self.recovery_required or self.held:
+            raise LockHeldError("CRE partial recovery lock is not owned")
+        if identity is None:
+            if not self.authority_initializing:
+                raise LockHeldError("CRE partial recovery lock is not owned")
+            self._write_owned_authority()
+            self._acquire_with_authority()
+            if not self.held:
+                raise LockHeldError("CRE authority recovery did not acquire the lock")
+            return
+        self._require_authority()
+        directory_fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(directory_fd)
+            if (opened.st_dev, opened.st_ino) != identity or _lock_directory_identity(
+                self.path
+            ) != identity:
+                raise LockHeldError("CRE partial recovery lock directory changed")
+            entries = os.listdir(directory_fd)
+            temporary_entries: list[str] = []
+            for name in entries:
+                if name in {"lease", "pid"}:
+                    continue
+                if not (
+                    name.startswith((".lease.", ".pid.")) and name.endswith(".tmp")
+                ):
+                    raise LockHeldError(
+                        "CRE partial recovery lock contains unexpected entry"
+                    )
+                observed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+                    raise LockHeldError(
+                        "CRE partial recovery lock contains unsafe entry"
+                    )
+                temporary_entries.append(name)
+            lease = self._owned_lease(directory_fd) if "lease" in entries else None
+            if lease is None:
+                lease = self.authority_generation
+                if lease is None:
+                    raise LockHeldError("CRE partial recovery authority is malformed")
+                self._replace_owned_lease(directory_fd, lease)
+            if lease != self.authority_generation or not lease.startswith(
+                OPERATOR_RECOVERY_LEASE_PREFIX
+            ):
+                raise LockHeldError("CRE partial recovery lease is not recoverable")
+            for name in temporary_entries:
+                os.unlink(name, dir_fd=directory_fd)
+            self.lease_token = lease
+            try:
+                pid = self._owned_pid(directory_fd)
+            except FileNotFoundError:
+                pid = None
+            if pid is None:
+                self._replace_owned_text(
+                    directory_fd,
+                    "pid",
+                    f"{os.getpid()} {int(datetime.now(timezone.utc).timestamp())}",
+                )
+            elif pid != os.getpid():
+                raise LockHeldError("CRE partial recovery lock owner changed")
+            os.fsync(directory_fd)
+            if _lock_directory_identity(self.path) != identity:
+                raise LockHeldError("CRE partial recovery lock directory changed")
+            parent_fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+            if _lock_directory_identity(self.path) != identity:
+                raise LockHeldError("CRE partial recovery lock directory changed")
+            self.directory_identity = identity
+            self.retain_on_exit = False
+            self.held = True
+            self.partial_directory_identity = None
+        finally:
+            os.close(directory_fd)
+
+    def _update_authority_generation(
+        self, generation: str, *, recovery_required: bool
+    ) -> None:
+        self._require_authority()
+        original_generation = self.authority_generation
+        original_recovery = self.authority_recovery_required
+        self.authority_generation = generation
+        self.authority_recovery_required = recovery_required
+        try:
+            self._write_owned_authority()
+        except BaseException:
+            self.authority_generation = original_generation
+            self.authority_recovery_required = original_recovery
+            raise
+
+    def clear_recovery_requirement(self) -> None:
+        """Durably make a successfully restored candidate lease reclaimable."""
+        if not self.recovery_required:
+            return
+        directory_fd = self._owned_directory_fd()
+        try:
+            replacement = secrets.token_urlsafe(32)
+            self._replace_owned_lease(directory_fd, replacement)
+            if self._owned_lease(directory_fd) != replacement:
+                raise LockHeldError("CRE recovery lease changed while clearing")
+            if _lock_directory_identity(self.path) != self.directory_identity:
+                raise LockHeldError(
+                    "CRE lock directory changed while clearing recovery"
+                )
+            self._update_authority_generation(replacement, recovery_required=False)
+            self.lease_token = replacement
+            self.recovery_required = False
+        finally:
+            os.close(directory_fd)
+
     def release(self) -> None:
-        if (
-            self.held
-            and self.lease_token is not None
-            and _lock_owner(self.path) == os.getpid()
-            and _lock_lease(self.path) == self.lease_token
-            and not _lock_interlocked(self.path)
-            and self.benchmark_marker_identity is None
-        ):
-            shutil.rmtree(self.path, ignore_errors=True)
+        try:
+            directory_fd = self._owned_directory_fd()
+        except LockHeldError:
+            directory_fd = -1
+        try:
+            try:
+                if (
+                    directory_fd >= 0
+                    and self.lease_token is not None
+                    and self._owned_lease(directory_fd) == self.lease_token
+                    and not _lock_interlocked(self.path)
+                    and self.benchmark_marker_identity is None
+                    and not self.retain_on_exit
+                    and not self.recovery_required
+                    and _lock_directory_identity(self.path) == self.directory_identity
+                ):
+                    shutil.rmtree(self.path, ignore_errors=True)
+            except (LockHeldError, OSError):
+                pass
+        finally:
+            if directory_fd >= 0:
+                os.close(directory_fd)
         self.held = False
         self.lease_token = None
         self.directory_identity = None
+        self._release_authority()
 
     def __enter__(self) -> Self:
         self.acquire()
@@ -1007,9 +1929,7 @@ def build_gate_argv(
     if env_file:
         argv.extend(["--env-file", env_file])
     if expected_db_target_sha256:
-        argv.extend(
-            ["--expected-db-target-sha256", expected_db_target_sha256]
-        )
+        argv.extend(["--expected-db-target-sha256", expected_db_target_sha256])
     return argv
 
 
@@ -1053,9 +1973,7 @@ def build_ingest_argv(
     if env_file:
         argv.extend(["--env-file", env_file])
     if expected_db_target_sha256:
-        argv.extend(
-            ["--expected-db-target-sha256", expected_db_target_sha256]
-        )
+        argv.extend(["--expected-db-target-sha256", expected_db_target_sha256])
     if FORBIDDEN_INGEST_FLAGS.intersection(argv):
         raise AssertionError("additive ingest argv contains a forbidden flag")
     return argv
@@ -1079,9 +1997,7 @@ def build_validate_argv(
     if env_file:
         argv.extend(["--env-file", env_file])
     if expected_db_target_sha256:
-        argv.extend(
-            ["--expected-db-target-sha256", expected_db_target_sha256]
-        )
+        argv.extend(["--expected-db-target-sha256", expected_db_target_sha256])
     if expected_artifact_run_key:
         argv.extend(["--expected-artifact-run-key", expected_artifact_run_key])
     return argv
@@ -1168,9 +2084,7 @@ def fresh_source_env(
         set_value("AVISON_YOUNG_DETAIL_TRANSPORT", "direct")
     if source == "cushman-wakefield":
         if collector_concurrency is not None:
-            record_inherited(
-                "CUSHMAN_DETAIL_CONCURRENCY", 1, collector_concurrency
-            )
+            record_inherited("CUSHMAN_DETAIL_CONCURRENCY", 1, collector_concurrency)
         clear("CUSHMAN_QUERY")
         set_value("CUSHMAN_DETAIL_MODE", "base")
     if source == "colliers-main":
@@ -1243,10 +2157,7 @@ def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, int]:
         if listing.get("provisionalIdentity"):
             provisional_identities += 1
         inventory_row = to_inventory_only_row(listing, scraped_at)
-        if (
-            listing.get("inventoryOnly") is not None
-            and inventory_row is None
-        ):
+        if listing.get("inventoryOnly") is not None and inventory_row is None:
             raise ArtifactValidationError(
                 f"listings[{index}] has an invalid inventoryOnly identity"
             )
@@ -1268,15 +2179,14 @@ def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, int]:
         try:
             row = to_row(listing, brokers_by_idx, scraped_at)
         except Exception as exc:
-            raise ArtifactValidationError(f"listings[{index}] failed to_row: {exc}") from exc
+            raise ArtifactValidationError(
+                f"listings[{index}] failed to_row: {exc}"
+            ) from exc
         if row is None:
             rejected += 1
             continue
         key = (row["slug"], row["external_id"])
-        if (
-            listing.get("sourceKey") in {"colliers", "newmark"}
-            and key in merged
-        ):
+        if listing.get("sourceKey") in {"colliers", "newmark"} and key in merged:
             identity_label = (
                 "canonical ProjectId"
                 if listing.get("sourceKey") == "colliers"
@@ -1331,7 +2241,9 @@ def validate_source_artifact(
             f"runMeta.transactions must be {list(selected_transactions)!r}"
         )
     if run_meta.get("maxItemsPerSource") is not None:
-        raise ArtifactValidationError("full refresh requires unlimited maxItemsPerSource")
+        raise ArtifactValidationError(
+            "full refresh requires unlimited maxItemsPerSource"
+        )
 
     started = parse_iso8601(run_meta.get("startedAt"), field="runMeta.startedAt")
     finished = parse_iso8601(run_meta.get("finishedAt"), field="runMeta.finishedAt")
@@ -1348,21 +2260,19 @@ def validate_source_artifact(
     )
     if finished < started:
         raise ArtifactValidationError("runMeta.finishedAt precedes startedAt")
-    if (
-        not math.isfinite(max_observation_age_hours)
-        or max_observation_age_hours <= 0
-    ):
+    if not math.isfinite(max_observation_age_hours) or max_observation_age_hours <= 0:
         raise ArtifactValidationError(
             "maximum artifact observation age must be finite and positive"
         )
     observation_cutoff = finished - timedelta(hours=max_observation_age_hours)
     if started.timestamp() + 5 < attempt.timestamp():
-        raise ArtifactValidationError("artifact predates the current collection attempt")
+        raise ArtifactValidationError(
+            "artifact predates the current collection attempt"
+        )
 
     freshness = run_meta.get("freshness")
     strict_freshness = (
-        isinstance(freshness, dict)
-        and freshness.get("requireFreshDetails") is True
+        isinstance(freshness, dict) and freshness.get("requireFreshDetails") is True
     )
     property_detail_freshness = (
         expected_source in PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS
@@ -1484,7 +2394,9 @@ def validate_source_artifact(
             )
         count = entry.get("listingsCollected")
         if not isinstance(count, int) or count < 0:
-            raise ArtifactValidationError(f"{expected_source}/{tx} has an invalid listing count")
+            raise ArtifactValidationError(
+                f"{expected_source}/{tx} has an invalid listing count"
+            )
         entry_total += count
         if strict_freshness or property_detail_freshness:
             canonical_count = canonical_count_for_transaction(tx, count)
@@ -1555,22 +2467,23 @@ def validate_source_artifact(
     listings = data.get("listings")
     if not isinstance(listings, list):
         raise ArtifactValidationError("full source artifact listings must be an array")
-    if (
-        not listings
-        and expected_source not in INVENTORY_ONLY_SOURCE_DEFINITIONS
-    ):
+    if not listings and expected_source not in INVENTORY_ONLY_SOURCE_DEFINITIONS:
         raise ArtifactValidationError("full source artifact must contain listings")
     if data.get("totalListings") != len(listings):
         raise ArtifactValidationError("totalListings does not match listings length")
     if entry_total != len(listings):
-        raise ArtifactValidationError("source entry counts do not match listings length")
+        raise ArtifactValidationError(
+            "source entry counts do not match listings length"
+        )
     for index, listing in enumerate(listings):
         if not isinstance(listing, dict):
             raise ArtifactValidationError(f"listings[{index}] must be an object")
         if listing.get("sourceKey") != expected_source:
             raise ArtifactValidationError(f"listings[{index}] has the wrong sourceKey")
         if listing.get("transactionMode") not in selected_transactions:
-            raise ArtifactValidationError(f"listings[{index}] has an invalid transactionMode")
+            raise ArtifactValidationError(
+                f"listings[{index}] has an invalid transactionMode"
+            )
         observation_fields = [
             ("inventoryObservedAt", listing.get("inventoryObservedAt")),
             ("detailObservedAt", listing.get("detailObservedAt")),
@@ -1679,10 +2592,7 @@ def validate_source_artifact(
                     raise ArtifactValidationError(
                         f"listings[{index}] lacks authoritative inventory-feed provenance"
                     )
-                if (
-                    expected_source
-                    in CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
-                ):
+                if expected_source in CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS:
                     if not preserves_children:
                         raise ArtifactValidationError(
                             f"listings[{index}] must preserve child collections"
@@ -1701,9 +2611,8 @@ def validate_source_artifact(
                     raise ArtifactValidationError(
                         f"listings[{index}] must not preserve child collections"
                     )
-                if (
-                    preserves_contacts
-                    and not colliers_contact_preservation_is_valid(listing)
+                if preserves_contacts and not colliers_contact_preservation_is_valid(
+                    listing
                 ):
                     raise ArtifactValidationError(
                         f"listings[{index}] has invalid contact preservation"
@@ -1715,10 +2624,9 @@ def validate_source_artifact(
                         f"listings[{index}] has an unaccepted strict-detail scope"
                     )
                 detail_value = listing.get("detailObservedAt")
-                if (
-                    provenance.get("cacheDisposition") == "source_revision_cache"
-                    and provenance.get("validatedAt")
-                ):
+                if provenance.get(
+                    "cacheDisposition"
+                ) == "source_revision_cache" and provenance.get("validatedAt"):
                     detail_value = provenance.get("validatedAt")
                 detail_observed = parse_iso8601(
                     detail_value,
@@ -1750,8 +2658,7 @@ def validate_source_artifact(
         )
     if (
         expected_source in {"cbre-dealflow", "colliers", "newmark"}
-        and stats["flat_listings"]
-        != stats["staged_unique"] + stats["inventory_only"]
+        and stats["flat_listings"] != stats["staged_unique"] + stats["inventory_only"]
     ):
         raise ArtifactValidationError(
             f"{expected_source} artifact does not preserve a one-to-one provider-card "
@@ -1760,10 +2667,7 @@ def validate_source_artifact(
     if (
         stats["staged_unique"] <= 0
         and stats["inventory_only"] <= 0
-        and not (
-            expected_source in INVENTORY_ONLY_SOURCE_DEFINITIONS
-            and not listings
-        )
+        and not (expected_source in INVENTORY_ONLY_SOURCE_DEFINITIONS and not listings)
     ):
         raise ArtifactValidationError("artifact has no usable unique rows")
     return {
@@ -1776,9 +2680,7 @@ def validate_source_artifact(
         "property_detail_freshness": property_detail_freshness,
         "freshness_generation_id": generation_id,
         "freshness_generation_started_at": (
-            generation_started.isoformat()
-            if generation_started is not None
-            else None
+            generation_started.isoformat() if generation_started is not None else None
         ),
         "sha256": sha256_file(path),
         "bytes": path.stat().st_size,
@@ -1796,9 +2698,7 @@ def _mark_cpu_interrupt_evidence_failed(*, reaped: bool) -> None:
         reason_code="host_cpu_evidence_failed",
         telemetry_valid=(details.telemetry_valid if details is not None else False),
         evidence_valid=False,
-        host_cpu_percent=(
-            details.host_cpu_percent if details is not None else None
-        ),
+        host_cpu_percent=(details.host_cpu_percent if details is not None else None),
         context=(details.context if details is not None else None),
         owned_processes_reaped=reaped,
     )
@@ -1881,9 +2781,7 @@ def _run_logged_command(
                 cleanup_errors.append(exc)
             if cleanup_errors:
                 if isinstance(interrupted, CpuGuardTrip):
-                    _mark_cpu_interrupt_evidence_failed(
-                        reaped=reaped_after_interrupt
-                    )
+                    _mark_cpu_interrupt_evidence_failed(reaped=reaped_after_interrupt)
                 else:
                     raise RefreshError(
                         "interrupt cleanup or required evidence failed"
@@ -1897,9 +2795,7 @@ def _run_logged_command(
             log.close()
         except (OSError, ValueError) as close_exc:
             if isinstance(active_error, CpuGuardTrip):
-                _mark_cpu_interrupt_evidence_failed(
-                    reaped=reaped_after_interrupt
-                )
+                _mark_cpu_interrupt_evidence_failed(reaped=reaped_after_interrupt)
                 raise active_error from close_exc
             if isinstance(active_error, KeyboardInterrupt):
                 raise RefreshError(
@@ -2059,7 +2955,7 @@ def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> No
             continue
         record_log(
             item,
-            f"[{utc_now()}] interrupt: terminating process group {item.process.pid}\n"
+            f"[{utc_now()}] interrupt: terminating process group {item.process.pid}\n",
         )
         try:
             os.killpg(item.process.pid, signal.SIGINT)
@@ -2126,9 +3022,7 @@ def _cohort_attempt(
     attempt_number = len(checkpoint["attempts"]) + 1
     attempt_started = utc_now()
     attempt_log = run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
-    tmp_artifact = (
-        run_dir / "sources" / f"{source}.attempt-{attempt_number}.json.tmp"
-    )
+    tmp_artifact = run_dir / "sources" / f"{source}.attempt-{attempt_number}.json.tmp"
     tmp_artifact.parent.mkdir(parents=True, exist_ok=True)
     tmp_artifact.unlink(missing_ok=True)
     attempt = {
@@ -2598,7 +3492,9 @@ def _relative_to_run(path: Path, run_dir: Path) -> str:
     return str(path.relative_to(run_dir))
 
 
-def _archive_rejected(tmp_artifact: Path, run_dir: Path, source: str, attempt_number: int) -> str | None:
+def _archive_rejected(
+    tmp_artifact: Path, run_dir: Path, source: str, attempt_number: int
+) -> str | None:
     if not tmp_artifact.exists():
         return None
     rejected = run_dir / "rejected" / f"{source}-attempt-{attempt_number}.json"
@@ -2625,7 +3521,9 @@ def _checkpoint_artifact_valid(
     path = run_dir / rel
     if not path.is_file() or sha256_file(path) != expected_hash:
         return None
-    attempt_started = artifact_info.get("attempt_started_at") or artifact_info.get("started_at")
+    attempt_started = artifact_info.get("attempt_started_at") or artifact_info.get(
+        "started_at"
+    )
     generation_bound = (
         source in STRICT_FRESHNESS_SOURCE_KEYS
         or source in PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS
@@ -2636,9 +3534,7 @@ def _checkpoint_artifact_valid(
             source,
             attempt_started,
             require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
-            expected_generation_id=(
-                run_dir.name if generation_bound else None
-            ),
+            expected_generation_id=(run_dir.name if generation_bound else None),
             expected_generation_started_at=(
                 generation_started_at if generation_bound else None
             ),
@@ -2783,8 +3679,10 @@ def collect_colliers_main_chunks(
             )
     return (
         75,
-        ("colliers-main remained incomplete after "
-         f"{COLLIERS_MAIN_MAX_CHUNKS_PER_ATTEMPT} bounded collection chunks"),
+        (
+            "colliers-main remained incomplete after "
+            f"{COLLIERS_MAIN_MAX_CHUNKS_PER_ATTEMPT} bounded collection chunks"
+        ),
     )
 
 
@@ -2821,7 +3719,9 @@ def collect_source(
     for _ in range(attempts_this_run):
         attempt_number = len(checkpoint["attempts"]) + 1
         attempt_started = utc_now()
-        attempt_log = run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
+        attempt_log = (
+            run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
+        )
         tmp_artifact.unlink(missing_ok=True)
         env, overrides = fresh_source_env(
             source,
@@ -2853,7 +3753,10 @@ def collect_source(
         save_manifest(run_dir, manifest)
         collection_error = None
         if source == "colliers-main":
-            def record_chunk(chunk: dict[str, Any], *, attempt_record: dict[str, Any] = attempt) -> None:
+
+            def record_chunk(
+                chunk: dict[str, Any], *, attempt_record: dict[str, Any] = attempt
+            ) -> None:
                 attempt_record["chunks"].append(chunk)
                 save_manifest(run_dir, manifest)
 
@@ -2905,9 +3808,7 @@ def collect_source(
                 source,
                 attempt_started,
                 require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
-                expected_generation_id=(
-                    run_dir.name if generation_bound else None
-                ),
+                expected_generation_id=(run_dir.name if generation_bound else None),
                 expected_generation_started_at=(
                     manifest["started_at"] if generation_bound else None
                 ),
@@ -2950,9 +3851,7 @@ def subset_gate_can_admit(info: Mapping[str, Any]) -> bool:
     )
 
 
-def gate_verdict_is_admitted(
-    manifest: Mapping[str, Any], verdict: Any
-) -> bool:
+def gate_verdict_is_admitted(manifest: Mapping[str, Any], verdict: Any) -> bool:
     transactions = tuple(manifest["config"]["transactions"])
     if transactions != TRANSACTIONS:
         return verdict == "ok_additive_subset"
@@ -2969,9 +3868,7 @@ def gate_source(
     env_file: str | None,
 ) -> None:
     checkpoint = manifest["sources"][source]
-    full_transaction_scope = (
-        tuple(manifest["config"]["transactions"]) == TRANSACTIONS
-    )
+    full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
     additive_hold_enabled = (
         manifest["config"].get("admit_baseline_hold_additively") is True
     )
@@ -2991,7 +3888,9 @@ def gate_source(
     if rc not in (0, 2):
         checkpoint["state"] = "gate_failed"
         save_manifest(run_dir, manifest)
-        raise GlobalStageError(f"coverage gate infrastructure failed for {source} (rc={rc})")
+        raise GlobalStageError(
+            f"coverage gate infrastructure failed for {source} (rc={rc})"
+        )
     try:
         result = _load_json(gate_path)
         per_source = result["per_source"][source]
@@ -3023,9 +3922,7 @@ def gate_source(
                 "whole_source_coverage": False,
             }
             if additive_coverage_hold:
-                manifest["scope"]["kind"] = (
-                    "collector_registry_additive_coverage_hold"
-                )
+                manifest["scope"]["kind"] = "collector_registry_additive_coverage_hold"
                 manifest["scope"]["whole_source_coverage"] = False
             scoped_info = per_source
             scoped_info["raw_verdict"] = scoped_info.get("verdict")
@@ -3033,9 +3930,7 @@ def gate_source(
             additive_admitted = subset_gate_can_admit(scoped_info)
             if additive_admitted:
                 scoped_info["verdict"] = (
-                    "ok_additive_subset"
-                    if subset_mode
-                    else "ok_additive_coverage_hold"
+                    "ok_additive_subset" if subset_mode else "ok_additive_coverage_hold"
                 )
                 scoped_info["reason"] = (
                     "strict artifact admitted additively; whole-source "
@@ -3057,9 +3952,7 @@ def gate_source(
                 else []
             )
             summary["hold_sources"] = (
-                []
-                if additive_admitted
-                else list(summary.get("hold_sources") or [])
+                [] if additive_admitted else list(summary.get("hold_sources") or [])
             )
             summary["mark_missing_safe_brokerages"] = []
             atomic_write_json(gate_path, result)
@@ -3210,9 +4103,7 @@ def advance_source(
         if not gate_verdict_is_admitted(manifest, verdict):
             checkpoint["state"] = "ingested"
             checkpoint["admission_state"] = (
-                "baseline_seed_required"
-                if verdict == "first_seen"
-                else "gate_blocked"
+                "baseline_seed_required" if verdict == "first_seen" else "gate_blocked"
             )
             save_manifest(run_dir, manifest)
             return False
@@ -3445,9 +4336,7 @@ def run_aggregate_gate(
     if rc not in (0, 2):
         raise GlobalStageError(f"aggregate coverage gate failed (rc={rc})")
     result = _load_json(output)
-    full_transaction_scope = (
-        tuple(manifest["config"]["transactions"]) == TRANSACTIONS
-    )
+    full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
     per_source = result.get("per_source") or {}
     additive_hold_enabled = (
         manifest["config"].get("admit_baseline_hold_additively") is True
@@ -3463,9 +4352,7 @@ def run_aggregate_gate(
             and subset_gate_can_admit(info)
         )
     )
-    limited_admission = (
-        not full_transaction_scope or bool(additive_coverage_holds)
-    )
+    limited_admission = not full_transaction_scope or bool(additive_coverage_holds)
     if limited_admission:
         summary = result.get("summary")
         if (
@@ -3486,9 +4373,7 @@ def run_aggregate_gate(
             "whole_source_coverage": False,
         }
         if additive_coverage_holds:
-            manifest["scope"]["kind"] = (
-                "collector_registry_additive_coverage_hold"
-            )
+            manifest["scope"]["kind"] = "collector_registry_additive_coverage_hold"
             manifest["scope"]["whole_source_coverage"] = False
         baseline_advisory_holds: list[str] = []
         for source, info in per_source.items():
@@ -3522,9 +4407,7 @@ def run_aggregate_gate(
                         else "additive_coverage_hold_batch"
                     )
                 )
-        summary["baseline_advisory_holds"] = sorted(
-            baseline_advisory_holds
-        )
+        summary["baseline_advisory_holds"] = sorted(baseline_advisory_holds)
         summary["hold_sources"] = sorted(
             source
             for source, info in per_source.items()
@@ -3537,10 +4420,10 @@ def run_aggregate_gate(
     non_ok_sources = sorted(
         configured_sources - observed_sources
         | {
-        source
-        for source, info in per_source.items()
-        if not isinstance(info, dict)
-        or not gate_verdict_is_admitted(manifest, info.get("verdict"))
+            source
+            for source, info in per_source.items()
+            if not isinstance(info, dict)
+            or not gate_verdict_is_admitted(manifest, info.get("verdict"))
         }
     )
     manifest["aggregate_gate"] = {
@@ -3601,11 +4484,7 @@ def _artifact_run_job_probe_is_exact(
 ) -> bool:
     queries = validation.get("queries")
     rows = queries.get("artifact_run_jobs") if isinstance(queries, dict) else None
-    if (
-        not isinstance(rows, list)
-        or len(rows) != 1
-        or not isinstance(rows[0], dict)
-    ):
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
         return False
     raw_count = rows[0].get("matching_jobs")
     if isinstance(raw_count, bool):
@@ -3793,17 +4672,15 @@ def _generation_expectation(
 ) -> tuple[str, datetime]:
     """Return the checkpoint generation identity and its immutable boundary."""
     generation_id = artifact.get("freshness_generation_id") or manifest.get("run_id")
-    generation_started_at = (
-        artifact.get("freshness_generation_started_at") or manifest.get("started_at")
-    )
+    generation_started_at = artifact.get(
+        "freshness_generation_started_at"
+    ) or manifest.get("started_at")
     if not isinstance(generation_id, str) or not generation_id:
         raise ValueError(f"{source} is missing its refresh generation id")
     return generation_id, _timestamp_second(generation_started_at)
 
 
-def _generation_evidence_values(
-    row: Mapping[str, Any], field: str
-) -> set[str] | None:
+def _generation_evidence_values(row: Mapping[str, Any], field: str) -> set[str] | None:
     """Parse the validator's JSON aggregate for one generation evidence field."""
     value = row.get(field)
     if isinstance(value, str):
@@ -3838,10 +4715,9 @@ def verify_validation_readback(
     queries = validation.get("queries")
     source_policy = load_source_policy()
     generation_rows = (
-        queries.get("freshness_generations")
-        if isinstance(queries, dict)
-        else None
+        queries.get("freshness_generations") if isinstance(queries, dict) else None
     )
+
     def requires_canonical_generation(source: str) -> bool:
         policy = source_policy[source]
         if policy["inventory_only_namespace"] is None:
@@ -3873,9 +4749,7 @@ def verify_validation_readback(
         if isinstance(row, dict) and isinstance(row.get("source_key"), str)
     }
     raw_queue_rows = (
-        queries.get("enrichment_queue_health")
-        if isinstance(queries, dict)
-        else None
+        queries.get("enrichment_queue_health") if isinstance(queries, dict) else None
     )
     queue_health_available = isinstance(raw_queue_rows, list)
     queue_by_source = {
@@ -3897,10 +4771,9 @@ def verify_validation_readback(
     inventory_coverage_error = None
     if fingerprint_rows_available:
         try:
-            if (
-                len(raw_fingerprint_rows) != len(SOURCE_KEYS)
-                or set(fingerprint_by_source) != set(SOURCE_KEYS)
-            ):
+            if len(raw_fingerprint_rows) != len(SOURCE_KEYS) or set(
+                fingerprint_by_source
+            ) != set(SOURCE_KEYS):
                 raise ValueError("fingerprint source coverage is incomplete")
             coverage = {
                 (
@@ -3913,7 +4786,9 @@ def verify_validation_readback(
             if len(coverage) != 1:
                 raise ValueError("fingerprint coverage totals disagree")
             active_rows, classified_rows, unclassified_rows = coverage.pop()
-            fingerprint_rows = sum(int(row["row_count"]) for row in raw_fingerprint_rows)
+            fingerprint_rows = sum(
+                int(row["row_count"]) for row in raw_fingerprint_rows
+            )
             if (
                 min(active_rows, classified_rows, unclassified_rows) < 0
                 or active_rows != classified_rows + unclassified_rows
@@ -4011,8 +4886,7 @@ def verify_validation_readback(
                     "ok": False,
                     "generation_id": generation_id,
                     "reason": (
-                        "generation start exceeds the 5-minute "
-                        "clock-skew allowance"
+                        "generation start exceeds the 5-minute clock-skew allowance"
                     ),
                 }
                 failures.append(source)
@@ -4054,17 +4928,12 @@ def verify_validation_readback(
                 }
                 failures.append(source)
                 continue
-            detail_scopes = _generation_evidence_values(
-                generation_row, "detail_scopes"
-            )
+            detail_scopes = _generation_evidence_values(generation_row, "detail_scopes")
             accepted_scopes = accepted_detail_scopes(evidence_class, source)
             cache_dispositions = _generation_evidence_values(
                 generation_row, "cache_dispositions"
             )
-            if (
-                detail_scopes is None
-                or not detail_scopes <= accepted_scopes
-            ):
+            if detail_scopes is None or not detail_scopes <= accepted_scopes:
                 checkpoint["readback"] = {
                     "ok": False,
                     "generation_id": generation_id,
@@ -4095,9 +4964,7 @@ def verify_validation_readback(
                     generation_row["latest_inventory_observed_at"]
                 )
                 if contract["requires_detail"]:
-                    persisted_detail = int(
-                        generation_row["persisted_detail_observed"]
-                    )
+                    persisted_detail = int(generation_row["persisted_detail_observed"])
                     missing_detail = int(
                         generation_row["missing_persisted_detail_proof"]
                     )
@@ -4162,7 +5029,9 @@ def verify_validation_readback(
             elif earliest_inventory < generation_started:
                 reason = "generation inventory observation predates generation start"
             elif earliest_inventory < observation_cutoff:
-                reason = "generation inventory observation exceeds artifact freshness SLO"
+                reason = (
+                    "generation inventory observation exceeds artifact freshness SLO"
+                )
             elif contract["requires_detail"] and persisted_detail != staged:
                 reason = (
                     "persisted detail observations "
@@ -4192,10 +5061,7 @@ def verify_validation_readback(
         inventory_details: dict[str, Any] = {
             "expected_active": expected_inventory_only,
         }
-        if (
-            expected_inventory_only
-            or policy["inventory_only_namespace"] is not None
-        ):
+        if expected_inventory_only or policy["inventory_only_namespace"] is not None:
             if inventory_readback is None:
                 inventory_ok = False
                 inventory_reason = "inventory-only source-index row is missing"
@@ -4213,9 +5079,7 @@ def verify_validation_readback(
                         if latest_inventory_at_raw
                         else None
                     )
-                    scope_watermark_raw = inventory_readback.get(
-                        "scope_watermark_at"
-                    )
+                    scope_watermark_raw = inventory_readback.get("scope_watermark_at")
                     scope_watermark = (
                         _timestamp_second(scope_watermark_raw)
                         if scope_watermark_raw
@@ -4263,14 +5127,10 @@ def verify_validation_readback(
                             f"!= expected {expected_inventory_only}"
                         )
                     elif (
-                        (
-                            latest_inventory_at is not None
-                            and latest_inventory_at > latest_allowed
-                        )
-                        or (
-                            scope_watermark is not None
-                            and scope_watermark > latest_allowed
-                        )
+                        latest_inventory_at is not None
+                        and latest_inventory_at > latest_allowed
+                    ) or (
+                        scope_watermark is not None and scope_watermark > latest_allowed
                     ):
                         inventory_reason = (
                             "inventory-only readback observation exceeds "
@@ -4283,10 +5143,7 @@ def verify_validation_readback(
                         inventory_reason = (
                             "inventory-only latest enumeration predates artifact"
                         )
-                    elif (
-                        scope_watermark is None
-                        or scope_watermark < readback_boundary
-                    ):
+                    elif scope_watermark is None or scope_watermark < readback_boundary:
                         inventory_reason = (
                             "inventory-only scope watermark predates artifact"
                         )
@@ -4365,7 +5222,9 @@ def verify_validation_readback(
             "latest_detail_batch_active": detail_count,
             "evidence_class": evidence_class,
             "detail_scopes": (
-                sorted(_generation_evidence_values(generation_row, "detail_scopes") or [])
+                sorted(
+                    _generation_evidence_values(generation_row, "detail_scopes") or []
+                )
                 if generation_row is not None
                 else None
             ),
@@ -4447,12 +5306,10 @@ def run_final_validation(
     # exact per-source readback above remain admission-critical. The absolute
     # audit is retained verbatim in the manifest and is enforced by
     # cre_freshness_certificate.py before any whole-registry freshness claim.
-    if (
-        result.get("ok") is not True
-        or not quality["ok"]
-        or not readback["ok"]
-    ):
-        raise GlobalStageError("final validation or per-source freshness readback failed")
+    if result.get("ok") is not True or not quality["ok"] or not readback["ok"]:
+        raise GlobalStageError(
+            "final validation or per-source freshness readback failed"
+        )
 
 
 def _int_value(value: Any) -> int:
@@ -4462,7 +5319,9 @@ def _int_value(value: Any) -> int:
         return 0
 
 
-def _rows_by(rows: Any, keys: Sequence[str]) -> dict[tuple[str, ...], Mapping[str, Any]]:
+def _rows_by(
+    rows: Any, keys: Sequence[str]
+) -> dict[tuple[str, ...], Mapping[str, Any]]:
     if not isinstance(rows, list):
         return {}
     return {
@@ -4476,8 +5335,12 @@ def compare_validation_quality(
     before: Mapping[str, Any], after: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Reject newly introduced hard defects or severe child-data loss."""
-    before_queries = before.get("queries") if isinstance(before.get("queries"), dict) else {}
-    after_queries = after.get("queries") if isinstance(after.get("queries"), dict) else {}
+    before_queries = (
+        before.get("queries") if isinstance(before.get("queries"), dict) else {}
+    )
+    after_queries = (
+        after.get("queries") if isinstance(after.get("queries"), dict) else {}
+    )
     policy = load_source_policy()
     failures: list[str] = []
 
@@ -4568,9 +5431,7 @@ ABSOLUTE_BAD_CHILD_URL_CHECKS = {
 ABSOLUTE_ORPHAN_CHILD_TYPES = {"contacts", "documents", "images", "media", "links"}
 
 
-def _source_requires_canonical_url(
-    policy: Mapping[str, Any], source_key: str
-) -> bool:
+def _source_requires_canonical_url(policy: Mapping[str, Any], source_key: str) -> bool:
     """Return whether the governed source claims a canonical property page.
 
     Authoritative inventory feeds can expose a stable, valid source URL without
@@ -4609,7 +5470,9 @@ def _absolute_rows(
         return []
     invalid_rows = sum(not isinstance(row, dict) for row in rows)
     if invalid_rows:
-        failures.append(f"validation report {query} has {invalid_rows} malformed row(s)")
+        failures.append(
+            f"validation report {query} has {invalid_rows} malformed row(s)"
+        )
     return [row for row in rows if isinstance(row, dict)]
 
 
@@ -4720,7 +5583,7 @@ def verify_absolute_validation_quality(after: Mapping[str, Any]) -> dict[str, An
 def record_scope_from_validation(
     manifest: dict[str, Any], validation: Mapping[str, Any]
 ) -> None:
-    rows = ((validation.get("queries") or {}).get("source_counts") or [])
+    rows = (validation.get("queries") or {}).get("source_counts") or []
     supported = set(manifest["config"]["sources"])
     unsupported = sum(
         _int_value(row.get("active"))
@@ -4748,11 +5611,7 @@ def require_lifecycle_schema_contract(
             continue
         item = row.get("contract_item")
         status = row.get("status")
-        if (
-            not isinstance(item, str)
-            or not isinstance(status, str)
-            or item in observed
-        ):
+        if not isinstance(item, str) or not isinstance(status, str) or item in observed:
             malformed = True
             continue
         observed[item] = status
@@ -4841,8 +5700,10 @@ def render_report(manifest: Mapping[str, Any]) -> str:
             f"- Validation query execution: `{validation.get('query_execution_ok')}`",
             f"- Validation quality regression check: `{validation.get('quality_no_regression')}`",
             f"- Per-source ingest readback: `{validation.get('readback_ok')}`",
-            ("- Unsupported active rows outside this run: "
-             f"`{(manifest.get('scope') or {}).get('unsupported_active_rows_before')}`"),
+            (
+                "- Unsupported active rows outside this run: "
+                f"`{(manifest.get('scope') or {}).get('unsupported_active_rows_before')}`"
+            ),
             "",
         ]
     )
@@ -4857,7 +5718,9 @@ def parse_sources(raw: str) -> tuple[str, ...]:
     values = tuple(part.strip().lower() for part in raw.split(",") if part.strip())
     unknown = [source for source in values if source not in SOURCE_KEYS]
     if not values or unknown or len(values) != len(set(values)):
-        raise ValueError(f"invalid source selection; unknown/duplicate values: {unknown or values}")
+        raise ValueError(
+            f"invalid source selection; unknown/duplicate values: {unknown or values}"
+        )
     return values
 
 
@@ -4916,7 +5779,9 @@ def create_fresh_run_dir(out_root: Path, *, run_id: str | None = None) -> Path:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--resume", default=None, help="existing run directory or manifest.json")
+    parser.add_argument(
+        "--resume", default=None, help="existing run directory or manifest.json"
+    )
     parser.add_argument("--run-id", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--env-file", default=None)
@@ -4971,10 +5836,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--cpu-sample-seconds",
         type=float,
         default=DEFAULT_CPU_SAMPLE_SECONDS,
-        help=(
-            "host CPU sampling interval "
-            f"(default: {DEFAULT_CPU_SAMPLE_SECONDS:g}s)"
-        ),
+        help=(f"host CPU sampling interval (default: {DEFAULT_CPU_SAMPLE_SECONDS:g}s)"),
     )
     parser.add_argument("--attempts-per-source", type=int, default=3)
     parser.add_argument(
@@ -5027,7 +5889,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.run_id is not None and args.resume:
         parser.error("--run-id cannot be combined with --resume")
     if args.run_id is not None and internal_worker_requested:
-        parser.error("--run-id cannot be combined with internal cohort worker arguments")
+        parser.error(
+            "--run-id cannot be combined with internal cohort worker arguments"
+        )
     if args.run_id is not None:
         try:
             validate_run_id(args.run_id)
@@ -5060,7 +5924,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(str(exc))
 
     if args.page_cap < 1 or not 1 <= args.concurrency <= 6:
-        parser.error("page-cap must be positive and concurrency must be between 1 and 6")
+        parser.error(
+            "page-cap must be positive and concurrency must be between 1 and 6"
+        )
     # This is intentionally lower than the number of independent provider
     # lanes.  Two workers lets a direct/API source overlap one heavy detail
     # source without turning the first operational rollout into an unmeasured
@@ -5074,10 +5940,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         or not 0 < args.max_host_cpu_percent < 100
     ):
         parser.error("max-host-cpu-percent must be finite and between 0 and 100")
-    if (
-        not math.isfinite(args.cpu_sustain_seconds)
-        or args.cpu_sustain_seconds <= 0
-    ):
+    if not math.isfinite(args.cpu_sustain_seconds) or args.cpu_sustain_seconds <= 0:
         parser.error("cpu-sustain-seconds must be finite and positive")
     if (
         not math.isfinite(args.cpu_sample_seconds)
@@ -5088,10 +5951,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "cpu-sample-seconds must be finite, positive, and no greater than "
             "cpu-sustain-seconds"
         )
-    if (
-        not math.isfinite(args.max_resume_age_hours)
-        or args.max_resume_age_hours <= 0
-    ):
+    if not math.isfinite(args.max_resume_age_hours) or args.max_resume_age_hours <= 0:
         parser.error("max-resume-age-hours must be finite and positive")
     try:
         sources = parse_sources(args.sources)
@@ -5110,7 +5970,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise RefreshError("refusing operational refresh from a dirty checkout")
     if args.resume:
         supplied = Path(args.resume).expanduser().resolve()
-        manifest_path = supplied if supplied.name == "manifest.json" else supplied / "manifest.json"
+        manifest_path = (
+            supplied if supplied.name == "manifest.json" else supplied / "manifest.json"
+        )
         run_dir = manifest_path.parent
         manifest = load_resume_manifest(
             manifest_path,
@@ -5214,7 +6076,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             health_log = run_dir / "logs" / "healthcheck.log"
             health_rc = run_command(
-                ["bash", str(REPO_ROOT / "scripts/firecrawl-ops/firecrawl_healthcheck.sh")],
+                [
+                    "bash",
+                    str(REPO_ROOT / "scripts/firecrawl-ops/firecrawl_healthcheck.sh"),
+                ],
                 health_log,
                 env=safe_process_env(),
             )
@@ -5257,7 +6122,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     env=safe_process_env(),
                 )
                 if pre_rc != 0:
-                    raise GlobalStageError(f"pre-refresh validation failed (rc={pre_rc})")
+                    raise GlobalStageError(
+                        f"pre-refresh validation failed (rc={pre_rc})"
+                    )
                 pre_result = _load_json(pre_validation)
                 manifest["preflight"].update(
                     {
@@ -5291,7 +6158,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if source_failures:
                 raise RefreshError(
-                    "source checkpoints remain incomplete: " + ", ".join(source_failures)
+                    "source checkpoints remain incomplete: "
+                    + ", ".join(source_failures)
                 )
             set_cpu_guard_context(
                 cpu_guard,
