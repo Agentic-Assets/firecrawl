@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
 
-import { parseC10SidecarInput, verifyC10SidecarAuthorization } from "./c10_browser_internal";
+import { C10SidecarCapabilityRegistry, issueC10SidecarCapability, parseC10SidecarInput } from "./c10_browser_internal";
 
 const secret = "c10-sidecar-test-secret-material-which-is-long-enough";
 const armSha256 = "a".repeat(64);
@@ -36,8 +36,10 @@ function input() {
 test("C10 sidecar accepts exactly one authenticated, reviewed no-store browser card", () => {
   const value = input();
   const parsed = parseC10SidecarInput(value);
-  const authorization = hmac("cre-capacity-c10-browser-request-v1", [parsed.sourceKey, parsed.armSha256, parsed.tokenId, parsed.cardSha256]);
-  assert.equal(verifyC10SidecarAuthorization(secret, parsed, authorization), true);
+  const authorization = issueC10SidecarCapability(secret, parsed);
+  const registry = new C10SidecarCapabilityRegistry();
+  assert.equal(registry.consume(secret, parsed, authorization), true);
+  assert.equal(registry.consume(secret, parsed, authorization), false);
   assert.equal(parsed.card.browserBootstrapUrl, "https://example.test/");
 });
 
@@ -46,6 +48,7 @@ test("C10 sidecar rejects altered cards, cache drift, and forged authorization",
   assert.throws(() => parseC10SidecarInput({ ...value, card: { ...value.card, cacheMode: "default" } }), /not executable/);
   assert.throws(() => parseC10SidecarInput({ ...value, card: { ...value.card, url: "https://other.test/api/list" } }), /reviewed origin/);
   const parsed = parseC10SidecarInput(value);
-  assert.equal(verifyC10SidecarAuthorization(secret, parsed, "0".repeat(64)), false);
-  assert.equal(verifyC10SidecarAuthorization(undefined, parsed, "0".repeat(64)), false);
+  const registry = new C10SidecarCapabilityRegistry();
+  assert.equal(registry.consume(secret, parsed, "0".repeat(64)), false);
+  assert.equal(registry.consume(undefined, parsed, issueC10SidecarCapability(secret, parsed)), false);
 });

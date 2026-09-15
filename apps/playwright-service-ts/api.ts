@@ -27,8 +27,9 @@ import {
 } from "./browser_batch_fetch";
 import {
   C10_BROWSER_INTERNAL_PATH,
+  C10SidecarCapabilityRegistry,
   parseC10SidecarInput,
-  verifyC10SidecarAuthorization,
+  signC10Evidence,
 } from "./c10_browser_internal";
 import { executeC10BrowserPageFetch } from "./c10_browser_execution";
 
@@ -38,10 +39,12 @@ stealthChromium.use(StealthPlugin());
 dotenv.config();
 
 const app = express();
+const c10App = express();
 const port = process.env.PORT || 3003;
 
 app.use("/browser-batch-fetch", express.json({ limit: "600kb" }));
 app.use(express.json());
+c10App.use(express.json({ limit: "600kb" }));
 
 const BLOCK_MEDIA =
   (process.env.BLOCK_MEDIA || "False").toUpperCase() === "TRUE";
@@ -60,6 +63,9 @@ const PROXY_SERVER = process.env.PROXY_SERVER || null;
 const PROXY_USERNAME = process.env.PROXY_USERNAME || null;
 const PROXY_PASSWORD = process.env.PROXY_PASSWORD || null;
 const C10_BROWSER_INTERNAL_SECRET = process.env.C10_BROWSER_INTERNAL_SECRET;
+const C10_BROWSER_INTERNAL_PORT = process.env.C10_BROWSER_INTERNAL_PORT;
+const C10_BROWSER_TEST_LOCAL_TARGETS = process.env.NODE_ENV === "test" && process.env.C10_BROWSER_INTERNAL_ALLOW_TEST_LOCAL_TARGETS === "true";
+const c10Capabilities = new C10SidecarCapabilityRegistry();
 
 class InsecureConnectionError extends Error {
   constructor(
@@ -699,14 +705,17 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
  * This is a sidecar-internal capability, not an apps/api or Firecrawl route.
  */
 if (C10_BROWSER_INTERNAL_SECRET) {
-  app.post(C10_BROWSER_INTERNAL_PATH, async (req: Request, res: Response) => {
+  c10App.get("/health", (_req: Request, res: Response) => {
+    res.status(200).json({ status: "healthy", listener: "loopback" });
+  });
+  c10App.post(C10_BROWSER_INTERNAL_PATH, async (req: Request, res: Response) => {
     let input;
     try {
       input = parseC10SidecarInput(req.body);
     } catch {
       return res.status(400).json({ error: "Invalid internal C10 browser request" });
     }
-    if (!verifyC10SidecarAuthorization(
+    if (!c10Capabilities.consume(
       C10_BROWSER_INTERNAL_SECRET,
       input,
       req.header("x-c10-browser-authorization") ?? undefined,
@@ -716,23 +725,30 @@ if (C10_BROWSER_INTERNAL_SECRET) {
     }
 
     const queuedAt = Date.now();
+    const deadlineAt = queuedAt + input.card.timeoutMs;
+    const remaining = () => {
+      const value = deadlineAt - Date.now();
+      if (value < 1) throw new Error("C10 browser hard deadline expired");
+      return value;
+    };
     let permitAcquired = false;
     let lease: { leaseId: string; slot: number } | null = null;
     let requestContext: BrowserContext | null = null;
     let page: Page | null = null;
     try {
-      await assertSafeTargetUrl(input.card.browserBootstrapUrl, false);
-      await assertSafeTargetUrl(input.card.url, false);
+      await assertSafeTargetUrl(input.card.browserBootstrapUrl, C10_BROWSER_TEST_LOCAL_TARGETS);
+      await assertSafeTargetUrl(input.card.url, C10_BROWSER_TEST_LOCAL_TARGETS);
+      remaining();
       if (!browser) await initializeBrowser();
-      await pageSemaphore.acquire(input.card.timeoutMs);
+      await pageSemaphore.acquire(remaining());
       permitAcquired = true;
       lease = c10PageLeasePool.acquire();
       const queueMs = Date.now() - queuedAt;
       const startedAt = Date.now();
-      const contextBundle = await createContext(false, undefined, false);
+      const contextBundle = await createContext(C10_BROWSER_TEST_LOCAL_TARGETS, undefined, C10_BROWSER_TEST_LOCAL_TARGETS);
       requestContext = contextBundle.context;
       page = await requestContext.newPage();
-      const browserResponse = await executeC10BrowserPageFetch(page, input.card);
+      const browserResponse = await executeC10BrowserPageFetch(page, input.card, deadlineAt);
       const body = Buffer.from(browserResponse.bodyBase64, "base64");
       if (body.byteLength > input.card.maxBytes) {
         throw new Error("C10 browser response exceeds its reviewed byte limit");
@@ -743,7 +759,7 @@ if (C10_BROWSER_INTERNAL_SECRET) {
       const proxyId = PROXY_SERVER
         ? createHash("sha256").update(PROXY_SERVER).digest("hex")
         : null;
-      return res.json({
+      const evidence = {
         status: browserResponse.status,
         finalUrl: browserResponse.finalUrl,
         redirectCount: browserResponse.redirected || browserResponse.finalUrl !== input.card.url ? 1 : 0,
@@ -765,7 +781,8 @@ if (C10_BROWSER_INTERNAL_SECRET) {
         fallbackUsed: false,
         cacheRead: false,
         cacheWrite: false,
-      });
+      };
+      return res.json({ ...evidence, evidenceSignature: signC10Evidence(C10_BROWSER_INTERNAL_SECRET, evidence) });
     } catch (error) {
       console.error("C10 internal browser execution failed:", error);
       return res.status(502).json({ error: "C10 internal browser execution failed" });
@@ -971,11 +988,19 @@ app.post("/scrape", async (req: Request, res: Response) => {
 });
 
 const start = async () => {
+  if (C10_BROWSER_INTERNAL_SECRET && (!C10_BROWSER_INTERNAL_PORT || !/^[1-9][0-9]{0,4}$/.test(C10_BROWSER_INTERNAL_PORT))) {
+    throw new Error("C10_BROWSER_INTERNAL_PORT is required for the private loopback listener");
+  }
   ssrfProxyPort = await startSSRFProxy();
   await initializeBrowser();
   app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
   });
+  if (C10_BROWSER_INTERNAL_SECRET && C10_BROWSER_INTERNAL_PORT) {
+    c10App.listen(Number(C10_BROWSER_INTERNAL_PORT), "127.0.0.1", () => {
+      console.log("C10 private browser listener is running on loopback");
+    });
+  }
 };
 start().catch((error) => {
   console.error("Failed to start server:", error);

@@ -1,9 +1,8 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 export const C10_BROWSER_INTERNAL_PATH = "/internal/c10/browser-execute";
 
-const TOKEN_PURPOSE = "cre-capacity-c10-browser-arm-v1";
-const REQUEST_PURPOSE = "cre-capacity-c10-browser-request-v1";
+const CAPABILITY_PURPOSE = "cre-capacity-c10-browser-capability-v2";
 const SHA256 = /^[0-9a-f]{64}$/;
 
 export type C10SidecarCard = {
@@ -181,16 +180,75 @@ export function parseC10SidecarInput(value: unknown): C10SidecarInput {
   return input;
 }
 
-/** Verify a card-specific HMAC without ever returning the coordinator secret. */
-export function verifyC10SidecarAuthorization(
-  secret: string | undefined,
+type Capability = {
+  readonly nonce: string;
+  readonly expiresAt: number;
+  readonly sourceKey: string;
+  readonly armSha256: string;
+  readonly tokenId: string;
+  readonly tokenSha256: string;
+  readonly cardSha256: string;
+  readonly manifestSha256: string;
+};
+
+function capabilityManifest(input: Pick<C10SidecarInput, "sourceKey" | "armSha256" | "tokenId" | "tokenSha256" | "cardSha256" | "card">): string {
+  return digest(canonicalJson(input));
+}
+
+function encodeCapability(capability: Capability, secret: string): string {
+  const payload = Buffer.from(canonicalJson(capability), "utf8").toString("base64url");
+  return `${payload}.${hmac(secret, CAPABILITY_PURPOSE, [payload])}`;
+}
+
+/** Coordinator-only issuer. The capability binds a reviewed complete card manifest and expires quickly. */
+export function issueC10SidecarCapability(
+  secret: string,
   input: C10SidecarInput,
-  authorization: string | undefined,
-): boolean {
-  if (!secret || secret.length < 32 || !authorization || !/^[0-9a-f]{64}$/.test(authorization)) return false;
-  const expectedToken = digest(hmac(secret, TOKEN_PURPOSE, [input.sourceKey, input.armSha256, input.tokenId]));
-  const expectedAuthorization = hmac(secret, REQUEST_PURPOSE, [input.sourceKey, input.armSha256, input.tokenId, input.cardSha256]);
-  return input.tokenSha256 === expectedToken
-    && authorization.length === expectedAuthorization.length
-    && timingSafeEqual(Buffer.from(authorization), Buffer.from(expectedAuthorization));
+  now = Date.now(),
+  lifetimeMs = 60_000,
+): string {
+  if (secret.length < 32 || !Number.isInteger(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > 120_000) {
+    throw new Error("C10 capability issuer is invalid");
+  }
+  return encodeCapability({
+    nonce: randomUUID(), expiresAt: now + lifetimeMs, sourceKey: input.sourceKey,
+    armSha256: input.armSha256, tokenId: input.tokenId, tokenSha256: input.tokenSha256,
+    cardSha256: input.cardSha256, manifestSha256: capabilityManifest(input),
+  }, secret);
+}
+
+/** Sidecar-resident, atomic replay registry. It consumes a nonce before browser admission. */
+export class C10SidecarCapabilityRegistry {
+  private readonly consumed = new Set<string>();
+
+  consume(secret: string | undefined, input: C10SidecarInput, authorization: string | undefined, now = Date.now()): boolean {
+    if (!secret || secret.length < 32 || !authorization) return false;
+    const [payload, signature, extra] = authorization.split(".");
+    if (!payload || !signature || extra || !/^[0-9a-f]{64}$/.test(signature)) return false;
+    const expected = hmac(secret, CAPABILITY_PURPOSE, [payload]);
+    if (expected.length !== signature.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) return false;
+    let capability: Capability;
+    try { capability = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Capability; } catch { return false; }
+    if (
+      !exactKeys(capability, ["armSha256", "cardSha256", "expiresAt", "manifestSha256", "nonce", "sourceKey", "tokenId", "tokenSha256"])
+      || typeof capability.nonce !== "string" || !Number.isInteger(capability.expiresAt)
+      || capability.expiresAt < now || capability.expiresAt > now + 120_000
+      || capability.sourceKey !== input.sourceKey || capability.armSha256 !== input.armSha256
+      || capability.tokenId !== input.tokenId || capability.tokenSha256 !== input.tokenSha256
+      || capability.cardSha256 !== input.cardSha256 || capability.manifestSha256 !== capabilityManifest(input)
+      || this.consumed.has(capability.nonce)
+    ) return false;
+    this.consumed.add(capability.nonce);
+    return true;
+  }
+}
+
+export function signC10Evidence(secret: string, evidence: Record<string, unknown>): string {
+  return hmac(secret, "cre-capacity-c10-browser-evidence-v1", [canonicalJson(evidence)]);
+}
+
+export function verifyC10Evidence(secret: string, evidence: Record<string, unknown>, signature: unknown): boolean {
+  if (typeof signature !== "string" || !/^[0-9a-f]{64}$/.test(signature)) return false;
+  const expected = signC10Evidence(secret, evidence);
+  return expected.length === signature.length && timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
 }

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import test from "node:test";
 
 import {
   C10ReceiptError,
+  canonicalJson,
   jllBrowserCardRegistry,
   jllBrowserCohortSha256,
   runJllBrowserFidelitySmoke,
@@ -18,6 +20,8 @@ const binding: ReceiptBinding = Object.freeze({
   planSha256: "a".repeat(64), cohortSha256: "b".repeat(64), policySha256: "c".repeat(64),
   sourceSha256: "d".repeat(64), armSha256: "e".repeat(64), implementationSha256: "f".repeat(64),
 });
+const secret = "jll-browser-test-secret-material-that-is-more-than-thirty-two-bytes";
+const sign = (value: object) => createHmac("sha256", secret).update(["cre-capacity-c10-browser-evidence-v1", canonicalJson(value)].join("\u0000"), "utf8").digest("hex");
 
 function cohort(): JllBrowserCohort {
   const value = {
@@ -50,21 +54,24 @@ function fetcher(delayMs = 0): LocalBrowserFetch {
     const body = Buffer.from(response(card));
     return {
       ok: true, status: 200, text: async () => "",
-      json: async () => ({
+      json: async () => {
+        const evidence = {
         status: 200, finalUrl: card.url, redirectCount: 0, elapsedMs: 1, challengeDetected: false,
         contentType: card.id === "jll-enumeration" ? "application/json" : "text/html",
         bodyBase64: body.toString("base64"), jobId: `job-${card.id}`,
         pageLease: { leaseId: `lease-${card.id}`, slot: 0 }, queueMs: 0,
         proxy: { mode: "direct", proxyId: null, country: null }, engine: "playwright-service", engineAttempts: 1,
-        fallbackDisabled: true, fallbackUsed: false, cacheRead: false, cacheWrite: false,
-      }),
+          fallbackDisabled: true, fallbackUsed: false, cacheRead: false, cacheWrite: false,
+        };
+        return { ...evidence, evidenceSignature: sign(evidence) };
+      },
     };
   };
 }
 
 const locked = Object.freeze({ assertHeld() {} });
 const options = (delayMs = 0) => ({
-  armSecret: "jll-browser-test-secret-material-that-is-more-than-thirty-two-bytes",
+  armSecret: secret,
   serviceUrl: "http://127.0.0.1:3003", store: new MemoryReceiptStore(), fetcher: fetcher(delayMs), coordinatorLock: locked,
 });
 

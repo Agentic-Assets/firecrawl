@@ -18,14 +18,20 @@ export type C10BrowserPageResponse = {
 export async function executeC10BrowserPageFetch(
   page: Page,
   card: Readonly<C10SidecarCard>,
+  deadlineAt = Date.now() + card.timeoutMs,
 ): Promise<C10BrowserPageResponse> {
+  const remaining = () => {
+    const value = deadlineAt - Date.now();
+    if (value < 1) throw new Error("C10 browser deadline expired");
+    return value;
+  };
   await page.setExtraHTTPHeaders({
     "cache-control": "no-store, no-cache, max-age=0",
     pragma: "no-cache",
   });
   const bootstrap = await page.goto(card.browserBootstrapUrl, {
     waitUntil: "load",
-    timeout: card.timeoutMs,
+    timeout: remaining(),
   });
   if (!bootstrap || bootstrap.status() < 200 || bootstrap.status() >= 300) {
     throw new Error("C10 browser bootstrap did not return a successful response");
@@ -46,7 +52,23 @@ export async function executeC10BrowserPageFetch(
         redirect: "manual",
         signal: controller.signal,
       });
-      const bytes = new Uint8Array(await browserResponse.arrayBuffer());
+      const reader = browserResponse.body?.getReader();
+      if (!reader) throw new Error("C10 browser response has no readable body");
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        total += chunk.value.byteLength;
+        if (total > instruction.maxBytes) {
+          await reader.cancel();
+          throw new Error("C10 browser response exceeds reviewed byte limit");
+        }
+        chunks.push(chunk.value);
+      }
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
       let binary = "";
       for (let offset = 0; offset < bytes.length; offset += 0x8000) {
         binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
@@ -66,7 +88,8 @@ export async function executeC10BrowserPageFetch(
     method: card.method,
     headers: card.headers,
     body: card.body,
-    timeoutMs: card.timeoutMs,
+    timeoutMs: remaining(),
+    maxBytes: card.maxBytes,
   });
   const finalUrl = new URL(response.finalUrl);
   if (finalUrl.protocol !== "https:" || finalUrl.host !== card.allowedHost) {

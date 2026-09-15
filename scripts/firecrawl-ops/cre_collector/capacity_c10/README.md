@@ -2,10 +2,12 @@
 
 Wave 1 is intentionally an offline admission and evidence protocol. It now
 also includes sealed receipt substrate and source-owned candidate producers,
-but it does not provide a runnable CLI, a concrete network transport, a
-scraper, a controller integration, or a generic source adapter. The receipt
-transport is an injected interface: no shipped C10 component opens a provider
-connection or can execute a request by itself.
+but it does not provide a general collector CLI, generic network transport,
+scraper, public controller integration, or generic source adapter. The sole
+concrete exception is the reviewed JLL browser library described below: it
+uses a private loopback listener, a short-lived one-time signed capability,
+and an injected held coordinator lock. No ordinary C10 component opens a
+provider connection or can execute a request by itself.
 
 `policy.py` seals the fixed 20-source, 12/8-plane matrix. `adapters.py`
 requires an exact registry where every source-specific adapter is explicitly
@@ -71,10 +73,10 @@ and provider-specific attrition classifier are independently reviewed. A failed
 or uncertain arm must quarantine under the held canonical lock; it must not
 attempt a fresh lock acquisition, a generic fallback, or an automatic rerun.
 
-This foundation is not browser-fidelity proof. The present 20-source matrix
-remains a compatibility and review panel. A browser-sensitive primary
-comparison cannot run until source-specific adapters prove the reviewed browser
-path, single engine attempt, cache controls, and scheduler activity.
+This foundation is not whole-cohort browser-fidelity proof. The present
+20-source matrix remains a compatibility and review panel. The JLL-only lane
+has local browser-route evidence; every other source still requires independent
+reviewed browser-path, cache instrumentation, and scheduler proof.
 Direct-native receipts remain non-comparable compatibility evidence.
 
 ## Candidate receipt hooks
