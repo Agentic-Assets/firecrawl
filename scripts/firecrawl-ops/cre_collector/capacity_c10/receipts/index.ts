@@ -1,4 +1,5 @@
 export * from "./boundary.js";
+export * from "./browser_transport.js";
 export * from "./contracts.js";
 export * from "./private_store.js";
 export * from "./producer.js";

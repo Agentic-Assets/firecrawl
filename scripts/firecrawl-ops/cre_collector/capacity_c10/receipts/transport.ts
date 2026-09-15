@@ -9,6 +9,7 @@ import {
   sha256,
 } from "./contracts.js";
 import type { ReceiptArtifactStore } from "./private_store.js";
+import { type BrowserTrustedEvidence } from "./browser_transport.js";
 
 export interface RequestCardInput {
   readonly id: string;
@@ -40,6 +41,8 @@ export interface TransportResponse {
   /** The source transport must report exactly one direct provider attempt. */
   readonly providerAttempts: number;
   readonly cacheMode: "no-store";
+  /** Present only for the internal C10 browser executor and sealed privately. */
+  readonly trustedBrowserEvidence?: BrowserTrustedEvidence;
 }
 
 export interface DirectProviderTransport {
@@ -520,6 +523,7 @@ export class SourceBoundOneShotTransport {
         providerAttempts: response.providerAttempts,
         cacheMode: response.cacheMode,
         contentType: response.contentType,
+        trustedBrowserEvidence: response.trustedBrowserEvidence ?? null,
         bodySha256,
         bodyArtifactSha256: body.sha256,
         projection,
