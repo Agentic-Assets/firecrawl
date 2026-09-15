@@ -671,6 +671,10 @@ BENCHMARK_ACTIVE_MARKER = "capacity-benchmark-active.json"
 BENCHMARK_QUARANTINE_MARKER = "capacity-benchmark-quarantine.json"
 OPERATOR_RECOVERY_LEASE_PREFIX = "operator-recovery-required:"
 LOCK_AUTHORITY_SUFFIX = ".authority"
+# This guard belongs to the explicit operator-only quarantine archive protocol.
+# Its mere presence blocks every normal acquire/reclaim path until the same
+# protocol has durably finished or safely resumed the paired archive.
+QUARANTINE_RECOVERY_GUARD = ".cre-quarantine-recovery.json"
 
 
 @dataclass(frozen=True)
@@ -1436,6 +1440,14 @@ class SharedLock:
 
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            (self.path.parent / QUARANTINE_RECOVERY_GUARD).lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise LockHeldError("CRE quarantine recovery guard is unsafe") from exc
+        else:
+            raise LockHeldError("CRE quarantine recovery requires operator completion")
         lease_token = secrets.token_urlsafe(32)
         if self.recovery_required:
             lease_token = f"{OPERATOR_RECOVERY_LEASE_PREFIX}{lease_token}"

@@ -12,10 +12,62 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
 import cre_checkpoint_refresh as refresh
-import pytest
+
+
+@pytest.fixture(autouse=True)
+def _offline_compose_loopback_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep pure benchmark tests off the host while using the runtime resolver."""
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "_compose_loopback_endpoints",
+        lambda _runner: {
+            "api": "http://127.0.0.1:3002",
+            "browser": "http://127.0.0.1:3003",
+        },
+    )
+
+
+def _lock_snapshot(path: Path) -> tuple[object, ...] | None:
+    """Read-only contamination sentinel for the primary checkout lock pair."""
+    try:
+        observed = path.lstat()
+    except FileNotFoundError:
+        return None
+    digest = None
+    if stat.S_ISREG(observed.st_mode):
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return (
+        observed.st_dev,
+        observed.st_ino,
+        observed.st_mode,
+        observed.st_size,
+        observed.st_mtime_ns,
+        digest,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _primary_lock_pair_is_never_a_test_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prevent, then detect, the former rollback-test checkout contamination."""
+    primary = refresh.canonical_shared_lock_dir(Path(__file__).resolve().parents[4])
+    authority = primary.with_name(f"{primary.name}.authority")
+    before = (_lock_snapshot(primary), _lock_snapshot(authority))
+    monkeypatch.setattr(
+        benchmark,
+        "canonical_shared_lock_dir",
+        lambda *_args: pytest.fail(
+            "test must inject a temporary canonical lock path explicitly"
+        ),
+    )
+    yield
+    assert (_lock_snapshot(primary), _lock_snapshot(authority)) == before
 
 
 def _cache_record(index: int) -> dict[str, object]:
@@ -2139,10 +2191,6 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
     lock_windows: list[str] = []
     lock_path = tmp_path / "out" / "daily" / ".cre.lock"
     monkeypatch.setattr(
-        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
-    )
-
-    monkeypatch.setattr(
         benchmark,
         "validate_admission",
         lambda value, *_args, **_kwargs: {
@@ -2197,6 +2245,7 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
         admission={},
         admission_path=admission_path,
         timeout_seconds=1,
+        _canonical_lock_path=lock_path,
     )
     benchmark.run_counterbalanced_pair_step(
         repo_root=Path(__file__).resolve().parents[4],
@@ -2205,6 +2254,7 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
         admission_path=admission_path,
         timeout_seconds=1,
         candidate_receipt_path=receipt,
+        _canonical_lock_path=lock_path,
     )
 
     state = json.loads((pair_root / "counterbalanced-pair-state.json").read_text())

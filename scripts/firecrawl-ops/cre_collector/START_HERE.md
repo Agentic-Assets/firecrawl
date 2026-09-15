@@ -215,8 +215,9 @@ An existing state file makes `apply` refuse; it is not a reason to delete saved
 state. Inspect `show` and the running sidecar first. Container recreation is a
 separate operation: preserve the observed port, image, shared-memory size,
 security and proxy configuration, and recreate **only** `playwright-service`
-with `--no-deps --no-build --pull never`. On the evaluated host its port is 3103,
-not Compose's default 3003. Do not recreate `api` to apply browser capacity:
+with `--no-deps --no-build --pull never`. Resolve the API and browser loopback
+ports from rendered Compose (`docker compose config --format json`); the current
+central defaults are 3002 and 3003. Do not recreate `api` to apply browser capacity:
 that would also apply any pending model/environment transition.
 
 ```bash

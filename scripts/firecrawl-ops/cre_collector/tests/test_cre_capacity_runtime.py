@@ -13,9 +13,24 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Self
 
+import pytest
+
 import cre_capacity_experiment as experiment
 import cre_capacity_runtime as runtime
-import pytest
+
+
+@pytest.fixture(autouse=True)
+def _runtime_tests_require_an_explicit_temporary_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redirect every implicit controller lock away from the checkout."""
+    isolated = tmp_path / "isolated" / "out" / "daily" / ".cre.lock"
+    monkeypatch.setattr(
+        runtime,
+        "canonical_shared_lock_dir",
+        lambda *_args: isolated,
+    )
 
 
 def profile() -> tuple[dict[str, object], str]:
@@ -69,6 +84,10 @@ def public_state(
             if docker_memory is not None
             else 32768 * 1024 * 1024 - 32768,
         },
+        "endpoints": {
+            "api": "http://127.0.0.1:3002",
+            "browser": "http://127.0.0.1:3003",
+        },
         "browser": {
             "id": "browser-before" if state == "baseline" else "browser-after",
             "image": "sha256:" + "b" * 64,
@@ -80,7 +99,7 @@ def public_state(
             "pids_limit": browser_pids,
             "shm_bytes": baseline["browser_shm_bytes"],
             "port_bindings": {
-                "3000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3103"}]
+                "3000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3003"}]
             },
             "network_mode": "firecrawl_backend",
             "mounts_sha256": "empty",
@@ -101,7 +120,7 @@ def public_state(
             "swap_bytes": 0,
             "pids_limit": None,
             "shm_bytes": 64 * 1024 * 1024,
-            "port_bindings": {"3002/tcp": [{"HostIp": "0.0.0.0", "HostPort": "3102"}]},
+            "port_bindings": {"3002/tcp": [{"HostIp": "0.0.0.0", "HostPort": "3002"}]},
             "network_mode": "firecrawl_backend",
             "mounts_sha256": "api-mount",
             "mount_count": 1,
@@ -281,7 +300,7 @@ def test_runtime_endpoint_retries_transient_startup_failure(
     monkeypatch.setattr(runtime.time, "monotonic", lambda: clock)
     monkeypatch.setattr(runtime.time, "sleep", sleep)
 
-    assert runtime._http_status("http://127.0.0.1:3103/") == 404
+    assert runtime._http_status("http://127.0.0.1:3003/") == 404
     assert attempts == 3
     assert sleeps == [runtime.RUNTIME_ENDPOINT_RETRY_SECONDS] * 2
 
@@ -309,7 +328,7 @@ def test_runtime_endpoint_fails_after_bounded_readiness_window(
     monkeypatch.setattr(runtime.time, "sleep", sleep)
 
     with pytest.raises(runtime.RuntimeAdmissionError, match="endpoint unavailable"):
-        runtime._http_status("http://127.0.0.1:3103/")
+        runtime._http_status("http://127.0.0.1:3003/")
 
     assert clock == runtime.RUNTIME_ENDPOINT_READY_SECONDS
     assert attempts == len(sleeps) + 1
@@ -333,7 +352,7 @@ def test_runtime_endpoint_readiness_wait_propagates_interrupt(
     )
 
     with pytest.raises(KeyboardInterrupt):
-        runtime._http_status("http://127.0.0.1:3103/")
+        runtime._http_status("http://127.0.0.1:3003/")
 
 
 def test_runtime_settlement_accepts_shared_rabbitmq_3137_fixture(
@@ -370,10 +389,12 @@ def test_runtime_settlement_accepts_shared_rabbitmq_3137_fixture(
     monkeypatch.setattr(
         runtime,
         "_http_status",
-        lambda url: 200 if ":3102" in url else 404,
+        lambda url: 200 if ":3002" in url else 404,
     )
 
-    result = runtime._settlement(runner)
+    result = runtime._settlement(
+        runner, {"api": "http://127.0.0.1:3002", "browser": "http://127.0.0.1:3003"}
+    )
 
     assert result["rabbitmq_queue_count"] == 4
     assert result["rabbitmq_ready"] == 0
@@ -382,6 +403,44 @@ def test_runtime_settlement_accepts_shared_rabbitmq_3137_fixture(
         "queue_crawl_finished_total": 0,
         "queue_scrape_backlog_total": 0,
         "queue_scrape_total": 0,
+    }
+
+
+def test_compose_loopback_endpoints_follow_rendered_compose_ports() -> None:
+    rendered = {
+        "services": {
+            "api": {
+                "environment": {"PORT": "3002"},
+                "ports": [
+                    {
+                        "target": 3002,
+                        "published": "3002",
+                        "host_ip": "127.0.0.1",
+                        "protocol": "tcp",
+                    }
+                ],
+            },
+            "playwright-service": {
+                "environment": {"PORT": "3000"},
+                "ports": [
+                    {
+                        "target": 3000,
+                        "published": "3003",
+                        "host_ip": "127.0.0.1",
+                        "protocol": "tcp",
+                    }
+                ],
+            },
+        }
+    }
+
+    endpoints = runtime._compose_loopback_endpoints(
+        lambda _argv, _cwd, _env: runtime.CommandResult(0, json.dumps(rendered))
+    )
+
+    assert endpoints == {
+        "api": "http://127.0.0.1:3002",
+        "browser": "http://127.0.0.1:3003",
     }
 
 
@@ -417,7 +476,7 @@ def test_private_overlay_changes_only_page_environment_and_resources() -> None:
     assert current.browser_env["MAX_CONCURRENT_PAGES"] == "4"
     assert service["cpus"] == 6
     assert service["pids_limit"] == 768
-    assert service["ports"] == ["127.0.0.1:3103:3000"]
+    assert service["ports"] == ["127.0.0.1:3003:3000"]
 
 
 def test_receipt_is_private_and_stale_apply_is_rejected(tmp_path: Path) -> None:
@@ -481,6 +540,269 @@ def test_preflight_rejects_output_outside_controlled_root_without_chmod(
         runtime.preflight("bold-jll-128", target)
     assert stat.S_IMODE(outside.stat().st_mode) == 0o755
     assert not target.exists()
+
+
+def _historic_quarantine_pair(lock_path: Path) -> None:
+    lock_path.mkdir(mode=0o700, parents=True)
+    lock_path.chmod(0o700)
+    owner = 99999999
+    result_path = "/private/var/folders/test/pytest-of-operator/pytest-1/result.json"
+    active = lock_path / "capacity-benchmark-active.json"
+    active.write_text(
+        json.dumps(
+            {
+                "kind": "cre_capacity_candidate_pair_active",
+                "state": "active",
+                "profile": "bold-jll-128",
+                "pid": owner,
+                "result_path": result_path,
+            }
+        ),
+        encoding="utf-8",
+    )
+    active.chmod(0o600)
+    quarantine = lock_path / "capacity-benchmark-quarantine.json"
+    quarantine.write_text(
+        json.dumps(
+            {
+                "kind": "cre_capacity_benchmark_lock_quarantine",
+                "state": "quarantined",
+                "reason": "candidate_baseline_rollback_failed",
+                "lock_path": str(lock_path),
+                "result_path": result_path,
+            }
+        ),
+        encoding="utf-8",
+    )
+    quarantine.chmod(0o600)
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    authority.write_text(f"{owner} {'x' * 32}\n", encoding="utf-8")
+    authority.chmod(0o600)
+
+
+def test_quarantine_recovery_dry_run_and_exact_pair_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    dry = runtime.recover_quarantine(execute=False)
+    assert dry["executed"] is False
+    assert lock_path.is_dir()
+    recovered = runtime.recover_quarantine(execute=True)
+    archive = Path(str(recovered["archive"]))
+    assert not lock_path.exists()
+    assert not lock_path.with_name(f"{lock_path.name}.authority").exists()
+    assert (archive / ".cre.lock").is_dir()
+    assert (archive / ".cre.lock.authority").is_file()
+    assert (
+        json.loads((archive / "recovery-receipt.json").read_text())["phase"]
+        == "archived"
+    )
+
+
+def test_quarantine_recovery_refuses_live_or_ambiguous_residue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    (lock_path / "unexpected").write_text("x", encoding="utf-8")
+    with pytest.raises(runtime.RuntimeAdmissionError, match="ambiguous"):
+        runtime.recover_quarantine(execute=False)
+    assert lock_path.is_dir()
+
+
+def test_quarantine_recovery_replays_an_interrupted_paired_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash between paired renames remains an operator stop, then resumes."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    real_rename = runtime.os.rename
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+
+    def interrupt_authority_rename(source: Path | str, target: Path | str) -> None:
+        if Path(source) == authority:
+            raise OSError("simulated interruption before authority archive")
+        real_rename(source, target)
+
+    monkeypatch.setattr(runtime.os, "rename", interrupt_authority_rename)
+    with pytest.raises(OSError, match="simulated interruption"):
+        runtime.recover_quarantine(execute=True)
+    guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
+    assert guard.is_file()
+    assert not lock_path.exists()
+    assert authority.is_file()
+    with pytest.raises(runtime.LockHeldError, match="operator completion"):
+        runtime.SharedLock(lock_path).acquire()
+
+    monkeypatch.setattr(runtime.os, "rename", real_rename)
+    replayed = runtime.recover_quarantine(execute=True)
+    assert replayed["executed"] is True
+    assert not guard.exists()
+    assert not authority.exists()
+    assert not lock_path.exists()
+
+
+def test_quarantine_recovery_replays_guard_before_archive_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first durable guard prevents a stranded deterministic archive name."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    real_fsync = runtime._fsync_directory
+    archive_root = lock_path.parent / runtime.QUARANTINE_ARCHIVE_DIR
+
+    def interrupt_archive_fsync(path: Path) -> None:
+        if path == archive_root:
+            raise OSError("simulated archive-create power loss")
+        real_fsync(path)
+
+    monkeypatch.setattr(runtime, "_fsync_directory", interrupt_archive_fsync)
+    with pytest.raises(OSError, match="archive-create"):
+        runtime.recover_quarantine(execute=True)
+    assert (lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD).is_file()
+    with pytest.raises(runtime.LockHeldError, match="operator completion"):
+        runtime.SharedLock(lock_path).acquire()
+
+    monkeypatch.setattr(runtime, "_fsync_directory", real_fsync)
+    replayed = runtime.recover_quarantine(execute=True)
+    assert replayed["executed"] is True
+    assert not lock_path.exists()
+
+
+def test_quarantine_recovery_refuses_tampered_receipt_before_guard_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A torn/tampered receipt can never be treated as a completed archive."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    real_guard_write = runtime._write_recovery_guard
+
+    def interrupt_receipt_phase(
+        path: Path, value: dict[str, object], *, create: bool
+    ) -> None:
+        if value.get("phase") == "receipt-written":
+            raise OSError("simulated crash after receipt")
+        real_guard_write(path, value, create=create)
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", interrupt_receipt_phase)
+    with pytest.raises(OSError, match="after receipt"):
+        runtime.recover_quarantine(execute=True)
+    guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
+    guard_value = json.loads(guard.read_text(encoding="utf-8"))
+    archive = Path(guard_value["archive"])
+    receipt = archive / "recovery-receipt.json"
+    receipt.write_text('{"tampered":true}\n', encoding="utf-8")
+    receipt.chmod(0o600)
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", real_guard_write)
+    with pytest.raises(runtime.RuntimeAdmissionError, match="receipt"):
+        runtime.recover_quarantine(execute=True)
+    assert guard.is_file()
+    assert receipt.read_text(encoding="utf-8") == '{"tampered":true}\n'
+
+
+@pytest.mark.parametrize(
+    ("member", "expected_phase"),
+    [(".cre.lock", "lock-renaming"), (".cre.lock.authority", "authority-renaming")],
+)
+def test_quarantine_recovery_replays_rename_before_parent_fsync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    member: str,
+    expected_phase: str,
+) -> None:
+    """A power loss after either paired rename has a durable replay intent."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    real_rename = runtime.os.rename
+    real_fsync = runtime._fsync_directory
+    renamed = False
+    failed = False
+
+    def record_rename(source: Path | str, target: Path | str) -> None:
+        nonlocal renamed
+        if Path(source).name == member:
+            renamed = True
+        real_rename(source, target)
+
+    def fail_parent_after_rename(path: Path) -> None:
+        nonlocal failed
+        if renamed and not failed and path == lock_path.parent:
+            failed = True
+            raise OSError("simulated parent fsync power loss")
+        real_fsync(path)
+
+    monkeypatch.setattr(runtime.os, "rename", record_rename)
+    monkeypatch.setattr(runtime, "_fsync_directory", fail_parent_after_rename)
+    with pytest.raises(OSError, match="parent fsync"):
+        runtime.recover_quarantine(execute=True)
+    guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
+    assert json.loads(guard.read_text(encoding="utf-8"))["phase"] == expected_phase
+    with pytest.raises(runtime.LockHeldError, match="operator completion"):
+        runtime.SharedLock(lock_path).acquire()
+
+    monkeypatch.setattr(runtime.os, "rename", real_rename)
+    monkeypatch.setattr(runtime, "_fsync_directory", real_fsync)
+    assert runtime.recover_quarantine(execute=True)["executed"] is True
+    assert not guard.exists()
 
 
 def test_dry_run_transition_requires_unchanged_machine_snapshot(
@@ -577,7 +899,7 @@ def test_compose_dry_run_uses_private_files_without_up(
                 0, str(current.public["browser"]["image"]) + "\n"
             )
         env_file = Path(values[values.index("--env-file") + 1])
-        assert env_file.read_text() == "PLAYWRIGHT_HOST_PORT=3103\n"
+        assert env_file.read_text() == "PLAYWRIGHT_HOST_PORT=3003\n"
         assert env == {
             key: runtime.os.environ[key]
             for key in (
@@ -590,7 +912,7 @@ def test_compose_dry_run_uses_private_files_without_up(
                 "DOCKER_CERT_PATH",
             )
             if key in runtime.os.environ
-        } | {"PLAYWRIGHT_HOST_PORT": "3103"}
+        } | {"PLAYWRIGHT_HOST_PORT": "3003"}
         seen_env_files.append(env_file)
         overlay = Path(values[values.index("-f", values.index("-f") + 1) + 1])
         overlay = Path(
@@ -606,7 +928,7 @@ def test_compose_dry_run_uses_private_files_without_up(
                     "host_ip": "127.0.0.1",
                     "mode": "ingress",
                     "protocol": "tcp",
-                    "published": "3103",
+                    "published": "3003",
                     "target": 3000,
                 }
             ]
@@ -662,7 +984,7 @@ def test_compose_recreate_rejects_topology_drift_before_up(
                             "host_ip": "127.0.0.1",
                             "mode": "ingress",
                             "protocol": "tcp",
-                            "published": "3103",
+                            "published": "3003",
                             "target": 3000,
                         }
                     ],
@@ -1474,7 +1796,7 @@ def test_compose_cleanup_failure_after_up_is_a_mutation_error(
                             "host_ip": "127.0.0.1",
                             "mode": "ingress",
                             "protocol": "tcp",
-                            "published": "3103",
+                            "published": "3003",
                             "target": 3000,
                         }
                     ],

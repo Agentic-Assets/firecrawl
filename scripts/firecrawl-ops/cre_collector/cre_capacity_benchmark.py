@@ -78,10 +78,6 @@ WORKER_ENV_ALLOWLIST = frozenset(
     {"PATH", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE", "TZ"}
 )
 ALLOWED_API_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
-LOOPBACK_ENDPOINTS = {
-    "api_url": "http://127.0.0.1:3102",
-    "browser_health_url": "http://127.0.0.1:3103/health",
-}
 SETTLEMENT_TIMEOUT_SECONDS = 60
 SETTLEMENT_POLL_SECONDS = 2
 EXPECTED_FRESHNESS_POLICY = {
@@ -4566,6 +4562,7 @@ def run_benchmark(
     _held_shared_lock: SharedLock | None = None,
     _retain_benchmark_interlock: bool = False,
     _prearmed_benchmark_interlock: bool = False,
+    _loopback_endpoints: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if _retain_benchmark_interlock and _held_shared_lock is None:
         raise BenchmarkError(
@@ -4579,7 +4576,25 @@ def run_benchmark(
         )
     replicates = int(profile["workload"]["replicates"])
     implementation = _implementation_manifest(repo_root)
-    endpoints = LOOPBACK_ENDPOINTS
+    if _loopback_endpoints is None:
+        try:
+            resolved = capacity_runtime._compose_loopback_endpoints(
+                capacity_runtime._default_runner
+            )
+        except capacity_runtime.RuntimeAdmissionError as exc:
+            raise BenchmarkError(
+                "resolved Compose loopback endpoints are unavailable"
+            ) from exc
+        endpoints = {
+            "api_url": resolved["api"],
+            "browser_health_url": f"{resolved['browser']}/health",
+        }
+    else:
+        endpoints = dict(_loopback_endpoints)
+    if not all(
+        isinstance(endpoints.get(key), str) for key in ("api_url", "browser_health_url")
+    ):
+        raise BenchmarkError("resolved Compose loopback endpoints are invalid")
     lock_path = canonical_shared_lock_dir(repo_root)
     try:
         with _benchmark_shared_lock(lock_path, _held_shared_lock) as shared_lock:
@@ -5037,6 +5052,7 @@ def run_counterbalanced_pair_step(
     admission_path: Path,
     timeout_seconds: int,
     candidate_receipt_path: Path | None = None,
+    _canonical_lock_path: Path | None = None,
 ) -> dict[str, Any]:
     """Run exactly the next arm and restore candidate runtime before recording it.
 
@@ -5102,7 +5118,9 @@ def run_counterbalanced_pair_step(
     }
     result: dict[str, Any] | None = None
     if variant == "candidate":
-        lock_path = canonical_shared_lock_dir(repo_root)
+        lock_path = _canonical_lock_path or canonical_shared_lock_dir(repo_root)
+        if _canonical_lock_path is not None and lock_path.name != ".cre.lock":
+            raise BenchmarkError("injected candidate lock path is invalid")
         try:
             with _candidate_rollback_lock(lock_path) as (
                 held_lock,

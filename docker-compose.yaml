@@ -89,7 +89,7 @@ services:
       # Configure maximum concurrent pages for Playwright browser instances
       # Keep this separate from API crawl concurrency so resource-sensitive
       # local workflows can constrain the browser sidecar independently.
-      MAX_CONCURRENT_PAGES: ${PLAYWRIGHT_MAX_CONCURRENT_PAGES:-${CRAWL_CONCURRENT_REQUESTS:-10}}
+      MAX_CONCURRENT_PAGES: ${PLAYWRIGHT_MAX_CONCURRENT_PAGES:-${CRAWL_CONCURRENT_REQUESTS:-4}}
     ports:
       - "127.0.0.1:${PLAYWRIGHT_HOST_PORT:-3003}:3000"
     networks:
@@ -101,9 +101,12 @@ services:
     # Resource limits for Docker Compose (not Swarm)
     cpus: ${PLAYWRIGHT_CPUS:-2.0}
     # Optional local safety backstop. Docker treats 0 as unlimited.
-    pids_limit: ${PLAYWRIGHT_PIDS_LIMIT:-0}
-    mem_limit: 4G
-    memswap_limit: 4G
+    pids_limit: ${PLAYWRIGHT_PIDS_LIMIT:-384}
+    # Governed production-current baseline. Candidate capacity is supplied only
+    # by the private CRE runtime overlay, never by this shared stack default.
+    mem_limit: 16G
+    memswap_limit: 16G
+    shm_size: 8G
     logging:
       driver: "json-file"
       options:
@@ -140,7 +143,7 @@ services:
     command: node dist/src/harness.js --start-docker
     # Resource limits for Docker Compose (not Swarm)
     # Increase if you have more CPU cores/RAM available
-    cpus: ${API_CPUS:-2.0}
+    cpus: ${API_CPUS:-1.0}
     mem_limit: 8G
     memswap_limit: 8G
 

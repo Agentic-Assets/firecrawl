@@ -70,3 +70,26 @@ not a distributed lock and does not defend against a malicious same-UID actor
 with direct filesystem access who can replace paths outside the protocol. In
 that case, or after any authority mismatch, stop the collector and perform
 manual recovery. Never delete the sidecar as an automated repair step.
+
+## Historic pytest quarantine residue
+
+`cre_capacity_runtime.py recover-quarantine` is the only operator path for the
+historic pre-persistent-authority pytest residue. It is dry-run by default,
+accepts no alternate lock path, and requires the exact canonical directory and
+its legacy two-field authority sibling, coherent active/quarantine marker
+hashes, a dead matching owner, a fresh 90-percent/30-second CPU observation,
+exact baseline resources, and idle API, browser, RabbitMQ, NuQ, crawl, and
+collector evidence. It rejects malformed, live, recovery-required, replaced,
+or non-pytest residue.
+
+With `--execute`, it first writes and parent-fsyncs the private
+`.cre-quarantine-recovery.json` guard. Every normal `SharedLock.acquire` treats
+that guard as an operator stop. It then archives the directory and authority as
+an exact retained mode-0700 pair, fsyncing each namespace transition and
+advancing the guard through `prepared`, `lock-archived`, `pair-archived`, and
+`receipt-written`. Re-running the same explicit command resumes only the
+recorded matching inode/hash pair; a malformed, replaced, or unexpected phase
+remains blocked. Only after the immutable hashed receipt and both archive
+members are revalidated does it fsync removal of the guard. It never unlinks or
+recursively deletes lock artifacts. Any interrupted or uncertain recovery is a
+stop, not permission for shell removal.
