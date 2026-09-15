@@ -1161,9 +1161,19 @@ def test_to_row_rejects_jll_document_queries_and_fragments() -> None:
 
 
 def test_withheld_jll_sql_replaces_or_clears_prior_price_bearing_prose() -> None:
-    compact = " ".join(ci.build_sql([], [], _SCRAPED_AT, set()).split())
-    row_gate = "( EXCLUDED.raw_data->>'jllPriceWithheld' = 'true' )"
-    stage_gate = "( s.raw_data->>'jllPriceWithheld' = 'true' )"
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    compact = " ".join(sql.split())
+    row_source_key = " ".join(ci.source_key_sql("EXCLUDED", "b_jll").split())
+    stage_source_key = " ".join(ci.source_key_sql("s", "b").split())
+    row_gate = (
+        "( EXCLUDED.raw_data->>'jllPriceWithheld' = 'true' "
+        "AND EXISTS ( SELECT 1 FROM credeals.cre_brokerages b_jll "
+        "WHERE b_jll.id = t.brokerage_id "
+        f"AND {row_source_key} = 'jll' ) )"
+    )
+    stage_gate = (
+        f"( s.raw_data->>'jllPriceWithheld' = 'true' AND {stage_source_key} = 'jll' )"
+    )
 
     assert f"title = CASE WHEN {row_gate} THEN EXCLUDED.title" in compact
     assert f"highlights = CASE WHEN {row_gate} THEN EXCLUDED.highlights" in compact
@@ -1177,6 +1187,39 @@ def test_withheld_jll_sql_replaces_or_clears_prior_price_bearing_prose() -> None
     assert f"extra_facts = CASE WHEN {stage_gate} THEN NULL" in compact
 
 
+def test_jll_withheld_sql_rejects_a_non_jll_marker_collision() -> None:
+    svn = _row(
+        {
+            "sourceKey": "svn",
+            "url": "https://example.buildout.com/website/property?propertyId=42",
+            "id": "42",
+            "name": "Non-JLL control collision",
+            "salePriceUsd": 3250000,
+            "jllPriceWithheld": True,
+        }
+    )
+    jll = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/42",
+            "id": "42",
+            "name": "JLL hidden",
+            "salePriceUsd": 3250000,
+            "hidePrice": True,
+        }
+    )
+    assert svn is not None and jll is not None
+    assert svn["sale_price_usd"] == 3250000
+    assert svn["raw_data"]["jllPriceWithheld"] is True
+    assert jll["sale_price_usd"] is None
+    assert jll["raw_data"]["jllPriceWithheld"] is True
+
+    sql = ci.build_sql([svn, jll], [], _SCRAPED_AT, set())
+    assert "b_jll.id = t.brokerage_id" in sql
+    assert f"{ci.source_key_sql('EXCLUDED', 'b_jll')} = 'jll'" in sql
+    assert f"{ci.source_key_sql('s', 'b')} = 'jll'" in sql
+
+
 def test_withheld_jll_detail_error_clears_prior_child_labels_only() -> None:
     sql = ci.build_sql([], [], _SCRAPED_AT, set())
     compact = " ".join(sql.split())
@@ -1185,7 +1228,8 @@ def test_withheld_jll_detail_error_clears_prior_child_labels_only() -> None:
     end = compact.index("-- Colliers", start)
     clear_scope = compact[start:end]
     assert "FROM _child_additive additive" in clear_scope
-    assert "END = 'jll' AND s.raw_data->>'jllPriceWithheld' = 'true'" in clear_scope
+    assert "s.raw_data->>'jllPriceWithheld' = 'true'" in clear_scope
+    assert "END = 'jll'" in clear_scope
 
     assert "SET title = NULL, license = NULL" in compact
     assert (

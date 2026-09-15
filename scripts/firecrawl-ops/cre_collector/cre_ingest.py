@@ -3253,16 +3253,24 @@ def build_sql(
         '$.**.freshnessProvenance.detailScope ? (@ == "first_party_detail_api")'
       )
     )"""
-    # Price visibility is an explicit provider fact, unlike a sparse ordinary
-    # update.  ``jllPriceWithheld`` is staged by _safe_jll_raw_data and carried
-    # above a dual sale/lease raw wrapper by merge_rows.  Do not rediscover this
-    # from arbitrary nested provider JSON: malformed and legacy pricing data
-    # is already classified fail-closed before it can reach this upsert.
-    jll_price_withheld_row_sql = """(
+    # Price visibility is an explicit, canonical-JLL provider fact, unlike a
+    # sparse ordinary update. ``jllPriceWithheld`` is staged by
+    # _safe_jll_raw_data and carried above a dual sale/lease raw wrapper by
+    # merge_rows. Scope it to the resolved JLL source as well as the target
+    # brokerage: an arbitrary non-JLL raw payload must not be able to trigger
+    # JLL's destructive privacy transition merely by using the same key.
+    jll_price_withheld_row_sql = f"""(
       EXCLUDED.raw_data->>'jllPriceWithheld' = 'true'
+      AND EXISTS (
+        SELECT 1
+        FROM credeals.cre_brokerages b_jll
+        WHERE b_jll.id = t.brokerage_id
+          AND {source_key_sql("EXCLUDED", "b_jll")} = 'jll'
+      )
     )"""
-    jll_price_withheld_stage_sql = """(
+    jll_price_withheld_stage_sql = f"""(
       s.raw_data->>'jllPriceWithheld' = 'true'
+      AND {staged_source_key_sql} = 'jll'
     )"""
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
@@ -4293,8 +4301,7 @@ FROM _child_additive additive
 JOIN _up u ON u.id = additive.id
 JOIN _src s USING (brokerage_id, external_id)
 JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
-WHERE {staged_source_key_sql} = 'jll'
-  AND s.raw_data->>'jllPriceWithheld' = 'true';
+WHERE {jll_price_withheld_stage_sql};
 
 -- Colliers' first-party property record can reference an expert whose public
 -- expert profile is no longer returned. Preserve only the prior contacts for

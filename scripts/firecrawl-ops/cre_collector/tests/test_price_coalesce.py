@@ -17,7 +17,7 @@ Pure Python, no DB connection. Asserts against build_sql([], [], scraped_at, set
 
 from datetime import datetime, timezone
 
-from cre_ingest import build_sql
+from cre_ingest import build_sql, source_key_sql
 
 _SCRAPED_AT = datetime(2026, 6, 15, 0, 0, 0, tzinfo=timezone.utc).isoformat()
 
@@ -82,7 +82,8 @@ def test_jll_withheld_visibility_clears_previously_visible_price_columns():
 def test_jll_withheld_visibility_clears_phase_two_derived_columns_on_prior_update():
     sql = _sql()
     compact = " ".join(sql.split())
-    guard = "s.raw_data->>'jllPriceWithheld' = 'true'"
+    source_key = " ".join(source_key_sql("s", "b").split())
+    guard = f"s.raw_data->>'jllPriceWithheld' = 'true' AND {source_key} = 'jll'"
     for column in ("price_per_unit", "grm", "price_per_acre", "revpar"):
         assert f"{column} = CASE WHEN ( {guard} ) THEN NULL" in compact
 
