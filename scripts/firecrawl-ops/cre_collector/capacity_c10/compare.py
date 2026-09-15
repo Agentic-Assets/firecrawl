@@ -103,9 +103,18 @@ def _browser_evidence_rates(
         raise C10Error("C10 scheduler did not demonstrate the planned saturation")
     expected = {source["key"]: source["plane"] for source in plan["sources"]}
     sources = evidence.get("sources")
-    if not isinstance(sources, list) or {
-        source.get("key") for source in sources if isinstance(source, Mapping)
-    } != set(expected):
+    if (
+        not isinstance(sources, list)
+        or len(sources) != len(expected)
+        or any(not isinstance(source, Mapping) for source in sources)
+    ):
+        raise C10Error("C10 browser evidence does not exactly match the cohort")
+    source_keys = [source.get("key") for source in sources]
+    if (
+        any(not isinstance(key, str) for key in source_keys)
+        or len(set(source_keys)) != len(source_keys)
+        or set(source_keys) != set(expected)
+    ):
         raise C10Error("C10 browser evidence does not exactly match the cohort")
     elapsed_minutes = (finished - started) / 60_000_000_000
     rates: dict[str, float] = {}

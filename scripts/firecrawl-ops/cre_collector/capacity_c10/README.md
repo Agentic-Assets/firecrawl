@@ -13,7 +13,9 @@ reviewed and fully verified. `admission.py` binds that registry, a hash-bound
 multisource-v1 cohort, and the isolated `c10-p0`/`c10-p1` configuration into an
 immutable plan. `runner.py` owns serial one-use arm ordering and a library-only
 coordinator that requires injected runtime, browser, settlement, rollback, and
-quarantine hooks. `compare.py`
+quarantine hooks. Before preflight, it atomically persists each arm claim in an
+owner-only, FD-identity-checked session root; an interrupted claim remains
+unresolved after quarantine recovery and cannot be replayed. `compare.py`
 is pure and can only produce an operator-review candidate, never an executable
 adoption decision.
 

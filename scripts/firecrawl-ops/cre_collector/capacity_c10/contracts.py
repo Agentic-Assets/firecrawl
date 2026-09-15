@@ -65,25 +65,31 @@ def new_session(plan: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def claim_next_arm(
-    plan: Mapping[str, Any], session: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Return a new ledger and exactly one unconsumed arm; never reuse an arm."""
+def validate_session(plan: Mapping[str, Any], session: Mapping[str, Any]) -> None:
+    """Require the canonical in-memory representation of a serial arm ledger."""
     validate_plan(plan)
     if (
-        session.get("schema_version") != SCHEMA_VERSION
+        set(session)
+        != {"schema_version", "kind", "plan_sha256", "consumed_arm_indexes"}
+        or session.get("schema_version") != SCHEMA_VERSION
         or session.get("kind") != SESSION_KIND
         or session.get("plan_sha256") != plan["plan_sha256"]
         or not isinstance(session.get("consumed_arm_indexes"), list)
     ):
         raise C10Error("C10 session is not bound to this immutable plan")
     consumed = session["consumed_arm_indexes"]
-    if any(type(index) is not int for index in consumed) or len(set(consumed)) != len(
-        consumed
-    ):
+    if any(type(index) is not int for index in consumed):
         raise C10Error("C10 session arm ledger is malformed")
-    if any(index < 0 or index >= len(ARM_SEQUENCE) for index in consumed):
-        raise C10Error("C10 session arm ledger is out of range")
+    if consumed != list(range(len(consumed))) or len(consumed) > len(ARM_SEQUENCE):
+        raise C10Error("C10 session arm ledger is not a canonical serial prefix")
+
+
+def claim_next_arm(
+    plan: Mapping[str, Any], session: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return a new ledger and exactly one unconsumed arm; never reuse an arm."""
+    validate_session(plan, session)
+    consumed = session["consumed_arm_indexes"]
     next_index = next(
         (index for index in range(len(ARM_SEQUENCE)) if index not in consumed), None
     )
