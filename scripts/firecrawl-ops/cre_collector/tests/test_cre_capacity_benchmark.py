@@ -77,6 +77,66 @@ def test_build_sample_is_exact_unique_and_spans_declared_strata(tmp_path: Path) 
     assert "not a population-weighted estimate" in sample["representation_claim"]
 
 
+def test_native_evidence_uses_the_bounded_jll_asset_contract_and_worker_import() -> (
+    None
+):
+    property_value = {
+        "images": [
+            "https://cdn.example/image.jpg",
+            {"image": "https://cdn.example/preview.jpg"},
+        ],
+        "brochures": [{"file": "https://cdn.example/brochure.pdf"}],
+        "floorPlans": {
+            "images": [{"image": "https://cdn.example/floor.jpg"}],
+            "files": [{"download": "https://cdn.example/floor.pdf"}],
+        },
+        "videos": [{"url": "https://video.example/watch", "caption": "$3.25M"}],
+        "virtualTours": {"url": "https://tour.example/virtual"},
+        "view360URLs": ["https://tour.example/360"],
+    }
+
+    native = benchmark._native_evidence(property_value)
+
+    assert native["counts"] == {
+        "images": 2,
+        "brochures": 1,
+        "floor_plans": 2,
+        "videos": 1,
+        "virtual_tours": 1,
+        "view_360": 1,
+    }
+    assert native["shape"] == sorted(native["counts"])
+    assert (
+        benchmark._native_evidence(
+            {"videos": {"nested": {"url": "https://unsafe.example/unbounded"}}}
+        )["counts"]["videos"]
+        == 0
+    )
+    source = benchmark._worker_source(Path(__file__).resolve().parents[4])
+    assert "jllNativeAssetUrls" in source
+    assert 'jllNativeAssetUrls(property.videos, "videos")' in source
+    assert 'jllNativeAssetUrls(property.floorPlans, "floorPlans")' in source
+
+
+def test_only_a_caller_held_lock_can_retain_a_benchmark_interlock(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(benchmark.BenchmarkError, match="caller-held canonical lock"):
+        benchmark.run_benchmark(
+            repo_root=tmp_path,
+            artifact_root=tmp_path,
+            sample_path=tmp_path / "sample.json",
+            sample={},
+            profile={},
+            profile_name="candidate",
+            config_sha256="a" * 64,
+            admission={},
+            admission_path=tmp_path / "admission.json",
+            timeout_seconds=1,
+            _retain_benchmark_interlock=True,
+        )
+
+
 def test_validate_sample_rejects_jll_investor_and_duplicate_identity(
     tmp_path: Path,
 ) -> None:
@@ -2067,6 +2127,7 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
             assert held_lock.held
             with pytest.raises(benchmark.LockHeldError):
                 benchmark.SharedLock(lock_path).acquire()
+            held_lock.arm_benchmark({"state": "active"})
             lock_windows.append("benchmark")
         result_path = kwargs["artifact_root"] / "result.json"
         result_path.write_bytes(benchmark._canonical({"completed": True}))
@@ -2250,6 +2311,7 @@ def test_candidate_pair_defers_quarantine_until_after_rollback(
         original_write(path, value)
 
     def fake_run(**kwargs):
+        assert kwargs["_retain_benchmark_interlock"] is True
         lock = kwargs["_held_shared_lock"]
         lock.arm_benchmark({"state": "active"})
         events.append("benchmark")
@@ -2371,6 +2433,77 @@ def test_caller_held_unknown_settlement_is_durably_deferred_to_pair_rollback(
         assert held_lock.held
         assert (lock_path / "pid").is_file()
         assert (lock_path / "lease").is_file()
+        assert (lock_path / "capacity-benchmark-active.json").is_file()
+        with pytest.raises(benchmark.LockHeldError):
+            benchmark.SharedLock(lock_path).acquire()
+
+
+def test_caller_held_idle_benchmark_retains_interlock_until_pair_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, "bold-jll-128")
+    admission = _admission(tmp_path)
+    admission["review_approval_created_at"] = benchmark._now()
+    admission["endpoints"] = {
+        "api_url": "http://127.0.0.1:3102",
+        "browser_health_url": "http://127.0.0.1:3103/health",
+    }
+    sample = {"inventory_sha256": "a" * 64}
+    sample_path = tmp_path / "sample.json"
+    sample_path.write_text(json.dumps(sample))
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(benchmark, "_implementation_manifest", lambda *_args: {})
+    monkeypatch.setattr(benchmark, "_verify_implementation_manifest", lambda *_args: {})
+    monkeypatch.setattr(benchmark, "validate_sample", lambda value, _details: value)
+    monkeypatch.setattr(benchmark, "verify_sample_provenance", lambda *_args: {})
+    monkeypatch.setattr(
+        benchmark, "verify_live_admission", lambda *_args: {"effective_runtime": {}}
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "_consume_admission",
+        lambda *_args, **_kwargs: _audit_file(tmp_path, admission),
+    )
+    monkeypatch.setattr(
+        benchmark, "_settlement_snapshot", lambda *_args: {"idle": True}
+    )
+    monkeypatch.setattr(benchmark, "_resource_snapshot", dict)
+    monkeypatch.setattr(benchmark, "_resource_verdict", lambda *_args: {})
+    monkeypatch.setattr(
+        benchmark,
+        "summarize_replicate",
+        lambda *_args, **_kwargs: {"remote_settlement_unknown": 0},
+    )
+    monkeypatch.setattr(benchmark, "_replicate_state", lambda *_args: "measured")
+    monkeypatch.setattr(benchmark, "_run_worker", lambda **_kwargs: (0, [], None))
+    monkeypatch.setattr(
+        benchmark,
+        "_await_idle_settlement",
+        lambda *_args: {"idle": True, "state": "idle"},
+    )
+
+    with benchmark.SharedLock(lock_path) as held_lock:
+        result = benchmark.run_benchmark(
+            repo_root=tmp_path,
+            artifact_root=artifact,
+            sample_path=sample_path,
+            sample=sample,
+            profile=profile,
+            profile_name="bold-jll-128",
+            config_sha256=digest,
+            admission=admission,
+            admission_path=tmp_path / "admission.json",
+            timeout_seconds=60,
+            _held_shared_lock=held_lock,
+            _retain_benchmark_interlock=True,
+        )
+        assert result["completed"] is True
+        assert held_lock.benchmark_marker_identity is not None
         assert (lock_path / "capacity-benchmark-active.json").is_file()
         with pytest.raises(benchmark.LockHeldError):
             benchmark.SharedLock(lock_path).acquire()

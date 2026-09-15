@@ -35,6 +35,7 @@ from statistics import median
 from typing import Any
 
 import cre_capacity_experiment as experiment
+import cre_capacity_multisource_v1 as multisource
 import cre_capacity_runtime as capacity_runtime
 import cre_capacity_telemetry as capacity_telemetry
 import cre_checkpoint_refresh as checkpoint_refresh
@@ -744,23 +745,19 @@ def _historic_fidelity(
             "size": {"surface_area": _present(property_value.get("surfaceArea"))},
             "brokers_contacts": {"contacts": _present(brokers)},
             "documents": {
-                "brochures": bool(_string_urls(property_value.get("brochures"))),
-                "floor_plans": bool(_floor_plan_urls(property_value.get("floorPlans"))),
+                "brochures": bool(_jll_native_asset_urls(property_value, "brochures")),
+                "floor_plans": bool(
+                    _jll_native_asset_urls(property_value, "floorPlans")
+                ),
             },
-            "images": {"photos": bool(_string_urls(property_value.get("images")))},
+            "images": {
+                "photos": bool(_jll_native_asset_urls(property_value, "images"))
+            },
             "media": {
-                "videos": bool(_string_urls(property_value.get("videos"))),
+                "videos": bool(_jll_native_asset_urls(property_value, "videos")),
                 "tours_360": bool(
-                    _string_urls(
-                        property_value.get("virtualTours")
-                        if isinstance(property_value.get("virtualTours"), list)
-                        else [property_value.get("virtualTours")]
-                    )
-                    or _string_urls(
-                        property_value.get("view360URLs")
-                        if isinstance(property_value.get("view360URLs"), list)
-                        else [property_value.get("view360URLs")]
-                    )
+                    _jll_native_asset_urls(property_value, "virtualTours")
+                    or _jll_native_asset_urls(property_value, "view360URLs")
                 ),
                 "other": bool(
                     _string_urls(
@@ -775,22 +772,29 @@ def _historic_fidelity(
     )
 
 
+def _jll_native_asset_urls(
+    property_value: Mapping[str, Any], raw_channel: str
+) -> list[str]:
+    return sorted(
+        {
+            url
+            for item in multisource._jll_asset_values(
+                raw_channel, property_value.get(raw_channel)
+            )
+            if (url := multisource._public_asset_url(item))
+        }
+    )
+
+
 def _native_evidence(property_value: Mapping[str, Any]) -> dict[str, Any]:
+
     channels = {
-        "images": _string_urls(property_value.get("images")),
-        "brochures": _string_urls(property_value.get("brochures")),
-        "floor_plans": _floor_plan_urls(property_value.get("floorPlans")),
-        "videos": _string_urls(property_value.get("videos")),
-        "virtual_tours": _string_urls(
-            property_value.get("virtualTours")
-            if isinstance(property_value.get("virtualTours"), list)
-            else [property_value.get("virtualTours")]
-        ),
-        "view_360": _string_urls(
-            property_value.get("view360URLs")
-            if isinstance(property_value.get("view360URLs"), list)
-            else [property_value.get("view360URLs")]
-        ),
+        "images": _jll_native_asset_urls(property_value, "images"),
+        "brochures": _jll_native_asset_urls(property_value, "brochures"),
+        "floor_plans": _jll_native_asset_urls(property_value, "floorPlans"),
+        "videos": _jll_native_asset_urls(property_value, "videos"),
+        "virtual_tours": _jll_native_asset_urls(property_value, "virtualTours"),
+        "view_360": _jll_native_asset_urls(property_value, "view360URLs"),
     }
     return {
         "counts": {key: len(values) for key, values in channels.items()},
@@ -1893,8 +1897,8 @@ WORKER_TEMPLATE = r"""import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import {
-  enrichJllListing, jllDetailCachePath, jllNextData, jllStrandedDocs,
-  jllStrandedMedia, jllStringUrls, jllHasUsableBrochure,
+  enrichJllListing, jllDetailCachePath, jllNextData,
+  jllStrandedMedia, jllNativeAssetUrls, jllHasUsableBrochure,
 } from __JLL_IMPORT__;
 import {
   flushPerformance, recordSourceCompleted, recordSourceStarted, withPerformanceSource,
@@ -1915,7 +1919,6 @@ if (sample.kind !== "cre_jll_capacity_sample" || sample.source !== "jll" || samp
 }
 const fingerprint = (values) => createHash("sha256").update([...new Set(values)].sort().join("\n")).digest("hex");
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
-const urls = (value) => Array.isArray(value) ? value.filter((item) => typeof item === "string" && /^https?:\/\//.test(item)) : [];
 const itemUrls = (value) => Array.isArray(value) ? value.flatMap((item) => typeof item === "string" ? [item] : item && typeof item.url === "string" ? [item.url] : []) : [];
 const present = (value) => typeof value === "number" || (typeof value === "string" && value.trim().length > 0) || (Array.isArray(value) && value.length > 0) || (!!value && typeof value === "object" && Object.keys(value).length > 0);
 function transactionTypeFor(value) {
@@ -1949,8 +1952,8 @@ function nativeEvidence(row) {
   const property = jllNextData(cached.rawHtml)?.props?.pageProps?.property;
   if (!property || String(property.id) !== String(row.id)) throw new Error("native identity mismatch");
   const channels = {
-    images: jllStringUrls(property.images), brochures: jllStringUrls(property.brochures),
-    floor_plans: itemUrls(jllStrandedDocs(property)), videos: urls(property.videos),
+    images: jllNativeAssetUrls(property.images, "images"), brochures: jllNativeAssetUrls(property.brochures, "brochures"),
+    floor_plans: jllNativeAssetUrls(property.floorPlans, "floorPlans"), videos: jllNativeAssetUrls(property.videos, "videos"),
     virtual_tours: itemUrls(jllStrandedMedia({ virtualTours: property.virtualTours })),
     view_360: itemUrls(jllStrandedMedia({ view360URLs: property.view360URLs })),
   };
@@ -4422,7 +4425,12 @@ def run_benchmark(
     timeout_seconds: int,
     pairing: Mapping[str, Any] | None = None,
     _held_shared_lock: SharedLock | None = None,
+    _retain_benchmark_interlock: bool = False,
 ) -> dict[str, Any]:
+    if _retain_benchmark_interlock and _held_shared_lock is None:
+        raise BenchmarkError(
+            "only a caller-held canonical lock may retain the benchmark interlock"
+        )
     replicates = int(profile["workload"]["replicates"])
     implementation = _implementation_manifest(repo_root)
     endpoints = LOOPBACK_ENDPOINTS
@@ -4729,6 +4737,7 @@ def run_benchmark(
                     interlock_armed
                     and pending_error is None
                     and result["final_settlement"].get("state") == "idle"
+                    and not _retain_benchmark_interlock
                 ):
                     shared_lock.disarm_benchmark()
             if pending_error is not None:
@@ -4952,7 +4961,11 @@ def run_counterbalanced_pair_step(
                 rollback_error: BaseException | None = None
                 quarantine_error: BaseException | None = None
                 try:
-                    result = run_benchmark(**run_kwargs, _held_shared_lock=held_lock)
+                    result = run_benchmark(
+                        **run_kwargs,
+                        _held_shared_lock=held_lock,
+                        _retain_benchmark_interlock=True,
+                    )
                 except BaseException as exc:  # noqa: BLE001 - rollback is mandatory
                     benchmark_error = exc
                 try:
@@ -4964,6 +4977,16 @@ def run_counterbalanced_pair_step(
                         execute=True,
                         _held_shared_lock=held_lock,
                     )
+                    if (
+                        benchmark_error is None
+                        and result is not None
+                        and result.get("completed") is True
+                    ):
+                        if held_lock.benchmark_marker_identity is None:
+                            raise BenchmarkError(
+                                "candidate benchmark lost its canonical interlock"
+                            )
+                        held_lock.disarm_benchmark()
                 except BaseException as exc:  # noqa: BLE001 - quarantine still follows
                     rollback_error = exc
                 finally:

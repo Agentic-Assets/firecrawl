@@ -703,11 +703,16 @@ const JLL_PRICE_LABELLED_TOKEN = new RegExp(
   `\\b(?:asking(?:\\s+price)?|sale\\s+price|lease\\s+(?:rate|price)?|rent(?:al)?\\s+(?:rate|price)?|price|consideration)\\b\\s*[:=-]?\\s*${JLL_MONEY_AMOUNT}(?:\\s*[kmb])?(?:\\s*/\\s*[a-z. ]+)?`,
   "i",
 );
+const JLL_MONEY_SUFFIX_TOKEN = new RegExp(
+  `\\b${JLL_MONEY_AMOUNT}(?:\\s*[kmb])?\\s*(?:\\b(?:usd|cad|eur|gbp|jpy|aud|nzd|chf|hkd|sgd|cny|rmb|inr|mxn|brl|krw|aed|sar|sek|nok|dkk|pln|try|zar)\\b|(?:us\\$|c\\$|a\\$)|[$€£¥])`,
+  "i",
+);
 
 function jllSafePublicText(value: unknown): string | null {
   const text = clean(value);
   return text &&
     !JLL_MONEY_TOKEN.test(text) &&
+    !JLL_MONEY_SUFFIX_TOKEN.test(text) &&
     !JLL_PRICE_LABELLED_TOKEN.test(text)
     ? text
     : null;
@@ -977,7 +982,7 @@ export function jllGraphqlItemToListing(
         ? null
         : `${buildingSizeSqft.toLocaleString("en-US")} SF`,
     buildingSizeSqft,
-    photos: jllNativeAssetUrls(item?.images),
+    photos: jllNativeAssetUrls(item?.images, "images"),
     brokerIds: [],
     url,
     jllPropertyTypeFilters: [propertyType],
@@ -1333,25 +1338,47 @@ export function jllStringUrls(values: any): string[] {
   );
 }
 
-/** Extract every public URL shape retained by the raw JLL asset contract. */
-function jllNativeAssetUrls(value: unknown): string[] {
-  const candidates: unknown[] = [];
-  const visit = (candidate: unknown): void => {
-    if (typeof candidate === "string") {
-      candidates.push(candidate);
-      return;
+export type JllNativeAssetChannel =
+  | "images"
+  | "brochures"
+  | "floorPlans"
+  | "videos"
+  | "virtualTours"
+  | "view360URLs";
+
+const JLL_NATIVE_ASSET_ENTRY_KEYS = ["url", "image", "download", "file"];
+
+function jllNativeAssetEntryUrls(value: unknown): unknown[] {
+  if (typeof value === "string") return [value];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return [];
+  }
+  const record = value as Record<string, unknown>;
+  return JLL_NATIVE_ASSET_ENTRY_KEYS.flatMap((key) =>
+    typeof record[key] === "string" ? [record[key]] : [],
+  );
+}
+
+/** Extract documented JLL asset entries without recursively harvesting objects. */
+export function jllNativeAssetUrls(
+  value: unknown,
+  channel: JllNativeAssetChannel,
+): string[] {
+  const entries = Array.isArray(value) ? value : [value];
+  const candidates = entries.flatMap(jllNativeAssetEntryUrls);
+  if (
+    channel === "floorPlans" &&
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  ) {
+    const envelope = value as Record<string, unknown>;
+    for (const key of ["images", "files"]) {
+      const bucket = envelope[key];
+      const floorPlanEntries = Array.isArray(bucket) ? bucket : [bucket];
+      candidates.push(...floorPlanEntries.flatMap(jllNativeAssetEntryUrls));
     }
-    if (Array.isArray(candidate)) {
-      candidate.forEach(visit);
-      return;
-    }
-    if (candidate === null || typeof candidate !== "object") return;
-    const record = candidate as Record<string, unknown>;
-    for (const key of ["url", "image", "download", "file", "images", "files"]) {
-      visit(record[key]);
-    }
-  };
-  visit(value);
+  }
   return jllStringUrls(candidates);
 }
 
@@ -1494,11 +1521,14 @@ export function jllContacts(brokersRaw: any[]): any[] {
 // harvester does not recognize. harvestDetail dedups by url. Never throws.
 export function jllStrandedMedia(property: any): (MediaItem | string)[] {
   const out: (MediaItem | string)[] = [];
-  for (const url of jllNativeAssetUrls(property?.videos)) {
+  for (const url of jllNativeAssetUrls(property?.videos, "videos")) {
     out.push(url);
   }
-  for (const value of [property?.virtualTours, property?.view360URLs]) {
-    for (const url of jllNativeAssetUrls(value)) {
+  for (const [channel, value] of [
+    ["virtualTours", property?.virtualTours],
+    ["view360URLs", property?.view360URLs],
+  ] as const) {
+    for (const url of jllNativeAssetUrls(value, channel)) {
       out.push({
         mediaType: "virtual_tour",
         provider: null,
@@ -1574,7 +1604,7 @@ export function jllReconcileDocumentChannels(
 }
 
 function jllFloorPlanEntryUrls(value: unknown): string[] {
-  return jllNativeAssetUrls(value)
+  return jllNativeAssetUrls(value, "floorPlans")
     .map(jllFloorPlanUrl)
     .filter((url): url is string => url !== null);
 }
@@ -1783,8 +1813,8 @@ export async function enrichJllListing(base: any): Promise<any> {
     // documents channel (floor_plan) via jllStrandedDocs so they are not
     // double-inserted (cre_listing_documents has no (listing_id,url) unique key,
     // so a url present in BOTH brochures and documents would insert twice).
-    const rawBrochures = jllNativeAssetUrls(property.brochures);
-    const images = jllNativeAssetUrls(property.images);
+    const rawBrochures = jllNativeAssetUrls(property.brochures, "brochures");
+    const images = jllNativeAssetUrls(property.images, "images");
     const url = normalizedJllListingUrl(base.url);
     const floorPlanDocuments = jllStrandedDocs(property);
 

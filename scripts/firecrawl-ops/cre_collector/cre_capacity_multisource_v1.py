@@ -1341,27 +1341,45 @@ def _public_asset_url(value: Any) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     parsed = urllib.parse.urlsplit(value.strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or len(parsed.path) <= 1
+    ):
         return None
     return value.strip()
 
 
-def _jll_asset_values(value: Any) -> list[Any]:
-    """Flatten JLL's native asset shapes without inventing a cross-channel map."""
+_JLL_NATIVE_ASSET_ENTRY_KEYS = ("url", "image", "download", "file")
+
+
+def _jll_asset_entry_values(value: Any) -> list[Any]:
+    """Read one documented string or object-form JLL asset entry."""
     if isinstance(value, str):
         return [value]
-    if isinstance(value, list):
-        flattened: list[Any] = []
-        for item in value:
-            flattened.extend(_jll_asset_values(item))
-        return flattened
-    if isinstance(value, Mapping):
-        flattened = []
-        for key in ("url", "image", "download", "file", "images", "files"):
-            if key in value:
-                flattened.extend(_jll_asset_values(value[key]))
-        return flattened
-    return []
+    if not isinstance(value, Mapping):
+        return []
+    return [
+        value[key]
+        for key in _JLL_NATIVE_ASSET_ENTRY_KEYS
+        if isinstance(value.get(key), str)
+    ]
+
+
+def _jll_asset_values(channel: str, value: Any) -> list[Any]:
+    """Read bounded JLL channel shapes; never recursively harvest unknown objects."""
+    entries = value if isinstance(value, list) else [value]
+    candidates = [item for entry in entries for item in _jll_asset_entry_values(entry)]
+    if channel == "floorPlans" and isinstance(value, Mapping):
+        for key in ("images", "files"):
+            bucket = value.get(key)
+            floor_entries = bucket if isinstance(bucket, list) else [bucket]
+            candidates.extend(
+                item
+                for entry in floor_entries
+                for item in _jll_asset_entry_values(entry)
+            )
+    return candidates
 
 
 def _url_set_hash(values: list[str]) -> str:
@@ -1390,7 +1408,9 @@ def _jll_asset_contract(
             return False
         raw_present = channel in property_value
         candidates = (
-            _jll_asset_values(property_value.get(channel)) if raw_present else []
+            _jll_asset_values(channel, property_value.get(channel))
+            if raw_present
+            else []
         )
         valid = [url for item in candidates if (url := _public_asset_url(item))]
         rejected = len(candidates) - len(valid)

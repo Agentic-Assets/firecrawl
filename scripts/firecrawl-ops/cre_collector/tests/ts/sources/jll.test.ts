@@ -22,6 +22,7 @@ import {
   jllNextData,
   jllPublicProfileUrl,
   jllStringUrls,
+  jllNativeAssetUrls,
   jllHasUsableBrochure,
   jllSurfaceAreaSqft,
   jllDescription,
@@ -143,6 +144,50 @@ test("jllStringUrls keeps unique http(s) URLs only", () => {
     ["https://a.example/b.pdf"],
   );
   assert.deepEqual(jllStringUrls(null), []);
+});
+
+test("JLL native asset URLs accept bounded documented string and object shapes", () => {
+  assert.deepEqual(
+    jllNativeAssetUrls(
+      ["https://cdn.example/image.jpg", { image: "https://cdn.example/preview.jpg" }],
+      "images",
+    ),
+    ["https://cdn.example/image.jpg", "https://cdn.example/preview.jpg"],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls(
+      [{ file: "https://cdn.example/brochure.pdf" }, "https://cdn.example/other.pdf"],
+      "brochures",
+    ),
+    ["https://cdn.example/brochure.pdf", "https://cdn.example/other.pdf"],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls(
+      { images: [{ image: "https://cdn.example/floor.jpg" }], files: [{ download: "https://cdn.example/floor.pdf" }] },
+      "floorPlans",
+    ),
+    ["https://cdn.example/floor.jpg", "https://cdn.example/floor.pdf"],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls([{ url: "https://video.example/watch" }], "videos"),
+    ["https://video.example/watch"],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls({ url: "https://tour.example/virtual" }, "virtualTours"),
+    ["https://tour.example/virtual"],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls(["https://tour.example/360"], "view360URLs"),
+    ["https://tour.example/360"],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls({ nested: { url: "https://unsafe.example/unbounded" } }, "videos"),
+    [],
+  );
+  assert.deepEqual(
+    jllNativeAssetUrls([["https://unsafe.example/nested-array"]], "images"),
+    [],
+  );
 });
 
 test("jllHasUsableBrochure requires a public URL for native and typed brochure evidence", () => {
@@ -1436,6 +1481,7 @@ test("JLL hidden child sanitizer preserves identities and URLs while omitting pr
       license: "License $3.25M",
       caption: "CAD $1,000,000 broker disclosure",
       headline: "Price 3.25M",
+      label: "Offering 3.25M USD",
     },
     "broker",
   );
@@ -1452,6 +1498,7 @@ test("JLL hidden child sanitizer preserves identities and URLs while omitting pr
       url: "https://cdn.example/brochure.pdf",
       name: "$3.25M brochure",
       caption: "USD $3.25M brochure caption",
+      headline: "Offering 3.25M USD",
       docType: "brochure",
     },
     {
@@ -1478,6 +1525,7 @@ test("JLL hidden child sanitizer preserves identities and URLs while omitting pr
     assert.equal(safe.title, undefined);
     assert.equal(safe.caption, undefined);
     assert.equal(safe.headline, undefined);
+    assert.equal(safe.label, undefined);
     assert.doesNotMatch(JSON.stringify(safe), /\$3\.25M|3\.25M|CAD|USD|EUR/);
   }
 

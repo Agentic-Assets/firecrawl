@@ -712,6 +712,7 @@ def test_withheld_jll_child_metadata_keeps_identity_urls_and_drops_price_labels(
                     "office": "Asking price $3.25M",
                     "license": "License $3.25M",
                     "caption": "CAD $1,000,000 broker disclosure",
+                    "label": "Offering 3.25M USD",
                     "headline": "Building 3B",
                 }
             ],
@@ -720,6 +721,7 @@ def test_withheld_jll_child_metadata_keeps_identity_urls_and_drops_price_labels(
                     "url": "https://cdn.example/brochure.pdf",
                     "name": "$3.25M brochure",
                     "caption": "USD $3.25M brochure caption",
+                    "headline": "Offering 3.25M USD",
                 }
             ],
             "documents": [
@@ -728,6 +730,7 @@ def test_withheld_jll_child_metadata_keeps_identity_urls_and_drops_price_labels(
                     "title": "$3.25M floor plan",
                     "docType": "floor_plan",
                     "headline": "Asking price 3.25M",
+                    "caption": "Offering 3.25M USD",
                 }
             ],
             "media": [
@@ -738,6 +741,7 @@ def test_withheld_jll_child_metadata_keeps_identity_urls_and_drops_price_labels(
                     "provider": "vimeo",
                     "title": "$3.25M tour",
                     "caption": "EUR 3.25M virtual tour",
+                    "headline": "Offering 3.25M USD",
                 }
             ],
         }
@@ -783,6 +787,7 @@ def test_withheld_jll_child_metadata_keeps_identity_urls_and_drops_price_labels(
     assert "CAD" not in raw
     assert "USD" not in raw
     assert "EUR" not in raw
+    assert "Offering" not in raw
     assert "Jane Broker" in raw
     assert "Building 3B" in raw
     assert "https://video.example/watch" in raw

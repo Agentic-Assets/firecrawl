@@ -121,7 +121,7 @@ def _jll_asset_evidence(
     for channel, source_path in multisource._JLL_ASSET_CHANNELS.items():
         raw_present = channel in property_value
         candidates = (
-            multisource._jll_asset_values(property_value.get(channel))
+            multisource._jll_asset_values(channel, property_value.get(channel))
             if raw_present
             else []
         )
@@ -773,6 +773,35 @@ def test_jll_asset_contract_binds_every_native_channel_and_rejects_mismatch() ->
     normalized["assets"]["videos"] = ["https://wrong.example/video"]
     assert not multisource._verified_jll_locator_fidelity(
         normalized, locators, assets, raw
+    )
+
+
+def test_jll_asset_contract_accepts_only_bounded_documented_asset_shapes() -> None:
+    assert multisource._jll_asset_values(
+        "images",
+        ["https://cdn.example/image.jpg", {"image": "https://cdn.example/preview.jpg"}],
+    ) == ["https://cdn.example/image.jpg", "https://cdn.example/preview.jpg"]
+    assert multisource._jll_asset_values(
+        "brochures", [{"file": "https://cdn.example/brochure.pdf"}]
+    ) == ["https://cdn.example/brochure.pdf"]
+    assert multisource._jll_asset_values(
+        "floorPlans",
+        {
+            "images": [{"image": "https://cdn.example/floor.jpg"}],
+            "files": [{"download": "https://cdn.example/floor.pdf"}],
+        },
+    ) == ["https://cdn.example/floor.jpg", "https://cdn.example/floor.pdf"]
+    assert (
+        multisource._jll_asset_values(
+            "videos", {"nested": {"url": "https://unsafe.example/unbounded"}}
+        )
+        == []
+    )
+    assert (
+        multisource._jll_asset_values(
+            "images", [["https://unsafe.example/nested-array"]]
+        )
+        == []
     )
 
 

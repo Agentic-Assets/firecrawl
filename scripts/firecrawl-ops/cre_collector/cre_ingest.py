@@ -2004,7 +2004,9 @@ def _safe_jll_hidden_child_metadata(value, *, broker=False):
         for item in value:
             if isinstance(item, str):
                 if not (
-                    _JLL_MONEY_TOKEN.search(item) or _JLL_LABELLED_PRICE.search(item)
+                    _JLL_MONEY_TOKEN.search(item)
+                    or _JLL_MONEY_SUFFIX.search(item)
+                    or _JLL_LABELLED_PRICE.search(item)
                 ):
                     safe.append(item)
             else:
@@ -2019,7 +2021,9 @@ def _safe_jll_hidden_child_metadata(value, *, broker=False):
         if key.casefold() in label_keys:
             if isinstance(item, str):
                 if not (
-                    _JLL_MONEY_TOKEN.search(item) or _JLL_LABELLED_PRICE.search(item)
+                    _JLL_MONEY_TOKEN.search(item)
+                    or _JLL_MONEY_SUFFIX.search(item)
+                    or _JLL_LABELLED_PRICE.search(item)
                 ):
                     safe[key] = item
             elif isinstance(item, list):
