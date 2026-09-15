@@ -3064,6 +3064,79 @@ def test_observed_legacy_guard_move_fsyncs_before_phase_advance(tmp_path, monkey
     successor.release()
 
 
+def test_legacy_sentinel_fsyncs_before_phase_one_authority_record(
+    tmp_path, monkeypatch
+):
+    """An old sentinel cannot become a durable phase-one fact prematurely."""
+    lock_path = tmp_path / ".cre.lock"
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    lock_path.mkdir()
+    (lock_path / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    original = f"v1 {owner} {token} {generation} normal\n"
+    authority.write_text(original, encoding="utf-8")
+    guard = lock_path.with_name(f"{lock_path.name}.reclaim")
+    guard.mkdir()
+    (lock_path / "lease").unlink()
+    parent_identity = refresh._lock_directory_identity(lock_path.parent)
+    original_fsync = refresh.os.fsync
+
+    def fail_parent_fsync(descriptor):
+        observed = os.fstat(descriptor)
+        if (observed.st_dev, observed.st_ino) == parent_identity:
+            raise OSError("legacy sentinel parent fsync failed")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(refresh.os, "fsync", fail_parent_fsync)
+    with pytest.raises(OSError, match="legacy sentinel parent fsync failed"):
+        refresh.SharedLock(lock_path).acquire()
+
+    assert authority.read_text(encoding="utf-8") == original
+    assert lock_path.is_dir()
+    assert guard.is_dir()
+
+    monkeypatch.setattr(refresh.os, "fsync", original_fsync)
+    successor = refresh.SharedLock(lock_path)
+    successor.acquire()
+    successor.release()
+
+
+def test_absent_lock_path_fsyncs_before_successor_authority_generation(
+    tmp_path, monkeypatch
+):
+    """A successor never outruns an observed but unacknowledged release."""
+    lock_path = tmp_path / ".cre.lock"
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    original = f"v1 {owner} {token} {generation} normal\n"
+    authority.write_text(original, encoding="utf-8")
+    parent_identity = refresh._lock_directory_identity(lock_path.parent)
+    original_fsync = refresh.os.fsync
+
+    def fail_parent_fsync(descriptor):
+        observed = os.fstat(descriptor)
+        if (observed.st_dev, observed.st_ino) == parent_identity:
+            raise OSError("absent lock parent fsync failed")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(refresh.os, "fsync", fail_parent_fsync)
+    with pytest.raises(OSError, match="absent lock parent fsync failed"):
+        refresh.SharedLock(lock_path).acquire()
+
+    assert authority.read_text(encoding="utf-8") == original
+    assert not lock_path.exists()
+
+    monkeypatch.setattr(refresh.os, "fsync", original_fsync)
+    successor = refresh.SharedLock(lock_path)
+    successor.acquire()
+    successor.release()
+
+
 @pytest.mark.parametrize("unsafe_entry", ["unexpected", "nonempty-guard", "bad-lease"])
 def test_partial_legacy_reclaim_residue_fails_closed_when_unverified(
     tmp_path, unsafe_entry

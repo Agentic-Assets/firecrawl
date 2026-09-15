@@ -1267,6 +1267,11 @@ class SharedLock:
                 source_identity=original_identity,
                 legacy_guard=1 if legacy_guard else 0,
             )
+        if legacy_guard:
+            # This sentinel originated under the pre-authority protocol. Make
+            # its verified namespace presence durable before acknowledging it
+            # in phase one of the persistent reclaim state.
+            self._fsync_lock_parent()
         self._write_reclaim_state(state)
         self._resume_reclaim_state(state)
 
@@ -1276,6 +1281,17 @@ class SharedLock:
         try:
             original_identity = _lock_directory_identity(self.path)
         except FileNotFoundError:
+            prior = self._authority_fields(self.authority_fd)
+            if prior is None:
+                raise LockHeldError("CRE lock authority is malformed")
+            if not self._authority_is_neutral(prior):
+                # A prior release may have removed the directory but crashed
+                # before persisting that deletion. Never publish a successor
+                # generation over that observed absence until it is durable.
+                # A freshly-created neutral sidecar has no prior directory to
+                # acknowledge and must still be able to retain a recovery
+                # stop if its initial lock write fails.
+                self._fsync_lock_parent()
             return
         if _lock_interlocked(self.path):
             raise LockHeldError(
