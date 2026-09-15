@@ -756,7 +756,6 @@ if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_K
 
     const queuedAt = Date.now();
     const deadlineAt = queuedAt + input.card.timeoutMs;
-    const leaseStartMonotonicNs = process.hrtime.bigint().toString();
     const remaining = () => {
       const value = deadlineAt - Date.now();
       if (value < 1) throw new Error("C10 browser hard deadline expired");
@@ -774,6 +773,9 @@ if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_K
       await pageSemaphore.acquire(remaining());
       permitAcquired = true;
       lease = c10PageLeasePool.acquire();
+      // A lease begins only after the real shared semaphore and slot are both
+      // owned. Queueing, DNS and browser initialization are never lease time.
+      const leaseStartMonotonicNs = process.hrtime.bigint().toString();
       const queueMs = Date.now() - queuedAt;
       const startedAt = Date.now();
       const contextBundle = await createContext(C10_BROWSER_TEST_LOCAL_TARGETS, undefined, C10_BROWSER_TEST_LOCAL_TARGETS);
