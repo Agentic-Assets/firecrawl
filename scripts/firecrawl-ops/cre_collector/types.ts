@@ -3,6 +3,16 @@
 
 export type Tx = "sale" | "lease";
 
+/** Source evidence stored by cre_ingest, never a qualified comp. */
+export interface RentCompEvidenceV1 {
+  version: 1;
+  rent: ReturnType<typeof import("./lib/rent-evidence.js").rentEvidence>;
+  areas: Array<{raw_quote: string; source_field_label: string; area_kind: "building" | "offered_space" | "land" | "units" | "unknown"; area_unit: "sf" | "acres" | "units" | "unknown"; value: number | null}>;
+  coordinates: {latitude: number | null; longitude: number | null; precision: "rooftop" | "parcel" | "unknown"; source_field_label: string | null; raw_quote: string | null};
+  source_updated_at: string | null;
+  collected_at: string | null;
+}
+
 // Canonical source-key tuple (one source of truth for collect.ts and
 // lib/enrich.ts). Exported here so the enrichment registry can type itself as
 // Partial<Record<SourceKey, ...>> without importing collect.ts. The tuple is

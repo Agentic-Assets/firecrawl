@@ -459,7 +459,7 @@ test("colliers SalesTracker: parseLeaseRate on null leaseRateText returns all-nu
 
 test("colliers SalesTracker: parseLeaseRate on NNN rate text returns correct type", () => {
   const lr = parseLeaseRate("$18.50 SF/yr NNN");
-  assert.equal(lr.min, 18.5);
+  assert.equal(lr.min, null);
   assert.equal(lr.max, null);
   assert.equal(lr.type, "nnn");
 });

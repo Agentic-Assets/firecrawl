@@ -246,10 +246,9 @@ test("liftTranswesternScalars: lease listing (455-kehoe-boulevard) lifts lease r
   assert.equal(out.minDivisibleSf, 3036);
   assert.equal(out.maxDivisibleSf, 3122);
 
-  // leaseRateMin / leaseRateMax: both rows have $11.75/SF -> min=11.75, max=null (single rate)
-  // Note: parseLeaseRate on '$11.75' returns {min:11.75,...} (bare amount, trusted as-is).
-  assert.equal(out.leaseRateMin, 11.75);
-  assert.equal(out.leaseRateMax, null);
+  // Raw dollar amounts lack explicit currency and period; no numeric lift.
+  assert.equal(out.leaseRateMin, undefined);
+  assert.equal(out.leaseRateMax, undefined);
 
   // leaseRateType: 'Absolute Net' in raw[] -> maps to 'nnn'
   assert.equal(out.leaseRateType, "nnn");
@@ -370,13 +369,12 @@ test("liftTranswesternScalars: lease type vocabulary matches NNN, FSG, MG withou
   assert.equal(outNoType.leaseRateType, undefined);
 });
 
-test("liftTranswesternScalars: lease rates > 1000 psf are excluded (implausible guard)", () => {
+test("liftTranswesternScalars: supported high lease rates survive the adapter", () => {
   const avail = [
-    { raw: ["A1", "2,000", "$5000/SF/YR", "Direct-New"], rate: "$5000/SF/YR", size: "2,000", type: "Direct-New" },
+    { raw: ["A1", "2,000", "USD 5000/SF/YR", "Direct-New"], rate: "USD 5000/SF/YR", size: "2,000", type: "Direct-New" },
   ];
   const out = liftTranswesternScalars({}, avail, null);
-  // parseLeaseRate caps at 500 -> returns min=null; leaseRateMin should be absent
-  assert.equal(out.leaseRateMin, undefined);
+  assert.equal(out.leaseRateMin, 5000);
 });
 
 test("liftTranswesternScalars: railServed parses Yes/No/absent correctly", () => {

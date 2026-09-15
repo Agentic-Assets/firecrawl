@@ -48,6 +48,12 @@ checkpoint-manifest readback. Dated docs are operational history.
 
 ## Files
 
+Rent evidence contract: `../../../docs/firecrawl-ops/references/rent-comp-evidence-v1.md`.
+`cre_rent_evidence.py` projects the versioned raw-data envelope during ingestion.
+Shared rent parsers require explicit currency, denominator, and period; high
+values are preserved with anomaly metadata and never capped. Source evidence
+does not qualify a market comp. GetCREdata remains the OM writer and qualifier.
+
 | File / dir | Purpose |
 |------------|---------|
 | `collect.ts` | Orchestrator: 51 sources, CLI, broker merge, artifact write |
