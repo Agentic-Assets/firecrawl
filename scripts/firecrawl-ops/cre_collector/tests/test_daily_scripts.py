@@ -126,6 +126,13 @@ def test_cre_status_reports_daily_while_legacy_tier_is_live():
     assert "ai.agentic.cre-daily.plist" in text
 
 
+def test_cre_status_never_advises_raw_canonical_lock_removal():
+    text = STATUS.read_text(encoding="utf-8")
+    assert 'rm -rf "$LOCKDIR"' not in text
+    assert "rm -rf" not in text
+    assert "governed quarantine recovery" in text
+
+
 @pytest.mark.parametrize(
     ("configured", "expected"),
     [

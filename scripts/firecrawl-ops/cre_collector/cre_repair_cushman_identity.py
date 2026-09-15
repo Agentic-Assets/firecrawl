@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
-import fcntl
 import hashlib
 import json
 import os
@@ -3481,22 +3480,10 @@ def shared_cre_lock(lock_dir: Path):
     if lock_dir.is_symlink():
         raise ValueError("CRE lock path must not be a symlink")
     if lock_dir.exists() and not lock_dir.is_dir():
-        current = lock_dir.stat()
-        if not lock_dir.is_file() or lock_dir.name != ".cre.lock" or current.st_size:
-            raise ValueError("CRE lock path is not a recognized empty legacy lock")
-        with lock_dir.open("a+") as handle:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise RuntimeError("legacy CRE lock is held") from exc
-            opened = os.fstat(handle.fileno())
-            current = lock_dir.stat()
-            if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
-                raise RuntimeError("legacy CRE lock changed")
-            lock_dir.unlink()
-            with SharedLock(lock_dir) as lock:
-                yield lock
-        return
+        raise ValueError(
+            "legacy CRE file lock requires governed quarantine recovery; "
+            "repair refuses canonical namespace migration"
+        )
     with SharedLock(lock_dir) as lock:
         yield lock
 

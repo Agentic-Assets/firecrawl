@@ -96,6 +96,13 @@ The launchd/manual tier entrypoint, `cre_tier_dispatch.py`, is also a normal
 passes the descriptor-bound authority to that child for the complete tier
 lifetime. The shell verifies that inherited proof before any collector work;
 it never creates, reclaims, or removes the canonical lock namespace itself.
+That proof reasserts a nonblocking exclusive flock on both inherited open file
+descriptions, so a separately opened same-UID descriptor with copied metadata
+is rejected while the real owner remains active.
+Manual repair entrypoints are also ordinary `SharedLock` callers. They reject a
+legacy file at the canonical lock path rather than unlinking or migrating it;
+only the explicit governed quarantine recovery may handle that forensic
+residue.
 
 It then archives the directory and authority as an exact retained mode-0700
 pair, fsyncing each namespace transition and advancing the guard through

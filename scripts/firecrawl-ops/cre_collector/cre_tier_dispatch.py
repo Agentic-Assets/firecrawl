@@ -11,6 +11,8 @@ worker is still running.
 from __future__ import annotations
 
 import argparse
+import errno
+import fcntl
 import os
 import signal
 import stat
@@ -91,6 +93,25 @@ def verify_inherited_lock(environ: Mapping[str, str] | None = None) -> None:
         quarantine_recovery_sync_path(lock_path),
         "recovery sync",
     )
+    # A pathname/inode match alone is not ownership: another same-UID process
+    # could open these files while the real dispatcher holds their flocks.  An
+    # inherited descriptor shares the dispatcher's open file description, so
+    # this nonblocking reassertion succeeds without changing its lifetime lock.
+    # A separately opened descriptor fails while either real owner is active.
+    for descriptor, label in (
+        (authority_fd, "authority"),
+        (sync_fd, "recovery sync"),
+    ):
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                raise TierDispatchError(
+                    f"CRE tier {label} descriptor does not own the dispatcher flock"
+                ) from exc
+            raise TierDispatchError(
+                f"CRE tier {label} descriptor flock is unavailable"
+            ) from exc
     token = env.get("CRE_TIER_LOCK_TOKEN")
     expected_generation = env.get("CRE_TIER_LOCK_GENERATION")
     owner = env.get("CRE_TIER_LOCK_OWNER_PID")

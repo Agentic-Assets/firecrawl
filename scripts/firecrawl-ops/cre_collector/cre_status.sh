@@ -270,13 +270,13 @@ if [ -d "$LOCKDIR" ]; then
   if [ -n "${lpid:-}" ] && kill -0 "$lpid" 2>/dev/null; then
     if [ -n "$lage" ] && [ "$lage" -gt $(( 18 * 3600 )) ]; then
       warn "lock held by live pid $lpid for $(human_age "$lage") (exceeds 18h; possible hung run)"
-      note "if confirmed hung: kill $lpid, then rm -rf \"$LOCKDIR\""
+      note "if confirmed hung: stop the owner, preserve lock artifacts, and use governed quarantine recovery; never manually delete the canonical lock"
     else
       ok "lock held by live pid $lpid${lage:+ ($(human_age "$lage"))} (a tier is running)"
     fi
   else
-    warn "stale lock present (owner '${lpid:-unknown}' not alive); next scheduled run reclaims it"
-    note "to clear now: rm -rf \"$LOCKDIR\""
+    warn "stale lock present (owner '${lpid:-unknown}' not alive); governed SharedLock may reclaim an ordinary stale directory"
+    note "do not manually remove the canonical lock or authority; preserve interlocked/ambiguous residue for governed quarantine recovery"
   fi
 else
   ok "no lock held (no tier running)"
