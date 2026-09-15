@@ -4,8 +4,8 @@
   ai.agentic.cre-daily.plist (TEMPLATE)
   CRE daily full-reconcile tier - runs at 06:30 local time every day.
   Runs cre_run_tier.sh daily, which invokes cre_daily_update.sh --no-mark-missing.
-  The shared portable mkdir lock in cre_run_tier.sh (no flock dependency) prevents
-  this from overlapping with the monitor or weekly tiers.
+  The shared governed Python authority in cre_tier_dispatch.py prevents this
+  from overlapping with the monitor or weekly tiers.
 
   This is a TEMPLATE. Do not load it directly. Render a machine-specific copy
   with launchd/install_launchd.sh, which fills in this machine's collector path,

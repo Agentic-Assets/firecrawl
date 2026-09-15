@@ -215,8 +215,9 @@ An existing state file makes `apply` refuse; it is not a reason to delete saved
 state. Inspect `show` and the running sidecar first. Container recreation is a
 separate operation: preserve the observed port, image, shared-memory size,
 security and proxy configuration, and recreate **only** `playwright-service`
-with `--no-deps --no-build --pull never`. On the evaluated host its port is 3103,
-not Compose's default 3003. Do not recreate `api` to apply browser capacity:
+with `--no-deps --no-build --pull never`. Resolve the API and browser loopback
+ports from rendered Compose (`docker compose config --format json`); the current
+central defaults are 3002 and 3003. Do not recreate `api` to apply browser capacity:
 that would also apply any pending model/environment transition.
 
 ```bash
@@ -1233,14 +1234,14 @@ historical launchd recovery commands below to create or restart a job.
 - **Missed or failed scheduled run.** Do not re-kick a tier or run a manual
   catch-up while the scheduler is disabled. Record the read-only preflight and
   obtain the runbook's named approval before any runtime action.
-- **Clear a wedged lock.** The tiers serialize on the portable `mkdir` lock dir
-  `out/daily/.cre.lock` (plus a transient `out/daily/.cre.lock.reclaim` during
-  stale reclaim). `cre_run_tier.sh` auto-reclaims a lock whose recorded PID is
-  dead, so a wedged lock means the owner is still alive or `cre_status.sh`
-  flagged it "possible hung run". After confirming no live process and receiving
-  runtime-recovery approval, quarantine the lock under a timestamped name rather
-  than deleting it. Never modify a lock while a real run is active; it exists to
-  keep additive and mark-missing work from overlapping.
+- **Clear a wedged lock.** The tiers serialize through the canonical Python
+  `SharedLock` authority at `out/daily/.cre.lock`, including the persistent
+  authority and recovery-sync sidecars. `cre_run_tier.sh` never reclaims or
+  removes that namespace. A wedged or quarantined lock is an operator-recovery
+  stop: preserve it, record `cre_status.sh` evidence, and use only the governed
+  quarantine recovery procedure after its explicit runtime-recovery approval.
+  Never modify lock artifacts while a real run is active; they prevent additive
+  and mark-missing work from overlapping.
 - **Reclaim disk.** Both runners self-prune on exit (daily keeps 14
   `run_*.json` / 29 `run_*.log` / 14 `gate_*.json` under `out/daily/`; the tier
   dispatcher keeps 24 `monitor_*.json` + 24 `monitor_*.log` under `out/monitor/`

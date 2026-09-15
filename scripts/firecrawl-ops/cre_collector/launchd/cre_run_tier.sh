@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# cre_run_tier.sh: lock-serialized dispatcher for the CRE launchd tiers.
+# cre_run_tier.sh: worker for the governed CRE launchd tier dispatcher.
 #
 # Usage: cre_run_tier.sh <monitor|enrich|weekly|daily>
 #
-# All tiers share one exclusive lock (a portable mkdir lock, no flock
-# dependency) so they cannot overlap with each other or with any manual run
-# that acquires the same lock. If the lock is already held the script exits
-# silently (exit 0) and launchd retries on the next scheduled interval. Each
-# real run writes out/daily/last_run_<tier>.json with its exit verdict for
+# The public entrypoint delegates lock lifetime to cre_tier_dispatch.py. That
+# Python process holds the persistent SharedLock authority and recovery-sync
+# flocks for the full worker lifetime, so scheduled/manual tiers cannot overlap
+# a governed quarantine archive. This shell retains only tier work, logs, and
+# verdict markers. Each real run writes out/daily/last_run_<tier>.json for
 # cre_status.sh to read.
 #
 # Tier semantics:
@@ -39,16 +39,24 @@ set -euo pipefail
 # need absolute paths; generate them per-machine with install_launchd.sh.
 COLLECTOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DAILY_OUT_DIR="${COLLECTOR_DIR}/out/daily"
-# Resolve the primary checkout from Git's common directory so a linked worktree
-# and the scheduled main checkout cannot accidentally use separate locks.
-GIT_COMMON_DIR="$(git -C "${COLLECTOR_DIR}" rev-parse --path-format=absolute --git-common-dir)"
-PRIMARY_CHECKOUT="$(cd "$(dirname "${GIT_COMMON_DIR}")" && pwd)"
-LOCKDIR="${PRIMARY_CHECKOUT}/scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
 MONITOR_SCRIPT="${COLLECTOR_DIR}/cre_monitor.py"
 ENRICH_SCRIPT="${COLLECTOR_DIR}/cre_enrich.py"
 DAILY_SCRIPT="${COLLECTOR_DIR}/cre_daily_update.sh"
 
 ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+
+# Public/manual launchd entrypoints always go through the Python authority
+# owner.  The private worker mode is accepted only after it proves it inherited
+# both descriptor-bound flocks from that owner; a direct --already-locked call
+# therefore cannot bypass the canonical quarantine guard.
+if [ "${1:-}" != "--already-locked" ]; then
+    exec python3 "${COLLECTOR_DIR}/cre_tier_dispatch.py" "$@"
+fi
+shift
+if ! python3 "${COLLECTOR_DIR}/cre_tier_dispatch.py" --verify-inherited-lock; then
+    echo "[cre_run_tier] ERROR: governed inherited lock proof failed" >&2
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Argument validation
@@ -62,91 +70,13 @@ case "${TIER}" in
         ;;
 esac
 
-# Ensure the shared artifact dir exists before locking or writing run markers.
-# (Stock macOS does not ship flock, and the old `flock -n 9` returned 127 when
-# absent, which read as "lock held" and made every scheduled tier exit 0
-# silently. The mkdir lock below has no external dependency.)
+# Ensure the shared artifact dir exists before writing run markers. The Python
+# dispatcher has already acquired the canonical authority before this worker
+# can reach this point.
 mkdir -p "${DAILY_OUT_DIR}"
 
-# ---------------------------------------------------------------------------
-# Acquire exclusive lock (portable, non-blocking, stdlib-only).
-#
-# An atomic `mkdir` is the lock gate; the PID file inside lets a later run
-# reclaim a lock left behind by a crashed process (stale-lock recovery).
-# ---------------------------------------------------------------------------
-LOCK_HELD=0
 RUN_START="$(ts)"
 MARKER="${DAILY_OUT_DIR}/last_run_${TIER}.json"
-
-# Write our identity (pid + start epoch) into the lock we just created. The
-# epoch lets cre_status.sh flag a lock held far longer than any legitimate run.
-_write_lock_owner() { printf '%s %s\n' "$$" "$(date +%s)" >"${LOCKDIR}/pid"; }
-
-# Read the recorded owner pid (first field of "pid epoch"); empty if absent.
-_lock_owner_pid() { [ -f "${LOCKDIR}/pid" ] && cut -d' ' -f1 "${LOCKDIR}/pid" 2>/dev/null || true; }
-
-# A capacity benchmark arms this durable marker before its detached worker can
-# start. Quarantine is added when final settlement cannot be proved. Either
-# entry blocks stale-owner reclamation, including dangling symlinks.
-_lock_interlocked() {
-    [ -e "${LOCKDIR}/capacity-benchmark-active.json" ] ||
-        [ -L "${LOCKDIR}/capacity-benchmark-active.json" ] ||
-        [ -e "${LOCKDIR}/capacity-benchmark-quarantine.json" ] ||
-        [ -L "${LOCKDIR}/capacity-benchmark-quarantine.json" ]
-}
-
-acquire_lock() {
-    if mkdir "${LOCKDIR}" 2>/dev/null; then
-        _write_lock_owner
-        LOCK_HELD=1
-        return 0
-    fi
-    # Lock dir exists. A benchmark interlock always wins over stale-owner logic.
-    if _lock_interlocked; then
-        return 1
-    fi
-    # Identify the recorded owner.
-    local owner=""
-    owner="$(_lock_owner_pid)"
-    if [ -z "${owner}" ]; then
-        # No pid yet: the holder is between mkdir and writing its pid. Treat as
-        # held (NOT stale) so we never delete a lock that is being created.
-        return 1
-    fi
-    if kill -0 "${owner}" 2>/dev/null; then
-        return 1   # held by a live process
-    fi
-    # Owner looks dead -> stale. Serialize reclamation behind a nested atomic
-    # guard so two racing reclaimers cannot both rm+mkdir and double-acquire.
-    if ! mkdir "${LOCKDIR}.reclaim" 2>/dev/null; then
-        return 1   # another process is already reclaiming; retry next fire
-    fi
-    # Re-check liveness INSIDE the critical section: the original owner may have
-    # already reclaimed (and now be live), in which case we must not disturb it.
-    local cur=""
-    cur="$(_lock_owner_pid)"
-    if [ -n "${cur}" ] && kill -0 "${cur}" 2>/dev/null; then
-        rm -rf "${LOCKDIR}.reclaim" 2>/dev/null || true
-        return 1
-    fi
-    if _lock_interlocked; then
-        rm -rf "${LOCKDIR}.reclaim" 2>/dev/null || true
-        return 1
-    fi
-    echo "[cre_run_tier] reclaiming stale lock (owner='${owner}' not alive) at $(ts)" >&2
-    rm -rf "${LOCKDIR}"
-    local got=1
-    if mkdir "${LOCKDIR}" 2>/dev/null; then
-        _write_lock_owner
-        got=0
-    fi
-    rm -rf "${LOCKDIR}.reclaim" 2>/dev/null || true
-    [ "${got}" = "0" ] || return 1
-    # Post-acquire verification: confirm we are the recorded owner before running.
-    [ "$(_lock_owner_pid)" = "$$" ] || return 1
-    LOCK_HELD=1
-    return 0
-}
 
 previous_failure_count() {
     # Markers are deliberately tiny JSON files, so keep this dependency-free.
@@ -289,24 +219,19 @@ prune_runtime_artifacts() {
 
 finish() {
     local rc=$?
-    if [ "${LOCK_HELD}" = "1" ]; then
-        local failures
-        failures="$(write_marker "${rc}")"
-        if [ "${rc}" != "0" ]; then
-            notify_failure "${rc}" "${failures:-1}"
-        fi
-        prune_runtime_artifacts            # bound disk on every real run, pass or fail
-        if ! _lock_interlocked; then
-            rm -rf "${LOCKDIR}" 2>/dev/null || true
-        fi
-        rm -rf "${LOCKDIR}.reclaim" 2>/dev/null || true
+    local failures
+    failures="$(write_marker "${rc}")"
+    if [ "${rc}" != "0" ]; then
+        notify_failure "${rc}" "${failures:-1}"
     fi
+    prune_runtime_artifacts            # bound disk on every real run, pass or fail
     exit "${rc}"
 }
 trap finish EXIT
 
-if ! acquire_lock; then
-    echo "[cre_run_tier] Another CRE tier is running, skipping ${TIER} at $(ts)" >&2
+# This test-only no-op runs only after descriptor-bound ownership proof. It
+# makes the shell/dispatcher handoff testable without starting a collection.
+if [ "${CRE_TIER_LOCK_VERIFY_ONLY:-0}" = "1" ]; then
     exit 0
 fi
 

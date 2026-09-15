@@ -18,6 +18,20 @@ import cre_capacity_runtime as runtime
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _runtime_tests_require_an_explicit_temporary_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redirect every implicit controller lock away from the checkout."""
+    isolated = tmp_path / "isolated" / "out" / "daily" / ".cre.lock"
+    monkeypatch.setattr(
+        runtime,
+        "canonical_shared_lock_dir",
+        lambda *_args: isolated,
+    )
+
+
 def profile() -> tuple[dict[str, object], str]:
     return experiment.load_profile(experiment.DEFAULT_CONFIG, "bold-jll-128")
 
@@ -69,6 +83,10 @@ def public_state(
             if docker_memory is not None
             else 32768 * 1024 * 1024 - 32768,
         },
+        "endpoints": {
+            "api": "http://127.0.0.1:3002",
+            "browser": "http://127.0.0.1:3003",
+        },
         "browser": {
             "id": "browser-before" if state == "baseline" else "browser-after",
             "image": "sha256:" + "b" * 64,
@@ -80,7 +98,7 @@ def public_state(
             "pids_limit": browser_pids,
             "shm_bytes": baseline["browser_shm_bytes"],
             "port_bindings": {
-                "3000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3103"}]
+                "3000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3003"}]
             },
             "network_mode": "firecrawl_backend",
             "mounts_sha256": "empty",
@@ -101,7 +119,7 @@ def public_state(
             "swap_bytes": 0,
             "pids_limit": None,
             "shm_bytes": 64 * 1024 * 1024,
-            "port_bindings": {"3002/tcp": [{"HostIp": "0.0.0.0", "HostPort": "3102"}]},
+            "port_bindings": {"3002/tcp": [{"HostIp": "0.0.0.0", "HostPort": "3002"}]},
             "network_mode": "firecrawl_backend",
             "mounts_sha256": "api-mount",
             "mount_count": 1,
@@ -281,7 +299,7 @@ def test_runtime_endpoint_retries_transient_startup_failure(
     monkeypatch.setattr(runtime.time, "monotonic", lambda: clock)
     monkeypatch.setattr(runtime.time, "sleep", sleep)
 
-    assert runtime._http_status("http://127.0.0.1:3103/") == 404
+    assert runtime._http_status("http://127.0.0.1:3003/") == 404
     assert attempts == 3
     assert sleeps == [runtime.RUNTIME_ENDPOINT_RETRY_SECONDS] * 2
 
@@ -309,7 +327,7 @@ def test_runtime_endpoint_fails_after_bounded_readiness_window(
     monkeypatch.setattr(runtime.time, "sleep", sleep)
 
     with pytest.raises(runtime.RuntimeAdmissionError, match="endpoint unavailable"):
-        runtime._http_status("http://127.0.0.1:3103/")
+        runtime._http_status("http://127.0.0.1:3003/")
 
     assert clock == runtime.RUNTIME_ENDPOINT_READY_SECONDS
     assert attempts == len(sleeps) + 1
@@ -333,7 +351,7 @@ def test_runtime_endpoint_readiness_wait_propagates_interrupt(
     )
 
     with pytest.raises(KeyboardInterrupt):
-        runtime._http_status("http://127.0.0.1:3103/")
+        runtime._http_status("http://127.0.0.1:3003/")
 
 
 def test_runtime_settlement_accepts_shared_rabbitmq_3137_fixture(
@@ -370,10 +388,12 @@ def test_runtime_settlement_accepts_shared_rabbitmq_3137_fixture(
     monkeypatch.setattr(
         runtime,
         "_http_status",
-        lambda url: 200 if ":3102" in url else 404,
+        lambda url: 200 if ":3002" in url else 404,
     )
 
-    result = runtime._settlement(runner)
+    result = runtime._settlement(
+        runner, {"api": "http://127.0.0.1:3002", "browser": "http://127.0.0.1:3003"}
+    )
 
     assert result["rabbitmq_queue_count"] == 4
     assert result["rabbitmq_ready"] == 0
@@ -383,6 +403,70 @@ def test_runtime_settlement_accepts_shared_rabbitmq_3137_fixture(
         "queue_scrape_backlog_total": 0,
         "queue_scrape_total": 0,
     }
+
+
+def test_compose_loopback_endpoints_follow_rendered_compose_ports() -> None:
+    rendered = {
+        "services": {
+            "api": {
+                "environment": {"PORT": "3002"},
+                "ports": [
+                    {
+                        "target": 3002,
+                        "published": "3002",
+                        "host_ip": "127.0.0.1",
+                        "protocol": "tcp",
+                    }
+                ],
+            },
+            "playwright-service": {
+                "environment": {"PORT": "3000"},
+                "ports": [
+                    {
+                        "target": 3000,
+                        "published": "3003",
+                        "host_ip": "127.0.0.1",
+                        "protocol": "tcp",
+                    }
+                ],
+            },
+        }
+    }
+
+    endpoints = runtime.compose_loopback_endpoints(
+        lambda _argv, _cwd, _env: runtime.CommandResult(0, json.dumps(rendered))
+    )
+
+    assert endpoints == {
+        "api": "http://127.0.0.1:3002",
+        "browser": "http://127.0.0.1:3003",
+    }
+
+
+def test_public_topology_contract_owns_command_runner_and_benchmark_boundary() -> None:
+    """Benchmark imports only the public topology contract, not runtime internals."""
+    import cre_capacity_benchmark as benchmark
+    import cre_capacity_topology as topology
+
+    assert runtime.CommandResult is topology.CommandResult
+    assert runtime._default_runner is topology.default_command_runner
+    source = Path(benchmark.__file__).read_text(encoding="utf-8")
+    assert "capacity_runtime._compose_loopback_endpoints" not in source
+    assert "capacity_runtime._default_runner" not in source
+
+
+def test_compose_browser_shared_memory_matches_the_governed_binary_contract() -> None:
+    """Docker's rendered `8G` is binary 8 GiB, not a decimal approximation."""
+    compose = runtime.COMPOSE_PATH.read_text(encoding="utf-8")
+    assert "shm_size: 8G" in compose
+    assert experiment.GOVERNED_BROWSER_SHM_BYTES == 8 * 1024**3
+    profile, _ = experiment.load_profile(
+        experiment.DEFAULT_CONFIG, "production-current"
+    )
+    assert (
+        profile["runtime_baseline"]["browser_shm_bytes"]
+        == experiment.GOVERNED_BROWSER_SHM_BYTES
+    )
 
 
 def test_container_memory_headroom_is_required() -> None:
@@ -417,7 +501,7 @@ def test_private_overlay_changes_only_page_environment_and_resources() -> None:
     assert current.browser_env["MAX_CONCURRENT_PAGES"] == "4"
     assert service["cpus"] == 6
     assert service["pids_limit"] == 768
-    assert service["ports"] == ["127.0.0.1:3103:3000"]
+    assert service["ports"] == ["127.0.0.1:3003:3000"]
 
 
 def test_receipt_is_private_and_stale_apply_is_rejected(tmp_path: Path) -> None:
@@ -577,7 +661,7 @@ def test_compose_dry_run_uses_private_files_without_up(
                 0, str(current.public["browser"]["image"]) + "\n"
             )
         env_file = Path(values[values.index("--env-file") + 1])
-        assert env_file.read_text() == "PLAYWRIGHT_HOST_PORT=3103\n"
+        assert env_file.read_text() == "PLAYWRIGHT_HOST_PORT=3003\n"
         assert env == {
             key: runtime.os.environ[key]
             for key in (
@@ -590,7 +674,7 @@ def test_compose_dry_run_uses_private_files_without_up(
                 "DOCKER_CERT_PATH",
             )
             if key in runtime.os.environ
-        } | {"PLAYWRIGHT_HOST_PORT": "3103"}
+        } | {"PLAYWRIGHT_HOST_PORT": "3003"}
         seen_env_files.append(env_file)
         overlay = Path(values[values.index("-f", values.index("-f") + 1) + 1])
         overlay = Path(
@@ -606,7 +690,7 @@ def test_compose_dry_run_uses_private_files_without_up(
                     "host_ip": "127.0.0.1",
                     "mode": "ingress",
                     "protocol": "tcp",
-                    "published": "3103",
+                    "published": "3003",
                     "target": 3000,
                 }
             ]
@@ -662,7 +746,7 @@ def test_compose_recreate_rejects_topology_drift_before_up(
                             "host_ip": "127.0.0.1",
                             "mode": "ingress",
                             "protocol": "tcp",
-                            "published": "3103",
+                            "published": "3003",
                             "target": 3000,
                         }
                     ],
@@ -1199,6 +1283,120 @@ def test_review_approval_nonce_has_canonical_durable_one_use_marker(
         )
 
 
+def test_review_approval_marker_file_fsync_failure_retains_nonce_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An uncertain marker is evidence, never an opportunity to reuse a nonce."""
+    selected, digest = profile()
+    receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
+    approval = json.loads(
+        write_approval(
+            tmp_path / "approval" / "review.json", receipt, digest
+        ).read_text()
+    )
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    marker = (
+        tmp_path
+        / "out"
+        / ".capacity-review-consumption"
+        / f"{runtime._hash(approval['nonce'])}.json"
+    )
+    real_fsync = runtime.os.fsync
+
+    def fail_marker_file_fsync(descriptor: int) -> None:
+        if stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError("simulated marker fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(runtime.os, "fsync", fail_marker_file_fsync)
+    with pytest.raises(runtime.RuntimeAdmissionError, match="durability is unknown"):
+        runtime._record_review_approval_consumption(
+            lock_path, approval, receipt, digest
+        )
+    assert marker.is_file()
+    with pytest.raises(runtime.RuntimeAdmissionError, match="already consumed"):
+        runtime._record_review_approval_consumption(
+            lock_path, approval, receipt, digest
+        )
+
+
+def test_review_approval_directory_fsync_failure_retains_nonce_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory durability failure must not leak raw OSError or reuse a nonce."""
+    selected, digest = profile()
+    receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
+    approval = json.loads(
+        write_approval(
+            tmp_path / "approval" / "review.json", receipt, digest
+        ).read_text()
+    )
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    root = tmp_path / "out" / ".capacity-review-consumption"
+    marker = root / f"{runtime._hash(approval['nonce'])}.json"
+    real_fsync_directory = runtime._fsync_directory
+
+    def fail_marker_parent_fsync(path: Path) -> None:
+        if path == root:
+            raise OSError("simulated marker parent fsync failure")
+        real_fsync_directory(path)
+
+    monkeypatch.setattr(runtime, "_fsync_directory", fail_marker_parent_fsync)
+    with pytest.raises(
+        runtime.RuntimeAdmissionError, match="could not be made durable"
+    ):
+        runtime._record_review_approval_consumption(
+            lock_path, approval, receipt, digest
+        )
+    assert marker.is_file()
+    with pytest.raises(runtime.RuntimeAdmissionError, match="already consumed"):
+        runtime._record_review_approval_consumption(
+            lock_path, approval, receipt, digest
+        )
+
+
+def test_review_approval_substituted_root_never_deletes_foreign_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cleanup after a root substitution retains both uncertain marker paths."""
+    selected, digest = profile()
+    receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
+    approval = json.loads(
+        write_approval(
+            tmp_path / "approval" / "review.json", receipt, digest
+        ).read_text()
+    )
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    root = tmp_path / "out" / ".capacity-review-consumption"
+    marker_name = f"{runtime._hash(approval['nonce'])}.json"
+    original_root = tmp_path / "out" / ".consumption-original"
+    foreign_marker = root / marker_name
+    real_fsync_directory = runtime._fsync_directory
+    substituted = False
+
+    def substitute_root_during_fsync(path: Path) -> None:
+        nonlocal substituted
+        if path == root and not substituted:
+            substituted = True
+            root.rename(original_root)
+            root.mkdir(mode=0o700)
+            foreign_marker.write_text("foreign", encoding="utf-8")
+            foreign_marker.chmod(0o600)
+            raise runtime.RuntimeAdmissionError("directory changed before durability")
+        real_fsync_directory(path)
+
+    monkeypatch.setattr(runtime, "_fsync_directory", substitute_root_during_fsync)
+    with pytest.raises(
+        runtime.RuntimeAdmissionError, match="could not be made durable"
+    ):
+        runtime._record_review_approval_consumption(
+            lock_path, approval, receipt, digest
+        )
+
+    assert (original_root / marker_name).is_file()
+    assert foreign_marker.read_text(encoding="utf-8") == "foreign"
+
+
 def test_review_benchmark_grant_is_exact_private_and_exclusive(tmp_path: Path) -> None:
     selected, digest = profile()
     receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
@@ -1474,7 +1672,7 @@ def test_compose_cleanup_failure_after_up_is_a_mutation_error(
                             "host_ip": "127.0.0.1",
                             "mode": "ingress",
                             "protocol": "tcp",
-                            "published": "3103",
+                            "published": "3003",
                             "target": 3000,
                         }
                     ],

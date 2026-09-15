@@ -32,12 +32,23 @@ from typing import Any
 
 import cre_capacity_experiment as experiment
 import cre_capacity_telemetry as capacity_telemetry
+import cre_capacity_topology as capacity_topology
 import cre_checkpoint_refresh as checkpoint_refresh
+import cre_quarantine_recovery as quarantine_recovery
+from cre_capacity_errors import (
+    RuntimeAdmissionError,
+    RuntimeMutationError,
+    RuntimeOverlayCleanupError,
+)
 from cre_checkpoint_refresh import (
     LockHeldError,
     SharedLock,
     canonical_shared_lock_dir,
 )
+
+CommandResult = capacity_topology.CommandResult
+CommandRunner = capacity_topology.CommandRunner
+_default_runner = capacity_topology.default_command_runner
 
 SCHEMA_VERSION = 1
 RECEIPT_KIND = "cre_capacity_runtime_transition"
@@ -66,6 +77,10 @@ EXECUTION_INPUTS = {
 PRIVATE_PAGE_KEY = "MAX_CONCURRENT_PAGES"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40,64}\Z")
 NONCE_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+LEGACY_AUTHORITY_TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}\Z")
+QUARANTINE_ARCHIVE_DIR = ".cre-quarantine-forensics"
+QUARANTINE_RECOVERY_KIND = "cre_capacity_quarantine_recovery"
+QUARANTINE_RECOVERY_GUARD = checkpoint_refresh.QUARANTINE_RECOVERY_GUARD
 REVIEW_APPROVAL_MAX_BYTES = 64 * 1024
 REVIEW_APPROVAL_CONSUMER = r"""
 import hashlib
@@ -321,18 +336,6 @@ os.unlink(path)
 """
 
 
-class RuntimeAdmissionError(RuntimeError):
-    """Runtime state cannot be admitted or changed safely."""
-
-
-class RuntimeMutationError(RuntimeAdmissionError):
-    """A runtime mutation command was issued but did not complete cleanly."""
-
-
-class RuntimeOverlayCleanupError(RuntimeMutationError):
-    """A resource command completed but its private overlay did not clean up."""
-
-
 def _operator_uid() -> int:
     """Return the ordinary operating-account UID or fail on privilege switching."""
     uid = os.getuid()
@@ -350,17 +353,6 @@ class RuntimeCompensationError(RuntimeAdmissionError):
     def __init__(self, message: str, *, baseline_verified: bool) -> None:
         super().__init__(message)
         self.baseline_verified = baseline_verified
-
-
-@dataclass(frozen=True)
-class CommandResult:
-    returncode: int
-    stdout: str
-
-
-CommandRunner = Callable[
-    [Sequence[str], Path | None, Mapping[str, str] | None], CommandResult
-]
 
 
 @dataclass
@@ -386,26 +378,6 @@ def _hash(value: object) -> str:
 
 def _file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _default_runner(
-    argv: Sequence[str], cwd: Path | None = None, env: Mapping[str, str] | None = None
-) -> CommandResult:
-    try:
-        completed = subprocess.run(
-            list(argv),
-            cwd=cwd,
-            env=dict(env) if env is not None else None,
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=120,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeAdmissionError(
-            f"runtime command unavailable: {Path(argv[0]).name}"
-        ) from exc
-    return CommandResult(completed.returncode, completed.stdout)
 
 
 def _run(
@@ -565,9 +537,21 @@ def _cgroup_value(runner: CommandRunner, container: str, name: str) -> int | Non
     return parsed
 
 
-def _settlement(runner: CommandRunner) -> dict[str, Any]:
-    queue = _queue_json("http://127.0.0.1:3102/v2/team/queue-status")
-    active = _queue_json("http://127.0.0.1:3102/v2/crawl/active")
+def compose_loopback_endpoints(runner: CommandRunner) -> dict[str, str]:
+    """Public Compose-derived endpoint contract shared with benchmark tooling."""
+    return capacity_topology.compose_loopback_endpoints(runner, repo_root=REPO_ROOT)
+
+
+_compose_loopback_endpoints = compose_loopback_endpoints
+
+
+def _settlement(runner: CommandRunner, endpoints: Mapping[str, str]) -> dict[str, Any]:
+    api_endpoint = endpoints.get("api")
+    browser_endpoint = endpoints.get("browser")
+    if not isinstance(api_endpoint, str) or not isinstance(browser_endpoint, str):
+        raise RuntimeAdmissionError("resolved Compose loopback endpoints are invalid")
+    queue = _queue_json(f"{api_endpoint}/v2/team/queue-status")
+    active = _queue_json(f"{api_endpoint}/v2/crawl/active")
     active_jobs, waiting_jobs, total_jobs = _queue_counts(queue)
     crawls = active.get("crawls")
     if crawls is None and isinstance(active.get("data"), Mapping):
@@ -625,8 +609,8 @@ def _settlement(runner: CommandRunner) -> dict[str, Any]:
         )
     )
     return {
-        "api_root_status": _http_status("http://127.0.0.1:3102/"),
-        "browser_root_status": _http_status("http://127.0.0.1:3103/"),
+        "api_root_status": _http_status(f"{api_endpoint}/"),
+        "browser_root_status": _http_status(f"{browser_endpoint}/"),
         "api": {"active": active_jobs, "waiting": waiting_jobs, "total": total_jobs},
         "active_crawls": len(crawls) if isinstance(crawls, list) else None,
         **rabbit_settlement,
@@ -687,6 +671,7 @@ def capture_runtime(runner: CommandRunner = _default_runner) -> RuntimeCapture:
         )
     except ValueError as exc:
         raise RuntimeAdmissionError("runtime memory capacity is invalid") from exc
+    endpoints = _compose_loopback_endpoints(runner)
     public = {
         "repo": _capture_source_state(runner),
         "host": {
@@ -697,7 +682,8 @@ def capture_runtime(runner: CommandRunner = _default_runner) -> RuntimeCapture:
         },
         "api": api_public,
         "browser": browser_public,
-        "settlement": _settlement(runner),
+        "endpoints": endpoints,
+        "settlement": _settlement(runner, endpoints),
     }
     public["transition_sha256"] = transition_fingerprint(public)
     public["snapshot_sha256"] = snapshot_fingerprint(public)
@@ -797,6 +783,39 @@ def evaluate_state(
         public["settlement"],
         public["repo"],
     )
+    endpoints = public.get("endpoints")
+    if not isinstance(endpoints, Mapping):
+        endpoints = {}
+    api_endpoint = endpoints.get("api")
+    browser_endpoint = endpoints.get("browser")
+    api_port = (
+        str(api_endpoint).rsplit(":", 1)[-1] if isinstance(api_endpoint, str) else None
+    )
+    browser_port = (
+        str(browser_endpoint).rsplit(":", 1)[-1]
+        if isinstance(browser_endpoint, str)
+        else None
+    )
+    # Older immutable admission receipts predate endpoint capture. Their
+    # port-binding snapshot is still the source of truth for verification.
+    if browser_port is None and isinstance(browser.get("port_bindings"), Mapping):
+        entries = browser["port_bindings"].get("3000/tcp")
+        if (
+            isinstance(entries, list)
+            and len(entries) == 1
+            and isinstance(entries[0], Mapping)
+        ):
+            browser_port = entries[0].get("HostPort")
+    if api_port is None and isinstance(api.get("port_bindings"), Mapping):
+        candidates = [
+            entry.get("HostPort")
+            for entries in api["port_bindings"].values()
+            if isinstance(entries, list)
+            for entry in entries
+            if isinstance(entry, Mapping)
+        ]
+        if len(candidates) == 1:
+            api_port = candidates[0]
     configured_bytes = (
         _int(runtime["orbstack_memory_mib"], "orbstack memory") * 1024 * 1024
     )
@@ -843,7 +862,7 @@ def evaluate_state(
         and 0 <= browser["cgroup_memory_current"] <= browser_memory * 9 // 10,
         "browser_shm": browser["shm_bytes"] == runtime["browser_shm_bytes"],
         "browser_port": browser["port_bindings"]
-        == {"3000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3103"}]},
+        == {"3000/tcp": [{"HostIp": "127.0.0.1", "HostPort": browser_port}]},
         "browser_network": browser["network_mode"] == "firecrawl_backend",
         "browser_no_volumes": browser["mount_count"] == 0,
         "browser_security": browser["security_opt"] == ["no-new-privileges:true"]
@@ -857,7 +876,7 @@ def evaluate_state(
         and 0 <= api["cgroup_memory_current"] <= api_memory * 9 // 10,
         "api_port": isinstance(api["port_bindings"], Mapping)
         and any(
-            entry.get("HostPort") == "3102"
+            entry.get("HostPort") == api_port
             for entries in api["port_bindings"].values()
             if isinstance(entries, list)
             for entry in entries
@@ -1014,6 +1033,48 @@ def _controller_output(path: Path) -> Path:
             "controller output must be under tasks/tmp/cre-capacity-transition-*"
         )
     return resolved
+
+
+_fsync_directory = quarantine_recovery.fsync_directory
+
+
+def _quarantine_recovery_config() -> quarantine_recovery.QuarantineRecoveryConfig:
+    lock_path = canonical_shared_lock_dir(REPO_ROOT)
+    expected = REPO_ROOT / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    if lock_path != expected:
+        raise RuntimeAdmissionError("canonical quarantine target is invalid")
+    return quarantine_recovery.QuarantineRecoveryConfig(lock_path=lock_path)
+
+
+def _quarantine_recovery_callbacks(
+    runner: CommandRunner,
+) -> quarantine_recovery.QuarantineRecoveryCallbacks:
+    return quarantine_recovery.QuarantineRecoveryCallbacks(
+        runner=runner,
+        compose_endpoints=_compose_loopback_endpoints,
+        settlement=_settlement,
+        load_baseline_profile=lambda: experiment.load_profile(
+            experiment.DEFAULT_CONFIG, "bold-jll-128"
+        ),
+        capture_runtime=capture_runtime,
+        evaluate_state=evaluate_state,
+        cpu_evidence=quarantine_recovery.recovery_cpu_evidence,
+    )
+
+
+def recover_quarantine(
+    *, execute: bool, runner: CommandRunner = _default_runner
+) -> dict[str, Any]:
+    """Archive only the exact governed legacy quarantine residue.
+
+    The runtime controller owns CLI and current-resource observation.  The
+    durable archive/replay protocol is isolated in ``cre_quarantine_recovery``.
+    """
+    return quarantine_recovery.recover_quarantine(
+        execute=execute,
+        config=_quarantine_recovery_config(),
+        callbacks=_quarantine_recovery_callbacks(runner),
+    )
 
 
 def preflight(
@@ -1463,20 +1524,6 @@ def admit_baseline(
                 lock.release()
 
 
-def _fsync_directory(path: Path) -> None:
-    """Persist directory-entry changes or fail closed."""
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    except OSError as exc:
-        raise RuntimeAdmissionError(
-            "review approval consumption directory could not be made durable"
-        ) from exc
-
-
 def _record_review_approval_consumption(
     lock_path: Path,
     approval: Mapping[str, Any],
@@ -1489,10 +1536,15 @@ def _record_review_approval_consumption(
     if canonical_lock.name != ".cre.lock" or canonical_lock.parent.name != "daily":
         raise RuntimeAdmissionError("canonical approval consumption path is invalid")
     consumption_root = canonical_lock.parent.parent / ".capacity-review-consumption"
-    consumption_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
+        consumption_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         root_stat = consumption_root.lstat()
+        _fsync_directory(consumption_root.parent)
     except OSError as exc:
+        raise RuntimeAdmissionError(
+            "canonical approval consumption directory is unsafe"
+        ) from exc
+    except RuntimeAdmissionError as exc:
         raise RuntimeAdmissionError(
             "canonical approval consumption directory is unsafe"
         ) from exc
@@ -1500,11 +1552,18 @@ def _record_review_approval_consumption(
         not stat.S_ISDIR(root_stat.st_mode)
         or root_stat.st_uid != operator_uid
         or stat.S_IMODE(root_stat.st_mode) != 0o700
+        or root_stat.st_nlink < 2
     ):
         raise RuntimeAdmissionError(
             "canonical approval consumption directory is unsafe"
         )
-    _fsync_directory(consumption_root.parent)
+    root_identity = (
+        root_stat.st_dev,
+        root_stat.st_ino,
+        stat.S_IMODE(root_stat.st_mode),
+        root_stat.st_uid,
+    )
+    root_min_nlink = root_stat.st_nlink
     nonce_sha256 = _hash(approval["nonce"])
     marker = consumption_root / f"{nonce_sha256}.json"
     payload = (
@@ -1546,6 +1605,13 @@ def _record_review_approval_consumption(
             or stat.S_IMODE(opened.st_mode) != 0o600
         ):
             raise RuntimeAdmissionError("review approval consumption marker is unsafe")
+        marker_identity = (
+            opened.st_dev,
+            opened.st_ino,
+            stat.S_IMODE(opened.st_mode),
+            opened.st_uid,
+            opened.st_nlink,
+        )
         remaining = memoryview(payload)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -1555,23 +1621,47 @@ def _record_review_approval_consumption(
                 )
             remaining = remaining[written:]
         os.fsync(descriptor)
-    except BaseException:
-        try:
-            marker.unlink()
-        except FileNotFoundError:
-            pass
-        raise
+    except OSError as exc:
+        # The nonce marker may already be durable even if its file fsync reports
+        # failure.  Never pathname-unlink an uncertain marker: a same-UID
+        # replacement could otherwise be deleted.  Retention makes the nonce
+        # fail closed until an operator investigates the exact evidence.
+        raise RuntimeAdmissionError(
+            "review approval consumption marker durability is unknown; "
+            "approval remains fail-closed"
+        ) from exc
     finally:
         os.close(descriptor)
     try:
         _fsync_directory(consumption_root)
-    except RuntimeAdmissionError as exc:
-        try:
-            marker.unlink()
-        except FileNotFoundError:
-            pass
+        confirmed_root = consumption_root.lstat()
+        confirmed_marker = marker.lstat()
+        if (
+            (
+                confirmed_root.st_dev,
+                confirmed_root.st_ino,
+                stat.S_IMODE(confirmed_root.st_mode),
+                confirmed_root.st_uid,
+            )
+            != root_identity
+            or confirmed_root.st_nlink < root_min_nlink
+            or (
+                confirmed_marker.st_dev,
+                confirmed_marker.st_ino,
+                stat.S_IMODE(confirmed_marker.st_mode),
+                confirmed_marker.st_uid,
+                confirmed_marker.st_nlink,
+            )
+            != marker_identity
+        ):
+            raise RuntimeAdmissionError("review approval consumption evidence changed")
+    except (OSError, RuntimeAdmissionError) as exc:
+        # Do not clean up by pathname after a strict directory fsync rejects a
+        # substitution.  The original marker, a replacement marker, or both
+        # may be present; preserving each is the only fail-closed outcome.
         raise RuntimeAdmissionError(
-            "review approval consumption could not be made durable"
+            "review approval consumption could not be made durable; "
+            "approval remains fail-closed"
         ) from exc
     return marker
 
@@ -1619,11 +1709,17 @@ def _private_overlay(
     browser_env[PRIVATE_PAGE_KEY] = str(
         runtime["global_pages"] if state == "baseline" else requested["global_pages"]
     )
+    endpoint = capture.public.get("endpoints", {}).get("browser")
+    if not isinstance(endpoint, str) or not re.fullmatch(
+        r"http://127\.0\.0\.1:(\d+)", endpoint
+    ):
+        raise RuntimeAdmissionError("baseline browser loopback endpoint is invalid")
+    host_port = endpoint.rsplit(":", 1)[1]
     return {
         "services": {
             "playwright-service": {
                 "environment": browser_env,
-                "ports": ["127.0.0.1:3103:3000"],
+                "ports": [f"127.0.0.1:{host_port}:3000"],
                 "cpus": runtime["browser_cpus"]
                 if state == "baseline"
                 else requested["browser_cpus"],
@@ -1661,8 +1757,12 @@ def _compose_recreate(
         write_private(
             overlay, _private_overlay(capture, profile, state), refuse_existing=True
         )
+        endpoint = capture.public["endpoints"]["browser"]
+        host_port = str(endpoint).rsplit(":", 1)[1]
         _write_private_bytes(
-            compose_env, b"PLAYWRIGHT_HOST_PORT=3103\n", refuse_existing=True
+            compose_env,
+            f"PLAYWRIGHT_HOST_PORT={host_port}\n".encode(),
+            refuse_existing=True,
         )
         command_env = {
             key: os.environ[key]
@@ -1677,7 +1777,7 @@ def _compose_recreate(
             )
             if key in os.environ
         }
-        command_env["PLAYWRIGHT_HOST_PORT"] = "3103"
+        command_env["PLAYWRIGHT_HOST_PORT"] = host_port
         prefix = [
             "docker",
             "compose",
@@ -1712,7 +1812,7 @@ def _compose_recreate(
                 "host_ip": "127.0.0.1",
                 "mode": "ingress",
                 "protocol": "tcp",
-                "published": "3103",
+                "published": host_port,
                 "target": 3000,
             }
         ]
@@ -2292,6 +2392,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if command == "apply":
             selected.add_argument("--admission-out", type=Path)
             selected.add_argument("--approval", type=Path)
+    recover = subparsers.add_parser(
+        "recover-quarantine",
+        help="archive only the exact historic quarantined lock pair after full idle proof",
+    )
+    recover.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command == "preflight":
@@ -2303,6 +2408,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 admission_out=args.admission_out,
                 approval_path=args.approval,
             )
+        elif args.command == "recover-quarantine":
+            result = recover_quarantine(execute=args.execute)
         else:
             result = transition(
                 args.receipt,

@@ -37,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Self
 
+import cre_recovery_guard_journal as recovery_guard_journal
 from cre_ingest import (
     AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS,
     BUILDOUT_SOURCE_KEYS,
@@ -671,6 +672,81 @@ BENCHMARK_ACTIVE_MARKER = "capacity-benchmark-active.json"
 BENCHMARK_QUARANTINE_MARKER = "capacity-benchmark-quarantine.json"
 OPERATOR_RECOVERY_LEASE_PREFIX = "operator-recovery-required:"
 LOCK_AUTHORITY_SUFFIX = ".authority"
+# This guard belongs to the explicit operator-only quarantine archive protocol.
+# Its mere presence blocks every normal acquire/reclaim path until the same
+# protocol has durably finished or safely resumed the paired archive.
+QUARANTINE_RECOVERY_GUARD = ".cre-quarantine-recovery.json"
+# Unlike the authority record, this synchronizer is never archived, renamed,
+# or replaced.  Every normal acquisition and the explicit quarantine recovery
+# transaction holds its flock while it reasons about the canonical authority
+# namespace.  That closes the otherwise unavoidable guard-check/authority-move
+# handoff window.
+QUARANTINE_RECOVERY_SYNC_SUFFIX = ".recovery-sync"
+
+
+def quarantine_recovery_sync_path(lock_path: Path) -> Path:
+    """Return the stable synchronization file for one canonical CRE lock."""
+    return lock_path.with_name(f"{lock_path.name}{QUARANTINE_RECOVERY_SYNC_SUFFIX}")
+
+
+def acquire_quarantine_recovery_sync(lock_path: Path) -> int:
+    """Take the persistent no-follow flock shared by acquire and recovery.
+
+    The file intentionally persists after its creator exits.  We validate the
+    opened descriptor against its pathname after taking the nonblocking flock;
+    a replacement is therefore a fail-closed error, not a synchronization
+    object we might accidentally trust.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    sync_path = quarantine_recovery_sync_path(lock_path)
+    descriptor = -1
+    try:
+        try:
+            descriptor = os.open(
+                sync_path,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+            )
+        except FileExistsError:
+            descriptor = os.open(sync_path, os.O_RDWR | os.O_NOFOLLOW)
+        observed = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or observed.st_nlink != 1
+            or observed.st_uid != os.geteuid()
+            or stat.S_IMODE(observed.st_mode) != 0o600
+        ):
+            raise LockHeldError("CRE quarantine recovery synchronizer is unsafe")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise LockHeldError(
+                "CRE lock authority is held by another process"
+            ) from exc
+        named = sync_path.lstat()
+        if (
+            not stat.S_ISREG(named.st_mode)
+            or named.st_nlink != 1
+            or named.st_uid != os.geteuid()
+            or stat.S_IMODE(named.st_mode) != 0o600
+            or (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino)
+        ):
+            raise LockHeldError("CRE quarantine recovery synchronizer changed")
+        return descriptor
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+
+
+def release_quarantine_recovery_sync(descriptor: int) -> None:
+    """Release a synchronization descriptor acquired by the helper above."""
+    if descriptor < 0:
+        return
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
 
 
 @dataclass(frozen=True)
@@ -710,6 +786,17 @@ def _lock_directory_identity(lock_dir: Path) -> tuple[int, int]:
     if not stat.S_ISDIR(observed.st_mode):
         raise LockHeldError("CRE lock is not a real directory")
     return observed.st_dev, observed.st_ino
+
+
+def _lock_path_is_absent(lock_dir: Path) -> bool:
+    """Only a missing directory entry is absent; dangling symlinks are stops."""
+    try:
+        lock_dir.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
 
 
 def canonical_shared_lock_dir(repo_root: Path = REPO_ROOT) -> Path:
@@ -765,6 +852,7 @@ class SharedLock:
     authority_recovery_required: bool = field(default=False, init=False)
     authority_locked: bool = field(default=False, init=False)
     authority_initializing: bool = field(default=False, init=False)
+    recovery_sync_fd: int = field(default=-1, init=False)
 
     @property
     def authority_path(self) -> Path:
@@ -1384,16 +1472,21 @@ class SharedLock:
                 raise LockHeldError("CRE lock authority is malformed")
             if prior is not None and prior[3]:
                 raise LockHeldError("CRE lock authority requires operator recovery")
-            if not self._authority_is_neutral(prior) and self.path.exists():
-                directory_owner = _lock_owner(self.path)
-                directory_lease = _lock_lease(self.path)
-                if (directory_owner, directory_lease) != (
-                    prior[0],
-                    prior[2],
-                ) and not self._verified_interrupted_legacy_reclaim(prior):
-                    raise LockHeldError(
-                        "CRE lock authority is not a verified stale generation"
-                    )
+            if not self._authority_is_neutral(prior):
+                try:
+                    _lock_directory_identity(self.path)
+                except FileNotFoundError:
+                    pass
+                else:
+                    directory_owner = _lock_owner(self.path)
+                    directory_lease = _lock_lease(self.path)
+                    if (directory_owner, directory_lease) != (
+                        prior[0],
+                        prior[2],
+                    ) and not self._verified_interrupted_legacy_reclaim(prior):
+                        raise LockHeldError(
+                            "CRE lock authority is not a verified stale generation"
+                        )
             if not created:
                 self.authority_token = token
                 self.authority_generation = generation
@@ -1435,7 +1528,40 @@ class SharedLock:
             os.close(directory_fd)
 
     def acquire(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Keep this flock for the full lifetime of the canonical lock.  The
+        # operator-only paired archive takes the same flock before publishing
+        # its guard, so no process can create a fresh authority/lock between a
+        # guard observation and the authority handoff.
+        self.recovery_sync_fd = acquire_quarantine_recovery_sync(self.path)
+        guard_path = self.path.parent / QUARANTINE_RECOVERY_GUARD
+        try:
+            guard_path.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            release_quarantine_recovery_sync(self.recovery_sync_fd)
+            self.recovery_sync_fd = -1
+            raise LockHeldError("CRE quarantine recovery guard is unsafe") from exc
+        else:
+            # Recovery retains a completed, identity-bound journal rather than
+            # unlinking evidence.  Import lazily to avoid the recovery module's
+            # dependency on this canonical lock implementation at import time.
+            try:
+                from cre_quarantine_recovery import completed_guard_evidence_is_valid
+
+                completed = recovery_guard_journal.completed_allows_acquire(
+                    guard_path,
+                    self.path,
+                    validate_completed=completed_guard_evidence_is_valid,
+                )
+            except Exception:
+                completed = False
+            if not completed:
+                release_quarantine_recovery_sync(self.recovery_sync_fd)
+                self.recovery_sync_fd = -1
+                raise LockHeldError(
+                    "CRE quarantine recovery requires operator completion"
+                )
         lease_token = secrets.token_urlsafe(32)
         if self.recovery_required:
             lease_token = f"{OPERATOR_RECOVERY_LEASE_PREFIX}{lease_token}"
@@ -1451,10 +1577,12 @@ class SharedLock:
                 and self.preserve_recovery_on_acquire_failure
                 and (
                     self.partial_directory_identity is not None
-                    or (self.authority_initializing and not self.path.exists())
+                    or (self.authority_initializing and _lock_path_is_absent(self.path))
                 )
             ):
                 self._release_authority()
+                release_quarantine_recovery_sync(self.recovery_sync_fd)
+                self.recovery_sync_fd = -1
                 self.lease_token = None
             raise
 
@@ -1819,6 +1947,8 @@ class SharedLock:
         self.lease_token = None
         self.directory_identity = None
         self._release_authority()
+        release_quarantine_recovery_sync(self.recovery_sync_fd)
+        self.recovery_sync_fd = -1
 
     def __enter__(self) -> Self:
         self.acquire()

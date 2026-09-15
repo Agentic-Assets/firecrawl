@@ -24,7 +24,6 @@ This is not a generic deduplication tool. Any drift from the reviewed
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -2259,34 +2258,20 @@ def assert_db_target(db_url: str) -> None:
 
 @contextmanager
 def shared_cre_lock(lock_dir: Path):
-    """Acquire the canonical directory lock, migrating our empty legacy file."""
+    """Acquire only the canonical governed directory lock.
+
+    A legacy file lock is forensic residue, not permission for an active repair
+    command to unlink the canonical namespace outside recovery-sync.  The
+    operator-only recovery procedure must resolve it before this repair runs.
+    """
     lock_dir.parent.mkdir(parents=True, exist_ok=True)
     if lock_dir.is_symlink():
         raise ValueError("CRE lock path must not be a symlink")
     if lock_dir.exists() and not lock_dir.is_dir():
-        current = lock_dir.stat()
-        if not lock_dir.is_file() or lock_dir.name != ".cre.lock" or current.st_size:
-            raise ValueError("CRE lock path is not a recognized empty legacy lock")
-        with lock_dir.open("a+") as legacy_handle:
-            try:
-                fcntl.flock(
-                    legacy_handle.fileno(),
-                    fcntl.LOCK_EX | fcntl.LOCK_NB,
-                )
-            except BlockingIOError as exc:
-                raise RuntimeError("legacy CRE file lock is actively held") from exc
-            opened = os.fstat(legacy_handle.fileno())
-            current = lock_dir.stat()
-            if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
-                raise RuntimeError("legacy CRE lock changed during migration")
-            lock_dir.unlink()
-            lock = SharedLock(lock_dir)
-            lock.acquire()
-            try:
-                yield lock
-            finally:
-                lock.release()
-        return
+        raise ValueError(
+            "legacy CRE file lock requires governed quarantine recovery; "
+            "repair refuses canonical namespace migration"
+        )
     with SharedLock(lock_dir) as lock:
         yield lock
 

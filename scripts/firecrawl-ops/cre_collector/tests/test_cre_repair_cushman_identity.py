@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -9,9 +10,9 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
+import cre_checkpoint_refresh as refresh
 import cre_repair_cushman_identity as repair
+import pytest
 
 
 def minimal_state():
@@ -77,6 +78,37 @@ def test_artifact_hash_and_generation_are_fail_closed(tmp_path):
     )
     with pytest.raises(ValueError, match="SHA-256"):
         repair.load_artifact(path)
+
+
+def test_repair_refuses_legacy_file_lock_outside_governed_recovery(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="governed quarantine recovery"):
+        with repair.shared_cre_lock(lock_dir):
+            pass
+
+    assert lock_dir.is_file()
+
+
+def test_repair_refuses_while_governed_tier_lock_is_held(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    tier = refresh.SharedLock(lock_dir)
+    tier.acquire()
+    try:
+        with pytest.raises(refresh.LockHeldError):
+            with repair.shared_cre_lock(lock_dir):
+                pass
+    finally:
+        tier.release()
+    assert not lock_dir.exists()
+
+
+def test_repair_lock_path_has_no_bespoke_legacy_unlink_migration():
+    source = inspect.getsource(repair.shared_cre_lock.__wrapped__)
+
+    assert ".unlink(" not in source
+    assert "fcntl.flock" not in source
 
 
 def test_apply_sql_contains_all_reviewed_surfaces_and_postconditions():

@@ -155,39 +155,33 @@ live daily plist.
 
 ## Shared-lock guarantee
 
-Every tier acquires the same exclusive lock before doing any work. The lock
-is a portable atomic `mkdir` (no `flock` dependency, since stock macOS does not
-ship flock) with PID-based stale-lock recovery:
+Every public/manual tier invocation first enters `cre_tier_dispatch.py`. It
+takes the canonical Python `SharedLock`, including its persistent
+`.cre.lock.authority` and `.cre.lock.recovery-sync` flocks, before forking the
+shell worker. The child first enters a dedicated session/process group and
+inherits both descriptors for its whole work lifetime; therefore an unexpected
+dispatcher-parent exit cannot free the authority while the worker continues.
+SIGINT/SIGTERM are forwarded only while the unreaped session leader proves that
+owned group. The dispatcher waits for the shell and all foreground descendants
+before releasing the lock. It may escalate TERM to KILL only under that same
+pre-reap identity proof; afterwards it only waits for group absence and never
+signals a bare numeric PGID that another process could reuse. The shell
+verifies those inherited descriptors and cannot be used as an unlocked
+`--already-locked` shortcut.
 
-```
-# COLLECTOR_DIR is self-located by cre_run_tier.sh (launchd/..); no hardcoded path.
-LOCKDIR="${COLLECTOR_DIR}/out/daily/.cre.lock"   # a directory, not a file
-mkdir "$LOCKDIR" 2>/dev/null || { still-alive owner? exit 0 : reclaim stale }
-trap 'rm -rf "$LOCKDIR"' EXIT                     # released on any exit
-```
+If another tier, benchmark, or operator quarantine recovery owns either
+protocol lock, the dispatcher exits 0 without running a worker, so launchd
+retries at the next cadence. Normal or stale-lock recovery remains exclusively
+inside `SharedLock`; launchd never creates, reclaims, renames, or removes the
+canonical lock namespace itself. See `../LOCK_AUTHORITY_RECOVERY.md` for the
+authority and quarantine state machine.
 
-If a tier is already running (the lock dir exists and its recorded PID is still
-alive) the competing tier exits immediately and silently (exit 0). launchd sees
-a clean exit and will not retry until the next scheduled interval. A lock left
-by a crashed run (PID no longer alive) is reclaimed automatically. This prevents
-the monitor, enrich, and weekly tiers from overlapping mid-run, and prevents the
-weekly pass from starting while an enrich or monitor run is in progress.
-
-> History: the lock used to be `flock -n 9`. Because macOS ships no `flock`, the
-> missing binary returned 127 and was misread as "lock held", so every scheduled
-> tier exited 0 without doing any work. The mkdir lock removes that dependency.
-
-Manual runs of `cre_run_tier.sh` from the terminal acquire the same lock, so
-scheduled and ad-hoc runs serialize correctly. (Running `cre_daily_update.sh`
-directly does not take the lock; prefer `cre_run_tier.sh weekly` for a locked,
-marker-writing full run.)
-
-The lock owner records `<pid> <start-epoch>` in `${LOCKDIR}/pid`, so
-`cre_status.sh` can tell three states apart: no lock held; a live lock held
-beyond any legitimate run length (flagged "possible hung run"); or a stale lock
-whose recorded PID is no longer alive (auto-reclaimed by the next tier, but
-surfaced so you are not surprised). To clear a wedged lock by hand, see
-`../START_HERE.md` Operational Recovery.
+Manual runs of `cre_run_tier.sh` use the same dispatcher, so scheduled and
+ad-hoc work serializes correctly. (Running `cre_daily_update.sh` directly does
+not take the lock; prefer `cre_run_tier.sh weekly` for a governed,
+marker-writing full run.) `cre_status.sh` exposes the compatibility lease/PID
+state, but operator quarantine recovery is the only path permitted to archive
+an interlocked canonical lock.
 
 ---
 

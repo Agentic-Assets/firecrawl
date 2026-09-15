@@ -32,7 +32,7 @@
       now carries the intra-day detail-refresh role the old every-3h cadence
       filled; the monitor only needs to re-enumerate and re-enqueue twice a day.
       06:10 / 18:10 are offset 20 min before the enrich :30 fires so the shared
-      mkdir lock rarely contends.
+      governed Python authority rarely contends.
     -->
     <key>StartCalendarInterval</key>
     <array>

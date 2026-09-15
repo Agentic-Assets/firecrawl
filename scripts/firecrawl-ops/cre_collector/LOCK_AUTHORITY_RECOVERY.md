@@ -70,3 +70,85 @@ not a distributed lock and does not defend against a malicious same-UID actor
 with direct filesystem access who can replace paths outside the protocol. In
 that case, or after any authority mismatch, stop the collector and perform
 manual recovery. Never delete the sidecar as an automated repair step.
+
+## Historic pytest quarantine residue
+
+`cre_capacity_runtime.py recover-quarantine` is the only operator path for the
+historic pre-persistent-authority pytest residue. Its CLI wrapper injects live
+runtime observation into the dedicated `cre_quarantine_recovery.py` archive and
+replay module, which owns the filesystem state machine and forensic receipt
+contract. It is dry-run by default,
+accepts no alternate lock path, and requires the exact canonical directory and
+its legacy two-field authority sibling, coherent active/quarantine marker
+hashes, a dead matching owner, a fresh 90-percent/30-second CPU observation,
+exact baseline resources, and idle API, browser, RabbitMQ, NuQ, crawl, and
+collector evidence. It rejects malformed, live, recovery-required, replaced,
+or non-pytest residue.
+
+With `--execute`, it first creates the private
+`.cre-quarantine-recovery.json` guard with `O_EXCL|O_NOFOLLOW`, then retains
+its verified file descriptor, owner, mode, link count, and inode for the whole
+operation. Phase changes are append-only, checksum-linked journal records
+written and fsynced through that descriptor; a torn final record resumes from
+the longest valid prefix, while a complete malformed or substituted journal is
+an operator stop. The guard pathname is never replaced or unlinked. Before
+that claim, and throughout archive/replay, it holds the
+stable private `.cre.lock.recovery-sync` flock. Every normal
+`SharedLock.acquire` holds that same flock for its own lifetime before it can
+inspect a guard or create an authority, so a recovery cannot archive the old
+authority while a cooperating acquisition creates a new canonical lock. The
+synchronizer is never moved or replaced by the protocol.
+
+The launchd/manual tier entrypoint, `cre_tier_dispatch.py`, is also a normal
+`SharedLock` owner. It forks `cre_run_tier.sh` only after taking both flocks and
+passes the descriptor-bound authority to that child for the complete tier
+lifetime. The child first creates a dedicated session/process group, then
+execs the shell. SIGINT and SIGTERM are forwarded only while the unreaped
+session leader proves that exact owned group. A bounded KILL escalation uses
+the same proof before the leader is reaped. Afterwards the dispatcher keeps
+both flocks until the group is absent but never signals a bare numeric PGID,
+which could have been reused by an unrelated process group. The shell verifies
+inherited proof before any collector work; it never creates, reclaims, or
+removes the canonical lock namespace itself. That proof reasserts a
+nonblocking exclusive flock on both inherited open file descriptions, so a
+separately opened same-UID descriptor with copied metadata is rejected while
+the real owner remains active.
+Manual repair entrypoints are also ordinary `SharedLock` callers. They reject a
+legacy file at the canonical lock path rather than unlinking or migrating it;
+only the explicit governed quarantine recovery may handle that forensic
+residue.
+
+It then archives the directory and authority as an exact retained mode-0700
+pair, fsyncing each namespace transition and advancing the guard through
+`prepared`, `lock-renaming`, `lock-archived`, `authority-renaming`,
+`pair-archived`, `receipt-written`, and terminal `completed`. Each phase accepts only its exact
+top-level archive entries; the nested lock accepts only the bound active and
+quarantine markers, and the final root adds only the bound receipt. Re-running
+the same explicit command resumes only the recorded matching inode/hash pair;
+a malformed, replaced, concurrent, or unexpected phase remains blocked. Only
+after the immutable hashed receipt and the complete archive root are
+revalidated does it append the immutable `completed` journal record. A normal
+acquire may proceed only when that exact completed record still binds the
+receipt, archive, and original pair and both canonical source names remain
+absent. The guard remains as retained forensic evidence; a later exact residue
+starts a new append-only operation record rather than overwriting prior proof.
+It never unlinks or recursively deletes lock artifacts. Any interrupted or
+uncertain recovery is a stop, not permission for shell removal.
+
+The journal has a fixed 64-KiB cap. Every encoded record reserves its complete
+byte length before the write; an over-cap append leaves the prior verified
+prefix untouched and stops for operator review. Recovery deliberately does not
+compact, overwrite, or delete prior forensic records to make space. A future
+operator procedure must archive and attest the completed journal as evidence
+before any separately reviewed retention change can reclaim capacity.
+
+A guard phase records a completed durable archive prefix and the next intended
+operation. It is not a perpetual assertion that a third party will keep a
+canonical source pathname absent after the phase's check. Every phase that
+would mutate another member, write the receipt, or clear the guard rechecks the
+canonical sources it expects to be absent. A noncooperating same-UID writer can
+therefore cause at most one intent-phase advance after a check; the next
+destructive phase stops with the guard and all forensic evidence retained. The
+protocol cannot atomically couple absence of an unrelated pathname with a
+separate guard write on both supported platforms. That direct-filesystem writer
+is outside the cooperative-process boundary above and requires manual recovery.

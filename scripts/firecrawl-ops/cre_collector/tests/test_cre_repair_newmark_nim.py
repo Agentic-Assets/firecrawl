@@ -1,7 +1,9 @@
 import hashlib
+import inspect
 import json
 from unittest.mock import patch
 
+import cre_checkpoint_refresh as refresh
 import cre_repair_newmark_nim as repair
 import pytest
 
@@ -502,22 +504,38 @@ def test_repair_uses_the_checkpoint_runners_shared_directory_lock(tmp_path):
     assert not lock_dir.exists()
 
 
-def test_repair_safely_migrates_its_empty_legacy_file_lock(tmp_path):
+def test_repair_refuses_empty_legacy_file_lock_outside_governed_recovery(tmp_path):
     lock_dir = tmp_path / ".cre.lock"
     lock_dir.write_text("")
-    with repair.shared_cre_lock(lock_dir):
-        assert lock_dir.is_dir()
-        assert (lock_dir / "pid").is_file()
-    assert not lock_dir.exists()
-
-
-def test_repair_refuses_to_migrate_an_actively_held_legacy_lock(tmp_path):
-    lock_dir = tmp_path / ".cre.lock"
-    lock_dir.write_text("")
-    with (
-        patch.object(repair.fcntl, "flock", side_effect=BlockingIOError),
-        pytest.raises(RuntimeError, match="actively held"),
-    ):
+    with pytest.raises(ValueError, match="governed quarantine recovery"):
         with repair.shared_cre_lock(lock_dir):
             pass
     assert lock_dir.is_file()
+
+
+def test_repair_refuses_legacy_file_lock_without_opening_or_unlinking_it(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.write_text("")
+    with pytest.raises(ValueError, match="governed quarantine recovery"):
+        with repair.shared_cre_lock(lock_dir):
+            pass
+    assert lock_dir.is_file()
+
+
+def test_repair_lock_path_has_no_bespoke_legacy_unlink_migration():
+    source = inspect.getsource(repair.shared_cre_lock.__wrapped__)
+
+    assert ".unlink(" not in source
+    assert "fcntl.flock" not in source
+
+
+def test_repair_refuses_while_governed_recovery_sync_is_held(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    sync = refresh.acquire_quarantine_recovery_sync(lock_dir)
+    try:
+        with pytest.raises(refresh.LockHeldError):
+            with repair.shared_cre_lock(lock_dir):
+                pass
+    finally:
+        refresh.release_quarantine_recovery_sync(sync)
+    assert not lock_dir.exists()
