@@ -20,6 +20,7 @@ from .contracts import (
     sha256,
     validate_plan,
 )
+from .session_store import DurableArmSessionStore
 
 
 class SettlementHook(Protocol):
@@ -76,6 +77,7 @@ class C10CoordinatorHooks:
 class C10CoordinatorPaths:
     """Private controller paths required for a single, explicitly armed arm."""
 
+    session_path: Path
     receipt_path: Path
     approval_path: Path | None = None
     admission_out: Path | None = None
@@ -178,98 +180,106 @@ def run_one_coordinated_arm(
     second experiment between a partial transition and its forensic handoff.
     """
     validate_plan(plan)
-    claimed = claim_next_arm(plan, session)
-    arm = claimed["arm"]
-    profile = plan["profiles"][arm["variant"]]
     lock_path = hooks.canonical_lock_path()
     lock = hooks.lock_factory(lock_path)
     if getattr(lock, "path", lock_path) != lock_path:
         raise C10Error("C10 coordinator did not receive the canonical SharedLock")
     lock.acquire()
     try:
-        receipt = hooks.preflight(
-            profile["name"],
-            paths.receipt_path,
-            profile_config=admission.PROFILE_CONFIG,
-            experiment_kind="C10",
-        )
-        if not isinstance(receipt, Mapping):
-            raise C10Error("C10 preflight did not return a runtime receipt")
-        candidate_transition: Mapping[str, Any] | None = None
-        if arm["variant"] == "p1":
-            if paths.approval_path is None or paths.admission_out is None:
-                raise C10Error(
-                    "C10 P1 arm requires explicit approval and admission paths"
+        with DurableArmSessionStore(paths.session_path) as session_store:
+            claimed = session_store.claim(plan, session)
+            arm = claimed["arm"]
+            profile = plan["profiles"][arm["variant"]]
+            receipt = hooks.preflight(
+                profile["name"],
+                paths.receipt_path,
+                profile_config=admission.PROFILE_CONFIG,
+                experiment_kind="C10",
+            )
+            if not isinstance(receipt, Mapping):
+                raise C10Error("C10 preflight did not return a runtime receipt")
+            candidate_transition: Mapping[str, Any] | None = None
+            if arm["variant"] == "p1":
+                if paths.approval_path is None or paths.admission_out is None:
+                    raise C10Error(
+                        "C10 P1 arm requires explicit approval and admission paths"
+                    )
+                candidate_transition = hooks.transition(
+                    paths.receipt_path,
+                    profile["name"],
+                    "candidate",
+                    execute=True,
+                    approval_path=paths.approval_path,
+                    admission_out=paths.admission_out,
+                    _held_shared_lock=lock,
+                    profile_config=admission.PROFILE_CONFIG,
+                    experiment_kind="C10",
                 )
-            candidate_transition = hooks.transition(
-                paths.receipt_path,
-                profile["name"],
-                "candidate",
-                execute=True,
-                approval_path=paths.approval_path,
-                admission_out=paths.admission_out,
-                _held_shared_lock=lock,
-                profile_config=admission.PROFILE_CONFIG,
-                experiment_kind="C10",
-            )
-            if not isinstance(candidate_transition, Mapping):
-                raise C10Error("C10 candidate transition returned invalid evidence")
-        raw = hooks.run_browser_arm(arm, _scheduler_concurrency(plan, arm))
-        if not isinstance(raw, Mapping):
-            raise C10Error("C10 browser arm returned invalid evidence")
-        result = {
-            "plan_sha256": plan["plan_sha256"],
-            "index": arm["index"],
-            "variant": arm["variant"],
-            "terminal": True,
-            "no_write": plan["no_write"],
-            "sealed_browser_evidence": _sealed_browser_arm(
-                plan,
-                arm,
-                raw,
-                _runtime_fingerprints(plan, arm, receipt, candidate_transition),
-            ),
-        }
-        validate_browser_arm(plan, result)
-        settlement = hooks.settle(arm)
-        if not isinstance(settlement, Mapping) or not _settlement_is_idle(settlement):
-            raise C10Error("C10 arm settlement is unknown or non-idle")
-        rollback: Mapping[str, Any] | None = None
-        if arm["must_rollback_to_p0"]:
-            rollback = hooks.transition(
-                paths.receipt_path,
-                profile["name"],
-                "baseline",
-                execute=True,
-                _held_shared_lock=lock,
-                profile_config=admission.PROFILE_CONFIG,
-                experiment_kind="C10",
-            )
-            if (
-                not isinstance(rollback, Mapping)
-                or rollback.get("verified") is not True
+                if not isinstance(candidate_transition, Mapping):
+                    raise C10Error("C10 candidate transition returned invalid evidence")
+            raw = hooks.run_browser_arm(arm, _scheduler_concurrency(plan, arm))
+            if not isinstance(raw, Mapping):
+                raise C10Error("C10 browser arm returned invalid evidence")
+            result = {
+                "plan_sha256": plan["plan_sha256"],
+                "index": arm["index"],
+                "variant": arm["variant"],
+                "terminal": True,
+                "no_write": plan["no_write"],
+                "sealed_browser_evidence": _sealed_browser_arm(
+                    plan,
+                    arm,
+                    raw,
+                    _runtime_fingerprints(plan, arm, receipt, candidate_transition),
+                ),
+            }
+            validate_browser_arm(plan, result)
+            settlement = hooks.settle(arm)
+            if not isinstance(settlement, Mapping) or not _settlement_is_idle(
+                settlement
             ):
-                raise C10Error("C10 P1 rollback is not verified")
-            baseline = receipt["baseline"]
-            if (
-                not isinstance(baseline, Mapping)
-                or rollback.get("container_snapshot_sha256")
-                != baseline.get("snapshot_sha256")
-                or rollback.get("transition_sha256")
-                != baseline.get("transition_sha256")
-            ):
-                raise C10Error("C10 P1 rollback fingerprint does not restore baseline")
-            post_rollback = hooks.settle(arm)
-            if not isinstance(post_rollback, Mapping) or not _settlement_is_idle(
-                post_rollback
-            ):
-                raise C10Error("C10 post-rollback settlement is unknown or non-idle")
-        return {
-            "session": claimed["session"],
-            "arm": arm,
-            "result": result,
-            "rollback": dict(rollback) if rollback is not None else None,
-        }
+                raise C10Error("C10 arm settlement is unknown or non-idle")
+            rollback: Mapping[str, Any] | None = None
+            if arm["must_rollback_to_p0"]:
+                rollback = hooks.transition(
+                    paths.receipt_path,
+                    profile["name"],
+                    "baseline",
+                    execute=True,
+                    _held_shared_lock=lock,
+                    profile_config=admission.PROFILE_CONFIG,
+                    experiment_kind="C10",
+                )
+                if (
+                    not isinstance(rollback, Mapping)
+                    or rollback.get("verified") is not True
+                ):
+                    raise C10Error("C10 P1 rollback is not verified")
+                baseline = receipt["baseline"]
+                if (
+                    not isinstance(baseline, Mapping)
+                    or rollback.get("container_snapshot_sha256")
+                    != baseline.get("snapshot_sha256")
+                    or rollback.get("transition_sha256")
+                    != baseline.get("transition_sha256")
+                ):
+                    raise C10Error(
+                        "C10 P1 rollback fingerprint does not restore baseline"
+                    )
+                post_rollback = hooks.settle(arm)
+                if not isinstance(post_rollback, Mapping) or not _settlement_is_idle(
+                    post_rollback
+                ):
+                    raise C10Error(
+                        "C10 post-rollback settlement is unknown or non-idle"
+                    )
+            session_store.mark_terminal(plan, arm, result)
+            return {
+                "session": claimed["session"],
+                "arm": arm,
+                "result": result,
+                "rollback": dict(rollback) if rollback is not None else None,
+            }
     except BaseException as exc:
         # Preserve the canonical lock directory for the existing recovery path,
         # but invoke the injected quarantine hook while this lock is still held.
