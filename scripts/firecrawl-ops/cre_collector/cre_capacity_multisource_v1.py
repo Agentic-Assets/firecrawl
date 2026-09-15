@@ -13,8 +13,10 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import stat
+import tempfile
 import urllib.parse
 from collections import Counter
 from collections.abc import Mapping
@@ -234,6 +236,45 @@ def _file_sha256(path: Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _exclusive_private_write(path: Path, value: bytes) -> None:
+    """Write one new 0600 regular file without following or replacing a target."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise MultisourceError("producer output cannot be created exclusively") from exc
+    try:
+        offset = 0
+        while offset < len(value):
+            offset += os.write(descriptor, value[offset:])
+        os.fsync(descriptor)
+    except OSError as exc:
+        raise MultisourceError("producer output cannot be written") from exc
+    finally:
+        os.close(descriptor)
+    try:
+        opened = path.lstat()
+    except OSError as exc:
+        raise MultisourceError("producer output is unavailable") from exc
+    if not stat.S_ISREG(opened.st_mode) or stat.S_IMODE(opened.st_mode) != 0o600:
+        raise MultisourceError("producer output is not a private regular file")
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise MultisourceError(
+            "producer output directory cannot be synchronized"
+        ) from exc
 
 
 def load_config(path: Path = CONFIG) -> dict[str, Any]:
@@ -1877,25 +1918,65 @@ def produce_jll_enumeration_artifacts(
     The admission verifier remains the authority that validates the full schema.
     """
     root = _private_root(receipt_root)
-    parent = aggregate_path.resolve().parent
-    if parent != root or aggregate_path.exists():
-        raise MultisourceError("aggregate output must be a new file in receipt root")
+    if not aggregate_path.is_absolute():
+        raise MultisourceError("aggregate output must be absolute")
+    try:
+        output_parent = aggregate_path.parent.resolve(strict=True)
+        aggregate_path.lstat()
+    except FileNotFoundError:
+        output_parent = aggregate_path.parent.resolve(strict=True)
+    except OSError as exc:
+        raise MultisourceError("aggregate output is unavailable") from exc
+    else:
+        raise MultisourceError("aggregate output must not overwrite an existing file")
+    if output_parent != root or aggregate_path.parent != output_parent:
+        raise MultisourceError("aggregate output must be directly inside receipt root")
     if not page_receipt_paths or not detail_receipt_paths:
         raise MultisourceError("JLL producer requires page and detail artifacts")
     source = {"key": "jll", "hosts": ["property.jll.com"]}
     page_manifests: list[dict[str, str]] = []
     search_targets: dict[str, str] = {}
     observed: list[datetime] = []
+    pages_by_filter: dict[tuple[str, str], list[tuple[int, int, int]]] = {}
     for path in page_receipt_paths:
         private_path = _private_regular(
             path.resolve(), MAX_RAW_RECEIPT_BYTES, root=root
         )
         page = _read_json(private_path, MAX_RAW_RECEIPT_BYTES)
-        if not isinstance(page, Mapping) or not isinstance(page.get("body"), str):
+        required = {
+            "kind",
+            "request_url",
+            "final_url",
+            "http_status",
+            "content_type",
+            "observed_at",
+            "timing_ms",
+            "operation_name",
+            "variables",
+            "request_body",
+            "query_sha256",
+            "body",
+        }
+        if (
+            not isinstance(page, Mapping)
+            or set(page) != required
+            or page.get("kind") != "jll_graphql_page_receipt_v1"
+            or not _valid_jll_graphql_url(page.get("request_url"), source)
+            or page.get("final_url") != page.get("request_url")
+            or page.get("http_status") != 200
+            or not isinstance(page.get("content_type"), str)
+            or "application/json" not in page["content_type"].casefold()
+            or page.get("operation_name") != "SearchResults"
+            or page.get("query_sha256") != _JLL_SEARCH_RESULTS_QUERY_SHA256
+            or not isinstance(page.get("request_body"), str)
+            or not isinstance(page.get("body"), str)
+        ):
             raise MultisourceError("JLL producer page artifact is malformed")
         try:
+            request = json.loads(page["request_body"])
             payload = json.loads(page["body"])
             items = payload["data"]["properties"]["items"]
+            count = payload["data"]["properties"]["count"]
             page_observed = _observed_at(
                 page.get("observed_at"),
                 now_utc=datetime.now(timezone.utc),
@@ -1903,7 +1984,41 @@ def produce_jll_enumeration_artifacts(
             )
         except (KeyError, TypeError, MultisourceError, json.JSONDecodeError) as exc:
             raise MultisourceError("JLL producer page artifact is malformed") from exc
-        if not isinstance(items, list):
+        variables = page.get("variables")
+        if (
+            not isinstance(items, list)
+            or type(count) is not int
+            or count < 0
+            or not isinstance(request, Mapping)
+            or request.get("operationName") != "SearchResults"
+            or request.get("variables") != variables
+            or not isinstance(request.get("query"), str)
+            or _sha256(request["query"].encode()) != _JLL_SEARCH_RESULTS_QUERY_SHA256
+            or not isinstance(variables, Mapping)
+            or set(variables)
+            != {
+                "market",
+                "language",
+                "propertyTypes",
+                "tenureTypes",
+                "skip",
+                "take",
+                "orderBy",
+            }
+            or variables.get("market") != "us"
+            or variables.get("language") != "en"
+            or not isinstance(variables.get("propertyTypes"), list)
+            or len(variables["propertyTypes"]) != 1
+            or not isinstance(variables["propertyTypes"][0], str)
+            or not isinstance(variables.get("tenureTypes"), list)
+            or len(variables["tenureTypes"]) != 1
+            or variables["tenureTypes"][0] not in _JLL_SUPPORTED_TENURES
+            or type(variables.get("skip")) is not int
+            or variables["skip"] < 0
+            or variables["skip"] % _JLL_PAGE_TAKE
+            or variables.get("take") != _JLL_PAGE_TAKE
+            or variables.get("orderBy") != _JLL_GRAPHQL_ORDER_BY
+        ):
             raise MultisourceError("JLL producer page artifact is malformed")
         for item in items:
             if not isinstance(item, Mapping) or not isinstance(item.get("id"), str):
@@ -1918,9 +2033,29 @@ def produce_jll_enumeration_artifacts(
         observed.append(
             datetime.fromisoformat(page_observed.removesuffix("Z") + "+00:00")
         )
+        pages_by_filter.setdefault(
+            (variables["propertyTypes"][0], variables["tenureTypes"][0]), []
+        ).append((variables["skip"], count, len(items)))
         page_manifests.append(
             {"path": str(private_path), "sha256": _file_sha256(private_path)}
         )
+    if {
+        property_type for property_type, _ in pages_by_filter
+    } != _JLL_ENUMERATION_PROPERTY_TYPES or len(
+        {tenure for _, tenure in pages_by_filter}
+    ) != 1:
+        raise MultisourceError("JLL producer page scope is incomplete")
+    for pages in pages_by_filter.values():
+        counts = {count for _, count, _ in pages}
+        if len(counts) != 1:
+            raise MultisourceError("JLL producer page counts disagree")
+        count = next(iter(counts))
+        if sorted(skip for skip, _, _ in pages) != list(range(0, count, 50)) or (
+            count == 0 and sorted(skip for skip, _, _ in pages) != [0]
+        ):
+            raise MultisourceError("JLL producer page sequence is incomplete")
+        if any(size != min(50, max(0, count - skip)) for skip, _, size in pages):
+            raise MultisourceError("JLL producer page cardinality is invalid")
     detail_by_target: dict[str, tuple[Path, str, str]] = {}
     for path in detail_receipt_paths:
         private_path = _private_regular(
@@ -1943,40 +2078,102 @@ def produce_jll_enumeration_artifacts(
     detail_ids = [detail_by_target[target][2] for target in search_targets.values()]
     if len(set(detail_ids)) != len(detail_ids):
         raise MultisourceError("JLL producer detail identities are duplicated")
-    resolution_manifests: list[dict[str, str]] = []
-    for index, (search_id, target) in enumerate(sorted(search_targets.items())):
-        detail_path, detail_hash, _ = detail_by_target[target]
-        resolution_path = root / f"{aggregate_path.stem}.resolution-{index}.json"
-        resolution_raw = _canonical(
-            {
-                "kind": "jll_detail_resolution_receipt_v1",
-                "search_id": search_id,
-                "canonical_url": target,
-                "detail_receipt_path": str(detail_path),
-                "detail_receipt_sha256": detail_hash,
-            }
-        )
-        resolution_path.write_bytes(resolution_raw)
-        resolution_path.chmod(0o600)
-        resolution_manifests.append(
-            {"path": str(resolution_path), "sha256": _sha256(resolution_raw)}
-        )
-    aggregate = {
-        "kind": "jll_graphql_enumeration_aggregate_v1",
-        "observed_at": max(observed)
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z"),
-        "total": len(detail_ids),
-        "complete": True,
-        "truncated": False,
-        "provider_ids": sorted(detail_ids, key=int),
-        "page_receipts": page_manifests,
-        "resolution_receipts": resolution_manifests,
-    }
-    aggregate_raw = _canonical(aggregate)
-    aggregate_path.write_bytes(aggregate_raw)
-    aggregate_path.chmod(0o600)
-    return {"path": str(aggregate_path), "sha256": _sha256(aggregate_raw)}
+    stage = Path(tempfile.mkdtemp(prefix=".jll-produce-", dir=root))
+    stage.chmod(0o700)
+    published: list[Path] = []
+    try:
+        final_resolution_paths = [
+            root / f"{aggregate_path.stem}.resolution-{index}.json"
+            for index in range(len(search_targets))
+        ]
+        if any(path.exists() or path.is_symlink() for path in final_resolution_paths):
+            raise MultisourceError("JLL producer resolution output already exists")
+        staged_manifests: list[dict[str, str]] = []
+        final_manifests: list[dict[str, str]] = []
+        for index, (search_id, target) in enumerate(sorted(search_targets.items())):
+            detail_path, detail_hash, _ = detail_by_target[target]
+            resolution_raw = _canonical(
+                {
+                    "kind": "jll_detail_resolution_receipt_v1",
+                    "search_id": search_id,
+                    "canonical_url": target,
+                    "detail_receipt_path": str(detail_path),
+                    "detail_receipt_sha256": detail_hash,
+                }
+            )
+            staged_path = stage / final_resolution_paths[index].name
+            _exclusive_private_write(staged_path, resolution_raw)
+            digest = _sha256(resolution_raw)
+            staged_manifests.append({"path": str(staged_path), "sha256": digest})
+            final_manifests.append(
+                {"path": str(final_resolution_paths[index]), "sha256": digest}
+            )
+        aggregate_base = {
+            "kind": "jll_graphql_enumeration_aggregate_v1",
+            "observed_at": max(observed)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z"),
+            "total": len(detail_ids),
+            "complete": True,
+            "truncated": False,
+            "provider_ids": sorted(detail_ids, key=int),
+            "page_receipts": page_manifests,
+        }
+        staged_aggregate = {**aggregate_base, "resolution_receipts": staged_manifests}
+        if not isinstance(
+            _verified_jll_enumeration_population(
+                staged_aggregate,
+                provider_ids=staged_aggregate["provider_ids"],
+                total=staged_aggregate["total"],
+                root=root,
+                source=source,
+                now_utc=datetime.now(timezone.utc),
+                maximum_age=365 * 24 * 60 * 60,
+            ),
+            dict,
+        ):
+            raise MultisourceError("JLL producer output is not consumable")
+        final_aggregate = {**aggregate_base, "resolution_receipts": final_manifests}
+        aggregate_raw = _canonical(final_aggregate)
+        staged_aggregate_path = stage / aggregate_path.name
+        _exclusive_private_write(staged_aggregate_path, aggregate_raw)
+        for staged_path, final_path in zip(
+            [Path(item["path"]) for item in staged_manifests],
+            final_resolution_paths,
+            strict=True,
+        ):
+            os.link(staged_path, final_path, follow_symlinks=False)
+            published.append(final_path)
+            staged_path.unlink()
+        os.link(staged_aggregate_path, aggregate_path, follow_symlinks=False)
+        published.append(aggregate_path)
+        staged_aggregate_path.unlink()
+        _fsync_directory(root)
+        if not isinstance(
+            _verified_jll_enumeration_population(
+                final_aggregate,
+                provider_ids=final_aggregate["provider_ids"],
+                total=final_aggregate["total"],
+                root=root,
+                source=source,
+                now_utc=datetime.now(timezone.utc),
+                maximum_age=365 * 24 * 60 * 60,
+            ),
+            dict,
+        ):
+            raise MultisourceError("published JLL producer output is not consumable")
+        return {"path": str(aggregate_path), "sha256": _sha256(aggregate_raw)}
+    except Exception:
+        for path in reversed(published):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise
+    finally:
+        for path in stage.iterdir():
+            path.unlink()
+        stage.rmdir()
 
 
 def main(argv: list[str] | None = None) -> int:

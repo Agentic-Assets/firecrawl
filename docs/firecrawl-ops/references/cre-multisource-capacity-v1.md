@@ -64,7 +64,12 @@ or the row wrapper. Search IDs, canonical URLs, and detail IDs must each form a
 bijection: duplicate targets or detail IDs, changed detail URL, or an unresolved
 card fail closed. `produce_jll_enumeration_artifacts` is the offline producer
 for already captured private page/detail artifacts; it writes the aggregate and
-resolution receipts but makes no network call.
+resolution receipts but makes no network call. It accepts only bounded regular
+0600 artifacts under the validated 0700 receipt root, fully prevalidates the
+adapter scope before publishing, stages with exclusive no-follow creation, and
+uses the same verifier before and after publication. Existing or symlinked
+targets are refused; a staging or publish failure removes only artifacts created
+by that invocation.
 
 All other sources remain screening-only until they receive reviewed native
 enumeration verifiers. Their asserted wrapper total never populates a page band,

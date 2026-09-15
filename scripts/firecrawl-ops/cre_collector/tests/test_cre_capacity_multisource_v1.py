@@ -9,8 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import cre_capacity_multisource_v1 as multisource
 import pytest
+
+import cre_capacity_multisource_v1 as multisource
 
 ADMISSION_NOW = datetime(2026, 9, 14, 12, 5, tzinfo=timezone.utc)
 OBSERVED_AT = "2026-09-14T12:00:00Z"
@@ -731,6 +732,79 @@ def test_jll_producer_roundtrip_and_unresolved_detail_fail_closed(
         multisource.MultisourceError, match="JLL enumeration completeness"
     ):
         _prevalidate(root, rows)
+
+
+def test_jll_producer_rejects_existing_or_symlinked_output(
+    evidence_root: Path, tmp_path: Path
+) -> None:
+    root = _private_dir(evidence_root, "jll-producer-output-boundary")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    original = _read(Path(rows[0]["enumeration_receipt_path"]))
+    pages = [Path(item["path"]) for item in original["page_receipts"]]
+    details = [
+        Path(_read(Path(item["path"]))["detail_receipt_path"])
+        for item in original["resolution_receipts"]
+    ]
+    existing, _ = _write(root, "already-exists.json", {"existing": True})
+    with pytest.raises(multisource.MultisourceError, match="must not overwrite"):
+        multisource.produce_jll_enumeration_artifacts(
+            receipt_root=root,
+            page_receipt_paths=pages,
+            detail_receipt_paths=details,
+            aggregate_path=existing,
+        )
+
+    target = tmp_path / "outside.json"
+    target.write_text("outside")
+    linked = root / "linked-output.json"
+    linked.symlink_to(target)
+    with pytest.raises(multisource.MultisourceError, match="must not overwrite"):
+        multisource.produce_jll_enumeration_artifacts(
+            receipt_root=root,
+            page_receipt_paths=pages,
+            detail_receipt_paths=details,
+            aggregate_path=linked,
+        )
+
+
+def test_jll_producer_prevalidation_and_staging_leave_no_partial_artifacts(
+    evidence_root: Path,
+) -> None:
+    root = _private_dir(evidence_root, "jll-producer-cleanup")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    original = _read(Path(rows[0]["enumeration_receipt_path"]))
+    pages = [Path(item["path"]) for item in original["page_receipts"]]
+    details = [
+        Path(_read(Path(item["path"]))["detail_receipt_path"])
+        for item in original["resolution_receipts"]
+    ]
+    baseline = {path.name for path in root.iterdir()}
+    incomplete_pages = [
+        path
+        for path in pages
+        if json.loads(_read(path)["request_body"])["variables"]["propertyTypes"][0]
+        != "office"
+    ]
+    with pytest.raises(multisource.MultisourceError, match="scope is incomplete"):
+        multisource.produce_jll_enumeration_artifacts(
+            receipt_root=root,
+            page_receipt_paths=incomplete_pages,
+            detail_receipt_paths=details,
+            aggregate_path=root / "incomplete.json",
+        )
+    assert {path.name for path in root.iterdir()} == baseline
+
+    broken = _read(details[0])
+    broken["content_type"] = "application/json"
+    _write(root, details[0].name, broken)
+    with pytest.raises(multisource.MultisourceError, match="output is not consumable"):
+        multisource.produce_jll_enumeration_artifacts(
+            receipt_root=root,
+            page_receipt_paths=pages,
+            detail_receipt_paths=details,
+            aggregate_path=root / "broken.json",
+        )
+    assert {path.name for path in root.iterdir()} == baseline
 
 
 def test_jll_wrapper_cannot_claim_population_absent_from_native_pages(
