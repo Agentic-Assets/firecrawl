@@ -1177,6 +1177,25 @@ def test_withheld_jll_sql_replaces_or_clears_prior_price_bearing_prose() -> None
     assert f"extra_facts = CASE WHEN {stage_gate} THEN NULL" in compact
 
 
+def test_withheld_jll_detail_error_clears_prior_child_labels_only() -> None:
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    compact = " ".join(sql.split())
+
+    start = compact.index("CREATE TEMP TABLE _jll_withheld_child_label_clear")
+    end = compact.index("-- Colliers", start)
+    clear_scope = compact[start:end]
+    assert "FROM _child_additive additive" in clear_scope
+    assert "END = 'jll' AND s.raw_data->>'jllPriceWithheld' = 'true'" in clear_scope
+
+    assert "SET title = NULL, license = NULL" in compact
+    assert (
+        "SET title = NULL WHERE listing_id IN (SELECT id FROM _jll_withheld_child_label_clear)"
+        in compact
+    )
+    assert "UPDATE credeals.cre_listing_documents SET title = NULL" in compact
+    assert "UPDATE credeals.cre_listing_media SET title = NULL" in compact
+
+
 def test_to_row_reconciles_every_jll_price_control_case_insensitively():
     concealed = _row(
         {

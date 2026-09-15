@@ -4282,6 +4282,20 @@ WHERE jsonb_path_exists(s.raw_data, '$.**.detailError')
         '$.**.preserveChildCollections ? (@ == true || @ == "true")'
       );
 
+-- A current JLL withholding control is a privacy boundary even when the
+-- detail request failed.  Such rows take the additive path above, which
+-- normally preserves old child labels via COALESCE/ON CONFLICT.  Keep every
+-- child identity and URL, but clear the only persisted display-label columns
+-- so an earlier public asking-price label cannot survive this observation.
+CREATE TEMP TABLE _jll_withheld_child_label_clear ON COMMIT DROP AS
+SELECT DISTINCT u.id
+FROM _child_additive additive
+JOIN _up u ON u.id = additive.id
+JOIN _src s USING (brokerage_id, external_id)
+JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+WHERE {staged_source_key_sql} = 'jll'
+  AND s.raw_data->>'jllPriceWithheld' = 'true';
+
 -- Colliers' first-party property record can reference an expert whose public
 -- expert profile is no longer returned. Preserve only the prior contacts for
 -- those explicitly marked rows. Documents, images, media, and links still use
@@ -4323,6 +4337,26 @@ SELECT id FROM _contact_preserve;
 DELETE FROM credeals.cre_listing_contacts  WHERE listing_id IN (SELECT id FROM _contact_refresh);
 DELETE FROM credeals.cre_listing_documents WHERE listing_id IN (SELECT id FROM _child_refresh);
 DELETE FROM credeals.cre_listing_images    WHERE listing_id IN (SELECT id FROM _child_refresh);
+
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'credeals' AND table_name = 'cre_listing_contacts'
+      AND column_name = 'license'
+  ) THEN
+    UPDATE credeals.cre_listing_contacts
+    SET title = NULL, license = NULL
+    WHERE listing_id IN (SELECT id FROM _jll_withheld_child_label_clear);
+  ELSE
+    UPDATE credeals.cre_listing_contacts
+    SET title = NULL
+    WHERE listing_id IN (SELECT id FROM _jll_withheld_child_label_clear);
+  END IF;
+END $$;
+
+UPDATE credeals.cre_listing_documents
+SET title = NULL
+WHERE listing_id IN (SELECT id FROM _jll_withheld_child_label_clear);
 
 -- Contacts refresh. The `license` column ships in sql/012, so the INSERT is
 -- column-existence-guarded: when present, license rides along; when absent
@@ -4656,6 +4690,10 @@ WHERE u.id IN (SELECT id FROM _child_additive)
 -- a source-specific branch, and uses the sql/011 unique keys for idempotence.
 DO $$ BEGIN
   IF to_regclass('credeals.cre_listing_media') IS NOT NULL THEN
+    UPDATE credeals.cre_listing_media
+    SET title = NULL
+    WHERE listing_id IN (SELECT id FROM _jll_withheld_child_label_clear);
+
     DELETE FROM credeals.cre_listing_media WHERE listing_id IN (SELECT id FROM _child_refresh);
     INSERT INTO credeals.cre_listing_media (listing_id, media_type, provider, url, embed_url, title)
     SELECT u.id, COALESCE(x->>'mediaType','other'), x->>'provider', x->>'url',
