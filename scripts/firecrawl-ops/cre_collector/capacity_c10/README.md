@@ -28,3 +28,15 @@ No C10 adapter may be admitted until its enumeration verifier, member verifier,
 and provider-specific attrition classifier are independently reviewed. A failed
 or uncertain arm must quarantine under the held canonical lock; it must not
 attempt a fresh lock acquisition, a generic fallback, or an automatic rerun.
+
+## Wave 2 strict-detail batch A hook
+
+`strict_detail_jll.py`, `strict_detail_jll_investor.py`,
+`strict_detail_colliers.py`, `strict_detail_colliers_main.py`,
+`strict_detail_marcus_millichap.py`, and
+`strict_detail_avison_young.py` are source-local receipt verifiers and
+no-write request descriptors only. They are intentionally **not** imported by
+the registry and all retain `fully_verified = False`. A later registry-only
+admission change must independently prove each adapter's private receipt root,
+actual no-write transport, and source-specific attrition behavior; it must not
+turn these fixtures or descriptors into a generic fetcher.
