@@ -3225,6 +3225,40 @@ def test_reclaim_state_rejects_oversized_padded_sidecar_untouched(tmp_path):
     assert lock_path.is_dir()
 
 
+def test_deleted_reclaim_prefix_fsyncs_parent_before_state_restore(
+    tmp_path, monkeypatch
+):
+    """A post-delete crash prefix remains reclaiming until parent durability."""
+    lock_path = tmp_path / ".cre.lock"
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    original = (f"v1 reclaiming bound {owner} {token} {generation} 1 1 0\n").encode()
+    authority.write_bytes(original)
+    parent_identity = refresh._lock_directory_identity(lock_path.parent)
+    original_fsync = refresh.os.fsync
+
+    def fail_parent_fsync(descriptor):
+        observed = os.fstat(descriptor)
+        if (observed.st_dev, observed.st_ino) == parent_identity:
+            raise OSError("post-delete parent fsync failed")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(refresh.os, "fsync", fail_parent_fsync)
+    with pytest.raises(OSError, match="post-delete parent fsync failed"):
+        refresh.SharedLock(lock_path).acquire()
+
+    assert authority.read_bytes() == original
+    assert not lock_path.exists()
+    assert not lock_path.with_name(f"{lock_path.name}.reclaim").exists()
+
+    monkeypatch.setattr(refresh.os, "fsync", original_fsync)
+    successor = refresh.SharedLock(lock_path)
+    successor.acquire()
+    successor.release()
+
+
 @pytest.mark.parametrize("operation", ["arm", "disarm"])
 def test_lock_benchmark_fsync_failure_preserves_interlock(
     tmp_path, monkeypatch, operation

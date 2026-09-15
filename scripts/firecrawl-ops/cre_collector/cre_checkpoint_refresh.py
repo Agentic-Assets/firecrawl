@@ -1221,6 +1221,11 @@ class SharedLock:
                 raise LockHeldError("CRE reclaim tombstone requires operator recovery")
             shutil.rmtree(tombstone)
             self._fsync_lock_parent()
+        else:
+            # A prior process can have removed the exact tombstone and died
+            # before its parent fsync.  Do not clear the durable reclaim record
+            # until this successor has made that deletion durable as well.
+            self._fsync_lock_parent()
         self._require_authority_hold()
         self._restore_reclaim_authority(state)
 
