@@ -55,6 +55,8 @@ test("private C10 route consumes one signed capability, enforces SSRF/body caps/
   assert.equal(evidence.engineAttempts, 1); assert.equal(evidence.cacheRead, false); assert.equal(evidence.cacheWrite, false); assert.match(evidence.evidenceSignature, /^[0-9a-f]{64}$/);
   assert.equal((await call(input, capability)).status, 404);
   assert.equal(targetCalls, 2); // one bootstrap navigation plus the one browser fetch operation
+  const publicHealth = await fetch(`http://127.0.0.1:${publicPort}/health`);
+  assert.equal((await publicHealth.json() as { activePages: number }).activePages, 0);
   const largeCard = { ...card, id: "card-2", url: `https://${host}/large`, browserBootstrapUrl: `https://${host}/`, maxBytes: 64 };
   const large = { ...input, card: largeCard, cardSha256: sha(largeCard) };
   assert.equal((await call(large, issueC10SidecarCapability(secret, large))).status, 502);

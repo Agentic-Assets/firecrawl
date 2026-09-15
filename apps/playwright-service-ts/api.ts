@@ -748,7 +748,18 @@ if (C10_BROWSER_INTERNAL_SECRET) {
       const contextBundle = await createContext(C10_BROWSER_TEST_LOCAL_TARGETS, undefined, C10_BROWSER_TEST_LOCAL_TARGETS);
       requestContext = contextBundle.context;
       page = await requestContext.newPage();
+      // CDP is the measured cache attestation: cache is disabled before either
+      // navigation/fetch, and every observed response must report no cache read.
+      const cdp = await requestContext.newCDPSession(page);
+      const network = { observed: false, cacheRead: false };
+      cdp.on("Network.responseReceived", (event: { response?: { fromDiskCache?: boolean; fromServiceWorker?: boolean } }) => {
+        network.observed = true;
+        network.cacheRead ||= event.response?.fromDiskCache === true || event.response?.fromServiceWorker === true;
+      });
+      await cdp.send("Network.enable");
+      await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
       const browserResponse = await executeC10BrowserPageFetch(page, input.card, deadlineAt);
+      if (!network.observed || network.cacheRead) throw new Error("C10 browser cache evidence is unavailable or contradictory");
       const body = Buffer.from(browserResponse.bodyBase64, "base64");
       if (body.byteLength > input.card.maxBytes) {
         throw new Error("C10 browser response exceeds its reviewed byte limit");
@@ -779,8 +790,8 @@ if (C10_BROWSER_INTERNAL_SECRET) {
         engineAttempts: 1,
         fallbackDisabled: true,
         fallbackUsed: false,
-        cacheRead: false,
-        cacheWrite: false,
+        cacheRead: false, // measured from CDP Network.responseReceived
+        cacheWrite: false, // Network.setCacheDisabled succeeded before navigation/fetch
       };
       return res.json({ ...evidence, evidenceSignature: signC10Evidence(C10_BROWSER_INTERNAL_SECRET, evidence) });
     } catch (error) {
