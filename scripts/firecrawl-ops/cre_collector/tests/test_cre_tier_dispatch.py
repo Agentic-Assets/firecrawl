@@ -10,9 +10,10 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 import cre_checkpoint_refresh as refresh
 import cre_tier_dispatch as dispatch
-import pytest
 
 COLLECTOR = Path(__file__).resolve().parent.parent
 RUN_TIER = COLLECTOR / "launchd" / "cre_run_tier.sh"
@@ -288,6 +289,21 @@ def test_inherited_authority_proof_rejects_closed_or_replaced_descriptors(
                     "CRE_TIER_LOCK_OWNER_PID": str(os.getpid()),
                 }
             )
+        reused_fd = os.open(lock.authority_path, os.O_RDWR | os.O_NOFOLLOW)
+        assert reused_fd == authority_fd
+        try:
+            with pytest.raises(dispatch.TierDispatchError, match="does not own"):
+                dispatch.verify_inherited_lock(
+                    {
+                        "CRE_TIER_LOCK_AUTHORITY_FD": str(reused_fd),
+                        "CRE_TIER_LOCK_SYNC_FD": str(lock.recovery_sync_fd),
+                        "CRE_TIER_LOCK_TOKEN": str(lock.authority_token),
+                        "CRE_TIER_LOCK_GENERATION": str(lock.authority_generation),
+                        "CRE_TIER_LOCK_OWNER_PID": str(os.getpid()),
+                    }
+                )
+        finally:
+            os.close(reused_fd)
         replacement = lock_path.parent / "replacement-authority"
         replacement.write_text("replacement\n", encoding="utf-8")
         replacement.chmod(0o600)
