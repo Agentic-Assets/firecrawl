@@ -204,9 +204,15 @@ class NaiGlobalAdapter(BatchBAdapter):
             for offset, page in enumerate(pages):
                 if _integer(page.get("offset"), "NAI page offset") != offset * 100:
                     raise C10Error("NAI pagination offset is non-contiguous")
-                rows = _items(page.get("rows"), "NAI page rows")
+                rows = page.get("rows")
+                if not isinstance(rows, list) or any(
+                    not isinstance(row, Mapping) for row in rows
+                ):
+                    raise C10Error("NAI page rows are invalid")
                 if len(rows) > 100:
                     raise C10Error("NAI page exceeds native page size")
+                if offset < len(pages) - 1 and len(rows) != 100:
+                    raise C10Error("NAI short page appeared before batch completion")
                 for row in rows:
                     member_id = _id(
                         row.get("public_post_id"), "NAI public post identity"

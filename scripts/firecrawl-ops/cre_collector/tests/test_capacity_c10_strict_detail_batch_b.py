@@ -73,16 +73,7 @@ def _enumeration(key: str, adapter: Any) -> dict[str, Any]:
                                     "canonical_url": "https://infabode.com/services/listings/n1",
                                 }
                             ],
-                        },
-                        {
-                            "offset": 100,
-                            "rows": [
-                                {
-                                    "public_post_id": "n2",
-                                    "canonical_url": "https://infabode.com/services/listings/n2",
-                                }
-                            ],
-                        },
+                        }
                     ],
                 }
             ],
@@ -213,8 +204,42 @@ def test_savills_rejects_nonterminal_nexturl_and_total_mismatch() -> None:
 def test_nai_requires_native_short_page_and_contiguous_offsets() -> None:
     adapter = strict_detail_batch_b_adapters()["nai-global"]
     evidence = _enumeration("nai-global", adapter)
-    evidence["batches"][0]["pages"][1]["offset"] = 200
+    evidence["batches"][0]["pages"][0]["rows"] = [
+        {
+            "public_post_id": str(index),
+            "canonical_url": f"https://infabode.com/services/listings/{index}",
+        }
+        for index in range(100)
+    ]
+    evidence["batches"][0]["pages"].append(
+        {
+            "offset": 200,
+            "rows": [
+                {
+                    "public_post_id": "n2",
+                    "canonical_url": "https://infabode.com/services/listings/n2",
+                }
+            ],
+        }
+    )
     with pytest.raises(contracts.C10Error, match="non-contiguous"):
+        adapter.verify_enumeration(evidence)
+
+
+def test_nai_accepts_an_empty_terminal_short_page_but_not_an_early_short_page() -> None:
+    adapter = strict_detail_batch_b_adapters()["nai-global"]
+    evidence = _enumeration("nai-global", adapter)
+    evidence["batches"][0]["pages"][0]["rows"] = [
+        {
+            "public_post_id": str(index),
+            "canonical_url": f"https://infabode.com/services/listings/{index}",
+        }
+        for index in range(100)
+    ]
+    evidence["batches"][0]["pages"].append({"offset": 100, "rows": []})
+    adapter.verify_enumeration(evidence)
+    evidence["batches"][0]["pages"][0]["rows"] = []
+    with pytest.raises(contracts.C10Error, match="before batch completion"):
         adapter.verify_enumeration(evidence)
 
 
