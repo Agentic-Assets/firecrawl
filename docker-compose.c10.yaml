@@ -1,0 +1,12 @@
+# Opt-in C10 v3 transport overlay.  It intentionally has no volumes: host
+# receipts and coordinator keys remain outside the OrbStack VM.  The required
+# env file is owner-only, gitignored, and contains the three ephemeral values.
+services:
+  playwright-service:
+    env_file:
+      - path: ${C10_BROWSER_PRIVATE_ENV_FILE:?set an owner-only C10 env file}
+        required: true
+    environment:
+      C10_BROWSER_INTERNAL_PORT: 3004
+    ports:
+      - "127.0.0.1:${C10_BROWSER_HOST_PORT:?set a loopback host port}:3004"
