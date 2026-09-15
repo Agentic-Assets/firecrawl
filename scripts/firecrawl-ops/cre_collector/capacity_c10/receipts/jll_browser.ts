@@ -15,6 +15,7 @@ import {
   createLocalC10BrowserTransport,
   type LocalBrowserFetch,
 } from "./local_browser_executor.js";
+import { type BrowserTrustedEvidence } from "./browser_transport.js";
 import {
   createJllReceiptProducer,
   jllEnumerationCard,
@@ -33,7 +34,9 @@ export interface JllBrowserCohort {
 }
 
 export interface JllBrowserRuntimeOptions {
-  readonly armSecret: string;
+  readonly coordinatorPrivateKeyPem: string;
+  readonly sidecarEvidencePublicKeyPem: string;
+  readonly hostTransportKey: string;
   readonly serviceUrl: string;
   readonly store: ReceiptArtifactStore;
   readonly fetcher?: LocalBrowserFetch;
@@ -47,6 +50,7 @@ export interface JllBrowserRun {
   readonly scheduler: Readonly<{
     configuredConcurrency: number;
     observedMaxActive: number;
+    signedLeaseCount: number;
     scheduledMemberCount: number;
   }>;
   readonly accounting: ReturnType<SourceBoundOneShotTransport["requestAccounting"]>;
@@ -121,13 +125,31 @@ function runtime(
   cohort: JllBrowserCohort,
   binding: ReceiptBinding,
   options: JllBrowserRuntimeOptions,
-): { producer: ReturnType<typeof createJllReceiptProducer>; transport: SourceBoundOneShotTransport } {
+): { producer: ReturnType<typeof createJllReceiptProducer>; transport: SourceBoundOneShotTransport; leases: BrowserTrustedEvidence[] } {
   options.coordinatorLock.assertHeld();
+  if (binding.cohortSha256 !== cohort.cohortMemberSha256) {
+    throw new C10ReceiptError("JLL cohort must be sealed in the coordinator binding");
+  }
   const cards = jllBrowserCardRegistry(cohort);
-  const direct = createLocalC10BrowserTransport("jll", binding, cards, options);
+  const leases: BrowserTrustedEvidence[] = [];
+  const direct = createLocalC10BrowserTransport("jll", binding, cards, { ...options, onVerifiedEvidence: (evidence) => leases.push(evidence) });
   const transport = new SourceBoundOneShotTransport("jll", binding, enumerationCards(cohort), options.store, direct);
   const plan: JllReceiptPlan = { ...cohort, enumerationCards: [] };
-  return { producer: createJllReceiptProducer(plan), transport };
+  return { producer: createJllReceiptProducer(plan), transport, leases };
+}
+
+function signedLeaseConcurrency(leases: readonly BrowserTrustedEvidence[], cohortSha256: string): number {
+  const points: Array<{ at: bigint; delta: 1 | -1 }> = [];
+  for (const evidence of leases) {
+    if (evidence.binding.cohortSha256 !== cohortSha256 || evidence.context.ephemeral !== true || evidence.cacheRead !== false || evidence.cacheWrite !== false) throw new C10ReceiptError("JLL signed lease lacks the sealed cohort/cache binding");
+    const start = BigInt(evidence.leaseStartMonotonicNs), end = BigInt(evidence.leaseEndMonotonicNs);
+    if (end < start) throw new C10ReceiptError("JLL signed lease monotonic interval is invalid");
+    points.push({ at: start, delta: 1 }, { at: end, delta: -1 });
+  }
+  let active = 0, maximum = 0;
+  // End events first at equal timestamps: touching intervals do not overlap.
+  for (const point of points.sort((left, right) => left.at === right.at ? left.delta - right.delta : left.at < right.at ? -1 : 1)) { active += point.delta; maximum = Math.max(maximum, active); }
+  return maximum;
 }
 
 async function boundedMembers<T>(
@@ -172,7 +194,7 @@ export async function runJllBrowserFidelitySmoke(
   const execution = runtime(cohort, binding, options);
   const enumeration = await execution.producer.produceEnumerationReceipt({ transport: execution.transport });
   const receipt = await execution.producer.produceMemberReceipt({ transport: execution.transport }, member);
-  return Object.freeze({ enumeration, members: Object.freeze([receipt]), scheduler: Object.freeze({ configuredConcurrency: 1, observedMaxActive: 1, scheduledMemberCount: 1 }), accounting: execution.transport.requestAccounting() });
+  return Object.freeze({ enumeration, members: Object.freeze([receipt]), scheduler: Object.freeze({ configuredConcurrency: 1, observedMaxActive: signedLeaseConcurrency(execution.leases, cohort.cohortMemberSha256), signedLeaseCount: execution.leases.length, scheduledMemberCount: 1 }), accounting: execution.transport.requestAccounting() });
 }
 
 /** All 16 members; only P0/P1 concurrency is admitted, and actual saturation must be observed. */
@@ -188,13 +210,14 @@ export async function runJllBrowserSaturationCalibration(
   const result = await boundedMembers(cohort.members, concurrency, (member) =>
     execution.producer.produceMemberReceipt({ transport: execution.transport }, member),
   );
-  if (result.observedMaxActive !== concurrency) {
+  const actualOverlap = signedLeaseConcurrency(execution.leases, cohort.cohortMemberSha256);
+  if (actualOverlap !== concurrency || execution.leases.length !== cohort.members.length + 1) {
     throw new C10ReceiptError("JLL browser saturation did not reach the reviewed concurrency");
   }
   return Object.freeze({
     enumeration,
     members: result.values,
-    scheduler: Object.freeze({ configuredConcurrency: concurrency, observedMaxActive: result.observedMaxActive, scheduledMemberCount: cohort.members.length }),
+    scheduler: Object.freeze({ configuredConcurrency: concurrency, observedMaxActive: actualOverlap, signedLeaseCount: execution.leases.length, scheduledMemberCount: cohort.members.length }),
     accounting: execution.transport.requestAccounting(),
   });
 }

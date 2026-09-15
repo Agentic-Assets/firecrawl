@@ -1,254 +1,74 @@
-import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+/** C10 browser protocol v3: separated Ed25519 capability and evidence keys. */
+import { createHash, sign, verify } from "node:crypto";
 
-export const C10_BROWSER_INTERNAL_PATH = "/internal/c10/browser-execute";
-
-const CAPABILITY_PURPOSE = "cre-capacity-c10-browser-capability-v2";
+export const C10_BROWSER_INTERNAL_PATH = "/internal/c10/v3/browser-execute";
+export const C10_PROTOCOL_VERSION = 3 as const;
 const SHA256 = /^[0-9a-f]{64}$/;
+const MAX_LIFETIME_MS = 120_000;
+const MAX_REPLAY_ENTRIES = 4_096;
 
-export type C10SidecarCard = {
-  id: string;
-  sourceKey: string;
-  stage: "enumeration" | "member";
-  method: "GET" | "POST";
-  url: string;
-  allowedHost: string;
-  headers: Record<string, string>;
-  contentType: "application/json" | null;
-  body: string | null;
-  browserBootstrapUrl: string;
-  cacheMode: "no-store";
-  timeoutMs: number;
-  maxBytes: number;
-  bodySha256: string | null;
-};
+export type C10Binding = Readonly<{ planSha256: string; cohortSha256: string; cardSha256: string; manifestSha256: string; sessionSha256: string; armSha256: string; profileSha256: string }>;
+export type C10SidecarCard = Readonly<{ id: string; sourceKey: string; stage: "enumeration" | "member"; method: "GET" | "POST"; url: string; allowedHost: string; headers: Record<string, string>; contentType: "application/json" | null; body: string | null; browserBootstrapUrl: string; cacheMode: "no-store"; timeoutMs: number; maxBytes: number; bodySha256: string | null }>;
+export type C10CapabilityPayload = Readonly<{ protocolVersion: 3; coordinatorKeyId: string; nonce: string; expiresAtMs: number; sourceKey: string; binding: C10Binding }>;
+export type C10SidecarInput = Readonly<{ capability: C10CapabilityPayload; card: C10SidecarCard }>;
 
-export type C10SidecarInput = {
-  sourceKey: string;
-  armSha256: string;
-  tokenId: string;
-  tokenSha256: string;
-  cardSha256: string;
-  card: C10SidecarCard;
-};
-
-function canonical(value: unknown): unknown {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("C10 value must be finite");
-    return Object.is(value, -0) ? 0 : value;
-  }
-  if (Array.isArray(value)) return value.map(canonical);
-  if (!value || typeof value !== "object") throw new Error("C10 value is unsupported");
-  const output: Record<string, unknown> = {};
-  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-    const nested = (value as Record<string, unknown>)[key];
-    if (nested === undefined) throw new Error("C10 value cannot omit fields");
-    output[key] = canonical(nested);
-  }
-  return output;
+export function canonicalJson(value: unknown): string {
+  const normalize = (input: unknown): unknown => {
+    if (input === null || typeof input === "string" || typeof input === "boolean") return input;
+    if (typeof input === "number") { if (!Number.isFinite(input)) throw new Error("C10 JSON must be finite"); return Object.is(input, -0) ? 0 : input; }
+    if (Array.isArray(input)) return input.map(normalize);
+    if (!input || typeof input !== "object") throw new Error("C10 JSON is unsupported");
+    const output: Record<string, unknown> = {};
+    for (const key of Object.keys(input as Record<string, unknown>).sort()) { const nested = (input as Record<string, unknown>)[key]; if (nested === undefined) throw new Error("C10 JSON cannot omit fields"); output[key] = normalize(nested); }
+    return output;
+  };
+  return JSON.stringify(normalize(value)).replace(/[^\u0000-\u007f]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(canonical(value)).replace(
-    /[^\u0000-\u007f]/g,
-    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
+export const sha256 = (value: string | Uint8Array): string => createHash("sha256").update(value).digest("hex");
+export const publicKeyId = (publicKeyPem: string): string => sha256(publicKeyPem);
+function exactKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join(",") === [...expected].sort().join(","); }
+function digest(value: unknown, label: string): string { if (typeof value !== "string" || !SHA256.test(value)) throw new Error(`${label} must be a SHA-256 digest`); return value; }
+function text(value: unknown, label: string, maximum = 4_096): string { if (typeof value !== "string" || value.length === 0 || value.length > maximum) throw new Error(`${label} is invalid`); return value; }
+function positiveInteger(value: unknown, label: string): number { if (!Number.isInteger(value) || (value as number) < 1) throw new Error(`${label} is invalid`); return value as number; }
+function bindingFrom(value: unknown): C10Binding {
+  const names = ["armSha256", "cardSha256", "cohortSha256", "manifestSha256", "planSha256", "profileSha256", "sessionSha256"];
+  if (!exactKeys(value, names)) throw new Error("C10 binding schema is invalid");
+  return Object.freeze({ planSha256: digest(value.planSha256, "C10 plan"), cohortSha256: digest(value.cohortSha256, "C10 cohort"), cardSha256: digest(value.cardSha256, "C10 card"), manifestSha256: digest(value.manifestSha256, "C10 manifest"), sessionSha256: digest(value.sessionSha256, "C10 session"), armSha256: digest(value.armSha256, "C10 arm"), profileSha256: digest(value.profileSha256, "C10 profile") });
 }
-
-function digest(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function hmac(secret: string, purpose: string, fields: readonly string[]): string {
-  return createHmac("sha256", secret)
-    .update([purpose, ...fields].join("\u0000"), "utf8")
-    .digest("hex");
-}
-
-function exactKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
-  return value !== null
-    && typeof value === "object"
-    && !Array.isArray(value)
-    && Object.keys(value).sort().join(",") === [...expected].sort().join(",");
-}
-
-function requireDigest(value: unknown, label: string): string {
-  if (typeof value !== "string" || !SHA256.test(value)) throw new Error(`${label} must be a SHA-256 digest`);
-  return value;
-}
-
-function requireString(value: unknown, label: string, maximum = 4_096): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > maximum) {
-    throw new Error(`${label} is invalid`);
-  }
-  return value;
-}
-
-function requirePositiveInteger(value: unknown, label: string): number {
-  if (!Number.isInteger(value) || (value as number) < 1) {
-    throw new Error(`${label} is invalid`);
-  }
-  return value as number;
-}
-
-function requireNullableString(value: unknown, label: string, maximum = 4_096): string | null {
-  if (value === null) return null;
-  return requireString(value, label, maximum);
-}
-
 function cardFrom(value: unknown, sourceKey: string): C10SidecarCard {
-  if (!exactKeys(value, [
-    "allowedHost", "body", "bodySha256", "browserBootstrapUrl", "cacheMode", "contentType", "headers",
-    "id", "maxBytes", "method", "sourceKey", "stage", "timeoutMs", "url",
-  ])) {
-    throw new Error("C10 browser card schema is invalid");
-  }
-  if (
-    value.sourceKey !== sourceKey
-    || (value.stage !== "enumeration" && value.stage !== "member")
-    || (value.method !== "GET" && value.method !== "POST")
-    || value.cacheMode !== "no-store"
-    || !Number.isInteger(value.timeoutMs)
-    || (value.timeoutMs as number) < 1
-    || !Number.isInteger(value.maxBytes)
-    || (value.maxBytes as number) < 1
-  ) {
-    throw new Error("C10 browser card is not executable");
-  }
-  const url = new URL(requireString(value.url, "C10 browser URL", 2_048));
-  const bootstrap = new URL(requireString(value.browserBootstrapUrl, "C10 browser bootstrap URL", 2_048));
-  if (
-    url.protocol !== "https:"
-    || bootstrap.protocol !== "https:"
-    || typeof value.allowedHost !== "string"
-    || url.host !== value.allowedHost
-    || bootstrap.host !== value.allowedHost
-    || bootstrap.origin !== url.origin
-    || url.hash
-    || bootstrap.hash
-  ) {
-    throw new Error("C10 browser card is outside its reviewed origin");
-  }
-  if (!value.headers || typeof value.headers !== "object" || Array.isArray(value.headers)) {
-    throw new Error("C10 browser headers are invalid");
-  }
+  const names = ["allowedHost", "body", "bodySha256", "browserBootstrapUrl", "cacheMode", "contentType", "headers", "id", "maxBytes", "method", "sourceKey", "stage", "timeoutMs", "url"];
+  if (!exactKeys(value, names)) throw new Error("C10 browser card schema is invalid");
+  if (value.sourceKey !== sourceKey || (value.stage !== "enumeration" && value.stage !== "member") || (value.method !== "GET" && value.method !== "POST") || value.cacheMode !== "no-store") throw new Error("C10 browser card is not executable");
+  const url = new URL(text(value.url, "C10 browser URL", 2_048)), bootstrap = new URL(text(value.browserBootstrapUrl, "C10 browser bootstrap URL", 2_048));
+  if (url.protocol !== "https:" || bootstrap.protocol !== "https:" || url.host !== value.allowedHost || bootstrap.host !== value.allowedHost || bootstrap.origin !== url.origin || url.hash || bootstrap.hash) throw new Error("C10 browser card is outside its reviewed origin");
+  if (!value.headers || typeof value.headers !== "object" || Array.isArray(value.headers)) throw new Error("C10 browser headers are invalid");
   const headers: Record<string, string> = {};
-  for (const [name, header] of Object.entries(value.headers)) {
-    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/.test(name) || typeof header !== "string" || header.length > 4_096) {
-      throw new Error("C10 browser header is invalid");
-    }
-    headers[name] = header;
-  }
-  if (value.method === "GET" && (value.body !== null || value.contentType !== null || value.bodySha256 !== null)) {
-    throw new Error("C10 GET browser card cannot carry a body");
-  }
-  if (value.method === "POST") {
-    if (typeof value.body !== "string" || value.contentType !== "application/json" || digest(value.body) !== value.bodySha256) {
-      throw new Error("C10 POST browser card body is invalid");
-    }
-  }
-  const stage = value.stage as C10SidecarCard["stage"];
-  const method = value.method as C10SidecarCard["method"];
-  const contentType = value.contentType as C10SidecarCard["contentType"];
-  return {
-    id: requireString(value.id, "C10 browser card id", 81), sourceKey, stage, method,
-    url: url.toString(), allowedHost: requireString(value.allowedHost, "C10 browser allowed host", 255), headers, contentType,
-    body: requireNullableString(value.body, "C10 browser body"), browserBootstrapUrl: bootstrap.toString(), cacheMode: "no-store",
-    timeoutMs: requirePositiveInteger(value.timeoutMs, "C10 browser timeout"),
-    maxBytes: requirePositiveInteger(value.maxBytes, "C10 browser byte limit"),
-    bodySha256: value.bodySha256 === null ? null : requireDigest(value.bodySha256, "C10 browser body"),
-  };
+  for (const [name, header] of Object.entries(value.headers)) { if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/.test(name) || typeof header !== "string" || header.length > 4_096) throw new Error("C10 browser header is invalid"); headers[name] = header; }
+  const contentType: "application/json" | null = value.contentType === "application/json" ? "application/json" : value.contentType === null ? null : (() => { throw new Error("C10 browser content type is invalid"); })();
+  const body: string | null = typeof value.body === "string" ? value.body : value.body === null ? null : (() => { throw new Error("C10 browser body is invalid"); })();
+  if (value.method === "GET" && (body !== null || contentType !== null || value.bodySha256 !== null)) throw new Error("C10 GET browser card cannot carry a body");
+  if (value.method === "POST" && (body === null || contentType !== "application/json" || sha256(body) !== value.bodySha256)) throw new Error("C10 POST browser card body is invalid");
+  return Object.freeze({ id: text(value.id, "C10 browser card id", 81), sourceKey, stage: value.stage as "enumeration" | "member", method: value.method as "GET" | "POST", url: url.toString(), allowedHost: text(value.allowedHost, "C10 browser allowed host", 255), headers, contentType, body, browserBootstrapUrl: bootstrap.toString(), cacheMode: "no-store", timeoutMs: positiveInteger(value.timeoutMs, "C10 browser timeout"), maxBytes: positiveInteger(value.maxBytes, "C10 browser byte limit"), bodySha256: value.bodySha256 === null ? null : digest(value.bodySha256, "C10 browser body") });
 }
-
-/** Parse the one-card private sidecar message. This is not a Firecrawl public request schema. */
 export function parseC10SidecarInput(value: unknown): C10SidecarInput {
-  if (!exactKeys(value, ["armSha256", "card", "cardSha256", "sourceKey", "tokenId", "tokenSha256"])) {
-    throw new Error("C10 browser request schema is invalid");
-  }
-  const sourceKey = requireString(value.sourceKey, "C10 source key", 81);
-  const input = {
-    sourceKey,
-    armSha256: requireDigest(value.armSha256, "C10 arm"),
-    tokenId: requireString(value.tokenId, "C10 token id", 128),
-    tokenSha256: requireDigest(value.tokenSha256, "C10 token"),
-    cardSha256: requireDigest(value.cardSha256, "C10 card"),
-    card: cardFrom(value.card, sourceKey),
-  };
-  if (digest(canonicalJson(input.card)) !== input.cardSha256) {
-    throw new Error("C10 browser request card digest is invalid");
-  }
-  return input;
+  if (!exactKeys(value, ["capability", "card"]) || !exactKeys(value.capability, ["binding", "coordinatorKeyId", "expiresAtMs", "nonce", "protocolVersion", "sourceKey"])) throw new Error("C10 v3 browser request schema is invalid");
+  const capability = value.capability; if (capability.protocolVersion !== C10_PROTOCOL_VERSION) throw new Error("C10 browser protocol version is invalid");
+  const sourceKey = text(capability.sourceKey, "C10 source key", 81);
+  const parsed = Object.freeze({ protocolVersion: C10_PROTOCOL_VERSION, coordinatorKeyId: digest(capability.coordinatorKeyId, "C10 coordinator key"), nonce: text(capability.nonce, "C10 nonce", 128), expiresAtMs: positiveInteger(capability.expiresAtMs, "C10 expiry"), sourceKey, binding: bindingFrom(capability.binding) });
+  const card = cardFrom(value.card, sourceKey); if (sha256(canonicalJson(card)) !== parsed.binding.cardSha256) throw new Error("C10 browser card digest is invalid"); return Object.freeze({ capability: parsed, card });
 }
-
-type Capability = {
-  readonly nonce: string;
-  readonly expiresAt: number;
-  readonly sourceKey: string;
-  readonly armSha256: string;
-  readonly tokenId: string;
-  readonly tokenSha256: string;
-  readonly cardSha256: string;
-  readonly manifestSha256: string;
-};
-
-function capabilityManifest(input: Pick<C10SidecarInput, "sourceKey" | "armSha256" | "tokenId" | "tokenSha256" | "cardSha256" | "card">): string {
-  return digest(canonicalJson(input));
-}
-
-function encodeCapability(capability: Capability, secret: string): string {
-  const payload = Buffer.from(canonicalJson(capability), "utf8").toString("base64url");
-  return `${payload}.${hmac(secret, CAPABILITY_PURPOSE, [payload])}`;
-}
-
-/** Coordinator-only issuer. The capability binds a reviewed complete card manifest and expires quickly. */
-export function issueC10SidecarCapability(
-  secret: string,
-  input: C10SidecarInput,
-  now = Date.now(),
-  lifetimeMs = 60_000,
-): string {
-  if (secret.length < 32 || !Number.isInteger(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > 120_000) {
-    throw new Error("C10 capability issuer is invalid");
-  }
-  return encodeCapability({
-    nonce: randomUUID(), expiresAt: now + lifetimeMs, sourceKey: input.sourceKey,
-    armSha256: input.armSha256, tokenId: input.tokenId, tokenSha256: input.tokenSha256,
-    cardSha256: input.cardSha256, manifestSha256: capabilityManifest(input),
-  }, secret);
-}
-
-/** Sidecar-resident, atomic replay registry. It consumes a nonce before browser admission. */
+/** Coordinator-only helper: this private key must never reach the sidecar. */
+export function issueC10SidecarCapability(privateKeyPem: string, capability: C10CapabilityPayload): string { if (capability.protocolVersion !== C10_PROTOCOL_VERSION || !Number.isInteger(capability.expiresAtMs)) throw new Error("C10 v3 capability is invalid"); const payload = Buffer.from(canonicalJson(capability), "utf8").toString("base64url"); return `${payload}.${sign(null, Buffer.from(payload, "utf8"), privateKeyPem).toString("base64url")}`; }
+/** Bounded ephemeral replay state. Persistence is forbidden because v3 keys rotate every lifecycle. */
 export class C10SidecarCapabilityRegistry {
-  private readonly consumed = new Set<string>();
-
-  consume(secret: string | undefined, input: C10SidecarInput, authorization: string | undefined, now = Date.now()): boolean {
-    if (!secret || secret.length < 32 || !authorization) return false;
-    const [payload, signature, extra] = authorization.split(".");
-    if (!payload || !signature || extra || !/^[0-9a-f]{64}$/.test(signature)) return false;
-    const expected = hmac(secret, CAPABILITY_PURPOSE, [payload]);
-    if (expected.length !== signature.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) return false;
-    let capability: Capability;
-    try { capability = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Capability; } catch { return false; }
-    if (
-      !exactKeys(capability, ["armSha256", "cardSha256", "expiresAt", "manifestSha256", "nonce", "sourceKey", "tokenId", "tokenSha256"])
-      || typeof capability.nonce !== "string" || !Number.isInteger(capability.expiresAt)
-      || capability.expiresAt < now || capability.expiresAt > now + 120_000
-      || capability.sourceKey !== input.sourceKey || capability.armSha256 !== input.armSha256
-      || capability.tokenId !== input.tokenId || capability.tokenSha256 !== input.tokenSha256
-      || capability.cardSha256 !== input.cardSha256 || capability.manifestSha256 !== capabilityManifest(input)
-      || this.consumed.has(capability.nonce)
-    ) return false;
-    this.consumed.add(capability.nonce);
-    return true;
+  private readonly consumed = new Map<string, number>();
+  consume(coordinatorPublicKeyPem: string | undefined, input: C10SidecarInput, authorization: string | undefined, now = Date.now()): boolean {
+    this.prune(now); if (!coordinatorPublicKeyPem || !authorization) return false; const [payload, signature, extra] = authorization.split(".");
+    if (!payload || !signature || extra || !verify(null, Buffer.from(payload, "utf8"), coordinatorPublicKeyPem, Buffer.from(signature, "base64url"))) return false;
+    try { const value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); if (!exactKeys(value, ["binding", "coordinatorKeyId", "expiresAtMs", "nonce", "protocolVersion", "sourceKey"])) return false; const parsed = parseC10SidecarInput({ capability: value, card: input.card }).capability; if (parsed.coordinatorKeyId !== publicKeyId(coordinatorPublicKeyPem) || parsed.expiresAtMs < now || parsed.expiresAtMs > now + MAX_LIFETIME_MS || canonicalJson(parsed) !== canonicalJson(input.capability) || this.consumed.has(parsed.nonce)) return false; if (this.consumed.size >= MAX_REPLAY_ENTRIES) this.prune(now, true); if (this.consumed.size >= MAX_REPLAY_ENTRIES) return false; this.consumed.set(parsed.nonce, parsed.expiresAtMs); return true; } catch { return false; }
   }
+  size(now = Date.now()): number { this.prune(now); return this.consumed.size; }
+  private prune(now: number, force = false): void { for (const [nonce, expiry] of this.consumed) if (expiry < now || (force && this.consumed.size >= MAX_REPLAY_ENTRIES)) this.consumed.delete(nonce); }
 }
-
-export function signC10Evidence(secret: string, evidence: Record<string, unknown>): string {
-  return hmac(secret, "cre-capacity-c10-browser-evidence-v1", [canonicalJson(evidence)]);
-}
-
-export function verifyC10Evidence(secret: string, evidence: Record<string, unknown>, signature: unknown): boolean {
-  if (typeof signature !== "string" || !/^[0-9a-f]{64}$/.test(signature)) return false;
-  const expected = signC10Evidence(secret, evidence);
-  return expected.length === signature.length && timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
-}
+export function signC10Evidence(sidecarPrivateKeyPem: string, evidence: Record<string, unknown>): string { return sign(null, Buffer.from(canonicalJson(evidence), "utf8"), sidecarPrivateKeyPem).toString("base64url"); }
+export function verifyC10Evidence(sidecarPublicKeyPem: string, evidence: Record<string, unknown>, signature: unknown): boolean { return typeof signature === "string" && verify(null, Buffer.from(canonicalJson(evidence), "utf8"), sidecarPublicKeyPem, Buffer.from(signature, "base64url")); }

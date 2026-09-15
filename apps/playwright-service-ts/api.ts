@@ -1,5 +1,5 @@
 import express, { Request, Response } from "express";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createPublicKey, randomUUID, timingSafeEqual } from "node:crypto";
 import { chromium as stealthChromium } from "playwright-extra";
 import {
   Browser,
@@ -29,6 +29,7 @@ import {
   C10_BROWSER_INTERNAL_PATH,
   C10SidecarCapabilityRegistry,
   parseC10SidecarInput,
+  publicKeyId,
   signC10Evidence,
 } from "./c10_browser_internal";
 import { executeC10BrowserPageFetch } from "./c10_browser_execution";
@@ -62,10 +63,23 @@ const ALLOW_LOCAL_WEBHOOKS =
 const PROXY_SERVER = process.env.PROXY_SERVER || null;
 const PROXY_USERNAME = process.env.PROXY_USERNAME || null;
 const PROXY_PASSWORD = process.env.PROXY_PASSWORD || null;
-const C10_BROWSER_INTERNAL_SECRET = process.env.C10_BROWSER_INTERNAL_SECRET;
+const C10_COORDINATOR_PUBLIC_KEY = process.env.C10_COORDINATOR_PUBLIC_KEY_PEM;
+const C10_SIDECAR_EVIDENCE_PRIVATE_KEY = process.env.C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM;
+const C10_HOST_TRANSPORT_V3_KEY = process.env.PLAYWRIGHT_HOST_TRANSPORT_V3_KEY;
 const C10_BROWSER_INTERNAL_PORT = process.env.C10_BROWSER_INTERNAL_PORT;
 const C10_BROWSER_TEST_LOCAL_TARGETS = process.env.NODE_ENV === "test" && process.env.C10_BROWSER_INTERNAL_ALLOW_TEST_LOCAL_TARGETS === "true";
 const c10Capabilities = new C10SidecarCapabilityRegistry();
+
+function validC10HostTransportKey(value: string | undefined): boolean {
+  if (!C10_HOST_TRANSPORT_V3_KEY || !value) return false;
+  const expected = Buffer.from(C10_HOST_TRANSPORT_V3_KEY, "utf8");
+  const actual = Buffer.from(value, "utf8");
+  return expected.byteLength === actual.byteLength && timingSafeEqual(expected, actual);
+}
+
+const c10V3Enabled = Boolean(
+  C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_KEY && C10_HOST_TRANSPORT_V3_KEY && C10_BROWSER_INTERNAL_PORT,
+);
 
 class InsecureConnectionError extends Error {
   constructor(
@@ -179,6 +193,8 @@ class C10PageLeasePool {
     }
     this.available.add(slot);
   }
+
+  availableCount(): number { return this.available.size; }
 }
 
 const c10PageLeasePool = new C10PageLeasePool();
@@ -701,14 +717,28 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
 });
 
 /**
- * Deliberately absent unless an operator provisions a private C10 secret.
- * This is a sidecar-internal capability, not an apps/api or Firecrawl route.
+ * Deliberately absent unless an operator provisions both asymmetric C10 key
+ * domains and a loopback-only host transport key. This is never an apps/api
+ * or Firecrawl route.
  */
-if (C10_BROWSER_INTERNAL_SECRET) {
+if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_KEY) {
   c10App.get("/health", (_req: Request, res: Response) => {
-    res.status(200).json({ status: "healthy", listener: "loopback" });
+    const health = {
+      protocolVersion: 3,
+      status: "healthy",
+      transport: "docker-loopback-tcp",
+      coordinatorKeyId: publicKeyId(C10_COORDINATOR_PUBLIC_KEY),
+      evidenceKeyId: publicKeyId(createPublicKey(C10_SIDECAR_EVIDENCE_PRIVATE_KEY).export({ type: "spki", format: "pem" }).toString()),
+      activePages: MAX_CONCURRENT_PAGES - c10PageLeasePool.availableCount(),
+      configuredCapacity: MAX_CONCURRENT_PAGES,
+      replayEntries: c10Capabilities.size(),
+    };
+    res.status(200).json({ ...health, healthSignature: signC10Evidence(C10_SIDECAR_EVIDENCE_PRIVATE_KEY, health) });
   });
   c10App.post(C10_BROWSER_INTERNAL_PATH, async (req: Request, res: Response) => {
+    if (!validC10HostTransportKey(req.header("x-firecrawl-host-transport-key") ?? undefined)) {
+      return res.sendStatus(401);
+    }
     let input;
     try {
       input = parseC10SidecarInput(req.body);
@@ -716,7 +746,7 @@ if (C10_BROWSER_INTERNAL_SECRET) {
       return res.status(400).json({ error: "Invalid internal C10 browser request" });
     }
     if (!c10Capabilities.consume(
-      C10_BROWSER_INTERNAL_SECRET,
+      C10_COORDINATOR_PUBLIC_KEY,
       input,
       req.header("x-c10-browser-authorization") ?? undefined,
     )) {
@@ -726,6 +756,7 @@ if (C10_BROWSER_INTERNAL_SECRET) {
 
     const queuedAt = Date.now();
     const deadlineAt = queuedAt + input.card.timeoutMs;
+    const leaseStartMonotonicNs = process.hrtime.bigint().toString();
     const remaining = () => {
       const value = deadlineAt - Date.now();
       if (value < 1) throw new Error("C10 browser hard deadline expired");
@@ -770,7 +801,10 @@ if (C10_BROWSER_INTERNAL_SECRET) {
       const proxyId = PROXY_SERVER
         ? createHash("sha256").update(PROXY_SERVER).digest("hex")
         : null;
+      const leaseEndMonotonicNs = process.hrtime.bigint().toString();
       const evidence = {
+        protocolVersion: 3,
+        binding: input.capability.binding,
         status: browserResponse.status,
         finalUrl: browserResponse.finalUrl,
         redirectCount: browserResponse.redirected || browserResponse.finalUrl !== input.card.url ? 1 : 0,
@@ -780,35 +814,43 @@ if (C10_BROWSER_INTERNAL_SECRET) {
         bodyBase64: browserResponse.bodyBase64,
         jobId: randomUUID(),
         pageLease: lease,
+        leaseStartMonotonicNs,
+        leaseEndMonotonicNs,
+        observedActivePages: MAX_CONCURRENT_PAGES - c10PageLeasePool.availableCount(),
+        configuredCapacity: MAX_CONCURRENT_PAGES,
         queueMs,
         proxy: {
           mode: PROXY_SERVER ? "configured" : "direct",
           proxyId,
           country: process.env.PROXY_COUNTRY || null,
         },
-        engine: "playwright-service",
-        engineAttempts: 1,
-        fallbackDisabled: true,
-        fallbackUsed: false,
+        engineAttempt: { engine: "playwright-service", ordinal: 1, fallbackDisabled: true, fallbackUsed: false },
+        context: { ephemeral: true, storageState: "none", cache: "disabled-cdp-and-fetch-no-store" },
         cacheRead: false, // measured from CDP Network.responseReceived
         cacheWrite: false, // Network.setCacheDisabled succeeded before navigation/fetch
       };
-      return res.json({ ...evidence, evidenceSignature: signC10Evidence(C10_BROWSER_INTERNAL_SECRET, evidence) });
+      return res.json({ ...evidence, evidenceSignature: signC10Evidence(C10_SIDECAR_EVIDENCE_PRIVATE_KEY, evidence) });
     } catch (error) {
       console.error("C10 internal browser execution failed:", error);
       return res.status(502).json({ error: "C10 internal browser execution failed" });
     } finally {
-      // Cleanup shares the original wall-clock budget; it cannot extend a C10 arm.
-      const cleanupBudgetMs = Math.max(1, Math.floor(Math.max(1, deadlineAt - Date.now()) / 2));
-      await cleanupBrowserBatchResources(
-        page ? () => page!.close() : null,
-        requestContext ? () => requestContext!.close() : null,
-        () => {
-          if (lease) c10PageLeasePool.release(lease.slot);
-          if (permitAcquired) pageSemaphore.release();
-        },
-        cleanupBudgetMs,
-      );
+      // The sole wall-clock deadline includes cleanup. Once it is exhausted,
+      // do not grant a grace period or return the permit: capacity is
+      // quarantined until the sidecar is restarted and inspected.
+      const remainingCleanupMs = deadlineAt - Date.now();
+      if (remainingCleanupMs > 0) {
+        await cleanupBrowserBatchResources(
+          page ? () => page!.close() : null,
+          requestContext ? () => requestContext!.close() : null,
+          () => {
+            if (lease) c10PageLeasePool.release(lease.slot);
+            if (permitAcquired) pageSemaphore.release();
+          },
+          remainingCleanupMs,
+        );
+      } else {
+        console.error("C10 v3 deadline exhausted before cleanup; capacity quarantined");
+      }
     }
   });
 }
@@ -1002,17 +1044,23 @@ app.post("/scrape", async (req: Request, res: Response) => {
 });
 
 const start = async () => {
-  if (C10_BROWSER_INTERNAL_SECRET && (!C10_BROWSER_INTERNAL_PORT || !/^[1-9][0-9]{0,4}$/.test(C10_BROWSER_INTERNAL_PORT))) {
-    throw new Error("C10_BROWSER_INTERNAL_PORT is required for the private loopback listener");
+  if ((C10_COORDINATOR_PUBLIC_KEY || C10_SIDECAR_EVIDENCE_PRIVATE_KEY || C10_HOST_TRANSPORT_V3_KEY || C10_BROWSER_INTERNAL_PORT) && !c10V3Enabled) {
+    throw new Error("C10 v3 requires coordinator public key, sidecar evidence private key, host transport key, and port");
+  }
+  if (c10V3Enabled && (!C10_BROWSER_INTERNAL_PORT || !/^[1-9][0-9]{0,4}$/.test(C10_BROWSER_INTERNAL_PORT))) {
+    throw new Error("C10_BROWSER_INTERNAL_PORT is invalid");
   }
   ssrfProxyPort = await startSSRFProxy();
   await initializeBrowser();
   app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
   });
-  if (C10_BROWSER_INTERNAL_SECRET && C10_BROWSER_INTERNAL_PORT) {
-    c10App.listen(Number(C10_BROWSER_INTERNAL_PORT), "127.0.0.1", () => {
-      console.log("C10 private browser listener is running on loopback");
+  if (c10V3Enabled && C10_BROWSER_INTERNAL_PORT) {
+    // Docker publishes this listener only as 127.0.0.1:<host-port>; binding
+    // all interfaces is required for the container port-forwarder, while the
+    // signed capability and host key protect sibling-container access.
+    c10App.listen(Number(C10_BROWSER_INTERNAL_PORT), "0.0.0.0", () => {
+      console.log("C10 v3 browser listener is running behind Docker loopback publication");
     });
   }
 };

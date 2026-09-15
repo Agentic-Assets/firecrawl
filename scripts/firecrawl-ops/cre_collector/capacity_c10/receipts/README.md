@@ -1,4 +1,4 @@
-# C10 private receipt substrate
+# C10 private receipt substrate, protocol v3
 
 This TypeScript package is a sealed evidence substrate, not a collector or an
 executable source registry. It includes source-owned candidate receipt
@@ -24,6 +24,15 @@ event and parsed coordinate. Each append is privately sealed with the parent
 event and projection hashes; member cards must be frozen before execution. POST
 cards require exact canonical JSON, a bounded body hash, and JSON content type.
 
+Protocol v3 replaces the old shared-secret protocol completely. The coordinator
+holds an ephemeral Ed25519 capability private key while the sidecar receives
+only its public key. The sidecar separately holds an ephemeral Ed25519 evidence
+private key while the coordinator receives only its public key. Each lifecycle
+rotates both pairs; capabilities from an older lifecycle fail verification.
+The sidecar's bounded in-memory nonce registry consumes an unexpired nonce
+before page admission and prunes expired entries. It is intentionally not made
+durable because the keys are ephemeral.
+
 Private artifacts contain the request and response evidence under an absolute
 0700 root. They are written through an exclusive no-follow temporary file and
 atomically linked into an immutable 0600 sealed artifact. Public receipt and
@@ -34,6 +43,16 @@ Every public receipt binds plan, cohort, policy, source, arm, and implementation
 SHA-256 values supplied by the canonical C10 coordinator. This package cannot
 create a plan, acquire a lock, execute an arm, settle, roll back, quarantine,
 or activate a source.
+
+The only supported host-to-sidecar transport is the opt-in
+`docker-compose.c10.yaml` overlay. Docker/OrbStack publishes its C10 listener
+on `127.0.0.1` only; no Unix socket is mounted because the coordinator lock and
+private receipt root must remain host-owned. A caller must prove the rendered
+loopback port, hold the canonical `SharedLock`, verify Linux
+`PrivateReceiptStore` support, and verify signed v3 health before execution.
+The sidecar signs every evidence record with lease monotonic start/end values,
+active/capacity observations, one exact engine attempt, ephemeral context/cache
+semantics, and plan/cohort/card/manifest/session/arm/profile bindings.
 
 `inventory.ts` contains source-local candidates for all eight
 authoritative-inventory sources. `strict_detail/` contains Batch A candidates
