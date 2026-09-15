@@ -2053,6 +2053,120 @@ def test_review_approval_nonce_has_canonical_durable_one_use_marker(
         )
 
 
+def test_review_approval_marker_file_fsync_failure_retains_nonce_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An uncertain marker is evidence, never an opportunity to reuse a nonce."""
+    selected, digest = profile()
+    receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
+    approval = json.loads(
+        write_approval(
+            tmp_path / "approval" / "review.json", receipt, digest
+        ).read_text()
+    )
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    marker = (
+        tmp_path
+        / "out"
+        / ".capacity-review-consumption"
+        / f"{runtime._hash(approval['nonce'])}.json"
+    )
+    real_fsync = runtime.os.fsync
+
+    def fail_marker_file_fsync(descriptor: int) -> None:
+        if stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError("simulated marker fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(runtime.os, "fsync", fail_marker_file_fsync)
+    with pytest.raises(runtime.RuntimeAdmissionError, match="durability is unknown"):
+        runtime._record_review_approval_consumption(
+            lock_path, approval, receipt, digest
+        )
+    assert marker.is_file()
+    with pytest.raises(runtime.RuntimeAdmissionError, match="already consumed"):
+        runtime._record_review_approval_consumption(
+            lock_path, approval, receipt, digest
+        )
+
+
+def test_review_approval_directory_fsync_failure_retains_nonce_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory durability failure must not leak raw OSError or reuse a nonce."""
+    selected, digest = profile()
+    receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
+    approval = json.loads(
+        write_approval(
+            tmp_path / "approval" / "review.json", receipt, digest
+        ).read_text()
+    )
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    root = tmp_path / "out" / ".capacity-review-consumption"
+    marker = root / f"{runtime._hash(approval['nonce'])}.json"
+    real_fsync_directory = runtime._fsync_directory
+
+    def fail_marker_parent_fsync(path: Path) -> None:
+        if path == root:
+            raise OSError("simulated marker parent fsync failure")
+        real_fsync_directory(path)
+
+    monkeypatch.setattr(runtime, "_fsync_directory", fail_marker_parent_fsync)
+    with pytest.raises(
+        runtime.RuntimeAdmissionError, match="could not be made durable"
+    ):
+        runtime._record_review_approval_consumption(
+            lock_path, approval, receipt, digest
+        )
+    assert marker.is_file()
+    with pytest.raises(runtime.RuntimeAdmissionError, match="already consumed"):
+        runtime._record_review_approval_consumption(
+            lock_path, approval, receipt, digest
+        )
+
+
+def test_review_approval_substituted_root_never_deletes_foreign_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cleanup after a root substitution retains both uncertain marker paths."""
+    selected, digest = profile()
+    receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
+    approval = json.loads(
+        write_approval(
+            tmp_path / "approval" / "review.json", receipt, digest
+        ).read_text()
+    )
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    root = tmp_path / "out" / ".capacity-review-consumption"
+    marker_name = f"{runtime._hash(approval['nonce'])}.json"
+    original_root = tmp_path / "out" / ".consumption-original"
+    foreign_marker = root / marker_name
+    real_fsync_directory = runtime._fsync_directory
+    substituted = False
+
+    def substitute_root_during_fsync(path: Path) -> None:
+        nonlocal substituted
+        if path == root and not substituted:
+            substituted = True
+            root.rename(original_root)
+            root.mkdir(mode=0o700)
+            foreign_marker.write_text("foreign", encoding="utf-8")
+            foreign_marker.chmod(0o600)
+            raise runtime.RuntimeAdmissionError("directory changed before durability")
+        real_fsync_directory(path)
+
+    monkeypatch.setattr(runtime, "_fsync_directory", substitute_root_during_fsync)
+    with pytest.raises(
+        runtime.RuntimeAdmissionError, match="could not be made durable"
+    ):
+        runtime._record_review_approval_consumption(
+            lock_path, approval, receipt, digest
+        )
+
+    assert (original_root / marker_name).is_file()
+    assert foreign_marker.read_text(encoding="utf-8") == "foreign"
+
+
 def test_review_benchmark_grant_is_exact_private_and_exclusive(tmp_path: Path) -> None:
     selected, digest = profile()
     receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())

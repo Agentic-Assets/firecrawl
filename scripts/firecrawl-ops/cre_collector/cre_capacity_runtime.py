@@ -2306,10 +2306,15 @@ def _record_review_approval_consumption(
     if canonical_lock.name != ".cre.lock" or canonical_lock.parent.name != "daily":
         raise RuntimeAdmissionError("canonical approval consumption path is invalid")
     consumption_root = canonical_lock.parent.parent / ".capacity-review-consumption"
-    consumption_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
+        consumption_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         root_stat = consumption_root.lstat()
+        _fsync_directory(consumption_root.parent)
     except OSError as exc:
+        raise RuntimeAdmissionError(
+            "canonical approval consumption directory is unsafe"
+        ) from exc
+    except RuntimeAdmissionError as exc:
         raise RuntimeAdmissionError(
             "canonical approval consumption directory is unsafe"
         ) from exc
@@ -2317,11 +2322,18 @@ def _record_review_approval_consumption(
         not stat.S_ISDIR(root_stat.st_mode)
         or root_stat.st_uid != operator_uid
         or stat.S_IMODE(root_stat.st_mode) != 0o700
+        or root_stat.st_nlink < 2
     ):
         raise RuntimeAdmissionError(
             "canonical approval consumption directory is unsafe"
         )
-    _fsync_directory(consumption_root.parent)
+    root_identity = (
+        root_stat.st_dev,
+        root_stat.st_ino,
+        stat.S_IMODE(root_stat.st_mode),
+        root_stat.st_uid,
+    )
+    root_min_nlink = root_stat.st_nlink
     nonce_sha256 = _hash(approval["nonce"])
     marker = consumption_root / f"{nonce_sha256}.json"
     payload = (
@@ -2363,6 +2375,13 @@ def _record_review_approval_consumption(
             or stat.S_IMODE(opened.st_mode) != 0o600
         ):
             raise RuntimeAdmissionError("review approval consumption marker is unsafe")
+        marker_identity = (
+            opened.st_dev,
+            opened.st_ino,
+            stat.S_IMODE(opened.st_mode),
+            opened.st_uid,
+            opened.st_nlink,
+        )
         remaining = memoryview(payload)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -2372,23 +2391,47 @@ def _record_review_approval_consumption(
                 )
             remaining = remaining[written:]
         os.fsync(descriptor)
-    except BaseException:
-        try:
-            marker.unlink()
-        except FileNotFoundError:
-            pass
-        raise
+    except OSError as exc:
+        # The nonce marker may already be durable even if its file fsync reports
+        # failure.  Never pathname-unlink an uncertain marker: a same-UID
+        # replacement could otherwise be deleted.  Retention makes the nonce
+        # fail closed until an operator investigates the exact evidence.
+        raise RuntimeAdmissionError(
+            "review approval consumption marker durability is unknown; "
+            "approval remains fail-closed"
+        ) from exc
     finally:
         os.close(descriptor)
     try:
         _fsync_directory(consumption_root)
-    except RuntimeAdmissionError as exc:
-        try:
-            marker.unlink()
-        except FileNotFoundError:
-            pass
+        confirmed_root = consumption_root.lstat()
+        confirmed_marker = marker.lstat()
+        if (
+            (
+                confirmed_root.st_dev,
+                confirmed_root.st_ino,
+                stat.S_IMODE(confirmed_root.st_mode),
+                confirmed_root.st_uid,
+            )
+            != root_identity
+            or confirmed_root.st_nlink < root_min_nlink
+            or (
+                confirmed_marker.st_dev,
+                confirmed_marker.st_ino,
+                stat.S_IMODE(confirmed_marker.st_mode),
+                confirmed_marker.st_uid,
+                confirmed_marker.st_nlink,
+            )
+            != marker_identity
+        ):
+            raise RuntimeAdmissionError("review approval consumption evidence changed")
+    except (OSError, RuntimeAdmissionError) as exc:
+        # Do not clean up by pathname after a strict directory fsync rejects a
+        # substitution.  The original marker, a replacement marker, or both
+        # may be present; preserving each is the only fail-closed outcome.
         raise RuntimeAdmissionError(
-            "review approval consumption could not be made durable"
+            "review approval consumption could not be made durable; "
+            "approval remains fail-closed"
         ) from exc
     return marker
 
