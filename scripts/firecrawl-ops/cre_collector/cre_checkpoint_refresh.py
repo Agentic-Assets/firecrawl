@@ -746,17 +746,46 @@ class SharedLock:
     authority_fd: int = field(default=-1, init=False)
     authority_identity: tuple[int, int] | None = field(default=None, init=False)
     authority_token: str | None = field(default=None, init=False)
+    authority_generation: str | None = field(default=None, init=False)
+    authority_initializing: bool = field(default=False, init=False)
 
     @property
     def authority_path(self) -> Path:
         return self.path.with_name(f"{self.path.name}{LOCK_AUTHORITY_SUFFIX}")
 
-    def _authority_is_current(self) -> bool:
+    @staticmethod
+    def _authority_fields(descriptor: int) -> tuple[int, str, str]:
+        observed = os.fstat(descriptor)
+        if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+            raise LockHeldError("CRE lock authority is unsafe")
+        raw = os.pread(descriptor, 512, 0)
+        if len(raw) >= 512:
+            raise LockHeldError("CRE lock authority is oversized")
+        try:
+            parts = raw.decode("utf-8").strip().split()
+        except UnicodeDecodeError as exc:
+            raise LockHeldError("CRE lock authority is malformed") from exc
+        if len(parts) != 3:
+            raise LockHeldError("CRE lock authority is malformed")
+        pid_raw, token, generation = parts
+        try:
+            pid = int(pid_raw)
+        except ValueError as exc:
+            raise LockHeldError("CRE lock authority has an invalid owner") from exc
         if (
-            self.authority_fd < 0
-            or self.authority_identity is None
-            or self.authority_token is None
+            pid <= 0
+            or re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) is None
+            or re.fullmatch(
+                rf"(?:{re.escape(OPERATOR_RECOVERY_LEASE_PREFIX)})?[A-Za-z0-9_-]{{32,128}}",
+                generation,
+            )
+            is None
         ):
+            raise LockHeldError("CRE lock authority is malformed")
+        return pid, token, generation
+
+    def _authority_fd_matches_path(self) -> bool:
+        if self.authority_fd < 0 or self.authority_identity is None:
             return False
         try:
             opened = os.fstat(self.authority_fd)
@@ -768,18 +797,108 @@ class SharedLock:
                 or (named.st_dev, named.st_ino) != self.authority_identity
             ):
                 return False
-            return (
-                os.pread(self.authority_fd, 512, 0).decode("utf-8").split()[-1]
-                == self.authority_token
-            )
-        except (OSError, UnicodeDecodeError, IndexError):
+            return True
+        except OSError:
             return False
+
+    def _authority_is_current(self) -> bool:
+        if (
+            not self._authority_fd_matches_path()
+            or self.authority_token is None
+            or self.authority_generation is None
+            or self.authority_initializing
+        ):
+            return False
+        try:
+            owner, token, generation = self._authority_fields(self.authority_fd)
+        except (LockHeldError, OSError):
+            return False
+        return (
+            owner == os.getpid()
+            and token == self.authority_token
+            and generation == self.authority_generation
+        )
 
     def _require_authority(self) -> None:
         if not self._authority_is_current():
             raise LockHeldError("CRE lock authority changed before mutation")
 
-    def _claim_authority(self) -> None:
+    def _authority_payload(self) -> bytes:
+        if self.authority_token is None or self.authority_generation is None:
+            raise LockHeldError("CRE lock authority is not initialized")
+        return f"{os.getpid()} {self.authority_token} {self.authority_generation}\n".encode()
+
+    def _write_owned_authority(self) -> None:
+        if not self._authority_fd_matches_path():
+            raise LockHeldError("CRE lock authority changed before initialization")
+        os.ftruncate(self.authority_fd, 0)
+        os.lseek(self.authority_fd, 0, os.SEEK_SET)
+        payload = memoryview(self._authority_payload())
+        while payload:
+            written = os.write(self.authority_fd, payload)
+            if written <= 0:
+                raise OSError("CRE lock authority write was short")
+            payload = payload[written:]
+        os.fsync(self.authority_fd)
+        self.authority_initializing = False
+        self._require_authority()
+
+    @staticmethod
+    def _path_identity(path: Path) -> tuple[int, int]:
+        observed = path.lstat()
+        if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+            raise LockHeldError("CRE lock authority is unsafe")
+        return observed.st_dev, observed.st_ino
+
+    def _unlink_verified_authority(self) -> None:
+        if not self._authority_fd_matches_path():
+            raise LockHeldError("CRE lock authority changed before reclaim")
+        os.unlink(self.authority_path)
+
+    def _reclaim_verified_stale_authority(self) -> None:
+        descriptor = os.open(self.authority_path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(descriptor)
+            identity = (opened.st_dev, opened.st_ino)
+            if self._path_identity(self.authority_path) != identity:
+                raise LockHeldError("CRE lock authority changed before reclaim")
+            owner, _token, generation = self._authority_fields(descriptor)
+            if _lock_interlocked(self.path):
+                raise LockHeldError(
+                    f"CRE benchmark interlock requires operator recovery: {self.path}"
+                )
+            if _lock_requires_operator_recovery(self.path):
+                raise LockHeldError("CRE lock authority requires operator recovery")
+            directory_owner = _lock_owner(self.path)
+            directory_lease = _lock_lease(self.path)
+            if directory_owner is None:
+                raise LockHeldError("CRE lock is held (owner is starting)")
+            if _pid_alive(directory_owner):
+                raise LockHeldError(
+                    f"CRE lock is held (live owner pid {directory_owner})"
+                )
+            if directory_owner != owner or directory_lease != generation:
+                raise LockHeldError(
+                    "CRE lock authority is not a verified stale generation"
+                )
+            self.authority_fd = descriptor
+            self.authority_identity = identity
+            self.authority_token = _token
+            self.authority_generation = generation
+            descriptor = -1
+            self._unlink_verified_authority()
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if self.authority_fd >= 0:
+                os.close(self.authority_fd)
+                self.authority_fd = -1
+            self.authority_identity = None
+            self.authority_token = None
+            self.authority_generation = None
+            self.authority_initializing = False
+
+    def _claim_authority(self, generation: str) -> None:
         token = secrets.token_urlsafe(32)
         try:
             descriptor = os.open(
@@ -788,50 +907,39 @@ class SharedLock:
                 0o600,
             )
         except FileExistsError as exc:
-            if _lock_requires_operator_recovery(self.path):
-                raise LockHeldError(
-                    f"CRE lock requires operator recovery: {self.path}"
-                ) from exc
-            owner = _lock_owner(self.path)
-            if owner is None or _pid_alive(owner):
-                detail = (
-                    "owner is starting" if owner is None else f"live owner pid {owner}"
-                )
-                raise LockHeldError(
-                    f"CRE lock is held ({detail}): {self.path}"
-                ) from exc
             try:
-                self.authority_path.unlink()
-            except OSError as unlink_error:
-                raise LockHeldError(
-                    f"CRE stale lock authority cannot be reclaimed: {self.authority_path}"
-                ) from unlink_error
-            return self._claim_authority()
+                self._reclaim_verified_stale_authority()
+            except LockHeldError:
+                raise
+            return self._claim_authority(generation)
         try:
-            os.fchmod(descriptor, 0o600)
-            payload = f"{os.getpid()} {token}\n".encode("utf-8")
-            os.write(descriptor, payload)
-            os.fsync(descriptor)
             observed = os.fstat(descriptor)
             self.authority_fd = descriptor
             self.authority_identity = (observed.st_dev, observed.st_ino)
             self.authority_token = token
+            self.authority_generation = generation
+            self.authority_initializing = True
             descriptor = -1
-            self._require_authority()
+            os.fchmod(self.authority_fd, 0o600)
+            self._write_owned_authority()
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
 
     def _release_authority(self) -> None:
         try:
-            if self._authority_is_current():
-                os.unlink(self.authority_path)
+            if self.authority_fd >= 0 and self.authority_identity is not None:
+                named = self.authority_path.lstat()
+                if (named.st_dev, named.st_ino) == self.authority_identity:
+                    os.unlink(self.authority_path)
         finally:
             if self.authority_fd >= 0:
                 os.close(self.authority_fd)
             self.authority_fd = -1
             self.authority_identity = None
             self.authority_token = None
+            self.authority_generation = None
+            self.authority_initializing = False
 
     def _record_created_directory(self) -> None:
         """Bind partial recovery to this just-created directory before I/O."""
@@ -850,16 +958,24 @@ class SharedLock:
 
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._claim_authority()
+        lease_token = secrets.token_urlsafe(32)
+        if self.recovery_required:
+            lease_token = f"{OPERATOR_RECOVERY_LEASE_PREFIX}{lease_token}"
+        self.lease_token = lease_token
         try:
+            self._claim_authority(lease_token)
             self._acquire_with_authority()
         except BaseException:
             if not (
                 self.recovery_required
                 and self.preserve_recovery_on_acquire_failure
-                and self.partial_directory_identity is not None
+                and (
+                    self.partial_directory_identity is not None
+                    or self.authority_initializing
+                )
             ):
                 self._release_authority()
+                self.lease_token = None
             raise
 
     def _acquire_with_authority(self) -> None:
@@ -906,10 +1022,9 @@ class SharedLock:
                 self._record_created_directory()
             finally:
                 shutil.rmtree(reclaim, ignore_errors=True)
-        lease_token = secrets.token_urlsafe(32)
-        if self.recovery_required:
-            lease_token = f"{OPERATOR_RECOVERY_LEASE_PREFIX}{lease_token}"
-        self.lease_token = lease_token
+        if self.lease_token is None:
+            raise LockHeldError("CRE lock has no authority-bound lease")
+        lease_token = self.lease_token
         try:
             atomic_write_text(self.path / "lease", f"{lease_token}\n")
             atomic_write_text(
@@ -1123,8 +1238,16 @@ class SharedLock:
     def recover_partial_acquire(self) -> None:
         """Finish only this instance's exact, newly-created recovery lock."""
         identity = self.partial_directory_identity
-        if not self.recovery_required or identity is None or self.held:
+        if not self.recovery_required or self.held:
             raise LockHeldError("CRE partial recovery lock is not owned")
+        if identity is None:
+            if not self.authority_initializing:
+                raise LockHeldError("CRE partial recovery lock is not owned")
+            self._write_owned_authority()
+            self._acquire_with_authority()
+            if not self.held:
+                raise LockHeldError("CRE authority recovery did not acquire the lock")
+            return
         self._require_authority()
         directory_fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
@@ -1152,9 +1275,13 @@ class SharedLock:
                 temporary_entries.append(name)
             lease = self._owned_lease(directory_fd) if "lease" in entries else None
             if lease is None:
-                lease = f"{OPERATOR_RECOVERY_LEASE_PREFIX}{secrets.token_urlsafe(32)}"
+                lease = self.authority_generation
+                if lease is None:
+                    raise LockHeldError("CRE partial recovery authority is malformed")
                 self._replace_owned_lease(directory_fd, lease)
-            if not lease.startswith(OPERATOR_RECOVERY_LEASE_PREFIX):
+            if lease != self.authority_generation or not lease.startswith(
+                OPERATOR_RECOVERY_LEASE_PREFIX
+            ):
                 raise LockHeldError("CRE partial recovery lease is not recoverable")
             for name in temporary_entries:
                 os.unlink(name, dir_fd=directory_fd)
@@ -1188,6 +1315,16 @@ class SharedLock:
         finally:
             os.close(directory_fd)
 
+    def _update_authority_generation(self, generation: str) -> None:
+        self._require_authority()
+        original = self.authority_generation
+        self.authority_generation = generation
+        try:
+            self._write_owned_authority()
+        except BaseException:
+            self.authority_generation = original
+            raise
+
     def clear_recovery_requirement(self) -> None:
         """Durably make a successfully restored candidate lease reclaimable."""
         if not self.recovery_required:
@@ -1202,6 +1339,7 @@ class SharedLock:
                 raise LockHeldError(
                     "CRE lock directory changed while clearing recovery"
                 )
+            self._update_authority_generation(replacement)
             self.lease_token = replacement
             self.recovery_required = False
         finally:

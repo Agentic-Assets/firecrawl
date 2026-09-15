@@ -2668,6 +2668,44 @@ def test_candidate_pair_partial_lease_failure_recovers_and_rolls_back(
     assert not lock_path.exists()
 
 
+@pytest.mark.parametrize("operation", ["write", "fsync"])
+def test_candidate_authority_initialization_failure_recovers_under_owned_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    original_write = refresh.os.write
+    original_fsync = refresh.os.fsync
+    failed = False
+    events: list[str] = []
+
+    def fail_once_write(descriptor, payload):
+        nonlocal failed
+        if operation == "write" and not failed:
+            failed = True
+            raise OSError("authority write failed")
+        return original_write(descriptor, payload)
+
+    def fail_once_fsync(descriptor):
+        nonlocal failed
+        if operation == "fsync" and not failed:
+            failed = True
+            raise OSError("authority fsync failed")
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(refresh.os, "write", fail_once_write)
+    monkeypatch.setattr(refresh.os, "fsync", fail_once_fsync)
+    with benchmark._candidate_rollback_lock(lock_path) as (held_lock, initial_error):
+        assert isinstance(initial_error, OSError)
+        descriptor = held_lock._owned_directory_fd()
+        os.close(descriptor)
+        events.append("rollback")
+        held_lock.clear_recovery_requirement()
+
+    assert events == ["rollback"]
+    assert not lock_path.exists()
+    assert not lock_path.with_name(f"{lock_path.name}.authority").exists()
+
+
 def test_candidate_pair_stale_reclaim_lease_failure_recovers_and_rolls_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

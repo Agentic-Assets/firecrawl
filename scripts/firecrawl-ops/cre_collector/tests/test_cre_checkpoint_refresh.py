@@ -2110,6 +2110,12 @@ def test_lock_retain_on_exit_preserves_owned_lock_but_allows_stale_reclaim(tmp_p
         refresh.SharedLock(lock.path).acquire()
 
     (lock.path / "pid").write_text("99999999 1\n", encoding="utf-8")
+    assert lock.authority_token is not None
+    assert lock.authority_generation is not None
+    lock.authority_path.write_text(
+        f"99999999 {lock.authority_token} {lock.authority_generation}\n",
+        encoding="utf-8",
+    )
     reclaimed = refresh.SharedLock(lock.path)
     reclaimed.acquire()
     reclaimed.release()
@@ -2497,6 +2503,146 @@ def test_authority_replacement_blocks_directory_mutation_and_release(tmp_path):
     assert lock.authority_path.read_text(encoding="utf-8") == "replacement authority\n"
     assert lock.path.is_dir()
     assert displaced.is_file()
+
+
+def _stale_authority(lock_dir, *, owner=99999999, generation=None, token=None):
+    generation = generation or "g" * 32
+    token = token or "t" * 32
+    (lock_dir / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_dir / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    authority = lock_dir.with_name(f"{lock_dir.name}{refresh.LOCK_AUTHORITY_SUFFIX}")
+    authority.write_text(f"{owner} {token} {generation}\n", encoding="utf-8")
+    return authority
+
+
+def test_verified_same_generation_stale_authority_is_reclaimed(tmp_path):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.mkdir()
+    authority = _stale_authority(lock_dir)
+
+    lock = refresh.SharedLock(lock_dir)
+    lock.acquire()
+    assert lock.held
+    assert lock.authority_generation == lock.lease_token
+    assert authority.is_file()
+    lock.release()
+    assert not lock_dir.exists()
+    assert not authority.exists()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "empty",
+        "malformed",
+        "token-mismatch",
+        "generation-mismatch",
+        "owner-mismatch",
+        "live-owner",
+        "recovery-lease",
+        "active-marker",
+        "quarantine-marker",
+    ],
+)
+def test_unverified_stale_authority_is_left_untouched(tmp_path, case):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.mkdir()
+    generation = "g" * 32
+    owner = 99999999
+    authority = _stale_authority(lock_dir, owner=owner, generation=generation)
+    if case == "empty":
+        authority.write_text("", encoding="utf-8")
+    elif case == "malformed":
+        authority.write_text("not an authority\n", encoding="utf-8")
+    elif case == "token-mismatch":
+        authority.write_text(f"{owner} short {generation}\n", encoding="utf-8")
+    elif case == "generation-mismatch":
+        authority.write_text(f"{owner} {'t' * 32} {'x' * 32}\n", encoding="utf-8")
+    elif case == "owner-mismatch":
+        authority.write_text(f"12345678 {'t' * 32} {generation}\n", encoding="utf-8")
+    elif case == "live-owner":
+        _stale_authority(lock_dir, owner=os.getpid(), generation=generation)
+    elif case == "recovery-lease":
+        recovery = f"{refresh.OPERATOR_RECOVERY_LEASE_PREFIX}{'g' * 32}"
+        _stale_authority(lock_dir, generation=recovery)
+    elif case == "active-marker":
+        (lock_dir / refresh.BENCHMARK_ACTIVE_MARKER).write_text("stop\n")
+    elif case == "quarantine-marker":
+        (lock_dir / refresh.BENCHMARK_QUARANTINE_MARKER).write_text("stop\n")
+    original_authority = authority.read_bytes()
+    original_lease = (lock_dir / "lease").read_bytes()
+
+    with pytest.raises(refresh.LockHeldError):
+        refresh.SharedLock(lock_dir).acquire()
+
+    assert authority.read_bytes() == original_authority
+    assert (lock_dir / "lease").read_bytes() == original_lease
+
+
+def test_stale_authority_unlink_replacement_race_leaves_replacement_untouched(
+    tmp_path, monkeypatch
+):
+    lock_dir = tmp_path / ".cre.lock"
+    lock_dir.mkdir()
+    authority = _stale_authority(lock_dir)
+    replacement = b"foreign authority\n"
+    displaced = tmp_path / ".cre.lock.authority.displaced"
+    lock = refresh.SharedLock(lock_dir)
+
+    def replace_before_unlink():
+        authority.rename(displaced)
+        authority.write_bytes(replacement)
+        return False
+
+    monkeypatch.setattr(lock, "_authority_fd_matches_path", replace_before_unlink)
+    with pytest.raises(refresh.LockHeldError, match="authority changed"):
+        lock.acquire()
+
+    assert authority.read_bytes() == replacement
+    assert displaced.is_file()
+    assert (lock_dir / "lease").read_text(encoding="utf-8") == "g" * 32 + "\n"
+
+
+@pytest.mark.parametrize("operation", ["write", "fsync"])
+def test_authority_initialization_failure_recovers_same_process(
+    tmp_path, monkeypatch, operation
+):
+    lock = refresh.SharedLock(
+        tmp_path / ".cre.lock",
+        recovery_required=True,
+        preserve_recovery_on_acquire_failure=True,
+    )
+    original_write = refresh.os.write
+    original_fsync = refresh.os.fsync
+    failed = False
+
+    def fail_once_write(descriptor, payload):
+        nonlocal failed
+        if operation == "write" and not failed:
+            failed = True
+            raise OSError("authority write failed")
+        return original_write(descriptor, payload)
+
+    def fail_once_fsync(descriptor):
+        nonlocal failed
+        if operation == "fsync" and not failed:
+            failed = True
+            raise OSError("authority fsync failed")
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(refresh.os, "write", fail_once_write)
+    monkeypatch.setattr(refresh.os, "fsync", fail_once_fsync)
+    with pytest.raises(OSError, match=f"authority {operation} failed"):
+        lock.acquire()
+
+    assert lock.authority_fd >= 0
+    assert lock.authority_initializing
+    lock.recover_partial_acquire()
+    assert lock.held
+    lock.clear_recovery_requirement()
+    lock.release()
+    assert not lock.path.exists()
+    assert not lock.authority_path.exists()
 
 
 @pytest.mark.parametrize("operation", ["arm", "disarm"])
