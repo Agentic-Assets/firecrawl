@@ -590,27 +590,27 @@ test("avisonYoungBaseListing emits availableSf / minDivisibleSf / maxDivisibleSf
   assert.equal(listingB.maxDivisibleSf, 127231);
 });
 
-test("avisonYoungBaseListing emits leaseRateMin/Max for normal rates and suppresses anomalous $7500/SF/YR rate", () => {
+test("avisonYoungBaseListing preserves unresolved currency at every magnitude", () => {
   const fixtures = loadFixture();
 
   // Row 17808: $18/SF/YR -> leaseRateMin=18; leaseRateMax pruned (null -> absent key)
   const rowA = fixtures.find((f) => f.external_id === "17808")!.rawSharpLaunch;
   const listingA = avisonYoungBaseListing(rowA, emptyTeam());
-  assert.equal(listingA.leaseRateMin, 18);
+  assert.equal(listingA.leaseRateMin, undefined);
   // prune() drops null values, so leaseRateMax is absent (undefined) when there is no range high
   assert.equal(listingA.leaseRateMax, undefined, "no range high -> prune drops leaseRateMax");
 
   // Row 17952: $4.95/SF/YR (same min and max in feed) -> leaseRateMin=4.95, leaseRateMax absent
   const rowB = fixtures.find((f) => f.external_id === "17952")!.rawSharpLaunch;
   const listingB = avisonYoungBaseListing(rowB, emptyTeam());
-  assert.equal(listingB.leaseRateMin, 4.95);
+  assert.equal(listingB.leaseRateMin, undefined);
   assert.equal(listingB.leaseRateMax, undefined, "identical min==max -> no range -> leaseRateMax absent");
 
-  // Row 18150: $7500/SF/YR anomaly -> MUST be rejected (>500 $/SF/yr guard) -> both absent after prune
+  // Row 18150 also lacks an explicit ISO currency.
   const rowC = fixtures.find((f) => f.external_id === "18150")!.rawSharpLaunch;
   const listingC = avisonYoungBaseListing(rowC, emptyTeam());
-  assert.equal(listingC.leaseRateMin, undefined, "AY $7500/SF/YR anomaly must be rejected by >500 guard");
-  assert.equal(listingC.leaseRateMax, undefined, "AY $7500/SF/YR anomaly must be rejected by >500 guard");
+  assert.equal(listingC.leaseRateMin, undefined, "Currency is unresolved");
+  assert.equal(listingC.leaseRateMax, undefined, "Currency is unresolved");
 });
 
 test("avisonYoungBaseListing emits submarket from rawSharpLaunch.submarket", () => {

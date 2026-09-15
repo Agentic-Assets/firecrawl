@@ -122,7 +122,7 @@ def test_marcus_specifications_scalar_lift():
     assert cols["size_sf"] == 10815.0                      # 'Rentable SF'
     assert cols["sale_price_per_sf"] == 272.07             # 'Price/Gross SF' '$272.07'
     assert cols["lease_rate_type"] == "nnn"                # 'Triple Net (NNN)'
-    assert cols["lease_rate_min"] == 23.40                 # 'Rent Per Square Feet' '$23.40'
+    assert "lease_rate_min" not in cols  # No explicit currency or period.
     assert cols["tenant_name"] == "JenCare Senior Medical Center"
     assert cols["guarantor"] == "Subsidiary of a Corporation"
     assert cols["lease_years_remaining"] == 1.3
@@ -156,8 +156,8 @@ def test_avison_availability_and_submarket():
     cols, _ = by["17952"]                                  # range availability
     assert cols["min_divisible_sf"] == 52435.0
     assert cols["max_divisible_sf"] == 127231.0
-    assert cols["lease_rate_min"] == 4.95
-    assert cols["lease_rate_max"] == 4.95
+    assert "lease_rate_min" not in cols
+    assert "lease_rate_max" not in cols
     assert cols["submarket"] == "Earth City"
 
 
@@ -254,8 +254,8 @@ def test_transwestern_lease_availability_aggregation():
     assert cols["min_divisible_sf"] == 3036.0
     assert cols["max_divisible_sf"] == 3122.0
     assert cols["available_sf"] == 3036.0 + 3122.0         # sum over non-sale rows
-    assert cols["lease_rate_min"] == 11.75
-    assert cols["lease_rate_max"] == 11.75
+    assert "lease_rate_min" not in cols
+    assert "lease_rate_max" not in cols
 
 
 def test_transwestern_land_area_acres_converts():
@@ -298,7 +298,7 @@ def test_cushman_annual_token_rejected_but_per_sf_kept():
     assert "lease_rate_min" not in annual_cols
     # '4.50/SF USD' -> trusted per-SF value.
     psf_cols, psf_extra = by["fc8ab88c3bbe4cb893135aa41e3dbdec"]
-    assert psf_cols["lease_rate_min"] == 4.5
+    assert "lease_rate_min" not in psf_cols  # Missing period.
     assert psf_extra.get("is_investment_property") is True
 
 
@@ -339,7 +339,7 @@ def test_svn_nnn_lease_rate():
         if o.get("_source") == "svn":
             by[o["id"]] = bf.derive_columns("svn", raw_of(o))
     cols, _ = by["1933292"]                                # '$35 SF/yr (NNN)'
-    assert cols["lease_rate_min"] == 35.0
+    assert "lease_rate_min" not in cols  # Dollar symbol is not an ISO currency.
     assert cols["lease_rate_type"] == "nnn"
 
 
@@ -360,7 +360,7 @@ def test_nai_pound_label_treated_as_usd():
     assert sale_extra.get("listing_office") == "NAI Capital Commercial"
     # Lease: per-SF annual price + sizeRange divisibility.
     lease_cols, _ = by[1600383]
-    assert lease_cols["lease_rate_min"] == 27.0
+    assert "lease_rate_min" not in lease_cols
     assert lease_cols["min_divisible_sf"] == 1500.0
     assert lease_cols["max_divisible_sf"] == 12705.0
 

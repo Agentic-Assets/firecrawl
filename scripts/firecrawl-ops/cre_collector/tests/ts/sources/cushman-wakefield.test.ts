@@ -934,15 +934,15 @@ test("parseLeaseRate: per-SF form '4.50/SF USD' is parsed to a usable min", () =
   // From real Cushman data: '4.50/SF USD' has a /SF signal but no $ prefix.
   // The parser uses Strategy 4 (single bare number) after detecting hasPerSfSignal.
   const result = parseLeaseRate("4.50/SF USD");
-  assert.equal(result.min, 4.5, "per-SF bare number must be extracted as min");
+  assert.equal(result.min, null, "Missing period stays unresolved");
   assert.equal(result.max, null);
   assert.equal(result.type, null);
 });
 
 test("parseLeaseRate: range per-SF form '16-18/SF USD' yields min=16, max=18", () => {
   const result = parseLeaseRate("16-18/SF USD");
-  assert.equal(result.min, 16);
-  assert.equal(result.max, 18);
+  assert.equal(result.min, null);
+  assert.equal(result.max, null);
   assert.equal(result.type, null);
 });
 
@@ -955,7 +955,7 @@ test("parseLeaseRate: 'Contact us for pricing' yields all-null result without th
 
 test("parseLeaseRate: '$24.00/SF/YR, FSG' yields full_service type", () => {
   const result = parseLeaseRate("$24.00/SF/YR, FSG");
-  assert.equal(result.min, 24);
+  assert.equal(result.min, null);
   assert.equal(result.type, "full_service");
 });
 

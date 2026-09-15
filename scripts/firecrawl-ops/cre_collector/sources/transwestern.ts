@@ -311,7 +311,7 @@ export interface TranswesternScalars {
  *   (< LAND_AREA_ACRES_THRESHOLD), else null (DQ guard: 29,185 is plainly SF, not acres).
  * - minDivisibleSf/maxDivisibleSf: min/max over availability[].size (comma-stripped numeric).
  * - availableSf: sum of availability[].size where type does NOT contain 'sale'.
- * - leaseRateMin/Max: min/max over availability[].rate where type NOT sale AND parsed $/SF < 1000.
+ * - leaseRateMin/Max: supported USD/SF/year evidence from non-sale availability.
  * - leaseRateType: first matching vocabulary token across all availability[].raw[] strings
  *   (vocabulary-matched, not hardcoded by index).
  * - canonicalUrl: the listing url field.
@@ -435,10 +435,10 @@ export function liftTranswesternScalars(
       const rawRate = clean(avRow.rate ?? null);
       if (rawRate) {
         const parsed = parseLeaseRate(rawRate);
-        if (parsed.min !== null && parsed.min < 1000) {
+        if (parsed.min !== null) {
           leaseRates.push(parsed.min);
         }
-        if (parsed.max !== null && parsed.max < 1000) {
+        if (parsed.max !== null) {
           leaseRates.push(parsed.max);
         }
       }

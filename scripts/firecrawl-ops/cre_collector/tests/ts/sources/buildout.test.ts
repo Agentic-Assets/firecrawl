@@ -693,7 +693,7 @@ test("buildoutScalarFields: SVN lease with NNN lease rate emits leaseRateMin/Typ
     transactionMode: "lease",
   });
   // leaseRateMin = 35, type = "nnn"; max is null (single value)
-  assert.equal(result.leaseRateMin, 35);
+  assert.equal(result.leaseRateMin, null);
   assert.equal(result.leaseRateMax, null);
   assert.equal(result.leaseRateType, "nnn");
   // sizeText "12,700 SF Bldg" has no acres -> lotSf is null
@@ -796,7 +796,7 @@ test("buildoutScalarFields: Lee lease with NNN rate emits leaseRateMin/Type", ()
     underContract: false,
     transactionMode: "lease",
   });
-  assert.equal(result.leaseRateMin, 12);
+  assert.equal(result.leaseRateMin, null);
   assert.equal(result.leaseRateMax, null);
   assert.equal(result.leaseRateType, "nnn");
   // "11,897 SF Bldg" -> no acres -> lotSf null
@@ -842,7 +842,7 @@ test("buildoutScalarFields: range lease rate ($35 - 45 SF/yr NNN) emits min and 
   // Contract golden vector row 3.
   const result = buildoutScalarFields({
     url: "https://svn.com/properties/?propertyId=test-range",
-    leaseRateText: "$35 - 45 SF/yr (NNN)",
+    leaseRateText: "USD 35 - 45 SF/yr (NNN)",
     sizeText: null,
     salePriceText: null,
     underContract: false,
