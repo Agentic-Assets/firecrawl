@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import copy
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -20,6 +22,7 @@ import secrets
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -1362,16 +1365,59 @@ def _rename_exact_to_empty_target(
 
     Replay accepts an already-archived expected inode, but an occupied target
     is always forensic evidence, not a destination we may replace. The
-    authority flock serializes cooperative recovery participants; lstat checks
-    make any unrelated target fail closed before calling POSIX rename.
+    authority flock serializes cooperative recovery participants, while the
+    operating-system no-replace primitive closes the check-to-rename window
+    against a foreign target appearing between the identity check and handoff.
     """
     if not _same_identity(source, expected):
         raise RuntimeAdmissionError(message)
     if not _path_is_absent(target):
         raise RuntimeAdmissionError(message)
-    os.rename(source, target)
+    _atomic_rename_noreplace(source, target, message=message)
     if not _same_identity(target, expected) or not _path_is_absent(source):
         raise RuntimeAdmissionError(message)
+
+
+def _atomic_rename_noreplace(source: Path, target: Path, *, message: str) -> None:
+    """Atomically rename only when ``target`` does not exist on Darwin/Linux.
+
+    POSIX ``rename`` clobbers a destination.  A preflight ``lstat`` cannot make
+    that safe, so this uses Darwin's ``renameatx_np(RENAME_EXCL)`` or Linux's
+    ``renameat2(RENAME_NOREPLACE)``. Unsupported runtimes deliberately stop
+    rather than falling back to clobbering rename semantics.
+    """
+    library = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    target_bytes = os.fsencode(target)
+    if sys.platform == "darwin":
+        operation = getattr(library, "renameatx_np", None)
+        directory_fd = -2  # AT_FDCWD on Darwin.
+        flags = 0x0004  # RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        operation = getattr(library, "renameat2", None)
+        directory_fd = -100  # AT_FDCWD on Linux.
+        flags = 0x0001  # RENAME_NOREPLACE
+    else:
+        operation = None
+        directory_fd = 0
+        flags = 0
+    if operation is None:
+        raise RuntimeAdmissionError("atomic no-replace rename is unavailable")
+    operation.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    operation.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    if operation(directory_fd, source_bytes, directory_fd, target_bytes, flags) == 0:
+        return
+    failure = ctypes.get_errno()
+    if failure in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise RuntimeAdmissionError(message)
+    raise OSError(failure, os.strerror(failure), target)
 
 
 def _archive_pair_is_exact(archive: Path, pair: Mapping[str, Any]) -> bool:
@@ -1385,6 +1431,16 @@ def _archive_pair_is_exact(archive: Path, pair: Mapping[str, Any]) -> bool:
     if not _same_identity(lock, pair.get("lock_identity", [])) or not _same_identity(
         authority, pair.get("authority_identity", [])
     ):
+        return False
+    try:
+        if sorted(item.name for item in lock.iterdir()) != sorted(
+            [
+                checkpoint_refresh.BENCHMARK_ACTIVE_MARKER,
+                checkpoint_refresh.BENCHMARK_QUARANTINE_MARKER,
+            ]
+        ):
+            return False
+    except OSError:
         return False
     try:
         _active, active_evidence = _regular_file_evidence(

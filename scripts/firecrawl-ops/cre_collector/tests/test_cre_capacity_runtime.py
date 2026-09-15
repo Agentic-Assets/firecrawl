@@ -655,15 +655,15 @@ def test_quarantine_recovery_replays_an_interrupted_paired_archive(
         runtime, "_settlement", lambda *_args: baseline.public["settlement"]
     )
     monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
-    real_rename = runtime.os.rename
+    real_rename = runtime._atomic_rename_noreplace
     authority = lock_path.with_name(f"{lock_path.name}.authority")
 
-    def interrupt_authority_rename(source: Path | str, target: Path | str) -> None:
-        if Path(source) == authority:
+    def interrupt_authority_rename(source: Path, target: Path, *, message: str) -> None:
+        if source == authority:
             raise OSError("simulated interruption before authority archive")
-        real_rename(source, target)
+        real_rename(source, target, message=message)
 
-    monkeypatch.setattr(runtime.os, "rename", interrupt_authority_rename)
+    monkeypatch.setattr(runtime, "_atomic_rename_noreplace", interrupt_authority_rename)
     with pytest.raises(OSError, match="simulated interruption"):
         runtime.recover_quarantine(execute=True)
     guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
@@ -673,7 +673,7 @@ def test_quarantine_recovery_replays_an_interrupted_paired_archive(
     with pytest.raises(runtime.LockHeldError, match="operator completion"):
         runtime.SharedLock(lock_path).acquire()
 
-    monkeypatch.setattr(runtime.os, "rename", real_rename)
+    monkeypatch.setattr(runtime, "_atomic_rename_noreplace", real_rename)
     replayed = runtime.recover_quarantine(execute=True)
     assert replayed["executed"] is True
     assert not guard.exists()
@@ -861,6 +861,100 @@ def test_quarantine_recovery_refuses_byte_identical_marker_replacement(
     assert active.exists()
 
 
+@pytest.mark.parametrize("member", [".cre.lock", ".cre.lock.authority"])
+def test_atomic_archive_handoff_refuses_a_target_created_after_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, member: str
+) -> None:
+    """The no-replace syscall closes the lstat-to-rename foreign-target race."""
+    source = tmp_path / f"source-{member.removeprefix('.')}"
+    target = tmp_path / f"target-{member.removeprefix('.')}"
+    if member == ".cre.lock":
+        source.mkdir(mode=0o700)
+    else:
+        source.write_bytes(b"owned authority\n")
+        source.chmod(0o600)
+    source_stat = source.lstat()
+    expected = [source_stat.st_dev, source_stat.st_ino]
+    real_atomic = runtime._atomic_rename_noreplace
+    foreign = b"foreign authority\n"
+
+    def insert_foreign_then_rename(
+        original: Path, destination: Path, *, message: str
+    ) -> None:
+        if member == ".cre.lock":
+            destination.mkdir(mode=0o700)
+        else:
+            destination.write_bytes(foreign)
+            destination.chmod(0o600)
+        real_atomic(original, destination, message=message)
+
+    monkeypatch.setattr(runtime, "_atomic_rename_noreplace", insert_foreign_then_rename)
+    with pytest.raises(runtime.RuntimeAdmissionError, match="handoff changed"):
+        runtime._rename_exact_to_empty_target(
+            source, target, expected, message="handoff changed"
+        )
+    assert source.exists()
+    assert target.exists()
+    if member == ".cre.lock.authority":
+        assert target.read_bytes() == foreign
+
+
+def test_atomic_archive_handoff_refuses_an_unsupported_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.write_bytes(b"owned\n")
+    source.chmod(0o600)
+    monkeypatch.setattr(runtime.sys, "platform", "unsupported")
+    with pytest.raises(runtime.RuntimeAdmissionError, match="no-replace"):
+        runtime._atomic_rename_noreplace(source, target, message="handoff changed")
+    assert source.exists()
+    assert not target.exists()
+
+
+def test_quarantine_recovery_refuses_an_unbound_archived_lock_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replay cannot clear the guard after any unbound archive mutation."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    real_guard_write = runtime._write_recovery_guard
+
+    def interrupt_receipt_phase(
+        path: Path, value: dict[str, object], *, create: bool
+    ) -> None:
+        if value.get("phase") == "receipt-written":
+            raise OSError("simulated crash after receipt")
+        real_guard_write(path, value, create=create)
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", interrupt_receipt_phase)
+    with pytest.raises(OSError, match="after receipt"):
+        runtime.recover_quarantine(execute=True)
+    guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
+    archive = Path(json.loads(guard.read_text(encoding="utf-8"))["archive"])
+    foreign = archive / ".cre.lock" / "foreign"
+    foreign.write_bytes(b"unbound forensic content\n")
+    foreign.chmod(0o600)
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", real_guard_write)
+    with pytest.raises(runtime.RuntimeAdmissionError, match="forensic pair changed"):
+        runtime.recover_quarantine(execute=True)
+    assert guard.exists()
+    assert foreign.exists()
+
+
 @pytest.mark.parametrize(
     ("member", "expected_phase"),
     [(".cre.lock", "lock-renaming"), (".cre.lock.authority", "authority-renaming")],
@@ -885,16 +979,16 @@ def test_quarantine_recovery_replays_rename_before_parent_fsync(
         runtime, "_settlement", lambda *_args: baseline.public["settlement"]
     )
     monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
-    real_rename = runtime.os.rename
+    real_rename = runtime._atomic_rename_noreplace
     real_fsync = runtime._fsync_directory
     renamed = False
     failed = False
 
-    def record_rename(source: Path | str, target: Path | str) -> None:
+    def record_rename(source: Path, target: Path, *, message: str) -> None:
         nonlocal renamed
-        if Path(source).name == member:
+        if source.name == member:
             renamed = True
-        real_rename(source, target)
+        real_rename(source, target, message=message)
 
     def fail_parent_after_rename(path: Path) -> None:
         nonlocal failed
@@ -903,7 +997,7 @@ def test_quarantine_recovery_replays_rename_before_parent_fsync(
             raise OSError("simulated parent fsync power loss")
         real_fsync(path)
 
-    monkeypatch.setattr(runtime.os, "rename", record_rename)
+    monkeypatch.setattr(runtime, "_atomic_rename_noreplace", record_rename)
     monkeypatch.setattr(runtime, "_fsync_directory", fail_parent_after_rename)
     with pytest.raises(OSError, match="parent fsync"):
         runtime.recover_quarantine(execute=True)
@@ -912,7 +1006,7 @@ def test_quarantine_recovery_replays_rename_before_parent_fsync(
     with pytest.raises(runtime.LockHeldError, match="operator completion"):
         runtime.SharedLock(lock_path).acquire()
 
-    monkeypatch.setattr(runtime.os, "rename", real_rename)
+    monkeypatch.setattr(runtime, "_atomic_rename_noreplace", real_rename)
     monkeypatch.setattr(runtime, "_fsync_directory", real_fsync)
     assert runtime.recover_quarantine(execute=True)["executed"] is True
     assert not guard.exists()
