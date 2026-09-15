@@ -1281,16 +1281,22 @@ raise SystemExit(0)
 
 
 @pytest.mark.parametrize(
-    ("member", "expected_phase"),
-    [(".cre.lock", "lock-renaming"), (".cre.lock.authority", "authority-renaming")],
+    ("member", "expected_phase", "failure_target"),
+    [
+        (".cre.lock", "lock-renaming", "archive"),
+        (".cre.lock", "lock-renaming", "source-parent"),
+        (".cre.lock.authority", "authority-renaming", "archive"),
+        (".cre.lock.authority", "authority-renaming", "source-parent"),
+    ],
 )
-def test_quarantine_recovery_replays_rename_before_parent_fsync(
+def test_quarantine_recovery_replays_rename_before_durable_handoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     member: str,
     expected_phase: str,
+    failure_target: str,
 ) -> None:
-    """A power loss after either paired rename has a durable replay intent."""
+    """Both destination/source fsync prefixes retain an exact replay intent."""
     monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
     lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
@@ -1308,24 +1314,37 @@ def test_quarantine_recovery_replays_rename_before_parent_fsync(
     real_fsync = runtime._fsync_directory
     renamed = False
     failed = False
+    archive: Path | None = None
+    handoff_fsync_events: list[Path] = []
 
     def record_rename(source: Path, target: Path, *, message: str) -> None:
-        nonlocal renamed
+        nonlocal archive, renamed
         if source.name == member:
             renamed = True
+            archive = target.parent
         real_rename(source, target, message=message)
 
-    def fail_parent_after_rename(path: Path) -> None:
+    def fail_durable_handoff_after_rename(path: Path) -> None:
         nonlocal failed
-        if renamed and not failed and path == lock_path.parent:
+        if renamed:
+            handoff_fsync_events.append(path)
+        target = archive if failure_target == "archive" else lock_path.parent
+        if renamed and not failed and path == target:
             failed = True
-            raise OSError("simulated parent fsync power loss")
+            raise OSError(f"simulated {failure_target} fsync power loss")
         real_fsync(path)
 
     monkeypatch.setattr(runtime, "_atomic_rename_noreplace", record_rename)
-    monkeypatch.setattr(runtime, "_fsync_directory", fail_parent_after_rename)
-    with pytest.raises(OSError, match="parent fsync"):
+    monkeypatch.setattr(runtime, "_fsync_directory", fail_durable_handoff_after_rename)
+    with pytest.raises(OSError, match=f"{failure_target} fsync"):
         runtime.recover_quarantine(execute=True)
+    assert failed
+    assert archive is not None
+    assert handoff_fsync_events[0] == archive
+    if failure_target == "archive":
+        assert handoff_fsync_events == [archive]
+    else:
+        assert handoff_fsync_events[:2] == [archive, lock_path.parent]
     guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
     assert json.loads(guard.read_text(encoding="utf-8"))["phase"] == expected_phase
     with pytest.raises(runtime.LockHeldError, match="operator completion"):

@@ -1758,8 +1758,11 @@ def _recover_quarantine_while_synchronized(
                 raise RuntimeAdmissionError("quarantine lock handoff changed")
             if not _archive_entries_are_exact(archive, [archived_lock.name]):
                 raise RuntimeAdmissionError("quarantine lock archive entries changed")
-            _fsync_directory(lock_path.parent)
+            # A cross-directory rename must first make the archive entry
+            # durable.  Fsyncing the source parent first could persist the
+            # removal while losing the only forensic destination on power loss.
             _fsync_directory(archive)
+            _fsync_directory(lock_path.parent)
             result["phase"] = "lock-archived"
             _write_recovery_guard(guard_path, result, create=False)
             phase = "lock-archived"
@@ -1797,8 +1800,10 @@ def _recover_quarantine_while_synchronized(
                 raise RuntimeAdmissionError(
                     "quarantine authority archive entries changed"
                 )
-            _fsync_directory(lock_path.parent)
+            # Keep the paired authority handoff in the same destination-first
+            # durability order as the lock directory above.
             _fsync_directory(archive)
+            _fsync_directory(lock_path.parent)
             result["phase"] = "pair-archived"
             _write_recovery_guard(guard_path, result, create=False)
             phase = "pair-archived"
