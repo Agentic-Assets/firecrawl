@@ -787,6 +787,8 @@ if (C10_BROWSER_INTERNAL_SECRET) {
       console.error("C10 internal browser execution failed:", error);
       return res.status(502).json({ error: "C10 internal browser execution failed" });
     } finally {
+      // Cleanup shares the original wall-clock budget; it cannot extend a C10 arm.
+      const cleanupBudgetMs = Math.max(1, Math.floor(Math.max(1, deadlineAt - Date.now()) / 2));
       await cleanupBrowserBatchResources(
         page ? () => page!.close() : null,
         requestContext ? () => requestContext!.close() : null,
@@ -794,6 +796,7 @@ if (C10_BROWSER_INTERNAL_SECRET) {
           if (lease) c10PageLeasePool.release(lease.slot);
           if (permitAcquired) pageSemaphore.release();
         },
+        cleanupBudgetMs,
       );
     }
   });

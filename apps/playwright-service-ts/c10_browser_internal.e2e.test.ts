@@ -30,6 +30,7 @@ test("private C10 route consumes one signed capability, enforces SSRF/body caps/
   const target = createServer({ key: await readFile(key), cert: await readFile(cert) }, (req, res) => {
     targetCalls += 1;
     if (req.url === "/large") return res.end("x".repeat(4096));
+    if (req.url === "/slow") return setTimeout(() => res.end('{"slow":true}'), 250);
     res.setHeader("content-type", "application/json"); res.end('{"ok":true}');
   });
   await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));
@@ -57,6 +58,9 @@ test("private C10 route consumes one signed capability, enforces SSRF/body caps/
   const largeCard = { ...card, id: "card-2", url: `https://${host}/large`, browserBootstrapUrl: `https://${host}/`, maxBytes: 64 };
   const large = { ...input, card: largeCard, cardSha256: sha(largeCard) };
   assert.equal((await call(large, issueC10SidecarCapability(secret, large))).status, 502);
+  const slowCard = { ...card, id: "card-3", url: `https://${host}/slow`, browserBootstrapUrl: `https://${host}/`, timeoutMs: 50 };
+  const slow = { ...input, card: slowCard, cardSha256: sha(slowCard) };
+  assert.equal((await call(slow, issueC10SidecarCapability(secret, slow))).status, 502);
   // Test-only local capability permits the fixture target; a production start lacks this env gate.
   assert.equal((await fetch(`http://127.0.0.1:${publicPort}/internal/c10/browser-execute`, { method: "POST" })).status, 404);
   const health = await fetch(`${privateBase}/health`); assert.equal(health.status, 200);
