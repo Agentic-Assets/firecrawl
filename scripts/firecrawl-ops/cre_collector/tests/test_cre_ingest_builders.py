@@ -25,8 +25,9 @@ import json
 import sys
 from datetime import datetime, timezone
 
-import cre_ingest as ci
 import pytest
+
+import cre_ingest as ci
 
 _SCRAPED_AT = datetime(2026, 6, 15, 0, 0, 0, tzinfo=timezone.utc).isoformat()
 
