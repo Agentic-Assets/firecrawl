@@ -2137,7 +2137,10 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
     admissions: list[str] = []
     rollbacks: list[tuple[Path, str, str, bool]] = []
     lock_windows: list[str] = []
-    lock_path = benchmark.canonical_shared_lock_dir(Path(__file__).resolve().parents[4])
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
 
     monkeypatch.setattr(
         benchmark,

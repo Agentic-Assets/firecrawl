@@ -669,6 +669,7 @@ def _lock_lease(lock_dir: Path) -> str | None:
 BENCHMARK_ACTIVE_MARKER = "capacity-benchmark-active.json"
 BENCHMARK_QUARANTINE_MARKER = "capacity-benchmark-quarantine.json"
 OPERATOR_RECOVERY_LEASE_PREFIX = "operator-recovery-required:"
+LOCK_AUTHORITY_SUFFIX = ".authority"
 
 
 def _lock_requires_operator_recovery(lock_dir: Path) -> bool:
@@ -742,21 +743,126 @@ class SharedLock:
     benchmark_marker_identity: tuple[int, int] | None = field(default=None, init=False)
     retain_on_exit: bool = field(default=False, init=False)
     partial_directory_identity: tuple[int, int] | None = field(default=None, init=False)
+    authority_fd: int = field(default=-1, init=False)
+    authority_identity: tuple[int, int] | None = field(default=None, init=False)
+    authority_token: str | None = field(default=None, init=False)
+
+    @property
+    def authority_path(self) -> Path:
+        return self.path.with_name(f"{self.path.name}{LOCK_AUTHORITY_SUFFIX}")
+
+    def _authority_is_current(self) -> bool:
+        if (
+            self.authority_fd < 0
+            or self.authority_identity is None
+            or self.authority_token is None
+        ):
+            return False
+        try:
+            opened = os.fstat(self.authority_fd)
+            named = self.authority_path.lstat()
+            if (
+                not stat.S_ISREG(named.st_mode)
+                or named.st_nlink != 1
+                or (opened.st_dev, opened.st_ino) != self.authority_identity
+                or (named.st_dev, named.st_ino) != self.authority_identity
+            ):
+                return False
+            return (
+                os.pread(self.authority_fd, 512, 0).decode("utf-8").split()[-1]
+                == self.authority_token
+            )
+        except (OSError, UnicodeDecodeError, IndexError):
+            return False
+
+    def _require_authority(self) -> None:
+        if not self._authority_is_current():
+            raise LockHeldError("CRE lock authority changed before mutation")
+
+    def _claim_authority(self) -> None:
+        token = secrets.token_urlsafe(32)
+        try:
+            descriptor = os.open(
+                self.authority_path,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+            )
+        except FileExistsError as exc:
+            if _lock_requires_operator_recovery(self.path):
+                raise LockHeldError(
+                    f"CRE lock requires operator recovery: {self.path}"
+                ) from exc
+            owner = _lock_owner(self.path)
+            if owner is None or _pid_alive(owner):
+                detail = (
+                    "owner is starting" if owner is None else f"live owner pid {owner}"
+                )
+                raise LockHeldError(
+                    f"CRE lock is held ({detail}): {self.path}"
+                ) from exc
+            try:
+                self.authority_path.unlink()
+            except OSError as unlink_error:
+                raise LockHeldError(
+                    f"CRE stale lock authority cannot be reclaimed: {self.authority_path}"
+                ) from unlink_error
+            return self._claim_authority()
+        try:
+            os.fchmod(descriptor, 0o600)
+            payload = f"{os.getpid()} {token}\n".encode("utf-8")
+            os.write(descriptor, payload)
+            os.fsync(descriptor)
+            observed = os.fstat(descriptor)
+            self.authority_fd = descriptor
+            self.authority_identity = (observed.st_dev, observed.st_ino)
+            self.authority_token = token
+            descriptor = -1
+            self._require_authority()
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _release_authority(self) -> None:
+        try:
+            if self._authority_is_current():
+                os.unlink(self.authority_path)
+        finally:
+            if self.authority_fd >= 0:
+                os.close(self.authority_fd)
+            self.authority_fd = -1
+            self.authority_identity = None
+            self.authority_token = None
 
     def _record_created_directory(self) -> None:
         """Bind partial recovery to this just-created directory before I/O."""
+        self._require_authority()
         directory_fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             observed = os.fstat(directory_fd)
             identity = (observed.st_dev, observed.st_ino)
             if _lock_directory_identity(self.path) != identity:
                 raise LockHeldError("CRE newly-created lock directory changed")
+            if os.listdir(directory_fd):
+                raise LockHeldError("CRE newly-created lock directory is not empty")
             self.partial_directory_identity = identity
         finally:
             os.close(directory_fd)
 
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._claim_authority()
+        try:
+            self._acquire_with_authority()
+        except BaseException:
+            if not (
+                self.recovery_required
+                and self.preserve_recovery_on_acquire_failure
+                and self.partial_directory_identity is not None
+            ):
+                self._release_authority()
+            raise
+
+    def _acquire_with_authority(self) -> None:
         if _lock_interlocked(self.path):
             raise LockHeldError(
                 f"CRE benchmark interlock requires operator recovery: {self.path}"
@@ -829,6 +935,7 @@ class SharedLock:
         self.held = True
 
     def _owned_directory_fd(self) -> int:
+        self._require_authority()
         if (
             not self.held
             or self.lease_token is None
@@ -1018,6 +1125,7 @@ class SharedLock:
         identity = self.partial_directory_identity
         if not self.recovery_required or identity is None or self.held:
             raise LockHeldError("CRE partial recovery lock is not owned")
+        self._require_authority()
         directory_fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             opened = os.fstat(directory_fd)
@@ -1125,6 +1233,11 @@ class SharedLock:
         self.held = False
         self.lease_token = None
         self.directory_identity = None
+        if not self.path.exists() and not self.recovery_required:
+            self._release_authority()
+        elif self.authority_fd >= 0:
+            os.close(self.authority_fd)
+            self.authority_fd = -1
 
     def __enter__(self) -> Self:
         self.acquire()

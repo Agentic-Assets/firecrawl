@@ -2458,6 +2458,47 @@ def test_partial_recovery_refuses_unverified_created_lock_paths(
     assert refresh._lock_requires_operator_recovery(lock.path)
 
 
+@pytest.mark.parametrize("creation", ["fresh", "stale-reclaim"])
+def test_authority_rejects_creation_window_directory_replacement(
+    tmp_path, monkeypatch, creation
+):
+    lock = refresh.SharedLock(tmp_path / ".cre.lock")
+    if creation == "stale-reclaim":
+        lock.path.mkdir()
+        (lock.path / "pid").write_text("99999999 1\n", encoding="utf-8")
+        (lock.path / "lease").write_text("stale\n", encoding="utf-8")
+    displaced = tmp_path / ".cre.lock.displaced"
+    original_record = lock._record_created_directory
+
+    def replace_before_capture():
+        lock.path.rename(displaced)
+        lock.path.mkdir()
+        (lock.path / "foreign").write_text("do not touch", encoding="utf-8")
+        original_record()
+
+    monkeypatch.setattr(lock, "_record_created_directory", replace_before_capture)
+    with pytest.raises(refresh.LockHeldError, match="not empty"):
+        lock.acquire()
+    assert (lock.path / "foreign").read_text(encoding="utf-8") == "do not touch"
+    assert not lock.authority_path.exists()
+    assert displaced.is_dir()
+
+
+def test_authority_replacement_blocks_directory_mutation_and_release(tmp_path):
+    lock = refresh.SharedLock(tmp_path / ".cre.lock")
+    lock.acquire()
+    displaced = tmp_path / ".cre.lock.authority.displaced"
+    lock.authority_path.rename(displaced)
+    lock.authority_path.write_text("replacement authority\n", encoding="utf-8")
+
+    with pytest.raises(refresh.LockHeldError, match="authority changed"):
+        lock.arm_benchmark({"state": "active"})
+    lock.release()
+    assert lock.authority_path.read_text(encoding="utf-8") == "replacement authority\n"
+    assert lock.path.is_dir()
+    assert displaced.is_file()
+
+
 @pytest.mark.parametrize("operation", ["arm", "disarm"])
 def test_lock_benchmark_fsync_failure_preserves_interlock(
     tmp_path, monkeypatch, operation
