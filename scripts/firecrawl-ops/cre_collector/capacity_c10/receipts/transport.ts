@@ -21,6 +21,8 @@ export interface RequestCardInput {
   readonly headers: Readonly<Record<string, string>>;
   readonly contentType: "application/json" | null;
   readonly body: string | null;
+  /** Required by the C10 browser executor for same-origin browser context setup. */
+  readonly browserBootstrapUrl?: string;
   readonly cacheMode: "no-store";
   readonly timeoutMs: number;
   readonly maxBytes: number;
@@ -125,6 +127,17 @@ function freezeCard(sourceKey: string, card: RequestCardInput): RequestCard {
   }
   if (card.cacheMode !== "no-store") {
     throw new C10ReceiptError("request card must disable cache use");
+  }
+  if (card.browserBootstrapUrl !== undefined) {
+    const bootstrap = new URL(card.browserBootstrapUrl);
+    if (
+      bootstrap.protocol !== "https:"
+      || bootstrap.host !== card.allowedHost
+      || bootstrap.origin !== url.origin
+      || bootstrap.hash
+    ) {
+      throw new C10ReceiptError("browser bootstrap URL is not allowlisted for this request card");
+    }
   }
   const body = card.body;
   if (card.method === "GET" && (body !== null || card.contentType !== null)) {
