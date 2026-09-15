@@ -1,0 +1,22 @@
+{
+  "jll_investor": {
+    "enumeration": {"kind": "jll_investor_search_snapshot_v1", "complete": true, "provider_ids": ["001000000000001"], "canonical_urls": ["https://invest.jll.com/us/en/listings/one"], "snapshot_sha256": "1111111111111111111111111111111111111111111111111111111111111111"},
+    "member": {"provider_id": "001000000000001", "canonical_url": "https://invest.jll.com/us/en/listings/one", "detail": {"salesforce_id": "001000000000001", "canonical_url": "https://invest.jll.com/us/en/listings/one", "native_documents": [], "native_images": [], "fidelity": {"name": "native"}}}
+  },
+  "colliers": {
+    "enumeration": {"kind": "colliers_salestracker_snapshot_v1", "engine_key": "engine", "complete": true, "total": 1, "project_ids": ["project-1"], "detail_urls": ["https://my.rcm1.com/detail/project-1"], "snapshot_sha256": "2222222222222222222222222222222222222222222222222222222222222222"},
+    "member": {"provider_id": "project-1", "canonical_url": "https://my.rcm1.com/detail/project-1", "detail": {"ProjectId": "project-1", "detail_url": "https://my.rcm1.com/detail/project-1", "native_documents": [], "native_images": [], "fidelity": {"name": "native"}}}
+  },
+  "colliers_main": {
+    "enumeration": {"kind": "colliers_main_sitemap_snapshot_v1", "complete": true, "truncated": false, "lastmod_bound": "2026-09-15T00:00:00Z", "listing_ids": ["usa123"], "sitemap_urls": ["https://www.colliers.com/en-us/properties/one"], "snapshot_sha256": "3333333333333333333333333333333333333333333333333333333333333333"},
+    "member": {"provider_id": "usa123", "canonical_url": "https://www.colliers.com/en-us/properties/one", "detail": {"listing_id": "usa123", "canonical_url": "https://www.colliers.com/en-us/properties/one", "json_ld": {"@type": "Product"}, "native_documents": [], "native_images": [], "fidelity": {"name": "native"}}}
+  },
+  "marcus": {
+    "enumeration": {"kind": "marcus_millichap_map_snapshot_v1", "complete": true, "tile_count": 1, "deal_ids": ["123"], "detail_urls": ["https://www.marcusmillichap.com/properties/one"], "snapshot_sha256": "4444444444444444444444444444444444444444444444444444444444444444"},
+    "member": {"provider_id": "123", "canonical_url": "https://www.marcusmillichap.com/properties/one", "detail": {"DealId": 123, "canonical_url": "https://www.marcusmillichap.com/properties/one", "native_documents": [], "native_images": [], "fidelity": {"name": "native"}}}
+  },
+  "avison": {
+    "enumeration": {"kind": "avison_young_sharplaunch_snapshot_v1", "complete": true, "feed_sha256": "5555555555555555555555555555555555555555555555555555555555555555", "sharplaunch_ids": ["ay-1"], "detail_urls": ["https://www.avisonyoung.us/properties/one"], "snapshot_sha256": "6666666666666666666666666666666666666666666666666666666666666666"},
+    "member": {"provider_id": "ay-1", "canonical_url": "https://www.avisonyoung.us/properties/one", "detail": {"sharp_launch_id": "ay-1", "canonical_url": "https://www.avisonyoung.us/properties/one", "native_documents": [], "native_images": [], "fidelity": {"name": "native"}}}
+  }
+}
