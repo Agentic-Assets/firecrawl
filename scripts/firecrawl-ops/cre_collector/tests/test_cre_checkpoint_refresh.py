@@ -2335,6 +2335,129 @@ def test_partial_recovery_refuses_unowned_starting_lock(tmp_path):
     assert lock_dir.is_dir()
 
 
+@pytest.mark.parametrize("creation", ["fresh", "stale-reclaim"])
+@pytest.mark.parametrize(
+    "failure_stage",
+    ["lease-precreate", "lease-temp", "pid-write", "directory-fsync", "parent-fsync"],
+)
+def test_partial_recovery_covers_every_created_lock_path(
+    tmp_path, monkeypatch, creation, failure_stage
+):
+    lock = refresh.SharedLock(
+        tmp_path / ".cre.lock",
+        recovery_required=True,
+        preserve_recovery_on_acquire_failure=True,
+    )
+    if creation == "stale-reclaim":
+        lock.path.mkdir()
+        (lock.path / "pid").write_text("99999999 1\n", encoding="utf-8")
+        (lock.path / "lease").write_text("stale-lease\n", encoding="utf-8")
+
+    original_write = refresh.atomic_write_text
+    original_fsync = refresh.os.fsync
+    initial_failure = False
+    sync_failure_pending = failure_stage in {"directory-fsync", "parent-fsync"}
+    parent_identity = refresh._lock_directory_identity(lock.path.parent)
+
+    def fail_write(path, value):
+        if path.name == "lease" and failure_stage in {
+            "lease-precreate",
+            "lease-temp",
+            "directory-fsync",
+            "parent-fsync",
+        }:
+            if failure_stage == "lease-temp":
+                (path.parent / ".lease.abandoned.tmp").write_text("partial")
+            raise OSError(f"{failure_stage} failure")
+        if path.name == "pid" and failure_stage == "pid-write":
+            raise OSError("pid-write failure")
+        original_write(path, value)
+
+    def fail_recovery_sync(descriptor):
+        nonlocal sync_failure_pending
+        identity = (
+            refresh.os.fstat(descriptor).st_dev,
+            refresh.os.fstat(descriptor).st_ino,
+        )
+        expected = (
+            lock.partial_directory_identity
+            if failure_stage == "directory-fsync"
+            else parent_identity
+        )
+        if initial_failure and sync_failure_pending and identity == expected:
+            sync_failure_pending = False
+            raise OSError(f"{failure_stage} failure")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(refresh, "atomic_write_text", fail_write)
+    monkeypatch.setattr(refresh.os, "fsync", fail_recovery_sync)
+    with pytest.raises(OSError, match=failure_stage):
+        lock.acquire()
+    initial_failure = True
+
+    if failure_stage in {"directory-fsync", "parent-fsync"}:
+        with pytest.raises(OSError, match=failure_stage):
+            lock.recover_partial_acquire()
+        assert refresh._lock_requires_operator_recovery(lock.path)
+
+    lock.recover_partial_acquire()
+    assert lock.held
+    assert lock.directory_identity is not None
+    lock.clear_recovery_requirement()
+    lock.release()
+    assert not lock.path.exists()
+
+
+@pytest.mark.parametrize("creation", ["fresh", "stale-reclaim"])
+@pytest.mark.parametrize("failure_stage", ["replacement", "cleanup"])
+def test_partial_recovery_refuses_unverified_created_lock_paths(
+    tmp_path, monkeypatch, creation, failure_stage
+):
+    lock = refresh.SharedLock(
+        tmp_path / ".cre.lock",
+        recovery_required=True,
+        preserve_recovery_on_acquire_failure=True,
+    )
+    if creation == "stale-reclaim":
+        lock.path.mkdir()
+        (lock.path / "pid").write_text("99999999 1\n", encoding="utf-8")
+        (lock.path / "lease").write_text("stale-lease\n", encoding="utf-8")
+    displaced = tmp_path / ".cre.lock.displaced"
+
+    def fail_lease(path, _value):
+        if failure_stage == "replacement":
+            path.parent.rename(displaced)
+            path.parent.mkdir()
+            (path.parent / "pid").write_text(f"{os.getpid()} 1\n", encoding="utf-8")
+            (path.parent / "lease").write_text("replacement-lease\n", encoding="utf-8")
+        else:
+            (path.parent / ".lease.abandoned.tmp").write_text("partial")
+        raise OSError(f"{failure_stage} failure")
+
+    monkeypatch.setattr(refresh, "atomic_write_text", fail_lease)
+    with pytest.raises(OSError, match=failure_stage):
+        lock.acquire()
+
+    if failure_stage == "replacement":
+        with pytest.raises(refresh.LockHeldError, match="directory changed"):
+            lock.recover_partial_acquire()
+        assert refresh._lock_lease(lock.path) == "replacement-lease"
+        assert displaced.is_dir()
+        return
+
+    original_unlink = refresh.os.unlink
+
+    def fail_cleanup(path, *args, **kwargs):
+        if path == ".lease.abandoned.tmp":
+            raise OSError("cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(refresh.os, "unlink", fail_cleanup)
+    with pytest.raises(OSError, match="cleanup failure"):
+        lock.recover_partial_acquire()
+    assert refresh._lock_requires_operator_recovery(lock.path)
+
+
 @pytest.mark.parametrize("operation", ["arm", "disarm"])
 def test_lock_benchmark_fsync_failure_preserves_interlock(
     tmp_path, monkeypatch, operation

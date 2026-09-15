@@ -2665,6 +2665,65 @@ def test_candidate_pair_partial_lease_failure_recovers_and_rolls_back(
     assert not lock_path.exists()
 
 
+def test_candidate_pair_stale_reclaim_lease_failure_recovers_and_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    lock_path.mkdir(parents=True)
+    (lock_path / "pid").write_text("99999999 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text("stale-lease\n", encoding="utf-8")
+    events: list[str] = []
+    original_write = refresh.atomic_write_text
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_first_lease(path: Path, value: str) -> None:
+        if path.name == "lease" and not events:
+            events.append("lease failure")
+            raise OSError("stale-reclaim lease write failed before creation")
+        original_write(path, value)
+
+    def rollback(*_args, _held_shared_lock, **_kwargs):
+        assert _held_shared_lock.held
+        assert _held_shared_lock.recovery_required
+        events.append("rollback")
+
+    monkeypatch.setattr(refresh, "atomic_write_text", fail_first_lease)
+    monkeypatch.setattr(benchmark, "run_benchmark", lambda **_kwargs: pytest.fail())
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", rollback)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(OSError, match="stale-reclaim lease write failed"):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert events == ["lease failure", "rollback"]
+    assert not lock_path.exists()
+
+
 def test_candidate_pair_partial_cleanup_failure_never_rolls_back_unlocked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

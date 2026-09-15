@@ -743,6 +743,18 @@ class SharedLock:
     retain_on_exit: bool = field(default=False, init=False)
     partial_directory_identity: tuple[int, int] | None = field(default=None, init=False)
 
+    def _record_created_directory(self) -> None:
+        """Bind partial recovery to this just-created directory before I/O."""
+        directory_fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            observed = os.fstat(directory_fd)
+            identity = (observed.st_dev, observed.st_ino)
+            if _lock_directory_identity(self.path) != identity:
+                raise LockHeldError("CRE newly-created lock directory changed")
+            self.partial_directory_identity = identity
+        finally:
+            os.close(directory_fd)
+
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if _lock_interlocked(self.path):
@@ -751,7 +763,7 @@ class SharedLock:
             )
         try:
             self.path.mkdir()
-            self.partial_directory_identity = _lock_directory_identity(self.path)
+            self._record_created_directory()
         except FileExistsError:
             original_identity = _lock_directory_identity(self.path)
             if _lock_requires_operator_recovery(self.path):
@@ -785,6 +797,7 @@ class SharedLock:
                     )
                 shutil.rmtree(self.path, ignore_errors=True)
                 self.path.mkdir()
+                self._record_created_directory()
             finally:
                 shutil.rmtree(reclaim, ignore_errors=True)
         lease_token = secrets.token_urlsafe(32)
