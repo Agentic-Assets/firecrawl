@@ -209,33 +209,64 @@ def _private_root(path: Path) -> Path:
     return resolved
 
 
-def _private_regular(path: Path, maximum: int, *, root: Path) -> Path:
+def _private_regular_bytes(path: Path, maximum: int, *, root: Path) -> bytes:
+    """Read one bounded private file from its verified, no-follow descriptor."""
     if not path.is_absolute():
         raise MultisourceError("receipt paths must be absolute")
     try:
+        parent = path.parent
+        resolved_parent = parent.resolve(strict=True)
         opened = path.lstat()
-        resolved = path.resolve(strict=True)
     except OSError as exc:
         raise MultisourceError("receipt is unavailable") from exc
-    if (
-        not stat.S_ISREG(opened.st_mode)
-        or opened.st_nlink != 1
-        or opened.st_size <= 0
-        or opened.st_size > maximum
-        or path != resolved
-        or stat.S_IMODE(opened.st_mode) != 0o600
-        or (resolved.parent != root and root not in resolved.parents)
+    if parent != resolved_parent or (
+        resolved_parent != root and root not in resolved_parent.parents
     ):
         raise MultisourceError("receipt is not a bounded regular file")
-    return resolved
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise MultisourceError("receipt is unavailable") from exc
+    try:
+        opened_descriptor = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(opened_descriptor.st_mode)
+            or (opened.st_dev, opened.st_ino)
+            != (opened_descriptor.st_dev, opened_descriptor.st_ino)
+            or opened.st_nlink != 1
+            or opened_descriptor.st_nlink != 1
+            or opened.st_size <= 0
+            or opened.st_size > maximum
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or stat.S_IMODE(opened_descriptor.st_mode) != 0o600
+        ):
+            raise MultisourceError("receipt is not a bounded regular file")
+        raw = bytearray()
+        while len(raw) <= maximum:
+            chunk = os.read(descriptor, min(1024 * 1024, maximum + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        closed_descriptor = os.fstat(descriptor)
+    except OSError as exc:
+        raise MultisourceError("receipt is unavailable") from exc
+    finally:
+        os.close(descriptor)
+    if (
+        len(raw) != opened_descriptor.st_size
+        or len(raw) > maximum
+        or (opened_descriptor.st_dev, opened_descriptor.st_ino)
+        != (closed_descriptor.st_dev, closed_descriptor.st_ino)
+        or opened_descriptor.st_size != closed_descriptor.st_size
+        or opened_descriptor.st_mtime_ns != closed_descriptor.st_mtime_ns
+        or opened_descriptor.st_ctime_ns != closed_descriptor.st_ctime_ns
+    ):
+        raise MultisourceError("receipt is not a bounded regular file")
+    return bytes(raw)
 
 
 def _exclusive_private_write(path: Path, value: bytes) -> None:
@@ -275,6 +306,65 @@ def _fsync_directory(path: Path) -> None:
         raise MultisourceError(
             "producer output directory cannot be synchronized"
         ) from exc
+
+
+def _entry_inode(directory_fd: int, name: str) -> tuple[int, int]:
+    """Read one root entry by descriptor without following a replacement link."""
+    try:
+        opened = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise MultisourceError("producer output entry is unavailable") from exc
+    if not stat.S_ISREG(opened.st_mode):
+        raise MultisourceError("producer output entry is not a regular file")
+    return opened.st_dev, opened.st_ino
+
+
+def _path_inode(path: Path) -> tuple[int, int]:
+    """Read one staged regular file without accepting a symbolic-link source."""
+    try:
+        opened = path.lstat()
+    except OSError as exc:
+        raise MultisourceError("producer staged output is unavailable") from exc
+    if not stat.S_ISREG(opened.st_mode):
+        raise MultisourceError("producer staged output is not a regular file")
+    return opened.st_dev, opened.st_ino
+
+
+def _open_private_directory(path: Path) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise MultisourceError("producer output directory is unavailable") from exc
+    try:
+        opened = os.fstat(descriptor)
+    except OSError as exc:
+        os.close(descriptor)
+        raise MultisourceError("producer output directory is unavailable") from exc
+    if not stat.S_ISDIR(opened.st_mode) or stat.S_IMODE(opened.st_mode) != 0o700:
+        os.close(descriptor)
+        raise MultisourceError("producer output directory is not private")
+    return descriptor
+
+
+def _publish_staged_file(
+    staged_path: Path,
+    final_path: Path,
+    *,
+    root_fd: int,
+    published: dict[str, tuple[int, int]],
+) -> None:
+    """Publish an owned staged file, refusing a destination changed during link."""
+    staged_inode = _path_inode(staged_path)
+    try:
+        os.link(staged_path, final_path, follow_symlinks=False)
+    except OSError as exc:
+        raise MultisourceError("producer output cannot be published") from exc
+    final_inode = _entry_inode(root_fd, final_path.name)
+    if final_inode != staged_inode:
+        raise MultisourceError("producer output changed during publication")
+    published[final_path.name] = staged_inode
+    staged_path.unlink()
 
 
 def load_config(path: Path = CONFIG) -> dict[str, Any]:
@@ -436,8 +526,13 @@ def _hex_digest(value: Any, *, label: str) -> str:
     return value
 
 
-def _read_private_json(path: Path, maximum: int, *, root: Path) -> Any:
-    return _read_json(_private_regular(path, maximum, root=root), maximum)
+def _read_private_json(path: Path, maximum: int, *, root: Path) -> tuple[Any, str]:
+    """Parse and hash exactly the bytes consumed through the verified descriptor."""
+    raw = _private_regular_bytes(path, maximum, root=root)
+    try:
+        return json.loads(raw), _sha256(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MultisourceError(f"invalid JSON in {path}") from exc
 
 
 def _source_config_sha256(source: Mapping[str, Any]) -> str:
@@ -536,15 +631,13 @@ def _enumeration_binding(
     enum_path_value = receipt.get("enumeration_receipt_path")
     if not isinstance(enum_path_value, str):
         raise MultisourceError("enumeration receipt path is invalid")
-    enum_path = _private_regular(
+    document, enum_hash = _read_private_json(
         Path(enum_path_value), MAX_RAW_RECEIPT_BYTES, root=root
     )
-    enum_hash = _file_sha256(enum_path)
     if enum_hash != _hex_digest(
         receipt.get("enumeration_receipt_sha256"), label="enumeration receipt"
     ):
         raise MultisourceError("enumeration receipt hash drifted")
-    document = _read_json(enum_path, MAX_RAW_RECEIPT_BYTES)
     jll_aggregate = source["key"] == "jll"
     required = (
         {
@@ -688,20 +781,17 @@ def _verified_jll_enumeration_population(
         if not isinstance(path_value, str):
             return False
         try:
-            page_path = _private_regular(
-                Path(path_value), MAX_RAW_RECEIPT_BYTES, root=root
+            page_path = Path(path_value)
+            page_receipt, actual_hash = _read_private_json(
+                page_path, MAX_RAW_RECEIPT_BYTES, root=root
             )
             page_hash = _hex_digest(manifest.get("sha256"), label="JLL page receipt")
         except MultisourceError:
             return False
         artifact_identity = (str(page_path), page_hash)
-        if artifact_identity in seen_artifacts or _file_sha256(page_path) != page_hash:
+        if artifact_identity in seen_artifacts or actual_hash != page_hash:
             return False
         seen_artifacts.add(artifact_identity)
-        try:
-            page_receipt = _read_json(page_path, MAX_RAW_RECEIPT_BYTES)
-        except MultisourceError:
-            return False
         required = {
             "kind",
             "request_url",
@@ -912,8 +1002,9 @@ def _verified_jll_resolution_targets(
         if not isinstance(path_value, str):
             return False
         try:
-            resolution_path = _private_regular(
-                Path(path_value), MAX_RAW_RECEIPT_BYTES, root=root
+            resolution_path = Path(path_value)
+            resolution, actual_hash = _read_private_json(
+                resolution_path, MAX_RAW_RECEIPT_BYTES, root=root
             )
             resolution_hash = _hex_digest(
                 manifest.get("sha256"), label="JLL resolution receipt"
@@ -921,16 +1012,9 @@ def _verified_jll_resolution_targets(
         except MultisourceError:
             return False
         artifact = (str(resolution_path), resolution_hash)
-        if (
-            artifact in seen_artifacts
-            or _file_sha256(resolution_path) != resolution_hash
-        ):
+        if artifact in seen_artifacts or actual_hash != resolution_hash:
             return False
         seen_artifacts.add(artifact)
-        try:
-            resolution = _read_json(resolution_path, MAX_RAW_RECEIPT_BYTES)
-        except MultisourceError:
-            return False
         required = {
             "kind",
             "search_id",
@@ -952,21 +1036,16 @@ def _verified_jll_resolution_targets(
             canonical_url = _canonical_jll_listing_url(
                 resolution["canonical_url"], source
             )
-            detail_path = _private_regular(
-                Path(resolution["detail_receipt_path"]),
-                MAX_RAW_RECEIPT_BYTES,
-                root=root,
+            detail_path = Path(resolution["detail_receipt_path"])
+            detail, actual_detail_hash = _read_private_json(
+                detail_path, MAX_RAW_RECEIPT_BYTES, root=root
             )
             detail_hash = _hex_digest(
                 resolution["detail_receipt_sha256"], label="JLL detail receipt"
             )
         except (KeyError, MultisourceError, TypeError):
             return False
-        if _file_sha256(detail_path) != detail_hash:
-            return False
-        try:
-            detail = _read_json(detail_path, MAX_RAW_RECEIPT_BYTES)
-        except MultisourceError:
+        if actual_detail_hash != detail_hash:
             return False
         detail_required = {
             "kind",
@@ -1031,13 +1110,13 @@ def _extractor_receipt_binding(
     path_value = receipt.get("extractor_receipt_path")
     if not isinstance(path_value, str):
         raise MultisourceError("extractor receipt path is invalid")
-    path = _private_regular(Path(path_value), MAX_RAW_RECEIPT_BYTES, root=root)
-    actual = _file_sha256(path)
+    document, actual = _read_private_json(
+        Path(path_value), MAX_RAW_RECEIPT_BYTES, root=root
+    )
     if actual != _hex_digest(
         receipt.get("extractor_receipt_sha256"), label="extractor receipt"
     ):
         raise MultisourceError("extractor receipt hash drifted")
-    document = _read_json(path, MAX_RAW_RECEIPT_BYTES)
     required = {
         "source_key",
         "provider_id",
@@ -1069,11 +1148,11 @@ def _raw_receipt_binding(
     raw_path_value = receipt.get("raw_receipt_path")
     if not isinstance(raw_path_value, str):
         raise MultisourceError("raw receipt path is invalid")
-    raw_path = _private_regular(Path(raw_path_value), MAX_RAW_RECEIPT_BYTES, root=root)
-    raw_hash = _file_sha256(raw_path)
+    document, raw_hash = _read_private_json(
+        Path(raw_path_value), MAX_RAW_RECEIPT_BYTES, root=root
+    )
     if raw_hash != receipt["raw_receipt_sha256"]:
         raise MultisourceError("raw receipt hash drifted")
-    document = _read_json(raw_path, MAX_RAW_RECEIPT_BYTES)
     required = {
         "request_url",
         "final_url",
@@ -1220,12 +1299,10 @@ def _fidelity_evidence(
         path_value = receipt.get(f"{name}_path")
         if not isinstance(path_value, str):
             raise MultisourceError(f"{name} path is invalid")
-        path = _private_regular(Path(path_value), maximum, root=root)
-        actual = _file_sha256(path)
+        document, actual = _read_private_json(Path(path_value), maximum, root=root)
         expected = _hex_digest(receipt.get(f"{name}_sha256"), label=name)
         if actual != expected:
             raise MultisourceError(f"{name} hash drifted")
-        document = _read_json(path, maximum)
         if not isinstance(document, Mapping):
             raise MultisourceError(f"{name} evidence is malformed")
         documents[name] = document
@@ -1939,10 +2016,7 @@ def produce_jll_enumeration_artifacts(
     observed: list[datetime] = []
     pages_by_filter: dict[tuple[str, str], list[tuple[int, int, int]]] = {}
     for path in page_receipt_paths:
-        private_path = _private_regular(
-            path.resolve(), MAX_RAW_RECEIPT_BYTES, root=root
-        )
-        page = _read_json(private_path, MAX_RAW_RECEIPT_BYTES)
+        page, page_hash = _read_private_json(path, MAX_RAW_RECEIPT_BYTES, root=root)
         required = {
             "kind",
             "request_url",
@@ -2036,9 +2110,7 @@ def produce_jll_enumeration_artifacts(
         pages_by_filter.setdefault(
             (variables["propertyTypes"][0], variables["tenureTypes"][0]), []
         ).append((variables["skip"], count, len(items)))
-        page_manifests.append(
-            {"path": str(private_path), "sha256": _file_sha256(private_path)}
-        )
+        page_manifests.append({"path": str(path), "sha256": page_hash})
     if {
         property_type for property_type, _ in pages_by_filter
     } != _JLL_ENUMERATION_PROPERTY_TYPES or len(
@@ -2058,10 +2130,7 @@ def produce_jll_enumeration_artifacts(
             raise MultisourceError("JLL producer page cardinality is invalid")
     detail_by_target: dict[str, tuple[Path, str, str]] = {}
     for path in detail_receipt_paths:
-        private_path = _private_regular(
-            path.resolve(), MAX_RAW_RECEIPT_BYTES, root=root
-        )
-        detail = _read_json(private_path, MAX_RAW_RECEIPT_BYTES)
+        detail, detail_hash = _read_private_json(path, MAX_RAW_RECEIPT_BYTES, root=root)
         if not isinstance(detail, Mapping) or not isinstance(detail.get("body"), str):
             raise MultisourceError("JLL producer detail artifact is malformed")
         property_value = _jll_next_property({"body": {"rawHtml": detail["body"]}})
@@ -2072,16 +2141,18 @@ def produce_jll_enumeration_artifacts(
         target = _canonical_jll_listing_url(detail_url, source)
         if target in detail_by_target:
             raise MultisourceError("JLL producer detail target is duplicated")
-        detail_by_target[target] = (private_path, _file_sha256(private_path), detail_id)
+        detail_by_target[target] = (path, detail_hash, detail_id)
     if set(detail_by_target) != set(search_targets.values()):
         raise MultisourceError("JLL producer has unresolved search targets")
     detail_ids = [detail_by_target[target][2] for target in search_targets.values()]
     if len(set(detail_ids)) != len(detail_ids):
         raise MultisourceError("JLL producer detail identities are duplicated")
-    stage = Path(tempfile.mkdtemp(prefix=".jll-produce-", dir=root))
-    stage.chmod(0o700)
-    published: list[Path] = []
+    root_fd = _open_private_directory(root)
+    stage: Path | None = None
+    published: dict[str, tuple[int, int]] = {}
     try:
+        stage = Path(tempfile.mkdtemp(prefix=".jll-produce-", dir=root))
+        stage.chmod(0o700)
         final_resolution_paths = [
             root / f"{aggregate_path.stem}.resolution-{index}.json"
             for index in range(len(search_targets))
@@ -2142,12 +2213,18 @@ def produce_jll_enumeration_artifacts(
             final_resolution_paths,
             strict=True,
         ):
-            os.link(staged_path, final_path, follow_symlinks=False)
-            published.append(final_path)
-            staged_path.unlink()
-        os.link(staged_aggregate_path, aggregate_path, follow_symlinks=False)
-        published.append(aggregate_path)
-        staged_aggregate_path.unlink()
+            _publish_staged_file(
+                staged_path,
+                final_path,
+                root_fd=root_fd,
+                published=published,
+            )
+        _publish_staged_file(
+            staged_aggregate_path,
+            aggregate_path,
+            root_fd=root_fd,
+            published=published,
+        )
         _fsync_directory(root)
         if not isinstance(
             _verified_jll_enumeration_population(
@@ -2163,17 +2240,32 @@ def produce_jll_enumeration_artifacts(
         ):
             raise MultisourceError("published JLL producer output is not consumable")
         return {"path": str(aggregate_path), "sha256": _sha256(aggregate_raw)}
-    except Exception:
-        for path in reversed(published):
+    except Exception as exc:
+        replacements: list[str] = []
+        for name, owned_inode in reversed(published.items()):
             try:
-                path.unlink()
+                if _entry_inode(root_fd, name) == owned_inode:
+                    os.unlink(name, dir_fd=root_fd)
+                else:
+                    replacements.append(name)
             except OSError:
                 pass
+            except MultisourceError:
+                replacements.append(name)
+        if replacements:
+            raise MultisourceError(
+                "producer cleanup left replaced output entries: "
+                + ", ".join(sorted(replacements))
+            ) from exc
         raise
     finally:
-        for path in stage.iterdir():
-            path.unlink()
-        stage.rmdir()
+        try:
+            if stage is not None:
+                for path in stage.iterdir():
+                    path.unlink()
+                stage.rmdir()
+        finally:
+            os.close(root_fd)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2182,12 +2274,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=CONFIG)
     args = parser.parse_args(argv)
     try:
-        manifest_root = _private_root(args.receipts.parent.resolve())
-        receipts = _read_json(
-            _private_regular(
-                args.receipts.resolve(), MAX_RECEIPT_BYTES, root=manifest_root
-            ),
-            MAX_RECEIPT_BYTES,
+        manifest_root = _private_root(args.receipts.parent)
+        receipts, _ = _read_private_json(
+            args.receipts, MAX_RECEIPT_BYTES, root=manifest_root
         )
         if not isinstance(receipts, dict):
             raise MultisourceError("receipt root must be an object")

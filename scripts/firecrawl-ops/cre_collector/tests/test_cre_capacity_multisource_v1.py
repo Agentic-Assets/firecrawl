@@ -9,9 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 import cre_capacity_multisource_v1 as multisource
+import pytest
 
 ADMISSION_NOW = datetime(2026, 9, 14, 12, 5, tzinfo=timezone.utc)
 OBSERVED_AT = "2026-09-14T12:00:00Z"
@@ -765,6 +764,203 @@ def test_jll_producer_rejects_existing_or_symlinked_output(
             detail_receipt_paths=details,
             aggregate_path=linked,
         )
+
+
+@pytest.mark.parametrize("artifact_kind", ["page", "detail"])
+def test_jll_producer_rejects_in_root_symlinked_input(
+    evidence_root: Path, artifact_kind: str
+) -> None:
+    root = _private_dir(evidence_root, f"jll-producer-input-{artifact_kind}")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    original = _read(Path(rows[0]["enumeration_receipt_path"]))
+    pages = [Path(item["path"]) for item in original["page_receipts"]]
+    details = [
+        Path(_read(Path(item["path"]))["detail_receipt_path"])
+        for item in original["resolution_receipts"]
+    ]
+    if artifact_kind == "page":
+        linked = root / "linked-page.json"
+        linked.symlink_to(pages[0].name)
+        pages[0] = linked
+    else:
+        linked = root / "linked-detail.json"
+        linked.symlink_to(details[0].name)
+        details[0] = linked
+
+    with pytest.raises(multisource.MultisourceError):
+        multisource.produce_jll_enumeration_artifacts(
+            receipt_root=root,
+            page_receipt_paths=pages,
+            detail_receipt_paths=details,
+            aggregate_path=root / f"{artifact_kind}-symlink.json",
+        )
+
+
+@pytest.mark.parametrize("artifact_kind", ["page", "detail"])
+def test_jll_producer_does_not_read_input_replaced_after_validation(
+    evidence_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_kind: str,
+) -> None:
+    root = _private_dir(evidence_root, f"jll-producer-toctou-{artifact_kind}")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    original = _read(Path(rows[0]["enumeration_receipt_path"]))
+    pages = [Path(item["path"]) for item in original["page_receipts"]]
+    details = [
+        Path(_read(Path(item["path"]))["detail_receipt_path"])
+        for item in original["resolution_receipts"]
+    ]
+    candidate = pages[0] if artifact_kind == "page" else details[0]
+    outside = tmp_path / f"outside-{artifact_kind}.json"
+    outside.write_text("outside data must never be read")
+    original_open = multisource.os.open
+    original_read = multisource.os.read
+    replaced = False
+    read_after_replacement = False
+
+    def replace_after_lstat(path: Any, flags: int, *args: Any) -> int:
+        nonlocal replaced
+        if path == candidate and not replaced:
+            candidate.unlink()
+            candidate.symlink_to(outside)
+            replaced = True
+        return original_open(path, flags, *args)
+
+    def reject_read_after_replacement(descriptor: int, size: int) -> bytes:
+        nonlocal read_after_replacement
+        if replaced:
+            read_after_replacement = True
+            raise AssertionError("producer read the replacement after validation")
+        return original_read(descriptor, size)
+
+    monkeypatch.setattr(multisource.os, "open", replace_after_lstat)
+    monkeypatch.setattr(multisource.os, "read", reject_read_after_replacement)
+    with pytest.raises(multisource.MultisourceError):
+        multisource.produce_jll_enumeration_artifacts(
+            receipt_root=root,
+            page_receipt_paths=pages,
+            detail_receipt_paths=details,
+            aggregate_path=root / f"{artifact_kind}-toctou.json",
+        )
+
+    assert replaced
+    assert not read_after_replacement
+
+
+def test_jll_producer_root_descriptor_failure_leaves_no_staging_directory(
+    evidence_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _private_dir(evidence_root, "jll-producer-root-descriptor")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    original = _read(Path(rows[0]["enumeration_receipt_path"]))
+    pages = [Path(item["path"]) for item in original["page_receipts"]]
+    details = [
+        Path(_read(Path(item["path"]))["detail_receipt_path"])
+        for item in original["resolution_receipts"]
+    ]
+    baseline = {path.name for path in root.iterdir()}
+    original_open = multisource.os.open
+
+    def reject_root_descriptor(path: Any, flags: int, *args: Any) -> int:
+        if path == root:
+            raise OSError("root descriptor denied")
+        return original_open(path, flags, *args)
+
+    monkeypatch.setattr(multisource.os, "open", reject_root_descriptor)
+    with pytest.raises(multisource.MultisourceError, match="directory is unavailable"):
+        multisource.produce_jll_enumeration_artifacts(
+            receipt_root=root,
+            page_receipt_paths=pages,
+            detail_receipt_paths=details,
+            aggregate_path=root / "root-descriptor.json",
+        )
+
+    assert {path.name for path in root.iterdir()} == baseline
+
+
+def test_jll_producer_preserves_replacement_between_link_and_ownership_capture(
+    evidence_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _private_dir(evidence_root, "jll-producer-publication-race")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    original = _read(Path(rows[0]["enumeration_receipt_path"]))
+    pages = [Path(item["path"]) for item in original["page_receipts"]]
+    details = [
+        Path(_read(Path(item["path"]))["detail_receipt_path"])
+        for item in original["resolution_receipts"]
+    ]
+    replacement = {"replacement": "must survive publication ownership check"}
+    original_link = multisource.os.link
+    raced_path: Path | None = None
+
+    def replace_after_link(
+        source: Any, destination: Any, *, follow_symlinks: bool = True
+    ) -> None:
+        nonlocal raced_path
+        original_link(source, destination, follow_symlinks=follow_symlinks)
+        if raced_path is None:
+            raced_path = Path(destination)
+            raced_path.unlink()
+            _write(root, raced_path.name, replacement)
+
+    monkeypatch.setattr(multisource.os, "link", replace_after_link)
+    with pytest.raises(
+        multisource.MultisourceError, match="output changed during publication"
+    ):
+        multisource.produce_jll_enumeration_artifacts(
+            receipt_root=root,
+            page_receipt_paths=pages,
+            detail_receipt_paths=details,
+            aggregate_path=root / "publication-race.json",
+        )
+
+    assert raced_path is not None
+    assert _read(raced_path) == replacement
+    assert not list(root.glob(".jll-produce-*"))
+
+
+def test_jll_producer_failure_cleanup_preserves_replaced_output(
+    evidence_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _private_dir(evidence_root, "jll-producer-cleanup-race")
+    rows = _receipt_batch(root, source_key="jll", count=16)
+    original = _read(Path(rows[0]["enumeration_receipt_path"]))
+    pages = [Path(item["path"]) for item in original["page_receipts"]]
+    details = [
+        Path(_read(Path(item["path"]))["detail_receipt_path"])
+        for item in original["resolution_receipts"]
+    ]
+    aggregate_path = root / "raced-aggregate.json"
+    replacement = {"replacement": "must survive producer cleanup"}
+    verifier = multisource._verified_jll_enumeration_population
+    calls = 0
+
+    def fail_after_publishing(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            aggregate_path.unlink()
+            _write(root, aggregate_path.name, replacement)
+            return False
+        return verifier(*args, **kwargs)
+
+    monkeypatch.setattr(
+        multisource, "_verified_jll_enumeration_population", fail_after_publishing
+    )
+    with pytest.raises(
+        multisource.MultisourceError,
+        match="cleanup left replaced output entries: raced-aggregate.json",
+    ):
+        multisource.produce_jll_enumeration_artifacts(
+            receipt_root=root,
+            page_receipt_paths=pages,
+            detail_receipt_paths=details,
+            aggregate_path=aggregate_path,
+        )
+
+    assert _read(aggregate_path) == replacement
+    assert not list(root.glob("raced-aggregate.resolution-*.json"))
 
 
 def test_jll_producer_prevalidation_and_staging_leave_no_partial_artifacts(
