@@ -1753,7 +1753,11 @@ def _recover_quarantine_while_synchronized(
                     message="quarantine lock handoff changed",
                 )
             elif not source_present and archived_present:
-                pass
+                # An archived expected inode is replayable only when its
+                # canonical source name is genuinely absent.  A foreign or
+                # reappeared source is forensic evidence, never absence.
+                if not _path_is_absent(lock_path):
+                    raise RuntimeAdmissionError("quarantine lock handoff changed")
             else:
                 raise RuntimeAdmissionError("quarantine lock handoff changed")
             if not _archive_entries_are_exact(archive, [archived_lock.name]):
@@ -1791,7 +1795,10 @@ def _recover_quarantine_while_synchronized(
                     message="quarantine authority handoff changed",
                 )
             elif not source_present and archived_present:
-                pass
+                # Apply the same strict absence rule to the authority sidecar
+                # before any further paired-archive mutation can occur.
+                if not _path_is_absent(authority):
+                    raise RuntimeAdmissionError("quarantine authority handoff changed")
             else:
                 raise RuntimeAdmissionError("quarantine authority handoff changed")
             if not _archive_entries_are_exact(

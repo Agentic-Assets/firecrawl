@@ -1356,6 +1356,115 @@ def test_quarantine_recovery_replays_rename_before_durable_handoff(
     assert not guard.exists()
 
 
+@pytest.mark.parametrize(
+    ("member", "expected_phase"),
+    [(".cre.lock", "lock-renaming"), (".cre.lock.authority", "authority-renaming")],
+)
+def test_quarantine_recovery_refuses_reappeared_source_before_any_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    member: str,
+    expected_phase: str,
+) -> None:
+    """An archived member cannot make a reappeared canonical path look absent."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    real_rename = runtime._atomic_rename_noreplace
+    real_fsync = runtime._fsync_directory
+    archive: Path | None = None
+
+    def record_member_rename(source: Path, target: Path, *, message: str) -> None:
+        nonlocal archive
+        if source.name == member:
+            archive = target.parent
+        real_rename(source, target, message=message)
+
+    def fail_archive_fsync_after_member_rename(path: Path) -> None:
+        if archive is not None and path == archive:
+            raise OSError("simulated archive durability interruption")
+        real_fsync(path)
+
+    monkeypatch.setattr(runtime, "_atomic_rename_noreplace", record_member_rename)
+    monkeypatch.setattr(
+        runtime, "_fsync_directory", fail_archive_fsync_after_member_rename
+    )
+    with pytest.raises(OSError, match="archive durability interruption"):
+        runtime.recover_quarantine(execute=True)
+    assert archive is not None
+    guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
+    assert json.loads(guard.read_text(encoding="utf-8"))["phase"] == expected_phase
+
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    source = lock_path if member == lock_path.name else authority
+    if member == lock_path.name:
+        source.mkdir(mode=0o700)
+    else:
+        source.write_text("foreign authority\n", encoding="utf-8")
+        source.chmod(0o600)
+
+    def snapshot_tree(path: Path) -> list[tuple[object, ...]]:
+        result: list[tuple[object, ...]] = []
+        for entry in [path, *sorted(path.rglob("*"))]:
+            observed = entry.lstat()
+            result.append(
+                (
+                    entry.relative_to(path),
+                    observed.st_dev,
+                    observed.st_ino,
+                    stat.S_IMODE(observed.st_mode),
+                    observed.st_uid,
+                    observed.st_nlink,
+                    entry.read_bytes() if stat.S_ISREG(observed.st_mode) else None,
+                )
+            )
+        return result
+
+    guard_before = guard.read_bytes()
+    archive_before = snapshot_tree(archive)
+    source_before = snapshot_tree(source) if source.is_dir() else source.read_bytes()
+    fsync_paths: list[Path] = []
+
+    def record_replay_fsync(path: Path) -> None:
+        fsync_paths.append(path)
+        real_fsync(path)
+
+    monkeypatch.setattr(runtime, "_fsync_directory", record_replay_fsync)
+    monkeypatch.setattr(
+        runtime,
+        "_atomic_rename_noreplace",
+        lambda *_args, **_kwargs: pytest.fail("reappeared source must not be renamed"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_write_recovery_guard",
+        lambda *_args, **_kwargs: pytest.fail(
+            "reappeared source must not advance guard"
+        ),
+    )
+    with pytest.raises(runtime.RuntimeAdmissionError, match="handoff changed"):
+        runtime.recover_quarantine(execute=True)
+
+    assert guard.read_bytes() == guard_before
+    assert snapshot_tree(archive) == archive_before
+    if source.is_dir():
+        assert snapshot_tree(source) == source_before
+    else:
+        assert source.read_bytes() == source_before
+    assert not (archive / "recovery-receipt.json").exists()
+    assert fsync_paths == [archive.parent]
+
+
 def test_dry_run_transition_requires_unchanged_machine_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
