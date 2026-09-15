@@ -95,15 +95,16 @@ The launchd/manual tier entrypoint, `cre_tier_dispatch.py`, is also a normal
 `SharedLock` owner. It forks `cre_run_tier.sh` only after taking both flocks and
 passes the descriptor-bound authority to that child for the complete tier
 lifetime. The child first creates a dedicated session/process group, then
-execs the shell. SIGINT and SIGTERM are forwarded only to that owned group;
-after its shell leader is reaped, the dispatcher keeps both flocks until all
-foreground descendants exit. It sends TERM, then a bounded KILL escalation
-only to that group, and deliberately continues holding authority if an owned
-group survives KILL. The shell verifies inherited proof before any collector
-work; it never creates, reclaims, or removes the canonical lock namespace
-itself. That proof reasserts a nonblocking exclusive flock on both inherited
-open file descriptions, so a separately opened same-UID descriptor with copied
-metadata is rejected while the real owner remains active.
+execs the shell. SIGINT and SIGTERM are forwarded only while the unreaped
+session leader proves that exact owned group. A bounded KILL escalation uses
+the same proof before the leader is reaped. Afterwards the dispatcher keeps
+both flocks until the group is absent but never signals a bare numeric PGID,
+which could have been reused by an unrelated process group. The shell verifies
+inherited proof before any collector work; it never creates, reclaims, or
+removes the canonical lock namespace itself. That proof reasserts a
+nonblocking exclusive flock on both inherited open file descriptions, so a
+separately opened same-UID descriptor with copied metadata is rejected while
+the real owner remains active.
 Manual repair entrypoints are also ordinary `SharedLock` callers. They reject a
 legacy file at the canonical lock path rather than unlinking or migrating it;
 only the explicit governed quarantine recovery may handle that forensic

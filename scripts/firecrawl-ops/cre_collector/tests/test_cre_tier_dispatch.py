@@ -201,8 +201,8 @@ def test_worker_group_signal_refuses_dispatcher_or_unrelated_group(monkeypatch):
     assert signals == [(4243, signal.SIGTERM)]
 
 
-def test_group_drain_signals_surviving_descendants_after_leader_reap(monkeypatch):
-    existence = iter((True, False, False))
+def test_group_drain_never_signals_a_bare_post_reap_pgid(monkeypatch):
+    existence = iter((True, False))
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(dispatch, "_worker_group_exists", lambda _pgid: next(existence))
     monkeypatch.setattr(
@@ -211,9 +211,40 @@ def test_group_drain_signals_surviving_descendants_after_leader_reap(monkeypatch
         lambda pgid, signum: signals.append((pgid, signum)) or True,
     )
 
-    dispatch._drain_worker_group(4243, initial_signal_sent=False)
+    dispatch._drain_worker_group(4243)
 
-    assert signals == [(4243, signal.SIGTERM)]
+    assert signals == []
+
+
+def test_kill_escalation_requires_the_unreaped_session_leader(monkeypatch):
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(dispatch, "_owned_worker_group", lambda pid: pid == 4243)
+    monkeypatch.setattr(
+        dispatch,
+        "_signal_worker_group",
+        lambda pgid, signum: signals.append((pgid, signum)) or True,
+    )
+
+    assert dispatch._escalate_owned_worker_group(4243, 4243)
+    assert not dispatch._escalate_owned_worker_group(4243, 4244)
+    assert signals == [(4243, signal.SIGKILL)]
+
+
+def test_wait_escalates_before_reaping_the_identity_bound_leader(monkeypatch):
+    waits = iter(((0, 0), (4243, 0)))
+    clocks = iter((0.0, 6.0))
+    escalations: list[tuple[int, int]] = []
+    monkeypatch.setattr(dispatch.os, "waitpid", lambda *_args: next(waits))
+    monkeypatch.setattr(dispatch.time, "monotonic", lambda: next(clocks))
+    monkeypatch.setattr(dispatch.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        dispatch,
+        "_escalate_owned_worker_group",
+        lambda pid, pgid: escalations.append((pid, pgid)) or True,
+    )
+
+    assert dispatch._wait_for_child(4243, [signal.SIGTERM], worker_pgid=4243) == 0
+    assert escalations == [(4243, 4243)]
 
 
 def test_child_retains_authority_after_dispatcher_sigkill_until_worker_exits(tmp_path):

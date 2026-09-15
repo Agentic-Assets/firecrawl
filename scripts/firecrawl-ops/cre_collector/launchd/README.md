@@ -161,11 +161,12 @@ takes the canonical Python `SharedLock`, including its persistent
 shell worker. The child first enters a dedicated session/process group and
 inherits both descriptors for its whole work lifetime; therefore an unexpected
 dispatcher-parent exit cannot free the authority while the worker continues.
-SIGINT/SIGTERM are forwarded only to that owned group. The dispatcher waits for
-the shell and all foreground descendants before releasing the lock, with TERM
-then a bounded owned-group KILL escalation; an unkillable owned group keeps the
-dispatcher and authority alive rather than opening an unlocked window. The
-shell verifies those inherited descriptors and cannot be used as an unlocked
+SIGINT/SIGTERM are forwarded only while the unreaped session leader proves that
+owned group. The dispatcher waits for the shell and all foreground descendants
+before releasing the lock. It may escalate TERM to KILL only under that same
+pre-reap identity proof; afterwards it only waits for group absence and never
+signals a bare numeric PGID that another process could reuse. The shell
+verifies those inherited descriptors and cannot be used as an unlocked
 `--already-locked` shortcut.
 
 If another tier, benchmark, or operator quarantine recovery owns either

@@ -33,7 +33,6 @@ COLLECTOR_DIR = Path(__file__).resolve().parent
 RUNNER = COLLECTOR_DIR / "launchd" / "cre_run_tier.sh"
 TIERS = frozenset({"monitor", "enrich", "weekly", "daily"})
 TIER_GROUP_TERM_GRACE_SECONDS = 5.0
-TIER_GROUP_KILL_GRACE_SECONDS = 5.0
 
 
 class TierDispatchError(RuntimeError):
@@ -145,15 +144,45 @@ def _default_command(tier: str) -> list[str]:
     return ["/bin/bash", str(RUNNER), "--already-locked", tier]
 
 
-def _wait_for_child(child_pid: int, forwarded_signal: list[int]) -> int:
+def _escalate_owned_worker_group(worker_pid: int, worker_pgid: int) -> bool:
+    """Escalate only while the unreaped session leader proves group identity."""
+    if worker_pgid != worker_pid or not _owned_worker_group(worker_pid):
+        return False
+    return _signal_worker_group(worker_pgid, signal.SIGKILL)
+
+
+def _wait_for_child(
+    child_pid: int,
+    forwarded_signal: list[int],
+    *,
+    worker_pgid: int = -1,
+) -> int:
+    """Reap the direct worker, escalating only while it is identity-bound."""
+    term_deadline: float | None = None
+    kill_attempted = False
     while True:
         try:
-            _pid, status = os.waitpid(child_pid, 0)
-            return os.waitstatus_to_exitcode(status)
+            waited_pid, status = os.waitpid(child_pid, os.WNOHANG)
         except InterruptedError:
             continue
         except ChildProcessError as exc:
             raise TierDispatchError("CRE tier worker disappeared before wait") from exc
+        if waited_pid:
+            return os.waitstatus_to_exitcode(status)
+        if forwarded_signal and term_deadline is None:
+            term_deadline = time.monotonic() + TIER_GROUP_TERM_GRACE_SECONDS
+        if (
+            term_deadline is not None
+            and not kill_attempted
+            and time.monotonic() >= term_deadline
+        ):
+            # The direct child remains unreaped while this loop runs, so its
+            # PID cannot be reused.  The session-leader proof binds the KILL to
+            # that exact dedicated group; a post-reap numeric PGID is never
+            # escalated.
+            _escalate_owned_worker_group(child_pid, worker_pgid)
+            kill_attempted = True
+        time.sleep(0.02)
 
 
 def _owned_worker_group(worker_pid: int) -> bool:
@@ -184,43 +213,20 @@ def _worker_group_exists(worker_pgid: int) -> bool:
     return _signal_worker_group(worker_pgid, 0)
 
 
-def _drain_worker_group(worker_pgid: int, *, initial_signal_sent: bool) -> None:
+def _drain_worker_group(worker_pgid: int) -> None:
     """Keep the caller's lock until every worker-group member is gone.
 
     A child shell can exit before a foreground descendant.  The group is a
     dedicated session whose ID is not the dispatcher's process group.  Once the
-    shell is reaped, a present group still reserves that ID for its descendants;
-    a missing group is never signaled.  A lingering group receives TERM, then a
-    bounded KILL escalation.  If an owned group somehow survives KILL, the
-    dispatcher deliberately remains alive and keeps authority rather than
-    returning and creating an unlocked window.  A supervising service may
-    still stop this dispatcher, but inherited descriptors keep the flocks held
-    by any surviving worker.
+    shell is reaped, only a numeric PGID remains.  It is never signaled: an
+    unrelated future group could reuse that number.  Escalation occurs before
+    reaping, while the direct session leader still proves the group identity.
+    Here the dispatcher merely keeps authority until the group is absent.  A
+    reused PGID can therefore make it wait conservatively, but never receive a
+    signal or cause an unlocked window.
     """
-    if not _worker_group_exists(worker_pgid):
-        return
-
-    if not initial_signal_sent:
-        _signal_worker_group(worker_pgid, signal.SIGTERM)
-    deadline = time.monotonic() + TIER_GROUP_TERM_GRACE_SECONDS
     while _worker_group_exists(worker_pgid):
-        if time.monotonic() >= deadline:
-            _signal_worker_group(worker_pgid, signal.SIGKILL)
-            break
-        time.sleep(0.02)
-
-    deadline = time.monotonic() + TIER_GROUP_KILL_GRACE_SECONDS
-    while _worker_group_exists(worker_pgid):
-        if time.monotonic() >= deadline:
-            print(
-                "[cre_tier_dispatch] CRE tier worker group survived owned "
-                "SIGKILL; retaining authority until it exits",
-                file=sys.stderr,
-            )
-            while _worker_group_exists(worker_pgid):
-                time.sleep(0.1)
-            return
-        time.sleep(0.02)
+        time.sleep(0.1)
 
 
 def run_tier(
@@ -283,20 +289,20 @@ def run_tier(
     worker_pgid = -1
     forwarded_signal: list[int] = []
     previous_handlers: dict[int, object] = {}
-    signal_failure: TierDispatchError | None = None
-    worker_group_signal_sent = False
     readiness_read, readiness_write = os.pipe()
 
     def forward_signal(signum: int, _frame: object) -> None:
-        nonlocal signal_failure, worker_group_signal_sent
         if signum not in forwarded_signal:
             forwarded_signal.append(signum)
         if worker_pgid > 0:
             try:
                 if _owned_worker_group(worker_pgid):
-                    worker_group_signal_sent = _signal_worker_group(worker_pgid, signum)
-            except TierDispatchError as exc:
-                signal_failure = exc
+                    _signal_worker_group(worker_pgid, signum)
+            except TierDispatchError:
+                # The direct leader is no longer an identity proof.  The reap
+                # path keeps authority and waits, but must not signal a bare
+                # PGID that might belong to another process group.
+                pass
 
     try:
         child_pid = os.fork()
@@ -323,10 +329,8 @@ def run_tier(
         worker_pgid = child_pid
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous_handlers[signum] = signal.signal(signum, forward_signal)
-        child_rc = _wait_for_child(child_pid, forwarded_signal)
-        if signal_failure is not None:
-            raise signal_failure
-        _drain_worker_group(worker_pgid, initial_signal_sent=worker_group_signal_sent)
+        child_rc = _wait_for_child(child_pid, forwarded_signal, worker_pgid=worker_pgid)
+        _drain_worker_group(worker_pgid)
         if child_rc < 0:
             return 128 + -child_rc
         if forwarded_signal and child_rc == 0:
