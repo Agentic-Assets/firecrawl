@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 from .contracts import C10Error, require_sha256
 from .policy import load_policy
+from .strict_detail_batch_b import strict_detail_batch_b_adapters
 
 
 class C10SourceAdapter(Protocol):
@@ -63,6 +64,17 @@ def default_registry() -> dict[str, C10SourceAdapter]:
         )
         for source in load_policy()["sources"]
     }
+
+
+def batch_b_registry() -> dict[str, C10SourceAdapter]:
+    """Return Batch B receipt validators plus fail-closed placeholders.
+
+    This is intentionally not an admitting registry: its six concrete adapters
+    remain ``fully_verified=False`` until their native proof chains are reviewed.
+    """
+    registry = default_registry()
+    registry.update(strict_detail_batch_b_adapters())
+    return registry
 
 
 def verified_registry(
