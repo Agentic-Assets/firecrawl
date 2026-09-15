@@ -2741,6 +2741,49 @@ def test_candidate_rollback_lock_reclaims_interrupted_stale_tombstone(
     assert not tombstone.exists()
 
 
+def test_candidate_rollback_lock_reclaims_after_legacy_guard_move(
+    tmp_path: Path,
+) -> None:
+    """Rollback remains owned after the legacy-guard move crash prefix."""
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.mkdir()
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    (lock_path / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    authority.write_text(f"v1 {owner} {token} {generation} normal\n", encoding="utf-8")
+    guard = lock_path.with_name(f"{lock_path.name}.reclaim")
+    guard.mkdir()
+    (lock_path / "lease").unlink()
+    initializer = refresh.SharedLock(lock_path)
+    initializer._claim_authority("n" * 32)
+    fields = initializer._authority_fields(initializer.authority_fd)
+    state = refresh._AuthorityReclaimState(
+        owner=fields[0],
+        token=fields[1],
+        generation=fields[2],
+        recovery_required=False,
+        source_identity=refresh._lock_directory_identity(lock_path),
+        legacy_guard=1,
+    )
+    initializer._write_reclaim_state(state)
+    os.rename(guard, initializer._legacy_guard_forensic_path(state))
+    initializer._fsync_lock_parent()
+    initializer._release_authority()
+
+    with benchmark._candidate_rollback_lock(lock_path) as (held_lock, initial_error):
+        assert initial_error is None
+        descriptor = held_lock._owned_directory_fd()
+        os.close(descriptor)
+        held_lock.clear_recovery_requirement()
+
+    assert not lock_path.exists()
+    assert not lock_path.with_name(f"{lock_path.name}.reclaim").exists()
+
+
 def test_candidate_pair_stale_reclaim_lease_failure_recovers_and_rolls_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

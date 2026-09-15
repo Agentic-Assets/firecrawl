@@ -32,7 +32,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Self
@@ -682,7 +682,9 @@ class _AuthorityReclaimState:
     generation: str | None
     recovery_required: bool
     source_identity: tuple[int, int]
-    legacy_guard: bool = False
+    # 0 is not legacy, 1 is the original sentinel still at `.reclaim`, and
+    # 2 is the fsynced post-move state with the sentinel at its forensic path.
+    legacy_guard: int = 0
 
 
 def _lock_requires_operator_recovery(lock_dir: Path) -> bool:
@@ -952,6 +954,19 @@ class SharedLock:
             return False
         finally:
             os.close(guard_fd)
+        return self._verified_interrupted_legacy_source(authority)
+
+    def _verified_interrupted_legacy_source(
+        self, authority: tuple[int, str, str, bool]
+    ) -> bool:
+        """Validate the old partial pid/lease residue without its sentinel."""
+        owner, _token, generation, recovery_required = authority
+        if (
+            self._authority_is_neutral(authority)
+            or recovery_required
+            or _pid_alive(owner)
+        ):
+            return False
         try:
             lock_fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError:
@@ -1036,7 +1051,7 @@ class SharedLock:
             raise LockHeldError(
                 "CRE lock authority reclaim state is malformed"
             ) from exc
-        if identity[0] < 0 or identity[1] <= 0 or legacy_raw not in {"0", "1"}:
+        if identity[0] < 0 or identity[1] <= 0 or legacy_raw not in {"0", "1", "2"}:
             raise LockHeldError("CRE lock authority reclaim state is malformed")
         return _AuthorityReclaimState(
             owner=owner,
@@ -1044,7 +1059,7 @@ class SharedLock:
             generation=generation_value,
             recovery_required=False,
             source_identity=identity,
-            legacy_guard=legacy_raw == "1",
+            legacy_guard=int(legacy_raw),
         )
 
     def _write_authority_bytes(self, payload: bytes) -> None:
@@ -1093,6 +1108,31 @@ class SharedLock:
         finally:
             os.close(parent_fd)
 
+    def _legacy_guard_forensic_path(self, state: _AuthorityReclaimState) -> Path:
+        if state.owner is None or state.token is None:
+            raise LockHeldError("CRE legacy reclaim state is malformed")
+        tombstone = self.path.with_name(f"{self.path.name}.reclaim")
+        return tombstone.with_name(f"{tombstone.name}.legacy-guard.{state.token}")
+
+    @staticmethod
+    def _empty_real_directory(path: Path) -> bool:
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            return False
+        try:
+            opened = os.fstat(descriptor)
+            named = path.lstat()
+            return (
+                stat.S_ISDIR(opened.st_mode)
+                and (opened.st_dev, opened.st_ino) == (named.st_dev, named.st_ino)
+                and not os.listdir(descriptor)
+            )
+        except OSError:
+            return False
+        finally:
+            os.close(descriptor)
+
     def _resume_reclaim_state(self, state: _AuthorityReclaimState) -> None:
         """Finish a previously fsynced rename/delete handoff under this flock."""
         self._require_authority_hold()
@@ -1122,23 +1162,45 @@ class SharedLock:
                 if owner is None or _pid_alive(owner):
                     raise LockHeldError("CRE reclaim source owner changed")
             elif state.legacy_guard:
-                if not self._verified_interrupted_legacy_reclaim(
-                    (state.owner, state.token or "", state.generation or "", False)
-                ):
+                legacy_authority = (
+                    state.owner,
+                    state.token or "",
+                    state.generation or "",
+                    False,
+                )
+                if not self._verified_interrupted_legacy_source(legacy_authority):
                     raise LockHeldError("CRE reclaim legacy source changed")
             elif (
                 _lock_owner(self.path) != state.owner
                 or _lock_lease(self.path) != state.generation
             ):
                 raise LockHeldError("CRE reclaim source owner or lease changed")
-            if tombstone_identity is not None:
-                if not state.legacy_guard or os.listdir(tombstone):
-                    raise LockHeldError("CRE reclaim tombstone path is occupied")
-                orphan = tombstone.with_name(
-                    f"{tombstone.name}.legacy-guard.{secrets.token_urlsafe(16)}"
-                )
-                os.rename(tombstone, orphan)
-                self._fsync_lock_parent()
+            if state.legacy_guard:
+                forensic = self._legacy_guard_forensic_path(state)
+                if state.legacy_guard == 1:
+                    if tombstone_identity is not None:
+                        if (
+                            not self._empty_real_directory(tombstone)
+                            or forensic.exists()
+                        ):
+                            raise LockHeldError(
+                                "CRE reclaim tombstone path is occupied"
+                            )
+                        os.rename(tombstone, forensic)
+                        self._fsync_lock_parent()
+                    elif not self._empty_real_directory(forensic):
+                        raise LockHeldError("CRE reclaim legacy guard changed")
+                    state = replace(state, legacy_guard=2)
+                    self._write_reclaim_state(state)
+                elif state.legacy_guard == 2:
+                    if tombstone_identity is not None or not self._empty_real_directory(
+                        forensic
+                    ):
+                        raise LockHeldError("CRE reclaim legacy guard changed")
+                else:
+                    raise LockHeldError("CRE reclaim legacy state is malformed")
+            elif tombstone_identity is not None:
+                raise LockHeldError("CRE reclaim tombstone path is occupied")
             os.rename(self.path, tombstone)
             if _lock_directory_identity(tombstone) != state.source_identity:
                 raise LockHeldError("CRE reclaim tombstone changed during handoff")
@@ -1184,7 +1246,7 @@ class SharedLock:
                 generation=None,
                 recovery_required=False,
                 source_identity=original_identity,
-                legacy_guard=legacy_guard,
+                legacy_guard=1 if legacy_guard else 0,
             )
         else:
             state = _AuthorityReclaimState(
@@ -1193,7 +1255,7 @@ class SharedLock:
                 generation=authority[2],
                 recovery_required=False,
                 source_identity=original_identity,
-                legacy_guard=legacy_guard,
+                legacy_guard=1 if legacy_guard else 0,
             )
         self._write_reclaim_state(state)
         self._resume_reclaim_state(state)

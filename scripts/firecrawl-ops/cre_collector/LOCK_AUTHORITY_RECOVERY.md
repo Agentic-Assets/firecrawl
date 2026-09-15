@@ -49,8 +49,13 @@ then fsyncs, restores the prior authority state, and only afterwards commits a
 successor generation. A foreign, replaced, malformed, live, interlocked, or
 recovery-required path fails closed untouched. The older empty `.reclaim`
 sentinel is recognized only for a dead, authority-matching partial legacy
-directory with no entries except safe matching `pid` and `lease` files; its
-empty guard is retained under a distinct forensic name rather than deleted.
+directory with no entries except safe matching `pid` and `lease` files. Its
+transition has two durable prefixes: the reclaim record first marks the
+original sentinel pending, then after its parent-fsynced rename to a
+token-derived forensic name records that moved phase before the canonical
+handoff. A successor accepts only the matching pending sentinel or matching
+forensic guard for that exact stale source, so a crash in the guard-move window
+resumes safely and a foreign guard is never deleted.
 
 If initialization of a newly created sidecar fails after exclusive creation,
 the same process retains the descriptor, inode, token, and generation. It can

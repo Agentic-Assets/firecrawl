@@ -2948,6 +2948,69 @@ os._exit(23)
         successor.release()
 
 
+def test_successor_recovers_after_legacy_guard_move_before_canonical_rename(tmp_path):
+    """The fsynced legacy-guard move is itself a resumable reclaim prefix."""
+    lock_path = tmp_path / ".cre.lock"
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    script = """
+import os
+import sys
+from pathlib import Path
+import cre_checkpoint_refresh as refresh
+path = Path(sys.argv[1])
+owner, token, generation = sys.argv[2:]
+path.mkdir()
+(path / "pid").write_text(f"{owner} 1\\n", encoding="utf-8")
+(path / "lease").write_text(f"{generation}\\n", encoding="utf-8")
+authority = path.with_name(f"{path.name}.authority")
+authority.write_text(f"v1 {owner} {token} {generation} normal\\n", encoding="utf-8")
+guard = path.with_name(f"{path.name}.reclaim")
+guard.mkdir()
+(path / "lease").unlink()
+lock = refresh.SharedLock(path)
+lock._claim_authority("n" * 32)
+fields = lock._authority_fields(lock.authority_fd)
+state = refresh._AuthorityReclaimState(
+    owner=fields[0], token=fields[1], generation=fields[2],
+    recovery_required=False, source_identity=refresh._lock_directory_identity(path),
+    legacy_guard=1,
+)
+lock._write_reclaim_state(state)
+os.rename(guard, lock._legacy_guard_forensic_path(state))
+lock._fsync_lock_parent()
+os._exit(23)
+"""
+    crashed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(lock_path),
+            str(owner),
+            token,
+            generation,
+        ],
+        cwd=Path(refresh.__file__).parent,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert crashed.returncode == 23, crashed.stderr
+
+    successor = refresh.SharedLock(lock_path)
+    successor.acquire()
+    try:
+        forensic = list(tmp_path.glob(".cre.lock.reclaim.legacy-guard.*"))
+        assert len(forensic) == 1
+        assert not lock_path.with_name(f"{lock_path.name}.reclaim").exists()
+        assert refresh._lock_owner(lock_path) == os.getpid()
+    finally:
+        successor.release()
+
+
 @pytest.mark.parametrize("unsafe_entry", ["unexpected", "nonempty-guard", "bad-lease"])
 def test_partial_legacy_reclaim_residue_fails_closed_when_unverified(
     tmp_path, unsafe_entry
