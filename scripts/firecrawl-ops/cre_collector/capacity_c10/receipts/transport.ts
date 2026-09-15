@@ -8,7 +8,7 @@ import {
   canonicalSha256,
   sha256,
 } from "./contracts.js";
-import { type ReceiptArtifactStore } from "./private_store.js";
+import type { ReceiptArtifactStore } from "./private_store.js";
 
 export interface RequestCardInput {
   readonly id: string;
@@ -166,6 +166,30 @@ export function allowlistedCards(
   return result;
 }
 
+/**
+ * Canonical digest for the complete, source-owned set of initial enumeration
+ * cards.  Sorting by id makes the binding independent of a caller's map
+ * insertion order while retaining every request-affecting field (including
+ * host, URL, headers, body, and body digest).
+ */
+export function initialCardSetSha256(
+  sourceKey: string,
+  cards: readonly RequestCardInput[] | ReadonlyMap<string, RequestCard>,
+): string {
+  const frozen = Array.isArray(cards)
+    ? [...allowlistedCards(sourceKey, cards).values()]
+    : [...cards.values()].map((card) => freezeCard(sourceKey, card));
+  if (!frozen.length) throw new C10ReceiptError("source needs an explicit request card");
+  const ids = new Set<string>();
+  for (const card of frozen) {
+    if (card.stage !== "enumeration" || ids.has(card.id)) {
+      throw new C10ReceiptError("initial request-card registry is malformed");
+    }
+    ids.add(card.id);
+  }
+  return canonicalSha256([...frozen].sort((left, right) => left.id.localeCompare(right.id)));
+}
+
 /** Source-bound request execution with a one-attempt terminal result per card. */
 export class SourceBoundOneShotTransport {
   private readonly consumed = new Set<string>();
@@ -173,6 +197,7 @@ export class SourceBoundOneShotTransport {
   readonly binding: ReceiptBinding;
   private readonly bindingSha256: string;
   private readonly cards = new Map<string, RequestCard>();
+  private readonly initialCardsSha256: string;
   private readonly accepted = new Map<string, SealedTransportEvent<SourceProjection>>();
   private readonly expansions: SealedGraphExpansion[] = [];
   private memberGraphFrozen = false;
@@ -194,6 +219,22 @@ export class SourceBoundOneShotTransport {
       this.cards.set(id, frozen);
     }
     if (this.cards.size === 0) throw new C10ReceiptError("source needs an explicit request card");
+    this.initialCardsSha256 = initialCardSetSha256(this.sourceKey, this.cards);
+  }
+
+  /**
+   * Reject a producer whose declared initial request plan differs from the
+   * cards sealed into this transport.  Producers must invoke this before their
+   * first provider request, so a same-source transport cannot substitute a
+   * different host, body, or endpoint.
+   */
+  assertInitialCards(cards: readonly RequestCardInput[]): void {
+    if (this.consumed.size !== 0 || this.expansions.length !== 0) {
+      throw new C10ReceiptError("initial request-card set must be verified before use");
+    }
+    if (initialCardSetSha256(this.sourceKey, cards) !== this.initialCardsSha256) {
+      throw new C10ReceiptError("initial request-card set does not match source plan");
+    }
   }
 
   async appendFrom<C>(

@@ -1,10 +1,9 @@
 /** JLL Investor native search and Next.js detail receipt producer. */
 import {
   C10ReceiptError,
-  type C10Member,
-  type RequestCardInput,
-  type SourceProjection,
-} from "../index.js";
+} from "../contracts.js";
+import type { RequestCardInput, SourceProjection } from "../transport.js";
+import type { C10Member } from "../producer.js";
 import {
   JLL_INVESTOR_HOST,
   jllInvestorBuildId,
@@ -13,7 +12,7 @@ import {
   jllInvestorStructuredListing,
   jllInvestorUrlFromAlias,
   parseJllInvestorSearchPage,
-} from "../../../sources/jll-investor.js";
+} from "../../../sources/pure/jll-investor-receipt.js";
 import {
   StrictDetailReceiptProducer,
   type StrictDetailPlan,

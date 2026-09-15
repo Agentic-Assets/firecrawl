@@ -14,18 +14,22 @@ import {
 } from "../../../sources/pure/foundry-identity.js";
 import {
   C10ReceiptError,
+  sha256,
+} from "../contracts.js";
+import {
   type C10Member,
-  type FrozenMemberGraph,
   type ReceiptProducer,
   type ReceiptProducerContext,
+  requireReceiptSource,
+  sealStageReceipt,
+} from "../producer.js";
+import {
+  type FrozenMemberGraph,
   type RequestCardInput,
   type SealedTransportEvent,
   type SourceProjection,
   type SourceResponseView,
-  requireReceiptSource,
-  sealStageReceipt,
-  sha256,
-} from "../index.js";
+} from "../transport.js";
 
 const DECODER = new TextDecoder();
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -83,6 +87,7 @@ function requireBefore(deadline: number): void {
 export const foundryCommercialReceiptProducer: ReceiptProducer = Object.freeze({
   async produceEnumerationReceipt(context: ReceiptProducerContext) {
     const transport = requireReceiptSource(context, "foundry-commercial");
+    transport.assertInitialCards(foundryCommercialInitialCards());
     const deadline = Date.now() + FOUNDRY_C10_ENUMERATION_DEADLINE_MS;
     const root = await transport.oneShot("foundry-sitemap-index", (view: Readonly<SourceResponseView>) => ({
       propertySitemaps: foundryPropertySitemaps(text(view.body)),

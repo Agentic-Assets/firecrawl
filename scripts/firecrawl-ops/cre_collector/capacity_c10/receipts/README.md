@@ -31,7 +31,9 @@ accounting values contain hashes and request metadata only; they contain no URL
 or response body.
 
 Every public receipt binds plan, cohort, policy, source, arm, and implementation
-SHA-256 values supplied by the canonical C10 coordinator. This package cannot
+SHA-256-shaped identifiers supplied by the canonical C10 coordinator. This
+package validates their binding shape but does not yet define or verify an
+implementation/source byte-hash recipe. This package cannot
 create a plan, acquire a lock, execute an arm, settle, roll back, quarantine,
 or activate a source.
 

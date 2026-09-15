@@ -79,6 +79,44 @@ async function context(sourceKey: string, cards: readonly any[], fake: FixtureTr
   return { transport: new SourceBoundOneShotTransport(sourceKey, binding, allowlistedCards(sourceKey, cards), store, fake) };
 }
 
+test("strict-detail rejects a same-source transport with a substituted initial host before request", async () => {
+  const plan: JllReceiptPlan = {
+    transaction: "sale", propertyType: "office", page: 1,
+    members: [{ key: "jll-1", providerId: "1", canonicalUrl: "https://property.jll.com/listings/office-1" }],
+    enumerationCards: [],
+  };
+  const expected = jllEnumerationCard(plan);
+  const fake = new FixtureTransport({});
+  const receiptContext = await context("jll", [{ ...expected, url: "https://alternate.example/graphql", allowedHost: "alternate.example" }], fake);
+  await assert.rejects(createJllReceiptProducer(plan).produceEnumerationReceipt(receiptContext), /initial request-card set does not match source plan/);
+  assert.equal(fake.cards.length, 0);
+});
+
+async function localImportGraph(entry: URL, seen = new Set<string>()): Promise<Array<{ file: string; specifier: string }>> {
+  const file = fileURLToPath(entry);
+  if (seen.has(file)) return [];
+  seen.add(file);
+  const source = await readFile(file, "utf8");
+  const edges: Array<{ file: string; specifier: string }> = [];
+  for (const match of source.matchAll(/\bimport(\s+type)?[\s\S]*?\bfrom\s+["']([^"']+)["']/g)) {
+    if (match[1]) continue;
+    const specifier = match[2]!;
+    edges.push({ file, specifier });
+    if (!specifier.startsWith(".")) continue;
+    const target = new URL(specifier.replace(/\.js$/, ".ts"), entry);
+    edges.push(...await localImportGraph(target, seen));
+  }
+  return edges;
+}
+
+test("strict receipt producer transitive graph excludes filesystem, cache, and scraper modules", async () => {
+  const entries = ["jll", "jll_investor", "colliers", "marcus_millichap", "avison_young", "colliers_main"]
+    .map((name) => new URL(`../../../capacity_c10/receipts/strict_detail/${name}.ts`, import.meta.url));
+  const edges = (await Promise.all(entries.map((entry) => localImportGraph(entry)))).flat();
+  const forbidden = /^(?:node:fs(?:\/|$))|(?:\.\.\/lib\/(?:scrape|performance)\.js$)/;
+  assert.equal(edges.filter((edge) => forbidden.test(edge.specifier)).length, 0, JSON.stringify(edges.filter((edge) => forbidden.test(edge.specifier))));
+});
+
 test("JLL seals native GraphQL enumeration and exact canonical POST detail graph", async () => {
   const plan: JllReceiptPlan = {
     transaction: "sale", propertyType: "office", page: 1,

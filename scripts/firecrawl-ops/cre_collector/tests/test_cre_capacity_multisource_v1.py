@@ -17,7 +17,9 @@ OBSERVED_AT = "2026-09-14T12:00:00Z"
 
 
 def _jll_search_query() -> str:
-    source = (Path(__file__).parents[1] / "sources" / "jll.ts").read_text()
+    source = (
+        Path(__file__).parents[1] / "sources" / "pure" / "jll-receipt.ts"
+    ).read_text()
     match = re.search(
         r"export const JLL_SEARCH_RESULTS_QUERY = `(.*?)`;", source, re.DOTALL
     )

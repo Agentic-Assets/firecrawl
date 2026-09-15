@@ -9,11 +9,13 @@
  */
 import {
   C10ReceiptError,
-  type C10Member,
   type PublicReceipt,
+} from "../contracts.js";
+import {
+  type C10Member,
   type ReceiptProducer,
   type ReceiptProducerContext,
-} from "../index.js";
+} from "../producer.js";
 
 export const AVISON_YOUNG_C10_BLOCKER =
   "Avison Young strict-detail receipt is blocked: no offline-proven ephemeral one-attempt detail renderer";

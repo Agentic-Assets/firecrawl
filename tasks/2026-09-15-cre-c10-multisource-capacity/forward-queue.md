@@ -8,9 +8,12 @@ each item before acting.
 - **Operationalize the existing private receipt and request-graph seals**
   (priority: highest; confidence: verified requirement)
   The package now seals private artifacts, native-provider identities,
-  canonical targets, adapter/source revisions, and ordered request-card graph
-  evidence. Before an arm can execute, a separate reviewed integration must
-  bind those seals to an FD/inode-safe execution boundary and a real
+  canonical targets, coordinator-declared adapter/source identifiers, and
+  ordered request-card graph evidence. The identifier fields are SHA-shaped
+  binding values only: Wave 1 does not define or verify a source- or
+  implementation-byte hash recipe. Before an arm can execute, a separate
+  reviewed integration must define that recipe and bind those seals to an
+  FD/inode-safe execution boundary and a real
   direct-provider transport. The public cohort intentionally omits private
   paths and cannot be a live request ledger by itself.
 

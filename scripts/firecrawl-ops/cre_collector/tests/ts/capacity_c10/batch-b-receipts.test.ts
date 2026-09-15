@@ -126,6 +126,18 @@ test("Foundry rejects a mismatched context before transport execution", async ()
   assert.equal(fake.cards.length, 0);
 });
 
+test("Foundry rejects a same-source substituted initial card before transport execution", async () => {
+  const fake = new FakeFoundryTransport();
+  const expected = foundryCommercialInitialCards()[0]!;
+  const transport = new SourceBoundOneShotTransport(
+    "foundry-commercial", binding,
+    allowlistedCards("foundry-commercial", [{ ...expected, url: `${expected.url}?substituted=1` }]),
+    new MemoryReceiptStore(), fake,
+  );
+  await assert.rejects(foundryCommercialReceiptProducer.produceEnumerationReceipt({ transport }), /initial request-card set does not match source plan/);
+  assert.equal(fake.cards.length, 0);
+});
+
 test("Batch B preserves reexport parity and makes every non-admitted source explicit", async () => {
   assert.deepEqual(Object.keys(BATCH_B_BLOCKED_SOURCES).sort(), ["daum-commercial", "matthews", "nai-global", "savills", "transwestern"]);
   assert.equal(naiPublicPostId(42), "42");

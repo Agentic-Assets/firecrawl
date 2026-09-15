@@ -2,18 +2,17 @@
 import {
   C10ReceiptError,
   canonicalJson,
-  type C10Member,
-  type RequestCardInput,
-  type SourceProjection,
-} from "../index.js";
+} from "../contracts.js";
+import type { RequestCardInput, SourceProjection } from "../transport.js";
+import type { C10Member } from "../producer.js";
 import {
   JLL_GRAPHQL_URL,
   JLL_SEARCH_RESULTS_QUERY,
   jllGraphqlVariables,
   jllNextData,
   normalizedJllListingUrl,
-  parseJllGraphqlSearchPage,
-} from "../../../sources/jll.js";
+  parseJllGraphqlSearchEnvelope,
+} from "../../../sources/pure/jll-receipt.js";
 import {
   StrictDetailReceiptProducer,
   type StrictDetailPlan,
@@ -87,7 +86,7 @@ function memberCard(
 
 function detailProjection(member: JllReceiptMember, route: string) {
   return (response: { readonly body: Uint8Array }) => {
-    const next = jllNextData(utf8Text(response.body, "JLL detail"));
+    const next = jllNextData(utf8Text(response.body, "JLL detail")) as any;
     const property = next?.props?.pageProps?.property ?? next?.props?.pageProps?.listing;
     const providerId = String(property?.id ?? property?.propertyId ?? "").trim();
     if (providerId !== member.providerId) {
@@ -113,16 +112,14 @@ function spec(plan: JllReceiptPlan): StrictDetailSourceSpec<JllReceiptMember> {
     sourceKey: "jll",
     async enumerate(context, sourcePlan) {
       const event = await context.transport.oneShot("jll-enumeration", (response) => {
-        const parsed = parseJllGraphqlSearchPage(
-          utf8Json(response.body, "JLL GraphQL"),
-          plan.transaction,
-          plan.propertyType,
-          plan.page,
-        );
-        const routes = parsed.listings.map((listing) => ({
-          providerId: String(listing.id),
-          canonicalUrl: normalizedJllListingUrl(String(listing.url)),
+        const parsed = parseJllGraphqlSearchEnvelope(utf8Json(response.body, "JLL GraphQL"));
+        const routes = parsed.items.map((item) => ({
+          providerId: String(item.id ?? "").trim(),
+          canonicalUrl: normalizedJllListingUrl(String(item.pageUrl ?? "")),
         }));
+        if (routes.some((route) => !route.providerId || !route.canonicalUrl) || new Set(routes.map((route) => route.providerId)).size !== routes.length || new Set(routes.map((route) => route.canonicalUrl)).size !== routes.length) {
+          throw new C10ReceiptError("JLL GraphQL enumeration contains duplicate or missing identities");
+        }
         return {
           page: plan.page,
           propertyType: plan.propertyType,

@@ -279,8 +279,9 @@ function makeProducer(spec: SourceSpec): InventoryReceiptProducer {
   return Object.freeze({
     sourceKey: spec.sourceKey, fully_verified: false, initialCards: spec.initialCards,
     async produceEnumerationReceipt(context: ReceiptProducerContext) {
-      requireReceiptSource(context, spec.sourceKey);
-      const first = await context.transport.oneShot("enumeration-0", (response) => spec.parsePage(response, 0));
+      const transport = requireReceiptSource(context, spec.sourceKey);
+      transport.assertInitialCards(spec.initialCards);
+      const first = await transport.oneShot("enumeration-0", (response) => spec.parsePage(response, 0));
       const firstPage = first.projection as PageProjection;
       const total = firstPage.total;
       const pageCount = Math.ceil(total / spec.pageSize);
@@ -288,8 +289,8 @@ function makeProducer(spec: SourceSpec): InventoryReceiptProducer {
       expectPage(firstPage, total, spec.pageSize);
       const pages: Array<typeof first> = [first];
       for (let page = 1; page < pageCount; page++) {
-        await context.transport.appendFrom(first, enumerationFactory, page);
-        const event = await context.transport.oneShot(`enumeration-${page}`, (response) => spec.parsePage(response, page));
+        await transport.appendFrom(first, enumerationFactory, page);
+        const event = await transport.oneShot(`enumeration-${page}`, (response) => spec.parsePage(response, page));
         expectPage(event.projection as PageProjection, total, spec.pageSize);
         pages.push(event);
       }
@@ -302,8 +303,8 @@ function makeProducer(spec: SourceSpec): InventoryReceiptProducer {
       }
       if (members.length > MAX_MEMBERS || (spec.sourceKey !== "cbre-dealflow" && members.length !== total)) throw new C10ReceiptError(`${spec.sourceKey} member population is incomplete`);
       if (members.length === 0) throw new C10ReceiptError(`${spec.sourceKey} has no comparable native members`);
-      for (const member of members) await context.transport.appendFrom(member.pageEvent, memberFactory, member.coordinate);
-      const frozenGraph = await context.transport.freezeMemberGraph();
+      for (const member of members) await transport.appendFrom(member.pageEvent, memberFactory, member.coordinate);
+      const frozenGraph = await transport.freezeMemberGraph();
       return sealStageReceipt(context, "enumeration", null, {
         sourceKey: spec.sourceKey, total, pageCount, memberCardCount: frozenGraph.memberCardCount,
         pageEvents: pages.map((event) => ({ cardId: event.cardId, projectionSha256: event.projectionSha256, privateEventSha256: event.privateEventSha256 })),
