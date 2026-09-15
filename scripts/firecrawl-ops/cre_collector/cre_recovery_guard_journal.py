@@ -29,6 +29,7 @@ class GuardJournal:
     sequence: int
     record_sha256: str | None
     valid_size: int
+    max_bytes: int
 
 
 _ACTIVE_JOURNAL: contextvars.ContextVar[GuardJournal | None] = contextvars.ContextVar(
@@ -109,10 +110,12 @@ def guard_record(
     ) + b"\n", record_sha256
 
 
-def _read(descriptor: int, path: Path) -> tuple[dict[str, Any], int, str, int]:
+def _read(
+    descriptor: int, path: Path, *, max_bytes: int
+) -> tuple[dict[str, Any], int, str, int]:
     identity = guard_identity(descriptor, path)
     observed = os.fstat(descriptor)
-    if observed.st_size <= 0 or observed.st_size > JOURNAL_MAX_BYTES:
+    if observed.st_size <= 0 or observed.st_size > max_bytes:
         raise RuntimeAdmissionError("quarantine recovery guard is malformed")
     raw = os.pread(descriptor, observed.st_size, 0)
     if len(raw) != observed.st_size:
@@ -161,7 +164,7 @@ def _read(descriptor: int, path: Path) -> tuple[dict[str, Any], int, str, int]:
     return state, sequence, previous, valid_size
 
 
-def open_journal(path: Path) -> GuardJournal:
+def open_journal(path: Path, *, max_bytes: int = JOURNAL_MAX_BYTES) -> GuardJournal:
     _parent_is_safe(path)
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
@@ -169,9 +172,11 @@ def open_journal(path: Path) -> GuardJournal:
         raise RuntimeAdmissionError("quarantine recovery guard is unsafe") from exc
     try:
         identity = guard_identity(descriptor, path)
-        state, sequence, previous, valid_size = _read(descriptor, path)
+        state, sequence, previous, valid_size = _read(
+            descriptor, path, max_bytes=max_bytes
+        )
         return GuardJournal(
-            path, descriptor, identity, state, sequence, previous, valid_size
+            path, descriptor, identity, state, sequence, previous, valid_size, max_bytes
         )
     except BaseException:
         os.close(descriptor)
@@ -193,7 +198,7 @@ def append(journal: GuardJournal, state: Mapping[str, Any]) -> None:
     raw, record_sha256 = guard_record(
         state, journal.sequence + 1, journal.record_sha256
     )
-    if journal.valid_size + len(raw) > JOURNAL_MAX_BYTES:
+    if journal.valid_size + len(raw) > journal.max_bytes:
         raise RuntimeAdmissionError("quarantine recovery guard journal is full")
     os.lseek(journal.descriptor, 0, os.SEEK_END)
     write_all(
@@ -209,7 +214,11 @@ def append(journal: GuardJournal, state: Mapping[str, Any]) -> None:
 
 
 def create(
-    path: Path, state: Mapping[str, Any], *, fsync_parent: Callable[[Path], None]
+    path: Path,
+    state: Mapping[str, Any],
+    *,
+    fsync_parent: Callable[[Path], None],
+    max_bytes: int = JOURNAL_MAX_BYTES,
 ) -> GuardJournal:
     _parent_is_safe(path)
     try:
@@ -221,7 +230,7 @@ def create(
     try:
         os.fchmod(descriptor, 0o600)
         identity = guard_identity(descriptor, path)
-        journal = GuardJournal(path, descriptor, identity, {}, 0, None, 0)
+        journal = GuardJournal(path, descriptor, identity, {}, 0, None, 0, max_bytes)
         append(journal, state)
         fsync_parent(path.parent)
         return journal
@@ -281,19 +290,22 @@ def write(
     *,
     create_record: bool,
     fsync_parent: Callable[[Path], None],
+    max_bytes: int = JOURNAL_MAX_BYTES,
 ) -> None:
     """Use the retained operation journal, or a safe isolated fixture journal."""
     current = active()
     if current is not None:
         if current.path != path:
             raise RuntimeAdmissionError("quarantine recovery guard changed")
+        if current.max_bytes != max_bytes:
+            raise RuntimeAdmissionError("quarantine recovery guard capacity changed")
         if not create_record:
             append(current, state)
         return
     if create_record:
-        journal = create(path, state, fsync_parent=fsync_parent)
+        journal = create(path, state, fsync_parent=fsync_parent, max_bytes=max_bytes)
     else:
-        journal = open_journal(path)
+        journal = open_journal(path, max_bytes=max_bytes)
         try:
             append(journal, state)
         finally:

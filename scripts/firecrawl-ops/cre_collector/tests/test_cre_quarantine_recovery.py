@@ -269,6 +269,70 @@ def test_guard_journal_repeated_appends_stop_with_a_readable_valid_prefix(
         pytest.fail("journal cap did not stop repeated appends")
     assert _guard_state(guard) == last
     assert guard.stat().st_size <= recovery.GUARD_JOURNAL_MAX_BYTES
+    # The recovery fixture cap is operation-local. It must not poison direct
+    # journal readers used later by SharedLock completed-state admission.
+    assert guard_journal.JOURNAL_MAX_BYTES == 65_536
+
+
+def test_recovery_wrapper_uses_an_explicit_fresh_journal_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh recovery journal receives its caller's cap without global state."""
+    guard = tmp_path / recovery.QUARANTINE_RECOVERY_GUARD
+    state = {"kind": "test", "phase": "prepared", "payload": "x" * 64}
+    raw, _ = recovery._guard_record(state, 1, None)
+    monkeypatch.setattr(recovery, "GUARD_JOURNAL_MAX_BYTES", len(raw))
+
+    journal = recovery._create_guard_journal(guard, state)
+    try:
+        assert journal.max_bytes == len(raw)
+        assert _guard_state(guard) == state
+    finally:
+        recovery._close_guard_journal(journal)
+    assert guard_journal.JOURNAL_MAX_BYTES == 65_536
+
+
+def test_journal_cap_is_per_instance_and_default_admission_stays_independent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Low-cap recovery fixtures cannot shrink independent default journals."""
+    small = tmp_path / "small.guard"
+    large = tmp_path / "large.guard"
+    small_state = {"kind": "test", "phase": "prepared", "payload": "s" * 32}
+    small_raw, _ = guard_journal.guard_record(small_state, 1, None)
+    monkeypatch.setattr(recovery, "GUARD_JOURNAL_MAX_BYTES", len(small_raw))
+    recovery._write_recovery_guard(small, small_state, create=True)
+    with pytest.raises(runtime.RuntimeAdmissionError, match="journal is full"):
+        recovery._write_recovery_guard(
+            small,
+            {"kind": "test", "phase": "lock-renaming"},
+            create=False,
+        )
+
+    large_state = {"kind": "test", "phase": "prepared", "payload": "l" * 3_000}
+    large_journal = guard_journal.create(
+        large,
+        large_state,
+        fsync_parent=recovery.fsync_directory,
+    )
+    try:
+        assert large_journal.max_bytes == guard_journal.JOURNAL_MAX_BYTES
+        assert large.stat().st_size > 2_048
+    finally:
+        guard_journal.close(large_journal)
+
+    reopened = guard_journal.open_journal(large)
+    try:
+        assert reopened.state == large_state
+        assert reopened.max_bytes == guard_journal.JOURNAL_MAX_BYTES
+    finally:
+        guard_journal.close(reopened)
+    assert guard_journal.completed_allows_acquire(
+        large,
+        tmp_path / ".cre.lock",
+        validate_completed=lambda state, _lock_path: state == large_state,
+    )
+    assert guard_journal.JOURNAL_MAX_BYTES == 65_536
 
 
 def test_completed_guard_substitution_blocks_acquire_without_deleting_foreign_path(

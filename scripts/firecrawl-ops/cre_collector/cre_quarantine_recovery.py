@@ -294,25 +294,32 @@ _close_guard_journal = guard_journal.close
 
 
 def _append_guard_state(journal: _GuardJournal, state: Mapping[str, Any]) -> None:
-    # Preserve the narrow cap-injection seam for the recovery matrix while the
-    # journal module owns the actual encoded-record reservation.
-    guard_journal.JOURNAL_MAX_BYTES = GUARD_JOURNAL_MAX_BYTES
     guard_journal.append(journal, state)
 
 
 def _open_guard_journal(path: Path) -> _GuardJournal:
-    return guard_journal.open_journal(path)
+    return guard_journal.open_journal(path, max_bytes=GUARD_JOURNAL_MAX_BYTES)
 
 
 def _create_guard_journal(path: Path, state: Mapping[str, Any]) -> _GuardJournal:
-    return guard_journal.create(path, state, fsync_parent=fsync_directory)
+    return guard_journal.create(
+        path,
+        state,
+        fsync_parent=fsync_directory,
+        max_bytes=GUARD_JOURNAL_MAX_BYTES,
+    )
 
 
 def _write_recovery_guard(
     path: Path, value: Mapping[str, Any], *, create: bool
 ) -> None:
-    guard_journal.JOURNAL_MAX_BYTES = GUARD_JOURNAL_MAX_BYTES
-    guard_journal.write(path, value, create_record=create, fsync_parent=fsync_directory)
+    guard_journal.write(
+        path,
+        value,
+        create_record=create,
+        fsync_parent=fsync_directory,
+        max_bytes=GUARD_JOURNAL_MAX_BYTES,
+    )
 
 
 def _read_recovery_guard(path: Path) -> dict[str, Any]:
