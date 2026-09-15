@@ -1802,6 +1802,42 @@ _JLL_LABELLED_PRICE = re.compile(
     rf"(?:\s*(?:\b(?:{_JLL_CURRENCY_CODE})\b|[$€£¥]))?(?:\s*/\s*[a-z. ]+)?)"
 )
 
+# PostgreSQL's ARE dialect differs from Python's regex dialect, so the
+# additive child cleanup uses this deliberately small equivalent rather than
+# interpolating the Python patterns.  It recognizes the same three disclosure
+# shapes: a currency-prefixed amount, an amount with a currency suffix, or an
+# explicitly labelled amount.  It deliberately does not treat bare ``3M``,
+# ``3B``, or ``500K SF`` as money.
+_JLL_SQL_MONEY_AMOUNT = r"[0-9][0-9,]*([.][0-9]+)?"
+_JLL_SQL_CURRENCY_CODE = (
+    r"(usd|cad|eur|gbp|jpy|aud|nzd|chf|hkd|sgd|cny|rmb|inr|mxn|brl|"
+    r"krw|rub|aed|sar|sek|nok|dkk|pln|try|zar)"
+)
+_JLL_SQL_CURRENCY_PREFIX = (
+    rf"({_JLL_SQL_CURRENCY_CODE}($|[^[:alnum:]_])[[:space:]]*|us[$]|c[$]|a[$]|[$€£¥])"
+)
+_JLL_SQL_CURRENCY_SUFFIX = rf"({_JLL_SQL_CURRENCY_CODE}($|[^[:alnum:]_])|[$€£¥])"
+_JLL_SQL_MONEY_UNIT = r"(mm|millions?|k|m|b)"
+_JLL_SQL_PRICE_LABEL = (
+    r"(asking([[:space:]]+(price|rate|rent|consideration))?|"
+    r"(list|sale|lease|rental)[[:space:]]*(price|rate|rent|consideration)|"
+    r"price|rate|rent|consideration)"
+)
+_JLL_SQL_HIDDEN_LABEL_DISCLOSURE = (
+    rf"(^|[^[:alnum:]_]){_JLL_SQL_CURRENCY_PREFIX}[[:space:]]*"
+    rf"{_JLL_SQL_MONEY_AMOUNT}[[:space:]]*{_JLL_SQL_MONEY_UNIT}?"
+    rf"|(^|[^[:alnum:]_]){_JLL_SQL_MONEY_AMOUNT}[[:space:]]*{_JLL_SQL_MONEY_UNIT}?"
+    rf"[[:space:]]*{_JLL_SQL_CURRENCY_SUFFIX}"
+    rf"|(^|[^[:alnum:]_]){_JLL_SQL_PRICE_LABEL}[[:space:]]*[:=-]?[[:space:]]*"
+    rf"{_JLL_SQL_CURRENCY_PREFIX}?[[:space:]]*{_JLL_SQL_MONEY_AMOUNT}"
+    rf"[[:space:]]*{_JLL_SQL_MONEY_UNIT}?"
+)
+
+
+def _jll_hidden_label_sql(column):
+    """Return the SQL-ARE predicate for a persisted JLL display label."""
+    return f"({column} ~* {sql_lit(_JLL_SQL_HIDDEN_LABEL_DISCLOSURE)})"
+
 
 def _safe_jll_pricing(value):
     """Retain JLL price provenance without storing withheld price values."""
@@ -3272,6 +3308,10 @@ def build_sql(
       s.raw_data->>'jllPriceWithheld' = 'true'
       AND {staged_source_key_sql} = 'jll'
     )"""
+    jll_contact_title_clear_sql = _jll_hidden_label_sql("c.title")
+    jll_contact_license_clear_sql = _jll_hidden_label_sql("c.license")
+    jll_document_title_clear_sql = _jll_hidden_label_sql("d.title")
+    jll_media_title_clear_sql = _jll_hidden_label_sql("m.title")
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
     # Large complete-source artifacts (CBRE is ~80 MB of inline COPY data) can
@@ -4293,8 +4333,9 @@ WHERE jsonb_path_exists(s.raw_data, '$.**.detailError')
 -- A current JLL withholding control is a privacy boundary even when the
 -- detail request failed.  Such rows take the additive path above, which
 -- normally preserves old child labels via COALESCE/ON CONFLICT.  Keep every
--- child identity and URL, but clear the only persisted display-label columns
--- so an earlier public asking-price label cannot survive this observation.
+-- child identity, URL, and non-price display label, but clear persisted labels
+-- matching the withholding redaction contract so an earlier public asking-
+-- price label cannot survive this observation.
 CREATE TEMP TABLE _jll_withheld_child_label_clear ON COMMIT DROP AS
 SELECT DISTINCT u.id
 FROM _child_additive additive
@@ -4351,19 +4392,23 @@ DO $$ BEGIN
     WHERE table_schema = 'credeals' AND table_name = 'cre_listing_contacts'
       AND column_name = 'license'
   ) THEN
-    UPDATE credeals.cre_listing_contacts
-    SET title = NULL, license = NULL
-    WHERE listing_id IN (SELECT id FROM _jll_withheld_child_label_clear);
+    UPDATE credeals.cre_listing_contacts AS c
+    SET title = CASE WHEN {jll_contact_title_clear_sql} THEN NULL ELSE c.title END,
+        license = CASE WHEN {jll_contact_license_clear_sql} THEN NULL ELSE c.license END
+    WHERE c.listing_id IN (SELECT id FROM _jll_withheld_child_label_clear)
+      AND ({jll_contact_title_clear_sql} OR {jll_contact_license_clear_sql});
   ELSE
-    UPDATE credeals.cre_listing_contacts
-    SET title = NULL
-    WHERE listing_id IN (SELECT id FROM _jll_withheld_child_label_clear);
+    UPDATE credeals.cre_listing_contacts AS c
+    SET title = CASE WHEN {jll_contact_title_clear_sql} THEN NULL ELSE c.title END
+    WHERE c.listing_id IN (SELECT id FROM _jll_withheld_child_label_clear)
+      AND {jll_contact_title_clear_sql};
   END IF;
 END $$;
 
-UPDATE credeals.cre_listing_documents
-SET title = NULL
-WHERE listing_id IN (SELECT id FROM _jll_withheld_child_label_clear);
+UPDATE credeals.cre_listing_documents AS d
+SET title = CASE WHEN {jll_document_title_clear_sql} THEN NULL ELSE d.title END
+WHERE d.listing_id IN (SELECT id FROM _jll_withheld_child_label_clear)
+  AND {jll_document_title_clear_sql};
 
 -- Contacts refresh. The `license` column ships in sql/012, so the INSERT is
 -- column-existence-guarded: when present, license rides along; when absent
@@ -4697,9 +4742,10 @@ WHERE u.id IN (SELECT id FROM _child_additive)
 -- a source-specific branch, and uses the sql/011 unique keys for idempotence.
 DO $$ BEGIN
   IF to_regclass('credeals.cre_listing_media') IS NOT NULL THEN
-    UPDATE credeals.cre_listing_media
-    SET title = NULL
-    WHERE listing_id IN (SELECT id FROM _jll_withheld_child_label_clear);
+    UPDATE credeals.cre_listing_media AS m
+    SET title = CASE WHEN {jll_media_title_clear_sql} THEN NULL ELSE m.title END
+    WHERE m.listing_id IN (SELECT id FROM _jll_withheld_child_label_clear)
+      AND {jll_media_title_clear_sql};
 
     DELETE FROM credeals.cre_listing_media WHERE listing_id IN (SELECT id FROM _child_refresh);
     INSERT INTO credeals.cre_listing_media (listing_id, media_type, provider, url, embed_url, title)

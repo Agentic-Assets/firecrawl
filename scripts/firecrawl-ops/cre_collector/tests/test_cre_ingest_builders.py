@@ -1220,9 +1220,10 @@ def test_jll_withheld_sql_rejects_a_non_jll_marker_collision() -> None:
     assert f"{ci.source_key_sql('s', 'b')} = 'jll'" in sql
 
 
-def test_withheld_jll_detail_error_clears_prior_child_labels_only() -> None:
+def test_withheld_jll_detail_error_clears_only_prior_monetary_child_labels() -> None:
     sql = ci.build_sql([], [], _SCRAPED_AT, set())
     compact = " ".join(sql.split())
+    money_predicate = ci.sql_lit(ci._JLL_SQL_HIDDEN_LABEL_DISCLOSURE)
 
     start = compact.index("CREATE TEMP TABLE _jll_withheld_child_label_clear")
     end = compact.index("-- Colliers", start)
@@ -1231,13 +1232,50 @@ def test_withheld_jll_detail_error_clears_prior_child_labels_only() -> None:
     assert "s.raw_data->>'jllPriceWithheld' = 'true'" in clear_scope
     assert "END = 'jll'" in clear_scope
 
-    assert "SET title = NULL, license = NULL" in compact
+    for column in ("c.title", "c.license", "d.title", "m.title"):
+        assert f"{column} ~* {money_predicate}" in sql
+    assert "SET title = NULL, license = NULL" not in compact
+    assert "UPDATE credeals.cre_listing_documents SET title = NULL" not in compact
+    assert "UPDATE credeals.cre_listing_media SET title = NULL" not in compact
+    assert "SET title = CASE WHEN (c.title ~*" in compact
+    assert "THEN NULL ELSE c.title END" in compact
+    assert "license = CASE WHEN (c.license ~*" in compact
+    assert "THEN NULL ELSE c.license END" in compact
+    assert "SET title = CASE WHEN (d.title ~*" in compact
+    assert "THEN NULL ELSE d.title END" in compact
+    assert "SET title = CASE WHEN (m.title ~*" in compact
+    assert "THEN NULL ELSE m.title END" in compact
     assert (
-        "SET title = NULL WHERE listing_id IN (SELECT id FROM _jll_withheld_child_label_clear)"
+        "IF EXISTS ( SELECT 1 FROM information_schema.columns WHERE table_schema = 'credeals' "
+        "AND table_name = 'cre_listing_contacts' AND column_name = 'license' ) THEN"
         in compact
     )
-    assert "UPDATE credeals.cre_listing_documents SET title = NULL" in compact
-    assert "UPDATE credeals.cre_listing_media SET title = NULL" in compact
+
+
+def test_withheld_jll_child_label_contract_clears_price_and_retains_safe_labels() -> (
+    None
+):
+    safe = ci._safe_jll_hidden_child_metadata(
+        {
+            "title": "Offering 3.25M USD",
+            "license": "License $3.25M",
+            "name": "Jane Broker",
+            "headline": "Building 3B",
+            "caption": "500K SF warehouse",
+            "description": "3M Company campus on 3 B Street",
+        },
+        broker=True,
+    )
+
+    assert safe == {
+        "name": "Jane Broker",
+        "headline": "Building 3B",
+        "caption": "500K SF warehouse",
+        "description": "3M Company campus on 3 B Street",
+    }
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    assert "[^[:alnum:]_]" in ci._JLL_SQL_HIDDEN_LABEL_DISCLOSURE
+    assert ci.sql_lit(ci._JLL_SQL_HIDDEN_LABEL_DISCLOSURE) in sql
 
 
 def test_to_row_reconciles_every_jll_price_control_case_insensitively():
