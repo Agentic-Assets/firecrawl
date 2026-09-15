@@ -110,6 +110,14 @@ def guard_record(
     ) + b"\n", record_sha256
 
 
+def _reserve_record(*, valid_size: int, raw: bytes, max_bytes: int) -> None:
+    """Reject an over-cap record before it can change a guard journal."""
+    if not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise RuntimeAdmissionError("quarantine recovery guard capacity is invalid")
+    if valid_size + len(raw) > max_bytes:
+        raise RuntimeAdmissionError("quarantine recovery guard journal is full")
+
+
 def _read(
     descriptor: int, path: Path, *, max_bytes: int
 ) -> tuple[dict[str, Any], int, str, int]:
@@ -198,8 +206,11 @@ def append(journal: GuardJournal, state: Mapping[str, Any]) -> None:
     raw, record_sha256 = guard_record(
         state, journal.sequence + 1, journal.record_sha256
     )
-    if journal.valid_size + len(raw) > journal.max_bytes:
-        raise RuntimeAdmissionError("quarantine recovery guard journal is full")
+    _reserve_record(
+        valid_size=journal.valid_size,
+        raw=raw,
+        max_bytes=journal.max_bytes,
+    )
     os.lseek(journal.descriptor, 0, os.SEEK_END)
     write_all(
         journal.descriptor, raw, message="quarantine recovery guard write was short"
@@ -220,6 +231,8 @@ def create(
     fsync_parent: Callable[[Path], None],
     max_bytes: int = JOURNAL_MAX_BYTES,
 ) -> GuardJournal:
+    first_raw, _ = guard_record(state, 1, None)
+    _reserve_record(valid_size=0, raw=first_raw, max_bytes=max_bytes)
     _parent_is_safe(path)
     try:
         descriptor = os.open(

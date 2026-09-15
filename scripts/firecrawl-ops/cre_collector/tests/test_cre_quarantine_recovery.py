@@ -292,6 +292,20 @@ def test_recovery_wrapper_uses_an_explicit_fresh_journal_capacity(
     assert guard_journal.JOURNAL_MAX_BYTES == 65_536
 
 
+def test_fresh_oversize_recovery_guard_fails_before_creating_a_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unrepresentable initial record cannot strand an empty guard file."""
+    guard = tmp_path / recovery.QUARANTINE_RECOVERY_GUARD
+    state = {"kind": "test", "phase": "prepared", "payload": "x" * 64}
+    raw, _ = recovery._guard_record(state, 1, None)
+    monkeypatch.setattr(recovery, "GUARD_JOURNAL_MAX_BYTES", len(raw) - 1)
+
+    with pytest.raises(runtime.RuntimeAdmissionError, match="journal is full"):
+        recovery._write_recovery_guard(guard, state, create=True)
+    assert not guard.exists()
+
+
 def test_journal_cap_is_per_instance_and_default_admission_stays_independent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
