@@ -2157,6 +2157,29 @@ def test_recovery_required_lease_clears_after_safe_completion(tmp_path):
     assert not lock.path.exists()
 
 
+def test_recovery_required_acquire_failure_preserves_its_stop(tmp_path, monkeypatch):
+    lock = refresh.SharedLock(
+        tmp_path / ".cre.lock",
+        recovery_required=True,
+        preserve_recovery_on_acquire_failure=True,
+    )
+    real_fsync = refresh.os.fsync
+
+    def fail_directory_fsync(descriptor):
+        if refresh.stat.S_ISDIR(refresh.os.fstat(descriptor).st_mode):
+            raise OSError("lease directory fsync failed")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(refresh.os, "fsync", fail_directory_fsync)
+    with pytest.raises(OSError, match="lease directory fsync failed"):
+        lock.acquire()
+
+    assert lock.path.is_dir()
+    assert refresh._lock_requires_operator_recovery(lock.path)
+    with pytest.raises(refresh.LockHeldError, match="requires operator recovery"):
+        refresh.SharedLock(lock.path).acquire()
+
+
 @pytest.mark.parametrize("operation", ["arm", "disarm"])
 def test_lock_benchmark_fsync_failure_preserves_interlock(
     tmp_path, monkeypatch, operation

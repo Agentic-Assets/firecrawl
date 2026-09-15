@@ -4460,6 +4460,54 @@ def _benchmark_shared_lock(lock_path: Path, held_lock: SharedLock | None):
         yield acquired_lock
 
 
+@contextmanager
+def _candidate_rollback_lock(lock_path: Path):
+    """Yield a verified lock, recovering only to perform mandatory rollback.
+
+    The caller enters this boundary after the candidate runtime is already
+    active. A first acquisition failure therefore cannot simply abort: retry
+    under a fresh verified lock so rollback remains serialized. If that lock is
+    unavailable, do not mutate runtime without ownership or claim a stop that
+    could not be durably established.
+    """
+    initial = SharedLock(
+        lock_path,
+        recovery_required=True,
+        preserve_recovery_on_acquire_failure=True,
+    )
+    try:
+        initial.acquire()
+    except BaseException as initial_error:  # noqa: BLE001 - rollback is mandatory
+        recovery = SharedLock(
+            lock_path,
+            recovery_required=True,
+            preserve_recovery_on_acquire_failure=True,
+        )
+        try:
+            recovery.acquire()
+        except BaseException as recovery_error:  # noqa: BLE001 - preserve both causes
+            failure = BenchmarkError(
+                "candidate rollback cannot acquire a verified canonical recovery lock; "
+                "operator intervention is required"
+            )
+            failure.add_note(
+                f"initial lock error: {type(initial_error).__name__}: {initial_error}"
+            )
+            failure.add_note(
+                f"recovery lock error: {type(recovery_error).__name__}: {recovery_error}"
+            )
+            raise failure from recovery_error
+        try:
+            yield recovery, initial_error
+        finally:
+            recovery.release()
+    else:
+        try:
+            yield initial, None
+        finally:
+            initial.release()
+
+
 def _require_prearmed_benchmark_interlock(lock: SharedLock) -> None:
     """Verify that an outer candidate step owns the active interlock."""
     if lock.benchmark_marker_identity is None:
@@ -5040,8 +5088,11 @@ def run_counterbalanced_pair_step(
     if variant == "candidate":
         lock_path = canonical_shared_lock_dir(repo_root)
         try:
-            with SharedLock(lock_path, recovery_required=True) as held_lock:
-                benchmark_error: BaseException | None = None
+            with _candidate_rollback_lock(lock_path) as (
+                held_lock,
+                acquisition_error,
+            ):
+                benchmark_error: BaseException | None = acquisition_error
                 rollback_error: BaseException | None = None
                 quarantine_error: BaseException | None = None
                 retention_error: BaseException | None = None
@@ -5051,30 +5102,31 @@ def run_counterbalanced_pair_step(
                     # validated. Arm before any benchmark preflight so a malformed
                     # sample, admission-consumption failure, or interrupt cannot
                     # release the canonical lock before mandatory rollback.
-                    held_lock.arm_benchmark(
-                        {
-                            "schema_version": SCHEMA_VERSION,
-                            "kind": "cre_capacity_candidate_pair_active",
-                            "state": "active",
-                            "armed_at": _now(),
-                            "pid": os.getpid(),
-                            "profile": profile_name,
-                            "pair_id": plan["pair_id"],
-                            "admission_sha256": _sha256(
-                                _canonical(validated_admission)
-                            ),
-                            "review_approval_nonce_sha256": validated_admission[
-                                "review_approval_nonce_sha256"
-                            ],
-                            "result_path": str(arm_root / "result.json"),
-                        }
-                    )
-                    result = run_benchmark(
-                        **run_kwargs,
-                        _held_shared_lock=held_lock,
-                        _retain_benchmark_interlock=True,
-                        _prearmed_benchmark_interlock=True,
-                    )
+                    if benchmark_error is None:
+                        held_lock.arm_benchmark(
+                            {
+                                "schema_version": SCHEMA_VERSION,
+                                "kind": "cre_capacity_candidate_pair_active",
+                                "state": "active",
+                                "armed_at": _now(),
+                                "pid": os.getpid(),
+                                "profile": profile_name,
+                                "pair_id": plan["pair_id"],
+                                "admission_sha256": _sha256(
+                                    _canonical(validated_admission)
+                                ),
+                                "review_approval_nonce_sha256": validated_admission[
+                                    "review_approval_nonce_sha256"
+                                ],
+                                "result_path": str(arm_root / "result.json"),
+                            }
+                        )
+                        result = run_benchmark(
+                            **run_kwargs,
+                            _held_shared_lock=held_lock,
+                            _retain_benchmark_interlock=True,
+                            _prearmed_benchmark_interlock=True,
+                        )
                 except BaseException as exc:  # noqa: BLE001 - rollback is mandatory
                     benchmark_error = exc
                 try:

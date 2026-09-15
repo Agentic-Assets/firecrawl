@@ -216,6 +216,12 @@ proves all loopback API, browser, RabbitMQ, NuQ, active-crawl, and queue counter
 are idle, reviews the recorded result, and removes that exact canonical lock
 directory. Do not remove it merely because the local worker process exited.
 
+If a candidate-step lock or quarantine write reaches rename but cannot confirm
+directory durability, the lock lease itself remains recovery-required even if a
+marker later appears absent. Treat that lease exactly like a quarantine stop:
+do not reclaim it from a dead PID or run an unlocked rollback. An operator must
+verify idle state and remove the exact canonical lock directory before retrying.
+
 The candidate is adoptable only if three counterbalanced matched pairs (the
 fixed `baseline,candidate,candidate,baseline,baseline,candidate` AB/BA/AB
 sequence) show at least a 15 percent throughput gain and all identity, normalized-field fidelity,

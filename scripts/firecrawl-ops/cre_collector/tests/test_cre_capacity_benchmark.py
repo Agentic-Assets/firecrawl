@@ -2546,6 +2546,179 @@ def test_candidate_pair_marker_arm_failure_obeys_rollback_interlock(
             benchmark.SharedLock(lock_path).acquire()
 
 
+@pytest.mark.parametrize(
+    "initial_error",
+    [OSError("candidate lock acquisition failed"), KeyboardInterrupt()],
+    ids=("io-failure", "interrupt"),
+)
+def test_candidate_pair_transient_lock_failure_rolls_back_under_recovery_lock(
+    initial_error: BaseException, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    original_acquire = benchmark.SharedLock.acquire
+    acquire_calls = 0
+    events: list[str] = []
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_once(lock):
+        nonlocal acquire_calls
+        acquire_calls += 1
+        if acquire_calls == 1:
+            raise initial_error
+        return original_acquire(lock)
+
+    def rollback(*_args, _held_shared_lock, **_kwargs):
+        assert _held_shared_lock.held
+        assert _held_shared_lock.benchmark_marker_identity is None
+        events.append("rollback")
+
+    monkeypatch.setattr(benchmark.SharedLock, "acquire", fail_once)
+    monkeypatch.setattr(benchmark, "run_benchmark", lambda **_kwargs: pytest.fail())
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", rollback)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(type(initial_error)):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert acquire_calls == 2
+    assert events == ["rollback"]
+    assert not lock_path.exists()
+
+
+@pytest.mark.parametrize("initial_error", [OSError("disk failed"), KeyboardInterrupt()])
+def test_candidate_pair_unavailable_recovery_lock_never_rolls_back_unlocked(
+    initial_error: BaseException, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    transitions: list[str] = []
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+    monkeypatch.setattr(
+        benchmark.SharedLock,
+        "acquire",
+        lambda _lock: (_ for _ in ()).throw(initial_error),
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "transition",
+        lambda *_args, **_kwargs: transitions.append("unsafe rollback"),
+    )
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        benchmark.BenchmarkError,
+        match="cannot acquire a verified canonical recovery lock",
+    ) as raised:
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert transitions == []
+    assert any("initial lock error" in note for note in raised.value.__notes__)
+    assert any("recovery lock error" in note for note in raised.value.__notes__)
+
+
+def test_candidate_pair_foreign_lock_never_performs_unowned_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    foreign = benchmark.SharedLock(lock_path)
+    foreign.acquire()
+    transitions: list[str] = []
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "transition",
+        lambda *_args, **_kwargs: transitions.append("unsafe rollback"),
+    )
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    try:
+        with pytest.raises(
+            benchmark.BenchmarkError,
+            match="cannot acquire a verified canonical recovery lock",
+        ):
+            benchmark.run_counterbalanced_pair_step(
+                repo_root=Path(__file__).resolve().parents[4],
+                pair_plan_path=plan_path,
+                admission={},
+                admission_path=admission_path,
+                timeout_seconds=1,
+                candidate_receipt_path=receipt,
+            )
+        assert transitions == []
+        assert (lock_path / "lease").read_text(encoding="utf-8") == (
+            f"{foreign.lease_token}\n"
+        )
+    finally:
+        foreign.release()
+
+
 def test_candidate_pair_retains_owned_lock_when_quarantine_publication_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

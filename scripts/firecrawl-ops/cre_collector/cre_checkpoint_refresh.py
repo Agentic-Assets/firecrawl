@@ -727,6 +727,7 @@ def checkpoint_lock_dir(lock_dir_override: str | None) -> Path:
 class SharedLock:
     path: Path
     recovery_required: bool = False
+    preserve_recovery_on_acquire_failure: bool = False
     held: bool = False
     lease_token: str | None = field(default=None, init=False)
     directory_identity: tuple[int, int] | None = field(default=None, init=False)
@@ -788,8 +789,15 @@ class SharedLock:
                 f"{os.getpid()} {int(datetime.now(timezone.utc).timestamp())}\n",
             )
         except Exception:
-            if _lock_lease(self.path) == lease_token and not _lock_interlocked(
-                self.path
+            preserve = (
+                self.recovery_required
+                and self.preserve_recovery_on_acquire_failure
+                and _lock_lease(self.path) == lease_token
+            )
+            if (
+                not preserve
+                and _lock_lease(self.path) == lease_token
+                and not _lock_interlocked(self.path)
             ):
                 shutil.rmtree(self.path, ignore_errors=True)
             raise
