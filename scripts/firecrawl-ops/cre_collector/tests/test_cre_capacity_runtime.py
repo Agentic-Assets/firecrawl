@@ -6,6 +6,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import sys
 import urllib.error
 from datetime import datetime, timedelta, timezone
@@ -713,9 +714,29 @@ def test_quarantine_recovery_replays_guard_before_archive_creation(
     with pytest.raises(runtime.LockHeldError, match="operator completion"):
         runtime.SharedLock(lock_path).acquire()
 
-    monkeypatch.setattr(runtime, "_fsync_directory", real_fsync)
+    archive_root_fsynced = False
+    real_rename = runtime._atomic_rename_noreplace
+
+    def record_replay_archive_fsync(path: Path) -> None:
+        nonlocal archive_root_fsynced
+        if path == archive_root:
+            archive_root_fsynced = True
+        real_fsync(path)
+
+    def require_archive_fsync_before_handoff(
+        source: Path, target: Path, *, message: str
+    ) -> None:
+        if source == lock_path and not archive_root_fsynced:
+            raise AssertionError("replay moved the lock before archive-root fsync")
+        real_rename(source, target, message=message)
+
+    monkeypatch.setattr(runtime, "_fsync_directory", record_replay_archive_fsync)
+    monkeypatch.setattr(
+        runtime, "_atomic_rename_noreplace", require_archive_fsync_before_handoff
+    )
     replayed = runtime.recover_quarantine(execute=True)
     assert replayed["executed"] is True
+    assert archive_root_fsynced
     assert not lock_path.exists()
 
 
@@ -855,7 +876,9 @@ def test_quarantine_recovery_refuses_byte_identical_marker_replacement(
     replacement.replace(active)
 
     monkeypatch.setattr(runtime, "_write_recovery_guard", real_guard_write)
-    with pytest.raises(runtime.RuntimeAdmissionError, match="forensic pair changed"):
+    with pytest.raises(
+        runtime.RuntimeAdmissionError, match="archive entries|forensic pair"
+    ):
         runtime.recover_quarantine(execute=True)
     assert guard.exists()
     assert active.exists()
@@ -949,10 +972,210 @@ def test_quarantine_recovery_refuses_an_unbound_archived_lock_entry(
     foreign.chmod(0o600)
 
     monkeypatch.setattr(runtime, "_write_recovery_guard", real_guard_write)
-    with pytest.raises(runtime.RuntimeAdmissionError, match="forensic pair changed"):
+    with pytest.raises(
+        runtime.RuntimeAdmissionError, match="archive entries|forensic pair"
+    ):
         runtime.recover_quarantine(execute=True)
     assert guard.exists()
     assert foreign.exists()
+
+
+def test_quarantine_recovery_refuses_an_unbound_archive_root_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A foreign top-level archive entry is never hidden by a valid pair."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    real_guard_write = runtime._write_recovery_guard
+
+    def interrupt_receipt_phase(
+        path: Path, value: dict[str, object], *, create: bool
+    ) -> None:
+        if value.get("phase") == "receipt-written":
+            raise OSError("simulated crash after receipt")
+        real_guard_write(path, value, create=create)
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", interrupt_receipt_phase)
+    with pytest.raises(OSError, match="after receipt"):
+        runtime.recover_quarantine(execute=True)
+    guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
+    archive = Path(json.loads(guard.read_text(encoding="utf-8"))["archive"])
+    foreign = archive / "foreign-root"
+    foreign.write_bytes(b"unbound archive content\n")
+    foreign.chmod(0o600)
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", real_guard_write)
+    with pytest.raises(
+        runtime.RuntimeAdmissionError, match="archive entries|forensic pair"
+    ):
+        runtime.recover_quarantine(execute=True)
+    assert guard.exists()
+    assert foreign.exists()
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "prepared",
+        "lock-renaming",
+        "lock-archived",
+        "authority-renaming",
+        "pair-archived",
+        "receipt-written",
+    ],
+)
+def test_quarantine_recovery_blocks_new_shared_lock_at_every_durable_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    """The persistent synchronizer spans every archive phase, not just guard I/O."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    real_guard_write = runtime._write_recovery_guard
+    observations: list[subprocess.CompletedProcess[str]] = []
+
+    def assert_new_lock_is_blocked(
+        path: Path, value: dict[str, object], *, create: bool
+    ) -> None:
+        real_guard_write(path, value, create=create)
+        if value.get("phase") != phase:
+            return
+        script = """
+import sys
+from pathlib import Path
+import cre_checkpoint_refresh as refresh
+try:
+    refresh.SharedLock(Path(sys.argv[1])).acquire()
+except refresh.LockHeldError as exc:
+    print(exc)
+    raise SystemExit(73)
+raise SystemExit(0)
+"""
+        observations.append(
+            subprocess.run(
+                [sys.executable, "-c", script, str(lock_path)],
+                cwd=Path(checkpoint_refresh.__file__).parent,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        )
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", assert_new_lock_is_blocked)
+    assert runtime.recover_quarantine(execute=True)["executed"] is True
+    assert len(observations) == 1
+    assert observations[0].returncode == 73, observations[0].stderr
+    assert "authority is held" in observations[0].stdout
+    assert not lock_path.exists()
+
+
+def test_quarantine_recovery_guard_create_is_atomic_and_never_clobbers(
+    tmp_path: Path,
+) -> None:
+    """A second operation cannot replace the first operation's durable guard."""
+    guard = tmp_path / runtime.QUARANTINE_RECOVERY_GUARD
+    original = {"kind": "test", "phase": "prepared"}
+    runtime._write_recovery_guard(guard, original, create=True)
+    with pytest.raises(runtime.RuntimeAdmissionError, match="already exists"):
+        runtime._write_recovery_guard(
+            guard, {"kind": "test", "phase": "lock-renaming"}, create=True
+        )
+    assert runtime._read_recovery_guard(guard) == original
+
+
+def test_quarantine_recovery_refuses_a_simultaneous_operation_before_guard_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stable flock rejects a peer before either can publish a guard."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    synchronizer = checkpoint_refresh.acquire_quarantine_recovery_sync(lock_path)
+    try:
+        with pytest.raises(runtime.RuntimeAdmissionError, match="already in progress"):
+            runtime.recover_quarantine(execute=True)
+        assert not (lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD).exists()
+    finally:
+        checkpoint_refresh.release_quarantine_recovery_sync(synchronizer)
+
+
+def test_quarantine_recovery_rejects_a_simultaneous_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second operator process loses the stable flock before guard mutation."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    real_guard_write = runtime._write_recovery_guard
+    observations: list[subprocess.CompletedProcess[str]] = []
+
+    def invoke_second_operator(
+        path: Path, value: dict[str, object], *, create: bool
+    ) -> None:
+        real_guard_write(path, value, create=create)
+        if value.get("phase") != "prepared":
+            return
+        script = """
+import sys
+from pathlib import Path
+import cre_capacity_runtime as runtime
+runtime.REPO_ROOT = Path(sys.argv[1])
+runtime.canonical_shared_lock_dir = lambda _root: Path(sys.argv[2])
+try:
+    runtime.recover_quarantine(execute=True)
+except runtime.RuntimeAdmissionError as exc:
+    print(exc)
+    raise SystemExit(73)
+raise SystemExit(0)
+"""
+        observations.append(
+            subprocess.run(
+                [sys.executable, "-c", script, str(tmp_path), str(lock_path)],
+                cwd=Path(runtime.__file__).parent,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        )
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", invoke_second_operator)
+    assert runtime.recover_quarantine(execute=True)["executed"] is True
+    assert len(observations) == 1
+    assert observations[0].returncode == 73, observations[0].stderr
+    assert "already in progress" in observations[0].stdout
 
 
 @pytest.mark.parametrize(

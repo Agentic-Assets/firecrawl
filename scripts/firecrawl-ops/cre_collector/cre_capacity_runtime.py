@@ -1295,13 +1295,48 @@ def _write_recovery_guard(
     ):
         raise RuntimeAdmissionError("quarantine recovery parent is unsafe")
     if create:
+        # Initial guards and receipts are operation claims.  They must never
+        # use replace semantics: a second recovery that races this creation has
+        # to stop, not overwrite a more advanced durable phase.
+        descriptor = -1
         try:
-            path.lstat()
-        except FileNotFoundError:
-            pass
-        else:
-            raise RuntimeAdmissionError("quarantine recovery guard already exists")
-    elif path.is_symlink():
+            descriptor = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+            )
+        except FileExistsError as exc:
+            raise RuntimeAdmissionError(
+                "quarantine recovery guard already exists"
+            ) from exc
+        try:
+            os.fchmod(descriptor, 0o600)
+            observed = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(observed.st_mode)
+                or observed.st_nlink != 1
+                or observed.st_uid != os.geteuid()
+                or stat.S_IMODE(observed.st_mode) != 0o600
+            ):
+                raise RuntimeAdmissionError("quarantine recovery guard is unsafe")
+            payload = memoryview(_canonical(value) + b"\n")
+            while payload:
+                written = os.write(descriptor, payload)
+                if written <= 0:
+                    raise OSError("quarantine recovery guard write was short")
+                payload = payload[written:]
+            os.fsync(descriptor)
+            named = path.lstat()
+            if (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino):
+                raise RuntimeAdmissionError("quarantine recovery guard changed")
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        _fsync_directory(path.parent)
+        if _read_recovery_guard(path) != dict(value):
+            raise RuntimeAdmissionError("quarantine recovery guard changed")
+        return
+    if path.is_symlink():
         raise RuntimeAdmissionError("quarantine recovery guard is unsafe")
     descriptor, temporary = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=parent
@@ -1420,11 +1455,39 @@ def _atomic_rename_noreplace(source: Path, target: Path, *, message: str) -> Non
     raise OSError(failure, os.strerror(failure), target)
 
 
-def _archive_pair_is_exact(archive: Path, pair: Mapping[str, Any]) -> bool:
-    lock = archive / ".cre.lock"
-    authority = archive / ".cre.lock.authority"
+def _archive_entries_are_exact(archive: Path, expected: Sequence[str]) -> bool:
+    """Bind the archive root itself, not just its nested lock contents."""
     try:
         _private_directory(archive, message="quarantine forensic archive is unsafe")
+        return sorted(item.name for item in archive.iterdir()) == sorted(expected)
+    except (OSError, RuntimeAdmissionError):
+        return False
+
+
+def _archive_pair_is_exact(
+    archive: Path, pair: Mapping[str, Any], *, receipt: bool | None = False
+) -> bool:
+    """Verify the complete archive root and every evidence-bearing member.
+
+    ``None`` accepts the narrow crash prefix after receipt creation but before
+    the guard phase advances; any receipt in that prefix is still separately
+    schema/hash validated by the caller before it can be trusted.
+    """
+    lock = archive / ".cre.lock"
+    authority = archive / ".cre.lock.authority"
+    root_pair = [lock.name, authority.name]
+    root_with_receipt = [*root_pair, "recovery-receipt.json"]
+    if receipt is True:
+        expected_roots = [root_with_receipt]
+    elif receipt is False:
+        expected_roots = [root_pair]
+    else:
+        expected_roots = [root_pair, root_with_receipt]
+    if not any(
+        _archive_entries_are_exact(archive, entries) for entries in expected_roots
+    ):
+        return False
+    try:
         _private_directory(lock, message="quarantine forensic lock is unsafe")
     except RuntimeAdmissionError:
         return False
@@ -1456,6 +1519,26 @@ def _archive_pair_is_exact(archive: Path, pair: Mapping[str, Any]) -> bool:
         active_evidence == pair.get("active_evidence")
         and quarantine_evidence == pair.get("quarantine_evidence")
         and authority_evidence == pair.get("authority_evidence")
+    )
+
+
+def _archive_phase_entries_are_exact(archive: Path, phase: str) -> bool:
+    """Accept only the durable namespace prefixes for one recovery phase."""
+    lock = ".cre.lock"
+    authority = ".cre.lock.authority"
+    receipt = "recovery-receipt.json"
+    allowed: dict[str, tuple[Sequence[str], ...]] = {
+        "prepared": ((),),
+        # A crash may occur after the durable intent but before/after rename.
+        "lock-renaming": ((), (lock,)),
+        "lock-archived": ((lock,),),
+        "authority-renaming": ((lock,), (lock, authority)),
+        # Receipt creation is durable before the phase guard advances.
+        "pair-archived": ((lock, authority), (lock, authority, receipt)),
+        "receipt-written": ((lock, authority, receipt),),
+    }
+    return phase in allowed and any(
+        _archive_entries_are_exact(archive, entries) for entries in allowed[phase]
     )
 
 
@@ -1506,6 +1589,27 @@ def _validate_recovery_receipt(
 
 
 def recover_quarantine(
+    *, execute: bool, runner: CommandRunner = _default_runner
+) -> dict[str, Any]:
+    """Serialize the explicit paired archive against every normal acquire."""
+    lock_path = canonical_shared_lock_dir(REPO_ROOT)
+    if lock_path != (
+        REPO_ROOT / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    ):
+        raise RuntimeAdmissionError("canonical quarantine target is invalid")
+    try:
+        synchronizer = checkpoint_refresh.acquire_quarantine_recovery_sync(lock_path)
+    except LockHeldError as exc:
+        raise RuntimeAdmissionError(
+            "quarantine recovery is already in progress"
+        ) from exc
+    try:
+        return _recover_quarantine_while_synchronized(execute=execute, runner=runner)
+    finally:
+        checkpoint_refresh.release_quarantine_recovery_sync(synchronizer)
+
+
+def _recover_quarantine_while_synchronized(
     *, execute: bool, runner: CommandRunner = _default_runner
 ) -> dict[str, Any]:
     """Durably archive one exact historic residue as a matched forensic pair."""
@@ -1588,8 +1692,15 @@ def recover_quarantine(
             _private_directory(archive, message="quarantine recovery archive changed")
         except RuntimeAdmissionError:
             raise RuntimeAdmissionError("quarantine recovery archive changed")
+    # An interrupted first creation can leave the deterministic archive name
+    # visible but its parent-entry durability unknown.  A replay must repair
+    # that acknowledgement before it advances the guard or moves either
+    # canonical artifact into the archive.
+    _fsync_directory(archive_root)
 
     phase = str(result["phase"])
+    if not _archive_phase_entries_are_exact(archive, phase):
+        raise RuntimeAdmissionError("quarantine recovery archive entries changed")
     archived_lock = archive / lock_path.name
     archived_authority = archive / authority.name
     held_authority = authority
@@ -1632,12 +1743,16 @@ def recover_quarantine(
                 pass
             else:
                 raise RuntimeAdmissionError("quarantine lock handoff changed")
+            if not _archive_entries_are_exact(archive, [archived_lock.name]):
+                raise RuntimeAdmissionError("quarantine lock archive entries changed")
             _fsync_directory(lock_path.parent)
             _fsync_directory(archive)
             result["phase"] = "lock-archived"
             _write_recovery_guard(guard_path, result, create=False)
             phase = "lock-archived"
         if phase == "lock-archived":
+            if not _archive_entries_are_exact(archive, [archived_lock.name]):
+                raise RuntimeAdmissionError("quarantine lock archive entries changed")
             if not _same_identity(archived_lock, pair["lock_identity"]):
                 raise RuntimeAdmissionError("quarantine lock archive changed")
             if not _same_identity(authority, pair["authority_identity"]):
@@ -1663,13 +1778,19 @@ def recover_quarantine(
                 pass
             else:
                 raise RuntimeAdmissionError("quarantine authority handoff changed")
+            if not _archive_entries_are_exact(
+                archive, [archived_lock.name, archived_authority.name]
+            ):
+                raise RuntimeAdmissionError(
+                    "quarantine authority archive entries changed"
+                )
             _fsync_directory(lock_path.parent)
             _fsync_directory(archive)
             result["phase"] = "pair-archived"
             _write_recovery_guard(guard_path, result, create=False)
             phase = "pair-archived"
         if phase == "pair-archived":
-            if not _archive_pair_is_exact(archive, pair):
+            if not _archive_pair_is_exact(archive, pair, receipt=None):
                 raise RuntimeAdmissionError("quarantine forensic pair changed")
             receipt = archive / "recovery-receipt.json"
             if receipt.exists():
@@ -1681,7 +1802,9 @@ def recover_quarantine(
             result["phase"] = "receipt-written"
             _write_recovery_guard(guard_path, result, create=False)
             phase = "receipt-written"
-        if phase != "receipt-written" or not _archive_pair_is_exact(archive, pair):
+        if phase != "receipt-written" or not _archive_pair_is_exact(
+            archive, pair, receipt=True
+        ):
             raise RuntimeAdmissionError("quarantine recovery did not complete safely")
         _validate_recovery_receipt(
             archive / "recovery-receipt.json",
