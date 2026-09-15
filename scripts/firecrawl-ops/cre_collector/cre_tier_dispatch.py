@@ -17,6 +17,7 @@ import os
 import signal
 import stat
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -31,6 +32,8 @@ from cre_checkpoint_refresh import (
 COLLECTOR_DIR = Path(__file__).resolve().parent
 RUNNER = COLLECTOR_DIR / "launchd" / "cre_run_tier.sh"
 TIERS = frozenset({"monitor", "enrich", "weekly", "daily"})
+TIER_GROUP_TERM_GRACE_SECONDS = 5.0
+TIER_GROUP_KILL_GRACE_SECONDS = 5.0
 
 
 class TierDispatchError(RuntimeError):
@@ -153,6 +156,73 @@ def _wait_for_child(child_pid: int, forwarded_signal: list[int]) -> int:
             raise TierDispatchError("CRE tier worker disappeared before wait") from exc
 
 
+def _owned_worker_group(worker_pid: int) -> bool:
+    """Return whether ``worker_pid`` still leads its dedicated session/group."""
+    if worker_pid <= 0 or worker_pid == os.getpgrp():
+        raise TierDispatchError("CRE tier worker group is unsafe")
+    try:
+        return (
+            os.getpgid(worker_pid) == worker_pid and os.getsid(worker_pid) == worker_pid
+        )
+    except ProcessLookupError:
+        return False
+
+
+def _signal_worker_group(worker_pgid: int, signum: int) -> bool:
+    """Signal only a known dedicated worker group, never the dispatcher's group."""
+    if worker_pgid <= 0 or worker_pgid == os.getpgrp():
+        raise TierDispatchError("CRE tier worker group is unsafe")
+    try:
+        os.killpg(worker_pgid, signum)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _worker_group_exists(worker_pgid: int) -> bool:
+    """Probe the dedicated group without signaling the caller's group."""
+    return _signal_worker_group(worker_pgid, 0)
+
+
+def _drain_worker_group(worker_pgid: int, *, initial_signal_sent: bool) -> None:
+    """Keep the caller's lock until every worker-group member is gone.
+
+    A child shell can exit before a foreground descendant.  The group is a
+    dedicated session whose ID is not the dispatcher's process group.  Once the
+    shell is reaped, a present group still reserves that ID for its descendants;
+    a missing group is never signaled.  A lingering group receives TERM, then a
+    bounded KILL escalation.  If an owned group somehow survives KILL, the
+    dispatcher deliberately remains alive and keeps authority rather than
+    returning and creating an unlocked window.  A supervising service may
+    still stop this dispatcher, but inherited descriptors keep the flocks held
+    by any surviving worker.
+    """
+    if not _worker_group_exists(worker_pgid):
+        return
+
+    if not initial_signal_sent:
+        _signal_worker_group(worker_pgid, signal.SIGTERM)
+    deadline = time.monotonic() + TIER_GROUP_TERM_GRACE_SECONDS
+    while _worker_group_exists(worker_pgid):
+        if time.monotonic() >= deadline:
+            _signal_worker_group(worker_pgid, signal.SIGKILL)
+            break
+        time.sleep(0.02)
+
+    deadline = time.monotonic() + TIER_GROUP_KILL_GRACE_SECONDS
+    while _worker_group_exists(worker_pgid):
+        if time.monotonic() >= deadline:
+            print(
+                "[cre_tier_dispatch] CRE tier worker group survived owned "
+                "SIGKILL; retaining authority until it exits",
+                file=sys.stderr,
+            )
+            while _worker_group_exists(worker_pgid):
+                time.sleep(0.1)
+            return
+        time.sleep(0.02)
+
+
 def run_tier(
     tier: str,
     *,
@@ -210,32 +280,69 @@ def run_tier(
         os.set_inheritable(descriptor, True)
 
     child_pid = -1
+    worker_pgid = -1
     forwarded_signal: list[int] = []
     previous_handlers: dict[int, object] = {}
+    signal_failure: TierDispatchError | None = None
+    worker_group_signal_sent = False
+    readiness_read, readiness_write = os.pipe()
 
     def forward_signal(signum: int, _frame: object) -> None:
+        nonlocal signal_failure, worker_group_signal_sent
         if signum not in forwarded_signal:
             forwarded_signal.append(signum)
-        if child_pid > 0:
+        if worker_pgid > 0:
             try:
-                os.kill(child_pid, signum)
-            except ProcessLookupError:
-                pass
+                if _owned_worker_group(worker_pgid):
+                    worker_group_signal_sent = _signal_worker_group(worker_pgid, signum)
+            except TierDispatchError as exc:
+                signal_failure = exc
 
     try:
         child_pid = os.fork()
         if child_pid == 0:
-            os.execvpe(selected_command[0], selected_command, parent_env)
-            raise AssertionError("unreachable after exec")
+            os.close(readiness_read)
+            try:
+                os.setsid()
+                os.write(readiness_write, b"ready")
+                os.close(readiness_write)
+                os.execvpe(selected_command[0], selected_command, parent_env)
+            except BaseException:
+                try:
+                    os.write(readiness_write, b"error")
+                except OSError:
+                    pass
+                os._exit(127)
+        os.close(readiness_write)
+        readiness_write = -1
+        if os.read(readiness_read, 16) != b"ready" or not _owned_worker_group(
+            child_pid
+        ):
+            _wait_for_child(child_pid, forwarded_signal)
+            raise TierDispatchError("CRE tier worker session could not be established")
+        worker_pgid = child_pid
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous_handlers[signum] = signal.signal(signum, forward_signal)
         child_rc = _wait_for_child(child_pid, forwarded_signal)
+        if signal_failure is not None:
+            raise signal_failure
+        _drain_worker_group(worker_pgid, initial_signal_sent=worker_group_signal_sent)
         if child_rc < 0:
             return 128 + -child_rc
         if forwarded_signal and child_rc == 0:
             return 128 + forwarded_signal[-1]
         return child_rc
     finally:
+        if readiness_read >= 0:
+            try:
+                os.close(readiness_read)
+            except OSError:
+                pass
+        if readiness_write >= 0:
+            try:
+                os.close(readiness_write)
+            except OSError:
+                pass
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
         for descriptor, inheritable in original_inheritable.items():

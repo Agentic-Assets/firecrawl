@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -40,6 +41,28 @@ def _sleeping_command(ready: Path) -> list[str]:
         sys.executable,
         "-c",
         f"import pathlib, time; pathlib.Path({str(ready)!r}).write_text('ready'); time.sleep(30)",
+    ]
+
+
+def _foreground_bash_descendant_command(ready: Path, terminated: Path) -> list[str]:
+    """Model the shell waiting on an npx/Python-like foreground worker."""
+    worker = (
+        "import os, pathlib, signal, time\n"
+        f"ready=pathlib.Path({str(ready)!r})\n"
+        f"terminated=pathlib.Path({str(terminated)!r})\n"
+        "def stop(_signum, _frame):\n"
+        "    terminated.write_text(str(os.getpid()))\n"
+        "    time.sleep(0.75)\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "signal.signal(signal.SIGINT, stop)\n"
+        "ready.write_text(str(os.getpid()))\n"
+        "time.sleep(30)\n"
+    )
+    return [
+        "/bin/bash",
+        "-c",
+        f"{shlex.quote(sys.executable)} -c {shlex.quote(worker)}",
     ]
 
 
@@ -120,6 +143,77 @@ def test_tier_signal_forwards_then_releases_canonical_lock(tmp_path):
     successor.acquire()
     successor.release()
     assert not lock_path.exists()
+
+
+@pytest.mark.parametrize("signum", (signal.SIGTERM, signal.SIGINT))
+def test_tier_signal_terminates_foreground_bash_descendant_before_release(
+    tmp_path, signum
+):
+    lock_path = tmp_path / ".cre.lock"
+    ready = tmp_path / "ready"
+    terminated = tmp_path / "terminated"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _dispatch_program(
+                lock_path, _foreground_bash_descendant_command(ready, terminated)
+            ),
+        ],
+        cwd=COLLECTOR,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    _wait_for(ready)
+    descendant_pid = int(ready.read_text(encoding="utf-8"))
+    process.send_signal(signum)
+    _wait_for(terminated)
+
+    # The shell has received TERM, but its foreground descendant still has a
+    # bounded cleanup window. The dispatcher must keep authority through it.
+    with pytest.raises(refresh.LockHeldError):
+        refresh.SharedLock(lock_path).acquire()
+    assert refresh._pid_alive(descendant_pid)
+
+    process.wait(timeout=10)
+    assert process.returncode == 128 + signum
+    deadline = time.monotonic() + 5
+    while refresh._pid_alive(descendant_pid) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not refresh._pid_alive(descendant_pid)
+    successor = refresh.SharedLock(lock_path)
+    successor.acquire()
+    successor.release()
+    assert not lock_path.exists()
+
+
+def test_worker_group_signal_refuses_dispatcher_or_unrelated_group(monkeypatch):
+    monkeypatch.setattr(dispatch.os, "getpgrp", lambda: 4242)
+    with pytest.raises(dispatch.TierDispatchError, match="unsafe"):
+        dispatch._signal_worker_group(4242, signal.SIGTERM)
+
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        dispatch.os, "killpg", lambda pgid, signum: signals.append((pgid, signum))
+    )
+    assert dispatch._signal_worker_group(4243, signal.SIGTERM)
+    assert signals == [(4243, signal.SIGTERM)]
+
+
+def test_group_drain_signals_surviving_descendants_after_leader_reap(monkeypatch):
+    existence = iter((True, False, False))
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(dispatch, "_worker_group_exists", lambda _pgid: next(existence))
+    monkeypatch.setattr(
+        dispatch,
+        "_signal_worker_group",
+        lambda pgid, signum: signals.append((pgid, signum)) or True,
+    )
+
+    dispatch._drain_worker_group(4243, initial_signal_sent=False)
+
+    assert signals == [(4243, signal.SIGTERM)]
 
 
 def test_child_retains_authority_after_dispatcher_sigkill_until_worker_exits(tmp_path):

@@ -94,11 +94,16 @@ synchronizer is never moved or replaced by the protocol.
 The launchd/manual tier entrypoint, `cre_tier_dispatch.py`, is also a normal
 `SharedLock` owner. It forks `cre_run_tier.sh` only after taking both flocks and
 passes the descriptor-bound authority to that child for the complete tier
-lifetime. The shell verifies that inherited proof before any collector work;
-it never creates, reclaims, or removes the canonical lock namespace itself.
-That proof reasserts a nonblocking exclusive flock on both inherited open file
-descriptions, so a separately opened same-UID descriptor with copied metadata
-is rejected while the real owner remains active.
+lifetime. The child first creates a dedicated session/process group, then
+execs the shell. SIGINT and SIGTERM are forwarded only to that owned group;
+after its shell leader is reaped, the dispatcher keeps both flocks until all
+foreground descendants exit. It sends TERM, then a bounded KILL escalation
+only to that group, and deliberately continues holding authority if an owned
+group survives KILL. The shell verifies inherited proof before any collector
+work; it never creates, reclaims, or removes the canonical lock namespace
+itself. That proof reasserts a nonblocking exclusive flock on both inherited
+open file descriptions, so a separately opened same-UID descriptor with copied
+metadata is rejected while the real owner remains active.
 Manual repair entrypoints are also ordinary `SharedLock` callers. They reject a
 legacy file at the canonical lock path rather than unlinking or migrating it;
 only the explicit governed quarantine recovery may handle that forensic

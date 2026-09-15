@@ -158,10 +158,15 @@ live daily plist.
 Every public/manual tier invocation first enters `cre_tier_dispatch.py`. It
 takes the canonical Python `SharedLock`, including its persistent
 `.cre.lock.authority` and `.cre.lock.recovery-sync` flocks, before forking the
-shell worker. The child inherits both descriptors for its whole work lifetime;
-therefore an unexpected dispatcher-parent exit cannot free the authority while
-the worker continues. The shell verifies those inherited descriptors and cannot
-be used as an unlocked `--already-locked` shortcut.
+shell worker. The child first enters a dedicated session/process group and
+inherits both descriptors for its whole work lifetime; therefore an unexpected
+dispatcher-parent exit cannot free the authority while the worker continues.
+SIGINT/SIGTERM are forwarded only to that owned group. The dispatcher waits for
+the shell and all foreground descendants before releasing the lock, with TERM
+then a bounded owned-group KILL escalation; an unkillable owned group keeps the
+dispatcher and authority alive rather than opening an unlocked window. The
+shell verifies those inherited descriptors and cannot be used as an unlocked
+`--already-locked` shortcut.
 
 If another tier, benchmark, or operator quarantine recovery owns either
 protocol lock, the dispatcher exits 0 without running a worker, so launchd
