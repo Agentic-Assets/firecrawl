@@ -2771,7 +2771,6 @@ def test_candidate_rollback_lock_reclaims_after_legacy_guard_move(
     )
     initializer._write_reclaim_state(state)
     os.rename(guard, initializer._legacy_guard_forensic_path(state))
-    initializer._fsync_lock_parent()
     initializer._release_authority()
 
     with benchmark._candidate_rollback_lock(lock_path) as (held_lock, initial_error):

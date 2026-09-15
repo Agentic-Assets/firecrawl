@@ -1188,8 +1188,13 @@ class SharedLock:
                             )
                         os.rename(tombstone, forensic)
                         self._fsync_lock_parent()
-                    elif not self._empty_real_directory(forensic):
-                        raise LockHeldError("CRE reclaim legacy guard changed")
+                    else:
+                        if not self._empty_real_directory(forensic):
+                            raise LockHeldError("CRE reclaim legacy guard changed")
+                        # A predecessor may have performed this rename and
+                        # crashed before its parent fsync. Acknowledge it
+                        # durably before advancing the sidecar phase.
+                        self._fsync_lock_parent()
                     state = replace(state, legacy_guard=2)
                     self._write_reclaim_state(state)
                 elif state.legacy_guard == 2:

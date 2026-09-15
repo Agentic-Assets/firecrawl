@@ -3011,6 +3011,59 @@ os._exit(23)
         successor.release()
 
 
+def test_observed_legacy_guard_move_fsyncs_before_phase_advance(tmp_path, monkeypatch):
+    """A predecessor's unacknowledged guard rename cannot advance phase two."""
+    lock_path = tmp_path / ".cre.lock"
+    owner = 99999999
+    token = "t" * 32
+    generation = "g" * 32
+    lock_path.mkdir()
+    (lock_path / "pid").write_text(f"{owner} 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text(f"{generation}\n", encoding="utf-8")
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    authority.write_text(f"v1 {owner} {token} {generation} normal\n", encoding="utf-8")
+    guard = lock_path.with_name(f"{lock_path.name}.reclaim")
+    guard.mkdir()
+    (lock_path / "lease").unlink()
+    initializer = refresh.SharedLock(lock_path)
+    initializer._claim_authority("n" * 32)
+    fields = initializer._authority_fields(initializer.authority_fd)
+    state = refresh._AuthorityReclaimState(
+        owner=fields[0],
+        token=fields[1],
+        generation=fields[2],
+        recovery_required=False,
+        source_identity=refresh._lock_directory_identity(lock_path),
+        legacy_guard=1,
+    )
+    initializer._write_reclaim_state(state)
+    forensic = initializer._legacy_guard_forensic_path(state)
+    os.rename(guard, forensic)
+    initializer._release_authority()
+    parent_identity = refresh._lock_directory_identity(lock_path.parent)
+    original_fsync = refresh.os.fsync
+
+    def fail_parent_fsync(descriptor):
+        observed = os.fstat(descriptor)
+        if (observed.st_dev, observed.st_ino) == parent_identity:
+            raise OSError("legacy guard parent fsync failed")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(refresh.os, "fsync", fail_parent_fsync)
+    with pytest.raises(OSError, match="legacy guard parent fsync failed"):
+        refresh.SharedLock(lock_path).acquire()
+
+    assert authority.read_text(encoding="utf-8").endswith(" 1\n")
+    assert lock_path.is_dir()
+    assert forensic.is_dir()
+    assert not guard.exists()
+
+    monkeypatch.setattr(refresh.os, "fsync", original_fsync)
+    successor = refresh.SharedLock(lock_path)
+    successor.acquire()
+    successor.release()
+
+
 @pytest.mark.parametrize("unsafe_entry", ["unexpected", "nonempty-guard", "bad-lease"])
 def test_partial_legacy_reclaim_residue_fails_closed_when_unverified(
     tmp_path, unsafe_entry
