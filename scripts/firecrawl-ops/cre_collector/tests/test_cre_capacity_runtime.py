@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import io
 import json
 import os
@@ -781,6 +782,107 @@ def test_quarantine_recovery_refuses_tampered_receipt_before_guard_clear(
         runtime.recover_quarantine(execute=True)
     assert guard.is_file()
     assert receipt.read_text(encoding="utf-8") == '{"tampered":true}\n'
+
+
+def test_quarantine_recovery_replays_existing_receipt_after_archive_fsync_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A receipt entry is re-fsynced before replay advances its guard phase."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    real_guard_write = runtime._write_recovery_guard
+    real_fsync = runtime._fsync_directory
+    archive: Path | None = None
+    receipt_write_started = False
+
+    def arm_receipt_fsync_failure(
+        path: Path, value: dict[str, object], *, create: bool
+    ) -> None:
+        nonlocal archive, receipt_write_started
+        if path.name == "recovery-receipt.json":
+            archive = path.parent
+            receipt_write_started = True
+        real_guard_write(path, value, create=create)
+
+    def fail_receipt_archive_fsync(path: Path) -> None:
+        if receipt_write_started and archive is not None and path == archive:
+            raise OSError("simulated receipt archive fsync failure")
+        real_fsync(path)
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", arm_receipt_fsync_failure)
+    monkeypatch.setattr(runtime, "_fsync_directory", fail_receipt_archive_fsync)
+    with pytest.raises(OSError, match="receipt archive fsync"):
+        runtime.recover_quarantine(execute=True)
+    guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
+    guard_value = json.loads(guard.read_text(encoding="utf-8"))
+    archive = Path(guard_value["archive"])
+    assert guard_value["phase"] == "pair-archived"
+    assert (archive / "recovery-receipt.json").is_file()
+    with pytest.raises(runtime.LockHeldError, match="operator completion"):
+        runtime.SharedLock(lock_path).acquire()
+
+    archive_fsynced = False
+
+    def record_archive_fsync(path: Path) -> None:
+        nonlocal archive_fsynced
+        if path == archive:
+            archive_fsynced = True
+        real_fsync(path)
+
+    def require_receipt_fsync_before_advance(
+        path: Path, value: dict[str, object], *, create: bool
+    ) -> None:
+        if value.get("phase") == "receipt-written" and not archive_fsynced:
+            raise AssertionError("replay advanced receipt phase before archive fsync")
+        real_guard_write(path, value, create=create)
+
+    monkeypatch.setattr(runtime, "_fsync_directory", record_archive_fsync)
+    monkeypatch.setattr(
+        runtime, "_write_recovery_guard", require_receipt_fsync_before_advance
+    )
+    assert runtime.recover_quarantine(execute=True)["executed"] is True
+    assert archive_fsynced
+    assert not guard.exists()
+
+
+def test_recovery_directory_fsync_is_unique_strict_and_refuses_substitution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recovery cannot silently use a later weak fsync helper or a symlink."""
+    source = inspect.getsource(runtime)
+    assert source.count("def _fsync_directory(") == 1
+    directory = tmp_path / "private"
+    directory.mkdir(mode=0o700)
+    observed_flags: list[int] = []
+    real_open = runtime.os.open
+
+    def record_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        observed_flags.append(flags)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(runtime.os, "open", record_open)
+    runtime._fsync_directory(directory)
+    assert any(
+        flags & os.O_DIRECTORY and flags & os.O_NOFOLLOW for flags in observed_flags
+    )
+
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    substituted = tmp_path / "substituted"
+    substituted.symlink_to(target, target_is_directory=True)
+    with pytest.raises(OSError):
+        runtime._fsync_directory(substituted)
 
 
 @pytest.mark.parametrize(

@@ -1107,8 +1107,21 @@ def _controller_output(path: Path) -> Path:
 
 
 def _fsync_directory(path: Path) -> None:
+    """Fsync one owner-controlled directory without following substitutions."""
     descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
+        observed = os.fstat(descriptor)
+        named = path.lstat()
+        if (
+            not stat.S_ISDIR(observed.st_mode)
+            or observed.st_uid != os.geteuid()
+            or stat.S_IMODE(observed.st_mode) & 0o022
+            or observed.st_nlink < 2
+            or (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino)
+        ):
+            raise RuntimeAdmissionError(
+                "directory changed before durability acknowledgement"
+            )
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
@@ -1799,6 +1812,15 @@ def _recover_quarantine_while_synchronized(
                 )
             else:
                 _write_recovery_receipt(receipt, result)
+            # A receipt may have been file-fsynced just before its containing
+            # archive directory fsync failed.  Replaying must repair that
+            # directory-entry durability before it advances the phase/guard.
+            _fsync_directory(archive)
+            if not _archive_pair_is_exact(archive, pair, receipt=True):
+                raise RuntimeAdmissionError("quarantine forensic pair changed")
+            _validate_recovery_receipt(
+                receipt, lock_path=lock_path, archive=archive, pair=pair
+            )
             result["phase"] = "receipt-written"
             _write_recovery_guard(guard_path, result, create=False)
             phase = "receipt-written"
@@ -2270,20 +2292,6 @@ def admit_baseline(
         finally:
             with _defer_transition_signals():
                 lock.release()
-
-
-def _fsync_directory(path: Path) -> None:
-    """Persist directory-entry changes or fail closed."""
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    except OSError as exc:
-        raise RuntimeAdmissionError(
-            "review approval consumption directory could not be made durable"
-        ) from exc
 
 
 def _record_review_approval_consumption(
