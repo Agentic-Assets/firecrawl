@@ -2451,6 +2451,8 @@ def to_row(listing, brokers_by_idx, scraped_at):
     if not source_contacts:
         for i, bid in enumerate(listing.get("brokerIds") or []):
             b = brokers_by_idx.get(bid)
+            if jll_pricing_withheld:
+                b = _safe_jll_hidden_child_metadata(b, broker=True)
             if not b or not (b.get("name") or b.get("email")):
                 continue
             contacts.append(
@@ -2946,6 +2948,14 @@ def merge_rows(a, b):
         a["extra_facts"] = None
         a["description"] = None
         a["markdown"] = None
+        # Merge happens after each individual pass has already constructed its
+        # staged children. A visible sibling can therefore contribute a title,
+        # caption, broker license, or other label after the hidden pass was
+        # sanitized. Reapply the same narrow label projection to the final
+        # row, preserving URLs, identifiers, types, and ordinary names.
+        a["contacts"] = _safe_jll_hidden_child_metadata(a["contacts"], broker=True)
+        for key in ("documents", "images", "media", "links"):
+            a[key] = _safe_jll_hidden_child_metadata(a[key])
     return a
 
 

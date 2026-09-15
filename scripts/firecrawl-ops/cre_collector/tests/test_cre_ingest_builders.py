@@ -25,9 +25,8 @@ import json
 import sys
 from datetime import datetime, timezone
 
-import pytest
-
 import cre_ingest as ci
+import pytest
 
 _SCRAPED_AT = datetime(2026, 6, 15, 0, 0, 0, tzinfo=timezone.utc).isoformat()
 
@@ -1274,6 +1273,127 @@ def test_merge_carries_jll_withheld_marker_across_dual_passes():
     assert merged["raw_data"]["secondary_pass"]["jllPriceWithheld"] is True
     assert "3250000" not in json.dumps(merged["raw_data"])
     assert "$3,250,000" not in json.dumps(merged["raw_data"])
+
+
+def test_merge_final_withheld_projection_sanitizes_visible_child_metadata():
+    visible = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/merged-hidden-children",
+            "id": "merged-hidden-children",
+            "transactionMode": "sale",
+            "contactsDetailed": [
+                {
+                    "id": "broker-1",
+                    "name": "Jane Broker",
+                    "email": "jane@example.com",
+                    "profileUrl": "https://jll.example/broker-1",
+                    "title": "$3.25M Advisor",
+                    "license": "Offering 3.25M USD",
+                }
+            ],
+            "brochures": [
+                {
+                    "url": "https://cdn.example/brochure.pdf",
+                    "name": "Offering 3.25M USD",
+                }
+            ],
+            "documents": [
+                {
+                    "url": "https://cdn.example/floor.pdf",
+                    "title": "$3.25M floor plan",
+                    "docType": "floor_plan",
+                }
+            ],
+            "media": [
+                {
+                    "url": "https://video.example/watch",
+                    "mediaType": "video",
+                    "title": "Offering 3.25M USD",
+                }
+            ],
+        }
+    )
+    withheld = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/merged-hidden-children",
+            "id": "merged-hidden-children",
+            "transactionMode": "lease",
+            "hidePrice": True,
+        }
+    )
+
+    merged = ci.merge_rows(visible, withheld)
+
+    assert merged["contacts"] == [
+        {
+            "name": "Jane Broker",
+            "email": "jane@example.com",
+            "phone": None,
+            "company": None,
+            "profileUrl": "https://jll.example/broker-1",
+            "avatarUrl": None,
+            "vcardUrl": None,
+            "isPrimary": True,
+        }
+    ]
+    assert merged["documents"] == [
+        {"url": "https://cdn.example/brochure.pdf", "docType": "brochure"},
+        {"url": "https://cdn.example/floor.pdf", "docType": "floor_plan"},
+    ]
+    assert merged["media"] == [
+        {
+            "mediaType": "video",
+            "provider": None,
+            "url": "https://video.example/watch",
+            "embedUrl": None,
+        }
+    ]
+    rendered = repr(merged)
+    assert "3.25M" not in rendered
+    assert "USD" not in rendered
+    assert "Jane Broker" in rendered
+    assert "https://video.example/watch" in rendered
+
+
+def test_withheld_jll_broker_id_fallback_sanitizes_legacy_broker_metadata():
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/hidden-broker-fallback",
+            "id": "hidden-broker-fallback",
+            "hidePrice": True,
+            "brokerIds": [0],
+        },
+        brokers={
+            0: {
+                "id": "broker-legacy",
+                "name": "Jane Broker",
+                "email": "jane@example.com",
+                "phone": "555-0100",
+                "profileUrl": "https://jll.example/broker-legacy",
+                "title": "$3.25M Advisor",
+                "license": "Offering 3.25M USD",
+                "office": "Asking price $3.25M",
+            }
+        },
+    )
+
+    assert row["contacts"] == [
+        {
+            "name": "Jane Broker",
+            "title": None,
+            "license": None,
+            "email": "jane@example.com",
+            "phone": "555-0100",
+            "company": None,
+            "avatarUrl": None,
+            "isPrimary": True,
+        }
+    ]
+    assert "3.25M" not in repr(row)
+    assert "USD" not in repr(row)
 
 
 def test_merge_final_withheld_projection_clears_visible_sibling_prose_in_either_order():
