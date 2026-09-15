@@ -35,6 +35,15 @@ import {
   refreshGenerationId,
   requireFreshDetails,
 } from "../lib/freshness.js";
+import {
+  JLL_GRAPHQL_URL as pureJllGraphqlUrl,
+  JLL_SEARCH_PAGE_SIZE as pureJllSearchPageSize,
+  JLL_SEARCH_RESULTS_QUERY as pureJllSearchResultsQuery,
+  jllGraphqlVariables as pureJllGraphqlVariables,
+  jllNextData as pureJllNextData,
+  normalizedJllListingUrl as pureNormalizedJllListingUrl,
+  parseJllGraphqlSearchEnvelope,
+} from "./pure/jll-receipt.js";
 
 // --- JLL: public GraphQL search + rendered detail pages ---
 
@@ -49,8 +58,8 @@ export const JLL_PROPERTY_TYPES = [
   "coworking",
   "data-center",
 ] as const;
-export const JLL_SEARCH_PAGE_SIZE = 50;
-export const JLL_GRAPHQL_URL = "https://property.jll.com/api/graphql";
+export const JLL_SEARCH_PAGE_SIZE = pureJllSearchPageSize;
+export const JLL_GRAPHQL_URL = pureJllGraphqlUrl;
 export const JLL_GRAPHQL_TIMEOUT_MS = boundedInt(
   process.env.JLL_GRAPHQL_TIMEOUT_MS,
   30000,
@@ -90,13 +99,7 @@ export function jllPropertyTypeLabel(propertyType: string): string {
 }
 
 export function normalizedJllListingUrl(href: string): string {
-  const abs = href.startsWith("http")
-    ? href
-    : `https://property.jll.com${href}`;
-  const url = new URL(abs);
-  url.hash = "";
-  url.search = "";
-  return url.toString().replace(/\/$/, "");
+  return pureNormalizedJllListingUrl(href);
 }
 
 export function jllFilteredSearchUrl(
@@ -273,65 +276,7 @@ export function assertJllIdentityReconciliation(
   }
 }
 
-export const JLL_SEARCH_RESULTS_QUERY = `
-  query SearchResults(
-    $market: String!
-    $language: String!
-    $propertyTypes: [String!]
-    $tenureTypes: [String!]
-    $skip: Int
-    $take: IntString = 50
-    $orderBy: PropertiesOrderInput
-  ) {
-    properties(
-      market: $market
-      language: $language
-      propertyTypes: $propertyTypes
-      tenureTypes: $tenureTypes
-      skip: $skip
-      take: $take
-      orderBy: $orderBy
-    ) {
-      count
-      items {
-        id
-        title
-        images
-        address
-        propertyTypes
-        tenureTypes
-        rentPrice {
-          amount
-          currency
-          unit
-        }
-        salePrice {
-          amount
-          currency
-          unit
-        }
-        hidePrice
-        pageUrl
-        latitude
-        longitude
-        city
-        state
-        postcode
-        surfaceAreas {
-          value
-          unit
-          label
-          alternativeUnit
-          showEstimateDesks
-          metrics {
-            value
-            unit
-          }
-        }
-      }
-    }
-  }
-`;
+export const JLL_SEARCH_RESULTS_QUERY = pureJllSearchResultsQuery;
 
 class JllGraphqlRequestError extends Error {
   constructor(
@@ -348,24 +293,7 @@ export function jllGraphqlVariables(
   propertyType: string,
   page: number,
 ): Record<string, unknown> {
-  if (!Number.isInteger(page) || page < 1) {
-    throw new Error(
-      `JLL GraphQL page must be a positive integer, received ${page}`,
-    );
-  }
-  return {
-    market: "us",
-    language: "en",
-    propertyTypes: [propertyType],
-    tenureTypes: [tx === "sale" ? "sale" : "rent"],
-    skip: (page - 1) * JLL_SEARCH_PAGE_SIZE,
-    take: JLL_SEARCH_PAGE_SIZE,
-    orderBy: {
-      field: "dateModified",
-      direction: "desc",
-      imagePriority: true,
-    },
-  };
+  return pureJllGraphqlVariables(tx, propertyType, page);
 }
 
 type JllPriceSourceShape =
@@ -1010,31 +938,9 @@ export function parseJllGraphqlSearchPage(
   propertyType: string,
   page: number,
 ): { total: number; listings: any[] } {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new Error("JLL GraphQL response is not an object");
-  }
-  if (payload.errors !== undefined) {
-    if (!Array.isArray(payload.errors) || payload.errors.length > 0) {
-      throw new Error("JLL GraphQL response contains errors");
-    }
-  }
-  const properties = payload?.data?.properties;
-  if (
-    !properties ||
-    typeof properties !== "object" ||
-    Array.isArray(properties)
-  ) {
-    throw new Error("JLL GraphQL response lacks data.properties");
-  }
-  const total = properties.count;
-  if (!Number.isInteger(total) || total < 0) {
-    throw new Error("JLL GraphQL response lacks a finite nonnegative count");
-  }
-  if (!Array.isArray(properties.items)) {
-    throw new Error("JLL GraphQL response lacks a properties.items array");
-  }
+  const { total, items } = parseJllGraphqlSearchEnvelope(payload);
 
-  const listings = properties.items.map((item: any) =>
+  const listings = items.map((item: any) =>
     jllGraphqlItemToListing(item, tx, propertyType, page, total),
   );
   const ids = listings.map((listing: any) => clean(listing?.id));
@@ -1072,7 +978,7 @@ async function requestJllGraphqlPage(
       cache: "no-store",
       signal: controller.signal,
       body: JSON.stringify({
-        query: JLL_SEARCH_RESULTS_QUERY,
+        query: pureJllSearchResultsQuery,
         variables: jllGraphqlVariables(tx, propertyType, page),
         operationName: "SearchResults",
       }),
@@ -1188,14 +1094,7 @@ export function mergeJllListing(
 }
 
 export function jllNextData(rawHtml: string): any | null {
-  const $ = cheerio.load(rawHtml);
-  const text = $("#__NEXT_DATA__").first().text();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
+  return pureJllNextData(rawHtml);
 }
 
 export function jllDetailCacheDir(): string {

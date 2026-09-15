@@ -2,10 +2,9 @@
 import {
   C10ReceiptError,
   canonicalJson,
-  type C10Member,
-  type RequestCardInput,
-  type SourceProjection,
-} from "../index.js";
+} from "../contracts.js";
+import type { RequestCardInput, SourceProjection } from "../transport.js";
+import type { C10Member } from "../producer.js";
 import {
   MARCUS_BASE,
   marcusHeaders,
@@ -14,7 +13,7 @@ import {
   marcusUrl,
   parseMarcusMapRowsResponse,
   parseMarcusPropertiesResponse,
-} from "../../../sources/marcus-millichap.js";
+} from "../../../sources/pure/marcus-receipt.js";
 import {
   StrictDetailReceiptProducer,
   type StrictDetailPlan,

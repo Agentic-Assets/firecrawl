@@ -1,10 +1,9 @@
 /** Colliers SalesTracker RCM list/map/SLP evidence without collector helpers. */
 import {
   C10ReceiptError,
-  type C10Member,
-  type RequestCardInput,
-  type SourceProjection,
-} from "../index.js";
+} from "../contracts.js";
+import type { RequestCardInput, SourceProjection } from "../transport.js";
+import type { C10Member } from "../producer.js";
 import {
   COLLIERS_PAGE_SIZE,
   COLLIERS_RCM_BASE,
@@ -14,8 +13,8 @@ import {
   colliersSlpInitUrl,
   colliersAssertDetailProjectId,
   groupColliersMapLocations,
-  parseColliersCards,
-} from "../../../sources/colliers.js";
+  parseColliersReceiptCards,
+} from "../../../sources/pure/colliers-receipt.js";
 import {
   StrictDetailReceiptProducer,
   type StrictDetailPlan,
@@ -127,7 +126,7 @@ function spec(plan: ColliersReceiptPlan): StrictDetailSourceSpec<ColliersReceipt
         const payload = utf8Json(response.body, "Colliers listing");
         const html = String((payload as { html?: unknown }).html ?? "");
         if (!html) throw new C10ReceiptError("Colliers list response has no HTML cards");
-        const cards = parseColliersCards(html, mapProjection.groups as any[], plan.start);
+        const cards = parseColliersReceiptCards(html, mapProjection.groups as any[], plan.start);
         return {
           cards: cards.map((card) => ({
             canonicalUrl: card.detailUrl,

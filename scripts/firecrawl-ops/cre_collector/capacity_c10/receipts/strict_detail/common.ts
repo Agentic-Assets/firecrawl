@@ -7,17 +7,21 @@
  */
 import {
   C10ReceiptError,
-  type C10Member,
   type PublicReceipt,
+} from "../contracts.js";
+import {
+  type C10Member,
   type ReceiptProducer,
   type ReceiptProducerContext,
-  type RequestCardInput,
-  type SealedTransportEvent,
-  type SourceProjection,
-  type SourceResponseProjector,
   requireReceiptSource,
   sealStageReceipt,
-} from "../index.js";
+} from "../producer.js";
+import type {
+  RequestCardInput,
+  SealedTransportEvent,
+  SourceProjection,
+  SourceResponseProjector,
+} from "../transport.js";
 
 export interface StrictDetailPlan<Member extends C10Member> {
   /** Fixed, source-owned enumeration cards known before any provider request. */
@@ -107,6 +111,7 @@ export class StrictDetailReceiptProducer<Member extends C10Member> implements Re
   async produceEnumerationReceipt(context: ReceiptProducerContext): Promise<PublicReceipt> {
     assertContext(context, this.spec);
     if (this.prepared) throw new C10ReceiptError("strict-detail member graph is already prepared");
+    context.transport.assertInitialCards(this.plan.enumerationCards);
     const memberKeys = exactMemberKeys(this.plan.members);
     const enumerated = await this.spec.enumerate(context, this.plan);
     const observed = [...enumerated.observedMemberKeys];

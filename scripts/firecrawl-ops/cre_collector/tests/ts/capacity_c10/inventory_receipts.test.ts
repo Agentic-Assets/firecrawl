@@ -7,6 +7,7 @@ import {
   C10ReceiptError,
   SourceBoundOneShotTransport,
   allowlistedCards,
+  canonicalJson,
   type DirectProviderTransport,
   type RequestCard,
   type TransportResponse,
@@ -118,6 +119,22 @@ test("all eight source producers seal fake native enumeration then member receip
     assert.ok(fake.calls.every((card) => card.method === "GET" || card.method === "POST"));
     assert.equal(fake.calls.filter((card) => card.method === "POST").length, sourceKey === "newmark" || sourceKey === "srs" ? 1 : 0);
   }
+});
+
+test("inventory rejects a same-source substituted initial POST body before transport execution", async () => {
+  const producer = inventoryReceiptProducers.get("newmark")!;
+  const fake = new FakeDirectTransport("newmark");
+  const expected = producer.initialCards[0]!;
+  const substituted = {
+    ...expected,
+    body: canonicalJson({ ...JSON.parse(expected.body!), page: 99 }),
+  };
+  const store = new MemoryReceiptStore();
+  const transport = new SourceBoundOneShotTransport(
+    producer.sourceKey, binding, allowlistedCards(producer.sourceKey, [substituted]), store, fake,
+  );
+  await assert.rejects(producer.produceEnumerationReceipt({ transport }), /initial request-card set does not match source plan/);
+  assert.equal(fake.calls.length, 0);
 });
 
 test("a terminal provider redirect is one attempt, with no fallback or member graph", async () => {

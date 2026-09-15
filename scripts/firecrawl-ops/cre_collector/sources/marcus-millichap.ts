@@ -20,6 +20,14 @@ import {
 } from "../lib/parse.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
+import {
+  marcusHeaders as pureMarcusHeaders,
+  marcusMapDetailBody as pureMarcusMapDetailBody,
+  marcusSearchBody as pureMarcusSearchBody,
+  marcusUrl as pureMarcusUrl,
+  parseMarcusMapRowsResponse as parsePureMarcusMapRowsResponse,
+  parseMarcusPropertiesResponse as parsePureMarcusPropertiesResponse,
+} from "./pure/marcus-receipt.js";
 
 
 // --- Marcus & Millichap: public contentsearch API + public detail pages (sale-only platform) ---
@@ -28,31 +36,15 @@ export const MARCUS_BASE = "https://www.marcusmillichap.com";
 export const MARCUS_PROPERTIES_URL = `${MARCUS_BASE}/properties`;
 
 export function marcusHeaders(): Record<string, string> {
-  return {
-    accept: "application/json, text/javascript, */*; q=0.01",
-    "content-type": "application/json",
-    origin: MARCUS_BASE,
-    referer: MARCUS_PROPERTIES_URL,
-    "user-agent": "Mozilla/5.0 CRE collector",
-  };
+  return pureMarcusHeaders();
 }
 
 export function marcusSearchBody(pageSize: number): Record<string, any> {
-  return {
-    pageNumber: 1,
-    pageSize,
-    sortOrder: "DESC",
-    indexFieldName: "orderdate",
-    facets: [],
-    rangeFacets: [],
-    geoFacet: { Polygons: [], Circles: [], FieldName: "customdraw" },
-    savedSearchId: null,
-    allowedFacets: ["propertytype", "location", "advisors", "listingprice", "caprate"],
-  };
+  return pureMarcusSearchBody(pageSize);
 }
 
 export function marcusMapDetailBody(activityId: string): Record<string, any> {
-  return { activityId };
+  return pureMarcusMapDetailBody(activityId);
 }
 
 export async function marcusPost(path: string, body: Record<string, any>): Promise<any> {
@@ -66,13 +58,7 @@ export async function marcusPost(path: string, body: Record<string, any>): Promi
 }
 
 export function marcusUrl(href: string | null | undefined): string | null {
-  const h = clean(href ?? null);
-  if (!h) return null;
-  try {
-    return new URL(h, MARCUS_BASE).toString();
-  } catch {
-    return null;
-  }
+  return pureMarcusUrl(href);
 }
 
 export function extractCssUrl(style: string | null | undefined): string | null {
@@ -165,73 +151,14 @@ export function parseMarcusPropertiesResponse(
   search: any,
   strict = requireFreshDetails()
 ): { rows: any[]; total: number | null } {
-  const results = search?.Results ?? search;
-  if (
-    strict
-    && (
-      !results
-      || typeof results !== "object"
-      || Array.isArray(results)
-      || !Array.isArray(results.Properties)
-    )
-  ) {
-    throw new Error(
-      "Marcus & Millichap properties response has no Properties array"
-    );
-  }
-  const rows = Array.isArray(results?.Properties) ? results.Properties : [];
-  const total =
-    typeof results?.TotalCount === "number" ? results.TotalCount : null;
-  if (
-    strict
-    && (
-      !Number.isFinite(total)
-      || !Number.isInteger(total)
-      || (total as number) < 0
-    )
-  ) {
-    throw new Error(
-      "Marcus & Millichap properties response requires a finite nonnegative integer TotalCount"
-    );
-  }
-  if (strict && (total as number) < rows.length) {
-    throw new Error(
-      `Marcus & Millichap properties response TotalCount ${total} is below returned rows ${rows.length}`
-    );
-  }
-  return { rows, total };
+  return parsePureMarcusPropertiesResponse(search, strict);
 }
 
 export function parseMarcusMapRowsResponse(
   map: any,
   strict = requireFreshDetails()
 ): any[] {
-  const results = map?.Results ?? map;
-  if (
-    strict
-    && (
-      !results
-      || typeof results !== "object"
-      || Array.isArray(results)
-      || !Array.isArray(results.Properties)
-    )
-  ) {
-    throw new Error(
-      "Marcus & Millichap mapproperties response has no Properties array"
-    );
-  }
-  const rows = Array.isArray(results?.Properties)
-    ? results.Properties
-    : Array.isArray(results)
-      ? results
-      : [];
-  const seen = new Set<string>();
-  return rows.filter((row: any) => {
-    const activityId = clean(row.ActivityId);
-    if (!activityId || seen.has(activityId)) return false;
-    seen.add(activityId);
-    return true;
-  });
+  return parsePureMarcusMapRowsResponse(map, strict);
 }
 
 export async function fetchMarcusMapRows(): Promise<any[]> {
