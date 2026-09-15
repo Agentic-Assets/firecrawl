@@ -8,6 +8,7 @@ receipt evidence.
 
 from __future__ import annotations
 
+import contextvars
 import ctypes
 import errno
 import fcntl
@@ -15,9 +16,9 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import sys
-import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -33,6 +34,11 @@ QUARANTINE_ARCHIVE_DIR = ".cre-quarantine-forensics"
 QUARANTINE_RECOVERY_KIND = "cre_capacity_quarantine_recovery"
 QUARANTINE_RECOVERY_GUARD = checkpoint_refresh.QUARANTINE_RECOVERY_GUARD
 LEGACY_AUTHORITY_TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}\Z")
+GUARD_JOURNAL_VERSION = 1
+GUARD_JOURNAL_MAX_BYTES = 65536
+_ACTIVE_GUARD_JOURNAL: contextvars.ContextVar[_GuardJournal | None] = (
+    contextvars.ContextVar("active_cre_quarantine_guard_journal", default=None)
+)
 
 
 @dataclass(frozen=True)
@@ -75,6 +81,19 @@ class QuarantineRecoveryResult(TypedDict, total=False):
     phase: str
     pair: QuarantineEvidence
     executed: bool
+
+
+@dataclass
+class _GuardJournal:
+    """One identity-bound, append-only recovery guard descriptor."""
+
+    path: Path
+    descriptor: int
+    identity: tuple[int, int]
+    state: dict[str, Any]
+    sequence: int
+    record_sha256: str | None
+    valid_size: int
 
 
 @dataclass(frozen=True)
@@ -284,19 +303,9 @@ def _recovery_guard_path(lock_path: Path) -> Path:
     return lock_path.parent / QUARANTINE_RECOVERY_GUARD
 
 
-def _write_recovery_guard(
-    path: Path, value: Mapping[str, Any], *, create: bool
-) -> None:
-    """Durably publish the only state normal lock acquisition understands.
-
-    The guard is intentionally outside the quarantined directory: after the
-    first archive rename, there is no canonical directory in which to place a
-    stop marker.  ``SharedLock.acquire`` treats any such guard as an operator
-    stop, so no successor can slip between either paired rename.
-    """
-    parent = path.parent
+def _guard_parent(path: Path) -> None:
     try:
-        parent_stat = parent.lstat()
+        parent_stat = path.parent.lstat()
     except OSError as exc:
         raise RuntimeAdmissionError(
             "quarantine recovery parent is unavailable"
@@ -307,81 +316,216 @@ def _write_recovery_guard(
         or stat.S_IMODE(parent_stat.st_mode) & 0o022
     ):
         raise RuntimeAdmissionError("quarantine recovery parent is unsafe")
-    if create:
-        # Initial guards and receipts are operation claims.  They must never
-        # use replace semantics: a second recovery that races this creation has
-        # to stop, not overwrite a more advanced durable phase.
-        descriptor = -1
-        try:
-            descriptor = os.open(
-                path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-            )
-        except FileExistsError as exc:
-            raise RuntimeAdmissionError(
-                "quarantine recovery guard already exists"
-            ) from exc
-        try:
-            os.fchmod(descriptor, 0o600)
-            observed = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(observed.st_mode)
-                or observed.st_nlink != 1
-                or observed.st_uid != os.geteuid()
-                or stat.S_IMODE(observed.st_mode) != 0o600
-            ):
-                raise RuntimeAdmissionError("quarantine recovery guard is unsafe")
-            payload = memoryview(_canonical(value) + b"\n")
-            while payload:
-                written = os.write(descriptor, payload)
-                if written <= 0:
-                    raise OSError("quarantine recovery guard write was short")
-                payload = payload[written:]
-            os.fsync(descriptor)
-            named = path.lstat()
-            if (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino):
-                raise RuntimeAdmissionError("quarantine recovery guard changed")
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-        fsync_directory(path.parent)
-        if _read_recovery_guard(path) != dict(value):
-            raise RuntimeAdmissionError("quarantine recovery guard changed")
-        return
-    if path.is_symlink():
+
+
+def _write_all(descriptor: int, raw: bytes, *, message: str) -> None:
+    payload = memoryview(raw)
+    while payload:
+        written = os.write(descriptor, payload)
+        if written <= 0:
+            raise OSError(message)
+        payload = payload[written:]
+
+
+def _guard_identity(descriptor: int, path: Path) -> tuple[int, int]:
+    observed = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(observed.st_mode)
+        or observed.st_nlink != 1
+        or observed.st_uid != os.geteuid()
+        or stat.S_IMODE(observed.st_mode) != 0o600
+    ):
         raise RuntimeAdmissionError("quarantine recovery guard is unsafe")
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=parent
-    )
+    try:
+        named = path.lstat()
+    except OSError as exc:
+        raise RuntimeAdmissionError("quarantine recovery guard changed") from exc
+    if (
+        not stat.S_ISREG(named.st_mode)
+        or named.st_nlink != 1
+        or named.st_uid != os.geteuid()
+        or stat.S_IMODE(named.st_mode) != 0o600
+        or (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino)
+    ):
+        raise RuntimeAdmissionError("quarantine recovery guard changed")
+    return (observed.st_dev, observed.st_ino)
+
+
+def _guard_record(
+    state: Mapping[str, Any], sequence: int, previous: str | None
+) -> tuple[bytes, str]:
+    unsigned = {
+        "journal_version": GUARD_JOURNAL_VERSION,
+        "sequence": sequence,
+        "previous_sha256": previous,
+        "state": dict(state),
+    }
+    digest = _hash(unsigned)
+    return _canonical({**unsigned, "record_sha256": digest}) + b"\n", digest
+
+
+def _read_guard_journal(
+    descriptor: int, path: Path
+) -> tuple[dict[str, Any], int, str, int]:
+    identity = _guard_identity(descriptor, path)
+    observed = os.fstat(descriptor)
+    if observed.st_size <= 0 or observed.st_size > GUARD_JOURNAL_MAX_BYTES:
+        raise RuntimeAdmissionError("quarantine recovery guard is malformed")
+    raw = os.pread(descriptor, observed.st_size, 0)
+    if len(raw) != observed.st_size:
+        raise RuntimeAdmissionError("quarantine recovery guard changed")
+    state: dict[str, Any] | None = None
+    sequence = 0
+    previous: str | None = None
+    valid_size = 0
+    lines = raw.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if not line.endswith(b"\n"):
+            if index == len(lines) - 1:
+                break
+            raise RuntimeAdmissionError("quarantine recovery guard is malformed")
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeAdmissionError(
+                "quarantine recovery guard is malformed"
+            ) from exc
+        if not isinstance(record, dict):
+            raise RuntimeAdmissionError("quarantine recovery guard is malformed")
+        supplied = record.get("record_sha256")
+        unsigned = {
+            key: value for key, value in record.items() if key != "record_sha256"
+        }
+        candidate = unsigned.get("state")
+        if (
+            unsigned.get("journal_version") != GUARD_JOURNAL_VERSION
+            or unsigned.get("sequence") != sequence + 1
+            or unsigned.get("previous_sha256") != previous
+            or not isinstance(candidate, dict)
+            or not isinstance(supplied, str)
+            or supplied != _hash(unsigned)
+        ):
+            raise RuntimeAdmissionError("quarantine recovery guard is malformed")
+        state = dict(candidate)
+        sequence += 1
+        previous = supplied
+        valid_size += len(line)
+    if state is None or previous is None:
+        raise RuntimeAdmissionError("quarantine recovery guard is malformed")
+    if _guard_identity(descriptor, path) != identity:
+        raise RuntimeAdmissionError("quarantine recovery guard changed")
+    return state, sequence, previous, valid_size
+
+
+def _open_guard_journal(path: Path) -> _GuardJournal:
+    _guard_parent(path)
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise RuntimeAdmissionError("quarantine recovery guard is unsafe") from exc
+    try:
+        identity = _guard_identity(descriptor, path)
+        state, sequence, previous, valid_size = _read_guard_journal(descriptor, path)
+        return _GuardJournal(
+            path, descriptor, identity, state, sequence, previous, valid_size
+        )
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _create_guard_journal(path: Path, state: Mapping[str, Any]) -> _GuardJournal:
+    _guard_parent(path)
+    try:
+        descriptor = os.open(
+            path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+        )
+    except FileExistsError as exc:
+        raise RuntimeAdmissionError("quarantine recovery guard already exists") from exc
     try:
         os.fchmod(descriptor, 0o600)
-        payload = memoryview(_canonical(value) + b"\n")
-        while payload:
-            written = os.write(descriptor, payload)
-            if written <= 0:
-                raise OSError("quarantine recovery guard write was short")
-            payload = payload[written:]
-        os.fsync(descriptor)
+        identity = _guard_identity(descriptor, path)
+        journal = _GuardJournal(path, descriptor, identity, {}, 0, None, 0)
+        _append_guard_state(journal, state)
+        fsync_directory(path.parent)
+        return journal
+    except BaseException:
         os.close(descriptor)
-        descriptor = -1
-        os.replace(temporary, path)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        Path(temporary).unlink(missing_ok=True)
-    fsync_directory(path.parent)
+        raise
+
+
+def _append_guard_state(journal: _GuardJournal, state: Mapping[str, Any]) -> None:
+    """Append one fsynced phase record without ever replacing the guard path."""
+    if _guard_identity(journal.descriptor, journal.path) != journal.identity:
+        raise RuntimeAdmissionError("quarantine recovery guard changed")
+    observed = os.fstat(journal.descriptor)
+    if observed.st_size < journal.valid_size:
+        raise RuntimeAdmissionError("quarantine recovery guard changed")
+    if observed.st_size != journal.valid_size:
+        # A crash can leave only a partial final record.  The verified FD is
+        # authoritative, so discard that torn suffix before extending the
+        # longest checksum-valid prefix.  A complete malformed record never
+        # reaches this branch: the reader rejects it fail closed.
+        os.ftruncate(journal.descriptor, journal.valid_size)
+        os.fsync(journal.descriptor)
+        if _guard_identity(journal.descriptor, journal.path) != journal.identity:
+            raise RuntimeAdmissionError("quarantine recovery guard changed")
+    raw, digest = _guard_record(state, journal.sequence + 1, journal.record_sha256)
+    os.lseek(journal.descriptor, 0, os.SEEK_END)
+    _write_all(
+        journal.descriptor, raw, message="quarantine recovery guard write was short"
+    )
+    os.fsync(journal.descriptor)
+    if _guard_identity(journal.descriptor, journal.path) != journal.identity:
+        raise RuntimeAdmissionError("quarantine recovery guard changed")
+    journal.state = dict(state)
+    journal.sequence += 1
+    journal.record_sha256 = digest
+    journal.valid_size += len(raw)
+
+
+def _write_recovery_guard(
+    path: Path, value: Mapping[str, Any], *, create: bool
+) -> None:
+    """Advance the active durable journal, or provide a safe test seam.
+
+    Production recovery installs its journal in a context-local slot for the
+    complete operation.  That preserves the original no-follow FD across every
+    phase.  The non-active path is intentionally limited to isolated fixtures:
+    it creates an exclusive journal or appends through a freshly verified FD;
+    it never replaces or unlinks a pathname.
+    """
+    active = _ACTIVE_GUARD_JOURNAL.get()
+    if active is not None:
+        if active.path != path:
+            raise RuntimeAdmissionError("quarantine recovery guard changed")
+        if not create:
+            _append_guard_state(active, value)
+        return
+    if create:
+        journal = _create_guard_journal(path, value)
+    else:
+        journal = _open_guard_journal(path)
+        try:
+            _append_guard_state(journal, value)
+        finally:
+            _close_guard_journal(journal)
+        return
+    _close_guard_journal(journal)
+
+
+def _close_guard_journal(journal: _GuardJournal | None) -> None:
+    if journal is not None and journal.descriptor >= 0:
+        os.close(journal.descriptor)
+        journal.descriptor = -1
 
 
 def _read_recovery_guard(path: Path) -> dict[str, Any]:
-    raw, _identity = _regular_bytes(path, limit=8192)
+    journal = _open_guard_journal(path)
     try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeAdmissionError("quarantine recovery guard is malformed") from exc
-    if not isinstance(value, dict):
-        raise RuntimeAdmissionError("quarantine recovery guard is malformed")
-    return value
+        return dict(journal.state)
+    finally:
+        _close_guard_journal(journal)
 
 
 def _same_identity(path: Path, expected: Sequence[int]) -> bool:
@@ -564,6 +708,7 @@ def _archive_phase_entries_are_exact(archive: Path, phase: str) -> bool:
         # Receipt creation is durable before the phase guard advances.
         "pair-archived": ((lock, authority), (lock, authority, receipt)),
         "receipt-written": ((lock, authority, receipt),),
+        "completed": ((lock, authority, receipt),),
     }
     return phase in allowed and any(
         _archive_entries_are_exact(archive, entries) for entries in allowed[phase]
@@ -577,10 +722,31 @@ def _recovery_receipt_payload(result: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _write_recovery_receipt(path: Path, result: Mapping[str, Any]) -> dict[str, Any]:
-    """Atomically write, file-fsync, rename, and parent-fsync the receipt."""
+    """Create one no-follow receipt, file-fsync it, then fsync its parent."""
     _private_directory(path.parent, message="quarantine forensic archive is unsafe")
     receipt = _recovery_receipt_payload(result)
-    _write_recovery_guard(path, receipt, create=True)
+    try:
+        descriptor = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+        )
+    except FileExistsError as exc:
+        raise RuntimeAdmissionError(
+            "quarantine recovery receipt already exists"
+        ) from exc
+    try:
+        os.fchmod(descriptor, 0o600)
+        identity = _guard_identity(descriptor, path)
+        _write_all(
+            descriptor,
+            _canonical(receipt) + b"\n",
+            message="quarantine recovery receipt write was short",
+        )
+        os.fsync(descriptor)
+        if _guard_identity(descriptor, path) != identity:
+            raise RuntimeAdmissionError("quarantine recovery receipt changed")
+    finally:
+        os.close(descriptor)
+    fsync_directory(path.parent)
     return receipt
 
 
@@ -616,6 +782,53 @@ def _validate_recovery_receipt(
     return receipt
 
 
+def _completed_guard_evidence_is_valid(
+    state: Mapping[str, Any], lock_path: Path
+) -> bool:
+    """Validate a terminal journal state without touching a later lock cycle."""
+    try:
+        if (
+            state.get("phase") != "completed"
+            or state.get("kind") != QUARANTINE_RECOVERY_KIND
+            or state.get("lock_path") != str(lock_path)
+            or not isinstance(state.get("pair"), Mapping)
+            or not isinstance(state.get("archive"), str)
+            or not isinstance(state.get("completed_receipt_sha256"), str)
+        ):
+            return False
+        archive = Path(state["archive"])
+        pair = dict(state["pair"])
+        if archive.parent != lock_path.parent / QUARANTINE_ARCHIVE_DIR:
+            return False
+        if not _archive_pair_is_exact(archive, pair, receipt=True):
+            return False
+        receipt_path = archive / "recovery-receipt.json"
+        _validate_recovery_receipt(
+            receipt_path, lock_path=lock_path, archive=archive, pair=pair
+        )
+        _raw, evidence = _regular_file_evidence(receipt_path, limit=8192)
+        return evidence["sha256"] == state["completed_receipt_sha256"]
+    except (OSError, RuntimeAdmissionError, TypeError, ValueError):
+        return False
+
+
+def completed_guard_allows_acquire(path: Path, lock_path: Path) -> bool:
+    """Allow a normal lock only after a retained terminal journal is exact."""
+    try:
+        journal = _open_guard_journal(path)
+    except RuntimeAdmissionError:
+        return False
+    try:
+        authority = lock_path.with_name(f"{lock_path.name}.authority")
+        return (
+            _completed_guard_evidence_is_valid(journal.state, lock_path)
+            and _path_is_absent(lock_path)
+            and _path_is_absent(authority)
+        )
+    finally:
+        _close_guard_journal(journal)
+
+
 def recover_quarantine(
     *,
     execute: bool,
@@ -638,6 +851,13 @@ def recover_quarantine(
         except RuntimeAdmissionError as exc:
             raise QuarantineRecoveryError(str(exc)) from exc
     finally:
+        # A fault before the namespace-operation try/finally still must not
+        # leak a retained descriptor or contaminate a later same-process
+        # operator invocation.
+        active = _ACTIVE_GUARD_JOURNAL.get()
+        if active is not None:
+            _close_guard_journal(active)
+            _ACTIVE_GUARD_JOURNAL.set(None)
         checkpoint_refresh.release_quarantine_recovery_sync(synchronizer)
 
 
@@ -663,6 +883,7 @@ def _recover_quarantine_while_synchronized(
             "authority-renaming",
             "pair-archived",
             "receipt-written",
+            "completed",
         }
         or not isinstance(guard.get("pair"), Mapping)
         or not isinstance(guard.get("archive"), str)
@@ -678,6 +899,7 @@ def _recover_quarantine_while_synchronized(
             "lock_path": str(lock_path),
             "pair": pair,
             "archive": str(archive),
+            "operation_id": secrets.token_hex(16),
             "phase": "prepared",
         }
     else:
@@ -706,22 +928,74 @@ def _recover_quarantine_while_synchronized(
     archive_root = lock_path.parent / config.archive_dir_name
     archive_root.mkdir(mode=0o700, exist_ok=True)
     _private_directory(archive_root, message="quarantine forensic archive is unsafe")
+    journal: _GuardJournal | None = None
+    journal_context: contextvars.Token[_GuardJournal | None] | None = None
     if guard is None:
         # The guard is the first durable operation artifact.  A crash before
         # archive creation can therefore be replayed by creating the exact
         # deterministic directory, rather than stranding the source pair.
+        journal = _create_guard_journal(guard_path, result)
+        journal_context = _ACTIVE_GUARD_JOURNAL.set(journal)
         _write_recovery_guard(guard_path, result, create=True)
         archive.mkdir(mode=0o700, exist_ok=False)
         fsync_directory(archive_root)
-    elif not archive.exists():
+    else:
+        # Reopen the retained journal only after read-only admission succeeds.
+        # Any replaced or torn guard fails before the first namespace mutation.
+        journal = _open_guard_journal(guard_path)
+        journal_context = _ACTIVE_GUARD_JOURNAL.set(journal)
+        result = dict(journal.state)
+        pair = dict(result["pair"])
+        archive = Path(str(result["archive"]))
+        if archive.parent != lock_path.parent / config.archive_dir_name:
+            _close_guard_journal(journal)
+            raise RuntimeAdmissionError("quarantine recovery archive target is invalid")
+        result.update({"cpu": cpu, "checks": checks, "settlement": settlement})
+    assert journal is not None
+    if result.get("phase") == "completed":
+        if not _completed_guard_evidence_is_valid(result, lock_path):
+            _close_guard_journal(journal)
+            raise RuntimeAdmissionError("quarantine recovery guard is not replay-safe")
+        if _path_is_absent(lock_path) and _path_is_absent(authority):
+            try:
+                return {**result, "executed": True, "already_completed": True}
+            finally:
+                _close_guard_journal(journal)
+        # A completed prior recovery remains immutable evidence.  A subsequent
+        # exact quarantined pair starts a distinct append-only journal cycle.
+        pair = _quarantine_pair(lock_path)
+        operation_id = secrets.token_hex(16)
+        operation = hashlib.sha256(
+            _canonical({"pair": pair, "operation_id": operation_id})
+        ).hexdigest()
+        archive = archive_root / operation
+        result = {
+            "schema_version": config.schema_version,
+            "kind": config.recovery_kind,
+            "lock_path": str(lock_path),
+            "pair": pair,
+            "archive": str(archive),
+            "operation_id": operation_id,
+            "phase": "prepared",
+            "cpu": cpu,
+            "checks": checks,
+            "settlement": settlement,
+        }
+        _write_recovery_guard(guard_path, result, create=False)
+        archive.mkdir(mode=0o700, exist_ok=False)
+        fsync_directory(archive_root)
+        guard = None
+    if guard is not None and not archive.exists():
         if result.get("phase") != "prepared":
+            _close_guard_journal(journal)
             raise RuntimeAdmissionError("quarantine recovery archive is missing")
         archive.mkdir(mode=0o700, exist_ok=False)
         fsync_directory(archive_root)
-    else:
+    elif guard is not None:
         try:
             _private_directory(archive, message="quarantine recovery archive changed")
         except RuntimeAdmissionError:
+            _close_guard_journal(journal)
             raise RuntimeAdmissionError("quarantine recovery archive changed")
     # An interrupted first creation can leave the deterministic archive name
     # visible but its parent-entry durability unknown.  A replay must repair
@@ -739,8 +1013,9 @@ def _recover_quarantine_while_synchronized(
         held_authority = archived_authority
     elif phase == "authority-renaming" and not authority.exists():
         held_authority = archived_authority
-    descriptor = os.open(held_authority, os.O_RDWR | os.O_NOFOLLOW)
+    descriptor = -1
     try:
+        descriptor = os.open(held_authority, os.O_RDWR | os.O_NOFOLLOW)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
@@ -868,12 +1143,19 @@ def _recover_quarantine_while_synchronized(
             archive=archive,
             pair=pair,
         )
-        # A crash before this unlink leaves a replay-safe guard and the immutable
-        # forensic pair.  A crash after it is also safe: both original artifacts
-        # have already been durably archived and no stale authority remains.
-        guard_path.unlink()
-        fsync_directory(guard_path.parent)
+        receipt_raw, receipt_evidence = _regular_file_evidence(
+            archive / "recovery-receipt.json", limit=8192
+        )
+        if not receipt_raw:
+            raise RuntimeAdmissionError("quarantine recovery receipt changed")
+        result["phase"] = "completed"
+        result["completed_receipt_sha256"] = receipt_evidence["sha256"]
+        _write_recovery_guard(guard_path, result, create=False)
         return {**result, "executed": True, "archive": str(archive)}
     finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+        if descriptor >= 0:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+        if journal_context is not None:
+            _ACTIVE_GUARD_JOURNAL.reset(journal_context)
+        _close_guard_journal(journal)

@@ -1516,8 +1516,9 @@ class SharedLock:
         # its guard, so no process can create a fresh authority/lock between a
         # guard observation and the authority handoff.
         self.recovery_sync_fd = acquire_quarantine_recovery_sync(self.path)
+        guard_path = self.path.parent / QUARANTINE_RECOVERY_GUARD
         try:
-            (self.path.parent / QUARANTINE_RECOVERY_GUARD).lstat()
+            guard_path.lstat()
         except FileNotFoundError:
             pass
         except OSError as exc:
@@ -1525,9 +1526,21 @@ class SharedLock:
             self.recovery_sync_fd = -1
             raise LockHeldError("CRE quarantine recovery guard is unsafe") from exc
         else:
-            release_quarantine_recovery_sync(self.recovery_sync_fd)
-            self.recovery_sync_fd = -1
-            raise LockHeldError("CRE quarantine recovery requires operator completion")
+            # Recovery retains a completed, identity-bound journal rather than
+            # unlinking evidence.  Import lazily to avoid the recovery module's
+            # dependency on this canonical lock implementation at import time.
+            try:
+                from cre_quarantine_recovery import completed_guard_allows_acquire
+
+                completed = completed_guard_allows_acquire(guard_path, self.path)
+            except Exception:
+                completed = False
+            if not completed:
+                release_quarantine_recovery_sync(self.recovery_sync_fd)
+                self.recovery_sync_fd = -1
+                raise LockHeldError(
+                    "CRE quarantine recovery requires operator completion"
+                )
         lease_token = secrets.token_urlsafe(32)
         if self.recovery_required:
             lease_token = f"{OPERATOR_RECOVERY_LEASE_PREFIX}{lease_token}"

@@ -66,6 +66,11 @@ def _historic_quarantine_pair(lock_path: Path) -> None:
     authority.chmod(0o600)
 
 
+def _guard_state(path: Path) -> dict[str, object]:
+    """Read the latest valid append-only recovery journal record."""
+    return recovery._read_recovery_guard(path)
+
+
 def test_quarantine_recovery_state_machine_is_owned_by_its_dedicated_module() -> None:
     """Keep the runtime CLI wrapper thin and recovery mechanics independently testable."""
     runtime_source = Path(runtime.__file__).read_text(encoding="utf-8")
@@ -135,6 +140,96 @@ def test_quarantine_recovery_dry_run_and_exact_pair_archive(
         json.loads((archive / "recovery-receipt.json").read_text())["phase"]
         == "archived"
     )
+    guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
+    assert _guard_state(guard)["phase"] == "completed"
+    # A valid completed journal is retained as forensic evidence, but it does
+    # not permanently wedge the next normal cooperative acquisition.
+    with runtime.SharedLock(lock_path):
+        assert lock_path.is_dir()
+    # A later exact residue does not overwrite the completed evidence.  It
+    # appends a distinct operation and retains both forensic archives.
+    _historic_quarantine_pair(lock_path)
+    later = runtime.recover_quarantine(execute=True)
+    later_archive = Path(str(later["archive"]))
+    assert later_archive != archive
+    assert archive.is_dir()
+    assert later_archive.is_dir()
+    assert _guard_state(guard)["phase"] == "completed"
+
+
+def test_guard_journal_rejects_replacement_after_append_before_path_recheck(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Appending through the retained FD cannot clobber a substituted guard."""
+    guard = tmp_path / recovery.QUARANTINE_RECOVERY_GUARD
+    first = {"kind": "test", "phase": "prepared"}
+    journal = recovery._create_guard_journal(guard, first)
+    foreign = b'{"foreign":true}\n'
+    real_fsync = recovery.os.fsync
+    replaced = False
+
+    def replace_before_fsync(descriptor: int) -> None:
+        nonlocal replaced
+        if not replaced and descriptor == journal.descriptor:
+            replaced = True
+            guard.unlink()
+            guard.write_bytes(foreign)
+            guard.chmod(0o600)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(recovery.os, "fsync", replace_before_fsync)
+    try:
+        with pytest.raises(
+            runtime.RuntimeAdmissionError, match="guard (changed|is unsafe)"
+        ):
+            recovery._append_guard_state(
+                journal, {"kind": "test", "phase": "lock-renaming"}
+            )
+    finally:
+        recovery._close_guard_journal(journal)
+    assert guard.read_bytes() == foreign
+
+
+def test_guard_journal_discards_only_a_torn_final_record_before_replay(
+    tmp_path: Path,
+) -> None:
+    """A crash-torn suffix resumes from the longest checksum-valid prefix."""
+    guard = tmp_path / recovery.QUARANTINE_RECOVERY_GUARD
+    recovery._write_recovery_guard(
+        guard, {"kind": "test", "phase": "prepared"}, create=True
+    )
+    with guard.open("ab") as handle:
+        handle.write(b'{"journal_version":1')
+        handle.flush()
+        os.fsync(handle.fileno())
+    recovery._write_recovery_guard(
+        guard, {"kind": "test", "phase": "lock-renaming"}, create=False
+    )
+    assert _guard_state(guard)["phase"] == "lock-renaming"
+    assert guard.read_bytes().endswith(b"\n")
+
+
+def test_completed_guard_substitution_blocks_acquire_without_deleting_foreign_path(
+    tmp_path: Path,
+) -> None:
+    """A replaced terminal journal is a stop, never a pathname cleanup target."""
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
+    lock_path.parent.mkdir(parents=True)
+    recovery._write_recovery_guard(
+        guard,
+        {"kind": "test", "phase": "completed"},
+        create=True,
+    )
+    original = guard.with_name("guard-original")
+    guard.rename(original)
+    foreign = b'{"foreign":true}\n'
+    guard.write_bytes(foreign)
+    guard.chmod(0o600)
+    with pytest.raises(runtime.LockHeldError, match="operator completion"):
+        runtime.SharedLock(lock_path).acquire()
+    assert guard.read_bytes() == foreign
+    assert original.exists()
 
 
 def test_actual_quarantine_recovery_sync_blocks_tier_dispatch(
@@ -296,7 +391,7 @@ def test_quarantine_recovery_replays_an_interrupted_paired_archive(
     monkeypatch.setattr(recovery, "_atomic_rename_noreplace", real_rename)
     replayed = runtime.recover_quarantine(execute=True)
     assert replayed["executed"] is True
-    assert not guard.exists()
+    assert _guard_state(guard)["phase"] == "completed"
     assert not authority.exists()
     assert not lock_path.exists()
 
@@ -389,7 +484,7 @@ def test_quarantine_recovery_refuses_tampered_receipt_before_guard_clear(
     with pytest.raises(OSError, match="after receipt"):
         runtime.recover_quarantine(execute=True)
     guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
-    guard_value = json.loads(guard.read_text(encoding="utf-8"))
+    guard_value = _guard_state(guard)
     archive = Path(guard_value["archive"])
     receipt = archive / "recovery-receipt.json"
     receipt.write_text('{"tampered":true}\n', encoding="utf-8")
@@ -419,31 +514,28 @@ def test_quarantine_recovery_replays_existing_receipt_after_archive_fsync_failur
         runtime, "_settlement", lambda *_args: baseline.public["settlement"]
     )
     monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
-    real_guard_write = recovery._write_recovery_guard
+    real_receipt_write = recovery._write_recovery_receipt
     real_fsync = recovery.fsync_directory
     archive: Path | None = None
     receipt_write_started = False
 
-    def arm_receipt_fsync_failure(
-        path: Path, value: dict[str, object], *, create: bool
-    ) -> None:
+    def arm_receipt_fsync_failure(path: Path, value: dict[str, object]) -> None:
         nonlocal archive, receipt_write_started
-        if path.name == "recovery-receipt.json":
-            archive = path.parent
-            receipt_write_started = True
-        real_guard_write(path, value, create=create)
+        archive = path.parent
+        receipt_write_started = True
+        real_receipt_write(path, value)
 
     def fail_receipt_archive_fsync(path: Path) -> None:
         if receipt_write_started and archive is not None and path == archive:
             raise OSError("simulated receipt archive fsync failure")
         real_fsync(path)
 
-    monkeypatch.setattr(recovery, "_write_recovery_guard", arm_receipt_fsync_failure)
+    monkeypatch.setattr(recovery, "_write_recovery_receipt", arm_receipt_fsync_failure)
     monkeypatch.setattr(recovery, "fsync_directory", fail_receipt_archive_fsync)
     with pytest.raises(OSError, match="receipt archive fsync"):
         runtime.recover_quarantine(execute=True)
     guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
-    guard_value = json.loads(guard.read_text(encoding="utf-8"))
+    guard_value = _guard_state(guard)
     archive = Path(guard_value["archive"])
     assert guard_value["phase"] == "pair-archived"
     assert (archive / "recovery-receipt.json").is_file()
@@ -458,6 +550,8 @@ def test_quarantine_recovery_replays_existing_receipt_after_archive_fsync_failur
             archive_fsynced = True
         real_fsync(path)
 
+    real_guard_write = recovery._write_recovery_guard
+
     def require_receipt_fsync_before_advance(
         path: Path, value: dict[str, object], *, create: bool
     ) -> None:
@@ -471,7 +565,7 @@ def test_quarantine_recovery_replays_existing_receipt_after_archive_fsync_failur
     )
     assert runtime.recover_quarantine(execute=True)["executed"] is True
     assert archive_fsynced
-    assert not guard.exists()
+    assert _guard_state(guard)["phase"] == "completed"
 
 
 def test_recovery_directory_fsync_is_unique_strict_and_refuses_substitution(
@@ -550,7 +644,7 @@ def test_quarantine_recovery_refuses_occupied_archive_member(
         runtime.recover_quarantine(execute=True)
 
     guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
-    archive = Path(json.loads(guard.read_text(encoding="utf-8"))["archive"])
+    archive = Path(str(_guard_state(guard)["archive"]))
     target = archive / member
     assert target.exists()
     if member == ".cre.lock.authority":
@@ -588,7 +682,7 @@ def test_quarantine_recovery_refuses_byte_identical_marker_replacement(
     with pytest.raises(OSError, match="after receipt"):
         runtime.recover_quarantine(execute=True)
     guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
-    archive = Path(json.loads(guard.read_text(encoding="utf-8"))["archive"])
+    archive = Path(str(_guard_state(guard)["archive"]))
     active = archive / ".cre.lock" / checkpoint_refresh.BENCHMARK_ACTIVE_MARKER
     replacement = active.with_name(f".{active.name}.replacement")
     replacement.write_bytes(active.read_bytes())
@@ -688,7 +782,7 @@ def test_quarantine_recovery_refuses_an_unbound_archived_lock_entry(
     with pytest.raises(OSError, match="after receipt"):
         runtime.recover_quarantine(execute=True)
     guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
-    archive = Path(json.loads(guard.read_text(encoding="utf-8"))["archive"])
+    archive = Path(str(_guard_state(guard)["archive"]))
     foreign = archive / ".cre.lock" / "foreign"
     foreign.write_bytes(b"unbound forensic content\n")
     foreign.chmod(0o600)
@@ -732,7 +826,7 @@ def test_quarantine_recovery_refuses_an_unbound_archive_root_entry(
     with pytest.raises(OSError, match="after receipt"):
         runtime.recover_quarantine(execute=True)
     guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
-    archive = Path(json.loads(guard.read_text(encoding="utf-8"))["archive"])
+    archive = Path(str(_guard_state(guard)["archive"]))
     foreign = archive / "foreign-root"
     foreign.write_bytes(b"unbound archive content\n")
     foreign.chmod(0o600)
@@ -966,14 +1060,14 @@ def test_quarantine_recovery_replays_rename_before_durable_handoff(
     else:
         assert handoff_fsync_events[:2] == [archive, lock_path.parent]
     guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
-    assert json.loads(guard.read_text(encoding="utf-8"))["phase"] == expected_phase
+    assert _guard_state(guard)["phase"] == expected_phase
     with pytest.raises(runtime.LockHeldError, match="operator completion"):
         runtime.SharedLock(lock_path).acquire()
 
     monkeypatch.setattr(recovery, "_atomic_rename_noreplace", real_rename)
     monkeypatch.setattr(recovery, "fsync_directory", real_fsync)
     assert runtime.recover_quarantine(execute=True)["executed"] is True
-    assert not guard.exists()
+    assert _guard_state(guard)["phase"] == "completed"
 
 
 @pytest.mark.parametrize(
@@ -1023,7 +1117,7 @@ def test_quarantine_recovery_refuses_reappeared_source_before_any_mutation(
         runtime.recover_quarantine(execute=True)
     assert archive is not None
     guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
-    assert json.loads(guard.read_text(encoding="utf-8"))["phase"] == expected_phase
+    assert _guard_state(guard)["phase"] == expected_phase
 
     authority = lock_path.with_name(f"{lock_path.name}.authority")
     source = lock_path if member == lock_path.name else authority
@@ -1149,7 +1243,7 @@ def test_quarantine_recovery_later_phase_reappearance_stops_before_mutation(
     monkeypatch.setattr(recovery, "_write_recovery_receipt", interrupt_receipt_write)
     with pytest.raises(OSError, match=f"{phase} interruption"):
         runtime.recover_quarantine(execute=True)
-    assert json.loads(guard.read_text(encoding="utf-8"))["phase"] == phase
+    assert _guard_state(guard)["phase"] == phase
 
     source = lock_path if reappeared_member == lock_path.name else authority
     if source == lock_path:
@@ -1176,7 +1270,7 @@ def test_quarantine_recovery_later_phase_reappearance_stops_before_mutation(
             )
         return result
 
-    archive = Path(json.loads(guard_before)["archive"])
+    archive = Path(str(_guard_state(guard)["archive"]))
     archive_before = snapshot_tree(archive)
     source_before = snapshot_tree(source) if source.is_dir() else source.read_bytes()
     fsync_paths: list[Path] = []
@@ -1276,7 +1370,7 @@ def test_quarantine_recovery_post_fence_reappearance_is_a_retained_intent_stop(
     )
     with pytest.raises(OSError, match="lock-archived interruption"):
         runtime.recover_quarantine(execute=True)
-    assert json.loads(guard.read_text(encoding="utf-8"))["phase"] == "lock-archived"
+    assert _guard_state(guard)["phase"] == "lock-archived"
 
     monkeypatch.setattr(recovery, "_write_recovery_guard", real_guard_write)
     real_fence = recovery._require_phase_source_absence
@@ -1296,9 +1390,7 @@ def test_quarantine_recovery_post_fence_reappearance_is_a_retained_intent_stop(
     monkeypatch.setattr(
         recovery, "_require_phase_source_absence", inject_after_lock_fence
     )
-    archived_lock = (
-        Path(json.loads(guard.read_text(encoding="utf-8"))["archive"]) / lock_path.name
-    )
+    archived_lock = Path(str(_guard_state(guard)["archive"])) / lock_path.name
     archived_lock_before = snapshot_tree(archived_lock)
     authority_before = (
         authority.lstat().st_dev,
@@ -1337,9 +1429,7 @@ def test_quarantine_recovery_post_fence_reappearance_is_a_retained_intent_stop(
     assert injected
     assert injected_lock_before is not None
     assert guard_writes == ["authority-renaming"]
-    assert (
-        json.loads(guard.read_text(encoding="utf-8"))["phase"] == "authority-renaming"
-    )
+    assert _guard_state(guard)["phase"] == "authority-renaming"
     assert lock_path.is_dir()
     assert snapshot_tree(lock_path) == injected_lock_before
     assert snapshot_tree(archived_lock) == archived_lock_before

@@ -85,9 +85,14 @@ exact baseline resources, and idle API, browser, RabbitMQ, NuQ, crawl, and
 collector evidence. It rejects malformed, live, recovery-required, replaced,
 or non-pytest residue.
 
-With `--execute`, it first writes and parent-fsyncs the private
-`.cre-quarantine-recovery.json` guard through an atomic exclusive create and
-strict readback. Before that claim, and throughout archive/replay, it holds the
+With `--execute`, it first creates the private
+`.cre-quarantine-recovery.json` guard with `O_EXCL|O_NOFOLLOW`, then retains
+its verified file descriptor, owner, mode, link count, and inode for the whole
+operation. Phase changes are append-only, checksum-linked journal records
+written and fsynced through that descriptor; a torn final record resumes from
+the longest valid prefix, while a complete malformed or substituted journal is
+an operator stop. The guard pathname is never replaced or unlinked. Before
+that claim, and throughout archive/replay, it holds the
 stable private `.cre.lock.recovery-sync` flock. Every normal
 `SharedLock.acquire` holds that same flock for its own lifetime before it can
 inspect a guard or create an authority, so a recovery cannot archive the old
@@ -116,15 +121,19 @@ residue.
 It then archives the directory and authority as an exact retained mode-0700
 pair, fsyncing each namespace transition and advancing the guard through
 `prepared`, `lock-renaming`, `lock-archived`, `authority-renaming`,
-`pair-archived`, and `receipt-written`. Each phase accepts only its exact
+`pair-archived`, `receipt-written`, and terminal `completed`. Each phase accepts only its exact
 top-level archive entries; the nested lock accepts only the bound active and
 quarantine markers, and the final root adds only the bound receipt. Re-running
 the same explicit command resumes only the recorded matching inode/hash pair;
 a malformed, replaced, concurrent, or unexpected phase remains blocked. Only
 after the immutable hashed receipt and the complete archive root are
-revalidated does it fsync removal of the guard. It never unlinks or recursively
-deletes lock artifacts. Any interrupted or uncertain recovery is a stop, not
-permission for shell removal.
+revalidated does it append the immutable `completed` journal record. A normal
+acquire may proceed only when that exact completed record still binds the
+receipt, archive, and original pair and both canonical source names remain
+absent. The guard remains as retained forensic evidence; a later exact residue
+starts a new append-only operation record rather than overwriting prior proof.
+It never unlinks or recursively deletes lock artifacts. Any interrupted or
+uncertain recovery is a stop, not permission for shell removal.
 
 A guard phase records a completed durable archive prefix and the next intended
 operation. It is not a perpetual assertion that a third party will keep a
