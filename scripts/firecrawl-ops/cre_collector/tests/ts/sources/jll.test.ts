@@ -1482,6 +1482,8 @@ test("JLL hidden child sanitizer preserves identities and URLs while omitting pr
       caption: "CAD $1,000,000 broker disclosure",
       headline: "Price 3.25M",
       label: "Offering 3.25M USD",
+      description: "Offering 3.25M US$",
+      licenses: ["Offering 3.25M C$", "Offering 3.25M A$"],
     },
     "broker",
   );

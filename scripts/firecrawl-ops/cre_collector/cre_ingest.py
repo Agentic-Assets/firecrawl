@@ -1791,7 +1791,7 @@ _JLL_MONEY_TOKEN = re.compile(
 )
 _JLL_MONEY_SUFFIX = re.compile(
     rf"(?i)\b{_JLL_MONEY_AMOUNT}(?:\s*{_JLL_MONEY_UNIT})?\s*"
-    rf"(?:\b(?:{_JLL_CURRENCY_CODE})\b|[$€£¥])"
+    rf"(?:\b(?:{_JLL_CURRENCY_CODE})\b|(?:us\$|c\$|a\$)|[$€£¥])"
 )
 _JLL_LABELLED_PRICE = re.compile(
     r"(?i)(\b(?:asking(?:\s+(?:price|rate|rent|consideration))?|"
@@ -1816,7 +1816,9 @@ _JLL_SQL_CURRENCY_CODE = (
 _JLL_SQL_CURRENCY_PREFIX = (
     rf"({_JLL_SQL_CURRENCY_CODE}($|[^[:alnum:]_])[[:space:]]*|us[$]|c[$]|a[$]|[$€£¥])"
 )
-_JLL_SQL_CURRENCY_SUFFIX = rf"({_JLL_SQL_CURRENCY_CODE}($|[^[:alnum:]_])|[$€£¥])"
+_JLL_SQL_CURRENCY_SUFFIX = (
+    rf"({_JLL_SQL_CURRENCY_CODE}($|[^[:alnum:]_])|us[$]|c[$]|a[$]|[$€£¥])"
+)
 _JLL_SQL_MONEY_UNIT = r"(mm|millions?|k|m|b)"
 _JLL_SQL_PRICE_LABEL = (
     r"(asking([[:space:]]+(price|rate|rent|consideration))?|"
