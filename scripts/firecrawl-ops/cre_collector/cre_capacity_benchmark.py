@@ -4696,22 +4696,34 @@ def run_benchmark(
                     worker_may_have_launched
                     and result["final_settlement"].get("state") != "idle"
                 ):
-                    try:
-                        result["lock_quarantine"] = _quarantine_shared_lock(
-                            shared_lock,
-                            artifact_result_path=artifact_root / "result.json",
-                            admission_sha256=result["admission_sha256"],
-                            review_approval_nonce_sha256=result[
-                                "review_approval_nonce_sha256"
-                            ],
-                        )
-                    except BenchmarkError as quarantine_exc:
+                    if _held_shared_lock is not None:
+                        # The pair controller must retain its lease through the
+                        # mandatory baseline rollback.  The durable result is
+                        # the handoff signal; its nested cleanup quarantines the
+                        # still-armed lock after rollback has been attempted.
                         result["lock_quarantine"] = {
-                            "state": "quarantine_evidence_unknown",
-                            "error_type": type(quarantine_exc).__name__,
+                            "state": "deferred_to_pair_rollback",
+                            "reason": "bounded_idle_settlement_not_proven",
+                            "lock_path": str(lock_path),
+                            "result_path": str(artifact_root / "result.json"),
                         }
-                        if pending_error is None:
-                            pending_error = quarantine_exc
+                    else:
+                        try:
+                            result["lock_quarantine"] = _quarantine_shared_lock(
+                                shared_lock,
+                                artifact_result_path=artifact_root / "result.json",
+                                admission_sha256=result["admission_sha256"],
+                                review_approval_nonce_sha256=result[
+                                    "review_approval_nonce_sha256"
+                                ],
+                            )
+                        except BenchmarkError as quarantine_exc:
+                            result["lock_quarantine"] = {
+                                "state": "quarantine_evidence_unknown",
+                                "error_type": type(quarantine_exc).__name__,
+                            }
+                            if pending_error is None:
+                                pending_error = quarantine_exc
                 _atomic_private_json(artifact_root / "result.json", result)
                 if (
                     interlock_armed
@@ -4936,9 +4948,14 @@ def run_counterbalanced_pair_step(
         lock_path = canonical_shared_lock_dir(repo_root)
         try:
             with SharedLock(lock_path) as held_lock:
+                benchmark_error: BaseException | None = None
+                rollback_error: BaseException | None = None
+                quarantine_error: BaseException | None = None
                 try:
                     result = run_benchmark(**run_kwargs, _held_shared_lock=held_lock)
-                finally:
+                except BaseException as exc:  # noqa: BLE001 - rollback is mandatory
+                    benchmark_error = exc
+                try:
                     assert rollback_receipt_path is not None
                     capacity_runtime.transition(
                         rollback_receipt_path,
@@ -4947,6 +4964,43 @@ def run_counterbalanced_pair_step(
                         execute=True,
                         _held_shared_lock=held_lock,
                     )
+                except BaseException as exc:  # noqa: BLE001 - quarantine still follows
+                    rollback_error = exc
+                finally:
+                    if held_lock.benchmark_marker_identity is not None:
+                        try:
+                            _quarantine_shared_lock(
+                                held_lock,
+                                artifact_result_path=arm_root / "result.json",
+                                admission_sha256=_sha256(
+                                    _canonical(validated_admission)
+                                ),
+                                review_approval_nonce_sha256=validated_admission[
+                                    "review_approval_nonce_sha256"
+                                ],
+                            )
+                        except BaseException as exc:  # noqa: BLE001 - preserve stop
+                            quarantine_error = exc
+                if rollback_error is not None or quarantine_error is not None:
+                    failure = BenchmarkError(
+                        "candidate pair rollback or lock quarantine failed; "
+                        "canonical interlock is retained"
+                    )
+                    if benchmark_error is not None:
+                        failure.add_note(
+                            f"benchmark error: {type(benchmark_error).__name__}: {benchmark_error}"
+                        )
+                    if rollback_error is not None:
+                        failure.add_note(
+                            f"rollback error: {type(rollback_error).__name__}: {rollback_error}"
+                        )
+                    if quarantine_error is not None:
+                        failure.add_note(
+                            f"quarantine error: {type(quarantine_error).__name__}: {quarantine_error}"
+                        )
+                    raise failure from (quarantine_error or rollback_error)
+                if benchmark_error is not None:
+                    raise benchmark_error
         except LockHeldError as exc:
             raise BenchmarkError("canonical CRE shared lock is already held") from exc
     else:
