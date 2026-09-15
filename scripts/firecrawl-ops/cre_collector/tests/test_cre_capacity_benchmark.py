@@ -12,11 +12,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
 import cre_checkpoint_refresh as refresh
+import pytest
 
 
 @pytest.fixture(autouse=True)
@@ -340,7 +339,7 @@ def _runtime_public(source_sha: str, variant: str = "candidate") -> dict[str, ob
             "cgroup_memory_max": 17_179_869_184,
             "cgroup_memory_current": 2_147_483_648,
             "cgroup_swap_max": 0,
-            "shm_bytes": 8_408_530_944,
+            "shm_bytes": experiment.GOVERNED_BROWSER_SHM_BYTES,
             "port_bindings": {
                 "3000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3103"}]
             },

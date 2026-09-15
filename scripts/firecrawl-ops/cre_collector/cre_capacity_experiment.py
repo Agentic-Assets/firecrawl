@@ -23,6 +23,11 @@ SCHEMA_VERSION = 1
 DEFAULT_CONFIG = Path(__file__).with_name("cre_capacity_experiment_profiles.json")
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024
+BINARY_GIBIBYTE = 1024**3
+# Docker Compose's `8G` shared-memory setting is a binary 8 GiB limit when
+# reported by Docker's HostConfig. Keep this contract centralized so an
+# otherwise healthy rendered Compose baseline cannot fail runtime admission.
+GOVERNED_BROWSER_SHM_BYTES = 8 * BINARY_GIBIBYTE
 REQUIRED_RUNTIME = frozenset(
     {
         "orbstack_memory_mib",
@@ -119,6 +124,10 @@ def load_profile(path: Path, profile_name: str) -> tuple[dict[str, Any], str]:
         _strict_int(runtime[key], key, 0, 2**63 - 1)
     if runtime["orbstack_memory_mib"] != 32768:
         raise ProfileError("OrbStack configured memory must be exactly 32768 MiB")
+    if runtime["browser_shm_bytes"] != GOVERNED_BROWSER_SHM_BYTES:
+        raise ProfileError(
+            "browser shared memory must match the governed Compose 8 GiB baseline"
+        )
     if not 1 <= runtime["minimum_docker_memtotal_basis_points"] <= 10000:
         raise ProfileError(
             "minimum Docker memory basis points must be between 1 and 10000"

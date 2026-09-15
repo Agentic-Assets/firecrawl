@@ -13,10 +13,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Self
 
-import pytest
-
 import cre_capacity_experiment as experiment
 import cre_capacity_runtime as runtime
+import cre_checkpoint_refresh as checkpoint_refresh
+import pytest
 
 
 @pytest.fixture(autouse=True)
@@ -444,6 +444,20 @@ def test_compose_loopback_endpoints_follow_rendered_compose_ports() -> None:
     }
 
 
+def test_compose_browser_shared_memory_matches_the_governed_binary_contract() -> None:
+    """Docker's rendered `8G` is binary 8 GiB, not a decimal approximation."""
+    compose = runtime.COMPOSE_PATH.read_text(encoding="utf-8")
+    assert "shm_size: 8G" in compose
+    assert experiment.GOVERNED_BROWSER_SHM_BYTES == 8 * 1024**3
+    profile, _ = experiment.load_profile(
+        experiment.DEFAULT_CONFIG, "production-current"
+    )
+    assert (
+        profile["runtime_baseline"]["browser_shm_bytes"]
+        == experiment.GOVERNED_BROWSER_SHM_BYTES
+    )
+
+
 def test_container_memory_headroom_is_required() -> None:
     selected, _ = profile()
     public = public_state()
@@ -746,6 +760,105 @@ def test_quarantine_recovery_refuses_tampered_receipt_before_guard_clear(
         runtime.recover_quarantine(execute=True)
     assert guard.is_file()
     assert receipt.read_text(encoding="utf-8") == '{"tampered":true}\n'
+
+
+@pytest.mark.parametrize(
+    ("member", "phase"),
+    [
+        (".cre.lock", "lock-renaming"),
+        (".cre.lock.authority", "authority-renaming"),
+    ],
+)
+def test_quarantine_recovery_refuses_occupied_archive_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    member: str,
+    phase: str,
+) -> None:
+    """An unexpected archive target is forensic evidence, never rename input."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    real_guard_write = runtime._write_recovery_guard
+    foreign = b"foreign authority\n"
+
+    def occupy_target(path: Path, value: dict[str, object], *, create: bool) -> None:
+        real_guard_write(path, value, create=create)
+        if value.get("phase") != phase:
+            return
+        archive = Path(str(value["archive"]))
+        target = archive / member
+        if member == ".cre.lock":
+            target.mkdir(mode=0o700)
+        else:
+            target.write_bytes(foreign)
+            target.chmod(0o600)
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", occupy_target)
+    with pytest.raises(runtime.RuntimeAdmissionError, match="handoff changed"):
+        runtime.recover_quarantine(execute=True)
+
+    guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
+    archive = Path(json.loads(guard.read_text(encoding="utf-8"))["archive"])
+    target = archive / member
+    assert target.exists()
+    if member == ".cre.lock.authority":
+        assert target.read_bytes() == foreign
+    assert guard.exists()
+
+
+def test_quarantine_recovery_refuses_byte_identical_marker_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Receipt finalization binds marker identity, not merely its digest."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    real_guard_write = runtime._write_recovery_guard
+
+    def interrupt_receipt_phase(
+        path: Path, value: dict[str, object], *, create: bool
+    ) -> None:
+        if value.get("phase") == "receipt-written":
+            raise OSError("simulated crash after receipt")
+        real_guard_write(path, value, create=create)
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", interrupt_receipt_phase)
+    with pytest.raises(OSError, match="after receipt"):
+        runtime.recover_quarantine(execute=True)
+    guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
+    archive = Path(json.loads(guard.read_text(encoding="utf-8"))["archive"])
+    active = archive / ".cre.lock" / checkpoint_refresh.BENCHMARK_ACTIVE_MARKER
+    replacement = active.with_name(f".{active.name}.replacement")
+    replacement.write_bytes(active.read_bytes())
+    replacement.chmod(0o600)
+    replacement.replace(active)
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", real_guard_write)
+    with pytest.raises(runtime.RuntimeAdmissionError, match="forensic pair changed"):
+        runtime.recover_quarantine(execute=True)
+    assert guard.exists()
+    assert active.exists()
 
 
 @pytest.mark.parametrize(

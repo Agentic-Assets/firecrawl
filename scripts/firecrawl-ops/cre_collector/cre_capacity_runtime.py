@@ -1111,7 +1111,10 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _regular_bytes(path: Path, *, limit: int = 65536) -> tuple[bytes, tuple[int, int]]:
+def _regular_file_evidence(
+    path: Path, *, limit: int = 65536
+) -> tuple[bytes, dict[str, Any]]:
+    """Read a private singleton file while binding its complete identity."""
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         observed = os.fstat(descriptor)
@@ -1130,9 +1133,20 @@ def _regular_bytes(path: Path, *, limit: int = 65536) -> tuple[bytes, tuple[int,
         named = path.lstat()
         if (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino):
             raise RuntimeAdmissionError("quarantine evidence changed during inspection")
-        return raw, (observed.st_dev, observed.st_ino)
+        return raw, {
+            "identity": [observed.st_dev, observed.st_ino],
+            "mode": stat.S_IMODE(observed.st_mode),
+            "uid": observed.st_uid,
+            "nlink": observed.st_nlink,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
     finally:
         os.close(descriptor)
+
+
+def _regular_bytes(path: Path, *, limit: int = 65536) -> tuple[bytes, tuple[int, int]]:
+    raw, evidence = _regular_file_evidence(path, limit=limit)
+    return raw, tuple(evidence["identity"])
 
 
 def _private_directory(path: Path, *, message: str) -> os.stat_result:
@@ -1175,9 +1189,11 @@ def _quarantine_pair(lock_path: Path) -> dict[str, Any]:
     )
     if entries != expected:
         raise RuntimeAdmissionError("quarantine lock has ambiguous entries")
-    active_raw, active_identity = _regular_bytes(lock_path / expected[0])
-    quarantine_raw, quarantine_identity = _regular_bytes(lock_path / expected[1])
-    authority_raw, authority_identity = _regular_bytes(authority, limit=512)
+    active_raw, active_evidence = _regular_file_evidence(lock_path / expected[0])
+    quarantine_raw, quarantine_evidence = _regular_file_evidence(
+        lock_path / expected[1]
+    )
+    authority_raw, authority_evidence = _regular_file_evidence(authority, limit=512)
     try:
         active = json.loads(active_raw)
         quarantine = json.loads(quarantine_raw)
@@ -1210,12 +1226,15 @@ def _quarantine_pair(lock_path: Path) -> dict[str, Any]:
         raise RuntimeAdmissionError("quarantine marker and authority owner differ")
     return {
         "lock_identity": [lock_stat.st_dev, lock_stat.st_ino],
-        "authority_identity": list(authority_identity),
-        "active_identity": list(active_identity),
-        "quarantine_identity": list(quarantine_identity),
-        "active_sha256": hashlib.sha256(active_raw).hexdigest(),
-        "quarantine_sha256": hashlib.sha256(quarantine_raw).hexdigest(),
-        "authority_sha256": hashlib.sha256(authority_raw).hexdigest(),
+        "authority_identity": authority_evidence["identity"],
+        "active_identity": active_evidence["identity"],
+        "quarantine_identity": quarantine_evidence["identity"],
+        "active_sha256": active_evidence["sha256"],
+        "quarantine_sha256": quarantine_evidence["sha256"],
+        "authority_sha256": authority_evidence["sha256"],
+        "active_evidence": active_evidence,
+        "quarantine_evidence": quarantine_evidence,
+        "authority_evidence": authority_evidence,
         "owner": owner,
     }
 
@@ -1332,6 +1351,29 @@ def _path_is_absent(path: Path) -> bool:
     return False
 
 
+def _rename_exact_to_empty_target(
+    source: Path,
+    target: Path,
+    expected: Sequence[int],
+    *,
+    message: str,
+) -> None:
+    """Move only the expected source to a target proven absent at handoff.
+
+    Replay accepts an already-archived expected inode, but an occupied target
+    is always forensic evidence, not a destination we may replace. The
+    authority flock serializes cooperative recovery participants; lstat checks
+    make any unrelated target fail closed before calling POSIX rename.
+    """
+    if not _same_identity(source, expected):
+        raise RuntimeAdmissionError(message)
+    if not _path_is_absent(target):
+        raise RuntimeAdmissionError(message)
+    os.rename(source, target)
+    if not _same_identity(target, expected) or not _path_is_absent(source):
+        raise RuntimeAdmissionError(message)
+
+
 def _archive_pair_is_exact(archive: Path, pair: Mapping[str, Any]) -> bool:
     lock = archive / ".cre.lock"
     authority = archive / ".cre.lock.authority"
@@ -1345,17 +1387,19 @@ def _archive_pair_is_exact(archive: Path, pair: Mapping[str, Any]) -> bool:
     ):
         return False
     try:
-        active, _ = _regular_bytes(lock / checkpoint_refresh.BENCHMARK_ACTIVE_MARKER)
-        quarantine, _ = _regular_bytes(
+        _active, active_evidence = _regular_file_evidence(
+            lock / checkpoint_refresh.BENCHMARK_ACTIVE_MARKER
+        )
+        _quarantine, quarantine_evidence = _regular_file_evidence(
             lock / checkpoint_refresh.BENCHMARK_QUARANTINE_MARKER
         )
-        authority_raw, _ = _regular_bytes(authority, limit=512)
+        _authority, authority_evidence = _regular_file_evidence(authority, limit=512)
     except (OSError, RuntimeAdmissionError):
         return False
     return (
-        hashlib.sha256(active).hexdigest() == pair.get("active_sha256")
-        and hashlib.sha256(quarantine).hexdigest() == pair.get("quarantine_sha256")
-        and hashlib.sha256(authority_raw).hexdigest() == pair.get("authority_sha256")
+        active_evidence == pair.get("active_evidence")
+        and quarantine_evidence == pair.get("quarantine_evidence")
+        and authority_evidence == pair.get("authority_evidence")
     )
 
 
@@ -1522,7 +1566,12 @@ def recover_quarantine(
             source_present = _same_identity(lock_path, pair["lock_identity"])
             archived_present = _same_identity(archived_lock, pair["lock_identity"])
             if source_present and not archived_present:
-                os.rename(lock_path, archived_lock)
+                _rename_exact_to_empty_target(
+                    lock_path,
+                    archived_lock,
+                    pair["lock_identity"],
+                    message="quarantine lock handoff changed",
+                )
             elif not source_present and archived_present:
                 pass
             else:
@@ -1548,7 +1597,12 @@ def recover_quarantine(
                 archived_authority, pair["authority_identity"]
             )
             if source_present and not archived_present:
-                os.rename(authority, archived_authority)
+                _rename_exact_to_empty_target(
+                    authority,
+                    archived_authority,
+                    pair["authority_identity"],
+                    message="quarantine authority handoff changed",
+                )
             elif not source_present and archived_present:
                 pass
             else:

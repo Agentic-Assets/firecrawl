@@ -27,7 +27,7 @@
         "browser_cpus": 2,
         "global_pages": 4,
         "browser_pids": 384,
-        "browser_shm_bytes": 8408530944,
+        "browser_shm_bytes": 8589934592,
         "api_cpus": 1
       },
       "requested": {
@@ -64,7 +64,7 @@
         "browser_cpus": 2,
         "global_pages": 4,
         "browser_pids": 384,
-        "browser_shm_bytes": 8408530944,
+        "browser_shm_bytes": 8589934592,
         "api_cpus": 1
       },
       "requested": {

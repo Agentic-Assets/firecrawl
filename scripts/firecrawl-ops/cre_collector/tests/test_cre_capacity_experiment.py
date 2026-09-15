@@ -46,6 +46,12 @@ def test_baseline_profile_declares_the_same_admitted_no_write_workload() -> None
     )
     assert plan["execution"]["technical_admission_required"] is True
     assert plan["execution"]["blockers"] == ["technical_admission_required"]
+    assert (
+        baseline["runtime_baseline"]["browser_shm_bytes"]
+        == candidate["runtime_baseline"]["browser_shm_bytes"]
+        == experiment.GOVERNED_BROWSER_SHM_BYTES
+        == 8 * experiment.BINARY_GIBIBYTE
+    )
 
 
 def test_effective_runtime_match_is_distinguished_from_proposed_cpu_settings() -> None:
@@ -91,6 +97,12 @@ def test_effective_runtime_drift_is_reported_without_mutating_anything() -> None
                 "later_two_provider_split", [6, 5]
             ),
             "provider split",
+        ),
+        (
+            lambda profile: profile["runtime_baseline"].__setitem__(
+                "browser_shm_bytes", 8 * 1000**3
+            ),
+            "shared memory",
         ),
     ],
 )
