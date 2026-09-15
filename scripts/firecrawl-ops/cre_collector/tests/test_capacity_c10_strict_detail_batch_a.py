@@ -6,9 +6,8 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
-import pytest
-
 import cre_capacity_multisource_v1 as multisource
+import pytest
 from capacity_c10.contracts import C10Error
 from capacity_c10.strict_detail_avison_young import AvisonYoungCapacityC10Adapter
 from capacity_c10.strict_detail_colliers import ColliersCapacityC10Adapter

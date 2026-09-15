@@ -11,7 +11,7 @@ import {
   foundryPropertySitemaps,
   foundryPropertyUrls,
   foundryProviderIdentity,
-} from "../../../sources/foundry-commercial.js";
+} from "../../../sources/pure/foundry-identity.js";
 import {
   C10ReceiptError,
   type C10Member,

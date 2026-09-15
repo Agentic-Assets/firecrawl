@@ -5,7 +5,6 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
-
 from capacity_c10 import adapters, contracts
 from capacity_c10.strict_detail_batch_b import strict_detail_batch_b_adapters
 

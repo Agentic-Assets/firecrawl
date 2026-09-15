@@ -90,10 +90,18 @@ test("Batch B preserves reexport parity and makes every non-admitted source expl
   assert.deepEqual(parseSavillsNextData('<script id="__NEXT_DATA__" type="application/json">{"ok":true}</script>'), { ok: true });
 });
 
-test("Foundry producer has no collector, cache, retry, Firecrawl, or writer import", async () => {
+test("Foundry producer has no collector, normal source, cache, retry, Firecrawl, or writer import", async () => {
   const path = new URL("../../../capacity_c10/receipts/sources/batch_b.ts", import.meta.url);
   const source = await readFile(path, "utf8");
-  for (const forbidden of ["foundryFetchText", "srcFoundryCommercial", "scrape", "cre_ingest", "collect.ts", "firecrawl"]) {
+  for (const forbidden of [
+    "foundry-commercial.js",
+    "foundryFetchText",
+    "srcFoundryCommercial",
+    "scrape",
+    "cre_ingest",
+    "collect.ts",
+    "firecrawl",
+  ]) {
     assert.equal(source.includes(forbidden), false, `producer must not import ${forbidden}`);
   }
 });
