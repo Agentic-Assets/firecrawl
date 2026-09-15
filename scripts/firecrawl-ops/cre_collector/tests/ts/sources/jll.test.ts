@@ -1654,6 +1654,42 @@ test("JLL rejects unsupported price units and redacts hidden prices on detail-sh
   }
 });
 
+test("JLL hidden child sanitizer matches the labelled-price parity matrix", () => {
+  for (const label of [
+    "Asking Rate 3.25M",
+    "List Price 3.25M",
+    "List Price=3.25M",
+    "Sale Consideration 3.25M",
+    "Lease Rent 3.25M",
+    "Rental Consideration 3.25M",
+    "Asking 3.25 million",
+    "Price RUB 3.25M",
+  ]) {
+    assert.deepEqual(
+      jllSanitizeHiddenChildMetadata(
+        { title: label, name: "Jane Broker" },
+        "broker",
+      ),
+      { name: "Jane Broker" },
+    );
+  }
+
+  for (const label of [
+    "Building 3B",
+    "3M Company",
+    "500K SF warehouse",
+    "3 B Street",
+  ]) {
+    assert.deepEqual(
+      jllSanitizeHiddenChildMetadata(
+        { title: label, name: "Jane Broker" },
+        "broker",
+      ),
+      { title: label, name: "Jane Broker" },
+    );
+  }
+});
+
 test("jll detail cache round-trips through temp dir", () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "jll-detail-cache-"));
   const prev = process.env.JLL_DETAIL_CACHE_DIR;

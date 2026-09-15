@@ -1290,6 +1290,37 @@ def test_withheld_jll_sql_matches_prefixed_currency_suffixes(currency_suffix) ->
     assert ci.sql_lit(ci._JLL_SQL_HIDDEN_LABEL_DISCLOSURE) in sql
 
 
+@pytest.mark.parametrize(
+    "label",
+    (
+        "Asking Rate 3.25M",
+        "List Price 3.25M",
+        "List Price=3.25M",
+        "Sale Consideration 3.25M",
+        "Lease Rent 3.25M",
+        "Rental Consideration 3.25M",
+        "Asking 3.25 million",
+        "Price RUB 3.25M",
+    ),
+)
+def test_withheld_jll_labelled_price_contract_matches_python_and_sql(label) -> None:
+    assert ci._safe_jll_hidden_child_metadata(
+        {"title": label, "name": "Jane Broker"}, broker=True
+    ) == {"name": "Jane Broker"}
+    assert ci.sql_lit(ci._JLL_SQL_HIDDEN_LABEL_DISCLOSURE) in ci.build_sql(
+        [], [], _SCRAPED_AT, set()
+    )
+
+
+@pytest.mark.parametrize(
+    "label", ("Building 3B", "3M Company", "500K SF warehouse", "3 B Street")
+)
+def test_withheld_jll_labelled_price_contract_keeps_safe_labels(label) -> None:
+    assert ci._safe_jll_hidden_child_metadata(
+        {"title": label, "name": "Jane Broker"}, broker=True
+    ) == {"title": label, "name": "Jane Broker"}
+
+
 def test_to_row_reconciles_every_jll_price_control_case_insensitively():
     concealed = _row(
         {

@@ -1796,7 +1796,7 @@ _JLL_MONEY_SUFFIX = re.compile(
 _JLL_LABELLED_PRICE = re.compile(
     r"(?i)(\b(?:asking(?:\s+(?:price|rate|rent|consideration))?|"
     r"(?:list|sale|lease|rental)\s*(?:price|rate|rent|consideration)|"
-    r"price|rate|rent|consideration)\s*[:\-]?\s*)"
+    r"price|rate|rent|consideration)\s*[:=\-]?\s*)"
     rf"(?:(?:\b(?:{_JLL_CURRENCY_CODE})\b\s*|(?:us\$|c\$|a\$)|[$€£¥])?\s*"
     rf"{_JLL_MONEY_AMOUNT}(?:\s*{_JLL_MONEY_UNIT})?"
     rf"(?:\s*(?:\b(?:{_JLL_CURRENCY_CODE})\b|[$€£¥]))?(?:\s*/\s*[a-z. ]+)?)"

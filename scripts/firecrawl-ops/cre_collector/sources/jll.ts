@@ -695,16 +695,23 @@ const JLL_SENSITIVE_PARENT_CHILDREN = new Map([
   ["dealeconomics", new Set(["amount"])],
 ]);
 const JLL_MONEY_AMOUNT = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?";
+const JLL_CURRENCY_CODE =
+  "usd|cad|eur|gbp|jpy|aud|nzd|chf|hkd|sgd|cny|rmb|inr|mxn|brl|krw|rub|aed|sar|sek|nok|dkk|pln|try|zar";
+const JLL_MONEY_UNIT = "(?:mm|million(?:s)?|k|m|b)";
+const JLL_CURRENCY_PREFIX =
+  `(?:\\b(?:${JLL_CURRENCY_CODE})\\b\\s*|(?:us\\$|c\\$|a\\$)|[$€£¥])`;
+const JLL_CURRENCY_SUFFIX =
+  `(?:\\b(?:${JLL_CURRENCY_CODE})\\b|(?:us\\$|c\\$|a\\$)|[$€£¥])`;
 const JLL_MONEY_TOKEN = new RegExp(
-  `(?:\\b(?:usd|cad|eur|gbp|jpy|aud|nzd|chf|hkd|sgd|cny|rmb|inr|mxn|brl|krw|aed|sar|sek|nok|dkk|pln|try|zar)\\s*|(?:us\\$|c\\$|a\\$)|[$€£¥])\\s*${JLL_MONEY_AMOUNT}(?:\\s*[kmb])?(?:\\s*/\\s*[a-z. ]+)?`,
+  `${JLL_CURRENCY_PREFIX}\\s*${JLL_MONEY_AMOUNT}(?:\\s*${JLL_MONEY_UNIT})?(?:\\s*/\\s*[a-z. ]+)?`,
   "i",
 );
 const JLL_PRICE_LABELLED_TOKEN = new RegExp(
-  `\\b(?:asking(?:\\s+price)?|sale\\s+price|lease\\s+(?:rate|price)?|rent(?:al)?\\s+(?:rate|price)?|price|consideration)\\b\\s*[:=-]?\\s*${JLL_MONEY_AMOUNT}(?:\\s*[kmb])?(?:\\s*/\\s*[a-z. ]+)?`,
+  `\\b(?:asking(?:\\s+(?:price|rate|rent|consideration))?|(?:list|sale|lease|rental)\\s*(?:price|rate|rent|consideration)|price|rate|rent|consideration)\\b\\s*[:=-]?\\s*(?:${JLL_CURRENCY_PREFIX}?\\s*${JLL_MONEY_AMOUNT}(?:\\s*${JLL_MONEY_UNIT})?(?:\\s*${JLL_CURRENCY_SUFFIX})?(?:\\s*/\\s*[a-z. ]+)?)`,
   "i",
 );
 const JLL_MONEY_SUFFIX_TOKEN = new RegExp(
-  `\\b${JLL_MONEY_AMOUNT}(?:\\s*[kmb])?\\s*(?:\\b(?:usd|cad|eur|gbp|jpy|aud|nzd|chf|hkd|sgd|cny|rmb|inr|mxn|brl|krw|aed|sar|sek|nok|dkk|pln|try|zar)\\b|(?:us\\$|c\\$|a\\$)|[$€£¥])`,
+  `\\b${JLL_MONEY_AMOUNT}(?:\\s*${JLL_MONEY_UNIT})?\\s*${JLL_CURRENCY_SUFFIX}`,
   "i",
 );
 
