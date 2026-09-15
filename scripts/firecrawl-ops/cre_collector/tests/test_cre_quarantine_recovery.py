@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
-import hashlib
 import inspect
 import json
 import os
@@ -13,15 +11,12 @@ import sys
 import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
-
-import pytest
-from cre_capacity_runtime_test_support import capture, profile
 
 import cre_capacity_runtime as runtime
 import cre_checkpoint_refresh as checkpoint_refresh
 import cre_quarantine_recovery as recovery
+import pytest
+from cre_capacity_runtime_test_support import capture, profile
 
 
 @pytest.fixture(autouse=True)
@@ -119,7 +114,7 @@ def test_quarantine_recovery_dry_run_and_exact_pair_archive(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -160,7 +155,7 @@ def test_actual_quarantine_recovery_sync_blocks_tier_dispatch(
         assert proceed.wait(timeout=10)
         return {"ok": True}
 
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", pause_after_sync)
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", pause_after_sync)
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -270,7 +265,7 @@ def test_quarantine_recovery_replays_an_interrupted_paired_archive(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -315,7 +310,7 @@ def test_quarantine_recovery_replays_guard_before_archive_creation(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -373,7 +368,7 @@ def test_quarantine_recovery_refuses_tampered_receipt_before_guard_clear(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -416,7 +411,7 @@ def test_quarantine_recovery_replays_existing_receipt_after_archive_fsync_failur
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -527,7 +522,7 @@ def test_quarantine_recovery_refuses_occupied_archive_member(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -572,7 +567,7 @@ def test_quarantine_recovery_refuses_byte_identical_marker_replacement(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -656,7 +651,7 @@ def test_atomic_archive_handoff_refuses_an_unsupported_runtime(
     target = tmp_path / "target"
     source.write_bytes(b"owned\n")
     source.chmod(0o600)
-    monkeypatch.setattr(runtime.sys, "platform", "unsupported")
+    monkeypatch.setattr(recovery.sys, "platform", "unsupported")
     with pytest.raises(runtime.RuntimeAdmissionError, match="no-replace"):
         recovery._atomic_rename_noreplace(source, target, message="handoff changed")
     assert source.exists()
@@ -672,7 +667,7 @@ def test_quarantine_recovery_refuses_an_unbound_archived_lock_entry(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -716,7 +711,7 @@ def test_quarantine_recovery_refuses_an_unbound_archive_root_entry(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -771,7 +766,7 @@ def test_quarantine_recovery_blocks_new_shared_lock_at_every_durable_phase(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -857,7 +852,7 @@ def test_quarantine_recovery_rejects_a_simultaneous_process(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -927,7 +922,7 @@ def test_quarantine_recovery_replays_rename_before_durable_handoff(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -997,7 +992,7 @@ def test_quarantine_recovery_refuses_reappeared_source_before_any_mutation(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -1113,7 +1108,7 @@ def test_quarantine_recovery_later_phase_reappearance_stops_before_mutation(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )
@@ -1239,7 +1234,7 @@ def test_quarantine_recovery_post_fence_reappearance_is_a_retained_intent_stop(
     monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
     _historic_quarantine_pair(lock_path)
     baseline = capture()
-    monkeypatch.setattr(recovery, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(recovery, "recovery_cpu_evidence", lambda: {"ok": True})
     monkeypatch.setattr(
         runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
     )

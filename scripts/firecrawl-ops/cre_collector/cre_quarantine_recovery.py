@@ -251,7 +251,7 @@ def _quarantine_pair(lock_path: Path) -> QuarantineEvidence:
     }
 
 
-def _recovery_cpu_evidence(
+def recovery_cpu_evidence(
     *,
     sampler: Callable[[], float] | None = None,
     sleep: Callable[[float], None] = time.sleep,
@@ -274,6 +274,10 @@ def _recovery_cpu_evidence(
         "sustain_seconds": 30,
         "samples": [round(value, 2) for value in samples],
     }
+
+
+# Keep the narrow test seam stable while runtime callers use the public API.
+_recovery_cpu_evidence = recovery_cpu_evidence
 
 
 def _recovery_guard_path(lock_path: Path) -> Path:

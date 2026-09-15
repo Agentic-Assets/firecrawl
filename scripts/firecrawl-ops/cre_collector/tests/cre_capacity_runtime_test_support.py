@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
-
 import cre_capacity_experiment as experiment
 import cre_capacity_runtime as runtime
 
@@ -136,89 +133,3 @@ def capture(state: str = "baseline") -> runtime.RuntimeCapture:
         },
         api_env={"MODEL_NAME": "private"},
     )
-
-
-def write_approval(
-    path: Path,
-    receipt: dict[str, object],
-    digest: str,
-    *,
-    profile_name: str = "bold-jll-128",
-) -> Path:
-    approval = {
-        "schema_version": runtime.SCHEMA_VERSION,
-        "kind": runtime.APPROVAL_KIND,
-        "profile": profile_name,
-        "config_sha256": digest,
-        "transition_receipt_sha256": receipt["receipt_sha256"],
-        "source_git_sha": receipt["baseline"]["repo"]["git_sha"],  # type: ignore[index]
-        "approved_by": "coordinating-review",
-        "approved": True,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "expires_after_seconds": runtime.RECEIPT_MAX_AGE_SECONDS,
-        "nonce": "e" * 64,
-    }
-    runtime.write_private(path, approval)
-    return path
-
-
-def mock_transition_authority(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, events: list[str] | None = None
-) -> None:
-    observed = events if events is not None else []
-
-    class FakeLock:
-        def __init__(self, path: Path) -> None:
-            assert path == tmp_path / "out" / "daily" / ".cre.lock"
-
-        def acquire(self) -> None:
-            observed.append("lock-acquire")
-
-        def release(self) -> None:
-            observed.append("lock-release")
-
-    monkeypatch.setattr(runtime, "SharedLock", FakeLock)
-    monkeypatch.setattr(
-        runtime,
-        "_canonical_transition_lock",
-        lambda: tmp_path / "out" / "daily" / ".cre.lock",
-    )
-
-    def consume_approval(path: Path, recovery_path: Path) -> bytes:
-        try:
-            raw = path.read_bytes()
-            approval = json.loads(raw)
-            grant_path = runtime._benchmark_grant_path(path.parent, approval)
-            runtime.write_private(
-                grant_path,
-                runtime._benchmark_grant_payload(approval),
-                refuse_existing=True,
-            )
-            path.unlink()
-        except OSError as exc:
-            raise runtime.RuntimeAdmissionError(
-                "review approval could not be atomically consumed"
-            ) from exc
-        return raw
-
-    monkeypatch.setattr(runtime, "_consume_review_approval_bytes", consume_approval)
-    monkeypatch.setattr(runtime, "_recover_review_consumption", lambda *a, **kw: None)
-
-    def destroy_grant(path: Path) -> None:
-        observed.append("grant-destroy")
-        path.unlink()
-
-    monkeypatch.setattr(runtime, "_destroy_review_benchmark_grant", destroy_grant)
-
-
-def mixed_capture(browser_state: str, api_state: str) -> runtime.RuntimeCapture:
-    value = capture(browser_state)
-    selected, _ = profile()
-    value.public["api"]["nano_cpus"] = (  # type: ignore[index]
-        selected["runtime_baseline"]["api_cpus"]  # type: ignore[index]
-        if api_state == "baseline"
-        else selected["requested"]["api_cpus"]  # type: ignore[index]
-    ) * 1_000_000_000
-    value.public["transition_sha256"] = runtime.transition_fingerprint(value.public)
-    value.public["snapshot_sha256"] = runtime.snapshot_fingerprint(value.public)
-    return value

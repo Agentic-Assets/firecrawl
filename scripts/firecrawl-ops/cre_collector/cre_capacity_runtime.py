@@ -11,9 +11,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import ctypes
-import errno
-import fcntl
 import hashlib
 import json
 import os
@@ -22,7 +19,6 @@ import secrets
 import signal
 import stat
 import subprocess
-import sys
 import tempfile
 import time
 import urllib.error
@@ -1062,7 +1058,7 @@ def _quarantine_recovery_callbacks(
         ),
         capture_runtime=capture_runtime,
         evaluate_state=evaluate_state,
-        cpu_evidence=quarantine_recovery._recovery_cpu_evidence,
+        cpu_evidence=quarantine_recovery.recovery_cpu_evidence,
     )
 
 

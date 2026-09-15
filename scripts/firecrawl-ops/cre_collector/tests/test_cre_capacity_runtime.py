@@ -2,26 +2,20 @@
 
 from __future__ import annotations
 
-import inspect
 import io
 import json
 import os
 import stat
-import subprocess
 import sys
-import threading
-import time
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Self
 
-import pytest
-
 import cre_capacity_experiment as experiment
 import cre_capacity_runtime as runtime
-import cre_checkpoint_refresh as checkpoint_refresh
+import pytest
 
 
 @pytest.fixture(autouse=True)
