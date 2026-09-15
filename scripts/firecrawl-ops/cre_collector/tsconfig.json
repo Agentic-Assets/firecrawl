@@ -13,6 +13,7 @@
     "types.ts",
     "lib/**/*.ts",
     "sources/**/*.ts",
+    "capacity_c10/receipts/**/*.ts",
     "tests/ts/**/*.ts"
   ]
 }

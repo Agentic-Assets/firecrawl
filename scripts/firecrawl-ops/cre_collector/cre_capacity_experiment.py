@@ -59,6 +59,22 @@ JLL_BENCHMARK_WORKLOAD = {
     "replicates": 3,
     "writes": "forbidden",
 }
+C10_BASELINE_WORKLOAD = {
+    "source": "multisource-c10",
+    "details": "immutable_cohort",
+    "replicates": 4,
+    "writes": "forbidden",
+}
+C10_BASELINE_PLANNED = {
+    "source_parallelism": "serial",
+    "full_path_no_write_adapter": "capacity_c10",
+    "provider_429_challenge_cooldown": "required-at-execution",
+}
+C10_EXPERIMENT_PLANNED = {
+    "source_parallelism": "serial",
+    "full_path_no_write_adapter": "capacity_c10",
+    "provider_429_challenge_cooldown": "required-at-execution",
+}
 
 
 class ProfileError(ValueError):
@@ -170,26 +186,33 @@ def load_profile(path: Path, profile_name: str) -> tuple[dict[str, Any], str]:
             raise ProfileError("later provider split must equal the global page budget")
     planned = _object(profile.get("planned"), "planned")
     workload = profile.get("workload")
-    if profile["kind"] == "experiment" and (
-        _object(workload, "workload") != JLL_BENCHMARK_WORKLOAD
-        or planned
-        != {
-            "source_parallelism": "unimplemented",
-            "full_path_no_write_adapter": "cre_capacity_benchmark",
-            "provider_429_challenge_cooldown": "required-at-execution",
-        }
-    ):
-        raise ProfileError("bold experiment contract has an unexpected value")
-    if profile["kind"] == "baseline" and (
-        _object(workload, "workload") != JLL_BENCHMARK_WORKLOAD
-        or planned
-        != {
-            "source_parallelism": "serial",
-            "full_path_no_write_adapter": "cre_capacity_benchmark",
-            "provider_429_challenge_cooldown": "required-at-execution",
-        }
-    ):
-        raise ProfileError("baseline benchmark contract has an unexpected value")
+    workload_value = _object(workload, "workload")
+    is_jll_profile = workload_value == JLL_BENCHMARK_WORKLOAD
+    is_c10_profile = workload_value == C10_BASELINE_WORKLOAD
+    if not is_jll_profile and not is_c10_profile:
+        raise ProfileError("capacity workload contract has an unexpected value")
+    if is_jll_profile:
+        expected_planned = (
+            {
+                "source_parallelism": "unimplemented",
+                "full_path_no_write_adapter": "cre_capacity_benchmark",
+                "provider_429_challenge_cooldown": "required-at-execution",
+            }
+            if profile["kind"] == "experiment"
+            else {
+                "source_parallelism": "serial",
+                "full_path_no_write_adapter": "cre_capacity_benchmark",
+                "provider_429_challenge_cooldown": "required-at-execution",
+            }
+        )
+    else:
+        expected_planned = (
+            C10_EXPERIMENT_PLANNED
+            if profile["kind"] == "experiment"
+            else C10_BASELINE_PLANNED
+        )
+    if planned != expected_planned:
+        raise ProfileError("capacity execution contract has an unexpected value")
     profile["runtime_baseline"] = dict(runtime)
     profile["requested"] = normalized_requested
     return profile, hashlib.sha256(_canonical(document)).hexdigest()

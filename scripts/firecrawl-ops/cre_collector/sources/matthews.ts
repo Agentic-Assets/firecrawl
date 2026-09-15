@@ -8,6 +8,7 @@ import {
 } from "../lib/freshness.js";
 import { clean, moneyToNumber, pmap, prune } from "../lib/util.js";
 import { SourceResult, Tx } from "../types.js";
+import { matthewsTenureFromUrl } from "./pure/matthews-identity.js";
 
 const MATTHEWS_HOST = "https://www.matthews.com";
 const MATTHEWS_SOURCE_URL = `${MATTHEWS_HOST}/listings`;
@@ -304,9 +305,7 @@ function matthewsDetailUrlsFromSitemap(xml: string): string[] {
   return urls;
 }
 
-export function matthewsTenureFromUrl(url: string): Tx {
-  return /\/properties\/leasing-/i.test(url) ? "lease" : "sale";
-}
+export { matthewsTenureFromUrl } from "./pure/matthews-identity.js";
 
 function normalizedMatthewsPropertyUrl(raw: string | null, baseUrl: string): string | null {
   const value = clean(raw);
