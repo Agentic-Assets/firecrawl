@@ -1402,6 +1402,21 @@ def _path_is_absent(path: Path) -> bool:
     return False
 
 
+def _require_phase_source_absence(phase: str, lock_path: Path, authority: Path) -> None:
+    """Fail closed if a completed handoff's canonical source reappears."""
+    if phase in {
+        "lock-archived",
+        "authority-renaming",
+        "pair-archived",
+        "receipt-written",
+    }:
+        if not _path_is_absent(lock_path):
+            raise RuntimeAdmissionError("quarantine lock source reappeared")
+    if phase in {"pair-archived", "receipt-written"}:
+        if not _path_is_absent(authority):
+            raise RuntimeAdmissionError("quarantine authority source reappeared")
+
+
 def _rename_exact_to_empty_target(
     source: Path,
     target: Path,
@@ -1771,6 +1786,7 @@ def _recover_quarantine_while_synchronized(
             _write_recovery_guard(guard_path, result, create=False)
             phase = "lock-archived"
         if phase == "lock-archived":
+            _require_phase_source_absence(phase, lock_path, authority)
             if not _archive_entries_are_exact(archive, [archived_lock.name]):
                 raise RuntimeAdmissionError("quarantine lock archive entries changed")
             if not _same_identity(archived_lock, pair["lock_identity"]):
@@ -1783,6 +1799,7 @@ def _recover_quarantine_while_synchronized(
             _write_recovery_guard(guard_path, result, create=False)
             phase = "authority-renaming"
         if phase == "authority-renaming":
+            _require_phase_source_absence(phase, lock_path, authority)
             source_present = _same_identity(authority, pair["authority_identity"])
             archived_present = _same_identity(
                 archived_authority, pair["authority_identity"]
@@ -1815,6 +1832,7 @@ def _recover_quarantine_while_synchronized(
             _write_recovery_guard(guard_path, result, create=False)
             phase = "pair-archived"
         if phase == "pair-archived":
+            _require_phase_source_absence(phase, lock_path, authority)
             if not _archive_pair_is_exact(archive, pair, receipt=None):
                 raise RuntimeAdmissionError("quarantine forensic pair changed")
             receipt = archive / "recovery-receipt.json"
@@ -1840,14 +1858,13 @@ def _recover_quarantine_while_synchronized(
             archive, pair, receipt=True
         ):
             raise RuntimeAdmissionError("quarantine recovery did not complete safely")
+        _require_phase_source_absence(phase, lock_path, authority)
         _validate_recovery_receipt(
             archive / "recovery-receipt.json",
             lock_path=lock_path,
             archive=archive,
             pair=pair,
         )
-        if not _path_is_absent(lock_path) or not _path_is_absent(authority):
-            raise RuntimeAdmissionError("quarantine source reappeared before clear")
         # A crash before this unlink leaves a replay-safe guard and the immutable
         # forensic pair.  A crash after it is also safe: both original artifacts
         # have already been durably archived and no stale authority remains.

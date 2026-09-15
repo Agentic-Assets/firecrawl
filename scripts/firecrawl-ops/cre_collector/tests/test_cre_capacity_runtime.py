@@ -1465,6 +1465,136 @@ def test_quarantine_recovery_refuses_reappeared_source_before_any_mutation(
     assert fsync_paths == [archive.parent]
 
 
+@pytest.mark.parametrize(
+    ("phase", "reappeared_member"),
+    [
+        ("lock-archived", ".cre.lock"),
+        ("authority-renaming", ".cre.lock"),
+        ("pair-archived", ".cre.lock"),
+        ("pair-archived", ".cre.lock.authority"),
+        ("receipt-written", ".cre.lock"),
+        ("receipt-written", ".cre.lock.authority"),
+    ],
+)
+def test_quarantine_recovery_later_phase_reappearance_stops_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    reappeared_member: str,
+) -> None:
+    """Every later phase fences all sources that its recorded handoffs removed."""
+    monkeypatch.setattr(runtime, "REPO_ROOT", tmp_path)
+    lock_path = tmp_path / "scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock"
+    monkeypatch.setattr(runtime, "canonical_shared_lock_dir", lambda _root: lock_path)
+    _historic_quarantine_pair(lock_path)
+    baseline = capture()
+    monkeypatch.setattr(runtime, "_recovery_cpu_evidence", lambda: {"ok": True})
+    monkeypatch.setattr(
+        runtime, "_compose_loopback_endpoints", lambda _r: baseline.public["endpoints"]
+    )
+    monkeypatch.setattr(
+        runtime, "_settlement", lambda *_args: baseline.public["settlement"]
+    )
+    monkeypatch.setattr(runtime, "capture_runtime", lambda _r: baseline)
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    guard = lock_path.parent / runtime.QUARANTINE_RECOVERY_GUARD
+    real_guard_write = runtime._write_recovery_guard
+    real_rename = runtime._atomic_rename_noreplace
+    real_receipt_write = runtime._write_recovery_receipt
+
+    def interrupt_at_phase(
+        path: Path, value: dict[str, object], *, create: bool
+    ) -> None:
+        if phase == "lock-archived" and value.get("phase") == "authority-renaming":
+            raise OSError("simulated lock-archived interruption")
+        real_guard_write(path, value, create=create)
+        if phase == "receipt-written" and value.get("phase") == "receipt-written":
+            raise OSError("simulated receipt-written interruption")
+
+    def interrupt_authority_rename(source: Path, target: Path, *, message: str) -> None:
+        if phase == "authority-renaming" and source == authority:
+            raise OSError("simulated authority-renaming interruption")
+        real_rename(source, target, message=message)
+
+    def interrupt_receipt_write(path: Path, value: dict[str, object]) -> None:
+        if phase == "pair-archived":
+            raise OSError("simulated pair-archived interruption")
+        real_receipt_write(path, value)
+
+    monkeypatch.setattr(runtime, "_write_recovery_guard", interrupt_at_phase)
+    monkeypatch.setattr(runtime, "_atomic_rename_noreplace", interrupt_authority_rename)
+    monkeypatch.setattr(runtime, "_write_recovery_receipt", interrupt_receipt_write)
+    with pytest.raises(OSError, match=f"{phase} interruption"):
+        runtime.recover_quarantine(execute=True)
+    assert json.loads(guard.read_text(encoding="utf-8"))["phase"] == phase
+
+    source = lock_path if reappeared_member == lock_path.name else authority
+    if source == lock_path:
+        source.mkdir(mode=0o700)
+    else:
+        source.write_text("foreign authority\n", encoding="utf-8")
+        source.chmod(0o600)
+    guard_before = guard.read_bytes()
+
+    def snapshot_tree(path: Path) -> list[tuple[object, ...]]:
+        result: list[tuple[object, ...]] = []
+        for entry in [path, *sorted(path.rglob("*"))]:
+            observed = entry.lstat()
+            result.append(
+                (
+                    entry.relative_to(path),
+                    observed.st_dev,
+                    observed.st_ino,
+                    stat.S_IMODE(observed.st_mode),
+                    observed.st_uid,
+                    observed.st_nlink,
+                    entry.read_bytes() if stat.S_ISREG(observed.st_mode) else None,
+                )
+            )
+        return result
+
+    archive = Path(json.loads(guard_before)["archive"])
+    archive_before = snapshot_tree(archive)
+    source_before = snapshot_tree(source) if source.is_dir() else source.read_bytes()
+    fsync_paths: list[Path] = []
+    real_fsync = runtime._fsync_directory
+
+    def record_replay_fsync(path: Path) -> None:
+        fsync_paths.append(path)
+        real_fsync(path)
+
+    monkeypatch.setattr(runtime, "_fsync_directory", record_replay_fsync)
+    monkeypatch.setattr(
+        runtime,
+        "_atomic_rename_noreplace",
+        lambda *_args, **_kwargs: pytest.fail("reappeared source must not be renamed"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_write_recovery_guard",
+        lambda *_args, **_kwargs: pytest.fail(
+            "reappeared source must not advance guard"
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_write_recovery_receipt",
+        lambda *_args, **_kwargs: pytest.fail(
+            "reappeared source must not write receipt"
+        ),
+    )
+    with pytest.raises(runtime.RuntimeAdmissionError, match="source reappeared"):
+        runtime.recover_quarantine(execute=True)
+
+    assert guard.read_bytes() == guard_before
+    assert snapshot_tree(archive) == archive_before
+    if source.is_dir():
+        assert snapshot_tree(source) == source_before
+    else:
+        assert source.read_bytes() == source_before
+    assert fsync_paths == [archive.parent]
+
+
 def test_dry_run_transition_requires_unchanged_machine_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
