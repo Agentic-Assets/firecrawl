@@ -42,9 +42,9 @@ mutation path outside the governed operator workflow.
 - Post-merge offline smoke on clean `main`: checkpoint/runtime/benchmark 611
   passed, 1 skipped; collector typecheck plus 864 passing tests; `git diff
   --check` passed.
-- Changed Python lint, formatting, and compilation checks passed. The final
-  thermo-nuclear review and the fresh Codex exact-head review reported no
-  actionable finding. The final review thread and inline audits were empty.
+- Changed Python lint, formatting, and compilation checks passed. All 16
+  review threads were resolved. The final thermo-nuclear review and fresh
+  Codex exact-head review found no actionable findings.
 
 ## Decisions
 
