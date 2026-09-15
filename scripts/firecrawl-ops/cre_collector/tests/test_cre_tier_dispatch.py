@@ -10,10 +10,9 @@ import sys
 import time
 from pathlib import Path
 
-import pytest
-
 import cre_checkpoint_refresh as refresh
 import cre_tier_dispatch as dispatch
+import pytest
 
 COLLECTOR = Path(__file__).resolve().parent.parent
 RUN_TIER = COLLECTOR / "launchd" / "cre_run_tier.sh"
@@ -234,7 +233,13 @@ def test_dispatcher_marks_verified_descriptors_inheritable_for_worker(tmp_path):
             "monitor",
             lock_path=lock_path,
             command=[sys.executable, "-c", worker],
-            environ={"CRE_TEST_LOCK_PATH": str(lock_path)},
+            environ={
+                **os.environ,
+                "CRE_TEST_LOCK_PATH": str(lock_path),
+                "PYTHONPATH": os.pathsep.join(
+                    (str(COLLECTOR), os.environ.get("PYTHONPATH", ""))
+                ),
+            },
         )
         == 0
     )
