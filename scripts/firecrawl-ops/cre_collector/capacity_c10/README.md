@@ -3,7 +3,7 @@
 Wave 1 is intentionally an offline admission and evidence protocol. It now
 also includes sealed receipt substrate and source-owned candidate producers,
 but it does not provide a runnable CLI, a concrete network transport, a
-scraper, a controller integration, or a generic source adapter. The receipt
+scraper, a collector/controller command integration, or a generic source adapter. The receipt
 transport is an injected interface: no shipped C10 component opens a provider
 connection or can execute a request by itself.
 
@@ -11,8 +11,9 @@ connection or can execute a request by itself.
 requires an exact registry where every source-specific adapter is explicitly
 reviewed and fully verified. `admission.py` binds that registry, a hash-bound
 multisource-v1 cohort, and the isolated `c10-p0`/`c10-p1` configuration into an
-immutable plan. `runner.py` owns only the serial one-use arm ordering and
-requires injected settlement, rollback, and quarantine evidence. `compare.py`
+immutable plan. `runner.py` owns serial one-use arm ordering and a library-only
+coordinator that requires injected runtime, browser, settlement, rollback, and
+quarantine hooks. `compare.py`
 is pure and can only produce an operator-review candidate, never an executable
 adoption decision.
 
@@ -24,7 +25,25 @@ not registered in a live collector, and no producer is evidence of adapter
 admission or of a completed C10 run. `candidate_registry()` remains an
 unverified review surface and `default_registry()` remains empty.
 
-Wave 2 must bind the runner hooks to the existing public components, without
+The executable-foundation seam is deliberately still library-only. Its
+`run_one_coordinated_arm()` coordinator receives explicitly injected runtime,
+browser, settlement, and quarantine hooks; it has no CLI and does not arm or
+call the local API by itself. It holds one `SharedLock` from preflight through
+browser execution, settlement, P1 rollback, and quarantine. Its only admitted
+alternate runtime profile is the canonical
+`cre_capacity_c10_profiles_v1.json`, named with `experiment_kind="C10"`; the
+ordinary controller retains its historic default profile behavior.
+
+The coordinator seals a browser arm only when it carries the plan/config and
+requested-profile digests, private runtime receipt digest, container snapshot
+and transition fingerprints, monotonic timing, and saturation evidence. P0
+must demonstrate four active scheduled members and P1 ten, with at least that
+many scheduled members. The comparator derives qualified rows per minute from
+that sealed timing and row count. It rejects direct/native transport,
+cache reads/writes, fallback/multiple attempts, caller-supplied throughput
+scalars, and unsaturated cohorts.
+
+The future live binding must use the existing public components, without
 duplicating them:
 
 - `cre_checkpoint_refresh.SharedLock` for exclusive ownership and retained
@@ -40,6 +59,12 @@ No C10 adapter may be admitted until its enumeration verifier, member verifier,
 and provider-specific attrition classifier are independently reviewed. A failed
 or uncertain arm must quarantine under the held canonical lock; it must not
 attempt a fresh lock acquisition, a generic fallback, or an automatic rerun.
+
+This foundation is not browser-fidelity proof. The present 20-source matrix
+remains a compatibility and review panel. A browser-sensitive primary
+comparison cannot run until source-specific adapters prove the reviewed browser
+path, single engine attempt, cache controls, and scheduler activity.
+Direct-native receipts remain non-comparable compatibility evidence.
 
 ## Candidate receipt hooks
 
