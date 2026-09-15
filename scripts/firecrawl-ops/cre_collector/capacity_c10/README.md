@@ -24,6 +24,24 @@ not registered in a live collector, and no producer is evidence of adapter
 admission or of a completed C10 run. `candidate_registry()` remains an
 unverified review surface and `default_registry()` remains empty.
 
+The executable-foundation seam is deliberately still library-only. Its
+`run_one_coordinated_arm()` coordinator receives explicitly injected runtime,
+browser, settlement, and quarantine hooks; it has no CLI and does not arm or
+call the local API by itself. It holds one `SharedLock` from preflight through
+browser execution, settlement, P1 rollback, and quarantine. Its only admitted
+alternate runtime profile is the canonical
+`cre_capacity_c10_profiles_v1.json`, named with `experiment_kind="C10"`; the
+ordinary controller retains its historic default profile behavior.
+
+The coordinator seals a browser arm only when it carries the plan/config and
+requested-profile digests, private runtime receipt digest, container snapshot
+and transition fingerprints, monotonic timing, and saturation evidence. P0
+must demonstrate four active scheduled members and P1 ten, with at least that
+many scheduled members. The comparator derives qualified rows per minute from
+that sealed timing and row count. It rejects direct/native transport,
+cache reads/writes, fallback/multiple attempts, caller-supplied throughput
+scalars, and unsaturated cohorts.
+
 Wave 2 must bind the runner hooks to the existing public components, without
 duplicating them:
 
@@ -40,6 +58,12 @@ No C10 adapter may be admitted until its enumeration verifier, member verifier,
 and provider-specific attrition classifier are independently reviewed. A failed
 or uncertain arm must quarantine under the held canonical lock; it must not
 attempt a fresh lock acquisition, a generic fallback, or an automatic rerun.
+
+This foundation is not browser-fidelity proof. The present 20-source matrix
+remains a compatibility and review panel. A browser-sensitive primary
+comparison cannot run until source-specific adapters prove the reviewed browser
+path, single engine attempt, cache controls, and scheduler activity.
+Direct-native receipts remain non-comparable compatibility evidence.
 
 ## Candidate receipt hooks
 
