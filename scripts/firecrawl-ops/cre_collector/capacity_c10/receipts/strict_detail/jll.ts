@@ -33,6 +33,7 @@ export interface JllReceiptPlan extends StrictDetailPlan<JllReceiptMember> {
 }
 
 const JLL_HOST = "property.jll.com";
+export const JLL_BROWSER_BOOTSTRAP_URL = "https://property.jll.com/";
 
 export function jllEnumerationCard(plan: Pick<JllReceiptPlan, "transaction" | "propertyType" | "page">): RequestCardInput {
   return {
@@ -54,6 +55,7 @@ export function jllEnumerationCard(plan: Pick<JllReceiptPlan, "transaction" | "p
       query: JLL_SEARCH_RESULTS_QUERY,
       variables: jllGraphqlVariables(plan.transaction, plan.propertyType, plan.page),
     }),
+    browserBootstrapUrl: JLL_BROWSER_BOOTSTRAP_URL,
     cacheMode: "no-store",
     timeoutMs: 30_000,
     maxBytes: 2 * 1024 * 1024,
@@ -79,6 +81,7 @@ function memberCard(
     headers: Object.freeze({ accept: "text/html,application/xhtml+xml" }),
     contentType: null,
     body: null,
+    browserBootstrapUrl: JLL_BROWSER_BOOTSTRAP_URL,
     cacheMode: "no-store",
     timeoutMs: 30_000,
     maxBytes: 2 * 1024 * 1024,
@@ -86,7 +89,10 @@ function memberCard(
 }
 
 function detailProjection(member: JllReceiptMember, route: string) {
-  return (response: { readonly body: Uint8Array }) => {
+  return (response: { readonly body: Uint8Array; readonly status: number; readonly finalUrl: string }) => {
+    if (response.status !== 200 || response.finalUrl !== route) {
+      throw new C10ReceiptError("JLL browser detail is not a qualified canonical response");
+    }
     const next = jllNextData(utf8Text(response.body, "JLL detail"));
     const property = next?.props?.pageProps?.property ?? next?.props?.pageProps?.listing;
     const providerId = String(property?.id ?? property?.propertyId ?? "").trim();

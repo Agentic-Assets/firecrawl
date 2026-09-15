@@ -33,6 +33,18 @@ alternate runtime profile is the canonical
 `cre_capacity_c10_profiles_v1.json`, named with `experiment_kind="C10"`; the
 ordinary controller retains its historic default profile behavior.
 
+The reviewed JLL browser library is the single source-specific exception to
+the former interface-only substrate. `receipts/jll_browser.ts` binds an exact
+ordered 16-member JLL cohort, its digest, all 17 request cards, and a held C10
+coordinator lock to either a one-member fidelity smoke or a 16-member P0/P1
+saturation calibration. It can only use the private loopback Playwright
+executor and fails before execution unless the source cohort, arm binding,
+card hashes, Linux receipt-store support, sidecar health, and coordinator lock
+are all present. `local_operator_preflight.ts` provisions a generated shared
+sidecar/coordinator secret only for a callback and restores the environment on
+every exit. It never writes, logs, or persists that secret. These are library
+entrypoints deliberately, not ordinary collector commands.
+
 The coordinator seals a browser arm only when it carries the plan/config and
 requested-profile digests, private runtime receipt digest, container snapshot
 and transition fingerprints, monotonic timing, and saturation evidence. P0
