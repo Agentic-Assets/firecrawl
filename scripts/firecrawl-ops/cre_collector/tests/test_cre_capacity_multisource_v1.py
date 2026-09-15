@@ -9,8 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import cre_capacity_multisource_v1 as multisource
 import pytest
+
+import cre_capacity_multisource_v1 as multisource
 
 ADMISSION_NOW = datetime(2026, 9, 14, 12, 5, tzinfo=timezone.utc)
 OBSERVED_AT = "2026-09-14T12:00:00Z"

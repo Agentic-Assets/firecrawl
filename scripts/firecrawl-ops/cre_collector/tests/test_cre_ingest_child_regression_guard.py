@@ -3,9 +3,10 @@
 import re
 from datetime import datetime, timezone
 
+import pytest
+
 import cre_checkpoint_refresh as refresh
 import cre_ingest as ingest
-import pytest
 
 SCRAPED_AT = datetime(2026, 7, 30, tzinfo=timezone.utc).isoformat()
 
