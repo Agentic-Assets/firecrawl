@@ -1434,6 +1434,8 @@ test("JLL hidden child sanitizer preserves identities and URLs while omitting pr
       title: "$3.25M Advisor",
       office: "Asking price $3.25M",
       license: "License $3.25M",
+      caption: "CAD $1,000,000 broker disclosure",
+      headline: "Price 3.25M",
     },
     "broker",
   );
@@ -1449,11 +1451,13 @@ test("JLL hidden child sanitizer preserves identities and URLs while omitting pr
     {
       url: "https://cdn.example/brochure.pdf",
       name: "$3.25M brochure",
+      caption: "USD $3.25M brochure caption",
       docType: "brochure",
     },
     {
       url: "https://cdn.example/floor.pdf",
       title: "$3.25M floor plan",
+      headline: "Asking price 3.25M",
       docType: "floor_plan",
     },
     {
@@ -1462,6 +1466,7 @@ test("JLL hidden child sanitizer preserves identities and URLs while omitting pr
       type: "video",
       provider: "vimeo",
       title: "$3.25M tour",
+      caption: "EUR 3.25M virtual tour",
     },
   ]) {
     const safe = jllSanitizeHiddenChildMetadata(child, "artifact");
@@ -1471,8 +1476,24 @@ test("JLL hidden child sanitizer preserves identities and URLs while omitting pr
     assert.equal(safe.embedUrl, child.embedUrl);
     assert.equal(safe.name, undefined);
     assert.equal(safe.title, undefined);
-    assert.doesNotMatch(JSON.stringify(safe), /\$3\.25M/);
+    assert.equal(safe.caption, undefined);
+    assert.equal(safe.headline, undefined);
+    assert.doesNotMatch(JSON.stringify(safe), /\$3\.25M|3\.25M|CAD|USD|EUR/);
   }
+
+  const nonprice = jllSanitizeHiddenChildMetadata(
+    {
+      url: "https://cdn.example/3b.pdf",
+      caption: "Building 3B",
+      headline: "3M Company",
+    },
+    "artifact",
+  );
+  assert.deepEqual(nonprice, {
+    url: "https://cdn.example/3b.pdf",
+    caption: "Building 3B",
+    headline: "3M Company",
+  });
 });
 
 test("JLL rejects unsupported price units and redacts hidden prices on detail-shape errors", async () => {
@@ -1911,6 +1932,7 @@ test("jllStrandedMedia: videos as bare strings (provider-classified), tours/360 
     videos: [
       "https://vimeo.com/824804225",
       "https://www.youtube.com/watch?v=abc123XYZ_0",
+      { url: "https://vimeo.com/824804226" },
     ],
     virtualTours: ["https://my.matterport.com/show/?m=ABC123"],
     view360URLs: ["https://kuula.co/share/collection/xyz"],
@@ -1929,6 +1951,7 @@ test("jllStrandedMedia: videos as bare strings (provider-classified), tours/360 
       (m) => m.provider === "youtube" && m.embedUrl?.includes("/embed/"),
     ),
   );
+  assert.ok(out.media.some((m) => m.url === "https://vimeo.com/824804226"));
   // virtualTours + view360URLs are promoted as TYPED virtual_tour items; the
   // harvester trusts that asserted type and does NOT reclassify (so a matterport
   // url that arrived via virtualTours stays virtual_tour, not matterport).
@@ -2054,7 +2077,13 @@ test("jllStrandedDocs skips malformed floor-plan entries without discarding vali
   assert.deepEqual(jllStrandedDocs({ floorPlans: null }), []);
   assert.deepEqual(
     jllStrandedDocs({ floorPlans: "https://cdn.jll.com/fp/not-an-array.pdf" }),
-    [],
+    [
+      {
+        url: "https://cdn.jll.com/fp/not-an-array.pdf",
+        title: "not an array",
+        docType: "floor_plan",
+      },
+    ],
   );
   assert.deepEqual(
     jllStrandedDocs({
@@ -2075,6 +2104,7 @@ test("jllStrandedDocs skips malformed floor-plan entries without discarding vali
     [
       { url: "https://cdn.jll.com/fp/valid.jpg", docType: "floor_plan" },
       { url: "https://cdn.jll.com/fp/valid.pdf", docType: "floor_plan" },
+      { url: "https://cdn.jll.com/fp/new-shape.pdf", docType: "floor_plan" },
     ],
   );
 });

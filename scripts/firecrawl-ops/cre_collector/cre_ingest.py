@@ -1971,9 +1971,20 @@ _JLL_SAFE_FRESHNESS_VALUES = {
     "cacheDisposition": frozenset({"live", "generation_cache"}),
 }
 
-_JLL_HIDDEN_ARTIFACT_LABEL_KEYS = frozenset({"name", "title", "label", "description"})
+_JLL_HIDDEN_ARTIFACT_LABEL_KEYS = frozenset(
+    {"name", "title", "label", "description", "caption", "headline"}
+)
 _JLL_HIDDEN_BROKER_LABEL_KEYS = frozenset(
-    {"title", "office", "license", "licenses", "label", "description"}
+    {
+        "title",
+        "office",
+        "license",
+        "licenses",
+        "label",
+        "description",
+        "caption",
+        "headline",
+    }
 )
 
 

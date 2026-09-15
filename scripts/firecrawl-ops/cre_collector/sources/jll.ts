@@ -722,6 +722,8 @@ const JLL_HIDDEN_ARTIFACT_LABEL_KEYS = new Set([
   "title",
   "label",
   "description",
+  "caption",
+  "headline",
 ]);
 const JLL_HIDDEN_BROKER_LABEL_KEYS = new Set([
   "title",
@@ -730,6 +732,8 @@ const JLL_HIDDEN_BROKER_LABEL_KEYS = new Set([
   "licenses",
   "label",
   "description",
+  "caption",
+  "headline",
 ]);
 
 function jllSanitizeHiddenChildValue(
@@ -973,7 +977,7 @@ export function jllGraphqlItemToListing(
         ? null
         : `${buildingSizeSqft.toLocaleString("en-US")} SF`,
     buildingSizeSqft,
-    photos: jllStringUrls(item?.images),
+    photos: jllNativeAssetUrls(item?.images),
     brokerIds: [],
     url,
     jllPropertyTypeFilters: [propertyType],
@@ -1329,6 +1333,28 @@ export function jllStringUrls(values: any): string[] {
   );
 }
 
+/** Extract every public URL shape retained by the raw JLL asset contract. */
+function jllNativeAssetUrls(value: unknown): string[] {
+  const candidates: unknown[] = [];
+  const visit = (candidate: unknown): void => {
+    if (typeof candidate === "string") {
+      candidates.push(candidate);
+      return;
+    }
+    if (Array.isArray(candidate)) {
+      candidate.forEach(visit);
+      return;
+    }
+    if (candidate === null || typeof candidate !== "object") return;
+    const record = candidate as Record<string, unknown>;
+    for (const key of ["url", "image", "download", "file", "images", "files"]) {
+      visit(record[key]);
+    }
+  };
+  visit(value);
+  return jllStringUrls(candidates);
+}
+
 /** True only for a native or typed brochure with a usable public URL. */
 export function jllHasUsableBrochure(normalized: unknown): boolean {
   if (
@@ -1468,15 +1494,11 @@ export function jllContacts(brokersRaw: any[]): any[] {
 // harvester does not recognize. harvestDetail dedups by url. Never throws.
 export function jllStrandedMedia(property: any): (MediaItem | string)[] {
   const out: (MediaItem | string)[] = [];
-  for (const url of jllStringUrls(
-    Array.isArray(property?.videos) ? property.videos : [],
-  )) {
+  for (const url of jllNativeAssetUrls(property?.videos)) {
     out.push(url);
   }
   for (const value of [property?.virtualTours, property?.view360URLs]) {
-    for (const url of jllStringUrls(
-      Array.isArray(value) ? value : value != null ? [value] : [],
-    )) {
+    for (const url of jllNativeAssetUrls(value)) {
       out.push({
         mediaType: "virtual_tour",
         provider: null,
@@ -1552,21 +1574,9 @@ export function jllReconcileDocumentChannels(
 }
 
 function jllFloorPlanEntryUrls(value: unknown): string[] {
-  if (value === null || value === undefined) return [];
-  if (typeof value === "string") {
-    const url = jllFloorPlanUrl(value);
-    return url ? [url] : [];
-  }
-  if (typeof value !== "object" || Array.isArray(value)) {
-    return [];
-  }
-
-  const entry = value as Record<string, unknown>;
-  const urls = [
-    jllFloorPlanUrl(entry.url),
-    jllFloorPlanUrl(entry.image),
-  ].filter((url): url is string => url !== null);
-  return urls;
+  return jllNativeAssetUrls(value)
+    .map(jllFloorPlanUrl)
+    .filter((url): url is string => url !== null);
 }
 
 /**
@@ -1578,21 +1588,7 @@ function jllFloorPlanEntryUrls(value: unknown): string[] {
 export function jllStrandedDocs(property: any): DocItem[] {
   const floorPlans = property?.floorPlans;
   if (floorPlans === null || floorPlans === undefined) return [];
-
-  let urls: string[];
-  if (Array.isArray(floorPlans)) {
-    urls = floorPlans.flatMap(jllFloorPlanEntryUrls);
-  } else if (typeof floorPlans === "object") {
-    const value = floorPlans as Record<string, unknown>;
-    const images = Array.isArray(value.images) ? value.images : [];
-    const files = Array.isArray(value.files) ? value.files : [];
-    urls = [
-      ...images.flatMap(jllFloorPlanEntryUrls),
-      ...files.flatMap(jllFloorPlanEntryUrls),
-    ];
-  } else {
-    return [];
-  }
+  const urls = jllFloorPlanEntryUrls(floorPlans);
 
   const seen = new Set<string>();
   return urls
@@ -1787,8 +1783,8 @@ export async function enrichJllListing(base: any): Promise<any> {
     // documents channel (floor_plan) via jllStrandedDocs so they are not
     // double-inserted (cre_listing_documents has no (listing_id,url) unique key,
     // so a url present in BOTH brochures and documents would insert twice).
-    const rawBrochures = jllStringUrls(property.brochures);
-    const images = jllStringUrls(property.images);
+    const rawBrochures = jllNativeAssetUrls(property.brochures);
+    const images = jllNativeAssetUrls(property.images);
     const url = normalizedJllListingUrl(base.url);
     const floorPlanDocuments = jllStrandedDocs(property);
 

@@ -25,9 +25,8 @@ import json
 import sys
 from datetime import datetime, timezone
 
-import pytest
-
 import cre_ingest as ci
+import pytest
 
 _SCRAPED_AT = datetime(2026, 6, 15, 0, 0, 0, tzinfo=timezone.utc).isoformat()
 
@@ -711,16 +710,23 @@ def test_withheld_jll_child_metadata_keeps_identity_urls_and_drops_price_labels(
                     "title": "$3.25M Advisor",
                     "office": "Asking price $3.25M",
                     "license": "License $3.25M",
+                    "caption": "CAD $1,000,000 broker disclosure",
+                    "headline": "Building 3B",
                 }
             ],
             "brochures": [
-                {"url": "https://cdn.example/brochure.pdf", "name": "$3.25M brochure"}
+                {
+                    "url": "https://cdn.example/brochure.pdf",
+                    "name": "$3.25M brochure",
+                    "caption": "USD $3.25M brochure caption",
+                }
             ],
             "documents": [
                 {
                     "url": "https://cdn.example/floor.pdf",
                     "title": "$3.25M floor plan",
                     "docType": "floor_plan",
+                    "headline": "Asking price 3.25M",
                 }
             ],
             "media": [
@@ -730,6 +736,7 @@ def test_withheld_jll_child_metadata_keeps_identity_urls_and_drops_price_labels(
                     "mediaType": "video",
                     "provider": "vimeo",
                     "title": "$3.25M tour",
+                    "caption": "EUR 3.25M virtual tour",
                 }
             ],
         }
@@ -772,7 +779,11 @@ def test_withheld_jll_child_metadata_keeps_identity_urls_and_drops_price_labels(
     ]
     raw = json.dumps(row["raw_data"])
     assert "3.25M" not in raw
+    assert "CAD" not in raw
+    assert "USD" not in raw
+    assert "EUR" not in raw
     assert "Jane Broker" in raw
+    assert "Building 3B" in raw
     assert "https://video.example/watch" in raw
 
 
