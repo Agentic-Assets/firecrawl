@@ -92,6 +92,7 @@ EXPECTED_FRESHNESS_POLICY = {
 IMPLEMENTATION_PATHS = (
     "scripts/firecrawl-ops/cre_collector/cre_capacity_benchmark.py",
     "scripts/firecrawl-ops/cre_collector/cre_capacity_experiment.py",
+    "scripts/firecrawl-ops/cre_collector/cre_capacity_multisource_v1.py",
     "scripts/firecrawl-ops/cre_collector/cre_capacity_runtime.py",
     "scripts/firecrawl-ops/cre_collector/cre_capacity_telemetry.py",
     "scripts/firecrawl-ops/cre_collector/cre_checkpoint_refresh.py",

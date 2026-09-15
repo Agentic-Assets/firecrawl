@@ -3474,6 +3474,10 @@ def test_implementation_manifest_is_config_independent_and_rechecked(
     manifest = benchmark._implementation_manifest(repo)
 
     assert set(manifest["files"]) == set(benchmark.IMPLEMENTATION_PATHS)
+    assert (
+        "scripts/firecrawl-ops/cre_collector/cre_capacity_multisource_v1.py"
+        in manifest["files"]
+    )
     assert not any("experiment_profiles" in path for path in manifest["files"])
     monkeypatch.setattr(benchmark, "_require_clean_git", lambda _repo: "a" * 40)
     monkeypatch.setattr(
