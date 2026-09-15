@@ -136,6 +136,17 @@ def test_only_a_caller_held_lock_can_retain_a_benchmark_interlock(
         )
 
 
+def test_prearmed_benchmark_interlock_requires_owned_active_marker(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    with benchmark.SharedLock(lock_path) as held_lock:
+        with pytest.raises(benchmark.BenchmarkError, match="no active interlock"):
+            benchmark._require_prearmed_benchmark_interlock(held_lock)
+        held_lock.arm_benchmark({"state": "active"})
+        benchmark._require_prearmed_benchmark_interlock(held_lock)
+
+
 def test_validate_sample_rejects_jll_investor_and_duplicate_identity(
     tmp_path: Path,
 ) -> None:
@@ -2107,7 +2118,12 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
     lock_path = benchmark.canonical_shared_lock_dir(Path(__file__).resolve().parents[4])
 
     monkeypatch.setattr(
-        benchmark, "validate_admission", lambda value, *_args, **_kwargs: value
+        benchmark,
+        "validate_admission",
+        lambda value, *_args, **_kwargs: {
+            **value,
+            "review_approval_nonce_sha256": "a" * 64,
+        },
     )
     monkeypatch.setattr(
         benchmark.capacity_runtime,
@@ -2126,7 +2142,9 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
             assert held_lock.held
             with pytest.raises(benchmark.LockHeldError):
                 benchmark.SharedLock(lock_path).acquire()
-            held_lock.arm_benchmark({"state": "active"})
+            assert held_lock.benchmark_marker_identity is not None
+            assert (lock_path / "capacity-benchmark-active.json").is_file()
+            assert kwargs["_prearmed_benchmark_interlock"] is True
             lock_windows.append("benchmark")
         result_path = kwargs["artifact_root"] / "result.json"
         result_path.write_bytes(benchmark._canonical({"completed": True}))
@@ -2136,6 +2154,7 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
 
     def fake_transition(receipt, profile, target, *, execute, _held_shared_lock):
         assert _held_shared_lock.held
+        assert _held_shared_lock.benchmark_marker_identity is not None
         with pytest.raises(benchmark.LockHeldError):
             benchmark.SharedLock(lock_path).acquire()
         lock_windows.append("rollback")
@@ -2168,6 +2187,7 @@ def test_counterbalanced_pair_step_records_next_arm_and_rolls_back_candidate_off
     assert [arm["variant"] for arm in state["arms"]] == ["baseline", "candidate"]
     assert rollbacks == [(receipt, "bold-jll-128", "baseline", True)]
     assert lock_windows == ["benchmark", "rollback"]
+    assert not lock_path.exists()
 
 
 def test_candidate_pair_step_rejects_missing_or_invalid_rollback_before_benchmark(
@@ -2312,7 +2332,8 @@ def test_candidate_pair_defers_quarantine_until_after_rollback(
     def fake_run(**kwargs):
         assert kwargs["_retain_benchmark_interlock"] is True
         lock = kwargs["_held_shared_lock"]
-        lock.arm_benchmark({"state": "active"})
+        assert kwargs["_prearmed_benchmark_interlock"] is True
+        assert lock.benchmark_marker_identity is not None
         events.append("benchmark")
         with pytest.raises(benchmark.LockHeldError):
             benchmark.SharedLock(lock_path).acquire()
@@ -2363,6 +2384,124 @@ def test_candidate_pair_defers_quarantine_until_after_rollback(
         assert not (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).exists()
     else:
         assert (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).is_file()
+
+
+def test_candidate_pair_prearms_interlock_before_benchmark_failure_and_rollback_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    events: list[str] = []
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def fail_before_inner_arm(**kwargs):
+        lock = kwargs["_held_shared_lock"]
+        assert kwargs["_prearmed_benchmark_interlock"] is True
+        assert lock.benchmark_marker_identity is not None
+        assert (lock_path / "capacity-benchmark-active.json").is_file()
+        events.append("benchmark")
+        raise OSError("benchmark preflight failed before worker arm")
+
+    def fail_rollback(*_args, _held_shared_lock, **_kwargs):
+        assert _held_shared_lock.benchmark_marker_identity is not None
+        events.append("rollback")
+        raise OSError("baseline rollback failed")
+
+    monkeypatch.setattr(benchmark, "run_benchmark", fail_before_inner_arm)
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", fail_rollback)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        benchmark.BenchmarkError, match="canonical interlock is retained"
+    ):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert events == ["benchmark", "rollback"]
+    assert (lock_path / "capacity-benchmark-active.json").is_file()
+    assert (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).is_file()
+    with pytest.raises(benchmark.LockHeldError):
+        benchmark.SharedLock(lock_path).acquire()
+
+
+def test_candidate_pair_prearmed_interlock_survives_interrupt_until_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pair_root, plan_path, receipt = _candidate_pair_plan(tmp_path)
+    lock_path = tmp_path / "out" / "daily" / ".cre.lock"
+    events: list[str] = []
+    monkeypatch.setattr(
+        benchmark, "canonical_shared_lock_dir", lambda *_args: lock_path
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "validate_admission",
+        lambda *_args, **_kwargs: {"review_approval_nonce_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        benchmark.capacity_runtime,
+        "load_fresh_receipt",
+        lambda *_args, **_kwargs: (
+            {},
+            {},
+            benchmark._experiment_contract()["config_sha256"],
+        ),
+    )
+
+    def interrupt_before_inner_arm(**kwargs):
+        lock = kwargs["_held_shared_lock"]
+        assert kwargs["_prearmed_benchmark_interlock"] is True
+        assert lock.benchmark_marker_identity is not None
+        events.append("benchmark")
+        raise KeyboardInterrupt("benchmark preflight interrupted")
+
+    def rollback(*_args, _held_shared_lock, **_kwargs):
+        assert _held_shared_lock.benchmark_marker_identity is not None
+        events.append("rollback")
+
+    monkeypatch.setattr(benchmark, "run_benchmark", interrupt_before_inner_arm)
+    monkeypatch.setattr(benchmark.capacity_runtime, "transition", rollback)
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(KeyboardInterrupt, match="benchmark preflight interrupted"):
+        benchmark.run_counterbalanced_pair_step(
+            repo_root=Path(__file__).resolve().parents[4],
+            pair_plan_path=plan_path,
+            admission={},
+            admission_path=admission_path,
+            timeout_seconds=1,
+            candidate_receipt_path=receipt,
+        )
+
+    assert events == ["benchmark", "rollback"]
+    assert (lock_path / "capacity-benchmark-active.json").is_file()
+    assert (lock_path / benchmark.BENCHMARK_QUARANTINE_MARKER).is_file()
+    with pytest.raises(benchmark.LockHeldError):
+        benchmark.SharedLock(lock_path).acquire()
 
 
 def test_caller_held_unknown_settlement_is_durably_deferred_to_pair_rollback(
@@ -2487,6 +2626,7 @@ def test_caller_held_idle_benchmark_retains_interlock_until_pair_rollback(
     )
 
     with benchmark.SharedLock(lock_path) as held_lock:
+        held_lock.arm_benchmark({"state": "outer-candidate-step"})
         result = benchmark.run_benchmark(
             repo_root=tmp_path,
             artifact_root=artifact,
@@ -2500,6 +2640,7 @@ def test_caller_held_idle_benchmark_retains_interlock_until_pair_rollback(
             timeout_seconds=60,
             _held_shared_lock=held_lock,
             _retain_benchmark_interlock=True,
+            _prearmed_benchmark_interlock=True,
         )
         assert result["completed"] is True
         assert held_lock.benchmark_marker_identity is not None
