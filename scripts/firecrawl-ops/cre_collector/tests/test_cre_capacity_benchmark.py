@@ -12,11 +12,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
 import cre_checkpoint_refresh as refresh
+import pytest
 
 
 def _cache_record(index: int) -> dict[str, object]:

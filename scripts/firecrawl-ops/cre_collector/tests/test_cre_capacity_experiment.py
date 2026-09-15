@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 import cre_capacity_experiment as experiment
+import pytest
 
 
 def test_bold_profile_resolves_global_budget_and_bounded_adapter() -> None:

@@ -11,9 +11,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-
 import cre_checkpoint_refresh as refresh
+import pytest
 
 ATTEMPT = "2026-07-29T12:00:00+00:00"
 
