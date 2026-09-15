@@ -1376,6 +1376,77 @@ def test_merge_carries_jll_withheld_marker_across_dual_passes():
     assert "$3,250,000" not in json.dumps(merged["raw_data"])
 
 
+def test_merge_ignores_jll_marker_collision_on_dual_svn_rows():
+    assert not ci._jll_raw_payload_withheld(
+        {
+            "sourceKey": "svn",
+            "jllPriceWithheld": True,
+            "primary": {"sourceKey": "jll", "jllPriceWithheld": True},
+        }
+    )
+    assert ci._jll_raw_payload_withheld({"sourceKey": "jll", "jllPriceWithheld": True})
+    sale = _row(
+        {
+            "sourceKey": "svn",
+            "url": "https://example.buildout.com/property?propertyId=marker-42",
+            "id": "marker-42",
+            "transactionMode": "sale",
+            "name": "SVN $3.25M listing",
+            "salePriceUsd": 3250000,
+            "jllPriceWithheld": True,
+        }
+    )
+    lease = _row(
+        {
+            "sourceKey": "svn",
+            "url": "https://example.buildout.com/property?propertyId=marker-42",
+            "id": "marker-42",
+            "transactionMode": "lease",
+            "leaseRateText": "$32/SF",
+            "jllPriceWithheld": True,
+        }
+    )
+
+    merged = ci.merge_rows(sale, lease)
+
+    assert merged["sale_price_usd"] == 3250000
+    assert merged["lease_rate_min"] == 32
+    assert merged["title"] == "SVN $3.25M listing"
+    assert merged["raw_data"].get("jllPriceWithheld") is None
+    assert merged["raw_data"]["primary"]["jllPriceWithheld"] is True
+    assert merged["raw_data"]["secondary_pass"]["jllPriceWithheld"] is True
+
+
+def test_merge_requires_both_passes_to_be_canonical_jll_before_redaction():
+    svn = _row(
+        {
+            "sourceKey": "svn",
+            "url": "https://example.buildout.com/property?propertyId=mixed-42",
+            "id": "mixed-42",
+            "transactionMode": "sale",
+            "name": "SVN $3.25M listing",
+            "salePriceUsd": 3250000,
+            "jllPriceWithheld": True,
+        }
+    )
+    hidden_jll = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/mixed-42",
+            "id": "mixed-42",
+            "transactionMode": "lease",
+            "hidePrice": True,
+        }
+    )
+
+    merged = ci.merge_rows(svn, hidden_jll)
+
+    assert merged["sale_price_usd"] == 3250000
+    assert merged["title"] == "SVN $3.25M listing"
+    assert merged["raw_data"].get("jllPriceWithheld") is None
+    assert ci._raw_payload_source_keys(merged["raw_data"]) == frozenset({"jll", "svn"})
+
+
 def test_merge_final_withheld_projection_sanitizes_visible_child_metadata():
     visible = _row(
         {

@@ -1951,14 +1951,41 @@ def _jll_raw_payload_withheld(value):
     """Find the safe withheld marker in direct or merged JLL raw payloads."""
     if not isinstance(value, dict):
         return False
-    if value.get(_JLL_WITHHELD_MARKER) is True:
-        return True
-    if value.get("sourceKey") == "jll" and _jll_pricing_is_withheld(value):
-        return True
+    if value.get("sourceKey") == "jll":
+        return value.get(_JLL_WITHHELD_MARKER) is True or _jll_pricing_is_withheld(
+            value
+        )
+    # A direct source payload is authoritative about its own source only.  Do
+    # not descend into arbitrary nested provider data from an SVN/other row:
+    # it cannot establish JLL's destructive withholding transition.
+    if value.get("sourceKey") is not None:
+        return False
     return any(
         _jll_raw_payload_withheld(value.get(key))
         for key in ("primary", "secondary_pass")
     )
+
+
+def _raw_payload_source_keys(value):
+    """Return direct provider source keys from a raw or dual-pass payload."""
+    if not isinstance(value, dict):
+        return frozenset()
+    source_key = value.get("sourceKey")
+    if isinstance(source_key, str):
+        return frozenset({source_key})
+    return frozenset().union(
+        *(
+            _raw_payload_source_keys(value.get(key))
+            for key in ("primary", "secondary_pass")
+        )
+    )
+
+
+def _is_canonical_jll_staged_row(row):
+    """Require the staged row and every direct pass to be canonical JLL."""
+    if not isinstance(row, dict) or row.get("slug") != SOURCE_TO_BROKERAGE["jll"][0]:
+        return False
+    return _raw_payload_source_keys(row.get("raw_data")) == frozenset({"jll"})
 
 
 _JLL_WITHHELD_TOP_LEVEL = frozenset(
@@ -2959,9 +2986,18 @@ def merge_rows(a, b):
     # Keep both raw payloads when the passes differ.  The top-level marker is
     # deliberately carried outside that wrapper so SQL does not need to infer
     # a price-withholding state from nested, malformed, or legacy provider data.
-    jll_price_withheld = _jll_raw_payload_withheld(
-        a["raw_data"]
-    ) or _jll_raw_payload_withheld(b["raw_data"])
+    # A raw marker alone is not sufficient: non-JLL providers can surface the
+    # same arbitrary key.  The destructive merge-time transition applies only
+    # when both normalized passes are canonically JLL, including their direct
+    # raw source keys.  This mirrors the source-key guards in generated SQL.
+    jll_price_withheld = (
+        _is_canonical_jll_staged_row(a)
+        and _is_canonical_jll_staged_row(b)
+        and (
+            _jll_raw_payload_withheld(a["raw_data"])
+            or _jll_raw_payload_withheld(b["raw_data"])
+        )
+    )
     if b["raw_data"] is not a["raw_data"]:
         a["raw_data"] = {"primary": a["raw_data"], "secondary_pass": b["raw_data"]}
     if jll_price_withheld:
