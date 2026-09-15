@@ -2110,12 +2110,10 @@ def test_lock_retain_on_exit_preserves_owned_lock_but_allows_stale_reclaim(tmp_p
         refresh.SharedLock(lock.path).acquire()
 
     (lock.path / "pid").write_text("99999999 1\n", encoding="utf-8")
-    assert lock.authority_token is not None
-    assert lock.authority_generation is not None
-    lock.authority_path.write_text(
-        f"99999999 {lock.authority_token} {lock.authority_generation}\n",
-        encoding="utf-8",
-    )
+    authority_parts = lock.authority_path.read_text(encoding="utf-8").split()
+    assert authority_parts[0] == "v1"
+    authority_parts[1] = "99999999"
+    lock.authority_path.write_text(" ".join(authority_parts) + "\n", encoding="utf-8")
     reclaimed = refresh.SharedLock(lock.path)
     reclaimed.acquire()
     reclaimed.release()
@@ -2231,6 +2229,7 @@ def test_recovery_required_acquire_failure_preserves_its_stop(tmp_path, monkeypa
 
     assert lock.path.is_dir()
     assert refresh._lock_requires_operator_recovery(lock.path)
+    lock.release()
     with pytest.raises(refresh.LockHeldError, match="requires operator recovery"):
         refresh.SharedLock(lock.path).acquire()
 
@@ -2322,6 +2321,7 @@ def test_partial_recovery_cleanup_failure_preserves_operator_stop(
 
     assert refresh._lock_requires_operator_recovery(lock.path)
     assert not lock.held
+    lock.release()
     with pytest.raises(refresh.LockHeldError, match="requires operator recovery"):
         refresh.SharedLock(lock.path).acquire()
 
@@ -2486,7 +2486,7 @@ def test_authority_rejects_creation_window_directory_replacement(
     with pytest.raises(refresh.LockHeldError, match="not empty"):
         lock.acquire()
     assert (lock.path / "foreign").read_text(encoding="utf-8") == "do not touch"
-    assert not lock.authority_path.exists()
+    assert lock.authority_path.is_file()
     assert displaced.is_dir()
 
 
@@ -2527,7 +2527,7 @@ def test_verified_same_generation_stale_authority_is_reclaimed(tmp_path):
     assert authority.is_file()
     lock.release()
     assert not lock_dir.exists()
-    assert not authority.exists()
+    assert authority.is_file()
 
 
 @pytest.mark.parametrize(
@@ -2642,7 +2642,115 @@ def test_authority_initialization_failure_recovers_same_process(
     lock.clear_recovery_requirement()
     lock.release()
     assert not lock.path.exists()
-    assert not lock.authority_path.exists()
+    assert lock.authority_path.is_file()
+
+
+def test_persistent_authority_blocks_competing_subprocess_then_reuses(tmp_path):
+    lock_path = tmp_path / ".cre.lock"
+    owner = refresh.SharedLock(lock_path)
+    owner.acquire()
+    script = """
+import sys
+from pathlib import Path
+import cre_checkpoint_refresh as refresh
+try:
+    lock = refresh.SharedLock(Path(sys.argv[1]))
+    lock.acquire()
+except refresh.LockHeldError as exc:
+    print(str(exc))
+    raise SystemExit(73)
+else:
+    lock.release()
+"""
+    blocked = subprocess.run(
+        [sys.executable, "-c", script, str(lock_path)],
+        cwd=Path(refresh.__file__).parent,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert blocked.returncode == 73, blocked.stderr
+    assert "authority is held" in blocked.stdout
+
+    owner.release()
+    reused = subprocess.run(
+        [sys.executable, "-c", script, str(lock_path)],
+        cwd=Path(refresh.__file__).parent,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert reused.returncode == 0, reused.stderr
+    assert lock_path.with_name(f"{lock_path.name}.authority").is_file()
+
+
+def test_crashed_owner_releases_flock_and_stale_directory_reuses_authority(tmp_path):
+    lock_path = tmp_path / ".cre.lock"
+    script = """
+import os
+import sys
+from pathlib import Path
+import cre_checkpoint_refresh as refresh
+refresh.SharedLock(Path(sys.argv[1])).acquire()
+os._exit(23)
+"""
+    crashed = subprocess.run(
+        [sys.executable, "-c", script, str(lock_path)],
+        cwd=Path(refresh.__file__).parent,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert crashed.returncode == 23, crashed.stderr
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    assert authority.is_file()
+
+    recovered = refresh.SharedLock(lock_path)
+    recovered.acquire()
+    recovered.release()
+    assert not lock_path.exists()
+    assert authority.is_file()
+
+
+def test_corrupt_persistent_authority_fails_closed_untouched(tmp_path):
+    lock_path = tmp_path / ".cre.lock"
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    authority.write_bytes(b"not a lock authority\n")
+
+    with pytest.raises(refresh.LockHeldError, match="authority is malformed"):
+        refresh.SharedLock(lock_path).acquire()
+    assert authority.read_bytes() == b"not a lock authority\n"
+
+
+def test_persistent_recovery_authority_blocks_automatic_acquire(tmp_path):
+    lock_path = tmp_path / ".cre.lock"
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    token = "t" * 32
+    generation = f"{refresh.OPERATOR_RECOVERY_LEASE_PREFIX}{'g' * 32}"
+    authority.write_text(
+        f"v1 99999999 {token} {generation} recovery-required\n", encoding="utf-8"
+    )
+
+    with pytest.raises(refresh.LockHeldError, match="requires operator recovery"):
+        refresh.SharedLock(lock_path).acquire()
+    assert authority.read_text(encoding="utf-8").endswith("recovery-required\n")
+
+
+def test_legacy_directory_only_lock_migrates_to_persistent_authority(tmp_path):
+    lock_path = tmp_path / ".cre.lock"
+    lock_path.mkdir()
+    (lock_path / "pid").write_text("99999999 1\n", encoding="utf-8")
+    (lock_path / "lease").write_text("legacy-lease\n", encoding="utf-8")
+
+    migrated = refresh.SharedLock(lock_path)
+    migrated.acquire()
+    migrated.release()
+    authority = lock_path.with_name(f"{lock_path.name}.authority")
+    assert authority.is_file()
+    assert authority.read_text(encoding="utf-8").startswith("v1 ")
 
 
 @pytest.mark.parametrize("operation", ["arm", "disarm"])

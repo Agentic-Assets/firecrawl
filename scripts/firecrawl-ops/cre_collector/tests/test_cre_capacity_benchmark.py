@@ -2703,7 +2703,7 @@ def test_candidate_authority_initialization_failure_recovers_under_owned_lock(
 
     assert events == ["rollback"]
     assert not lock_path.exists()
-    assert not lock_path.with_name(f"{lock_path.name}.authority").exists()
+    assert lock_path.with_name(f"{lock_path.name}.authority").is_file()
 
 
 def test_candidate_pair_stale_reclaim_lease_failure_recovers_and_rolls_back(
