@@ -5,12 +5,14 @@ each item before acting.
 
 ## Hardening
 
-- **Build an FD/inode-bound private execution seal** (priority: highest;
-  confidence: verified requirement)
-  Bind raw receipt files, native provider identities, canonical targets,
-  adapter and source revisions, and ordered request cards before an arm can
-  execute. The public cohort intentionally omits private paths and cannot be a
-  live request ledger by itself.
+- **Operationalize the existing private receipt and request-graph seals**
+  (priority: highest; confidence: verified requirement)
+  The package now seals private artifacts, native-provider identities,
+  canonical targets, adapter/source revisions, and ordered request-card graph
+  evidence. Before an arm can execute, a separate reviewed integration must
+  bind those seals to an FD/inode-safe execution boundary and a real
+  direct-provider transport. The public cohort intentionally omits private
+  paths and cannot be a live request ledger by itself.
 
 - **Implement source-native adapter fixtures in reviewed families** (priority:
   highest; confidence: verified gap)
@@ -23,6 +25,18 @@ each item before acting.
   Use `SharedLock`, runtime preflight/transition, established settlement
   telemetry, verified P0 rollback, and quarantine recovery through a narrow
   integration layer. Do not migrate those controls into `capacity_c10`.
+
+- **Freeze the validity strata before any C10 execution** (priority: highest;
+  confidence: verified requirement)
+  Treat the fixed 20-source matrix as a compatibility panel, not a pooled
+  causal population. Predeclare a browser-sensitive causal subset only after
+  each source has reviewed, source-native browser-relevant transport and
+  fidelity evidence. Separately predeclare a direct-control stratum of sources
+  with a reviewed direct native path. Estimate effects within the
+  browser-sensitive subset, report the direct-control stratum as a trend and
+  implementation control, and retain unclassified or blocked sources as
+  compatibility-only. Do not infer membership from a plane label or from a
+  receipt descriptor.
 
 ## Robustness
 

@@ -15,6 +15,7 @@ import {
   type SealedTransportEvent,
   type SourceProjection,
   type SourceResponseProjector,
+  requireReceiptSource,
   sealStageReceipt,
 } from "../index.js";
 
@@ -73,9 +74,7 @@ function assertContext<Member extends C10Member>(
   context: ReceiptProducerContext,
   spec: StrictDetailSourceSpec<Member>,
 ): void {
-  if (context.sourceKey !== spec.sourceKey) {
-    throw new C10ReceiptError("strict-detail producer context has the wrong source");
-  }
+  requireReceiptSource(context, spec.sourceKey);
 }
 
 /**

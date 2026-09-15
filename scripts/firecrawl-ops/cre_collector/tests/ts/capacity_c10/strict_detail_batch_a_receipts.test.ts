@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
   C10ReceiptError,
-  PrivateReceiptStore,
   SourceBoundOneShotTransport,
   allowlistedCards,
   type DirectProviderTransport,
@@ -15,6 +13,7 @@ import {
   type ReceiptBinding,
   type TransportResponse,
 } from "../../../capacity_c10/receipts/index.js";
+import { MemoryReceiptStore } from "./receipt_test_store.js";
 import {
   AVISON_YOUNG_C10_BLOCKER,
   AvisonYoungBlockedReceiptProducer,
@@ -76,14 +75,8 @@ class FixtureTransport implements DirectProviderTransport {
 }
 
 async function context(sourceKey: string, cards: readonly any[], fake: FixtureTransport) {
-  const root = await mkdtemp(join(tmpdir(), "c10-wave4-"));
-  const store = await PrivateReceiptStore.create(root);
-  return {
-    sourceKey,
-    binding,
-    store,
-    transport: new SourceBoundOneShotTransport(sourceKey, binding, allowlistedCards(sourceKey, cards), store, fake),
-  };
+  const store = new MemoryReceiptStore();
+  return { transport: new SourceBoundOneShotTransport(sourceKey, binding, allowlistedCards(sourceKey, cards), store, fake) };
 }
 
 test("JLL seals native GraphQL enumeration and exact canonical POST detail graph", async () => {
@@ -177,6 +170,24 @@ test("browser-dependent source modules fail closed before any transport is invok
   }], fake);
   await assert.rejects(new AvisonYoungBlockedReceiptProducer().produceEnumerationReceipt(blockedContext), new RegExp(AVISON_YOUNG_C10_BLOCKER));
   await assert.rejects(new ColliersMainBlockedReceiptProducer().produceEnumerationReceipt(blockedContext), new RegExp(COLLIERS_MAIN_C10_BLOCKER));
+  assert.equal(fake.cards.length, 0);
+});
+
+test("strict-detail common wrapper rejects a mismatched transport before enumeration", async () => {
+  const producer = createJllReceiptProducer({
+    transaction: "sale",
+    propertyType: "office",
+    page: 1,
+    members: [{ key: "jll-1", providerId: "1", canonicalUrl: "https://property.jll.com/listings/office-1" }],
+    enumerationCards: [],
+  });
+  const fake = new FixtureTransport({});
+  const wrong = new SourceBoundOneShotTransport("wrong-source", binding, allowlistedCards("wrong-source", [{
+    id: "wrong-enum", sourceKey: "wrong-source", stage: "enumeration", method: "GET",
+    url: "https://example.test/enumeration", allowedHost: "example.test", headers: {},
+    contentType: null, body: null, cacheMode: "no-store", timeoutMs: 1_000, maxBytes: 64,
+  }]), new MemoryReceiptStore(), fake);
+  await assert.rejects(producer.produceEnumerationReceipt({ transport: wrong }), /source binding mismatch/);
   assert.equal(fake.cards.length, 0);
 });
 

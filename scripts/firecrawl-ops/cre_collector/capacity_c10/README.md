@@ -1,7 +1,11 @@
 # C10 capacity experiment contract
 
-Wave 1 is intentionally an offline admission and evidence protocol. It does
-not provide a CLI, a scraper, or a generic source adapter.
+Wave 1 is intentionally an offline admission and evidence protocol. It now
+also includes sealed receipt substrate and source-owned candidate producers,
+but it does not provide a runnable CLI, a concrete network transport, a
+scraper, a controller integration, or a generic source adapter. The receipt
+transport is an injected interface: no shipped C10 component opens a provider
+connection or can execute a request by itself.
 
 `policy.py` seals the fixed 20-source, 12/8-plane matrix. `adapters.py`
 requires an exact registry where every source-specific adapter is explicitly
@@ -11,6 +15,14 @@ immutable plan. `runner.py` owns only the serial one-use arm ordering and
 requires injected settlement, rollback, and quarantine evidence. `compare.py`
 is pure and can only produce an operator-review candidate, never an executable
 adoption decision.
+
+The receipt producers do not change this admission boundary. Inventory
+producers, strict-detail Batch A producers, and the Foundry Batch B producer
+can construct and seal source-specific request graphs when a future reviewed
+coordinator supplies an implementation of the transport interface. They are
+not registered in a live collector, and no producer is evidence of adapter
+admission or of a completed C10 run. `candidate_registry()` remains an
+unverified review surface and `default_registry()` remains empty.
 
 Wave 2 must bind the runner hooks to the existing public components, without
 duplicating them:
@@ -29,7 +41,7 @@ and provider-specific attrition classifier are independently reviewed. A failed
 or uncertain arm must quarantine under the held canonical lock; it must not
 attempt a fresh lock acquisition, a generic fallback, or an automatic rerun.
 
-## Wave 2 strict-detail batch A hook
+## Candidate receipt hooks
 
 `strict_detail_jll.py`, `strict_detail_jll_investor.py`,
 `strict_detail_colliers.py`, `strict_detail_colliers_main.py`,
@@ -42,3 +54,10 @@ execute them. A later registry-only admission change must independently prove
 each adapter's private receipt root, actual no-write transport, and
 source-specific attrition behavior; it must not turn these fixtures or
 descriptors into a generic fetcher.
+
+The TypeScript receipt package additionally has source-owned inventory
+producers for the eight authoritative-inventory sources and one Batch B
+producer for Foundry. The remaining Batch B sources, together with Avison
+Young and Colliers Main, retain explicit blockers. These candidates have no
+concrete direct-provider transport, CLI or controller wiring, verified-registry
+entry, admission, or live-run evidence.

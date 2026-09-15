@@ -7,6 +7,7 @@ import {
   type C10Member,
   type ReceiptProducer,
   type ReceiptProducerContext,
+  requireReceiptSource,
   sealStageReceipt,
 } from "./producer.js";
 import {
@@ -278,7 +279,7 @@ function makeProducer(spec: SourceSpec): InventoryReceiptProducer {
   return Object.freeze({
     sourceKey: spec.sourceKey, fully_verified: false, initialCards: spec.initialCards,
     async produceEnumerationReceipt(context: ReceiptProducerContext) {
-      if (context.sourceKey !== spec.sourceKey) throw new C10ReceiptError("receipt producer source binding mismatch");
+      requireReceiptSource(context, spec.sourceKey);
       const first = await context.transport.oneShot("enumeration-0", (response) => spec.parsePage(response, 0));
       const firstPage = first.projection as PageProjection;
       const total = firstPage.total;
@@ -310,7 +311,7 @@ function makeProducer(spec: SourceSpec): InventoryReceiptProducer {
       });
     },
     async produceMemberReceipt(context: ReceiptProducerContext, member: C10Member) {
-      if (context.sourceKey !== spec.sourceKey) throw new C10ReceiptError("receipt producer source binding mismatch");
+      requireReceiptSource(context, spec.sourceKey);
       const cardId = `member-${safeCardPart(member.providerId, "member provider id")}`;
       if (member.key !== cardId) throw new C10ReceiptError("member key does not bind its native provider identity");
       const event = await context.transport.oneShot(cardId, (response) => spec.parseMember(response, member));

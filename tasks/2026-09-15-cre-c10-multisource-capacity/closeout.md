@@ -2,14 +2,16 @@
 
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
-**Implementation commit:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643`
+**Wave 1 implementation commit:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643`
 **State:** draft [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is open; no merge, runtime, or data mutation occurred.
 
 ## Goal
 
-Create Wave 1 only: a safe, maintainable offline contract for a 20-source C10
-capacity experiment, without adding a generic live collector or changing the
-established JLL benchmark path.
+Create a safe, maintainable offline contract for a 20-source C10 capacity
+experiment, without adding a generic live collector or changing the established
+JLL benchmark path. The branch subsequently added sealed receipt substrate and
+source-owned candidate producers; those additions remain offline-only and do
+not change the Wave 1 execution boundary.
 
 ## What shipped
 
@@ -26,11 +28,17 @@ established JLL benchmark path.
 - Offline fixtures cover policy and cohort hashing, registry parity, exact
   cohort membership, no-write proof, P0/P1 resource whitelist, counterbalance,
   one-use arms, settlement/rollback/quarantine ordering, and comparison.
+- The receipt package now seals private artifacts and request graphs and has
+  candidate inventory producers, strict-detail Batch A producers, and one
+  Foundry Batch B producer. They describe source-specific cards and parsers;
+  no concrete direct-provider transport, CLI/controller integration, registry
+  admission, or C10 live run was added. Avison Young, Colliers Main, and the
+  remaining Batch B sources remain explicit blockers.
 
-## Verification
+## Wave 1 verification baseline
 
-All results below were obtained on implementation commit `16fb3567a` before
-this capture-only record.
+All results below were obtained on implementation commit `16fb3567a`, before
+the later receipt-substrate and producer additions recorded above.
 
 - `python3 -m pytest scripts/firecrawl-ops/cre_collector/tests -q`: 3105
   passed, 20 skipped.
@@ -41,9 +49,11 @@ this capture-only record.
 - Existing unchanged collector TypeScript surface on the main checkout:
   `npm run typecheck` passed and unit tests reported 864 passing.
 
-GitHub CI has not been used as completion proof. The worktree lacked its own
-Node dependencies, so the unchanged TypeScript checks were run from the clean
-main checkout with its existing dependencies; no TypeScript file changed.
+GitHub CI has not been used as completion proof. At the Wave 1 commit, the
+worktree lacked its own Node dependencies, so the then-unchanged TypeScript
+checks were run from the clean main checkout with its existing dependencies.
+That historical baseline is not verification of the later TypeScript receipt
+work.
 
 ## Decisions made
 
@@ -61,10 +71,12 @@ main checkout with its existing dependencies; no TypeScript file changed.
 
 ## Deliberately deferred
 
-No native live adapters, request-card execution seal, runtime/resource
-transition, lock acquisition, source call, database/cache/status/scheduler/model/OCR
-change, or experiment arm is included. Those require a separate reviewed Wave 2
-and explicit operator approval.
+No native live adapter, concrete direct-provider transport, receipt CLI or
+controller integration, runtime/resource transition, lock acquisition, source
+call, database/cache/status/scheduler/model/OCR change, registry admission, or
+experiment arm is included. The request-card and private-artifact seals exist,
+but their presence is not execution evidence. These steps require a separately
+reviewed integration wave and explicit operator approval.
 
 ## Left to the operator
 

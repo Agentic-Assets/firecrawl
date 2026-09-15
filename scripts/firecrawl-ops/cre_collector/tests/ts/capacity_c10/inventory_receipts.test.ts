@@ -1,19 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
   C10ReceiptError,
-  PrivateReceiptStore,
   SourceBoundOneShotTransport,
   allowlistedCards,
   type DirectProviderTransport,
   type RequestCard,
   type TransportResponse,
 } from "../../../capacity_c10/receipts/index.js";
+import { MemoryReceiptStore } from "./receipt_test_store.js";
 import {
   inventoryReceiptProducers,
   type InventoryReceiptProducer,
@@ -79,8 +77,7 @@ class FakeDirectTransport implements DirectProviderTransport {
 }
 
 async function contextFor(producer: InventoryReceiptProducer, direct?: FakeDirectTransport) {
-  const root = await mkdtemp(join(tmpdir(), "c10-inventory-receipts-"));
-  const store = await PrivateReceiptStore.create(root);
+  const store = new MemoryReceiptStore();
   const fake = direct ?? new FakeDirectTransport(producer.sourceKey);
   const transport = new SourceBoundOneShotTransport(
     producer.sourceKey,
@@ -89,7 +86,7 @@ async function contextFor(producer: InventoryReceiptProducer, direct?: FakeDirec
     store,
     fake,
   );
-  return { context: { sourceKey: producer.sourceKey, binding, store, transport }, fake };
+  return { context: { transport }, fake };
 }
 
 test("all eight source producers seal fake native enumeration then member receipts", async () => {
@@ -149,6 +146,18 @@ test("Deal Flow preserves noncomparable cards as sealed population evidence and 
   await assert.rejects(producer.produceEnumerationReceipt(context), /no comparable native members/);
   assert.equal(fake.calls.length, 1);
   assert.equal(context.transport.requestAccounting().events[0]?.outcome, "accepted");
+});
+
+test("inventory producer rejects a mismatched transport before any request", async () => {
+  const producer = inventoryReceiptProducers.get("cbre")!;
+  const fake = new FakeDirectTransport("cbre");
+  const initial = producer.initialCards[0]!;
+  const wrong = new SourceBoundOneShotTransport("wrong-source", binding, allowlistedCards("wrong-source", [{
+    ...initial,
+    sourceKey: "wrong-source",
+  }]), new MemoryReceiptStore(), fake);
+  await assert.rejects(producer.produceEnumerationReceipt({ transport: wrong }), /source binding mismatch/);
+  assert.equal(fake.calls.length, 0);
 });
 
 test("inventory receipt module is isolated from collector, cache, and Firecrawl imports", async () => {

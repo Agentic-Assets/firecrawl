@@ -3,7 +3,9 @@
 These modules are deliberately source-local receipt adapters. They are not a
 registry, CLI, collector extension, or live executor. A later governed
 coordinator must bind a private receipt root, an immutable plan/cohort/policy,
-and an injected direct provider transport before any request can be made.
+and a concrete implementation of the injected direct-provider transport before
+any request can be made. This package supplies only the interface and
+source-specific card/projection logic; it does not supply such a transport.
 
 | Source | Native proof path | Wave 4 state |
 | --- | --- | --- |
@@ -27,3 +29,5 @@ The blockers are intentional. They must not be registered as
 offline-proven ephemeral one-attempt renderer with equivalent identity and asset
 evidence. No module here imports collection orchestration, normal scrape
 helpers, cache helpers, database/status/scheduler paths, or model/OCR controls.
+There is no CLI or controller binding, verified-registry admission, or live-run
+evidence for this batch.

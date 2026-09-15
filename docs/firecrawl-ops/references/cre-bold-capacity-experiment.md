@@ -14,6 +14,18 @@ The current checkpoint series remains serial. The later two-provider split is a
 planned global 10-page allocation of 6 plus 4, not 10 pages per provider and not
 implemented source parallelism.
 
+## Scope and validity boundary
+
+This is a separate, single-source JLL benchmark. It is not the C10 20-source
+compatibility panel and cannot establish an all-source browser-capacity effect.
+For a future C10 analysis, only a predeclared browser-sensitive causal subset
+may support that matched causal estimate. A separately predeclared
+direct-control stratum may provide contemporaneous trend and implementation
+context, but must be reported separately and never pooled with the
+browser-sensitive estimate. Candidate C10 receipts or seals do not alter this
+historical JLL experiment, create a C10 transport/controller, or admit a C10
+live run.
+
 The proposed candidate is browser 6 CPU, global 10 pages, JLL detail width 10,
 browser 16 GiB with no additional swap, browser PID 768, and API 2 CPU with
 8 GiB and no additional swap. OrbStack remains configured at exactly 32 GiB.

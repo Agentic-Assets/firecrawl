@@ -1,10 +1,12 @@
 # C10 private receipt substrate
 
 This TypeScript package is a sealed evidence substrate, not a collector or an
-executable source registry. It has no source producer implementation and it
-does not import `collect.ts`, ingestion, checkpoints, cache helpers, or normal
-scrape helpers. Python `candidate_registry()` remains unverified and
-`verified_registry()` remains closed.
+executable source registry. It includes source-owned candidate receipt
+producers, but has no concrete `DirectProviderTransport` implementation, CLI
+entrypoint, controller integration, or live execution path. It does not import
+`collect.ts`, ingestion, checkpoints, cache helpers, or normal scrape helpers.
+Python `candidate_registry()` remains unverified and `verified_registry()`
+remains closed.
 
 A future, independently reviewed source module may implement only
 `ReceiptProducer.produceEnumerationReceipt()` and
@@ -33,9 +35,13 @@ SHA-256 values supplied by the canonical C10 coordinator. This package cannot
 create a plan, acquire a lock, execute an arm, settle, roll back, quarantine,
 or activate a source.
 
-`strict_detail/` now contains source-local batch-A producers for JLL, JLL
-Investor, Colliers SalesTracker, and Marcus & Millichap. They remain unregistered
-and not fully verified. Avison Young and Colliers Main are explicit blockers,
-not degraded receipts, until their browser-dependent detail paths can meet this
-same ephemeral one-attempt evidence contract. See
+`inventory.ts` contains source-local candidates for all eight
+authoritative-inventory sources. `strict_detail/` contains Batch A candidates
+for JLL, JLL Investor, Colliers SalesTracker, and Marcus & Millichap.
+`sources/batch_b.ts` contains the sole currently representable Batch B
+candidate, Foundry. They all require a future reviewed coordinator to supply a
+concrete direct transport, and they remain unregistered and unverified. Avison
+Young, Colliers Main, and the remaining Batch B sources are explicit blockers,
+not degraded receipts, until their source-specific paths can meet this same
+ephemeral one-attempt evidence contract. See
 [`strict_detail/README.md`](./strict_detail/README.md).

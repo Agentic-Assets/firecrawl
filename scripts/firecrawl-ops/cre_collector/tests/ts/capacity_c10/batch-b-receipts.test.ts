@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
   BATCH_B_BLOCKED_SOURCES,
-  PrivateReceiptStore,
+  FOUNDRY_C10_ENUMERATION_DEADLINE_MS,
+  FOUNDRY_C10_MAX_SITEMAP_CARDS,
   SourceBoundOneShotTransport,
   allowlistedCards,
   foundryCommercialInitialCards,
@@ -17,6 +16,7 @@ import {
   type RequestCard,
   type TransportResponse,
 } from "../../../capacity_c10/receipts/index.js";
+import { MemoryReceiptStore } from "./receipt_test_store.js";
 import { canonicalDaumPropertyUrl, daumTenure } from "../../../sources/daum-commercial.js";
 import { canonicalTranswesternUrl } from "../../../sources/transwestern.js";
 import { naiPublicPostId } from "../../../sources/nai-global.js";
@@ -44,9 +44,9 @@ class FakeFoundryTransport implements DirectProviderTransport {
 }
 
 async function context(fake = new FakeFoundryTransport()) {
-  const store = await PrivateReceiptStore.create(await mkdtemp(join(tmpdir(), "c10-foundry-")));
+  const store = new MemoryReceiptStore();
   const transport = new SourceBoundOneShotTransport("foundry-commercial", binding, allowlistedCards("foundry-commercial", foundryCommercialInitialCards()), store, fake);
-  return { sourceKey: "foundry-commercial", binding, store, transport, fake } as const;
+  return { store, transport, fake } as const;
 }
 
 test("Foundry producer derives, seals, freezes, and then verifies direct no-store member detail", async () => {
@@ -56,6 +56,15 @@ test("Foundry producer derives, seals, freezes, and then verifies direct no-stor
   assert.deepEqual(receiptContext.fake.cards.map((card) => card.id), ["foundry-sitemap-index", "foundry-sitemap-0"]);
   assert.equal(enumeration.stage, "enumeration");
   assert.equal(enumeration.noWrite.database_writes, 0);
+  const enumerationArtifact = receiptContext.store.jsonFor(enumeration.privateArtifactSha256);
+  const evidence = enumerationArtifact.evidence as Readonly<Record<string, unknown>>;
+  assert.match(evidence.frozenMemberGraphArtifactSha256 as string, /^[0-9a-f]{64}$/);
+  const eventBindings = evidence.enumerationEvents as readonly Readonly<Record<string, unknown>>[];
+  assert.equal(eventBindings.length, 2);
+  for (const event of eventBindings) {
+    assert.match(event.privateEventSha256 as string, /^[0-9a-f]{64}$/);
+    assert.match(event.projectionSha256 as string, /^[0-9a-f]{64}$/);
+  }
   const member = await foundryCommercialReceiptProducer.produceMemberReceipt(receiptContext, { key: memberKey, providerId: "123" });
   assert.equal(member.stage, "member");
   assert.equal(receiptContext.fake.cards.length, 3);
@@ -78,6 +87,43 @@ test("Foundry producer rejects an arbitrary member, cohort mismatch, and a fake 
   fake.execute = async (card) => ({ ...(await original(card)), providerAttempts: 2 });
   await assert.rejects(foundryCommercialReceiptProducer.produceMemberReceipt(second, { key: memberKey, providerId: "123" }), /violates/);
   assert.equal(second.transport.requestAccounting().retries, 0);
+});
+
+test("Foundry uses fixed sitemap, member, card, and aggregate-deadline caps", async () => {
+  const overLimit = new FakeFoundryTransport();
+  overLimit.execute = async (request) => {
+    overLimit.cards.push(request);
+    return response(request, `<sitemapindex>${Array.from(
+    { length: FOUNDRY_C10_MAX_SITEMAP_CARDS + 1 },
+    (_, index) => `<sitemap><loc>https://www.foundrycommercial.com/property-sitemap${index + 1}.xml</loc></sitemap>`,
+    ).join("")}</sitemapindex>`);
+  };
+  const capped = await context(overLimit);
+  await assert.rejects(foundryCommercialReceiptProducer.produceEnumerationReceipt(capped), /projection is invalid/);
+  assert.equal(overLimit.cards.length, 1);
+  assert.equal(foundryCommercialInitialCards()[0]?.timeoutMs, 60_000);
+
+  const timely = await context();
+  const originalNow = Date.now;
+  let reads = 0;
+  Date.now = () => (reads++ === 0 ? 1 : FOUNDRY_C10_ENUMERATION_DEADLINE_MS + 2);
+  try {
+    await assert.rejects(foundryCommercialReceiptProducer.produceEnumerationReceipt(timely), /fixed deadline/);
+  } finally {
+    Date.now = originalNow;
+  }
+  assert.equal(timely.fake.cards.length, 1);
+});
+
+test("Foundry rejects a mismatched context before transport execution", async () => {
+  const fake = new FakeFoundryTransport();
+  const wrong = new SourceBoundOneShotTransport("wrong-source", binding, allowlistedCards("wrong-source", [{
+    id: "wrong-enum", sourceKey: "wrong-source", stage: "enumeration", method: "GET",
+    url: "https://example.test/enumeration", allowedHost: "example.test", headers: {},
+    contentType: null, body: null, cacheMode: "no-store", timeoutMs: 1_000, maxBytes: 64,
+  }]), new MemoryReceiptStore(), fake);
+  await assert.rejects(foundryCommercialReceiptProducer.produceEnumerationReceipt({ transport: wrong }), /source binding mismatch/);
+  assert.equal(fake.cards.length, 0);
 });
 
 test("Batch B preserves reexport parity and makes every non-admitted source explicit", async () => {

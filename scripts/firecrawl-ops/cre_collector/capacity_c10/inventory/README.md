@@ -5,12 +5,14 @@ inventory parsers already in `sources/`.  They make no request, cache, status,
 database, scheduler, model, or OCR mutation.  Their `fully_verified` flags are
 deliberately `False`, so importing this package cannot admit any source.
 
-Integration hook: a later reviewed receipt producer must serialize the exact
-enumeration and member evidence each adapter expects.  A separate reviewer may
-then add the adapter to the Wave 1 registry only after verifying its complete
-population path, asset/field fidelity, and a genuine source-native attrition
-signal.  The existing generic HTTP path, canonical cache, and write-capable
-collector paths are not an integration target.
+The matching TypeScript package now has candidate receipt producers for all
+eight sources. They can construct source-owned, sealed request cards and
+projections only when a future coordinator provides a concrete direct-provider
+transport. A separate reviewer may add an adapter to a future registry only
+after verifying its complete population path, asset/field fidelity, a genuine
+source-native attrition signal, and the real no-write transport. The existing
+generic HTTP path, canonical cache, and write-capable collector paths are not
+an integration target. No inventory source has been admitted or run.
 
 | Source | Native population surface | Candidate blocker |
 | --- | --- | --- |

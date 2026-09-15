@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, stat, symlink } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -19,6 +19,7 @@ import {
   type ReceiptProducer,
   type TransportResponse,
 } from "../../../capacity_c10/receipts/index.js";
+import { MemoryReceiptStore } from "./receipt_test_store.js";
 
 const DIGEST = "a".repeat(64);
 const binding: ReceiptBinding = Object.freeze({
@@ -87,8 +88,7 @@ test("canonical JSON is deterministic and matches the ASCII C10 convention", () 
 });
 
 test("one-shot transport seals private artifacts and exposes URL-free accounting", async () => {
-  const root = await mkdtemp(join(tmpdir(), "c10-receipts-"));
-  const store = await PrivateReceiptStore.create(root);
+  const store = new MemoryReceiptStore();
   const fake = new FakeTransport((card) => response(card.url));
   const transport = new SourceBoundOneShotTransport("jll", binding, cards(), store, fake);
 
@@ -110,12 +110,11 @@ test("one-shot transport seals private artifacts and exposes URL-free accounting
   assert.deepEqual([...(leakedBody ?? [])], Array.from({ length: 11 }, () => 0));
   assert.equal(Object.isFrozen(event.projection), true);
   assert.throws(() => { (event.projection as { providerId: string }).providerId = "mutated"; }, TypeError);
-  assert.ok((await readdir(root)).some((name) => name.endsWith(".sealed")));
+  assert.ok(store.artifacts.size > 0);
 });
 
 test("projection failure consumes the card without exposing a reusable body handle", async () => {
-  const root = await mkdtemp(join(tmpdir(), "c10-receipts-"));
-  const store = await PrivateReceiptStore.create(root);
+  const store = new MemoryReceiptStore();
   const fake = new FakeTransport((card) => response(card.url));
   const transport = new SourceBoundOneShotTransport("jll", binding, cards(), store, fake);
   await assert.rejects(transport.oneShot("enum", () => { throw new Error("native parser rejected body"); }), /projection failed/);
@@ -125,8 +124,7 @@ test("projection failure consumes the card without exposing a reusable body hand
 });
 
 test("response failures are terminal, counted once, and never retried", async () => {
-  const root = await mkdtemp(join(tmpdir(), "c10-receipts-"));
-  const store = await PrivateReceiptStore.create(root);
+  const store = new MemoryReceiptStore();
   const fake = new FakeTransport({ ...response("https://example.test/search?page=1"), redirectCount: 1 });
   const transport = new SourceBoundOneShotTransport("jll", binding, cards(), store, fake);
 
@@ -152,8 +150,7 @@ test("response failures are terminal, counted once, and never retried", async ()
 });
 
 test("POST cards seal exact canonical bodies and redact them from public accounting", async () => {
-  const root = await mkdtemp(join(tmpdir(), "c10-receipts-"));
-  const store = await PrivateReceiptStore.create(root);
+  const store = new MemoryReceiptStore();
   const fake = new FakeTransport((card) => response(card.url));
   const body = canonicalJson({ query: "publicPosts", variables: { limit: 100, offset: 0 } });
   const postCards = allowlistedCards("nai-global", [{
@@ -185,8 +182,7 @@ test("POST cards seal exact canonical bodies and redact them from public account
 });
 
 test("staged graph rejects arbitrary, replayed, backward, excess, and post-freeze cards", async () => {
-  const root = await mkdtemp(join(tmpdir(), "c10-receipts-"));
-  const store = await PrivateReceiptStore.create(root);
+  const store = new MemoryReceiptStore();
   const fake = new FakeTransport((card) => response(card.url));
   const transport = new SourceBoundOneShotTransport("jll", binding, cards(), store, fake);
   const first = await transport.oneShot("enum", (view) => ({ ...projection(view.finalUrl), nextPage: 2 }));
@@ -245,8 +241,7 @@ test("challenge, status, byte, time, and final-URL bounds are terminal", async (
     { providerAttempts: 2 },
   ];
   for (const override of invalidResponses) {
-    const root = await mkdtemp(join(tmpdir(), "c10-receipts-"));
-    const store = await PrivateReceiptStore.create(root);
+    const store = new MemoryReceiptStore();
     const fake = new FakeTransport({ ...response("https://example.test/search?page=1"), ...override });
     const transport = new SourceBoundOneShotTransport("jll", binding, cards(), store, fake);
     await assert.rejects(transport.oneShot("enum", (view) => projection(view.finalUrl)), /violates/);
@@ -277,15 +272,9 @@ test("request cards reject host drift and the controller rejects collector surfa
 });
 
 test("producer protocol binds each sealed public receipt to immutable C10 hashes", async () => {
-  const root = await mkdtemp(join(tmpdir(), "c10-receipts-"));
-  const store = await PrivateReceiptStore.create(root);
+  const store = new MemoryReceiptStore();
   const fake = new FakeTransport((card) => response(card.url));
-  const context = {
-    sourceKey: "jll",
-    binding,
-    store,
-    transport: new SourceBoundOneShotTransport("jll", binding, cards(), store, fake),
-  };
+  const context = { transport: new SourceBoundOneShotTransport("jll", binding, cards(), store, fake) };
   let enumerationEvent: Awaited<ReturnType<typeof context.transport.oneShot>> | undefined;
   const producer: ReceiptProducer = {
     async produceEnumerationReceipt(receiptContext) {
@@ -330,13 +319,18 @@ test("producer protocol binds each sealed public receipt to immutable C10 hashes
   assert.equal(JSON.stringify(enumeration).includes("providerCount"), false);
 });
 
-test("private root refuses symlink roots and production imports stay isolated", async () => {
+test("private receipt store fails closed without FD-relative primitives and production imports stay isolated", async () => {
   const parent = await mkdtemp(join(tmpdir(), "c10-receipts-"));
   const target = join(parent, "target");
   const link = join(parent, "link");
-  await PrivateReceiptStore.create(target);
-  await symlink(target, link);
-  await assert.rejects(PrivateReceiptStore.create(link), /real directory/);
+  if (PrivateReceiptStore.safeRuntimeAvailable()) {
+    const store = await PrivateReceiptStore.create(target);
+    await symlink(target, link);
+    await assert.rejects(PrivateReceiptStore.create(link), /root could not retain|real mode/);
+    await store.close();
+  } else {
+    await assert.rejects(PrivateReceiptStore.create(target), /fd-relative filesystem primitives/);
+  }
 
   const root = fileURLToPath(new URL("../../../capacity_c10/receipts/", import.meta.url));
   const files = await readdir(root);
@@ -345,11 +339,28 @@ test("private root refuses symlink roots and production imports stay isolated", 
   for (const source of imports) assert.equal(forbidden.test(source), false, "receipt package imported a forbidden collector surface");
 });
 
-test("sealed artifacts are private, immutable, and never overwrite a prior seal", async () => {
+test("FD-relative private store rejects root replacement, symlink, hardlink, and duplicate seal races", async (t) => {
+  if (!PrivateReceiptStore.safeRuntimeAvailable()) {
+    t.skip("host lacks Node-accessible FD-relative filesystem primitives");
+    return;
+  }
   const root = await mkdtemp(join(tmpdir(), "c10-receipts-"));
   const store = await PrivateReceiptStore.create(root);
   const artifact = await store.sealBytes("evidence", Buffer.from("private bytes"));
   assert.equal((await stat(root)).mode & 0o777, 0o700);
   assert.equal((await stat(join(root, artifact.name))).mode & 0o777, 0o600);
   await assert.rejects(store.sealBytes("evidence", Buffer.from("private bytes")), C10ReceiptError);
+  await link(join(root, artifact.name), join(root, "attacker-hardlink"));
+  await assert.rejects(store.verifySealed(artifact), /sealed artifact is invalid/);
+  await unlink(join(root, "attacker-hardlink"));
+  await store.verifySealed(artifact);
+
+  const replaced = `${root}-replaced`;
+  await rename(root, replaced);
+  await mkdir(root, { mode: 0o700 });
+  await assert.rejects(store.sealBytes("after-replace", Buffer.from("x")), /root identity changed/);
+  await rm(root, { recursive: true, force: true });
+  await symlink(replaced, root);
+  await assert.rejects(store.verifySealed(artifact), /root identity changed/);
+  await store.close();
 });

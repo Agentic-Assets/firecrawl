@@ -18,6 +18,31 @@ matrix verifies adapter host contracts, including `invest.jll.com`,
 `www.cbredealflow.com`, and Colliers ST's `sales.colliers.com` plus
 `my.rcm1.com`; this lane does not infer generic provider hosts.
 
+## Validity roles
+
+The fixed 20-source matrix is a **compatibility panel**. It tests whether each
+source can satisfy the same reviewed evidence and comparison contract; it is
+not, by itself, a homogeneous population for a pooled causal estimate of
+browser capacity. The strict-detail and authoritative-inventory plane labels
+also do not determine causal membership.
+
+Before any execution, the protocol must predeclare three disjoint reporting
+roles from source-native implementation evidence:
+
+| Role | Membership rule | Permitted interpretation |
+| --- | --- | --- |
+| Compatibility panel | all 20 fixed source keys | coverage, compatibility, and failure classification only; never a pooled causal effect |
+| Browser-sensitive causal subset | only sources with reviewed evidence that browser capacity is on the measured acquisition path and whose matched P0/P1 arms differ only in predeclared capacity controls | within-subset matched causal estimate, subject to the ordinary freshness, fidelity, and settlement gates |
+| Direct-control stratum | only sources with a reviewed direct native acquisition path that is not browser-capacity limited | contemporaneous operational/trend control; do not pool it with the browser-sensitive effect |
+
+No source is placed in either analytical stratum merely because a candidate
+receipt producer or seal exists. Until a reviewed concrete transport and
+source-specific fidelity path establish its role, it remains compatibility-only.
+Blocked or unclassified sources make the causal analysis incomplete; they do
+not become controls by default. Report each stratum separately and preserve the
+full compatibility-panel result, including failures, alongside any subset
+estimate.
+
 Prevalidation samples eight receipts per source for calibration. A source joins
 the core only with at least 16 current detail-eligible receipts, selecting 24
 or its full eligible census when smaller. Selection is deterministic, seeded,
@@ -95,8 +120,9 @@ The intended reviewed execution order is calibration, then three screening-only
 epochs, then four paired epochs in B-C, C-B, C-B, B-C order using the immutable
 cohort. A run must retain source-level latency, throughput, HTTP outcomes,
 attrition, throttling/challenge/retry, fidelity, asset, and raw-receipt reports.
-No generic multisource executor exists yet; a provider adapter is not admitted
-to this experiment merely because it appears in the matrix.
+No generic multisource executor, concrete direct transport, CLI/controller
+integration, or live C10 run exists yet; a provider adapter or receipt producer
+is not admitted to this experiment merely because it appears in the matrix.
 
 ```bash
 python3 cre_capacity_multisource_v1.py \

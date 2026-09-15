@@ -8,7 +8,7 @@ import {
   canonicalSha256,
   sha256,
 } from "./contracts.js";
-import { type PrivateReceiptStore } from "./private_store.js";
+import { type ReceiptArtifactStore } from "./private_store.js";
 
 export interface RequestCardInput {
   readonly id: string;
@@ -170,7 +170,7 @@ export function allowlistedCards(
 export class SourceBoundOneShotTransport {
   private readonly consumed = new Set<string>();
   private readonly events: RequestAccountingEvent[] = [];
-  private readonly binding: ReceiptBinding;
+  readonly binding: ReceiptBinding;
   private readonly bindingSha256: string;
   private readonly cards = new Map<string, RequestCard>();
   private readonly accepted = new Map<string, SealedTransportEvent<SourceProjection>>();
@@ -178,10 +178,10 @@ export class SourceBoundOneShotTransport {
   private memberGraphFrozen = false;
 
   constructor(
-    private readonly sourceKey: string,
+    readonly sourceKey: string,
     binding: ReceiptBinding,
     cards: ReadonlyMap<string, RequestCard>,
-    private readonly store: PrivateReceiptStore,
+    readonly store: ReceiptArtifactStore,
     private readonly direct: DirectProviderTransport,
   ) {
     this.binding = assertBinding(binding);

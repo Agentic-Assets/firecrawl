@@ -1,18 +1,14 @@
 import {
+  C10ReceiptError,
   C10_RECEIPT_SCHEMA_VERSION,
   NO_WRITE,
   type PublicReceipt,
-  type ReceiptBinding,
   sealPublicReceipt,
 } from "./contracts.js";
-import { type PrivateReceiptStore } from "./private_store.js";
 import { type SourceBoundOneShotTransport } from "./transport.js";
 
 export interface ReceiptProducerContext {
-  readonly sourceKey: string;
-  readonly binding: ReceiptBinding;
   readonly transport: SourceBoundOneShotTransport;
-  readonly store: PrivateReceiptStore;
 }
 
 export interface C10Member {
@@ -32,23 +28,35 @@ export async function sealStageReceipt(
   memberKey: string | null,
   privateEvidence: unknown,
 ): Promise<PublicReceipt> {
-  const privateArtifact = await context.store.sealJson(`${stage}-${context.sourceKey}`, {
-    binding: context.binding,
-    sourceKey: context.sourceKey,
+  const { transport } = context;
+  const privateArtifact = await transport.store.sealJson(`${stage}-${transport.sourceKey}`, {
+    binding: transport.binding,
+    sourceKey: transport.sourceKey,
     stage,
     memberKey,
-    requestAccounting: context.transport.requestAccounting(),
+    requestAccounting: transport.requestAccounting(),
     evidence: privateEvidence,
   });
   return sealPublicReceipt({
     schemaVersion: C10_RECEIPT_SCHEMA_VERSION,
     kind: "cre_capacity_c10_private_source_receipt",
     stage,
-    sourceKey: context.sourceKey,
+    sourceKey: transport.sourceKey,
     memberKey,
-    binding: context.binding,
+    binding: transport.binding,
     noWrite: NO_WRITE,
-    requestAccounting: context.transport.requestAccounting(),
+    requestAccounting: transport.requestAccounting(),
     privateArtifactSha256: privateArtifact.sha256,
   });
+}
+
+/** Reject source-specific producers before they can execute a mismatched transport. */
+export function requireReceiptSource(
+  context: ReceiptProducerContext,
+  expectedSourceKey: string,
+): SourceBoundOneShotTransport {
+  if (context.transport.sourceKey !== expectedSourceKey) {
+    throw new C10ReceiptError("receipt producer source binding mismatch");
+  }
+  return context.transport;
 }
