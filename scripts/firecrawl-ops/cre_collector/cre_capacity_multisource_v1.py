@@ -79,6 +79,21 @@ _JLL_PROPERTY_TYPES = {
     "mixed use": "mixed_use",
     "special purpose": "special_purpose",
 }
+_JLL_SEMANTIC_FIELDS = (
+    "address",
+    "name",
+    "transaction_type",
+    "property_type",
+)
+_JLL_REQUIRED_SEMANTIC_FIELDS = frozenset({"transaction_type", "property_type"})
+_JLL_ASSET_CHANNELS = {
+    "images": "property.images",
+    "brochures": "property.brochures",
+    "floorPlans": "property.floorPlans",
+    "videos": "property.videos",
+    "virtualTours": "property.virtualTours",
+    "view360URLs": "property.view360URLs",
+}
 _JLL_GRAPHQL_PATH = "/api/graphql"
 _JLL_PAGE_TAKE = 50
 _JLL_GRAPHQL_ORDER_BY = {
@@ -1234,7 +1249,10 @@ def _jll_property_source_field(
     direct_fields = {"address": "address", "name": "title"}
     if normalized_field in direct_fields:
         key = direct_fields[normalized_field]
-        return (f"property.{key}", property_value.get(key))
+        value = property_value.get(key)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return (f"property.{key}", value)
     collection_fields = {
         "transaction_type": "tenureTypes",
         "property_type": "propertyTypes",
@@ -1249,6 +1267,88 @@ def _jll_property_source_field(
     ):
         return None
     return (f"property.{key}[0]", value[0])
+
+
+def _jll_field_presence(
+    property_value: Mapping[str, Any], normalized_field: str
+) -> str:
+    """Classify a contract field without treating omitted evidence as absence."""
+    source = _jll_property_source_field(property_value, normalized_field)
+    return "present" if source is not None else "absent"
+
+
+def _public_asset_url(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    parsed = urllib.parse.urlsplit(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return value.strip()
+
+
+def _jll_asset_values(value: Any) -> list[Any]:
+    """Flatten JLL's native asset shapes without inventing a cross-channel map."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        flattened: list[Any] = []
+        for item in value:
+            flattened.extend(_jll_asset_values(item))
+        return flattened
+    if isinstance(value, Mapping):
+        flattened = []
+        for key in ("url", "image", "download", "file", "images", "files"):
+            if key in value:
+                flattened.extend(_jll_asset_values(value[key]))
+        return flattened
+    return []
+
+
+def _url_set_hash(values: list[str]) -> str:
+    return _sha256(_canonical(sorted(set(values))))
+
+
+def _jll_asset_contract(
+    property_value: Mapping[str, Any],
+    normalized: Mapping[str, Any],
+    assets: Mapping[str, Any],
+) -> bool:
+    """Bind every native JLL asset channel to its exact normalized URL set."""
+    normalized_assets = normalized.get("assets")
+    channels = assets.get("channels")
+    if (
+        not isinstance(normalized_assets, Mapping)
+        or set(normalized_assets) != set(_JLL_ASSET_CHANNELS)
+        or not isinstance(channels, Mapping)
+        or set(channels) != set(_JLL_ASSET_CHANNELS)
+    ):
+        return False
+    for channel, source_path in _JLL_ASSET_CHANNELS.items():
+        evidence = channels.get(channel)
+        mapped = normalized_assets.get(channel)
+        if not isinstance(evidence, Mapping) or not isinstance(mapped, list):
+            return False
+        raw_present = channel in property_value
+        candidates = (
+            _jll_asset_values(property_value.get(channel)) if raw_present else []
+        )
+        valid = [url for item in candidates if (url := _public_asset_url(item))]
+        rejected = len(candidates) - len(valid)
+        expected_presence = "present" if valid else "empty" if raw_present else "absent"
+        normalized_urls = [url for item in mapped if (url := _public_asset_url(item))]
+        if len(normalized_urls) != len(mapped):
+            return False
+        expected = {
+            "source_path": source_path,
+            "presence": expected_presence,
+            "raw_valid_url_set_sha256": _url_set_hash(valid),
+            "accepted_public_url_set_sha256": _url_set_hash(valid),
+            "normalized_mapped_url_set_sha256": _url_set_hash(normalized_urls),
+            "rejected_invalid_count": rejected,
+        }
+        if dict(evidence) != expected or set(valid) != set(normalized_urls):
+            return False
+    return True
 
 
 def _jll_raw_detail_identity(
@@ -1277,33 +1377,54 @@ def _jll_raw_detail_identity(
 
 
 def _verified_jll_locator_fidelity(
-    normalized: Mapping[str, Any], locators: Mapping[str, Any], raw: Mapping[str, Any]
+    normalized: Mapping[str, Any],
+    locators: Mapping[str, Any],
+    assets: Mapping[str, Any],
+    raw: Mapping[str, Any],
 ) -> bool:
-    """Verify normalized JLL field values against explicit NEXT-data locators."""
+    """Verify fixed JLL semantic and native-asset source contracts."""
     fields = normalized.get("fields")
     locator_fields = locators.get("fields")
     property_value = _jll_next_property(raw)
     if (
         not isinstance(fields, Mapping)
-        or not fields
         or not isinstance(locator_fields, Mapping)
-        or set(locator_fields) != set(fields)
+        or set(locator_fields) != set(_JLL_SEMANTIC_FIELDS)
         or property_value is None
     ):
         return False
-    for normalized_field, normalized_value in fields.items():
+    present_fields = set(fields)
+    if not present_fields.issubset(_JLL_SEMANTIC_FIELDS):
+        return False
+    if not _JLL_REQUIRED_SEMANTIC_FIELDS.issubset(present_fields):
+        return False
+    # Both display name and street address are required to make a detail row a
+    # usable property identity.  A name-only search-card remains screening
+    # evidence, never a strict experiment member.
+    if not {"address", "name"}.issubset(present_fields):
+        return False
+    for normalized_field in _JLL_SEMANTIC_FIELDS:
         locator = locator_fields.get(normalized_field)
         source_field = _jll_property_source_field(property_value, normalized_field)
+        expected_presence = _jll_field_presence(property_value, normalized_field)
+        normalized_value = fields.get(normalized_field)
+        expected_locator = {"presence": expected_presence}
+        if source_field is not None:
+            expected_locator.update(
+                {
+                    "source_path": source_field[0],
+                    "value_sha256": _sha256(_canonical(source_field[1])),
+                }
+            )
         if (
             not isinstance(locator, Mapping)
-            or set(locator) != {"source_path", "value_sha256"}
-            or source_field is None
-            or locator.get("source_path") != source_field[0]
-            or locator.get("value_sha256") != _sha256(_canonical(normalized_value))
-            or source_field[1] != normalized_value
+            or dict(locator) != expected_locator
+            or (source_field is None and normalized_field in present_fields)
+            or (source_field is not None and normalized_field not in present_fields)
+            or (source_field is not None and source_field[1] != normalized_value)
         ):
             return False
-    return True
+    return _jll_asset_contract(property_value, normalized, assets)
 
 
 def _fidelity_evidence(
@@ -1344,20 +1465,16 @@ def _fidelity_evidence(
         normalized.get("provider_id") != provider_id
         or normalized.get("canonical_url") != canonical_url
         or not isinstance(fields, Mapping)
-        or not fields
         or locators.get("provider_id") != provider_id
         or not isinstance(locator_fields, Mapping)
-        or not locator_fields
-        or set(locator_fields) != set(fields)
         or assets.get("provider_id") != provider_id
-        or not isinstance(assets.get("assets"), list)
     ):
         raise MultisourceError("artifact-bound fidelity evidence is incomplete")
     # v1 intentionally does not fabricate a generic semantic parser. Sources
     # without a reviewed verifier remain valuable screening evidence but cannot
     # become an experiment-ready cohort member.
     verified = source["key"] == "jll" and _verified_jll_locator_fidelity(
-        normalized, locators, raw
+        normalized, locators, assets, raw
     )
     return (
         hashes["normalized"],

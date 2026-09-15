@@ -1946,6 +1946,11 @@ _JLL_WITHHELD_TOP_LEVEL = frozenset(
         "detailObservedAt",
         "freshnessProvenance",
         "currentTenants",
+        "contactsDetailed",
+        "brochures",
+        "documents",
+        "media",
+        "photos",
         "jllSearchResult",
         _JLL_WITHHELD_MARKER,
     }
@@ -1965,6 +1970,54 @@ _JLL_SAFE_FRESHNESS_VALUES = {
     "method": frozenset({"jll_detail"}),
     "cacheDisposition": frozenset({"live", "generation_cache"}),
 }
+
+_JLL_HIDDEN_ARTIFACT_LABEL_KEYS = frozenset({"name", "title", "label", "description"})
+_JLL_HIDDEN_BROKER_LABEL_KEYS = frozenset(
+    {"title", "office", "license", "licenses", "label", "description"}
+)
+
+
+def _safe_jll_hidden_child_metadata(value, *, broker=False):
+    """Remove only explicit money-bearing child labels from withheld JLL data.
+
+    URLs, identifiers, classifications, and broker identity fields remain
+    useful operational evidence.  This is deliberately narrower than the old
+    suffix matcher: a child label is withheld only for an explicit currency
+    token or labelled asking-price disclosure.
+    """
+    label_keys = (
+        _JLL_HIDDEN_BROKER_LABEL_KEYS if broker else _JLL_HIDDEN_ARTIFACT_LABEL_KEYS
+    )
+    if isinstance(value, list):
+        safe = []
+        for item in value:
+            if isinstance(item, str):
+                if not (
+                    _JLL_MONEY_TOKEN.search(item) or _JLL_LABELLED_PRICE.search(item)
+                ):
+                    safe.append(item)
+            else:
+                safe.append(_safe_jll_hidden_child_metadata(item, broker=broker))
+        return safe
+    if not isinstance(value, dict):
+        return value
+    safe = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            continue
+        if key.casefold() in label_keys:
+            if isinstance(item, str):
+                if not (
+                    _JLL_MONEY_TOKEN.search(item) or _JLL_LABELLED_PRICE.search(item)
+                ):
+                    safe[key] = item
+            elif isinstance(item, list):
+                labels = _safe_jll_hidden_child_metadata(item, broker=broker)
+                if labels:
+                    safe[key] = labels
+            continue
+        safe[key] = _safe_jll_hidden_child_metadata(item, broker=broker)
+    return safe
 
 
 def _safe_jll_tenant_identities(value):
@@ -2042,6 +2095,21 @@ def _safe_jll_withheld_projection(value, pricing):
         projected["currentTenants"] = tenants
     else:
         projected.pop("currentTenants", None)
+    for key, broker in (
+        ("contactsDetailed", True),
+        ("brochures", False),
+        ("documents", False),
+        ("media", False),
+    ):
+        children = raw.get(key)
+        if isinstance(children, list):
+            projected[key] = [
+                _safe_jll_hidden_child_metadata(item, broker=broker)
+                for item in children
+                if isinstance(item, (dict, str))
+            ]
+        else:
+            projected.pop(key, None)
     freshness = _safe_jll_freshness_provenance(raw.get("freshnessProvenance"))
     if freshness:
         projected["freshnessProvenance"] = freshness
@@ -2334,6 +2402,8 @@ def to_row(listing, brokers_by_idx, scraped_at):
 
     contacts = []
     source_contacts = listing.get("contactsDetailed") or []
+    if jll_pricing_withheld:
+        source_contacts = _safe_jll_hidden_child_metadata(source_contacts, broker=True)
     if source_contacts:
         for i, c in enumerate(source_contacts):
             if not isinstance(c, dict) or not (
@@ -2382,7 +2452,14 @@ def to_row(listing, brokers_by_idx, scraped_at):
             )
 
     documents = []
-    for d in listing.get("brochures") or []:
+    source_brochures = listing.get("brochures") or []
+    source_documents = listing.get("documents") or []
+    source_media = listing.get("media") or []
+    if jll_pricing_withheld:
+        source_brochures = _safe_jll_hidden_child_metadata(source_brochures)
+        source_documents = _safe_jll_hidden_child_metadata(source_documents)
+        source_media = _safe_jll_hidden_child_metadata(source_media)
+    for d in source_brochures:
         if isinstance(d, dict):
             doc_url = http_url_or_none(
                 d.get("url"),
@@ -2403,7 +2480,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
     # harvest.classifyDoc, already shipped); to_row honors the source docType
     # verbatim. The Python classify_doc mirror (cre_parse) is for the WS2
     # backfill / doc-reclassification scripts (contract Section D), not re-run here.
-    for d in listing.get("documents") or []:
+    for d in source_documents:
         if isinstance(d, dict):
             doc_url = http_url_or_none(
                 d.get("url"),
@@ -2429,7 +2506,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
     # from detail pages (lib/harvest.ts). Bare strings normalize to the default
     # 'other' type; everything is http-url filtered so non-URL noise never stages.
     media = []
-    for m in listing.get("media") or []:
+    for m in source_media:
         if isinstance(m, str):
             mu = http_url_or_none(m)
             if mu:

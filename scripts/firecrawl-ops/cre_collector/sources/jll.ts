@@ -1,24 +1,40 @@
 // sources/jll.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { brokerRef, brokers } from "../lib/broker.js";
 import { CONCURRENCY, PAGE_CAP } from "../lib/config.js";
 import { harvestDetail } from "../lib/harvest.js";
-import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
+import {
+  dedupeStrings,
+  stripHtmlText,
+  titleFromFilename,
+} from "../lib/html.js";
 import { normBuildingClass } from "../lib/parse.js";
 import { recordJllDetailCache } from "../lib/performance.js";
 import { scrapeDoc } from "../lib/scrape.js";
 import { DocItem, MediaItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
-import { boundedInt, clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
+import {
+  boundedInt,
+  clean,
+  moneyToNumber,
+  num,
+  pmap,
+  prune,
+} from "../lib/util.js";
 import {
   detailObservation,
   generationMatches,
   refreshGenerationId,
   requireFreshDetails,
 } from "../lib/freshness.js";
-
 
 // --- JLL: public GraphQL search + rendered detail pages ---
 
@@ -39,21 +55,31 @@ export const JLL_GRAPHQL_TIMEOUT_MS = boundedInt(
   process.env.JLL_GRAPHQL_TIMEOUT_MS,
   30000,
   1000,
-  120000
+  120000,
 );
-export const JLL_GRAPHQL_RETRIES = boundedInt(process.env.JLL_GRAPHQL_RETRIES, 3, 1, 5);
+export const JLL_GRAPHQL_RETRIES = boundedInt(
+  process.env.JLL_GRAPHQL_RETRIES,
+  3,
+  1,
+  5,
+);
 export const JLL_DETAIL_CONCURRENCY = boundedInt(
   process.env.JLL_DETAIL_CONCURRENCY,
   Math.min(CONCURRENCY, 3),
   1,
-  10
+  10,
 );
-export const JLL_DETAIL_WAIT_MS = boundedInt(process.env.JLL_DETAIL_WAIT_MS, 1000, 0, 30000);
+export const JLL_DETAIL_WAIT_MS = boundedInt(
+  process.env.JLL_DETAIL_WAIT_MS,
+  1000,
+  0,
+  30000,
+);
 export const JLL_DETAIL_FALLBACK_WAIT_MS = boundedInt(
   process.env.JLL_DETAIL_FALLBACK_WAIT_MS,
   8000,
   1000,
-  60000
+  60000,
 );
 
 export function jllPropertyTypeLabel(propertyType: string): string {
@@ -64,14 +90,20 @@ export function jllPropertyTypeLabel(propertyType: string): string {
 }
 
 export function normalizedJllListingUrl(href: string): string {
-  const abs = href.startsWith("http") ? href : `https://property.jll.com${href}`;
+  const abs = href.startsWith("http")
+    ? href
+    : `https://property.jll.com${href}`;
   const url = new URL(abs);
   url.hash = "";
   url.search = "";
   return url.toString().replace(/\/$/, "");
 }
 
-export function jllFilteredSearchUrl(tenure: "sale" | "rent", propertyType: string, page: number): string {
+export function jllFilteredSearchUrl(
+  tenure: "sale" | "rent",
+  propertyType: string,
+  page: number,
+): string {
   const url = new URL("https://property.jll.com/search");
   url.searchParams.set("tenureTypes", tenure);
   url.searchParams.set("propertyTypes", propertyType);
@@ -79,13 +111,18 @@ export function jllFilteredSearchUrl(tenure: "sale" | "rent", propertyType: stri
   return url.toString();
 }
 
-export function parseJllSearchPage(html: string, tx: Tx, propertyType: string, page: number): {
+export function parseJllSearchPage(
+  html: string,
+  tx: Tx,
+  propertyType: string,
+  page: number,
+): {
   total: number | null;
   listings: any[];
 } {
   const $ = cheerio.load(html);
   const totalMatch = ($("h2").text() || html).match(
-    /([0-9][0-9,]*)\s+propert(?:y|ies)/i
+    /([0-9][0-9,]*)\s+propert(?:y|ies)/i,
   );
   const total = totalMatch ? Number(totalMatch[1].replace(/,/g, "")) : null;
   const seenHere = new Set<string>();
@@ -108,12 +145,19 @@ export function parseJllSearchPage(html: string, tx: Tx, propertyType: string, p
         }
       });
     const flat = lines.join(" | ");
-    const priceText = (flat.match(/\$[0-9][0-9,.]*(?:\s*-\s*\$[0-9][0-9,.]*)?/) ?? [])[0] ?? null;
-    const sizeText = (flat.match(/([0-9][0-9,.]*\s*(?:SF|Acres?))/i) ?? [])[1] ?? null;
+    const priceText =
+      (flat.match(/\$[0-9][0-9,.]*(?:\s*-\s*\$[0-9][0-9,.]*)?/) ?? [])[0] ??
+      null;
+    const sizeText =
+      (flat.match(/([0-9][0-9,.]*\s*(?:SF|Acres?))/i) ?? [])[1] ?? null;
     const addr =
       lines.find(
-        (l) => /,\s*[A-Z]{2}[, ]/.test(l) || /,\s*[A-Z]{2}$/.test(l.replace(/,?\s*\d{5}$/, ""))
-      ) ?? lines[1] ?? null;
+        (l) =>
+          /,\s*[A-Z]{2}[, ]/.test(l) ||
+          /,\s*[A-Z]{2}$/.test(l.replace(/,?\s*\d{5}$/, "")),
+      ) ??
+      lines[1] ??
+      null;
     const m = (addr ?? "").match(/^(.*?),\s*([A-Z]{2}),?\s*(\d{5})?/);
     listings.push({
       id: url.split("/listings/")[1] ?? null,
@@ -142,7 +186,7 @@ export function assertJllSearchPageCompleteness(
   parsed: { total: number | null; listings: any[] },
   page: number,
   expectedTotal: number | null = null,
-  strict = requireFreshDetails()
+  strict = requireFreshDetails(),
 ): void {
   if (!strict) return;
   const total = parsed.total;
@@ -151,12 +195,17 @@ export function assertJllSearchPageCompleteness(
   }
   if (expectedTotal !== null && total !== expectedTotal) {
     throw new Error(
-      `JLL search page ${page} total changed from ${expectedTotal} to ${total}`
+      `JLL search page ${page} total changed from ${expectedTotal} to ${total}`,
     );
   }
-  const pages = Math.max(1, Math.ceil((total as number) / JLL_SEARCH_PAGE_SIZE));
+  const pages = Math.max(
+    1,
+    Math.ceil((total as number) / JLL_SEARCH_PAGE_SIZE),
+  );
   if (!Number.isInteger(page) || page < 1 || page > pages) {
-    throw new Error(`JLL search page ${page} falls outside the declared ${pages}-page result`);
+    throw new Error(
+      `JLL search page ${page} falls outside the declared ${pages}-page result`,
+    );
   }
   const expectedCards =
     page < pages
@@ -166,10 +215,13 @@ export function assertJllSearchPageCompleteness(
     .map((listing) => clean(listing?.url))
     .filter((url): url is string => !!url);
   const uniqueUrls = new Set(urls);
-  if (urls.length !== parsed.listings.length || uniqueUrls.size !== expectedCards) {
+  if (
+    urls.length !== parsed.listings.length ||
+    uniqueUrls.size !== expectedCards
+  ) {
     throw new Error(
       `JLL search page ${page} expected ${expectedCards} unique cards from total=${total}, ` +
-        `received ${uniqueUrls.size}`
+        `received ${uniqueUrls.size}`,
     );
   }
 }
@@ -178,22 +230,26 @@ export function assertJllFilterCoverage(
   propertyType: string,
   total: number | null,
   urls: Iterable<string>,
-  strict = requireFreshDetails()
+  strict = requireFreshDetails(),
 ): void {
   if (!strict) return;
   if (!Number.isInteger(total) || (total as number) < 0) {
-    throw new Error(`JLL ${propertyType} filter lacks a finite nonnegative total`);
+    throw new Error(
+      `JLL ${propertyType} filter lacks a finite nonnegative total`,
+    );
   }
-  const uniqueUrls = new Set([...urls].map((url) => clean(url)).filter(Boolean));
+  const uniqueUrls = new Set(
+    [...urls].map((url) => clean(url)).filter(Boolean),
+  );
   if (uniqueUrls.size !== total) {
     throw new Error(
-      `JLL ${propertyType} filter reconciled ${uniqueUrls.size} unique cards against reported total ${total}`
+      `JLL ${propertyType} filter reconciled ${uniqueUrls.size} unique cards against reported total ${total}`,
     );
   }
 }
 
 export function assertJllIdentityReconciliation(
-  listings: Iterable<{ id?: unknown; url?: unknown }>
+  listings: Iterable<{ id?: unknown; url?: unknown }>,
 ): void {
   const idToUrl = new Map<string, string>();
   const urlToId = new Map<string, string>();
@@ -278,7 +334,10 @@ export const JLL_SEARCH_RESULTS_QUERY = `
 `;
 
 class JllGraphqlRequestError extends Error {
-  constructor(message: string, readonly retryable: boolean) {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+  ) {
     super(message);
     this.name = "JllGraphqlRequestError";
   }
@@ -287,10 +346,12 @@ class JllGraphqlRequestError extends Error {
 export function jllGraphqlVariables(
   tx: Tx,
   propertyType: string,
-  page: number
+  page: number,
 ): Record<string, unknown> {
   if (!Number.isInteger(page) || page < 1) {
-    throw new Error(`JLL GraphQL page must be a positive integer, received ${page}`);
+    throw new Error(
+      `JLL GraphQL page must be a positive integer, received ${page}`,
+    );
   }
   return {
     market: "us",
@@ -339,31 +400,57 @@ function jllPublicPriceAmount(value: unknown): number | null {
 function jllFormattedPriceText(
   amount: number,
   currency: string | null,
-  unit: string | null
+  unit: string | null,
 ): string {
   const amountText = amount.toLocaleString("en-US", {
     minimumFractionDigits: Number.isInteger(amount) ? 0 : 2,
     maximumFractionDigits: 2,
   });
-  const prefix = currency?.toUpperCase() === "USD" ? "$" : currency ? `${currency} ` : "";
+  const prefix =
+    currency?.toUpperCase() === "USD" ? "$" : currency ? `${currency} ` : "";
   return `${prefix}${amountText}${unit ? `/${unit}` : ""}`;
 }
 
 const JLL_LEGACY_CURRENCY_CODES = new Set([
-  "USD", "CAD", "EUR", "GBP", "JPY", "AUD", "NZD", "CHF", "HKD", "SGD", "CNY", "RMB",
-  "INR", "MXN", "BRL", "KRW", "AED", "SAR", "SEK", "NOK", "DKK", "PLN", "TRY", "ZAR",
+  "USD",
+  "CAD",
+  "EUR",
+  "GBP",
+  "JPY",
+  "AUD",
+  "NZD",
+  "CHF",
+  "HKD",
+  "SGD",
+  "CNY",
+  "RMB",
+  "INR",
+  "MXN",
+  "BRL",
+  "KRW",
+  "AED",
+  "SAR",
+  "SEK",
+  "NOK",
+  "DKK",
+  "PLN",
+  "TRY",
+  "ZAR",
 ]);
 const JLL_LEGACY_PRICE_AMOUNT = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?";
 const JLL_LEGACY_PRICE_TOKEN = new RegExp(
   `(?:\\b[a-z]{3}\\b\\s*|us\\$|c\\$|a\\$|[$€£¥]\\s*)(${JLL_LEGACY_PRICE_AMOUNT})\\s*([kmb])?`,
-  "i"
+  "i",
 );
 
 function jllLegacyCurrency(text: string): string | null {
-  const codes = [...text.matchAll(/\b([a-z]{3})\b\s*(?=(?:us\$|c\$|a\$|[$€£¥]|\d))/gi)]
-    .map((match) => match[1].toUpperCase());
+  const codes = [
+    ...text.matchAll(/\b([a-z]{3})\b\s*(?=(?:us\$|c\$|a\$|[$€£¥]|\d))/gi),
+  ].map((match) => match[1].toUpperCase());
   if (codes.length) {
-    return codes.length === 1 && JLL_LEGACY_CURRENCY_CODES.has(codes[0]) ? codes[0] : null;
+    return codes.length === 1 && JLL_LEGACY_CURRENCY_CODES.has(codes[0])
+      ? codes[0]
+      : null;
   }
   if (/\bus\$/i.test(text)) return "USD";
   if (/\bc\$/i.test(text)) return "CAD";
@@ -378,16 +465,23 @@ function jllLegacyPriceAmount(text: string): number | null {
   const match = text.match(JLL_LEGACY_PRICE_TOKEN);
   if (!match) return null;
   const amount = Number(match[1].replace(/,/g, ""));
-  const multiplier = ({ k: 1_000, m: 1_000_000, b: 1_000_000_000 } as const)[
-    match[2]?.toLowerCase() as "k" | "m" | "b"
-  ] ?? 1;
+  const multiplier =
+    ({ k: 1_000, m: 1_000_000, b: 1_000_000_000 } as const)[
+      match[2]?.toLowerCase() as "k" | "m" | "b"
+    ] ?? 1;
   const normalized = amount * multiplier;
   return Number.isFinite(normalized) && normalized > 0 ? normalized : null;
 }
 
 function jllNormalizedPrice(price: unknown): JllNormalizedPrice {
   if (price === null || price === undefined) {
-    return { sourceShape: "absent", text: null, amount: null, currency: null, unit: null };
+    return {
+      sourceShape: "absent",
+      text: null,
+      amount: null,
+      currency: null,
+      unit: null,
+    };
   }
   if (typeof price === "number") {
     const amount = jllPublicPriceAmount(price);
@@ -402,7 +496,13 @@ function jllNormalizedPrice(price: unknown): JllNormalizedPrice {
   if (typeof price === "string") {
     const text = clean(price);
     if (text === null) {
-      return { sourceShape: "legacy_string", text: null, amount: null, currency: null, unit: null };
+      return {
+        sourceShape: "legacy_string",
+        text: null,
+        amount: null,
+        currency: null,
+        unit: null,
+      };
     }
     const amount = jllPublicPriceAmount(text);
     if (amount !== null) {
@@ -426,15 +526,26 @@ function jllNormalizedPrice(price: unknown): JllNormalizedPrice {
     };
   }
   if (typeof price !== "object" || Array.isArray(price)) {
-    return { sourceShape: "unsupported", text: null, amount: null, currency: null, unit: null };
+    return {
+      sourceShape: "unsupported",
+      text: null,
+      amount: null,
+      currency: null,
+      unit: null,
+    };
   }
-  const value = price as { amount?: unknown; currency?: unknown; unit?: unknown };
+  const value = price as {
+    amount?: unknown;
+    currency?: unknown;
+    unit?: unknown;
+  };
   const amount = jllPublicPriceAmount(value.amount);
   const currency = clean(value.currency)?.toUpperCase() ?? null;
   const unit = clean(value.unit);
   return {
     sourceShape: "structured",
-    text: amount === null ? null : jllFormattedPriceText(amount, currency, unit),
+    text:
+      amount === null ? null : jllFormattedPriceText(amount, currency, unit),
     amount,
     currency,
     unit,
@@ -443,7 +554,8 @@ function jllNormalizedPrice(price: unknown): JllNormalizedPrice {
 
 function jllPriceUsd(price: JllNormalizedPrice): number | null {
   const unit = price.unit?.trim().toLowerCase().replace(/\s+/g, " ") ?? null;
-  const totalSaleUnit = unit === null || ["total", "total sale", "total_price"].includes(unit);
+  const totalSaleUnit =
+    unit === null || ["total", "total sale", "total_price"].includes(unit);
   return price.amount !== null && price.currency === "USD" && totalSaleUnit
     ? price.amount
     : null;
@@ -463,7 +575,17 @@ function jllLeasePriceText(price: JllNormalizedPrice): string | null {
   // Once a unit is provided, admit only explicit area/time lease-rate units.
   if (
     unit === null ||
-    ["sf", "sq ft", "sqft", "square foot", "square feet", "sf/year", "sf/yr", "sf/month", "sf/mo"].includes(unit)
+    [
+      "sf",
+      "sq ft",
+      "sqft",
+      "square foot",
+      "square feet",
+      "sf/year",
+      "sf/yr",
+      "sf/month",
+      "sf/mo",
+    ].includes(unit)
   ) {
     return price.text;
   }
@@ -474,20 +596,31 @@ function jllSalePriceText(price: JllNormalizedPrice): string | null {
   return jllPriceUsd(price) === null ? null : price.text;
 }
 
-function jllWithholdingControl(value: unknown, key: string): JllWithholdingControl {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return "absent";
+function jllWithholdingControl(
+  value: unknown,
+  key: string,
+): JllWithholdingControl {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return "absent";
   const record = value as Record<string, unknown>;
   const controls: JllWithholdingControl[] = [];
   const legacyKey = key.toLowerCase();
   for (const [candidateKey, candidate] of Object.entries(record)) {
     const normalizedKey = candidateKey.toLowerCase();
     if (normalizedKey === legacyKey) {
-      controls.push(candidate === true ? "withheld" : candidate === false ? "visible" : "unknown");
+      controls.push(
+        candidate === true
+          ? "withheld"
+          : candidate === false
+            ? "visible"
+            : "unknown",
+      );
     } else if (normalizedKey === "pricewithholdingcontrol") {
       controls.push(
-        typeof candidate === "string" && ["absent", "visible", "withheld", "unknown"].includes(candidate)
+        typeof candidate === "string" &&
+          ["absent", "visible", "withheld", "unknown"].includes(candidate)
           ? (candidate as JllWithholdingControl)
-          : "unknown"
+          : "unknown",
       );
     }
   }
@@ -504,7 +637,9 @@ function jllWithholdingControl(value: unknown, key: string): JllWithholdingContr
   return "unknown";
 }
 
-function jllReconciledWithholdingControl(...values: unknown[]): JllWithholdingControl {
+function jllReconciledWithholdingControl(
+  ...values: unknown[]
+): JllWithholdingControl {
   const controls = values
     .map((value) => jllWithholdingControl(value, "hidePrice"))
     .filter((control) => control !== "absent");
@@ -514,7 +649,9 @@ function jllReconciledWithholdingControl(...values: unknown[]): JllWithholdingCo
   // malformed or duplicate-case signals remain fail-closed as `unknown`.
   if (controls.includes("withheld")) return "withheld";
   if (controls.includes("unknown")) return "unknown";
-  return controls.every((control) => control === "visible") ? "visible" : "unknown";
+  return controls.every((control) => control === "visible")
+    ? "visible"
+    : "unknown";
 }
 
 function jllStoredWithholdingControl(value: unknown): JllWithholdingControl {
@@ -522,10 +659,15 @@ function jllStoredWithholdingControl(value: unknown): JllWithholdingControl {
 }
 
 function jllPriceWithheld(...controls: JllWithholdingControl[]): boolean {
-  return controls.some((control) => control === "withheld" || control === "unknown");
+  return controls.some(
+    (control) => control === "withheld" || control === "unknown",
+  );
 }
 
-const JLL_PRICE_CONTROL_KEYS = new Set(["hideprice", "pricewithholdingcontrol"]);
+const JLL_PRICE_CONTROL_KEYS = new Set([
+  "hideprice",
+  "pricewithholdingcontrol",
+]);
 const JLL_DIRECT_PRICE_KEYS = new Set([
   "askingprice",
   "leaseratemax",
@@ -541,7 +683,12 @@ const JLL_DIRECT_PRICE_KEYS = new Set([
   "salepricetext",
   "salepriceusd",
 ]);
-const JLL_FREE_TEXT_KEYS = new Set(["description", "highlights", "markdown", "summary"]);
+const JLL_FREE_TEXT_KEYS = new Set([
+  "description",
+  "highlights",
+  "markdown",
+  "summary",
+]);
 const JLL_SENSITIVE_PARENT_CHILDREN = new Map([
   ["financials", new Set(["amount"])],
   ["futureeconomics", new Set(["consideration"])],
@@ -550,16 +697,81 @@ const JLL_SENSITIVE_PARENT_CHILDREN = new Map([
 const JLL_MONEY_AMOUNT = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?";
 const JLL_MONEY_TOKEN = new RegExp(
   `(?:\\b(?:usd|cad|eur|gbp|jpy|aud|nzd|chf|hkd|sgd|cny|rmb|inr|mxn|brl|krw|aed|sar|sek|nok|dkk|pln|try|zar)\\s*|(?:us\\$|c\\$|a\\$)|[$€£¥])\\s*${JLL_MONEY_AMOUNT}(?:\\s*[kmb])?(?:\\s*/\\s*[a-z. ]+)?`,
-  "i"
+  "i",
 );
 const JLL_PRICE_LABELLED_TOKEN = new RegExp(
   `\\b(?:asking(?:\\s+price)?|sale\\s+price|lease\\s+(?:rate|price)?|rent(?:al)?\\s+(?:rate|price)?|price|consideration)\\b\\s*[:=-]?\\s*${JLL_MONEY_AMOUNT}(?:\\s*[kmb])?(?:\\s*/\\s*[a-z. ]+)?`,
-  "i"
+  "i",
 );
 
 function jllSafePublicText(value: unknown): string | null {
   const text = clean(value);
-  return text && !JLL_MONEY_TOKEN.test(text) && !JLL_PRICE_LABELLED_TOKEN.test(text) ? text : null;
+  return text &&
+    !JLL_MONEY_TOKEN.test(text) &&
+    !JLL_PRICE_LABELLED_TOKEN.test(text)
+    ? text
+    : null;
+}
+
+// These are presentation leaves, not a broad suffix heuristic.  A hidden
+// listing may keep the child identity and its usable URL while price-bearing
+// labels attached by a provider are omitted.  Broker names are deliberately
+// not in this set: a person called "3M" is not a monetary disclosure.
+const JLL_HIDDEN_ARTIFACT_LABEL_KEYS = new Set([
+  "name",
+  "title",
+  "label",
+  "description",
+]);
+const JLL_HIDDEN_BROKER_LABEL_KEYS = new Set([
+  "title",
+  "office",
+  "license",
+  "licenses",
+  "label",
+  "description",
+]);
+
+function jllSanitizeHiddenChildValue(
+  value: unknown,
+  labelKeys: Set<string>,
+): any {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      if (typeof item !== "string")
+        return [jllSanitizeHiddenChildValue(item, labelKeys)];
+      const safe = jllSafePublicText(item);
+      return safe === null ? [] : [safe];
+    });
+  }
+  if (value === null || typeof value !== "object") return value;
+  const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (labelKeys.has(key.toLowerCase())) {
+      if (typeof child === "string") {
+        const safe = jllSafePublicText(child);
+        if (safe !== null) output[key] = safe;
+      } else if (Array.isArray(child)) {
+        const safe = jllSanitizeHiddenChildValue(child, labelKeys);
+        if (safe.length) output[key] = safe;
+      }
+      continue;
+    }
+    output[key] = jllSanitizeHiddenChildValue(child, labelKeys);
+  }
+  return output;
+}
+
+export function jllSanitizeHiddenChildMetadata(
+  value: unknown,
+  kind: "broker" | "artifact",
+): any {
+  return jllSanitizeHiddenChildValue(
+    value,
+    kind === "broker"
+      ? JLL_HIDDEN_BROKER_LABEL_KEYS
+      : JLL_HIDDEN_ARTIFACT_LABEL_KEYS,
+  );
 }
 
 /** Apply the narrow JLL withheld-price raw-retention contract.
@@ -570,16 +782,25 @@ function jllSafePublicText(value: unknown): string | null {
  * omitted entirely because a generic sanitizer cannot prove it has no monetary
  * disclosure.
  */
-function jllRedactSensitivePriceFields(value: unknown, parentKey?: string): any {
-  if (Array.isArray(value)) return value.map((item) => jllRedactSensitivePriceFields(item, parentKey));
+function jllRedactSensitivePriceFields(
+  value: unknown,
+  parentKey?: string,
+): any {
+  if (Array.isArray(value))
+    return value.map((item) => jllRedactSensitivePriceFields(item, parentKey));
   if (value === null || typeof value !== "object") return value;
   const output: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
     const normalizedKey = key.toLowerCase();
-    if (!JLL_PRICE_CONTROL_KEYS.has(normalizedKey) && JLL_DIRECT_PRICE_KEYS.has(normalizedKey)) {
+    if (
+      !JLL_PRICE_CONTROL_KEYS.has(normalizedKey) &&
+      JLL_DIRECT_PRICE_KEYS.has(normalizedKey)
+    ) {
       continue;
     }
-    if (JLL_SENSITIVE_PARENT_CHILDREN.get(parentKey ?? "")?.has(normalizedKey)) {
+    if (
+      JLL_SENSITIVE_PARENT_CHILDREN.get(parentKey ?? "")?.has(normalizedKey)
+    ) {
       continue;
     }
     if (JLL_FREE_TEXT_KEYS.has(normalizedKey)) {
@@ -624,7 +845,10 @@ function jllSafeTenantIdentities(value: unknown): Array<{ name: string }> {
 }
 
 function jllWithheldPublicProjection(value: unknown): Record<string, unknown> {
-  const redacted = jllRedactSensitivePriceFields(value) as Record<string, unknown>;
+  const redacted = jllRedactSensitivePriceFields(value) as Record<
+    string,
+    unknown
+  >;
   const projected: Record<string, unknown> = {};
   for (const key of JLL_WITHHELD_PUBLIC_BASE_KEYS) {
     if (!Object.hasOwn(redacted, key)) continue;
@@ -640,7 +864,9 @@ function jllWithheldPublicProjection(value: unknown): Record<string, unknown> {
   if (tenants.length) projected.currentTenants = tenants;
   if (redacted.jllSearchResult !== undefined) {
     projected.jllSearchResult = {
-      priceWithholdingControl: jllStoredWithholdingControl(redacted.jllSearchResult),
+      priceWithholdingControl: jllStoredWithholdingControl(
+        redacted.jllSearchResult,
+      ),
     };
   }
   return projected;
@@ -648,11 +874,15 @@ function jllWithheldPublicProjection(value: unknown): Record<string, unknown> {
 
 function jllPriceProvenance(
   price: JllNormalizedPrice,
-  withheld: boolean
+  withheld: boolean,
 ): Record<string, unknown> {
   const provenance: Record<string, unknown> = {
     sourceShape: price.sourceShape,
-    normalization: withheld ? "redacted" : price.text === null ? "unavailable" : "available",
+    normalization: withheld
+      ? "redacted"
+      : price.text === null
+        ? "unavailable"
+        : "available",
   };
   if (!withheld && price.text !== null) {
     provenance.normalizedText = price.text;
@@ -677,19 +907,25 @@ export function jllGraphqlItemToListing(
   tx: Tx,
   propertyType: string,
   page: number,
-  total: number
+  total: number,
 ): any {
   const id = clean(item?.id);
   const pageUrl = clean(item?.pageUrl);
-  if (!id) throw new Error(`JLL GraphQL ${propertyType} page ${page} item lacks an id`);
-  if (!pageUrl) throw new Error(`JLL GraphQL ${propertyType} page ${page} item ${id} lacks pageUrl`);
+  if (!id)
+    throw new Error(
+      `JLL GraphQL ${propertyType} page ${page} item lacks an id`,
+    );
+  if (!pageUrl)
+    throw new Error(
+      `JLL GraphQL ${propertyType} page ${page} item ${id} lacks pageUrl`,
+    );
 
   let url: string;
   try {
     url = normalizedJllListingUrl(pageUrl);
   } catch {
     throw new Error(
-      `JLL GraphQL ${propertyType} page ${page} item ${id} has an invalid pageUrl`
+      `JLL GraphQL ${propertyType} page ${page} item ${id} has an invalid pageUrl`,
     );
   }
   const parsedUrl = new URL(url);
@@ -699,7 +935,7 @@ export function jllGraphqlItemToListing(
     !parsedUrl.pathname.startsWith("/listings/")
   ) {
     throw new Error(
-      `JLL GraphQL ${propertyType} page ${page} item ${id} has a non-listing pageUrl`
+      `JLL GraphQL ${propertyType} page ${page} item ${id} has a non-listing pageUrl`,
     );
   }
 
@@ -728,8 +964,10 @@ export function jllGraphqlItemToListing(
     latitude: num(item?.latitude),
     longitude: num(item?.longitude),
     salePriceUsd: tx === "sale" && !hiddenPrice ? jllPriceUsd(salePrice) : null,
-    salePriceText: tx === "sale" && !hiddenPrice ? jllSalePriceText(salePrice) : null,
-    leaseRateText: tx === "lease" && !hiddenPrice ? jllLeasePriceText(rentPrice) : null,
+    salePriceText:
+      tx === "sale" && !hiddenPrice ? jllSalePriceText(salePrice) : null,
+    leaseRateText:
+      tx === "lease" && !hiddenPrice ? jllLeasePriceText(rentPrice) : null,
     sizeText:
       buildingSizeSqft === null
         ? null
@@ -754,7 +992,7 @@ export function parseJllGraphqlSearchPage(
   payload: any,
   tx: Tx,
   propertyType: string,
-  page: number
+  page: number,
 ): { total: number; listings: any[] } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("JLL GraphQL response is not an object");
@@ -765,7 +1003,11 @@ export function parseJllGraphqlSearchPage(
     }
   }
   const properties = payload?.data?.properties;
-  if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
+  if (
+    !properties ||
+    typeof properties !== "object" ||
+    Array.isArray(properties)
+  ) {
     throw new Error("JLL GraphQL response lacks data.properties");
   }
   const total = properties.count;
@@ -777,7 +1019,7 @@ export function parseJllGraphqlSearchPage(
   }
 
   const listings = properties.items.map((item: any) =>
-    jllGraphqlItemToListing(item, tx, propertyType, page, total)
+    jllGraphqlItemToListing(item, tx, propertyType, page, total),
   );
   const ids = listings.map((listing: any) => clean(listing?.id));
   const urls = listings.map((listing: any) => clean(listing?.url));
@@ -788,7 +1030,7 @@ export function parseJllGraphqlSearchPage(
     new Set(urls).size !== listings.length
   ) {
     throw new Error(
-      `JLL GraphQL ${propertyType} page ${page} contains duplicate or missing ids/urls`
+      `JLL GraphQL ${propertyType} page ${page} contains duplicate or missing ids/urls`,
     );
   }
   return { total, listings };
@@ -797,7 +1039,7 @@ export function parseJllGraphqlSearchPage(
 async function requestJllGraphqlPage(
   tx: Tx,
   propertyType: string,
-  page: number
+  page: number,
 ): Promise<any> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), JLL_GRAPHQL_TIMEOUT_MS);
@@ -825,7 +1067,7 @@ async function requestJllGraphqlPage(
       controller.signal.aborted
         ? `JLL GraphQL request timed out after ${JLL_GRAPHQL_TIMEOUT_MS}ms`
         : `JLL GraphQL transport failed: ${String(error)}`,
-      true
+      true,
     );
   }
 
@@ -835,19 +1077,24 @@ async function requestJllGraphqlPage(
     if (!response.ok) {
       throw new JllGraphqlRequestError(
         `JLL GraphQL HTTP ${response.status}`,
-        response.status === 408 || response.status === 429 || response.status >= 500
+        response.status === 408 ||
+          response.status === 429 ||
+          response.status >= 500,
       );
     }
     if (!contentType.toLowerCase().includes("application/json")) {
       throw new JllGraphqlRequestError(
         `JLL GraphQL returned non-JSON content-type ${contentType || "<missing>"}`,
-        false
+        false,
       );
     }
     try {
       return JSON.parse(body);
     } catch {
-      throw new JllGraphqlRequestError("JLL GraphQL returned malformed JSON", false);
+      throw new JllGraphqlRequestError(
+        "JLL GraphQL returned malformed JSON",
+        false,
+      );
     }
   } catch (error) {
     if (error instanceof JllGraphqlRequestError) throw error;
@@ -855,14 +1102,18 @@ async function requestJllGraphqlPage(
       controller.signal.aborted
         ? `JLL GraphQL response timed out after ${JLL_GRAPHQL_TIMEOUT_MS}ms`
         : `JLL GraphQL response read failed: ${String(error)}`,
-      true
+      true,
     );
   } finally {
     clearTimeout(timer);
   }
 }
 
-export async function fetchJllSearchPage(tx: Tx, propertyType: string, page: number): Promise<{
+export async function fetchJllSearchPage(
+  tx: Tx,
+  propertyType: string,
+  page: number,
+): Promise<{
   total: number | null;
   listings: any[];
 }> {
@@ -872,11 +1123,16 @@ export async function fetchJllSearchPage(tx: Tx, propertyType: string, page: num
       const payload = await requestJllGraphqlPage(tx, propertyType, page);
       const parsed = parseJllGraphqlSearchPage(payload, tx, propertyType, page);
       try {
-        assertJllSearchPageCompleteness(parsed, page, null, requireFreshDetails());
+        assertJllSearchPageCompleteness(
+          parsed,
+          page,
+          null,
+          requireFreshDetails(),
+        );
       } catch (error) {
         throw new JllGraphqlRequestError(
           `JLL GraphQL page coverage failed: ${String(error)}`,
-          true
+          true,
         );
       }
       return parsed;
@@ -887,7 +1143,7 @@ export async function fetchJllSearchPage(tx: Tx, propertyType: string, page: num
       if (!retryable || attempt === JLL_GRAPHQL_RETRIES) throw error;
       console.error(
         `  jll/${tx}/${propertyType}: GraphQL page ${page} attempt ${attempt} failed ` +
-          `(${String(error)}); retrying`
+          `(${String(error)}); retrying`,
       );
       await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
     }
@@ -895,11 +1151,18 @@ export async function fetchJllSearchPage(tx: Tx, propertyType: string, page: num
   throw lastError;
 }
 
-export function mergeJllListing(existing: any, candidate: any, propertyType: string, page: number) {
+export function mergeJllListing(
+  existing: any,
+  candidate: any,
+  propertyType: string,
+  page: number,
+) {
   existing.jllPropertyTypeFilters = Array.from(
-    new Set([...(existing.jllPropertyTypeFilters ?? []), propertyType])
+    new Set([...(existing.jllPropertyTypeFilters ?? []), propertyType]),
   );
-  existing.jllSearchPages = Array.from(new Set([...(existing.jllSearchPages ?? []), page]));
+  existing.jllSearchPages = Array.from(
+    new Set([...(existing.jllSearchPages ?? []), page]),
+  );
   existing.jllFilterTotals = {
     ...(existing.jllFilterTotals ?? {}),
     ...(candidate.jllFilterTotals ?? {}),
@@ -924,16 +1187,25 @@ export function jllDetailCacheDir(): string {
 }
 
 export function jllDetailCachePath(url: string): string {
-  const key = createHash("sha1").update(normalizedJllListingUrl(url)).digest("hex");
+  const key = createHash("sha1")
+    .update(normalizedJllListingUrl(url))
+    .digest("hex");
   return `${jllDetailCacheDir()}/${key}.json`;
 }
 
-export function jllCachedAtMeetsBoundary(cachedAt: unknown, boundary = process.env.JLL_DETAIL_CACHE_MIN_CACHED_AT): boolean {
+export function jllCachedAtMeetsBoundary(
+  cachedAt: unknown,
+  boundary = process.env.JLL_DETAIL_CACHE_MIN_CACHED_AT,
+): boolean {
   if (!boundary) return true;
   if (typeof cachedAt !== "string") return false;
   const cachedMs = Date.parse(cachedAt);
   const boundaryMs = Date.parse(boundary);
-  return Number.isFinite(cachedMs) && Number.isFinite(boundaryMs) && cachedMs >= boundaryMs;
+  return (
+    Number.isFinite(cachedMs) &&
+    Number.isFinite(boundaryMs) &&
+    cachedMs >= boundaryMs
+  );
 }
 
 export function readJllDetailCache(url: string): ScrapedDoc | null {
@@ -946,19 +1218,27 @@ export function readJllDetailCache(url: string): ScrapedDoc | null {
     if (!jllCachedAtMeetsBoundary(cached.cachedAt)) return null;
     if (!generationMatches(cached.generationId)) return null;
     const observedAt =
-      typeof cached.detailObservedAt === "string" ? cached.detailObservedAt : cached.cachedAt;
+      typeof cached.detailObservedAt === "string"
+        ? cached.detailObservedAt
+        : cached.cachedAt;
     return {
       rawHtml: cached.rawHtml,
       markdown: typeof cached.markdown === "string" ? cached.markdown : "",
-      links: Array.isArray(cached.links) ? cached.links.filter((link: any) => typeof link === "string") : [],
-      images: Array.isArray(cached.images) ? cached.images.filter((image: any) => typeof image === "string") : undefined,
-      attributes: Array.isArray(cached.attributes) ? cached.attributes : undefined,
+      links: Array.isArray(cached.links)
+        ? cached.links.filter((link: any) => typeof link === "string")
+        : [],
+      images: Array.isArray(cached.images)
+        ? cached.images.filter((image: any) => typeof image === "string")
+        : undefined,
+      attributes: Array.isArray(cached.attributes)
+        ? cached.attributes
+        : undefined,
       metadata: cached.metadata,
       detailObservation: detailObservation(
         "jll_detail",
         "generation_cache",
         observedAt,
-        { generationId: cached.generationId ?? null }
+        { generationId: cached.generationId ?? null },
       ),
     };
   } catch {
@@ -970,14 +1250,16 @@ export function writeJllDetailCache(url: string, doc: ScrapedDoc): void {
   const path = jllDetailCachePath(url);
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
-  const observed = doc.detailObservation?.observedAt ?? new Date().toISOString();
+  const observed =
+    doc.detailObservation?.observedAt ?? new Date().toISOString();
   writeFileSync(
     tmp,
     JSON.stringify(
       {
         url: normalizedJllListingUrl(url),
         cachedAt: observed,
-        generationId: doc.detailObservation?.generationId ?? refreshGenerationId(),
+        generationId:
+          doc.detailObservation?.generationId ?? refreshGenerationId(),
         detailObservedAt: observed,
         rawHtml: doc.rawHtml,
         markdown: doc.markdown,
@@ -987,15 +1269,15 @@ export function writeJllDetailCache(url: string, doc: ScrapedDoc): void {
         metadata: doc.metadata,
       },
       null,
-      2
-    )
+      2,
+    ),
   );
   renameSync(tmp, path);
 }
 
 export async function scrapeJllDetailDoc(
   url: string,
-  opts: { refresh?: boolean; waitFor?: number } = {}
+  opts: { refresh?: boolean; waitFor?: number } = {},
 ): Promise<ScrapedDoc> {
   let cached: ScrapedDoc | null;
   if (opts.refresh) {
@@ -1028,26 +1310,32 @@ export function jllPublicProfileUrl(pageUrl: any): string | null {
 
 export function jllStringUrls(values: any): string[] {
   if (!Array.isArray(values)) return [];
-  return dedupeStrings(values.map((value) => clean(value))).filter((value): value is string => {
-    if (!value) return false;
-    try {
-      const url = new URL(value);
-      return (
-        (url.protocol === "http:" || url.protocol === "https:") &&
-        url.hostname.length > 0 &&
-        url.pathname.length > 1
-      );
-    } catch {
-      // Assets are optional evidence.  A malformed brochure/media URL must
-      // not turn an otherwise valid listing into a detail-enrichment failure.
-      return false;
-    }
-  });
+  return dedupeStrings(values.map((value) => clean(value))).filter(
+    (value): value is string => {
+      if (!value) return false;
+      try {
+        const url = new URL(value);
+        return (
+          (url.protocol === "http:" || url.protocol === "https:") &&
+          url.hostname.length > 0 &&
+          url.pathname.length > 1
+        );
+      } catch {
+        // Assets are optional evidence.  A malformed brochure/media URL must
+        // not turn an otherwise valid listing into a detail-enrichment failure.
+        return false;
+      }
+    },
+  );
 }
 
 /** True only for a native or typed brochure with a usable public URL. */
 export function jllHasUsableBrochure(normalized: unknown): boolean {
-  if (normalized === null || typeof normalized !== "object" || Array.isArray(normalized)) {
+  if (
+    normalized === null ||
+    typeof normalized !== "object" ||
+    Array.isArray(normalized)
+  ) {
     return false;
   }
   const record = normalized as Record<string, unknown>;
@@ -1067,7 +1355,9 @@ export function jllHasUsableBrochure(normalized: unknown): boolean {
   const brochures = record.brochures;
   if (
     Array.isArray(brochures) &&
-    brochures.some((item) => usableUrl(typeof item === "string" ? item : (item as any)?.url))
+    brochures.some((item) =>
+      usableUrl(typeof item === "string" ? item : (item as any)?.url),
+    )
   ) {
     return true;
   }
@@ -1077,8 +1367,9 @@ export function jllHasUsableBrochure(normalized: unknown): boolean {
     documents.some(
       (item: any) =>
         usableUrl(item?.url) &&
-        String(item?.docType ?? item?.documentType ?? item?.type ?? "").toLowerCase() ===
-          "brochure"
+        String(
+          item?.docType ?? item?.documentType ?? item?.type ?? "",
+        ).toLowerCase() === "brochure",
     )
   );
 }
@@ -1086,23 +1377,36 @@ export function jllHasUsableBrochure(normalized: unknown): boolean {
 export function jllSurfaceAreaSqft(property: any): number | null {
   const direct = num(property?.surfaceArea);
   if (direct) return direct;
-  const areas = Array.isArray(property?.surfaceAreas) ? property.surfaceAreas : [];
+  const areas = Array.isArray(property?.surfaceAreas)
+    ? property.surfaceAreas
+    : [];
   const feet = areas
-    .flatMap((area: any) => [area, ...(Array.isArray(area?.metrics) ? area.metrics : [])])
+    .flatMap((area: any) => [
+      area,
+      ...(Array.isArray(area?.metrics) ? area.metrics : []),
+    ])
     .find((area: any) => clean(area?.unit)?.toLowerCase() === "feet");
   const value = feet?.value;
   if (typeof value === "number") return num(value);
-  if (value && typeof value === "object") return num(value.max) ?? num(value.min);
+  if (value && typeof value === "object")
+    return num(value.max) ?? num(value.min);
   return null;
 }
 
 export function jllDescription(property: any): string | null {
-  const sections = Array.isArray(property?.descriptionSections) ? property.descriptionSections : [];
+  const sections = Array.isArray(property?.descriptionSections)
+    ? property.descriptionSections
+    : [];
   const pieces = sections
-    .flatMap((section: any) => [stripHtmlText(section?.title), stripHtmlText(section?.content)])
+    .flatMap((section: any) => [
+      stripHtmlText(section?.title),
+      stripHtmlText(section?.content),
+    ])
     .filter(Boolean);
   const highlights = Array.isArray(property?.highlights)
-    ? property.highlights.map((item: any) => stripHtmlText(item)).filter(Boolean)
+    ? property.highlights
+        .map((item: any) => stripHtmlText(item))
+        .filter(Boolean)
     : [];
   return clean([...pieces, ...highlights].join("\n\n"));
 }
@@ -1139,12 +1443,16 @@ export function jllContacts(brokersRaw: any[]): any[] {
         license: jllExtractLicense(broker?.brokerLicenses ?? broker?.licenses),
         licenses: broker?.brokerLicenses,
         entityLicenses: broker?.entityLicenses,
-      })
+      }),
     )
     .filter(Boolean);
   const seen = new Set<string>();
   return contacts.filter((contact: any) => {
-    const key = contact.email ?? contact.profileUrl ?? contact.name ?? JSON.stringify(contact);
+    const key =
+      contact.email ??
+      contact.profileUrl ??
+      contact.name ??
+      JSON.stringify(contact);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -1160,12 +1468,22 @@ export function jllContacts(brokersRaw: any[]): any[] {
 // harvester does not recognize. harvestDetail dedups by url. Never throws.
 export function jllStrandedMedia(property: any): (MediaItem | string)[] {
   const out: (MediaItem | string)[] = [];
-  for (const url of jllStringUrls(Array.isArray(property?.videos) ? property.videos : [])) {
+  for (const url of jllStringUrls(
+    Array.isArray(property?.videos) ? property.videos : [],
+  )) {
     out.push(url);
   }
   for (const value of [property?.virtualTours, property?.view360URLs]) {
-    for (const url of jllStringUrls(Array.isArray(value) ? value : value != null ? [value] : [])) {
-      out.push({ mediaType: "virtual_tour", provider: null, url, embedUrl: null, title: null });
+    for (const url of jllStringUrls(
+      Array.isArray(value) ? value : value != null ? [value] : [],
+    )) {
+      out.push({
+        mediaType: "virtual_tour",
+        provider: null,
+        url,
+        embedUrl: null,
+        title: null,
+      });
     }
   }
   return out;
@@ -1199,10 +1517,13 @@ function jllFloorPlanUrlKey(url: string): string {
 export function jllReconcileDocumentChannels(
   brochureUrls: string[],
   harvestedDocuments: DocItem[],
-  floorPlanDocuments: DocItem[]
+  floorPlanDocuments: DocItem[],
 ): { brochures: string[]; documents: DocItem[] } {
   const floorPlansByKey = new Map(
-    floorPlanDocuments.map((document) => [jllFloorPlanUrlKey(document.url), document])
+    floorPlanDocuments.map((document) => [
+      jllFloorPlanUrlKey(document.url),
+      document,
+    ]),
   );
   const brochuresByKey = new Map<string, string>();
   for (const url of brochureUrls) {
@@ -1274,16 +1595,18 @@ export function jllStrandedDocs(property: any): DocItem[] {
   }
 
   const seen = new Set<string>();
-  return urls.filter((url) => {
-    const key = jllFloorPlanUrlKey(url);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).map((url) => ({
-    url,
-    title: titleFromFilename(url),
-    docType: "floor_plan" as const,
-  }));
+  return urls
+    .filter((url) => {
+      const key = jllFloorPlanUrlKey(url);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((url) => ({
+      url,
+      title: titleFromFilename(url),
+      docType: "floor_plan" as const,
+    }));
 }
 
 // Lift stranded structured fields the JLL detail payload exposes but the adapter
@@ -1302,9 +1625,9 @@ export function jllStrandedStructured(property: any): Record<string, any> {
     ? dedupeStrings(
         property.amenities
           .map((a: any) =>
-            clean(typeof a === "string" ? a : a?.name ?? a?.title)
+            clean(typeof a === "string" ? a : (a?.name ?? a?.title)),
           )
-          .filter(Boolean)
+          .filter(Boolean),
       )
     : [];
 
@@ -1316,9 +1639,9 @@ export function jllStrandedStructured(property: any): Record<string, any> {
           .map((h: any) =>
             typeof h === "string"
               ? clean(stripHtmlText(h))
-              : clean(h?.title ?? h?.text ?? h?.value)
+              : clean(h?.title ?? h?.text ?? h?.value),
           )
-          .filter(Boolean)
+          .filter(Boolean),
       )
     : [];
 
@@ -1331,12 +1654,14 @@ export function jllStrandedStructured(property: any): Record<string, any> {
     : undefined;
 
   // buildingClass: normalize "Class A"/"A"/"B"/etc. via the frozen lib helper.
-  const buildingClass = normBuildingClass(clean(property?.buildingClass)) ?? undefined;
+  const buildingClass =
+    normBuildingClass(clean(property?.buildingClass)) ?? undefined;
 
   // extraFacts: long-tail facts with no discrete column.
   const locationDescription = clean(property?.locationDescription);
   const extraFacts: Record<string, unknown> = {};
-  if (locationDescription) extraFacts.location_description = locationDescription;
+  if (locationDescription)
+    extraFacts.location_description = locationDescription;
 
   return (
     prune({
@@ -1361,7 +1686,7 @@ export async function enrichJllListing(base: any): Promise<any> {
   // parsed so a malformed detail shape cannot restore a public search price.
   const baseWithholdingControl = jllReconciledWithholdingControl(
     base,
-    base?.jllSearchResult
+    base?.jllSearchResult,
   );
   const basePriceWithheld = jllPriceWithheld(baseWithholdingControl);
   let failurePricing: Record<string, unknown> | null = null;
@@ -1371,7 +1696,10 @@ export async function enrichJllListing(base: any): Promise<any> {
     let pageProps = next?.props?.pageProps;
     let property = pageProps?.property;
     if (!property && JLL_DETAIL_FALLBACK_WAIT_MS > JLL_DETAIL_WAIT_MS) {
-      doc = await scrapeJllDetailDoc(base.url, { refresh: true, waitFor: JLL_DETAIL_FALLBACK_WAIT_MS });
+      doc = await scrapeJllDetailDoc(base.url, {
+        refresh: true,
+        waitFor: JLL_DETAIL_FALLBACK_WAIT_MS,
+      });
       next = jllNextData(doc.rawHtml);
       pageProps = next?.props?.pageProps;
       property = pageProps?.property;
@@ -1386,18 +1714,22 @@ export async function enrichJllListing(base: any): Promise<any> {
     }
 
     const detailId = clean(property.id);
-    const detailUrlRaw = clean(property.pageUrl) ?? clean(pageProps?.relativeUrl);
+    const detailUrlRaw =
+      clean(property.pageUrl) ?? clean(pageProps?.relativeUrl);
     if (!detailId || detailId !== clean(base.id)) {
       throw new Error(
         `JLL detail provider id mismatch: expected ${clean(base.id) ?? "missing"}, ` +
-          `received ${detailId ?? "missing"}`
+          `received ${detailId ?? "missing"}`,
       );
     }
     if (
       !detailUrlRaw ||
-      normalizedJllListingUrl(detailUrlRaw) !== normalizedJllListingUrl(base.url)
+      normalizedJllListingUrl(detailUrlRaw) !==
+        normalizedJllListingUrl(base.url)
     ) {
-      throw new Error("JLL detail listing URL does not match enumerated inventory URL");
+      throw new Error(
+        "JLL detail listing URL does not match enumerated inventory URL",
+      );
     }
 
     // Establish and enforce the price visibility boundary before parsing any
@@ -1405,17 +1737,20 @@ export async function enrichJllListing(base: any): Promise<any> {
     // hidden price into the unmodified search-card fallback.
     const searchWithholdingControl = jllReconciledWithholdingControl(
       base,
-      base?.jllSearchResult
+      base?.jllSearchResult,
     );
-    const detailWithholdingControl = jllWithholdingControl(property, "hidePrice");
+    const detailWithholdingControl = jllWithholdingControl(
+      property,
+      "hidePrice",
+    );
     const hiddenPrice = jllPriceWithheld(
       searchWithholdingControl,
-      detailWithholdingControl
+      detailWithholdingControl,
     );
     const salePrice = jllNormalizedPrice(property.salePrice);
     const rentPrice = jllNormalizedPrice(property.rentPrice);
     const baseSalePrice = jllNormalizedPrice(
-      base.salePriceText ?? base.salePrice ?? base.salePriceUsd
+      base.salePriceText ?? base.salePrice ?? base.salePriceUsd,
     );
     const baseLeasePrice = jllNormalizedPrice(base.leaseRateText);
     const pricing = {
@@ -1428,7 +1763,14 @@ export async function enrichJllListing(base: any): Promise<any> {
     failurePricing = hiddenPrice ? pricing : null;
     const publicBase = hiddenPrice ? jllWithheldPublicProjection(base) : base;
 
-    const contactsDetailed = jllContacts(Array.isArray(pageProps?.brokers) ? pageProps.brokers : property?.brokers);
+    const rawContactsDetailed = jllContacts(
+      Array.isArray(pageProps?.brokers) ? pageProps.brokers : property?.brokers,
+    );
+    const contactsDetailed = hiddenPrice
+      ? rawContactsDetailed.map((contact) =>
+          jllSanitizeHiddenChildMetadata(contact, "broker"),
+        )
+      : rawContactsDetailed;
     const brokerIds = contactsDetailed
       .map((contact: any) =>
         brokerRef({
@@ -1438,7 +1780,7 @@ export async function enrichJllListing(base: any): Promise<any> {
           office: clean(contact.office),
           avatarUrl: clean(contact.avatarUrl),
           company: "JLL",
-        })
+        }),
       )
       .filter((id: number | null): id is number => id !== null);
     // Brochures channel keeps true brochures only; floor plans move to the typed
@@ -1457,7 +1799,9 @@ export async function enrichJllListing(base: any): Promise<any> {
     // the disk cache (no structured `images`), fall back to the native gallery for
     // the image channel rather than the rawHtml <img> regex (which would pull in
     // site-chrome icons); the page links/attributes still harvest from rawHtml.
-    const harvestDoc: ScrapedDoc = Array.isArray(doc.images) ? doc : { ...doc, images };
+    const harvestDoc: ScrapedDoc = Array.isArray(doc.images)
+      ? doc
+      : { ...doc, images };
     const harvested = harvestDetail(harvestDoc, {
       baseUrl: url,
       extraMedia: jllStrandedMedia(property),
@@ -1470,14 +1814,31 @@ export async function enrichJllListing(base: any): Promise<any> {
     const documentChannels = jllReconcileDocumentChannels(
       rawBrochures,
       harvested.documents,
-      floorPlanDocuments
+      floorPlanDocuments,
     );
-    const brochureDocs = documentChannels.brochures.map((docUrl) => ({
+    const rawBrochureDocs = documentChannels.brochures.map((docUrl) => ({
       name: titleFromFilename(docUrl),
       url: docUrl,
     }));
-    const documents = documentChannels.documents;
-    const photos = dedupeStrings([...(images.length ? images : base.photos ?? []), ...harvested.images]);
+    const brochureDocs = hiddenPrice
+      ? rawBrochureDocs.map((document) =>
+          jllSanitizeHiddenChildMetadata(document, "artifact"),
+        )
+      : rawBrochureDocs;
+    const documents = hiddenPrice
+      ? documentChannels.documents.map((document) =>
+          jllSanitizeHiddenChildMetadata(document, "artifact"),
+        )
+      : documentChannels.documents;
+    const media = hiddenPrice
+      ? harvested.media.map((item) =>
+          jllSanitizeHiddenChildMetadata(item, "artifact"),
+        )
+      : harvested.media;
+    const photos = dedupeStrings([
+      ...(images.length ? images : (base.photos ?? [])),
+      ...harvested.images,
+    ]);
     // Withheld detail gets a deliberately minimal, allowlisted representation.
     // Do not attempt to maintain a future blacklist for arbitrary provider
     // fields: price-bearing prose can surface in highlights or long-tail facts.
@@ -1498,30 +1859,36 @@ export async function enrichJllListing(base: any): Promise<any> {
       },
       id: base.id,
       name: hiddenPrice
-        ? jllSafePublicText(clean(property.title) ?? publicBase.name) ?? undefined
-        : clean(property.title) ?? base.name,
+        ? (jllSafePublicText(clean(property.title) ?? publicBase.name) ??
+          undefined)
+        : (clean(property.title) ?? base.name),
       assetType: hiddenPrice
-        ? jllSafePublicText(
+        ? (jllSafePublicText(
             Array.isArray(property.propertyTypes)
               ? property.propertyTypes.map(jllPropertyTypeLabel).join(", ")
-              : clean(property.propertyType) ?? publicBase.assetType
-          ) ?? undefined
+              : (clean(property.propertyType) ?? publicBase.assetType),
+          ) ?? undefined)
         : Array.isArray(property.propertyTypes)
           ? property.propertyTypes.map(jllPropertyTypeLabel).join(", ")
-          : clean(property.propertyType) ?? base.assetType,
+          : (clean(property.propertyType) ?? base.assetType),
       description: hiddenPrice ? undefined : description,
       street: hiddenPrice
-        ? jllSafePublicText(clean(property.address) ?? publicBase.street) ?? undefined
-        : clean(property.address) ?? base.street,
+        ? (jllSafePublicText(clean(property.address) ?? publicBase.street) ??
+          undefined)
+        : (clean(property.address) ?? base.street),
       city: hiddenPrice
-        ? jllSafePublicText(clean(property.city) ?? publicBase.city) ?? undefined
-        : clean(property.city) ?? base.city,
+        ? (jllSafePublicText(clean(property.city) ?? publicBase.city) ??
+          undefined)
+        : (clean(property.city) ?? base.city),
       state: hiddenPrice
-        ? jllSafePublicText(clean(property.state) ?? publicBase.state) ?? undefined
-        : clean(property.state) ?? base.state,
+        ? (jllSafePublicText(clean(property.state) ?? publicBase.state) ??
+          undefined)
+        : (clean(property.state) ?? base.state),
       postalCode: hiddenPrice
-        ? jllSafePublicText(clean(property.postcode) ?? publicBase.postalCode) ?? undefined
-        : clean(property.postcode) ?? base.postalCode,
+        ? (jllSafePublicText(
+            clean(property.postcode) ?? publicBase.postalCode,
+          ) ?? undefined)
+        : (clean(property.postcode) ?? base.postalCode),
       latitude: num(property.latitude) ?? base.latitude,
       longitude: num(property.longitude) ?? base.longitude,
       salePriceUsd: hiddenPrice
@@ -1540,15 +1907,17 @@ export async function enrichJllListing(base: any): Promise<any> {
           ? jllLeasePriceText(baseLeasePrice)
           : jllLeasePriceText(rentPrice),
       sizeText: hiddenPrice
-        ? jllSafePublicText(clean(property.surfaceArea) ?? publicBase.sizeText) ?? undefined
-        : clean(property.surfaceArea) ?? base.sizeText,
+        ? (jllSafePublicText(
+            clean(property.surfaceArea) ?? publicBase.sizeText,
+          ) ?? undefined)
+        : (clean(property.surfaceArea) ?? base.sizeText),
       buildingSizeSqft: jllSurfaceAreaSqft(property) ?? base.buildingSizeSqft,
       ...lifted,
       brokerIds,
       contactsDetailed,
       brochures: brochureDocs,
       documents,
-      media: harvested.media,
+      media,
       links: harvested.links,
       photos,
       markdown: hiddenPrice ? undefined : markdown,
@@ -1556,10 +1925,14 @@ export async function enrichJllListing(base: any): Promise<any> {
       lastUpdated: base.lastUpdated,
       jllDetail: {
         id: clean(property.id),
-        refId: hiddenPrice ? jllSafePublicText(property.refId) ?? undefined : clean(property.refId),
-        pageUrl: hiddenPrice ? jllSafePublicText(property.pageUrl) ?? undefined : clean(property.pageUrl),
+        refId: hiddenPrice
+          ? (jllSafePublicText(property.refId) ?? undefined)
+          : clean(property.refId),
+        pageUrl: hiddenPrice
+          ? (jllSafePublicText(property.pageUrl) ?? undefined)
+          : clean(property.pageUrl),
         relativeUrl: hiddenPrice
-          ? jllSafePublicText(pageProps?.relativeUrl) ?? undefined
+          ? (jllSafePublicText(pageProps?.relativeUrl) ?? undefined)
           : clean(pageProps?.relativeUrl),
         pricing,
         tenureTypes: hiddenPrice ? undefined : property.tenureTypes,
@@ -1569,13 +1942,15 @@ export async function enrichJllListing(base: any): Promise<any> {
         amenitiesData: hiddenPrice ? undefined : property.amenitiesData,
         highlights: hiddenPrice ? undefined : property.highlights,
         customRefId: hiddenPrice
-          ? jllSafePublicText(property.customRefId) ?? undefined
+          ? (jllSafePublicText(property.customRefId) ?? undefined)
           : clean(property.customRefId),
         buildingClass: hiddenPrice
-          ? jllSafePublicText(property.buildingClass) ?? undefined
+          ? (jllSafePublicText(property.buildingClass) ?? undefined)
           : clean(property.buildingClass),
         parkingDetails: hiddenPrice ? undefined : property.parkingDetails,
-        locationDescription: hiddenPrice ? undefined : stripHtmlText(property.locationDescription),
+        locationDescription: hiddenPrice
+          ? undefined
+          : stripHtmlText(property.locationDescription),
         submarket: hiddenPrice ? undefined : clean(property.submarket),
         videos: hiddenPrice ? undefined : property.videos,
         virtualTours: hiddenPrice ? undefined : property.virtualTours,
@@ -1597,9 +1972,10 @@ export async function enrichJllListing(base: any): Promise<any> {
     // The error path is also a visibility boundary.  Redact recursively so a
     // search-card askingPrice or an old nested jllDetail price cannot survive a
     // malformed detail field; preserve only safe control/provenance fields.
-    const redacted = basePriceWithheld || failurePricing !== null
-      ? jllWithheldPublicProjection(base)
-      : jllRedactSensitivePriceFields(base);
+    const redacted =
+      basePriceWithheld || failurePricing !== null
+        ? jllWithheldPublicProjection(base)
+        : jllRedactSensitivePriceFields(base);
     const detail =
       failurePricing === null
         ? redacted.jllDetail
@@ -1608,7 +1984,11 @@ export async function enrichJllListing(base: any): Promise<any> {
   }
 }
 
-export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+export async function srcJll(
+  tx: Tx,
+  max: number,
+  monitor: boolean,
+): Promise<SourceResult> {
   const tenure = tx === "sale" ? "sale" : "rent";
   const sourceUrl = `https://property.jll.com/search?tenureTypes=${tenure}`;
   if (monitor) {
@@ -1625,7 +2005,8 @@ export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<Sou
     return {
       company: "JLL",
       sourceUrl,
-      method: "Monitor mode unsupported (detail-derived numeric external id); full-sweep cadence only",
+      method:
+        "Monitor mode unsupported (detail-derived numeric external id); full-sweep cadence only",
       totalAvailable: null,
       listings: [],
       note: "Monitor mode emits no rows for jll: its external id is the detail-page numeric property.id and cannot be derived from the search-card URL slug. Refresh this source via the full (non-monitor) collection path.",
@@ -1636,7 +2017,7 @@ export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<Sou
   const filterTotals: Record<string, number | null> = {};
   const maxByFilterPage: Record<string, number | null> = {};
   const filterUrls = new Map<string, Set<string>>(
-    JLL_PROPERTY_TYPES.map((propertyType) => [propertyType, new Set<string>()])
+    JLL_PROPERTY_TYPES.map((propertyType) => [propertyType, new Set<string>()]),
   );
   const observedIdentityPairs: Array<{ id?: unknown; url?: unknown }> = [];
   const strictFreshness = requireFreshDetails();
@@ -1648,27 +2029,31 @@ export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<Sou
     });
     if (!activePropertyTypes.length) break;
 
-    const pageResults = await pmap(activePropertyTypes, CONCURRENCY, async (propertyType) => {
-      const parsed = await fetchJllSearchPage(tx, propertyType, page);
-      if (filterTotals[propertyType] === undefined) {
-        filterTotals[propertyType] = parsed.total;
-        maxByFilterPage[propertyType] =
-          parsed.total === null
-            ? null
-            : Math.max(1, Math.ceil(parsed.total / JLL_SEARCH_PAGE_SIZE));
-      } else {
-        assertJllSearchPageCompleteness(
-          parsed,
-          page,
-          filterTotals[propertyType],
-          strictFreshness
+    const pageResults = await pmap(
+      activePropertyTypes,
+      CONCURRENCY,
+      async (propertyType) => {
+        const parsed = await fetchJllSearchPage(tx, propertyType, page);
+        if (filterTotals[propertyType] === undefined) {
+          filterTotals[propertyType] = parsed.total;
+          maxByFilterPage[propertyType] =
+            parsed.total === null
+              ? null
+              : Math.max(1, Math.ceil(parsed.total / JLL_SEARCH_PAGE_SIZE));
+        } else {
+          assertJllSearchPageCompleteness(
+            parsed,
+            page,
+            filterTotals[propertyType],
+            strictFreshness,
+          );
+        }
+        console.error(
+          `  jll/${tx}/${propertyType}: page ${page}, ${parsed.listings.length} cards (filter total ${parsed.total ?? "?"})`,
         );
-      }
-      console.error(
-        `  jll/${tx}/${propertyType}: page ${page}, ${parsed.listings.length} cards (filter total ${parsed.total ?? "?"})`
-      );
-      return { propertyType, ...parsed };
-    });
+        return { propertyType, ...parsed };
+      },
+    );
 
     for (const result of pageResults) {
       const urls = filterUrls.get(result.propertyType)!;
@@ -1701,17 +2086,22 @@ export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<Sou
     }
 
     console.error(
-      `  jll/${tx}: page ${page}, ${listings.length} unique collected across ${activePropertyTypes.length} property filters`
+      `  jll/${tx}: page ${page}, ${listings.length} unique collected across ${activePropertyTypes.length} property filters`,
     );
     if (addedOrSeenOnPage === 0) break;
   }
-  if (!listings.length) throw new Error("no listing cards found on JLL search page");
+  if (!listings.length)
+    throw new Error("no listing cards found on JLL search page");
   const inventoryObservedAt = new Date().toISOString();
   for (const listing of listings) {
     listing.inventoryObservedAt = inventoryObservedAt;
   }
-  const knownTotals = Object.values(filterTotals).filter((n): n is number => typeof n === "number");
-  const total = knownTotals.length ? knownTotals.reduce((sum, n) => sum + n, 0) : null;
+  const knownTotals = Object.values(filterTotals).filter(
+    (n): n is number => typeof n === "number",
+  );
+  const total = knownTotals.length
+    ? knownTotals.reduce((sum, n) => sum + n, 0)
+    : null;
   let coverageTruncated = false;
   for (const propertyType of JLL_PROPERTY_TYPES) {
     try {
@@ -1719,7 +2109,7 @@ export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<Sou
         propertyType,
         filterTotals[propertyType] ?? null,
         filterUrls.get(propertyType) ?? [],
-        strictFreshness
+        strictFreshness,
       );
     } catch (error) {
       if (Number.isFinite(max) && listings.length >= max) {
@@ -1733,16 +2123,22 @@ export async function srcJll(tx: Tx, max: number, monitor: boolean): Promise<Sou
     coverageTruncated = true;
   }
   let enrichedCount = 0;
-  const enriched = await pmap(listings, JLL_DETAIL_CONCURRENCY, async (listing) => {
-    const row = await enrichJllListing(listing);
-    enrichedCount++;
-    if (enrichedCount % 100 === 0 || enrichedCount === listings.length) {
-      console.error(`  jll/${tx}: detail enriched ${enrichedCount}/${listings.length}`);
-    }
-    return row;
-  });
+  const enriched = await pmap(
+    listings,
+    JLL_DETAIL_CONCURRENCY,
+    async (listing) => {
+      const row = await enrichJllListing(listing);
+      enrichedCount++;
+      if (enrichedCount % 100 === 0 || enrichedCount === listings.length) {
+        console.error(
+          `  jll/${tx}: detail enriched ${enrichedCount}/${listings.length}`,
+        );
+      }
+      return row;
+    },
+  );
   const totalEvidence = JLL_PROPERTY_TYPES.map(
-    (propertyType) => `${propertyType}=${filterTotals[propertyType] ?? "?"}`
+    (propertyType) => `${propertyType}=${filterTotals[propertyType] ?? "?"}`,
   ).join(", ");
   return {
     company: "JLL",

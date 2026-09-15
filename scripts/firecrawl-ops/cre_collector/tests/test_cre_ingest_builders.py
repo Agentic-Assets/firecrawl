@@ -694,6 +694,88 @@ def test_to_row_redacts_withheld_jll_pricing_before_raw_data_staging():
     assert r["lease_rate_max"] is None
 
 
+def test_withheld_jll_child_metadata_keeps_identity_urls_and_drops_price_labels():
+    row = _row(
+        {
+            "sourceKey": "jll",
+            "url": "https://property.jll.com/listings/hidden-children",
+            "id": "hidden-children",
+            "hidePrice": True,
+            "contactsDetailed": [
+                {
+                    "id": "broker-1",
+                    "name": "Jane Broker",
+                    "email": "jane@example.com",
+                    "phone": "555-0100",
+                    "profileUrl": "https://jll.example/broker-1",
+                    "title": "$3.25M Advisor",
+                    "office": "Asking price $3.25M",
+                    "license": "License $3.25M",
+                }
+            ],
+            "brochures": [
+                {"url": "https://cdn.example/brochure.pdf", "name": "$3.25M brochure"}
+            ],
+            "documents": [
+                {
+                    "url": "https://cdn.example/floor.pdf",
+                    "title": "$3.25M floor plan",
+                    "docType": "floor_plan",
+                }
+            ],
+            "media": [
+                {
+                    "url": "https://video.example/watch",
+                    "embedUrl": "https://video.example/embed",
+                    "mediaType": "video",
+                    "provider": "vimeo",
+                    "title": "$3.25M tour",
+                }
+            ],
+        }
+    )
+
+    assert row["contacts"] == [
+        {
+            "name": "Jane Broker",
+            "title": None,
+            "license": None,
+            "email": "jane@example.com",
+            "phone": "555-0100",
+            "company": None,
+            "profileUrl": "https://jll.example/broker-1",
+            "avatarUrl": None,
+            "vcardUrl": None,
+            "isPrimary": True,
+        }
+    ]
+    assert row["documents"] == [
+        {
+            "title": None,
+            "url": "https://cdn.example/brochure.pdf",
+            "docType": "brochure",
+        },
+        {
+            "title": None,
+            "url": "https://cdn.example/floor.pdf",
+            "docType": "floor_plan",
+        },
+    ]
+    assert row["media"] == [
+        {
+            "mediaType": "video",
+            "provider": "vimeo",
+            "url": "https://video.example/watch",
+            "embedUrl": "https://video.example/embed",
+            "title": None,
+        }
+    ]
+    raw = json.dumps(row["raw_data"])
+    assert "3.25M" not in raw
+    assert "Jane Broker" in raw
+    assert "https://video.example/watch" in raw
+
+
 def test_to_row_withheld_jll_clears_every_price_derived_staging_column_on_insert():
     row = _row(
         {

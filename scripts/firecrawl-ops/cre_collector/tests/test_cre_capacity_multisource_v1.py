@@ -97,12 +97,47 @@ def _locator_fields(fields: dict[str, Any]) -> dict[str, dict[str, str]]:
         "property_type": "propertyTypes[0]",
     }
     return {
-        key: {
-            "source_path": f"property.{source_fields[key]}",
-            "value_sha256": multisource._sha256(multisource._canonical(value)),
-        }
-        for key, value in fields.items()
+        key: (
+            {
+                "presence": "present",
+                "source_path": f"property.{source_fields[key]}",
+                "value_sha256": multisource._sha256(
+                    multisource._canonical(fields[key])
+                ),
+            }
+            if key in fields
+            else {"presence": "absent"}
+        )
+        for key in multisource._JLL_SEMANTIC_FIELDS
     }
+
+
+def _jll_asset_evidence(
+    property_value: dict[str, Any] | None = None,
+) -> tuple[dict[str, list[str]], dict[str, Any]]:
+    property_value = property_value or {}
+    normalized: dict[str, list[str]] = {}
+    channels: dict[str, Any] = {}
+    for channel, source_path in multisource._JLL_ASSET_CHANNELS.items():
+        raw_present = channel in property_value
+        candidates = (
+            multisource._jll_asset_values(property_value.get(channel))
+            if raw_present
+            else []
+        )
+        valid = [
+            url for item in candidates if (url := multisource._public_asset_url(item))
+        ]
+        normalized[channel] = valid
+        channels[channel] = {
+            "source_path": source_path,
+            "presence": "present" if valid else "empty" if raw_present else "absent",
+            "raw_valid_url_set_sha256": multisource._url_set_hash(valid),
+            "accepted_public_url_set_sha256": multisource._url_set_hash(valid),
+            "normalized_mapped_url_set_sha256": multisource._url_set_hash(valid),
+            "rejected_invalid_count": len(candidates) - len(valid),
+        }
+    return normalized, {"channels": channels}
 
 
 def _extractor_document(row: dict[str, Any]) -> dict[str, Any]:
@@ -367,6 +402,7 @@ def _receipt_batch(
             "transaction_type": transaction_type,
             "property_type": property_type,
         }
+        normalized_assets, asset_evidence = _jll_asset_evidence()
         normalized_path, normalized_hash = _write(
             root,
             f"normalized-{source_key}-{number}.json",
@@ -374,6 +410,7 @@ def _receipt_batch(
                 "provider_id": provider_id,
                 "canonical_url": canonical_url,
                 "fields": fields,
+                "assets": normalized_assets,
             },
         )
         locator_path, locator_hash = _write(
@@ -384,7 +421,7 @@ def _receipt_batch(
         assets_path, assets_hash = _write(
             root,
             f"assets-{source_key}-{number}.json",
-            {"provider_id": provider_id, "assets": []},
+            {"provider_id": provider_id, **asset_evidence},
         )
         row: dict[str, Any] = {
             "source_key": source_key,
@@ -594,6 +631,147 @@ def test_prevalidation_uses_artifact_bound_fidelity_and_deterministic_strata(
     rows[0]["structured_fidelity"] = {"complete": True}
     with pytest.raises(multisource.MultisourceError, match="unsupported"):
         _prevalidate(root, rows)
+
+
+def _jll_fidelity_documents(property_value: dict[str, Any]):
+    fields = {
+        "address": property_value["address"],
+        "name": property_value["title"],
+        "transaction_type": property_value["tenureTypes"][0],
+        "property_type": property_value["propertyTypes"][0],
+    }
+    normalized_assets, asset_evidence = _jll_asset_evidence(property_value)
+    return (
+        {"fields": fields, "assets": normalized_assets},
+        {"fields": _locator_fields(fields)},
+        asset_evidence,
+        {"body": {"rawHtml": _jll_raw_html(property_value=property_value)}},
+    )
+
+
+def test_jll_semantic_contract_rejects_omitted_or_name_only_core_mapping() -> None:
+    property_value = {
+        "id": "strict",
+        "pageUrl": "https://property.jll.com/listings/strict",
+        "address": "1 Test Street",
+        "title": "Strict listing",
+        "tenureTypes": ["sale"],
+        "propertyTypes": ["office"],
+    }
+    normalized, locators, assets, raw = _jll_fidelity_documents(property_value)
+    assert multisource._verified_jll_locator_fidelity(normalized, locators, assets, raw)
+
+    normalized = {
+        **normalized,
+        "fields": {
+            key: value
+            for key, value in normalized["fields"].items()
+            if key != "address"
+        },
+    }
+    assert not multisource._verified_jll_locator_fidelity(
+        normalized, locators, assets, raw
+    )
+
+
+def test_jll_name_only_twenty_four_row_fixture_is_screening_only(
+    evidence_root: Path,
+) -> None:
+    root = _private_dir(evidence_root, "jll-name-only")
+    rows = _receipt_batch(root, source_key="jll", count=25)
+    for row in rows:
+        raw = _read(Path(row["raw_receipt_path"]))
+        property_value = multisource._jll_next_property(raw)
+        assert property_value is not None
+        name_only = dict(property_value)
+        name_only.pop("address")
+        raw["body"] = {"rawHtml": _jll_raw_html(property_value=name_only)}
+        _rewrite_raw_receipt(root, row, raw)
+        fields = {
+            key: value
+            for key, value in _read(Path(row["normalized_path"]))["fields"].items()
+            if key != "address"
+        }
+        normalized_assets, asset_evidence = _jll_asset_evidence(name_only)
+        normalized_path, normalized_hash = _write(
+            root,
+            Path(row["normalized_path"]).name,
+            {
+                "provider_id": row["provider_id"],
+                "canonical_url": row["canonical_url"],
+                "fields": fields,
+                "assets": normalized_assets,
+            },
+        )
+        locator_path, locator_hash = _write(
+            root,
+            Path(row["field_locator_path"]).name,
+            {"provider_id": row["provider_id"], "fields": _locator_fields(fields)},
+        )
+        assets_path, assets_hash = _write(
+            root,
+            Path(row["asset_evidence_path"]).name,
+            {"provider_id": row["provider_id"], **asset_evidence},
+        )
+        row.update(
+            {
+                "normalized_path": str(normalized_path),
+                "normalized_sha256": normalized_hash,
+                "field_locator_path": str(locator_path),
+                "field_locator_sha256": locator_hash,
+                "asset_evidence_path": str(assets_path),
+                "asset_evidence_sha256": assets_hash,
+            }
+        )
+        _refresh_extractor(root, row)
+
+    cohort = _prevalidate(root, rows)
+    jll = next(source for source in cohort["sources"] if source["source_key"] == "jll")
+    assert jll["core_state"] == "semantic_fidelity_unverified"
+    assert jll["core"] == []
+
+    name_only = dict(property_value)
+    name_only.pop("address")
+    fields = {
+        key: value
+        for key, value in _jll_fidelity_documents(property_value)[0]["fields"].items()
+        if key != "address"
+    }
+    normalized_assets, asset_evidence = _jll_asset_evidence(name_only)
+    assert not multisource._verified_jll_locator_fidelity(
+        {"fields": fields, "assets": normalized_assets},
+        {"fields": _locator_fields(fields)},
+        asset_evidence,
+        {"body": {"rawHtml": _jll_raw_html(property_value=name_only)}},
+    )
+
+
+def test_jll_asset_contract_binds_every_native_channel_and_rejects_mismatch() -> None:
+    property_value = {
+        "id": "assets",
+        "pageUrl": "https://property.jll.com/listings/assets",
+        "address": "1 Test Street",
+        "title": "Asset listing",
+        "tenureTypes": ["sale"],
+        "propertyTypes": ["office"],
+        "images": ["https://cdn.example/image.jpg", "not-a-url"],
+        "brochures": ["https://cdn.example/brochure.pdf"],
+        "floorPlans": {
+            "images": [{"image": "https://cdn.example/floor.jpg"}],
+            "files": [{"download": "https://cdn.example/floor.pdf"}],
+        },
+        "videos": [{"url": "https://video.example/watch"}],
+        "virtualTours": "https://tour.example/virtual",
+        "view360URLs": ["https://tour.example/360"],
+    }
+    normalized, locators, assets, raw = _jll_fidelity_documents(property_value)
+    assert multisource._verified_jll_locator_fidelity(normalized, locators, assets, raw)
+    assert assets["channels"]["images"]["rejected_invalid_count"] == 1
+
+    normalized["assets"]["videos"] = ["https://wrong.example/video"]
+    assert not multisource._verified_jll_locator_fidelity(
+        normalized, locators, assets, raw
+    )
 
 
 def test_all_twenty_sources_remain_incomplete_without_source_specific_verifiers(
