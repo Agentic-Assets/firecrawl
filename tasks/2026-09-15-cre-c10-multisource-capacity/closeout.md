@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`317253849280e168cd3fe1074e45d0a02f3ee321`
+`574714d1b7920878cd5250f95cf8dafafaf4abb7`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -34,40 +34,44 @@ not change the Wave 1 execution boundary.
 - The receipt package now seals private artifacts and size-bounded request-graph
   shards and has seven candidate inventory producers, strict-detail Batch A
   producers, and one Foundry Batch B producer. They describe source-specific
-  cards and parsers. Inventory member receipts now require reviewed native JSON
-  envelopes, provider-derived identity, and non-shell content; unreviewed HTML
-  shapes fail closed. No concrete direct-provider transport, CLI/controller
-  integration, registry admission, or C10 live run was added. CBRE Deal Flow,
-  Avison Young, Colliers Main, and the remaining Batch B sources remain explicit
-  blockers.
+  enumeration cards and parsers. All seven inventory member paths are explicitly
+  non-executable because their public targets return HTML and no source-owned
+  identity parser is reviewed; fabricated JSON page fixtures are not treated as
+  capability. No concrete direct-provider transport, CLI/controller integration,
+  registry admission, or C10 live run was added. CBRE Deal Flow, Avison Young,
+  Colliers Main, and the remaining Batch B sources remain explicit blockers.
 - Browser-arm evidence binds each source to its immutable cohort member count
   and digest and derives throughput from source-level serial monotonic timing.
   Buildout candidates use the native `show_link` identity. CBRE Deal Flow was
   removed from the executable map rather than approximating its form POST/HTML
   protocol.
+- Marcus member cards use the provider's `mappropertydetail` route and require
+  native `PropertyDetail` / `PropertyUrl` evidence. Colliers list evidence uses
+  and reconciles the provider-native `numProjects` page count.
 - The coordinator derives the canonical shared CRE lock independently and
   treats the injected path only as an attestation. P0 can no longer bypass the
   collector lock merely because it does not call the transition hook.
 
 ## Verification
 
-The final code candidate `317253849280e168cd3fe1074e45d0a02f3ee321`
+The final code candidate `574714d1b7920878cd5250f95cf8dafafaf4abb7`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
 - `python3 -m pytest tests/ -q`: 3160 passed, 18 skipped.
-- `npm test`: TypeScript typecheck passed; 905 passed, 1 expected
+- `npm test`: TypeScript typecheck passed; 903 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Four exact-head Codex review passes produced eleven material findings. All eleven
+Five exact-head Codex review passes produced fourteen material findings. All fourteen
 were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
 recoverable terminal-result evidence, independently derived canonical lock
-ownership, and provider-derived native member identity with shell rejection.
+ownership, fail-closed inventory HTML member paths, the Marcus native detail
+endpoint/envelope, and Colliers' native page-count field.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
