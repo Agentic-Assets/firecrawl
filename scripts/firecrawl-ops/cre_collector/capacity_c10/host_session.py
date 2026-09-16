@@ -471,8 +471,9 @@ class C10SealedCardRegistry:
         ) != cohort.get("cohort_sha256"):
             raise C10Error("C10 registry rejects a different plan or cohort")
         sources = cohort.get("sources")
-        if not isinstance(sources, list):
+        if not isinstance(sources, list) or len(sources) != 20:
             raise C10Error("C10 registry cohort is invalid")
+        self.source_projection_sha256 = self._validate_source_projection(plan, sources)
         jll = next(
             (
                 value
@@ -527,6 +528,58 @@ class C10SealedCardRegistry:
         self.manifest_sha256 = sha256(
             {card_id: json.loads(card) for card_id, card in self._cards.items()}
         )
+
+    @staticmethod
+    def _validate_source_projection(plan: Mapping[str, Any], sources: list[Any]) -> str:
+        """Bind all twenty plan source projections to the sealed cohort.
+
+        A plan hash alone is not enough at this boundary: a forged Plan B can
+        retain the same cohort hash while changing its source projection.  The
+        registry retains the exact admitted projection and execute compares it
+        before it acquires a lock or creates any lifecycle material.
+        """
+        plan_sources = plan.get("sources")
+        if not isinstance(plan_sources, list) or len(plan_sources) != 20:
+            raise C10Error("C10 registry plan lacks the twenty-source contract")
+        by_key: dict[str, Mapping[str, Any]] = {}
+        for source in sources:
+            if not isinstance(source, Mapping) or not isinstance(
+                source.get("source_key"), str
+            ):
+                raise C10Error("C10 registry cohort source is invalid")
+            key = source["source_key"]
+            if key in by_key:
+                raise C10Error("C10 registry cohort source keys are not unique")
+            core, fresh = source.get("core"), source.get("fresh_enumeration")
+            if not isinstance(core, list) or not isinstance(fresh, Mapping):
+                raise C10Error("C10 registry cohort source projection is invalid")
+            by_key[key] = source
+        if len(by_key) != 20:
+            raise C10Error("C10 registry cohort source count is invalid")
+        seen: set[str] = set()
+        for projection in plan_sources:
+            if not isinstance(projection, Mapping):
+                raise C10Error("C10 registry plan source projection is invalid")
+            key = projection.get("key")
+            source = by_key.get(key) if isinstance(key, str) else None
+            if source is None or key in seen:
+                raise C10Error("C10 registry plan source set differs from cohort")
+            seen.add(key)
+            core = source["core"]
+            fresh = source["fresh_enumeration"]
+            if (
+                projection.get("plane") != source.get("plane")
+                or projection.get("cohort_member_count") != len(core)
+                or projection.get("cohort_member_sha256") != sha256(core)
+                or projection.get("enumeration_receipt_sha256")
+                != fresh.get("receipt_sha256")
+            ):
+                raise C10Error(
+                    "C10 registry plan source projection differs from cohort"
+                )
+        if seen != set(by_key):
+            raise C10Error("C10 registry plan source set differs from cohort")
+        return sha256(plan_sources)
 
     @staticmethod
     def _member_route(value: Any) -> str:
@@ -628,6 +681,14 @@ class C10SealedCardRegistry:
         if not isinstance(card_id, str) or card_id not in self._cards:
             raise C10Error("C10 rejects a card outside the sealed registry")
         return json.loads(self._cards[card_id])
+
+    def assert_plan_identity(self, plan: Mapping[str, Any]) -> None:
+        if (
+            self.plan_sha256 != plan.get("plan_sha256")
+            or self.cohort_sha256 != plan.get("cohort_sha256")
+            or self.source_projection_sha256 != sha256(plan.get("sources"))
+        ):
+            raise C10Error("C10 registry rejects an alternate plan/source projection")
 
 
 @dataclass(frozen=True)
@@ -742,7 +803,9 @@ class DockerComposeSidecar:
                     "docker-compose.yaml",
                     "-f",
                     "docker-compose.c10.yaml",
-                    "stop",
+                    "rm",
+                    "--force",
+                    "--stop",
                     "playwright-service",
                 ],
                 cwd=self.repo_root,
@@ -752,7 +815,7 @@ class DockerComposeSidecar:
                 check=False,
             )
             if result.returncode != 0:
-                raise C10Error("C10 sidecar stop was not confirmed")
+                raise C10Error("C10 sidecar removal was not confirmed")
             quiescence = subprocess.run(
                 [
                     "docker",
@@ -762,6 +825,7 @@ class DockerComposeSidecar:
                     "-f",
                     "docker-compose.c10.yaml",
                     "ps",
+                    "--all",
                     "--format",
                     "json",
                     "playwright-service",
@@ -773,10 +837,14 @@ class DockerComposeSidecar:
                 timeout=_remaining(deadline),
                 check=False,
             )
-            if quiescence.returncode != 0 or self._compose_is_running(
+            if quiescence.returncode != 0 or not self._compose_is_absent(
                 quiescence.stdout
             ):
-                raise C10Error("C10 sidecar quiescence was not confirmed")
+                # Absence is stronger than stopped: it removes the container
+                # Config.Env which held the per-session sidecar secrets.
+                raise C10Error(
+                    "C10 sidecar removal/Config.Env absence was not confirmed"
+                )
         finally:
             self._remove_env()
             self._compose_env = None
@@ -818,17 +886,21 @@ class DockerComposeSidecar:
             self._env_file = None
 
     @staticmethod
-    def _compose_is_running(output: str) -> bool:
+    def _compose_is_absent(output: str) -> bool:
+        if not output.strip():
+            return True
         for line in output.splitlines():
             if not line.strip():
                 continue
             try:
-                state = json.loads(line).get("State", "")
+                parsed = json.loads(line)
             except json.JSONDecodeError:
-                return True
-            if str(state).lower() in {"running", "restarting", "created"}:
-                return True
-        return False
+                return False
+            # Compose may return a JSON array or a JSON object. Either form
+            # represents a retained container and therefore retained Config.Env.
+            if parsed not in (None, []):
+                return False
+        return True
 
 
 class C10HostExecutionSession:
@@ -862,6 +934,9 @@ class C10HostExecutionSession:
         if timeout_seconds <= 0 or timeout_seconds > 120:
             raise C10Error("C10 lifecycle timeout is outside its reviewed bound")
         validate_plan(plan)
+        # Reject an alternate but syntactically valid Plan B before lock
+        # acquisition, durable claim, key generation, or Compose activity.
+        self.cards.assert_plan_identity(plan)
         deadline = time.monotonic() + timeout_seconds
         lock = SharedLock(self.lock_path)
         if lock.path.resolve() != canonical_shared_lock_dir(self.repo_root).resolve():
