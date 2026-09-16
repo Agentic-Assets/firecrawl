@@ -33,14 +33,18 @@ def _free_loopback_port() -> int:
 def _loopback_listener(
     repo_root: Path, environment: dict[str, str]
 ) -> Iterator[subprocess.Popen[str]]:
+    # `--import tsx` resolves the "tsx" package from cwd's node module
+    # resolution chain. Only apps/playwright-service-ts (not the repository
+    # root) owns that dependency, matching production's `_run_child`, which
+    # runs its own child from the collector package for the same reason.
     process = subprocess.Popen(
         [
             "node",
             "--import",
             "tsx",
-            "apps/playwright-service-ts/c10_browser_loopback_fixture.ts",
+            "c10_browser_loopback_fixture.ts",
         ],
-        cwd=repo_root,
+        cwd=repo_root / "apps/playwright-service-ts",
         env=environment,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -136,3 +140,50 @@ def test_python_issued_capability_reaches_real_loopback_listener_and_quarantines
     assert store._arm_path(0).with_suffix(".quarantine").exists(), (
         "a rejected child must retain durable quarantine evidence"
     )
+
+
+def test_python_verifies_signed_health_reports_the_admission_lane(
+    tmp_path: Path,
+) -> None:
+    """A sidecar started with C10_ADMISSION_LANE set must report that lane in
+    its signed health, and `_verify_health` must accept it only when the
+    caller names the same lane (the default strict check rejects it)."""
+    repo_root = Path(__file__).parents[4]
+    plan, cohort = sealed_jll_plan()
+    cards = C10SealedCardRegistry(plan, cohort)
+    store = C10SessionStore(tmp_path / "ledger" / "session.json")
+    host = object.__new__(_C10HostTransport)
+    host.repo_root = repo_root
+    host.cards = cards
+    host.session_store = store
+
+    deadline = time.monotonic() + 60
+    keys = host._keys(deadline)
+    claim = controller_claim(store, plan)
+    profile = plan["profiles"][claim["arm"]["variant"]]
+    port = _free_loopback_port()
+    lane = "jll-canonical-url-lexicographic-v1"
+    environment = {
+        **os.environ,
+        "C10_COORDINATOR_PUBLIC_KEY_PEM_B64": base64.b64encode(
+            keys.coordinator_public_pem.encode("utf-8")
+        ).decode("ascii"),
+        "C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM_B64": base64.b64encode(
+            keys.sidecar_private_pem.encode("utf-8")
+        ).decode("ascii"),
+        "PLAYWRIGHT_HOST_TRANSPORT_V3_KEY": keys.transport_key,
+        "C10_BROWSER_INTERNAL_PORT": str(port),
+        "C10_PROFILE_SHA256": contracts.sha256(profile["requested"]),
+        "C10_ADMISSION_LANE": lane,
+        "NODE_ENV": "test",
+    }
+    endpoint = f"http://127.0.0.1:{port}"
+
+    with _loopback_listener(repo_root, environment) as listener:
+        host._verify_health(endpoint, keys, profile, deadline, admission_lane=lane)
+        with pytest.raises(
+            contracts.C10Error, match="signed health binding is invalid"
+        ):
+            host._verify_health(endpoint, keys, profile, deadline)
+
+    assert listener.returncode == 0

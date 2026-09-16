@@ -10,8 +10,10 @@ import type { Browser, BrowserContext, Page } from "playwright";
 import { cleanupBrowserBatchResources } from "./browser_batch_fetch";
 import {
   C10_BROWSER_INTERNAL_PATH,
+  C10_JLL_ADMISSION_LANE,
   C10SidecarCapabilityRegistry,
   parseC10SidecarInput,
+  type C10AdmissionLane,
   publicKeyId,
   signC10Evidence,
   type C10SidecarCard,
@@ -39,6 +41,9 @@ export type C10BrowserListenerConfig = Readonly<{
   hostTransportKey: string | undefined;
   port: string | undefined;
   profileSha256: string | undefined;
+  /** Null for strict P0/P1; the reviewed lane name for JLL admission only. */
+  admissionLane: C10AdmissionLane;
+  admissionLaneValid: boolean;
   allowTestLocalTargets: boolean;
   hasAnyConfiguration: boolean;
   enabled: boolean;
@@ -92,12 +97,16 @@ export function readC10BrowserListenerConfig(
   const hostTransportKey = environment.PLAYWRIGHT_HOST_TRANSPORT_V3_KEY;
   const port = environment.C10_BROWSER_INTERNAL_PORT;
   const profileSha256 = environment.C10_PROFILE_SHA256;
+  const lane = environment.C10_ADMISSION_LANE;
+  const admissionLane: C10AdmissionLane = lane === C10_JLL_ADMISSION_LANE ? C10_JLL_ADMISSION_LANE : null;
   return Object.freeze({
     coordinatorPublicKey,
     sidecarEvidencePrivateKey,
     hostTransportKey,
     port,
     profileSha256,
+    admissionLane,
+    admissionLaneValid: lane === undefined || lane === "" || lane === C10_JLL_ADMISSION_LANE,
     allowTestLocalTargets:
       environment.NODE_ENV === "test" &&
       environment.C10_BROWSER_INTERNAL_ALLOW_TEST_LOCAL_TARGETS === "true",
@@ -128,6 +137,9 @@ export function assertC10BrowserListenerConfiguration(
   }
   if (config.enabled && (!config.port || !/^[1-9][0-9]{0,4}$/.test(config.port))) {
     throw new Error("C10_BROWSER_INTERNAL_PORT is invalid");
+  }
+  if (!config.admissionLaneValid) {
+    throw new Error("C10_ADMISSION_LANE is not a reviewed admission lane");
   }
 }
 
@@ -231,6 +243,28 @@ export function hasC10EnumerationMembership(
 }
 
 /**
+ * Admission-lane enumeration success: a well-formed native GraphQL envelope
+ * with at least sixteen candidates.  Membership is recomputed and enforced by
+ * the coordinator from this signed body before any member capability exists.
+ */
+export function hasC10AdmissionEnumerationCandidates(bodyBase64: string): boolean {
+  try {
+    const payload: unknown = JSON.parse(Buffer.from(bodyBase64, "base64").toString("utf8"));
+    if (!payload || typeof payload !== "object" || Array.isArray(payload) || "errors" in payload) {
+      return false;
+    }
+    const data = (payload as { data?: unknown }).data;
+    if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+    const properties = (data as { properties?: unknown }).properties;
+    if (!properties || typeof properties !== "object" || Array.isArray(properties)) return false;
+    const items = (properties as { items?: unknown }).items;
+    return Array.isArray(items) && items.length >= 16;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Success evidence is intentionally stricter than transport completion. A
  * result has to be the reviewed route, status, response representation, and
  * challenge-free before the listener signs it.
@@ -247,7 +281,10 @@ export function isC10SuccessfulBrowserResponse(
     normalizedContentType(response.contentType) ===
       expectedC10ResponseContentType(card) &&
     !challengeDetected &&
-    (card.stage !== "enumeration" || hasC10EnumerationMembership(card, response.bodyBase64))
+    (card.stage !== "enumeration" ||
+      (card.expectedMemberRoutes === null
+        ? hasC10AdmissionEnumerationCandidates(response.bodyBase64)
+        : hasC10EnumerationMembership(card, response.bodyBase64)))
   );
 }
 
@@ -296,6 +333,7 @@ export function createC10BrowserListener(
         dependencies.maxConcurrentPages - pageLeasePool.availableCount(),
       configuredCapacity: dependencies.maxConcurrentPages,
       profileSha256: config.profileSha256,
+      admissionLane: config.admissionLane,
       replayEntries: capabilities.size(),
     };
     return res.status(200).json({
@@ -315,7 +353,7 @@ export function createC10BrowserListener(
     }
     let input;
     try {
-      input = parseC10SidecarInput(req.body);
+      input = parseC10SidecarInput(req.body, { admissionLane: config.admissionLane });
     } catch {
       return res.status(400).json({ error: "Invalid internal C10 browser request" });
     }
@@ -324,6 +362,8 @@ export function createC10BrowserListener(
         coordinatorPublicKey,
         input,
         req.header("x-c10-browser-authorization") ?? undefined,
+        Date.now(),
+        { admissionLane: config.admissionLane },
       )
     ) {
       // Deliberately do not disclose whether the path, token, arm, or card was wrong.

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isC10SuccessfulBrowserResponse } from "./c10_browser_listener";
+import {
+  assertC10BrowserListenerConfiguration,
+  hasC10AdmissionEnumerationCandidates,
+  isC10SuccessfulBrowserResponse,
+  readC10BrowserListenerConfig,
+} from "./c10_browser_listener";
 import type { C10BrowserPageResponse } from "./c10_browser_execution";
 import type { C10SidecarCard } from "./c10_browser_internal";
 
@@ -122,6 +127,104 @@ test("C10 success gate rejects non-success, route, representation, and challenge
   );
   assert.equal(
     isC10SuccessfulBrowserResponse(enumerationCard, response(), true),
+    false,
+  );
+});
+
+test("readC10BrowserListenerConfig/assertC10BrowserListenerConfiguration: admission lane unset is null, named lane round-trips, any other value is invalid and throws", () => {
+  const unset = readC10BrowserListenerConfig({});
+  assert.equal(unset.admissionLane, null);
+  assert.equal(unset.admissionLaneValid, true);
+  assert.doesNotThrow(() => assertC10BrowserListenerConfiguration(unset));
+
+  const named = readC10BrowserListenerConfig({
+    C10_ADMISSION_LANE: "jll-canonical-url-lexicographic-v1",
+  });
+  assert.equal(named.admissionLane, "jll-canonical-url-lexicographic-v1");
+  assert.equal(named.admissionLaneValid, true);
+  assert.doesNotThrow(() => assertC10BrowserListenerConfiguration(named));
+
+  const invalid = readC10BrowserListenerConfig({ C10_ADMISSION_LANE: "other" });
+  assert.equal(invalid.admissionLane, null);
+  assert.equal(invalid.admissionLaneValid, false);
+  assert.throws(
+    () => assertC10BrowserListenerConfiguration(invalid),
+    /C10_ADMISSION_LANE is not a reviewed admission lane/,
+  );
+});
+
+test("hasC10AdmissionEnumerationCandidates accepts >=16 candidates and rejects 15, an errors envelope, or non-JSON", () => {
+  const bodyWith = (count: number) =>
+    Buffer.from(
+      JSON.stringify({
+        data: {
+          properties: {
+            items: Array.from({ length: count }, (_, index) => ({
+              pageUrl: `https://www.us.jll.com/properties/candidate-${index + 1}`,
+            })),
+          },
+        },
+      }),
+    ).toString("base64");
+  assert.equal(hasC10AdmissionEnumerationCandidates(bodyWith(16)), true);
+  assert.equal(hasC10AdmissionEnumerationCandidates(bodyWith(15)), false);
+  assert.equal(
+    hasC10AdmissionEnumerationCandidates(
+      Buffer.from(JSON.stringify({ errors: [{ message: "upstream failure" }] })).toString(
+        "base64",
+      ),
+    ),
+    false,
+  );
+  assert.equal(
+    hasC10AdmissionEnumerationCandidates(Buffer.from("not-json").toString("base64")),
+    false,
+  );
+});
+
+test("C10 admission enumeration success accepts >=16 candidates while a strict card still requires sealed membership", () => {
+  const admissionEnumerationCard: C10SidecarCard = {
+    ...enumerationCard,
+    id: "admission-enumeration",
+    expectedMemberRoutes: null,
+  };
+  const candidateBody = (count: number) =>
+    Buffer.from(
+      JSON.stringify({
+        data: {
+          properties: {
+            items: Array.from({ length: count }, (_, index) => ({
+              pageUrl: `https://www.us.jll.com/properties/candidate-${index + 1}`,
+            })),
+          },
+        },
+      }),
+    ).toString("base64");
+
+  assert.equal(
+    isC10SuccessfulBrowserResponse(
+      admissionEnumerationCard,
+      response({ bodyBase64: candidateBody(16) }),
+      false,
+    ),
+    true,
+  );
+  assert.equal(
+    isC10SuccessfulBrowserResponse(
+      admissionEnumerationCard,
+      response({ bodyBase64: candidateBody(15) }),
+      false,
+    ),
+    false,
+  );
+  // The same sixteen non-sealed candidates do not satisfy the strict card,
+  // which still requires membership in its sealed expectedMemberRoutes.
+  assert.equal(
+    isC10SuccessfulBrowserResponse(
+      enumerationCard,
+      response({ bodyBase64: candidateBody(16) }),
+      false,
+    ),
     false,
   );
 });

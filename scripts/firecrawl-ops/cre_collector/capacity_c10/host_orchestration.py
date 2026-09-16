@@ -70,6 +70,7 @@ _HEALTH_FIELDS = {
     "activePages",
     "configuredCapacity",
     "coordinatorKeyId",
+    "admissionLane",
     "evidenceKeyId",
     "healthSignature",
     "protocolVersion",
@@ -381,7 +382,14 @@ class _C10HostTransport:
         keys: C10EphemeralKeys,
         profile: Mapping[str, Any],
         deadline: float,
+        *,
+        admission_lane: str | None = None,
     ) -> None:
+        """Verify signed health, including the sidecar's lane.
+
+        P0/P1 calibration requires a strict sidecar (``admissionLane`` null);
+        only the JLL admission action may require its named admission lane.
+        """
         request = Request(
             f"{endpoint}/health",
             headers={"x-firecrawl-host-transport-key": keys.transport_key},
@@ -411,6 +419,7 @@ class _C10HostTransport:
             or unsigned.get("configuredCapacity")
             != profile["requested"]["global_pages"]
             or unsigned.get("profileSha256") != sha256(profile["requested"])
+            or unsigned.get("admissionLane") != admission_lane
         ):
             raise C10Error("C10 signed health binding is invalid")
 
@@ -483,7 +492,9 @@ class _C10HostTransport:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                cwd=self.repo_root,
+                # `--import tsx` resolves from cwd; only the collector package
+                # (not the repository root) owns the pinned tsx dependency.
+                cwd=self.repo_root / "scripts/firecrawl-ops/cre_collector",
                 start_new_session=True,
             )
             frame = (_canonical_text(payload) + "\n").encode("utf-8")
@@ -564,7 +575,15 @@ class _C10HostTransport:
         issued: Mapping[str, Any],
         keys: C10EphemeralKeys,
         deadline: float,
+        *,
+        admission_enumeration: bool = False,
     ) -> None:
+        """Verify signed sidecar evidence for one issued card.
+
+        P0/P1 enumeration cards must carry their sixteen sealed member routes.
+        Only the JLL admission controller, which recomputes membership from
+        this very body before issuing any member card, may omit them.
+        """
         evidence = _safe_json(raw, "C10 sidecar evidence")
         if set(evidence) != _EVIDENCE_FIELDS:
             raise C10Error("C10 sidecar evidence schema is invalid")
@@ -617,15 +636,16 @@ class _C10HostTransport:
         if card.get("stage") == "enumeration":
             expected = card.get("expectedMemberRoutes")
             allowed_host = card.get("allowedHost")
-            if not isinstance(allowed_host, str) or (
-                expected is not None
-                and (
-                    not isinstance(expected, list)
-                    or len(expected) != 16
-                    or not all(isinstance(route, str) for route in expected)
-                )
+            if admission_enumeration:
+                if not isinstance(allowed_host, str) or expected is not None:
+                    raise C10Error("C10 admission enumeration card is invalid")
+            elif (
+                not isinstance(expected, list)
+                or len(expected) != 16
+                or not all(isinstance(route, str) for route in expected)
+                or not isinstance(allowed_host, str)
             ):
-                raise C10Error("C10 enumeration card has an invalid sealed membership")
+                raise C10Error("C10 enumeration card lacks sealed membership")
             try:
                 payload = json.loads(base64.b64decode(body, validate=True))
                 items = payload["data"]["properties"]["items"]
@@ -651,5 +671,5 @@ class _C10HostTransport:
                 ):
                     continue
                 observed.add(f"https://{parsed.netloc}{parsed.path}".rstrip("/"))
-            if expected is not None and not set(expected).issubset(observed):
+            if not admission_enumeration and not set(expected).issubset(observed):
                 raise C10Error("C10 enumeration evidence does not bind sealed cohort")

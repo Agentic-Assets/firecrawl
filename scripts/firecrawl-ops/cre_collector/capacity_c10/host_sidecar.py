@@ -307,6 +307,8 @@ class DockerComposeSidecar:
                 actual_environment.get(key) == expected_environment[key]
                 for key in ("MAX_CONCURRENT_PAGES", "C10_PROFILE_SHA256")
             )
+            and (actual_environment.get("C10_ADMISSION_LANE") or "")
+            == (expected_environment.get("C10_ADMISSION_LANE") or "")
         )
 
     def _remove_env(self) -> None:

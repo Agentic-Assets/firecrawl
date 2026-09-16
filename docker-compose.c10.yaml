@@ -11,6 +11,8 @@ services:
       C10_BROWSER_INTERNAL_PORT: 3004
       MAX_CONCURRENT_PAGES: ${MAX_CONCURRENT_PAGES:?set reviewed C10 capacity}
       C10_PROFILE_SHA256: ${C10_PROFILE_SHA256:?set reviewed C10 profile identity}
+      # Empty for P0/P1 calibration. Only the JLL admission action names its lane.
+      C10_ADMISSION_LANE: ${C10_ADMISSION_LANE:-}
     security_opt:
       - no-new-privileges:true
     cap_drop:
