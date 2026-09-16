@@ -44,28 +44,96 @@ pin; then run the existing production-controller dry-run before any bounded P0
 arm. Preserve the receipt manifest and final outcome as operator evidence. Do
 not treat this document or a passing mock test as live provider proof.
 
-## Stop handoff: 2026-09-16
+## Finalization: 2026-09-16
 
-- Draft PR: [#72](https://github.com/Agentic-Assets/firecrawl/pull/72).
-- Current branch SHA: `e963d4f00` (`fix: select JLL admission members in source`),
-  following bridge commit `518b5a895`. Neither change is merged or approved.
-- Merged prerequisites remain PR #67 (host hardening), PR #70 (offline
-  admission support), and PR #71 (JLL-only lane). None is live-provider proof.
-- Verified before this stop: bridge-focused Python tests passed; the prior exact
-  full collector Python rerun was `3248 passed, 18 skipped, 3 warnings`; the
-  prior collector TypeScript suite was `913 passed, 1 skipped`, with typecheck
-  passing. The isolated worktree hydrated the pinned Playwright package lock so
-  the loopback child resolves `express` from its real working directory.
-- The deterministic source-owned selection remediation is committed but
-  unreviewed and not fully re-gated: it proposes
-  `jll-canonical-url-lexicographic-v1` (canonicalize, reject malformed or
-  duplicate candidates, lexicographically sort routes, take 16) and binds a
-  selection digest into the receipt set/manifest. Do not treat it as complete
-  until a fresh cross-language adversarial review and full exact-head gates
-  prove TS source selection, Python manifest verification, controller override
-  refusal, tie/duplicate/insufficient behavior, and recovery.
-- No provider request, C10 calibration, authority pin, database/cache/listing/
-  scheduler mutation, or merge occurred. The next live stage remains blocked
-  on review and merge: provision fresh 0700 roots, run the reviewed bounded JLL
-  admission action once, descriptor-reopen and build the bundle, render (not
-  install) authority, then open a distinct reviewed pin PR.
+The open items from the earlier stop handoff are closed on
+[PR #72](https://github.com/Agentic-Assets/firecrawl/pull/72). Review records:
+`docs/logs/subagents/2026-09-16/c10-jll-controller-bridge/phase1-adversarial-review.md`
+and `phase2-live-readiness-fixes.md` in the same folder.
+
+### Phase 1: cross-language adversarial review (`038650480`, `afda66d90`, `683fac06a`)
+
+Before this pass the bridge could not have completed a live collection, even
+though its earlier tests passed:
+
+- Python rejected every manifest the TS child wrote (extra `selection_digest`
+  in `collection_intent`).
+- Controller replies were capped at 64 KiB, below real base64 response sizes;
+  the cap is now 8 MiB, matching the child.
+- Bridge cards did not satisfy the sidecar v3 contract. The sidecar now has a
+  named JLL-only admission lane reported in signed health; P0/P1 stay strict
+  and require no lane.
+
+Also fixed: locale-sensitive TS sort replaced with code-unit order and a strict
+route grammar; one shared Python selector with 42 golden vectors checked in
+both languages; Python recomputes the selection from the sealed enumeration
+body before any bundle; the ignored `members` override removed and cards
+pinned exactly; deadline-bounded non-blocking child I/O; fresh empty 0700
+receipt root required; bounded seal count, bytes, stems and request ids.
+
+### Independent review and phase 2 (`39962fad1`, `a1f53bf25`, `44584a307`, `cfb6ccb5c`)
+
+A separate reviewer approved the offline code but confirmed live-run defects,
+now fixed with tests:
+
+- Teardown ran under the expired run deadline and leaked the sidecar. It now
+  has its own bounded budget with retries; unproven teardown keeps the lock and
+  armed marker and writes a quarantine record naming the compose project.
+- Health was a single request after `compose up`. The shared health check
+  (P0/P1 too) now retries only connection refused/reset, up to 60 s; every
+  HTTP response still goes through signed-health verification.
+- Budgets split: startup and health 180 s, collection 570 s (17 x 30 s + 60 s),
+  teardown 60 s; worst case 815 s including child reaping.
+- The offline builder accepted roots the controller rejected. The controller
+  now seals a completion attestation only after verification, and the builder
+  and renderers require it and refuse quarantined roots.
+- Adapter digest checked before lock or sidecar work; killed child reaped;
+  admission holds the shared C10 lock; GraphQL `errors: []` means no errors in
+  TS sidecar, Python evidence check and selection (11 shared vectors).
+
+### Gates on exact head `cfb6ccb5c`
+
+| Gate | Result |
+| --- | --- |
+| Collector `python3 -m pytest tests/ -q -p no:cacheprovider` | 3447 passed, 1 skipped |
+| Collector `npx tsc --noEmit` | pass |
+| Collector `npm run test:unit` | 976 passed, 1 skipped |
+| `apps/playwright-service-ts` `npx tsc --noEmit -p .` | pass |
+| `apps/playwright-service-ts` `npm test` | 60 passed |
+| `uvx ruff check`, `ruff format --check`, `py_compile` (changed Python) | clean |
+| knip pre-commit hook | ran on every commit, never bypassed |
+
+A deslop gate ran after each phase; the second pass also refuted P0/P1
+regressions, lock release with a live container, child forgery of the
+completion attestation, and unverified readiness acceptance.
+
+### Operator-visible changes
+
+- C10 runs (P0/P1 and admission) never build or pull the sidecar image. Build
+  it from the reviewed checkout first:
+  `docker compose -f docker-compose.yaml -f docker-compose.c10.yaml build playwright-service-c10`.
+- The private receipt store is Linux-only; the live admission must run on the
+  Linux production host.
+- Quarantine recovery is by compose project label:
+  `docker ps --all --filter label=com.docker.compose.project=<project>`.
+
+### Known live-run risks (unchanged by design)
+
+- A response body starting with a UTF-8 BOM is rejected.
+- The existing challenge regex matches "captcha" in member HTML and would fail
+  closed on a page embedding reCAPTCHA.
+- The 815 s bound and readiness behavior are proven against fakes and the local
+  loopback listener, not a real Docker sidecar or JLL.
+- The offline checker validates `session_sha256`/`run_sha256` shape only; a
+  same-uid process could write matching files, as it could the manifest itself.
+
+### Still not done (separately gated)
+
+No provider request, root provisioning, authority pin, P0/P1 arm, database,
+cache, listing or scheduler write, or merge occurred. Remaining sequence after
+merge approval: rebuild the sidecar image from the merged checkout; provision
+a fresh 0700 root on the Linux host; run the reviewed bounded JLL admission
+action once; build the bundle and render (not install) authority; open a
+distinct reviewed pin PR; then run the production-controller dry-run before any
+bounded P0 arm. Do not treat this document or passing tests as live provider
+proof.
