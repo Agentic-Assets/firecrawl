@@ -457,6 +457,48 @@ class C10SessionStore:
         except OSError as exc:
             raise C10Error("C10 quarantine evidence could not be persisted") from exc
 
+    def record_terminal(
+        self, claim: Mapping[str, Any], authenticated_arm: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Durably bind one authenticated host arm before lock release.
+
+        This intentionally stores only hashes and the comparator-facing
+        envelope. Browser bodies remain in the private sealed receipt root.
+        ``O_EXCL`` makes a second terminalization of the same claim a stop.
+        """
+        claim_id = claim.get("claim_id")
+        if not isinstance(claim_id, str) or not claim_id:
+            raise C10Error("C10 terminalization requires a durable claim")
+        record = {
+            "kind": "cre_capacity_c10_v3_host_terminal",
+            "claim_id": claim_id,
+            "session_sha256": claim.get("session_sha256"),
+            "arm": claim.get("arm"),
+            "authenticated_arm_sha256": sha256(authenticated_arm),
+            "state": "terminal",
+        }
+        target = self.path.with_name(f"{self.path.name}.terminal")
+        try:
+            descriptor = os.open(
+                target,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                _FILE_MODE,
+            )
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(canonical_bytes(record))
+                handle.flush()
+                os.fsync(handle.fileno())
+            parent = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(parent)
+            finally:
+                os.close(parent)
+        except FileExistsError as exc:
+            raise C10Error("C10 arm is already terminalized") from exc
+        except OSError as exc:
+            raise C10Error("C10 terminal evidence could not be persisted") from exc
+        return record
+
 
 class C10SealedCardRegistry:
     """The only C10 request graph: one fixed JLL enumeration and 16 members.
@@ -938,7 +980,8 @@ class C10HostExecutionSession:
         session: Mapping[str, Any],
         *,
         timeout_seconds: float = 120,
-        child: Callable[[Mapping[str, Any], float], Mapping[str, Any]] | None = None,
+        _claim: Mapping[str, Any] | None = None,
+        _held_shared_lock: SharedLock | None = None,
     ) -> Mapping[str, Any]:
         if timeout_seconds <= 0 or timeout_seconds > 120:
             raise C10Error("C10 lifecycle timeout is outside its reviewed bound")
@@ -947,15 +990,31 @@ class C10HostExecutionSession:
         # acquisition, durable claim, key generation, or Compose activity.
         self.cards.assert_plan_identity(plan)
         deadline = time.monotonic() + timeout_seconds
-        lock = SharedLock(self.lock_path)
+        lock = _held_shared_lock or SharedLock(self.lock_path)
         if lock.path.resolve() != canonical_shared_lock_dir(self.repo_root).resolve():
             raise C10Error("C10 host rejected a noncanonical SharedLock identity")
-        lock.acquire()
+        owns_lock = _held_shared_lock is None
+        if owns_lock:
+            lock.acquire()
+        else:
+            try:
+                descriptor = lock._owned_directory_fd()
+            except Exception as exc:
+                raise C10Error(
+                    "C10 host requires the owned canonical SharedLock"
+                ) from exc
+            os.close(descriptor)
         sidecar_attempted = False
         claim: Mapping[str, Any] | None = None
         result: Mapping[str, Any] | None = None
         try:
-            claim = self.session_store.claim(plan, session)
+            if _claim is None:
+                claim = self.session_store.claim(plan, session)
+            else:
+                durable = self.session_store.read_bound(plan, session)
+                if dict(durable) != dict(_claim):
+                    raise C10Error("C10 host rejects an unbound durable claim")
+                claim = durable
             with PrivateReceiptStore.create(self.private_root) as store:
                 keys = self._keys(deadline)
                 port = self._free_loopback_port()
@@ -986,7 +1045,7 @@ class C10HostExecutionSession:
                 endpoint = f"http://127.0.0.1:{port}"
                 self._verify_health(endpoint, keys, profile, deadline)
                 evidence, artifacts = self._run_cohort(
-                    endpoint, claim, plan, profile, keys, store, deadline, child
+                    endpoint, claim, plan, profile, keys, store, deadline
                 )
                 result = {
                     "claim": claim,
@@ -1009,7 +1068,8 @@ class C10HostExecutionSession:
                 self.quarantine(f"C10 sidecar cleanup failed: {cleanup_error}")
                 raise
             finally:
-                lock.release()
+                if owns_lock:
+                    lock.release()
         if result is None:
             raise C10Error("C10 host did not produce a terminal cohort result")
         return result
@@ -1023,7 +1083,6 @@ class C10HostExecutionSession:
         keys: C10EphemeralKeys,
         store: PrivateReceiptStore,
         deadline: float,
-        child: Callable[[Mapping[str, Any], float], Mapping[str, Any]] | None,
     ) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
         """Run the one enumeration then all 16 immutable members at P0/P1.
 
@@ -1035,7 +1094,6 @@ class C10HostExecutionSession:
             "jll_detail_concurrency"
         ):
             raise C10Error("C10 profile has no reviewed P0/P1 JLL capacity")
-        execute_child = child or self._run_child
         issued_cards = [
             self._issue(
                 endpoint,
@@ -1061,13 +1119,13 @@ class C10HostExecutionSession:
         )
         # The native enumeration is a required predecessor of every selected
         # detail member. It is still host-issued and sealed like every card.
-        enumeration = execute_child(issued_cards[0], deadline)
+        enumeration = self._run_child(issued_cards[0], deadline)
         self._verify_evidence(enumeration, issued_cards[0], keys, deadline)
         evidence: list[Mapping[str, Any]] = [enumeration]
         pool = ThreadPoolExecutor(max_workers=target, thread_name_prefix="c10-jll")
         try:
             futures = {
-                pool.submit(execute_child, issued, deadline): issued
+                pool.submit(self._run_child, issued, deadline): issued
                 for issued in issued_cards[1:]
             }
             for future in as_completed(futures, timeout=_remaining(deadline)):

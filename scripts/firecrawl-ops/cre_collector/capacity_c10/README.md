@@ -12,17 +12,10 @@ manifest, Compose lifecycle, capability signer, and private artifacts.
 requires an exact registry where every source-specific adapter is explicitly
 reviewed and fully verified. `admission.py` binds that registry, a hash-bound
 multisource-v1 cohort, and the isolated `c10-p0`/`c10-p1` configuration into an
-immutable plan. `runner.py` owns serial one-use arm ordering and a library-only
-coordinator that requires injected runtime, browser, settlement, rollback, and
-quarantine hooks. Before preflight, it atomically persists each arm claim in an
-owner-only, FD-identity-checked session root derived solely from the canonical
-shared-lock location and immutable plan/session identity. Callers cannot select
-another ledger. An interrupted claim remains unresolved after quarantine
-recovery and cannot be replayed. Terminalization atomically retains the sealed
-result and digest in that ledger, so a caller crash cannot consume the only
-recoverable copy. `compare.py`
-is pure and can only produce an operator-review candidate, never an executable
-adoption decision.
+immutable plan. `runner.py` is a pure, data-only session helper: it has no
+runtime hooks, subprocesses, lock access, or callback-driven execution path.
+`compare.py` is pure and can only produce an operator-review candidate, never
+an executable adoption decision.
 
 The receipt producers do not change this admission boundary. Inventory
 producers, strict-detail Batch A producers, and the Foundry Batch B producer
@@ -32,14 +25,14 @@ not registered in a live collector, and no producer is evidence of adapter
 admission or of a completed C10 run. `candidate_registry()` remains an
 unverified review surface and `default_registry()` remains empty.
 
-The executable-foundation seam is deliberately still library-only. Its
-`run_one_coordinated_arm()` coordinator receives explicitly injected runtime,
-browser, settlement, and quarantine hooks; it has no CLI and does not arm or
-call the local API by itself. It holds one `SharedLock` from preflight through
-browser execution, settlement, P1 rollback, and quarantine. Its only admitted
-alternate runtime profile is the canonical
-`cre_capacity_c10_profiles_v1.json`, named with `experiment_kind="C10"`; the
-ordinary controller retains its historic default profile behavior.
+The executable path is `capacity_c10.production`, not an injectable runner.
+It durably claims an arm before any host activity, holds the canonical
+`SharedLock` through runtime preflight, P1 candidate transition, host execution,
+settlement, rollback, terminalization, and quarantine, and invokes only the
+existing `cre_capacity_runtime` controller. Its only admitted alternate runtime
+profile is the canonical `cre_capacity_c10_profiles_v1.json`, named with
+`experiment_kind="C10"`; the ordinary controller retains its historic default
+profile behavior.
 
 The former TypeScript JLL executor, lifecycle preflight, and local browser
 constructor have been removed. A host creates a sealed, plan-bound JLL card
@@ -52,11 +45,13 @@ arbitrary card. The host accepts a terminal success only after it has verified
 signed cleanup-complete evidence and derived the exact 4/10 active-lease peak
 from sidecar lease intervals.
 
-The only production arm entrypoint is `python -m capacity_c10.production
---execute` with explicit sealed plan, cohort, session, durable session store,
-private receipt root, and repository paths. It constructs the host session
-itself and accepts no browser callback, arbitrary card, or caller scheduler
-evidence. Without `--execute` it refuses to run.
+The only production entrypoint is `python -m capacity_c10.production`. It
+defaults to a local-input-only dry run. `--execute --smoke` runs one sealed
+16-member P0/P1 arm only after its canonical runtime preflight, and P1 also
+requires a fresh approval plus admission path. `--execute --counterbalanced`
+runs the fixed eight-arm sequence and requires one approval and admission file
+per P1 arm. It constructs the host registry itself and accepts no browser
+callback, arbitrary card, or caller scheduler evidence.
 
 The coordinator seals a browser arm only when it carries the plan/config and
 requested-profile digests, private runtime receipt digest, container snapshot
@@ -71,7 +66,7 @@ direct/native transport,
 cache reads/writes, fallback/multiple attempts, caller-supplied throughput
 scalars, and unsaturated cohorts.
 
-The future live binding must use the existing public components, without
+The production coordinator binds the existing public components, without
 duplicating them:
 
 - `cre_checkpoint_refresh.SharedLock` for exclusive ownership and retained
@@ -93,6 +88,9 @@ This foundation is not whole-cohort browser-fidelity proof. The present
 has local browser-route evidence; every other source still requires independent
 reviewed browser-path, cache instrumentation, and scheduler proof.
 Direct-native receipts remain non-comparable compatibility evidence.
+Authenticated JLL host evidence is terminalized separately and remains
+`not_comparable_pending_authenticated_20_source_evidence`; no missing source is
+converted into an assumed throughput observation.
 
 ## Candidate receipt hooks
 
