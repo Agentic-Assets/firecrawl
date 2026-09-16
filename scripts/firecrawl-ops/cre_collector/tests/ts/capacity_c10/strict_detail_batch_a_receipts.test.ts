@@ -102,8 +102,14 @@ test("strict-detail rejects a same-source transport with a substituted initial h
   };
   const expected = jllEnumerationCard(plan.enumerations[0]!, 0);
   const fake = new FixtureTransport({});
-  const receiptContext = await context("jll", [{ ...expected, url: "https://alternate.example/graphql", allowedHost: "alternate.example" }], fake);
-  await assert.rejects(createJllReceiptProducer(plan).produceEnumerationReceipt(receiptContext), /initial request-card set does not match source plan/);
+  await assert.rejects(
+    context(
+      "jll",
+      [{ ...expected, url: "https://alternate.example/graphql", allowedHost: "alternate.example" }],
+      fake,
+    ),
+    /browser bootstrap URL is not allowlisted for this request card/,
+  );
   assert.equal(fake.cards.length, 0);
 });
 

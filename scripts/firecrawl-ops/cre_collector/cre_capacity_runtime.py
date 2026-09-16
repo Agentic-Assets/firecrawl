@@ -389,16 +389,113 @@ def _run(
     *,
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
+    deadline: float | None = None,
 ) -> str:
-    result = runner(argv, cwd, env)
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeAdmissionError("runtime deadline expired before command")
+        if runner is _default_runner:
+            result = runner(argv, cwd, env, timeout_seconds=remaining)  # type: ignore[call-arg]
+        else:
+            # Test and adapter runners are synchronous by contract. The real
+            # subprocess path above receives the remaining absolute budget.
+            result = runner(argv, cwd, env)
+        if time.monotonic() >= deadline:
+            raise RuntimeAdmissionError("runtime deadline expired during command")
+    else:
+        result = runner(argv, cwd, env)
     if result.returncode != 0:
         raise RuntimeAdmissionError(f"runtime command failed: {Path(argv[0]).name}")
     return result.stdout
 
 
-def _json_output(runner: CommandRunner, argv: Sequence[str]) -> Any:
+def _capture_with_deadline(
+    runner: CommandRunner, deadline: float | None
+) -> RuntimeCapture:
+    """Preserve legacy test seams while making real deadline calls explicit."""
+    if deadline is None:
+        return capture_runtime(runner)
+    return capture_runtime(runner, deadline=deadline)
+
+
+def _recovery_with_deadline(
+    capture: RuntimeCapture, runner: CommandRunner, deadline: float | None
+) -> RuntimeCapture:
+    if deadline is None:
+        return _capture_recovery_state(capture, runner)
+    return _capture_recovery_state(capture, runner, deadline=deadline)
+
+
+def _compose_with_deadline(
+    capture: RuntimeCapture,
+    profile: Mapping[str, Any],
+    state: str,
+    runner: CommandRunner,
+    *,
+    deadline: float | None,
+    execute: bool = True,
+    mutation_observer: Callable[[], None] | None = None,
+) -> None:
+    """Call the mutable compose seam without changing legacy test adapters."""
+    kwargs: dict[str, Any] = {}
+    if not execute:
+        kwargs["execute"] = False
+    if mutation_observer is not None:
+        kwargs["mutation_observer"] = mutation_observer
+    if deadline is not None:
+        kwargs["deadline"] = deadline
+    _compose_recreate(capture, profile, state, runner, **kwargs)
+
+
+def _api_with_deadline(
+    profile: Mapping[str, Any],
+    state: str,
+    runner: CommandRunner,
+    *,
+    deadline: float | None,
+    mutation_observer: Callable[[], None] | None = None,
+) -> None:
+    """Call the mutable API seam while preserving its default public shape."""
+    kwargs: dict[str, Any] = {}
+    if mutation_observer is not None:
+        kwargs["mutation_observer"] = mutation_observer
+    if deadline is not None:
+        kwargs["deadline"] = deadline
+    _api_update(profile, state, runner, **kwargs)
+
+
+def _restore_with_deadline(
+    current: RuntimeCapture,
+    receipt: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    runner: CommandRunner,
+    deadline: float | None,
+) -> RuntimeCapture:
+    if deadline is None:
+        return _restore_baseline(current, receipt, profile, runner)
+    return _restore_baseline(current, receipt, profile, runner, deadline=deadline)
+
+
+def _compensate_with_deadline(
+    current: RuntimeCapture,
+    receipt: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    runner: CommandRunner,
+    deadline: float | None,
+) -> RuntimeCapture:
+    if deadline is None:
+        return _compensate_candidate_attempt(current, receipt, profile, runner)
+    return _compensate_candidate_attempt(
+        current, receipt, profile, runner, deadline=deadline
+    )
+
+
+def _json_output(
+    runner: CommandRunner, argv: Sequence[str], *, deadline: float | None = None
+) -> Any:
     try:
-        return json.loads(_run(runner, argv, cwd=REPO_ROOT))
+        return json.loads(_run(runner, argv, cwd=REPO_ROOT, deadline=deadline))
     except json.JSONDecodeError as exc:
         raise RuntimeAdmissionError(f"invalid JSON from {Path(argv[0]).name}") from exc
 
@@ -475,9 +572,18 @@ def _container_public(
     }
 
 
-def _queue_json(url: str) -> dict[str, Any]:
+def _queue_json(url: str, *, deadline: float | None = None) -> dict[str, Any]:
     try:
-        with urllib.request.urlopen(url, timeout=10) as response:
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeAdmissionError(
+                    "runtime deadline expired before network request"
+                )
+            timeout = min(10.0, remaining)
+        else:
+            timeout = 10.0
+        with urllib.request.urlopen(url, timeout=timeout) as response:
             raw = response.read(64 * 1024)
     except (OSError, TimeoutError, urllib.error.URLError) as exc:
         raise RuntimeAdmissionError("loopback queue endpoint unavailable") from exc
@@ -492,12 +598,16 @@ def _queue_json(url: str) -> dict[str, Any]:
     return value
 
 
-def _http_status(url: str) -> int:
-    deadline = time.monotonic() + RUNTIME_ENDPOINT_READY_SECONDS
+def _http_status(url: str, *, deadline: float | None = None) -> int:
+    endpoint_deadline = time.monotonic() + RUNTIME_ENDPOINT_READY_SECONDS
+    if deadline is not None:
+        endpoint_deadline = min(endpoint_deadline, deadline)
     last_error: BaseException | None = None
     while True:
+        if deadline is not None and endpoint_deadline <= time.monotonic():
+            break
         try:
-            remaining = deadline - time.monotonic()
+            remaining = endpoint_deadline - time.monotonic()
             with urllib.request.urlopen(
                 url, timeout=min(10, max(0.1, remaining))
             ) as response:
@@ -507,7 +617,7 @@ def _http_status(url: str) -> int:
             return exc.code
         except (OSError, TimeoutError, urllib.error.URLError) as exc:
             last_error = exc
-            remaining = deadline - time.monotonic()
+            remaining = endpoint_deadline - time.monotonic()
             if remaining <= 0:
                 break
             time.sleep(min(RUNTIME_ENDPOINT_RETRY_SECONDS, remaining))
@@ -525,9 +635,13 @@ def _queue_counts(payload: Mapping[str, Any]) -> tuple[int, int, int]:
     return values  # type: ignore[return-value]
 
 
-def _cgroup_value(runner: CommandRunner, container: str, name: str) -> int | None:
+def _cgroup_value(
+    runner: CommandRunner, container: str, name: str, *, deadline: float | None = None
+) -> int | None:
     value = _run(
-        runner, ["docker", "exec", container, "cat", f"/sys/fs/cgroup/{name}"]
+        runner,
+        ["docker", "exec", container, "cat", f"/sys/fs/cgroup/{name}"],
+        deadline=deadline,
     ).strip()
     if value == "max":
         return None
@@ -540,21 +654,60 @@ def _cgroup_value(runner: CommandRunner, container: str, name: str) -> int | Non
     return parsed
 
 
-def compose_loopback_endpoints(runner: CommandRunner) -> dict[str, str]:
+def compose_loopback_endpoints(
+    runner: CommandRunner, *, deadline: float | None = None
+) -> dict[str, str]:
     """Public Compose-derived endpoint contract shared with benchmark tooling."""
-    return capacity_topology.compose_loopback_endpoints(runner, repo_root=REPO_ROOT)
+    try:
+        configured = json.loads(
+            _run(
+                runner,
+                ["docker", "compose", "config", "--format", "json"],
+                cwd=REPO_ROOT,
+                deadline=deadline,
+            )
+        )
+        services = configured["services"]
+        endpoints: dict[str, str] = {}
+        for label, service_name in (("api", "api"), ("browser", "playwright-service")):
+            service = services[service_name]
+            target = int(service["environment"]["PORT"])
+            match = next(
+                port for port in service["ports"] if int(port["target"]) == target
+            )
+            endpoints[label] = f"http://127.0.0.1:{int(match['published'])}"
+        return endpoints
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        StopIteration,
+    ) as exc:
+        raise RuntimeAdmissionError(
+            "resolved Compose loopback endpoints are invalid"
+        ) from exc
 
 
 _compose_loopback_endpoints = compose_loopback_endpoints
 
 
-def _settlement(runner: CommandRunner, endpoints: Mapping[str, str]) -> dict[str, Any]:
+def _settlement(
+    runner: CommandRunner,
+    endpoints: Mapping[str, str],
+    *,
+    deadline: float | None = None,
+) -> dict[str, Any]:
     api_endpoint = endpoints.get("api")
     browser_endpoint = endpoints.get("browser")
     if not isinstance(api_endpoint, str) or not isinstance(browser_endpoint, str):
         raise RuntimeAdmissionError("resolved Compose loopback endpoints are invalid")
-    queue = _queue_json(f"{api_endpoint}/v2/team/queue-status")
-    active = _queue_json(f"{api_endpoint}/v2/crawl/active")
+    if deadline is None:
+        queue = _queue_json(f"{api_endpoint}/v2/team/queue-status")
+        active = _queue_json(f"{api_endpoint}/v2/crawl/active")
+    else:
+        queue = _queue_json(f"{api_endpoint}/v2/team/queue-status", deadline=deadline)
+        active = _queue_json(f"{api_endpoint}/v2/crawl/active", deadline=deadline)
     active_jobs, waiting_jobs, total_jobs = _queue_counts(queue)
     crawls = active.get("crawls")
     if crawls is None and isinstance(active.get("data"), Mapping):
@@ -572,6 +725,7 @@ def _settlement(runner: CommandRunner, endpoints: Mapping[str, str]) -> dict[str
             "messages_unacknowledged",
             "--quiet",
         ],
+        deadline=deadline,
     )
     nuq = _run(
         runner,
@@ -594,13 +748,14 @@ def _settlement(runner: CommandRunner, endpoints: Mapping[str, str]) -> dict[str
                 "select 'queue_crawl_finished_total', count(*) from nuq.queue_crawl_finished order by 1;"
             ),
         ],
+        deadline=deadline,
     )
     try:
         rabbit_settlement = capacity_telemetry.parse_rabbitmq_settlement(rabbit)
         nuq_settlement = capacity_telemetry.parse_nuq_settlement(nuq)
     except capacity_telemetry.CapacityTelemetryError as exc:
         raise RuntimeAdmissionError(str(exc)) from exc
-    processes = _run(runner, ["/bin/ps", "-Ao", "command="])
+    processes = _run(runner, ["/bin/ps", "-Ao", "command="], deadline=deadline)
     process_busy = any(
         marker in processes
         for marker in (
@@ -612,8 +767,12 @@ def _settlement(runner: CommandRunner, endpoints: Mapping[str, str]) -> dict[str
         )
     )
     return {
-        "api_root_status": _http_status(f"{api_endpoint}/"),
-        "browser_root_status": _http_status(f"{browser_endpoint}/"),
+        "api_root_status": _http_status(f"{api_endpoint}/")
+        if deadline is None
+        else _http_status(f"{api_endpoint}/", deadline=deadline),
+        "browser_root_status": _http_status(f"{browser_endpoint}/")
+        if deadline is None
+        else _http_status(f"{browser_endpoint}/", deadline=deadline),
         "api": {"active": active_jobs, "waiting": waiting_jobs, "total": total_jobs},
         "active_crawls": len(crawls) if isinstance(crawls, list) else None,
         **rabbit_settlement,
@@ -622,11 +781,20 @@ def _settlement(runner: CommandRunner, endpoints: Mapping[str, str]) -> dict[str
     }
 
 
-def _capture_source_state(runner: CommandRunner) -> dict[str, Any]:
+def _capture_source_state(
+    runner: CommandRunner, *, deadline: float | None = None
+) -> dict[str, Any]:
     return {
-        "git_sha": _run(runner, ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT).strip(),
+        "git_sha": _run(
+            runner, ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, deadline=deadline
+        ).strip(),
         "dirty": bool(
-            _run(runner, ["git", "status", "--porcelain"], cwd=REPO_ROOT).strip()
+            _run(
+                runner,
+                ["git", "status", "--porcelain"],
+                cwd=REPO_ROOT,
+                deadline=deadline,
+            ).strip()
         ),
         "compose_sha256": _file_hash(COMPOSE_PATH),
         "override_sha256": _file_hash(OVERRIDE_PATH),
@@ -636,9 +804,15 @@ def _capture_source_state(runner: CommandRunner) -> dict[str, Any]:
     }
 
 
-def capture_runtime(runner: CommandRunner = _default_runner) -> RuntimeCapture:
+def capture_runtime(
+    runner: CommandRunner = _default_runner, *, deadline: float | None = None
+) -> RuntimeCapture:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise RuntimeAdmissionError("runtime deadline expired before capture")
     inspected = _json_output(
-        runner, ["docker", "inspect", API_CONTAINER, BROWSER_CONTAINER]
+        runner,
+        ["docker", "inspect", API_CONTAINER, BROWSER_CONTAINER],
+        deadline=deadline,
     )
     if not isinstance(inspected, list) or len(inspected) != 2:
         raise RuntimeAdmissionError(
@@ -662,31 +836,45 @@ def capture_runtime(runner: CommandRunner = _default_runner) -> RuntimeCapture:
         (api_public, API_CONTAINER),
         (browser_public, BROWSER_CONTAINER),
     ):
-        public["cgroup_memory_max"] = _cgroup_value(runner, container, "memory.max")
-        public["cgroup_swap_max"] = _cgroup_value(runner, container, "memory.swap.max")
+        public["cgroup_memory_max"] = _cgroup_value(
+            runner, container, "memory.max", deadline=deadline
+        )
+        public["cgroup_swap_max"] = _cgroup_value(
+            runner, container, "memory.swap.max", deadline=deadline
+        )
         public["cgroup_memory_current"] = _cgroup_value(
-            runner, container, "memory.current"
+            runner, container, "memory.current", deadline=deadline
         )
     try:
-        orb_memory = int(_run(runner, ["orb", "config", "get", "memory_mib"]).strip())
+        orb_memory = int(
+            _run(
+                runner, ["orb", "config", "get", "memory_mib"], deadline=deadline
+            ).strip()
+        )
         docker_memory = int(
-            _run(runner, ["docker", "info", "--format", "{{.MemTotal}}"]).strip()
+            _run(
+                runner,
+                ["docker", "info", "--format", "{{.MemTotal}}"],
+                deadline=deadline,
+            ).strip()
         )
     except ValueError as exc:
         raise RuntimeAdmissionError("runtime memory capacity is invalid") from exc
-    endpoints = _compose_loopback_endpoints(runner)
+    endpoints = _compose_loopback_endpoints(runner, deadline=deadline)
     public = {
-        "repo": _capture_source_state(runner),
+        "repo": _capture_source_state(runner, deadline=deadline),
         "host": {
-            "orb_status": _run(runner, ["orb", "status"]).strip(),
+            "orb_status": _run(runner, ["orb", "status"], deadline=deadline).strip(),
             "orbstack_memory_mib": orb_memory,
-            "docker_context": _run(runner, ["docker", "context", "show"]).strip(),
+            "docker_context": _run(
+                runner, ["docker", "context", "show"], deadline=deadline
+            ).strip(),
             "docker_memtotal_bytes": docker_memory,
         },
         "api": api_public,
         "browser": browser_public,
         "endpoints": endpoints,
-        "settlement": _settlement(runner, endpoints),
+        "settlement": _settlement(runner, endpoints, deadline=deadline),
     }
     public["transition_sha256"] = transition_fingerprint(public)
     public["snapshot_sha256"] = snapshot_fingerprint(public)
@@ -694,7 +882,7 @@ def capture_runtime(runner: CommandRunner = _default_runner) -> RuntimeCapture:
 
 
 def _capture_recovery_state(
-    before: RuntimeCapture, runner: CommandRunner
+    before: RuntimeCapture, runner: CommandRunner, *, deadline: float | None = None
 ) -> RuntimeCapture:
     """Inspect identity/config without requiring a recreated browser to run.
 
@@ -703,14 +891,18 @@ def _capture_recovery_state(
     identity, existing browser configuration, source inputs, and host identity
     are still checked live. This is never a successful verification snapshot.
     """
-    names = _run(runner, ["docker", "ps", "-a", "--format", "{{.Names}}"])
+    names = _run(
+        runner, ["docker", "ps", "-a", "--format", "{{.Names}}"], deadline=deadline
+    )
     present = set(names.splitlines())
     if API_CONTAINER not in present:
         raise RuntimeAdmissionError("recovery cannot identify the preserved API")
     containers = [API_CONTAINER]
     if BROWSER_CONTAINER in present:
         containers.append(BROWSER_CONTAINER)
-    inspected = _json_output(runner, ["docker", "inspect", *containers])
+    inspected = _json_output(
+        runner, ["docker", "inspect", *containers], deadline=deadline
+    )
     if not isinstance(inspected, list) or len(inspected) != len(containers):
         raise RuntimeAdmissionError("recovery container inspection is incomplete")
     observed = {
@@ -727,16 +919,26 @@ def _capture_recovery_state(
     if BROWSER_CONTAINER in observed:
         browser_env = _env_map(observed[BROWSER_CONTAINER])
         public["browser"] = _container_public(observed[BROWSER_CONTAINER], browser_env)
-    public["repo"] = _capture_source_state(runner)
+    public["repo"] = (
+        _capture_source_state(runner)
+        if deadline is None
+        else _capture_source_state(runner, deadline=deadline)
+    )
     try:
-        orb_memory = int(_run(runner, ["orb", "config", "get", "memory_mib"]).strip())
+        orb_memory = int(
+            _run(
+                runner, ["orb", "config", "get", "memory_mib"], deadline=deadline
+            ).strip()
+        )
     except ValueError as exc:
         raise RuntimeAdmissionError("recovery host memory identity is invalid") from exc
     public["host"].update(
         {
-            "orb_status": _run(runner, ["orb", "status"]).strip(),
+            "orb_status": _run(runner, ["orb", "status"], deadline=deadline).strip(),
             "orbstack_memory_mib": orb_memory,
-            "docker_context": _run(runner, ["docker", "context", "show"]).strip(),
+            "docker_context": _run(
+                runner, ["docker", "context", "show"], deadline=deadline
+            ).strip(),
         }
     )
     return RuntimeCapture(public, browser_env, api_env)
@@ -1106,6 +1308,7 @@ def preflight(
     *,
     profile_config: Path | None = None,
     experiment_kind: str | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Capture a receipt for the default controller or the explicit C10 plan.
 
@@ -1115,12 +1318,14 @@ def preflight(
     prevents an arbitrary JSON file from changing runtime resources through the
     otherwise generic controller interface.
     """
+    if deadline is not None and time.monotonic() >= deadline:
+        raise RuntimeAdmissionError("runtime deadline expired before preflight")
     out = _controller_output(out)
     selected_config = _runtime_profile_config(profile_config, experiment_kind)
     profile, digest = experiment.load_profile(selected_config, profile_name)
     if profile["kind"] not in {"baseline", "experiment"}:
         raise RuntimeAdmissionError("runtime transition requires a benchmark profile")
-    capture = capture_runtime(runner)
+    capture = _capture_with_deadline(runner, deadline)
     receipt = _receipt_payload(profile_name, profile, digest, capture)
     write_private(out, receipt, refuse_existing=True)
     if not receipt["admitted"]:
@@ -1226,6 +1431,105 @@ def _validate_review_authority(path: Path) -> None:
         )
 
 
+def _validate_review_approval_fields(
+    approval: Mapping[str, Any],
+    profile_name: str,
+    config_sha256: str,
+    now: datetime | None = None,
+    transition_receipt_sha256: str | None = None,
+    source_git_sha: str | None = None,
+) -> dict[str, Any]:
+    """Validate approval fields independent of a mutable runtime receipt."""
+    required = {
+        "schema_version",
+        "kind",
+        "profile",
+        "config_sha256",
+        "transition_receipt_sha256",
+        "source_git_sha",
+        "approved_by",
+        "approved",
+        "created_at",
+        "expires_after_seconds",
+        "nonce",
+    }
+    if (
+        set(approval) != required
+        or not isinstance(profile_name, str)
+        or not profile_name
+        or not NONCE_PATTERN.fullmatch(str(config_sha256))
+        or approval.get("schema_version") != SCHEMA_VERSION
+        or approval.get("kind") != APPROVAL_KIND
+        or approval.get("profile") != profile_name
+        or approval.get("config_sha256") != config_sha256
+        or not NONCE_PATTERN.fullmatch(str(approval.get("config_sha256")))
+        or approval.get("approved_by") != "coordinating-review"
+        or approval.get("approved") is not True
+        or approval.get("expires_after_seconds") != RECEIPT_MAX_AGE_SECONDS
+        or not NONCE_PATTERN.fullmatch(str(approval.get("transition_receipt_sha256")))
+        or not SHA_PATTERN.fullmatch(str(approval.get("source_git_sha")))
+        or not NONCE_PATTERN.fullmatch(str(approval.get("nonce")))
+    ):
+        raise RuntimeAdmissionError("review approval bindings are invalid")
+    if (
+        transition_receipt_sha256 is not None
+        and approval.get("transition_receipt_sha256") != transition_receipt_sha256
+    ) or (
+        source_git_sha is not None and approval.get("source_git_sha") != source_git_sha
+    ):
+        raise RuntimeAdmissionError(
+            "review approval does not bind the admitted transition"
+        )
+    age = (datetime.now(timezone.utc) if now is None else now) - _parse_time(
+        approval.get("created_at")
+    )
+    if age.total_seconds() < 0 or age.total_seconds() > RECEIPT_MAX_AGE_SECONDS:
+        raise RuntimeAdmissionError("review approval is stale")
+    return dict(approval)
+
+
+def validate_review_approval(
+    path: Path,
+    profile_name: str,
+    config_sha256: str,
+    now: datetime | None = None,
+    *,
+    transition_receipt_sha256: str | None = None,
+    source_git_sha: str | None = None,
+) -> dict[str, Any]:
+    """Non-consumingly validate one private approval's static contract.
+
+    The caller receives no mutation authority. Optional receipt fingerprints
+    bind this static check, while the one-use transition remains the
+    responsibility of ``consume_review_approval``.
+    """
+    _validate_review_authority(path)
+    try:
+        if path.stat().st_size > REVIEW_APPROVAL_MAX_BYTES:
+            raise RuntimeAdmissionError(
+                "review approval exceeds its private size bound"
+            )
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise RuntimeAdmissionError("review approval path is unavailable") from exc
+    if len(raw) > REVIEW_APPROVAL_MAX_BYTES:
+        raise RuntimeAdmissionError("review approval exceeds its private size bound")
+    try:
+        approval = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeAdmissionError("review approval contains invalid JSON") from exc
+    if not isinstance(approval, Mapping):
+        raise RuntimeAdmissionError("review approval contains invalid JSON")
+    return _validate_review_approval_fields(
+        approval,
+        profile_name,
+        config_sha256,
+        now,
+        transition_receipt_sha256,
+        source_git_sha,
+    )
+
+
 def _benchmark_grant_payload(approval: Mapping[str, Any]) -> dict[str, Any]:
     required = {
         "profile",
@@ -1301,7 +1605,18 @@ def _write_review_benchmark_grant(parent: Path, approval: Mapping[str, Any]) -> 
     return path
 
 
-def _consume_review_approval_bytes(path: Path, recovery_path: Path) -> bytes:
+def _deadline_timeout(deadline: float | None, cap: float = 30.0) -> float:
+    if deadline is None:
+        return cap
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RuntimeAdmissionError("runtime deadline expired before helper command")
+    return min(cap, remaining)
+
+
+def _consume_review_approval_bytes(
+    path: Path, recovery_path: Path, *, deadline: float | None = None
+) -> bytes:
     """Read-and-destroy approval in an isolated same-user helper process."""
     _validate_review_authority(path)
     try:
@@ -1315,7 +1630,7 @@ def _consume_review_approval_bytes(path: Path, recovery_path: Path) -> bytes:
             ],
             capture_output=True,
             check=False,
-            timeout=30,
+            timeout=_deadline_timeout(deadline),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeAdmissionError("review approval consumer is unavailable") from exc
@@ -1324,7 +1639,9 @@ def _consume_review_approval_bytes(path: Path, recovery_path: Path) -> bytes:
     return result.stdout
 
 
-def _recover_review_consumption(path: Path, *, discard: bool) -> None:
+def _recover_review_consumption(
+    path: Path, *, discard: bool, deadline: float | None = None
+) -> None:
     """Recover an exact helper transaction even if its response was lost."""
     _operator_uid()
     try:
@@ -1338,7 +1655,7 @@ def _recover_review_consumption(path: Path, *, discard: bool) -> None:
             ],
             capture_output=True,
             check=False,
-            timeout=30,
+            timeout=_deadline_timeout(deadline),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeAdmissionError(
@@ -1348,7 +1665,9 @@ def _recover_review_consumption(path: Path, *, discard: bool) -> None:
         raise RuntimeAdmissionError("review consumption recovery failed")
 
 
-def _destroy_review_benchmark_grant(path: Path) -> None:
+def _destroy_review_benchmark_grant(
+    path: Path, *, deadline: float | None = None
+) -> None:
     """Destroy an unused review grant without exposing or reading its payload."""
     _operator_uid()
     try:
@@ -1361,7 +1680,7 @@ def _destroy_review_benchmark_grant(path: Path) -> None:
             ],
             capture_output=True,
             check=False,
-            timeout=30,
+            timeout=_deadline_timeout(deadline),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeAdmissionError(
@@ -1371,6 +1690,20 @@ def _destroy_review_benchmark_grant(path: Path) -> None:
         raise RuntimeAdmissionError("review benchmark grant could not be destroyed")
 
 
+def _consume_approval_with_deadline(
+    path: Path,
+    receipt: Mapping[str, Any],
+    profile_name: str,
+    config_sha256: str,
+    deadline: float | None,
+) -> tuple[dict[str, Any], Path]:
+    if deadline is None:
+        return consume_review_approval(path, receipt, profile_name, config_sha256)
+    return consume_review_approval(
+        path, receipt, profile_name, config_sha256, deadline=deadline
+    )
+
+
 def _validate_approval_payload(
     approval: Mapping[str, Any],
     receipt: Mapping[str, Any],
@@ -1378,41 +1711,15 @@ def _validate_approval_payload(
     config_sha256: str,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    required = {
-        "schema_version",
-        "kind",
-        "profile",
-        "config_sha256",
-        "transition_receipt_sha256",
-        "source_git_sha",
-        "approved_by",
-        "approved",
-        "created_at",
-        "expires_after_seconds",
-        "nonce",
-    }
-    if (
-        set(approval) != required
-        or approval.get("schema_version") != SCHEMA_VERSION
-        or approval.get("kind") != APPROVAL_KIND
-        or approval.get("profile") != profile_name
-        or approval.get("config_sha256") != config_sha256
-        or approval.get("transition_receipt_sha256") != receipt.get("receipt_sha256")
-        or approval.get("source_git_sha")
-        != receipt.get("baseline", {}).get("repo", {}).get("git_sha")
-        or approval.get("approved_by") != "coordinating-review"
-        or approval.get("approved") is not True
-        or approval.get("expires_after_seconds") != RECEIPT_MAX_AGE_SECONDS
-        or not NONCE_PATTERN.fullmatch(str(approval.get("nonce")))
-    ):
-        raise RuntimeAdmissionError(
-            "review approval does not bind the admitted transition"
-        )
-    current = now or datetime.now(timezone.utc)
-    age = (current - _parse_time(approval.get("created_at"))).total_seconds()
-    if age < 0 or age > RECEIPT_MAX_AGE_SECONDS:
-        raise RuntimeAdmissionError("review approval is stale")
-    return dict(approval)
+    validated = _validate_review_approval_fields(
+        approval,
+        profile_name,
+        config_sha256,
+        now,
+        receipt.get("receipt_sha256"),
+        receipt.get("baseline", {}).get("repo", {}).get("git_sha"),
+    )
+    return validated
 
 
 def consume_review_approval(
@@ -1421,16 +1728,33 @@ def consume_review_approval(
     profile_name: str,
     config_sha256: str,
     now: datetime | None = None,
+    deadline: float | None = None,
 ) -> tuple[dict[str, Any], Path]:
     """Atomically consume one operator-owned approval before issuing a mutation."""
     path = Path(os.path.abspath(path))
+    # Reject invalid static authority before beginning its one-use transaction.
+    validate_review_approval(
+        path,
+        profile_name,
+        config_sha256,
+        now,
+        transition_receipt_sha256=receipt.get("receipt_sha256"),
+        source_git_sha=receipt.get("baseline", {}).get("repo", {}).get("git_sha"),
+    )
     recovery_path = path.parent / (
         f".cre-capacity-consumption-{secrets.token_hex(32)}.json"
     )
     grant_path: Path | None = None
     try:
         try:
-            approval = json.loads(_consume_review_approval_bytes(path, recovery_path))
+            raw_approval = (
+                _consume_review_approval_bytes(path, recovery_path)
+                if deadline is None
+                else _consume_review_approval_bytes(
+                    path, recovery_path, deadline=deadline
+                )
+            )
+            approval = json.loads(raw_approval)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise RuntimeAdmissionError(
                 "review approval contains invalid JSON"
@@ -1441,18 +1765,29 @@ def consume_review_approval(
         validated = _validate_approval_payload(
             approval, receipt, profile_name, config_sha256, now
         )
-        _recover_review_consumption(recovery_path, discard=False)
+        if deadline is None:
+            _recover_review_consumption(recovery_path, discard=False)
+        else:
+            _recover_review_consumption(recovery_path, discard=False, deadline=deadline)
         return validated, grant_path
     except BaseException as primary_error:
         cleanup_errors: list[BaseException] = []
         with _defer_transition_signals():
             try:
-                _recover_review_consumption(recovery_path, discard=True)
+                if deadline is None:
+                    _recover_review_consumption(recovery_path, discard=True)
+                else:
+                    _recover_review_consumption(
+                        recovery_path, discard=True, deadline=deadline
+                    )
             except BaseException as exc:  # noqa: BLE001 - always attempt known grant cleanup
                 cleanup_errors.append(exc)
             if grant_path is not None:
                 try:
-                    _destroy_review_benchmark_grant(grant_path)
+                    if deadline is None:
+                        _destroy_review_benchmark_grant(grant_path)
+                    else:
+                        _destroy_review_benchmark_grant(grant_path, deadline=deadline)
                 except BaseException as exc:  # noqa: BLE001 - retain both cleanup failures
                     cleanup_errors.append(exc)
         if cleanup_errors:
@@ -1501,6 +1836,7 @@ def admit_baseline(
     admission_out: Path,
     approval_path: Path,
     runner: CommandRunner = _default_runner,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Bind a baseline benchmark to a fresh, read-only review admission.
 
@@ -1509,6 +1845,10 @@ def admit_baseline(
     approval only to create the benchmark grant, and writes a private admission
     receipt for the normal benchmark worker.
     """
+    if deadline is not None and time.monotonic() >= deadline:
+        raise RuntimeAdmissionError(
+            "runtime deadline expired before baseline admission"
+        )
     receipt, profile, digest = load_fresh_receipt(receipt_path, profile_name)
     if profile["kind"] != "baseline":
         raise RuntimeAdmissionError("baseline admission requires a baseline profile")
@@ -1525,7 +1865,7 @@ def admit_baseline(
         except LockHeldError as exc:
             raise RuntimeAdmissionError(str(exc)) from exc
         try:
-            current = capture_runtime(runner)
+            current = _capture_with_deadline(runner, deadline)
             baseline = receipt["baseline"]
             if current.public["transition_sha256"] != baseline["transition_sha256"]:
                 raise RuntimeAdmissionError("runtime drifted after preflight")
@@ -1781,6 +2121,7 @@ def _compose_recreate(
     *,
     execute: bool = True,
     mutation_observer: Callable[[], None] | None = None,
+    deadline: float | None = None,
 ) -> None:
     parent = Path(
         tempfile.mkdtemp(
@@ -1836,6 +2177,7 @@ def _compose_recreate(
                     [*prefix, "config", "--format", "json"],
                     cwd=REPO_ROOT,
                     env=command_env,
+                    deadline=deadline,
                 )
             )
         except json.JSONDecodeError as exc:
@@ -1866,6 +2208,7 @@ def _compose_recreate(
                 "{{.Id}}",
             ],
             cwd=REPO_ROOT,
+            deadline=deadline,
         ).strip()
         configured_env = service.get("environment")
         if not (
@@ -1903,7 +2246,7 @@ def _compose_recreate(
             if mutation_observer is not None:
                 mutation_observer()
             try:
-                _run(runner, argv, cwd=REPO_ROOT, env=command_env)
+                _run(runner, argv, cwd=REPO_ROOT, env=command_env, deadline=deadline)
             except RuntimeAdmissionError as exc:
                 raise RuntimeMutationError(
                     "browser recreation failed after mutation request"
@@ -1942,6 +2285,7 @@ def _api_update(
     runner: CommandRunner,
     *,
     mutation_observer: Callable[[], None] | None = None,
+    deadline: float | None = None,
 ) -> None:
     runtime, requested = profile["runtime_baseline"], profile["requested"]
     cpus = runtime["api_cpus"] if state == "baseline" else requested["api_cpus"]
@@ -1963,6 +2307,7 @@ def _api_update(
                 API_CONTAINER,
             ],
             cwd=REPO_ROOT,
+            deadline=deadline,
         )
     except RuntimeAdmissionError as exc:
         raise RuntimeMutationError("API update failed after mutation request") from exc
@@ -2124,24 +2469,28 @@ def _restore_baseline(
     receipt: Mapping[str, Any],
     profile: Mapping[str, Any],
     runner: CommandRunner,
+    *,
+    deadline: float | None = None,
 ) -> RuntimeCapture:
     """Resume a safe rollback from baseline, candidate, or a mixed state."""
     browser_state, api_state = _component_states(current, receipt, profile)
     cleanup_error: RuntimeOverlayCleanupError | None = None
     if browser_state == "candidate":
         try:
-            _compose_recreate(current, profile, "baseline", runner)
+            _compose_with_deadline(
+                current, profile, "baseline", runner, deadline=deadline
+            )
         except RuntimeOverlayCleanupError as exc:
             cleanup_error = exc
-        current = capture_runtime(runner)
+        current = _capture_with_deadline(runner, deadline)
         observed_browser, observed_api = _component_states(current, receipt, profile)
         if observed_browser != "baseline" or observed_api != api_state:
             raise RuntimeAdmissionError(
                 "browser rollback did not preserve the API component"
             )
     if api_state == "candidate":
-        _api_update(profile, "baseline", runner)
-        current = capture_runtime(runner)
+        _api_with_deadline(profile, "baseline", runner, deadline=deadline)
+        current = _capture_with_deadline(runner, deadline)
     final_browser, final_api = _component_states(current, receipt, profile)
     checks = verify_capture(current, receipt, profile, "baseline")
     if (final_browser, final_api) != ("baseline", "baseline") or not all(
@@ -2158,6 +2507,8 @@ def _compensate_candidate_attempt(
     receipt: Mapping[str, Any],
     profile: Mapping[str, Any],
     runner: CommandRunner,
+    *,
+    deadline: float | None = None,
 ) -> RuntimeCapture:
     """Reverse an issued candidate attempt even when its resources are partial."""
     baseline = receipt["baseline"]
@@ -2175,17 +2526,17 @@ def _compensate_candidate_attempt(
         )
     failures: list[BaseException] = []
     try:
-        _compose_recreate(current, profile, "baseline", runner)
+        _compose_with_deadline(current, profile, "baseline", runner, deadline=deadline)
     except BaseException as exc:  # noqa: BLE001 - compensation must continue
         failures.append(exc)
     try:
-        _api_update(profile, "baseline", runner)
+        _api_with_deadline(profile, "baseline", runner, deadline=deadline)
     except BaseException as exc:  # noqa: BLE001 - verification still must run
         failures.append(exc)
     baseline_verified = False
     restored: RuntimeCapture | None = None
     try:
-        restored = capture_runtime(runner)
+        restored = _capture_with_deadline(runner, deadline)
         checks = verify_capture(restored, receipt, profile, "baseline")
         baseline_verified = all(checks.values())
     except BaseException as exc:  # noqa: BLE001 - preserve command failures
@@ -2216,7 +2567,10 @@ def transition(
     _held_shared_lock: SharedLock | None = None,
     profile_config: Path | None = None,
     experiment_kind: str | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise RuntimeAdmissionError("runtime deadline expired before transition")
     receipt, profile, digest = load_fresh_receipt(
         receipt_path,
         profile_name,
@@ -2250,7 +2604,7 @@ def transition(
     if not execute:
         if _held_shared_lock is not None:
             raise RuntimeAdmissionError("caller-held lock is only valid for execution")
-        current = capture_runtime(runner)
+        current = _capture_with_deadline(runner, deadline)
         baseline = receipt["baseline"]
         try:
             browser_state, api_state = _component_states(current, receipt, profile)
@@ -2263,7 +2617,9 @@ def transition(
             or (browser_state, api_state) != ("baseline", "baseline")
         ):
             raise RuntimeAdmissionError("runtime drifted after preflight")
-        _compose_recreate(current, profile, state, runner, execute=False)
+        _compose_with_deadline(
+            current, profile, state, runner, execute=False, deadline=deadline
+        )
         if state == "baseline":
             plan["commands"] = {
                 component: receipt["rollback_plan"][component]
@@ -2298,7 +2654,7 @@ def transition(
         except LockHeldError as exc:
             raise RuntimeAdmissionError(str(exc)) from exc
         try:
-            current = capture_runtime(runner)
+            current = _capture_with_deadline(runner, deadline)
             baseline = receipt["baseline"]
             try:
                 browser_state, api_state = _component_states(current, receipt, profile)
@@ -2315,32 +2671,36 @@ def transition(
                     raise RuntimeAdmissionError("runtime drifted after preflight")
                 assert approval_path is not None
                 with _delay_transition_signals():
-                    approval, review_grant_path = consume_review_approval(
-                        approval_path, receipt, profile_name, digest
+                    approval, review_grant_path = _consume_approval_with_deadline(
+                        approval_path, receipt, profile_name, digest, deadline
                     )
                     _record_review_approval_consumption(
                         lock_path, approval, receipt, digest
                     )
-                _compose_recreate(
+                _compose_with_deadline(
                     current,
                     profile,
                     "candidate",
                     runner,
                     mutation_observer=mark_mutation,
+                    deadline=deadline,
                 )
                 mutation_issued = True
-                _api_update(
+                _api_with_deadline(
                     profile,
                     "candidate",
                     runner,
                     mutation_observer=mark_mutation,
+                    deadline=deadline,
                 )
-                after = capture_runtime(runner)
+                after = _capture_with_deadline(runner, deadline)
                 checks = verify_capture(after, receipt, profile, "candidate")
                 if not all(checks.values()):
                     raise RuntimeAdmissionError("candidate verification failed")
             else:
-                after = _restore_baseline(current, receipt, profile, runner)
+                after = _restore_with_deadline(
+                    current, receipt, profile, runner, deadline
+                )
                 checks = verify_capture(after, receipt, profile, "baseline")
 
             result = {
@@ -2369,7 +2729,12 @@ def transition(
             if state == "candidate" and review_grant_path is not None:
                 try:
                     with _defer_transition_signals():
-                        _destroy_review_benchmark_grant(review_grant_path)
+                        if deadline is None:
+                            _destroy_review_benchmark_grant(review_grant_path)
+                        else:
+                            _destroy_review_benchmark_grant(
+                                review_grant_path, deadline=deadline
+                            )
                 except BaseException as cleanup_exc:  # noqa: BLE001 - keep compensating
                     grant_cleanup_error = cleanup_exc
             compensation_error: BaseException | None = None
@@ -2383,11 +2748,13 @@ def transition(
                             except OSError as exc:
                                 admission_cleanup_error = exc
                         try:
-                            rollback_capture = capture_runtime(runner)
+                            rollback_capture = _capture_with_deadline(runner, deadline)
                         except (RuntimeAdmissionError, OSError):
-                            rollback_capture = _capture_recovery_state(current, runner)
-                        _compensate_candidate_attempt(
-                            rollback_capture, receipt, profile, runner
+                            rollback_capture = _recovery_with_deadline(
+                                current, runner, deadline
+                            )
+                        _compensate_with_deadline(
+                            rollback_capture, receipt, profile, runner, deadline
                         )
                         if admission_cleanup_error is not None:
                             raise RuntimeAdmissionError(

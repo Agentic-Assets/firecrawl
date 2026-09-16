@@ -2,29 +2,25 @@
 
 Wave 1 is intentionally an offline admission and evidence protocol. It now
 also includes sealed receipt substrate and source-owned candidate producers,
-but it does not provide a runnable CLI, a concrete network transport, a
-scraper, a collector/controller command integration, or a generic source adapter. The receipt
-transport is an injected interface: no shipped C10 component opens a provider
-connection or can execute a request by itself.
+but it does not provide a general collector CLI, generic network transport,
+scraper, public controller integration, or generic source adapter. No
+TypeScript component opens a provider connection or can execute a request by
+itself: the Linux-only Python host coordinator owns the lock, sealed card
+manifest, Compose lifecycle, capability signer, and private artifacts.
 
 `policy.py` seals the fixed 20-source, 12/8-plane matrix. `authority.py` loads
 the one non-substitutable repository authority and fingerprints the complete
-collector Python/TypeScript source tree plus package/config dependencies. That authority currently approves
-no cohort and no adapter, so `admission.py` cannot issue a plan. A future
-reviewed commit must pin one exact cohort digest and all twenty current
-implementation digests before `admission.py` can bind the registry, cohort, and
-isolated `c10-p0`/`c10-p1` configuration into an immutable plan. `runner.py`
-owns serial one-use arm ordering and a library-only
-coordinator that requires injected runtime, browser, settlement, rollback, and
-quarantine hooks. Before preflight, it atomically persists each arm claim in an
-owner-only, FD-identity-checked session root derived solely from the canonical
-shared-lock location and immutable plan/session identity. Callers cannot select
-another ledger. An interrupted claim remains unresolved after quarantine
-recovery and cannot be replayed. Terminalization atomically retains the sealed
-result and digest in that ledger, so a caller crash cannot consume the only
-recoverable copy. `compare.py`
-is pure and can only produce an operator-review candidate, never an executable
-adoption decision.
+collector Python/TypeScript source tree plus package/config dependencies. That
+authority currently approves no cohort and no adapter, so `admission.py` cannot
+issue a plan. A future reviewed commit must pin one exact cohort digest and all
+twenty current implementation digests before `admission.py` can bind the exact
+registry, cohort, and isolated `c10-p0`/`c10-p1` configuration into an immutable
+plan. `runner.py` is a pure, data-only session helper with no runtime hooks,
+subprocesses, lock access, or callback-driven execution path. The dedicated
+Linux-only production host owns runtime transitions, locking, durable host
+artifacts, and capability handling. `compare.py` accepts only the canonical
+durable arm ledger and can only produce an offline operator-review candidate,
+never an executable adoption decision.
 
 The receipt producers do not change this admission boundary. Inventory
 producers, strict-detail Batch A producers, and the Foundry Batch B producer
@@ -34,14 +30,53 @@ not registered in a live collector, and no producer is evidence of adapter
 admission or of a completed C10 run. `candidate_registry()` remains an
 unverified review surface and `default_registry()` remains empty.
 
-The executable-foundation seam is deliberately still library-only. Its
-`run_one_coordinated_arm()` coordinator receives explicitly injected runtime,
-browser, settlement, and quarantine hooks; it has no CLI and does not arm or
-call the local API by itself. It holds one `SharedLock` from preflight through
-browser execution, settlement, P1 rollback, and quarantine. Its only admitted
-alternate runtime profile is the canonical
-`cre_capacity_c10_profiles_v1.json`, named with `experiment_kind="C10"`; the
-ordinary controller retains its historic default profile behavior.
+The executable path is `capacity_c10.production`, not an injectable runner.
+It durably claims an arm before any host activity, holds the canonical
+`SharedLock` through runtime preflight, P1 candidate transition, host execution,
+settlement, rollback, terminalization, and quarantine, and invokes only the
+existing `cre_capacity_runtime` controller. Its only admitted alternate runtime
+profile is the canonical `cre_capacity_c10_profiles_v1.json`, named with
+`experiment_kind="C10"`; the ordinary controller retains its historic default
+profile behavior.
+
+The former TypeScript JLL executor, lifecycle preflight, and local browser
+constructor have been removed. A host creates a sealed, plan-bound JLL card
+registry only from the canonical GraphQL enumeration recipe and the exact
+sixteen hash-bound JLL cohort members. It issues the enumeration and all
+sixteen member capabilities before the bounded P0/P1 scheduler begins. The
+narrow issued-capability child can perform only one host-issued card and cannot
+receive or create a lock, keypair, receipt store, Compose configuration, or an
+arbitrary card. The host accepts a terminal success only after it has verified
+signed cleanup-complete evidence and derived the exact 4/10 active-lease peak
+from sidecar lease intervals.
+
+The only production entrypoint is `python -m capacity_c10.production`. It
+defaults to a local-input-only dry run. `--execute --smoke` runs one sealed
+16-member P0/P1 arm only after its canonical runtime preflight, and P1 also
+requires a fresh approval plus admission path. All CLI paths are canonical
+roots: `--runtime-receipt-root`, `--approval-root`, and `--admission-root`.
+After the coordinator claims the next durable arm under `SharedLock`, it alone
+derives `arm-N.json` beneath each root. The dry run validates that exact next
+arm's receipt output and, for P1, approval/admission files; an approved P1
+smoke therefore executes the same `approval-root/arm-N.json` file.
+Execution repeats those owner-only-root, exact-output, and P1 approval checks
+while holding that lock before it marks or claims an arm, so dry-run success is
+never execution authority. P0 accepts no same-arm approval or admission output.
+`--execute --counterbalanced` runs the fixed eight-arm sequence and requires
+one approval and admission file per P1 arm. It constructs the host registry
+itself and accepts no browser callback, arbitrary card, or caller scheduler
+evidence.
+
+The durable ledger path is derived solely from the canonical shared-lock root
+and immutable plan digest. It is not a CLI argument. Claim and terminal state
+are one atomically replaced ledger record;
+the terminal record retains the safe authenticated comparator envelope and
+artifact manifest hashes, never browser bodies. Replaying an unadvanced session
+or selecting an alternate ledger fails closed. One monotonic deadline begins
+before preflight and is carried through host execution, settlement, rollback,
+and terminalization. The compatibility facade `host_session.py` exposes the
+minimal public API; crypto, ledger, registry, sidecar, and orchestration live
+in focused host modules.
 
 The coordinator seals a browser arm only when it carries the plan/config and
 requested-profile digests, private runtime receipt digest, container snapshot
@@ -58,7 +93,7 @@ direct/native transport,
 cache reads/writes, fallback/multiple attempts, caller-supplied throughput
 scalars, and unsaturated cohorts.
 
-The future live binding must use the existing public components, without
+The production coordinator binds the existing public components, without
 duplicating them:
 
 - `cre_checkpoint_refresh.SharedLock` for exclusive ownership and retained
@@ -75,11 +110,14 @@ and provider-specific attrition classifier are independently reviewed. A failed
 or uncertain arm must quarantine under the held canonical lock; it must not
 attempt a fresh lock acquisition, a generic fallback, or an automatic rerun.
 
-This foundation is not browser-fidelity proof. The present 20-source matrix
-remains a compatibility and review panel. A browser-sensitive primary
-comparison cannot run until source-specific adapters prove the reviewed browser
-path, single engine attempt, cache controls, and scheduler activity.
+This foundation is not whole-cohort browser-fidelity proof. The present
+20-source matrix remains a compatibility and review panel. The JLL-only lane
+has local browser-route evidence; every other source still requires independent
+reviewed browser-path, cache instrumentation, and scheduler proof.
 Direct-native receipts remain non-comparable compatibility evidence.
+Authenticated JLL host evidence is terminalized separately and remains
+`not_comparable_pending_authenticated_20_source_evidence`; no missing source is
+converted into an assumed throughput observation.
 
 ## Candidate receipt hooks
 

@@ -1,0 +1,24 @@
+# Isolated C10 service. It never extends, replaces, or removes the ordinary
+# playwright-service: each lifecycle gets a unique COMPOSE_PROJECT_NAME.
+services:
+  playwright-service-c10:
+    build: apps/playwright-service-ts
+    env_file:
+      - path: ${C10_BROWSER_PRIVATE_ENV_FILE:?set an owner-only C10 env file}
+        required: true
+    environment:
+      PORT: 3003
+      C10_BROWSER_INTERNAL_PORT: 3004
+      MAX_CONCURRENT_PAGES: ${MAX_CONCURRENT_PAGES:?set reviewed C10 capacity}
+      C10_PROFILE_SHA256: ${C10_PROFILE_SHA256:?set reviewed C10 profile identity}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cpus: ${C10_BROWSER_CPUS:?set reviewed C10 browser CPUs}
+    pids_limit: ${C10_BROWSER_PIDS:?set reviewed C10 browser PIDs}
+    mem_limit: 16G
+    memswap_limit: 16G
+    shm_size: 8G
+    ports:
+      - "127.0.0.1:${C10_BROWSER_HOST_PORT:?set a loopback host port}:3004"

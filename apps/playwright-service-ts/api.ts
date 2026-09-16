@@ -24,6 +24,10 @@ import {
   parseBrowserBatchFetchInput,
   withBrowserBatchHardTimeout,
 } from "./browser_batch_fetch";
+import {
+  createC10BrowserListener,
+  readC10BrowserListenerConfig,
+} from "./c10_browser_listener";
 
 // Register stealth plugin before any launch call.
 stealthChromium.use(StealthPlugin());
@@ -52,6 +56,7 @@ const ALLOW_LOCAL_WEBHOOKS =
 const PROXY_SERVER = process.env.PROXY_SERVER || null;
 const PROXY_USERNAME = process.env.PROXY_USERNAME || null;
 const PROXY_PASSWORD = process.env.PROXY_PASSWORD || null;
+const c10ListenerConfig = readC10BrowserListenerConfig(process.env);
 
 class InsecureConnectionError extends Error {
   constructor(
@@ -663,6 +668,19 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
   }
 });
 
+const createC10Listener = () =>
+  createC10BrowserListener({
+    config: c10ListenerConfig,
+    maxConcurrentPages: MAX_CONCURRENT_PAGES,
+    proxyServer: PROXY_SERVER,
+    proxyCountry: process.env.PROXY_COUNTRY,
+    pageSemaphore,
+    getBrowser: () => browser,
+    initializeBrowser,
+    createContext,
+    assertSafeTargetUrl,
+  });
+
 app.post("/scrape", async (req: Request, res: Response) => {
   const {
     url,
@@ -852,11 +870,20 @@ app.post("/scrape", async (req: Request, res: Response) => {
 });
 
 const start = async () => {
+  const c10Listener = createC10Listener();
   ssrfProxyPort = await startSSRFProxy();
   await initializeBrowser();
   app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
   });
+  if (c10Listener.enabled && c10Listener.port) {
+    // Docker publishes this listener only as 127.0.0.1:<host-port>; binding
+    // all interfaces is required for the container port-forwarder, while the
+    // signed capability and host key protect sibling-container access.
+    c10Listener.app.listen(c10Listener.port, "0.0.0.0", () => {
+      console.log("C10 v3 browser listener is running behind Docker loopback publication");
+    });
+  }
 };
 start().catch((error) => {
   console.error("Failed to start server:", error);

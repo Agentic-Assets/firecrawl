@@ -1,9 +1,13 @@
-# C10 private receipt substrate
+# C10 private receipt substrate, protocol v3
 
 This TypeScript package is a sealed evidence substrate, not a collector or an
-executable source registry. It includes source-owned candidate receipt
-producers, but has no concrete `DirectProviderTransport` implementation, CLI
-entrypoint, controller integration, or live execution path. It does not import
+executable source registry. The only executable TypeScript surface is
+`issued_browser_child.ts`: it accepts exactly one Python-issued capability over
+stdin and returns the sidecar response unchanged. It has no key generator,
+receipt-store construction, lock interface, Compose control, or generic
+transport constructor. The host coordinator is
+`capacity_c10/host_session.py`; it owns those authority-bearing operations.
+It does not import
 `collect.ts`, ingestion, checkpoints, cache helpers, or normal scrape helpers.
 Python `candidate_registry()` remains unverified and `verified_registry()`
 remains closed.
@@ -30,6 +34,15 @@ Stage receipts likewise retain only a bounded count/digest commitment to the
 cumulative request-accounting ledger, whose individual accepted events are
 already privately sealed by the one-shot transport.
 
+Protocol v3 replaces the old shared-secret protocol completely. The coordinator
+holds an ephemeral Ed25519 capability private key while the sidecar receives
+only its public key. The sidecar separately holds an ephemeral Ed25519 evidence
+private key while the coordinator receives only its public key. Each lifecycle
+rotates both pairs; capabilities from an older lifecycle fail verification.
+The sidecar's bounded in-memory nonce registry consumes an unexpired nonce
+before page admission and prunes expired entries. It is intentionally not made
+durable because the keys are ephemeral.
+
 Private artifacts contain the request and response evidence under an absolute
 0700 root. They are written through an exclusive no-follow temporary file and
 atomically linked into an immutable 0600 sealed artifact. Public receipt and
@@ -47,6 +60,29 @@ or activate a source.
 authoritative-inventory sources. CBRE Deal Flow is an explicit blocked
 descriptor, not an executable fallback: its ListingEngine needs a
 provider-derived engine key and form-urlencoded POST response HTML. `strict_detail/` contains Batch A candidates
+
+The only supported host-to-sidecar transport is the opt-in
+`docker-compose.c10.yaml` overlay. Docker/OrbStack publishes its C10 listener
+on `127.0.0.1` only; no Unix socket is mounted because the coordinator lock and
+private receipt root must remain host-owned. A caller must prove the rendered
+loopback port, hold the canonical `SharedLock`, durably claim an arm in
+`C10SessionStore`, verify Linux `PrivateReceiptStore` support, and verify
+signed, host-key-authenticated v3 health before execution. The coordinator
+binds the durable claim digest, rather than a caller-controlled mutable ledger,
+as `sessionSha256`; it never permits an alternate plan or ledger to resume a
+claim. A lifecycle has one deadline covering Compose startup, health, browser
+execution, evidence sealing, and cleanup. Any timeout, child failure, bad
+signature, root replacement, or cleanup failure retains the canonical lock for
+quarantine before it can be released.
+The sidecar signs every evidence record with lease monotonic start/end values,
+active/capacity observations, one exact engine attempt, ephemeral context/cache
+semantics, and plan/cohort/card/manifest/session/arm/profile bindings.
+
+`inventory.ts` contains executable source-local candidates for seven
+authoritative-inventory sources. CBRE Deal Flow is an explicit blocked
+descriptor, not an executable fallback: its ListingEngine needs a
+provider-derived engine key and form-urlencoded POST response HTML.
+`strict_detail/` contains Batch A candidates
 for JLL, JLL Investor, Colliers SalesTracker, and Marcus & Millichap.
 `sources/batch_b.ts` contains the sole currently representable Batch B
 candidate, Foundry. They all require a future reviewed coordinator to supply a
