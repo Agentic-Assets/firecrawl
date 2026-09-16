@@ -2,8 +2,8 @@
 
 **Branch:** `feat/c10-production-integration`
 **Base:** `feat/c10-v3-host-session` at `86235ad5fbc13029f0ea49e5cf8c3079df5fe554`
-**State:** verified locally and awaiting the commit/push that follows this
-capture. No runtime, Docker, provider, or database calls occurred.
+**State:** canonical-ledger and deadline hardening verified locally. No runtime,
+Docker, provider, or database calls occurred.
 
 ## Goal
 
@@ -25,13 +25,16 @@ canonical lock, sealed host execution, and authenticated terminalization.
   inflated into a 20-source comparator result.
 - Added a dry-run-default CLI with guarded one-arm smoke and fixed
   counterbalanced-sequence modes.
+- Follow-up review hardening derives the sole ledger path from the canonical
+  lock, plan, and session; terminal state atomically includes the safe
+  authenticated envelope; and splits host ownership into focused modules.
 
 ## Verification
 
 - `ruff check` and `ruff format --check` on the six changed Python files:
   passed.
 - `python3 -m py_compile` on changed C10 Python modules: passed.
-- Focused C10 Python tests: `32 passed`.
+- Focused C10 Python tests: `32 passed` after the follow-up hardening.
 - `git diff --check`: passed.
 - TypeScript unit tests could not start in this isolated worktree because its
   `node_modules` lacks `tsx`. No TypeScript source changed.

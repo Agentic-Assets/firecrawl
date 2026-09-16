@@ -636,7 +636,11 @@ def _capture_source_state(runner: CommandRunner) -> dict[str, Any]:
     }
 
 
-def capture_runtime(runner: CommandRunner = _default_runner) -> RuntimeCapture:
+def capture_runtime(
+    runner: CommandRunner = _default_runner, *, deadline: float | None = None
+) -> RuntimeCapture:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise RuntimeAdmissionError("runtime deadline expired before capture")
     inspected = _json_output(
         runner, ["docker", "inspect", API_CONTAINER, BROWSER_CONTAINER]
     )
@@ -1106,6 +1110,7 @@ def preflight(
     *,
     profile_config: Path | None = None,
     experiment_kind: str | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Capture a receipt for the default controller or the explicit C10 plan.
 
@@ -1115,6 +1120,8 @@ def preflight(
     prevents an arbitrary JSON file from changing runtime resources through the
     otherwise generic controller interface.
     """
+    if deadline is not None and time.monotonic() >= deadline:
+        raise RuntimeAdmissionError("runtime deadline expired before preflight")
     out = _controller_output(out)
     selected_config = _runtime_profile_config(profile_config, experiment_kind)
     profile, digest = experiment.load_profile(selected_config, profile_name)
@@ -2216,7 +2223,10 @@ def transition(
     _held_shared_lock: SharedLock | None = None,
     profile_config: Path | None = None,
     experiment_kind: str | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise RuntimeAdmissionError("runtime deadline expired before transition")
     receipt, profile, digest = load_fresh_receipt(
         receipt_path,
         profile_name,
