@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Self
 
 import pytest
-from capacity_c10 import admission, contracts
+from capacity_c10 import admission, contracts, host_store
 from capacity_c10.host_session import (
     C10HostExecutionSession,
     C10SealedCardRegistry,
@@ -328,6 +328,95 @@ def _sealed_jll_plan() -> tuple[dict[str, object], dict[str, object]]:
         )
     _seal_cohort(cohort)
     return admission.admit_plan(cohort, registry=_registry()), cohort
+
+
+def _seed_valid_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    plan: dict[str, object],
+    store: C10SessionStore,
+    claim: dict[str, object],
+) -> dict[str, bytes]:
+    """Persist a signed, re-openable predecessor terminal without Linux I/O."""
+    private_key, public_key = _OpenSsl.pair(time.monotonic() + 30)
+    arm = claim["arm"]
+    assert isinstance(arm, dict)
+    profile = plan["profiles"][arm["variant"]]  # type: ignore[index]
+    assert isinstance(profile, dict)
+    binding = {
+        "planSha256": plan["plan_sha256"],
+        "cohortSha256": plan["cohort_sha256"],
+        "sessionSha256": claim["session_sha256"],
+        "armSha256": contracts.sha256(arm),
+        "profileSha256": contracts.sha256(profile["requested"]),
+        "cardSha256": "c" * 64,
+        "manifestSha256": "d" * 64,
+    }
+    artifacts: dict[str, bytes] = {}
+    manifest: list[dict[str, object]] = []
+    evidence: list[dict[str, object]] = []
+    for index in range(17):
+        unsigned = {"binding": binding, "fixtureSequence": index}
+        signed = {
+            **unsigned,
+            "evidenceSignature": _OpenSsl.sign(
+                private_key, contracts.canonical_bytes(unsigned), time.monotonic() + 30
+            ),
+        }
+        body = contracts.canonical_bytes(signed)
+        digest = hashlib.sha256(body).hexdigest()
+        name = f"browser-evidence-{index}-{digest}.sealed"
+        artifacts[name] = body
+        manifest.append({"name": name, "sha256": digest, "bytes": len(body)})
+        evidence.append(signed)
+    root = {"path": str((tmp_path / "private-receipts").resolve()), "id": "r" * 64}
+
+    class FakeReceipts:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def descriptor(self) -> dict[str, str]:
+            return root
+
+        def read_sealed(self, artifact: dict[str, object]) -> bytes:
+            try:
+                return artifacts[str(artifact["name"])]
+            except KeyError as exc:
+                raise contracts.C10Error("fixture receipt artifact is missing") from exc
+
+    monkeypatch.setattr(
+        host_store.PrivateReceiptStore,
+        "create",
+        classmethod(lambda _cls, _root: FakeReceipts()),
+    )
+    authenticated = {
+        "kind": "cre_capacity_c10_authenticated_host_arm_v1",
+        "plan_sha256": plan["plan_sha256"],
+        "index": arm["index"],
+        "variant": arm["variant"],
+        "no_write": plan["no_write"],
+        "runtime": {
+            "profile_config_sha256": plan["profiles"]["config_sha256"],  # type: ignore[index]
+            "profile_requested_sha256": contracts.sha256(profile["requested"]),
+            "runtime_receipt_sha256": "a" * 64,
+            "container_snapshot_sha256": "b" * 64,
+            "transition_sha256": "c" * 64,
+        },
+        "host_result": {
+            "claim": claim,
+            "receipt_root": root,
+            "evidence_manifest": manifest,
+            "evidence_manifest_sha256": contracts.sha256(evidence),
+            "evidence_public_key": public_key,
+            "evidence_key_id": hashlib.sha256(public_key.encode()).hexdigest(),
+            "binding": binding,
+        },
+    }
+    store.record_terminal(claim, authenticated)
+    return artifacts
 
 
 def test_registry_rejects_same_cohort_plan_b_before_any_lifecycle(
@@ -807,8 +896,8 @@ def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
     seed = C10SessionStore(
         tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
     )
-    seed_claim = seed.claim(plan)
-    seed.record_terminal(seed_claim, {})
+    seed_claim = dict(seed.claim(plan))
+    _seed_valid_terminal(monkeypatch, tmp_path, plan, seed, seed_claim)
     events: list[str] = []
 
     class Lock:
@@ -883,3 +972,140 @@ def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
         )
     assert events == ["lock", "arm", "candidate", "host", "baseline", "release"]
     assert list((tmp_path / ".cre-c10-ledger-v1").glob("*.quarantine"))
+
+
+@pytest.mark.parametrize("corruption", ["missing", "tampered"])
+def test_prior_terminal_receipts_block_later_arm_before_lock_or_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, corruption: str
+) -> None:
+    plan, cohort = _sealed_jll_plan()
+    store = C10SessionStore(
+        tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
+    )
+    claim = dict(store.claim(plan))
+    artifacts = _seed_valid_terminal(monkeypatch, tmp_path, plan, store, claim)
+    name = next(iter(artifacts))
+    if corruption == "missing":
+        del artifacts[name]
+    else:
+        artifacts[name] = b'{"tampered":true}'
+
+    lock_events: list[str] = []
+    monkeypatch.setattr(
+        "capacity_c10.production.canonical_shared_lock_dir",
+        lambda _root: tmp_path / ".cre.lock",
+    )
+    monkeypatch.setattr(
+        "capacity_c10.production._canonical_lock",
+        lambda _root: pytest.fail("tampered predecessor must fail before lock"),
+    )
+    monkeypatch.setattr(
+        "capacity_c10.production.C10HostExecutionSession",
+        lambda **_kwargs: pytest.fail("tampered predecessor must fail before host"),
+    )
+    with pytest.raises(
+        contracts.C10Error, match="artifact is missing|signature is invalid"
+    ):
+        execute_production_arm(
+            repo_root=tmp_path,
+            plan=plan,
+            cohort=cohort,
+            private_root=tmp_path / "private",
+            runtime_receipt_path=tmp_path / "receipt.json",
+            approval_path=tmp_path / "approval.json",
+            admission_out=tmp_path / "admission.json",
+        )
+    assert lock_events == []
+
+
+@pytest.mark.parametrize("timeout_seconds", [0, -1, 121, float("inf")])
+def test_production_rejects_invalid_timeout_before_lock_or_ledger_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, timeout_seconds: float
+) -> None:
+    plan, cohort = _sealed_jll_plan()
+    monkeypatch.setattr(
+        "capacity_c10.production._canonical_lock",
+        lambda _root: pytest.fail("invalid timeout must fail before lock"),
+    )
+    with pytest.raises(contracts.C10Error, match="timeout_seconds"):
+        execute_production_arm(
+            repo_root=tmp_path,
+            plan=plan,
+            cohort=cohort,
+            private_root=tmp_path / "private",
+            runtime_receipt_path=tmp_path / "receipt.json",
+            timeout_seconds=timeout_seconds,
+        )
+    assert not (tmp_path / ".cre-c10-ledger-v1").exists()
+
+
+def test_lock_arm_failure_quarantines_and_releases_before_a_replay_attempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, cohort = _sealed_jll_plan()
+    events: list[str] = []
+
+    class Lock:
+        def __init__(self) -> None:
+            self.path, self.retain_on_exit = tmp_path / ".cre.lock", False
+
+        def acquire(self) -> None:
+            events.append("lock")
+
+        def arm_benchmark(self, _evidence: object) -> None:
+            events.append("arm")
+            raise contracts.C10Error("arm marker failed")
+
+        def release(self) -> None:
+            events.append("release")
+
+    monkeypatch.setattr("capacity_c10.production._canonical_lock", lambda _: Lock())
+    monkeypatch.setattr(
+        "capacity_c10.production.canonical_shared_lock_dir",
+        lambda _root: tmp_path / ".cre.lock",
+    )
+    monkeypatch.setattr(
+        "capacity_c10.production.C10HostExecutionSession",
+        lambda **_kwargs: type("Host", (), {"lock_path": tmp_path / ".cre.lock"})(),
+    )
+    with pytest.raises(contracts.C10Error, match="arm marker failed"):
+        execute_production_arm(
+            repo_root=tmp_path,
+            plan=plan,
+            cohort=cohort,
+            private_root=tmp_path / "private",
+            runtime_receipt_path=tmp_path / "receipt.json",
+        )
+    assert events == ["lock", "arm", "release"]
+    assert (
+        tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.quarantine"
+    ).exists()
+    with pytest.raises(contracts.C10Error, match="terminal recovery"):
+        execute_production_arm(
+            repo_root=tmp_path,
+            plan=plan,
+            cohort=cohort,
+            private_root=tmp_path / "private",
+            runtime_receipt_path=tmp_path / "receipt.json",
+        )
+
+
+def test_cli_execute_rejects_invalid_timeout_before_reading_or_mutating_paths() -> None:
+    with pytest.raises(contracts.C10Error, match="lifecycle timeout"):
+        main(
+            [
+                "--execute",
+                "--timeout-seconds",
+                "0",
+                "--plan",
+                "/definitely/missing/plan.json",
+                "--cohort",
+                "/definitely/missing/cohort.json",
+                "--private-root",
+                "/definitely/missing/private",
+                "--runtime-receipt",
+                "/definitely/missing/receipt.json",
+                "--repo-root",
+                "/definitely/missing/repo",
+            ]
+        )

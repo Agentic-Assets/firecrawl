@@ -139,10 +139,19 @@ def execute_production_arm(
     and proves post-rollback idleness before terminalizing. Any uncertainty
     retains the shared lock and writes a quarantine record.
     """
+    if type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 120:
+        raise C10Error("C10 timeout_seconds must be greater than 0 and at most 120")
     validate_plan(plan)
     registry = C10SealedCardRegistry(plan, cohort)
     store = _canonical_session_store(repo_root, plan)
     store.assert_available(plan)
+    next_arm_index = store.next_arm_index(plan)
+    # A later arm cannot advance based on ledger metadata alone. Reopen every
+    # completed predecessor's owner-only receipt root and prove its ordered
+    # artifact hashes, signatures, and bindings before acquiring the lock or
+    # touching runtime state for this arm.
+    for prior_index in range(next_arm_index):
+        store.load_terminal(plan, prior_index)
     host = C10HostExecutionSession(
         repo_root=repo_root,
         session_store=store,
@@ -154,22 +163,25 @@ def execute_production_arm(
     if lock.path.resolve() != host.lock_path:
         raise C10Error("C10 host and runtime canonical locks differ")
     lock.acquire()
-    # The canonical lock marker is the crash/reclaim boundary.  A durable
-    # sibling ledger alone is not enough because it survives outside the lock
-    # tree while a dead owner could otherwise be stale-reclaimed.
-    lock.arm_benchmark(
-        {
-            "kind": "cre_capacity_c10_v3",
-            "plan_sha256": plan["plan_sha256"],
-            "protocol_ledger_sha256": sha256(
-                {"protocol": "cre_capacity_c10_v3", "plan_sha256": plan["plan_sha256"]}
-            ),
-        }
-    )
     claim: Mapping[str, Any] | None = None
     candidate_transition: Mapping[str, Any] | None = None
     receipt: Mapping[str, Any] | None = None
     try:
+        # The canonical lock marker is the crash/reclaim boundary. A durable
+        # sibling ledger alone is not enough because it survives outside the
+        # lock tree while a dead owner could otherwise be stale-reclaimed.
+        lock.arm_benchmark(
+            {
+                "kind": "cre_capacity_c10_v3",
+                "plan_sha256": plan["plan_sha256"],
+                "protocol_ledger_sha256": sha256(
+                    {
+                        "protocol": "cre_capacity_c10_v3",
+                        "plan_sha256": plan["plan_sha256"],
+                    }
+                ),
+            }
+        )
         # Claim precedes any host, runtime, Compose, or provider activity.
         _remaining(deadline)
         claim = store.claim(plan)
@@ -385,6 +397,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=120)
     args = parser.parse_args(argv)
+    if not 0 < args.timeout_seconds <= 120:
+        raise C10Error("C10 lifecycle timeout is outside its reviewed bound")
     plan, cohort = (
         _read(args.plan, "plan"),
         _read(args.cohort, "cohort"),
@@ -397,8 +411,6 @@ def main(argv: list[str] | None = None) -> int:
     # Docker, the runtime controller, the host sidecar, or a provider.
     selected = "counterbalanced" if args.counterbalanced else "smoke"
     if not args.execute:
-        if not 0 < args.timeout_seconds <= 120:
-            raise C10Error("C10 lifecycle timeout is outside its reviewed bound")
         next_index = _validate_dry_run_paths(
             plan=plan,
             store=store,
